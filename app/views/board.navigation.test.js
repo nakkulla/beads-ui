@@ -89,14 +89,21 @@ describe('views/board keyboard navigation', () => {
     expect(document.activeElement).toBe(first);
   });
 
-  test('ArrowLeft/ArrowRight jump to top card in adjacent non-empty column, skipping empty', async () => {
+  test('ArrowLeft/ArrowRight jump through resolved column and skip empty columns', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const issues = [
       { id: 'B-1', title: 'b1', updated_at: '2025-10-23T10:00:00.000Z' },
       { id: 'P-1', title: 'p1', updated_at: '2025-10-23T10:00:00.000Z' },
-      { id: 'P-2', title: 'p2', updated_at: '2025-10-23T09:00:00.000Z' }
+      { id: 'P-2', title: 'p2', updated_at: '2025-10-23T09:00:00.000Z' },
+      { id: 'RS-1', title: 'resolved', updated_at: '2025-10-23T08:00:00.000Z' },
+      {
+        id: 'C-1',
+        title: 'closed',
+        updated_at: '2025-10-23T07:00:00.000Z',
+        closed_at: Date.now()
+      }
     ];
     const issueStores = createTestIssueStores();
     issueStores.getStore('tab:board:blocked').applyPush({
@@ -110,6 +117,18 @@ describe('views/board keyboard navigation', () => {
       id: 'tab:board:in-progress',
       revision: 1,
       issues: issues.filter((i) => i.id.startsWith('P-'))
+    });
+    issueStores.getStore('tab:board:resolved').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:resolved',
+      revision: 1,
+      issues: issues.filter((i) => i.id.startsWith('RS-'))
+    });
+    issueStores.getStore('tab:board:closed').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:closed',
+      revision: 1,
+      issues: issues.filter((i) => i.id.startsWith('C-'))
     });
 
     /** @type {string[]} */
@@ -132,22 +151,38 @@ describe('views/board keyboard navigation', () => {
     const prog_first = /** @type {HTMLElement} */ (
       mount.querySelector('#in-progress-col .board-card')
     );
+    const resolved_first = /** @type {HTMLElement} */ (
+      mount.querySelector('#resolved-col .board-card')
+    );
+    const closed_first = /** @type {HTMLElement} */ (
+      mount.querySelector('#closed-col .board-card')
+    );
     open_first.focus();
     open_first.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
     );
     expect(document.activeElement).toBe(prog_first);
 
-    // Enter opens the details (via goto_issue callback)
     prog_first.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
+    );
+    expect(document.activeElement).toBe(resolved_first);
+
+    resolved_first.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
+    );
+    expect(document.activeElement).toBe(closed_first);
+
+    // Enter opens the details (via goto_issue callback)
+    resolved_first.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
     );
-    expect(opened).toEqual(['P-1']);
+    expect(opened).toEqual(['RS-1']);
 
     // Space also opens
-    prog_first.dispatchEvent(
+    resolved_first.dispatchEvent(
       new KeyboardEvent('keydown', { key: ' ', bubbles: true })
     );
-    expect(opened).toEqual(['P-1', 'P-1']);
+    expect(opened).toEqual(['RS-1', 'RS-1']);
   });
 });

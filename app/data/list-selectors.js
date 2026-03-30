@@ -4,7 +4,7 @@
  * triggers once per issues envelope to let views re-render.
  */
 /**
- * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'closed', priority?: number, issue_type?: string, created_at?: number, updated_at?: number, closed_at?: number }} IssueLite
+ * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'resolved'|'closed', priority?: number, issue_type?: string, created_at?: number, updated_at?: number, closed_at?: number }} IssueLite
  */
 import { cmpClosedDesc, cmpPriorityThenCreated } from './sort.js';
 
@@ -39,7 +39,7 @@ export function createListSelectors(issue_stores = undefined) {
    * Get entities for a Board column with column-specific sort.
    *
    * @param {string} client_id
-   * @param {'ready'|'blocked'|'in_progress'|'closed'} mode
+   * @param {'ready'|'blocked'|'in_progress'|'resolved'|'closed'} mode
    * @returns {IssueLite[]}
    */
   function selectBoardColumn(client_id, mode) {
@@ -47,7 +47,7 @@ export function createListSelectors(issue_stores = undefined) {
       issue_stores && issue_stores.snapshotFor
         ? issue_stores.snapshotFor(client_id).slice()
         : [];
-    if (mode === 'in_progress') {
+    if (mode === 'in_progress' || mode === 'resolved') {
       arr.sort(cmpPriorityThenCreated);
     } else if (mode === 'closed') {
       arr.sort(cmpClosedDesc);

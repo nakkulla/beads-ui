@@ -11,7 +11,7 @@ import { createTypeBadge } from '../utils/type-badge.js';
  * @typedef {{
  *   id: string,
  *   title?: string,
- *   status?: 'open'|'in_progress'|'closed',
+ *   status?: 'open'|'in_progress'|'resolved'|'closed',
  *   priority?: number,
  *   issue_type?: string,
  *   created_at?: number,
@@ -23,12 +23,13 @@ import { createTypeBadge } from '../utils/type-badge.js';
 /**
  * Map column IDs to their corresponding status values.
  *
- * @type {Record<string, 'open'|'in_progress'|'closed'>}
+ * @type {Record<string, 'open'|'in_progress'|'resolved'|'closed'>}
  */
 const COLUMN_STATUS_MAP = {
   'blocked-col': 'open',
   'ready-col': 'open',
   'in-progress-col': 'in_progress',
+  'resolved-col': 'resolved',
   'closed-col': 'closed'
 };
 
@@ -66,6 +67,8 @@ export function createBoardView(
   /** @type {IssueLite[]} */
   let list_in_progress = [];
   /** @type {IssueLite[]} */
+  let list_resolved = [];
+  /** @type {IssueLite[]} */
   let list_closed = [];
   /** @type {IssueLite[]} */
   let list_closed_raw = [];
@@ -99,6 +102,7 @@ export function createBoardView(
         ${columnTemplate('Blocked', 'blocked-col', list_blocked)}
         ${columnTemplate('Ready', 'ready-col', list_ready)}
         ${columnTemplate('In Progress', 'in-progress-col', list_in_progress)}
+        ${columnTemplate('Resolved', 'resolved-col', list_resolved)}
         ${columnTemplate('Closed', 'closed-col', list_closed)}
       </div>
     `;
@@ -254,7 +258,7 @@ export function createBoardView(
    * Update issue status via WebSocket transport.
    *
    * @param {string} issue_id
-   * @param {'open'|'in_progress'|'closed'} new_status
+   * @param {'open'|'in_progress'|'resolved'|'closed'} new_status
    */
   async function updateIssueStatus(issue_id, new_status) {
     if (!transport) {
@@ -593,6 +597,10 @@ export function createBoardView(
           'tab:board:closed',
           'closed'
         );
+        const resolved = selectors.selectBoardColumn(
+          'tab:board:resolved',
+          'resolved'
+        );
 
         // Ready excludes items that are in progress
         /** @type {Set<string>} */
@@ -602,6 +610,7 @@ export function createBoardView(
         list_ready = ready;
         list_blocked = blocked;
         list_in_progress = in_progress;
+        list_resolved = resolved;
         list_closed_raw = closed;
       }
       applyClosedFilter();
@@ -610,6 +619,7 @@ export function createBoardView(
       list_ready = [];
       list_blocked = [];
       list_in_progress = [];
+      list_resolved = [];
       list_closed = [];
       doRender();
     }
@@ -658,6 +668,7 @@ export function createBoardView(
           cnt('tab:board:ready') +
           cnt('tab:board:blocked') +
           cnt('tab:board:in-progress') +
+          cnt('tab:board:resolved') +
           cnt('tab:board:closed');
         const data = /** @type {any} */ (_data);
         const can_fetch =
@@ -668,12 +679,13 @@ export function createBoardView(
           typeof data.getClosed === 'function';
         if (total_items === 0 && can_fetch) {
           log('fallback fetch');
-          /** @type {[IssueLite[], IssueLite[], IssueLite[], IssueLite[]]} */
-          const [ready_raw, blocked_raw, in_prog_raw, closed_raw] =
+          /** @type {[IssueLite[], IssueLite[], IssueLite[], IssueLite[], IssueLite[]]} */
+          const [ready_raw, blocked_raw, in_prog_raw, resolved_raw, closed_raw] =
             await Promise.all([
               data.getReady().catch(() => []),
               data.getBlocked().catch(() => []),
               data.getInProgress().catch(() => []),
+              (data.getResolved?.() ?? Promise.resolve([])).catch(() => []),
               data.getClosed().catch(() => [])
             ]);
           // Normalize and map unknowns to IssueLite shape
@@ -686,6 +698,10 @@ export function createBoardView(
           /** @type {IssueLite[]} */
           const in_prog = Array.isArray(in_prog_raw)
             ? in_prog_raw.map((it) => it)
+            : [];
+          /** @type {IssueLite[]} */
+          const resolved = Array.isArray(resolved_raw)
+            ? resolved_raw.map((it) => it)
             : [];
           /** @type {IssueLite[]} */
           const closed = Array.isArray(closed_raw)
@@ -701,9 +717,11 @@ export function createBoardView(
           ready.sort(cmpPriorityThenCreated);
           blocked.sort(cmpPriorityThenCreated);
           in_prog.sort(cmpPriorityThenCreated);
+          resolved.sort(cmpPriorityThenCreated);
           list_ready = ready;
           list_blocked = blocked;
           list_in_progress = in_prog;
+          list_resolved = resolved;
           list_closed_raw = closed;
           applyClosedFilter();
           doRender();
@@ -717,6 +735,7 @@ export function createBoardView(
       list_ready = [];
       list_blocked = [];
       list_in_progress = [];
+      list_resolved = [];
       list_closed = [];
     }
   };

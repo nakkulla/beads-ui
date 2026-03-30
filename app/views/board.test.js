@@ -43,7 +43,7 @@ function createTestIssueStores() {
 }
 
 describe('views/board', () => {
-  test('renders four columns (Blocked, Ready, In Progress, Closed) with sorted cards and navigates on click', async () => {
+  test('renders five columns (Blocked, Ready, In Progress, Resolved, Closed) with sorted cards and navigates on click', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
@@ -106,6 +106,22 @@ describe('views/board', () => {
         updated_at: new Date('2025-10-22T09:00:00.000Z').getTime(),
         issue_type: 'feature'
       },
+      // Resolved
+      {
+        id: 'RS-2',
+        title: 'rs2',
+        updated_at: new Date('2025-10-20T08:00:00.000Z').getTime(),
+        created_at: new Date('2025-10-20T08:00:00.000Z').getTime(),
+        issue_type: 'task'
+      },
+      {
+        id: 'RS-1',
+        title: 'rs1',
+        updated_at: new Date('2025-10-19T08:00:00.000Z').getTime(),
+        created_at: new Date('2025-10-19T08:00:00.000Z').getTime(),
+        priority: 0,
+        issue_type: 'bug'
+      },
       // Closed
       {
         id: 'C-2',
@@ -140,6 +156,12 @@ describe('views/board', () => {
       id: 'tab:board:in-progress',
       revision: 1,
       issues: issues.filter((i) => i.id.startsWith('P-'))
+    });
+    issueStores.getStore('tab:board:resolved').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:resolved',
+      revision: 1,
+      issues: issues.filter((i) => i.id.startsWith('RS-'))
     });
     issueStores.getStore('tab:board:closed').applyPush({
       type: 'snapshot',
@@ -180,6 +202,12 @@ describe('views/board', () => {
       mount.querySelectorAll('#in-progress-col .board-card .mono')
     ).map((el) => el.textContent?.trim());
     expect(prog_ids).toEqual(['P-2', 'P-1']);
+
+    // Resolved: priority asc, then created_at asc
+    const resolved_ids = Array.from(
+      mount.querySelectorAll('#resolved-col .board-card .mono')
+    ).map((el) => el.textContent?.trim());
+    expect(resolved_ids).toEqual(['RS-1', 'RS-2']);
 
     // Closed: closed_at desc
     const closed_ids = Array.from(
@@ -264,6 +292,20 @@ describe('views/board', () => {
         }
       ]
     });
+    issueStores.getStore('tab:board:resolved').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:resolved',
+      revision: 1,
+      issues: [
+        {
+          id: 'RS-1',
+          title: 'resolved 1',
+          created_at: now + 1,
+          updated_at: now + 1,
+          issue_type: 'task'
+        }
+      ]
+    });
     issueStores.getStore('tab:board:closed').applyPush({
       type: 'snapshot',
       id: 'tab:board:closed',
@@ -299,6 +341,9 @@ describe('views/board', () => {
     const in_progress_count = mount
       .querySelector('#in-progress-col .board-column__count')
       ?.textContent?.trim();
+    const resolved_count = mount
+      .querySelector('#resolved-col .board-column__count')
+      ?.textContent?.trim();
     const closed_count = mount
       .querySelector('#closed-col .board-column__count')
       ?.textContent?.trim();
@@ -306,6 +351,7 @@ describe('views/board', () => {
     expect(blocked_count).toBe('2');
     expect(ready_count).toBe('3');
     expect(in_progress_count).toBe('1');
+    expect(resolved_count).toBe('1');
     expect(closed_count).toBe('1');
 
     const closed_label = mount
