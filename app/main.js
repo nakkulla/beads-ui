@@ -173,6 +173,14 @@ export function bootstrap(root_element) {
         void unsub_board_in_progress().catch(() => {});
         unsub_board_in_progress = null;
       }
+      if (unsub_issues_resolved) {
+        void unsub_issues_resolved().catch(() => {});
+        unsub_issues_resolved = null;
+      }
+      if (unsub_board_resolved) {
+        void unsub_board_resolved().catch(() => {});
+        unsub_board_resolved = null;
+      }
       if (unsub_board_closed) {
         void unsub_board_closed().catch(() => {});
         unsub_board_closed = null;
@@ -184,9 +192,11 @@ export function bootstrap(root_element) {
       // Clear all subscription stores
       const storeIds = [
         'tab:issues',
+        'tab:issues:resolved',
         'tab:epics',
         'tab:board:ready',
         'tab:board:in-progress',
+        'tab:board:resolved',
         'tab:board:closed',
         'tab:board:blocked'
       ];
@@ -651,9 +661,13 @@ export function bootstrap(root_element) {
     /** @type {null | (() => Promise<void>)} */
     let unsub_epics_tab = null;
     /** @type {null | (() => Promise<void>)} */
+    let unsub_issues_resolved = null;
+    /** @type {null | (() => Promise<void>)} */
     let unsub_board_ready = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_board_in_progress = null;
+    /** @type {null | (() => Promise<void>)} */
+    let unsub_board_resolved = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_board_closed = null;
     /** @type {null | (() => Promise<void>)} */
@@ -674,19 +688,38 @@ export function bootstrap(root_element) {
     /**
      * Compute subscription spec for Issues tab based on filters.
      *
-     * @param {{ status?: string }} filters
+     * @param {any} filters
+     * @returns {string[]}
+     */
+    function getStatusFilterArray(filters) {
+      const raw = filters?.status;
+      if (Array.isArray(raw)) {
+        return raw.map((it) => String(it)).filter(Boolean);
+      }
+      if (typeof raw === 'string' && raw !== '' && raw !== 'all') {
+        return [raw];
+      }
+      return [];
+    }
+
+    /**
+     * @param {any} filters
      * @returns {{ type: string, params?: Record<string, string|number|boolean> }}
      */
     function computeIssuesSpec(filters) {
-      const st = String(filters?.status || 'all');
-      if (st === 'ready') {
+      const status_filters = getStatusFilterArray(filters);
+      const [st] = status_filters;
+      if (status_filters.length === 1 && st === 'ready') {
         return { type: 'ready-issues' };
       }
-      if (st === 'in_progress') {
+      if (status_filters.length === 1 && st === 'in_progress') {
         return { type: 'in-progress-issues' };
       }
-      if (st === 'closed') {
+      if (status_filters.length === 1 && st === 'closed') {
         return { type: 'closed-issues' };
+      }
+      if (status_filters.length === 1 && st === 'resolved') {
+        return { type: 'resolved-issues' };
       }
       // "all" and "open" map to all-issues; client filters apply locally
       return { type: 'all-issues' };
@@ -703,6 +736,11 @@ export function bootstrap(root_element) {
       // Issues tab
       if (s.view === 'issues') {
         const spec = computeIssuesSpec(s.filters || {});
+        const status_filters = getStatusFilterArray(s.filters || {});
+        const needs_aux_resolved =
+          status_filters.includes('resolved') &&
+          !status_filters.includes('ready') &&
+          !(status_filters.length === 1 && status_filters[0] === 'resolved');
         const key = JSON.stringify(spec);
         // Register store first to capture the initial snapshot
         try {
@@ -731,6 +769,39 @@ export function bootstrap(root_element) {
               pending_subscriptions.delete(issues_sub_key);
             });
         }
+        if (
+          needs_aux_resolved &&
+          !unsub_issues_resolved &&
+          !pending_subscriptions.has('tab:issues:resolved')
+        ) {
+          try {
+            sub_issue_stores.register('tab:issues:resolved', {
+              type: 'resolved-issues'
+            });
+          } catch (err) {
+            log('register issues:resolved store failed: %o', err);
+          }
+          pending_subscriptions.add('tab:issues:resolved');
+          void subscriptions
+            .subscribeList('tab:issues:resolved', { type: 'resolved-issues' })
+            .then((u) => (unsub_issues_resolved = u))
+            .catch((err) => {
+              log('subscribe issues resolved failed: %o', err);
+              showFatalFromError(err, 'issues list (Resolved)');
+            })
+            .finally(() => {
+              pending_subscriptions.delete('tab:issues:resolved');
+            });
+        }
+        if (!needs_aux_resolved && unsub_issues_resolved) {
+          void unsub_issues_resolved().catch(() => {});
+          unsub_issues_resolved = null;
+          try {
+            sub_issue_stores.unregister('tab:issues:resolved');
+          } catch (err) {
+            log('unregister issues:resolved failed: %o', err);
+          }
+        }
       } else if (unsub_issues_tab) {
         void unsub_issues_tab().catch(() => {});
         unsub_issues_tab = null;
@@ -739,6 +810,15 @@ export function bootstrap(root_element) {
           sub_issue_stores.unregister('tab:issues');
         } catch (err) {
           log('unregister issues store failed: %o', err);
+        }
+        if (unsub_issues_resolved) {
+          void unsub_issues_resolved().catch(() => {});
+          unsub_issues_resolved = null;
+          try {
+            sub_issue_stores.unregister('tab:issues:resolved');
+          } catch (err) {
+            log('unregister issues:resolved failed: %o', err);
+          }
         }
       }
 
@@ -828,6 +908,32 @@ export function bootstrap(root_element) {
               pending_subscriptions.delete('tab:board:in-progress');
             });
         }
+        // Resolved column
+        if (
+          !unsub_board_resolved &&
+          !pending_subscriptions.has('tab:board:resolved')
+        ) {
+          try {
+            sub_issue_stores.register('tab:board:resolved', {
+              type: 'resolved-issues'
+            });
+          } catch (err) {
+            log('register board:resolved store failed: %o', err);
+          }
+          pending_subscriptions.add('tab:board:resolved');
+          void subscriptions
+            .subscribeList('tab:board:resolved', {
+              type: 'resolved-issues'
+            })
+            .then((u) => (unsub_board_resolved = u))
+            .catch((err) => {
+              log('subscribe board resolved failed: %o', err);
+              showFatalFromError(err, 'board (Resolved)');
+            })
+            .finally(() => {
+              pending_subscriptions.delete('tab:board:resolved');
+            });
+        }
         // Closed column
         if (
           !unsub_board_closed &&
@@ -894,6 +1000,15 @@ export function bootstrap(root_element) {
             sub_issue_stores.unregister('tab:board:in-progress');
           } catch (err) {
             log('unregister board:in-progress failed: %o', err);
+          }
+        }
+        if (unsub_board_resolved) {
+          void unsub_board_resolved().catch(() => {});
+          unsub_board_resolved = null;
+          try {
+            sub_issue_stores.unregister('tab:board:resolved');
+          } catch (err) {
+            log('unregister board:resolved failed: %o', err);
           }
         }
         if (unsub_board_closed) {
