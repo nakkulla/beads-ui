@@ -39,6 +39,17 @@ export function mapSubscriptionToBdArgs(spec) {
         '1000'
       ];
     }
+    case 'resolved-issues': {
+      return [
+        'list',
+        '--json',
+        '--tree=false',
+        '--status',
+        'resolved',
+        '--limit',
+        '1000'
+      ];
+    }
     case 'issue-detail': {
       const p = spec.params || {};
       const id = String(p.id || '').trim();

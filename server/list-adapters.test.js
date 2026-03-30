@@ -57,6 +57,19 @@ describe('list adapters for subscription types', () => {
     ]);
   });
 
+  test('mapSubscriptionToBdArgs returns args for resolved-issues', () => {
+    const args = mapSubscriptionToBdArgs({ type: 'resolved-issues' });
+    expect(args).toEqual([
+      'list',
+      '--json',
+      '--tree=false',
+      '--status',
+      'resolved',
+      '--limit',
+      '1000'
+    ]);
+  });
+
   test('mapSubscriptionToBdArgs returns args for issue-detail', () => {
     const args = mapSubscriptionToBdArgs({
       type: 'issue-detail',
