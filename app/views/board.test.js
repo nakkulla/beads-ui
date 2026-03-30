@@ -419,4 +419,106 @@ describe('views/board', () => {
     ).map((el) => el.textContent?.trim());
     expect(prog_ids).toEqual(['X-2']);
   });
+
+  test('filters Blocked and Ready to exclude resolved issues', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const now = Date.now();
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:blocked').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:blocked',
+      revision: 1,
+      issues: [
+        {
+          id: 'B-1',
+          title: 'blocked open',
+          status: 'open',
+          created_at: now - 20,
+          updated_at: now - 20,
+          issue_type: 'task'
+        },
+        {
+          id: 'RS-1',
+          title: 'blocked resolved',
+          status: 'resolved',
+          created_at: now - 10,
+          updated_at: now - 10,
+          issue_type: 'task'
+        }
+      ]
+    });
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'R-1',
+          title: 'ready open',
+          status: 'open',
+          created_at: now - 30,
+          updated_at: now - 30,
+          issue_type: 'task'
+        },
+        {
+          id: 'RS-2',
+          title: 'ready resolved',
+          status: 'resolved',
+          created_at: now - 5,
+          updated_at: now - 5,
+          issue_type: 'task'
+        }
+      ]
+    });
+    issueStores.getStore('tab:board:resolved').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:resolved',
+      revision: 1,
+      issues: [
+        {
+          id: 'RS-1',
+          title: 'resolved 1',
+          status: 'resolved',
+          created_at: now - 10,
+          updated_at: now - 10,
+          issue_type: 'task'
+        },
+        {
+          id: 'RS-2',
+          title: 'resolved 2',
+          status: 'resolved',
+          created_at: now - 5,
+          updated_at: now - 5,
+          issue_type: 'task'
+        }
+      ]
+    });
+
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      undefined,
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const blocked_ids = Array.from(
+      mount.querySelectorAll('#blocked-col .board-card .mono')
+    ).map((el) => el.textContent?.trim());
+    const ready_ids = Array.from(
+      mount.querySelectorAll('#ready-col .board-card .mono')
+    ).map((el) => el.textContent?.trim());
+    const resolved_ids = Array.from(
+      mount.querySelectorAll('#resolved-col .board-card .mono')
+    ).map((el) => el.textContent?.trim());
+
+    expect(blocked_ids).toEqual(['B-1']);
+    expect(ready_ids).toEqual(['R-1']);
+    expect(resolved_ids).toEqual(['RS-1', 'RS-2']);
+  });
 });

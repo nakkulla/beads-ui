@@ -76,6 +76,16 @@ export function createBoardView(
   const selectors = issueStores ? createListSelectors(issueStores) : null;
 
   /**
+   * Board의 Blocked/Ready 컬럼은 open 상태만 표시한다.
+   *
+   * @param {IssueLite} issue
+   * @returns {boolean}
+   */
+  function isOpenBoardIssue(issue) {
+    return String(issue.status || 'open') === 'open';
+  }
+
+  /**
    * Closed column filter mode.
    * 'today' → items with closed_at since local day start
    * '3' → last 3 days; '7' → last 7 days
@@ -605,10 +615,12 @@ export function createBoardView(
         // Ready excludes items that are in progress
         /** @type {Set<string>} */
         const in_prog_ids = new Set(in_progress.map((i) => i.id));
-        const ready = ready_raw.filter((i) => !in_prog_ids.has(i.id));
+        const ready = ready_raw.filter(
+          (i) => isOpenBoardIssue(i) && !in_prog_ids.has(i.id)
+        );
 
         list_ready = ready;
-        list_blocked = blocked;
+        list_blocked = blocked.filter((i) => isOpenBoardIssue(i));
         list_in_progress = in_progress;
         list_resolved = resolved;
         list_closed_raw = closed;
@@ -716,15 +728,18 @@ export function createBoardView(
           // Remove items from Ready that are already In Progress
           /** @type {Set<string>} */
           const in_progress_ids = new Set(in_prog.map((i) => i.id));
-          ready = ready.filter((i) => !in_progress_ids.has(i.id));
+          ready = ready.filter(
+            (i) => isOpenBoardIssue(i) && !in_progress_ids.has(i.id)
+          );
 
           // Sort as per column rules
           ready.sort(cmpPriorityThenCreated);
-          blocked.sort(cmpPriorityThenCreated);
+          const blocked_open = blocked.filter((i) => isOpenBoardIssue(i));
+          blocked_open.sort(cmpPriorityThenCreated);
           in_prog.sort(cmpPriorityThenCreated);
           resolved.sort(cmpPriorityThenCreated);
           list_ready = ready;
-          list_blocked = blocked;
+          list_blocked = blocked_open;
           list_in_progress = in_prog;
           list_resolved = resolved;
           list_closed_raw = closed;
