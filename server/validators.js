@@ -16,6 +16,7 @@ const SUBSCRIPTION_TYPES = new Set([
   'ready-issues',
   'in-progress-issues',
   'closed-issues',
+  'resolved-issues',
   'issue-detail'
 ]);
 
