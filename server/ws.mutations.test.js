@@ -46,6 +46,35 @@ describe('ws mutation handlers', () => {
     expect(obj.payload.status).toBe('in_progress');
   });
 
+  test('update-status accepts resolved', async () => {
+    const mRun = /** @type {import('vitest').Mock} */ (runBd);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    mJson.mockResolvedValueOnce({
+      code: 0,
+      stdoutJson: { id: 'UI-8', status: 'resolved' }
+    });
+    const ws = makeStubSocket();
+    const req = {
+      id: 'r1-resolved',
+      type: 'update-status',
+      payload: { id: 'UI-8', status: 'resolved' }
+    };
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(JSON.stringify(req))
+    );
+    const obj = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(obj.ok).toBe(true);
+    expect(obj.payload.status).toBe('resolved');
+    expect(mRun.mock.calls[0][0]).toEqual([
+      'update',
+      'UI-8',
+      '--status',
+      'resolved'
+    ]);
+  });
+
   test('update-status invalid payload yields bad_request', async () => {
     const ws = makeStubSocket();
     const req = {

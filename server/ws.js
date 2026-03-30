@@ -776,7 +776,7 @@ export async function handleMessage(ws, data) {
   if (req.type === 'update-status') {
     log('update-status');
     const { id, status } = /** @type {any} */ (req.payload);
-    const allowed = new Set(['open', 'in_progress', 'closed']);
+    const allowed = new Set(['open', 'in_progress', 'resolved', 'closed']);
     if (
       typeof id !== 'string' ||
       id.length === 0 ||
@@ -788,7 +788,7 @@ export async function handleMessage(ws, data) {
           makeError(
             req,
             'bad_request',
-            "payload requires { id: string, status: 'open'|'in_progress'|'closed' }"
+            "payload requires { id: string, status: 'open'|'in_progress'|'resolved'|'closed' }"
           )
         )
       );
