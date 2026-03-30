@@ -4,7 +4,7 @@
 import { debug } from './utils/logging.js';
 
 /**
- * @typedef {'all'|'open'|'in_progress'|'closed'|'ready'} StatusFilter
+ * @typedef {'all'|'open'|'in_progress'|'resolved'|'closed'|'ready'|string[]} StatusFilter
  */
 
 /**

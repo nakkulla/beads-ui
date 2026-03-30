@@ -355,7 +355,7 @@ export function bootstrap(root_element) {
       client.onConnection(onConn);
     }
     // Load persisted filters (status/search/type) from localStorage
-    /** @type {{ status: 'all'|'open'|'in_progress'|'closed'|'ready', search: string, type: string }} */
+    /** @type {{ status: 'all'|'open'|'in_progress'|'resolved'|'closed'|'ready', search: string, type: string }} */
     let persisted_filters = { status: 'all', search: '', type: '' };
     try {
       const raw = window.localStorage.getItem('beads-ui.filters');
@@ -378,9 +378,14 @@ export function bootstrap(root_element) {
             parsed_type = first_valid;
           }
           persisted_filters = {
-            status: ['all', 'open', 'in_progress', 'closed', 'ready'].includes(
-              obj.status
-            )
+            status: [
+              'all',
+              'open',
+              'in_progress',
+              'resolved',
+              'closed',
+              'ready'
+            ].includes(obj.status)
               ? obj.status
               : 'all',
             search: typeof obj.search === 'string' ? obj.search : '',

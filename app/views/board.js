@@ -680,14 +680,19 @@ export function createBoardView(
         if (total_items === 0 && can_fetch) {
           log('fallback fetch');
           /** @type {[IssueLite[], IssueLite[], IssueLite[], IssueLite[], IssueLite[]]} */
-          const [ready_raw, blocked_raw, in_prog_raw, resolved_raw, closed_raw] =
-            await Promise.all([
-              data.getReady().catch(() => []),
-              data.getBlocked().catch(() => []),
-              data.getInProgress().catch(() => []),
-              (data.getResolved?.() ?? Promise.resolve([])).catch(() => []),
-              data.getClosed().catch(() => [])
-            ]);
+          const [
+            ready_raw,
+            blocked_raw,
+            in_prog_raw,
+            resolved_raw,
+            closed_raw
+          ] = await Promise.all([
+            data.getReady().catch(() => []),
+            data.getBlocked().catch(() => []),
+            data.getInProgress().catch(() => []),
+            (data.getResolved?.() ?? Promise.resolve([])).catch(() => []),
+            data.getClosed().catch(() => [])
+          ]);
           // Normalize and map unknowns to IssueLite shape
           /** @type {IssueLite[]} */
           let ready = Array.isArray(ready_raw) ? ready_raw.map((it) => it) : [];
