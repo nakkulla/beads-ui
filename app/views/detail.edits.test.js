@@ -5,6 +5,44 @@ import { createDetailView } from './detail.js';
 const mockSend = (impl) => vi.fn(impl);
 
 describe('views/detail edits', () => {
+  test('status dropdown includes resolved option', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const initial = {
+      id: 'UI-70',
+      title: 'T',
+      description: 'D',
+      status: 'open',
+      priority: 2
+    };
+
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-70' ? [initial] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+
+    const view = createDetailView(
+      mount,
+      async () => initial,
+      undefined,
+      stores
+    );
+    await view.load('UI-70');
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select.badge--status')
+    );
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toContain('resolved');
+  });
+
   test('updates status via dropdown and disables while pending', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';

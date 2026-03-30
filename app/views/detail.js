@@ -6,7 +6,7 @@ import { debug } from '../utils/logging.js';
 import { renderMarkdown } from '../utils/markdown.js';
 import { emojiForPriority } from '../utils/priority-badge.js';
 import { priority_levels } from '../utils/priority.js';
-import { statusLabel } from '../utils/status.js';
+import { STATUSES, statusLabel } from '../utils/status.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
 
@@ -941,7 +941,7 @@ export function createDetailView(
     >
       ${(() => {
         const cur = String(issue.status || 'open');
-        return ['open', 'in_progress', 'closed'].map(
+        return STATUSES.map(
           (s) =>
             html`<option value=${s} ?selected=${cur === s}>
               ${statusLabel(s)}

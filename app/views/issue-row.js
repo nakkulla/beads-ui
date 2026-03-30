@@ -2,7 +2,7 @@ import { html } from 'lit-html';
 import { createIssueIdRenderer } from '../utils/issue-id-renderer.js';
 import { emojiForPriority } from '../utils/priority-badge.js';
 import { priority_levels } from '../utils/priority.js';
-import { statusLabel } from '../utils/status.js';
+import { STATUSES, statusLabel } from '../utils/status.js';
 import { createTypeBadge } from '../utils/type-badge.js';
 
 /**
@@ -156,7 +156,7 @@ export function createIssueRowRenderer(options) {
           .value=${cur_status}
           @change=${makeSelectChange(it.id, 'status')}
         >
-          ${['open', 'in_progress', 'closed'].map(
+          ${STATUSES.map(
             (s) =>
               html`<option value=${s} ?selected=${cur_status === s}>
                 ${statusLabel(s)}
