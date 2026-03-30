@@ -1,7 +1,7 @@
 /**
  * Create a colored badge for a status value.
  *
- * @param {string | null | undefined} status - 'open' | 'in_progress' | 'closed'
+ * @param {string | null | undefined} status - 'open' | 'in_progress' | 'resolved' | 'closed'
  * @returns {HTMLSpanElement}
  */
 export function createStatusBadge(status) {
@@ -25,6 +25,8 @@ function labelForStatus(s) {
       return 'Open';
     case 'in_progress':
       return 'In progress';
+    case 'resolved':
+      return 'Resolved';
     case 'closed':
       return 'Closed';
     default:
