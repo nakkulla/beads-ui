@@ -10,7 +10,7 @@ import { createIssueRowRenderer } from './issue-row.js';
 // List view implementation; requires a transport send function.
 
 /**
- * @typedef {{ id: string, title?: string, status?: 'closed'|'open'|'in_progress', priority?: number, issue_type?: string, assignee?: string, labels?: string[] }} Issue
+ * @typedef {{ id: string, title?: string, status?: 'closed'|'open'|'in_progress'|'resolved', priority?: number, issue_type?: string, assignee?: string, labels?: string[] }} Issue
  */
 
 /**
@@ -202,6 +202,28 @@ export function createListView(
   // Compose helpers: centralize membership + entity selection + sorting
   const selectors = issue_stores ? createListSelectors(issue_stores) : null;
 
+  function selectIssuesForCurrentFilters() {
+    if (!selectors) {
+      return [];
+    }
+
+    const primary = selectors.selectIssuesFor('tab:issues');
+    const include_aux_resolved =
+      status_filters.includes('resolved') && !status_filters.includes('ready');
+
+    if (!include_aux_resolved) {
+      return primary;
+    }
+
+    const aux = selectors.selectIssuesFor('tab:issues:resolved');
+    /** @type {Map<string, Issue>} */
+    const by_id = new Map();
+    for (const it of [...primary, ...aux]) {
+      by_id.set(String(it.id), it);
+    }
+    return Array.from(by_id.values());
+  }
+
   /**
    * Build lit-html template for the list view.
    */
@@ -241,7 +263,7 @@ export function createListView(
             <span class="filter-dropdown__arrow">▾</span>
           </button>
           <div class="filter-dropdown__menu">
-            ${['ready', 'open', 'in_progress', 'closed'].map(
+            ${['ready', 'open', 'in_progress', 'resolved', 'closed'].map(
               (s) => html`
                 <label class="filter-dropdown__option">
                   <input
@@ -374,9 +396,7 @@ export function createListView(
     // Compose items from subscriptions membership and issues store entities
     try {
       if (selectors) {
-        issues_cache = /** @type {Issue[]} */ (
-          selectors.selectIssuesFor('tab:issues')
-        );
+        issues_cache = /** @type {Issue[]} */ (selectIssuesForCurrentFilters());
       } else {
         issues_cache = [];
       }
@@ -562,9 +582,7 @@ export function createListView(
   if (selectors) {
     selectors.subscribe(() => {
       try {
-        issues_cache = /** @type {Issue[]} */ (
-          selectors.selectIssuesFor('tab:issues')
-        );
+        issues_cache = /** @type {Issue[]} */ (selectIssuesForCurrentFilters());
         doRender();
       } catch {
         // ignore

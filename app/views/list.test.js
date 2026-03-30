@@ -667,6 +667,52 @@ describe('views/list', () => {
     expect(rows).toEqual(['UI-1', 'UI-2']);
   });
 
+  test('shows resolved option and merges resolved aux store for multi-status filters', async () => {
+    document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:issues').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues',
+      revision: 1,
+      issues: [
+        { id: 'UI-1', title: 'Alpha', status: 'open', priority: 1 },
+        { id: 'UI-2', title: 'Beta', status: 'in_progress', priority: 2 }
+      ]
+    });
+    issueStores.getStore('tab:issues:resolved').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues:resolved',
+      revision: 1,
+      issues: [{ id: 'UI-9', title: 'Gamma', status: 'resolved', priority: 3 }]
+    });
+
+    const view = createListView(
+      mount,
+      async () => [],
+      undefined,
+      undefined,
+      undefined,
+      issueStores
+    );
+    await view.load();
+
+    const statusOptions = Array.from(
+      mount.querySelectorAll('.filter-dropdown__option')
+    ).map((el) => el.textContent?.trim());
+    expect(statusOptions).toContain('Resolved');
+
+    toggleFilter(mount, 0, 'Open');
+    await Promise.resolve();
+    toggleFilter(mount, 0, 'Resolved');
+    await Promise.resolve();
+
+    const rows = Array.from(mount.querySelectorAll('tr.issue-row')).map(
+      (el) => el.getAttribute('data-issue-id') || ''
+    );
+    expect(rows).toEqual(['UI-1', 'UI-9']);
+  });
+
   test('filters by multiple types with dropdown checkboxes', async () => {
     document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
