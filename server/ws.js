@@ -329,14 +329,43 @@ function emitSubscriptionDelete(ws, client_id, key, issue_id) {
 // issues-changed removed in v2: detail and lists are pushed via subscriptions
 
 /**
+ * Replace a registry entry's cached snapshot with a filtered immutable array.
+ *
+ * @param {string} key
+ * @param {Array<Record<string, unknown>>} items
+ */
+function setCachedSnapshot(key, items) {
+  const entry = registry.get(key);
+  if (!entry) {
+    return;
+  }
+  entry.cachedSnapshot = items.filter((it) => it && typeof it.id === 'string');
+}
+
+/**
+ * Run a refresh in the background for a subscription spec.
+ *
+ * @param {{ type: string, params?: Record<string, string|number|boolean> }} spec
+ */
+function scheduleBackgroundRefresh(spec) {
+  void refreshAndPublish(spec).catch((err) => {
+    log('background refresh failed for %s: %o', keyOf(spec), err);
+  });
+}
+
+/**
  * Refresh a subscription spec: fetch via adapter, apply to registry and emit
  * per-subscription full-issue envelopes to subscribers. Serialized per key.
  *
  * @param {{ type: string, params?: Record<string, string|number|boolean> }} spec
  */
 async function refreshAndPublish(spec) {
+  const gen = registry.generation;
   const key = keyOf(spec);
   await registry.withKeyLock(key, async () => {
+    if (registry.generation !== gen) {
+      return;
+    }
     const res = await fetchListForSubscription(spec, {
       cwd: CURRENT_WORKSPACE?.root_dir
     });
@@ -344,9 +373,13 @@ async function refreshAndPublish(spec) {
       log('refresh failed for %s: %s %o', key, res.error.message, res.error);
       return;
     }
+    if (registry.generation !== gen) {
+      return;
+    }
     const items = applyClosedIssuesFilter(spec, res.items);
     const prev_size = registry.get(key)?.itemsById.size || 0;
     const delta = registry.applyItems(key, items);
+    setCachedSnapshot(key, items);
     const entry = registry.get(key);
     if (!entry || entry.subscribers.size === 0) {
       return;
@@ -619,6 +652,7 @@ export async function handleMessage(ws, data) {
     const client_id = validation.id;
     const spec = validation.spec;
     const key = keyOf(spec);
+    const { entry: existing_entry } = registry.ensure(spec);
 
     /**
      * Reply with an error and avoid attaching the subscription when
@@ -631,6 +665,39 @@ export async function handleMessage(ws, data) {
     const replyWithError = (code, message, details = undefined) => {
       ws.send(JSON.stringify(makeError(req, code, message, details)));
     };
+
+    if (existing_entry.cachedSnapshot !== null) {
+      const s = ensureSubs(ws);
+      const { key: attached_key } = registry.attach(spec, ws);
+      s.list_subs?.set(client_id, { key: attached_key, spec });
+
+      try {
+        emitSubscriptionSnapshot(
+          ws,
+          client_id,
+          attached_key,
+          existing_entry.cachedSnapshot
+        );
+      } catch (err) {
+        log('cache hit snapshot send failed for %s: %o', attached_key, err);
+        s.list_subs?.delete(client_id);
+        try {
+          registry.detach(spec, ws);
+        } catch {
+          // ignore detach errors
+        }
+        replyWithError('bd_error', 'Failed to publish cached snapshot', {
+          key
+        });
+        return;
+      }
+
+      ws.send(
+        JSON.stringify(makeOk(req, { id: client_id, key: attached_key }))
+      );
+      scheduleBackgroundRefresh(spec);
+      return;
+    }
 
     /** @type {Awaited<ReturnType<typeof fetchListForSubscription>> | null} */
     let initial = null;
@@ -669,6 +736,7 @@ export async function handleMessage(ws, data) {
           initial ? initial.items : []
         );
         void registry.applyItems(attached_key, items);
+        setCachedSnapshot(attached_key, items);
         emitSubscriptionSnapshot(ws, client_id, attached_key, items);
       });
     } catch (err) {

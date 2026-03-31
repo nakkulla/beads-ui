@@ -10,8 +10,8 @@
  *  - `subscribers`: Set<WebSocket>
  *  - `lock`: Promise chain to serialize refresh/update operations per key
  *
- * No TTL eviction; entries are swept when sockets disconnect (and only when
- * that leaves the subscriber set empty).
+ * No TTL eviction; entries are retained even when subscriber sets become
+ * empty, and are cleared on workspace changes.
  */
 
 /**
@@ -28,6 +28,7 @@
 /**
  * @typedef {{
  *   itemsById: Map<string, ItemMeta>,
+ *   cachedSnapshot: Array<Record<string, unknown>> | null,
  *   subscribers: Set<WebSocket>,
  *   lock: Promise<void>
  * }} Entry
@@ -41,6 +42,7 @@
 function createEntry() {
   return {
     itemsById: new Map(),
+    cachedSnapshot: null,
     subscribers: new Set(),
     lock: Promise.resolve()
   };
@@ -134,6 +136,13 @@ export class SubscriptionRegistry {
   constructor() {
     /** @type {Map<string, Entry>} */
     this._entries = new Map();
+    /** @type {number} */
+    this._generation = 0;
+  }
+
+  /** @returns {number} */
+  get generation() {
+    return this._generation;
   }
 
   /**
@@ -176,8 +185,7 @@ export class SubscriptionRegistry {
   }
 
   /**
-   * Detach a subscriber from the spec. Keeps entry even if empty; eviction
-   * is handled by `onDisconnect` sweep.
+   * Detach a subscriber from the spec. Keeps entry even if empty.
    *
    * @param {SubscriptionSpec} spec
    * @param {WebSocket} ws
@@ -193,22 +201,13 @@ export class SubscriptionRegistry {
   }
 
   /**
-   * On socket disconnect, remove it from all subscriber sets and evict any
-   * entries that become empty as a result of this sweep.
+   * On socket disconnect, remove it from all subscriber sets.
    *
    * @param {WebSocket} ws
    */
   onDisconnect(ws) {
-    /** @type {string[]} */
-    const empties = [];
-    for (const [key, entry] of this._entries) {
+    for (const [, entry] of this._entries) {
       entry.subscribers.delete(ws);
-      if (entry.subscribers.size === 0) {
-        empties.push(key);
-      }
-    }
-    for (const key of empties) {
-      this._entries.delete(key);
     }
   }
 
@@ -290,6 +289,7 @@ export class SubscriptionRegistry {
    */
   clear() {
     this._entries.clear();
+    this._generation++;
   }
 }
 

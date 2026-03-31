@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { fetchListForSubscription } from './list-adapters.js';
 import { keyOf, registry } from './subscriptions.js';
 import { attachWsServer, handleMessage, scheduleListRefresh } from './ws.js';
@@ -17,6 +17,11 @@ vi.mock('./list-adapters.js', () => ({
     };
   })
 }));
+
+afterEach(() => {
+  registry.clear();
+  vi.useRealTimers();
+});
 
 describe('ws list subscriptions', () => {
   test('refresh emits upsert/delete after subscribe', async () => {

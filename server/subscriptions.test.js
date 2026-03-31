@@ -77,7 +77,7 @@ describe('subscriptions registry', () => {
     expect(d.updated.sort()).toEqual(['A', 'B']);
   });
 
-  test('attach/detach and disconnect-driven eviction', () => {
+  test('attach/detach and disconnect preserves empty entry for caching', () => {
     const reg = new SubscriptionRegistry();
     /** @type {any} */
     const ws_a = { OPEN: 1, readyState: 1, send: vi.fn() };
@@ -96,10 +96,11 @@ describe('subscriptions registry', () => {
     const entry2 = reg.get(key);
     expect(entry2 && entry2.subscribers.size).toBe(1);
 
-    // Disconnecting B should sweep it and remove empty entry
+    // Disconnecting B should sweep it but preserve entry for caching
     reg.onDisconnect(ws_b);
     const entry3 = reg.get(key);
-    expect(entry3).toBeNull();
+    expect(entry3).not.toBeNull();
+    expect(entry3?.subscribers.size).toBe(0);
   });
 
   test('applyItems stores map and returns correct delta', () => {
@@ -124,5 +125,54 @@ describe('subscriptions registry', () => {
     expect(d2.added).toEqual(['C']);
     expect(d2.updated).toEqual(['B']);
     expect(d2.removed).toEqual(['A']);
+  });
+
+  test('onDisconnect removes subscriber but preserves entry for caching', () => {
+    const reg = new SubscriptionRegistry();
+    /** @type {any} */
+    const ws = { OPEN: 1, readyState: 1, send: vi.fn() };
+    const spec = { type: 'cache-test' };
+    const { key } = reg.attach(spec, ws);
+
+    expect(reg.get(key)?.subscribers.size).toBe(1);
+
+    reg.onDisconnect(ws);
+
+    const entry = reg.get(key);
+    expect(entry).not.toBeNull();
+    expect(entry?.subscribers.size).toBe(0);
+  });
+
+  test('generation counter starts at 0 and increments on clear', () => {
+    const reg = new SubscriptionRegistry();
+    expect(reg.generation).toBe(0);
+
+    reg.clear();
+    expect(reg.generation).toBe(1);
+
+    reg.clear();
+    expect(reg.generation).toBe(2);
+  });
+
+  test('clear removes all entries and increments generation', () => {
+    const reg = new SubscriptionRegistry();
+    /** @type {any} */
+    const ws = { OPEN: 1, readyState: 1, send: vi.fn() };
+    const { key } = reg.attach({ type: 'gen-test' }, ws);
+    expect(reg.get(key)).not.toBeNull();
+
+    const gen_before = reg.generation;
+    reg.clear();
+    expect(reg.get(key)).toBeNull();
+    expect(reg.generation).toBe(gen_before + 1);
+  });
+
+  test('createEntry includes cachedSnapshot initialized to null', () => {
+    const reg = new SubscriptionRegistry();
+    const spec = { type: 'test-cache' };
+
+    const { entry } = reg.ensure(spec);
+
+    expect(entry.cachedSnapshot).toBeNull();
   });
 });
