@@ -81,6 +81,11 @@
   --space-8: 16px;
   --space-9: 18px;
   --space-10: 20px;
+
+  --label-has-fg: #16a34a;
+  --label-has-border: color-mix(in srgb, #16a34a 35%, transparent);
+  --label-reviewed-fg: #2563eb;
+  --label-reviewed-border: color-mix(in srgb, #2563eb 35%, transparent);
 }
 
 html,
@@ -608,6 +613,36 @@ button:disabled {
 .priority-badge + .priority-badge,
 .badge-select + .badge-select {
   margin-left: var(--space-2);
+}
+
+.label-badge {
+  display: inline-block;
+  padding: 0 5px;
+  line-height: 16px;
+  height: 16px;
+  border-radius: var(--badge-radius);
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: middle;
+  user-select: none;
+  border: 1px solid;
+  text-wrap: nowrap;
+}
+
+.label-badge--has {
+  color: var(--label-has-fg);
+  border-color: var(--label-has-border);
+  background: color-mix(in srgb, var(--label-has-fg) 8%, transparent);
+}
+
+.label-badge--reviewed {
+  color: var(--label-reviewed-fg);
+  border-color: var(--label-reviewed-border);
+  background: color-mix(in srgb, var(--label-reviewed-fg) 8%, transparent);
+}
+
+.label-badge + .label-badge {
+  margin-left: var(--space-1);
 }
 
 /* Status + Priority palette (light) derived from base */
@@ -1348,6 +1383,26 @@ input.inline-edit:focus {
   display: flex;
   align-items: center;
   gap: var(--space-4);
+}
+
+.board-card__labels {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+
+.board-card__date {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.date-cell {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 /* Drag and drop styles */

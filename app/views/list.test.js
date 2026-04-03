@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { createSubscriptionIssueStore } from '../data/subscription-issue-store.js';
 import { createListView } from './list.js';
 
@@ -794,5 +794,89 @@ describe('views/list', () => {
     toggleFilter(mount, 0, 'Open');
     await Promise.resolve();
     expect(mount.querySelectorAll('tr.issue-row').length).toBe(2);
+  });
+
+  test('renders labels and created columns in the issues table', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-10-25T10:00:00.000Z'));
+
+    try {
+      document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
+      const mount = /** @type {HTMLElement} */ (
+        document.getElementById('mount')
+      );
+      const issues = [
+        {
+          id: 'UI-1',
+          title: 'Has labels',
+          status: 'open',
+          priority: 1,
+          issue_type: 'task',
+          labels: ['area:auth', 'has:spec', 'reviewed:code'],
+          created_at: Date.parse('2025-10-24T10:00:00.000Z')
+        },
+        {
+          id: 'UI-2',
+          title: 'ISO string date',
+          status: 'open',
+          priority: 2,
+          issue_type: 'bug',
+          labels: ['component:api'],
+          created_at: '2025-10-25T08:00:00.000Z'
+        }
+      ];
+      const issueStores = createTestIssueStores();
+      issueStores.getStore('tab:issues').applyPush({
+        type: 'snapshot',
+        id: 'tab:issues',
+        revision: 1,
+        issues
+      });
+      const view = createListView(
+        mount,
+        async () => [],
+        undefined,
+        undefined,
+        undefined,
+        issueStores
+      );
+
+      await view.load();
+
+      const headers = Array.from(mount.querySelectorAll('thead th')).map(
+        (element) => element.textContent?.trim()
+      );
+      const label_badges = Array.from(
+        mount.querySelectorAll(
+          'tbody tr.issue-row:nth-child(1) td:nth-child(4) .label-badge'
+        )
+      ).map((element) => element.textContent?.trim());
+      const created_text = mount
+        .querySelector('tbody tr.issue-row:nth-child(1) td:nth-child(8)')
+        ?.textContent?.trim();
+      const iso_created_text = mount
+        .querySelector('tbody tr.issue-row:nth-child(2) td:nth-child(8)')
+        ?.textContent?.trim();
+
+      expect(headers).toEqual([
+        'ID',
+        'Type',
+        'Title',
+        'Labels',
+        'Status',
+        'Assignee',
+        'Priority',
+        'Created',
+        'Deps'
+      ]);
+      expect(
+        mount.querySelectorAll('tbody tr.issue-row:nth-child(1) td')
+      ).toHaveLength(9);
+      expect(label_badges).toEqual(['has:spec', 'reviewed:code']);
+      expect(created_text).toBe('1일 전');
+      expect(iso_created_text).toBe('2시간 전');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

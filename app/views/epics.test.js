@@ -527,4 +527,142 @@ describe('views/epics', () => {
     );
     expect(input).not.toBeNull();
   });
+
+  test('renders labels and created columns for epic children', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-10-25T10:00:00.000Z'));
+
+    try {
+      document.body.innerHTML = '<div id="m"></div>';
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+      const data = {
+        updateIssue: vi.fn(),
+        getIssue: vi.fn(async (id) => ({ id }))
+      };
+      const stores = new Map();
+      const listeners = new Set();
+      /** @param {string} id */
+      const getStore = (id) => {
+        let store = stores.get(id);
+        if (!store) {
+          store = createSubscriptionIssueStore(id);
+          stores.set(id, store);
+          store.subscribe(() => {
+            for (const fn of Array.from(listeners)) {
+              try {
+                fn();
+              } catch {
+                /* ignore */
+              }
+            }
+          });
+        }
+        return store;
+      };
+      const issueStores = {
+        getStore,
+        /** @param {string} id */
+        snapshotFor(id) {
+          return getStore(id).snapshot().slice();
+        },
+        /** @param {() => void} fn */
+        subscribe(fn) {
+          listeners.add(fn);
+          return () => listeners.delete(fn);
+        }
+      };
+      const subscriptions = createSubscriptionStore(async () => {});
+      issueStores.getStore('tab:epics').applyPush({
+        type: 'snapshot',
+        id: 'tab:epics',
+        revision: 1,
+        issues: [
+          {
+            id: 'UI-90',
+            title: 'Epic Labels',
+            issue_type: 'epic',
+            dependents: [{ id: 'UI-91' }, { id: 'UI-92' }]
+          }
+        ]
+      });
+
+      const view = createEpicsView(
+        mount,
+        /** @type {any} */ (data),
+        () => {},
+        subscriptions,
+        /** @type {any} */ (issueStores)
+      );
+      await view.load();
+      issueStores.getStore('detail:UI-90');
+      issueStores.getStore('detail:UI-90').applyPush({
+        type: 'snapshot',
+        id: 'detail:UI-90',
+        revision: 1,
+        issues: [
+          {
+            id: 'UI-90',
+            title: 'Epic Labels',
+            issue_type: 'epic',
+            dependents: [
+              {
+                id: 'UI-91',
+                title: 'Child with labels',
+                status: 'open',
+                priority: 1,
+                issue_type: 'task',
+                labels: ['has:spec', 'component:api', 'reviewed:code'],
+                created_at: '2025-10-24T10:00:00.000Z'
+              },
+              {
+                id: 'UI-92',
+                title: 'Child numeric date',
+                status: 'open',
+                priority: 2,
+                issue_type: 'bug',
+                labels: ['area:auth'],
+                created_at: Date.parse('2025-10-25T08:00:00.000Z')
+              }
+            ]
+          }
+        ]
+      });
+
+      await view.load();
+
+      const headers = Array.from(
+        mount.querySelectorAll('.epic-children thead th')
+      ).map((element) => element.textContent?.trim());
+      const first_row_badges = Array.from(
+        mount.querySelectorAll(
+          'tr.epic-row:nth-child(1) td:nth-child(4) .label-badge'
+        )
+      ).map((element) => element.textContent?.trim());
+      const first_date = mount
+        .querySelector('tr.epic-row:nth-child(1) td:nth-child(8)')
+        ?.textContent?.trim();
+      const second_date = mount
+        .querySelector('tr.epic-row:nth-child(2) td:nth-child(8)')
+        ?.textContent?.trim();
+
+      expect(headers).toEqual([
+        'ID',
+        'Type',
+        'Title',
+        'Labels',
+        'Status',
+        'Assignee',
+        'Priority',
+        'Created'
+      ]);
+      expect(
+        mount.querySelectorAll('tr.epic-row:nth-child(1) td')
+      ).toHaveLength(8);
+      expect(first_row_badges).toEqual(['has:spec', 'reviewed:code']);
+      expect(first_date).toBe('1일 전');
+      expect(second_date).toBe('2시간 전');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

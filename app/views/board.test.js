@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { createSubscriptionIssueStore } from '../data/subscription-issue-store.js';
 import { createBoardView } from './board.js';
 
@@ -520,5 +520,73 @@ describe('views/board', () => {
     expect(blocked_ids).toEqual(['B-1']);
     expect(ready_ids).toEqual(['R-1']);
     expect(resolved_ids).toEqual(['RS-1', 'RS-2']);
+  });
+
+  test('renders filtered labels and relative created dates on cards', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-10-25T10:00:00.000Z'));
+
+    try {
+      document.body.innerHTML = '<div id="m"></div>';
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+      const issueStores = createTestIssueStores();
+      issueStores.getStore('tab:board:ready').applyPush({
+        type: 'snapshot',
+        id: 'tab:board:ready',
+        revision: 1,
+        issues: [
+          {
+            id: 'UI-1',
+            title: 'Card with labels',
+            status: 'open',
+            priority: 1,
+            issue_type: 'task',
+            labels: ['area:auth', 'has:spec', 'reviewed:plan'],
+            created_at: '2025-10-24T10:00:00.000Z',
+            updated_at: '2025-10-24T10:00:00.000Z'
+          },
+          {
+            id: 'UI-2',
+            title: 'Card without labels',
+            status: 'open',
+            priority: 2,
+            issue_type: 'bug',
+            labels: ['area:auth'],
+            created_at: Date.parse('2025-10-25T08:00:00.000Z'),
+            updated_at: Date.parse('2025-10-25T08:00:00.000Z')
+          }
+        ]
+      });
+
+      const view = createBoardView(
+        mount,
+        null,
+        () => {},
+        undefined,
+        undefined,
+        issueStores
+      );
+
+      await view.load();
+
+      const cards = mount.querySelectorAll('#ready-col .board-card');
+      const first_card = /** @type {HTMLElement} */ (cards[0]);
+      const second_card = /** @type {HTMLElement} */ (cards[1]);
+      const badge_text = Array.from(
+        first_card.querySelectorAll('.label-badge')
+      ).map((element) => element.textContent?.trim());
+
+      expect(badge_text).toEqual(['has:spec', 'reviewed:plan']);
+      expect(first_card.querySelector('.board-card__labels')).not.toBeNull();
+      expect(second_card.querySelector('.board-card__labels')).toBeNull();
+      expect(
+        first_card.querySelector('.board-card__date')?.textContent?.trim()
+      ).toBe('1일 전');
+      expect(
+        second_card.querySelector('.board-card__date')?.textContent?.trim()
+      ).toBe('2시간 전');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

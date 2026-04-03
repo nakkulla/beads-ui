@@ -1,12 +1,14 @@
 import { html } from 'lit-html';
 import { createIssueIdRenderer } from '../utils/issue-id-renderer.js';
+import { createLabelBadge, filterCardLabels } from '../utils/label-badge.js';
 import { emojiForPriority } from '../utils/priority-badge.js';
 import { priority_levels } from '../utils/priority.js';
+import { formatRelativeTime } from '../utils/relative-time.js';
 import { STATUSES, statusLabel } from '../utils/status.js';
 import { createTypeBadge } from '../utils/type-badge.js';
 
 /**
- * @typedef {{ id: string, title?: string, status?: string, priority?: number, issue_type?: string, assignee?: string, dependency_count?: number, dependent_count?: number }} IssueRowData
+ * @typedef {{ id: string, title?: string, status?: string, priority?: number, issue_type?: string, assignee?: string, labels?: string[], created_at?: number | string, dependency_count?: number, dependent_count?: number }} IssueRowData
  */
 
 /**
@@ -18,7 +20,8 @@ import { createTypeBadge } from '../utils/type-badge.js';
  *   onUpdate: (id: string, patch: { title?: string, assignee?: string, status?: 'open'|'in_progress'|'resolved'|'closed', priority?: number }) => Promise<void>,
  *   requestRender: () => void,
  *   getSelectedId?: () => string | null,
- *   row_class?: string
+ *   row_class?: string,
+ *   show_deps?: boolean
  * }} options
  * @returns {(it: IssueRowData) => import('lit-html').TemplateResult<1>}
  */
@@ -28,6 +31,7 @@ export function createIssueRowRenderer(options) {
   const request_render = options.requestRender;
   const get_selected_id = options.getSelectedId || (() => null);
   const row_class = options.row_class || 'issue-row';
+  const show_deps = options.show_deps ?? true;
 
   /** @type {Set<string>} */
   const editing = new Set();
@@ -151,6 +155,9 @@ export function createIssueRowRenderer(options) {
       <td role="gridcell">${createTypeBadge(it.issue_type)}</td>
       <td role="gridcell">${editableText(it.id, 'title', it.title || '')}</td>
       <td role="gridcell">
+        ${filterCardLabels(it.labels).map((label) => createLabelBadge(label))}
+      </td>
+      <td role="gridcell">
         <select
           class="badge-select badge--status is-${cur_status}"
           .value=${cur_status}
@@ -184,31 +191,40 @@ export function createIssueRowRenderer(options) {
           )}
         </select>
       </td>
-      <td role="gridcell" class="deps-col">
-        ${(it.dependency_count || 0) > 0 || (it.dependent_count || 0) > 0
-          ? html`<span class="deps-indicator"
-              >${(it.dependency_count || 0) > 0
-                ? html`<span
-                    class="dep-count"
-                    title="${it.dependency_count} ${(it.dependency_count ||
-                      0) === 1
-                      ? 'dependency'
-                      : 'dependencies'}"
-                    >→${it.dependency_count}</span
-                  >`
-                : ''}${(it.dependent_count || 0) > 0
-                ? html`<span
-                    class="dependent-count"
-                    title="${it.dependent_count} ${(it.dependent_count || 0) ===
-                    1
-                      ? 'dependent'
-                      : 'dependents'}"
-                    >←${it.dependent_count}</span
-                  >`
-                : ''}</span
-            >`
-          : ''}
+      <td
+        role="gridcell"
+        class="date-cell"
+        title=${it.created_at ? new Date(it.created_at).toISOString() : ''}
+      >
+        ${it.created_at ? formatRelativeTime(it.created_at) : ''}
       </td>
+      ${show_deps
+        ? html`<td role="gridcell" class="deps-col">
+            ${(it.dependency_count || 0) > 0 || (it.dependent_count || 0) > 0
+              ? html`<span class="deps-indicator"
+                  >${(it.dependency_count || 0) > 0
+                    ? html`<span
+                        class="dep-count"
+                        title="${it.dependency_count} ${(it.dependency_count ||
+                          0) === 1
+                          ? 'dependency'
+                          : 'dependencies'}"
+                        >→${it.dependency_count}</span
+                      >`
+                    : ''}${(it.dependent_count || 0) > 0
+                    ? html`<span
+                        class="dependent-count"
+                        title="${it.dependent_count} ${(it.dependent_count ||
+                          0) === 1
+                          ? 'dependent'
+                          : 'dependents'}"
+                        >←${it.dependent_count}</span
+                      >`
+                    : ''}</span
+                >`
+              : ''}
+          </td>`
+        : ''}
     </tr>`;
   }
 

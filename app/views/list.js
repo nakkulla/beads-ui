@@ -10,7 +10,7 @@ import { createIssueRowRenderer } from './issue-row.js';
 // List view implementation; requires a transport send function.
 
 /**
- * @typedef {{ id: string, title?: string, status?: 'closed'|'open'|'in_progress'|'resolved', priority?: number, issue_type?: string, assignee?: string, labels?: string[] }} Issue
+ * @typedef {{ id: string, title?: string, status?: 'closed'|'open'|'in_progress'|'resolved', priority?: number, issue_type?: string, assignee?: string, labels?: string[], created_at?: number | string }} Issue
  */
 
 /**
@@ -314,15 +314,17 @@ export function createListView(
                 class="table"
                 role="grid"
                 aria-rowcount=${String(filtered.length)}
-                aria-colcount="6"
+                aria-colcount="9"
               >
                 <colgroup>
                   <col style="width: 100px" />
                   <col style="width: 120px" />
                   <col />
+                  <col style="width: 140px" />
                   <col style="width: 120px" />
                   <col style="width: 160px" />
                   <col style="width: 130px" />
+                  <col style="width: 90px" />
                   <col style="width: 80px" />
                 </colgroup>
                 <thead>
@@ -330,9 +332,11 @@ export function createListView(
                     <th role="columnheader">ID</th>
                     <th role="columnheader">Type</th>
                     <th role="columnheader">Title</th>
+                    <th role="columnheader">Labels</th>
                     <th role="columnheader">Status</th>
                     <th role="columnheader">Assignee</th>
                     <th role="columnheader">Priority</th>
+                    <th role="columnheader">Created</th>
                     <th role="columnheader">Deps</th>
                   </tr>
                 </thead>

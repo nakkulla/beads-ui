@@ -2,8 +2,10 @@ import { html, render } from 'lit-html';
 import { createListSelectors } from '../data/list-selectors.js';
 import { cmpClosedDesc, cmpPriorityThenCreated } from '../data/sort.js';
 import { createIssueIdRenderer } from '../utils/issue-id-renderer.js';
+import { createLabelBadge, filterCardLabels } from '../utils/label-badge.js';
 import { debug } from '../utils/logging.js';
 import { createPriorityBadge } from '../utils/priority-badge.js';
+import { formatRelativeTime } from '../utils/relative-time.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
 
@@ -14,7 +16,8 @@ import { createTypeBadge } from '../utils/type-badge.js';
  *   status?: 'open'|'in_progress'|'resolved'|'closed',
  *   priority?: number,
  *   issue_type?: string,
- *   created_at?: number,
+ *   labels?: string[],
+ *   created_at?: number | string,
  *   updated_at?: number,
  *   closed_at?: number
  * }} IssueLite
@@ -179,6 +182,7 @@ export function createBoardView(
    * @param {IssueLite} it
    */
   function cardTemplate(it) {
+    const card_labels = filterCardLabels(it.labels);
     return html`
       <article
         class="board-card"
@@ -193,9 +197,21 @@ export function createBoardView(
         <div class="board-card__title text-truncate">
           ${it.title || '(no title)'}
         </div>
+        ${card_labels.length > 0
+          ? html`<div class="board-card__labels">
+              ${card_labels.map((label) => createLabelBadge(label))}
+            </div>`
+          : ''}
         <div class="board-card__meta">
           ${createTypeBadge(it.issue_type)} ${createPriorityBadge(it.priority)}
           ${createIssueIdRenderer(it.id, { class_name: 'mono' })}
+          ${it.created_at
+            ? html`<span
+                class="board-card__date"
+                title=${new Date(it.created_at).toISOString()}
+                >${formatRelativeTime(it.created_at)}</span
+              >`
+            : ''}
         </div>
       </article>
     `;

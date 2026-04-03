@@ -4,7 +4,7 @@
  * triggers once per issues envelope to let views re-render.
  */
 /**
- * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'resolved'|'closed', priority?: number, issue_type?: string, created_at?: number, updated_at?: number, closed_at?: number }} IssueLite
+ * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'resolved'|'closed', priority?: number, issue_type?: string, created_at?: number | string, updated_at?: number, closed_at?: number }} IssueLite
  */
 import { cmpClosedDesc, cmpPriorityThenCreated } from './sort.js';
 

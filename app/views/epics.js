@@ -4,7 +4,7 @@ import { createIssueIdRenderer } from '../utils/issue-id-renderer.js';
 import { createIssueRowRenderer } from './issue-row.js';
 
 /**
- * @typedef {{ id: string, title?: string, status?: string, priority?: number, issue_type?: string, assignee?: string, created_at?: number, updated_at?: number }} IssueLite
+ * @typedef {{ id: string, title?: string, status?: string, priority?: number, issue_type?: string, assignee?: string, created_at?: number | string, updated_at?: number }} IssueLite
  */
 
 /**
@@ -60,7 +60,8 @@ export function createEpicsView(
     onUpdate: updateInline,
     requestRender: doRender,
     getSelectedId: () => null,
-    row_class: 'epic-row'
+    row_class: 'epic-row',
+    show_deps: false
   });
 
   function doRender() {
@@ -121,18 +122,22 @@ export function createEpicsView(
                         <col style="width: 100px" />
                         <col style="width: 120px" />
                         <col />
+                        <col style="width: 140px" />
                         <col style="width: 120px" />
                         <col style="width: 160px" />
                         <col style="width: 130px" />
+                        <col style="width: 90px" />
                       </colgroup>
                       <thead>
                         <tr>
                           <th>ID</th>
                           <th>Type</th>
                           <th>Title</th>
+                          <th>Labels</th>
                           <th>Status</th>
                           <th>Assignee</th>
                           <th>Priority</th>
+                          <th>Created</th>
                         </tr>
                       </thead>
                       <tbody>
