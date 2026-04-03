@@ -665,4 +665,100 @@ describe('views/epics', () => {
       vi.useRealTimers();
     }
   });
+
+  test('renders empty created cell for invalid epic child timestamp without crashing', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const data = {
+      updateIssue: vi.fn(),
+      getIssue: vi.fn(async (id) => ({ id }))
+    };
+    const stores = new Map();
+    const listeners = new Set();
+    /** @param {string} id */
+    const getStore = (id) => {
+      let store = stores.get(id);
+      if (!store) {
+        store = createSubscriptionIssueStore(id);
+        stores.set(id, store);
+        store.subscribe(() => {
+          for (const fn of Array.from(listeners)) {
+            try {
+              fn();
+            } catch {
+              /* ignore */
+            }
+          }
+        });
+      }
+      return store;
+    };
+    const issueStores = {
+      getStore,
+      /** @param {string} id */
+      snapshotFor(id) {
+        return getStore(id).snapshot().slice();
+      },
+      /** @param {() => void} fn */
+      subscribe(fn) {
+        listeners.add(fn);
+        return () => listeners.delete(fn);
+      }
+    };
+    const subscriptions = createSubscriptionStore(async () => {});
+    issueStores.getStore('tab:epics').applyPush({
+      type: 'snapshot',
+      id: 'tab:epics',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-95',
+          title: 'Epic Invalid Timestamp',
+          issue_type: 'epic',
+          dependents: [{ id: 'UI-96' }]
+        }
+      ]
+    });
+
+    const view = createEpicsView(
+      mount,
+      /** @type {any} */ (data),
+      () => {},
+      subscriptions,
+      /** @type {any} */ (issueStores)
+    );
+    await view.load();
+    issueStores.getStore('detail:UI-95');
+    issueStores.getStore('detail:UI-95').applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-95',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-95',
+          title: 'Epic Invalid Timestamp',
+          issue_type: 'epic',
+          dependents: [
+            {
+              id: 'UI-96',
+              title: 'Bad child timestamp',
+              status: 'open',
+              priority: 1,
+              issue_type: 'task',
+              created_at: 'not-a-date'
+            }
+          ]
+        }
+      ]
+    });
+
+    await view.load();
+
+    const created_cell = mount.querySelector(
+      'tr.epic-row:nth-child(1) td:nth-child(8)'
+    );
+
+    expect(created_cell?.textContent?.trim()).toBe('');
+    expect(created_cell?.getAttribute('title')).toBe('');
+  });
 });

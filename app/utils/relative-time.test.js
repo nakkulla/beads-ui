@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { formatRelativeTime } from './relative-time.js';
+import { formatRelativeTime, formatTimestampTitle } from './relative-time.js';
 
 describe('utils/relative-time', () => {
   const NOW = 1712100000000;
@@ -23,6 +23,14 @@ describe('utils/relative-time', () => {
 
   test('returns empty string for invalid timestamps', () => {
     expect(formatRelativeTime('not-a-date', NOW)).toBe('');
+    expect(formatTimestampTitle('not-a-date')).toBe('');
+  });
+
+  test('formats valid timestamps for title attributes', () => {
+    expect(formatTimestampTitle('2024-04-02T23:20:00.000Z')).toBe(
+      '2024-04-02T23:20:00.000Z'
+    );
+    expect(formatTimestampTitle(NOW)).toBe('2024-04-02T23:20:00.000Z');
   });
 
   test('future timestamps show 방금', () => {

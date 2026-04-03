@@ -5,7 +5,10 @@ import { createIssueIdRenderer } from '../utils/issue-id-renderer.js';
 import { createLabelBadge, filterCardLabels } from '../utils/label-badge.js';
 import { debug } from '../utils/logging.js';
 import { createPriorityBadge } from '../utils/priority-badge.js';
-import { formatRelativeTime } from '../utils/relative-time.js';
+import {
+  formatRelativeTime,
+  formatTimestampTitle
+} from '../utils/relative-time.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
 
@@ -208,7 +211,7 @@ export function createBoardView(
           ${it.created_at
             ? html`<span
                 class="board-card__date"
-                title=${new Date(it.created_at).toISOString()}
+                title=${formatTimestampTitle(it.created_at)}
                 >${formatRelativeTime(it.created_at)}</span
               >`
             : ''}

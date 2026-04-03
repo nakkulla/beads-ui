@@ -589,4 +589,42 @@ describe('views/board', () => {
       vi.useRealTimers();
     }
   });
+
+  test('renders empty created date for invalid timestamp without crashing', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-3',
+          title: 'Invalid timestamp',
+          status: 'open',
+          priority: 1,
+          issue_type: 'task',
+          created_at: 'not-a-date'
+        }
+      ]
+    });
+
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      undefined,
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const date_element = mount.querySelector('#ready-col .board-card__date');
+
+    expect(date_element).not.toBeNull();
+    expect(date_element?.textContent?.trim()).toBe('');
+    expect(date_element?.getAttribute('title')).toBe('');
+  });
 });

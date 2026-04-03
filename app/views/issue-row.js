@@ -3,7 +3,10 @@ import { createIssueIdRenderer } from '../utils/issue-id-renderer.js';
 import { createLabelBadge, filterCardLabels } from '../utils/label-badge.js';
 import { emojiForPriority } from '../utils/priority-badge.js';
 import { priority_levels } from '../utils/priority.js';
-import { formatRelativeTime } from '../utils/relative-time.js';
+import {
+  formatRelativeTime,
+  formatTimestampTitle
+} from '../utils/relative-time.js';
 import { STATUSES, statusLabel } from '../utils/status.js';
 import { createTypeBadge } from '../utils/type-badge.js';
 
@@ -194,7 +197,7 @@ export function createIssueRowRenderer(options) {
       <td
         role="gridcell"
         class="date-cell"
-        title=${it.created_at ? new Date(it.created_at).toISOString() : ''}
+        title=${formatTimestampTitle(it.created_at)}
       >
         ${it.created_at ? formatRelativeTime(it.created_at) : ''}
       </td>

@@ -4,7 +4,7 @@
  * @param {number | string | null | undefined} timestamp_value
  * @returns {number | null}
  */
-function coerceTimestampMs(timestamp_value) {
+export function coerceTimestampMs(timestamp_value) {
   if (!timestamp_value) {
     return null;
   }
@@ -14,6 +14,21 @@ function coerceTimestampMs(timestamp_value) {
 
   const parsed_ms = Date.parse(timestamp_value);
   return Number.isFinite(parsed_ms) ? parsed_ms : null;
+}
+
+/**
+ * Format a timestamp as an ISO string for tooltip display.
+ *
+ * @param {number | string | null | undefined} timestamp_value
+ * @returns {string}
+ */
+export function formatTimestampTitle(timestamp_value) {
+  const event_ms = coerceTimestampMs(timestamp_value);
+  if (event_ms === null) {
+    return '';
+  }
+
+  return new Date(event_ms).toISOString();
 }
 
 /**

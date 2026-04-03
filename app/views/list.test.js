@@ -879,4 +879,42 @@ describe('views/list', () => {
       vi.useRealTimers();
     }
   });
+
+  test('renders empty created cell for invalid timestamp without crashing', async () => {
+    document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:issues').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-3',
+          title: 'Invalid timestamp',
+          status: 'open',
+          priority: 1,
+          issue_type: 'task',
+          created_at: 'not-a-date'
+        }
+      ]
+    });
+    const view = createListView(
+      mount,
+      async () => [],
+      undefined,
+      undefined,
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const created_cell = mount.querySelector(
+      'tbody tr.issue-row:nth-child(1) td:nth-child(8)'
+    );
+
+    expect(created_cell?.textContent?.trim()).toBe('');
+    expect(created_cell?.getAttribute('title')).toBe('');
+  });
 });
