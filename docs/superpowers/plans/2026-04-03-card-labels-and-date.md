@@ -1,10 +1,20 @@
 # Card Labels & Created Date Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Display `has:` and `reviewed:` prefix labels as colored badges and issue creation date as relative time on board cards and list/epic rows.
+**Goal:** Display `has:` and `reviewed:` prefix labels as colored badges and
+issue creation date as relative time on board cards and list/epic rows.
 
-**Architecture:** Two new utility modules (`label-badge.js`, `relative-time.js`) following existing badge/util patterns (DOM element factories). Board card template gets a label row + date in meta. List and epic table headers gain Labels + Created columns. CSS additions for label badge colors (light + dark themes).
+**Architecture:** Two new utility modules (`label-badge.js`, `relative-time.js`)
+following existing badge/util patterns (DOM element factories).
+`relative-time.js` accepts both epoch-ms and ISO string timestamps for
+compatibility with existing view/test data. Board card template gets a label
+row + date in meta. List and epic table headers gain Labels + Created columns.
+CSS additions for label badge colors (light + dark themes). Existing
+board/list/epics tests are updated to cover the new rendering and column order.
 
 **Tech Stack:** lit-html, vitest, vanilla JS DOM API
 
@@ -14,23 +24,28 @@
 
 ## File Structure
 
-| File | Action | Responsibility |
-|------|--------|----------------|
-| `app/utils/relative-time.js` | Create | `formatRelativeTime(epochMs)` — epoch ms → relative time string |
-| `app/utils/relative-time.test.js` | Create | Unit tests for relative time boundary values |
-| `app/utils/label-badge.js` | Create | `filterCardLabels(labels)` — filter `has:`/`reviewed:` labels; `createLabelBadge(label)` — DOM badge element |
-| `app/utils/label-badge.test.js` | Create | Unit tests for filtering and badge creation |
-| `app/styles.css` | Modify | Add `.label-badge`, `.board-card__labels`, `.board-card__date` styles |
-| `app/views/board.js` | Modify | Add `labels` to `IssueLite` typedef; add label row + date to `cardTemplate()` |
-| `app/views/issue-row.js` | Modify | Add `labels`, `created_at` to `IssueRowData` typedef; add Labels + Created `<td>` cells |
-| `app/views/list.js` | Modify | Add Labels + Created to colgroup + thead (7→9 columns) |
-| `app/views/epics.js` | Modify | Add Labels + Created to colgroup + thead (6→8 columns) |
+| File                                | Action | Responsibility                                                                                               |
+| ----------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------ |
+| `app/utils/relative-time.js`        | Create | `formatRelativeTime(timestamp)` — epoch ms or ISO string → relative time string                              |
+| `app/utils/relative-time.test.js`   | Create | Unit tests for relative time boundary values                                                                 |
+| `app/utils/label-badge.js`          | Create | `filterCardLabels(labels)` — filter `has:`/`reviewed:` labels; `createLabelBadge(label)` — DOM badge element |
+| `app/utils/label-badge.test.js`     | Create | Unit tests for filtering and badge creation                                                                  |
+| `app/styles.css`                    | Modify | Add `.label-badge`, `.board-card__labels`, `.board-card__date` styles                                        |
+| `app/views/board.js`                | Modify | Add `labels` to `IssueLite` typedef; add label row + date to `cardTemplate()`                                |
+| `app/views/issue-row.js`            | Modify | Add `labels`, `created_at` to `IssueRowData` typedef; add Labels + Created `<td>` cells                      |
+| `app/views/list.js`                 | Modify | Add Labels + Created to colgroup + thead (7→9 columns)                                                       |
+| `app/views/epics.js`                | Modify | Add Labels + Created to colgroup + thead (6→8 columns)                                                       |
+| `app/views/board.test.js`           | Modify | Cover label/date rendering and mixed timestamp inputs on board cards                                         |
+| `app/views/list.test.js`            | Modify | Cover Labels/Created columns and filtered badge rendering in issue rows                                      |
+| `app/views/list.navigation.test.js` | Modify | Update column-position selectors affected by inserted Labels column                                          |
+| `app/views/epics.test.js`           | Modify | Cover Labels/Created columns and mixed timestamp inputs in epic rows                                         |
 
 ---
 
 ### Task 1: `relative-time.js` — Utility + Tests
 
 **Files:**
+
 - Create: `app/utils/relative-time.js`
 - Create: `app/utils/relative-time.test.js`
 
@@ -49,10 +64,18 @@ describe('utils/relative-time', () => {
     return formatRelativeTime(NOW - ms_ago, NOW);
   }
 
-  test('returns empty string for falsy input', () => {
+  test('returns empty string for empty input', () => {
     expect(formatRelativeTime(0)).toBe('');
     expect(formatRelativeTime(null)).toBe('');
     expect(formatRelativeTime(undefined)).toBe('');
+  });
+
+  test('parses ISO string timestamps', () => {
+    expect(formatRelativeTime('2024-04-02T23:20:00.000Z', NOW)).toBe('방금');
+  });
+
+  test('returns empty string for invalid timestamps', () => {
+    expect(formatRelativeTime('not-a-date', NOW)).toBe('');
   });
 
   test('future timestamps show "방금"', () => {
@@ -98,8 +121,8 @@ describe('utils/relative-time', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run app/utils/relative-time.test.js`
-Expected: FAIL — module `./relative-time.js` not found.
+Run: `npx vitest run app/utils/relative-time.test.js` Expected: FAIL — module
+`./relative-time.js` not found.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -107,16 +130,20 @@ Create `app/utils/relative-time.js`:
 
 ```js
 /**
- * Format an epoch-ms timestamp as a Korean relative time string.
+ * Format a timestamp as a Korean relative time string.
  *
- * @param {number | null | undefined} epoch_ms
+ * @param {number | string | null | undefined} timestamp
  * @param {number} [now] - current time in ms (defaults to Date.now(), injectable for tests)
  * @returns {string}
  */
-export function formatRelativeTime(epoch_ms, now) {
-  if (!epoch_ms) return '';
+export function formatRelativeTime(timestamp, now) {
+  if (!timestamp) return '';
   const ref = typeof now === 'number' ? now : Date.now();
-  const diff = ref - epoch_ms;
+  const parsed =
+    typeof timestamp === 'number' ? timestamp : Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) return '';
+
+  const diff = ref - parsed;
   if (diff < 60_000) return '방금';
 
   const minutes = Math.floor(diff / 60_000);
@@ -141,21 +168,19 @@ export function formatRelativeTime(epoch_ms, now) {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `npx vitest run app/utils/relative-time.test.js`
-Expected: all tests PASS.
+Run: `npx vitest run app/utils/relative-time.test.js` Expected: all tests PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Mark task complete**
 
-```bash
-git add app/utils/relative-time.js app/utils/relative-time.test.js
-git commit -m "feat: 상대 시간 포맷 유틸 추가 (relative-time.js)"
-```
+Manual `git commit` steps are omitted from this plan. Use the repo's autocommit
+workflow unless an explicit manual commit is requested.
 
 ---
 
 ### Task 2: `label-badge.js` — Utility + Tests
 
 **Files:**
+
 - Create: `app/utils/label-badge.js`
 - Create: `app/utils/label-badge.test.js`
 
@@ -165,7 +190,7 @@ Create `app/utils/label-badge.test.js`:
 
 ```js
 import { describe, expect, test } from 'vitest';
-import { filterCardLabels, createLabelBadge } from './label-badge.js';
+import { createLabelBadge, filterCardLabels } from './label-badge.js';
 
 describe('utils/label-badge', () => {
   describe('filterCardLabels', () => {
@@ -222,8 +247,8 @@ describe('utils/label-badge', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run app/utils/label-badge.test.js`
-Expected: FAIL — module `./label-badge.js` not found.
+Run: `npx vitest run app/utils/label-badge.test.js` Expected: FAIL — module
+`./label-badge.js` not found.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -275,26 +300,22 @@ export function createLabelBadge(label) {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `npx vitest run app/utils/label-badge.test.js`
-Expected: all tests PASS.
+Run: `npx vitest run app/utils/label-badge.test.js` Expected: all tests PASS.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add app/utils/label-badge.js app/utils/label-badge.test.js
-git commit -m "feat: label 배지 필터/생성 유틸 추가 (label-badge.js)"
-```
+- [ ] **Step 5: Mark task complete**
 
 ---
 
 ### Task 3: CSS — Label Badge & Date Styles
 
 **Files:**
+
 - Modify: `app/styles.css`
 
 - [ ] **Step 1: Add label badge CSS variables to the light theme `:root`**
 
-Find the existing `:root` block (near line 1, before the dark theme media query at line 671). Add after the existing badge variables (around line 668):
+Find the existing `:root` block (near line 1, before the dark theme media query
+at line 671). Add after the existing badge variables (around line 668):
 
 ```css
 /* Label badges (card/row) */
@@ -306,7 +327,8 @@ Find the existing `:root` block (near line 1, before the dark theme media query 
 
 - [ ] **Step 2: Add dark theme overrides**
 
-Find the dark theme media query at line 1387 (`@media (prefers-color-scheme: dark)`). Add inside the `:root` block:
+Find the dark theme media query at line 1387
+(`@media (prefers-color-scheme: dark)`). Add inside the `:root` block:
 
 ```css
 --label-has-fg: #4ade80;
@@ -380,28 +402,25 @@ Insert after the board card date styles:
 }
 ```
 
-- [ ] **Step 6: Commit**
-
-```bash
-git add app/styles.css
-git commit -m "style: label 배지 및 날짜 CSS 추가"
-```
+- [ ] **Step 6: Mark task complete**
 
 ---
 
 ### Task 4: Board Card — Labels + Date in `cardTemplate`
 
 **Files:**
+
 - Modify: `app/views/board.js:10-20` (typedef)
 - Modify: `app/views/board.js:181-202` (cardTemplate)
 - Modify: `app/views/board.js` (imports, near top)
 
 - [ ] **Step 1: Add imports**
 
-At the top of `app/views/board.js`, find the existing imports (look for `import { createTypeBadge }` and similar). Add these two imports:
+At the top of `app/views/board.js`, find the existing imports (look for
+`import { createTypeBadge }` and similar). Add these two imports:
 
 ```js
-import { filterCardLabels, createLabelBadge } from '../utils/label-badge.js';
+import { createLabelBadge, filterCardLabels } from '../utils/label-badge.js';
 import { formatRelativeTime } from '../utils/relative-time.js';
 ```
 
@@ -435,7 +454,7 @@ to:
  *   priority?: number,
  *   issue_type?: string,
  *   labels?: string[],
- *   created_at?: number,
+ *   created_at?: number | string,
  *   updated_at?: number,
  *   closed_at?: number
  * }} IssueLite
@@ -447,71 +466,77 @@ to:
 Replace the `cardTemplate` function body (lines 181-202) with:
 
 ```js
-  function cardTemplate(it) {
-    const card_labels = filterCardLabels(it.labels);
-    return html`
-      <article
-        class="board-card"
-        data-issue-id=${it.id}
-        role="listitem"
-        tabindex="-1"
-        draggable="true"
-        @click=${(/** @type {MouseEvent} */ ev) => onCardClick(ev, it.id)}
-        @dragstart=${(/** @type {DragEvent} */ ev) => onDragStart(ev, it.id)}
-        @dragend=${onDragEnd}
-      >
-        <div class="board-card__title text-truncate">
-          ${it.title || '(no title)'}
-        </div>
-        ${card_labels.length > 0
-          ? html`<div class="board-card__labels">
-              ${card_labels.map((l) => createLabelBadge(l))}
-            </div>`
+function cardTemplate(it) {
+  const card_labels = filterCardLabels(it.labels);
+  return html`
+    <article
+      class="board-card"
+      data-issue-id=${it.id}
+      role="listitem"
+      tabindex="-1"
+      draggable="true"
+      @click=${(/** @type {MouseEvent} */ ev) => onCardClick(ev, it.id)}
+      @dragstart=${(/** @type {DragEvent} */ ev) => onDragStart(ev, it.id)}
+      @dragend=${onDragEnd}
+    >
+      <div class="board-card__title text-truncate">
+        ${it.title || '(no title)'}
+      </div>
+      ${card_labels.length > 0
+        ? html`<div class="board-card__labels">
+            ${card_labels.map((l) => createLabelBadge(l))}
+          </div>`
+        : ''}
+      <div class="board-card__meta">
+        ${createTypeBadge(it.issue_type)} ${createPriorityBadge(it.priority)}
+        ${createIssueIdRenderer(it.id, { class_name: 'mono' })}
+        ${it.created_at
+          ? html`<span
+              class="board-card__date"
+              title=${new Date(it.created_at).toISOString()}
+              >${formatRelativeTime(it.created_at)}</span
+            >`
           : ''}
-        <div class="board-card__meta">
-          ${createTypeBadge(it.issue_type)} ${createPriorityBadge(it.priority)}
-          ${createIssueIdRenderer(it.id, { class_name: 'mono' })}
-          ${it.created_at
-            ? html`<span
-                class="board-card__date"
-                title=${new Date(it.created_at).toISOString()}
-                >${formatRelativeTime(it.created_at)}</span
-              >`
-            : ''}
-        </div>
-      </article>
-    `;
-  }
+      </div>
+    </article>
+  `;
+}
 ```
 
-- [ ] **Step 4: Verify board renders**
+- [ ] **Step 4: Add board rendering tests**
+
+Update `app/views/board.test.js` to verify:
+
+- cards render only `has:`/`reviewed:` labels as `.label-badge`
+- cards without matching labels omit the labels row
+- relative time text renders for both numeric and ISO string `created_at` inputs
+
+- [ ] **Step 5: Verify board renders**
 
 Run: `npm start` (or your dev server) and open the board view. Confirm:
+
 - Cards with `has:`/`reviewed:` labels show colored badge row below title
 - Cards without those labels show no extra row
 - Relative time appears right-aligned in the meta row
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add app/views/board.js
-git commit -m "feat: 보드 카드에 label 배지 및 생성 날짜 표시"
-```
+- [ ] **Step 6: Mark task complete**
 
 ---
 
 ### Task 5: Issue Row — Labels + Created Columns
 
 **Files:**
+
 - Modify: `app/views/issue-row.js:1-10` (imports + typedef)
 - Modify: `app/views/issue-row.js:140-213` (rowTemplate)
 
 - [ ] **Step 1: Add imports**
 
-At the top of `app/views/issue-row.js`, add after the existing imports (after line 6):
+At the top of `app/views/issue-row.js`, add after the existing imports (after
+line 6):
 
 ```js
-import { filterCardLabels, createLabelBadge } from '../utils/label-badge.js';
+import { createLabelBadge, filterCardLabels } from '../utils/label-badge.js';
 import { formatRelativeTime } from '../utils/relative-time.js';
 ```
 
@@ -529,21 +554,24 @@ to:
 
 ```js
 /**
- * @typedef {{ id: string, title?: string, status?: string, priority?: number, issue_type?: string, assignee?: string, labels?: string[], created_at?: number, dependency_count?: number, dependent_count?: number }} IssueRowData
+ * @typedef {{ id: string, title?: string, status?: string, priority?: number, issue_type?: string, assignee?: string, labels?: string[], created_at?: number | string, dependency_count?: number, dependent_count?: number }} IssueRowData
  */
 ```
 
 - [ ] **Step 3: Add Labels and Created `<td>` cells to `rowTemplate`**
 
-In the `rowTemplate` function, insert **after** the Title `<td>` (after line 152 — `<td role="gridcell">${editableText(it.id, 'title', it.title || '')}</td>`) and **before** the Status `<td>`:
+In the `rowTemplate` function, insert **after** the Title `<td>` (after line 152
+— `<td role="gridcell">${editableText(it.id, 'title', it.title || '')}</td>`)
+and **before** the Status `<td>`:
 
 ```js
-      <td role="gridcell">
-        ${filterCardLabels(it.labels).map((l) => createLabelBadge(l))}
-      </td>
+<td role="gridcell">
+  ${filterCardLabels(it.labels).map((l) => createLabelBadge(l))}
+</td>
 ```
 
-Then insert **after** the Priority `<td>` (after line 185 — the closing `</select></td>` of priority) and **before** the Deps `<td>`:
+Then insert **after** the Priority `<td>` (after line 185 — the closing
+`</select></td>` of priority) and **before** the Deps `<td>`:
 
 ```js
       <td role="gridcell" class="date-cell"
@@ -551,18 +579,22 @@ Then insert **after** the Priority `<td>` (after line 185 — the closing `</sel
       >${it.created_at ? formatRelativeTime(it.created_at) : ''}</td>
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Add row rendering tests**
 
-```bash
-git add app/views/issue-row.js
-git commit -m "feat: 목록 행에 Labels 및 Created 컬럼 추가"
-```
+Update `app/views/list.test.js` and `app/views/epics.test.js` to verify:
+
+- Labels and Created cells render in the expected positions
+- Labels cells only contain filtered `has:`/`reviewed:` badges
+- Created cells render relative time for both numeric and ISO string timestamps
+
+- [ ] **Step 5: Mark task complete**
 
 ---
 
 ### Task 6: List View — Table Header Update
 
 **Files:**
+
 - Modify: `app/views/list.js:317-337`
 
 - [ ] **Step 1: Update `aria-colcount`**
@@ -609,18 +641,20 @@ Replace the thead (lines 328-337) with:
 </thead>
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Update keyboard-navigation selectors**
 
-```bash
-git add app/views/list.js
-git commit -m "feat: 목록 뷰 테이블 헤더에 Labels/Created 컬럼 추가"
-```
+Update any position-sensitive tests (for example
+`app/views/list.navigation.test.js`) so the status select and other controls
+point at the new column indexes after inserting Labels and Created.
+
+- [ ] **Step 5: Mark task complete**
 
 ---
 
 ### Task 7: Epics View — Table Header Update
 
 **Files:**
+
 - Modify: `app/views/epics.js:119-137`
 
 - [ ] **Step 1: Update `<colgroup>`**
@@ -640,7 +674,8 @@ Replace the colgroup (lines 120-127) with:
 </colgroup>
 ```
 
-(Added `140px` for Labels after Title, and `90px` for Created at end. Epics has no Deps column.)
+(Added `140px` for Labels after Title, and `90px` for Created at end. Epics has
+no Deps column.)
 
 - [ ] **Step 2: Update `<thead>`**
 
@@ -661,40 +696,53 @@ Replace the thead (lines 128-137) with:
 </thead>
 ```
 
-- [ ] **Step 3: Commit**
-
-```bash
-git add app/views/epics.js
-git commit -m "feat: 에픽 뷰 테이블 헤더에 Labels/Created 컬럼 추가"
-```
+- [ ] **Step 3: Mark task complete**
 
 ---
 
 ### Task 8: Full Test Suite + Manual Verification
 
 **Files:**
+
 - All test files
 
-- [ ] **Step 1: Run all tests**
+- [ ] **Step 1: Run repo-standard validation**
 
-Run: `npx vitest run`
-Expected: all tests pass, including new `relative-time.test.js` and `label-badge.test.js`.
+Run:
+
+```bash
+npm run tsc
+npm test
+npm run lint
+npm run prettier:write
+```
+
+Expected: all commands succeed, including the new utility tests and updated
+board/list/epics view tests.
 
 - [ ] **Step 2: Fix any failures**
 
-If existing board/list/epics tests fail due to column count changes (e.g., snapshot mismatches or column-count assertions), update those tests to reflect the new 9-column (list) / 8-column (epics) structure.
+If validation fails, update the affected tests and implementation with the
+smallest necessary changes. In particular verify:
+
+- new utility tests for `relative-time.js` and `label-badge.js`
+- `board.test.js` coverage for label/date rendering
+- `list.test.js` and `epics.test.js` coverage for Labels/Created cells
+- `list.navigation.test.js` or any other position-sensitive selectors updated
+  for the new column layout
 
 - [ ] **Step 3: Manual verification**
 
 Start the dev server and check:
-1. **Board view**: cards with `has:spec`, `has:plan`, `reviewed:code` labels show green/blue badges. Cards without those labels have no extra row. Relative time visible in meta.
-2. **List view**: Labels and Created columns visible. Labels column shows filtered badges. Created column shows relative time with ISO tooltip on hover.
+
+1. **Board view**: cards with `has:spec`, `has:plan`, `reviewed:code` labels
+   show green/blue badges. Cards without those labels have no extra row.
+   Relative time visible in meta.
+2. **List view**: Labels and Created columns visible. Labels column shows
+   filtered badges. Created column shows relative time with ISO tooltip on
+   hover.
 3. **Epics view**: Same as list but without Deps column.
-4. **Dark mode**: Toggle system theme or use DevTools. Verify label badge colors adapt.
+4. **Dark mode**: Toggle system theme or use DevTools. Verify label badge colors
+   adapt.
 
-- [ ] **Step 4: Final commit (if any fixes)**
-
-```bash
-git add -A
-git commit -m "fix: 기존 테스트 컬럼 수 업데이트"
-```
+- [ ] **Step 4: Mark task complete**
