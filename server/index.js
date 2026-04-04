@@ -6,6 +6,7 @@ import { resolveWorkspaceDatabase } from './db.js';
 import { debug, enableAllDebug } from './logging.js';
 import { registerWorkspace, watchRegistry } from './registry-watcher.js';
 import { watchDb } from './watcher.js';
+import { discoverWorkspaces } from './workspace-discovery.js';
 import { attachWsServer } from './ws.js';
 
 if (process.argv.includes('--debug') || process.argv.includes('-d')) {
@@ -35,6 +36,10 @@ if (workspace_database.source !== 'home-default' && workspace_database.exists) {
     path: config.root_dir,
     database: workspace_database.path
   });
+}
+
+for (const workspace of discoverWorkspaces()) {
+  registerWorkspace(workspace);
 }
 
 // Watch the active beads DB and schedule subscription refresh for active lists
