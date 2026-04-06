@@ -605,6 +605,156 @@ describe('views/detail', () => {
     expect(value && value.getAttribute('title')).toBe(planPath);
   });
 
+  test('expands and collapses metadata path on click', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const issue = {
+      id: 'UI-123',
+      title: 'Toggle metadata',
+      dependencies: [],
+      dependents: [],
+      spec_id:
+        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md'
+    };
+
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-123' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+
+    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    await view.load('UI-123');
+
+    const value = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.metadata-path__value')
+    );
+    expect(value?.getAttribute('aria-expanded')).toBe('false');
+    expect(value?.classList.contains('is-expanded')).toBe(false);
+
+    value?.click();
+
+    const expanded = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.metadata-path__value')
+    );
+    expect(expanded?.getAttribute('aria-expanded')).toBe('true');
+    expect(expanded?.classList.contains('is-expanded')).toBe(true);
+
+    expanded?.click();
+
+    const collapsed = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.metadata-path__value')
+    );
+    expect(collapsed?.getAttribute('aria-expanded')).toBe('false');
+    expect(collapsed?.classList.contains('is-expanded')).toBe(false);
+  });
+
+  test('expands only the clicked metadata row', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const issue = {
+      id: 'UI-124',
+      title: 'Independent rows',
+      dependencies: [],
+      dependents: [],
+      spec_id:
+        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md',
+      metadata: {
+        plan: 'docs/superpowers/plans/2026-04-06-detail-metadata-paths.md'
+      }
+    };
+
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-124' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+
+    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    await view.load('UI-124');
+
+    const values = /** @type {HTMLElement[]} */ (
+      Array.from(mount.querySelectorAll('.metadata-path__value'))
+    );
+    expect(values).toHaveLength(2);
+
+    values[0].click();
+
+    const afterClick = /** @type {HTMLElement[]} */ (
+      Array.from(mount.querySelectorAll('.metadata-path__value'))
+    );
+    expect(afterClick[0]?.getAttribute('aria-expanded')).toBe('true');
+    expect(afterClick[1]?.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('resets metadata expanded state when a new issue loads', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const firstIssue = {
+      id: 'UI-125',
+      title: 'First metadata',
+      dependencies: [],
+      dependents: [],
+      spec_id:
+        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md'
+    };
+    const secondIssue = {
+      id: 'UI-126',
+      title: 'Second metadata',
+      dependencies: [],
+      dependents: [],
+      spec_id:
+        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md'
+    };
+
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        if (id === 'detail:UI-125') {
+          return [firstIssue];
+        }
+        if (id === 'detail:UI-126') {
+          return [secondIssue];
+        }
+        return [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+
+    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    await view.load('UI-125');
+
+    const firstValue = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.metadata-path__value')
+    );
+    firstValue?.click();
+    expect(firstValue?.getAttribute('aria-expanded')).toBe('true');
+
+    await view.load('UI-126');
+
+    const secondValue = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.metadata-path__value')
+    );
+    expect(secondValue?.getAttribute('aria-expanded')).toBe('false');
+    expect(secondValue?.classList.contains('is-expanded')).toBe(false);
+  });
+
   describe('delete issue', () => {
     test('renders delete button in detail view', async () => {
       document.body.innerHTML =

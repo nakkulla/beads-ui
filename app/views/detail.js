@@ -129,6 +129,8 @@ export function createDetailView(
   let comment_text = '';
   /** @type {boolean} */
   let comment_pending = false;
+  /** @type {Set<string>} */
+  let expanded_metadata_labels = new Set();
 
   /** @type {HTMLDialogElement | null} */
   let delete_dialog = null;
@@ -877,6 +879,18 @@ export function createDetailView(
   };
 
   /**
+   * @param {string} label
+   */
+  function toggleMetadataPath(label) {
+    if (expanded_metadata_labels.has(label)) {
+      expanded_metadata_labels.delete(label);
+    } else {
+      expanded_metadata_labels.add(label);
+    }
+    doRender();
+  }
+
+  /**
    * @param {'Dependencies'|'Dependents'} title
    * @param {Dependency[]} items
    */
@@ -939,9 +953,21 @@ export function createDetailView(
                 (entry) =>
                   html`<div class="metadata-path">
                     <div class="metadata-path__label">${entry.label}</div>
-                    <div class="metadata-path__value" title=${entry.value}>
+                    <button
+                      type="button"
+                      class=${`metadata-path__value${
+                        expanded_metadata_labels.has(entry.label)
+                          ? ' is-expanded'
+                          : ''
+                      }`}
+                      aria-expanded=${expanded_metadata_labels.has(entry.label)
+                        ? 'true'
+                        : 'false'}
+                      title=${entry.value}
+                      @click=${() => toggleMetadataPath(entry.label)}
+                    >
                       ${entry.value}
-                    </div>
+                    </button>
                   </div>`
               )}
             </div>
@@ -1533,6 +1559,7 @@ export function createDetailView(
         return;
       }
       current_id = String(id);
+      expanded_metadata_labels = new Set();
       // Try from store first; show placeholder while waiting for snapshot
       current = null;
       refreshFromStore();

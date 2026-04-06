@@ -2,7 +2,9 @@
 
 ## 목적
 
-상세 뷰 sidebar의 `Metadata` 경로가 현재 한 줄 ellipsis로만 보여 가독성이 낮으므로, 기본은 축약 상태를 유지하되 사용자가 클릭하면 같은 카드 안에서 전체 경로를 여러 줄로 펼쳐 읽을 수 있게 한다.
+상세 뷰 sidebar의 `Metadata` 경로가 현재 한 줄 ellipsis로만 보여 가독성이
+낮으므로, 기본은 축약 상태를 유지하되 사용자가 클릭하면 같은 카드 안에서 전체
+경로를 여러 줄로 펼쳐 읽을 수 있게 한다.
 
 ## 범위
 
@@ -24,7 +26,8 @@
 ## 현재 상태
 
 - `Metadata` 경로는 `.metadata-path__value`로 렌더링된다.
-- CSS는 `white-space: nowrap`, `text-overflow: ellipsis`, `overflow: hidden`을 사용한다.
+- CSS는 `white-space: nowrap`, `text-overflow: ellipsis`, `overflow: hidden`을
+  사용한다.
 - 전체 경로는 `title` tooltip으로만 확인 가능하다.
 - 클릭 상호작용이나 expanded state는 없다.
 
@@ -40,7 +43,8 @@
 
 ### 렌더링 구조
 
-`detail.js`에서 metadata row key(`Spec`, `Plan`, `Handoff`)를 기준으로 expanded state를 관리한다.
+`detail.js`에서 metadata row key(`Spec`, `Plan`, `Handoff`)를 기준으로 expanded
+state를 관리한다.
 
 각 value element는 클릭 가능한 컨트롤로 렌더링한다.
 
@@ -51,11 +55,13 @@
 ### 스타일
 
 collapsed 상태:
+
 - `white-space: nowrap`
 - `overflow: hidden`
 - `text-overflow: ellipsis`
 
 expanded 상태:
+
 - `white-space: normal`
 - `overflow: visible`
 - `text-overflow: clip`
@@ -65,11 +71,11 @@ expanded 상태:
 
 ## 수정 대상 파일
 
-| 파일 | 변경 |
-|------|------|
-| `app/views/detail.js` | metadata expanded state 추가, 클릭 토글 렌더링 반영 |
-| `app/styles.css` | collapsed / expanded 상태 스타일 분리 |
-| `app/views/detail.test.js` | 클릭 확장/재접힘/독립 상태 테스트 추가 |
+| 파일                       | 변경                                                |
+| -------------------------- | --------------------------------------------------- |
+| `app/views/detail.js`      | metadata expanded state 추가, 클릭 토글 렌더링 반영 |
+| `app/styles.css`           | collapsed / expanded 상태 스타일 분리               |
+| `app/views/detail.test.js` | 클릭 확장/재접힘/독립 상태 테스트 추가              |
 
 ## 테스트
 
