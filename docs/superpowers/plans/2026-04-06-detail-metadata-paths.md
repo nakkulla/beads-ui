@@ -1,11 +1,20 @@
 # Detail Metadata Paths Implementation Plan
+
 Parent bead: UI-tuxb
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Show `spec_id`, `metadata.plan`, and `metadata.handoff` as read-only paths in the issue detail sidebar when those values exist.
+**Goal:** Show `spec_id`, `metadata.plan`, and `metadata.handoff` as read-only
+paths in the issue detail sidebar when those values exist.
 
-**Architecture:** Keep the change entirely inside the detail view. Extend the detail payload typedef to acknowledge `spec_id` and the `metadata` object, normalize the three path values with a small local helper, and render a dedicated `Metadata` props card only when at least one value exists. Add narrow CSS for row layout and truncation without changing the server or protocol shape.
+**Architecture:** Keep the change entirely inside the detail view. Extend the
+detail payload typedef to acknowledge `spec_id` and the `metadata` object,
+normalize the three path values with a small local helper, and render a
+dedicated `Metadata` props card only when at least one value exists. Add narrow
+CSS for row layout and truncation without changing the server or protocol shape.
 
 **Tech Stack:** lit-html, vitest, vanilla JS DOM API, existing detail view CSS
 
@@ -15,23 +24,25 @@ Parent bead: UI-tuxb
 
 ## File Structure
 
-| File | Action | Responsibility |
-|------|--------|----------------|
-| `app/views/detail.js` | Modify | Extend `IssueDetail` typing, normalize metadata paths, render `Metadata` section in the sidebar |
-| `app/styles.css` | Modify | Add metadata row/value layout and truncation styles for the detail sidebar |
-| `app/views/detail.test.js` | Modify | Cover metadata section render/hide/title behavior |
+| File                       | Action | Responsibility                                                                                  |
+| -------------------------- | ------ | ----------------------------------------------------------------------------------------------- |
+| `app/views/detail.js`      | Modify | Extend `IssueDetail` typing, normalize metadata paths, render `Metadata` section in the sidebar |
+| `app/styles.css`           | Modify | Add metadata row/value layout and truncation styles for the detail sidebar                      |
+| `app/views/detail.test.js` | Modify | Cover metadata section render/hide/title behavior                                               |
 
 ---
 
 ### Task 1: Detail view metadata rendering tests
 
 **Files:**
+
 - Modify: `app/views/detail.test.js`
 - Verify against: `app/views/detail.js`
 
 - [ ] **Step 1: Write the failing tests**
 
-Add these tests near the other sidebar/detail rendering tests in `app/views/detail.test.js`:
+Add these tests near the other sidebar/detail rendering tests in
+`app/views/detail.test.js`:
 
 ```js
 test('renders metadata paths in sidebar when values exist', async () => {
@@ -44,7 +55,8 @@ test('renders metadata paths in sidebar when values exist', async () => {
     title: 'Has metadata',
     dependencies: [],
     dependents: [],
-    spec_id: 'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md',
+    spec_id:
+      'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md',
     metadata: {
       plan: 'docs/superpowers/plans/2026-04-06-detail-metadata-paths.md',
       handoff: 'docs/handoffs/2026-04-06_12-00-00_detail-metadata.md'
@@ -158,12 +170,14 @@ test('renders only present metadata values and keeps full path in title', async 
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run app/views/detail.test.js`
-Expected: FAIL because the current detail sidebar does not render a `Metadata` section or `.metadata-path__value` element.
+Run: `npx vitest run app/views/detail.test.js` Expected: FAIL because the
+current detail sidebar does not render a `Metadata` section or
+`.metadata-path__value` element.
 
 - [ ] **Step 3: Confirm the failing assertions point at missing metadata UI**
 
 Expected failures should mention at least one of these:
+
 - missing `Metadata` text
 - missing `Spec` / `Plan` / `Handoff` labels
 - missing `.metadata-path__value`
@@ -172,19 +186,22 @@ If the failure is unrelated, fix the test setup before changing implementation.
 
 - [ ] **Step 4: Mark task complete**
 
-Do not change implementation in this task. The goal is to lock the expected DOM behavior first.
+Do not change implementation in this task. The goal is to lock the expected DOM
+behavior first.
 
 ---
 
 ### Task 2: Implement metadata section in `detail.js`
 
 **Files:**
+
 - Modify: `app/views/detail.js`
 - Verify with: `app/views/detail.test.js`
 
 - [ ] **Step 1: Extend the detail payload typedef**
 
-Update the `IssueDetail` typedef near the top of `app/views/detail.js` to include `spec_id` and `metadata`:
+Update the `IssueDetail` typedef near the top of `app/views/detail.js` to
+include `spec_id` and `metadata`:
 
 ```js
 /**
@@ -229,41 +246,41 @@ function normalizePath(value) {
 
 - [ ] **Step 3: Render the metadata section in the sidebar**
 
-Inside `detailTemplate(issue)`, compute the three normalized values and create a conditional card before dependencies:
+Inside `detailTemplate(issue)`, compute the three normalized values and create a
+conditional card before dependencies:
 
 ```js
-    const spec_value = normalizePath(issue.spec_id);
-    const plan_value = normalizePath(issue.metadata?.plan);
-    const handoff_value = normalizePath(issue.metadata?.handoff);
+const spec_value = normalizePath(issue.spec_id);
+const plan_value = normalizePath(issue.metadata?.plan);
+const handoff_value = normalizePath(issue.metadata?.handoff);
 
-    const metadata_rows = [
-      { label: 'Spec', value: spec_value },
-      { label: 'Plan', value: plan_value },
-      { label: 'Handoff', value: handoff_value }
-    ].filter((entry) => entry.value.length > 0);
+const metadata_rows = [
+  { label: 'Spec', value: spec_value },
+  { label: 'Plan', value: plan_value },
+  { label: 'Handoff', value: handoff_value }
+].filter((entry) => entry.value.length > 0);
 
-    const metadata_block =
-      metadata_rows.length > 0
-        ? html`<div class="props-card metadata-paths">
-            <div class="props-card__title">Metadata</div>
-            <div class="metadata-paths__list">
-              ${metadata_rows.map(
-                (entry) => html`<div class="metadata-path">
-                  <div class="metadata-path__label">${entry.label}</div>
-                  <div
-                    class="metadata-path__value"
-                    title=${entry.value}
-                  >
-                    ${entry.value}
-                  </div>
-                </div>`
-              )}
-            </div>
-          </div>`
-        : null;
+const metadata_block =
+  metadata_rows.length > 0
+    ? html`<div class="props-card metadata-paths">
+        <div class="props-card__title">Metadata</div>
+        <div class="metadata-paths__list">
+          ${metadata_rows.map(
+            (entry) =>
+              html`<div class="metadata-path">
+                <div class="metadata-path__label">${entry.label}</div>
+                <div class="metadata-path__value" title=${entry.value}>
+                  ${entry.value}
+                </div>
+              </div>`
+          )}
+        </div>
+      </div>`
+    : null;
 ```
 
-Then insert the block in the sidebar between `labels_block` and `depsSection(...)`:
+Then insert the block in the sidebar between `labels_block` and
+`depsSection(...)`:
 
 ```js
               ${labels_block}
@@ -274,18 +291,20 @@ Then insert the block in the sidebar between `labels_block` and `depsSection(...
 
 - [ ] **Step 4: Run the focused tests**
 
-Run: `npx vitest run app/views/detail.test.js`
-Expected: PASS — all existing detail tests plus the new metadata tests pass.
+Run: `npx vitest run app/views/detail.test.js` Expected: PASS — all existing
+detail tests plus the new metadata tests pass.
 
 - [ ] **Step 5: Mark task complete**
 
-Manual `git commit` steps are omitted from this plan. Use the repo's autocommit workflow unless an explicit manual commit is requested.
+Manual `git commit` steps are omitted from this plan. Use the repo's autocommit
+workflow unless an explicit manual commit is requested.
 
 ---
 
 ### Task 3: Add metadata layout styles and run targeted verification
 
 **Files:**
+
 - Modify: `app/styles.css`
 - Verify with: `app/views/detail.test.js`
 
@@ -323,8 +342,8 @@ Add these rules near the other detail sidebar styles in `app/styles.css`:
 
 - [ ] **Step 2: Re-run the focused detail tests**
 
-Run: `npx vitest run app/views/detail.test.js`
-Expected: PASS — CSS changes do not affect DOM assertions.
+Run: `npx vitest run app/views/detail.test.js` Expected: PASS — CSS changes do
+not affect DOM assertions.
 
 - [ ] **Step 3: Run the repo validation commands required before handoff**
 
@@ -338,6 +357,7 @@ npm run prettier:write
 ```
 
 Expected:
+
 - `npm run tsc` exits 0
 - `npm test` exits 0
 - `npm run lint` exits 0
@@ -345,17 +365,22 @@ Expected:
 
 - [ ] **Step 4: Re-run the focused detail tests after prettier**
 
-Run: `npx vitest run app/views/detail.test.js`
-Expected: PASS — formatting did not alter behavior.
+Run: `npx vitest run app/views/detail.test.js` Expected: PASS — formatting did
+not alter behavior.
 
 - [ ] **Step 5: Mark task complete**
 
-At this point the feature is ready for implementation review or execution handoff.
+At this point the feature is ready for implementation review or execution
+handoff.
 
 ---
 
 ## Self-Review Checklist
 
-- **Spec coverage:** The plan covers sidebar location, conditional display, value normalization, truncate/title behavior, and no server/protocol changes.
-- **Placeholder scan:** No TODO/TBD markers remain; each task has exact files, commands, and expected outcomes.
-- **Type consistency:** The plan consistently uses `spec_id`, `metadata.plan`, `metadata.handoff`, `normalizePath`, `metadata_block`, and `.metadata-path__value` across tests and implementation.
+- **Spec coverage:** The plan covers sidebar location, conditional display,
+  value normalization, truncate/title behavior, and no server/protocol changes.
+- **Placeholder scan:** No TODO/TBD markers remain; each task has exact files,
+  commands, and expected outcomes.
+- **Type consistency:** The plan consistently uses `spec_id`, `metadata.plan`,
+  `metadata.handoff`, `normalizePath`, `metadata_block`, and
+  `.metadata-path__value` across tests and implementation.

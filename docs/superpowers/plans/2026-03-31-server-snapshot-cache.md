@@ -1,10 +1,17 @@
 # Server Snapshot Cache Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** subscribe-list 요청 시 서버 메모리 캐시에서 즉시 snapshot을 반환하여 초기 로딩 성능을 개선한다.
+**Goal:** subscribe-list 요청 시 서버 메모리 캐시에서 즉시 snapshot을 반환하여
+초기 로딩 성능을 개선한다.
 
-**Architecture:** `SubscriptionRegistry`의 Entry에 `cachedSnapshot` (immutable array reference)을 추가하고, 새 구독자에게 캐시된 데이터를 즉시 전송한 뒤 백그라운드에서 bd를 호출해 delta를 반영한다. workspace 전환 시 generation counter로 stale refresh를 방지한다.
+**Architecture:** `SubscriptionRegistry`의 Entry에 `cachedSnapshot` (immutable
+array reference)을 추가하고, 새 구독자에게 캐시된 데이터를 즉시 전송한 뒤
+백그라운드에서 bd를 호출해 delta를 반영한다. workspace 전환 시 generation
+counter로 stale refresh를 방지한다.
 
 **Tech Stack:** Node.js, vitest, WebSocket (ws)
 
@@ -14,18 +21,19 @@
 
 ## File Structure
 
-| Action | File | Responsibility |
-|--------|------|----------------|
-| Modify | `server/subscriptions.js` | Entry에 `cachedSnapshot` 추가, eviction 정책 변경, generation counter |
-| Modify | `server/ws.js` | 캐시 히트 분기, `setCachedSnapshot`, `scheduleBackgroundRefresh`, generation guard |
-| Modify | `server/subscriptions.test.js` | `cachedSnapshot`, eviction 변경, generation counter 테스트 |
-| Create | `server/ws.snapshot-cache.test.js` | 캐시 히트/미스, 백그라운드 refresh, generation guard 통합 테스트 |
+| Action | File                               | Responsibility                                                                     |
+| ------ | ---------------------------------- | ---------------------------------------------------------------------------------- |
+| Modify | `server/subscriptions.js`          | Entry에 `cachedSnapshot` 추가, eviction 정책 변경, generation counter              |
+| Modify | `server/ws.js`                     | 캐시 히트 분기, `setCachedSnapshot`, `scheduleBackgroundRefresh`, generation guard |
+| Modify | `server/subscriptions.test.js`     | `cachedSnapshot`, eviction 변경, generation counter 테스트                         |
+| Create | `server/ws.snapshot-cache.test.js` | 캐시 히트/미스, 백그라운드 refresh, generation guard 통합 테스트                   |
 
 ---
 
 ### Task 1: Entry에 `cachedSnapshot` 필드 추가
 
 **Files:**
+
 - Modify: `server/subscriptions.js:41-47` (`createEntry` 함수)
 - Modify: `server/subscriptions.test.js`
 
@@ -44,8 +52,8 @@ test('createEntry includes cachedSnapshot initialized to null', () => {
 
 - [ ] **Step 2: 테스트가 실패하는지 확인**
 
-Run: `npx vitest run server/subscriptions.test.js -t "cachedSnapshot"`
-Expected: FAIL — `entry.cachedSnapshot` is `undefined`
+Run: `npx vitest run server/subscriptions.test.js -t "cachedSnapshot"` Expected:
+FAIL — `entry.cachedSnapshot` is `undefined`
 
 - [ ] **Step 3: `createEntry`에 `cachedSnapshot: null` 추가**
 
@@ -77,13 +85,13 @@ JSDoc typedef도 업데이트:
 
 - [ ] **Step 4: 테스트 통과 확인**
 
-Run: `npx vitest run server/subscriptions.test.js -t "cachedSnapshot"`
-Expected: PASS
+Run: `npx vitest run server/subscriptions.test.js -t "cachedSnapshot"` Expected:
+PASS
 
 - [ ] **Step 5: 전체 subscriptions 테스트 통과 확인**
 
-Run: `npx vitest run server/subscriptions.test.js`
-Expected: 모든 테스트 PASS (기존 테스트가 깨지지 않아야 함)
+Run: `npx vitest run server/subscriptions.test.js` Expected: 모든 테스트 PASS
+(기존 테스트가 깨지지 않아야 함)
 
 - [ ] **Step 6: Commit (optional checkpoint)**
 
@@ -97,6 +105,7 @@ git commit -m "feat: Entry에 cachedSnapshot 필드 추가"   # 수동 checkpoin
 ### Task 2: Eviction 정책 변경 — `onDisconnect`에서 entry 유지
 
 **Files:**
+
 - Modify: `server/subscriptions.js:201-213` (`onDisconnect` 메서드)
 - Modify: `server/subscriptions.test.js`
 
@@ -149,36 +158,42 @@ Expected: PASS
 
 - [ ] **Step 5: 기존 eviction 테스트 업데이트**
 
-기존 `'attach/detach and disconnect-driven eviction'` 테스트의 마지막 4줄 (lines 99-102)을 교체:
+기존 `'attach/detach and disconnect-driven eviction'` 테스트의 마지막 4줄 (lines
+99-102)을 교체:
 
 교체 대상 (old):
+
 ```js
-    // Disconnecting B should sweep it and remove empty entry
-    reg.onDisconnect(ws_b);
-    const entry3 = reg.get(key);
-    expect(entry3).toBeNull();
+// Disconnecting B should sweep it and remove empty entry
+reg.onDisconnect(ws_b);
+const entry3 = reg.get(key);
+expect(entry3).toBeNull();
 ```
 
 교체 내용 (new):
+
 ```js
-    // Disconnecting B should sweep it but preserve entry for caching
-    reg.onDisconnect(ws_b);
-    const entry3 = reg.get(key);
-    expect(entry3).not.toBeNull();
-    expect(entry3?.subscribers.size).toBe(0);
+// Disconnecting B should sweep it but preserve entry for caching
+reg.onDisconnect(ws_b);
+const entry3 = reg.get(key);
+expect(entry3).not.toBeNull();
+expect(entry3?.subscribers.size).toBe(0);
 ```
 
 - [ ] **Step 6: 전체 테스트 통과 확인**
 
-Run: `npx vitest run server/subscriptions.test.js`
-Expected: 모든 테스트 PASS
+Run: `npx vitest run server/subscriptions.test.js` Expected: 모든 테스트 PASS
 
 - [ ] **Step 7: ws.list-subscriptions 테스트도 확인**
 
-Run: `npx vitest run server/ws.list-subscriptions.test.js`
-Expected: 모든 테스트 PASS (eviction 관련 assertion이 깨질 수 있으므로 확인 필수)
+Run: `npx vitest run server/ws.list-subscriptions.test.js` Expected: 모든 테스트
+PASS (eviction 관련 assertion이 깨질 수 있으므로 확인 필수)
 
-> **주의**: `server/ws.list-subscriptions.test.js`의 `'unsubscribe-list detaches and disconnect sweep evicts entry'` 테스트는 현재 entry 삭제를 직접 assert하지 않지만 (`// Do not assert full eviction here due to global registry`) 다른 테스트와의 간접적 의존성을 확인해야 한다.
+> **주의**: `server/ws.list-subscriptions.test.js`의
+> `'unsubscribe-list detaches and disconnect sweep evicts entry'` 테스트는 현재
+> entry 삭제를 직접 assert하지 않지만
+> (`// Do not assert full eviction here due to global registry`) 다른 테스트와의
+> 간접적 의존성을 확인해야 한다.
 
 - [ ] **Step 8: Commit (optional checkpoint)**
 
@@ -192,6 +207,7 @@ git commit -m "feat: onDisconnect에서 entry 삭제 제거 (캐시 보존)"   #
 ### Task 3: Generation counter 추가
 
 **Files:**
+
 - Modify: `server/subscriptions.js` (constructor, `clear`, getter)
 - Modify: `server/subscriptions.test.js`
 
@@ -227,8 +243,8 @@ test('clear removes all entries and increments generation', () => {
 
 - [ ] **Step 2: 테스트가 실패하는지 확인**
 
-Run: `npx vitest run server/subscriptions.test.js -t "generation"`
-Expected: FAIL — `reg.generation` is `undefined`
+Run: `npx vitest run server/subscriptions.test.js -t "generation"` Expected:
+FAIL — `reg.generation` is `undefined`
 
 - [ ] **Step 3: SubscriptionRegistry에 generation counter 구현**
 
@@ -259,13 +275,12 @@ export class SubscriptionRegistry {
 
 - [ ] **Step 4: 테스트 통과 확인**
 
-Run: `npx vitest run server/subscriptions.test.js -t "generation"`
-Expected: PASS
+Run: `npx vitest run server/subscriptions.test.js -t "generation"` Expected:
+PASS
 
 - [ ] **Step 5: 전체 테스트 통과 확인**
 
-Run: `npx vitest run server/subscriptions.test.js`
-Expected: 모든 테스트 PASS
+Run: `npx vitest run server/subscriptions.test.js` Expected: 모든 테스트 PASS
 
 - [ ] **Step 6: Commit (optional checkpoint)**
 
@@ -279,6 +294,7 @@ git commit -m "feat: SubscriptionRegistry에 generation counter 추가"   # 수�
 ### Task 4: `setCachedSnapshot` 헬퍼 및 `refreshAndPublish` 캐시 갱신
 
 **Files:**
+
 - Modify: `server/ws.js:337-390` (`refreshAndPublish`, 새 헬퍼 함수)
 - Create: `server/ws.snapshot-cache.test.js`
 
@@ -321,16 +337,20 @@ describe('snapshot cache', () => {
       readyState: 1,
       OPEN: 1,
       /** @param {string} msg */
-      send(msg) { this.sent.push(String(msg)); }
+      send(msg) {
+        this.sent.push(String(msg));
+      }
     };
 
     await handleMessage(
       /** @type {any} */ (sock),
-      Buffer.from(JSON.stringify({
-        id: 'sub-cold',
-        type: /** @type {any} */ ('subscribe-list'),
-        payload: { id: 'c-cold', type: 'all-issues' }
-      }))
+      Buffer.from(
+        JSON.stringify({
+          id: 'sub-cold',
+          type: /** @type {any} */ ('subscribe-list'),
+          payload: { id: 'c-cold', type: 'all-issues' }
+        })
+      )
     );
 
     const key = keyOf({ type: 'all-issues' });
@@ -353,24 +373,30 @@ describe('snapshot cache', () => {
       readyState: 1,
       OPEN: 1,
       /** @param {string} msg */
-      send(msg) { this.sent.push(String(msg)); }
+      send(msg) {
+        this.sent.push(String(msg));
+      }
     };
     wss.clients.add(/** @type {any} */ (sock));
 
     // Cold subscribe
     await handleMessage(
       /** @type {any} */ (sock),
-      Buffer.from(JSON.stringify({
-        id: 'sub-refresh',
-        type: /** @type {any} */ ('subscribe-list'),
-        payload: { id: 'c-refresh', type: 'ready-issues' }
-      }))
+      Buffer.from(
+        JSON.stringify({
+          id: 'sub-refresh',
+          type: /** @type {any} */ ('subscribe-list'),
+          payload: { id: 'c-refresh', type: 'ready-issues' }
+        })
+      )
     );
 
     const key = keyOf({ type: 'ready-issues' });
 
     // Mock changed data
-    const mock = /** @type {import('vitest').Mock} */ (fetchListForSubscription);
+    const mock = /** @type {import('vitest').Mock} */ (
+      fetchListForSubscription
+    );
     mock.mockResolvedValueOnce({
       ok: true,
       items: [
@@ -395,8 +421,8 @@ describe('snapshot cache', () => {
 
 - [ ] **Step 2: 테스트가 실패하는지 확인**
 
-Run: `npx vitest run server/ws.snapshot-cache.test.js`
-Expected: FAIL — `cachedSnapshot`이 `null`로 남아 있음
+Run: `npx vitest run server/ws.snapshot-cache.test.js` Expected: FAIL —
+`cachedSnapshot`이 `null`로 남아 있음
 
 - [ ] **Step 3: `setCachedSnapshot` 헬퍼 구현**
 
@@ -419,7 +445,8 @@ function setCachedSnapshot(key, items) {
 
 - [ ] **Step 4: `refreshAndPublish`에서 `setCachedSnapshot` 호출 추가**
 
-`server/ws.js`의 `refreshAndPublish` 함수에서 `registry.applyItems(key, items)` 직후에 추가:
+`server/ws.js`의 `refreshAndPublish` 함수에서 `registry.applyItems(key, items)`
+직후에 추가:
 
 ```js
 const delta = registry.applyItems(key, items);
@@ -430,41 +457,39 @@ setCachedSnapshot(key, items);
 
 - [ ] **Step 5: subscribe-list cold path에서도 `setCachedSnapshot` 호출 추가**
 
-`server/ws.js`의 subscribe-list 핸들러 (line 666-673)에서, `withKeyLock` 콜백 안에 `setCachedSnapshot` 호출을 추가한다. `items` 변수는 이 콜백 스코프 안에서 선언되어 있다:
+`server/ws.js`의 subscribe-list 핸들러 (line 666-673)에서, `withKeyLock` 콜백
+안에 `setCachedSnapshot` 호출을 추가한다. `items` 변수는 이 콜백 스코프 안에서
+선언되어 있다:
 
 교체 대상 (old — `withKeyLock` 블록 전체):
+
 ```js
-      await registry.withKeyLock(attached_key, async () => {
-        const items = applyClosedIssuesFilter(
-          spec,
-          initial ? initial.items : []
-        );
-        void registry.applyItems(attached_key, items);
-        emitSubscriptionSnapshot(ws, client_id, attached_key, items);
-      });
+await registry.withKeyLock(attached_key, async () => {
+  const items = applyClosedIssuesFilter(spec, initial ? initial.items : []);
+  void registry.applyItems(attached_key, items);
+  emitSubscriptionSnapshot(ws, client_id, attached_key, items);
+});
 ```
 
 교체 내용 (new):
+
 ```js
-      await registry.withKeyLock(attached_key, async () => {
-        const items = applyClosedIssuesFilter(
-          spec,
-          initial ? initial.items : []
-        );
-        void registry.applyItems(attached_key, items);
-        setCachedSnapshot(attached_key, items);
-        emitSubscriptionSnapshot(ws, client_id, attached_key, items);
-      });
+await registry.withKeyLock(attached_key, async () => {
+  const items = applyClosedIssuesFilter(spec, initial ? initial.items : []);
+  void registry.applyItems(attached_key, items);
+  setCachedSnapshot(attached_key, items);
+  emitSubscriptionSnapshot(ws, client_id, attached_key, items);
+});
 ```
 
 - [ ] **Step 6: 테스트 통과 확인**
 
-Run: `npx vitest run server/ws.snapshot-cache.test.js`
-Expected: PASS
+Run: `npx vitest run server/ws.snapshot-cache.test.js` Expected: PASS
 
 - [ ] **Step 7: 기존 ws 테스트 통과 확인**
 
-Run: `npx vitest run server/ws.list-subscriptions.test.js server/ws.test.js server/ws.mutation-window.test.js server/ws.list-refresh.coalesce.test.js`
+Run:
+`npx vitest run server/ws.list-subscriptions.test.js server/ws.test.js server/ws.mutation-window.test.js server/ws.list-refresh.coalesce.test.js`
 Expected: 모든 테스트 PASS
 
 - [ ] **Step 8: Commit**
@@ -479,6 +504,7 @@ git commit -m "feat: setCachedSnapshot 헬퍼 및 refreshAndPublish 캐시 갱�
 ### Task 5: Generation guard를 `refreshAndPublish`에 추가
 
 **Files:**
+
 - Modify: `server/ws.js:337-390` (`refreshAndPublish`)
 - Modify: `server/ws.snapshot-cache.test.js`
 
@@ -501,18 +527,22 @@ test('refreshAndPublish discards in-flight result when generation changes', asyn
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
-    send(msg) { this.sent.push(String(msg)); }
+    send(msg) {
+      this.sent.push(String(msg));
+    }
   };
   wss.clients.add(/** @type {any} */ (sock));
 
   // Cold subscribe to populate entry
   await handleMessage(
     /** @type {any} */ (sock),
-    Buffer.from(JSON.stringify({
-      id: 'sub-gen',
-      type: /** @type {any} */ ('subscribe-list'),
-      payload: { id: 'c-gen', type: 'in-progress-issues' }
-    }))
+    Buffer.from(
+      JSON.stringify({
+        id: 'sub-gen',
+        type: /** @type {any} */ ('subscribe-list'),
+        payload: { id: 'c-gen', type: 'in-progress-issues' }
+      })
+    )
   );
 
   const key = keyOf({ type: 'in-progress-issues' });
@@ -553,18 +583,21 @@ test('refreshAndPublish discards in-flight result when generation changes', asyn
 - [ ] **Step 2: 테스트가 실패하는지 확인**
 
 Run: `npx vitest run server/ws.snapshot-cache.test.js -t "generation changes"`
-Expected: FAIL — generation guard가 아직 없어서 clear 이전에 시작된 stale refresh 결과가 다시 기록될 수 있음
+Expected: FAIL — generation guard가 아직 없어서 clear 이전에 시작된 stale
+refresh 결과가 다시 기록될 수 있음
 
 - [ ] **Step 3: `refreshAndPublish`에 generation guard 추가**
 
-`server/ws.js`의 `refreshAndPublish` 함수 (line 337-390) 전체를 아래로 교체한다. 변경 포인트는 3곳: (1) `gen` 캡처, (2) bd 호출 전 guard, (3) bd 호출 후 guard. 나머지 delta 전파 로직은 그대로 유지:
+`server/ws.js`의 `refreshAndPublish` 함수 (line 337-390) 전체를 아래로 교체한다.
+변경 포인트는 3곳: (1) `gen` 캡처, (2) bd 호출 전 guard, (3) bd 호출 후 guard.
+나머지 delta 전파 로직은 그대로 유지:
 
 ```js
 async function refreshAndPublish(spec) {
-  const gen = registry.generation;                    // (1) generation 캡처
+  const gen = registry.generation; // (1) generation 캡처
   const key = keyOf(spec);
   await registry.withKeyLock(key, async () => {
-    if (registry.generation !== gen) return;           // (2) bd 호출 전 guard
+    if (registry.generation !== gen) return; // (2) bd 호출 전 guard
     const res = await fetchListForSubscription(spec, {
       cwd: CURRENT_WORKSPACE?.root_dir
     });
@@ -572,7 +605,7 @@ async function refreshAndPublish(spec) {
       log('refresh failed for %s: %s %o', key, res.error.message, res.error);
       return;
     }
-    if (registry.generation !== gen) return;           // (3) bd 호출 후 guard
+    if (registry.generation !== gen) return; // (3) bd 호출 후 guard
     const items = applyClosedIssuesFilter(spec, res.items);
     const prev_size = registry.get(key)?.itemsById.size || 0;
     const delta = registry.applyItems(key, items);
@@ -627,8 +660,8 @@ Expected: PASS
 
 - [ ] **Step 5: 전체 snapshot-cache 테스트 통과 확인**
 
-Run: `npx vitest run server/ws.snapshot-cache.test.js`
-Expected: 모든 테스트 PASS
+Run: `npx vitest run server/ws.snapshot-cache.test.js` Expected: 모든 테스트
+PASS
 
 - [ ] **Step 6: Commit (optional checkpoint)**
 
@@ -642,6 +675,7 @@ git commit -m "feat: refreshAndPublish에 generation guard 추가"   # 수동 ch
 ### Task 6: 캐시 히트 경로 구현 — subscribe-list 핸들러
 
 **Files:**
+
 - Modify: `server/ws.js:607-688` (subscribe-list 핸들러)
 - Modify: `server/ws.snapshot-cache.test.js`
 
@@ -663,17 +697,21 @@ test('subscribe-list serves cached snapshot without bd call on cache hit', async
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
-    send(msg) { this.sent.push(String(msg)); }
+    send(msg) {
+      this.sent.push(String(msg));
+    }
   };
 
   // First subscribe: cold path (populates cache)
   await handleMessage(
     /** @type {any} */ (sock1),
-    Buffer.from(JSON.stringify({
-      id: 'sub-first',
-      type: /** @type {any} */ ('subscribe-list'),
-      payload: { id: 'c-first', type: 'epics' }
-    }))
+    Buffer.from(
+      JSON.stringify({
+        id: 'sub-first',
+        type: /** @type {any} */ ('subscribe-list'),
+        payload: { id: 'c-first', type: 'epics' }
+      })
+    )
   );
 
   const mock = /** @type {import('vitest').Mock} */ (fetchListForSubscription);
@@ -692,22 +730,32 @@ test('subscribe-list serves cached snapshot without bd call on cache hit', async
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
-    send(msg) { this.sent.push(String(msg)); }
+    send(msg) {
+      this.sent.push(String(msg));
+    }
   };
 
   await handleMessage(
     /** @type {any} */ (sock2),
-    Buffer.from(JSON.stringify({
-      id: 'sub-cached',
-      type: /** @type {any} */ ('subscribe-list'),
-      payload: { id: 'c-cached', type: 'epics' }
-    }))
+    Buffer.from(
+      JSON.stringify({
+        id: 'sub-cached',
+        type: /** @type {any} */ ('subscribe-list'),
+        payload: { id: 'c-cached', type: 'epics' }
+      })
+    )
   );
 
   // sock2 should receive the cached snapshot immediately even while
   // background refresh is still pending
   const snapshot = sock2.sent
-    .map((m) => { try { return JSON.parse(m); } catch { return null; } })
+    .map((m) => {
+      try {
+        return JSON.parse(m);
+      } catch {
+        return null;
+      }
+    })
     .find((o) => o && o.type === 'snapshot');
   expect(snapshot).toBeTruthy();
   expect(snapshot.payload.id).toBe('c-cached');
@@ -716,7 +764,13 @@ test('subscribe-list serves cached snapshot without bd call on cache hit', async
 
   // OK reply should also be present
   const ok_reply = sock2.sent
-    .map((m) => { try { return JSON.parse(m); } catch { return null; } })
+    .map((m) => {
+      try {
+        return JSON.parse(m);
+      } catch {
+        return null;
+      }
+    })
     .find((o) => o && o.ok === true && o.type === 'subscribe-list');
   expect(ok_reply).toBeTruthy();
 
@@ -744,18 +798,22 @@ test('cache hit triggers background refresh that updates cachedSnapshot', async 
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
-    send(msg) { this.sent.push(String(msg)); }
+    send(msg) {
+      this.sent.push(String(msg));
+    }
   };
   wss.clients.add(/** @type {any} */ (sock1));
 
   // Cold subscribe
   await handleMessage(
     /** @type {any} */ (sock1),
-    Buffer.from(JSON.stringify({
-      id: 'sub-bg',
-      type: /** @type {any} */ ('subscribe-list'),
-      payload: { id: 'c-bg', type: 'resolved-issues' }
-    }))
+    Buffer.from(
+      JSON.stringify({
+        id: 'sub-bg',
+        type: /** @type {any} */ ('subscribe-list'),
+        payload: { id: 'c-bg', type: 'resolved-issues' }
+      })
+    )
   );
 
   // Mock returns updated data for background refresh
@@ -774,17 +832,21 @@ test('cache hit triggers background refresh that updates cachedSnapshot', async 
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
-    send(msg) { this.sent.push(String(msg)); }
+    send(msg) {
+      this.sent.push(String(msg));
+    }
   };
   wss.clients.add(/** @type {any} */ (sock2));
 
   await handleMessage(
     /** @type {any} */ (sock2),
-    Buffer.from(JSON.stringify({
-      id: 'sub-bg2',
-      type: /** @type {any} */ ('subscribe-list'),
-      payload: { id: 'c-bg2', type: 'resolved-issues' }
-    }))
+    Buffer.from(
+      JSON.stringify({
+        id: 'sub-bg2',
+        type: /** @type {any} */ ('subscribe-list'),
+        payload: { id: 'c-bg2', type: 'resolved-issues' }
+      })
+    )
   );
 
   // Flush microtasks for background refreshAndPublish to complete
@@ -808,17 +870,21 @@ test('subscribe-list cache hit serves empty array as valid cache (not a miss)', 
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
-    send(msg) { this.sent.push(String(msg)); }
+    send(msg) {
+      this.sent.push(String(msg));
+    }
   };
 
   // Cold path with empty result
   await handleMessage(
     /** @type {any} */ (sock1),
-    Buffer.from(JSON.stringify({
-      id: 'sub-empty',
-      type: /** @type {any} */ ('subscribe-list'),
-      payload: { id: 'c-empty', type: 'blocked-issues' }
-    }))
+    Buffer.from(
+      JSON.stringify({
+        id: 'sub-empty',
+        type: /** @type {any} */ ('subscribe-list'),
+        payload: { id: 'c-empty', type: 'blocked-issues' }
+      })
+    )
   );
 
   /** @type {(value: { ok: true, items: [] }) => void} */
@@ -836,20 +902,30 @@ test('subscribe-list cache hit serves empty array as valid cache (not a miss)', 
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
-    send(msg) { this.sent.push(String(msg)); }
+    send(msg) {
+      this.sent.push(String(msg));
+    }
   };
 
   await handleMessage(
     /** @type {any} */ (sock2),
-    Buffer.from(JSON.stringify({
-      id: 'sub-empty-2',
-      type: /** @type {any} */ ('subscribe-list'),
-      payload: { id: 'c-empty-2', type: 'blocked-issues' }
-    }))
+    Buffer.from(
+      JSON.stringify({
+        id: 'sub-empty-2',
+        type: /** @type {any} */ ('subscribe-list'),
+        payload: { id: 'c-empty-2', type: 'blocked-issues' }
+      })
+    )
   );
 
   const snapshot = sock2.sent
-    .map((m) => { try { return JSON.parse(m); } catch { return null; } })
+    .map((m) => {
+      try {
+        return JSON.parse(m);
+      } catch {
+        return null;
+      }
+    })
     .find((o) => o && o.type === 'snapshot');
   expect(snapshot).toBeTruthy();
   expect(snapshot.payload.id).toBe('c-empty-2');
@@ -861,12 +937,14 @@ test('subscribe-list cache hit serves empty array as valid cache (not a miss)', 
 
 - [ ] **Step 2: 테스트가 실패하는지 확인**
 
-Run: `npx vitest run server/ws.snapshot-cache.test.js -t "cache hit"`
-Expected: FAIL — 캐시 히트 분기가 없어 cached snapshot을 즉시 전송하지 못하고 background refresh와 동작이 섞임
+Run: `npx vitest run server/ws.snapshot-cache.test.js -t "cache hit"` Expected:
+FAIL — 캐시 히트 분기가 없어 cached snapshot을 즉시 전송하지 못하고 background
+refresh와 동작이 섞임
 
 - [ ] **Step 3: subscribe-list 핸들러에 캐시 히트 분기 구현**
 
-`server/ws.js`의 subscribe-list 핸들러에서, validation 이후 `fetchListForSubscription` 호출 전에 캐시 히트 분기를 추가:
+`server/ws.js`의 subscribe-list 핸들러에서, validation 이후
+`fetchListForSubscription` 호출 전에 캐시 히트 분기를 추가:
 
 ```js
 const client_id = validation.id;
@@ -919,12 +997,13 @@ function scheduleBackgroundRefresh(spec) {
 
 - [ ] **Step 4: 테스트 통과 확인**
 
-Run: `npx vitest run server/ws.snapshot-cache.test.js -t "cache hit"`
-Expected: PASS
+Run: `npx vitest run server/ws.snapshot-cache.test.js -t "cache hit"` Expected:
+PASS
 
 - [ ] **Step 5: 전체 테스트 통과 확인**
 
-Run: `npx vitest run server/ws.snapshot-cache.test.js server/ws.list-subscriptions.test.js server/ws.test.js server/ws.mutation-window.test.js`
+Run:
+`npx vitest run server/ws.snapshot-cache.test.js server/ws.list-subscriptions.test.js server/ws.test.js server/ws.mutation-window.test.js`
 Expected: 모든 테스트 PASS
 
 - [ ] **Step 6: Commit (optional checkpoint)**
@@ -939,24 +1018,24 @@ git commit -m "feat: subscribe-list 캐시 히트 경로 구현"   # 수동 chec
 ### Task 7: 전체 통합 테스트 및 최종 검증
 
 **Files:**
+
 - Modify: `server/ws.snapshot-cache.test.js` (필요시)
 
 - [ ] **Step 1: 전체 서버 테스트 실행**
 
-Run: `npx vitest run server/`
-Expected: 모든 서버 테스트 PASS
+Run: `npx vitest run server/` Expected: 모든 서버 테스트 PASS
 
 - [ ] **Step 2: 전체 테스트 스위트 실행**
 
-Run: `npm test`
-Expected: 모든 테스트 PASS
+Run: `npm test` Expected: 모든 테스트 PASS
 
 - [ ] **Step 3: 수동 검증 (선택)**
 
 1. `npm start`로 서버 시작
 2. 브라우저에서 접속 → 초기 로딩 확인
 3. F5 새로고침 → 캐시 히트로 즉시 로딩되는지 확인
-4. 서버 콘솔에서 `subscribe-list` 로그 확인 — 두 번째 연결부터는 `fetchListForSubscription` 호출 없이 바로 snapshot 전송
+4. 서버 콘솔에서 `subscribe-list` 로그 확인 — 두 번째 연결부터는
+   `fetchListForSubscription` 호출 없이 바로 snapshot 전송
 
 - [ ] **Step 4: Commit (optional checkpoint, 필요시)**
 

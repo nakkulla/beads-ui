@@ -881,7 +881,43 @@ export function createDetailView(
   /**
    * @param {string} label
    */
-  function toggleMetadataPath(label) {
+  /**
+   * @param {Event} ev
+   * @returns {boolean}
+   */
+  function hasSelectedTextWithin(ev) {
+    const target = ev.currentTarget;
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    const selection = window.getSelection?.();
+    if (!selection) {
+      return false;
+    }
+
+    const selectedText = selection.toString().trim();
+    if (selectedText.length === 0) {
+      return false;
+    }
+
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    return Boolean(
+      (anchorNode && target.contains(anchorNode)) ||
+      (focusNode && target.contains(focusNode))
+    );
+  }
+
+  /**
+   * @param {string} label
+   * @param {Event} ev
+   */
+  function toggleMetadataPath(label, ev) {
+    if (hasSelectedTextWithin(ev)) {
+      return;
+    }
+
     if (expanded_metadata_labels.has(label)) {
       expanded_metadata_labels.delete(label);
     } else {
@@ -964,7 +1000,10 @@ export function createDetailView(
                         ? 'true'
                         : 'false'}
                       title=${entry.value}
-                      @click=${() => toggleMetadataPath(entry.label)}
+                      @click=${
+                        /** @param {Event} ev */ (ev) =>
+                          toggleMetadataPath(entry.label, ev)
+                      }
                     >
                       ${entry.value}
                     </button>

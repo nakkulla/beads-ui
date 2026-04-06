@@ -755,6 +755,66 @@ describe('views/detail', () => {
     expect(secondValue?.classList.contains('is-expanded')).toBe(false);
   });
 
+  test('does not collapse metadata path when text selection exists inside it', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const issue = {
+      id: 'UI-127',
+      title: 'Selected metadata text',
+      dependencies: [],
+      dependents: [],
+      spec_id:
+        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md'
+    };
+
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-127' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+
+    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    await view.load('UI-127');
+
+    const value = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.metadata-path__value')
+    );
+    value?.click();
+
+    const expanded = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.metadata-path__value')
+    );
+    expect(expanded?.getAttribute('aria-expanded')).toBe('true');
+
+    const originalGetSelection = window.getSelection;
+    const anchorNode = expanded?.firstChild ?? expanded;
+    window.getSelection = /** @type {typeof window.getSelection} */ (
+      () =>
+        /** @type {Selection} */ ({
+          anchorNode,
+          focusNode: anchorNode,
+          toString() {
+            return 'docs/superpowers/specs';
+          }
+        })
+    );
+
+    expanded?.click();
+
+    const stillExpanded = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.metadata-path__value')
+    );
+    expect(stillExpanded?.getAttribute('aria-expanded')).toBe('true');
+
+    window.getSelection = originalGetSelection;
+  });
+
   describe('delete issue', () => {
     test('renders delete button in detail view', async () => {
       document.body.innerHTML =
