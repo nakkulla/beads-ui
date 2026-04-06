@@ -33,6 +33,19 @@ function formatCommentDate(dateStr) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function normalizePath(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : '';
+}
+
+/**
  * @typedef {Object} Dependency
  * @property {string} id
  * @property {string} [title]
@@ -62,6 +75,8 @@ function formatCommentDate(dateStr) {
  * @property {string} [assignee]
  * @property {number} [priority]
  * @property {string[]} [labels]
+ * @property {string} [spec_id]
+ * @property {{ plan?: string | null, handoff?: string | null }} [metadata]
  * @property {Dependency[]} [dependencies]
  * @property {Dependency[]} [dependents]
  * @property {Comment[]} [comments]
@@ -906,6 +921,33 @@ export function createDetailView(
    * @param {IssueDetail} issue
    */
   function detailTemplate(issue) {
+    const spec_value = normalizePath(issue.spec_id);
+    const plan_value = normalizePath(issue.metadata?.plan);
+    const handoff_value = normalizePath(issue.metadata?.handoff);
+    const metadata_rows = [
+      { label: 'Spec', value: spec_value },
+      { label: 'Plan', value: plan_value },
+      { label: 'Handoff', value: handoff_value }
+    ].filter((entry) => entry.value.length > 0);
+
+    const metadata_block =
+      metadata_rows.length > 0
+        ? html`<div class="props-card metadata-paths">
+            <div class="props-card__title">Metadata</div>
+            <div class="metadata-paths__list">
+              ${metadata_rows.map(
+                (entry) =>
+                  html`<div class="metadata-path">
+                    <div class="metadata-path__label">${entry.label}</div>
+                    <div class="metadata-path__value" title=${entry.value}>
+                      ${entry.value}
+                    </div>
+                  </div>`
+              )}
+            </div>
+          </div>`
+        : null;
+
     const title_zone = edit_title
       ? html`<div class="detail-title">
           <h2>
@@ -1310,6 +1352,7 @@ export function createDetailView(
                 </div>
               </div>
               ${labels_block}
+              ${metadata_block}
               ${depsSection('Dependencies', issue.dependencies || [])}
               ${depsSection('Dependents', issue.dependents || [])}
             </div>

@@ -1,5 +1,7 @@
 # 상세 뷰 Metadata 경로 표시
 
+Parent bead: UI-tuxb
+
 ## 목적
 
 Issue detail 화면에서 `spec_id`, `metadata.plan`, `metadata.handoff` 값을 읽기 전용으로 노출하여, 사용자가 해당 이슈에 연결된 산출물 문서 경로를 UI에서 바로 확인할 수 있게 한다.

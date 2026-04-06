@@ -480,6 +480,131 @@ describe('views/detail', () => {
     expect(closeReasonProp).toBeUndefined();
   });
 
+  test('renders metadata paths in sidebar when values exist', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const issue = {
+      id: 'UI-120',
+      title: 'Has metadata',
+      dependencies: [],
+      dependents: [],
+      spec_id:
+        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md',
+      metadata: {
+        plan: 'docs/superpowers/plans/2026-04-06-detail-metadata-paths.md',
+        handoff: 'docs/handoffs/2026-04-06_12-00-00_detail-metadata.md'
+      }
+    };
+
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-120' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+
+    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    await view.load('UI-120');
+
+    const metadataCard = Array.from(mount.querySelectorAll('.props-card')).find(
+      (card) => card.textContent?.includes('Metadata')
+    );
+
+    expect(metadataCard).toBeTruthy();
+    expect(metadataCard && metadataCard.textContent).toContain('Spec');
+    expect(metadataCard && metadataCard.textContent).toContain('Plan');
+    expect(metadataCard && metadataCard.textContent).toContain('Handoff');
+    expect(metadataCard && metadataCard.textContent).toContain(
+      'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md'
+    );
+    expect(metadataCard && metadataCard.textContent).toContain(
+      'docs/superpowers/plans/2026-04-06-detail-metadata-paths.md'
+    );
+    expect(metadataCard && metadataCard.textContent).toContain(
+      'docs/handoffs/2026-04-06_12-00-00_detail-metadata.md'
+    );
+  });
+
+  test('hides metadata section when all metadata paths are missing', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const issue = {
+      id: 'UI-121',
+      title: 'No metadata',
+      dependencies: [],
+      dependents: []
+    };
+
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-121' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+
+    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    await view.load('UI-121');
+
+    expect(mount.textContent || '').not.toContain('Metadata');
+    expect(mount.textContent || '').not.toContain('Spec');
+    expect(mount.textContent || '').not.toContain('Plan');
+    expect(mount.textContent || '').not.toContain('Handoff');
+  });
+
+  test('renders only present metadata values and keeps full path in title', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const planPath =
+      'docs/superpowers/plans/2026-04-06-detail-metadata-paths-with-a-very-long-name-for-truncation.md';
+    const issue = {
+      id: 'UI-122',
+      title: 'Partial metadata',
+      dependencies: [],
+      dependents: [],
+      spec_id: '   ',
+      metadata: {
+        plan: planPath,
+        handoff: null
+      }
+    };
+
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-122' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+
+    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    await view.load('UI-122');
+
+    expect(mount.textContent || '').toContain('Metadata');
+    expect(mount.textContent || '').toContain('Plan');
+    expect(mount.textContent || '').not.toContain('Spec');
+    expect(mount.textContent || '').not.toContain('Handoff');
+
+    const value = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.metadata-path__value')
+    );
+    expect(value).toBeTruthy();
+    expect(value && value.getAttribute('title')).toBe(planPath);
+  });
+
   describe('delete issue', () => {
     test('renders delete button in detail view', async () => {
       document.body.innerHTML =

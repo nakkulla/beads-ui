@@ -1746,6 +1746,32 @@ html[data-theme='dark'] {
   }
 }
 
+#detail-root .metadata-paths__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+#detail-root .metadata-path {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+#detail-root .metadata-path__label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#detail-root .metadata-path__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
 /* --- Issue Details Dialog (UI-104) --- */
 #issue-dialog {
   padding: 0;
