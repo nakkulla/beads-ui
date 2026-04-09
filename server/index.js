@@ -4,9 +4,16 @@ import { printServerUrl } from './cli/daemon.js';
 import { getConfig } from './config.js';
 import { resolveWorkspaceDatabase } from './db.js';
 import { debug, enableAllDebug } from './logging.js';
-import { registerWorkspace, watchRegistry } from './registry-watcher.js';
+import {
+  registerWorkspace,
+  replaceDiscoveredWorkspaces,
+  watchRegistry
+} from './registry-watcher.js';
 import { watchDb } from './watcher.js';
-import { discoverWorkspaces } from './workspace-discovery.js';
+import {
+  discoverWorkspaces,
+  watchWorkspaceDiscovery
+} from './workspace-discovery.js';
 import { attachWsServer } from './ws.js';
 
 if (process.argv.includes('--debug') || process.argv.includes('-d')) {
@@ -38,9 +45,8 @@ if (workspace_database.source !== 'home-default' && workspace_database.exists) {
   });
 }
 
-for (const workspace of discoverWorkspaces()) {
-  registerWorkspace(workspace);
-}
+const discovered_workspaces = discoverWorkspaces();
+replaceDiscoveredWorkspaces(discovered_workspaces);
 
 // Watch the active beads DB and schedule subscription refresh for active lists
 const db_watcher = watchDb(config.root_dir, () => {
@@ -50,13 +56,23 @@ const db_watcher = watchDb(config.root_dir, () => {
   // v2: all updates flow via subscription push envelopes only
 });
 
-const { scheduleListRefresh } = attachWsServer(server, {
+const { scheduleListRefresh, broadcast } = attachWsServer(server, {
   path: '/ws',
   heartbeat_ms: 30000,
   // Coalesce DB change bursts into one refresh run
   refresh_debounce_ms: 75,
   root_dir: config.root_dir,
   watcher: db_watcher
+});
+
+watchWorkspaceDiscovery({
+  onChange(workspaces) {
+    replaceDiscoveredWorkspaces(workspaces);
+    broadcast('workspaces-updated', { count: workspaces.length });
+  },
+  onError(err) {
+    log('workspace discovery watcher error %o', err);
+  }
 });
 
 // Watch the global registry for workspace changes (e.g., when user starts
