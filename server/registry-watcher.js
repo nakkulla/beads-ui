@@ -58,7 +58,8 @@ export function replaceDiscoveredWorkspaces(workspaces) {
 }
 
 /**
- * Get all dynamically registered workspaces (in-memory only).
+ * Get all in-memory workspaces, combining manual registrations with the latest
+ * auto-discovered snapshot while letting manual entries win on path conflicts.
  *
  * @returns {Array<{ path: string, database: string, pid: number, version: string }>}
  */
