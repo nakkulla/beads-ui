@@ -327,4 +327,62 @@ describe('watchWorkspaceDiscovery', () => {
       events.some((paths) => paths.includes(path.join(dir_b, 'repo-b')))
     ).toBe(true);
   });
+
+  test('detects new repo under an existing nested directory', async () => {
+    const tmp = mkdtemp();
+    const scan_dir = path.join(tmp, 'projects');
+    const org_dir = path.join(scan_dir, 'my-org');
+    fs.mkdirSync(org_dir, { recursive: true });
+    const config_path = path.join(tmp, 'watch.conf');
+    fs.writeFileSync(config_path, scan_dir + '\n');
+
+    const mod = await import('./workspace-discovery.js');
+    /** @type {string[][]} */
+    const events = [];
+    const watcher = mod.watchWorkspaceDiscovery({
+      config_path,
+      debounce_ms: 20,
+      onChange(workspaces) {
+        events.push(workspaces.map((ws) => ws.path).sort());
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    createBeadsRepo(org_dir, 'repo-b');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    watcher.close();
+
+    expect(
+      events.some((paths) => paths.includes(path.join(org_dir, 'repo-b')))
+    ).toBe(true);
+  });
+
+  test('recovers when configured scan dir is created later', async () => {
+    const tmp = mkdtemp();
+    const scan_dir = path.join(tmp, 'projects');
+    const config_path = path.join(tmp, 'watch.conf');
+    fs.writeFileSync(config_path, scan_dir + '\n');
+
+    const mod = await import('./workspace-discovery.js');
+    /** @type {string[][]} */
+    const events = [];
+    const watcher = mod.watchWorkspaceDiscovery({
+      config_path,
+      debounce_ms: 20,
+      onChange(workspaces) {
+        events.push(workspaces.map((ws) => ws.path).sort());
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    fs.mkdirSync(scan_dir);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    createBeadsRepo(scan_dir, 'repo-late');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    watcher.close();
+
+    expect(
+      events.some((paths) => paths.includes(path.join(scan_dir, 'repo-late')))
+    ).toBe(true);
+  });
 });

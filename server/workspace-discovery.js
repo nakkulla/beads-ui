@@ -32,6 +32,42 @@ function readConfigLines(config_path) {
 function defaultNoop() {}
 
 /**
+ * @param {string} dir
+ * @returns {string}
+ */
+function findExistingAncestor(dir) {
+  let current = path.resolve(dir);
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  return current;
+}
+
+/**
+ * @param {string} dir
+ * @returns {string[]}
+ */
+function listWatchRoots(dir) {
+  const roots = [dir];
+
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory() && !entry.name.startsWith('.')) {
+        roots.push(path.join(dir, entry.name));
+      }
+    }
+  } catch {
+    // ignore listing errors; root watch is still useful
+  }
+
+  return roots;
+}
+
+/**
  * @param {string} base_dir
  * @param {number} max_depth
  * @returns {string[]}
@@ -159,14 +195,23 @@ export function watchWorkspaceDiscovery({
   const reconfigureDirWatchers = () => {
     closeDirWatchers();
 
-    for (const dir of new Set(readConfigLines(resolved_config))) {
-      try {
-        const watcher = fs.watch(dir, { persistent: true }, () => {
-          schedule();
-        });
-        dir_watchers.set(dir, watcher);
-      } catch (err) {
-        onError(err);
+    for (const configured_dir of new Set(readConfigLines(resolved_config))) {
+      const watch_roots = fs.existsSync(configured_dir)
+        ? listWatchRoots(configured_dir)
+        : [findExistingAncestor(configured_dir)];
+
+      for (const watch_root of watch_roots) {
+        if (dir_watchers.has(watch_root)) {
+          continue;
+        }
+        try {
+          const watcher = fs.watch(watch_root, { persistent: true }, () => {
+            schedule();
+          });
+          dir_watchers.set(watch_root, watcher);
+        } catch (err) {
+          onError(err);
+        }
       }
     }
   };
