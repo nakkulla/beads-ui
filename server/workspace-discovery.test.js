@@ -297,8 +297,10 @@ describe('watchWorkspaceDiscovery', () => {
     const tmp = mkdtemp();
     const scan_dir = path.join(tmp, 'projects');
     const dir_b = path.join(tmp, 'dir-b');
+    const dir_c = path.join(tmp, 'dir-c');
     fs.mkdirSync(scan_dir);
     fs.mkdirSync(dir_b);
+    fs.mkdirSync(dir_c);
     const config_path = path.join(tmp, 'watch.conf');
     fs.writeFileSync(config_path, scan_dir + '\n');
 
@@ -319,12 +321,15 @@ describe('watchWorkspaceDiscovery', () => {
     fs.renameSync(replaced_config, config_path);
     await new Promise((resolve) => setTimeout(resolve, 120));
 
-    createBeadsRepo(dir_b, 'repo-b');
+    fs.writeFileSync(config_path, [scan_dir, dir_b, dir_c].join('\n'));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    createBeadsRepo(dir_c, 'repo-c');
     await new Promise((resolve) => setTimeout(resolve, 120));
     watcher.close();
 
     expect(
-      events.some((paths) => paths.includes(path.join(dir_b, 'repo-b')))
+      events.some((paths) => paths.includes(path.join(dir_c, 'repo-c')))
     ).toBe(true);
   });
 

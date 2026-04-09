@@ -234,10 +234,19 @@ export function watchWorkspaceDiscovery({
     }
     try {
       config_watcher = fs.watch(resolved_config, { persistent: true }, () => {
+        reattachConfigWatcher();
         schedule();
       });
     } catch (err) {
       onError(err);
+    }
+  };
+
+  const reattachConfigWatcher = () => {
+    config_watcher?.close();
+    config_watcher = null;
+    if (fs.existsSync(resolved_config)) {
+      attachConfigWatcher();
     }
   };
 
@@ -247,9 +256,7 @@ export function watchWorkspaceDiscovery({
       config_watcher = null;
       return;
     }
-    if (config_watcher === null) {
-      attachConfigWatcher();
-    }
+    reattachConfigWatcher();
   };
 
   try {
