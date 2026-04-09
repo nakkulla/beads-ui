@@ -335,6 +335,11 @@ export function bootstrap(root_element) {
       }
     });
 
+    client.on('workspaces-updated', () => {
+      log('workspaces-updated event');
+      void loadWorkspaces();
+    });
+
     // --- End workspace management (mounting happens after store is created) ---
 
     // Show toasts for WebSocket connectivity changes
