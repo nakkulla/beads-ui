@@ -292,4 +292,39 @@ describe('watchWorkspaceDiscovery', () => {
       events.some((paths) => paths.includes(path.join(dir_b, 'repo-b')))
     ).toBe(true);
   });
+
+  test('keeps watching after config file is atomically replaced', async () => {
+    const tmp = mkdtemp();
+    const scan_dir = path.join(tmp, 'projects');
+    const dir_b = path.join(tmp, 'dir-b');
+    fs.mkdirSync(scan_dir);
+    fs.mkdirSync(dir_b);
+    const config_path = path.join(tmp, 'watch.conf');
+    fs.writeFileSync(config_path, scan_dir + '\n');
+
+    const mod = await import('./workspace-discovery.js');
+    /** @type {string[][]} */
+    const events = [];
+    const watcher = mod.watchWorkspaceDiscovery({
+      config_path,
+      debounce_ms: 20,
+      onChange(workspaces) {
+        events.push(workspaces.map((ws) => ws.path).sort());
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const replaced_config = path.join(tmp, 'watch.next.conf');
+    fs.writeFileSync(replaced_config, [scan_dir, dir_b].join('\n'));
+    fs.renameSync(replaced_config, config_path);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    createBeadsRepo(dir_b, 'repo-b');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    watcher.close();
+
+    expect(
+      events.some((paths) => paths.includes(path.join(dir_b, 'repo-b')))
+    ).toBe(true);
+  });
 });

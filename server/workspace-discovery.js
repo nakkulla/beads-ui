@@ -183,7 +183,10 @@ export function watchWorkspaceDiscovery({
     timer.unref?.();
   }
 
-  if (fs.existsSync(resolved_config)) {
+  const attachConfigWatcher = () => {
+    if (config_watcher !== null || !fs.existsSync(resolved_config)) {
+      return;
+    }
     try {
       config_watcher = fs.watch(resolved_config, { persistent: true }, () => {
         schedule();
@@ -191,38 +194,36 @@ export function watchWorkspaceDiscovery({
     } catch (err) {
       onError(err);
     }
-  } else {
-    try {
-      config_parent_watcher = fs.watch(
-        path.dirname(resolved_config),
-        { persistent: true },
-        (_event_type, filename) => {
-          if (
-            !filename ||
-            String(filename) !== path.basename(resolved_config)
-          ) {
-            return;
-          }
-          if (config_watcher === null && fs.existsSync(resolved_config)) {
-            try {
-              config_watcher = fs.watch(
-                resolved_config,
-                { persistent: true },
-                () => {
-                  schedule();
-                }
-              );
-            } catch (err) {
-              onError(err);
-            }
-          }
-          schedule();
-        }
-      );
-    } catch (err) {
-      onError(err);
+  };
+
+  const refreshConfigWatcher = () => {
+    if (!fs.existsSync(resolved_config)) {
+      config_watcher?.close();
+      config_watcher = null;
+      return;
     }
+    if (config_watcher === null) {
+      attachConfigWatcher();
+    }
+  };
+
+  try {
+    config_parent_watcher = fs.watch(
+      path.dirname(resolved_config),
+      { persistent: true },
+      (_event_type, filename) => {
+        if (!filename || String(filename) !== path.basename(resolved_config)) {
+          return;
+        }
+        refreshConfigWatcher();
+        schedule();
+      }
+    );
+  } catch (err) {
+    onError(err);
   }
+
+  attachConfigWatcher();
 
   reconfigureDirWatchers();
 
@@ -233,7 +234,9 @@ export function watchWorkspaceDiscovery({
         timer = null;
       }
       config_watcher?.close();
+      config_watcher = null;
       config_parent_watcher?.close();
+      config_parent_watcher = null;
       closeDirWatchers();
     }
   };
