@@ -7,11 +7,19 @@ const log = debug('registry-watcher');
 
 /**
  * In-memory registry of workspaces registered dynamically via the API.
- * These supplement the file-based registry at ~/.beads/registry.json.
+ * Manual registrations supplement the file-based registry at ~/.beads/registry.json,
+ * while discovered registrations mirror the current discovery snapshot.
  *
  * @type {Map<string, { path: string, database: string, pid: number, version: string }>}
  */
-const inMemoryWorkspaces = new Map();
+const manualWorkspaces = new Map();
+
+/**
+ * Snapshot of workspaces found by auto discovery.
+ *
+ * @type {Map<string, { path: string, database: string, pid: number, version: string }>}
+ */
+const discoveredWorkspaces = new Map();
 
 /**
  * Register a workspace dynamically (in-memory).
@@ -22,7 +30,7 @@ const inMemoryWorkspaces = new Map();
 export function registerWorkspace(workspace) {
   const normalized = path.resolve(workspace.path);
   log('registering workspace: %s (db: %s)', normalized, workspace.database);
-  inMemoryWorkspaces.set(normalized, {
+  manualWorkspaces.set(normalized, {
     path: normalized,
     database: workspace.database,
     pid: process.pid,
@@ -31,12 +39,36 @@ export function registerWorkspace(workspace) {
 }
 
 /**
+ * Replace the current auto-discovered workspace snapshot.
+ *
+ * @param {Array<{ path: string, database: string }>} workspaces
+ */
+export function replaceDiscoveredWorkspaces(workspaces) {
+  discoveredWorkspaces.clear();
+
+  for (const workspace of workspaces) {
+    const normalized = path.resolve(workspace.path);
+    discoveredWorkspaces.set(normalized, {
+      path: normalized,
+      database: workspace.database,
+      pid: process.pid,
+      version: 'dynamic'
+    });
+  }
+}
+
+/**
  * Get all dynamically registered workspaces (in-memory only).
  *
  * @returns {Array<{ path: string, database: string, pid: number, version: string }>}
  */
 export function getInMemoryWorkspaces() {
-  return Array.from(inMemoryWorkspaces.values());
+  return [
+    ...manualWorkspaces.values(),
+    ...Array.from(discoveredWorkspaces.values()).filter(
+      (workspace) => !manualWorkspaces.has(path.resolve(workspace.path))
+    )
+  ];
 }
 
 /**
