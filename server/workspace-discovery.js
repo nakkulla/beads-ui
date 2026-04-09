@@ -197,7 +197,10 @@ export function watchWorkspaceDiscovery({
         path.dirname(resolved_config),
         { persistent: true },
         (_event_type, filename) => {
-          if (!filename || String(filename) !== path.basename(resolved_config)) {
+          if (
+            !filename ||
+            String(filename) !== path.basename(resolved_config)
+          ) {
             return;
           }
           if (config_watcher === null && fs.existsSync(resolved_config)) {
