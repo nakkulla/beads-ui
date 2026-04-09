@@ -206,3 +206,90 @@ describe('discoverWorkspaces', () => {
     expect(result).toHaveLength(2);
   });
 });
+
+describe('watchWorkspaceDiscovery', () => {
+  test('rescans when a new repo appears', async () => {
+    const tmp = mkdtemp();
+    const scan_dir = path.join(tmp, 'projects');
+    fs.mkdirSync(scan_dir);
+    const config_path = path.join(tmp, 'watch.conf');
+    fs.writeFileSync(config_path, scan_dir + '\n');
+
+    const mod = await import('./workspace-discovery.js');
+    /** @type {string[][]} */
+    const events = [];
+    const watcher = mod.watchWorkspaceDiscovery({
+      config_path,
+      debounce_ms: 20,
+      onChange(workspaces) {
+        events.push(workspaces.map((ws) => ws.path).sort());
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    createBeadsRepo(scan_dir, 'repo-added');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    watcher.close();
+
+    expect(
+      events.some((paths) => paths.includes(path.join(scan_dir, 'repo-added')))
+    ).toBe(true);
+  });
+
+  test('removes repo after deletion', async () => {
+    const tmp = mkdtemp();
+    const scan_dir = path.join(tmp, 'projects');
+    fs.mkdirSync(scan_dir);
+    const repo = createBeadsRepo(scan_dir, 'repo-gone');
+    const config_path = path.join(tmp, 'watch.conf');
+    fs.writeFileSync(config_path, scan_dir + '\n');
+
+    const mod = await import('./workspace-discovery.js');
+    /** @type {string[][]} */
+    const events = [];
+    const watcher = mod.watchWorkspaceDiscovery({
+      config_path,
+      debounce_ms: 20,
+      onChange(workspaces) {
+        events.push(workspaces.map((ws) => ws.path).sort());
+      }
+    });
+
+    fs.rmSync(repo, { recursive: true, force: true });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    watcher.close();
+
+    expect(events.at(-1)).toEqual([]);
+  });
+
+  test('reconfigures scan dirs after config change', async () => {
+    const tmp = mkdtemp();
+    const dir_a = path.join(tmp, 'dir-a');
+    const dir_b = path.join(tmp, 'dir-b');
+    fs.mkdirSync(dir_a);
+    fs.mkdirSync(dir_b);
+    createBeadsRepo(dir_b, 'repo-b');
+    const config_path = path.join(tmp, 'watch.conf');
+    fs.writeFileSync(config_path, dir_a + '\n');
+
+    const mod = await import('./workspace-discovery.js');
+    /** @type {string[][]} */
+    const events = [];
+    const watcher = mod.watchWorkspaceDiscovery({
+      config_path,
+      debounce_ms: 20,
+      onChange(workspaces) {
+        events.push(workspaces.map((ws) => ws.path).sort());
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    fs.writeFileSync(config_path, [dir_a, dir_b].join('\n'));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    watcher.close();
+
+    expect(
+      events.some((paths) => paths.includes(path.join(dir_b, 'repo-b')))
+    ).toBe(true);
+  });
+});
