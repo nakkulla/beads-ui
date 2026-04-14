@@ -24,8 +24,14 @@ function getProjectName(workspace_path) {
  * @param {HTMLElement} mount_element
  * @param {{ getState: () => any, subscribe: (fn: (s: any) => void) => () => void }} store
  * @param {(workspace_path: string) => Promise<void>} onWorkspaceChange
+ * @param {{ onSyncNow: () => void, onAutoSyncChange: (mode: string) => void }} controls
  */
-export function createWorkspacePicker(mount_element, store, onWorkspaceChange) {
+export function createWorkspacePicker(
+  mount_element,
+  store,
+  onWorkspaceChange,
+  controls
+) {
   const log = debug('views:workspace-picker');
   /** @type {(() => void) | null} */
   let unsubscribe = null;
@@ -62,46 +68,70 @@ export function createWorkspacePicker(mount_element, store, onWorkspaceChange) {
     const s = store.getState();
     const current = s.workspace?.current;
     const available = s.workspace?.available || [];
+    const sync = s.sync || { is_syncing: false, auto_sync_mode: 'off' };
+    const sync_disabled =
+      !current || current.can_sync !== true || is_switching || sync.is_syncing;
 
     // Don't render if no workspaces available
     if (available.length === 0) {
       return html``;
     }
 
-    // If only one workspace, show it as a simple label
-    if (available.length === 1) {
-      const name = getProjectName(available[0].path);
-      return html`
-        <div class="workspace-picker workspace-picker--single">
-          <span class="workspace-picker__label" title="${available[0].path}"
-            >${name}</span
-          >
-        </div>
-      `;
-    }
-
-    // Multiple workspaces: show dropdown
     const current_path = current?.path || '';
     return html`
       <div class="workspace-picker">
-        <select
-          class="workspace-picker__select"
-          @change=${onChange}
-          ?disabled=${is_switching}
-          aria-label="Select project workspace"
-        >
-          ${available.map(
-            (/** @type {WorkspaceInfo} */ ws) => html`
-              <option
-                value="${ws.path}"
-                ?selected=${ws.path === current_path}
-                title="${ws.path}"
-              >
-                ${getProjectName(ws.path)}
-              </option>
+        ${available.length === 1
+          ? html`
+              <div class="workspace-picker workspace-picker--single">
+                <span class="workspace-picker__label" title="${available[0].path}"
+                  >${getProjectName(available[0].path)}</span
+                >
+              </div>
             `
-          )}
-        </select>
+          : html`
+              <select
+                class="workspace-picker__select"
+                @change=${onChange}
+                ?disabled=${is_switching}
+                aria-label="Select project workspace"
+              >
+                ${available.map(
+                  (/** @type {WorkspaceInfo} */ ws) => html`
+                    <option
+                      value="${ws.path}"
+                      ?selected=${ws.path === current_path}
+                      title="${ws.path}"
+                    >
+                      ${getProjectName(ws.path)}
+                    </option>
+                  `
+                )}
+              </select>
+            `}
+        <button
+          id="sync-now-btn"
+          type="button"
+          ?disabled=${sync_disabled}
+          @click=${() => controls.onSyncNow()}
+        >
+          ${sync.is_syncing ? 'Syncing…' : 'Sync now'}
+        </button>
+        <label class="workspace-picker__auto-sync">
+          Auto sync
+          <select
+            id="auto-sync-select"
+            .value=${sync.auto_sync_mode}
+            ?disabled=${!current || current.can_sync !== true}
+            @change=${(ev) =>
+              controls.onAutoSyncChange(
+                /** @type {HTMLSelectElement} */ (ev.target).value
+              )}
+          >
+            <option value="off">Off</option>
+            <option value="30s">30s</option>
+            <option value="60s">60s</option>
+          </select>
+        </label>
         ${is_switching
           ? html`<span
               class="workspace-picker__loading"

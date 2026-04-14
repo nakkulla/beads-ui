@@ -253,4 +253,76 @@ describe('sync-workspace', () => {
     expect(reply.ok).toBe(false);
     expect(reply.error.code).toBe('bad_request');
   });
+
+  test('does not refresh active subscriptions for stale workspace after switch', async () => {
+    const server = createServer();
+    const { wss } = attachWsServer(server, { path: '/ws', root_dir: '/tmp/a' });
+    const sock = makeStubSocket();
+    wss.clients.add(/** @type {any} */ (sock));
+
+    /** @type {(value: { code: number, stdout: string, stderr: string }) => void} */
+    let resolve_pull = () => {};
+    run_bd_sync_mock
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: 'Dolt server: running\n  Port: 50000',
+        stderr: ''
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolve_pull = resolve;
+          })
+      );
+
+    await handleMessage(
+      /** @type {any} */ (sock),
+      Buffer.from(
+        JSON.stringify({
+          id: 'sub-stale',
+          type: 'subscribe-list',
+          payload: { id: 'blocked', type: 'blocked-issues' }
+        })
+      )
+    );
+
+    fetch_list_mock.mockClear();
+
+    const sync_promise = handleMessage(
+      /** @type {any} */ (sock),
+      Buffer.from(
+        JSON.stringify({
+          id: 'sync-stale',
+          type: 'sync-workspace',
+          payload: { path: '/tmp/a', reason: 'manual' }
+        })
+      )
+    );
+
+    while (run_bd_sync_mock.mock.calls.length < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    await handleMessage(
+      /** @type {any} */ (sock),
+      Buffer.from(
+        JSON.stringify({
+          id: 'switch-b',
+          type: 'set-workspace',
+          payload: { path: '/tmp/b' }
+        })
+      )
+    );
+
+    resolve_pull({ code: 0, stdout: 'pulled', stderr: '' });
+    await sync_promise;
+
+    const reply = sock.sent
+      .map((message) => JSON.parse(message))
+      .find((message) => message.id === 'sync-stale');
+
+    expect(reply?.ok).toBe(true);
+    expect(reply?.payload.refreshed).toBe(false);
+    expect(fetch_list_mock).not.toHaveBeenCalled();
+  });
 });
