@@ -108,7 +108,9 @@ function runBdUnlocked(args, options = {}) {
   };
 
   /** @type {string[]} */
-  const final_args = options.force_no_sandbox ? args.slice() : buildBdArgs(args);
+  const final_args = options.force_no_sandbox
+    ? args.slice()
+    : buildBdArgs(args);
 
   return new Promise((resolve) => {
     const child = spawn(bin, final_args, spawn_opts);

@@ -265,9 +265,15 @@ export function bootstrap(root_element) {
      * @returns {import('./state.js').WorkspaceInfo[]}
      */
     function normalizeWorkspaceList(workspaces) {
-      return workspaces
-        .map((workspace) => normalizeWorkspaceInfo(workspace))
-        .filter(Boolean);
+      /** @type {import('./state.js').WorkspaceInfo[]} */
+      const items = [];
+      for (const workspace of workspaces) {
+        const normalized = normalizeWorkspaceInfo(workspace);
+        if (normalized) {
+          items.push(normalized);
+        }
+      }
+      return items;
     }
 
     /**
@@ -567,6 +573,7 @@ export function bootstrap(root_element) {
       view: last_view,
       board: persistedBoard,
       sync: {
+        is_syncing: false,
         auto_sync_mode: persisted_auto_sync
       }
     });

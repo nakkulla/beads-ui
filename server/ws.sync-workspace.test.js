@@ -120,8 +120,10 @@ describe('sync-workspace', () => {
     );
 
     const reply = sock.sent
-      .map((message) => JSON.parse(message))
-      .find((message) => message.id === 'sync-1');
+      .map((/** @type {string} */ message) => JSON.parse(message))
+      .find(
+        (/** @type {{ id?: string }} */ message) => message.id === 'sync-1'
+      );
 
     expect(reply?.ok).toBe(true);
     expect(reply?.payload.started_dolt).toBe(true);
@@ -318,8 +320,10 @@ describe('sync-workspace', () => {
     await sync_promise;
 
     const reply = sock.sent
-      .map((message) => JSON.parse(message))
-      .find((message) => message.id === 'sync-stale');
+      .map((/** @type {string} */ message) => JSON.parse(message))
+      .find(
+        (/** @type {{ id?: string }} */ message) => message.id === 'sync-stale'
+      );
 
     expect(reply?.ok).toBe(true);
     expect(reply?.payload.refreshed).toBe(false);

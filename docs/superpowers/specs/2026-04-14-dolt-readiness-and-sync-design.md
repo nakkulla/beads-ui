@@ -1,4 +1,5 @@
 # Dolt readiness 안정화 및 workspace sync UX 추가
+
 Parent bead: UI-cdq1
 
 ## 목적

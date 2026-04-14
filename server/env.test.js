@@ -14,7 +14,9 @@ describe('buildSpawnPath', () => {
   });
 
   test('dedupes duplicate path entries while preserving order', () => {
-    const result = buildSpawnPath('/opt/homebrew/bin:/usr/bin:/opt/homebrew/bin');
+    const result = buildSpawnPath(
+      '/opt/homebrew/bin:/usr/bin:/opt/homebrew/bin'
+    );
 
     expect(result.split(':')).toEqual([
       '/opt/homebrew/bin',

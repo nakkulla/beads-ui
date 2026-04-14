@@ -156,8 +156,13 @@ describe('main sync-workspace integration', () => {
     await Promise.resolve();
 
     const sync_calls = CLIENT.send.mock.calls.filter(
-      ([type, payload]) =>
-        type === 'sync-workspace' && payload?.reason === 'workspace-switch'
+      (/** @type {[string, any]} */ call) => {
+        const type = call[0];
+        const payload = call[1];
+        return (
+          type === 'sync-workspace' && payload?.reason === 'workspace-switch'
+        );
+      }
     );
     expect(sync_calls).toHaveLength(1);
     expect(sync_calls[0][1]).toEqual({
@@ -389,7 +394,7 @@ describe('main sync-workspace integration', () => {
     await vi.advanceTimersByTimeAsync(30000);
 
     const sync_calls = CLIENT.send.mock.calls.filter(
-      ([type]) => type === 'sync-workspace'
+      (/** @type {[string, any]} */ call) => call[0] === 'sync-workspace'
     );
     expect(sync_calls).toHaveLength(0);
   });

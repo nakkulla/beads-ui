@@ -83,7 +83,9 @@ export function createWorkspacePicker(
         ${available.length === 1
           ? html`
               <div class="workspace-picker workspace-picker--single">
-                <span class="workspace-picker__label" title="${available[0].path}"
+                <span
+                  class="workspace-picker__label"
+                  title="${available[0].path}"
                   >${getProjectName(available[0].path)}</span
                 >
               </div>
@@ -122,7 +124,7 @@ export function createWorkspacePicker(
             id="auto-sync-select"
             .value=${sync.auto_sync_mode}
             ?disabled=${!current || current.can_sync !== true}
-            @change=${(ev) =>
+            @change=${(/** @type {Event} */ ev) =>
               controls.onAutoSyncChange(
                 /** @type {HTMLSelectElement} */ (ev.target).value
               )}

@@ -55,7 +55,7 @@ import { debug } from './utils/logging.js';
  * Create a simple store for application state.
  *
  * @param {Partial<AppState>} [initial]
- * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, filters?: Partial<Filters>, workspace?: Partial<WorkspaceState> }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
+ * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, filters?: Partial<Filters>, board?: Partial<BoardState>, workspace?: Partial<WorkspaceState>, sync?: Partial<SyncState> }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
  */
 export function createStore(initial = {}) {
   const log = debug('state');
@@ -138,9 +138,11 @@ export function createStore(initial = {}) {
       // Avoid emitting if nothing changed (shallow compare)
       const workspace_changed =
         next.workspace.current?.path !== state.workspace.current?.path ||
-        next.workspace.current?.database !== state.workspace.current?.database ||
+        next.workspace.current?.database !==
+          state.workspace.current?.database ||
         next.workspace.current?.backend !== state.workspace.current?.backend ||
-        next.workspace.current?.can_sync !== state.workspace.current?.can_sync ||
+        next.workspace.current?.can_sync !==
+          state.workspace.current?.can_sync ||
         next.workspace.available.length !== state.workspace.available.length;
       const sync_changed =
         next.sync.is_syncing !== state.sync.is_syncing ||

@@ -162,8 +162,9 @@ const WORKSPACE_SYNC_LOCKS = new Map();
  * @returns {Promise<T>}
  */
 async function withWorkspaceSyncLock(workspace_path, fn) {
-  const previous = WORKSPACE_SYNC_LOCKS.get(workspace_path) || Promise.resolve();
-  /** @type {() => void} */
+  const previous =
+    WORKSPACE_SYNC_LOCKS.get(workspace_path) || Promise.resolve();
+  /** @type {(value: void | PromiseLike<void>) => void} */
   let release = () => {};
   const current = new Promise((resolve) => {
     release = resolve;
@@ -1464,7 +1465,8 @@ export async function handleMessage(ws, data) {
     const raw_payload = /** @type {any} */ (req.payload || {});
     const requested_path =
       typeof raw_payload.path === 'string' ? raw_payload.path.trim() : '';
-    const base_workspace_root = requested_path || CURRENT_WORKSPACE?.root_dir || '';
+    const base_workspace_root =
+      requested_path || CURRENT_WORKSPACE?.root_dir || '';
     const reason =
       typeof raw_payload.reason === 'string' && raw_payload.reason.length > 0
         ? raw_payload.reason

@@ -178,7 +178,9 @@ describe('runBd', () => {
     await runBd(['list', '--json'], { env: { PATH: '/usr/bin:/bin' } });
 
     const options = mockedSpawn.mock.calls.at(-1)?.[2] || {};
-    expect(String(options.env.PATH).startsWith('/opt/homebrew/bin:/usr/local/bin')).toBe(true);
+    expect(
+      String(options.env.PATH).startsWith('/opt/homebrew/bin:/usr/local/bin')
+    ).toBe(true);
   });
 });
 

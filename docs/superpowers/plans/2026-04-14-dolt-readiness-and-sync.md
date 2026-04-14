@@ -1,4 +1,5 @@
 # Dolt readiness 안정화 및 workspace sync UX 추가 Implementation Plan
+
 Parent bead: UI-cdq1
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
