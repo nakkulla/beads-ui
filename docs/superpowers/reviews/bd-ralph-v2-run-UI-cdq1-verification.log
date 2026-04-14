@@ -1,0 +1,28 @@
+# bd-ralph-v2 verification log for UI-cdq1
+
+## Plan review / baseline evidence
+- READY_CHECK=ran
+- READY_MATCH=yes
+- READY_NOTE=ready
+- Baseline: `npm run all`
+  - PASS: lint
+  - PASS: tsc
+  - PASS: test
+  - NON-FATAL DRIFT: prettier:check failed initially on plan/spec docs only; corrected during plan-review fixes
+
+## Task verification
+- UI-cdq1.1: PASS `npx vitest run server/env.test.js`
+- UI-cdq1.2: PASS `npx vitest run server/bd.test.js -t "runBdSync|normalized PATH|sandbox by default|keeps sandbox by default|injects normalized PATH"`
+- UI-cdq1.3: PASS `npx vitest run server/ws.sync-workspace.test.js`
+- UI-cdq1.4: PASS `npx vitest run app/protocol.test.js app/main.sync-workspace.test.js`
+- UI-cdq1.5: PASS `npx vitest run app/main.sync-workspace.test.js -t "Sync now|auto sync"`
+- UI-cdq1.6: PASS `npx vitest run server/ws.sync-workspace.test.js app/main.sync-workspace.test.js -t "stale workspace|no longer current|stale workspace after switch"`
+- UI-cdq1.7: PASS targeted server/app suites, `npm run tsc && npm run lint`, `npm test`, `npm run prettier:write`, `npm test` post-prettier
+
+## Implementation review fix verification
+- PASS `npx vitest run server/ws.test.js app/state.test.js && npm run tsc && npm run lint`
+- PASS `npx vitest run app/main.sync-workspace.test.js app/state.test.js && npm run tsc && npm run lint`
+
+## Final verification before finish
+- PASS `npm run tsc && npm run lint && npm test && npm run prettier:check`
+- PASS `npx prettier --write app/main.sync-workspace.test.js app/state.test.js server/ws.test.js && npm test && npm run prettier:check`
