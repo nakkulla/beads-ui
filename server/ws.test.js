@@ -84,7 +84,8 @@ describe('ws message handling', () => {
     const event = observer.sent
       .map((/** @type {string} */ msg) => JSON.parse(msg))
       .find(
-        (/** @type {{ type?: string }} */ msg) => msg.type === 'workspace-changed'
+        (/** @type {{ type?: string }} */ msg) =>
+          msg.type === 'workspace-changed'
       );
     expect(event).toBeTruthy();
     expect(event.payload.root_dir).toBe(root_b);

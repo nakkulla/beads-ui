@@ -589,13 +589,13 @@ describe('main sync-workspace integration', () => {
 
     const workspace_switch_calls = CLIENT.send.mock.calls.filter(
       (/** @type {[string, any]} */ call) => {
-      const type = call[0];
-      const payload = call[1];
-      return (
-        type === 'sync-workspace' &&
-        payload?.reason === 'workspace-switch' &&
-        payload?.path === '/tmp/b'
-      );
+        const type = call[0];
+        const payload = call[1];
+        return (
+          type === 'sync-workspace' &&
+          payload?.reason === 'workspace-switch' &&
+          payload?.path === '/tmp/b'
+        );
       }
     );
     expect(workspace_switch_calls).toHaveLength(1);

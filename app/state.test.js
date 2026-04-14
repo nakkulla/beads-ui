@@ -35,7 +35,9 @@ describe('state store', () => {
     });
     /** @type {Array<import('./state.js').WorkspaceInfo[]>} */
     const seen = [];
-    const off = store.subscribe((state) => seen.push(state.workspace.available));
+    const off = store.subscribe((state) =>
+      seen.push(state.workspace.available)
+    );
 
     store.setState({
       workspace: {
@@ -73,7 +75,9 @@ describe('state store', () => {
     });
     /** @type {Array<import('./state.js').WorkspaceInfo[]>} */
     const seen = [];
-    const off = store.subscribe((state) => seen.push(state.workspace.available));
+    const off = store.subscribe((state) =>
+      seen.push(state.workspace.available)
+    );
 
     store.setState({
       workspace: {
