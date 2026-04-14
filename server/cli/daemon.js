@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig } from '../config.js';
 import { resolveWorkspaceDatabase } from '../db.js';
+import { buildSpawnPath } from '../env.js';
 
 /**
  * Resolve the runtime directory used for PID and log files.
@@ -162,6 +163,7 @@ export function startDaemon(options = {}) {
 
   /** @type {Record<string, string | undefined>} */
   const spawn_env = { ...process.env };
+  spawn_env.PATH = buildSpawnPath(spawn_env.PATH);
   if (options.host) {
     spawn_env.HOST = options.host;
   }
