@@ -18,4 +18,40 @@ describe('state store', () => {
     expect(state.selected_id).toBe('UI-1');
     expect(state.filters.status).toBe('open');
   });
+
+  test('emits when workspace list contents change with the same length', () => {
+    const store = createStore({
+      workspace: {
+        current: null,
+        available: [
+          {
+            path: '/tmp/a',
+            database: '/tmp/a/.beads',
+            backend: 'dolt',
+            can_sync: true
+          }
+        ]
+      }
+    });
+    /** @type {Array<import('./state.js').WorkspaceInfo[]>} */
+    const seen = [];
+    const off = store.subscribe((state) => seen.push(state.workspace.available));
+
+    store.setState({
+      workspace: {
+        available: [
+          {
+            path: '/tmp/b',
+            database: '/tmp/b/.beads',
+            backend: 'dolt',
+            can_sync: true
+          }
+        ]
+      }
+    });
+    off();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0][0].path).toBe('/tmp/b');
+  });
 });

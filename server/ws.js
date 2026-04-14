@@ -221,6 +221,30 @@ const SUBS = new WeakMap();
 let CURRENT_WSS = null;
 
 /**
+ * Broadcast a server-initiated event to all open clients.
+ *
+ * @param {MessageType} type
+ * @param {unknown} [payload]
+ */
+function broadcastEvent(type, payload) {
+  const wss = CURRENT_WSS;
+  if (!wss) {
+    return;
+  }
+  const msg = JSON.stringify({
+    id: `evt-${Date.now()}`,
+    ok: true,
+    type,
+    payload
+  });
+  for (const ws of wss.clients) {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(msg);
+    }
+  }
+}
+
+/**
  * Current workspace configuration.
  *
  * @type {{ root_dir: string, db_path: string, backend: 'dolt'|'sqlite', can_sync: boolean } | null}
@@ -594,17 +618,7 @@ export function attachWsServer(http_server, options = {}) {
    * @param {unknown} [payload]
    */
   function broadcast(type, payload) {
-    const msg = JSON.stringify({
-      id: `evt-${Date.now()}`,
-      ok: true,
-      type,
-      payload
-    });
-    for (const ws of wss.clients) {
-      if (ws.readyState === ws.OPEN) {
-        ws.send(msg);
-      }
-    }
+    broadcastEvent(type, payload);
   }
 
   /**
@@ -634,7 +648,7 @@ export function attachWsServer(http_server, options = {}) {
       registry.clear();
 
       // Broadcast workspace-changed event to all clients
-      broadcast('workspace-changed', CURRENT_WORKSPACE);
+      broadcastEvent('workspace-changed', CURRENT_WORKSPACE);
 
       // Schedule refresh of all active list subscriptions
       scheduleListRefresh();
@@ -1444,6 +1458,9 @@ export async function handleMessage(ws, data) {
 
       // Clear existing registry entries
       registry.clear();
+
+      // Broadcast workspace-changed event to all clients
+      broadcastEvent('workspace-changed', CURRENT_WORKSPACE);
 
       // Schedule refresh of all active list subscriptions
       scheduleListRefresh();

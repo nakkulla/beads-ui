@@ -136,6 +136,18 @@ export function createStore(initial = {}) {
         }
       };
       // Avoid emitting if nothing changed (shallow compare)
+      const next_available_key = next.workspace.available
+        .map(
+          (ws) =>
+            `${ws.path}|${ws.database}|${ws.backend || ''}|${ws.can_sync === true ? '1' : '0'}`
+        )
+        .join('||');
+      const current_available_key = state.workspace.available
+        .map(
+          (ws) =>
+            `${ws.path}|${ws.database}|${ws.backend || ''}|${ws.can_sync === true ? '1' : '0'}`
+        )
+        .join('||');
       const workspace_changed =
         next.workspace.current?.path !== state.workspace.current?.path ||
         next.workspace.current?.database !==
@@ -143,7 +155,7 @@ export function createStore(initial = {}) {
         next.workspace.current?.backend !== state.workspace.current?.backend ||
         next.workspace.current?.can_sync !==
           state.workspace.current?.can_sync ||
-        next.workspace.available.length !== state.workspace.available.length;
+        next_available_key !== current_available_key;
       const sync_changed =
         next.sync.is_syncing !== state.sync.is_syncing ||
         next.sync.auto_sync_mode !== state.sync.auto_sync_mode;
