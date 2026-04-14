@@ -139,13 +139,13 @@ export function createStore(initial = {}) {
       const next_available_key = next.workspace.available
         .map(
           (ws) =>
-            `${ws.path}|${ws.database}|${ws.backend || ''}|${ws.can_sync === true ? '1' : '0'}`
+            `${ws.path}|${ws.database}|${ws.backend || ''}|${ws.can_sync === true ? '1' : '0'}|${typeof ws.pid === 'number' ? ws.pid : ''}|${ws.version || ''}`
         )
         .join('||');
       const current_available_key = state.workspace.available
         .map(
           (ws) =>
-            `${ws.path}|${ws.database}|${ws.backend || ''}|${ws.can_sync === true ? '1' : '0'}`
+            `${ws.path}|${ws.database}|${ws.backend || ''}|${ws.can_sync === true ? '1' : '0'}|${typeof ws.pid === 'number' ? ws.pid : ''}|${ws.version || ''}`
         )
         .join('||');
       const workspace_changed =

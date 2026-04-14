@@ -491,4 +491,116 @@ describe('main sync-workspace integration', () => {
     );
     expect(toast_texts.some((text) => text.includes('Synced a'))).toBe(false);
   });
+
+  test('runs workspace-switch sync even when previous workspace sync is still in flight', async () => {
+    /** @type {() => void} */
+    let resolve_a_sync = () => {};
+    CLIENT = {
+      send: vi.fn(async (type, payload) => {
+        if (type === 'list-workspaces') {
+          return {
+            workspaces: [
+              {
+                path: '/tmp/a',
+                database: '/tmp/a/.beads',
+                backend: 'dolt',
+                can_sync: true
+              },
+              {
+                path: '/tmp/b',
+                database: '/tmp/b/.beads',
+                backend: 'dolt',
+                can_sync: true
+              }
+            ],
+            current: {
+              root_dir: '/tmp/a',
+              db_path: '/tmp/a/.beads',
+              backend: 'dolt',
+              can_sync: true
+            }
+          };
+        }
+        if (type === 'sync-workspace' && payload.path === '/tmp/a') {
+          return await new Promise((resolve) => {
+            resolve_a_sync = () =>
+              resolve({
+                workspace: {
+                  root_dir: '/tmp/a',
+                  db_path: '/tmp/a/.beads',
+                  backend: 'dolt',
+                  can_sync: true
+                },
+                pulled: true
+              });
+          });
+        }
+        if (type === 'sync-workspace' && payload.path === '/tmp/b') {
+          return {
+            workspace: {
+              root_dir: '/tmp/b',
+              db_path: '/tmp/b/.beads',
+              backend: 'dolt',
+              can_sync: true
+            },
+            pulled: true
+          };
+        }
+        if (type === 'set-workspace') {
+          return {
+            changed: true,
+            workspace: {
+              root_dir: payload.path,
+              db_path: `${payload.path}/.beads`,
+              backend: 'dolt',
+              can_sync: true
+            }
+          };
+        }
+        return null;
+      }),
+      on() {
+        return () => {};
+      },
+      onConnection() {
+        return () => {};
+      },
+      close() {},
+      getState() {
+        return 'open';
+      }
+    };
+
+    renderShell();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    document.getElementById('sync-now-btn')?.click();
+    await Promise.resolve();
+
+    const picker = /** @type {HTMLSelectElement} */ (
+      document.querySelector('.workspace-picker__select')
+    );
+    picker.value = '/tmp/b';
+    picker.dispatchEvent(new Event('change'));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const workspace_switch_calls = CLIENT.send.mock.calls.filter(
+      (/** @type {[string, any]} */ call) => {
+      const type = call[0];
+      const payload = call[1];
+      return (
+        type === 'sync-workspace' &&
+        payload?.reason === 'workspace-switch' &&
+        payload?.path === '/tmp/b'
+      );
+      }
+    );
+    expect(workspace_switch_calls).toHaveLength(1);
+
+    resolve_a_sync();
+    await Promise.resolve();
+  });
 });

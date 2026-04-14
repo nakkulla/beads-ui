@@ -224,6 +224,8 @@ export function bootstrap(root_element) {
 
     /** @type {ReturnType<typeof setInterval> | null} */
     let auto_sync_timer = null;
+    /** @type {Set<string>} */
+    const syncing_workspace_paths = new Set();
 
     /**
      * @param {any} workspace
@@ -301,16 +303,35 @@ export function bootstrap(root_element) {
     }
 
     /**
+     * Sync the store-level loading state with the current workspace path.
+     */
+    function updateCurrentSyncState() {
+      const current_path = store.getState().workspace.current?.path || '';
+      store.setState({
+        sync: {
+          is_syncing: current_path
+            ? syncing_workspace_paths.has(current_path)
+            : false
+        }
+      });
+    }
+
+    /**
      * @param {'manual'|'auto'|'workspace-switch'} [reason]
      */
     async function syncCurrentWorkspace(reason = 'manual') {
       const current = store.getState().workspace.current;
-      if (!current || !current.can_sync || store.getState().sync.is_syncing) {
+      if (!current || !current.can_sync) {
         return;
       }
 
       const started_for = current.path;
-      store.setState({ sync: { is_syncing: true } });
+      if (syncing_workspace_paths.has(started_for)) {
+        return;
+      }
+
+      syncing_workspace_paths.add(started_for);
+      updateCurrentSyncState();
       try {
         await client.send('sync-workspace', {
           reason,
@@ -334,7 +355,8 @@ export function bootstrap(root_element) {
           );
         }
       } finally {
-        store.setState({ sync: { is_syncing: false } });
+        syncing_workspace_paths.delete(started_for);
+        updateCurrentSyncState();
       }
     }
 
@@ -373,6 +395,7 @@ export function bootstrap(root_element) {
               current
             }
           });
+          updateCurrentSyncState();
           // Persist preference
           window.localStorage.setItem('beads-ui.workspace', workspace_path);
           // Clear and resubscribe if workspace actually changed
@@ -419,6 +442,7 @@ export function bootstrap(root_element) {
           const available = normalizeWorkspaceList(result.workspaces);
           const current = normalizeWorkspaceInfo(result.current);
           store.setState({ workspace: { current, available } });
+          updateCurrentSyncState();
 
           // Check if we have a saved preference that differs from current
           const savedWorkspace =
@@ -451,6 +475,7 @@ export function bootstrap(root_element) {
             current
           }
         });
+        updateCurrentSyncState();
         // Reload workspaces to get fresh list
         void loadWorkspaces();
         // Clear and resubscribe
