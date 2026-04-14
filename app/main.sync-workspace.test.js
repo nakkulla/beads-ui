@@ -603,4 +603,171 @@ describe('main sync-workspace integration', () => {
     resolve_a_sync();
     await Promise.resolve();
   });
+
+  test('workspace-changed event triggers best-effort sync for the new workspace', async () => {
+    /** @type {Record<string, (payload: any) => void>} */
+    const handlers = {};
+    let current_path = '/tmp/a';
+    CLIENT = {
+      send: vi.fn(async (type, payload) => {
+        if (type === 'list-workspaces') {
+          return {
+            workspaces: [
+              {
+                path: '/tmp/a',
+                database: '/tmp/a/.beads',
+                backend: 'dolt',
+                can_sync: true
+              },
+              {
+                path: '/tmp/b',
+                database: '/tmp/b/.beads',
+                backend: 'dolt',
+                can_sync: true
+              }
+            ],
+            current: {
+              root_dir: current_path,
+              db_path: `${current_path}/.beads`,
+              backend: 'dolt',
+              can_sync: true
+            }
+          };
+        }
+        if (type === 'sync-workspace') {
+          return {
+            workspace: {
+              root_dir: payload.path,
+              db_path: `${payload.path}/.beads`,
+              backend: 'dolt',
+              can_sync: true
+            },
+            pulled: true
+          };
+        }
+        return null;
+      }),
+      on(
+        /** @type {string} */ type,
+        /** @type {(payload: any) => void} */ handler
+      ) {
+        handlers[type] = handler;
+        return () => {};
+      },
+      onConnection() {
+        return () => {};
+      },
+      trigger(/** @type {string} */ type, /** @type {any} */ payload) {
+        handlers[type]?.(payload);
+      },
+      close() {},
+      getState() {
+        return 'open';
+      }
+    };
+
+    renderShell();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    current_path = '/tmp/b';
+    CLIENT.trigger('workspace-changed', {
+      root_dir: '/tmp/b',
+      db_path: '/tmp/b/.beads',
+      backend: 'dolt',
+      can_sync: true
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(CLIENT.send).toHaveBeenCalledWith('sync-workspace', {
+      reason: 'workspace-switch',
+      path: '/tmp/b'
+    });
+  });
+
+  test('workspace-changed event does not restore the saved startup workspace preference', async () => {
+    /** @type {Record<string, (payload: any) => void>} */
+    const handlers = {};
+    let current_path = '/tmp/a';
+    window.localStorage.setItem('beads-ui.workspace', '/tmp/a');
+    CLIENT = {
+      send: vi.fn(async (type) => {
+        if (type === 'list-workspaces') {
+          return {
+            workspaces: [
+              {
+                path: '/tmp/a',
+                database: '/tmp/a/.beads',
+                backend: 'dolt',
+                can_sync: true
+              },
+              {
+                path: '/tmp/b',
+                database: '/tmp/b/.beads',
+                backend: 'dolt',
+                can_sync: true
+              }
+            ],
+            current: {
+              root_dir: current_path,
+              db_path: `${current_path}/.beads`,
+              backend: 'dolt',
+              can_sync: true
+            }
+          };
+        }
+        if (type === 'sync-workspace') {
+          return {
+            workspace: {
+              root_dir: current_path,
+              db_path: `${current_path}/.beads`,
+              backend: 'dolt',
+              can_sync: true
+            },
+            pulled: true
+          };
+        }
+        return null;
+      }),
+      on(
+        /** @type {string} */ type,
+        /** @type {(payload: any) => void} */ handler
+      ) {
+        handlers[type] = handler;
+        return () => {};
+      },
+      onConnection() {
+        return () => {};
+      },
+      trigger(/** @type {string} */ type, /** @type {any} */ payload) {
+        handlers[type]?.(payload);
+      },
+      close() {},
+      getState() {
+        return 'open';
+      }
+    };
+
+    renderShell();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    current_path = '/tmp/b';
+    CLIENT.trigger('workspace-changed', {
+      root_dir: '/tmp/b',
+      db_path: '/tmp/b/.beads',
+      backend: 'dolt',
+      can_sync: true
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const set_workspace_calls = CLIENT.send.mock.calls.filter(
+      (/** @type {[string, any]} */ call) => call[0] === 'set-workspace'
+    );
+    expect(set_workspace_calls).toHaveLength(0);
+  });
 });

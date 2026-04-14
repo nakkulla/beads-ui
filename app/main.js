@@ -433,8 +433,10 @@ export function bootstrap(root_element) {
 
     /**
      * Load available workspaces from server and update state.
+     *
+     * @param {{ restore_saved?: boolean }} [options]
      */
-    async function loadWorkspaces() {
+    async function loadWorkspaces(options = {}) {
       try {
         const result = await client.send('list-workspaces', {});
         log('workspaces loaded: %o', result);
@@ -447,7 +449,13 @@ export function bootstrap(root_element) {
           // Check if we have a saved preference that differs from current
           const savedWorkspace =
             window.localStorage.getItem('beads-ui.workspace');
-          if (savedWorkspace && current && savedWorkspace !== current.path) {
+          const restore_saved = options.restore_saved === true;
+          if (
+            restore_saved &&
+            savedWorkspace &&
+            current &&
+            savedWorkspace !== current.path
+          ) {
             // Check if saved workspace is in available list
             const savedExists = available.some(
               (/** @type {{ path: string }} */ ws) => ws.path === savedWorkspace
@@ -476,10 +484,11 @@ export function bootstrap(root_element) {
           }
         });
         updateCurrentSyncState();
-        // Reload workspaces to get fresh list
-        void loadWorkspaces();
         // Clear and resubscribe
         void clearAndResubscribe();
+        void syncCurrentWorkspace('workspace-switch');
+        // Reload workspaces to get fresh list without restoring the saved startup preference
+        void loadWorkspaces({ restore_saved: false });
         resetAutoSyncTimer();
       }
     });
@@ -631,7 +640,7 @@ export function bootstrap(root_element) {
       });
     }
     // Load workspaces after WebSocket is connected
-    void loadWorkspaces();
+    void loadWorkspaces({ restore_saved: true });
 
     // Global New Issue dialog (UI-106) mounted at root so it is always visible
     const new_issue_dialog = createNewIssueDialog(
