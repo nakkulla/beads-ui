@@ -9,6 +9,7 @@ import {
   terminateProcess
 } from './daemon.js';
 import { openUrl, registerWorkspaceWithServer, waitForServer } from './open.js';
+import { isManagedSharedServiceRunning } from './shared-service.js';
 
 const STARTUP_SETTLE_MS = 200;
 const REGISTER_RETRY_ATTEMPTS = 5;
@@ -36,10 +37,16 @@ export async function handleStart(options) {
     process.env.PORT = String(options.port);
   }
 
+  const { url } = getConfig();
   const existing_pid = readPidFile();
+  const should_use_managed_shared_service =
+    !existing_pid &&
+    !process.env.BDUI_RUNTIME_DIR &&
+    options?.host === undefined &&
+    options?.port === undefined &&
+    isManagedSharedServiceRunning();
   if (existing_pid && isProcessRunning(existing_pid)) {
     // Server is already running - register this workspace dynamically
-    const { url } = getConfig();
     const registered = await registerCurrentWorkspace(url, cwd);
     if (registered) {
       console.log('Workspace registered: %s', cwd);
@@ -50,12 +57,22 @@ export async function handleStart(options) {
     }
     return 0;
   }
+
+  if (should_use_managed_shared_service) {
+    const registered = await registerCurrentWorkspace(url, cwd);
+    if (registered) {
+      console.log('Workspace registered: %s', cwd);
+      console.warn(
+        'Shared beads-ui service is already running; using that service instead of starting a repo-local daemon.'
+      );
+      return 0;
+    }
+  }
+
   if (existing_pid && !isProcessRunning(existing_pid)) {
     // stale PID file
     removePidFile();
   }
-
-  const { url } = getConfig();
 
   const started = startDaemon({
     is_debug: options?.is_debug,

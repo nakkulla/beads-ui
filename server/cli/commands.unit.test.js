@@ -11,6 +11,10 @@ vi.mock('./open.js', () => ({
   registerWorkspaceWithServer: vi.fn(async () => true)
 }));
 
+vi.mock('./shared-service.js', () => ({
+  isManagedSharedServiceRunning: vi.fn(() => false)
+}));
+
 // Mock db resolution
 vi.mock('../db.js', () => ({
   resolveDbPath: () => ({
@@ -149,6 +153,36 @@ describe('handleStart (unit)', () => {
 
     expect(code).toBe(0);
     expect(print_url).toHaveBeenCalledTimes(1);
+    expect(register_workspace_with_server).toHaveBeenCalledTimes(1);
+    expect(register_workspace_with_server).toHaveBeenCalledWith(
+      'http://127.0.0.1:3000',
+      {
+        path: process.cwd(),
+        database: path.join(process.cwd(), '.beads')
+      }
+    );
+  });
+
+  test('registers workspace with launchd-managed shared service instead of spawning a local daemon', async () => {
+    const register_workspace_with_server =
+      /** @type {import('vitest').Mock} */ (open.registerWorkspaceWithServer);
+    register_workspace_with_server.mockReset();
+
+    const start_daemon = vi.spyOn(daemon, 'startDaemon');
+    vi.spyOn(daemon, 'readPidFile').mockReturnValue(null);
+    vi.spyOn(daemon, 'isProcessRunning').mockReturnValue(false);
+
+    const { isManagedSharedServiceRunning } = await import(
+      './shared-service.js'
+    );
+    /** @type {import('vitest').Mock} */ (isManagedSharedServiceRunning)
+      .mockReset()
+      .mockReturnValue(true);
+
+    const code = await handleStart({ open: false });
+
+    expect(code).toBe(0);
+    expect(start_daemon).not.toHaveBeenCalled();
     expect(register_workspace_with_server).toHaveBeenCalledTimes(1);
     expect(register_workspace_with_server).toHaveBeenCalledWith(
       'http://127.0.0.1:3000',
