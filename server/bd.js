@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { resolveDbPath } from './db.js';
+import { buildSpawnPath } from './env.js';
 import { debug } from './logging.js';
 
 const log = debug('bd');
@@ -65,10 +66,23 @@ export function runBd(args, options = {}) {
 }
 
 /**
- * Run the `bd` CLI with provided arguments without queueing.
+ * Run sync-oriented `bd` commands without prepending sandbox.
  *
  * @param {string[]} args
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
+ * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+ */
+export function runBdSync(args, options = {}) {
+  return withBdRunQueue(async () =>
+    runBdUnlocked(args, { ...options, force_no_sandbox: true })
+  );
+}
+
+/**
+ * Run the `bd` CLI with provided arguments without queueing.
+ *
+ * @param {string[]} args
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, force_no_sandbox?: boolean }} [options]
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
 function runBdUnlocked(args, options = {}) {
@@ -81,7 +95,7 @@ function runBdUnlocked(args, options = {}) {
     cwd: options.cwd || process.cwd(),
     env: options.env || process.env
   });
-  const env_with_db = { ...(options.env || process.env) };
+  const env_with_db = buildSpawnEnv(options);
   if (db_path.source === 'nearest' && db_path.exists) {
     env_with_db.BEADS_DB = db_path.path;
   }
@@ -94,7 +108,9 @@ function runBdUnlocked(args, options = {}) {
   };
 
   /** @type {string[]} */
-  const final_args = buildBdArgs(args);
+  const final_args = options.force_no_sandbox
+    ? args.slice()
+    : buildBdArgs(args);
 
   return new Promise((resolve) => {
     const child = spawn(bin, final_args, spawn_opts);
@@ -149,6 +165,18 @@ function runBdUnlocked(args, options = {}) {
       finish(code);
     });
   });
+}
+
+/**
+ * Build the subprocess environment for `bd` execution.
+ *
+ * @param {{ env?: Record<string, string | undefined> }} [options]
+ * @returns {Record<string, string | undefined>}
+ */
+function buildSpawnEnv(options = {}) {
+  const env_with_db = { ...(options.env || process.env) };
+  env_with_db.PATH = buildSpawnPath(env_with_db.PATH);
+  return env_with_db;
 }
 
 /**

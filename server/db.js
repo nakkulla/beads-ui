@@ -77,6 +77,26 @@ export function resolveWorkspaceDatabase(options = {}) {
 }
 
 /**
+ * Resolve sync capability metadata for a workspace.
+ *
+ * `metadata`-backed workspaces map to Dolt repositories in this app, while
+ * SQLite paths remain local-only and do not support Dolt sync.
+ *
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, explicit_db?: string }} [options]
+ * @returns {{ path: string, source: 'flag'|'env'|'nearest'|'metadata'|'home-default', exists: boolean, backend: 'dolt'|'sqlite', can_sync: boolean }}
+ */
+export function getWorkspaceSyncInfo(options = {}) {
+  const workspace_db = resolveWorkspaceDatabase(options);
+  const backend = workspace_db.source === 'metadata' ? 'dolt' : 'sqlite';
+
+  return {
+    ...workspace_db,
+    backend,
+    can_sync: backend === 'dolt'
+  };
+}
+
+/**
  * Find nearest `.beads/metadata.json` by walking up from start.
  *
  * @param {string} start

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { getBdBin, getGitUserName, runBd, runBdJson } from './bd.js';
+import { getBdBin, getGitUserName, runBd, runBdJson, runBdSync } from './bd.js';
 
 // Mock child_process.spawn before importing the module under test
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
@@ -152,6 +152,35 @@ describe('runBd', () => {
 
     const options = mockedSpawn.mock.calls[0][2];
     expect(options.env.BEADS_DB).toBe('/custom/workspace.db');
+  });
+
+  test('keeps sandbox by default for list reads', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('ok', '', 0));
+
+    await runBd(['list', '--json']);
+
+    const args = mockedSpawn.mock.calls.at(-1)?.[1] || [];
+    expect(args[0]).toBe('--sandbox');
+  });
+
+  test('runBdSync omits sandbox for sync commands', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('ok', '', 0));
+
+    await runBdSync(['dolt', 'pull']);
+
+    const args = mockedSpawn.mock.calls.at(-1)?.[1] || [];
+    expect(args[0]).toBe('dolt');
+  });
+
+  test('injects normalized PATH into spawn env', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('ok', '', 0));
+
+    await runBd(['list', '--json'], { env: { PATH: '/usr/bin:/bin' } });
+
+    const options = mockedSpawn.mock.calls.at(-1)?.[2] || {};
+    expect(
+      String(options.env.PATH).startsWith('/opt/homebrew/bin:/usr/local/bin')
+    ).toBe(true);
   });
 });
 

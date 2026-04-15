@@ -1,5 +1,9 @@
+import fs from 'node:fs';
+import { createServer } from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
-import { handleMessage } from './ws.js';
+import { attachWsServer, handleMessage } from './ws.js';
 
 /** @returns {any} */
 function makeStubSocket() {
@@ -46,6 +50,50 @@ describe('ws message handling', () => {
     const obj = JSON.parse(last);
     expect(obj.ok).toBe(false);
     expect(obj.error.code).toBe('unknown_type');
+  });
+
+  test('set-workspace broadcasts workspace-changed when workspace changes', async () => {
+    const root_a = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-ws-a-'));
+    const root_b = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-ws-b-'));
+    try {
+      fs.mkdirSync(path.join(root_a, '.beads'), { recursive: true });
+      fs.mkdirSync(path.join(root_b, '.beads'), { recursive: true });
+      fs.writeFileSync(path.join(root_a, '.beads', 'metadata.json'), '{}');
+      fs.writeFileSync(path.join(root_b, '.beads', 'metadata.json'), '{}');
+
+      const server = createServer();
+      const { wss } = attachWsServer(server, {
+        path: '/ws',
+        root_dir: root_a
+      });
+      const requester = makeStubSocket();
+      const observer = makeStubSocket();
+      wss.clients.add(/** @type {any} */ (requester));
+      wss.clients.add(/** @type {any} */ (observer));
+
+      await handleMessage(
+        /** @type {any} */ (requester),
+        Buffer.from(
+          JSON.stringify({
+            id: 'set-workspace-1',
+            type: 'set-workspace',
+            payload: { path: root_b }
+          })
+        )
+      );
+
+      const event = observer.sent
+        .map((/** @type {string} */ msg) => JSON.parse(msg))
+        .find(
+          (/** @type {{ type?: string }} */ msg) =>
+            msg.type === 'workspace-changed'
+        );
+      expect(event).toBeTruthy();
+      expect(event.payload.root_dir).toBe(root_b);
+    } finally {
+      fs.rmSync(root_a, { recursive: true, force: true });
+      fs.rmSync(root_b, { recursive: true, force: true });
+    }
   });
 });
 
