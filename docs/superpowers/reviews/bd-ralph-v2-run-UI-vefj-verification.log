@@ -1,0 +1,129 @@
+# bd-ralph-v2 verification log for UI-vefj
+generated_at=2026-04-15T06:27:58Z
+worktree=/Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/bd-ralph-v2-UI-vefj
+head=bfa579a9c8d763249ee94da44363b3a2f1bd9e59
+
+$ npm run tsc
+
+> beads-ui@0.11.3 tsc
+> tsc -p tsconfig.json --noEmit
+
+
+$ npm test
+
+> beads-ui@0.11.3 test
+> vitest run
+
+
+ RUN  v4.0.15 /Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/bd-ralph-v2-UI-vefj
+
+ ✓ |jsdom| app/views/board.closed-filter.test.js (1 test) 22ms
+ ✓ |jsdom| app/views/detail.acceptance-notes.test.js (2 tests) 36ms
+ ✓ |jsdom| app/views/detail.notes-edit.test.js (1 test) 38ms
+ ✓ |jsdom| app/views/board.test.js (6 tests) 44ms
+ ✓ |jsdom| app/views/detail.priority.test.js (2 tests) 58ms
+ ✓ |jsdom| app/views/list.navigation.test.js (4 tests) 64ms
+ ✓ |jsdom| app/views/epics.test.js (7 tests) 63ms
+ ✓ |jsdom| app/views/detail.edits.test.js (4 tests) 74ms
+ ✓ |jsdom| app/views/list.test.js (14 tests) 133ms
+ ✓ |jsdom| app/main.resolved-status.test.js (2 tests) 52ms
+ ✓ |jsdom| app/main.ws-toast.test.js (1 test) 53ms
+ ✓ |jsdom| app/main.filter-switch-reset.test.js (1 test) 58ms
+ ✓ |jsdom| app/main.push-stores.e2e.test.js (2 tests) 77ms
+ ✓ |jsdom| app/main.test.js (1 test) 52ms
+ ✓ |jsdom| app/views/detail.test.js (21 tests) 211ms
+ ✓ |jsdom| app/views/detail.assignee.test.js (3 tests) 33ms
+ ✓ |jsdom| app/main.issues-fast-filters.test.js (1 test) 62ms
+ ✓ |jsdom| app/main.new-issue.test.js (3 tests) 60ms
+ ✓ |jsdom| app/utils/markdown.test.js (9 tests) 56ms
+ ✓ |jsdom| app/main.view-sync.test.js (1 test) 41ms
+ ✓ |jsdom| app/views/detail.deps.test.js (3 tests) 77ms
+ ✓ |jsdom| app/views/board.persist.test.js (1 test) 54ms
+ ✓ |jsdom| app/views/detail.acceptance-placeholder.test.js (1 test) 70ms
+ ✓ |jsdom| app/views/list.fast-switch.test.js (1 test) 36ms
+ ✓ |jsdom| app/views/detail.design.test.js (2 tests) 42ms
+ ✓ |jsdom| app/views/list.inline-edits.test.js (2 tests) 38ms
+ ✓ |jsdom| app/views/detail.toast.test.js (1 test) 60ms
+ ✓ |jsdom| app/views/detail.labels.test.js (1 test) 36ms
+ ✓ |jsdom| app/main.board-switch.test.js (1 test) 33ms
+ ✓ |jsdom| app/main.deep-link.test.js (1 test) 42ms
+ ✓ |jsdom| app/views/detail.ui47.test.js (3 tests) 31ms
+ ✓ |jsdom| app/main.dialog.test.js (1 test) 27ms
+ ✓ |jsdom| app/views/board.navigation.test.js (2 tests) 26ms
+ ✓ |jsdom| app/detail.push.test.js (1 test) 20ms
+ ✓ |jsdom| app/utils/issue-id-renderer.test.js (5 tests) 12ms
+ ✓ |jsdom| app/utils/label-badge.test.js (8 tests) 3ms
+ ✓ |jsdom| app/views/nav.test.js (1 test) 12ms
+ ✓ |jsdom| app/views/issue-dialog.focus.test.js (1 test) 8ms
+ ✓ |jsdom| app/main.theme.test.js (2 tests) 5ms
+ ✓ |jsdom| app/router.test.js (3 tests) 4ms
+ ✓ |jsdom| app/utils/type-badge.test.js (2 tests) 3ms
+ ✓ |jsdom| app/data/subscriptions-store.test.js (4 tests) 6ms
+ ✓ |jsdom| app/ws.test.js (3 tests) 5ms
+ ✓ |jsdom| app/utils/status-badge.test.js (1 test) 3ms
+ ✓ |jsdom| app/protocol.test.js (11 tests) 2ms
+stdout | server/cli/commands.unit.test.js > handleStart (unit) > returns 0 when already running
+Workspace registered: /Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/bd-ralph-v2-UI-vefj
+
+stdout | server/cli/commands.unit.test.js > handleStart (unit) > registers workspace from metadata when already running
+Workspace registered: /Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/bd-ralph-v2-UI-vefj
+
+stdout | server/cli/commands.unit.test.js > handleStart (unit) > registers workspace at custom port when already running
+Workspace registered: /Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/bd-ralph-v2-UI-vefj
+
+ ✓ |node| server/workspace-discovery.test.js (11 tests) 38ms
+ ✓ |node| server/db.test.js (10 tests) 14ms
+ ✓ |node| server/bd.test.js (14 tests) 19ms
+ ✓ |node| server/ws.list-subscriptions.test.js (9 tests) 6ms
+ ✓ |node| server/ws.mutation-window.test.js (2 tests) 7ms
+ ✓ |node| server/ws.snapshot-cache.test.js (6 tests) 12ms
+ ✓ |node| server/ws.list-refresh.coalesce.test.js (1 test) 5ms
+ ✓ |node| server/app.live-mode.test.js (2 tests) 77ms
+ ✓ |node| server/cli/cli.test.js (21 tests) 5ms
+ ✓ |node| server/ws.mutations.test.js (15 tests) 3ms
+ ✓ |node| server/list-adapters.test.js (12 tests) 3ms
+ ✓ |node| server/watcher.test.js (4 tests) 5ms
+ ✓ |jsdom| app/data/list-selectors.test.js (5 tests) 2ms
+ ✓ |node| server/subscriptions.test.js (11 tests) 4ms
+ ✓ |node| server/ws.comments.test.js (8 tests) 3ms
+ ✓ |node| server/ws.delete.test.js (4 tests) 2ms
+ ✓ |node| server/ws.test.js (3 tests) 2ms
+ ✓ |jsdom| app/data/subscription-issue-store.test.js (6 tests) 2ms
+ ✓ |jsdom| app/utils/relative-time.test.js (12 tests) 2ms
+ ✓ |node| server/validators.test.js (2 tests) 1ms
+ ✓ |node| server/app.test.js (2 tests) 2ms
+ ✓ |node| server/cli/daemon.test.js (1 test) 2ms
+ ✓ |node| server/config.test.js (2 tests) 1ms
+ ✓ |node| server/ws.labels.test.js (3 tests) 2ms
+ ✓ |node| server/cli/open.test.js (3 tests) 1ms
+ ✓ |jsdom| app/utils/status.test.js (2 tests) 1ms
+ ✓ |jsdom| app/data/providers.test.js (2 tests) 1ms
+ ✓ |jsdom| app/state.test.js (1 test) 1ms
+ ✓ |node| server/cli/commands.unit.test.js (9 tests) 405ms
+stdout | server/cli/commands.integration.test.js > commands integration > start is idempotent when already running
+beads db   /mock/test.db (nearest)
+beads ui   listening on http://127.0.0.1:0
+
+stdout | server/cli/commands.integration.test.js > commands integration > start is idempotent when already running
+Workspace registered: /Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/bd-ralph-v2-UI-vefj
+
+ ✓ |node| server/cli/commands.integration.test.js (4 tests) 918ms
+     ✓ start then stop returns 0 and manages PID file  305ms
+     ✓ start is idempotent when already running  306ms
+     ✓ restart stops (when needed) and starts  305ms
+
+ Test Files  75 passed (75)
+      Tests  335 passed (335)
+   Start at  15:27:59
+   Duration  3.47s (transform 1.38s, setup 374ms, import 3.59s, tests 3.49s, environment 29.95s)
+
+
+$ npm run lint
+
+> beads-ui@0.11.3 lint
+> eslint --ext .js .
+
+
+$ npx prettier --check README.md server/config.js server/config.test.js server/app.js server/app.live-mode.test.js docs/superpowers/plans/2026-04-15-shared-server-live-mode.md
+Checking formatting...
+All matched files use Prettier code style!

@@ -54,6 +54,8 @@ See `bdui --help` for options.
 - `BD_BIN`: path to the `bd` binary.
 - `BDUI_RUNTIME_DIR`: override runtime directory for PID/logs. Defaults to
   `$XDG_RUNTIME_DIR/beads-ui` or the system temp dir.
+- `BDUI_FRONTEND_MODE`: `live` forces on-demand bundling for `/main.bundle.js`
+  even when `app/main.bundle.js` exists. The default is `static`.
 - `HOST`: overrides the bind address (default `127.0.0.1`).
 - `PORT`: overrides the listen port (default `3000`).
 
@@ -71,6 +73,15 @@ These can also be set via CLI options: `bdui start --host 0.0.0.0 --port 8080`
 - 🚀 Start the dev server with `npm start`.
 - 🔗 Alternatively, use `npm link` to link the package globally and run
   `bdui start` from any project.
+
+### Shared server live mode
+
+When the shared launchd-managed server runs with `BDUI_FRONTEND_MODE=live`:
+
+- changes under `app/**` apply on browser refresh
+- changes under `server/**` or `bin/**` require a shared server restart
+- the canonical shared-service restart flow is managed outside this repo and is
+  tracked separately in `dotfiles-6ch`
 
 ## Debug Logging
 

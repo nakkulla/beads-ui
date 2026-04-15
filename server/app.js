@@ -9,7 +9,7 @@ import { registerWorkspace } from './registry-watcher.js';
 /**
  * Create and configure the Express application.
  *
- * @param {{ host: string, port: number, app_dir: string, root_dir: string }} config - Server configuration.
+ * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static' }} config - Server configuration.
  * @returns {Express} Configured Express app instance.
  */
 export function createApp(config) {
@@ -51,11 +51,14 @@ export function createApp(config) {
     res.status(200).json({ ok: true, registered: workspace_path });
   });
 
-  if (
-    !fs.statSync(path.resolve(config.app_dir, 'main.bundle.js'), {
-      throwIfNoEntry: false
-    })
-  ) {
+  const use_live_bundle = config.frontend_mode === 'live';
+  const bundle_missing = use_live_bundle
+    ? false
+    : !fs.statSync(path.resolve(config.app_dir, 'main.bundle.js'), {
+        throwIfNoEntry: false
+      });
+
+  if (use_live_bundle || bundle_missing) {
     /**
      * On-demand bundle for the browser using esbuild.
      *
