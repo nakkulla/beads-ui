@@ -51,13 +51,12 @@ export function createApp(config) {
     res.status(200).json({ ok: true, registered: workspace_path });
   });
 
-  const bundle_missing = !fs.statSync(
-    path.resolve(config.app_dir, 'main.bundle.js'),
-    {
-      throwIfNoEntry: false
-    }
-  );
   const use_live_bundle = config.frontend_mode === 'live';
+  const bundle_missing = use_live_bundle
+    ? false
+    : !fs.statSync(path.resolve(config.app_dir, 'main.bundle.js'), {
+        throwIfNoEntry: false
+      });
 
   if (use_live_bundle || bundle_missing) {
     /**
