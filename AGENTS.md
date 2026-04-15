@@ -1,5 +1,12 @@
 # Agents
 
+## Shared Server Boundary
+
+- The shared/public beads-ui service on port `3000` is owned by dotfiles-managed `projectmgr`/`launchd`, not by this repo checkout.
+- Do not assume changes in this repo are live on the shared server until the dotfiles-managed install/restart path deploys them.
+- Do not use repo-local `bdui start`/`restart` to control the shared service.
+- For local verification from this repo, prefer `127.0.0.1` on a non-shared port such as `3300`.
+
 ## Beads (bd) — Work Tracking
 
 Use MCP `beads` (bd) as our dependency‑aware issue tracker. Run
