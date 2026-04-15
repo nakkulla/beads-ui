@@ -93,6 +93,20 @@ describe('discoverWorkspaces', () => {
     expect(paths).toEqual([repo_a, repo_b].sort());
   });
 
+  test('discovers a scan directory when it is itself a .beads repo', async () => {
+    const tmp = mkdtemp();
+    const scan_dir = createBeadsRepo(tmp, 'vault-repo');
+
+    const config_path = path.join(tmp, 'test.conf');
+    fs.writeFileSync(config_path, scan_dir + '\n');
+
+    const mod = await import('./workspace-discovery.js');
+    const result = mod.discoverWorkspaces(config_path);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].path).toBe(scan_dir);
+  });
+
   test('discovers .beads repos at depth 2', async () => {
     const tmp = mkdtemp();
     const scan_dir = path.join(tmp, 'projects');

@@ -68,6 +68,18 @@ function listWatchRoots(dir) {
 }
 
 /**
+ * @param {string} dir
+ * @returns {boolean}
+ */
+function hasBeadsDirectory(dir) {
+  try {
+    return fs.statSync(path.join(dir, '.beads')).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * @param {string} base_dir
  * @param {number} max_depth
  * @returns {string[]}
@@ -75,6 +87,10 @@ function listWatchRoots(dir) {
 function findBeadsRepos(base_dir, max_depth) {
   /** @type {string[]} */
   const results = [];
+
+  if (hasBeadsDirectory(base_dir)) {
+    results.push(base_dir);
+  }
 
   /**
    * @param {string} dir
@@ -99,14 +115,9 @@ function findBeadsRepos(base_dir, max_depth) {
       }
 
       const child = path.join(dir, entry.name);
-      const beads_path = path.join(child, '.beads');
-      try {
-        if (fs.statSync(beads_path).isDirectory()) {
-          results.push(child);
-          continue;
-        }
-      } catch {
-        // recurse below when there is no .beads directory
+      if (hasBeadsDirectory(child)) {
+        results.push(child);
+        continue;
       }
 
       walk(child, depth + 1);
