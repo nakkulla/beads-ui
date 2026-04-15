@@ -79,6 +79,116 @@ describe('main sync-workspace integration', () => {
     });
   });
 
+  test('workspace switch waits for workspace-changed before syncing the new workspace', async () => {
+    /** @type {Record<string, (payload: any) => void>} */
+    const handlers = {};
+    CLIENT = {
+      send: vi.fn(async (type, payload) => {
+        if (type === 'list-workspaces') {
+          return {
+            workspaces: [
+              {
+                path: '/tmp/a',
+                database: '/tmp/a/.beads',
+                backend: 'dolt',
+                can_sync: true
+              },
+              {
+                path: '/tmp/b',
+                database: '/tmp/b/.beads',
+                backend: 'dolt',
+                can_sync: true
+              }
+            ],
+            current: {
+              root_dir: '/tmp/a',
+              db_path: '/tmp/a/.beads',
+              backend: 'dolt',
+              can_sync: true
+            }
+          };
+        }
+        if (type === 'set-workspace') {
+          return {
+            changed: true,
+            workspace: {
+              root_dir: payload.path,
+              db_path: `${payload.path}/.beads`,
+              backend: 'dolt',
+              can_sync: true
+            }
+          };
+        }
+        if (type === 'sync-workspace') {
+          return {
+            workspace: {
+              root_dir: payload.path,
+              db_path: `${payload.path}/.beads`,
+              backend: 'dolt',
+              can_sync: true
+            },
+            pulled: true
+          };
+        }
+        return null;
+      }),
+      on(
+        /** @type {string} */ type,
+        /** @type {(payload: any) => void} */ handler
+      ) {
+        handlers[type] = handler;
+        return () => {};
+      },
+      onConnection() {
+        return () => {};
+      },
+      trigger(/** @type {string} */ type, /** @type {any} */ payload) {
+        handlers[type]?.(payload);
+      },
+      close() {},
+      getState() {
+        return 'open';
+      }
+    };
+
+    renderShell();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const picker = /** @type {HTMLSelectElement} */ (
+      document.querySelector('.workspace-picker__select')
+    );
+    picker.value = '/tmp/b';
+    picker.dispatchEvent(new Event('change'));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const before_event_calls = CLIENT.send.mock.calls.filter(
+      (/** @type {[string, any]} */ call) => call[0] === 'sync-workspace'
+    );
+    expect(before_event_calls).toHaveLength(0);
+
+    CLIENT.trigger('workspace-changed', {
+      root_dir: '/tmp/b',
+      db_path: '/tmp/b/.beads',
+      backend: 'dolt',
+      can_sync: true
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const sync_calls = CLIENT.send.mock.calls.filter(
+      (/** @type {[string, any]} */ call) => call[0] === 'sync-workspace'
+    );
+    expect(sync_calls).toHaveLength(1);
+    expect(sync_calls[0][1]).toEqual({
+      reason: 'workspace-switch',
+      path: '/tmp/b'
+    });
+  });
+
   test('workspace switch triggers one best-effort sync', async () => {
     /** @type {Record<string, (payload: any) => void>} */
     const handlers = {};
@@ -419,6 +529,8 @@ describe('main sync-workspace integration', () => {
   });
 
   test('ignores sync completion for a workspace that is no longer current', async () => {
+    /** @type {Record<string, (payload: any) => void>} */
+    const handlers = {};
     /** @type {() => void} */
     let resolve_sync = () => {};
     CLIENT = {
@@ -474,11 +586,18 @@ describe('main sync-workspace integration', () => {
         }
         return null;
       }),
-      on() {
+      on(
+        /** @type {string} */ type,
+        /** @type {(payload: any) => void} */ handler
+      ) {
+        handlers[type] = handler;
         return () => {};
       },
       onConnection() {
         return () => {};
+      },
+      trigger(/** @type {string} */ type, /** @type {any} */ payload) {
+        handlers[type]?.(payload);
       },
       close() {},
       getState() {
@@ -499,6 +618,13 @@ describe('main sync-workspace integration', () => {
     picker.value = '/tmp/b';
     picker.dispatchEvent(new Event('change'));
     await Promise.resolve();
+    CLIENT.trigger('workspace-changed', {
+      root_dir: '/tmp/b',
+      db_path: '/tmp/b/.beads',
+      backend: 'dolt',
+      can_sync: true
+    });
+    await Promise.resolve();
     await Promise.resolve();
 
     resolve_sync();
@@ -512,6 +638,8 @@ describe('main sync-workspace integration', () => {
   });
 
   test('runs workspace-switch sync even when previous workspace sync is still in flight', async () => {
+    /** @type {Record<string, (payload: any) => void>} */
+    const handlers = {};
     /** @type {() => void} */
     let resolve_a_sync = () => {};
     CLIENT = {
@@ -578,11 +706,18 @@ describe('main sync-workspace integration', () => {
         }
         return null;
       }),
-      on() {
+      on(
+        /** @type {string} */ type,
+        /** @type {(payload: any) => void} */ handler
+      ) {
+        handlers[type] = handler;
         return () => {};
       },
       onConnection() {
         return () => {};
+      },
+      trigger(/** @type {string} */ type, /** @type {any} */ payload) {
+        handlers[type]?.(payload);
       },
       close() {},
       getState() {
@@ -602,6 +737,13 @@ describe('main sync-workspace integration', () => {
     );
     picker.value = '/tmp/b';
     picker.dispatchEvent(new Event('change'));
+    await Promise.resolve();
+    CLIENT.trigger('workspace-changed', {
+      root_dir: '/tmp/b',
+      db_path: '/tmp/b/.beads',
+      backend: 'dolt',
+      can_sync: true
+    });
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
