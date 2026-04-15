@@ -7,19 +7,11 @@ const log = debug('registry-watcher');
 
 /**
  * In-memory registry of workspaces registered dynamically via the API.
- * Manual registrations supplement the file-based registry at ~/.beads/registry.json,
- * while discovered registrations mirror the current discovery snapshot.
+ * These supplement the file-based registry at ~/.beads/registry.json.
  *
  * @type {Map<string, { path: string, database: string, pid: number, version: string }>}
  */
-const manualWorkspaces = new Map();
-
-/**
- * Snapshot of workspaces found by auto discovery.
- *
- * @type {Map<string, { path: string, database: string, pid: number, version: string }>}
- */
-const discoveredWorkspaces = new Map();
+const inMemoryWorkspaces = new Map();
 
 /**
  * Register a workspace dynamically (in-memory).
@@ -30,7 +22,7 @@ const discoveredWorkspaces = new Map();
 export function registerWorkspace(workspace) {
   const normalized = path.resolve(workspace.path);
   log('registering workspace: %s (db: %s)', normalized, workspace.database);
-  manualWorkspaces.set(normalized, {
+  inMemoryWorkspaces.set(normalized, {
     path: normalized,
     database: workspace.database,
     pid: process.pid,
@@ -39,37 +31,12 @@ export function registerWorkspace(workspace) {
 }
 
 /**
- * Replace the current auto-discovered workspace snapshot.
- *
- * @param {Array<{ path: string, database: string }>} workspaces
- */
-export function replaceDiscoveredWorkspaces(workspaces) {
-  discoveredWorkspaces.clear();
-
-  for (const workspace of workspaces) {
-    const normalized = path.resolve(workspace.path);
-    discoveredWorkspaces.set(normalized, {
-      path: normalized,
-      database: workspace.database,
-      pid: process.pid,
-      version: 'dynamic'
-    });
-  }
-}
-
-/**
- * Get all in-memory workspaces, combining manual registrations with the latest
- * auto-discovered snapshot while letting manual entries win on path conflicts.
+ * Get all dynamically registered workspaces (in-memory only).
  *
  * @returns {Array<{ path: string, database: string, pid: number, version: string }>}
  */
 export function getInMemoryWorkspaces() {
-  return [
-    ...manualWorkspaces.values(),
-    ...Array.from(discoveredWorkspaces.values()).filter(
-      (workspace) => !manualWorkspaces.has(path.resolve(workspace.path))
-    )
-  ];
+  return Array.from(inMemoryWorkspaces.values());
 }
 
 /**

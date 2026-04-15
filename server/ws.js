@@ -6,8 +6,8 @@
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { isRequest, makeError, makeOk } from '../app/protocol.js';
-import { getGitUserName, runBd, runBdJson, runBdSync } from './bd.js';
-import { getWorkspaceSyncInfo } from './db.js';
+import { getGitUserName, runBd, runBdJson } from './bd.js';
+import { resolveWorkspaceDatabase } from './db.js';
 import { fetchListForSubscription } from './list-adapters.js';
 import { debug } from './logging.js';
 import { getAvailableWorkspaces } from './registry-watcher.js';
@@ -150,38 +150,6 @@ async function refreshAllActiveListSubscriptions() {
   );
 }
 
-/** @type {Map<string, Promise<void>>} */
-const WORKSPACE_SYNC_LOCKS = new Map();
-
-/**
- * Serialize sync work for a workspace.
- *
- * @template T
- * @param {string} workspace_path
- * @param {() => Promise<T>} fn
- * @returns {Promise<T>}
- */
-async function withWorkspaceSyncLock(workspace_path, fn) {
-  const previous =
-    WORKSPACE_SYNC_LOCKS.get(workspace_path) || Promise.resolve();
-  /** @type {(value: void | PromiseLike<void>) => void} */
-  let release = () => {};
-  const current = new Promise((resolve) => {
-    release = resolve;
-  });
-  WORKSPACE_SYNC_LOCKS.set(workspace_path, current);
-
-  await previous.catch(() => {});
-  try {
-    return await fn();
-  } finally {
-    release();
-    if (WORKSPACE_SYNC_LOCKS.get(workspace_path) === current) {
-      WORKSPACE_SYNC_LOCKS.delete(workspace_path);
-    }
-  }
-}
-
 /**
  * Schedule a coalesced refresh of all active list subscriptions.
  */
@@ -221,33 +189,9 @@ const SUBS = new WeakMap();
 let CURRENT_WSS = null;
 
 /**
- * Broadcast a server-initiated event to all open clients.
- *
- * @param {MessageType} type
- * @param {unknown} [payload]
- */
-function broadcastEvent(type, payload) {
-  const wss = CURRENT_WSS;
-  if (!wss) {
-    return;
-  }
-  const msg = JSON.stringify({
-    id: `evt-${Date.now()}`,
-    ok: true,
-    type,
-    payload
-  });
-  for (const ws of wss.clients) {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(msg);
-    }
-  }
-}
-
-/**
  * Current workspace configuration.
  *
- * @type {{ root_dir: string, db_path: string, backend: 'dolt'|'sqlite', can_sync: boolean } | null}
+ * @type {{ root_dir: string, db_path: string } | null}
  */
 let CURRENT_WORKSPACE = null;
 
@@ -275,39 +219,6 @@ function ensureSubs(ws) {
     SUBS.set(ws, s);
   }
   return s;
-}
-
-/**
- * Build the workspace payload shape sent to clients.
- *
- * @param {string} root_dir
- * @returns {{ root_dir: string, db_path: string, backend: 'dolt'|'sqlite', can_sync: boolean }}
- */
-function buildWorkspacePayload(root_dir) {
-  const workspace_info = getWorkspaceSyncInfo({ cwd: root_dir });
-
-  return {
-    root_dir: path.resolve(root_dir),
-    db_path: workspace_info.path,
-    backend: workspace_info.backend,
-    can_sync: workspace_info.can_sync
-  };
-}
-
-/**
- * Add sync capability metadata to a discovered workspace listing.
- *
- * @param {{ path: string, database?: string, pid?: number, version?: string }} workspace
- * @returns {{ path: string, database?: string, pid?: number, version?: string, backend: 'dolt'|'sqlite', can_sync: boolean }}
- */
-function buildWorkspaceListItem(workspace) {
-  const workspace_info = getWorkspaceSyncInfo({ cwd: workspace.path });
-
-  return {
-    ...workspace,
-    backend: workspace_info.backend,
-    can_sync: workspace_info.can_sync
-  };
 }
 
 /**
@@ -549,7 +460,11 @@ export function attachWsServer(http_server, options = {}) {
 
   // Initialize workspace state
   const initial_root = options.root_dir || process.cwd();
-  CURRENT_WORKSPACE = buildWorkspacePayload(initial_root);
+  const initial_db = resolveWorkspaceDatabase({ cwd: initial_root });
+  CURRENT_WORKSPACE = {
+    root_dir: initial_root,
+    db_path: initial_db.path
+  };
 
   if (options.watcher) {
     DB_WATCHER = options.watcher;
@@ -618,26 +533,39 @@ export function attachWsServer(http_server, options = {}) {
    * @param {unknown} [payload]
    */
   function broadcast(type, payload) {
-    broadcastEvent(type, payload);
+    const msg = JSON.stringify({
+      id: `evt-${Date.now()}`,
+      ok: true,
+      type,
+      payload
+    });
+    for (const ws of wss.clients) {
+      if (ws.readyState === ws.OPEN) {
+        ws.send(msg);
+      }
+    }
   }
 
   /**
    * Change the current workspace and rebind the database watcher.
    *
    * @param {string} new_root_dir - Absolute path to the new workspace root.
-   * @returns {{ changed: boolean, workspace: { root_dir: string, db_path: string, backend: 'dolt'|'sqlite', can_sync: boolean } }}
+   * @returns {{ changed: boolean, workspace: { root_dir: string, db_path: string } }}
    */
   function setWorkspace(new_root_dir) {
     const resolved_root = path.resolve(new_root_dir);
-    const new_workspace = buildWorkspacePayload(resolved_root);
+    const new_db = resolveWorkspaceDatabase({ cwd: resolved_root });
     const old_path = CURRENT_WORKSPACE?.db_path || '';
 
-    CURRENT_WORKSPACE = new_workspace;
+    CURRENT_WORKSPACE = {
+      root_dir: resolved_root,
+      db_path: new_db.path
+    };
 
-    const changed = new_workspace.db_path !== old_path;
+    const changed = new_db.path !== old_path;
 
     if (changed) {
-      log('workspace changed: %s → %s', old_path, new_workspace.db_path);
+      log('workspace changed: %s → %s', old_path, new_db.path);
 
       // Rebind the database watcher to the new workspace
       if (DB_WATCHER) {
@@ -648,7 +576,7 @@ export function attachWsServer(http_server, options = {}) {
       registry.clear();
 
       // Broadcast workspace-changed event to all clients
-      broadcastEvent('workspace-changed', CURRENT_WORKSPACE);
+      broadcast('workspace-changed', CURRENT_WORKSPACE);
 
       // Schedule refresh of all active list subscriptions
       scheduleListRefresh();
@@ -1398,7 +1326,7 @@ export async function handleMessage(ws, data) {
   // list-workspaces: returns all available workspaces from the registry
   if (req.type === 'list-workspaces') {
     log('list-workspaces');
-    const workspaces = getAvailableWorkspaces().map(buildWorkspaceListItem);
+    const workspaces = getAvailableWorkspaces();
     ws.send(
       JSON.stringify(
         makeOk(req, {
@@ -1438,17 +1366,21 @@ export async function handleMessage(ws, data) {
     const resolved = path.resolve(workspace_path);
 
     // Update workspace (this will rebind watcher, clear registry, broadcast change)
-    const new_workspace = buildWorkspacePayload(resolved);
+    const new_db = resolveWorkspaceDatabase({ cwd: resolved });
     const old_path = CURRENT_WORKSPACE?.db_path || '';
-    CURRENT_WORKSPACE = new_workspace;
 
-    const changed = new_workspace.db_path !== old_path;
+    CURRENT_WORKSPACE = {
+      root_dir: resolved,
+      db_path: new_db.path
+    };
+
+    const changed = new_db.path !== old_path;
 
     if (changed) {
       log(
         'workspace changed via set-workspace: %s → %s',
         old_path,
-        new_workspace.db_path
+        new_db.path
       );
 
       // Rebind the database watcher
@@ -1458,9 +1390,6 @@ export async function handleMessage(ws, data) {
 
       // Clear existing registry entries
       registry.clear();
-
-      // Broadcast workspace-changed event to all clients
-      broadcastEvent('workspace-changed', CURRENT_WORKSPACE);
 
       // Schedule refresh of all active list subscriptions
       scheduleListRefresh();
@@ -1474,97 +1403,6 @@ export async function handleMessage(ws, data) {
         })
       )
     );
-    return;
-  }
-
-  if (req.type === 'sync-workspace') {
-    log('sync-workspace');
-    const raw_payload = /** @type {any} */ (req.payload || {});
-    const requested_path =
-      typeof raw_payload.path === 'string' ? raw_payload.path.trim() : '';
-    const base_workspace_root =
-      requested_path || CURRENT_WORKSPACE?.root_dir || '';
-    const reason =
-      typeof raw_payload.reason === 'string' && raw_payload.reason.length > 0
-        ? raw_payload.reason
-        : 'manual';
-
-    if (!base_workspace_root) {
-      ws.send(
-        JSON.stringify(makeError(req, 'bad_request', 'No workspace selected'))
-      );
-      return;
-    }
-
-    const workspace_root = path.resolve(base_workspace_root);
-    const workspace_info = getWorkspaceSyncInfo({ cwd: workspace_root });
-    if (!workspace_info.can_sync) {
-      ws.send(
-        JSON.stringify(
-          makeError(
-            req,
-            'bad_request',
-            'Workspace does not support Dolt sync',
-            {
-              workspace_root,
-              reason
-            }
-          )
-        )
-      );
-      return;
-    }
-
-    try {
-      const result = await withWorkspaceSyncLock(workspace_root, async () => {
-        const status = await runBdSync(['dolt', 'status'], {
-          cwd: workspace_root
-        });
-        const status_text = `${status.stdout}\n${status.stderr}`;
-        let started_dolt = false;
-
-        if (/not running|Expected port:\s*0/.test(status_text)) {
-          const started = await runBdSync(['dolt', 'start'], {
-            cwd: workspace_root
-          });
-          if (started.code !== 0) {
-            throw new Error(started.stderr || 'Failed to start Dolt server');
-          }
-          started_dolt = true;
-        }
-
-        const pulled = await runBdSync(['dolt', 'pull'], {
-          cwd: workspace_root
-        });
-        if (pulled.code !== 0) {
-          throw new Error(pulled.stderr || 'Failed to pull workspace');
-        }
-
-        const refreshed = CURRENT_WORKSPACE?.root_dir === workspace_root;
-        if (refreshed) {
-          await refreshAllActiveListSubscriptions();
-        }
-
-        return {
-          workspace: buildWorkspacePayload(workspace_root),
-          started_dolt,
-          pulled: true,
-          refreshed
-        };
-      });
-
-      ws.send(JSON.stringify(makeOk(req, result)));
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      ws.send(
-        JSON.stringify(
-          makeError(req, 'bd_error', error, {
-            workspace_root,
-            reason
-          })
-        )
-      );
-    }
     return;
   }
 

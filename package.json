@@ -20,7 +20,6 @@
   "scripts": {
     "all": "npm run lint && npm run tsc && npm test && npm run prettier:check",
     "start": "node server/index.js --debug",
-    "deploy:shared": "\"$HOME/Documents/GitHub/dotfiles/shell/bin/bdui-deploy\" .",
     "build": "node scripts/build-frontend.js",
     "test": "vitest run",
     "test:watch": "vitest",

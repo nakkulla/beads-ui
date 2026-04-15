@@ -4,16 +4,9 @@ import { printServerUrl } from './cli/daemon.js';
 import { getConfig } from './config.js';
 import { resolveWorkspaceDatabase } from './db.js';
 import { debug, enableAllDebug } from './logging.js';
-import {
-  registerWorkspace,
-  replaceDiscoveredWorkspaces,
-  watchRegistry
-} from './registry-watcher.js';
+import { registerWorkspace, watchRegistry } from './registry-watcher.js';
 import { watchDb } from './watcher.js';
-import {
-  discoverWorkspaces,
-  watchWorkspaceDiscovery
-} from './workspace-discovery.js';
+import { discoverWorkspaces } from './workspace-discovery.js';
 import { attachWsServer } from './ws.js';
 
 if (process.argv.includes('--debug') || process.argv.includes('-d')) {
@@ -35,21 +28,6 @@ const app = createApp(config);
 const server = createServer(app);
 const log = debug('server');
 
-/**
- * @param {Array<{ path: string, database: string }>} workspaces
- * @returns {string}
- */
-function serializeWorkspaceSnapshot(workspaces) {
-  return JSON.stringify(
-    workspaces
-      .map((workspace) => ({
-        path: workspace.path,
-        database: workspace.database
-      }))
-      .sort((a, b) => a.path.localeCompare(b.path))
-  );
-}
-
 // Register the initial workspace (from cwd) so it appears in the workspace picker
 // even without the beads daemon running
 const workspace_database = resolveWorkspaceDatabase({ cwd: config.root_dir });
@@ -60,9 +38,9 @@ if (workspace_database.source !== 'home-default' && workspace_database.exists) {
   });
 }
 
-const discovered_workspaces = discoverWorkspaces();
-let discovered_snapshot_key = serializeWorkspaceSnapshot(discovered_workspaces);
-replaceDiscoveredWorkspaces(discovered_workspaces);
+for (const workspace of discoverWorkspaces()) {
+  registerWorkspace(workspace);
+}
 
 // Watch the active beads DB and schedule subscription refresh for active lists
 const db_watcher = watchDb(config.root_dir, () => {
@@ -72,28 +50,13 @@ const db_watcher = watchDb(config.root_dir, () => {
   // v2: all updates flow via subscription push envelopes only
 });
 
-const { scheduleListRefresh, broadcast } = attachWsServer(server, {
+const { scheduleListRefresh } = attachWsServer(server, {
   path: '/ws',
   heartbeat_ms: 30000,
   // Coalesce DB change bursts into one refresh run
   refresh_debounce_ms: 75,
   root_dir: config.root_dir,
   watcher: db_watcher
-});
-
-watchWorkspaceDiscovery({
-  onChange(workspaces) {
-    const next_snapshot_key = serializeWorkspaceSnapshot(workspaces);
-    if (next_snapshot_key === discovered_snapshot_key) {
-      return;
-    }
-    discovered_snapshot_key = next_snapshot_key;
-    replaceDiscoveredWorkspaces(workspaces);
-    broadcast('workspaces-updated', { count: workspaces.length });
-  },
-  onError(err) {
-    log('workspace discovery watcher error %o', err);
-  }
 });
 
 // Watch the global registry for workspace changes (e.g., when user starts

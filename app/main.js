@@ -222,161 +222,6 @@ export function bootstrap(root_element) {
       ensureTabSubscriptions(store.getState());
     }
 
-    /** @type {ReturnType<typeof setInterval> | null} */
-    let auto_sync_timer = null;
-    /** @type {Set<string>} */
-    const syncing_workspace_paths = new Set();
-    /** @type {string | null} */
-    let pending_workspace_switch_path = null;
-
-    /**
-     * @param {any} workspace
-     * @returns {import('./state.js').WorkspaceInfo | null}
-     */
-    function normalizeWorkspaceInfo(workspace) {
-      if (!workspace) {
-        return null;
-      }
-      const path_value =
-        typeof workspace.path === 'string'
-          ? workspace.path
-          : typeof workspace.root_dir === 'string'
-            ? workspace.root_dir
-            : '';
-      const database_value =
-        typeof workspace.database === 'string'
-          ? workspace.database
-          : typeof workspace.db_path === 'string'
-            ? workspace.db_path
-            : '';
-      if (!path_value || !database_value) {
-        return null;
-      }
-
-      return {
-        path: path_value,
-        database: database_value,
-        backend: workspace.backend === 'dolt' ? 'dolt' : 'sqlite',
-        can_sync: workspace.can_sync === true,
-        pid: typeof workspace.pid === 'number' ? workspace.pid : undefined,
-        version:
-          typeof workspace.version === 'string' ? workspace.version : undefined
-      };
-    }
-
-    /**
-     * @param {any[]} workspaces
-     * @returns {import('./state.js').WorkspaceInfo[]}
-     */
-    function normalizeWorkspaceList(workspaces) {
-      /** @type {import('./state.js').WorkspaceInfo[]} */
-      const items = [];
-      for (const workspace of workspaces) {
-        const normalized = normalizeWorkspaceInfo(workspace);
-        if (normalized) {
-          items.push(normalized);
-        }
-      }
-      return items;
-    }
-
-    /**
-     * Restart the auto-sync timer for the current workspace.
-     */
-    function resetAutoSyncTimer() {
-      if (auto_sync_timer) {
-        clearInterval(auto_sync_timer);
-        auto_sync_timer = null;
-      }
-
-      const state = store.getState();
-      const current = state.workspace.current;
-      const auto_sync_mode = state.sync.auto_sync_mode;
-      const interval_ms =
-        auto_sync_mode === '30s' ? 30000 : auto_sync_mode === '60s' ? 60000 : 0;
-
-      if (!current || !current.can_sync || interval_ms === 0) {
-        return;
-      }
-
-      auto_sync_timer = setInterval(() => {
-        void syncCurrentWorkspace('auto');
-      }, interval_ms);
-    }
-
-    /**
-     * Sync the store-level loading state with the current workspace path.
-     */
-    function updateCurrentSyncState() {
-      const current_path = store.getState().workspace.current?.path || '';
-      store.setState({
-        sync: {
-          is_syncing: current_path
-            ? syncing_workspace_paths.has(current_path)
-            : false
-        }
-      });
-    }
-
-    /**
-     * @param {'manual'|'auto'|'workspace-switch'} [reason]
-     */
-    async function syncCurrentWorkspace(reason = 'manual') {
-      const current = store.getState().workspace.current;
-      if (!current || !current.can_sync) {
-        return;
-      }
-
-      const started_for = current.path;
-      if (syncing_workspace_paths.has(started_for)) {
-        return;
-      }
-
-      syncing_workspace_paths.add(started_for);
-      updateCurrentSyncState();
-      try {
-        await client.send('sync-workspace', {
-          reason,
-          path: current.path
-        });
-
-        const still_current =
-          store.getState().workspace.current?.path === started_for;
-        if (still_current && reason === 'manual') {
-          showToast('Synced ' + getProjectName(started_for), 'success', 2000);
-        }
-      } catch (err) {
-        log('workspace sync failed: %o', err);
-        const still_current =
-          store.getState().workspace.current?.path === started_for;
-        if (still_current) {
-          showToast(
-            'Sync failed for ' + getProjectName(started_for),
-            'error',
-            3000
-          );
-        }
-      } finally {
-        syncing_workspace_paths.delete(started_for);
-        updateCurrentSyncState();
-      }
-    }
-
-    /**
-     * @param {string} next_mode
-     */
-    function handleAutoSyncChange(next_mode) {
-      const auto_sync_mode =
-        next_mode === '30s' || next_mode === '60s' ? next_mode : 'off';
-      window.localStorage.setItem('beads-ui.auto-sync', auto_sync_mode);
-      store.setState({
-        sync: {
-          auto_sync_mode
-        }
-      });
-      resetAutoSyncTimer();
-    }
-
     /**
      * Handle workspace change request from the picker.
      *
@@ -384,34 +229,34 @@ export function bootstrap(root_element) {
      */
     async function handleWorkspaceChange(workspace_path) {
       log('requesting workspace switch to %s', workspace_path);
-      pending_workspace_switch_path = workspace_path;
       try {
         const result = await client.send('set-workspace', {
           path: workspace_path
         });
         log('workspace switch result: %o', result);
         if (result && result.workspace) {
-          window.localStorage.setItem('beads-ui.workspace', workspace_path);
-
-          if (result.changed) {
-            log(
-              'awaiting workspace-changed event before finalizing switch to %s',
-              workspace_path
-            );
-          } else {
-            const current = normalizeWorkspaceInfo(result.workspace);
-            pending_workspace_switch_path = null;
-            store.setState({
-              workspace: {
-                current
+          // Update state with new workspace
+          store.setState({
+            workspace: {
+              current: {
+                path: result.workspace.root_dir,
+                database: result.workspace.db_path
               }
-            });
-            updateCurrentSyncState();
-            resetAutoSyncTimer();
+            }
+          });
+          // Persist preference
+          window.localStorage.setItem('beads-ui.workspace', workspace_path);
+          // Clear and resubscribe if workspace actually changed
+          if (result.changed) {
+            await clearAndResubscribe();
+            showToast(
+              'Switched to ' + getProjectName(workspace_path),
+              'success',
+              2000
+            );
           }
         }
       } catch (err) {
-        pending_workspace_switch_path = null;
         log('workspace switch failed: %o', err);
         showToast('Failed to switch workspace', 'error', 3000);
         throw err;
@@ -432,29 +277,30 @@ export function bootstrap(root_element) {
 
     /**
      * Load available workspaces from server and update state.
-     *
-     * @param {{ restore_saved?: boolean }} [options]
      */
-    async function loadWorkspaces(options = {}) {
+    async function loadWorkspaces() {
       try {
         const result = await client.send('list-workspaces', {});
         log('workspaces loaded: %o', result);
         if (result && Array.isArray(result.workspaces)) {
-          const available = normalizeWorkspaceList(result.workspaces);
-          const current = normalizeWorkspaceInfo(result.current);
+          const available = result.workspaces.map((/** @type {any} */ ws) => ({
+            path: ws.path,
+            database: ws.database,
+            pid: ws.pid,
+            version: ws.version
+          }));
+          const current = result.current
+            ? {
+                path: result.current.root_dir,
+                database: result.current.db_path
+              }
+            : null;
           store.setState({ workspace: { current, available } });
-          updateCurrentSyncState();
 
           // Check if we have a saved preference that differs from current
           const savedWorkspace =
             window.localStorage.getItem('beads-ui.workspace');
-          const restore_saved = options.restore_saved === true;
-          if (
-            restore_saved &&
-            savedWorkspace &&
-            current &&
-            savedWorkspace !== current.path
-          ) {
+          if (savedWorkspace && current && savedWorkspace !== current.path) {
             // Check if saved workspace is in available list
             const savedExists = available.some(
               (/** @type {{ path: string }} */ ws) => ws.path === savedWorkspace
@@ -462,10 +308,8 @@ export function bootstrap(root_element) {
             if (savedExists) {
               log('restoring saved workspace preference: %s', savedWorkspace);
               await handleWorkspaceChange(savedWorkspace);
-              return;
             }
           }
-          resetAutoSyncTimer();
         }
       } catch (err) {
         log('failed to load workspaces: %o', err);
@@ -475,38 +319,20 @@ export function bootstrap(root_element) {
     // Handle workspace-changed events from server (e.g., if another client changes workspace)
     client.on('workspace-changed', (payload) => {
       log('workspace-changed event: %o', payload);
-      const current = normalizeWorkspaceInfo(payload);
-      if (current) {
-        const is_local_switch = pending_workspace_switch_path === current.path;
-        if (is_local_switch) {
-          pending_workspace_switch_path = null;
-          window.localStorage.setItem('beads-ui.workspace', current.path);
-        }
+      if (payload && payload.root_dir) {
         store.setState({
           workspace: {
-            current
+            current: {
+              path: payload.root_dir,
+              database: payload.db_path
+            }
           }
         });
-        updateCurrentSyncState();
+        // Reload workspaces to get fresh list
+        void loadWorkspaces();
         // Clear and resubscribe
         void clearAndResubscribe();
-        void syncCurrentWorkspace('workspace-switch');
-        if (is_local_switch) {
-          showToast(
-            'Switched to ' + getProjectName(current.path),
-            'success',
-            2000
-          );
-        }
-        // Reload workspaces to get fresh list without restoring the saved startup preference
-        void loadWorkspaces({ restore_saved: false });
-        resetAutoSyncTimer();
       }
-    });
-
-    client.on('workspaces-updated', () => {
-      log('workspaces-updated event');
-      void loadWorkspaces();
     });
 
     // --- End workspace management (mounting happens after store is created) ---
@@ -602,25 +428,11 @@ export function bootstrap(root_element) {
     } catch (err) {
       log('board prefs parse error: %o', err);
     }
-    /** @type {'off'|'30s'|'60s'} */
-    let persisted_auto_sync = 'off';
-    try {
-      const raw_auto_sync = window.localStorage.getItem('beads-ui.auto-sync');
-      if (raw_auto_sync === '30s' || raw_auto_sync === '60s') {
-        persisted_auto_sync = raw_auto_sync;
-      }
-    } catch (err) {
-      log('auto sync parse error: %o', err);
-    }
 
     const store = createStore({
       filters: persisted_filters,
       view: last_view,
-      board: persistedBoard,
-      sync: {
-        is_syncing: false,
-        auto_sync_mode: persisted_auto_sync
-      }
+      board: persistedBoard
     });
     const router = createHashRouter(store);
     router.start();
@@ -643,15 +455,10 @@ export function bootstrap(root_element) {
     // Workspace picker (mount now that store exists)
     const workspace_mount = document.getElementById('workspace-picker');
     if (workspace_mount) {
-      createWorkspacePicker(workspace_mount, store, handleWorkspaceChange, {
-        onSyncNow: () => {
-          void syncCurrentWorkspace('manual');
-        },
-        onAutoSyncChange: handleAutoSyncChange
-      });
+      createWorkspacePicker(workspace_mount, store, handleWorkspaceChange);
     }
     // Load workspaces after WebSocket is connected
-    void loadWorkspaces({ restore_saved: true });
+    void loadWorkspaces();
 
     // Global New Issue dialog (UI-106) mounted at root so it is always visible
     const new_issue_dialog = createNewIssueDialog(

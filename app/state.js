@@ -27,18 +27,8 @@ import { debug } from './utils/logging.js';
  * @typedef {Object} WorkspaceInfo
  * @property {string} path - Full path to workspace
  * @property {string} database - Path to the database file
- * @property {'dolt'|'sqlite'} [backend] - Workspace backend type
- * @property {boolean} [can_sync] - Whether Dolt sync is supported
  * @property {number} [pid] - Process ID of the daemon
  * @property {string} [version] - Version of beads
- */
-
-/**
- * @typedef {'off'|'30s'|'60s'} AutoSyncMode
- */
-
-/**
- * @typedef {{ is_syncing: boolean, auto_sync_mode: AutoSyncMode }} SyncState
  */
 
 /**
@@ -48,14 +38,14 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, workspace: WorkspaceState, sync: SyncState }} AppState
+ * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, workspace: WorkspaceState }} AppState
  */
 
 /**
  * Create a simple store for application state.
  *
  * @param {Partial<AppState>} [initial]
- * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, filters?: Partial<Filters>, board?: Partial<BoardState>, workspace?: Partial<WorkspaceState>, sync?: Partial<SyncState> }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
+ * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, filters?: Partial<Filters>, workspace?: Partial<WorkspaceState> }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
  */
 export function createStore(initial = {}) {
   const log = debug('state');
@@ -80,14 +70,6 @@ export function createStore(initial = {}) {
     workspace: {
       current: initial.workspace?.current ?? null,
       available: initial.workspace?.available ?? []
-    },
-    sync: {
-      is_syncing: initial.sync?.is_syncing ?? false,
-      auto_sync_mode:
-        initial.sync?.auto_sync_mode === '30s' ||
-        initial.sync?.auto_sync_mode === '60s'
-          ? initial.sync.auto_sync_mode
-          : 'off'
     }
   };
 
@@ -111,7 +93,7 @@ export function createStore(initial = {}) {
     /**
      * Update state. Nested filters can be partial.
      *
-     * @param {{ selected_id?: string | null, filters?: Partial<Filters>, board?: Partial<BoardState>, workspace?: Partial<WorkspaceState>, sync?: Partial<SyncState> }} patch
+     * @param {{ selected_id?: string | null, filters?: Partial<Filters>, board?: Partial<BoardState>, workspace?: Partial<WorkspaceState> }} patch
      */
     setState(patch) {
       /** @type {AppState} */
@@ -129,36 +111,12 @@ export function createStore(initial = {}) {
             patch.workspace?.available !== undefined
               ? patch.workspace.available
               : state.workspace.available
-        },
-        sync: {
-          ...state.sync,
-          ...(patch.sync || {})
         }
       };
       // Avoid emitting if nothing changed (shallow compare)
-      const next_available_key = next.workspace.available
-        .map(
-          (ws) =>
-            `${ws.path}|${ws.database}|${ws.backend || ''}|${ws.can_sync === true ? '1' : '0'}|${typeof ws.pid === 'number' ? ws.pid : ''}|${ws.version || ''}`
-        )
-        .join('||');
-      const current_available_key = state.workspace.available
-        .map(
-          (ws) =>
-            `${ws.path}|${ws.database}|${ws.backend || ''}|${ws.can_sync === true ? '1' : '0'}|${typeof ws.pid === 'number' ? ws.pid : ''}|${ws.version || ''}`
-        )
-        .join('||');
       const workspace_changed =
         next.workspace.current?.path !== state.workspace.current?.path ||
-        next.workspace.current?.database !==
-          state.workspace.current?.database ||
-        next.workspace.current?.backend !== state.workspace.current?.backend ||
-        next.workspace.current?.can_sync !==
-          state.workspace.current?.can_sync ||
-        next_available_key !== current_available_key;
-      const sync_changed =
-        next.sync.is_syncing !== state.sync.is_syncing ||
-        next.sync.auto_sync_mode !== state.sync.auto_sync_mode;
+        next.workspace.available.length !== state.workspace.available.length;
       if (
         next.selected_id === state.selected_id &&
         next.view === state.view &&
@@ -166,8 +124,7 @@ export function createStore(initial = {}) {
         next.filters.search === state.filters.search &&
         next.filters.type === state.filters.type &&
         next.board.closed_filter === state.board.closed_filter &&
-        !workspace_changed &&
-        !sync_changed
+        !workspace_changed
       ) {
         return;
       }
@@ -177,8 +134,7 @@ export function createStore(initial = {}) {
         view: state.view,
         filters: state.filters,
         board: state.board,
-        workspace: state.workspace.current?.path,
-        sync: state.sync
+        workspace: state.workspace.current?.path
       });
       emit();
     },
