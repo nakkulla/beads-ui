@@ -8,7 +8,11 @@ import { createApp } from './app.js';
  * @param {import('node:http').Server} server
  */
 async function listen(server) {
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => {
+    server.listen({ port: 0, host: '127.0.0.1' }, () => {
+      resolve(undefined);
+    });
+  });
   return /** @type {import('node:net').AddressInfo} */ (server.address());
 }
 
