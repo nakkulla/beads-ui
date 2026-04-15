@@ -226,6 +226,10 @@ export function bootstrap(root_element) {
     let auto_sync_timer = null;
     /** @type {Set<string>} */
     const syncing_workspace_paths = new Set();
+    /** @type {string | null} */
+    let suppressed_workspace_changed_sync_path = null;
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    let suppressed_workspace_changed_sync_timer = null;
 
     /**
      * @param {any} workspace
@@ -317,6 +321,42 @@ export function bootstrap(root_element) {
     }
 
     /**
+     * Suppress one matching workspace-changed sync after a local workspace switch.
+     *
+     * @param {string} workspace_path
+     */
+    function suppressWorkspaceChangedSync(workspace_path) {
+      if (suppressed_workspace_changed_sync_timer) {
+        clearTimeout(suppressed_workspace_changed_sync_timer);
+      }
+
+      suppressed_workspace_changed_sync_path = workspace_path;
+      suppressed_workspace_changed_sync_timer = setTimeout(() => {
+        suppressed_workspace_changed_sync_path = null;
+        suppressed_workspace_changed_sync_timer = null;
+      }, 5000);
+    }
+
+    /**
+     * Consume a pending workspace-changed sync suppression for the same path.
+     *
+     * @param {string} workspace_path
+     * @returns {boolean}
+     */
+    function consumeSuppressedWorkspaceChangedSync(workspace_path) {
+      if (suppressed_workspace_changed_sync_path !== workspace_path) {
+        return false;
+      }
+
+      suppressed_workspace_changed_sync_path = null;
+      if (suppressed_workspace_changed_sync_timer) {
+        clearTimeout(suppressed_workspace_changed_sync_timer);
+        suppressed_workspace_changed_sync_timer = null;
+      }
+      return true;
+    }
+
+    /**
      * @param {'manual'|'auto'|'workspace-switch'} [reason]
      */
     async function syncCurrentWorkspace(reason = 'manual') {
@@ -400,6 +440,7 @@ export function bootstrap(root_element) {
           window.localStorage.setItem('beads-ui.workspace', workspace_path);
           // Clear and resubscribe if workspace actually changed
           if (result.changed) {
+            suppressWorkspaceChangedSync(workspace_path);
             await clearAndResubscribe();
             resetAutoSyncTimer();
             void syncCurrentWorkspace('workspace-switch');
@@ -478,6 +519,9 @@ export function bootstrap(root_element) {
       log('workspace-changed event: %o', payload);
       const current = normalizeWorkspaceInfo(payload);
       if (current) {
+        const is_suppressed = consumeSuppressedWorkspaceChangedSync(
+          current.path
+        );
         store.setState({
           workspace: {
             current
@@ -486,7 +530,9 @@ export function bootstrap(root_element) {
         updateCurrentSyncState();
         // Clear and resubscribe
         void clearAndResubscribe();
-        void syncCurrentWorkspace('workspace-switch');
+        if (!is_suppressed) {
+          void syncCurrentWorkspace('workspace-switch');
+        }
         // Reload workspaces to get fresh list without restoring the saved startup preference
         void loadWorkspaces({ restore_saved: false });
         resetAutoSyncTimer();

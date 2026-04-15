@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 const DEFAULT_BIN_DIRS = ['/opt/homebrew/bin', '/usr/local/bin'];
 
 /**
@@ -11,7 +13,7 @@ export function buildSpawnPath(raw_path) {
   const parts = [];
   /** @type {Set<string>} */
   const seen = new Set();
-  const raw_parts = String(raw_path || '').split(':');
+  const raw_parts = String(raw_path || '').split(path.delimiter);
 
   for (const entry of [...DEFAULT_BIN_DIRS, ...raw_parts]) {
     const value = String(entry || '').trim();
@@ -22,5 +24,5 @@ export function buildSpawnPath(raw_path) {
     parts.push(value);
   }
 
-  return parts.join(':');
+  return parts.join(path.delimiter);
 }

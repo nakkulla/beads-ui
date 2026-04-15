@@ -80,6 +80,8 @@ describe('main sync-workspace integration', () => {
   });
 
   test('workspace switch triggers one best-effort sync', async () => {
+    /** @type {Record<string, (payload: any) => void>} */
+    const handlers = {};
     CLIENT = {
       send: vi.fn(async (type, payload) => {
         if (type === 'list-workspaces') {
@@ -130,11 +132,18 @@ describe('main sync-workspace integration', () => {
         }
         return null;
       }),
-      on() {
+      on(
+        /** @type {string} */ type,
+        /** @type {(payload: any) => void} */ handler
+      ) {
+        handlers[type] = handler;
         return () => {};
       },
       onConnection() {
         return () => {};
+      },
+      trigger(/** @type {string} */ type, /** @type {any} */ payload) {
+        handlers[type]?.(payload);
       },
       close() {},
       getState() {
@@ -151,6 +160,16 @@ describe('main sync-workspace integration', () => {
     );
     picker.value = '/tmp/b';
     picker.dispatchEvent(new Event('change'));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    CLIENT.trigger('workspace-changed', {
+      root_dir: '/tmp/b',
+      db_path: '/tmp/b/.beads',
+      backend: 'dolt',
+      can_sync: true
+    });
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
