@@ -20,6 +20,10 @@ async function listen(server) {
  * @param {import('node:http').Server} server
  */
 async function close(server) {
+  if (!server.listening) {
+    return;
+  }
+
   await new Promise((resolve, reject) => {
     server.close((error) => {
       if (error) {
@@ -55,14 +59,16 @@ describe('createApp live frontend mode', () => {
       frontend_mode: 'live'
     });
     const server = createServer(app);
-    const address = await listen(server);
+    let response;
+    let text;
 
-    const response = await fetch(
-      `http://127.0.0.1:${address.port}/main.bundle.js`
-    );
-    const text = await response.text();
-
-    await close(server);
+    try {
+      const address = await listen(server);
+      response = await fetch(`http://127.0.0.1:${address.port}/main.bundle.js`);
+      text = await response.text();
+    } finally {
+      await close(server);
+    }
 
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
@@ -81,14 +87,15 @@ describe('createApp live frontend mode', () => {
       frontend_mode: 'static'
     });
     const server = createServer(app);
-    const address = await listen(server);
+    let response;
 
-    const response = await fetch(
-      `http://127.0.0.1:${address.port}/main.bundle.js`
-    );
-    await response.arrayBuffer();
-
-    await close(server);
+    try {
+      const address = await listen(server);
+      response = await fetch(`http://127.0.0.1:${address.port}/main.bundle.js`);
+      await response.arrayBuffer();
+    } finally {
+      await close(server);
+    }
 
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).not.toBe('no-store');
