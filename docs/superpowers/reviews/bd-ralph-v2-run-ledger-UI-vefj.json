@@ -1,0 +1,180 @@
+{
+  "schema_version": "v1",
+  "workflow": "bd-ralph-v2",
+  "parent_bead_id": "UI-vefj",
+  "generated_at": "2026-04-15T06:32:20.640765Z",
+  "artifact_path": "docs/superpowers/reviews/bd-ralph-v2-run-ledger-UI-vefj.json",
+  "run": {
+    "canonical_worktree": "/Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/bd-ralph-v2-UI-vefj",
+    "canonical_branch": "bd-ralph-v2-UI-vefj",
+    "plan_path": "docs/superpowers/plans/2026-04-15-shared-server-live-mode.md",
+    "completed_task_count": 3,
+    "unresolved_task_count": 0,
+    "scope_narrowed": true,
+    "tracking_repo": "/Users/isy_macstudio/Documents/GitHub/beads-ui",
+    "execution_repo": "/Users/isy_macstudio/Documents/GitHub/beads-ui",
+    "repo_boundary_status": "narrowed-followup"
+  },
+  "phase_evidence": {
+    "setup": {
+      "ready_check": "ran",
+      "ready_match": "yes",
+      "ready_note": "ready",
+      "baseline_verification": "fail"
+    },
+    "plan": {
+      "plan_path": "docs/superpowers/plans/2026-04-15-shared-server-live-mode.md",
+      "plan_review": "run",
+      "plan_review_verdict": "APPROVE_WITH_CHANGES",
+      "stale_after_review": false
+    },
+    "seed": {
+      "push_ok": true,
+      "child_mapping_present": true,
+      "parent_lookup_success": true,
+      "child_lookup_success": true
+    },
+    "execute": {
+      "completed_task_count": 3,
+      "unresolved_task_count": 0,
+      "children": [
+        {
+          "id": "UI-vefj.3",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run tsc && npm test && npm run lint && npx prettier --check README.md server/config.js server/config.test.js server/app.js server/app.live-mode.test.js docs/superpowers/plans/2026-04-15-shared-server-live-mode.md"
+        },
+        {
+          "id": "UI-vefj.2",
+          "status": "resolved",
+          "verification_summary": "PASS: npx prettier --check README.md"
+        },
+        {
+          "id": "UI-vefj.1",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run tsc && npx vitest run server/config.test.js server/app.test.js server/app.live-mode.test.js && npx vitest run server/cli/*.test.js server/ws*.test.js && npx eslint server/config.js server/config.test.js server/app.js server/app.live-mode.test.js && npx prettier --check server/config.js server/config.test.js server/app.js server/app.live-mode.test.js"
+        }
+      ],
+      "task_verification_summary": [
+        {
+          "id": "UI-vefj.3",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run tsc && npm test && npm run lint && npx prettier --check README.md server/config.js server/config.test.js server/app.js server/app.live-mode.test.js docs/superpowers/plans/2026-04-15-shared-server-live-mode.md"
+        },
+        {
+          "id": "UI-vefj.2",
+          "status": "resolved",
+          "verification_summary": "PASS: npx prettier --check README.md"
+        },
+        {
+          "id": "UI-vefj.1",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run tsc && npx vitest run server/config.test.js server/app.test.js server/app.live-mode.test.js && npx vitest run server/cli/*.test.js server/ws*.test.js && npx eslint server/config.js server/config.test.js server/app.js server/app.live-mode.test.js && npx prettier --check server/config.js server/config.test.js server/app.js server/app.live-mode.test.js"
+        }
+      ],
+      "scope_narrowed": true
+    },
+    "review": {
+      "dispatch_history": [
+        {
+          "subject": "implementation-review",
+          "verdict": "APPROVE",
+          "external_attempts": 3,
+          "self_attempts": 0,
+          "escalated": false
+        }
+      ],
+      "final_verdict": "APPROVE",
+      "stale_after_code_change": false,
+      "reviewed_impl_applied": true
+    },
+    "simplify": {
+      "policy": "run",
+      "status": "changed",
+      "verification": "pass",
+      "rereview": "ran",
+      "commit_sha": "2a8b10f50c66d07d6383ed4c5bdaf473c1665b81"
+    },
+    "finish": {
+      "pr_url": "https://github.com/nakkulla/beads-ui/pull/3",
+      "pr_number": "3",
+      "final_quality_gate_success": true,
+      "first_branch_push_success": true,
+      "final_git_status": "clean",
+      "final_parent_status": "resolved",
+      "final_children_status": "all-resolved",
+      "run_ledger_write_success": true,
+      "metadata_sync_success": true,
+      "artifact_only_second_commit_success": true,
+      "second_branch_push_success": true
+    }
+  },
+  "invocations": [],
+  "failures": [
+    {
+      "phase": "finish",
+      "classification": "followup_required",
+      "reason": "dotfiles operational scope was intentionally excluded from this beads-ui-only run",
+      "next_safe_action": "Complete dotfiles-6ch before considering the broader parent scope fully done",
+      "followup_id": "dotfiles-6ch"
+    }
+  ],
+  "review": {
+    "review_debt_summary": "none",
+    "plan_review": {
+      "final_verdict": "APPROVE_WITH_CHANGES",
+      "final_source": "external",
+      "external_attempts": 2,
+      "self_attempts": 0,
+      "escalated": false,
+      "budget_exhausted": false,
+      "reviewed_plan_applied": true,
+      "debt_present": false
+    },
+    "implementation_review": {
+      "signals": [],
+      "final_verdict": "APPROVE",
+      "final_source": "external",
+      "external_attempts": 3,
+      "self_attempts": 0,
+      "escalated": false,
+      "budget_exhausted": false,
+      "stale_after_code_change": false,
+      "forced_handoff": false,
+      "reviewed_impl_applied": true
+    },
+    "simplify": {
+      "policy": "run",
+      "status": "changed",
+      "verification": "pass",
+      "rereview": "ran",
+      "commit_sha": "2a8b10f50c66d07d6383ed4c5bdaf473c1665b81"
+    }
+  },
+  "acceptance": {
+    "status": "accepted_with_followup",
+    "blocking_checks": [],
+    "waived_checks": [],
+    "summary": {
+      "pr_url": "https://github.com/nakkulla/beads-ui/pull/3",
+      "implementation_review_verdict": "APPROVE"
+    }
+  },
+  "followup": [
+    {
+      "id": "dotfiles-6ch",
+      "owner": "dotfiles",
+      "reason": "Cross-repo dotfiles operational work excluded from this beads-ui-only run",
+      "required_action": "Implement shared wrapper, launchd, and restart command changes in dotfiles"
+    }
+  ],
+  "summary": {
+    "audit_version": "v1",
+    "audit_status": "accepted_with_followup",
+    "audit_artifact": "docs/superpowers/reviews/bd-ralph-v2-run-ledger-UI-vefj.json",
+    "canonical_worktree": "/Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/bd-ralph-v2-UI-vefj",
+    "canonical_branch": "bd-ralph-v2-UI-vefj",
+    "completed_task_count": "3",
+    "unresolved_task_count": "0",
+    "implementation_review_verdict": "APPROVE"
+  }
+}
