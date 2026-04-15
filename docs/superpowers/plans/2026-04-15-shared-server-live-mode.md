@@ -34,7 +34,7 @@
 | Modify | `../dotfiles/shell/launchd/com.beads-ui.server.plist` | 새 wrapper/운영 규칙과 일치하는 launchd 설정 유지 |
 | Delete | `../dotfiles/shell/bin/bdui-deploy` | 전역 재설치 기반 deploy 흐름 제거 |
 | Delete | `../dotfiles/shell/bin/bdui-dolt-sync` | background sync 유틸 제거 |
-| Modify | `../dotfiles/CLAUDE.md` or relevant ops doc | shared restart canonical command와 live mode 정책 문서화 |
+| Modify | `../dotfiles/CLAUDE.md` | shared restart canonical command와 live mode 정책 문서화 |
 
 ---
 
@@ -50,10 +50,10 @@
 `server/app.live-mode.test.js`를 새로 만들고 다음 테스트를 추가한다.
 
 ```js
-import { beforeEach, describe, expect, test, vi } from 'vitest';
 import fs from 'node:fs';
+import { createServer } from 'node:http';
 import path from 'node:path';
-import request from 'supertest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createApp } from './app.js';
 
 vi.mock('node:fs', async () => {
@@ -71,6 +71,10 @@ describe('createApp live frontend mode', () => {
     vi.restoreAllMocks();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   test('serves on-demand bundle when frontend_mode is live even if bundle file exists', async () => {
     vi.spyOn(fs, 'statSync').mockReturnValue({ isFile: () => true });
 
@@ -81,13 +85,19 @@ describe('createApp live frontend mode', () => {
       root_dir: process.cwd(),
       frontend_mode: 'live'
     });
+    const server = createServer(app);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = /** @type {import('node:net').AddressInfo} */ (server.address());
 
-    const res = await request(app).get('/main.bundle.js');
+    const res = await fetch(`http://127.0.0.1:${address.port}/main.bundle.js`);
+    const text = await res.text();
+
+    server.close();
 
     expect(res.status).toBe(200);
-    expect(res.headers['cache-control']).toBe('no-store');
-    expect(res.headers['content-type']).toContain('application/javascript');
-    expect(res.text).toContain('createHashRouter');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('content-type')).toContain('application/javascript');
+    expect(text).toContain('createHashRouter');
   });
 
   test('uses static bundle when frontend_mode is static and bundle file exists', async () => {
@@ -98,11 +108,16 @@ describe('createApp live frontend mode', () => {
       root_dir: process.cwd(),
       frontend_mode: 'static'
     });
+    const server = createServer(app);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = /** @type {import('node:net').AddressInfo} */ (server.address());
 
-    const res = await request(app).get('/main.bundle.js');
+    const res = await fetch(`http://127.0.0.1:${address.port}/main.bundle.js`);
+
+    server.close();
 
     expect(res.status).toBe(200);
-    expect(res.headers['cache-control']).not.toBe('no-store');
+    expect(res.headers.get('cache-control')).not.toBe('no-store');
   });
 });
 ```
@@ -493,7 +508,7 @@ git -C ../dotfiles commit -m "chore: launchd shared server 설정 정리"   # �
 **Files:**
 - Delete: `../dotfiles/shell/bin/bdui-deploy`
 - Delete: `../dotfiles/shell/bin/bdui-dolt-sync`
-- Modify: `../dotfiles/CLAUDE.md` or the relevant operator-facing doc that currently references these flows
+- Modify: `../dotfiles/CLAUDE.md`
 
 - [ ] **Step 1: obsolete 스크립트 참조 검색**
 
@@ -607,7 +622,6 @@ git -C ../dotfiles status --short
 ```
 
 Expected: 변경 범위가 plan과 일치
-```
 
 ## Self-Review Checklist
 
