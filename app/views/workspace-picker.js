@@ -24,13 +24,21 @@ function getProjectName(workspace_path) {
  * @param {HTMLElement} mount_element
  * @param {{ getState: () => any, subscribe: (fn: (s: any) => void) => () => void }} store
  * @param {(workspace_path: string) => Promise<void>} onWorkspaceChange
+ * @param {(workspace_path: string) => Promise<void>} [onWorkspaceSync]
  */
-export function createWorkspacePicker(mount_element, store, onWorkspaceChange) {
+export function createWorkspacePicker(
+  mount_element,
+  store,
+  onWorkspaceChange,
+  onWorkspaceSync = async () => {}
+) {
   const log = debug('views:workspace-picker');
   /** @type {(() => void) | null} */
   let unsubscribe = null;
   /** @type {boolean} */
   let is_switching = false;
+  /** @type {boolean} */
+  let is_syncing = false;
 
   /**
    * Handle workspace selection change.
@@ -58,10 +66,48 @@ export function createWorkspacePicker(mount_element, store, onWorkspaceChange) {
     }
   }
 
+  async function onSyncClick() {
+    const current_path = store.getState().workspace?.current?.path || '';
+    if (!current_path || is_syncing) {
+      return;
+    }
+
+    log('syncing workspace %s', current_path);
+    is_syncing = true;
+    doRender();
+    try {
+      await onWorkspaceSync(current_path);
+    } catch (err) {
+      log('workspace sync failed: %o', err);
+    } finally {
+      is_syncing = false;
+      doRender();
+    }
+  }
+
+  function renderSyncButton(current_path) {
+    if (!current_path) {
+      return html``;
+    }
+
+    return html`
+      <button
+        type="button"
+        class="workspace-picker__sync-button"
+        @click=${onSyncClick}
+        ?disabled=${is_switching || is_syncing}
+        aria-label="Sync current workspace"
+      >
+        ${is_syncing ? 'Syncing…' : 'Sync'}
+      </button>
+    `;
+  }
+
   function template() {
     const s = store.getState();
     const current = s.workspace?.current;
     const available = s.workspace?.available || [];
+    const current_path = current?.path || available[0]?.path || '';
 
     // Don't render if no workspaces available
     if (available.length === 0) {
@@ -76,18 +122,24 @@ export function createWorkspacePicker(mount_element, store, onWorkspaceChange) {
           <span class="workspace-picker__label" title="${available[0].path}"
             >${name}</span
           >
+          ${renderSyncButton(current_path)}
+          ${is_syncing
+            ? html`<span
+                class="workspace-picker__loading"
+                aria-hidden="true"
+              ></span>`
+            : ''}
         </div>
       `;
     }
 
     // Multiple workspaces: show dropdown
-    const current_path = current?.path || '';
     return html`
       <div class="workspace-picker">
         <select
           class="workspace-picker__select"
           @change=${onChange}
-          ?disabled=${is_switching}
+          ?disabled=${is_switching || is_syncing}
           aria-label="Select project workspace"
         >
           ${available.map(
@@ -102,7 +154,8 @@ export function createWorkspacePicker(mount_element, store, onWorkspaceChange) {
             `
           )}
         </select>
-        ${is_switching
+        ${renderSyncButton(current_path)}
+        ${is_switching || is_syncing
           ? html`<span
               class="workspace-picker__loading"
               aria-hidden="true"
