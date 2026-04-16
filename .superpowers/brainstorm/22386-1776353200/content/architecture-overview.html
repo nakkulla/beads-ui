@@ -1,0 +1,85 @@
+
+<h2>Worker Jobs: 현재 구조 vs 추천 구조</h2>
+<p class="subtitle">추천안은 <strong>Backend/Supervisor 분리</strong>입니다. 핵심은 job의 truth source를 UI 서버 밖으로 분리하는 것입니다.</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">현재 구조</div>
+    <div class="mockup-body">
+      <div class="section">
+        <div class="label">Flow</div>
+        <div class="mock-nav">Browser UI</div>
+        <div class="placeholder">beads-ui server<br>API + in-memory jobs + spawn(codex exec)</div>
+        <div class="placeholder">child process</div>
+      </div>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>장점</h4>
+          <ul>
+            <li>구현 단순</li>
+            <li>기존 구조 확장 쉬움</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>한계</h4>
+          <ul>
+            <li>서버 재시작 시 상태 취약</li>
+            <li>cancel/log/recovery 확장성 낮음</li>
+            <li>UI 서버에 책임 집중</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">추천 구조 (Approach B)</div>
+    <div class="mockup-body">
+      <div class="section">
+        <div class="label">Flow</div>
+        <div class="mock-nav">Browser UI</div>
+        <div class="placeholder">beads-ui server<br>UI + API gateway</div>
+        <div class="placeholder">Local Job Backend / Supervisor<br>job store + runner + cancel + recovery</div>
+        <div style="display:flex; gap:12px;">
+          <div class="placeholder" style="flex:1;">Runner: direct process</div>
+          <div class="placeholder" style="flex:1;">Optional attach/debug: tmux</div>
+        </div>
+        <div class="placeholder">logs / events / elapsed time</div>
+      </div>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>장점</h4>
+          <ul>
+            <li>서버 재시작 후에도 복구 가능</li>
+            <li>cancel, log, history 확장 쉬움</li>
+            <li>UI와 실행 책임 분리</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>비용</h4>
+          <ul>
+            <li>구성요소 1개 증가</li>
+            <li>초기 설계 난이도 상승</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="keep-b" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>이 방향 유지</h3>
+      <p>Supervisor 분리 구조로 설계를 계속 진행합니다.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="adjust-b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>조정 필요</h3>
+      <p>분리 구조는 맞지만, 경계나 구성요소를 더 단순화/변경하고 싶습니다.</p>
+    </div>
+  </div>
+</div>
