@@ -161,6 +161,35 @@ supervisor + SQLite job store로 옮긴다.**
 즉, 사용자 입장에서는 Worker 탭이 job manager를 제공하지만,
 실제 실행 ownership은 항상 companion supervisor에 있다.
 
+### 1.4.1 bootstrap / runtime contract
+
+supervisor의 process management는 기존 `server/cli/daemon.js`의 detached daemon 패턴을
+worker-supervisor 용도로 좁혀 재사용하는 방향으로 고정한다.
+
+- entrypoint: Worker jobs 전용 supervisor entry script
+- launch owner: `beads-ui` server
+- runtime contract:
+  - detached process
+  - PID file
+  - append-only daemon log
+  - health check endpoint
+
+worker-supervisor runtime 경로는 repo-local state 아래로 고정한다.
+
+- runtime root: `.bdui/worker-jobs/runtime/`
+- PID file: `.bdui/worker-jobs/runtime/supervisor.pid`
+- daemon log: `.bdui/worker-jobs/runtime/supervisor.log`
+
+`beads-ui`는 Worker jobs API 요청 처리 전에 다음 순서로 companion 상태를 확인한다.
+
+1. PID file 존재 여부 확인
+2. PID가 가리키는 process 존재 여부 확인
+3. companion health endpoint 확인
+4. 실패 시 companion 재기동
+
+즉, supervisor bootstrap은 ad hoc process management가 아니라,
+기존 daemon/runtime 계약(PID/log/health check)을 worker-supervisor 전용으로 재사용하는 것으로 본다.
+
 ## 2. 데이터 모델
 
 ### 2.1 jobs 테이블
@@ -175,7 +204,8 @@ supervisor + SQLite job store로 옮긴다.**
 - `status`
 - `runner_kind` (`process` 기본)
 - `pid` nullable
-- `started_at`
+- `created_at`
+- `started_at` nullable
 - `finished_at` nullable
 - `cancel_requested_at` nullable
 - `grace_deadline_at` nullable
@@ -203,9 +233,12 @@ UI에서 바로 쓰기 좋은 derived field는 API 레이어에서 계산한다.
 - `succeeded`
 - `failed`
 - `cancelled`
-- `unknown`
 
-`unknown`은 recovery/reconcile 과정에서만 짧게 사용하는 복구용 상태다.
+`unknown`은 **durable canonical status가 아니다.**
+
+- DB의 canonical `status` 값에는 저장하지 않는다.
+- reconcile 중 runner 상태를 즉시 확정하지 못한 짧은 순간에만 API/view-model에서 사용하는 transient 상태다.
+- reconcile pass 종료 시점에는 canonical status(`running`, `cancelling`, `failed` 등)로 정리되어야 한다.
 
 ### 2.3 cancel 메타데이터
 
@@ -222,10 +255,17 @@ cancel은 별도 boolean보다 **상태 + 시각 필드**로 표현한다.
 
 elapsed time은 timestamp 기반으로 계산한다.
 
+- `queued` 상태에서는 `now - created_at`
 - active 상태(`starting`, `running`, `cancelling`)에서는 `now - started_at`
 - final state에서는 `finished_at - started_at`
 
 즉, elapsed 자체를 지속적으로 DB에 기록하지 않고 API/UI에서 파생 계산한다.
+
+여기서 각 timestamp 의미는 다음처럼 고정한다.
+
+- `created_at`: job row가 enqueue/accepted 된 시각
+- `started_at`: runner process가 실제 시작된 시각
+- `finished_at`: terminal state로 확정된 시각
 
 ### 2.5 job_events 테이블
 
@@ -263,6 +303,14 @@ elapsed time은 timestamp 기반으로 계산한다.
 
 ## 3.1 UI-facing API (`beads-ui`)
 
+HTTP boundary에서는 **camelCase**를 canonical field shape로 사용한다.
+
+- request/response JSON: `issueId`, `prNumber`, `workspace`, `startedAt`, `finishedAt`
+- SQLite/internal store column: `issue_id`, `pr_number`, `workspace_path`, `started_at`, `finished_at`
+
+즉, API와 persistence 레이어는 naming convention을 분리하고,
+`beads-ui`와 supervisor 사이의 HTTP contract는 camelCase로 고정한다.
+
 첫 버전 `beads-ui`는 아래 API를 제공한다.
 
 - `GET /api/worker/jobs?workspace=/absolute/path/to/workspace`
@@ -281,6 +329,10 @@ elapsed time은 timestamp 기반으로 계산한다.
     { "command": "bd-ralph-v2", "issueId": "dotfiles-fzn", "workspace": "/repo" }
     ```
 
+    ```json
+    { "command": "pr-review", "issueId": "UI-62lm", "workspace": "/repo", "prNumber": 42 }
+    ```
+
 - `POST /api/worker/jobs/:jobId/cancel`
   - cancel request accepted 여부, grace deadline 반환
 
@@ -288,6 +340,113 @@ elapsed time은 timestamp 기반으로 계산한다.
   - 최근 N줄 tail 반환
 
 첫 버전은 polling 기반으로 충분하며 websocket/SSE는 도입하지 않는다.
+
+### 3.1.1 canonical response shape
+
+주요 endpoint의 response shape는 아래처럼 고정한다.
+
+#### `GET /api/worker/jobs`
+
+```json
+{
+  "items": [
+    {
+      "id": "job-123",
+      "command": "bd-ralph-v2",
+      "issueId": "UI-qclw",
+      "prNumber": null,
+      "workspace": "/repo",
+      "status": "running",
+      "runnerKind": "process",
+      "startedAt": "2026-04-17T01:23:45Z",
+      "finishedAt": null,
+      "elapsedMs": 120000,
+      "isCancellable": true,
+      "finalResult": null,
+      "errorSummary": null
+    }
+  ]
+}
+```
+
+#### `GET /api/worker/jobs/:jobId`
+
+```json
+{
+  "item": {
+    "id": "job-123",
+    "command": "bd-ralph-v2",
+    "issueId": "UI-qclw",
+    "prNumber": null,
+    "workspace": "/repo",
+    "status": "running",
+    "runnerKind": "process",
+    "createdAt": "2026-04-17T01:23:40Z",
+    "startedAt": "2026-04-17T01:23:45Z",
+    "finishedAt": null,
+    "cancelRequestedAt": null,
+    "graceDeadlineAt": null,
+    "elapsedMs": 120000,
+    "isCancellable": true,
+    "finalResult": null,
+    "errorSummary": null,
+    "events": [],
+    "logPreview": {
+      "path": ".bdui/worker-jobs/logs/job-123.log",
+      "tail": []
+    }
+  }
+}
+```
+
+#### `POST /api/worker/jobs/:jobId/cancel`
+
+```json
+{
+  "item": {
+    "id": "job-123",
+    "status": "cancelling",
+    "cancelRequestedAt": "2026-04-17T01:25:00Z",
+    "graceDeadlineAt": "2026-04-17T01:25:30Z",
+    "isCancellable": false
+  }
+}
+```
+
+#### `GET /api/worker/jobs/:jobId/log?tail=200`
+
+```json
+{
+  "path": ".bdui/worker-jobs/logs/job-123.log",
+  "tail": ["line 1", "line 2"],
+  "truncated": true
+}
+```
+
+### 3.1.2 error 규칙
+
+첫 버전의 주요 error 규칙은 아래처럼 고정한다.
+
+- `400 Bad Request`
+  - workspace 누락/형식 오류
+  - command/body shape 오류
+  - `tail` 파라미터 오류
+
+- `404 Not Found`
+  - job id 없음
+  - log 파일 없음
+
+- `409 Conflict`
+  - 동일 대상 active job 존재
+  - `issueId` only `pr-review` 해석 결과가 다수 PR로 모호함
+  - 이미 terminal state인 job에 cancel 요청
+
+- `422 Unprocessable Entity`
+  - `issueId` only `pr-review` 해석 결과가 0개 PR
+
+- `502` 또는 `503`
+  - companion supervisor unavailable
+  - health/reconnect 실패
 
 ## 3.2 `beads-ui` ↔ supervisor 인터페이스
 
@@ -314,6 +473,23 @@ elapsed time은 timestamp 기반으로 계산한다.
 
 create는 synchronous completion이 아니라 **accepted/queued semantics**로 본다.
 
+### 3.3.1 `pr-review` 대상 해석 규칙
+
+`pr-review`는 두 경로를 모두 지원해야 한다.
+
+1. **explicit PR target**
+   - body에 `prNumber`가 포함되면 그 PR을 canonical target으로 사용한다.
+   - 이는 detail panel의 per-PR action과 대응한다.
+
+2. **issue-only target**
+   - body에 `issueId`만 있고 `prNumber`가 없으면, supervisor가 해당 issue의 linked/open PR을 resolve한다.
+   - resolve 결과가 정확히 1개면 그 PR을 target으로 사용한다.
+   - 결과가 0개면 create를 거부한다.
+   - 결과가 2개 이상이면 create를 거부한다.
+
+즉, parent row direct action은 **정확히 1개 open PR이 있을 때만 활성화**되어야 하며,
+API 레이어도 같은 규칙을 다시 검사한다.
+
 ## 3.4 cancel 흐름
 
 cancel 정책은 **graceful → timeout → force**로 고정한다.
@@ -325,7 +501,9 @@ cancel 정책은 **graceful → timeout → force**로 고정한다.
 5. `grace_deadline_at` 설정
 6. deadline 전 종료되면 `cancelled`
 7. deadline 초과 시 force kill
-8. final state와 관련 event 기록
+8. force kill 이후 실제 프로세스가 종료되면 최종 상태는 일관되게 `cancelled`
+9. cancel orchestration 자체가 실패하거나, cancel accepted 이전에 job이 별도 오류로 끝난 경우에만 `failed`
+10. final state와 관련 event 기록
 
 첫 버전은 workflow-specific cancel hook 없이 공통 cancel policy만 제공한다.
 
@@ -344,9 +522,12 @@ startup 시:
 
 1. SQLite에서 final state가 아닌 job 조회
 2. 각 job의 pid/process 상태 확인
-3. 살아 있으면 `running`/`cancelling` 상태 복구
-4. 죽었으면 `failed` 또는 `unknown` 처리 후 정리
-5. `job.reconciled` event 기록
+3. 필요하면 일시적으로 view-model에서만 `unknown`으로 표기
+4. 살아 있으면 `running`/`cancelling` 상태 복구
+5. 죽었으면 `failed`로 정리
+6. `job.reconciled` event 기록
+
+reconcile 종료 시점에는 durable status에 `unknown`이 남아 있으면 안 된다.
 
 ## 3.6 로그 수집
 
