@@ -1406,6 +1406,41 @@ export async function handleMessage(ws, data) {
     return;
   }
 
+  if (req.type === 'sync-workspace') {
+    log('sync-workspace');
+
+    if (!CURRENT_WORKSPACE?.root_dir) {
+      ws.send(
+        JSON.stringify(
+          makeError(req, 'server_error', 'No active workspace')
+        )
+      );
+      return;
+    }
+
+    const res = await runBd(['dolt', 'pull'], {
+      cwd: CURRENT_WORKSPACE.root_dir,
+      sandbox: false
+    });
+
+    if (res.code !== 0) {
+      ws.send(
+        JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
+      );
+      return;
+    }
+
+    triggerMutationRefreshOnce();
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          workspace: CURRENT_WORKSPACE
+        })
+      )
+    );
+    return;
+  }
+
   // Unknown type
   const err = makeError(
     req,
