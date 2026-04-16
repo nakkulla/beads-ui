@@ -10,10 +10,13 @@ import { statusLabel } from '../utils/status.js';
  *   onSelect: () => void,
  *   onToggleExpand: () => void,
  *   onRunRalph: () => void,
- *   onRunPrReview: () => void
+ *   onRunPrReview: () => void,
+ *   onCancelJob: (job_id: string) => void
  * }} handlers
  */
 export function workerParentRowTemplate(row, handlers) {
+  const current_job = row.current_job || null;
+
   return html`
     <div
       class="worker-parent-row ${handlers.selected ? 'is-selected' : ''}"
@@ -52,15 +55,18 @@ export function workerParentRowTemplate(row, handlers) {
         ${row.spec_id
           ? html`<span class="worker-badge">Has spec</span>`
           : html`<span class="worker-badge worker-badge--muted">No spec</span>`}
-        ${row.has_open_pr
-          ? html`<span class="worker-badge">Open PR</span>`
-          : null}
-        ${row.has_active_job
-          ? html`<span class="worker-badge worker-badge--active">Running</span>`
+        ${row.has_open_pr ? html`<span class="worker-badge">Open PR</span>` : null}
+        ${current_job
+          ? html`
+              <span class="worker-badge worker-badge--active"
+                >${statusLabel(current_job.status || 'running')}</span
+              >
+              <span class="worker-badge worker-badge--elapsed"
+                >${row.current_job_elapsed_label}</span
+              >
+            `
           : row.runnable
-            ? html`<span class="worker-badge worker-badge--ready"
-                >Runnable</span
-              >`
+            ? html`<span class="worker-badge worker-badge--ready">Runnable</span>`
             : null}
       </div>
 
@@ -70,18 +76,14 @@ export function workerParentRowTemplate(row, handlers) {
       </div>
 
       <div class="worker-parent-row__counts">
-        ${row.child_counts.open > 0
-          ? html`<span>${row.child_counts.open} open</span>`
-          : null}
+        ${row.child_counts.open > 0 ? html`<span>${row.child_counts.open} open</span>` : null}
         ${row.child_counts.in_progress > 0
           ? html`<span>${row.child_counts.in_progress} in progress</span>`
           : null}
         ${row.child_counts.resolved > 0
           ? html`<span>${row.child_counts.resolved} resolved</span>`
           : null}
-        ${row.child_counts.closed > 0
-          ? html`<span>${row.child_counts.closed} closed</span>`
-          : null}
+        ${row.child_counts.closed > 0 ? html`<span>${row.child_counts.closed} closed</span>` : null}
       </div>
 
       <div class="worker-parent-row__actions">
@@ -101,6 +103,17 @@ export function workerParentRowTemplate(row, handlers) {
         >
           Run pr-review
         </button>
+        ${current_job?.isCancellable
+          ? html`
+              <button
+                type="button"
+                data-cancel-job=${current_job.id}
+                @click=${() => handlers.onCancelJob(current_job.id)}
+              >
+                Cancel
+              </button>
+            `
+          : null}
       </div>
     </div>
   `;

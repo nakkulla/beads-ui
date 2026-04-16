@@ -2,10 +2,11 @@ import { describe, expect, test, vi } from 'vitest';
 import { createWorkerDetailView } from './worker-detail.js';
 
 describe('views/worker-detail', () => {
-  test('renders summary, spec panel, selected PRs, and workspace PR summary', async () => {
+  test('renders current job, recent jobs, log preview, and cancel action', async () => {
     document.body.innerHTML = '<div id="mount"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
-    const fetch_impl = vi.fn(async (url, init) => {
+    const onCancelJob = vi.fn();
+    const fetch_impl = vi.fn(async (url) => {
       const href = String(url);
       if (href.includes('/api/worker/spec/')) {
         return {
@@ -29,17 +30,22 @@ describe('views/worker-detail', () => {
           })
         };
       }
-      if (init && /** @type {RequestInit} */ (init).method === 'POST') {
+      if (href.includes('/api/worker/jobs/job-2/log')) {
         return {
           ok: true,
-          json: async () => ({ ok: true })
+          json: async () => ({
+            path: '.bdui/worker-jobs/logs/job-2.log',
+            tail: ['line 1', 'line 2'],
+            truncated: false
+          })
         };
       }
       throw new Error(`Unhandled fetch: ${href}`);
     });
 
     const detail = createWorkerDetailView(mount, {
-      fetch_impl
+      fetch_impl,
+      onCancelJob
     });
 
     await detail.load(
@@ -49,13 +55,39 @@ describe('views/worker-detail', () => {
         status: 'in_progress'
       },
       '/workspace',
-      [{ status: 'running', issueId: 'UI-62lm', command: 'bd-ralph-v2' }]
+      [
+        {
+          id: 'job-2',
+          status: 'running',
+          issueId: 'UI-62lm',
+          command: 'bd-ralph-v2',
+          elapsedMs: 65000,
+          isCancellable: true,
+          workspace: '/workspace'
+        },
+        {
+          id: 'job-1',
+          status: 'failed',
+          issueId: 'UI-62lm',
+          command: 'bd-ralph-v2',
+          elapsedMs: 5000,
+          errorSummary: 'boom',
+          workspace: '/workspace'
+        }
+      ]
     );
 
-    expect(mount.textContent).toContain('UI-62lm');
-    expect(mount.textContent).toContain('# Worker spec');
-    expect(mount.textContent).toContain('Add Worker tab');
-    expect(mount.textContent).toContain('Workspace PR');
-    expect(mount.textContent).toContain('running');
+    expect(mount.textContent).toContain('Current job');
+    expect(mount.textContent).toContain('Recent jobs');
+    expect(mount.textContent).toContain('line 1');
+    expect(mount.textContent).toContain('1m 5s');
+    expect(mount.textContent).toContain('boom');
+
+    const cancel_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-cancel-job="job-2"]')
+    );
+    cancel_button.click();
+
+    expect(onCancelJob).toHaveBeenCalledWith('job-2');
   });
 });

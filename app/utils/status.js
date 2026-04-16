@@ -21,6 +21,20 @@ export function statusLabel(status) {
       return 'Resolved';
     case 'closed':
       return 'Closed';
+    case 'queued':
+      return 'Queued';
+    case 'starting':
+      return 'Starting';
+    case 'running':
+      return 'Running';
+    case 'cancelling':
+      return 'Cancelling';
+    case 'succeeded':
+      return 'Succeeded';
+    case 'failed':
+      return 'Failed';
+    case 'cancelled':
+      return 'Cancelled';
     default:
       return (status || '').toString() || 'Open';
   }

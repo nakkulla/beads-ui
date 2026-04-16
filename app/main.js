@@ -769,6 +769,23 @@ export function bootstrap(root_element) {
       worker_view.load();
     }
 
+    /**
+     * @param {string} job_id
+     */
+    async function cancelWorkerJob(job_id) {
+      const workspace_path = store.getState().workspace.current?.path;
+      if (!workspace_path) {
+        return;
+      }
+      await fetch(`/api/worker/jobs/${encodeURIComponent(job_id)}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace: workspace_path })
+      });
+      await refreshWorkerJobs();
+      worker_view.load();
+    }
+
     const worker_view = createWorkerView(worker_root, {
       store,
       issue_stores: sub_issue_stores,
@@ -786,7 +803,9 @@ export function bootstrap(root_element) {
             typeof target === 'object' && typeof target?.prNumber === 'number'
               ? target.prNumber
               : undefined
-        })
+        }),
+      onCancelJob: (/** @type {string} */ job_id) =>
+        void cancelWorkerJob(job_id)
     });
     // Preload epics when switching to view
     /**

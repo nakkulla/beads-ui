@@ -19,7 +19,8 @@ import { workerTreeTemplate } from './worker-tree.js';
  *   fetch_impl?: WorkerFetch,
  *   getWorkerJobs?: () => any[],
  *   onRunRalph?: (id: string) => void,
- *   onRunPrReview?: (target: any) => void
+ *   onRunPrReview?: (target: any) => void,
+ *   onCancelJob?: (job_id: string) => void
  * }} deps
  */
 export function createWorkerView(mount_element, deps) {
@@ -54,8 +55,7 @@ export function createWorkerView(mount_element, deps) {
   function renderView() {
     const state = deps.store.getState();
     const workspace_is_valid = !!state.workspace?.current;
-    const jobs =
-      typeof deps.getWorkerJobs === 'function' ? deps.getWorkerJobs() : [];
+    const jobs = typeof deps.getWorkerJobs === 'function' ? deps.getWorkerJobs() : [];
     const selected_parent_id = state.worker?.selected_parent_id || null;
     const rows = filterWorkerParents(
       buildWorkerParents(deps.issue_stores.snapshotFor('tab:worker:all'), {
@@ -99,8 +99,7 @@ export function createWorkerView(mount_element, deps) {
               expanded_ids,
               selected_parent_id,
               onSelectParent(id) {
-                const next_selected_parent_id =
-                  selected_parent_id === id ? null : id;
+                const next_selected_parent_id = selected_parent_id === id ? null : id;
                 deps.store.setState({
                   worker: { selected_parent_id: next_selected_parent_id }
                 });
@@ -122,17 +121,15 @@ export function createWorkerView(mount_element, deps) {
               },
               onRunPrReview(id) {
                 deps.onRunPrReview?.(id);
+              },
+              onCancelJob(job_id) {
+                deps.onCancelJob?.(job_id);
               }
             })}
           </aside>
 
           ${selected
-            ? html`
-                <section
-                  class="worker-layout__right"
-                  id="worker-detail-mount"
-                ></section>
-              `
+            ? html`<section class="worker-layout__right" id="worker-detail-mount"></section>`
             : null}
         </section>
       `,
@@ -147,14 +144,11 @@ export function createWorkerView(mount_element, deps) {
         detail_view = createWorkerDetailView(detail_mount, {
           fetch_impl: deps.fetch_impl,
           onRunRalph: deps.onRunRalph,
-          onRunPrReview: deps.onRunPrReview
+          onRunPrReview: deps.onRunPrReview,
+          onCancelJob: deps.onCancelJob
         });
       }
-      void detail_view.load(
-        selected,
-        state.workspace?.current?.path || '',
-        jobs
-      );
+      void detail_view.load(selected, state.workspace?.current?.path || '', jobs);
     } else {
       detail_view?.clear();
     }
