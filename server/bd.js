@@ -57,7 +57,7 @@ export function getBdBin() {
  * Shell is not used to avoid injection; args must be pre-split.
  *
  * @param {string[]} args - Arguments to pass (e.g., ["list", "--json"]).
- * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean }} [options]
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
 export function runBd(args, options = {}) {
@@ -68,7 +68,7 @@ export function runBd(args, options = {}) {
  * Run the `bd` CLI with provided arguments without queueing.
  *
  * @param {string[]} args
- * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean }} [options]
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
 function runBdUnlocked(args, options = {}) {
@@ -94,7 +94,7 @@ function runBdUnlocked(args, options = {}) {
   };
 
   /** @type {string[]} */
-  const final_args = buildBdArgs(args);
+  const final_args = buildBdArgs(args, options);
 
   return new Promise((resolve) => {
     const child = spawn(bin, final_args, spawn_opts);
@@ -157,10 +157,23 @@ function runBdUnlocked(args, options = {}) {
  * UI requests. Set `BDUI_BD_SANDBOX=0` (or "false") to opt out.
  *
  * @param {string[]} args
+ * @param {{ sandbox?: boolean }} [options]
  * @returns {string[]}
  */
-function buildBdArgs(args) {
+function buildBdArgs(args, options = {}) {
   const arg_set = new Set(args);
+  if (options.sandbox === false) {
+    return args.slice();
+  }
+
+  if (options.sandbox === true) {
+    if (arg_set.has('--sandbox')) {
+      return args.slice();
+    }
+
+    return ['--sandbox', ...args];
+  }
+
   const raw_sandbox = String(process.env.BDUI_BD_SANDBOX || '').toLowerCase();
   const sandbox_disabled = raw_sandbox === '0' || raw_sandbox === 'false';
   const should_prepend_sandbox = !sandbox_disabled && !arg_set.has('--sandbox');
