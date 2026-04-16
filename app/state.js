@@ -12,7 +12,7 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {'issues'|'epics'|'board'} ViewName
+ * @typedef {'issues'|'epics'|'board'|'worker'} ViewName
  */
 
 /**
@@ -21,6 +21,10 @@ import { debug } from './utils/logging.js';
 
 /**
  * @typedef {{ closed_filter: ClosedFilter }} BoardState
+ */
+
+/**
+ * @typedef {{ selected_parent_id: string | null, show_closed_children: string[] }} WorkerState
  */
 
 /**
@@ -38,14 +42,14 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, workspace: WorkspaceState }} AppState
+ * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState }} AppState
  */
 
 /**
  * Create a simple store for application state.
  *
  * @param {Partial<AppState>} [initial]
- * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, filters?: Partial<Filters>, workspace?: Partial<WorkspaceState> }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
+ * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState> }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
  */
 export function createStore(initial = {}) {
   const log = debug('state');
@@ -66,6 +70,12 @@ export function createStore(initial = {}) {
         initial.board?.closed_filter === 'today'
           ? initial.board?.closed_filter
           : 'today'
+    },
+    worker: {
+      selected_parent_id: initial.worker?.selected_parent_id ?? null,
+      show_closed_children: Array.isArray(initial.worker?.show_closed_children)
+        ? initial.worker.show_closed_children
+        : []
     },
     workspace: {
       current: initial.workspace?.current ?? null,
@@ -93,7 +103,7 @@ export function createStore(initial = {}) {
     /**
      * Update state. Nested filters can be partial.
      *
-     * @param {{ selected_id?: string | null, filters?: Partial<Filters>, board?: Partial<BoardState>, workspace?: Partial<WorkspaceState> }} patch
+     * @param {{ selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState> }} patch
      */
     setState(patch) {
       /** @type {AppState} */
@@ -102,6 +112,7 @@ export function createStore(initial = {}) {
         ...patch,
         filters: { ...state.filters, ...(patch.filters || {}) },
         board: { ...state.board, ...(patch.board || {}) },
+        worker: { ...state.worker, ...(patch.worker || {}) },
         workspace: {
           current:
             patch.workspace?.current !== undefined
@@ -124,6 +135,12 @@ export function createStore(initial = {}) {
         next.filters.search === state.filters.search &&
         next.filters.type === state.filters.type &&
         next.board.closed_filter === state.board.closed_filter &&
+        next.worker.selected_parent_id === state.worker.selected_parent_id &&
+        next.worker.show_closed_children.length ===
+          state.worker.show_closed_children.length &&
+        next.worker.show_closed_children.every(
+          (id, index) => id === state.worker.show_closed_children[index]
+        ) &&
         !workspace_changed
       ) {
         return;
@@ -134,6 +151,7 @@ export function createStore(initial = {}) {
         view: state.view,
         filters: state.filters,
         board: state.board,
+        worker: state.worker,
         workspace: state.workspace.current?.path
       });
       emit();

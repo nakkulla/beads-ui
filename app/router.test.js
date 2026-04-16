@@ -25,10 +25,27 @@ describe('router', () => {
     router.stop();
   });
 
+  test('worker hash updates worker selection without opening global detail state', () => {
+    document.body.innerHTML = '<div></div>';
+    const store = createStore();
+    const router = createHashRouter(store);
+    router.start();
+
+    window.location.hash = '#/worker?issue=UI-62lm';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    expect(store.getState().view).toBe('worker');
+    expect(store.getState().selected_id).toBeNull();
+    expect(store.getState().worker.selected_parent_id).toBe('UI-62lm');
+
+    router.stop();
+  });
+
   test('parseView resolves from hash and defaults to issues', () => {
     expect(parseView('#/issues')).toBe('issues');
     expect(parseView('#/epics')).toBe('epics');
     expect(parseView('#/board')).toBe('board');
+    expect(parseView('#/worker')).toBe('worker');
     expect(parseView('')).toBe('issues');
     expect(parseView('#/unknown')).toBe('issues');
   });
