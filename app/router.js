@@ -125,7 +125,8 @@ export function createHashRouter(store) {
       const s = store.getState
         ? store.getState()
         : { selected_id: null, worker: { selected_parent_id: null } };
-      const id = view === 'worker' ? s.worker?.selected_parent_id : s.selected_id;
+      const id =
+        view === 'worker' ? s.worker?.selected_parent_id : s.selected_id;
       const next = id ? issueHashFor(view, id) : `#/${view}`;
       log('goto view %s (id=%s)', view, id || '');
       if (window.location.hash !== next) {

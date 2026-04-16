@@ -17,6 +17,9 @@ export function createWorkerJobManager(options = {}) {
   /** @type {Array<any>} */
   const jobs = [];
 
+  /**
+   * @param {{ id: string, command: string, status: string, issueId?: string | null, workspace: string, prNumber?: number | null }} job
+   */
   function sanitize(job) {
     return {
       id: job.id,
@@ -97,6 +100,7 @@ export function createWorkerJobManager(options = {}) {
   };
 }
 
+/** @type {ReturnType<typeof createWorkerJobManager> | null} */
 let worker_job_manager = null;
 
 export function getWorkerJobManager() {

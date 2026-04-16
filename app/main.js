@@ -779,7 +779,9 @@ export function bootstrap(root_element) {
       onRunPrReview: (target) =>
         void enqueueWorkerJob('pr-review', {
           issueId:
-            typeof target === 'string' ? target : (target?.issueId ?? undefined),
+            typeof target === 'string'
+              ? target
+              : (target?.issueId ?? undefined),
           prNumber:
             typeof target === 'object' && typeof target?.prNumber === 'number'
               ? target.prNumber
@@ -966,10 +968,7 @@ export function bootstrap(root_element) {
         } catch (err) {
           log('register worker store failed: %o', err);
         }
-        if (
-          !unsub_worker_all &&
-          !pending_subscriptions.has('tab:worker:all')
-        ) {
+        if (!unsub_worker_all && !pending_subscriptions.has('tab:worker:all')) {
           pending_subscriptions.add('tab:worker:all');
           void subscriptions
             .subscribeList('tab:worker:all', { type: 'all-issues' })
@@ -1210,7 +1209,13 @@ export function bootstrap(root_element) {
      * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'worker', filters: any }} s
      */
     const onRouteChange = (s) => {
-      if (issues_root && epics_root && board_root && worker_root && detail_mount) {
+      if (
+        issues_root &&
+        epics_root &&
+        board_root &&
+        worker_root &&
+        detail_mount
+      ) {
         // Underlying route visibility is controlled only by selected view
         issues_root.hidden = s.view !== 'issues';
         epics_root.hidden = s.view !== 'epics';

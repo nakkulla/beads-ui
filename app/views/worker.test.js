@@ -2,8 +2,14 @@ import { describe, expect, test, vi } from 'vitest';
 import { createStore } from '../state.js';
 import { createWorkerView } from './worker.js';
 
+/**
+ * @param {any[]} snapshot
+ */
 function createIssueStores(snapshot) {
   return {
+    /**
+     * @param {string} client_id
+     */
     snapshotFor(client_id) {
       if (client_id === 'tab:worker:all') {
         return snapshot;
@@ -24,12 +30,16 @@ describe('views/worker', () => {
     const onRunPrReview = vi.fn();
     const store = createStore({
       view: 'worker',
-      worker: { selected_parent_id: 'UI-62lm' },
+      worker: {
+        selected_parent_id: 'UI-62lm',
+        show_closed_children: []
+      },
       workspace: {
         current: {
           path: '/tmp/workspace',
           database: '/tmp/workspace/.beads/test.db'
-        }
+        },
+        available: []
       }
     });
 
@@ -124,7 +134,8 @@ describe('views/worker', () => {
     const store = createStore({
       view: 'worker',
       workspace: {
-        current: null
+        current: null,
+        available: []
       }
     });
 

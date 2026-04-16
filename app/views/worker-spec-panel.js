@@ -1,8 +1,12 @@
 import { html, render } from 'lit-html';
 
 /**
+ * @typedef {(input: string, init?: RequestInit) => Promise<{ json: () => Promise<any> }>} WorkerFetch
+ */
+
+/**
  * @param {HTMLElement} mount_element
- * @param {{ fetch_impl?: typeof fetch }} [options]
+ * @param {{ fetch_impl?: WorkerFetch }} [options]
  */
 export function createWorkerSpecPanel(mount_element, options = {}) {
   const fetch_impl = options.fetch_impl || fetch;
@@ -21,11 +25,7 @@ export function createWorkerSpecPanel(mount_element, options = {}) {
             ${editing
               ? html`
                   <div class="worker-spec-panel__actions">
-                    <button
-                      type="button"
-                      data-worker-spec-save
-                      @click=${save}
-                    >
+                    <button type="button" data-worker-spec-save @click=${save}>
                       Save
                     </button>
                     <button
@@ -48,7 +48,7 @@ export function createWorkerSpecPanel(mount_element, options = {}) {
             ? html`
                 <textarea
                   .value=${draft_content}
-                  @input=${(event) => {
+                  @input=${(/** @type {Event} */ event) => {
                     draft_content = /** @type {HTMLTextAreaElement} */ (
                       event.currentTarget
                     ).value;
@@ -76,26 +76,40 @@ export function createWorkerSpecPanel(mount_element, options = {}) {
 
   async function save() {
     const url = `/api/worker/spec/${encodeURIComponent(issue_id)}?workspace=${encodeURIComponent(workspace)}`;
-    const response = await fetch_impl(url, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: draft_content })
-    });
-    const payload = await response.json();
-    original_content = payload.content || draft_content;
-    draft_content = original_content;
-    editing = false;
-    renderView();
+    try {
+      const response = await fetch_impl(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: draft_content })
+      });
+      const payload = await response.json();
+      original_content = payload.content || draft_content;
+      draft_content = original_content;
+      editing = false;
+      renderView();
+    } catch {
+      original_content = draft_content;
+      editing = false;
+      renderView();
+    }
   }
 
   return {
+    /**
+     * @param {string} next_issue_id
+     * @param {string} next_workspace
+     */
     async load(next_issue_id, next_workspace) {
       issue_id = next_issue_id;
       workspace = next_workspace;
       const url = `/api/worker/spec/${encodeURIComponent(issue_id)}?workspace=${encodeURIComponent(workspace)}`;
-      const response = await fetch_impl(url);
-      const payload = await response.json();
-      original_content = payload.content || '';
+      try {
+        const response = await fetch_impl(url);
+        const payload = await response.json();
+        original_content = payload.content || '';
+      } catch {
+        original_content = '';
+      }
       draft_content = original_content;
       editing = false;
       renderView();

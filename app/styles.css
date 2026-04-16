@@ -2428,7 +2428,11 @@ html[data-theme='dark'] {
 }
 
 .worker-badge--active {
-  border-color: color-mix(in srgb, var(--status-in-progress-base) 45%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--status-in-progress-base) 45%,
+    transparent
+  );
 }
 
 .worker-badge--ready {

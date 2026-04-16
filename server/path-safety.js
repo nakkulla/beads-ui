@@ -32,7 +32,10 @@ export function resolveWithinDocs(root_dir, target_path) {
   }
   const docs_root = path.resolve(root_dir, 'docs');
   const resolved = path.resolve(root_dir, target_path);
-  if (resolved === docs_root || resolved.startsWith(`${docs_root}${path.sep}`)) {
+  if (
+    resolved === docs_root ||
+    resolved.startsWith(`${docs_root}${path.sep}`)
+  ) {
     return resolved;
   }
   return null;

@@ -22,9 +22,9 @@ describe('views/worker-pr-panel', () => {
 
     expect(mount.textContent).toContain('Add Worker tab');
     expect(mount.textContent).toContain('Polish Worker tab');
-    expect(
-      mount.querySelectorAll('[data-run-pr-review-number]').length
-    ).toBe(2);
+    expect(mount.querySelectorAll('[data-run-pr-review-number]').length).toBe(
+      2
+    );
   });
 
   test('renders empty state when there are no PRs', () => {

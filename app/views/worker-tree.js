@@ -24,7 +24,9 @@ export function workerTreeTemplate(rows, handlers) {
       ${rows.map((row) => {
         const expanded = handlers.expanded_ids.has(row.id);
         const pr_review_enabled =
-          row.has_open_pr && !row.has_active_job && row.status !== 'closed';
+          row.open_pr_count === 1 &&
+          !row.has_active_job &&
+          row.status !== 'closed';
         return html`
           <article class="worker-tree__item">
             ${workerParentRowTemplate(row, {
@@ -36,11 +38,10 @@ export function workerTreeTemplate(rows, handlers) {
               onRunRalph: () => handlers.onRunRalph(row.id),
               onRunPrReview: () => handlers.onRunPrReview(row.id)
             })}
-
             ${expanded
               ? html`
                   <div class="worker-tree__children">
-                    ${row.visible_children.map((child) =>
+                    ${row.visible_children.map((/** @type {any} */ child) =>
                       workerChildRowTemplate(child)
                     )}
                     ${row.hidden_closed_count > 0

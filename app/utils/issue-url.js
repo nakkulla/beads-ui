@@ -6,8 +6,6 @@
  */
 export function issueHashFor(view, id) {
   const v =
-    view === 'epics' || view === 'board' || view === 'worker'
-      ? view
-      : 'issues';
+    view === 'epics' || view === 'board' || view === 'worker' ? view : 'issues';
   return `#/${v}?issue=${encodeURIComponent(id)}`;
 }

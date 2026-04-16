@@ -1,6 +1,10 @@
 import { html } from 'lit-html';
 
 /**
+ * @typedef {(input: string, init?: RequestInit) => Promise<{ json: () => Promise<any> }>} WorkerFetch
+ */
+
+/**
  * @param {{
  *   search: string,
  *   status: string,
@@ -23,7 +27,7 @@ export function workerToolbarTemplate(filters, handlers) {
           type="search"
           name="worker-search"
           .value=${filters.search}
-          @input=${(event) =>
+          @input=${(/** @type {Event} */ event) =>
             handlers.onSearchInput(
               /** @type {HTMLInputElement} */ (event.currentTarget).value
             )}
@@ -35,7 +39,7 @@ export function workerToolbarTemplate(filters, handlers) {
         <select
           name="worker-status-filter"
           .value=${filters.status}
-          @change=${(event) =>
+          @change=${(/** @type {Event} */ event) =>
             handlers.onStatusChange(
               /** @type {HTMLSelectElement} */ (event.currentTarget).value
             )}
@@ -52,7 +56,7 @@ export function workerToolbarTemplate(filters, handlers) {
           type="checkbox"
           name="worker-runnable-only"
           .checked=${filters.runnable_only}
-          @change=${(event) =>
+          @change=${(/** @type {Event} */ event) =>
             handlers.onRunnableToggle(
               /** @type {HTMLInputElement} */ (event.currentTarget).checked
             )}
@@ -65,7 +69,7 @@ export function workerToolbarTemplate(filters, handlers) {
           type="checkbox"
           name="worker-open-pr-only"
           .checked=${filters.has_open_pr_only}
-          @change=${(event) =>
+          @change=${(/** @type {Event} */ event) =>
             handlers.onOpenPrToggle(
               /** @type {HTMLInputElement} */ (event.currentTarget).checked
             )}

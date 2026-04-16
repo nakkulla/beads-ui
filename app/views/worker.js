@@ -8,11 +8,15 @@ import { workerToolbarTemplate } from './worker-toolbar.js';
 import { workerTreeTemplate } from './worker-tree.js';
 
 /**
+ * @typedef {(input: string, init?: RequestInit) => Promise<{ json: () => Promise<any> }>} WorkerFetch
+ */
+
+/**
  * @param {HTMLElement} mount_element
  * @param {{
  *   store: { getState: () => any, setState: (patch: any) => void, subscribe: (fn: (s: any) => void) => () => void },
  *   issue_stores: { snapshotFor: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void },
- *   fetch_impl?: typeof fetch,
+ *   fetch_impl?: WorkerFetch,
  *   getWorkerJobs?: () => any[],
  *   onRunRalph?: (id: string) => void,
  *   onRunPrReview?: (target: any) => void
@@ -20,6 +24,7 @@ import { workerTreeTemplate } from './worker-tree.js';
  */
 export function createWorkerView(mount_element, deps) {
   const expanded_ids = new Set();
+  /** @type {ReturnType<typeof createWorkerDetailView> | null} */
   let detail_view = null;
   let filters = {
     search: '',
@@ -28,13 +33,16 @@ export function createWorkerView(mount_element, deps) {
     has_open_pr_only: false
   };
 
+  /**
+   * @param {string} parent_id
+   */
   function toggleClosedParent(parent_id) {
     const state = deps.store.getState();
     const current = Array.isArray(state.worker?.show_closed_children)
       ? state.worker.show_closed_children
       : [];
     const next = current.includes(parent_id)
-      ? current.filter((id) => id !== parent_id)
+      ? current.filter((/** @type {string} */ id) => id !== parent_id)
       : [...current, parent_id];
     deps.store.setState({
       worker: {
@@ -82,7 +90,6 @@ export function createWorkerView(mount_element, deps) {
                 renderView();
               }
             })}
-
             ${workerTreeTemplate(rows, {
               expanded_ids,
               selected_parent_id,
@@ -112,7 +119,10 @@ export function createWorkerView(mount_element, deps) {
             })}
           </aside>
 
-          <section class="worker-layout__right" id="worker-detail-mount"></section>
+          <section
+            class="worker-layout__right"
+            id="worker-detail-mount"
+          ></section>
         </section>
       `,
       mount_element
@@ -129,7 +139,11 @@ export function createWorkerView(mount_element, deps) {
           onRunPrReview: deps.onRunPrReview
         });
       }
-      void detail_view.load(selected, state.workspace?.current?.path || '', jobs);
+      void detail_view.load(
+        selected,
+        state.workspace?.current?.path || '',
+        jobs
+      );
     }
   }
 

@@ -36,7 +36,9 @@ export function workerParentRowTemplate(row, handlers) {
           @click=${handlers.onSelect}
         >
           <span class="worker-parent-row__id mono">${row.id}</span>
-          <span class="worker-parent-row__title">${row.title || '(no title)'}</span>
+          <span class="worker-parent-row__title"
+            >${row.title || '(no title)'}</span
+          >
         </button>
       </div>
 
@@ -54,9 +56,7 @@ export function workerParentRowTemplate(row, handlers) {
           ? html`<span class="worker-badge">Open PR</span>`
           : null}
         ${row.has_active_job
-          ? html`<span class="worker-badge worker-badge--active"
-              >Running</span
-            >`
+          ? html`<span class="worker-badge worker-badge--active">Running</span>`
           : row.runnable
             ? html`<span class="worker-badge worker-badge--ready"
                 >Runnable</span

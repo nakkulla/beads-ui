@@ -96,7 +96,9 @@ function toTimestamp(value) {
  */
 function weightForStatus(status) {
   if (status && status in PROGRESS_WEIGHTS) {
-    return PROGRESS_WEIGHTS[/** @type {'open'|'in_progress'|'resolved'|'closed'} */ (status)];
+    return PROGRESS_WEIGHTS[
+      /** @type {'open'|'in_progress'|'resolved'|'closed'} */ (status)
+    ];
   }
   return 0;
 }
@@ -160,7 +162,10 @@ export function computeProgressFromStatuses(statuses) {
   if (!Array.isArray(statuses) || statuses.length === 0) {
     return 0;
   }
-  const total = statuses.reduce((sum, status) => sum + weightForStatus(status), 0);
+  const total = statuses.reduce(
+    (sum, status) => sum + weightForStatus(status),
+    0
+  );
   return Math.round((total / statuses.length) * 100);
 }
 
@@ -194,7 +199,8 @@ export function buildWorkerParentViewModel(parent, children, options = {}) {
     ? options.show_closed_children
     : [];
   const visible_children =
-    show_closed_children.includes(parent.id) || show_closed_children.includes('*')
+    show_closed_children.includes(parent.id) ||
+    show_closed_children.includes('*')
       ? children.slice()
       : children.filter((child) => child.status !== 'closed');
   const hidden_closed_count = children.filter(
@@ -203,12 +209,15 @@ export function buildWorkerParentViewModel(parent, children, options = {}) {
   const statuses = children.map((child) => String(child.status || 'open'));
   const jobs = Array.isArray(options.jobs) ? options.jobs : [];
   const active_job = hasActiveJob(parent.id, jobs);
-  const open_pr_count = Array.isArray(options.open_pr_ids_by_parent?.[parent.id])
+  const open_pr_count = Array.isArray(
+    options.open_pr_ids_by_parent?.[parent.id]
+  )
     ? options.open_pr_ids_by_parent[parent.id].length
     : Number(parent.open_pr_count || 0);
   const counts = {
     open: children.filter((child) => child.status === 'open').length,
-    in_progress: children.filter((child) => child.status === 'in_progress').length,
+    in_progress: children.filter((child) => child.status === 'in_progress')
+      .length,
     resolved: children.filter((child) => child.status === 'resolved').length,
     closed: children.filter((child) => child.status === 'closed').length
   };
@@ -259,14 +268,21 @@ export function buildWorkerParents(issues, options = {}) {
     const dependent_children = Array.isArray(issue.dependents)
       ? issue.dependents.filter((child) => !!child?.id)
       : [];
-    const merged_children =
-      direct_children.length > 0
-        ? direct_children
-        : dependent_children.filter((child) => !issue_by_id.has(child.id))
-            .map((child) => ({ ...child, parent: issue.id }))
-            .concat(direct_children);
+    /** @type {WorkerIssue[]} */
+    const merged_children = [];
+    if (direct_children.length > 0) {
+      merged_children.push(...direct_children);
+    } else {
+      for (const child of dependent_children) {
+        if (!issue_by_id.has(child.id)) {
+          merged_children.push({ ...child, parent: issue.id });
+        }
+      }
+    }
     const jobs = Array.isArray(options.jobs) ? options.jobs : [];
-    const open_pr_count = Array.isArray(options.open_pr_ids_by_parent?.[issue.id])
+    const open_pr_count = Array.isArray(
+      options.open_pr_ids_by_parent?.[issue.id]
+    )
       ? options.open_pr_ids_by_parent[issue.id].length
       : Number(issue.open_pr_count || 0);
     const is_parent =
@@ -319,7 +335,9 @@ function compareWorkerParents(a, b) {
  * @param {WorkerFilters} [filters]
  */
 export function filterWorkerParents(items, filters = {}) {
-  const search = String(filters.search || '').trim().toLowerCase();
+  const search = String(filters.search || '')
+    .trim()
+    .toLowerCase();
   const status = String(filters.status || 'all');
 
   return items.filter((item) => {
@@ -333,7 +351,8 @@ export function filterWorkerParents(items, filters = {}) {
       return false;
     }
     if (search.length > 0) {
-      const haystack = `${String(item.id)} ${String(item.title || '')}`.toLowerCase();
+      const haystack =
+        `${String(item.id)} ${String(item.title || '')}`.toLowerCase();
       if (!haystack.includes(search)) {
         return false;
       }

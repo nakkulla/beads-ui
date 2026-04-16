@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
