@@ -26,7 +26,7 @@ describe('views/worker-detail', () => {
     const detail = createWorkerDetailView(mount, { fetch_impl, onCancelJob });
 
     await detail.load({ id: 'UI-62lm', title: 'Worker 탭 추가', status: 'in_progress' }, '/workspace', [
-      { id: 'job-2', status: 'running', issueId: 'UI-62lm', command: 'bd-ralph-v2', elapsedMs: 65000, isCancellable: true, workspace: '/workspace' },
+      { id: 'job-2', status: 'running', issueId: 'UI-62lm', command: 'bd-ralph-v2', elapsedMs: 65000, isCancellable: true, workspace: '/workspace', wasForceKilled: true },
       { id: 'job-1', status: 'failed', issueId: 'UI-62lm', command: 'bd-ralph-v2', elapsedMs: 5000, errorSummary: 'boom', workspace: '/workspace' }
     ]);
 
@@ -35,6 +35,7 @@ describe('views/worker-detail', () => {
     expect(mount.textContent).toContain('line 1');
     expect(mount.textContent).toContain('1m 5s');
     expect(mount.textContent).toContain('boom');
+    expect(mount.textContent).toContain('Force killed');
 
     const cancel_button = /** @type {HTMLButtonElement} */ (mount.querySelector('[data-cancel-job="job-2"]'));
     cancel_button.click();
@@ -42,7 +43,7 @@ describe('views/worker-detail', () => {
     expect(onCancelJob).toHaveBeenCalledWith('job-2');
   });
 
-  test('renders log preview error hint when log fetch fails', async () => {
+  test('renders log preview error hint when log endpoint returns non-ok', async () => {
     document.body.innerHTML = '<div id="mount"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
     const fetch_impl = vi.fn(async (url) => {
@@ -54,7 +55,7 @@ describe('views/worker-detail', () => {
         return { ok: true, json: async () => ({ items: [] }) };
       }
       if (href.includes('/api/worker/jobs/job-2/log')) {
-        throw new Error('log failed');
+        return { ok: false, json: async () => ({ error: 'no log' }) };
       }
       return { ok: true, json: async () => ({ items: [] }) };
     });

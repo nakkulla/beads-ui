@@ -6,7 +6,7 @@ import { createWorkerSpecPanel } from './worker-spec-panel.js';
 
 /**
  * @typedef {{ id: string, title?: string, status?: string }} WorkerDetailIssue
- * @typedef {{ id?: string, status?: string, issueId?: string, command?: string, prNumber?: number, elapsedMs?: number, isCancellable?: boolean, errorSummary?: string, workspace?: string }} WorkerDetailJob
+ * @typedef {{ id?: string, status?: string, issueId?: string, command?: string, prNumber?: number, elapsedMs?: number, isCancellable?: boolean, errorSummary?: string, workspace?: string, wasForceKilled?: boolean }} WorkerDetailJob
  * @typedef {{ number: number, title: string, state?: string }} WorkerPullRequest
  * @typedef {(input: string, init?: RequestInit) => Promise<{ ok?: boolean, json: () => Promise<any> }>} WorkerFetch
  */
@@ -92,6 +92,9 @@ export function createWorkerDetailView(mount_element, options = {}) {
                           <div>${current_job.command || 'worker job'}</div>
                           <div>${current_job.status}</div>
                           <div>${formatElapsedMs(current_job.elapsedMs)}</div>
+                          ${current_job.wasForceKilled
+                            ? html`<div>Force killed</div>`
+                            : null}
                           ${current_job.isCancellable
                             ? html`
                                 <button
@@ -126,9 +129,8 @@ export function createWorkerDetailView(mount_element, options = {}) {
                         <li>
                           <span>${job.status}</span>
                           <span>${formatElapsedMs(job.elapsedMs)}</span>
-                          ${job.errorSummary
-                            ? html`<span>${job.errorSummary}</span>`
-                            : null}
+                          ${job.errorSummary ? html`<span>${job.errorSummary}</span>` : null}
+                          ${job.wasForceKilled ? html`<span>Force killed</span>` : null}
                         </li>
                       `
                     )}
@@ -213,6 +215,9 @@ export function createWorkerDetailView(mount_element, options = {}) {
           const log_response = await fetch_impl(
             `/api/worker/jobs/${encodeURIComponent(current_job.id)}/log?workspace=${encodeURIComponent(workspace)}&tail=20`
           );
+          if (!log_response.ok) {
+            throw new Error('log not ok');
+          }
           const log_payload = await log_response.json();
           log_tail = Array.isArray(log_payload.tail) ? log_payload.tail : [];
         } catch {

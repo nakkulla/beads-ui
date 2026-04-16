@@ -51,8 +51,6 @@ describe('worker supervisor', () => {
 
     await supervisor.acquireOwnership({ port: 4100 });
     const job = await supervisor.createJob({ command: 'bd-ralph-v2', issueId: 'UI-qclw', workspace: root_dir });
-    if (!job) throw new Error('job was not created');
-
     expect(job.status).toBe('running');
     expect(job.pid).toBe(4321);
 
@@ -63,6 +61,36 @@ describe('worker supervisor', () => {
     expect(supervisor.getEvents(job.id).map((event) => event.event_type).slice(-1)[0]).toBe('job.exited');
   });
 
+  test('marks job failed when runner.startJob throws synchronously', async () => {
+    const root_dir = mkdtemp();
+    const store = createJobStore({ root_dir, now: () => '2026-04-17T03:00:00.000Z' });
+    const supervisor = createWorkerSupervisor({
+      root_dir,
+      store,
+      runner: {
+        startJob() {
+          throw new Error('spawn failed');
+        },
+        async cancelJob() {
+          return true;
+        }
+      },
+      owner_pid: 9000,
+      health_check_impl: async () => true,
+      is_process_running_impl: () => true,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
+
+    await supervisor.acquireOwnership({ port: 4199 });
+    await expect(
+      supervisor.createJob({ command: 'bd-ralph-v2', issueId: 'UI-qclw', workspace: root_dir })
+    ).rejects.toMatchObject({ code: 'start_failed' });
+
+    const failed_job = store.listJobs()[0];
+    expect(failed_job.status).toBe('failed');
+    expect(store.findActiveConflict({ workspace: root_dir, issueId: 'UI-qclw' })).toBeNull();
+  });
+
   test('moves running job into cancelling and cancelled during cancel flow', async () => {
     const root_dir = mkdtemp();
     const store = createJobStore({ root_dir, now: () => '2026-04-17T03:00:00.000Z' });
@@ -71,8 +99,6 @@ describe('worker supervisor', () => {
 
     await supervisor.acquireOwnership({ port: 4101 });
     const job = await supervisor.createJob({ command: 'bd-ralph-v2', issueId: 'UI-qclw', workspace: root_dir });
-    if (!job) throw new Error('job was not created');
-
     const cancelled = await supervisor.cancelJob(job.id, { grace_timeout_ms: 250 });
 
     expect(cancelled.status).toBe('cancelled');
@@ -104,11 +130,10 @@ describe('worker supervisor', () => {
 
     await supervisor.acquireOwnership({ port: 4103 });
     const job = await supervisor.createJob({ command: 'bd-ralph-v2', issueId: 'UI-qclw', workspace: root_dir });
-    if (!job) throw new Error('job was not created');
-
     await supervisor.cancelJob(job.id, { grace_timeout_ms: 250 });
 
     expect(supervisor.getEvents(job.id).some((event) => event.event_type === 'job.killed')).toBe(true);
+    expect(supervisor.getJob(job.id)?.status).toBe('cancelled');
   });
 
   test('marks stale active job as failed during reconcile', async () => {
@@ -143,25 +168,19 @@ describe('worker supervisor', () => {
     const root_dir = mkdtemp();
     const runtime = createWorkerSupervisorServer({
       root_dir,
-      supervisor: {
-        async acquireOwnership() {
-          throw Object.assign(new Error('already active'), { code: 'conflict' });
-        },
+      supervisor: /** @type {any} */ ({
+        async acquireOwnership() { throw Object.assign(new Error('already active'), { code: 'conflict' }); },
         async reconcileJobs() {},
         listJobs() { return []; },
         getJob() { return null; },
         getEvents() { return []; },
         getJobLog() { return { path: '', tail: [], truncated: false }; },
+        async createJob() { throw new Error('not used'); },
+        async cancelJob() { throw new Error('not used'); },
         async close() {},
         releaseOwnership() {},
-        store: /** @type {any} */ ({}),
-        async createJob() {
-          throw new Error('not used');
-        },
-        async cancelJob() {
-          throw new Error('not used');
-        }
-      }
+        store: {}
+      })
     });
 
     await expect(runtime.start()).rejects.toMatchObject({ code: 'conflict' });

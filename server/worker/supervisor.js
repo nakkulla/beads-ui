@@ -158,13 +158,26 @@ export function createWorkerSupervisor(options) {
       workspace
     });
     const started_at = now();
-    const started = runner.startJob({
-      command: input.command,
-      issueId: input.issueId,
-      prNumber: resolved_pr.prNumber,
-      workspace,
-      log_path: path.join(store.paths.root_dir, created_job.log_path)
-    });
+    /** @type {StartedWorkerProcess} */
+    let started;
+    try {
+      started = runner.startJob({
+        command: input.command,
+        issueId: input.issueId,
+        prNumber: resolved_pr.prNumber,
+        workspace,
+        log_path: path.join(store.paths.root_dir, created_job.log_path)
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      store.updateJob(created_job.id, {
+        status: 'failed',
+        finished_at: now(),
+        error_summary: message
+      });
+      store.appendEvent(created_job.id, 'job.failed', { message, stage: 'start' });
+      throw Object.assign(new Error(message), { code: 'start_failed' });
+    }
     const running_job = store.updateJob(created_job.id, {
       status: 'running',
       pid: started.pid,
@@ -408,7 +421,7 @@ export function createWorkerSupervisorServer(options) {
               ? req.query.workspace
               : undefined
         })
-        .map(serializeJob)
+        .map((job) => serializeJob(job, (job_id) => supervisor.getEvents(job_id)))
     });
   });
 
@@ -421,7 +434,7 @@ export function createWorkerSupervisorServer(options) {
     }
     res.status(200).json({
       item: {
-        ...serializeJob(job),
+        ...serializeJob(job, (job_id) => supervisor.getEvents(job_id)),
         events: supervisor.getEvents(job.id),
         logPreview: supervisor.getJobLog(job.id, { tail: 200 })
       }
@@ -431,7 +444,9 @@ export function createWorkerSupervisorServer(options) {
   app.post('/jobs', async (req, res) => {
     try {
       const job = await supervisor.createJob(req.body || {});
-      res.status(202).json(serializeJob(job));
+      res
+        .status(202)
+        .json(serializeJob(job, (job_id) => supervisor.getEvents(job_id)));
     } catch (error) {
       sendSupervisorError(res, error);
     }
@@ -440,7 +455,9 @@ export function createWorkerSupervisorServer(options) {
   app.post('/jobs/:jobId/cancel', async (req, res) => {
     try {
       const job = await supervisor.cancelJob(req.params.jobId, req.body || {});
-      res.status(200).json({ item: serializeJob(job) });
+      res.status(200).json({
+        item: serializeJob(job, (job_id) => supervisor.getEvents(job_id))
+      });
     } catch (error) {
       sendSupervisorError(res, error);
     }
@@ -569,9 +586,12 @@ function requireJob(job, job_id) {
 
 /**
  * @param {ReturnType<ReturnType<typeof createWorkerSupervisor>['getJob']>} job
+ * @param {(job_id: string) => Array<{ event_type?: string }>} get_events
  */
-function serializeJob(job) {
+function serializeJob(job, get_events) {
   const required_job = requireJob(job, 'unknown');
+  const was_force_killed = get_events(required_job.id)
+    .some((event) => event.event_type === 'job.killed');
   return {
     id: required_job.id,
     command: required_job.command,
@@ -591,7 +611,8 @@ function serializeJob(job) {
       ? required_job.status
       : null,
     errorSummary: required_job.error_summary,
-    createdAt: required_job.created_at
+    createdAt: required_job.created_at,
+    wasForceKilled: was_force_killed
   };
 }
 

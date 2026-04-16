@@ -51,6 +51,7 @@ const STATUS_SORT_ORDER = {
  *   elapsedMs?: number,
  *   errorSummary?: string,
  *   isCancellable?: boolean
+ *   wasForceKilled?: boolean
  * }} WorkerJob
  */
 
