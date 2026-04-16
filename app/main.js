@@ -264,6 +264,36 @@ export function bootstrap(root_element) {
     }
 
     /**
+     * Handle a manual sync request for the current workspace.
+     *
+     * @param {string} workspace_path
+     */
+    async function handleWorkspaceSync(workspace_path) {
+      log('requesting workspace sync for %s', workspace_path);
+      try {
+        const result = await client.send('sync-workspace', {});
+        log('workspace sync result: %o', result);
+
+        if (result?.workspace) {
+          store.setState({
+            workspace: {
+              current: {
+                path: result.workspace.root_dir,
+                database: result.workspace.db_path
+              }
+            }
+          });
+        }
+
+        showToast('Synced ' + getProjectName(workspace_path), 'success', 2000);
+      } catch (err) {
+        log('workspace sync failed: %o', err);
+        showToast('Sync failed', 'error', 3000);
+        throw err;
+      }
+    }
+
+    /**
      * Extract project name from path.
      *
      * @param {string} path
@@ -455,7 +485,12 @@ export function bootstrap(root_element) {
     // Workspace picker (mount now that store exists)
     const workspace_mount = document.getElementById('workspace-picker');
     if (workspace_mount) {
-      createWorkspacePicker(workspace_mount, store, handleWorkspaceChange);
+      createWorkspacePicker(
+        workspace_mount,
+        store,
+        handleWorkspaceChange,
+        handleWorkspaceSync
+      );
     }
     // Load workspaces after WebSocket is connected
     void loadWorkspaces();

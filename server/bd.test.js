@@ -108,6 +108,15 @@ describe('runBd', () => {
     }
   });
 
+  test('allows disabling sandbox per call', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('ok', '', 0));
+
+    await runBd(['dolt', 'pull'], { sandbox: false });
+
+    const args = mockedSpawn.mock.calls[0][1];
+    expect(args).toEqual(['dolt', 'pull']);
+  });
+
   test('returns stdout/stderr and exit code', async () => {
     mockedSpawn.mockReturnValueOnce(makeFakeProc('ok', '', 0));
     const res = await runBd(['--version']);
