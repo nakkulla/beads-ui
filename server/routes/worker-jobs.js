@@ -44,17 +44,40 @@ function resolveWorkspace(req, root_dir) {
 export function createWorkerJobsRouter(options) {
   const router = express.Router();
 
-  router.get('/', (req, res) => {
-    const manager = getWorkerJobManager();
-    res.status(200).json({
-      items: manager.listJobs({
-        workspace: resolveWorkspace(req, options.root_dir) || undefined
-      })
-    });
+  router.get('/', async (req, res) => {
+    const manager = getWorkerJobManager({ root_dir: options.root_dir });
+    const workspace = resolveWorkspace(req, options.root_dir);
+    try {
+      const items = await manager.listJobs({
+        workspace: workspace || undefined
+      });
+      res.status(200).json({ items });
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  router.get('/:jobId', async (req, res) => {
+    const manager = getWorkerJobManager({ root_dir: options.root_dir });
+    const workspace = resolveWorkspace(req, options.root_dir);
+    if (!workspace) {
+      res.status(400).json({ error: 'Invalid worker job request: workspace' });
+      return;
+    }
+    try {
+      const item = await manager.getJob({ jobId: req.params.jobId });
+      if (!item || path.resolve(item.workspace) !== workspace) {
+        res.status(404).json({ error: 'Worker job not found' });
+        return;
+      }
+      res.status(200).json({ item });
+    } catch (error) {
+      sendError(res, error);
+    }
   });
 
   router.post('/', async (req, res) => {
-    const manager = getWorkerJobManager();
+    const manager = getWorkerJobManager({ root_dir: options.root_dir });
     const workspace = resolveWorkspace(req, options.root_dir);
     const { command, issueId, prNumber } = req.body || {};
     if (
@@ -74,15 +97,81 @@ export function createWorkerJobsRouter(options) {
       });
       res.status(202).json(result);
     } catch (error) {
-      const code =
-        error && typeof error === 'object' && 'code' in error
-          ? /** @type {{ code?: unknown }} */ (error).code
-          : '';
-      res.status(code === 'conflict' ? 409 : 500).json({
-        error: error instanceof Error ? error.message : 'Failed to enqueue job'
-      });
+      sendError(res, error);
+    }
+  });
+
+  router.post('/:jobId/cancel', async (req, res) => {
+    const manager = getWorkerJobManager({ root_dir: options.root_dir });
+    const workspace = resolveWorkspace(req, options.root_dir);
+    if (!workspace) {
+      res.status(400).json({ error: 'Invalid worker job request: workspace' });
+      return;
+    }
+    try {
+      const item = await manager.getJob({ jobId: req.params.jobId });
+      if (!item || path.resolve(item.workspace) !== workspace) {
+        res.status(404).json({ error: 'Worker job not found' });
+        return;
+      }
+      const cancelled = await manager.cancelJob({ jobId: req.params.jobId });
+      res.status(200).json({ item: cancelled });
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  router.get('/:jobId/log', async (req, res) => {
+    const manager = getWorkerJobManager({ root_dir: options.root_dir });
+    const workspace = resolveWorkspace(req, options.root_dir);
+    if (!workspace) {
+      res.status(400).json({ error: 'Invalid worker job request: workspace' });
+      return;
+    }
+    const tail =
+      typeof req.query.tail === 'string'
+        ? Number.parseInt(req.query.tail, 10)
+        : 200;
+    if (!Number.isInteger(tail) || tail < 1 || tail > 1000) {
+      res.status(400).json({ error: 'Invalid worker job request: tail' });
+      return;
+    }
+    try {
+      const item = await manager.getJob({ jobId: req.params.jobId });
+      if (!item || path.resolve(item.workspace) !== workspace) {
+        res.status(404).json({ error: 'Worker job not found' });
+        return;
+      }
+      const payload = await manager.getJobLog({ jobId: req.params.jobId, tail });
+      res.status(200).json(payload);
+    } catch (error) {
+      sendError(res, error);
     }
   });
 
   return router;
+}
+
+/**
+ * @param {import('express').Response} res
+ * @param {unknown} error
+ */
+function sendError(res, error) {
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? /** @type {{ code?: unknown }} */ (error).code
+      : '';
+  const status =
+    code === 'not_found'
+      ? 404
+      : code === 'conflict'
+        ? 409
+        : code === 'unprocessable'
+          ? 422
+          : code === 'unavailable'
+            ? 503
+            : 500;
+  res.status(status).json({
+    error: error instanceof Error ? error.message : 'Failed to handle worker job'
+  });
 }
