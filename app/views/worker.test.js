@@ -68,6 +68,12 @@ describe('views/worker', () => {
 
     expect(mount.querySelector('#worker-detail-mount')).not.toBeNull();
     expect(mount.querySelector('.worker-layout--with-detail')).not.toBeNull();
+
+    summary_button.click();
+    await Promise.resolve();
+
+    expect(mount.querySelector('#worker-detail-mount')).toBeNull();
+    expect(mount.querySelector('.worker-layout--overview')).not.toBeNull();
   });
 
   test('renders toolbar, parent row badges/actions, and toggles closed children', async () => {

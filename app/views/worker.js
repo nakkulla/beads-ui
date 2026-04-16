@@ -99,8 +99,10 @@ export function createWorkerView(mount_element, deps) {
               expanded_ids,
               selected_parent_id,
               onSelectParent(id) {
+                const next_selected_parent_id =
+                  selected_parent_id === id ? null : id;
                 deps.store.setState({
-                  worker: { selected_parent_id: id }
+                  worker: { selected_parent_id: next_selected_parent_id }
                 });
               },
               onToggleExpand(id) {
