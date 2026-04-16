@@ -3,6 +3,7 @@ tsconfig.tsbuildinfo
 .DS_Store
 .beads/issues.jsonl
 .worktrees/
+.bdui/
 
 # Dolt database files (added by bd init)
 .dolt/
