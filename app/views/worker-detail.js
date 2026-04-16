@@ -29,6 +29,7 @@ export function createWorkerDetailView(mount_element, options = {}) {
   let jobs = [];
   /** @type {string[]} */
   let log_tail = [];
+  let log_error = '';
 
   /**
    * @param {WorkerPullRequest[]} [selected_prs]
@@ -109,7 +110,11 @@ export function createWorkerDetailView(mount_element, options = {}) {
                         </div>
                         <div class="worker-detail__log-preview">
                           <h4>Log preview</h4>
-                          <pre>${log_tail.join('\n')}</pre>
+                          ${log_error
+                            ? html`<p>${log_error}</p>`
+                            : log_tail.length > 0
+                              ? html`<pre>${log_tail.join('\n')}</pre>`
+                              : html`<p>No log output yet.</p>`}
                         </div>
                       `
                     : html`<p>No active job.</p>`}
@@ -169,6 +174,7 @@ export function createWorkerDetailView(mount_element, options = {}) {
       current_workspace = workspace;
       jobs = next_jobs;
       log_tail = [];
+      log_error = '';
       if (!issue || !workspace) {
         await renderShell([], []);
         return;
@@ -211,6 +217,7 @@ export function createWorkerDetailView(mount_element, options = {}) {
           log_tail = Array.isArray(log_payload.tail) ? log_payload.tail : [];
         } catch {
           log_tail = [];
+          log_error = 'Failed to load log preview.';
         }
       }
 
@@ -224,6 +231,7 @@ export function createWorkerDetailView(mount_element, options = {}) {
       current_workspace = '';
       jobs = [];
       log_tail = [];
+      log_error = '';
       render(html``, mount_element);
     }
   };

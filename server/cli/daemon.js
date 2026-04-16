@@ -294,7 +294,7 @@ export function startDaemon(options = {}) {
  *
  * @param {number} pid
  * @param {number} timeout_ms
- * @returns {Promise<boolean>} Resolves true if the process is gone.
+ * @returns {Promise<{ ok: boolean, forced: boolean }>} Resolves whether the process is gone and whether SIGKILL was needed.
  */
 export async function terminateProcess(pid, timeout_ms) {
   try {
@@ -302,14 +302,14 @@ export async function terminateProcess(pid, timeout_ms) {
   } catch (err) {
     const code = /** @type {{ code?: string }} */ (err).code;
     if (code === 'ESRCH') {
-      return true;
+      return { ok: true, forced: false };
     }
   }
 
   const start_time = Date.now();
   while (Date.now() - start_time < timeout_ms) {
     if (!isProcessRunning(pid)) {
-      return true;
+      return { ok: true, forced: false };
     }
     await sleep(100);
   }
@@ -321,7 +321,7 @@ export async function terminateProcess(pid, timeout_ms) {
   }
 
   await sleep(50);
-  return !isProcessRunning(pid);
+  return { ok: !isProcessRunning(pid), forced: true };
 }
 
 /**

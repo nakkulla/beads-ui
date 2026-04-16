@@ -47,10 +47,12 @@ export function createWorkerJobsRouter(options) {
   router.get('/', async (req, res) => {
     const manager = getWorkerJobManager({ root_dir: options.root_dir });
     const workspace = resolveWorkspace(req, options.root_dir);
+    if (!workspace) {
+      res.status(400).json({ error: 'Invalid worker job request: workspace' });
+      return;
+    }
     try {
-      const items = await manager.listJobs({
-        workspace: workspace || undefined
-      });
+      const items = await manager.listJobs({ workspace });
       res.status(200).json({ items });
     } catch (error) {
       sendError(res, error);

@@ -385,10 +385,11 @@ export function createWorkerSupervisor(options) {
 }
 
 /**
- * @param {{ root_dir: string, host?: string, port?: number }} options
+ * @param {{ root_dir: string, host?: string, port?: number, supervisor?: ReturnType<typeof createWorkerSupervisor> | null }} options
  */
 export function createWorkerSupervisorServer(options) {
-  const supervisor = createWorkerSupervisor({ root_dir: options.root_dir });
+  const supervisor =
+    options.supervisor || createWorkerSupervisor({ root_dir: options.root_dir });
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json());
@@ -472,9 +473,24 @@ export function createWorkerSupervisorServer(options) {
         address && typeof address === 'object' && 'port' in address
           ? address.port
           : null;
-      await supervisor.acquireOwnership({ port: actual_port });
-      await supervisor.reconcileJobs();
-      return { server, port: actual_port };
+      try {
+        await supervisor.acquireOwnership({ port: actual_port });
+        await supervisor.reconcileJobs();
+        return { server, port: actual_port };
+      } catch (error) {
+        await new Promise((resolve, reject) => {
+          /** @type {(close_error?: Error | null) => void} */
+          const handle_close = (close_error) => {
+            if (close_error) {
+              reject(close_error);
+              return;
+            }
+            resolve(undefined);
+          };
+          server.close(handle_close);
+        });
+        throw error;
+      }
     }
   };
 }
