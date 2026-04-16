@@ -19,6 +19,7 @@ import { createIssueDialog } from './views/issue-dialog.js';
 import { createListView } from './views/list.js';
 import { createTopNav } from './views/nav.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
+import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
 
@@ -187,6 +188,10 @@ export function bootstrap(root_element) {
         void unsub_issues_resolved().catch(() => {});
         unsub_issues_resolved = null;
       }
+      if (unsub_worker_all) {
+        void unsub_worker_all().catch(() => {});
+        unsub_worker_all = null;
+      }
       if (unsub_board_resolved) {
         void unsub_board_resolved().catch(() => {});
         unsub_board_resolved = null;
@@ -203,6 +208,7 @@ export function bootstrap(root_element) {
       const storeIds = [
         'tab:issues',
         'tab:issues:resolved',
+        'tab:worker:all',
         'tab:epics',
         'tab:board:ready',
         'tab:board:in-progress',
@@ -702,6 +708,12 @@ export function bootstrap(root_element) {
       sub_issue_stores,
       transport
     );
+    const worker_view = createWorkerView(worker_root, {
+      store,
+      issue_stores: sub_issue_stores,
+      onRunRalph: () => {},
+      onRunPrReview: () => {}
+    });
     // Preload epics when switching to view
     /**
      * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'worker', filters: any }} s
@@ -713,6 +725,8 @@ export function bootstrap(root_element) {
     let unsub_epics_tab = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_issues_resolved = null;
+    /** @type {null | (() => Promise<void>)} */
+    let unsub_worker_all = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_board_ready = null;
     /** @type {null | (() => Promise<void>)} */
@@ -870,6 +884,41 @@ export function bootstrap(root_element) {
           } catch (err) {
             log('unregister issues:resolved failed: %o', err);
           }
+        }
+      }
+
+      // Worker tab
+      if (s.view === 'worker') {
+        try {
+          sub_issue_stores.register('tab:worker:all', { type: 'all-issues' });
+        } catch (err) {
+          log('register worker store failed: %o', err);
+        }
+        if (
+          !unsub_worker_all &&
+          !pending_subscriptions.has('tab:worker:all')
+        ) {
+          pending_subscriptions.add('tab:worker:all');
+          void subscriptions
+            .subscribeList('tab:worker:all', { type: 'all-issues' })
+            .then((unsub) => {
+              unsub_worker_all = unsub;
+            })
+            .catch((err) => {
+              log('subscribe worker failed: %o', err);
+              showFatalFromError(err, 'worker');
+            })
+            .finally(() => {
+              pending_subscriptions.delete('tab:worker:all');
+            });
+        }
+      } else if (unsub_worker_all) {
+        void unsub_worker_all().catch(() => {});
+        unsub_worker_all = null;
+        try {
+          sub_issue_stores.unregister('tab:worker:all');
+        } catch (err) {
+          log('unregister worker store failed: %o', err);
         }
       }
 
@@ -1105,6 +1154,9 @@ export function bootstrap(root_element) {
       }
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
+      }
+      if (s.view === 'worker') {
+        worker_view.load();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };
