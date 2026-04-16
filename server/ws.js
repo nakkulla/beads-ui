@@ -1411,9 +1411,7 @@ export async function handleMessage(ws, data) {
 
     if (!CURRENT_WORKSPACE?.root_dir) {
       ws.send(
-        JSON.stringify(
-          makeError(req, 'server_error', 'No active workspace')
-        )
+        JSON.stringify(makeError(req, 'server_error', 'No active workspace'))
       );
       return;
     }

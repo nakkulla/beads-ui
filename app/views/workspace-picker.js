@@ -85,6 +85,9 @@ export function createWorkspacePicker(
     }
   }
 
+  /**
+   * @param {string} current_path
+   */
   function renderSyncButton(current_path) {
     if (!current_path) {
       return html``;

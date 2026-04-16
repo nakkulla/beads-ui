@@ -80,7 +80,9 @@ describe('main workspace sync', () => {
 
     const toasts = Array.from(document.querySelectorAll('.toast'));
     expect(
-      toasts.some((toast) => (toast.textContent || '').includes('Synced repo-a'))
+      toasts.some((toast) =>
+        (toast.textContent || '').includes('Synced repo-a')
+      )
     ).toBe(true);
   });
 

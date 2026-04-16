@@ -1,6 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
 import { createWorkspacePicker } from './workspace-picker.js';
 
+/**
+ * @param {any} workspace
+ */
 function makeStore(workspace) {
   return {
     state: { workspace },
@@ -64,9 +67,11 @@ describe('views/workspace-picker', () => {
     let resolveSync = () => {};
     const onWorkspaceSync = vi.fn(
       () =>
-        new Promise((resolve) => {
-          resolveSync = resolve;
-        })
+        /** @type {Promise<void>} */ (
+          new Promise((resolve) => {
+            resolveSync = () => resolve();
+          })
+        )
     );
 
     createWorkspacePicker(
@@ -91,9 +96,7 @@ describe('views/workspace-picker', () => {
     expect(syncButton.disabled).toBe(true);
     expect(syncButton.textContent?.trim()).toBe('Syncing…');
     expect(select.disabled).toBe(true);
-    expect(
-      mount.querySelector('.workspace-picker__loading')
-    ).not.toBeNull();
+    expect(mount.querySelector('.workspace-picker__loading')).not.toBeNull();
 
     resolveSync();
     await Promise.resolve();
