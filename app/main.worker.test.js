@@ -7,11 +7,13 @@ vi.mock('./ws.js', () => {
   const handlers = {};
   const singleton = {
     /**
-     * @param {string} _type
-     * @param {any} _payload
+     * @param {string} type
+     * @param {any} payload
      * @returns {Promise<null>}
      */
-    async send(_type, _payload) {
+    async send(type, payload) {
+      void type;
+      void payload;
       return null;
     },
     /**
