@@ -1,0 +1,132 @@
+<h2>Worker 탭 visual companion 예시</h2>
+<p class="subtitle">이게 brainstorming 서버에서 제가 보여드리는 mockup 방식의 예시입니다. 아래 카드 중 하나를 클릭해서 선호안을 표시할 수도 있습니다.</p>
+
+<div class="section">
+  <div class="cards">
+    <div class="card" data-choice="layout-a" onclick="toggleSelect(this)">
+      <div class="card-image">
+        <div class="mockup">
+          <div class="mockup-header">A. Recommended — Worker Split View</div>
+          <div class="mockup-body">
+            <div style="display:grid;grid-template-columns:1.15fr 1fr;gap:12px;min-height:340px;">
+              <div style="border:1px solid #2b3443;border-radius:12px;padding:12px;background:#0f1722;">
+                <div class="label">Worker filters</div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px 0;">
+                  <input class="mock-input" value="search parent" style="width:120px" />
+                  <input class="mock-input" value="status: all" style="width:110px" />
+                  <input class="mock-input" value="runnable only" style="width:120px" />
+                </div>
+                <div style="display:flex;flex-direction:column;gap:10px;">
+                  <div style="border:1px solid #3a4658;border-radius:10px;padding:10px;background:#111b28;box-shadow:0 0 0 2px rgba(88,166,255,.12) inset;">
+                    <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+                      <strong>UI-nl9g</strong>
+                      <span class="label">feature</span>
+                    </div>
+                    <div style="font-size:12px;color:#9fb0c3;margin-top:4px;">workspace discovery watcher 후속 안정화</div>
+                    <div style="height:8px;background:#223045;border-radius:999px;margin:10px 0 6px 0;overflow:hidden;">
+                      <div style="width:72%;height:100%;background:linear-gradient(90deg,#4ade80,#60a5fa);"></div>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;font-size:11px;color:#9fb0c3;">
+                      <span>2 closed · 1 resolved · 1 in_progress · 3 open</span>
+                      <span>72%</span>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">
+                      <span class="mock-button" style="padding:4px 8px;font-size:11px;">RUNNING</span>
+                      <span class="mock-button" style="padding:4px 8px;font-size:11px;">HAS SPEC</span>
+                      <span class="mock-button" style="padding:4px 8px;font-size:11px;">OPEN PR</span>
+                    </div>
+                    <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+                      <button class="mock-button">Run bd-ralph-v2</button>
+                      <button class="mock-button">Run pr-review</button>
+                      <button class="mock-button">Open spec</button>
+                    </div>
+                    <div style="margin-top:10px;padding-top:10px;border-top:1px dashed #334155;display:flex;flex-direction:column;gap:6px;">
+                      <div style="font-size:12px;">└ UI-ab12 child A <span style="color:#fbbf24;">[resolved]</span></div>
+                      <div style="font-size:12px;">└ UI-cd34 child B <span style="color:#60a5fa;">[in_progress]</span></div>
+                      <div style="font-size:12px;">└ UI-ef56 child C <span style="color:#cbd5e1;">[open]</span></div>
+                      <div style="font-size:11px;color:#94a3b8;">Show closed (2)</div>
+                    </div>
+                  </div>
+                  <div style="border:1px solid #2b3443;border-radius:10px;padding:10px;background:#0f1722;opacity:.72;">
+                    <strong>UI-pw5u</strong>
+                    <div style="font-size:12px;color:#9fb0c3;">workspace manual sync</div>
+                  </div>
+                </div>
+              </div>
+              <div style="border:1px solid #2b3443;border-radius:12px;padding:12px;background:#0f1722;">
+                <div class="label">Worker detail</div>
+                <div style="font-size:14px;font-weight:700;margin:6px 0 10px 0;">UI-nl9g · parent summary</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+                  <div class="placeholder" style="min-height:56px;">Execution status / issue badges</div>
+                  <div class="placeholder" style="min-height:56px;">Selected parent PRs</div>
+                </div>
+                <div class="placeholder" style="min-height:140px;margin-bottom:10px;">Spec viewer / inline markdown editor</div>
+                <div class="placeholder" style="min-height:90px;">Workspace-wide open PR summary</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card-body">
+        <h3>A. Split view</h3>
+        <p>왼쪽은 parent tree + 필터 + 진행률, 오른쪽은 spec/PR/상태 패널입니다.</p>
+      </div>
+    </div>
+
+    <div class="card" data-choice="layout-b" onclick="toggleSelect(this)">
+      <div class="card-image">
+        <div class="mockup">
+          <div class="mockup-header">B. Dense Board-style Worker</div>
+          <div class="mockup-body">
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;min-height:340px;">
+              <div style="border:1px solid #2b3443;border-radius:12px;padding:10px;background:#0f1722;">
+                <div class="label">Runnable</div>
+                <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">
+                  <div style="border:1px solid #334155;border-radius:10px;padding:10px;">
+                    <strong>UI-nl9g</strong>
+                    <div style="font-size:11px;color:#9fb0c3;margin:6px 0;">72%</div>
+                    <div style="height:6px;background:#223045;border-radius:999px;"><div style="width:72%;height:100%;background:#60a5fa;border-radius:999px;"></div></div>
+                  </div>
+                  <div style="border:1px solid #334155;border-radius:10px;padding:10px;"><strong>UI-xy11</strong></div>
+                </div>
+              </div>
+              <div style="border:1px solid #2b3443;border-radius:12px;padding:10px;background:#0f1722;">
+                <div class="label">Needs PR review</div>
+                <div class="placeholder" style="min-height:260px;margin-top:10px;">parent cards</div>
+              </div>
+              <div style="border:1px solid #2b3443;border-radius:12px;padding:10px;background:#0f1722;">
+                <div class="label">Attention</div>
+                <div class="placeholder" style="min-height:260px;margin-top:10px;">failed / blocked cards</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card-body">
+        <h3>B. Board-style</h3>
+        <p>운영 대시보드 느낌은 강하지만 parent/child hierarchy와 spec 편집 맥락은 약합니다.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>이런 식으로 보여드릴 수 있어요</h4>
+      <ul>
+        <li>layout A/B 비교 mockup</li>
+        <li>spec editor 위치나 PR panel 배치 비교</li>
+        <li>필터 바 / row density / progression 디자인 비교</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>이 화면의 성격</h4>
+      <ul>
+        <li>brainstorming용 시각 자료</li>
+        <li>클릭 선택 이벤트를 다음 턴에 반영 가능</li>
+        <li>실제 구현 전 설계 합의용</li>
+      </ul>
+    </div>
+  </div>
+</div>
