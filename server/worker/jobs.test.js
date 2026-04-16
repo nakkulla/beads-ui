@@ -8,7 +8,11 @@ describe('worker job manager gateway', () => {
       listJobs: vi.fn(async () => [{ id: 'job-1', status: 'running' }]),
       getJob: vi.fn(async () => ({ id: 'job-1', workspace: '/repo' })),
       cancelJob: vi.fn(async () => ({ id: 'job-1', status: 'cancelled' })),
-      getJobLog: vi.fn(async () => ({ path: 'log', tail: ['line'], truncated: false }))
+      getJobLog: vi.fn(async () => ({
+        path: 'log',
+        tail: ['line'],
+        truncated: false
+      }))
     };
     const manager = createWorkerJobManager({ root_dir: '/repo', client });
 

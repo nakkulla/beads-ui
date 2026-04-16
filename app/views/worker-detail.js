@@ -40,9 +40,14 @@ export function createWorkerDetailView(mount_element, options = {}) {
       ? jobs.filter((job) => job.issueId === issue.id)
       : [];
     const current_job =
-      issue_jobs.find((job) => ['queued', 'starting', 'running', 'cancelling'].includes(String(job.status))) ||
-      null;
-    const recent_jobs = current_job ? issue_jobs.filter((job) => job.id !== current_job.id) : issue_jobs;
+      issue_jobs.find((job) =>
+        ['queued', 'starting', 'running', 'cancelling'].includes(
+          String(job.status)
+        )
+      ) || null;
+    const recent_jobs = current_job
+      ? issue_jobs.filter((job) => job.id !== current_job.id)
+      : issue_jobs;
 
     render(
       html`
@@ -76,7 +81,6 @@ export function createWorkerDetailView(mount_element, options = {}) {
                 </header>
               `
             : html`<div class="worker-empty">No parent selected.</div>`}
-
           ${issue
             ? html`
                 <section class="worker-detail__jobs">
@@ -194,7 +198,9 @@ export function createWorkerDetailView(mount_element, options = {}) {
       const current_job = jobs.find(
         (job) =>
           job.issueId === issue.id &&
-          ['queued', 'starting', 'running', 'cancelling'].includes(String(job.status))
+          ['queued', 'starting', 'running', 'cancelling'].includes(
+            String(job.status)
+          )
       );
       if (current_job?.id) {
         try {

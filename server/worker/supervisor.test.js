@@ -45,7 +45,10 @@ afterEach(() => {
 describe('worker supervisor', () => {
   test('creates job, marks it running, and finalizes success on close', async () => {
     const root_dir = mkdtemp();
-    const store = createJobStore({ root_dir, now: () => '2026-04-17T03:00:00.000Z' });
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
     const runner_stub = createRunnerStub();
     const supervisor = createWorkerSupervisor({
       root_dir,
@@ -84,7 +87,10 @@ describe('worker supervisor', () => {
 
   test('moves running job into cancelling and cancelled during cancel flow', async () => {
     const root_dir = mkdtemp();
-    const store = createJobStore({ root_dir, now: () => '2026-04-17T03:00:00.000Z' });
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
     const runner_stub = createRunnerStub();
     const supervisor = createWorkerSupervisor({
       root_dir,
@@ -106,7 +112,9 @@ describe('worker supervisor', () => {
       throw new Error('job was not created');
     }
 
-    const cancelled = await supervisor.cancelJob(job.id, { grace_timeout_ms: 250 });
+    const cancelled = await supervisor.cancelJob(job.id, {
+      grace_timeout_ms: 250
+    });
 
     expect(cancelled.status).toBe('cancelled');
     expect(cancelled.cancel_requested_at).toBe('2026-04-17T03:00:00.000Z');
@@ -115,7 +123,10 @@ describe('worker supervisor', () => {
 
   test('records job.killed when runner reports forced cancellation', async () => {
     const root_dir = mkdtemp();
-    const store = createJobStore({ root_dir, now: () => '2026-04-17T03:00:00.000Z' });
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
     const child = /** @type {any} */ (new EventEmitter());
     child.unref = () => {};
     const supervisor = createWorkerSupervisor({
@@ -148,13 +159,18 @@ describe('worker supervisor', () => {
     await supervisor.cancelJob(job.id, { grace_timeout_ms: 250 });
 
     expect(
-      supervisor.getEvents(job.id).some((event) => event.event_type === 'job.killed')
+      supervisor
+        .getEvents(job.id)
+        .some((event) => event.event_type === 'job.killed')
     ).toBe(true);
   });
 
   test('marks stale active job as failed during reconcile', async () => {
     const root_dir = mkdtemp();
-    const store = createJobStore({ root_dir, now: () => '2026-04-17T03:00:00.000Z' });
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
     const job = store.createJob({
       command: 'bd-ralph-v2',
       issueId: 'UI-qclw',
@@ -181,12 +197,19 @@ describe('worker supervisor', () => {
 
   test('takes over stale owner when health check fails for live pid', async () => {
     const root_dir = mkdtemp();
-    const store = createJobStore({ root_dir, now: () => '2026-04-17T03:00:00.000Z' });
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
     const lock_path = store.paths.lock_path;
     fs.mkdirSync(path.dirname(lock_path), { recursive: true });
     fs.writeFileSync(
       lock_path,
-      JSON.stringify({ pid: 1111, port: 4099, acquired_at: '2026-04-17T02:59:00.000Z' })
+      JSON.stringify({
+        pid: 1111,
+        port: 4099,
+        acquired_at: '2026-04-17T02:59:00.000Z'
+      })
     );
     const supervisor = createWorkerSupervisor({
       root_dir,

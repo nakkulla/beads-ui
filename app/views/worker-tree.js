@@ -25,7 +25,9 @@ export function workerTreeTemplate(rows, handlers) {
       ${rows.map((row) => {
         const expanded = handlers.expanded_ids.has(row.id);
         const pr_review_enabled =
-          row.open_pr_count === 1 && !row.has_active_job && row.status !== 'closed';
+          row.open_pr_count === 1 &&
+          !row.has_active_job &&
+          row.status !== 'closed';
         return html`
           <article class="worker-tree__item">
             ${workerParentRowTemplate(row, {

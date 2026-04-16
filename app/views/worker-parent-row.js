@@ -55,7 +55,9 @@ export function workerParentRowTemplate(row, handlers) {
         ${row.spec_id
           ? html`<span class="worker-badge">Has spec</span>`
           : html`<span class="worker-badge worker-badge--muted">No spec</span>`}
-        ${row.has_open_pr ? html`<span class="worker-badge">Open PR</span>` : null}
+        ${row.has_open_pr
+          ? html`<span class="worker-badge">Open PR</span>`
+          : null}
         ${current_job
           ? html`
               <span class="worker-badge worker-badge--active"
@@ -66,7 +68,9 @@ export function workerParentRowTemplate(row, handlers) {
               >
             `
           : row.runnable
-            ? html`<span class="worker-badge worker-badge--ready">Runnable</span>`
+            ? html`<span class="worker-badge worker-badge--ready"
+                >Runnable</span
+              >`
             : null}
       </div>
 
@@ -76,14 +80,18 @@ export function workerParentRowTemplate(row, handlers) {
       </div>
 
       <div class="worker-parent-row__counts">
-        ${row.child_counts.open > 0 ? html`<span>${row.child_counts.open} open</span>` : null}
+        ${row.child_counts.open > 0
+          ? html`<span>${row.child_counts.open} open</span>`
+          : null}
         ${row.child_counts.in_progress > 0
           ? html`<span>${row.child_counts.in_progress} in progress</span>`
           : null}
         ${row.child_counts.resolved > 0
           ? html`<span>${row.child_counts.resolved} resolved</span>`
           : null}
-        ${row.child_counts.closed > 0 ? html`<span>${row.child_counts.closed} closed</span>` : null}
+        ${row.child_counts.closed > 0
+          ? html`<span>${row.child_counts.closed} closed</span>`
+          : null}
       </div>
 
       <div class="worker-parent-row__actions">

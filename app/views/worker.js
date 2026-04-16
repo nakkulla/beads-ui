@@ -55,7 +55,8 @@ export function createWorkerView(mount_element, deps) {
   function renderView() {
     const state = deps.store.getState();
     const workspace_is_valid = !!state.workspace?.current;
-    const jobs = typeof deps.getWorkerJobs === 'function' ? deps.getWorkerJobs() : [];
+    const jobs =
+      typeof deps.getWorkerJobs === 'function' ? deps.getWorkerJobs() : [];
     const selected_parent_id = state.worker?.selected_parent_id || null;
     const rows = filterWorkerParents(
       buildWorkerParents(deps.issue_stores.snapshotFor('tab:worker:all'), {
@@ -99,7 +100,8 @@ export function createWorkerView(mount_element, deps) {
               expanded_ids,
               selected_parent_id,
               onSelectParent(id) {
-                const next_selected_parent_id = selected_parent_id === id ? null : id;
+                const next_selected_parent_id =
+                  selected_parent_id === id ? null : id;
                 deps.store.setState({
                   worker: { selected_parent_id: next_selected_parent_id }
                 });
@@ -129,7 +131,10 @@ export function createWorkerView(mount_element, deps) {
           </aside>
 
           ${selected
-            ? html`<section class="worker-layout__right" id="worker-detail-mount"></section>`
+            ? html`<section
+                class="worker-layout__right"
+                id="worker-detail-mount"
+              ></section>`
             : null}
         </section>
       `,
@@ -148,7 +153,11 @@ export function createWorkerView(mount_element, deps) {
           onCancelJob: deps.onCancelJob
         });
       }
-      void detail_view.load(selected, state.workspace?.current?.path || '', jobs);
+      void detail_view.load(
+        selected,
+        state.workspace?.current?.path || '',
+        jobs
+      );
     } else {
       detail_view?.clear();
     }

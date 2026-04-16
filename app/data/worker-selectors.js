@@ -9,7 +9,12 @@ const PROGRESS_WEIGHTS = {
   closed: 1
 };
 
-const ACTIVE_JOB_STATUSES = new Set(['queued', 'starting', 'running', 'cancelling']);
+const ACTIVE_JOB_STATUSES = new Set([
+  'queued',
+  'starting',
+  'running',
+  'cancelling'
+]);
 
 const STATUS_SORT_ORDER = {
   in_progress: 0,
@@ -170,7 +175,8 @@ function selectParentJobs(parent_id, jobs) {
  */
 function hasActiveJob(parent_id, jobs) {
   return selectParentJobs(parent_id, jobs).some(
-    (job) => typeof job.status === 'string' && ACTIVE_JOB_STATUSES.has(job.status)
+    (job) =>
+      typeof job.status === 'string' && ACTIVE_JOB_STATUSES.has(job.status)
   );
 }
 
@@ -236,7 +242,8 @@ export function buildWorkerParentViewModel(parent, children, options = {}) {
     ? options.show_closed_children
     : [];
   const visible_children =
-    show_closed_children.includes(parent.id) || show_closed_children.includes('*')
+    show_closed_children.includes(parent.id) ||
+    show_closed_children.includes('*')
       ? children.slice()
       : children.filter((child) => child.status !== 'closed');
   const hidden_closed_count = children.filter(
@@ -247,16 +254,22 @@ export function buildWorkerParentViewModel(parent, children, options = {}) {
   const parent_jobs = selectParentJobs(parent.id, jobs);
   const current_job =
     parent_jobs.find(
-      (job) => typeof job.status === 'string' && ACTIVE_JOB_STATUSES.has(job.status)
+      (job) =>
+        typeof job.status === 'string' && ACTIVE_JOB_STATUSES.has(job.status)
     ) || null;
-  const recent_jobs = current_job ? parent_jobs.slice(1, 4) : parent_jobs.slice(0, 3);
+  const recent_jobs = current_job
+    ? parent_jobs.slice(1, 4)
+    : parent_jobs.slice(0, 3);
   const active_job = current_job !== null;
-  const open_pr_count = Array.isArray(options.open_pr_ids_by_parent?.[parent.id])
+  const open_pr_count = Array.isArray(
+    options.open_pr_ids_by_parent?.[parent.id]
+  )
     ? options.open_pr_ids_by_parent[parent.id].length
     : Number(parent.open_pr_count || 0);
   const counts = {
     open: children.filter((child) => child.status === 'open').length,
-    in_progress: children.filter((child) => child.status === 'in_progress').length,
+    in_progress: children.filter((child) => child.status === 'in_progress')
+      .length,
     resolved: children.filter((child) => child.status === 'resolved').length,
     closed: children.filter((child) => child.status === 'closed').length
   };
@@ -322,7 +335,9 @@ export function buildWorkerParents(issues, options = {}) {
       }
     }
     const jobs = Array.isArray(options.jobs) ? options.jobs : [];
-    const open_pr_count = Array.isArray(options.open_pr_ids_by_parent?.[issue.id])
+    const open_pr_count = Array.isArray(
+      options.open_pr_ids_by_parent?.[issue.id]
+    )
       ? options.open_pr_ids_by_parent[issue.id].length
       : Number(issue.open_pr_count || 0);
     const is_parent =
@@ -375,7 +390,9 @@ function compareWorkerParents(a, b) {
  * @param {WorkerFilters} [filters]
  */
 export function filterWorkerParents(items, filters = {}) {
-  const search = String(filters.search || '').trim().toLowerCase();
+  const search = String(filters.search || '')
+    .trim()
+    .toLowerCase();
   const status = String(filters.status || 'all');
 
   return items.filter((item) => {
@@ -389,7 +406,8 @@ export function filterWorkerParents(items, filters = {}) {
       return false;
     }
     if (search.length > 0) {
-      const haystack = `${String(item.id)} ${String(item.title || '')}`.toLowerCase();
+      const haystack =
+        `${String(item.id)} ${String(item.title || '')}`.toLowerCase();
       if (!haystack.includes(search)) {
         return false;
       }

@@ -87,15 +87,18 @@ describe('worker jobs route', () => {
 
     try {
       const address = await listen(server);
-      response = await fetch(`http://127.0.0.1:${address.port}/api/worker/jobs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          command: 'bd-ralph-v2',
-          issueId: 'UI-qclw',
-          workspace: allowed_workspace
-        })
-      });
+      response = await fetch(
+        `http://127.0.0.1:${address.port}/api/worker/jobs`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            command: 'bd-ralph-v2',
+            issueId: 'UI-qclw',
+            workspace: allowed_workspace
+          })
+        }
+      );
       body = await response.json();
     } finally {
       await close(server);

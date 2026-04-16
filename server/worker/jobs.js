@@ -11,7 +11,9 @@ const worker_job_managers = new Map();
  * @param {{ root_dir: string, client?: any }} options
  */
 export function createWorkerJobManager(options) {
-  const client = options.client || createWorkerSupervisorClient({ root_dir: options.root_dir });
+  const client =
+    options.client ||
+    createWorkerSupervisorClient({ root_dir: options.root_dir });
 
   return {
     /**
@@ -69,7 +71,9 @@ function createWorkerSupervisorClient(options) {
   const fetch_impl = options.fetch_impl || fetch;
   const start_daemon_impl = options.start_daemon_impl || startManagedDaemon;
   const paths = createWorkerStatePaths(options.root_dir);
-  const entry_path = fileURLToPath(new URL('./supervisor-entry.js', import.meta.url));
+  const entry_path = fileURLToPath(
+    new URL('./supervisor-entry.js', import.meta.url)
+  );
   /** @type {string | null} */
   let base_url = null;
 
@@ -91,7 +95,10 @@ function createWorkerSupervisorClient(options) {
      */
     async getJob(input) {
       const url = await ensureBaseUrl();
-      const response = await fetchJson(fetch_impl, `${url}/jobs/${encodeURIComponent(input.jobId)}`);
+      const response = await fetchJson(
+        fetch_impl,
+        `${url}/jobs/${encodeURIComponent(input.jobId)}`
+      );
       return response.item || null;
     },
 
@@ -130,7 +137,10 @@ function createWorkerSupervisorClient(options) {
     async getJobLog(input) {
       const url = await ensureBaseUrl();
       const query = input.tail != null ? `?tail=${input.tail}` : '';
-      return fetchJson(fetch_impl, `${url}/jobs/${encodeURIComponent(input.jobId)}/log${query}`);
+      return fetchJson(
+        fetch_impl,
+        `${url}/jobs/${encodeURIComponent(input.jobId)}/log${query}`
+      );
     }
   };
 
@@ -214,10 +224,13 @@ async function fetchJson(fetch_impl, url, init) {
             : response.status >= 500
               ? 'unavailable'
               : 'invalid_request';
-    throw Object.assign(new Error(body.error || 'Worker supervisor request failed'), {
-      code,
-      status: response.status
-    });
+    throw Object.assign(
+      new Error(body.error || 'Worker supervisor request failed'),
+      {
+        code,
+        status: response.status
+      }
+    );
   }
   return body;
 }

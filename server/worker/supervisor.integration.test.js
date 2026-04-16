@@ -198,7 +198,9 @@ describe('worker supervisor integration', () => {
         .tail.some((line) => line.includes('worker-started'))
     );
 
-    const cancelled = await supervisor.cancelJob(job.id, { grace_timeout_ms: 200 });
+    const cancelled = await supervisor.cancelJob(job.id, {
+      grace_timeout_ms: 200
+    });
     const log = supervisor.getJobLog(job.id, { tail: 20 });
 
     expect(cancelled.status).toBe('cancelled');
@@ -248,7 +250,9 @@ describe('worker supervisor integration', () => {
     }
     await waitFor(() => supervisor.getJob(job.id)?.status === 'running');
 
-    const cancelled = await supervisor.cancelJob(job.id, { grace_timeout_ms: 50 });
+    const cancelled = await supervisor.cancelJob(job.id, {
+      grace_timeout_ms: 50
+    });
 
     expect(cancelled.status).toBe('cancelled');
     expect(runner.getLastCancelResult()).not.toBeNull();

@@ -209,7 +209,9 @@ export function createJobStore(options) {
   function createJobId(created_at) {
     job_counter += 1;
     const created_value = Date.parse(created_at);
-    const stable_value = Number.isFinite(created_value) ? created_value : Date.now();
+    const stable_value = Number.isFinite(created_value)
+      ? created_value
+      : Date.now();
     return `job-${stable_value}-${job_counter}`;
   }
 
@@ -227,9 +229,9 @@ export function createJobStore(options) {
    * @returns {JobRow[]}
    */
   function listJobs(filters = {}) {
-    return list_jobs_stmt.all(filters.workspace_path ?? null).map(
-      (row) => /** @type {JobRow} */ ({ ...row })
-    );
+    return list_jobs_stmt
+      .all(filters.workspace_path ?? null)
+      .map((row) => /** @type {JobRow} */ ({ ...row }));
   }
 
   /**
@@ -270,7 +272,9 @@ export function createJobStore(options) {
    * @param {Record<string, unknown>} patch
    */
   function updateJob(job_id, patch) {
-    const entries = Object.entries(patch).filter(([, value]) => value !== undefined);
+    const entries = Object.entries(patch).filter(
+      ([, value]) => value !== undefined
+    );
     if (entries.length === 0) {
       return getJob(job_id);
     }
@@ -280,7 +284,10 @@ export function createJobStore(options) {
     const values = entries.map(
       ([, value]) => /** @type {SQLInputValue} */ (value)
     );
-    db.prepare(`UPDATE jobs SET ${assignments} WHERE id = ?`).run(...values, job_id);
+    db.prepare(`UPDATE jobs SET ${assignments} WHERE id = ?`).run(
+      ...values,
+      job_id
+    );
     return getJob(job_id);
   }
 

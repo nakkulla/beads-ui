@@ -26,7 +26,10 @@ afterEach(() => {
 describe('worker job store', () => {
   test('creates job row, empty log file, and job.created event together', () => {
     const root_dir = mkdtemp();
-    const store = createJobStore({ root_dir, now: () => '2026-04-17T02:00:00.000Z' });
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T02:00:00.000Z'
+    });
 
     const job = store.createJob({
       command: 'bd-ralph-v2',
@@ -49,7 +52,10 @@ describe('worker job store', () => {
 
   test('detects active conflicts by issue and pr number and ignores final jobs', () => {
     const root_dir = mkdtemp();
-    const store = createJobStore({ root_dir, now: () => '2026-04-17T02:00:00.000Z' });
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T02:00:00.000Z'
+    });
 
     const first = store.createJob({
       command: 'bd-ralph-v2',

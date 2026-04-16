@@ -6,10 +6,15 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createJobStore } from './job-store.js';
-import { createWorkerProcessRunner } from './process-runner.js';
 import { resolvePrReviewTarget } from './pr-target-resolver.js';
+import { createWorkerProcessRunner } from './process-runner.js';
 
-const ACTIVE_JOB_STATUSES = new Set(['queued', 'starting', 'running', 'cancelling']);
+const ACTIVE_JOB_STATUSES = new Set([
+  'queued',
+  'starting',
+  'running',
+  'cancelling'
+]);
 const FINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 
 /**
@@ -100,7 +105,9 @@ export function createWorkerSupervisor(options) {
       existing_record && typeof existing_record.pid === 'number'
         ? existing_record.pid
         : null;
-    const existing_running = existing_pid ? is_process_running_impl(existing_pid) : false;
+    const existing_running = existing_pid
+      ? is_process_running_impl(existing_pid)
+      : false;
     const existing_healthy = existing_running
       ? await health_check_impl(existing_record || {})
       : false;
@@ -193,7 +200,9 @@ export function createWorkerSupervisor(options) {
   async function cancelJob(job_id, options = {}) {
     const job = requireJob(getJob(job_id), job_id);
     if (!ACTIVE_JOB_STATUSES.has(job.status) || job.pid == null) {
-      throw Object.assign(new Error('Job is not cancellable'), { code: 'conflict' });
+      throw Object.assign(new Error('Job is not cancellable'), {
+        code: 'conflict'
+      });
     }
 
     const cancel_requested_at = now();
@@ -394,7 +403,9 @@ export function createWorkerSupervisorServer(options) {
       items: supervisor
         .listJobs({
           workspace:
-            typeof req.query.workspace === 'string' ? req.query.workspace : undefined
+            typeof req.query.workspace === 'string'
+              ? req.query.workspace
+              : undefined
         })
         .map(serializeJob)
     });
@@ -505,7 +516,9 @@ function sendSupervisorError(res, error) {
             : 500;
   res.status(status).json({
     error:
-      error instanceof Error ? error.message : 'Worker supervisor request failed'
+      error instanceof Error
+        ? error.message
+        : 'Worker supervisor request failed'
   });
 }
 

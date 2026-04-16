@@ -127,7 +127,10 @@ describe('views/worker', () => {
       onRunRalph,
       onRunPrReview,
       onCancelJob,
-      fetch_impl: vi.fn(async () => ({ ok: true, json: async () => ({ items: [] }) }))
+      fetch_impl: vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ items: [] })
+      }))
     });
 
     expect(mount.textContent).toContain('Running');

@@ -142,7 +142,10 @@ export function createWorkerJobsRouter(options) {
         res.status(404).json({ error: 'Worker job not found' });
         return;
       }
-      const payload = await manager.getJobLog({ jobId: req.params.jobId, tail });
+      const payload = await manager.getJobLog({
+        jobId: req.params.jobId,
+        tail
+      });
       res.status(200).json(payload);
     } catch (error) {
       sendError(res, error);
@@ -172,6 +175,7 @@ function sendError(res, error) {
             ? 503
             : 500;
   res.status(status).json({
-    error: error instanceof Error ? error.message : 'Failed to handle worker job'
+    error:
+      error instanceof Error ? error.message : 'Failed to handle worker job'
   });
 }

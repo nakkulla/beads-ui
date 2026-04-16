@@ -54,9 +54,7 @@ describe('managed daemon helpers', () => {
   test('starts detached child and writes pid file to custom runtime dir', () => {
     const runtime_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-daemon-'));
     const unref = vi.fn();
-    const spawn_impl = /** @type {any} */ (
-      vi.fn(() => ({ pid: 6543, unref }))
-    );
+    const spawn_impl = /** @type {any} */ (vi.fn(() => ({ pid: 6543, unref })));
 
     const started = startManagedDaemon({
       entry_path: '/tmp/fake-entry.js',
@@ -68,6 +66,8 @@ describe('managed daemon helpers', () => {
 
     expect(started).toEqual({ pid: 6543 });
     expect(unref).toHaveBeenCalledTimes(1);
-    expect(fs.readFileSync(path.join(runtime_dir, 'supervisor.pid'), 'utf8')).toContain('6543');
+    expect(
+      fs.readFileSync(path.join(runtime_dir, 'supervisor.pid'), 'utf8')
+    ).toContain('6543');
   });
 });
