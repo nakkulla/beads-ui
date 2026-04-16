@@ -23,6 +23,53 @@ function createIssueStores(snapshot) {
 }
 
 describe('views/worker', () => {
+  test('hides right detail panel until a parent is selected', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = createStore({
+      view: 'worker',
+      worker: {
+        selected_parent_id: null,
+        show_closed_children: []
+      },
+      workspace: {
+        current: {
+          path: '/tmp/workspace',
+          database: '/tmp/workspace/.beads/test.db'
+        },
+        available: []
+      }
+    });
+
+    createWorkerView(mount, {
+      store,
+      issue_stores: createIssueStores([
+        {
+          id: 'UI-62lm',
+          title: 'Worker 탭 추가',
+          status: 'resolved',
+          priority: 1,
+          issue_type: 'feature',
+          spec_id: 'docs/spec.md',
+          updated_at: '2026-04-16T09:20:04Z',
+          open_pr_count: 1
+        }
+      ])
+    });
+
+    expect(mount.querySelector('#worker-detail-mount')).toBeNull();
+    expect(mount.querySelector('.worker-layout--overview')).not.toBeNull();
+
+    const summary_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-parent-row__summary')
+    );
+    summary_button.click();
+    await Promise.resolve();
+
+    expect(mount.querySelector('#worker-detail-mount')).not.toBeNull();
+    expect(mount.querySelector('.worker-layout--with-detail')).not.toBeNull();
+  });
+
   test('renders toolbar, parent row badges/actions, and toggles closed children', async () => {
     document.body.innerHTML = '<div id="mount"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
@@ -94,6 +141,7 @@ describe('views/worker', () => {
     expect(mount.querySelector('progress')).not.toBeNull();
     expect(mount.textContent).toContain('Has spec');
     expect(mount.textContent).toContain('Open PR');
+    expect(mount.querySelector('#worker-detail-mount')).not.toBeNull();
 
     const expand = /** @type {HTMLButtonElement} */ (
       mount.querySelector('[data-expand-parent="UI-62lm"]')

@@ -65,12 +65,17 @@ export function createWorkerView(mount_element, deps) {
       }),
       filters
     );
-    const selected =
-      rows.find((row) => row.id === selected_parent_id) || rows[0] || null;
+    const selected = selected_parent_id
+      ? rows.find((row) => row.id === selected_parent_id) || null
+      : null;
 
     render(
       html`
-        <section class="worker-layout">
+        <section
+          class="worker-layout ${selected
+            ? 'worker-layout--with-detail'
+            : 'worker-layout--overview'}"
+        >
           <aside class="worker-layout__left">
             ${workerToolbarTemplate(filters, {
               onSearchInput(value) {
@@ -119,10 +124,14 @@ export function createWorkerView(mount_element, deps) {
             })}
           </aside>
 
-          <section
-            class="worker-layout__right"
-            id="worker-detail-mount"
-          ></section>
+          ${selected
+            ? html`
+                <section
+                  class="worker-layout__right"
+                  id="worker-detail-mount"
+                ></section>
+              `
+            : null}
         </section>
       `,
       mount_element
@@ -144,6 +153,8 @@ export function createWorkerView(mount_element, deps) {
         state.workspace?.current?.path || '',
         jobs
       );
+    } else {
+      detail_view?.clear();
     }
   }
 
