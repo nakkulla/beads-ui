@@ -1,0 +1,229 @@
+{
+  "schema_version": "v1",
+  "workflow": "bd-ralph-v2",
+  "parent_bead_id": "UI-62lm",
+  "generated_at": "2026-04-16T09:57:39.566857Z",
+  "artifact_path": "docs/superpowers/reviews/bd-ralph-v2-run-ledger-UI-62lm.json",
+  "run": {
+    "canonical_worktree": "/Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/ui-62lm-worker-tab",
+    "canonical_branch": "ui-62lm-worker-tab",
+    "plan_path": "docs/superpowers/plans/2026-04-16-worker-tab.md",
+    "completed_task_count": 7,
+    "unresolved_task_count": 0,
+    "started_at": "2026-04-16T09:25:00Z",
+    "finished_at": "2026-04-16T09:57:30Z",
+    "scope_narrowed": false,
+    "tracking_repo": "/Users/isy_macstudio/Documents/GitHub/beads-ui",
+    "execution_repo": "/Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/ui-62lm-worker-tab",
+    "repo_boundary_status": "local"
+  },
+  "phase_evidence": {
+    "setup": {
+      "ready_check": "ran",
+      "ready_match": "yes",
+      "ready_note": "ready",
+      "baseline_verification": "unknown"
+    },
+    "plan": {
+      "path": "docs/superpowers/plans/2026-04-16-worker-tab.md",
+      "plan_review": "run",
+      "plan_review_verdict": "APPROVE",
+      "freshness": {
+        "base_sha": "",
+        "head_sha": "8a693111276f5fefbda03bf2ebadee95f8d9dfb9",
+        "source": "none",
+        "status": "unknown",
+        "changed_files": "unknown",
+        "auto_refresh": false,
+        "reason": "missing-base"
+      },
+      "stale_after_review": false
+    },
+    "seed": {
+      "push_ok": true,
+      "child_mapping_present": true,
+      "parent_lookup_success": true,
+      "child_lookup_success": true
+    },
+    "execute": {
+      "completed_task_count": 7,
+      "unresolved_task_count": 0,
+      "children": [
+        {
+          "id": "UI-62lm.7",
+          "status": "resolved",
+          "verification_summary": "PASS:npm run tsc && npm test && npm run lint && npx vitest run app/main.worker.test.js app/data/worker-selectors.test.js app/views/worker.test.js app/views/worker-spec-panel.test.js app/views/worker-pr-panel.test.js app/views/worker-pr-summary.test.js server/path-safety.test.js server/routes/worker-spec.test.js server/routes/worker-prs.test.js server/routes/worker-jobs.test.js"
+        },
+        {
+          "id": "UI-62lm.6",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run server/routes/worker-jobs.test.js app/views/worker-detail.test.js app/main.worker.test.js"
+        },
+        {
+          "id": "UI-62lm.5",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run server/routes/worker-prs.test.js app/views/worker-pr-panel.test.js app/views/worker-pr-summary.test.js"
+        },
+        {
+          "id": "UI-62lm.4",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run server/path-safety.test.js server/routes/worker-spec.test.js app/views/worker-spec-panel.test.js"
+        },
+        {
+          "id": "UI-62lm.3",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run app/views/worker.test.js app/main.worker.test.js"
+        },
+        {
+          "id": "UI-62lm.2",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run app/data/worker-selectors.test.js"
+        },
+        {
+          "id": "UI-62lm.1",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run app/main.worker.test.js app/router.test.js app/views/nav.test.js app/state.test.js app/main.test.js"
+        }
+      ],
+      "task_verification_summary": [
+        {
+          "id": "UI-62lm.7",
+          "status": "resolved",
+          "verification_summary": "PASS:npm run tsc && npm test && npm run lint && npx vitest run app/main.worker.test.js app/data/worker-selectors.test.js app/views/worker.test.js app/views/worker-spec-panel.test.js app/views/worker-pr-panel.test.js app/views/worker-pr-summary.test.js server/path-safety.test.js server/routes/worker-spec.test.js server/routes/worker-prs.test.js server/routes/worker-jobs.test.js"
+        },
+        {
+          "id": "UI-62lm.6",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run server/routes/worker-jobs.test.js app/views/worker-detail.test.js app/main.worker.test.js"
+        },
+        {
+          "id": "UI-62lm.5",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run server/routes/worker-prs.test.js app/views/worker-pr-panel.test.js app/views/worker-pr-summary.test.js"
+        },
+        {
+          "id": "UI-62lm.4",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run server/path-safety.test.js server/routes/worker-spec.test.js app/views/worker-spec-panel.test.js"
+        },
+        {
+          "id": "UI-62lm.3",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run app/views/worker.test.js app/main.worker.test.js"
+        },
+        {
+          "id": "UI-62lm.2",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run app/data/worker-selectors.test.js"
+        },
+        {
+          "id": "UI-62lm.1",
+          "status": "resolved",
+          "verification_summary": "PASS:npx vitest run app/main.worker.test.js app/router.test.js app/views/nav.test.js app/state.test.js app/main.test.js"
+        }
+      ],
+      "scope_narrowed": false
+    },
+    "review": {
+      "dispatch_history": [
+        {
+          "subject": "implementation-review",
+          "verdict": "APPROVE",
+          "external_attempts": 0,
+          "self_attempts": 1,
+          "escalated": true
+        }
+      ],
+      "final_verdict": "APPROVE",
+      "stale_after_code_change": false,
+      "reviewed_impl_applied": true
+    },
+    "simplify": {
+      "policy": "run",
+      "status": "no-op",
+      "verification": "skipped",
+      "rereview": "skipped",
+      "commit_sha": ""
+    },
+    "finish": {
+      "pr_url": "https://github.com/nakkulla/beads-ui/pull/5",
+      "pr_number": "5",
+      "final_quality_gate_success": true,
+      "first_branch_push_success": true,
+      "final_git_status": "clean",
+      "final_parent_status": "resolved",
+      "final_children_status": "all-resolved",
+      "run_ledger_write_success": true,
+      "metadata_sync_success": true,
+      "artifact_only_second_commit_success": true,
+      "second_branch_push_success": true
+    }
+  },
+  "invocations": [],
+  "failures": [],
+  "usage": {
+    "scope": "direct_children",
+    "accuracy": "invocation_delta",
+    "status": "unavailable",
+    "main": {
+      "session_id": "",
+      "transcript_path": ""
+    },
+    "direct_children": [],
+    "failure_reason": "missing_inputs"
+  },
+  "review": {
+    "review_debt_summary": "none",
+    "plan_review": {
+      "final_verdict": "APPROVE",
+      "final_source": "self",
+      "external_attempts": 0,
+      "self_attempts": 1,
+      "escalated": true,
+      "budget_exhausted": false,
+      "reviewed_plan_applied": false,
+      "debt_present": false
+    },
+    "implementation_review": {
+      "signals": [],
+      "final_verdict": "APPROVE",
+      "final_source": "self",
+      "external_attempts": 0,
+      "self_attempts": 1,
+      "escalated": true,
+      "budget_exhausted": false,
+      "stale_after_code_change": false,
+      "forced_handoff": false,
+      "reviewed_impl_applied": true
+    },
+    "simplify": {
+      "policy": "run",
+      "status": "no-op",
+      "verification": "skipped",
+      "rereview": "skipped",
+      "commit_sha": ""
+    }
+  },
+  "acceptance": {
+    "status": "accepted",
+    "blocking_checks": [],
+    "waived_checks": [],
+    "summary": {
+      "pr_url": "https://github.com/nakkulla/beads-ui/pull/5",
+      "implementation_review_verdict": "APPROVE"
+    }
+  },
+  "followup": [],
+  "summary": {
+    "audit_version": "v1",
+    "audit_status": "accepted",
+    "audit_artifact": "docs/superpowers/reviews/bd-ralph-v2-run-ledger-UI-62lm.json",
+    "canonical_worktree": "/Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/ui-62lm-worker-tab",
+    "canonical_branch": "ui-62lm-worker-tab",
+    "completed_task_count": "7",
+    "unresolved_task_count": "0",
+    "implementation_review_verdict": "APPROVE",
+    "run_started_at": "2026-04-16T09:25:00Z",
+    "run_finished_at": "2026-04-16T09:57:30Z"
+  }
+}
