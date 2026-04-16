@@ -112,3 +112,22 @@ Never update `CHANGES.md`.
 - Run tests: `npm test`
 - Run eslint: `npm run lint`
 - Run prettier: `npm run prettier:write`
+
+## Local `bdui` Development Workflow
+
+- For local development, prefer `npm link` from this repository so the `bdui`
+  command resolves to the current checkout instead of a published global
+  package snapshot.
+- When you need the browser UI to reflect the latest source changes
+  immediately, run the server with `BDUI_FRONTEND_MODE=live`.
+  - Example start:
+    ```bash
+    BDUI_FRONTEND_MODE=live bdui start --host 0.0.0.0 --port 3000
+    ```
+  - Example restart:
+    ```bash
+    BDUI_FRONTEND_MODE=live bdui restart --host 0.0.0.0 --port 3000
+    ```
+- If you run without `BDUI_FRONTEND_MODE=live`, the server may serve the static
+  `app/main.bundle.js`; after frontend source edits, run `npm run build` before
+  expecting UI changes to appear.
