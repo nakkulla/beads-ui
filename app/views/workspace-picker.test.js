@@ -106,4 +106,32 @@ describe('views/workspace-picker', () => {
     expect(syncButton.textContent?.trim()).toBe('Sync');
     expect(select.disabled).toBe(false);
   });
+
+  test('falls back to first available workspace when current workspace is absent', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore({
+      current: null,
+      available: [{ path: '/repo-a', database: '/repo-a/.beads/ui.db' }]
+    });
+    const onWorkspaceChange = vi.fn();
+    const onWorkspaceSync = vi.fn(async () => {});
+
+    createWorkspacePicker(
+      mount,
+      /** @type {any} */ (store),
+      onWorkspaceChange,
+      onWorkspaceSync
+    );
+
+    const syncButton = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.workspace-picker__sync-button')
+    );
+
+    syncButton.click();
+    await Promise.resolve();
+
+    expect(onWorkspaceChange).not.toHaveBeenCalled();
+    expect(onWorkspaceSync).toHaveBeenCalledWith('/repo-a');
+  });
 });

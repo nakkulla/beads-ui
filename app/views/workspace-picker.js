@@ -67,7 +67,9 @@ export function createWorkspacePicker(
   }
 
   async function onSyncClick() {
-    const current_path = store.getState().workspace?.current?.path || '';
+    const s = store.getState();
+    const current_path =
+      s.workspace?.current?.path || s.workspace?.available?.[0]?.path || '';
     if (!current_path || is_syncing) {
       return;
     }

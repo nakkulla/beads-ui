@@ -37,6 +37,29 @@ function makeSocket() {
 
 /**
  * @param {import('ws').WebSocketServer} wss
+ * @param {import('node:http').Server} server
+ */
+async function closeSocketServer(wss, server) {
+  wss.clients.clear();
+  wss.emit('close');
+
+  if (!server.listening) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(undefined);
+    });
+  });
+}
+
+/**
+ * @param {import('ws').WebSocketServer} wss
  * @returns {Promise<ReturnType<typeof makeSocket>>}
  */
 async function subscribeActiveList(wss) {
@@ -66,46 +89,50 @@ describe('sync-workspace handler', () => {
       refresh_debounce_ms: 50
     });
 
-    await subscribeActiveList(wss);
+    try {
+      await subscribeActiveList(wss);
 
-    const mFetch = /** @type {import('vitest').Mock} */ (
-      fetchListForSubscription
-    );
-    mFetch.mockClear();
+      const mFetch = /** @type {import('vitest').Mock} */ (
+        fetchListForSubscription
+      );
+      mFetch.mockClear();
 
-    const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    mRun.mockResolvedValueOnce({ code: 0, stdout: 'ok', stderr: '' });
+      const mRun = /** @type {import('vitest').Mock} */ (runBd);
+      mRun.mockResolvedValueOnce({ code: 0, stdout: 'ok', stderr: '' });
 
-    const ws = makeSocket();
-    wss.clients.add(/** @type {any} */ (ws));
+      const ws = makeSocket();
+      wss.clients.add(/** @type {any} */ (ws));
 
-    await handleMessage(
-      /** @type {any} */ (ws),
-      Buffer.from(
-        JSON.stringify({
-          id: 'sync-1',
-          type: 'sync-workspace',
-          payload: {}
+      await handleMessage(
+        /** @type {any} */ (ws),
+        Buffer.from(
+          JSON.stringify({
+            id: 'sync-1',
+            type: 'sync-workspace',
+            payload: {}
+          })
+        )
+      );
+
+      scheduleListRefresh();
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+
+      expect(mRun).toHaveBeenCalledWith(
+        ['dolt', 'pull'],
+        expect.objectContaining({
+          cwd: '/repo-a',
+          sandbox: false
         })
-      )
-    );
+      );
+      expect(mFetch).toHaveBeenCalledTimes(1);
 
-    scheduleListRefresh();
-    await vi.advanceTimersByTimeAsync(0);
-    await Promise.resolve();
-
-    expect(mRun).toHaveBeenCalledWith(
-      ['dolt', 'pull'],
-      expect.objectContaining({
-        cwd: '/repo-a',
-        sandbox: false
-      })
-    );
-    expect(mFetch).toHaveBeenCalledTimes(1);
-
-    const reply = JSON.parse(ws.sent[0]);
-    expect(reply.ok).toBe(true);
-    expect(reply.payload.workspace.root_dir).toBe('/repo-a');
+      const reply = JSON.parse(ws.sent[0]);
+      expect(reply.ok).toBe(true);
+      expect(reply.payload.workspace.root_dir).toBe('/repo-a');
+    } finally {
+      await closeSocketServer(wss, server);
+    }
   });
 
   test('returns bd_error and does not refresh when pull fails', async () => {
@@ -116,36 +143,44 @@ describe('sync-workspace handler', () => {
       refresh_debounce_ms: 50
     });
 
-    await subscribeActiveList(wss);
+    try {
+      await subscribeActiveList(wss);
 
-    const mFetch = /** @type {import('vitest').Mock} */ (
-      fetchListForSubscription
-    );
-    mFetch.mockClear();
+      const mFetch = /** @type {import('vitest').Mock} */ (
+        fetchListForSubscription
+      );
+      mFetch.mockClear();
 
-    const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    mRun.mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'pull failed' });
+      const mRun = /** @type {import('vitest').Mock} */ (runBd);
+      mRun.mockResolvedValueOnce({
+        code: 1,
+        stdout: '',
+        stderr: 'pull failed'
+      });
 
-    const ws = makeSocket();
-    wss.clients.add(/** @type {any} */ (ws));
+      const ws = makeSocket();
+      wss.clients.add(/** @type {any} */ (ws));
 
-    await handleMessage(
-      /** @type {any} */ (ws),
-      Buffer.from(
-        JSON.stringify({
-          id: 'sync-2',
-          type: 'sync-workspace',
-          payload: {}
-        })
-      )
-    );
+      await handleMessage(
+        /** @type {any} */ (ws),
+        Buffer.from(
+          JSON.stringify({
+            id: 'sync-2',
+            type: 'sync-workspace',
+            payload: {}
+          })
+        )
+      );
 
-    await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(500);
 
-    expect(mFetch).toHaveBeenCalledTimes(0);
+      expect(mFetch).toHaveBeenCalledTimes(0);
 
-    const reply = JSON.parse(ws.sent[0]);
-    expect(reply.ok).toBe(false);
-    expect(reply.error.code).toBe('bd_error');
+      const reply = JSON.parse(ws.sent[0]);
+      expect(reply.ok).toBe(false);
+      expect(reply.error.code).toBe('bd_error');
+    } finally {
+      await closeSocketServer(wss, server);
+    }
   });
 });
