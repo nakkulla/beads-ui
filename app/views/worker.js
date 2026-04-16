@@ -3,6 +3,7 @@ import {
   buildWorkerParents,
   filterWorkerParents
 } from '../data/worker-selectors.js';
+import { createWorkerDetailView } from './worker-detail.js';
 import { workerToolbarTemplate } from './worker-toolbar.js';
 import { workerTreeTemplate } from './worker-tree.js';
 
@@ -11,12 +12,15 @@ import { workerTreeTemplate } from './worker-tree.js';
  * @param {{
  *   store: { getState: () => any, setState: (patch: any) => void, subscribe: (fn: (s: any) => void) => () => void },
  *   issue_stores: { snapshotFor: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void },
+ *   fetch_impl?: typeof fetch,
+ *   getWorkerJobs?: () => any[],
  *   onRunRalph?: (id: string) => void,
- *   onRunPrReview?: (id: string) => void
+ *   onRunPrReview?: (target: any) => void
  * }} deps
  */
 export function createWorkerView(mount_element, deps) {
   const expanded_ids = new Set();
+  let detail_view = null;
   let filters = {
     search: '',
     status: 'all',
@@ -42,9 +46,12 @@ export function createWorkerView(mount_element, deps) {
   function renderView() {
     const state = deps.store.getState();
     const workspace_is_valid = !!state.workspace?.current;
+    const jobs =
+      typeof deps.getWorkerJobs === 'function' ? deps.getWorkerJobs() : [];
     const selected_parent_id = state.worker?.selected_parent_id || null;
     const rows = filterWorkerParents(
       buildWorkerParents(deps.issue_stores.snapshotFor('tab:worker:all'), {
+        jobs,
         workspace_is_valid,
         show_closed_children: state.worker?.show_closed_children || []
       }),
@@ -105,25 +112,25 @@ export function createWorkerView(mount_element, deps) {
             })}
           </aside>
 
-          <section class="worker-layout__right">
-            ${selected
-              ? html`
-                  <div class="worker-detail-placeholder">
-                    <h2>${selected.id}</h2>
-                    <p>${selected.title || '(no title)'}</p>
-                  </div>
-                `
-              : html`
-                  <div class="worker-detail-placeholder">
-                    <h2>No parent selected</h2>
-                    <p>Select a worker parent to inspect details.</p>
-                  </div>
-                `}
-          </section>
+          <section class="worker-layout__right" id="worker-detail-mount"></section>
         </section>
       `,
       mount_element
     );
+
+    const detail_mount = /** @type {HTMLElement | null} */ (
+      mount_element.querySelector('#worker-detail-mount')
+    );
+    if (detail_mount) {
+      if (!detail_view) {
+        detail_view = createWorkerDetailView(detail_mount, {
+          fetch_impl: deps.fetch_impl,
+          onRunRalph: deps.onRunRalph,
+          onRunPrReview: deps.onRunPrReview
+        });
+      }
+      void detail_view.load(selected, state.workspace?.current?.path || '', jobs);
+    }
   }
 
   const unsub_store = deps.store.subscribe(() => renderView());
@@ -139,11 +146,13 @@ export function createWorkerView(mount_element, deps) {
       renderView();
     },
     clear() {
+      detail_view?.clear();
       render(html``, mount_element);
     },
     destroy() {
       unsub_store();
       unsub_issue_stores();
+      detail_view?.clear();
       render(html``, mount_element);
     }
   };

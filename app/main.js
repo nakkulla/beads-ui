@@ -708,11 +708,83 @@ export function bootstrap(root_element) {
       sub_issue_stores,
       transport
     );
+    /** @type {Array<{ status?: string, issueId?: string, workspace?: string, command?: string, prNumber?: number }>} */
+    let worker_jobs = [];
+    /** @type {ReturnType<typeof setInterval> | null} */
+    let worker_jobs_timer = null;
+
+    async function refreshWorkerJobs() {
+      const workspace_path = store.getState().workspace.current?.path;
+      if (!workspace_path) {
+        worker_jobs = [];
+        return;
+      }
+      try {
+        const response = await fetch(
+          `/api/worker/jobs?workspace=${encodeURIComponent(workspace_path)}`
+        );
+        const payload = await response.json();
+        worker_jobs = Array.isArray(payload.items) ? payload.items : [];
+      } catch {
+        worker_jobs = [];
+      }
+    }
+
+    function stopWorkerJobsPolling() {
+      if (worker_jobs_timer) {
+        clearInterval(worker_jobs_timer);
+        worker_jobs_timer = null;
+      }
+    }
+
+    async function startWorkerJobsPolling() {
+      stopWorkerJobsPolling();
+      await refreshWorkerJobs();
+      worker_view.load();
+      worker_jobs_timer = setInterval(() => {
+        void refreshWorkerJobs().then(() => worker_view.load());
+      }, 3000);
+    }
+
+    /**
+     * @param {'bd-ralph-v2'|'pr-review'} command
+     * @param {{ issueId?: string, prNumber?: number }} target
+     */
+    async function enqueueWorkerJob(command, target) {
+      const workspace_path = store.getState().workspace.current?.path;
+      if (!workspace_path) {
+        return;
+      }
+      await fetch('/api/worker/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          command,
+          workspace: workspace_path,
+          issueId: target.issueId,
+          prNumber: target.prNumber
+        })
+      });
+      await refreshWorkerJobs();
+      worker_view.load();
+    }
+
     const worker_view = createWorkerView(worker_root, {
       store,
       issue_stores: sub_issue_stores,
-      onRunRalph: () => {},
-      onRunPrReview: () => {}
+      fetch_impl: fetch,
+      getWorkerJobs: () => worker_jobs,
+      onRunRalph: (issue_id) =>
+        void enqueueWorkerJob('bd-ralph-v2', { issueId: issue_id }),
+      onRunPrReview: (target) =>
+        void enqueueWorkerJob('pr-review', {
+          issueId:
+            typeof target === 'string' ? target : (target?.issueId ?? undefined),
+          prNumber:
+            typeof target === 'object' && typeof target?.prNumber === 'number'
+              ? target.prNumber
+              : undefined
+        })
     });
     // Preload epics when switching to view
     /**
@@ -1156,7 +1228,10 @@ export function bootstrap(root_element) {
         void board_view.load();
       }
       if (s.view === 'worker') {
+        void startWorkerJobsPolling();
         worker_view.load();
+      } else {
+        stopWorkerJobsPolling();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };
