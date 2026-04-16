@@ -19,6 +19,7 @@ import { createIssueDialog } from './views/issue-dialog.js';
 import { createListView } from './views/list.js';
 import { createTopNav } from './views/nav.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
+import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
 
@@ -38,6 +39,7 @@ export function bootstrap(root_element) {
     </section>
     <section id="epics-root" class="route epics" hidden></section>
     <section id="board-root" class="route board" hidden></section>
+    <section id="worker-root" class="route worker" hidden></section>
     <section id="detail-panel" class="route detail" hidden></section>
   `;
   render(shell, root_element);
@@ -50,12 +52,21 @@ export function bootstrap(root_element) {
   const epics_root = document.getElementById('epics-root');
   /** @type {HTMLElement|null} */
   const board_root = document.getElementById('board-root');
+  /** @type {HTMLElement|null} */
+  const worker_root = document.getElementById('worker-root');
 
   /** @type {HTMLElement|null} */
   const list_mount = document.getElementById('list-panel');
   /** @type {HTMLElement|null} */
   const detail_mount = document.getElementById('detail-panel');
-  if (list_mount && issues_root && epics_root && board_root && detail_mount) {
+  if (
+    list_mount &&
+    issues_root &&
+    epics_root &&
+    board_root &&
+    worker_root &&
+    detail_mount
+  ) {
     /** @type {HTMLElement|null} */
     const header_loading = document.getElementById('header-loading');
     const activity = createActivityIndicator(header_loading);
@@ -177,6 +188,10 @@ export function bootstrap(root_element) {
         void unsub_issues_resolved().catch(() => {});
         unsub_issues_resolved = null;
       }
+      if (unsub_worker_all) {
+        void unsub_worker_all().catch(() => {});
+        unsub_worker_all = null;
+      }
       if (unsub_board_resolved) {
         void unsub_board_resolved().catch(() => {});
         unsub_board_resolved = null;
@@ -193,6 +208,7 @@ export function bootstrap(root_element) {
       const storeIds = [
         'tab:issues',
         'tab:issues:resolved',
+        'tab:worker:all',
         'tab:epics',
         'tab:board:ready',
         'tab:board:in-progress',
@@ -427,14 +443,15 @@ export function bootstrap(root_element) {
       log('filters parse error: %o', err);
     }
     // Load last-view from storage
-    /** @type {'issues'|'epics'|'board'} */
+    /** @type {'issues'|'epics'|'board'|'worker'} */
     let last_view = 'issues';
     try {
       const raw_view = window.localStorage.getItem('beads-ui.view');
       if (
         raw_view === 'issues' ||
         raw_view === 'epics' ||
-        raw_view === 'board'
+        raw_view === 'board' ||
+        raw_view === 'worker'
       ) {
         last_view = raw_view;
       }
@@ -569,7 +586,7 @@ export function bootstrap(root_element) {
       const s = store.getState();
       store.setState({ selected_id: null });
       try {
-        /** @type {'issues'|'epics'|'board'} */
+        /** @type {'issues'|'epics'|'board'|'worker'} */
         const v = s.view || 'issues';
         router.gotoView(v);
       } catch {
@@ -691,9 +708,89 @@ export function bootstrap(root_element) {
       sub_issue_stores,
       transport
     );
+    /** @type {Array<{ status?: string, issueId?: string, workspace?: string, command?: string, prNumber?: number }>} */
+    let worker_jobs = [];
+    /** @type {ReturnType<typeof setInterval> | null} */
+    let worker_jobs_timer = null;
+
+    async function refreshWorkerJobs() {
+      const workspace_path = store.getState().workspace.current?.path;
+      if (!workspace_path) {
+        worker_jobs = [];
+        return;
+      }
+      try {
+        const response = await fetch(
+          `/api/worker/jobs?workspace=${encodeURIComponent(workspace_path)}`
+        );
+        const payload = await response.json();
+        worker_jobs = Array.isArray(payload.items) ? payload.items : [];
+      } catch {
+        worker_jobs = [];
+      }
+    }
+
+    function stopWorkerJobsPolling() {
+      if (worker_jobs_timer) {
+        clearInterval(worker_jobs_timer);
+        worker_jobs_timer = null;
+      }
+    }
+
+    async function startWorkerJobsPolling() {
+      stopWorkerJobsPolling();
+      await refreshWorkerJobs();
+      worker_view.load();
+      worker_jobs_timer = setInterval(() => {
+        void refreshWorkerJobs().then(() => worker_view.load());
+      }, 3000);
+    }
+
+    /**
+     * @param {'bd-ralph-v2'|'pr-review'} command
+     * @param {{ issueId?: string, prNumber?: number }} target
+     */
+    async function enqueueWorkerJob(command, target) {
+      const workspace_path = store.getState().workspace.current?.path;
+      if (!workspace_path) {
+        return;
+      }
+      await fetch('/api/worker/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          command,
+          workspace: workspace_path,
+          issueId: target.issueId,
+          prNumber: target.prNumber
+        })
+      });
+      await refreshWorkerJobs();
+      worker_view.load();
+    }
+
+    const worker_view = createWorkerView(worker_root, {
+      store,
+      issue_stores: sub_issue_stores,
+      fetch_impl: fetch,
+      getWorkerJobs: () => worker_jobs,
+      onRunRalph: (issue_id) =>
+        void enqueueWorkerJob('bd-ralph-v2', { issueId: issue_id }),
+      onRunPrReview: (target) =>
+        void enqueueWorkerJob('pr-review', {
+          issueId:
+            typeof target === 'string'
+              ? target
+              : (target?.issueId ?? undefined),
+          prNumber:
+            typeof target === 'object' && typeof target?.prNumber === 'number'
+              ? target.prNumber
+              : undefined
+        })
+    });
     // Preload epics when switching to view
     /**
-     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board', filters: any }} s
+     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'worker', filters: any }} s
      */
     // --- Subscriptions: tab-level management and filter-driven updates ---
     /** @type {null | (() => Promise<void>)} */
@@ -702,6 +799,8 @@ export function bootstrap(root_element) {
     let unsub_epics_tab = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_issues_resolved = null;
+    /** @type {null | (() => Promise<void>)} */
+    let unsub_worker_all = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_board_ready = null;
     /** @type {null | (() => Promise<void>)} */
@@ -770,7 +869,7 @@ export function bootstrap(root_element) {
     /**
      * Ensure only the active tab has subscriptions; clean up previous.
      *
-     * @param {{ view: 'issues'|'epics'|'board', filters: any }} s
+     * @param {{ view: 'issues'|'epics'|'board'|'worker', filters: any }} s
      */
     function ensureTabSubscriptions(s) {
       // Issues tab
@@ -859,6 +958,38 @@ export function bootstrap(root_element) {
           } catch (err) {
             log('unregister issues:resolved failed: %o', err);
           }
+        }
+      }
+
+      // Worker tab
+      if (s.view === 'worker') {
+        try {
+          sub_issue_stores.register('tab:worker:all', { type: 'all-issues' });
+        } catch (err) {
+          log('register worker store failed: %o', err);
+        }
+        if (!unsub_worker_all && !pending_subscriptions.has('tab:worker:all')) {
+          pending_subscriptions.add('tab:worker:all');
+          void subscriptions
+            .subscribeList('tab:worker:all', { type: 'all-issues' })
+            .then((unsub) => {
+              unsub_worker_all = unsub;
+            })
+            .catch((err) => {
+              log('subscribe worker failed: %o', err);
+              showFatalFromError(err, 'worker');
+            })
+            .finally(() => {
+              pending_subscriptions.delete('tab:worker:all');
+            });
+        }
+      } else if (unsub_worker_all) {
+        void unsub_worker_all().catch(() => {});
+        unsub_worker_all = null;
+        try {
+          sub_issue_stores.unregister('tab:worker:all');
+        } catch (err) {
+          log('unregister worker store failed: %o', err);
         }
       }
 
@@ -1075,14 +1206,21 @@ export function bootstrap(root_element) {
     /**
      * Manage route visibility and list subscriptions per view.
      *
-     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board', filters: any }} s
+     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'worker', filters: any }} s
      */
     const onRouteChange = (s) => {
-      if (issues_root && epics_root && board_root && detail_mount) {
+      if (
+        issues_root &&
+        epics_root &&
+        board_root &&
+        worker_root &&
+        detail_mount
+      ) {
         // Underlying route visibility is controlled only by selected view
         issues_root.hidden = s.view !== 'issues';
         epics_root.hidden = s.view !== 'epics';
         board_root.hidden = s.view !== 'board';
+        worker_root.hidden = s.view !== 'worker';
         // detail_mount visibility handled in subscription above
       }
       // Ensure subscriptions for the active tab before loading the view to
@@ -1093,6 +1231,12 @@ export function bootstrap(root_element) {
       }
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
+      }
+      if (s.view === 'worker') {
+        void startWorkerJobsPolling();
+        worker_view.load();
+      } else {
+        stopWorkerJobsPolling();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };

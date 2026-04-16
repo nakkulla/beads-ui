@@ -228,8 +228,9 @@ export function createDetailView(
 
   /** @param {string} id */
   function issueHref(id) {
+    const parsed_view = parseView(window.location.hash || '');
     /** @type {'issues'|'epics'|'board'} */
-    const view = parseView(window.location.hash || '');
+    const view = parsed_view === 'worker' ? 'issues' : parsed_view;
     return issueHashFor(view, id);
   }
 

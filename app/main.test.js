@@ -11,7 +11,9 @@ describe('app/main (jsdom)', () => {
 
     const list_panel = root_element.querySelector('#list-panel');
     const detail_panel = root_element.querySelector('#detail-panel');
+    const worker_root = root_element.querySelector('#worker-root');
     expect(list_panel).not.toBeNull();
     expect(detail_panel).not.toBeNull();
+    expect(worker_root).not.toBeNull();
   });
 });

@@ -2,7 +2,7 @@ import { issueHashFor } from './utils/issue-url.js';
 import { debug } from './utils/logging.js';
 
 /**
- * Hash-based router for tabs (issues/epics/board) and deep-linked issue ids.
+ * Hash-based router for tabs (issues/epics/board/worker) and deep-linked issue ids.
  */
 
 /**
@@ -35,7 +35,7 @@ export function parseHash(hash) {
  * Parse the current view from hash.
  *
  * @param {string} hash
- * @returns {'issues'|'epics'|'board'}
+ * @returns {'issues'|'epics'|'board'|'worker'}
  */
 export function parseView(hash) {
   const h = String(hash || '');
@@ -44,6 +44,9 @@ export function parseView(hash) {
   }
   if (/^#\/board(\b|\/|$)/.test(h)) {
     return 'board';
+  }
+  if (/^#\/worker(\b|\/|$)/.test(h)) {
+    return 'worker';
   }
   // Default to issues (also covers #/issues and unknown/empty)
   return 'issues';
@@ -72,7 +75,13 @@ export function createHashRouter(store) {
     const id = parseHash(hash);
     const view = parseView(hash);
     log('hash change → view=%s id=%s', view, id);
-    store.setState({ selected_id: id, view });
+    store.setState({
+      selected_id: view === 'worker' ? null : id,
+      view,
+      worker: {
+        selected_parent_id: view === 'worker' ? id : null
+      }
+    });
   };
 
   return {
@@ -95,27 +104,38 @@ export function createHashRouter(store) {
       if (window.location.hash !== next) {
         window.location.hash = next;
       } else {
-        // Force state update even if hash is the same
-        store.setState({ selected_id: id, view });
+        store.setState({
+          selected_id: view === 'worker' ? null : id,
+          view,
+          worker: {
+            selected_parent_id: view === 'worker' ? id : null
+          }
+        });
       }
     },
     /**
      * Navigate to a top-level view.
      *
-     * @param {'issues'|'epics'|'board'} view
+     * @param {'issues'|'epics'|'board'|'worker'} view
      */
     /**
-     * @param {'issues'|'epics'|'board'} view
+     * @param {'issues'|'epics'|'board'|'worker'} view
      */
     gotoView(view) {
-      const s = store.getState ? store.getState() : { selected_id: null };
-      const id = s.selected_id;
+      const s = store.getState
+        ? store.getState()
+        : { selected_id: null, worker: { selected_parent_id: null } };
+      const id =
+        view === 'worker' ? s.worker?.selected_parent_id : s.selected_id;
       const next = id ? issueHashFor(view, id) : `#/${view}`;
       log('goto view %s (id=%s)', view, id || '');
       if (window.location.hash !== next) {
         window.location.hash = next;
       } else {
-        store.setState({ view, selected_id: null });
+        store.setState({
+          view,
+          selected_id: view === 'worker' ? null : s.selected_id
+        });
       }
     }
   };

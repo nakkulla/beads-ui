@@ -5,6 +5,9 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { registerWorkspace } from './registry-watcher.js';
+import { createWorkerJobsRouter } from './routes/worker-jobs.js';
+import { createWorkerPrsRouter } from './routes/worker-prs.js';
+import { createWorkerSpecRouter } from './routes/worker-spec.js';
 
 /**
  * Create and configure the Express application.
@@ -30,6 +33,19 @@ export function createApp(config) {
 
   // Enable JSON body parsing for API endpoints
   app.use(express.json());
+
+  app.use(
+    '/api/worker/spec',
+    createWorkerSpecRouter({ root_dir: config.root_dir })
+  );
+  app.use(
+    '/api/worker/prs',
+    createWorkerPrsRouter({ root_dir: config.root_dir })
+  );
+  app.use(
+    '/api/worker/jobs',
+    createWorkerJobsRouter({ root_dir: config.root_dir })
+  );
 
   // Register workspace endpoint - allows CLI to register workspaces dynamically
   // when the server is already running
