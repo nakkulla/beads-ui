@@ -70,6 +70,10 @@ parent 이슈를 중심으로 작업 진행 상황을 모니터링하고, `bd-ra
 
 이번 spec는 이 구조를 바탕으로, `beads-ui` 안에 worker-oriented 탭을 추가하는 설계다.
 
+추가로 중요한 제약 하나가 있다. 현재 `beads-ui`의 `selected_id`는 전역 issue detail dialog와
+강하게 연결되어 있다. 따라서 Worker 탭은 기존 `selected_id`를 재사용하지 않고,
+**Worker 전용 selection state**를 별도로 둬야 한다.
+
 ## 결정 요약
 
 ### 선택한 방향
@@ -105,7 +109,22 @@ top nav에 `Worker` 탭을 추가한다.
 - `#/worker`
 - 선택 parent가 있을 때: `#/worker?issue=<id>`
 
-기존 canonical query 방식(`?issue=<id>`)을 재사용하여 deep-link와 selection 복원을 지원한다.
+이를 위해 현재 `issues | epics | board`만 지원하는 라우팅/URL helper를 Worker까지 확장한다.
+즉, `app/router.js`, `app/state.js`, `app/utils/issue-url.js`는 이번 spec의 명시적 변경 범위에 포함된다.
+
+기존 canonical query 방식(`?issue=<id>`)은 유지하되, Worker 탭의 `issue` query는
+**Worker 전용 selected parent state**에만 연결한다.
+
+즉:
+- `issues / epics / board`에서는 기존 `selected_id`가 detail dialog selection을 의미한다.
+- `worker`에서는 `issue` query가 `worker.selected_parent_id`를 의미한다.
+- Worker 탭에 있을 때는 기존 detail dialog를 자동으로 열지 않는다.
+
+따라서 구현에는 다음 중 하나가 필요하다.
+- store에 `worker.selected_parent_id`를 추가하거나
+- 동등한 Worker 전용 selection state를 별도 계층으로 도입한다.
+
+중요한 점은 **Worker selection이 기존 global detail selection side effect를 유발하면 안 된다**는 것이다.
 
 ### 1.3 2-panel layout
 
@@ -147,7 +166,38 @@ Worker 탭은 다음 두 패널로 구성한다.
 
 ## 2. 왼쪽 패널: Worker Tree
 
-### 2.1 filters
+### 2.1 canonical `runnable` 정의
+
+Worker 탭에서 `runnable`은 아래 predicate로 고정한다.
+
+```text
+runnable = is_parent && has_spec_id && !has_active_job && workspace_is_valid && parent_status != closed
+```
+
+각 항목의 판정 기준은 다음처럼 고정한다.
+
+- `is_parent`
+  - `parent-child` 관계에서 parent로 식별되거나, child를 가진 `feature`/`epic`이다.
+- `has_spec_id`
+  - issue의 `spec_id`가 비어 있지 않은 문자열이다.
+- `has_active_job`
+  - `/api/worker/jobs` 기준 현재 parent+workspace 조합에 대해 상태가 `running`, `capacity-wait`, `needs-attention` 중 하나인 job이 존재한다.
+- `workspace_is_valid`
+  - app state의 `workspace.current`가 존재하고, Worker API 호출 시 그 workspace path를 유효한 current workspace로 사용할 수 있다.
+  - 첫 버전에서는 registry 재검증까지 포함하지 않고, **현재 선택된 workspace가 존재하는지**를 canonical 기준으로 본다.
+- `parent_status != closed`
+  - parent의 자체 status를 의미한다.
+  - `resolved` parent는 runnable에 **포함**한다. 즉, `closed`만 runnable에서 제외한다.
+
+이 정의는 다음 세 곳에서 동일하게 재사용한다.
+
+- `runnable only` filter
+- parent 기본 정렬의 `runnable` 우선순위 판단
+- `Run bd-ralph-v2` 버튼 활성화 판단
+
+즉, selector / view / server helper가 각각 유사하지만 다른 조건을 따로 해석하지 않도록 한다.
+
+### 2.2 filters
 
 첫 버전 필터는 아래 네 가지로 제한한다.
 
@@ -158,7 +208,7 @@ Worker 탭은 다음 두 패널로 구성한다.
 
 필터는 모두 AND 조건으로 조합한다.
 
-### 2.2 parent row 표시 요소
+### 2.3 parent row 표시 요소
 
 각 parent row는 다음 정보를 표시한다.
 
@@ -171,6 +221,20 @@ Worker 탭은 다음 두 패널로 구성한다.
 - status badges
 - action buttons
 
+### 2.4 parent 기본 정렬
+
+Worker tree의 기본 정렬은 운영 우선순위가 높은 항목이 위로 오도록 고정한다.
+
+우선순위:
+1. active job이 있는 parent (`RUNNING`, `WAITING`, `NEEDS-ATTN`)
+2. `runnable` parent
+3. parent status 우선순위: `in_progress` → `open` → `resolved`
+4. priority 오름차순 (`0`이 가장 높음)
+5. `updated_at` 내림차순 (없으면 `created_at` 내림차순)
+6. `id` 오름차순
+
+이 정렬은 필터 적용 후에도 stable하게 유지한다.
+
 예시 정보 구조:
 
 ```text
@@ -182,7 +246,7 @@ workspace discovery watcher 후속 안정화
 [Run bd-ralph-v2] [Run pr-review] [Open spec]
 ```
 
-### 2.3 child row 표시 요소
+### 2.5 child row 표시 요소
 
 child row는 간결하게 유지한다.
 
@@ -237,7 +301,9 @@ child가 없으면 parent 자체 상태를 같은 가중치로 환산한다.
 
 ### 4.1 `Run bd-ralph-v2` 활성 조건
 
-모두 만족해야 활성화한다.
+`Run bd-ralph-v2` 버튼은 위의 canonical `runnable` predicate가 true일 때만 활성화한다.
+
+즉, 모두 만족해야 한다.
 
 1. 대상이 parent 이슈다.
 2. `spec_id`가 있다.
@@ -255,14 +321,23 @@ child가 없으면 parent 자체 상태를 같은 가중치로 환산한다.
 
 ### 4.2 `Run pr-review` 활성 조건
 
-모두 만족해야 활성화한다.
+`pr-review`는 **대상 PR이 단일하게 결정될 때만 직접 실행**한다.
 
-1. 연결된 open PR이 존재한다.
+parent row의 `Run pr-review` 버튼 활성 조건:
+1. 연결된 open PR이 정확히 1개 존재한다.
 2. 현재 parent에 active job이 없다.
 3. 현재 workspace가 유효하다.
 4. parent 상태가 `closed`가 아니다.
 
-UI는 issue id 기준으로 action을 보내고, 실제 PR number resolve는 서버가 담당한다.
+동작 규칙:
+- open PR이 **1개**면 parent row에서 직접 `pr-review`를 실행할 수 있다.
+- open PR이 **2개 이상**면 parent row의 `Run pr-review` 버튼은 비활성화하고,
+  오른쪽 `selected parent PR panel`에서 **각 PR row별 실행 버튼**을 제공한다.
+- open PR이 **0개**면 비활성화한다.
+
+즉, Worker 탭에서는 “여러 PR이 있는 parent에 대해 어떤 PR을 실행할지”를 암묵적으로 추정하지 않는다.
+
+UI는 issue id 또는 selected PR number 기준으로 action을 보내고, 최종 PR number resolve/검증은 서버가 담당한다.
 
 ### 4.3 badge 집합
 
@@ -327,8 +402,10 @@ UI는 issue id 기준으로 action을 보내고, 실제 PR number resolve는 서
 - `title`
 - `state`
 - `baseRefName ← headRefName`
+- per-PR `Run pr-review` 버튼
 
 이 패널은 parent 맥락에 집중한다.
+다중 open PR이 있는 parent에서는 이 패널이 `pr-review` 실행의 canonical 진입점이다.
 
 ### 5.4 workspace-wide open PR summary
 
@@ -344,7 +421,9 @@ UI는 issue id 기준으로 action을 보내고, 실제 PR number resolve는 서
 
 | 파일 | 역할 |
 | --- | --- |
-| `app/router.js` | `worker` view parse/goto 지원 |
+| `app/state.js` | Worker 전용 selection state shape 추가 (`worker.selected_parent_id` 또는 동등 구조) |
+| `app/router.js` | `worker` view parse/goto 지원, Worker query semantics 반영 |
+| `app/utils/issue-url.js` | Worker용 canonical issue hash helper 지원 |
 | `app/views/nav.js` | `Worker` 탭 추가 |
 | `app/main.js` | `worker-root` shell 추가, Worker view mount, route visibility, wiring |
 | `app/views/worker.js` | Worker 탭 shell |
@@ -438,9 +517,17 @@ read는 `spec_id` 경로를 안전하게 읽어 markdown를 반환한다.
 write는 다음 조건을 만족해야 한다.
 
 - `spec_id`가 존재한다.
-- `docs/**.md` 경로다.
-- workspace 내부 안전 경로다.
+- 상대 경로이며 `docs/`로 시작한다.
+- `.md` 확장자만 허용한다.
+- 절대 경로를 금지한다.
+- `..` traversal을 금지한다.
+- workspace root 기준으로 canonical resolve한 결과가 `<workspace>/docs/**` 아래에 남아 있어야 한다.
+- symlink를 따라간 최종 canonical path도 `<workspace>/docs/**` 밖으로 벗어나면 안 된다.
+- 파일이 아직 없더라도 canonical parent directory가 `<workspace>/docs/**` 아래인지 검증해야 한다.
 - markdown text만 저장한다.
+
+구현은 가능하면 `beads-worker`의 `path-safety` / `spec-reader` 패턴과 동등한 helper를 재사용하거나
+같은 수준의 검증 함수를 도입한다.
 
 ### 7.4 parent summary 전용 API는 만들지 않음
 
@@ -511,7 +598,7 @@ workspace 전환 시:
 
 - child가 없는 parent → parent 상태 fallback으로 progression 계산
 - `spec_id`가 없지만 PR은 있는 parent → `pr-review`만 활성 가능
-- open PR이 여러 개일 수 있음 → selected parent PR panel은 리스트 형태로 처리
+- open PR이 여러 개일 수 있음 → selected parent PR panel은 리스트 + PR별 실행 버튼 형태로 처리, parent row의 단일 `Run pr-review`는 비활성
 - 현재 active job이 있을 때 두 action 버튼 모두 비활성
 - filter로 모든 parent가 사라질 때 → empty state 표시
 - workspace 전환 후 기존 selection이 존재하지 않을 때 → 첫 visible parent 선택
@@ -534,8 +621,8 @@ workspace 전환 시:
 3. 각 parent row에 progression bar와 child 상태 요약이 표시된다.
 4. child expand 시 `closed` child는 기본 숨김이며 `Show closed (N)`으로 노출할 수 있다.
 5. `bd-ralph-v2` 버튼은 parent+spec+non-active-job 조건에서만 활성화된다.
-6. open PR이 있는 parent는 `pr-review` 버튼을 사용할 수 있다.
-7. 오른쪽 패널에서 선택 parent의 spec을 읽고 inline 수정/저장할 수 있다.
+6. open PR이 정확히 1개인 parent는 row에서 `pr-review`를 직접 실행할 수 있고, 여러 PR이 있는 parent는 오른쪽 PR panel에서 PR별 실행을 할 수 있다.
+7. 오른쪽 패널에서 선택 parent의 spec을 읽고 inline 수정/저장할 수 있으며, spec 경로는 canonical path safety 검증을 통과해야 한다.
 8. 오른쪽 패널에서 선택 parent PR과 workspace-wide open PR 요약을 볼 수 있다.
 9. 실행 중/실패/주의 필요 상태가 badge로 표시된다.
 10. workspace 전환 시 Worker 탭 데이터가 새 workspace 기준으로 갱신된다.
