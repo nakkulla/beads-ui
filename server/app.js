@@ -42,7 +42,10 @@ export function createApp(config) {
     '/api/worker/prs',
     createWorkerPrsRouter({ root_dir: config.root_dir })
   );
-  app.use('/api/worker/jobs', createWorkerJobsRouter());
+  app.use(
+    '/api/worker/jobs',
+    createWorkerJobsRouter({ root_dir: config.root_dir })
+  );
 
   // Register workspace endpoint - allows CLI to register workspaces dynamically
   // when the server is already running

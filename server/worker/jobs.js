@@ -8,12 +8,29 @@ const ACTIVE_STATUSES = new Set([
 ]);
 
 /**
+ * @typedef {{
+ *   on: (
+ *     event_name: 'error' | 'close',
+ *     handler: (value?: unknown) => void
+ *   ) => void
+ * }} WorkerChildProcess
+ */
+
+/**
+ * @typedef {(command: string, args: string[], options: { cwd: string }) => WorkerChildProcess} WorkerSpawn
+ */
+
+/**
  * @param {{
- *   spawn_impl?: typeof spawn
+ *   spawn_impl?: WorkerSpawn
  * }} [options]
  */
 export function createWorkerJobManager(options = {}) {
-  const spawn_impl = options.spawn_impl || spawn;
+  const spawn_impl =
+    options.spawn_impl ||
+    /** @type {WorkerSpawn} */ (
+      (command, args, spawn_options) => spawn(command, args, spawn_options)
+    );
   /** @type {Array<any>} */
   const jobs = [];
 
@@ -61,14 +78,15 @@ export function createWorkerJobManager(options = {}) {
     };
     jobs.unshift(job);
 
-    let shell_command = '';
+    let exec_target = '';
     if (input.command === 'bd-ralph-v2') {
-      shell_command = `codex exec '$bd-ralph-v2 ${input.issueId || ''}'`;
+      exec_target = `$bd-ralph-v2 ${input.issueId || ''}`.trim();
     } else {
-      shell_command = `codex exec '$pr-review ${input.prNumber ?? input.issueId ?? ''}'`;
+      exec_target =
+        `$pr-review ${input.prNumber ?? input.issueId ?? ''}`.trim();
     }
 
-    const child = spawn_impl('bash', ['-lc', shell_command], {
+    const child = spawn_impl('codex', ['exec', exec_target], {
       cwd: input.workspace
     });
     job.status = 'running';

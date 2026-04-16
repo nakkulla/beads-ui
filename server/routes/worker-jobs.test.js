@@ -44,6 +44,8 @@ async function close(server) {
 
 describe('worker jobs route', () => {
   const app_dir = path.resolve('app');
+  const root_dir = '/workspace-root';
+  const allowed_workspace = path.join(root_dir, '.worktrees', 'ui-62lm-worker');
 
   beforeEach(() => {
     enqueueJob.mockReset();
@@ -64,7 +66,7 @@ describe('worker jobs route', () => {
       host: '127.0.0.1',
       port: 3000,
       app_dir,
-      root_dir: process.cwd(),
+      root_dir,
       frontend_mode: 'static'
     });
     const server = createServer(app);
@@ -81,7 +83,7 @@ describe('worker jobs route', () => {
           body: JSON.stringify({
             command: 'bd-ralph-v2',
             issueId: 'UI-62lm',
-            workspace: '/workspace'
+            workspace: allowed_workspace
           })
         }
       );
@@ -109,7 +111,7 @@ describe('worker jobs route', () => {
       host: '127.0.0.1',
       port: 3000,
       app_dir,
-      root_dir: process.cwd(),
+      root_dir,
       frontend_mode: 'static'
     });
     const server = createServer(app);
@@ -126,7 +128,7 @@ describe('worker jobs route', () => {
           body: JSON.stringify({
             command: 'pr-review',
             issueId: 'UI-62lm',
-            workspace: '/workspace',
+            workspace: allowed_workspace,
             prNumber: 42
           })
         }
@@ -156,7 +158,7 @@ describe('worker jobs route', () => {
       host: '127.0.0.1',
       port: 3000,
       app_dir,
-      root_dir: process.cwd(),
+      root_dir,
       frontend_mode: 'static'
     });
     const server = createServer(app);
@@ -187,7 +189,7 @@ describe('worker jobs route', () => {
       host: '127.0.0.1',
       port: 3000,
       app_dir,
-      root_dir: process.cwd(),
+      root_dir,
       frontend_mode: 'static'
     });
     const server = createServer(app);
@@ -203,7 +205,7 @@ describe('worker jobs route', () => {
           body: JSON.stringify({
             command: 'bd-ralph-v2',
             issueId: 'UI-62lm',
-            workspace: '/workspace'
+            workspace: allowed_workspace
           })
         }
       );
@@ -212,5 +214,41 @@ describe('worker jobs route', () => {
     }
 
     expect(response.status).toBe(409);
+  });
+
+  test('POST /api/worker/jobs rejects workspace outside allowed root', async () => {
+    const { createApp } = await import('../app.js');
+    const app = createApp({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir,
+      root_dir: '/workspace-root',
+      frontend_mode: 'static'
+    });
+    const server = createServer(app);
+    let response;
+    let body;
+
+    try {
+      const address = await listen(server);
+      response = await fetch(
+        `http://127.0.0.1:${address.port}/api/worker/jobs`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            command: 'bd-ralph-v2',
+            issueId: 'UI-62lm',
+            workspace: '/tmp/evil-workspace'
+          })
+        }
+      );
+      body = await response.json();
+    } finally {
+      await close(server);
+    }
+
+    expect(response.status).toBe(400);
+    expect(body.error).toContain('workspace');
   });
 });

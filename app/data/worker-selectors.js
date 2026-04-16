@@ -42,7 +42,9 @@ const STATUS_SORT_ORDER = {
 /**
  * @typedef {{
  *   issue_id?: string,
+ *   issueId?: string,
  *   parent_id?: string,
+ *   parentId?: string,
  *   status?: string
  * }} WorkerJob
  */
@@ -145,7 +147,11 @@ function hasActiveJob(parent_id, jobs) {
     const issue_id =
       typeof job.parent_id === 'string' && job.parent_id.length > 0
         ? job.parent_id
-        : job.issue_id;
+        : typeof job.parentId === 'string' && job.parentId.length > 0
+          ? job.parentId
+          : typeof job.issue_id === 'string' && job.issue_id.length > 0
+            ? job.issue_id
+            : job.issueId;
     return (
       issue_id === parent_id &&
       typeof job.status === 'string' &&

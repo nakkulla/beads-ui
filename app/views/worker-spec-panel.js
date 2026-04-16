@@ -1,7 +1,7 @@
 import { html, render } from 'lit-html';
 
 /**
- * @typedef {(input: string, init?: RequestInit) => Promise<{ json: () => Promise<any> }>} WorkerFetch
+ * @typedef {(input: string, init?: RequestInit) => Promise<{ ok?: boolean, json: () => Promise<any> }>} WorkerFetch
  */
 
 /**
@@ -15,6 +15,7 @@ export function createWorkerSpecPanel(mount_element, options = {}) {
   let original_content = '';
   let draft_content = '';
   let editing = false;
+  let error_message = '';
 
   function renderView() {
     render(
@@ -56,6 +57,13 @@ export function createWorkerSpecPanel(mount_element, options = {}) {
                 ></textarea>
               `
             : html`<pre>${original_content}</pre>`}
+          ${error_message
+            ? html`
+                <p class="worker-spec-panel__error" role="alert">
+                  ${error_message}
+                </p>
+              `
+            : ''}
         </section>
       `,
       mount_element
@@ -65,12 +73,14 @@ export function createWorkerSpecPanel(mount_element, options = {}) {
   function edit() {
     editing = true;
     draft_content = original_content;
+    error_message = '';
     renderView();
   }
 
   function cancel() {
     editing = false;
     draft_content = original_content;
+    error_message = '';
     renderView();
   }
 
@@ -83,13 +93,23 @@ export function createWorkerSpecPanel(mount_element, options = {}) {
         body: JSON.stringify({ content: draft_content })
       });
       const payload = await response.json();
+      if (response.ok === false) {
+        throw new Error(
+          typeof payload?.error === 'string' && payload.error.length > 0
+            ? payload.error
+            : 'Failed to save spec'
+        );
+      }
       original_content = payload.content || draft_content;
       draft_content = original_content;
       editing = false;
+      error_message = '';
       renderView();
-    } catch {
-      original_content = draft_content;
-      editing = false;
+    } catch (error) {
+      error_message =
+        error instanceof Error && error.message.length > 0
+          ? error.message
+          : 'Failed to save spec';
       renderView();
     }
   }
@@ -112,6 +132,7 @@ export function createWorkerSpecPanel(mount_element, options = {}) {
       }
       draft_content = original_content;
       editing = false;
+      error_message = '';
       renderView();
     },
     clear() {
@@ -120,6 +141,7 @@ export function createWorkerSpecPanel(mount_element, options = {}) {
       original_content = '';
       draft_content = '';
       editing = false;
+      error_message = '';
       render(html``, mount_element);
     }
   };

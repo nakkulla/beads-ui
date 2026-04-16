@@ -99,6 +99,39 @@ describe('worker-selectors', () => {
     expect(items.map((item) => item.id)).toEqual(['UI-A', 'UI-B', 'UI-C']);
   });
 
+  test('detects active jobs from camelCase worker job fields', () => {
+    const items = buildWorkerParents(
+      [
+        {
+          id: 'UI-A',
+          title: 'Running parent',
+          status: 'resolved',
+          priority: 2,
+          issue_type: 'feature',
+          spec_id: 'docs/a.md',
+          updated_at: '2026-04-16T09:00:00Z'
+        },
+        {
+          id: 'UI-B',
+          title: 'Idle parent',
+          status: 'resolved',
+          priority: 2,
+          issue_type: 'feature',
+          spec_id: 'docs/b.md',
+          updated_at: '2026-04-16T08:00:00Z'
+        }
+      ],
+      {
+        workspace_is_valid: true,
+        jobs: [{ issueId: 'UI-A', status: 'running' }]
+      }
+    );
+
+    expect(items[0].id).toBe('UI-A');
+    expect(items[0].has_active_job).toBe(true);
+    expect(items[0].runnable).toBe(false);
+  });
+
   test('applies runnable, open pr, search, and status filters with AND semantics', () => {
     const items = buildWorkerParents(
       [

@@ -101,4 +101,51 @@ describe('views/worker-spec-panel', () => {
     expect(mount.textContent).toContain('# Worker spec');
     expect(mount.textContent).not.toContain('# Unsaved');
   });
+
+  test('keeps edit mode and original content when save fails', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const fetch_impl = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ content: '# Worker spec' })
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        json: async () => ({ error: 'Forbidden path' })
+      });
+
+    const panel = createWorkerSpecPanel(mount, {
+      fetch_impl
+    });
+    await panel.load('UI-62lm', '/workspace');
+
+    const edit_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-worker-spec-edit]')
+    );
+    edit_button.click();
+
+    const textarea = /** @type {HTMLTextAreaElement} */ (
+      mount.querySelector('textarea')
+    );
+    textarea.value = '# Unsaved';
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const save_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-worker-spec-save]')
+    );
+    save_button.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const current_textarea = /** @type {HTMLTextAreaElement | null} */ (
+      mount.querySelector('textarea')
+    );
+
+    expect(current_textarea).toBeTruthy();
+    expect(mount.textContent).toContain('Save');
+    expect(current_textarea?.value).toBe('# Unsaved');
+    expect(mount.textContent).not.toContain('# Worker spec');
+  });
 });
