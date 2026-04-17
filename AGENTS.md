@@ -131,3 +131,12 @@ Never update `CHANGES.md`.
 - If you run without `BDUI_FRONTEND_MODE=live`, the server may serve the static
   `app/main.bundle.js`; after frontend source edits, run `npm run build` before
   expecting UI changes to appear.
+
+## Pull Request Target
+
+- When creating a PR from this repository, target the writable fork on
+  `origin` by default.
+- In this repo, that means creating PRs against `nakkulla/beads-ui`, not the
+  read-only `upstream` remote.
+- Treat `upstream` as a reference/sync remote unless the user explicitly asks
+  to open a PR there.
