@@ -113,6 +113,20 @@ Never update `CHANGES.md`.
 - Run eslint: `npm run lint`
 - Run prettier: `npm run prettier:write`
 
+## Post‑Merge Runtime Validation
+
+- After merging code changes into `main`, restart the actual `bdui` program from
+  the merged checkout before claiming the work is fully finished.
+- If the merged change affects runtime behavior, re-run the modified program and
+  verify that the real server process comes up from the merged workspace, not a
+  stale worktree or pre-merge checkout.
+- For local UI verification, prefer:
+  ```bash
+  BDUI_FRONTEND_MODE=live bdui restart --host 0.0.0.0 --port 3000
+  ```
+- After restart, verify the running process path, listening port, and a basic
+  HTTP response before reporting success.
+
 ## Local `bdui` Development Workflow
 
 - For local development, prefer `npm link` from this repository so the `bdui`
