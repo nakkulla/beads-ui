@@ -105,6 +105,49 @@ describe('worker-selectors', () => {
     expect(item.runnable).toBe(false);
   });
 
+  test('excludes the current job from recent jobs even when it is not first', () => {
+    const item = buildWorkerParentViewModel(
+      {
+        id: 'UI-A',
+        title: 'Running parent',
+        status: 'resolved',
+        priority: 2,
+        issue_type: 'feature',
+        spec_id: 'docs/a.md',
+        updated_at: '2026-04-16T09:00:00Z'
+      },
+      [],
+      {
+        workspace_is_valid: true,
+        jobs: [
+          {
+            id: 'job-3',
+            issueId: 'UI-A',
+            status: 'failed',
+            elapsedMs: 3000
+          },
+          {
+            id: 'job-2',
+            issueId: 'UI-A',
+            status: 'running',
+            elapsedMs: 65000,
+            isCancellable: true
+          },
+          {
+            id: 'job-1',
+            issueId: 'UI-A',
+            status: 'failed',
+            elapsedMs: 5000,
+            errorSummary: 'boom'
+          }
+        ]
+      }
+    );
+
+    expect(item.current_job?.id).toBe('job-2');
+    expect(item.recent_jobs.map((job) => job.id)).toEqual(['job-3', 'job-1']);
+  });
+
   test('sorts active job first, then runnable, then status, priority, time, and id', () => {
     const items = buildWorkerParents(
       [

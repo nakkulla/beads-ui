@@ -55,6 +55,7 @@ describe('managed daemon helpers', () => {
     const runtime_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-daemon-'));
     const unref = vi.fn();
     const spawn_impl = /** @type {any} */ (vi.fn(() => ({ pid: 6543, unref })));
+    const close_spy = vi.spyOn(fs, 'closeSync');
 
     const started = startManagedDaemon({
       entry_path: '/tmp/fake-entry.js',
@@ -66,8 +67,11 @@ describe('managed daemon helpers', () => {
 
     expect(started).toEqual({ pid: 6543 });
     expect(unref).toHaveBeenCalledTimes(1);
+    expect(close_spy).toHaveBeenCalledTimes(1);
     expect(
       fs.readFileSync(path.join(runtime_dir, 'supervisor.pid'), 'utf8')
     ).toContain('6543');
+
+    close_spy.mockRestore();
   });
 });

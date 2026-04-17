@@ -259,7 +259,7 @@ export function buildWorkerParentViewModel(parent, children, options = {}) {
         typeof job.status === 'string' && ACTIVE_JOB_STATUSES.has(job.status)
     ) || null;
   const recent_jobs = current_job
-    ? parent_jobs.slice(1, 4)
+    ? parent_jobs.filter((job) => job.id !== current_job.id).slice(0, 3)
     : parent_jobs.slice(0, 3);
   const active_job = current_job !== null;
   const open_pr_count = Array.isArray(

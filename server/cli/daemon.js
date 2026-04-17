@@ -259,6 +259,14 @@ export function startManagedDaemon(options) {
       // ignore
     }
     return null;
+  } finally {
+    if (log_fd >= 0) {
+      try {
+        fs.closeSync(log_fd);
+      } catch {
+        // ignore
+      }
+    }
   }
 }
 

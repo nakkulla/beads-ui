@@ -1,6 +1,7 @@
 /**
  * @import { DatabaseSync as DatabaseSyncType, SQLInputValue, SQLOutputValue } from 'node:sqlite'
  */
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -212,7 +213,7 @@ export function createJobStore(options) {
     const stable_value = Number.isFinite(created_value)
       ? created_value
       : Date.now();
-    return `job-${stable_value}-${job_counter}`;
+    return `job-${stable_value}-${job_counter}-${randomUUID()}`;
   }
 
   /**

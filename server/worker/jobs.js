@@ -158,7 +158,7 @@ function createWorkerSupervisorClient(options) {
       }
     }
 
-    start_daemon_impl({
+    const started = start_daemon_impl({
       entry_path,
       runtime_dir: paths.runtime_dir,
       pid_file_name: 'supervisor.pid',
@@ -169,6 +169,11 @@ function createWorkerSupervisorClient(options) {
         BDUI_WORKER_SUPERVISOR_PORT: '0'
       }
     });
+    if (!started?.pid) {
+      throw Object.assign(new Error('Worker supervisor failed to start'), {
+        code: 'start_failed'
+      });
+    }
 
     const started_url = await waitForSupervisorUrl();
     base_url = started_url;

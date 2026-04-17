@@ -175,7 +175,10 @@ export function createWorkerSupervisor(options) {
         finished_at: now(),
         error_summary: message
       });
-      store.appendEvent(created_job.id, 'job.failed', { message, stage: 'start' });
+      store.appendEvent(created_job.id, 'job.failed', {
+        message,
+        stage: 'start'
+      });
       throw Object.assign(new Error(message), { code: 'start_failed' });
     }
     const running_job = store.updateJob(created_job.id, {
@@ -242,13 +245,16 @@ export function createWorkerSupervisor(options) {
     }
 
     if (!cancelled) {
-      const failed_job = store.updateJob(job_id, {
-        status: 'failed',
-        finished_at: now(),
+      const active_job = store.updateJob(job_id, {
+        status: 'running',
+        cancel_requested_at: null,
+        grace_deadline_at: null,
         error_summary: 'Cancel failed'
       });
-      store.appendEvent(job_id, 'job.failed', { reason: 'cancel_failed' });
-      return requireJob(failed_job, job_id);
+      store.appendEvent(job_id, 'job.cancel_failed', {
+        reason: 'cancel_failed'
+      });
+      return requireJob(active_job, job_id);
     }
 
     const cancelled_job = store.updateJob(job_id, {
@@ -280,7 +286,9 @@ export function createWorkerSupervisor(options) {
         );
         continue;
       }
-      store.appendEvent(job.id, 'job.reconciled', { status: job.status });
+      store.updateJob(job.id, {
+        last_heartbeat_at: now()
+      });
     }
   }
 
@@ -402,7 +410,8 @@ export function createWorkerSupervisor(options) {
  */
 export function createWorkerSupervisorServer(options) {
   const supervisor =
-    options.supervisor || createWorkerSupervisor({ root_dir: options.root_dir });
+    options.supervisor ||
+    createWorkerSupervisor({ root_dir: options.root_dir });
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json());
@@ -421,7 +430,9 @@ export function createWorkerSupervisorServer(options) {
               ? req.query.workspace
               : undefined
         })
-        .map((job) => serializeJob(job, (job_id) => supervisor.getEvents(job_id)))
+        .map((job) =>
+          serializeJob(job, (job_id) => supervisor.getEvents(job_id))
+        )
     });
   });
 
@@ -590,8 +601,9 @@ function requireJob(job, job_id) {
  */
 function serializeJob(job, get_events) {
   const required_job = requireJob(job, 'unknown');
-  const was_force_killed = get_events(required_job.id)
-    .some((event) => event.event_type === 'job.killed');
+  const was_force_killed = get_events(required_job.id).some(
+    (event) => event.event_type === 'job.killed'
+  );
   return {
     id: required_job.id,
     command: required_job.command,

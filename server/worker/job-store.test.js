@@ -90,4 +90,30 @@ describe('worker job store', () => {
       store.findActiveConflict({ workspace: root_dir, prNumber: 42 })
     ).toBeNull();
   });
+
+  test('creates unique job ids across store restarts at the same timestamp', () => {
+    const root_dir = mkdtemp();
+    const first_store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T02:00:00.000Z'
+    });
+    const first_job = first_store.createJob({
+      command: 'bd-ralph-v2',
+      issueId: 'UI-qclw',
+      workspace: root_dir
+    });
+    first_store.close();
+
+    const second_store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T02:00:00.000Z'
+    });
+    const second_job = second_store.createJob({
+      command: 'bd-ralph-v2',
+      issueId: 'UI-qclw.1',
+      workspace: root_dir
+    });
+
+    expect(second_job.id).not.toBe(first_job.id);
+  });
 });
