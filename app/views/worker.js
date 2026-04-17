@@ -19,7 +19,8 @@ import { workerTreeTemplate } from './worker-tree.js';
  *   fetch_impl?: WorkerFetch,
  *   getWorkerJobs?: () => any[],
  *   onRunRalph?: (id: string) => void,
- *   onRunPrReview?: (target: any) => void
+ *   onRunPrReview?: (target: any) => void,
+ *   onCancelJob?: (job_id: string) => void
  * }} deps
  */
 export function createWorkerView(mount_element, deps) {
@@ -122,17 +123,18 @@ export function createWorkerView(mount_element, deps) {
               },
               onRunPrReview(id) {
                 deps.onRunPrReview?.(id);
+              },
+              onCancelJob(job_id) {
+                deps.onCancelJob?.(job_id);
               }
             })}
           </aside>
 
           ${selected
-            ? html`
-                <section
-                  class="worker-layout__right"
-                  id="worker-detail-mount"
-                ></section>
-              `
+            ? html`<section
+                class="worker-layout__right"
+                id="worker-detail-mount"
+              ></section>`
             : null}
         </section>
       `,
@@ -147,7 +149,8 @@ export function createWorkerView(mount_element, deps) {
         detail_view = createWorkerDetailView(detail_mount, {
           fetch_impl: deps.fetch_impl,
           onRunRalph: deps.onRunRalph,
-          onRunPrReview: deps.onRunPrReview
+          onRunPrReview: deps.onRunPrReview,
+          onCancelJob: deps.onCancelJob
         });
       }
       void detail_view.load(

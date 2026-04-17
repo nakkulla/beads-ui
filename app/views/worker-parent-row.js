@@ -10,10 +10,13 @@ import { statusLabel } from '../utils/status.js';
  *   onSelect: () => void,
  *   onToggleExpand: () => void,
  *   onRunRalph: () => void,
- *   onRunPrReview: () => void
+ *   onRunPrReview: () => void,
+ *   onCancelJob: (job_id: string) => void
  * }} handlers
  */
 export function workerParentRowTemplate(row, handlers) {
+  const current_job = row.current_job || null;
+
   return html`
     <div
       class="worker-parent-row ${handlers.selected ? 'is-selected' : ''}"
@@ -55,8 +58,15 @@ export function workerParentRowTemplate(row, handlers) {
         ${row.has_open_pr
           ? html`<span class="worker-badge">Open PR</span>`
           : null}
-        ${row.has_active_job
-          ? html`<span class="worker-badge worker-badge--active">Running</span>`
+        ${current_job
+          ? html`
+              <span class="worker-badge worker-badge--active"
+                >${statusLabel(current_job.status || 'running')}</span
+              >
+              <span class="worker-badge worker-badge--elapsed"
+                >${row.current_job_elapsed_label}</span
+              >
+            `
           : row.runnable
             ? html`<span class="worker-badge worker-badge--ready"
                 >Runnable</span
@@ -101,6 +111,17 @@ export function workerParentRowTemplate(row, handlers) {
         >
           Run pr-review
         </button>
+        ${current_job?.isCancellable
+          ? html`
+              <button
+                type="button"
+                data-cancel-job=${current_job.id}
+                @click=${() => handlers.onCancelJob(current_job.id)}
+              >
+                Cancel
+              </button>
+            `
+          : null}
       </div>
     </div>
   `;

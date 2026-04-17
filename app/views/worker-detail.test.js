@@ -2,60 +2,69 @@ import { describe, expect, test, vi } from 'vitest';
 import { createWorkerDetailView } from './worker-detail.js';
 
 describe('views/worker-detail', () => {
-  test('renders summary, spec panel, selected PRs, and workspace PR summary', async () => {
+  test('renders current job, recent jobs, log preview, and cancel action', async () => {
     document.body.innerHTML = '<div id="mount"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
-    const fetch_impl = vi.fn(async (url, init) => {
+    const onCancelJob = vi.fn();
+    const fetch_impl = vi.fn(async (url) => {
       const href = String(url);
       if (href.includes('/api/worker/spec/')) {
-        return {
-          ok: true,
-          json: async () => ({ content: '# Worker spec' })
-        };
+        return { ok: true, json: async () => ({ content: '# Worker spec' }) };
       }
       if (href.includes('/api/worker/prs/UI-62lm')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ number: 42, title: 'Add Worker tab', state: 'OPEN' }]
-          })
-        };
+        return { ok: true, json: async () => ({ items: [{ number: 42, title: 'Add Worker tab', state: 'OPEN' }] }) };
       }
       if (href.includes('/api/worker/prs?workspace=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ number: 7, title: 'Workspace PR', state: 'OPEN' }]
-          })
-        };
+        return { ok: true, json: async () => ({ items: [{ number: 7, title: 'Workspace PR', state: 'OPEN' }] }) };
       }
-      if (init && /** @type {RequestInit} */ (init).method === 'POST') {
-        return {
-          ok: true,
-          json: async () => ({ ok: true })
-        };
+      if (href.includes('/api/worker/jobs/job-2/log')) {
+        return { ok: true, json: async () => ({ path: '.bdui/worker-jobs/logs/job-2.log', tail: ['line 1', 'line 2'], truncated: false }) };
       }
       throw new Error(`Unhandled fetch: ${href}`);
     });
 
-    const detail = createWorkerDetailView(mount, {
-      fetch_impl
+    const detail = createWorkerDetailView(mount, { fetch_impl, onCancelJob });
+
+    await detail.load({ id: 'UI-62lm', title: 'Worker 탭 추가', status: 'in_progress' }, '/workspace', [
+      { id: 'job-2', status: 'running', issueId: 'UI-62lm', command: 'bd-ralph-v2', elapsedMs: 65000, isCancellable: true, workspace: '/workspace', wasForceKilled: true },
+      { id: 'job-1', status: 'failed', issueId: 'UI-62lm', command: 'bd-ralph-v2', elapsedMs: 5000, errorSummary: 'boom', workspace: '/workspace' }
+    ]);
+
+    expect(mount.textContent).toContain('Current job');
+    expect(mount.textContent).toContain('Recent jobs');
+    expect(mount.textContent).toContain('line 1');
+    expect(mount.textContent).toContain('1m 5s');
+    expect(mount.textContent).toContain('boom');
+    expect(mount.textContent).toContain('Force killed');
+
+    const cancel_button = /** @type {HTMLButtonElement} */ (mount.querySelector('[data-cancel-job="job-2"]'));
+    cancel_button.click();
+
+    expect(onCancelJob).toHaveBeenCalledWith('job-2');
+  });
+
+  test('renders log preview error hint when log endpoint returns non-ok', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const fetch_impl = vi.fn(async (url) => {
+      const href = String(url);
+      if (href.includes('/api/worker/spec/')) {
+        return { ok: true, json: async () => ({ content: '# Worker spec' }) };
+      }
+      if (href.includes('/api/worker/prs/')) {
+        return { ok: true, json: async () => ({ items: [] }) };
+      }
+      if (href.includes('/api/worker/jobs/job-2/log')) {
+        return { ok: false, json: async () => ({ error: 'no log' }) };
+      }
+      return { ok: true, json: async () => ({ items: [] }) };
     });
 
-    await detail.load(
-      {
-        id: 'UI-62lm',
-        title: 'Worker 탭 추가',
-        status: 'in_progress'
-      },
-      '/workspace',
-      [{ status: 'running', issueId: 'UI-62lm', command: 'bd-ralph-v2' }]
-    );
+    const detail = createWorkerDetailView(mount, { fetch_impl });
+    await detail.load({ id: 'UI-62lm', title: 'Worker 탭 추가', status: 'in_progress' }, '/workspace', [
+      { id: 'job-2', status: 'running', issueId: 'UI-62lm', command: 'bd-ralph-v2', elapsedMs: 65000, isCancellable: true, workspace: '/workspace' }
+    ]);
 
-    expect(mount.textContent).toContain('UI-62lm');
-    expect(mount.textContent).toContain('# Worker spec');
-    expect(mount.textContent).toContain('Add Worker tab');
-    expect(mount.textContent).toContain('Workspace PR');
-    expect(mount.textContent).toContain('running');
+    expect(mount.textContent).toContain('Failed to load log preview.');
   });
 });

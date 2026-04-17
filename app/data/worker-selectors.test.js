@@ -4,6 +4,7 @@ import {
   buildWorkerParents,
   computeProgressFromStatuses,
   filterWorkerParents,
+  formatElapsedMs,
   isRunnableParent
 } from './worker-selectors.js';
 
@@ -12,6 +13,11 @@ describe('worker-selectors', () => {
     expect(
       computeProgressFromStatuses(['open', 'in_progress', 'resolved', 'closed'])
     ).toBe(59);
+  });
+
+  test('formats elapsed milliseconds into readable labels', () => {
+    expect(formatElapsedMs(65000)).toBe('1m 5s');
+    expect(formatElapsedMs(4000)).toBe('4s');
   });
 
   test('builds parent view model with closed children hidden by default', () => {
@@ -59,6 +65,89 @@ describe('worker-selectors', () => {
     ).toBe(true);
   });
 
+  test('attaches current and recent jobs using camelCase worker fields', () => {
+    const item = buildWorkerParentViewModel(
+      {
+        id: 'UI-A',
+        title: 'Running parent',
+        status: 'resolved',
+        priority: 2,
+        issue_type: 'feature',
+        spec_id: 'docs/a.md',
+        updated_at: '2026-04-16T09:00:00Z'
+      },
+      [],
+      {
+        workspace_is_valid: true,
+        jobs: [
+          {
+            id: 'job-2',
+            issueId: 'UI-A',
+            status: 'running',
+            elapsedMs: 65000,
+            isCancellable: true
+          },
+          {
+            id: 'job-1',
+            issueId: 'UI-A',
+            status: 'failed',
+            elapsedMs: 5000,
+            errorSummary: 'boom'
+          }
+        ]
+      }
+    );
+
+    expect(item.current_job?.id).toBe('job-2');
+    expect(item.current_job_elapsed_label).toBe('1m 5s');
+    expect(item.recent_jobs).toHaveLength(1);
+    expect(item.has_active_job).toBe(true);
+    expect(item.runnable).toBe(false);
+  });
+
+  test('excludes the current job from recent jobs even when it is not first', () => {
+    const item = buildWorkerParentViewModel(
+      {
+        id: 'UI-A',
+        title: 'Running parent',
+        status: 'resolved',
+        priority: 2,
+        issue_type: 'feature',
+        spec_id: 'docs/a.md',
+        updated_at: '2026-04-16T09:00:00Z'
+      },
+      [],
+      {
+        workspace_is_valid: true,
+        jobs: [
+          {
+            id: 'job-3',
+            issueId: 'UI-A',
+            status: 'failed',
+            elapsedMs: 3000
+          },
+          {
+            id: 'job-2',
+            issueId: 'UI-A',
+            status: 'running',
+            elapsedMs: 65000,
+            isCancellable: true
+          },
+          {
+            id: 'job-1',
+            issueId: 'UI-A',
+            status: 'failed',
+            elapsedMs: 5000,
+            errorSummary: 'boom'
+          }
+        ]
+      }
+    );
+
+    expect(item.current_job?.id).toBe('job-2');
+    expect(item.recent_jobs.map((job) => job.id)).toEqual(['job-3', 'job-1']);
+  });
+
   test('sorts active job first, then runnable, then status, priority, time, and id', () => {
     const items = buildWorkerParents(
       [
@@ -97,39 +186,6 @@ describe('worker-selectors', () => {
     );
 
     expect(items.map((item) => item.id)).toEqual(['UI-A', 'UI-B', 'UI-C']);
-  });
-
-  test('detects active jobs from camelCase worker job fields', () => {
-    const items = buildWorkerParents(
-      [
-        {
-          id: 'UI-A',
-          title: 'Running parent',
-          status: 'resolved',
-          priority: 2,
-          issue_type: 'feature',
-          spec_id: 'docs/a.md',
-          updated_at: '2026-04-16T09:00:00Z'
-        },
-        {
-          id: 'UI-B',
-          title: 'Idle parent',
-          status: 'resolved',
-          priority: 2,
-          issue_type: 'feature',
-          spec_id: 'docs/b.md',
-          updated_at: '2026-04-16T08:00:00Z'
-        }
-      ],
-      {
-        workspace_is_valid: true,
-        jobs: [{ issueId: 'UI-A', status: 'running' }]
-      }
-    );
-
-    expect(items[0].id).toBe('UI-A');
-    expect(items[0].has_active_job).toBe(true);
-    expect(items[0].runnable).toBe(false);
   });
 
   test('applies runnable, open pr, search, and status filters with AND semantics', () => {

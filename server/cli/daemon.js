@@ -1,5 +1,5 @@
 /**
- * @import { SpawnOptions } from 'node:child_process'
+ * @import { SpawnOptions, ChildProcess } from 'node:child_process'
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -8,6 +8,32 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig } from '../config.js';
 import { resolveWorkspaceDatabase } from '../db.js';
+
+/**
+ * @typedef {{
+ *   runtime_dir: string,
+ *   pid_file_path: string,
+ *   log_file_path: string
+ * }} ManagedRuntimePaths
+ */
+
+/**
+ * @typedef {(command: string, args: string[], options: SpawnOptions) => ChildProcess} ManagedSpawn
+ */
+
+/**
+ * @typedef {{
+ *   entry_path: string,
+ *   runtime_dir: string,
+ *   pid_file_name: string,
+ *   log_file_name: string,
+ *   entry_args?: string[],
+ *   env?: Record<string, string | undefined>,
+ *   cwd?: string,
+ *   is_debug?: boolean,
+ *   spawn_impl?: ManagedSpawn
+ * }} StartManagedDaemonOptions
+ */
 
 /**
  * Resolve the runtime directory used for PID and log files.
@@ -36,7 +62,7 @@ export function getRuntimeDir() {
  * @param {string} dir_path
  * @returns {string}
  */
-function ensureDir(dir_path) {
+export function ensureDir(dir_path) {
   try {
     fs.mkdirSync(dir_path, { recursive: true, mode: 0o700 });
   } catch {
@@ -46,30 +72,49 @@ function ensureDir(dir_path) {
 }
 
 /**
+ * @param {{ runtime_dir: string, pid_file_name: string, log_file_name: string }} options
+ * @returns {ManagedRuntimePaths}
+ */
+export function createManagedRuntimePaths(options) {
+  const runtime_dir = ensureDir(options.runtime_dir);
+  return {
+    runtime_dir,
+    pid_file_path: path.join(runtime_dir, options.pid_file_name),
+    log_file_path: path.join(runtime_dir, options.log_file_name)
+  };
+}
+
+/**
  * @returns {string}
  */
 export function getPidFilePath() {
-  const runtime_dir = getRuntimeDir();
-  return path.join(runtime_dir, 'server.pid');
+  return createManagedRuntimePaths({
+    runtime_dir: getRuntimeDir(),
+    pid_file_name: 'server.pid',
+    log_file_name: 'daemon.log'
+  }).pid_file_path;
 }
 
 /**
  * @returns {string}
  */
 export function getLogFilePath() {
-  const runtime_dir = getRuntimeDir();
-  return path.join(runtime_dir, 'daemon.log');
+  return createManagedRuntimePaths({
+    runtime_dir: getRuntimeDir(),
+    pid_file_name: 'server.pid',
+    log_file_name: 'daemon.log'
+  }).log_file_path;
 }
 
 /**
  * Read PID from the PID file if present.
  *
+ * @param {string} pid_file_path
  * @returns {number | null}
  */
-export function readPidFile() {
-  const pid_file = getPidFilePath();
+export function readPidFileAt(pid_file_path) {
   try {
-    const text = fs.readFileSync(pid_file, 'utf8');
+    const text = fs.readFileSync(pid_file_path, 'utf8');
     const pid_value = Number.parseInt(text.trim(), 10);
     if (Number.isFinite(pid_value) && pid_value > 0) {
       return pid_value;
@@ -81,24 +126,46 @@ export function readPidFile() {
 }
 
 /**
- * @param {number} pid
+ * Read PID from the default server PID file if present.
+ *
+ * @returns {number | null}
  */
-export function writePidFile(pid) {
-  const pid_file = getPidFilePath();
+export function readPidFile() {
+  return readPidFileAt(getPidFilePath());
+}
+
+/**
+ * @param {number} pid
+ * @param {string} pid_file_path
+ */
+export function writePidFileAt(pid, pid_file_path) {
   try {
-    fs.writeFileSync(pid_file, String(pid) + '\n', { encoding: 'utf8' });
+    fs.writeFileSync(pid_file_path, `${pid}\n`, { encoding: 'utf8' });
   } catch {
     // ignore write errors; daemon still runs but management degrades
   }
 }
 
-export function removePidFile() {
-  const pid_file = getPidFilePath();
+/**
+ * @param {number} pid
+ */
+export function writePidFile(pid) {
+  writePidFileAt(pid, getPidFilePath());
+}
+
+/**
+ * @param {string} pid_file_path
+ */
+export function removePidFileAt(pid_file_path) {
   try {
-    fs.unlinkSync(pid_file);
+    fs.unlinkSync(pid_file_path);
   } catch {
     // ignore
   }
+}
+
+export function removePidFile() {
+  removePidFileAt(getPidFilePath());
 }
 
 /**
@@ -132,8 +199,75 @@ export function isProcessRunning(pid) {
 export function getServerEntryPath() {
   const here = fileURLToPath(new URL(import.meta.url));
   const cli_dir = path.dirname(here);
-  const server_entry = path.resolve(cli_dir, '..', 'index.js');
-  return server_entry;
+  return path.resolve(cli_dir, '..', 'index.js');
+}
+
+/**
+ * Spawn a managed detached daemon, redirecting stdio to the configured log file.
+ * Writes the configured PID file upon success.
+ *
+ * @param {StartManagedDaemonOptions} options
+ * @returns {{ pid: number } | null}
+ */
+export function startManagedDaemon(options) {
+  const runtime_paths = createManagedRuntimePaths({
+    runtime_dir: options.runtime_dir,
+    pid_file_name: options.pid_file_name,
+    log_file_name: options.log_file_name
+  });
+
+  /** @type {number} */
+  let log_fd;
+  try {
+    log_fd = fs.openSync(runtime_paths.log_file_path, 'a');
+    if (options.is_debug) {
+      console.debug('log file  ', runtime_paths.log_file_path);
+    }
+  } catch {
+    log_fd = -1;
+  }
+
+  /** @type {SpawnOptions} */
+  const spawn_options = {
+    cwd: options.cwd || process.cwd(),
+    detached: true,
+    env: { ...process.env, ...(options.env || {}) },
+    stdio: log_fd >= 0 ? ['ignore', log_fd, log_fd] : 'ignore',
+    windowsHide: true
+  };
+  const spawn_impl = options.spawn_impl || spawn;
+
+  try {
+    const child = spawn_impl(
+      process.execPath,
+      [options.entry_path, ...(options.entry_args || [])],
+      spawn_options
+    );
+    child.unref?.();
+    const child_pid = typeof child.pid === 'number' ? child.pid : -1;
+    if (child_pid > 0) {
+      writePidFileAt(child_pid, runtime_paths.pid_file_path);
+      return { pid: child_pid };
+    }
+    return null;
+  } catch (err) {
+    console.error('start error', err);
+    try {
+      const message = `${new Date().toISOString()} start error: ${String(err)}\n`;
+      fs.appendFileSync(runtime_paths.log_file_path, message, 'utf8');
+    } catch {
+      // ignore
+    }
+    return null;
+  } finally {
+    if (log_fd >= 0) {
+      try {
+        fs.closeSync(log_fd);
+      } catch {
+        // ignore
+      }
+    }
+  }
 }
 
 /**
@@ -141,25 +275,9 @@ export function getServerEntryPath() {
  * Writes the PID file upon success.
  *
  * @param {{ is_debug?: boolean, host?: string, port?: number }} [options]
- * @returns {{ pid: number } | null} Returns child PID on success; null on failure.
+ * @returns {{ pid: number } | null}
  */
 export function startDaemon(options = {}) {
-  const server_entry = getServerEntryPath();
-  const log_file = getLogFilePath();
-
-  // Open the log file for appending; reuse for both stdout and stderr
-  /** @type {number} */
-  let log_fd;
-  try {
-    log_fd = fs.openSync(log_file, 'a');
-    if (options.is_debug) {
-      console.debug('log file  ', log_file);
-    }
-  } catch {
-    // If log cannot be opened, fallback to ignoring stdio
-    log_fd = -1;
-  }
-
   /** @type {Record<string, string | undefined>} */
   const spawn_env = { ...process.env };
   if (options.host) {
@@ -169,40 +287,14 @@ export function startDaemon(options = {}) {
     spawn_env.PORT = String(options.port);
   }
 
-  /** @type {SpawnOptions} */
-  const opts = {
-    cwd: process.cwd(),
-    detached: true,
+  return startManagedDaemon({
+    entry_path: getServerEntryPath(),
+    runtime_dir: getRuntimeDir(),
+    pid_file_name: 'server.pid',
+    log_file_name: 'daemon.log',
     env: spawn_env,
-    stdio: log_fd >= 0 ? ['ignore', log_fd, log_fd] : 'ignore',
-    windowsHide: true
-  };
-
-  try {
-    const child = spawn(process.execPath, [server_entry], opts);
-    // Detach fully from the parent
-    child.unref();
-    const child_pid = typeof child.pid === 'number' ? child.pid : -1;
-    if (child_pid > 0) {
-      if (options.is_debug) {
-        console.debug('starting  ', child_pid);
-      }
-      writePidFile(child_pid);
-      return { pid: child_pid };
-    }
-    return null;
-  } catch (err) {
-    console.error('start error', err);
-    // Log startup error to log file for traceability
-    try {
-      const message =
-        new Date().toISOString() + ' start error: ' + String(err) + '\n';
-      fs.appendFileSync(log_file, message, 'utf8');
-    } catch {
-      // ignore
-    }
-    return null;
-  }
+    is_debug: options.is_debug
+  });
 }
 
 /**
@@ -210,7 +302,7 @@ export function startDaemon(options = {}) {
  *
  * @param {number} pid
  * @param {number} timeout_ms
- * @returns {Promise<boolean>} Resolves true if the process is gone.
+ * @returns {Promise<{ ok: boolean, forced: boolean }>} Resolves whether the process is gone and whether SIGKILL was needed.
  */
 export async function terminateProcess(pid, timeout_ms) {
   try {
@@ -218,30 +310,26 @@ export async function terminateProcess(pid, timeout_ms) {
   } catch (err) {
     const code = /** @type {{ code?: string }} */ (err).code;
     if (code === 'ESRCH') {
-      return true;
+      return { ok: true, forced: false };
     }
-    // On EPERM or others, continue to wait/poll
   }
 
   const start_time = Date.now();
-  // Poll until process no longer exists or timeout
   while (Date.now() - start_time < timeout_ms) {
     if (!isProcessRunning(pid)) {
-      return true;
+      return { ok: true, forced: false };
     }
     await sleep(100);
   }
 
-  // Fallback to SIGKILL
   try {
     process.kill(pid, 'SIGKILL');
   } catch {
     // ignore
   }
 
-  // Give a brief moment after SIGKILL
   await sleep(50);
-  return !isProcessRunning(pid);
+  return { ok: !isProcessRunning(pid), forced: true };
 }
 
 /**
@@ -260,7 +348,6 @@ function sleep(ms) {
  * Print the server URL derived from current config.
  */
 export function printServerUrl() {
-  // Resolve from the caller's working directory by default
   const resolved_db = resolveWorkspaceDatabase();
   console.log(
     `beads db   ${resolved_db.path} (${resolved_db.source}${resolved_db.exists ? '' : ', missing'})`

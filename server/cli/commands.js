@@ -170,7 +170,7 @@ export async function handleStop() {
   }
 
   const terminated = await terminateProcess(existing_pid, 5000);
-  if (terminated) {
+  if (terminated.ok) {
     removePidFile();
     return 0;
   }

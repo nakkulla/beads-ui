@@ -185,7 +185,10 @@ describe('handleStop (unit)', () => {
   test('returns 0 when process terminates and removes PID', async () => {
     vi.spyOn(daemon, 'readPidFile').mockReturnValue(2222);
     vi.spyOn(daemon, 'isProcessRunning').mockReturnValue(true);
-    vi.spyOn(daemon, 'terminateProcess').mockResolvedValue(true);
+    vi.spyOn(daemon, 'terminateProcess').mockResolvedValue({
+      ok: true,
+      forced: false
+    });
     const remove_pid = vi
       .spyOn(daemon, 'removePidFile')
       .mockImplementation(() => {});

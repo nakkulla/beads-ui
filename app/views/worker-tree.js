@@ -11,7 +11,8 @@ import { workerParentRowTemplate } from './worker-parent-row.js';
  *   onToggleExpand: (id: string) => void,
  *   onToggleClosed: (id: string) => void,
  *   onRunRalph: (id: string) => void,
- *   onRunPrReview: (id: string) => void
+ *   onRunPrReview: (id: string) => void,
+ *   onCancelJob: (job_id: string) => void
  * }} handlers
  */
 export function workerTreeTemplate(rows, handlers) {
@@ -36,7 +37,8 @@ export function workerTreeTemplate(rows, handlers) {
               onSelect: () => handlers.onSelectParent(row.id),
               onToggleExpand: () => handlers.onToggleExpand(row.id),
               onRunRalph: () => handlers.onRunRalph(row.id),
-              onRunPrReview: () => handlers.onRunPrReview(row.id)
+              onRunPrReview: () => handlers.onRunPrReview(row.id),
+              onCancelJob: handlers.onCancelJob
             })}
             ${expanded
               ? html`

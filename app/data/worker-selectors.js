@@ -10,9 +10,10 @@ const PROGRESS_WEIGHTS = {
 };
 
 const ACTIVE_JOB_STATUSES = new Set([
+  'queued',
+  'starting',
   'running',
-  'capacity-wait',
-  'needs-attention'
+  'cancelling'
 ]);
 
 const STATUS_SORT_ORDER = {
@@ -41,11 +42,16 @@ const STATUS_SORT_ORDER = {
 
 /**
  * @typedef {{
+ *   id?: string,
  *   issue_id?: string,
  *   issueId?: string,
  *   parent_id?: string,
  *   parentId?: string,
- *   status?: string
+ *   status?: string,
+ *   elapsedMs?: number,
+ *   errorSummary?: string,
+ *   isCancellable?: boolean
+ *   wasForceKilled?: boolean
  * }} WorkerJob
  */
 
@@ -138,26 +144,58 @@ function isTopLevelParentCandidate(issue) {
 }
 
 /**
+ * @param {WorkerJob} job
+ * @returns {string}
+ */
+function getJobParentId(job) {
+  if (typeof job.parent_id === 'string' && job.parent_id.length > 0) {
+    return job.parent_id;
+  }
+  if (typeof job.parentId === 'string' && job.parentId.length > 0) {
+    return job.parentId;
+  }
+  if (typeof job.issue_id === 'string' && job.issue_id.length > 0) {
+    return job.issue_id;
+  }
+  return typeof job.issueId === 'string' ? job.issueId : '';
+}
+
+/**
+ * @param {string} parent_id
+ * @param {WorkerJob[]} jobs
+ * @returns {WorkerJob[]}
+ */
+function selectParentJobs(parent_id, jobs) {
+  return jobs.filter((job) => getJobParentId(job) === parent_id);
+}
+
+/**
  * @param {string} parent_id
  * @param {WorkerJob[]} jobs
  * @returns {boolean}
  */
 function hasActiveJob(parent_id, jobs) {
-  return jobs.some((job) => {
-    const issue_id =
-      typeof job.parent_id === 'string' && job.parent_id.length > 0
-        ? job.parent_id
-        : typeof job.parentId === 'string' && job.parentId.length > 0
-          ? job.parentId
-          : typeof job.issue_id === 'string' && job.issue_id.length > 0
-            ? job.issue_id
-            : job.issueId;
-    return (
-      issue_id === parent_id &&
-      typeof job.status === 'string' &&
-      ACTIVE_JOB_STATUSES.has(job.status)
-    );
-  });
+  return selectParentJobs(parent_id, jobs).some(
+    (job) =>
+      typeof job.status === 'string' && ACTIVE_JOB_STATUSES.has(job.status)
+  );
+}
+
+/**
+ * @param {number | undefined} elapsed_ms
+ * @returns {string}
+ */
+export function formatElapsedMs(elapsed_ms) {
+  if (!elapsed_ms || elapsed_ms <= 0) {
+    return '0s';
+  }
+  const total_seconds = Math.floor(elapsed_ms / 1000);
+  const minutes = Math.floor(total_seconds / 60);
+  const seconds = total_seconds % 60;
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
 }
 
 /**
@@ -214,7 +252,16 @@ export function buildWorkerParentViewModel(parent, children, options = {}) {
   ).length;
   const statuses = children.map((child) => String(child.status || 'open'));
   const jobs = Array.isArray(options.jobs) ? options.jobs : [];
-  const active_job = hasActiveJob(parent.id, jobs);
+  const parent_jobs = selectParentJobs(parent.id, jobs);
+  const current_job =
+    parent_jobs.find(
+      (job) =>
+        typeof job.status === 'string' && ACTIVE_JOB_STATUSES.has(job.status)
+    ) || null;
+  const recent_jobs = current_job
+    ? parent_jobs.filter((job) => job.id !== current_job.id).slice(0, 3)
+    : parent_jobs.slice(0, 3);
+  const active_job = current_job !== null;
   const open_pr_count = Array.isArray(
     options.open_pr_ids_by_parent?.[parent.id]
   )
@@ -241,6 +288,9 @@ export function buildWorkerParentViewModel(parent, children, options = {}) {
     hidden_closed_count,
     child_counts: counts,
     progress_percent: computeProgressFromStatuses(statuses),
+    current_job,
+    current_job_elapsed_label: formatElapsedMs(current_job?.elapsedMs),
+    recent_jobs,
     has_active_job: active_job,
     has_open_pr: open_pr_count > 0,
     open_pr_count,
