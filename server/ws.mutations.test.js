@@ -1,6 +1,7 @@
+import { createServer } from 'node:http';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { runBd, runBdJson } from './bd.js';
-import { handleMessage } from './ws.js';
+import { attachWsServer, handleMessage } from './ws.js';
 
 vi.mock('./bd.js', () => ({ runBdJson: vi.fn(), runBd: vi.fn() }));
 
@@ -22,7 +23,74 @@ function makeStubSocket() {
   };
 }
 
+/**
+ * @param {import('ws').WebSocketServer} wss
+ * @param {import('node:http').Server} server
+ */
+async function closeSocketServer(wss, server) {
+  wss.clients.clear();
+  wss.emit('close');
+
+  if (!server.listening) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(undefined);
+    });
+  });
+}
+
 describe('ws mutation handlers', () => {
+  test('update-status runs bd commands in the current workspace', async () => {
+    const server = createServer();
+    const { wss } = attachWsServer(server, {
+      path: '/ws',
+      root_dir: '/repo-a'
+    });
+
+    try {
+      const mRun = /** @type {import('vitest').Mock} */ (runBd);
+      const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+      mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+      mJson.mockResolvedValueOnce({
+        code: 0,
+        stdoutJson: { id: 'UI-7', status: 'in_progress' }
+      });
+
+      const ws = makeStubSocket();
+      wss.clients.add(/** @type {any} */ (ws));
+
+      await handleMessage(
+        /** @type {any} */ (ws),
+        Buffer.from(
+          JSON.stringify({
+            id: 'r-workspace',
+            type: 'update-status',
+            payload: { id: 'UI-7', status: 'in_progress' }
+          })
+        )
+      );
+
+      expect(mRun).toHaveBeenCalledWith(
+        ['update', 'UI-7', '--status', 'in_progress'],
+        expect.objectContaining({ cwd: '/repo-a' })
+      );
+      expect(mJson).toHaveBeenCalledWith(
+        ['show', 'UI-7', '--json'],
+        expect.objectContaining({ cwd: '/repo-a' })
+      );
+    } finally {
+      await closeSocketServer(wss, server);
+    }
+  });
+
   test('update-status validates and returns updated issue', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
     const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
