@@ -1,4 +1,5 @@
 # Board Deferred 컬럼 임시 펼침 UX
+Parent bead: UI-eigm
 
 ## 문제 정의
 

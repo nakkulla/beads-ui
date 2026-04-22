@@ -50,6 +50,17 @@ export function mapSubscriptionToBdArgs(spec) {
         '1000'
       ];
     }
+    case 'deferred-issues': {
+      return [
+        'list',
+        '--json',
+        '--tree=false',
+        '--status',
+        'deferred',
+        '--limit',
+        '1000'
+      ];
+    }
     case 'issue-detail': {
       const p = spec.params || {};
       const id = String(p.id || '').trim();
