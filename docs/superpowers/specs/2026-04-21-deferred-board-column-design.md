@@ -1,5 +1,7 @@
 # Board Deferred 컬럼 임시 펼침 UX
 
+Parent bead: UI-eigm
+
 ## 문제 정의
 
 현재 `beads-ui` board는 `Blocked / Ready / In Progress / Resolved / Closed`
@@ -13,17 +15,18 @@
 
 즉, 현재 UI는 실제 beads 상태 모델을 완전히 반영하지 못하고 있다.
 
-동시에 `Deferred`는 사용자가 상시 작업하는 메인 흐름 컬럼이라기보다,
-“현재 어떤 이슈가 미뤄져 있는지 잠깐 확인하는 보조 컬럼” 성격이 더 강하다.
+동시에 `Deferred`는 사용자가 상시 작업하는 메인 흐름 컬럼이라기보다, “현재 어떤
+이슈가 미뤄져 있는지 잠깐 확인하는 보조 컬럼” 성격이 더 강하다.
 
-따라서 단순히 board에 항상 새 컬럼을 하나 더 추가하기보다,
-기본 보드 밀도를 유지하면서 필요할 때만 펼쳐볼 수 있는 UX가 필요하다.
+따라서 단순히 board에 항상 새 컬럼을 하나 더 추가하기보다, 기본 보드 밀도를
+유지하면서 필요할 때만 펼쳐볼 수 있는 UX가 필요하다.
 
 ## 목표
 
 - `Deferred`를 board에서 **정식 status column** 으로 지원한다.
 - 다만 기본 상태에서는 `Deferred` 컬럼을 숨긴다.
-- 사용자는 board 상단 control에서 `Deferred` 컬럼을 **임시로 펼치고 다시 접을 수 있어야** 한다.
+- 사용자는 board 상단 control에서 `Deferred` 컬럼을 **임시로 펼치고 다시 접을 수
+  있어야** 한다.
 - 사용자는 `Deferred` 이슈 개수를 버튼에서 즉시 확인할 수 있어야 한다.
 - status dropdown 및 board 이동 흐름에서도 `deferred`를 선택할 수 있어야 한다.
 
@@ -95,16 +98,15 @@
 - 대신 board 상단 control 영역에 `Deferred (N)` 버튼을 항상 보여준다.
 - `N`은 현재 deferred 이슈 개수다.
 
-이 버튼은 “deferred 상태인 이슈가 존재한다”는 사실을 항상 드러내되,
-기본 보드 폭을 늘리지 않는 역할을 한다.
+이 버튼은 “deferred 상태인 이슈가 존재한다”는 사실을 항상 드러내되, 기본 보드
+폭을 늘리지 않는 역할을 한다.
 
 ### 토글 동작
 
 - 숨김 상태에서 버튼 클릭 → `Deferred` 컬럼 표시
 - 표시 상태에서 버튼 클릭 → `Deferred` 컬럼 다시 숨김
 
-여기서 말하는 토글은 **session-local expand/collapse** 이다.
-즉:
+여기서 말하는 토글은 **session-local expand/collapse** 이다. 즉:
 
 - 새로고침 전까지는 현재 토글 상태 유지 가능
 - 하지만 localStorage에는 저장하지 않음
@@ -112,10 +114,9 @@
 
 ### momentary UI를 쓰지 않는 이유
 
-“누르고 있는 동안만 보이기”는 컬럼 내용을 읽거나 카드 이동을 하기 어렵다.
-이번 UX의 목적은 단순 hover preview가 아니라
-**필요할 때 deferred 목록을 확인하고, 필요하면 바로 상태를 바꾸는 것** 이므로
-클릭 기반 펼침/접힘 토글이 더 적절하다.
+“누르고 있는 동안만 보이기”는 컬럼 내용을 읽거나 카드 이동을 하기 어렵다. 이번
+UX의 목적은 단순 hover preview가 아니라 **필요할 때 deferred 목록을 확인하고,
+필요하면 바로 상태를 바꾸는 것** 이므로 클릭 기반 펼침/접힘 토글이 더 적절하다.
 
 ## 2. 컬럼 구성과 배치
 
@@ -136,7 +137,8 @@
 - `Resolved`
 - `Closed`
 
-`Deferred`는 active execution 흐름 바로 뒤, `Resolved` 앞에 두는 것을 기본안으로 한다.
+`Deferred`는 active execution 흐름 바로 뒤, `Resolved` 앞에 두는 것을 기본안으로
+한다.
 
 이유:
 
@@ -168,12 +170,12 @@ UI가 다루는 canonical issue status는 다음으로 확장한다.
 
 ### 현재 모델과의 차이
 
-현재 코드에는 `resolved`가 강하게 반영돼 있지만 `deferred`는 없다.
-이번 변경은 `resolved`를 제거하지 않고,
-**기존 UI 확장 모델 위에 `deferred`를 추가** 하는 방식으로 간다.
+현재 코드에는 `resolved`가 강하게 반영돼 있지만 `deferred`는 없다. 이번 변경은
+`resolved`를 제거하지 않고, **기존 UI 확장 모델 위에 `deferred`를 추가** 하는
+방식으로 간다.
 
-이렇게 하면 기존 `resolved` 기반 UX를 깨지 않으면서
-실제 `bd`의 `deferred` 상태도 반영할 수 있다.
+이렇게 하면 기존 `resolved` 기반 UX를 깨지 않으면서 실제 `bd`의 `deferred`
+상태도 반영할 수 있다.
 
 ## 4. board data flow
 
@@ -207,8 +209,8 @@ board view는 현재 다음 구독을 사용한다.
 
 ### dropdown
 
-issue detail, list inline edit 등 status를 바꾸는 dropdown에는
-`deferred` 옵션을 추가한다.
+issue detail, list inline edit 등 status를 바꾸는 dropdown에는 `deferred` 옵션을
+추가한다.
 
 이로써 사용자는 board가 아니어도 issue를 deferred로 보낼 수 있다.
 
@@ -219,24 +221,24 @@ issue detail, list inline edit 등 status를 바꾸는 dropdown에는
 - 카드 drop to `Deferred` → `status=deferred`
 - `Deferred` 카드 drop to 다른 컬럼 → 해당 컬럼 status로 변경
 
-기존 board 구현은 “column → status” 맵으로 mutation을 수행하므로,
-여기에 `deferred-col → deferred` 만 추가하면 된다.
+기존 board 구현은 “column → status” 맵으로 mutation을 수행하므로, 여기에
+`deferred-col → deferred` 만 추가하면 된다.
 
-단, `Blocked`와 `Ready`는 여전히 둘 다 `open` 계열이므로,
-이 기존 규칙은 유지한다.
+단, `Blocked`와 `Ready`는 여전히 둘 다 `open` 계열이므로, 이 기존 규칙은
+유지한다.
 
 ## 6. 정렬 규칙
 
-`Deferred` 컬럼의 첫 버전 정렬은
-`Ready / Blocked / In Progress / Resolved` 와 같은 계열로 둔다.
+`Deferred` 컬럼의 첫 버전 정렬은 `Ready / Blocked / In Progress / Resolved` 와
+같은 계열로 둔다.
 
 - priority ascending
 - created_at ascending
 
 이유:
 
-- 별도 `defer_until` UX를 이번 범위에 넣지 않으므로
-  defer date 중심 정렬을 새로 도입하면 의미가 애매해진다.
+- 별도 `defer_until` UX를 이번 범위에 넣지 않으므로 defer date 중심 정렬을 새로
+  도입하면 의미가 애매해진다.
 - 우선은 기존 board의 active-state 정렬 규칙을 재사용하는 편이 단순하다.
 
 향후 `defer_until` 노출을 붙일 때만 별도 정렬 재검토가 가능하다.
@@ -300,7 +302,8 @@ Deferred를 완전히 숨기면 사용자가 상태 존재를 모를 수 있다.
 
 ## 10. 수용 기준
 
-- 사용자는 board에서 `Deferred (N)` 버튼으로 deferred 존재 여부를 확인할 수 있다.
+- 사용자는 board에서 `Deferred (N)` 버튼으로 deferred 존재 여부를 확인할 수
+  있다.
 - 기본 board는 기존과 유사한 밀도를 유지한다.
 - 사용자는 버튼 클릭으로 deferred 목록을 임시로 펼쳐볼 수 있다.
 - 사용자는 dropdown 또는 board 이동으로 issue를 `deferred` 상태로 바꿀 수 있다.

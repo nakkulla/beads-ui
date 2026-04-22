@@ -20,7 +20,7 @@ import { createTypeBadge } from '../utils/type-badge.js';
  *
  * @param {{
  *   navigate: (id: string) => void,
- *   onUpdate: (id: string, patch: { title?: string, assignee?: string, status?: 'open'|'in_progress'|'resolved'|'closed', priority?: number }) => Promise<void>,
+ *   onUpdate: (id: string, patch: { title?: string, assignee?: string, status?: 'open'|'in_progress'|'deferred'|'resolved'|'closed', priority?: number }) => Promise<void>,
  *   requestRender: () => void,
  *   getSelectedId?: () => string | null,
  *   row_class?: string,

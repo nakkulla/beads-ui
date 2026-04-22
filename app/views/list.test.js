@@ -189,6 +189,49 @@ describe('views/list', () => {
     expect(visible[0].text.toLowerCase()).toContain('gamma');
   });
 
+  test('shows Deferred in status filter and inline status select', async () => {
+    document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:issues').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-5',
+          title: 'Deferred option',
+          status: 'open',
+          priority: 2,
+          issue_type: 'task'
+        }
+      ]
+    });
+    const view = createListView(
+      mount,
+      async () => [],
+      undefined,
+      undefined,
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const filter_option = Array.from(
+      mount.querySelectorAll('.filter-dropdown__option')
+    ).find((option) => option.textContent?.includes('Deferred'));
+    const status_select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('tr.issue-row .badge-select.badge--status')
+    );
+    const option_values = Array.from(status_select.options).map(
+      (option) => option.value
+    );
+
+    expect(filter_option).toBeTruthy();
+    expect(option_values).toContain('deferred');
+  });
+
   test('filters by issue type and combines with search', async () => {
     document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
@@ -711,6 +754,181 @@ describe('views/list', () => {
       (el) => el.getAttribute('data-issue-id') || ''
     );
     expect(rows).toEqual(['UI-1', 'UI-9']);
+  });
+
+  test('uses only primary resolved store for resolved-only filters', async () => {
+    document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:issues').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues',
+      revision: 1,
+      issues: [{ id: 'UI-9', title: 'Resolved issue', status: 'resolved' }]
+    });
+    issueStores.getStore('tab:issues:resolved').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues:resolved',
+      revision: 1,
+      issues: [{ id: 'UI-10', title: 'Stale resolved aux', status: 'resolved' }]
+    });
+
+    const view = createListView(
+      mount,
+      async () => [],
+      undefined,
+      {
+        getState() {
+          return {
+            selected_id: null,
+            view: 'issues',
+            filters: {
+              status: ['resolved'],
+              search: '',
+              type: ''
+            }
+          };
+        },
+        setState() {},
+        subscribe() {
+          return () => {};
+        }
+      },
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const rows = Array.from(mount.querySelectorAll('tr.issue-row')).map(
+      (el) => el.getAttribute('data-issue-id') || ''
+    );
+    expect(rows).toEqual(['UI-9']);
+  });
+
+  test('uses only primary deferred store for deferred-only filters', async () => {
+    document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:issues').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues',
+      revision: 1,
+      issues: [{ id: 'UI-8', title: 'Deferred issue', status: 'deferred' }]
+    });
+    issueStores.getStore('tab:issues:deferred').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues:deferred',
+      revision: 1,
+      issues: [{ id: 'UI-11', title: 'Stale deferred aux', status: 'deferred' }]
+    });
+
+    const view = createListView(
+      mount,
+      async () => [],
+      undefined,
+      {
+        getState() {
+          return {
+            selected_id: null,
+            view: 'issues',
+            filters: {
+              status: ['deferred'],
+              search: '',
+              type: ''
+            }
+          };
+        },
+        setState() {},
+        subscribe() {
+          return () => {};
+        }
+      },
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const rows = Array.from(mount.querySelectorAll('tr.issue-row')).map(
+      (el) => el.getAttribute('data-issue-id') || ''
+    );
+    expect(rows).toEqual(['UI-8']);
+  });
+
+  test('merges resolved and deferred aux stores without duplicate rows', async () => {
+    document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:issues').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues',
+      revision: 1,
+      issues: [{ id: 'UI-1', title: 'Open issue', status: 'open', priority: 1 }]
+    });
+    issueStores.getStore('tab:issues:resolved').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues:resolved',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-9',
+          title: 'Resolved issue',
+          status: 'resolved',
+          priority: 2
+        }
+      ]
+    });
+    issueStores.getStore('tab:issues:deferred').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues:deferred',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-8',
+          title: 'Deferred issue',
+          status: 'deferred',
+          priority: 3
+        },
+        {
+          id: 'UI-9',
+          title: 'Resolved issue duplicate',
+          status: 'resolved',
+          priority: 2
+        }
+      ]
+    });
+    const view = createListView(
+      mount,
+      async () => [],
+      undefined,
+      {
+        getState() {
+          return {
+            selected_id: null,
+            view: 'issues',
+            filters: {
+              status: ['open', 'resolved', 'deferred'],
+              search: '',
+              type: ''
+            }
+          };
+        },
+        setState() {},
+        subscribe() {
+          return () => {};
+        }
+      },
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const rows = Array.from(mount.querySelectorAll('tr.issue-row')).map(
+      (el) => el.getAttribute('data-issue-id') || ''
+    );
+    expect(rows).toEqual(['UI-1', 'UI-9', 'UI-8']);
   });
 
   test('filters by multiple types with dropdown checkboxes', async () => {
