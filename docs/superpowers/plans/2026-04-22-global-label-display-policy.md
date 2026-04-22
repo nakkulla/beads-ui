@@ -273,6 +273,16 @@ const DEFAULT_CONFIG = {
   }
 };
 
+let state = {
+  selected_id: initial.selected_id ?? null,
+  view: initial.view ?? 'issues',
+  filters: { ... },
+  board: { ... },
+  worker: { ... },
+  workspace: { ... },
+  config: initial.config ?? DEFAULT_CONFIG
+};
+
 const next = {
   ...state,
   ...patch,
