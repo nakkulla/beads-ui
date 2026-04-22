@@ -470,8 +470,11 @@ export function bootstrap(root_element) {
       log('view parse error: %o', err);
     }
     // Load board preferences
-    /** @type {{ closed_filter: 'today'|'3'|'7' }} */
-    let persistedBoard = { closed_filter: 'today' };
+    /** @type {{ closed_filter: 'today'|'3'|'7', show_deferred_column: boolean }} */
+    let persistedBoard = {
+      closed_filter: 'today',
+      show_deferred_column: false
+    };
     try {
       const raw_board = window.localStorage.getItem('beads-ui.board');
       if (raw_board) {

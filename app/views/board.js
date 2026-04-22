@@ -313,7 +313,7 @@ export function createBoardView(
    * Update issue status via WebSocket transport.
    *
    * @param {string} issue_id
-   * @param {'open'|'in_progress'|'resolved'|'closed'} new_status
+   * @param {'open'|'in_progress'|'deferred'|'resolved'|'closed'} new_status
    */
   async function updateIssueStatus(issue_id, new_status) {
     if (!transport) {

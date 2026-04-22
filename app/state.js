@@ -4,7 +4,7 @@
 import { debug } from './utils/logging.js';
 
 /**
- * @typedef {'all'|'open'|'in_progress'|'resolved'|'closed'|'ready'|string[]} StatusFilter
+ * @typedef {'all'|'open'|'in_progress'|'deferred'|'resolved'|'closed'|'ready'|string[]} StatusFilter
  */
 
 /**
@@ -136,8 +136,7 @@ export function createStore(initial = {}) {
         next.filters.search === state.filters.search &&
         next.filters.type === state.filters.type &&
         next.board.closed_filter === state.board.closed_filter &&
-        next.board.show_deferred_column ===
-          state.board.show_deferred_column &&
+        next.board.show_deferred_column === state.board.show_deferred_column &&
         next.worker.selected_parent_id === state.worker.selected_parent_id &&
         next.worker.show_closed_children.length ===
           state.worker.show_closed_children.length &&

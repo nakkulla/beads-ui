@@ -667,7 +667,7 @@ describe('views/board', () => {
       getState() {
         return this.state;
       },
-      setState(patch) {
+      setState(/** @type {any} */ patch) {
         this.state = {
           ...this.state,
           ...(patch || {}),
@@ -730,6 +730,7 @@ describe('views/board', () => {
       issues: []
     });
 
+    /** @type {{ type: string, payload: unknown }[]} */
     const calls = [];
     const store = {
       state: {
@@ -741,7 +742,7 @@ describe('views/board', () => {
       getState() {
         return this.state;
       },
-      setState(patch) {
+      setState(/** @type {any} */ patch) {
         this.state = {
           ...this.state,
           ...(patch || {}),
@@ -758,7 +759,7 @@ describe('views/board', () => {
       store,
       undefined,
       issueStores,
-      async (type, payload) => {
+      async (/** @type {string} */ type, payload) => {
         calls.push({ type, payload });
         return {};
       }
@@ -771,7 +772,7 @@ describe('views/board', () => {
     const drop_event = new Event('drop', { bubbles: true, cancelable: true });
     Object.defineProperty(drop_event, 'dataTransfer', {
       value: {
-        getData(type) {
+        getData(/** @type {string} */ type) {
           return type === 'text/plain' ? 'R-1' : '';
         }
       }

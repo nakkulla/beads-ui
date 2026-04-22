@@ -1,4 +1,5 @@
 # Deferred Board Column Implementation Plan
+
 Parent bead: UI-eigm
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
@@ -51,31 +52,31 @@ issues-list routing. Keep the board UX session-local by storing
 
 ## File Structure
 
-| Action | File | Responsibility |
-| --- | --- | --- |
-| Modify | `app/utils/status.js` | canonical status order + `statusLabel('deferred')` |
-| Modify | `app/utils/status.test.js` | deferred status order/label 회귀 테스트 |
-| Modify | `app/state.js` | `board.show_deferred_column` session-local state 추가 |
-| Modify | `app/state.test.js` | board toggle state merge/regression 확인 |
-| Modify | `app/main.js` | deferred filter persistence, issues spec routing, board/cleanup deferred subscription wiring |
-| Modify | `app/data/providers.js` | `updateIssue()` status union과 mutation JSDoc을 deferred까지 확장 |
-| Modify | `app/data/list-selectors.js` | board/list selector status typing surface를 deferred-aware로 정리 |
-| Create | `app/main.deferred-status.test.js` | deferred issues/board subscription wiring과 aux merge 경로 회귀 테스트 |
-| Modify | `app/views/board.js` | `Deferred (N)` button, conditional deferred column, drag/drop target, counts |
-| Modify | `app/styles.css` | deferred toggle button / board header controls / deferred status badge styling |
-| Modify | `app/views/board.test.js` | board render/toggle/drag-drop 회귀 테스트 |
-| Modify | `app/views/board.persist.test.js` | `show_deferred_column` session-local store sync 테스트 |
-| Modify | `app/views/detail.js` | detail status select와 status union JSDoc에 deferred 추가 |
-| Modify | `app/views/detail.test.js` | detail status select option 회귀 테스트 |
-| Modify | `app/views/issue-row.js` | list inline status select와 row patch JSDoc에 deferred 추가 |
-| Modify | `app/views/list.js` | status filter label/rendering, deferred-only/combined list handling, status union JSDoc 정리 |
-| Modify | `app/views/list.test.js` | deferred filter + inline status option 테스트 |
-| Modify | `server/list-adapters.js` | `deferred-issues` subscription → `bd list --status deferred` |
-| Modify | `server/list-adapters.test.js` | deferred subscription arg mapping 테스트 |
-| Modify | `server/validators.js` | `deferred-issues` subscription type 허용 |
-| Modify | `server/validators.test.js` | deferred subscription validation 테스트 |
-| Modify | `server/ws.js` | `update-status` allowed set에 deferred 추가 |
-| Modify | `server/ws.mutations.test.js` | deferred mutation accept/validation 테스트 |
+| Action | File                               | Responsibility                                                                               |
+| ------ | ---------------------------------- | -------------------------------------------------------------------------------------------- |
+| Modify | `app/utils/status.js`              | canonical status order + `statusLabel('deferred')`                                           |
+| Modify | `app/utils/status.test.js`         | deferred status order/label 회귀 테스트                                                      |
+| Modify | `app/state.js`                     | `board.show_deferred_column` session-local state 추가                                        |
+| Modify | `app/state.test.js`                | board toggle state merge/regression 확인                                                     |
+| Modify | `app/main.js`                      | deferred filter persistence, issues spec routing, board/cleanup deferred subscription wiring |
+| Modify | `app/data/providers.js`            | `updateIssue()` status union과 mutation JSDoc을 deferred까지 확장                            |
+| Modify | `app/data/list-selectors.js`       | board/list selector status typing surface를 deferred-aware로 정리                            |
+| Create | `app/main.deferred-status.test.js` | deferred issues/board subscription wiring과 aux merge 경로 회귀 테스트                       |
+| Modify | `app/views/board.js`               | `Deferred (N)` button, conditional deferred column, drag/drop target, counts                 |
+| Modify | `app/styles.css`                   | deferred toggle button / board header controls / deferred status badge styling               |
+| Modify | `app/views/board.test.js`          | board render/toggle/drag-drop 회귀 테스트                                                    |
+| Modify | `app/views/board.persist.test.js`  | `show_deferred_column` session-local store sync 테스트                                       |
+| Modify | `app/views/detail.js`              | detail status select와 status union JSDoc에 deferred 추가                                    |
+| Modify | `app/views/detail.test.js`         | detail status select option 회귀 테스트                                                      |
+| Modify | `app/views/issue-row.js`           | list inline status select와 row patch JSDoc에 deferred 추가                                  |
+| Modify | `app/views/list.js`                | status filter label/rendering, deferred-only/combined list handling, status union JSDoc 정리 |
+| Modify | `app/views/list.test.js`           | deferred filter + inline status option 테스트                                                |
+| Modify | `server/list-adapters.js`          | `deferred-issues` subscription → `bd list --status deferred`                                 |
+| Modify | `server/list-adapters.test.js`     | deferred subscription arg mapping 테스트                                                     |
+| Modify | `server/validators.js`             | `deferred-issues` subscription type 허용                                                     |
+| Modify | `server/validators.test.js`        | deferred subscription validation 테스트                                                      |
+| Modify | `server/ws.js`                     | `update-status` allowed set에 deferred 추가                                                  |
+| Modify | `server/ws.mutations.test.js`      | deferred mutation accept/validation 테스트                                                   |
 
 ---
 
@@ -271,23 +272,28 @@ Expected:
 - `app/data/providers.js`
   - `updateIssue()` 의 status union/JSDoc을 `deferred` 포함으로 확장
 - `app/data/list-selectors.js`
-  - board/list selector typing surface가 deferred column/store를 수용하도록 JSDoc 정리
+  - board/list selector typing surface가 deferred column/store를 수용하도록
+    JSDoc 정리
 - `app/views/board.js`
   - `COLUMN_STATUS_MAP` 에 `deferred-col: 'deferred'` 추가
   - `list_deferred` 와 `show_deferred_column` derived state 추가
   - `Deferred (N)` 버튼을 기존 closed filter와 같은 header control group에 배치
   - `show_deferred_column` 이 true일 때만 `Deferred` 컬럼 렌더
   - total count 계산/store refresh 경로에 deferred 반영
-  - `Deferred (N)` count는 board 진입 직후 `tab:board:deferred` snapshot으로 즉시 확보되도록 유지
+  - `Deferred (N)` count는 board 진입 직후 `tab:board:deferred` snapshot으로
+    즉시 확보되도록 유지
 - `app/styles.css`
-  - board header control row에서 closed filter와 deferred toggle이 함께 정렬되도록 스타일 보강
-  - deferred toggle active state와 deferred status badge가 기존 badge 톤과 충돌하지 않게 최소 스타일 추가
+  - board header control row에서 closed filter와 deferred toggle이 함께
+    정렬되도록 스타일 보강
+  - deferred toggle active state와 deferred status badge가 기존 badge 톤과
+    충돌하지 않게 최소 스타일 추가
 
 구현 스케치:
 
 ```js
-const show_deferred_column =
-  Boolean(store?.getState().board?.show_deferred_column);
+const show_deferred_column = Boolean(
+  store?.getState().board?.show_deferred_column
+);
 
 const deferred_count = list_deferred.length;
 ```
@@ -332,12 +338,12 @@ Expected: PASS
 아래 계약을 테스트로 먼저 고정한다.
 
 1. issues status filter dropdown에 `Deferred` 가 보인다.
-2. `deferred` 단일 filter 선택 시 `tab:issues` 가 아니라
-   `tab:issues:deferred` / `deferred-issues` subscription 이 사용된다.
-3. `open + deferred` 같이 다중 선택 시 `tab:issues` 결과와
-   `tab:issues:deferred` 결과가 merge 된다.
-4. detail status select 와 issue row inline status select 둘 다 `deferred` 옵션을
-   보여준다.
+2. `deferred` 단일 filter 선택 시 `tab:issues` 가 아니라 `tab:issues:deferred` /
+   `deferred-issues` subscription 이 사용된다.
+3. `open + deferred` 같이 다중 선택 시 `tab:issues` 결과와 `tab:issues:deferred`
+   결과가 merge 된다.
+4. detail status select 와 issue row inline status select 둘 다 `deferred`
+   옵션을 보여준다.
 5. localStorage filter 복원 경로가 `deferred` 를 유효 값으로 유지한다.
 
 핵심 테스트 예시:
@@ -383,20 +389,28 @@ Expected:
 - `app/main.js`
   - persisted filter valid set에 `deferred` 추가
   - `computeIssuesSpec()` 에 `deferred` 단일 선택 → `deferred-issues`
-  - issues view 전용 `needs_aux_deferred` 계산과 `tab:issues:deferred` register/subscribe/unsubscribe 경로를 분리 명시
-  - board view 전용 `tab:board:deferred` register/subscribe/unsubscribe 경로와 cleanup 목록을 분리 유지
-  - `clearAndResubscribe()` / workspace switch store unregister 목록에 deferred IDs를 모두 반영
+  - issues view 전용 `needs_aux_deferred` 계산과 `tab:issues:deferred`
+    register/subscribe/unsubscribe 경로를 분리 명시
+  - board view 전용 `tab:board:deferred` register/subscribe/unsubscribe 경로와
+    cleanup 목록을 분리 유지
+  - `clearAndResubscribe()` / workspace switch store unregister 목록에 deferred
+    IDs를 모두 반영
 - `app/data/providers.js`
-  - `updateIssue()` status patch JSDoc이 UI select와 같은 union을 공유하도록 정리
+  - `updateIssue()` status patch JSDoc이 UI select와 같은 union을 공유하도록
+    정리
 - `app/data/list-selectors.js`
-  - board/list selector return surface가 deferred store merge와 충돌하지 않게 typing/JSDoc을 맞춘다
+  - board/list selector return surface가 deferred store merge와 충돌하지 않게
+    typing/JSDoc을 맞춘다
 - `app/main.deferred-status.test.js`
-  - deferred 단일 filter, `open + deferred` merge, board deferred subscription 생성/정리 케이스를 별도 파일에서 검증
+  - deferred 단일 filter, `open + deferred` merge, board deferred subscription
+    생성/정리 케이스를 별도 파일에서 검증
 - `app/views/list.js`
   - status filter 옵션 배열에 `deferred` 추가
   - `selectIssuesForCurrentFilters()` 가 aux deferred store를 merge 하도록 확장
-- `app/views/detail.js`, `app/views/issue-row.js`, `app/views/list.js`, `app/views/board.js`
-  - `STATUSES` 기반 select와 board/status patch surface가 새 status를 그대로 노출하게 회귀 확인
+- `app/views/detail.js`, `app/views/issue-row.js`, `app/views/list.js`,
+  `app/views/board.js`
+  - `STATUSES` 기반 select와 board/status patch surface가 새 status를 그대로
+    노출하게 회귀 확인
   - 흩어진 JSDoc status union/patch surface에 `deferred` 를 명시적으로 추가
 
 구현 스케치:
@@ -444,18 +458,21 @@ Expected: PASS
 - Modify: `server/list-adapters.js`
 - Modify: `server/validators.js`
 - Modify: `server/ws.js`
-- Modify: `docs/superpowers/plans/2026-04-22-deferred-board-column.md` (검증 결과만 필요 시 업데이트)
+- Modify: `docs/superpowers/plans/2026-04-22-deferred-board-column.md` (검증
+  결과만 필요 시 업데이트)
 
-- [ ] **Step 1: Deferred drag/drop + merged filters + count edge case 테스트를 보강**
+- [ ] **Step 1: Deferred drag/drop + merged filters + count edge case 테스트를
+      보강**
 
 추가로 아래 edge case를 고정한다.
 
 1. Deferred 컬럼이 숨김일 때는 drop target 으로 사용되지 않는다.
 2. Deferred 컬럼 표시 중 다른 컬럼으로 이동하면 status가 올바르게 바뀐다.
-3. `ready + deferred` 또는 `open + deferred` 같이 섞인 filters 에서 중복 issue id가
-   한 번만 렌더된다.
+3. `ready + deferred` 또는 `open + deferred` 같이 섞인 filters 에서 중복 issue
+   id가 한 번만 렌더된다.
 4. Deferred 버튼 count는 컬럼이 숨겨져도 유지된다.
-5. board 첫 진입 snapshot 이후 `Deferred (N)` count가 별도 추가 fetch 없이 즉시 보인다.
+5. board 첫 진입 snapshot 이후 `Deferred (N)` count가 별도 추가 fetch 없이 즉시
+   보인다.
 
 - [ ] **Step 2: touched test suites를 실행한다**
 
@@ -524,5 +541,5 @@ Expected:
 - `resolved` UX가 유지되는지
 - list/detail/board status 변경 경로가 모두 `deferred` 를 허용하는지
 - `show_deferred_column` 이 localStorage에 저장되지 않는지
-- 새로운 subscription IDs (`tab:board:deferred`, `tab:issues:deferred`) 가 정리된
-  cleanup path를 가지는지
+- 새로운 subscription IDs (`tab:board:deferred`, `tab:issues:deferred`) 가
+  정리된 cleanup path를 가지는지

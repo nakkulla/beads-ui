@@ -23,6 +23,7 @@ describe('state store', () => {
 
   test('tracks board deferred column state without emitting unchanged values', () => {
     const store = createStore();
+    /** @type {boolean[]} */
     const seen = [];
     const off = store.subscribe((s) => seen.push(s.board.show_deferred_column));
 
