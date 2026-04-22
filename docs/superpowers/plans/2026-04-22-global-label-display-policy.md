@@ -191,6 +191,19 @@ test('emits when config.visible_prefixes changes', () => {
   off();
   expect(seen).toHaveLength(1);
 });
+
+test('hydrates bootstrap config into the initial store state', () => {
+  const store = createStore({
+    config: {
+      label_display_policy: { visible_prefixes: ['area:', 'agent:'] }
+    }
+  });
+
+  expect(store.getState().config.label_display_policy.visible_prefixes).toEqual([
+    'area:',
+    'agent:'
+  ]);
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -201,16 +214,6 @@ Expected: FAIL because `/` still serves static `index.html`, `/api/config` does 
 - [ ] **Step 3: Implement bootstrapped config delivery and reconnect refresh**
 
 ```js
-/**
- * @typedef {{
- *   config: {
- *     label_display_policy: {
- *       visible_prefixes: string[]
- *     }
- *   }
- * }} AppConfigState
- */
-
 function toBootstrapPayload(config) {
   return {
     label_display_policy: {
@@ -248,6 +251,28 @@ const store = createStore({
 });
 
 // app/state.js
+/**
+ * @typedef {{
+ *   selected_id: string | null,
+ *   view: ViewName,
+ *   filters: Filters,
+ *   board: BoardState,
+ *   worker: WorkerState,
+ *   workspace: WorkspaceState,
+ *   config: {
+ *     label_display_policy: {
+ *       visible_prefixes: string[]
+ *     }
+ *   }
+ * }} AppState
+ */
+
+const DEFAULT_CONFIG = {
+  label_display_policy: {
+    visible_prefixes: ['has:', 'reviewed:']
+  }
+};
+
 const next = {
   ...state,
   ...patch,
@@ -477,7 +502,8 @@ const card_labels = filterVisibleLabels(
 ```
 
 `issue-row.js`는 순수 renderer로 유지하고, policy 변경 시 row renderer를 다시 호출하는 책임은
-`board.js` / `list.js` / `epics.js` 상위 뷰가 가진다.
+`board.js` / `list.js` / `epics.js` 상위 뷰가 가진다. 이때 입력 contract는
+`getVisibleLabelPrefixes()` getter 하나로 고정하고, `issue-row.js` 내부에서 store를 직접 읽지 않는다.
 
 - [ ] **Step 4: Run test to verify it passes**
 
