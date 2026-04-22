@@ -20,7 +20,7 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ closed_filter: ClosedFilter }} BoardState
+ * @typedef {{ closed_filter: ClosedFilter, show_deferred_column: boolean }} BoardState
  */
 
 /**
@@ -69,7 +69,8 @@ export function createStore(initial = {}) {
         initial.board?.closed_filter === '7' ||
         initial.board?.closed_filter === 'today'
           ? initial.board?.closed_filter
-          : 'today'
+          : 'today',
+      show_deferred_column: initial.board?.show_deferred_column === true
     },
     worker: {
       selected_parent_id: initial.worker?.selected_parent_id ?? null,
@@ -135,6 +136,8 @@ export function createStore(initial = {}) {
         next.filters.search === state.filters.search &&
         next.filters.type === state.filters.type &&
         next.board.closed_filter === state.board.closed_filter &&
+        next.board.show_deferred_column ===
+          state.board.show_deferred_column &&
         next.worker.selected_parent_id === state.worker.selected_parent_id &&
         next.worker.show_closed_children.length ===
           state.worker.show_closed_children.length &&

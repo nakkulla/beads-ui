@@ -184,6 +184,10 @@ export function bootstrap(root_element) {
         void unsub_board_in_progress().catch(() => {});
         unsub_board_in_progress = null;
       }
+      if (unsub_board_deferred) {
+        void unsub_board_deferred().catch(() => {});
+        unsub_board_deferred = null;
+      }
       if (unsub_issues_resolved) {
         void unsub_issues_resolved().catch(() => {});
         unsub_issues_resolved = null;
@@ -212,6 +216,7 @@ export function bootstrap(root_element) {
         'tab:epics',
         'tab:board:ready',
         'tab:board:in-progress',
+        'tab:board:deferred',
         'tab:board:resolved',
         'tab:board:closed',
         'tab:board:blocked'
@@ -825,6 +830,8 @@ export function bootstrap(root_element) {
     /** @type {null | (() => Promise<void>)} */
     let unsub_board_in_progress = null;
     /** @type {null | (() => Promise<void>)} */
+    let unsub_board_deferred = null;
+    /** @type {null | (() => Promise<void>)} */
     let unsub_board_resolved = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_board_closed = null;
@@ -1098,6 +1105,32 @@ export function bootstrap(root_element) {
               pending_subscriptions.delete('tab:board:in-progress');
             });
         }
+        // Deferred column
+        if (
+          !unsub_board_deferred &&
+          !pending_subscriptions.has('tab:board:deferred')
+        ) {
+          try {
+            sub_issue_stores.register('tab:board:deferred', {
+              type: 'deferred-issues'
+            });
+          } catch (err) {
+            log('register board:deferred store failed: %o', err);
+          }
+          pending_subscriptions.add('tab:board:deferred');
+          void subscriptions
+            .subscribeList('tab:board:deferred', {
+              type: 'deferred-issues'
+            })
+            .then((u) => (unsub_board_deferred = u))
+            .catch((err) => {
+              log('subscribe board deferred failed: %o', err);
+              showFatalFromError(err, 'board (Deferred)');
+            })
+            .finally(() => {
+              pending_subscriptions.delete('tab:board:deferred');
+            });
+        }
         // Resolved column
         if (
           !unsub_board_resolved &&
@@ -1190,6 +1223,15 @@ export function bootstrap(root_element) {
             sub_issue_stores.unregister('tab:board:in-progress');
           } catch (err) {
             log('unregister board:in-progress failed: %o', err);
+          }
+        }
+        if (unsub_board_deferred) {
+          void unsub_board_deferred().catch(() => {});
+          unsub_board_deferred = null;
+          try {
+            sub_issue_stores.unregister('tab:board:deferred');
+          } catch (err) {
+            log('unregister board:deferred failed: %o', err);
           }
         }
         if (unsub_board_resolved) {

@@ -627,4 +627,163 @@ describe('views/board', () => {
     expect(date_element?.textContent?.trim()).toBe('');
     expect(date_element?.getAttribute('title')).toBe('');
   });
+
+  test('toggles deferred column from header button and shows deferred count while hidden', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const now = Date.now();
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:deferred').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:deferred',
+      revision: 1,
+      issues: [
+        {
+          id: 'D-1',
+          title: 'deferred 1',
+          status: 'deferred',
+          created_at: now - 1,
+          updated_at: now - 1,
+          issue_type: 'task'
+        },
+        {
+          id: 'D-2',
+          title: 'deferred 2',
+          status: 'deferred',
+          created_at: now,
+          updated_at: now,
+          issue_type: 'bug'
+        }
+      ]
+    });
+
+    const store = {
+      state: {
+        selected_id: null,
+        view: 'board',
+        filters: { status: 'all', search: '', type: '' },
+        board: { closed_filter: 'today', show_deferred_column: false }
+      },
+      getState() {
+        return this.state;
+      },
+      setState(patch) {
+        this.state = {
+          ...this.state,
+          ...(patch || {}),
+          filters: { ...this.state.filters, ...(patch.filters || {}) },
+          board: { ...this.state.board, ...(patch.board || {}) }
+        };
+      }
+    };
+
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      store,
+      undefined,
+      issueStores
+    );
+    await view.load();
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.board-deferred-toggle')
+    );
+    expect(button.textContent?.trim()).toContain('Deferred (2)');
+    expect(mount.querySelector('#deferred-col')).toBeNull();
+
+    button.click();
+    const deferred_cards = Array.from(
+      mount.querySelectorAll('#deferred-col .board-card .mono')
+    ).map((el) => el.textContent?.trim());
+    expect(deferred_cards).toEqual(['D-1', 'D-2']);
+
+    button.click();
+    expect(mount.querySelector('#deferred-col')).toBeNull();
+  });
+
+  test('updates issue status when dropping on deferred column', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const now = Date.now();
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'R-1',
+          title: 'ready 1',
+          status: 'open',
+          created_at: now,
+          updated_at: now,
+          issue_type: 'task'
+        }
+      ]
+    });
+    issueStores.getStore('tab:board:deferred').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:deferred',
+      revision: 1,
+      issues: []
+    });
+
+    const calls = [];
+    const store = {
+      state: {
+        selected_id: null,
+        view: 'board',
+        filters: { status: 'all', search: '', type: '' },
+        board: { closed_filter: 'today', show_deferred_column: true }
+      },
+      getState() {
+        return this.state;
+      },
+      setState(patch) {
+        this.state = {
+          ...this.state,
+          ...(patch || {}),
+          filters: { ...this.state.filters, ...(patch.filters || {}) },
+          board: { ...this.state.board, ...(patch.board || {}) }
+        };
+      }
+    };
+
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      store,
+      undefined,
+      issueStores,
+      async (type, payload) => {
+        calls.push({ type, payload });
+        return {};
+      }
+    );
+    await view.load();
+
+    const deferred_col = /** @type {HTMLElement} */ (
+      mount.querySelector('#deferred-col')
+    );
+    const drop_event = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop_event, 'dataTransfer', {
+      value: {
+        getData(type) {
+          return type === 'text/plain' ? 'R-1' : '';
+        }
+      }
+    });
+    deferred_col.dispatchEvent(drop_event);
+    await Promise.resolve();
+
+    expect(calls).toEqual([
+      {
+        type: 'update-status',
+        payload: { id: 'R-1', status: 'deferred' }
+      }
+    ]);
+  });
 });
