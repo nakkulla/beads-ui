@@ -1,10 +1,23 @@
 # Global label display policy Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+Parent bead: UI-9ooi
 
-**Goal:** 서버 전역 config로 Board / Issues / Epics 요약 영역의 label 표시 prefix 정책을 제어하고, bootstrap + reconnect refresh를 통해 같은 서버 인스턴스의 모든 클라이언트에 동일한 policy snapshot을 적용한다.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
-**Architecture:** `server/config.js`가 global config file을 읽어 `label_display_policy` snapshot을 반환하고, `server/app.js`는 `/` bootstrap HTML과 `GET /api/config`에서 같은 schema를 전달한다. `app/main.js`와 `app/state.js`는 이 snapshot을 canonical `config` branch로 유지하며, reconnect 후 재조회된 config가 rerender를 일으키도록 한다. `app/utils/label-badge.js`와 Board/List/Epics renderer는 store에서 받은 visible prefixes를 공통 filtering contract로 주입받아 같은 규칙으로 badge를 렌더링한다.
+**Goal:** 서버 전역 config로 Board / Issues / Epics 요약 영역의 label 표시
+prefix 정책을 제어하고, bootstrap + reconnect refresh를 통해 같은 서버
+인스턴스의 모든 클라이언트에 동일한 policy snapshot을 적용한다.
+
+**Architecture:** `server/config.js`가 global config file을 읽어
+`label_display_policy` snapshot을 반환하고, `server/app.js`는 `/` bootstrap
+HTML과 `GET /api/config`에서 같은 schema를 전달한다. `app/main.js`와
+`app/state.js`는 이 snapshot을 canonical `config` branch로 유지하며, reconnect
+후 재조회된 config가 rerender를 일으키도록 한다. `app/utils/label-badge.js`와
+Board/List/Epics renderer는 store에서 받은 visible prefixes를 공통 filtering
+contract로 주입받아 같은 규칙으로 badge를 렌더링한다.
 
 **Tech Stack:** Node.js, Express, lit-html, Vitest, esbuild
 
@@ -13,16 +26,17 @@
 ### Task 1: Add server-global label policy loading with safe fallback
 
 **Files:**
+
 - Modify: `server/config.js`
 - Modify: `server/config.test.js`
 
 - [ ] **Step 1: Write the failing config tests**
 
 ```js
-import { afterEach, describe, expect, test } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { afterEach, describe, expect, test } from 'vitest';
 import { getConfig } from './config.js';
 
 afterEach(() => {
@@ -88,8 +102,8 @@ test('preserves explicit empty array to hide summary labels', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npm test -- server/config.test.js`
-Expected: FAIL because `getConfig()` does not return `label_display_policy` yet.
+Run: `npm test -- server/config.test.js` Expected: FAIL because `getConfig()`
+does not return `label_display_policy` yet.
 
 - [ ] **Step 3: Implement config parsing in `server/config.js`**
 
@@ -135,8 +149,8 @@ function readGlobalConfig(config_path) {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npm test -- server/config.test.js`
-Expected: PASS with default fallback, env override, invalid config fallback, and explicit `[]` coverage.
+Run: `npm test -- server/config.test.js` Expected: PASS with default fallback,
+env override, invalid config fallback, and explicit `[]` coverage.
 
 - [ ] **Step 5: Commit**
 
@@ -148,6 +162,7 @@ git commit -m "계획: 전역 label policy config 로더 추가"
 ### Task 2: Bootstrap and refresh the server config snapshot into the client state
 
 **Files:**
+
 - Modify: `server/app.js`
 - Modify: `server/app.test.js`
 - Modify: `server/app.live-mode.test.js`
@@ -199,17 +214,18 @@ test('hydrates bootstrap config into the initial store state', () => {
     }
   });
 
-  expect(store.getState().config.label_display_policy.visible_prefixes).toEqual([
-    'area:',
-    'agent:'
-  ]);
+  expect(store.getState().config.label_display_policy.visible_prefixes).toEqual(
+    ['area:', 'agent:']
+  );
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npm test -- server/app.test.js server/app.live-mode.test.js app/state.test.js app/main.config-refresh.test.js`
-Expected: FAIL because `/` still serves static `index.html`, `/api/config` does not exist, and `AppState` ignores `config` changes.
+Run:
+`npm test -- server/app.test.js server/app.live-mode.test.js app/state.test.js app/main.config-refresh.test.js`
+Expected: FAIL because `/` still serves static `index.html`, `/api/config` does
+not exist, and `AppState` ignores `config` changes.
 
 - [ ] **Step 3: Implement bootstrapped config delivery and reconnect refresh**
 
@@ -235,10 +251,17 @@ app.get('/api/config', (_req, res) => {
 
 app.get('/', (_req, res) => {
   const html = fs.readFileSync(index_path, 'utf8');
-  const payload = escapeBootstrapJson(JSON.stringify(toBootstrapPayload(config)));
-  res.type('html').send(
-    html.replace('</head>', `<script>window.__BDUI_BOOTSTRAP__=${payload};</script></head>`)
+  const payload = escapeBootstrapJson(
+    JSON.stringify(toBootstrapPayload(config))
   );
+  res
+    .type('html')
+    .send(
+      html.replace(
+        '</head>',
+        `<script>window.__BDUI_BOOTSTRAP__=${payload};</script></head>`
+      )
+    );
 });
 app.use(express.static(config.app_dir, { index: false }));
 ```
@@ -326,6 +349,7 @@ client.onConnection(async (state) => {
 ```
 
 Implementation order inside `server/app.js` is fixed:
+
 1. register `/api/config`
 2. register explicit `/` bootstrap route
 3. register `express.static(config.app_dir, { index: false })`
@@ -334,8 +358,10 @@ Implementation order inside `server/app.js` is fixed:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npm test -- server/app.test.js server/app.live-mode.test.js app/state.test.js app/main.config-refresh.test.js`
-Expected: PASS with bootstrapped `/`, schema-identical `/api/config`, and `config` state rerender coverage.
+Run:
+`npm test -- server/app.test.js server/app.live-mode.test.js app/state.test.js app/main.config-refresh.test.js`
+Expected: PASS with bootstrapped `/`, schema-identical `/api/config`, and
+`config` state rerender coverage.
 
 - [ ] **Step 5: Commit**
 
@@ -347,6 +373,7 @@ git commit -m "계획: bootstrap config와 reconnect refresh 연결"
 ### Task 3: Replace hard-coded label filtering with policy-driven rendering
 
 **Files:**
+
 - Modify: `app/utils/label-badge.js`
 - Modify: `app/utils/label-badge.test.js`
 - Modify: `app/views/board.js`
@@ -358,7 +385,8 @@ git commit -m "계획: bootstrap config와 reconnect refresh 연결"
 - Modify: `app/views/epics.test.js`
 - Create: `app/views/issue-row.test.js`
 
-- [ ] **Step 0: Add config-change rerender hooks before changing the filter contract**
+- [ ] **Step 0: Add config-change rerender hooks before changing the filter
+      contract**
 
 ```js
 // app/views/board.js
@@ -467,16 +495,19 @@ test('board uses store config prefixes for card badges', async () => {
 
   await view.load();
 
-  const labels = Array.from(mount.querySelectorAll('.board-card__labels .label-badge')).map(
-    (element) => element.textContent
-  );
+  const labels = Array.from(
+    mount.querySelectorAll('.board-card__labels .label-badge')
+  ).map((element) => element.textContent);
 
   expect(labels).toContain('area:auth');
   expect(labels).not.toContain('has:spec');
 });
 
 test('issue row renderer reads getVisibleLabelPrefixes', () => {
-  render(rowTemplate({ id: 'UI-1', labels: ['agent:codex', 'has:plan'] }), mount);
+  render(
+    rowTemplate({ id: 'UI-1', labels: ['agent:codex', 'has:plan'] }),
+    mount
+  );
 
   const labels = Array.from(mount.querySelectorAll('.label-badge')).map(
     (element) => element.textContent
@@ -489,8 +520,10 @@ test('issue row renderer reads getVisibleLabelPrefixes', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npm test -- app/utils/label-badge.test.js app/views/board.test.js app/views/list.test.js app/views/epics.test.js app/views/issue-row.test.js`
-Expected: FAIL because the filter is still hard-coded to `has:` / `reviewed:` and row renderers do not accept policy input.
+Run:
+`npm test -- app/utils/label-badge.test.js app/views/board.test.js app/views/list.test.js app/views/epics.test.js app/views/issue-row.test.js`
+Expected: FAIL because the filter is still hard-coded to `has:` / `reviewed:`
+and row renderers do not accept policy input.
 
 - [ ] **Step 3: Implement the policy-driven filter contract**
 
@@ -524,14 +557,17 @@ const card_labels = filterVisibleLabels(
 );
 ```
 
-`issue-row.js`는 순수 renderer로 유지하고, policy 변경 시 row renderer를 다시 호출하는 책임은
-`board.js` / `list.js` / `epics.js` 상위 뷰가 가진다. 이때 입력 contract는
-`getVisibleLabelPrefixes()` getter 하나로 고정하고, `issue-row.js` 내부에서 store를 직접 읽지 않는다.
+`issue-row.js`는 순수 renderer로 유지하고, policy 변경 시 row renderer를 다시
+호출하는 책임은 `board.js` / `list.js` / `epics.js` 상위 뷰가 가진다. 이때 입력
+contract는 `getVisibleLabelPrefixes()` getter 하나로 고정하고, `issue-row.js`
+내부에서 store를 직접 읽지 않는다.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npm test -- app/utils/label-badge.test.js app/views/board.test.js app/views/list.test.js app/views/epics.test.js app/views/issue-row.test.js`
-Expected: PASS with Board / Issues / Epics all honoring the same prefix policy and neutral badge rendering for non-`has:` / non-`reviewed:` labels.
+Run:
+`npm test -- app/utils/label-badge.test.js app/views/board.test.js app/views/list.test.js app/views/epics.test.js app/views/issue-row.test.js`
+Expected: PASS with Board / Issues / Epics all honoring the same prefix policy
+and neutral badge rendering for non-`has:` / non-`reviewed:` labels.
 
 - [ ] **Step 5: Commit**
 
@@ -543,6 +579,7 @@ git commit -m "계획: 전역 label policy로 요약 badge 렌더링 통합"
 ### Task 4: Regenerate static assets and run end-to-end verification
 
 **Files:**
+
 - Modify: `app/main.bundle.js`
 - Modify: `app/main.bundle.js.map`
 - Verify: `server/config.js`
@@ -568,7 +605,8 @@ test('reconnect refresh updates rendered labels after config change', async () =
 
 - [ ] **Step 2: Run the focused verification suite**
 
-Run: `npm test -- server/config.test.js server/app.test.js server/app.live-mode.test.js app/state.test.js app/main.config-refresh.test.js app/utils/label-badge.test.js app/views/board.test.js app/views/list.test.js app/views/epics.test.js app/views/issue-row.test.js`
+Run:
+`npm test -- server/config.test.js server/app.test.js server/app.live-mode.test.js app/state.test.js app/main.config-refresh.test.js app/utils/label-badge.test.js app/views/board.test.js app/views/list.test.js app/views/epics.test.js app/views/issue-row.test.js`
 Expected: PASS for the full label-policy regression slice.
 
 - [ ] **Step 3: Rebuild the static frontend bundle**
@@ -577,12 +615,14 @@ Expected: PASS for the full label-policy regression slice.
 npm run build
 ```
 
-Expected: `app/main.bundle.js` and `app/main.bundle.js.map` are regenerated from the updated source without build errors.
+Expected: `app/main.bundle.js` and `app/main.bundle.js.map` are regenerated from
+the updated source without build errors.
 
 - [ ] **Step 4: Run full repo verification**
 
 Run: `npm run tsc && npm test && npm run lint && npm run prettier:write`
-Expected: all commands succeed; `prettier:write` may touch generated or legacy files, so review the resulting diff before the final commit.
+Expected: all commands succeed; `prettier:write` may touch generated or legacy
+files, so review the resulting diff before the final commit.
 
 - [ ] **Step 5: Commit**
 
