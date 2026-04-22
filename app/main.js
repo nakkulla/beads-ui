@@ -469,9 +469,10 @@ export function bootstrap(root_element) {
     } catch (err) {
       log('view parse error: %o', err);
     }
-    // Load board preferences
+    // Load persisted board preferences. The deferred column remains
+    // session-local, so it always starts hidden on bootstrap.
     /** @type {{ closed_filter: 'today'|'3'|'7', show_deferred_column: boolean }} */
-    let persistedBoard = {
+    let initial_board_state = {
       closed_filter: 'today',
       show_deferred_column: false
     };
@@ -482,7 +483,7 @@ export function bootstrap(root_element) {
         if (obj && typeof obj === 'object') {
           const cf = String(obj.closed_filter || 'today');
           if (cf === 'today' || cf === '3' || cf === '7') {
-            persistedBoard.closed_filter = cf;
+            initial_board_state.closed_filter = cf;
           }
         }
       }
@@ -493,7 +494,7 @@ export function bootstrap(root_element) {
     const store = createStore({
       filters: persisted_filters,
       view: last_view,
-      board: persistedBoard
+      board: initial_board_state
     });
     const router = createHashRouter(store);
     router.start();

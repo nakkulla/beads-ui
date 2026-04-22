@@ -209,8 +209,12 @@ export function createListView(
 
     const primary = selectors.selectIssuesFor('tab:issues');
     const include_aux_resolved =
-      status_filters.includes('resolved') && !status_filters.includes('ready');
-    const include_aux_deferred = status_filters.includes('deferred');
+      status_filters.includes('resolved') &&
+      !status_filters.includes('ready') &&
+      !(status_filters.length === 1 && status_filters[0] === 'resolved');
+    const include_aux_deferred =
+      status_filters.includes('deferred') &&
+      !(status_filters.length === 1 && status_filters[0] === 'deferred');
 
     if (!include_aux_resolved && !include_aux_deferred) {
       return primary;
@@ -231,9 +235,6 @@ export function createListView(
       for (const it of aux_deferred) {
         by_id.set(String(it.id), it);
       }
-    }
-    for (const it of by_id.values()) {
-      by_id.set(String(it.id), it);
     }
     return Array.from(by_id.values());
   }
