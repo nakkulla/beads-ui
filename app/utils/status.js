@@ -1,9 +1,15 @@
 /**
  * Known status values in canonical order.
  *
- * @type {Array<'open'|'in_progress'|'resolved'|'closed'>}
+ * @type {Array<'open'|'in_progress'|'deferred'|'resolved'|'closed'>}
  */
-export const STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
+export const STATUSES = [
+  'open',
+  'in_progress',
+  'deferred',
+  'resolved',
+  'closed'
+];
 
 /**
  * Map canonical status to display label.
@@ -17,6 +23,8 @@ export function statusLabel(status) {
       return 'Open';
     case 'in_progress':
       return 'In progress';
+    case 'deferred':
+      return 'Deferred';
     case 'resolved':
       return 'Resolved';
     case 'closed':
