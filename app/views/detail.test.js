@@ -997,37 +997,4 @@ describe('views/detail', () => {
       expect(placeholder?.textContent).toContain('No issue selected');
     });
   });
-
-  test('includes Deferred in the status select options', async () => {
-    document.body.innerHTML =
-      '<section class="panel"><div id="mount"></div></section>';
-    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
-    const issue = {
-      id: 'UI-70',
-      title: 'With deferred status option',
-      status: 'open',
-      dependencies: [],
-      dependents: []
-    };
-    const stores = {
-      snapshotFor(/** @type {string} */ id) {
-        return id === 'detail:UI-70' ? [issue] : [];
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
-
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
-    await view.load('UI-70');
-
-    const status_select = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('.props-card .badge-select.badge--status')
-    );
-    const option_values = Array.from(status_select.options).map(
-      (option) => option.value
-    );
-
-    expect(option_values).toContain('deferred');
-  });
 });

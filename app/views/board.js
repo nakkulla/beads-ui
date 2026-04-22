@@ -16,7 +16,7 @@ import { createTypeBadge } from '../utils/type-badge.js';
  * @typedef {{
  *   id: string,
  *   title?: string,
- *   status?: 'open'|'in_progress'|'deferred'|'resolved'|'closed',
+ *   status?: 'open'|'in_progress'|'resolved'|'closed',
  *   priority?: number,
  *   issue_type?: string,
  *   labels?: string[],
@@ -29,13 +29,12 @@ import { createTypeBadge } from '../utils/type-badge.js';
 /**
  * Map column IDs to their corresponding status values.
  *
- * @type {Record<string, 'open'|'in_progress'|'deferred'|'resolved'|'closed'>}
+ * @type {Record<string, 'open'|'in_progress'|'resolved'|'closed'>}
  */
 const COLUMN_STATUS_MAP = {
   'blocked-col': 'open',
   'ready-col': 'open',
   'in-progress-col': 'in_progress',
-  'deferred-col': 'deferred',
   'resolved-col': 'resolved',
   'closed-col': 'closed'
 };
@@ -76,8 +75,6 @@ export function createBoardView(
   /** @type {IssueLite[]} */
   let list_resolved = [];
   /** @type {IssueLite[]} */
-  let list_deferred = [];
-  /** @type {IssueLite[]} */
   let list_closed = [];
   /** @type {IssueLite[]} */
   let list_closed_raw = [];
@@ -102,7 +99,6 @@ export function createBoardView(
    * @type {'today'|'3'|'7'}
    */
   let closed_filter_mode = 'today';
-  let show_deferred_column = false;
   if (store) {
     try {
       const s = store.getState();
@@ -111,41 +107,19 @@ export function createBoardView(
       if (cf === 'today' || cf === '3' || cf === '7') {
         closed_filter_mode = /** @type {any} */ (cf);
       }
-      show_deferred_column = s?.board?.show_deferred_column === true;
     } catch {
       // ignore store init errors
     }
   }
 
   function template() {
-    const deferred_count = list_deferred.length;
     return html`
-      <div class="panel__body">
-        <div class="board-toolbar">
-          <button
-            class="btn board-deferred-toggle ${show_deferred_column
-              ? 'is-active'
-              : ''}"
-            type="button"
-            aria-pressed=${show_deferred_column ? 'true' : 'false'}
-            @click=${onDeferredToggleClick}
-          >
-            Deferred (${deferred_count})
-          </button>
-        </div>
-        <div
-          class="board-root"
-          style=${`--board-column-count: ${show_deferred_column ? 6 : 5}`}
-        >
-          ${columnTemplate('Blocked', 'blocked-col', list_blocked)}
-          ${columnTemplate('Ready', 'ready-col', list_ready)}
-          ${columnTemplate('In Progress', 'in-progress-col', list_in_progress)}
-          ${show_deferred_column
-            ? columnTemplate('Deferred', 'deferred-col', list_deferred)
-            : ''}
-          ${columnTemplate('Resolved', 'resolved-col', list_resolved)}
-          ${columnTemplate('Closed', 'closed-col', list_closed)}
-        </div>
+      <div class="panel__body board-root">
+        ${columnTemplate('Blocked', 'blocked-col', list_blocked)}
+        ${columnTemplate('Ready', 'ready-col', list_ready)}
+        ${columnTemplate('In Progress', 'in-progress-col', list_in_progress)}
+        ${columnTemplate('Resolved', 'resolved-col', list_resolved)}
+        ${columnTemplate('Closed', 'closed-col', list_closed)}
       </div>
     `;
   }
@@ -313,7 +287,7 @@ export function createBoardView(
    * Update issue status via WebSocket transport.
    *
    * @param {string} issue_id
-   * @param {'open'|'in_progress'|'deferred'|'resolved'|'closed'} new_status
+   * @param {'open'|'in_progress'|'resolved'|'closed'} new_status
    */
   async function updateIssueStatus(issue_id, new_status) {
     if (!transport) {
@@ -630,18 +604,6 @@ export function createBoardView(
     }
   }
 
-  function onDeferredToggleClick() {
-    show_deferred_column = !show_deferred_column;
-    if (store) {
-      try {
-        store.setState({ board: { show_deferred_column } });
-      } catch {
-        // ignore store errors
-      }
-    }
-    doRender();
-  }
-
   /**
    * Compose lists from subscriptions + issues store and render.
    */
@@ -664,10 +626,6 @@ export function createBoardView(
           'tab:board:closed',
           'closed'
         );
-        const deferred = selectors.selectBoardColumn(
-          'tab:board:deferred',
-          'deferred'
-        );
         const resolved = selectors.selectBoardColumn(
           'tab:board:resolved',
           'resolved'
@@ -683,7 +641,6 @@ export function createBoardView(
         list_ready = ready;
         list_blocked = blocked.filter((i) => isOpenBoardIssue(i));
         list_in_progress = in_progress;
-        list_deferred = deferred;
         list_resolved = resolved;
         list_closed_raw = closed;
       }
@@ -742,7 +699,6 @@ export function createBoardView(
           cnt('tab:board:ready') +
           cnt('tab:board:blocked') +
           cnt('tab:board:in-progress') +
-          cnt('tab:board:deferred') +
           cnt('tab:board:resolved') +
           cnt('tab:board:closed');
         const data = /** @type {any} */ (_data);

@@ -15,13 +15,6 @@ import { keyOf, registry } from './subscriptions.js';
 import { validateSubscribeListPayload } from './validators.js';
 
 const log = debug('ws');
-const UPDATE_STATUS_ALLOWED = new Set([
-  'open',
-  'in_progress',
-  'deferred',
-  'resolved',
-  'closed'
-]);
 
 /**
  * Debounced refresh scheduling for active list subscriptions.
@@ -900,18 +893,19 @@ export async function handleMessage(ws, data) {
   if (req.type === 'update-status') {
     log('update-status');
     const { id, status } = /** @type {any} */ (req.payload);
+    const allowed = new Set(['open', 'in_progress', 'resolved', 'closed']);
     if (
       typeof id !== 'string' ||
       id.length === 0 ||
       typeof status !== 'string' ||
-      !UPDATE_STATUS_ALLOWED.has(status)
+      !allowed.has(status)
     ) {
       ws.send(
         JSON.stringify(
           makeError(
             req,
             'bad_request',
-            "payload requires { id: string, status: 'open'|'in_progress'|'deferred'|'resolved'|'closed' }"
+            "payload requires { id: string, status: 'open'|'in_progress'|'resolved'|'closed' }"
           )
         )
       );

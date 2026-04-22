@@ -143,35 +143,6 @@ describe('ws mutation handlers', () => {
     ]);
   });
 
-  test('update-status accepts deferred', async () => {
-    const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
-    mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-9', status: 'deferred' }
-    });
-    const ws = makeStubSocket();
-    const req = {
-      id: 'r1-deferred',
-      type: 'update-status',
-      payload: { id: 'UI-9', status: 'deferred' }
-    };
-    await handleMessage(
-      /** @type {any} */ (ws),
-      Buffer.from(JSON.stringify(req))
-    );
-    const obj = JSON.parse(ws.sent[ws.sent.length - 1]);
-    expect(obj.ok).toBe(true);
-    expect(obj.payload.status).toBe('deferred');
-    expect(mRun.mock.calls[0][0]).toEqual([
-      'update',
-      'UI-9',
-      '--status',
-      'deferred'
-    ]);
-  });
-
   test('update-status invalid payload yields bad_request', async () => {
     const ws = makeStubSocket();
     const req = {

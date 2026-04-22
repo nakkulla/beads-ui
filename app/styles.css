@@ -1307,24 +1307,9 @@ input.inline-edit:focus {
 /* Board view styles */
 .board-root {
   display: grid;
-  grid-template-columns: repeat(
-    var(--board-column-count, 5),
-    minmax(380px, 1fr)
-  );
+  grid-template-columns: repeat(5, 1fr);
   gap: var(--space-8);
   padding: var(--space-6);
-}
-.board-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  padding: var(--space-6) var(--space-6) 0;
-}
-.board-deferred-toggle {
-  font-variant-numeric: tabular-nums;
-}
-.board-deferred-toggle.is-active {
-  background: color-mix(in srgb, var(--accent) 18%, var(--control-bg));
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
 }
 .board-column {
   display: flex;
