@@ -10,7 +10,7 @@ import { createIssueRowRenderer } from './issue-row.js';
 // List view implementation; requires a transport send function.
 
 /**
- * @typedef {{ id: string, title?: string, status?: 'closed'|'open'|'in_progress'|'resolved', priority?: number, issue_type?: string, assignee?: string, labels?: string[], created_at?: number | string }} Issue
+ * @typedef {{ id: string, title?: string, status?: 'closed'|'open'|'in_progress'|'deferred'|'resolved', priority?: number, issue_type?: string, assignee?: string, labels?: string[], created_at?: number | string }} Issue
  */
 
 /**
@@ -210,15 +210,29 @@ export function createListView(
     const primary = selectors.selectIssuesFor('tab:issues');
     const include_aux_resolved =
       status_filters.includes('resolved') && !status_filters.includes('ready');
+    const include_aux_deferred = status_filters.includes('deferred');
 
-    if (!include_aux_resolved) {
+    if (!include_aux_resolved && !include_aux_deferred) {
       return primary;
     }
-
-    const aux = selectors.selectIssuesFor('tab:issues:resolved');
     /** @type {Map<string, Issue>} */
     const by_id = new Map();
-    for (const it of [...primary, ...aux]) {
+    for (const it of primary) {
+      by_id.set(String(it.id), it);
+    }
+    if (include_aux_resolved) {
+      const aux_resolved = selectors.selectIssuesFor('tab:issues:resolved');
+      for (const it of aux_resolved) {
+        by_id.set(String(it.id), it);
+      }
+    }
+    if (include_aux_deferred) {
+      const aux_deferred = selectors.selectIssuesFor('tab:issues:deferred');
+      for (const it of aux_deferred) {
+        by_id.set(String(it.id), it);
+      }
+    }
+    for (const it of by_id.values()) {
       by_id.set(String(it.id), it);
     }
     return Array.from(by_id.values());
@@ -263,7 +277,14 @@ export function createListView(
             <span class="filter-dropdown__arrow">▾</span>
           </button>
           <div class="filter-dropdown__menu">
-            ${['ready', 'open', 'in_progress', 'resolved', 'closed'].map(
+            ${[
+              'ready',
+              'open',
+              'in_progress',
+              'deferred',
+              'resolved',
+              'closed'
+            ].map(
               (s) => html`
                 <label class="filter-dropdown__option">
                   <input

@@ -172,6 +172,10 @@ export function bootstrap(root_element) {
         void unsub_issues_tab().catch(() => {});
         unsub_issues_tab = null;
       }
+      if (unsub_issues_deferred) {
+        void unsub_issues_deferred().catch(() => {});
+        unsub_issues_deferred = null;
+      }
       if (unsub_epics_tab) {
         void unsub_epics_tab().catch(() => {});
         unsub_epics_tab = null;
@@ -212,6 +216,7 @@ export function bootstrap(root_element) {
       const storeIds = [
         'tab:issues',
         'tab:issues:resolved',
+        'tab:issues:deferred',
         'tab:worker:all',
         'tab:epics',
         'tab:board:ready',
@@ -406,7 +411,7 @@ export function bootstrap(root_element) {
       client.onConnection(onConn);
     }
     // Load persisted filters (status/search/type) from localStorage
-    /** @type {{ status: 'all'|'open'|'in_progress'|'resolved'|'closed'|'ready', search: string, type: string }} */
+    /** @type {{ status: 'all'|'open'|'in_progress'|'deferred'|'resolved'|'closed'|'ready', search: string, type: string }} */
     let persisted_filters = { status: 'all', search: '', type: '' };
     try {
       const raw = window.localStorage.getItem('beads-ui.filters');
@@ -433,6 +438,7 @@ export function bootstrap(root_element) {
               'all',
               'open',
               'in_progress',
+              'deferred',
               'resolved',
               'closed',
               'ready'
@@ -824,6 +830,8 @@ export function bootstrap(root_element) {
     /** @type {null | (() => Promise<void>)} */
     let unsub_issues_resolved = null;
     /** @type {null | (() => Promise<void>)} */
+    let unsub_issues_deferred = null;
+    /** @type {null | (() => Promise<void>)} */
     let unsub_worker_all = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_board_ready = null;
@@ -880,6 +888,9 @@ export function bootstrap(root_element) {
       if (status_filters.length === 1 && st === 'in_progress') {
         return { type: 'in-progress-issues' };
       }
+      if (status_filters.length === 1 && st === 'deferred') {
+        return { type: 'deferred-issues' };
+      }
       if (status_filters.length === 1 && st === 'closed') {
         return { type: 'closed-issues' };
       }
@@ -906,6 +917,9 @@ export function bootstrap(root_element) {
           status_filters.includes('resolved') &&
           !status_filters.includes('ready') &&
           !(status_filters.length === 1 && status_filters[0] === 'resolved');
+        const needs_aux_deferred =
+          status_filters.includes('deferred') &&
+          !(status_filters.length === 1 && status_filters[0] === 'deferred');
         const key = JSON.stringify(spec);
         // Register store first to capture the initial snapshot
         try {
@@ -958,6 +972,32 @@ export function bootstrap(root_element) {
               pending_subscriptions.delete('tab:issues:resolved');
             });
         }
+        if (
+          needs_aux_deferred &&
+          !unsub_issues_deferred &&
+          !pending_subscriptions.has('tab:issues:deferred')
+        ) {
+          try {
+            sub_issue_stores.register('tab:issues:deferred', {
+              type: 'deferred-issues'
+            });
+          } catch (err) {
+            log('register issues:deferred store failed: %o', err);
+          }
+          pending_subscriptions.add('tab:issues:deferred');
+          void subscriptions
+            .subscribeList('tab:issues:deferred', {
+              type: 'deferred-issues'
+            })
+            .then((u) => (unsub_issues_deferred = u))
+            .catch((err) => {
+              log('subscribe issues deferred failed: %o', err);
+              showFatalFromError(err, 'issues list (Deferred)');
+            })
+            .finally(() => {
+              pending_subscriptions.delete('tab:issues:deferred');
+            });
+        }
         if (!needs_aux_resolved && unsub_issues_resolved) {
           void unsub_issues_resolved().catch(() => {});
           unsub_issues_resolved = null;
@@ -965,6 +1005,15 @@ export function bootstrap(root_element) {
             sub_issue_stores.unregister('tab:issues:resolved');
           } catch (err) {
             log('unregister issues:resolved failed: %o', err);
+          }
+        }
+        if (!needs_aux_deferred && unsub_issues_deferred) {
+          void unsub_issues_deferred().catch(() => {});
+          unsub_issues_deferred = null;
+          try {
+            sub_issue_stores.unregister('tab:issues:deferred');
+          } catch (err) {
+            log('unregister issues:deferred failed: %o', err);
           }
         }
       } else if (unsub_issues_tab) {
@@ -983,6 +1032,15 @@ export function bootstrap(root_element) {
             sub_issue_stores.unregister('tab:issues:resolved');
           } catch (err) {
             log('unregister issues:resolved failed: %o', err);
+          }
+        }
+        if (unsub_issues_deferred) {
+          void unsub_issues_deferred().catch(() => {});
+          unsub_issues_deferred = null;
+          try {
+            sub_issue_stores.unregister('tab:issues:deferred');
+          } catch (err) {
+            log('unregister issues:deferred failed: %o', err);
           }
         }
       }

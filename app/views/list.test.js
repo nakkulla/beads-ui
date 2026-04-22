@@ -189,6 +189,49 @@ describe('views/list', () => {
     expect(visible[0].text.toLowerCase()).toContain('gamma');
   });
 
+  test('shows Deferred in status filter and inline status select', async () => {
+    document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:issues').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-5',
+          title: 'Deferred option',
+          status: 'open',
+          priority: 2,
+          issue_type: 'task'
+        }
+      ]
+    });
+    const view = createListView(
+      mount,
+      async () => [],
+      undefined,
+      undefined,
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const filter_option = Array.from(
+      mount.querySelectorAll('.filter-dropdown__option')
+    ).find((option) => option.textContent?.includes('Deferred'));
+    const status_select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('tr.issue-row .badge-select.badge--status')
+    );
+    const option_values = Array.from(status_select.options).map(
+      (option) => option.value
+    );
+
+    expect(filter_option).toBeTruthy();
+    expect(option_values).toContain('deferred');
+  });
+
   test('filters by issue type and combines with search', async () => {
     document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
