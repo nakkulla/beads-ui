@@ -1,0 +1,128 @@
+
+<h2>Label Display Policy — Header Settings Mockup</h2>
+<p class="subtitle">Global config 기반으로 모든 사용자/모든 workspace에 동일 적용되는 정책을 header에서 어떻게 드러낼지 비교한 화면입니다.</p>
+
+<div class="section">
+  <div class="label">설계 핵심</div>
+  <ul>
+    <li>Board + Issues/Epics row에 동일한 label prefix policy 적용</li>
+    <li>설정 source of truth는 global config</li>
+    <li>header entry는 편집 UI가 아니라 현재 정책을 보여주는 read-only entry</li>
+  </ul>
+</div>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Option A — Icon button + popover</div>
+        <div class="mockup-body">
+          <div class="mock-nav" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <span><strong>Beads</strong> · Workspace · Issues · Epics · Board</span>
+            <span style="display:flex;align-items:center;gap:10px;">
+              <span style="padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);">🌙 Dark</span>
+              <span style="padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:#111827;color:#fff;">＋ New issue</span>
+              <span style="padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2);">⚙︎</span>
+            </span>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+            <div style="width:320px;border:1px solid var(--border);border-radius:16px;background:var(--surface);padding:14px;box-shadow:0 12px 30px rgba(0,0,0,.12);">
+              <div style="font-weight:700;margin-bottom:8px;">Label Display Policy</div>
+              <div class="subtitle" style="margin-bottom:12px;">Global config에서 제어됩니다</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+                <span style="padding:4px 8px;border-radius:999px;background:#dcfce7;color:#166534;border:1px solid #86efac;">has:</span>
+                <span style="padding:4px 8px;border-radius:999px;background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd;">reviewed:</span>
+                <span style="padding:4px 8px;border-radius:999px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;">area:</span>
+                <span style="padding:4px 8px;border-radius:999px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;">component:</span>
+              </div>
+              <div style="font-size:12px;color:var(--muted);">Config path: ~/.config/bdui/config.json</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Icon-only settings</h3>
+      <p>기존 header를 덜 건드리고, 클릭 시 global policy를 popover로 보여줍니다.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Option B — Labeled pill + popover</div>
+        <div class="mockup-body">
+          <div class="mock-nav" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <span><strong>Beads</strong> · Workspace · Issues · Epics · Board</span>
+            <span style="display:flex;align-items:center;gap:10px;">
+              <span style="padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);">Policy · 4 prefixes</span>
+              <span style="padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);">🌙 Dark</span>
+              <span style="padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:#111827;color:#fff;">＋ New issue</span>
+            </span>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+            <div style="width:320px;border:1px solid var(--border);border-radius:16px;background:var(--surface);padding:14px;box-shadow:0 12px 30px rgba(0,0,0,.12);">
+              <div style="font-weight:700;margin-bottom:8px;">Global Label Policy</div>
+              <div class="subtitle" style="margin-bottom:12px;">Editing is disabled in UI</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;margin-bottom:12px;">
+                <span style="padding:4px 8px;border-radius:999px;background:#dcfce7;color:#166534;border:1px solid #86efac;">has:</span>
+                <span style="padding:4px 8px;border-radius:999px;background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd;">reviewed:</span>
+                <span style="padding:4px 8px;border-radius:999px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;">area:</span>
+                <span style="padding:4px 8px;border-radius:999px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;">component:</span>
+              </div>
+              <div style="font-size:12px;color:var(--muted);">Managed via ~/.config/bdui/config.json</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. Labeled policy pill</h3>
+      <p>지금 어떤 global policy가 적용 중인지 header에서 바로 드러납니다.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">적용 예시</div>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">Board card</div>
+      <div class="mockup-body">
+        <div style="border:1px solid var(--border);border-radius:16px;padding:14px;background:var(--surface);">
+          <div style="font-weight:700;margin-bottom:10px;">Add label policy config loader</div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+            <span style="padding:4px 8px;border-radius:999px;background:#dcfce7;color:#166534;border:1px solid #86efac;">has:spec</span>
+            <span style="padding:4px 8px;border-radius:999px;background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd;">reviewed:plan</span>
+            <span style="padding:4px 8px;border-radius:999px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;">area:board</span>
+          </div>
+          <div class="subtitle">feature · P1 · UI-201 · 2h ago</div>
+        </div>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">Issues/Epics row</div>
+      <div class="mockup-body">
+        <table style="width:100%;border-collapse:collapse;font-size:14px;">
+          <thead>
+            <tr>
+              <th style="text-align:left;border-bottom:1px solid var(--border);padding:6px;">ID</th>
+              <th style="text-align:left;border-bottom:1px solid var(--border);padding:6px;">Title</th>
+              <th style="text-align:left;border-bottom:1px solid var(--border);padding:6px;">Labels</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="padding:8px 6px;border-bottom:1px solid var(--border);">UI-201</td>
+              <td style="padding:8px 6px;border-bottom:1px solid var(--border);">Add label policy config loader</td>
+              <td style="padding:8px 6px;border-bottom:1px solid var(--border);">
+                <span style="padding:3px 7px;border-radius:999px;background:#dcfce7;color:#166534;border:1px solid #86efac;">has:spec</span>
+                <span style="padding:3px 7px;border-radius:999px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;">component:ui</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
