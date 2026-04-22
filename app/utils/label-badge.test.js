@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { createLabelBadge, filterCardLabels } from './label-badge.js';
+import {
+  createLabelBadge,
+  filterCardLabels,
+  filterVisibleLabels
+} from './label-badge.js';
 
 describe('utils/label-badge', () => {
   describe('filterCardLabels', () => {
@@ -54,6 +58,17 @@ describe('utils/label-badge', () => {
 
       expect(element.getAttribute('title')).toBe('has:spec');
       expect(element.getAttribute('aria-label')).toBe('Label: has:spec');
+    });
+  });
+
+  describe('filterVisibleLabels', () => {
+    test('keeps only labels matching configured prefixes', () => {
+      expect(
+        filterVisibleLabels(
+          ['has:spec', 'reviewed:plan', 'area:auth', 'component:api'],
+          ['area:', 'component:']
+        )
+      ).toEqual(['area:auth', 'component:api']);
     });
   });
 });

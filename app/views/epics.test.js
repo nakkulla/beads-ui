@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { createSubscriptionIssueStore } from '../data/subscription-issue-store.js';
 import { createSubscriptionStore } from '../data/subscriptions-store.js';
+import { createStore } from '../state.js';
 import { createEpicsView } from './epics.js';
 
 describe('views/epics', () => {
@@ -760,5 +761,110 @@ describe('views/epics', () => {
 
     expect(created_cell?.textContent?.trim()).toBe('');
     expect(created_cell?.getAttribute('title')).toBe('');
+  });
+
+  test('rerenders epic child labels when config prefixes change', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const data = {
+      updateIssue: vi.fn(),
+      getIssue: vi.fn(async (id) => ({ id }))
+    };
+    const stores = new Map();
+    const listeners = new Set();
+    /** @param {string} id */
+    const getStore = (id) => {
+      let s = stores.get(id);
+      if (!s) {
+        s = createSubscriptionIssueStore(id);
+        stores.set(id, s);
+        s.subscribe(() => {
+          for (const fn of Array.from(listeners)) {
+            fn();
+          }
+        });
+      }
+      return s;
+    };
+    const issueStores = {
+      getStore,
+      /** @param {string} id */
+      snapshotFor(id) {
+        return getStore(id).snapshot().slice();
+      },
+      /** @param {() => void} fn */
+      subscribe(fn) {
+        listeners.add(fn);
+        return () => listeners.delete(fn);
+      }
+    };
+    const subscriptions = createSubscriptionStore(async () => {});
+    const store = createStore({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['area:']
+        }
+      }
+    });
+    issueStores.getStore('tab:epics').applyPush({
+      type: 'snapshot',
+      id: 'tab:epics',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-10',
+          title: 'Epic',
+          issue_type: 'epic',
+          dependents: [{ id: 'UI-11' }]
+        }
+      ]
+    });
+    issueStores.getStore('detail:UI-10').applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-10',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-10',
+          title: 'Epic',
+          issue_type: 'epic',
+          dependents: [
+            {
+              id: 'UI-11',
+              title: 'Child',
+              status: 'open',
+              priority: 1,
+              issue_type: 'task',
+              labels: ['area:auth', 'agent:codex']
+            }
+          ]
+        }
+      ]
+    });
+
+    const view = createEpicsView(
+      mount,
+      /** @type {any} */ (data),
+      () => {},
+      subscriptions,
+      /** @type {any} */ (issueStores),
+      store
+    );
+
+    await view.load();
+    expect(mount.textContent).toContain('area:auth');
+    expect(mount.textContent).not.toContain('agent:codex');
+
+    store.setState({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['agent:']
+        }
+      }
+    });
+    await Promise.resolve();
+
+    expect(mount.textContent).toContain('agent:codex');
+    expect(mount.textContent).not.toContain('area:auth');
   });
 });

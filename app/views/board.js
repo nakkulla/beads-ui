@@ -2,7 +2,7 @@ import { html, render } from 'lit-html';
 import { createListSelectors } from '../data/list-selectors.js';
 import { cmpClosedDesc, cmpPriorityThenCreated } from '../data/sort.js';
 import { createIssueIdRenderer } from '../utils/issue-id-renderer.js';
-import { createLabelBadge, filterCardLabels } from '../utils/label-badge.js';
+import { createLabelBadge, filterVisibleLabels } from '../utils/label-badge.js';
 import { debug } from '../utils/logging.js';
 import { createPriorityBadge } from '../utils/priority-badge.js';
 import {
@@ -117,6 +117,17 @@ export function createBoardView(
     }
   }
 
+  function getVisibleLabelPrefixes() {
+    const prefixes = store?.getState?.().config?.label_display_policy
+      ?.visible_prefixes;
+
+    if (!Array.isArray(prefixes)) {
+      return ['has:', 'reviewed:'];
+    }
+
+    return prefixes;
+  }
+
   function template() {
     const deferred_count = list_deferred.length;
     return html`
@@ -211,7 +222,7 @@ export function createBoardView(
    * @param {IssueLite} it
    */
   function cardTemplate(it) {
-    const card_labels = filterCardLabels(it.labels);
+    const card_labels = filterVisibleLabels(it.labels, getVisibleLabelPrefixes());
     return html`
       <article
         class="board-card"
@@ -710,6 +721,19 @@ export function createBoardView(
     });
   }
 
+  /** @type {null | (() => void)} */
+  let unsubscribe_store = null;
+  if (store?.subscribe) {
+    let config_prefix_key = JSON.stringify(getVisibleLabelPrefixes());
+    unsubscribe_store = store.subscribe(() => {
+      const next_key = JSON.stringify(getVisibleLabelPrefixes());
+      if (next_key !== config_prefix_key) {
+        config_prefix_key = next_key;
+        doRender();
+      }
+    });
+  }
+
   return {
     async load() {
       // Compose lists from subscriptions + issues store
@@ -814,6 +838,10 @@ export function createBoardView(
       }
     },
     clear() {
+      if (unsubscribe_store) {
+        unsubscribe_store();
+        unsubscribe_store = null;
+      }
       mount_element.replaceChildren();
       list_ready = [];
       list_blocked = [];

@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { createSubscriptionIssueStore } from '../data/subscription-issue-store.js';
+import { createStore } from '../state.js';
 import { createListView } from './list.js';
 
 /**
@@ -1134,5 +1135,56 @@ describe('views/list', () => {
 
     expect(created_cell?.textContent?.trim()).toBe('');
     expect(created_cell?.getAttribute('title')).toBe('');
+  });
+
+  test('rerenders list labels when config prefixes change', async () => {
+    document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:issues').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-1',
+          title: 'Label policy',
+          status: 'open',
+          priority: 1,
+          labels: ['area:auth', 'agent:codex']
+        }
+      ]
+    });
+    const store = createStore({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['area:']
+        }
+      }
+    });
+    const view = createListView(
+      mount,
+      async () => [],
+      undefined,
+      store,
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+    expect(mount.textContent).toContain('area:auth');
+    expect(mount.textContent).not.toContain('agent:codex');
+
+    store.setState({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['agent:']
+        }
+      }
+    });
+    await Promise.resolve();
+
+    expect(mount.textContent).toContain('agent:codex');
+    expect(mount.textContent).not.toContain('area:auth');
   });
 });

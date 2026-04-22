@@ -85,6 +85,13 @@ export function createListView(
     return [];
   }
 
+  function getVisibleLabelPrefixes() {
+    return store?.getState?.().config?.label_display_policy?.visible_prefixes ?? [
+      'has:',
+      'reviewed:'
+    ];
+  }
+
   // Shared row renderer (used in template below)
   const row_renderer = createIssueRowRenderer({
     navigate: (id) => {
@@ -96,6 +103,7 @@ export function createListView(
     onUpdate: updateInline,
     requestRender: doRender,
     getSelectedId: () => selected_id,
+    getVisibleLabelPrefixes: () => getVisibleLabelPrefixes(),
     row_class: 'issue-row'
   });
 
@@ -568,6 +576,7 @@ export function createListView(
 
   // Keep selection in sync with store
   if (store) {
+    let config_prefix_key = JSON.stringify(getVisibleLabelPrefixes());
     unsubscribe = store.subscribe((s) => {
       if (s.selected_id !== selected_id) {
         selected_id = s.selected_id;
@@ -595,6 +604,16 @@ export function createListView(
           JSON.stringify(next_type_arr) !== JSON.stringify(type_filters);
         if (type_changed) {
           type_filters = next_type_arr;
+          needs_render = true;
+        }
+        const next_config_key = JSON.stringify(
+          s.config?.label_display_policy?.visible_prefixes ?? [
+            'has:',
+            'reviewed:'
+          ]
+        );
+        if (next_config_key !== config_prefix_key) {
+          config_prefix_key = next_config_key;
           needs_render = true;
         }
         if (needs_render) {

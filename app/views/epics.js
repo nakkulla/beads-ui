@@ -20,13 +20,15 @@ import { createIssueRowRenderer } from './issue-row.js';
  * @param {(id: string) => void} goto_issue - Navigate to issue detail.
  * @param {{ subscribeList: (client_id: string, spec: { type: string, params?: Record<string, string|number|boolean> }) => Promise<() => Promise<void>>, selectors: { getIds: (client_id: string) => string[], count?: (client_id: string) => number } }} [subscriptions]
  * @param {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issue_stores]
+ * @param {{ getState: () => any, subscribe?: (fn: (s:any)=>void)=>()=>void }} [store]
  */
 export function createEpicsView(
   mount_element,
   data,
   goto_issue,
   subscriptions = undefined,
-  issue_stores = undefined
+  issue_stores = undefined,
+  store = undefined
 ) {
   /** @type {any[]} */
   let groups = [];
@@ -60,9 +62,29 @@ export function createEpicsView(
     onUpdate: updateInline,
     requestRender: doRender,
     getSelectedId: () => null,
+    getVisibleLabelPrefixes: () =>
+      store?.getState?.().config?.label_display_policy?.visible_prefixes ?? [
+        'has:',
+        'reviewed:'
+      ],
     row_class: 'epic-row',
     show_deps: false
   });
+
+  if (store?.subscribe) {
+    let config_prefix_key = JSON.stringify(
+      store.getState().config.label_display_policy.visible_prefixes
+    );
+    store.subscribe((state) => {
+      const next_key = JSON.stringify(
+        state.config.label_display_policy.visible_prefixes
+      );
+      if (next_key !== config_prefix_key) {
+        config_prefix_key = next_key;
+        doRender();
+      }
+    });
+  }
 
   function doRender() {
     render(template(), mount_element);

@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { createSubscriptionIssueStore } from '../data/subscription-issue-store.js';
+import { createStore } from '../state.js';
 import { createBoardView } from './board.js';
 
 function createTestIssueStores() {
@@ -786,5 +787,55 @@ describe('views/board', () => {
         payload: { id: 'R-1', status: 'deferred' }
       }
     ]);
+  });
+
+  test('rerenders board labels when config prefixes change', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-1',
+          title: 'Config labels',
+          status: 'open',
+          labels: ['area:auth', 'agent:codex']
+        }
+      ]
+    });
+    const store = createStore({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['area:']
+        }
+      }
+    });
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      store,
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+    expect(mount.textContent).toContain('area:auth');
+    expect(mount.textContent).not.toContain('agent:codex');
+
+    store.setState({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['agent:']
+        }
+      }
+    });
+    await Promise.resolve();
+
+    expect(mount.textContent).toContain('agent:codex');
+    expect(mount.textContent).not.toContain('area:auth');
   });
 });
