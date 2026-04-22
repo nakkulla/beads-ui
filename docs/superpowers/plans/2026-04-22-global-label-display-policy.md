@@ -276,10 +276,23 @@ const DEFAULT_CONFIG = {
 let state = {
   selected_id: initial.selected_id ?? null,
   view: initial.view ?? 'issues',
-  filters: { ... },
-  board: { ... },
-  worker: { ... },
-  workspace: { ... },
+  filters: {
+    status: initial.filters?.status ?? 'all',
+    search: initial.filters?.search ?? '',
+    type: typeof initial.filters?.type === 'string' ? initial.filters.type : ''
+  },
+  board: {
+    closed_filter: initial.board?.closed_filter ?? 'today',
+    show_deferred_column: initial.board?.show_deferred_column === true
+  },
+  worker: {
+    selected_parent_id: initial.worker?.selected_parent_id ?? null,
+    show_closed_children: initial.worker?.show_closed_children ?? []
+  },
+  workspace: {
+    current: initial.workspace?.current ?? null,
+    available: initial.workspace?.available ?? []
+  },
   config: initial.config ?? DEFAULT_CONFIG
 };
 
