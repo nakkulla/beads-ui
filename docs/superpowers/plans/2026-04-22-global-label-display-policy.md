@@ -310,6 +310,94 @@ git commit -m "계획: bootstrap config와 reconnect refresh 연결"
 - Modify: `app/views/epics.test.js`
 - Create: `app/views/issue-row.test.js`
 
+- [ ] **Step 0: Add config-change rerender hooks before changing the filter contract**
+
+```js
+// app/views/board.js
+let unsubscribe_store = null;
+if (store?.subscribe) {
+  let last_prefix_key = '';
+  unsubscribe_store = store.subscribe((state) => {
+    const next_prefix_key = JSON.stringify(
+      state.config.label_display_policy.visible_prefixes
+    );
+    if (next_prefix_key !== last_prefix_key) {
+      last_prefix_key = next_prefix_key;
+      doRender();
+    }
+  });
+}
+
+// app/views/epics.js
+// main.js passes store into createEpicsView(...)
+const epics_view = createEpicsView(
+  epics_root,
+  data,
+  (id) => router.gotoIssue(id),
+  store,
+  subscriptions,
+  sub_issue_stores
+);
+
+let unsubscribe_store = null;
+if (store?.subscribe) {
+  let last_prefix_key = '';
+  unsubscribe_store = store.subscribe((state) => {
+    const next_prefix_key = JSON.stringify(
+      state.config.label_display_policy.visible_prefixes
+    );
+    if (next_prefix_key !== last_prefix_key) {
+      last_prefix_key = next_prefix_key;
+      doRender();
+    }
+  });
+}
+
+// app/views/list.js
+let config_prefix_key = JSON.stringify(
+  store.getState().config.label_display_policy.visible_prefixes
+);
+unsubscribe = store.subscribe((state) => {
+  selected_id = state.selected_id;
+  status_filters = normalizeStatusFilter(state.filters.status);
+  type_filters = normalizeTypeFilter(state.filters.type);
+  search_text = state.filters.search || '';
+  const next_prefix_key = JSON.stringify(
+    state.config.label_display_policy.visible_prefixes
+  );
+  if (next_prefix_key !== config_prefix_key) {
+    config_prefix_key = next_prefix_key;
+  }
+  doRender();
+});
+```
+
+- [ ] **Step 0.5: Add rerender regression tests for live config changes**
+
+```js
+test('board rerenders badges when config prefixes change', async () => {
+  const store = createStore({
+    config: { label_display_policy: { visible_prefixes: ['area:'] } }
+  });
+
+  await view.load();
+  store.setState({
+    config: { label_display_policy: { visible_prefixes: ['agent:'] } }
+  });
+
+  expect(readBoardLabels(mount)).toEqual(['agent:codex']);
+});
+
+test('epics rerenders child labels when config prefixes change', async () => {
+  await view.load();
+  store.setState({
+    config: { label_display_policy: { visible_prefixes: ['component:'] } }
+  });
+
+  expect(readEpicChildLabels(mount)).toEqual(['component:api']);
+});
+```
+
 - [ ] **Step 1: Write the failing label-policy tests**
 
 ```js
@@ -387,6 +475,9 @@ const card_labels = filterVisibleLabels(
   store.getState().config.label_display_policy.visible_prefixes
 );
 ```
+
+`issue-row.js`는 순수 renderer로 유지하고, policy 변경 시 row renderer를 다시 호출하는 책임은
+`board.js` / `list.js` / `epics.js` 상위 뷰가 가진다.
 
 - [ ] **Step 4: Run test to verify it passes**
 
