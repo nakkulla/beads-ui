@@ -28,6 +28,14 @@ import { debug } from './utils/logging.js';
  */
 
 /**
+ * @typedef {{ visible_prefixes: string[] }} LabelDisplayPolicy
+ */
+
+/**
+ * @typedef {{ label_display_policy: LabelDisplayPolicy }} AppConfig
+ */
+
+/**
  * @typedef {Object} WorkspaceInfo
  * @property {string} path - Full path to workspace
  * @property {string} database - Path to the database file
@@ -42,14 +50,43 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState }} AppState
+ * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState, config: AppConfig }} AppState
  */
+
+const DEFAULT_CONFIG = Object.freeze({
+  label_display_policy: {
+    visible_prefixes: ['has:', 'reviewed:']
+  }
+});
+
+/**
+ * @param {Partial<AppConfig> | undefined} input
+ * @returns {AppConfig}
+ */
+function normalizeConfig(input) {
+  const prefixes = input?.label_display_policy?.visible_prefixes;
+
+  if (!Array.isArray(prefixes)) {
+    return {
+      label_display_policy: {
+        visible_prefixes: DEFAULT_CONFIG.label_display_policy.visible_prefixes
+          .slice()
+      }
+    };
+  }
+
+  return {
+    label_display_policy: {
+      visible_prefixes: prefixes.filter((value) => typeof value === 'string')
+    }
+  };
+}
 
 /**
  * Create a simple store for application state.
  *
  * @param {Partial<AppState>} [initial]
- * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState> }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
+ * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
  */
 export function createStore(initial = {}) {
   const log = debug('state');
@@ -81,7 +118,8 @@ export function createStore(initial = {}) {
     workspace: {
       current: initial.workspace?.current ?? null,
       available: initial.workspace?.available ?? []
-    }
+    },
+    config: normalizeConfig(initial.config)
   };
 
   /** @type {Set<(s: AppState) => void>} */
@@ -104,7 +142,7 @@ export function createStore(initial = {}) {
     /**
      * Update state. Nested filters can be partial.
      *
-     * @param {{ selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState> }} patch
+     * @param {{ selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }} patch
      */
     setState(patch) {
       /** @type {AppState} */
@@ -123,12 +161,21 @@ export function createStore(initial = {}) {
             patch.workspace?.available !== undefined
               ? patch.workspace.available
               : state.workspace.available
-        }
+        },
+        config:
+          patch.config !== undefined ? normalizeConfig(patch.config) : state.config
       };
       // Avoid emitting if nothing changed (shallow compare)
       const workspace_changed =
         next.workspace.current?.path !== state.workspace.current?.path ||
         next.workspace.available.length !== state.workspace.available.length;
+      const config_changed =
+        next.config.label_display_policy.visible_prefixes.length !==
+          state.config.label_display_policy.visible_prefixes.length ||
+        next.config.label_display_policy.visible_prefixes.some(
+          (prefix, index) =>
+            prefix !== state.config.label_display_policy.visible_prefixes[index]
+        );
       if (
         next.selected_id === state.selected_id &&
         next.view === state.view &&
@@ -143,7 +190,8 @@ export function createStore(initial = {}) {
         next.worker.show_closed_children.every(
           (id, index) => id === state.worker.show_closed_children[index]
         ) &&
-        !workspace_changed
+        !workspace_changed &&
+        !config_changed
       ) {
         return;
       }
@@ -154,7 +202,8 @@ export function createStore(initial = {}) {
         filters: state.filters,
         board: state.board,
         worker: state.worker,
-        workspace: state.workspace.current?.path
+        workspace: state.workspace.current?.path,
+        config: state.config.label_display_policy.visible_prefixes
       });
       emit();
     },

@@ -22,6 +22,17 @@ describe('server app wiring (no listen)', () => {
     expect(isFunction(app.use)).toBe(true);
   });
 
+  test('createApp accepts label_display_policy config', () => {
+    const config = getConfig();
+    const app = createApp(config);
+
+    expect(isFunction(app.get)).toBe(true);
+    expect(config.label_display_policy.visible_prefixes).toEqual([
+      'has:',
+      'reviewed:'
+    ]);
+  });
+
   test('index.html exists in configured app_dir', () => {
     const config = getConfig();
     const index_path = path.join(config.app_dir, 'index.html');

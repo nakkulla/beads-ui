@@ -23,6 +23,49 @@ import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
 
+const DEFAULT_CONFIG = {
+  label_display_policy: {
+    visible_prefixes: ['has:', 'reviewed:']
+  }
+};
+
+/**
+ * @returns {{ label_display_policy: { visible_prefixes: string[] } }}
+ */
+function readBootstrapConfig() {
+  const bootstrap = /** @type {any} */ (window).__BDUI_BOOTSTRAP__;
+  const prefixes = bootstrap?.label_display_policy?.visible_prefixes;
+
+  if (!Array.isArray(prefixes)) {
+    return {
+      label_display_policy: {
+        visible_prefixes: DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice()
+      }
+    };
+  }
+
+  return {
+    label_display_policy: {
+      visible_prefixes: prefixes.filter((value) => typeof value === 'string')
+    }
+  };
+}
+
+/**
+ * @param {{ setState: (patch: { config?: { label_display_policy: { visible_prefixes: string[] } } }) => void }} store
+ * @param {(message: string, details: unknown) => void} log_error
+ * @returns {Promise<void>}
+ */
+async function refreshConfigSnapshot(store, log_error) {
+  try {
+    const response = await fetch('/api/config');
+    const config = await response.json();
+    store.setState({ config });
+  } catch (err) {
+    log_error('config refresh failed', err);
+  }
+}
+
 /**
  * Bootstrap the SPA shell with two panels.
  *
@@ -406,6 +449,9 @@ export function bootstrap(root_element) {
         } else if (s === 'open' && had_disconnect) {
           had_disconnect = false;
           showToast('Reconnected', 'success', 2200);
+          void refreshConfigSnapshot(store, (message, err) => {
+            log(`${message}: %o`, err);
+          });
         }
       };
       client.onConnection(onConn);
@@ -492,6 +538,7 @@ export function bootstrap(root_element) {
     }
 
     const store = createStore({
+      config: readBootstrapConfig(),
       filters: persisted_filters,
       view: last_view,
       board: initial_board_state
