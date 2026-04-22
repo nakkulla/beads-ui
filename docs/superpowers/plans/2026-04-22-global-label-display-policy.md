@@ -20,11 +20,20 @@
 
 ```js
 import { afterEach, describe, expect, test } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { getConfig } from './config.js';
 
 afterEach(() => {
   delete process.env.BDUI_CONFIG_PATH;
 });
+
+function writeConfigFixture(name, payload) {
+  const fixture_path = path.join(os.tmpdir(), name);
+  fs.writeFileSync(fixture_path, JSON.stringify(payload));
+  return fixture_path;
+}
 
 test('returns default visible prefixes when config file is missing', () => {
   const config = getConfig();
@@ -36,6 +45,9 @@ test('returns default visible prefixes when config file is missing', () => {
 });
 
 test('reads visible prefixes from global config file', () => {
+  const fixture_path = writeConfigFixture('bdui-labels-valid.json', {
+    labels: { visible_prefixes: ['has:', 'reviewed:', 'area:', 'component:'] }
+  });
   process.env.BDUI_CONFIG_PATH = fixture_path;
 
   const config = getConfig();
@@ -49,6 +61,9 @@ test('reads visible prefixes from global config file', () => {
 });
 
 test('falls back when config contains only invalid prefixes', () => {
+  const fixture_path = writeConfigFixture('bdui-labels-invalid.json', {
+    labels: { visible_prefixes: [null, 42, ''] }
+  });
   process.env.BDUI_CONFIG_PATH = fixture_path;
 
   const config = getConfig();
@@ -60,6 +75,9 @@ test('falls back when config contains only invalid prefixes', () => {
 });
 
 test('preserves explicit empty array to hide summary labels', () => {
+  const fixture_path = writeConfigFixture('bdui-labels-empty.json', {
+    labels: { visible_prefixes: [] }
+  });
   process.env.BDUI_CONFIG_PATH = fixture_path;
 
   const config = getConfig();
@@ -183,6 +201,16 @@ Expected: FAIL because `/` still serves static `index.html`, `/api/config` does 
 - [ ] **Step 3: Implement bootstrapped config delivery and reconnect refresh**
 
 ```js
+/**
+ * @typedef {{
+ *   config: {
+ *     label_display_policy: {
+ *       visible_prefixes: string[]
+ *     }
+ *   }
+ * }} AppConfigState
+ */
+
 function toBootstrapPayload(config) {
   return {
     label_display_policy: {
@@ -202,7 +230,6 @@ app.get('/api/config', (_req, res) => {
   res.json(toBootstrapPayload(config));
 });
 
-app.use(express.static(config.app_dir, { index: false }));
 app.get('/', (_req, res) => {
   const html = fs.readFileSync(index_path, 'utf8');
   const payload = escapeBootstrapJson(JSON.stringify(toBootstrapPayload(config)));
@@ -210,6 +237,7 @@ app.get('/', (_req, res) => {
     html.replace('</head>', `<script>window.__BDUI_BOOTSTRAP__=${payload};</script></head>`)
   );
 });
+app.use(express.static(config.app_dir, { index: false }));
 ```
 
 ```js
@@ -218,6 +246,21 @@ const store = createStore({
     label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] }
   }
 });
+
+// app/state.js
+const next = {
+  ...state,
+  ...patch,
+  config: patch.config ?? state.config
+};
+
+const config_changed =
+  next.config.label_display_policy.visible_prefixes.length !==
+    state.config.label_display_policy.visible_prefixes.length ||
+  next.config.label_display_policy.visible_prefixes.some(
+    (prefix, index) =>
+      prefix !== state.config.label_display_policy.visible_prefixes[index]
+  );
 
 let had_disconnect = false;
 client.onConnection(async (state) => {
@@ -233,6 +276,13 @@ client.onConnection(async (state) => {
   }
 });
 ```
+
+Implementation order inside `server/app.js` is fixed:
+1. register `/api/config`
+2. register explicit `/` bootstrap route
+3. register `express.static(config.app_dir, { index: false })`
+
+이 순서를 바꾸지 않아야 정적 `index.html`이 bootstrap route를 shadow하지 않는다.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -281,15 +331,23 @@ test('board uses store config prefixes for card badges', async () => {
 
   await view.load();
 
-  expect(mount.textContent).toContain('area:auth');
-  expect(mount.textContent).not.toContain('has:spec');
+  const labels = Array.from(mount.querySelectorAll('.board-card__labels .label-badge')).map(
+    (element) => element.textContent
+  );
+
+  expect(labels).toContain('area:auth');
+  expect(labels).not.toContain('has:spec');
 });
 
 test('issue row renderer reads getVisibleLabelPrefixes', () => {
-  const row = renderRow({ labels: ['agent:codex', 'has:plan'] });
+  render(rowTemplate({ id: 'UI-1', labels: ['agent:codex', 'has:plan'] }), mount);
 
-  expect(row_html).toContain('agent:codex');
-  expect(row_html).not.toContain('has:plan');
+  const labels = Array.from(mount.querySelectorAll('.label-badge')).map(
+    (element) => element.textContent
+  );
+
+  expect(labels).toContain('agent:codex');
+  expect(labels).not.toContain('has:plan');
 });
 ```
 
@@ -356,15 +414,15 @@ git commit -m "계획: 전역 label policy로 요약 badge 렌더링 통합"
 
 ```js
 test('bootstrapped non-default policy reaches board, issues, and epics consistently', async () => {
-  expect(board_labels).toEqual(['area:auth']);
-  expect(issue_row_labels).toEqual(['area:auth']);
-  expect(epic_child_labels).toEqual(['area:auth']);
+  expect(readBoardLabels()).toEqual(['area:auth']);
+  expect(readIssueRowLabels()).toEqual(['area:auth']);
+  expect(readEpicChildLabels()).toEqual(['area:auth']);
 });
 
 test('reconnect refresh updates rendered labels after config change', async () => {
   await simulateReconnectWithConfig(['agent:']);
 
-  expect(rendered_labels).toEqual(['agent:codex']);
+  expect(readBoardLabels()).toEqual(['agent:codex']);
 });
 ```
 
