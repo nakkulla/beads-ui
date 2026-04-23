@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, test, vi } from 'vitest';
 import { createWorkerDetailView } from './worker-detail.js';
 
@@ -67,4 +68,13 @@ describe('views/worker-detail', () => {
 
     expect(mount.textContent).toContain('Failed to load log preview.');
   });
+
+  test('defines worker detail scroll owner styles', () => {
+    const stylesheet = readFileSync('app/styles.css', 'utf8');
+
+    expect(stylesheet).toContain('#worker-detail-mount');
+    expect(stylesheet).toContain('.worker-detail');
+    expect(stylesheet).toContain('overflow-y: auto;');
+  });
+
 });

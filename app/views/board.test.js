@@ -704,6 +704,17 @@ describe('views/board', () => {
     expect(stylesheet).toContain('grid-template-columns: 1fr;');
   });
 
+  test('defines route-shell and column-body scroll contract for board', () => {
+    const stylesheet = readFileSync('app/styles.css', 'utf8');
+
+    expect(stylesheet).toContain('#board-root.route.board');
+    expect(stylesheet).toContain('#board-root > .panel__body');
+    expect(stylesheet).toContain('.board-column {');
+    expect(stylesheet).toContain('overflow: hidden;');
+    expect(stylesheet).toContain('.board-column__body');
+    expect(stylesheet).toContain('overflow-y: auto;');
+  });
+
   test('toggles deferred column from header button and shows deferred count while hidden', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
