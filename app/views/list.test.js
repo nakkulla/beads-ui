@@ -233,6 +233,43 @@ describe('views/list', () => {
     expect(option_values).toContain('deferred');
   });
 
+  test('renders deferred inline status select with deferred class', async () => {
+    document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:issues').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-6',
+          title: 'Deferred inline row',
+          status: 'deferred',
+          priority: 2,
+          issue_type: 'task'
+        }
+      ]
+    });
+    const view = createListView(
+      mount,
+      async () => [],
+      undefined,
+      undefined,
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const status_select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('tr.issue-row .badge-select.badge--status')
+    );
+
+    expect(status_select.value).toBe('deferred');
+    expect(status_select.className).toContain('is-deferred');
+  });
+
   test('filters by issue type and combines with search', async () => {
     document.body.innerHTML = '<aside id="mount" class="panel"></aside>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
@@ -1067,14 +1104,14 @@ describe('views/list', () => {
       );
       const label_badges = Array.from(
         mount.querySelectorAll(
-          'tbody tr.issue-row:nth-child(1) td:nth-child(4) .label-badge'
+          'tbody tr.issue-row:nth-child(2) td:nth-child(4) .label-badge'
         )
       ).map((element) => element.textContent?.trim());
       const created_text = mount
-        .querySelector('tbody tr.issue-row:nth-child(1) td:nth-child(8)')
+        .querySelector('tbody tr.issue-row:nth-child(2) td:nth-child(8)')
         ?.textContent?.trim();
       const iso_created_text = mount
-        .querySelector('tbody tr.issue-row:nth-child(2) td:nth-child(8)')
+        .querySelector('tbody tr.issue-row:nth-child(1) td:nth-child(8)')
         ?.textContent?.trim();
 
       expect(headers).toEqual([

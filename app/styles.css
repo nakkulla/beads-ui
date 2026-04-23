@@ -11,6 +11,7 @@
   /* Status base colors */
   --status-open-base: #51cb4e; /* open */
   --status-in-progress-base: #666666; /* in_progress */
+  --status-deferred-base: #0f766e; /* deferred */
   --status-resolved-base: #e6a117; /* resolved */
   --status-closed-base: #5f26c9; /* closed */
 
@@ -690,6 +691,12 @@ button:disabled {
     var(--status-in-progress-base) 90%,
     #000
   );
+  --badge-bg-deferred: color-mix(
+    in srgb,
+    var(--panel-bg) 78%,
+    var(--status-deferred-base)
+  );
+  --badge-fg-deferred: color-mix(in srgb, var(--status-deferred-base) 90%, #000);
   --badge-bg-closed: color-mix(
     in srgb,
     var(--panel-bg) 85%,
@@ -745,6 +752,16 @@ button:disabled {
     --badge-fg-in-progress: color-mix(
       in srgb,
       var(--status-in-progress-base) 75%,
+      #fff
+    );
+    --badge-bg-deferred: color-mix(
+      in srgb,
+      var(--panel-bg) 80%,
+      var(--status-deferred-base)
+    );
+    --badge-fg-deferred: color-mix(
+      in srgb,
+      var(--status-deferred-base) 75%,
       #fff
     );
     --badge-bg-closed: color-mix(
@@ -814,6 +831,12 @@ html[data-theme='dark'] {
     var(--status-in-progress-base) 75%,
     #fff
   );
+  --badge-bg-deferred: color-mix(
+    in srgb,
+    var(--panel-bg) 80%,
+    var(--status-deferred-base)
+  );
+  --badge-fg-deferred: color-mix(in srgb, var(--status-deferred-base) 75%, #fff);
   --badge-bg-closed: color-mix(
     in srgb,
     var(--panel-bg) 80%,
@@ -860,6 +883,11 @@ html[data-theme='dark'] {
 .badge-select.badge--status.is-in_progress {
   background: var(--badge-bg-in-progress);
   color: var(--badge-fg-in-progress);
+}
+.status-badge.is-deferred,
+.badge-select.badge--status.is-deferred {
+  background: var(--badge-bg-deferred);
+  color: var(--badge-fg-deferred);
 }
 .status-badge.is-closed,
 .badge-select.badge--status.is-closed {
@@ -2735,6 +2763,11 @@ html[data-theme='dark'] {
     var(--status-in-progress-base) 45%,
     transparent
   );
+}
+.worker-badge--status.is-deferred {
+  background: var(--badge-bg-deferred);
+  color: var(--badge-fg-deferred);
+  border-color: color-mix(in srgb, var(--status-deferred-base) 45%, transparent);
 }
 .worker-badge--status.is-resolved {
   background: var(--badge-bg-resolved);
