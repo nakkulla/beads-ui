@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, test, vi } from 'vitest';
 import { createSubscriptionIssueStore } from '../data/subscription-issue-store.js';
 import { createStore } from '../state.js';
@@ -627,6 +628,16 @@ describe('views/board', () => {
     expect(date_element).not.toBeNull();
     expect(date_element?.textContent?.trim()).toBe('');
     expect(date_element?.getAttribute('title')).toBe('');
+  });
+
+  test('defines shared min-width contract for six-column deferred layout', () => {
+    const stylesheet = readFileSync('app/styles.css', 'utf8');
+
+    expect(stylesheet).toContain('--board-column-min-width: 300px;');
+    expect(stylesheet).toContain('minmax(var(--board-column-min-width), 1fr)');
+    expect(stylesheet).toContain('min-width: var(--board-column-min-width);');
+    expect(stylesheet).toContain('@media (max-width: 1100px)');
+    expect(stylesheet).toContain('grid-template-columns: 1fr;');
   });
 
   test('toggles deferred column from header button and shows deferred count while hidden', async () => {
