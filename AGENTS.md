@@ -142,6 +142,9 @@ Never update `CHANGES.md`.
 - Use `bdui` directly only when you intentionally start an ad-hoc repo-local
   development server outside the shared service flow, ideally on a different
   localhost port.
+- For temporary ad-hoc local servers, do not treat a printed listening URL as
+  success; verify the process is still alive, the intended checkout owns it,
+  and HTTP still responds after a short delay.
 - When you need the browser UI to reflect the latest source changes
   immediately, run the server with `BDUI_FRONTEND_MODE=live`.
   - Example start:
