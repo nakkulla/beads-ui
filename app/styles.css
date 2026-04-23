@@ -394,6 +394,30 @@ a {
   }
 }
 
+#board-root.route.board,
+#worker-root.route.worker {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#board-root > .panel__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#worker-root > .worker-layout {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .panel {
   min-height: 0;
   overflow: visible;
@@ -1344,6 +1368,10 @@ input.inline-edit:focus {
 /* Board view styles */
 .board-root {
   display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
   grid-template-columns: repeat(
     var(--board-column-count, 5),
     minmax(var(--board-column-min-width), 1fr)
@@ -1368,7 +1396,7 @@ input.inline-edit:focus {
   flex-direction: column;
   min-height: 0;
   min-width: var(--board-column-min-width);
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: color-mix(in srgb, var(--panel-bg) 92%, transparent);
@@ -1416,8 +1444,10 @@ input.inline-edit:focus {
   }
 }
 .board-column__body {
+  flex: 1 1 auto;
+  min-height: 0;
   padding: var(--space-5);
-  overflow: visible;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   /* UI-77: increase vertical spacing between card rows */
@@ -2335,7 +2365,9 @@ html[data-theme='dark'] {
 
 .worker-layout {
   display: grid;
-  min-height: calc(100vh - 92px);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .worker-layout--overview {
@@ -2348,6 +2380,10 @@ html[data-theme='dark'] {
 
 .worker-layout__left,
 .worker-layout__right {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   padding: var(--space-8);
 }
 
@@ -2431,7 +2467,10 @@ html[data-theme='dark'] {
 /* ---------- Worker tab: tree & cards ---------- */
 .worker-tree {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
   gap: var(--space-6);
 }
 
@@ -2930,8 +2969,34 @@ html[data-theme='dark'] {
   text-overflow: ellipsis;
 }
 
+#worker-detail-mount {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.worker-detail {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  gap: var(--space-6);
+}
+
+.worker-detail__summary {
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: inherit;
+}
+
 .worker-detail-placeholder,
 .worker-empty {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   padding: var(--space-9);
   border: 1px dashed var(--border);
   border-radius: 12px;

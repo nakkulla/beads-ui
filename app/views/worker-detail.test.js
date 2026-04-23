@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 import { createWorkerDetailView } from './worker-detail.js';
 
@@ -12,23 +14,61 @@ describe('views/worker-detail', () => {
         return { ok: true, json: async () => ({ content: '# Worker spec' }) };
       }
       if (href.includes('/api/worker/prs/UI-62lm')) {
-        return { ok: true, json: async () => ({ items: [{ number: 42, title: 'Add Worker tab', state: 'OPEN' }] }) };
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ number: 42, title: 'Add Worker tab', state: 'OPEN' }]
+          })
+        };
       }
       if (href.includes('/api/worker/prs?workspace=')) {
-        return { ok: true, json: async () => ({ items: [{ number: 7, title: 'Workspace PR', state: 'OPEN' }] }) };
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ number: 7, title: 'Workspace PR', state: 'OPEN' }]
+          })
+        };
       }
       if (href.includes('/api/worker/jobs/job-2/log')) {
-        return { ok: true, json: async () => ({ path: '.bdui/worker-jobs/logs/job-2.log', tail: ['line 1', 'line 2'], truncated: false }) };
+        return {
+          ok: true,
+          json: async () => ({
+            path: '.bdui/worker-jobs/logs/job-2.log',
+            tail: ['line 1', 'line 2'],
+            truncated: false
+          })
+        };
       }
       throw new Error(`Unhandled fetch: ${href}`);
     });
 
     const detail = createWorkerDetailView(mount, { fetch_impl, onCancelJob });
 
-    await detail.load({ id: 'UI-62lm', title: 'Worker 탭 추가', status: 'in_progress' }, '/workspace', [
-      { id: 'job-2', status: 'running', issueId: 'UI-62lm', command: 'bd-ralph', elapsedMs: 65000, isCancellable: true, workspace: '/workspace', wasForceKilled: true },
-      { id: 'job-1', status: 'failed', issueId: 'UI-62lm', command: 'bd-ralph', elapsedMs: 5000, errorSummary: 'boom', workspace: '/workspace' }
-    ]);
+    await detail.load(
+      { id: 'UI-62lm', title: 'Worker 탭 추가', status: 'in_progress' },
+      '/workspace',
+      [
+        {
+          id: 'job-2',
+          status: 'running',
+          issueId: 'UI-62lm',
+          command: 'bd-ralph',
+          elapsedMs: 65000,
+          isCancellable: true,
+          workspace: '/workspace',
+          wasForceKilled: true
+        },
+        {
+          id: 'job-1',
+          status: 'failed',
+          issueId: 'UI-62lm',
+          command: 'bd-ralph',
+          elapsedMs: 5000,
+          errorSummary: 'boom',
+          workspace: '/workspace'
+        }
+      ]
+    );
 
     expect(mount.textContent).toContain('Current job');
     expect(mount.textContent).toContain('Recent jobs');
@@ -37,7 +77,9 @@ describe('views/worker-detail', () => {
     expect(mount.textContent).toContain('boom');
     expect(mount.textContent).toContain('Force killed');
 
-    const cancel_button = /** @type {HTMLButtonElement} */ (mount.querySelector('[data-cancel-job="job-2"]'));
+    const cancel_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-cancel-job="job-2"]')
+    );
     cancel_button.click();
 
     expect(onCancelJob).toHaveBeenCalledWith('job-2');
@@ -61,10 +103,33 @@ describe('views/worker-detail', () => {
     });
 
     const detail = createWorkerDetailView(mount, { fetch_impl });
-    await detail.load({ id: 'UI-62lm', title: 'Worker 탭 추가', status: 'in_progress' }, '/workspace', [
-      { id: 'job-2', status: 'running', issueId: 'UI-62lm', command: 'bd-ralph', elapsedMs: 65000, isCancellable: true, workspace: '/workspace' }
-    ]);
+    await detail.load(
+      { id: 'UI-62lm', title: 'Worker 탭 추가', status: 'in_progress' },
+      '/workspace',
+      [
+        {
+          id: 'job-2',
+          status: 'running',
+          issueId: 'UI-62lm',
+          command: 'bd-ralph',
+          elapsedMs: 65000,
+          isCancellable: true,
+          workspace: '/workspace'
+        }
+      ]
+    );
 
     expect(mount.textContent).toContain('Failed to load log preview.');
+  });
+
+  test('defines worker detail scroll owner styles', () => {
+    const stylesheet = readFileSync(
+      join(import.meta.dirname, '../styles.css'),
+      'utf8'
+    );
+
+    expect(stylesheet).toContain('#worker-detail-mount');
+    expect(stylesheet).toContain('.worker-detail');
+    expect(stylesheet).toContain('overflow-y: auto;');
   });
 });

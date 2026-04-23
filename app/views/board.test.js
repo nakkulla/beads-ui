@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 import { createSubscriptionIssueStore } from '../data/subscription-issue-store.js';
 import { createStore } from '../state.js';
@@ -695,13 +696,30 @@ describe('views/board', () => {
   });
 
   test('defines shared min-width contract for six-column deferred layout', () => {
-    const stylesheet = readFileSync('app/styles.css', 'utf8');
+    const stylesheet = readFileSync(
+      join(import.meta.dirname, '../styles.css'),
+      'utf8'
+    );
 
     expect(stylesheet).toContain('--board-column-min-width: 300px;');
     expect(stylesheet).toContain('minmax(var(--board-column-min-width), 1fr)');
     expect(stylesheet).toContain('min-width: var(--board-column-min-width);');
     expect(stylesheet).toContain('@media (max-width: 1100px)');
     expect(stylesheet).toContain('grid-template-columns: 1fr;');
+  });
+
+  test('defines route-shell and column-body scroll contract for board', () => {
+    const stylesheet = readFileSync(
+      join(import.meta.dirname, '../styles.css'),
+      'utf8'
+    );
+
+    expect(stylesheet).toContain('#board-root.route.board');
+    expect(stylesheet).toContain('#board-root > .panel__body');
+    expect(stylesheet).toContain('.board-column {');
+    expect(stylesheet).toContain('overflow: hidden;');
+    expect(stylesheet).toContain('.board-column__body');
+    expect(stylesheet).toContain('overflow-y: auto;');
   });
 
   test('toggles deferred column from header button and shows deferred count while hidden', async () => {

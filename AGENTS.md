@@ -124,8 +124,8 @@ Never update `CHANGES.md`.
   ```bash
   bdui-shared restart
   ```
-- Use `bdui` directly only for exceptional ad-hoc repo-local development
-  servers on a different localhost port that are not the shared service.
+- Use `bdui` directly only for exceptional ad-hoc repo-local development servers
+  on a different localhost port that are not the shared service.
 - For an ad-hoc repo-local live-mode server, prefer:
   ```bash
   BDUI_FRONTEND_MODE=live bdui restart --host 127.0.0.1 --port 3001
@@ -136,17 +136,17 @@ Never update `CHANGES.md`.
 ## Local `bdui` Development Workflow
 
 - For local development, prefer `npm link` from this repository so the `bdui`
-  command resolves to the current checkout instead of a published global
-  package snapshot.
+  command resolves to the current checkout instead of a published global package
+  snapshot.
 - The canonical control path for the normal shared server is `bdui-shared`.
 - Use `bdui` directly only when you intentionally start an ad-hoc repo-local
   development server outside the shared service flow, ideally on a different
   localhost port.
 - For temporary ad-hoc local servers, do not treat a printed listening URL as
-  success; verify the process is still alive, the intended checkout owns it,
-  and HTTP still responds after a short delay.
-- When you need the browser UI to reflect the latest source changes
-  immediately, run the server with `BDUI_FRONTEND_MODE=live`.
+  success; verify the process is still alive, the intended checkout owns it, and
+  HTTP still responds after a short delay.
+- When you need the browser UI to reflect the latest source changes immediately,
+  run the server with `BDUI_FRONTEND_MODE=live`.
   - Example start:
     ```bash
     BDUI_FRONTEND_MODE=live bdui start --host 127.0.0.1 --port 3001
@@ -161,9 +161,9 @@ Never update `CHANGES.md`.
 
 ## Pull Request Target
 
-- When creating a PR from this repository, target the writable fork on
-  `origin` by default.
+- When creating a PR from this repository, target the writable fork on `origin`
+  by default.
 - In this repo, that means creating PRs against `nakkulla/beads-ui`, not the
   read-only `upstream` remote.
-- Treat `upstream` as a reference/sync remote unless the user explicitly asks
-  to open a PR there.
+- Treat `upstream` as a reference/sync remote unless the user explicitly asks to
+  open a PR there.

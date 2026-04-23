@@ -32,7 +32,11 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ label_display_policy: LabelDisplayPolicy }} AppConfig
+ * @typedef {{ default_workspace: string | null }} WorkspaceConfig
+ */
+
+/**
+ * @typedef {{ label_display_policy?: LabelDisplayPolicy, workspace_config?: WorkspaceConfig }} AppConfig
  */
 
 /**
@@ -50,27 +54,38 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState, config: AppConfig }} AppState
+ * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState, config: { label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig } }} AppState
  */
 
 const DEFAULT_CONFIG = Object.freeze({
   label_display_policy: {
     visible_prefixes: ['has:', 'reviewed:']
+  },
+  workspace_config: {
+    default_workspace: null
   }
 });
 
 /**
- * @param {Partial<AppConfig> | undefined} input
- * @returns {AppConfig}
+ * @param {AppConfig | undefined} input
+ * @returns {{ label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig }}
  */
 function normalizeConfig(input) {
   const prefixes = input?.label_display_policy?.visible_prefixes;
+  const default_workspace =
+    typeof input?.workspace_config?.default_workspace === 'string' &&
+    input.workspace_config.default_workspace.length > 0
+      ? input.workspace_config.default_workspace
+      : null;
 
   if (!Array.isArray(prefixes)) {
     return {
       label_display_policy: {
-        visible_prefixes: DEFAULT_CONFIG.label_display_policy.visible_prefixes
-          .slice()
+        visible_prefixes:
+          DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice()
+      },
+      workspace_config: {
+        default_workspace
       }
     };
   }
@@ -78,6 +93,9 @@ function normalizeConfig(input) {
   return {
     label_display_policy: {
       visible_prefixes: prefixes.filter((value) => typeof value === 'string')
+    },
+    workspace_config: {
+      default_workspace
     }
   };
 }
@@ -85,7 +103,7 @@ function normalizeConfig(input) {
 /**
  * Create a simple store for application state.
  *
- * @param {Partial<AppState>} [initial]
+ * @param {{ selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }} [initial]
  * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
  */
 export function createStore(initial = {}) {
@@ -163,9 +181,10 @@ export function createStore(initial = {}) {
               : state.workspace.available
         },
         config:
-          patch.config !== undefined ? normalizeConfig(patch.config) : state.config
+          patch.config !== undefined
+            ? normalizeConfig(patch.config)
+            : state.config
       };
-      // Avoid emitting if nothing changed (shallow compare)
       const workspace_changed =
         next.workspace.current?.path !== state.workspace.current?.path ||
         next.workspace.available.length !== state.workspace.available.length;
@@ -175,7 +194,9 @@ export function createStore(initial = {}) {
         next.config.label_display_policy.visible_prefixes.some(
           (prefix, index) =>
             prefix !== state.config.label_display_policy.visible_prefixes[index]
-        );
+        ) ||
+        next.config.workspace_config.default_workspace !==
+          state.config.workspace_config.default_workspace;
       if (
         next.selected_id === state.selected_id &&
         next.view === state.view &&
@@ -203,7 +224,10 @@ export function createStore(initial = {}) {
         board: state.board,
         worker: state.worker,
         workspace: state.workspace.current?.path,
-        config: state.config.label_display_policy.visible_prefixes
+        config: {
+          visible_prefixes: state.config.label_display_policy.visible_prefixes,
+          default_workspace: state.config.workspace_config.default_workspace
+        }
       });
       emit();
     },

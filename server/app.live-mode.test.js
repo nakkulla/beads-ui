@@ -142,6 +142,9 @@ describe('createApp live frontend mode', () => {
     expect(config_payload).toEqual({
       label_display_policy: {
         visible_prefixes: ['area:<tag>', '</script>']
+      },
+      workspace_config: {
+        default_workspace: null
       }
     });
   });

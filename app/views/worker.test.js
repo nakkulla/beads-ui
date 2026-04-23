@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 import { createStore } from '../state.js';
 import { createWorkerView } from './worker.js';
@@ -149,5 +151,20 @@ describe('views/worker', () => {
     expect(onCancelJob).toHaveBeenCalledWith('job-2');
     expect(onRunRalph).not.toHaveBeenCalled();
     expect(onRunPrReview).not.toHaveBeenCalled();
+  });
+
+  test('defines route-shell and pane-body scroll contract for worker', () => {
+    const stylesheet = readFileSync(
+      join(import.meta.dirname, '../styles.css'),
+      'utf8'
+    );
+
+    expect(stylesheet).toContain('#worker-root.route.worker');
+    expect(stylesheet).toContain('#worker-root > .worker-layout');
+    expect(stylesheet).toContain('.worker-layout__left');
+    expect(stylesheet).toContain('.worker-tree');
+    expect(stylesheet).toContain('#worker-detail-mount');
+    expect(stylesheet).toContain('.worker-detail');
+    expect(stylesheet).toContain('min-height: 0;');
   });
 });
