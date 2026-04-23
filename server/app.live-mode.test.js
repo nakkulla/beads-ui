@@ -134,9 +134,11 @@ describe('createApp live frontend mode', () => {
     }
 
     expect(root_response.status).toBe(200);
+    expect(root_response.headers.get('cache-control')).toBe('no-store');
     expect(root_text).toContain('window.__BDUI_BOOTSTRAP__');
     expect(root_text).toContain('\\u003c');
     expect(config_response.status).toBe(200);
+    expect(config_response.headers.get('cache-control')).toBe('no-store');
     expect(config_payload).toEqual({
       label_display_policy: {
         visible_prefixes: ['area:<tag>', '</script>']

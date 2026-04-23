@@ -101,6 +101,7 @@ export function createApp(config) {
    * @param {Response} res
    */
   app.get('/api/config', (_req, res) => {
+    res.set('Cache-Control', 'no-store');
     res.type('application/json');
     res.status(200).send(toBootstrapPayload(config));
   });
@@ -163,6 +164,7 @@ export function createApp(config) {
     );
 
     res
+      .set('Cache-Control', 'no-store')
       .status(200)
       .type('html')
       .send(

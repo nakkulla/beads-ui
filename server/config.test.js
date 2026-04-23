@@ -19,6 +19,15 @@ function writeConfigFixture(payload) {
   return file_path;
 }
 
+/**
+ * @returns {string}
+ */
+function missingConfigPath() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-config-missing-'));
+  temp_dirs.push(dir);
+  return path.join(dir, 'config.json');
+}
+
 afterEach(() => {
   delete process.env.BDUI_FRONTEND_MODE;
   delete process.env.BDUI_CONFIG_PATH;
@@ -45,6 +54,8 @@ describe('getConfig', () => {
   });
 
   test('returns default label policy when config file is missing', () => {
+    process.env.BDUI_CONFIG_PATH = missingConfigPath();
+
     const config = getConfig();
 
     expect(config.label_display_policy.visible_prefixes).toEqual([
