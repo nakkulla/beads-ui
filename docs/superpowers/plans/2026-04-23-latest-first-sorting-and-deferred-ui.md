@@ -257,15 +257,17 @@ git commit -m "fix: deferred board 6컬럼 폭 재분배"
 - Closed-only views keep `closed_at` desc.
 ```
 
-- [ ] **Step 2: full repository verification을 실행한다**
-
-Run: `npm run lint && npm run tsc && npm test`
-Expected: PASS
+- [ ] **Step 2: touched files formatting을 먼저 고정한다**
 
 Run: `npm run prettier:write docs/superpowers/specs/2026-04-23-latest-first-sorting-and-deferred-ui-design.md docs/superpowers/plans/2026-04-23-latest-first-sorting-and-deferred-ui.md docs/subscription-issue-store.md app/data/sort.js app/data/list-selectors.js app/data/subscription-issue-store.js app/views/detail.js app/views/issue-row.js app/views/list.js app/views/board.js app/styles.css app/data/list-selectors.test.js app/data/subscription-issue-store.test.js app/views/detail.test.js app/views/list.test.js app/views/board.test.js`
 Expected: touched files are formatted with no unintended unrelated repo churn.
 
-- [ ] **Step 3: live/runtime surface를 직접 확인한다**
+- [ ] **Step 3: full repository verification을 formatting 이후에 실행한다**
+
+Run: `npm run lint && npm run tsc && npm test`
+Expected: PASS
+
+- [ ] **Step 4: live/runtime surface를 직접 확인한다**
 
 Run: `BDUI_FRONTEND_MODE=live bdui restart --host 127.0.0.1 --port 3001`
 Expected: server restarts from the current worktree and serves the latest frontend source.
@@ -275,7 +277,7 @@ Manual checks:
 - issues filter dropdown and inline status select still expose `Deferred`
 - toggling Deferred column no longer causes `Closed` to jump out immediately in multi-column mode
 
-- [ ] **Step 4: final docs/runtime commit을 남긴다**
+- [ ] **Step 5: final docs/runtime commit을 남긴다**
 
 ```bash
 git add docs/subscription-issue-store.md app/data/list-selectors.js app/data/subscription-issue-store.js
