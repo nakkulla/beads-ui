@@ -41,12 +41,18 @@ describe('state store', () => {
       config: {
         label_display_policy: {
           visible_prefixes: ['area:', 'agent:']
+        },
+        workspace_config: {
+          default_workspace: '/repo-a'
         }
       }
     });
 
     expect(store.getState().config.label_display_policy.visible_prefixes).toEqual(
       ['area:', 'agent:']
+    );
+    expect(store.getState().config.workspace_config.default_workspace).toBe(
+      '/repo-a'
     );
   });
 

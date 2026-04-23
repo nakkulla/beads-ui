@@ -26,20 +26,35 @@ import { createWsClient } from './ws.js';
 const DEFAULT_CONFIG = {
   label_display_policy: {
     visible_prefixes: ['has:', 'reviewed:']
+  },
+  workspace_config: {
+    default_workspace: null
   }
 };
 
 /**
- * @returns {{ label_display_policy: { visible_prefixes: string[] } }}
+ * @returns {{
+ *   label_display_policy: { visible_prefixes: string[] },
+ *   workspace_config: { default_workspace: string | null }
+ * }}
  */
 function readBootstrapConfig() {
   const bootstrap = /** @type {any} */ (window).__BDUI_BOOTSTRAP__;
   const prefixes = bootstrap?.label_display_policy?.visible_prefixes;
 
+  const default_workspace =
+    typeof bootstrap?.workspace_config?.default_workspace === 'string' &&
+    bootstrap.workspace_config.default_workspace.length > 0
+      ? bootstrap.workspace_config.default_workspace
+      : null;
+
   if (!Array.isArray(prefixes)) {
     return {
       label_display_policy: {
         visible_prefixes: DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice()
+      },
+      workspace_config: {
+        default_workspace
       }
     };
   }
@@ -47,12 +62,15 @@ function readBootstrapConfig() {
   return {
     label_display_policy: {
       visible_prefixes: prefixes.filter((value) => typeof value === 'string')
+    },
+    workspace_config: {
+      default_workspace
     }
   };
 }
 
 /**
- * @param {{ setState: (patch: { config?: { label_display_policy: { visible_prefixes: string[] } } }) => void }} store
+ * @param {{ setState: (patch: { config?: { label_display_policy: { visible_prefixes: string[] }, workspace_config?: { default_workspace: string | null } } }) => void }} store
  * @param {(message: string, details: unknown) => void} log_error
  * @returns {Promise<void>}
  */
@@ -396,17 +414,25 @@ export function bootstrap(root_element) {
             : null;
           store.setState({ workspace: { current, available } });
 
-          // Check if we have a saved preference that differs from current
+          const configuredDefault =
+            store.getState().config.workspace_config.default_workspace;
           const savedWorkspace =
             window.localStorage.getItem('beads-ui.workspace');
+
+          if (configuredDefault && current?.path === configuredDefault) {
+            window.localStorage.setItem('beads-ui.workspace', configuredDefault);
+            return;
+          }
+
           if (savedWorkspace && current && savedWorkspace !== current.path) {
-            // Check if saved workspace is in available list
             const savedExists = available.some(
               (/** @type {{ path: string }} */ ws) => ws.path === savedWorkspace
             );
             if (savedExists) {
               log('restoring saved workspace preference: %s', savedWorkspace);
               await handleWorkspaceChange(savedWorkspace);
+            } else {
+              window.localStorage.removeItem('beads-ui.workspace');
             }
           }
         }

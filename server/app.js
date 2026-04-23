@@ -10,8 +10,14 @@ import { createWorkerPrsRouter } from './routes/worker-prs.js';
 import { createWorkerSpecRouter } from './routes/worker-spec.js';
 
 /**
- * @param {{ label_display_policy?: { visible_prefixes: string[] } }} config
- * @returns {{ label_display_policy: { visible_prefixes: string[] } }}
+ * @param {{
+ *   label_display_policy?: { visible_prefixes: string[] },
+ *   workspace_config?: { default_workspace: string | null }
+ * }} config
+ * @returns {{
+ *   label_display_policy: { visible_prefixes: string[] },
+ *   workspace_config: { default_workspace: string | null }
+ * }}
  */
 function toBootstrapPayload(config) {
   const visible_prefixes = Array.isArray(
@@ -23,6 +29,13 @@ function toBootstrapPayload(config) {
   return {
     label_display_policy: {
       visible_prefixes
+    },
+    workspace_config: {
+      default_workspace:
+        typeof config.workspace_config?.default_workspace === 'string' &&
+        config.workspace_config.default_workspace.length > 0
+          ? config.workspace_config.default_workspace
+          : null
     }
   };
 }
