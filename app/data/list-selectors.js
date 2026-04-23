@@ -52,7 +52,7 @@ export function createListSelectors(issue_stores = undefined) {
     } else if (mode === 'closed') {
       arr.sort(cmpClosedDesc);
     } else {
-      // ready/blocked share the same sort
+      // All non-closed board modes share the latest-first sort contract.
       arr.sort(cmpCreatedDescThenPriority);
     }
     return arr;

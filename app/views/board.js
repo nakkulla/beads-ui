@@ -41,11 +41,13 @@ const COLUMN_STATUS_MAP = {
 };
 
 /**
- * Create the Board view with Blocked, Ready, In progress, Closed.
+ * Create the Board view with Blocked, Ready, In progress, Deferred, Resolved,
+ * and Closed.
  * Push-only: derives items from per-subscription stores.
  *
  * Sorting rules:
- * - Ready/Blocked/In progress/Resolved: created_at desc, then priority asc.
+ * - Ready/Blocked/In progress/Deferred/Resolved: created_at desc, then
+ *   priority asc, then id asc.
  * - Closed: closed_at desc.
  *
  * @param {HTMLElement} mount_element
