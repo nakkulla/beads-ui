@@ -2,26 +2,29 @@
 
 ## 문제 정의
 
-현재 `beads-ui`의 issue 정렬과 `Deferred` UI는 다음 세 가지 문제를 동시에 갖고 있다.
+현재 `beads-ui`의 issue 정렬과 `Deferred` UI는 다음 세 가지 문제를 동시에 갖고
+있다.
 
 1. **정렬 정책이 사용자 기대와 다르다.**
    - 현재 open 계열 list/board/epics children은 공통 comparator를 사용해
      `priority asc -> created_at asc -> id asc` 순으로 정렬한다.
    - 사용자는 "최신일수록 위"를 기대한다.
-   - `docs/subscription-issue-store.md`는 기본 정렬을 `created_at desc`로 설명하고
-     있어 문서와 코드도 어긋나 있다.
+   - `docs/subscription-issue-store.md`는 기본 정렬을
+     `priority asc -> created_at desc` 로 설명하고 있어, 현재 코드와도 다르고
+     이번 목표인 "최신순 우선"과도 어긋나 있다.
 
-2. **이슈 상세의 status select에서 `Deferred`가 신뢰성 있게 보이지 않는다.**
+2. **특정 runtime surface에서 `Deferred` 표현 계약이 회귀한 것으로 보인다.**
    - canonical status source 자체에는 이미 `deferred`가 포함되어 있다.
    - 사용자가 겪는 문제는 status model 부재라기보다, 실제 detail select에서의
      렌더 반영 / status badge-select 스타일 / 최신 bundle 반영 여부가 일치하지
-     않는 데 가깝다.
-   - 따라서 이번 작업은 data source 추가가 아니라, 실제 사용자 surface에서
-     `Deferred`가 보이고 동작한다는 계약을 다시 고정하는 작업으로 본다.
+     않아 "없는 것처럼 보이는" 데 가깝다.
+   - 따라서 이번 작업은 data source 추가가 아니라, **detail status select를 우선
+     재현 surface로 두고** 실제 사용자 surface에서 `Deferred`가 보이고
+     동작한다는 계약을 다시 고정하는 작업으로 본다.
 
 3. **Board에서 Deferred 컬럼을 켜면 폭이 재분배되지 않는다.**
-   - 현재 board는 `show_deferred_column`이 켜질 때 column count만 5→6으로 바꾸고,
-     각 컬럼은 여전히 큰 최소폭을 유지한다.
+   - 현재 board는 `show_deferred_column`이 켜질 때 column count만 5→6으로
+     바꾸고, 각 컬럼은 여전히 큰 최소폭을 유지한다.
    - 그 결과 Deferred 컬럼이 등장해도 기존 컬럼 폭이 줄어들지 않고, `Closed`
      컬럼이 오른쪽으로 밀려난다.
 
@@ -29,12 +32,12 @@
 
 ## 목표
 
-- `issues list`, `board`, `epics children`의 기본 정렬을 **최신 생성일 우선**으로
-  통일한다.
+- `issues list`, `board`, `epics children`의 기본 정렬을 **최신 생성일
+  우선**으로 통일한다.
 - `closed`는 기존처럼 `closed_at desc` 예외 정책으로 유지한다.
 - issue detail의 status select에서 `Deferred`가 항상 보이도록 한다.
-- 같은 canonical status를 쓰는 list inline status select / issues filter dropdown도
-  함께 회귀 점검한다.
+- 같은 canonical status를 쓰는 list inline status select / issues filter
+  dropdown도 함께 회귀 점검한다.
 - board에서 Deferred 컬럼이 켜질 때 전체 폭이 자동 재분배되어 `Closed` 컬럼이
   화면 밖으로 밀리지 않도록 한다.
 - 코드와 문서의 정렬 설명을 일치시킨다.
@@ -64,13 +67,15 @@
   - `closed_at desc`
   - `id asc`
 
-이 comparator는 `app/data/list-selectors.js`를 통해 다음 view에 재사용된다.
+이 comparator는 `app/data/list-selectors.js`와
+`app/data/subscription-issue-store.js`를 통해 다음 view/store에 재사용된다.
 
 - issues list
 - board open / in_progress / deferred / resolved columns
 - epics children
+- subscription snapshot 기본 정렬
 
-즉, 정렬 정책 변경은 개별 화면 패치가 아니라 **shared selector policy 변경**이다.
+즉, 정렬 정책 변경은 개별 화면 패치가 아니라 **shared sort policy 변경**이다.
 
 ### 2. Deferred status source와 실제 UX 인식 간 괴리
 
@@ -81,10 +86,12 @@
 - `app/views/issue-row.js`
 - `app/views/list.js`
 
-하지만 사용자는 issue detail에서 status를 바꾸는 실제 select에서 `Deferred`가
-안 보인다고 인지하고 있다. 따라서 이번 작업은 "canonical source가 없다"가 아니라
-"실제 사용자 surface에 올바르게 렌더/스타일링/배포되지 않는다"는 문제로 정의하고,
-다음 세 가지를 함께 검증 대상으로 본다.
+하지만 코드와 테스트만 보면 `Deferred` option 자체는 이미 존재한다. 이번 작업은
+그 사실을 유지한 채, 사용자가 issue detail에서 status를 바꾸는 실제 runtime
+surface에서 `Deferred`가 눈에 잘 드러나지 않거나 빠진 것처럼 보였던 회귀를 다시
+고정하는 일로 본다. 따라서 이번 작업은 "canonical source가 없다"가 아니라 "실제
+사용자 surface에 올바르게 렌더/스타일링/배포되지 않는다"는 문제로 정의하고, 다음
+세 가지를 함께 검증 대상으로 본다.
 
 - canonical status source가 detail/list/filter에 동일하게 반영되는지
 - status select/badge 스타일이 `deferred`를 정상적으로 표현하는지
@@ -99,6 +106,8 @@
 - `app/styles.css`
   - `.board-root`는 `repeat(var(--board-column-count), minmax(380px, 1fr))`
   - `.board-column`은 `min-width: 380px`
+  - `@media (max-width: 1100px)`에서는 `.board-root`가 `1fr` 단일 컬럼으로
+    접힌다.
 
 따라서 6번째 컬럼이 생겨도 각 컬럼 최소폭이 유지되어, 작은/보통 폭 화면에서는
 자동 재분배보다 horizontal overflow가 먼저 발생한다.
@@ -126,6 +135,8 @@
   반영 확인**까지 포함해야 재발을 막을 수 있다.
 - board width 문제는 JS 토글 문제가 아니라 **CSS layout contract 문제**이므로,
   column count와 min-width 정책을 함께 다뤄야 한다.
+- subscription store도 같은 comparator를 쓰므로, 정렬 변경은 selector만이 아니라
+  snapshot ordering contract까지 함께 보아야 drift를 막을 수 있다.
 
 ## 설계
 
@@ -166,7 +177,8 @@
 즉:
 
 - invalid `created_at` issue는 open 계열에서 가장 오래된 항목처럼 뒤로 간다.
-- invalid `closed_at` issue는 closed 목록에서 가장 오래전에 닫힌 것처럼 뒤로 간다.
+- invalid `closed_at` issue는 closed 목록에서 가장 오래전에 닫힌 것처럼 뒤로
+  간다.
 
 ### 1.4 shared source of truth
 
@@ -194,12 +206,28 @@ canonical order는 유지한다.
 
 ### 2.2 detail status select를 기준 동작으로 고정
 
-사용자가 직접 지적한 surface는 issue detail의 status select다. 따라서 이번 작업의
-기준 acceptance는 다음과 같다.
+사용자가 직접 지적한 surface는 issue detail의 status select다. 따라서 이번
+작업의 기준 acceptance는 다음과 같다.
 
 - issue detail의 status select에 `Deferred` option이 항상 보인다.
 - 현재 issue status가 `deferred`일 때 select의 value/class가 올바르게 반영된다.
 - `update-status` mutation 경로에서 `deferred`를 정상 전송한다.
+- 위 항목은 소스 존재 여부가 아니라 **실제 runtime surface 회귀 방지** 기준이다.
+
+### 2.2.1 mutation/protocol contract 재확인
+
+`Deferred`는 이번 작업에서 새로 추가하는 backend status가 아니다. 현재도 다음
+runtime contract는 이미 `deferred`를 허용한다.
+
+- `server/ws.js`
+  - `update-status` validation이 `deferred`를 허용한다.
+- `server/ws.mutations.test.js`
+  - `update-status accepts deferred` 회귀 테스트가 존재한다.
+
+따라서 이번 작업의 의도는 backend contract를 새로 설계하는 것이 아니라, **UI
+surface와 existing mutation contract가 계속 일치하도록 회귀를 막는 것**이다.
+구현 중 실제 drift가 확인되면 해당 validation/doc/test도 함께 맞추되, 기본
+전제는 "이미 허용되는 `deferred`를 UI에서 신뢰성 있게 드러내고 사용한다"이다.
 
 ### 2.3 list/filter 회귀 점검
 
@@ -223,7 +251,7 @@ canonical order는 유지한다.
   따른다.
 
 색상 자체는 기존 palette와 조화되는 단일 tone을 사용하고, 새 status만 과도하게
-  강조하지 않는다.
+강조하지 않는다.
 
 ## 3. Board Deferred 컬럼 레이아웃
 
@@ -238,21 +266,27 @@ canonical order는 유지한다.
 
 ### 3.2 layout strategy
 
-board는 계속 CSS grid를 사용한다. 다만 column minimum policy를 조정한다.
+board는 계속 CSS grid를 사용한다. 다만 column minimum policy를 조정한다. 구현용
+single source of truth는 예를 들어 `--board-column-min-width` 같은 CSS
+variable로 둔다.
 
 첫 버전의 정량 목표는 다음과 같다.
 
 - 현재 `380px`인 board column 최소폭을 **`300px`** 기준으로 완화한다.
-- `.board-root`와 `.board-column`이 서로 다른 최소폭을 갖지 않도록, 같은 source of
-  truth(예: shared CSS variable)로 묶는다.
-- Deferred column이 켜진 6컬럼 상태에서는 **약 `1800px` 이상의 viewport/container
-  폭에서 min-width 자체 때문에 즉시 overflow가 발생하지 않는 것**을 목표로 한다.
+- `.board-root`와 `.board-column`이 서로 다른 최소폭을 갖지 않도록, 같은 source
+  of truth(예: shared CSS variable)로 묶는다.
+- `app/styles.css`의 현재 contract(`gap: 16px`, `padding: 12px`, 6컬럼)를
+  기준으로, Deferred column이 켜진 6컬럼 상태에서는 **약 `1904px`
+  (`300px * 6 + 16px * 5 + 12px * 2`) 이상의 viewport/container 폭에서**
+  min-width 자체 때문에 즉시 overflow가 발생하지 않는 것을 목표로 한다.
 - 이보다 좁은 폭에서는 horizontal scroll fallback을 허용한다.
 
 핵심 방향:
 
 - `.board-root`의 `minmax()` 최소값을 `300px` 기준으로 낮춘다.
 - `.board-column`의 `min-width`도 같은 `300px` 기준으로 맞춘다.
+- `@media (max-width: 1100px)`의 단일 컬럼 fallback은 유지하고, 새 최소폭 정책은
+  **multi-column mode가 활성인 폭**에서만 적용한다.
 - 작은 화면에서는 기존처럼 horizontal scroll이 가능해야 한다.
 - 큰 화면에서는 5→6컬럼 전환 시 전체 폭이 다시 분배되는 것이 우선이다.
 
@@ -267,7 +301,8 @@ board는 계속 CSS grid를 사용한다. 다만 column minimum policy를 조정
 
 - 현재 문제는 CSS min-width contract만 완화해도 해결 가능한 수준이다.
 - JS measurement는 resize sync / observer / hydration timing 복잡도를 늘린다.
-- 이번 요구는 정책 정리와 버그 수정이 목적이지, board layout engine 재설계가 아니다.
+- 이번 요구는 정책 정리와 버그 수정이 목적이지, board layout engine 재설계가
+  아니다.
 
 ## 4. 문서 정합성
 
@@ -275,7 +310,7 @@ board는 계속 CSS grid를 사용한다. 다만 column minimum policy를 조정
 
 수정 후 문서 설명:
 
-- open 계열 기본 정렬은 `created_at desc` 중심
+- open 계열 기본 정렬은 `created_at desc -> priority asc -> id asc`
 - closed는 `closed_at desc`
 
 문서와 구현이 어긋난 채 남으면 이후 selector/store 관련 작업에서 잘못된 전제가
@@ -289,6 +324,8 @@ board는 계속 CSS grid를 사용한다. 다만 column minimum policy를 조정
   - open 계열 comparator를 `created_at desc -> priority asc -> id asc`로 변경
 - `app/data/list-selectors.js`
   - 새 comparator 재사용 (필요 시 주석/JSDoc 정합성 수정)
+- `app/data/subscription-issue-store.js`
+  - 기본 sort source가 변경된 comparator를 그대로 따르는지 확인
 - `app/views/detail.js`
   - detail status select의 `Deferred` 회귀 고정
 - `app/views/issue-row.js`
@@ -309,10 +346,11 @@ board는 계속 CSS grid를 사용한다. 다만 column minimum policy를 조정
 ### 테스트
 
 - `app/data/list-selectors.test.js`
+- `app/data/subscription-issue-store.test.js`
 - `app/views/board.test.js`
 - `app/views/detail.test.js`
 - `app/views/list.test.js`
-- 필요 시 `app/data/subscription-issue-store.test.js`
+- 필요 시 `server/ws.mutations.test.js`
 
 ## 테스트 전략
 
@@ -321,6 +359,7 @@ board는 계속 CSS grid를 사용한다. 다만 column minimum policy를 조정
 - list selector가 open 계열을 `created_at desc`로 정렬하는지 확인
 - board ready/blocked/in_progress/deferred/resolved가 새 정책을 따르는지 확인
 - epics children도 같은 shared policy를 따르는지 확인
+- subscription store snapshot도 같은 shared policy를 따르는지 확인
 - closed는 여전히 `closed_at desc`인지 확인
 - invalid timestamp fallback이 안정적으로 동작하는지 확인
 
@@ -330,16 +369,19 @@ board는 계속 CSS grid를 사용한다. 다만 column minimum policy를 조정
 - detail에서 현재 status가 `deferred`일 때 select value/class가 올바른지
 - list inline status select options에 `deferred`가 존재하는지
 - issues filter dropdown에 `Deferred`가 보이는지
+- UI가 보내는 `update-status` 경로가 existing `deferred` contract와 충돌하지
+  않는지
 
 ### 3. Board layout contract 테스트
 
-JSDOM에서 실제 픽셀 layout을 완전하게 검증할 수 없으므로, 테스트는 contract 수준으로
-고정한다.
+JSDOM에서 실제 픽셀 layout을 완전하게 검증할 수 없으므로, 테스트는 contract
+수준으로 고정한다.
 
 - Deferred 컬럼 hidden 시 column count 관련 style/structure가 5컬럼 기준인지
 - Deferred 컬럼 shown 시 6컬럼 기준 style/structure가 적용되는지
-- CSS contract가 `380px` 기반이 아니라 `300px` shared minimum으로 바뀌었는지
-  selector/snapshot 수준으로 고정
+- CSS contract가 `380px` 기반이 아니라 `300px` shared minimum으로 바뀌었는지,
+  그리고 6컬럼 기준 최소 필요 폭이 `1904px` 계산과 정합적인지 selector/snapshot
+  수준으로 고정
 - `.board-root`와 `.board-column`이 서로 다른 최소폭 상수를 갖지 않는지 확인
 
 실제 가시성/overflow는 implementation 단계의 runtime verification으로 확인한다.
@@ -361,8 +403,8 @@ JSDOM에서 실제 픽셀 layout을 완전하게 검증할 수 없으므로, 테
 
 ### 리스크 1. priority 기반 작업 흐름이 약해 보일 수 있음
 
-날짜 우선 정책으로 바꾸면 기존 priority-first 정렬을 선호하던 사용자는 다르게 느낄
-수 있다.
+날짜 우선 정책으로 바꾸면 기존 priority-first 정렬을 선호하던 사용자는 다르게
+느낄 수 있다.
 
 대응:
 
@@ -393,6 +435,9 @@ JSDOM에서 실제 픽셀 layout을 완전하게 검증할 수 없으므로, 테
 - closed는 여전히 최근 닫힘 순으로 위에 온다.
 - issue detail status select에 `Deferred`가 보인다.
 - issues filter dropdown과 inline status select도 `Deferred`를 계속 노출한다.
+- board card/status badge도 `deferred` 스타일 contract와 충돌하지 않는다.
 - Deferred 컬럼을 켜면 board 폭이 재분배되고, 최소폭 contract가 `300px` 기준으로
-  완화되어 `Closed` 컬럼이 기존처럼 즉시 밀려나는 현상이 줄어든다.
+  완화되어 6컬럼 기준 최소 필요 폭이 약 `1904px` 수준으로 내려가며, `Closed`
+  컬럼이 기존처럼 즉시 밀려나는 현상이 줄어든다.
+- `@media (max-width: 1100px)`의 단일 컬럼 fallback은 유지된다.
 - 정렬 관련 문서 설명이 코드와 일치한다.

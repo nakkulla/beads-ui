@@ -10,24 +10,24 @@ describe('subscription issue store', () => {
       revision: 1,
       issues: [
         {
-          id: 'B',
-          priority: 2,
-          created_at: 10_000,
-          updated_at: 10_000,
-          closed_at: null
-        },
-        {
           id: 'A',
           priority: 1,
           created_at: 20_000,
           updated_at: 20_000,
+          closed_at: null
+        },
+        {
+          id: 'B',
+          priority: 2,
+          created_at: 30_000,
+          updated_at: 30_000,
           closed_at: null
         }
       ]
     });
     const snap = /** @type {any[]} */ (store.snapshot());
     expect(Array.isArray(snap)).toBe(true);
-    expect(snap.map((it) => it.id)).toEqual(['A', 'B']);
+    expect(snap.map((it) => it.id)).toEqual(['B', 'A']);
     expect(store.size()).toBe(2);
   });
 

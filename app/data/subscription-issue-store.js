@@ -2,7 +2,7 @@
  * @import { SubscriptionIssueStore, SubscriptionIssueStoreOptions } from '../../types/subscription-issue-store.js'
  */
 import { debug } from '../utils/logging.js';
-import { cmpPriorityThenCreated } from './sort.js';
+import { cmpCreatedDescThenPriority } from './sort.js';
 
 /**
  * Per-subscription issue store. Holds full Issue objects and exposes a
@@ -30,7 +30,7 @@ export function createSubscriptionIssueStore(id, options = {}) {
   /** @type {boolean} */
   let is_disposed = false;
   /** @type {(a:any,b:any)=>number} */
-  const sort = options.sort || cmpPriorityThenCreated;
+  const sort = options.sort || cmpCreatedDescThenPriority;
 
   function emit() {
     for (const fn of Array.from(listeners)) {

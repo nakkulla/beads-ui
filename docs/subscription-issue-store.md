@@ -101,7 +101,8 @@ export function ListView({ store }) {
 
 ## Ordering and Identity
 
-- Default sort: priority asc, then `created_at` desc, then id asc.
+- Default snapshot sort: `created_at` desc, then priority asc, then id asc.
+- Closed-only surfaces are re-sorted by selectors with `closed_at` desc.
 - When upserting, the store preserves object identity for existing ids by
   mutating fields in place. This reduces unnecessary re‑renders.
 

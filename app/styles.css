@@ -11,6 +11,7 @@
   /* Status base colors */
   --status-open-base: #51cb4e; /* open */
   --status-in-progress-base: #666666; /* in_progress */
+  --status-deferred-base: #0f766e; /* deferred */
   --status-resolved-base: #e6a117; /* resolved */
   --status-closed-base: #5f26c9; /* closed */
 
@@ -81,6 +82,7 @@
   --space-8: 16px;
   --space-9: 18px;
   --space-10: 20px;
+  --board-column-min-width: 300px;
 
   --label-has-fg: #16a34a;
   --label-has-border: color-mix(in srgb, #16a34a 35%, transparent);
@@ -690,6 +692,16 @@ button:disabled {
     var(--status-in-progress-base) 90%,
     #000
   );
+  --badge-bg-deferred: color-mix(
+    in srgb,
+    var(--panel-bg) 78%,
+    var(--status-deferred-base)
+  );
+  --badge-fg-deferred: color-mix(
+    in srgb,
+    var(--status-deferred-base) 90%,
+    #000
+  );
   --badge-bg-closed: color-mix(
     in srgb,
     var(--panel-bg) 85%,
@@ -745,6 +757,16 @@ button:disabled {
     --badge-fg-in-progress: color-mix(
       in srgb,
       var(--status-in-progress-base) 75%,
+      #fff
+    );
+    --badge-bg-deferred: color-mix(
+      in srgb,
+      var(--panel-bg) 80%,
+      var(--status-deferred-base)
+    );
+    --badge-fg-deferred: color-mix(
+      in srgb,
+      var(--status-deferred-base) 75%,
       #fff
     );
     --badge-bg-closed: color-mix(
@@ -814,6 +836,16 @@ html[data-theme='dark'] {
     var(--status-in-progress-base) 75%,
     #fff
   );
+  --badge-bg-deferred: color-mix(
+    in srgb,
+    var(--panel-bg) 80%,
+    var(--status-deferred-base)
+  );
+  --badge-fg-deferred: color-mix(
+    in srgb,
+    var(--status-deferred-base) 75%,
+    #fff
+  );
   --badge-bg-closed: color-mix(
     in srgb,
     var(--panel-bg) 80%,
@@ -860,6 +892,11 @@ html[data-theme='dark'] {
 .badge-select.badge--status.is-in_progress {
   background: var(--badge-bg-in-progress);
   color: var(--badge-fg-in-progress);
+}
+.status-badge.is-deferred,
+.badge-select.badge--status.is-deferred {
+  background: var(--badge-bg-deferred);
+  color: var(--badge-fg-deferred);
 }
 .status-badge.is-closed,
 .badge-select.badge--status.is-closed {
@@ -1309,7 +1346,7 @@ input.inline-edit:focus {
   display: grid;
   grid-template-columns: repeat(
     var(--board-column-count, 5),
-    minmax(380px, 1fr)
+    minmax(var(--board-column-min-width), 1fr)
   );
   gap: var(--space-8);
   padding: var(--space-6);
@@ -1330,7 +1367,7 @@ input.inline-edit:focus {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  min-width: 380px;
+  min-width: var(--board-column-min-width);
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1440,6 +1477,12 @@ input.inline-edit:focus {
   white-space: nowrap;
 }
 
+@media (max-width: 1100px) {
+  .board-root {
+    grid-template-columns: 1fr;
+  }
+}
+
 .date-cell {
   font-size: 11px;
   color: var(--muted);
@@ -1462,12 +1505,6 @@ input.inline-edit:focus {
 
 .board-column--drag-over .board-column__body {
   min-height: 100px;
-}
-
-@media (max-width: 1100px) {
-  .board-root {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* a11y helper */
@@ -2733,6 +2770,15 @@ html[data-theme='dark'] {
   border-color: color-mix(
     in srgb,
     var(--status-in-progress-base) 45%,
+    transparent
+  );
+}
+.worker-badge--status.is-deferred {
+  background: var(--badge-bg-deferred);
+  color: var(--badge-fg-deferred);
+  border-color: color-mix(
+    in srgb,
+    var(--status-deferred-base) 45%,
     transparent
   );
 }

@@ -110,7 +110,7 @@ describe('views/epics', () => {
     expect(navCalls[0]).toBe('UI-2');
   });
 
-  test('sorts children by priority then created_at asc', async () => {
+  test('sorts children by created_at desc before priority tie-breaks', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const data = {
@@ -222,7 +222,7 @@ describe('views/epics', () => {
         r.querySelector('td.mono')
       )?.textContent?.trim()
     );
-    expect(ids).toEqual(['UI-12', 'UI-11', 'UI-13']);
+    expect(ids).toEqual(['UI-13', 'UI-11', 'UI-12']);
   });
 
   test('clicking inputs/selects inside a row does not navigate', async () => {
@@ -634,16 +634,16 @@ describe('views/epics', () => {
       const headers = Array.from(
         mount.querySelectorAll('.epic-children thead th')
       ).map((element) => element.textContent?.trim());
-      const first_row_badges = Array.from(
+      const labeled_row_badges = Array.from(
         mount.querySelectorAll(
-          'tr.epic-row:nth-child(1) td:nth-child(4) .label-badge'
+          'tr.epic-row:nth-child(2) td:nth-child(4) .label-badge'
         )
       ).map((element) => element.textContent?.trim());
-      const first_date = mount
-        .querySelector('tr.epic-row:nth-child(1) td:nth-child(8)')
-        ?.textContent?.trim();
-      const second_date = mount
+      const labeled_row_date = mount
         .querySelector('tr.epic-row:nth-child(2) td:nth-child(8)')
+        ?.textContent?.trim();
+      const newest_row_date = mount
+        .querySelector('tr.epic-row:nth-child(1) td:nth-child(8)')
         ?.textContent?.trim();
 
       expect(headers).toEqual([
@@ -659,9 +659,9 @@ describe('views/epics', () => {
       expect(
         mount.querySelectorAll('tr.epic-row:nth-child(1) td')
       ).toHaveLength(8);
-      expect(first_row_badges).toEqual(['has:spec', 'reviewed:code']);
-      expect(first_date).toBe('1일 전');
-      expect(second_date).toBe('2시간 전');
+      expect(labeled_row_badges).toEqual(['has:spec', 'reviewed:code']);
+      expect(labeled_row_date).toBe('1일 전');
+      expect(newest_row_date).toBe('2시간 전');
     } finally {
       vi.useRealTimers();
     }

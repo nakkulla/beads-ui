@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { createDetailView } from './detail.js';
 
@@ -998,14 +999,14 @@ describe('views/detail', () => {
     });
   });
 
-  test('includes Deferred in the status select options', async () => {
+  test('includes Deferred in the status select options and preserves deferred class', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
     const issue = {
       id: 'UI-70',
       title: 'With deferred status option',
-      status: 'open',
+      status: 'deferred',
       dependencies: [],
       dependents: []
     };
@@ -1029,5 +1030,14 @@ describe('views/detail', () => {
     );
 
     expect(option_values).toContain('deferred');
+    expect(status_select.value).toBe('deferred');
+    expect(status_select.className).toContain('is-deferred');
+  });
+
+  test('defines deferred status badge/select styles in the shared stylesheet', () => {
+    const stylesheet = readFileSync('app/styles.css', 'utf8');
+
+    expect(stylesheet).toContain('.status-badge.is-deferred');
+    expect(stylesheet).toContain('.badge-select.badge--status.is-deferred');
   });
 });

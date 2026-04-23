@@ -25,21 +25,21 @@ function toSortableTimestamp(timestamp_value) {
 }
 
 /**
- * Compare by priority asc, then created_at asc, then id asc.
+ * Compare open issues by created_at desc, then priority asc, then id asc.
  *
  * @param {IssueLite} a
  * @param {IssueLite} b
  */
-export function cmpPriorityThenCreated(a, b) {
+export function cmpCreatedDescThenPriority(a, b) {
+  const ca = toSortableTimestamp(a.created_at);
+  const cb = toSortableTimestamp(b.created_at);
+  if (ca !== cb) {
+    return ca < cb ? 1 : -1;
+  }
   const pa = a.priority ?? 2;
   const pb = b.priority ?? 2;
   if (pa !== pb) {
     return pa - pb;
-  }
-  const ca = toSortableTimestamp(a.created_at);
-  const cb = toSortableTimestamp(b.created_at);
-  if (ca !== cb) {
-    return ca < cb ? -1 : 1;
   }
   const ida = a.id;
   const idb = b.id;

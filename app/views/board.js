@@ -1,6 +1,6 @@
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../data/list-selectors.js';
-import { cmpClosedDesc, cmpPriorityThenCreated } from '../data/sort.js';
+import { cmpClosedDesc, cmpCreatedDescThenPriority } from '../data/sort.js';
 import { createIssueIdRenderer } from '../utils/issue-id-renderer.js';
 import { createLabelBadge, filterVisibleLabels } from '../utils/label-badge.js';
 import { debug } from '../utils/logging.js';
@@ -41,11 +41,13 @@ const COLUMN_STATUS_MAP = {
 };
 
 /**
- * Create the Board view with Blocked, Ready, In progress, Closed.
+ * Create the Board view with Blocked, Ready, In progress, Deferred, Resolved,
+ * and Closed.
  * Push-only: derives items from per-subscription stores.
  *
  * Sorting rules:
- * - Ready/Blocked/In progress: priority asc, then created_at asc.
+ * - Ready/Blocked/In progress/Deferred/Resolved: created_at desc, then
+ *   priority asc, then id asc.
  * - Closed: closed_at desc.
  *
  * @param {HTMLElement} mount_element
@@ -118,8 +120,8 @@ export function createBoardView(
   }
 
   function getVisibleLabelPrefixes() {
-    const prefixes = store?.getState?.().config?.label_display_policy
-      ?.visible_prefixes;
+    const prefixes =
+      store?.getState?.().config?.label_display_policy?.visible_prefixes;
 
     if (!Array.isArray(prefixes)) {
       return ['has:', 'reviewed:'];
@@ -222,7 +224,10 @@ export function createBoardView(
    * @param {IssueLite} it
    */
   function cardTemplate(it) {
-    const card_labels = filterVisibleLabels(it.labels, getVisibleLabelPrefixes());
+    const card_labels = filterVisibleLabels(
+      it.labels,
+      getVisibleLabelPrefixes()
+    );
     return html`
       <article
         class="board-card"
@@ -820,11 +825,11 @@ export function createBoardView(
           );
 
           // Sort as per column rules
-          ready.sort(cmpPriorityThenCreated);
+          ready.sort(cmpCreatedDescThenPriority);
           const blocked_open = blocked.filter((i) => isOpenBoardIssue(i));
-          blocked_open.sort(cmpPriorityThenCreated);
-          in_prog.sort(cmpPriorityThenCreated);
-          resolved.sort(cmpPriorityThenCreated);
+          blocked_open.sort(cmpCreatedDescThenPriority);
+          in_prog.sort(cmpCreatedDescThenPriority);
+          resolved.sort(cmpCreatedDescThenPriority);
           list_ready = ready;
           list_blocked = blocked_open;
           list_in_progress = in_prog;
