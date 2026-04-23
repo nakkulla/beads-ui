@@ -15,10 +15,10 @@
 - `app/data/sort.js` — open/closed shared comparator source of truth
 - `app/data/list-selectors.js` — list/board/epic children selector sorting contract and JSDoc
 - `app/data/subscription-issue-store.js` — subscription snapshot ordering that reuses the shared comparator
+- `app/views/board.js` — board sorting import + column count/style contract consumer
 - `app/views/detail.js` — detail status select runtime wiring
 - `app/views/issue-row.js` — inline status badge/select class contract
 - `app/views/list.js` — filter dropdown + inline edit surface
-- `app/views/board.js` — board column count/style contract consumer
 - `app/styles.css` — `is-deferred` style and board min-width variable contract
 - `docs/subscription-issue-store.md` — sorting policy documentation
 - `app/data/list-selectors.test.js` — selector ordering regression coverage
@@ -34,6 +34,7 @@
 - Modify: `app/data/sort.js`
 - Modify: `app/data/list-selectors.js`
 - Modify: `app/data/subscription-issue-store.js`
+- Modify: `app/views/board.js`
 - Test: `app/data/list-selectors.test.js`
 - Test: `app/data/subscription-issue-store.test.js`
 
@@ -74,10 +75,10 @@ expect(store.snapshot().map((it) => it.id)).toEqual(['UI-2', 'UI-1']);
 Run: `npm test -- app/data/list-selectors.test.js app/data/subscription-issue-store.test.js`
 Expected: 최신 생성일 우선 assertion이 FAIL 한다.
 
-- [ ] **Step 4: shared comparator를 created_at desc 중심으로 바꾸고 재사용 지점을 정리한다**
+- [ ] **Step 4: shared comparator 이름/주석/재사용 지점을 최신순 의미에 맞게 함께 정리한다**
 
 ```js
-export function cmpPriorityThenCreated(a, b) {
+export function cmpCreatedDescThenPriority(a, b) {
   const created_a = toSortableTimestamp(a.created_at);
   const created_b = toSortableTimestamp(b.created_at);
   if (created_a !== created_b) {
@@ -94,6 +95,10 @@ export function cmpPriorityThenCreated(a, b) {
 }
 ```
 
+```js
+import { cmpClosedDesc, cmpCreatedDescThenPriority } from './sort.js';
+```
+
 - [ ] **Step 5: selector/store 주석과 targeted tests를 갱신 후 다시 실행한다**
 
 Run: `npm test -- app/data/list-selectors.test.js app/data/subscription-issue-store.test.js`
@@ -102,7 +107,7 @@ Expected: PASS
 - [ ] **Step 6: task commit을 남긴다**
 
 ```bash
-git add app/data/sort.js app/data/list-selectors.js app/data/subscription-issue-store.js app/data/list-selectors.test.js app/data/subscription-issue-store.test.js
+git add app/data/sort.js app/data/list-selectors.js app/data/subscription-issue-store.js app/views/board.js app/data/list-selectors.test.js app/data/subscription-issue-store.test.js
 git commit -m "feat: 최신순 정렬 공용 계약 갱신"
 ```
 
@@ -154,12 +159,14 @@ const status_select = html`
 }
 ```
 
-- [ ] **Step 4: existing mutation contract와 충돌하지 않는지 필요 시 확인한다**
+- [ ] **Step 4: existing mutation contract와 충돌하지 않는지 명시적 조건으로 확인한다**
 
 Run: `npm test -- app/views/detail.test.js app/views/list.test.js`
 Expected: PASS
 
-If UI 테스트 중 `update-status` drift가 의심되면 run: `npm test -- server/ws.mutations.test.js`
+If 이번 task에서 `app/views/detail.js`, `app/views/list.js`, `app/views/issue-row.js` 변경 후
+`sendFn('update-status', ...)` assertion, payload shape, 또는 deferred status persistence에
+영향 주는 diff가 생기면 run: `npm test -- server/ws.mutations.test.js`
 Expected: `update-status accepts deferred` PASS
 
 - [ ] **Step 5: task commit을 남긴다**
@@ -181,7 +188,16 @@ git commit -m "fix: deferred UI 회귀 계약 고정"
 ```js
 const board_root = mount.querySelector('.board-root');
 expect(board_root.style.getPropertyValue('--board-column-count')).toBe('6');
-expect(getComputedStyle(board_root).gridTemplateColumns).toContain('var(--board-column-min-width)');
+
+const stylesheet = readFileSync(
+  new URL('../../app/styles.css', import.meta.url),
+  'utf8'
+);
+expect(stylesheet).toContain('--board-column-min-width: 300px;');
+expect(stylesheet).toContain('minmax(var(--board-column-min-width), 1fr)');
+expect(stylesheet).toContain('.board-column');
+expect(stylesheet).toContain('min-width: var(--board-column-min-width);');
+expect(stylesheet).toContain('@media (max-width: 1100px)');
 ```
 
 - [ ] **Step 2: deferred column toggle contract를 targeted run으로 확인한다**
@@ -230,8 +246,7 @@ git commit -m "fix: deferred board 6컬럼 폭 재분배"
 
 **Files:**
 - Modify: `docs/subscription-issue-store.md`
-- Modify if needed: `app/data/list-selectors.js`
-- Modify if needed: `app/data/subscription-issue-store.js`
+- Verify only: repo verification commands and live runtime evidence
 
 - [ ] **Step 1: sorting 문서를 최종 코드 계약과 맞춘다**
 
@@ -272,5 +287,5 @@ git commit -m "docs: latest-first sorting 계획과 문서 정리"
 
 - **Spec coverage:** sorting / Deferred UI / board layout / docs / runtime verification / subscription store ordering까지 task에 모두 연결했다.
 - **Placeholder scan:** TODO/TBD/“적절히 처리” 같은 placeholder를 쓰지 않았고, 각 task마다 명시적 파일/명령/expected output을 넣었다.
-- **Type consistency:** comparator는 기존 `cmpPriorityThenCreated` symbol을 유지하되 내부 정책만 최신순으로 바꾸는 방향으로 문서화했다. Deferred는 기존 `STATUSES`와 `update-status` contract를 재사용한다.
+- **Type consistency:** comparator는 `created_at desc` 의미를 이름/주석/import까지 맞춰 정리하는 방향으로 문서화했다. Deferred는 기존 `STATUSES`와 `update-status` contract를 재사용한다.
 - **Skill routing check:** skill artifact 변경은 없으므로 `superpowers:writing-skills`/`skill-creator`는 불필요하다.
