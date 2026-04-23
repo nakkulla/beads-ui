@@ -115,12 +115,16 @@ Never update `CHANGES.md`.
 
 ## Post‑Merge Runtime Validation
 
-- After merging code changes into `main`, restart the actual `bdui` program from
-  the merged checkout before claiming the work is fully finished.
+- After merging code changes into `main`, restart the actual server from the
+  merged checkout before claiming the work is fully finished.
 - If the merged change affects runtime behavior, re-run the modified program and
   verify that the real server process comes up from the merged workspace, not a
   stale worktree or pre-merge checkout.
-- For local UI verification, prefer:
+- For the launchd-managed shared server, prefer:
+  ```bash
+  bdui-shared restart
+  ```
+- For repo-local UI verification, prefer:
   ```bash
   BDUI_FRONTEND_MODE=live bdui restart --host 0.0.0.0 --port 3000
   ```
@@ -132,6 +136,8 @@ Never update `CHANGES.md`.
 - For local development, prefer `npm link` from this repository so the `bdui`
   command resolves to the current checkout instead of a published global
   package snapshot.
+- Use `bdui-shared` only for the shared launchd-managed service. Use `bdui`
+  for repo-local development commands in this checkout.
 - When you need the browser UI to reflect the latest source changes
   immediately, run the server with `BDUI_FRONTEND_MODE=live`.
   - Example start:
