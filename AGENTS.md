@@ -120,13 +120,15 @@ Never update `CHANGES.md`.
 - If the merged change affects runtime behavior, re-run the modified program and
   verify that the real server process comes up from the merged workspace, not a
   stale worktree or pre-merge checkout.
-- For the launchd-managed shared server, prefer:
+- For the canonical shared server path, prefer:
   ```bash
   bdui-shared restart
   ```
-- For repo-local UI verification, prefer:
+- Use `bdui` directly only for exceptional ad-hoc repo-local development
+  servers on a different localhost port that are not the shared service.
+- For an ad-hoc repo-local live-mode server, prefer:
   ```bash
-  BDUI_FRONTEND_MODE=live bdui restart --host 0.0.0.0 --port 3000
+  BDUI_FRONTEND_MODE=live bdui restart --host 127.0.0.1 --port 3001
   ```
 - After restart, verify the running process path, listening port, and a basic
   HTTP response before reporting success.
@@ -136,17 +138,19 @@ Never update `CHANGES.md`.
 - For local development, prefer `npm link` from this repository so the `bdui`
   command resolves to the current checkout instead of a published global
   package snapshot.
-- Use `bdui-shared` only for the shared launchd-managed service. Use `bdui`
-  for repo-local development commands in this checkout.
+- The canonical control path for the normal shared server is `bdui-shared`.
+- Use `bdui` directly only when you intentionally start an ad-hoc repo-local
+  development server outside the shared service flow, ideally on a different
+  localhost port.
 - When you need the browser UI to reflect the latest source changes
   immediately, run the server with `BDUI_FRONTEND_MODE=live`.
   - Example start:
     ```bash
-    BDUI_FRONTEND_MODE=live bdui start --host 0.0.0.0 --port 3000
+    BDUI_FRONTEND_MODE=live bdui start --host 127.0.0.1 --port 3001
     ```
   - Example restart:
     ```bash
-    BDUI_FRONTEND_MODE=live bdui restart --host 0.0.0.0 --port 3000
+    BDUI_FRONTEND_MODE=live bdui restart --host 127.0.0.1 --port 3001
     ```
 - If you run without `BDUI_FRONTEND_MODE=live`, the server may serve the static
   `app/main.bundle.js`; after frontend source edits, run `npm run build` before
