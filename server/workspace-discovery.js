@@ -179,12 +179,7 @@ export function resolveStartupWorkspace(input) {
       ? path.resolve(input.default_workspace)
       : null;
 
-  if (
-    default_workspace &&
-    input.configured_workspaces.some(
-      (workspace) => workspace.path === default_workspace
-    )
-  ) {
+  if (default_workspace && isWorkspacePath(default_workspace)) {
     return default_workspace;
   }
 

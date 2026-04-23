@@ -89,6 +89,20 @@ describe('discoverWorkspaces', () => {
     expect(result[0].path).toBe(deep_repo);
   });
 
+  test('prefers a valid default_workspace even when it is not in configured lists', async () => {
+    const tmp = mkdtemp();
+    const default_repo = createBeadsRepo(tmp, 'default-repo');
+
+    const mod = await import('./workspace-discovery.js');
+    const result = mod.resolveStartupWorkspace({
+      configured_workspaces: [],
+      default_workspace: default_repo,
+      cwd: null
+    });
+
+    expect(result).toBe(default_repo);
+  });
+
   test('skips explicit paths that are not usable workspaces', async () => {
     const tmp = mkdtemp();
     const scan_dir = path.join(tmp, 'projects');
