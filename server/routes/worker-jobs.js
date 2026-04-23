@@ -84,7 +84,7 @@ export function createWorkerJobsRouter(options) {
     const { command, issueId, prNumber } = req.body || {};
     if (
       typeof command !== 'string' ||
-      (command !== 'bd-ralph-v2' && command !== 'pr-review') ||
+      (command !== 'bd-ralph' && command !== 'pr-review') ||
       !workspace
     ) {
       res.status(400).json({ error: 'Invalid worker job request: workspace' });

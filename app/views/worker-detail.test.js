@@ -26,8 +26,8 @@ describe('views/worker-detail', () => {
     const detail = createWorkerDetailView(mount, { fetch_impl, onCancelJob });
 
     await detail.load({ id: 'UI-62lm', title: 'Worker 탭 추가', status: 'in_progress' }, '/workspace', [
-      { id: 'job-2', status: 'running', issueId: 'UI-62lm', command: 'bd-ralph-v2', elapsedMs: 65000, isCancellable: true, workspace: '/workspace', wasForceKilled: true },
-      { id: 'job-1', status: 'failed', issueId: 'UI-62lm', command: 'bd-ralph-v2', elapsedMs: 5000, errorSummary: 'boom', workspace: '/workspace' }
+      { id: 'job-2', status: 'running', issueId: 'UI-62lm', command: 'bd-ralph', elapsedMs: 65000, isCancellable: true, workspace: '/workspace', wasForceKilled: true },
+      { id: 'job-1', status: 'failed', issueId: 'UI-62lm', command: 'bd-ralph', elapsedMs: 5000, errorSummary: 'boom', workspace: '/workspace' }
     ]);
 
     expect(mount.textContent).toContain('Current job');
@@ -62,7 +62,7 @@ describe('views/worker-detail', () => {
 
     const detail = createWorkerDetailView(mount, { fetch_impl });
     await detail.load({ id: 'UI-62lm', title: 'Worker 탭 추가', status: 'in_progress' }, '/workspace', [
-      { id: 'job-2', status: 'running', issueId: 'UI-62lm', command: 'bd-ralph-v2', elapsedMs: 65000, isCancellable: true, workspace: '/workspace' }
+      { id: 'job-2', status: 'running', issueId: 'UI-62lm', command: 'bd-ralph', elapsedMs: 65000, isCancellable: true, workspace: '/workspace' }
     ]);
 
     expect(mount.textContent).toContain('Failed to load log preview.');

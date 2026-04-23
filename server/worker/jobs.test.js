@@ -17,7 +17,7 @@ describe('worker job manager gateway', () => {
     const manager = createWorkerJobManager({ root_dir: '/repo', client });
 
     const created = await manager.enqueueJob({
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       issueId: 'UI-qclw',
       workspace: '/repo'
     });
@@ -27,7 +27,7 @@ describe('worker job manager gateway', () => {
     const log = await manager.getJobLog({ jobId: 'job-1', tail: 20 });
 
     expect(client.createJob).toHaveBeenCalledWith({
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       issueId: 'UI-qclw',
       workspace: '/repo'
     });

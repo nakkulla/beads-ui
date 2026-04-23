@@ -33,13 +33,13 @@ import { terminateProcess } from '../cli/daemon.js';
  * @returns {string}
  */
 export function buildWorkerExecTarget(input) {
-  if (input.command === 'bd-ralph-v2') {
+  if (input.command === 'bd-ralph') {
     if (!input.issueId) {
-      throw Object.assign(new Error('Missing issueId for bd-ralph-v2'), {
+      throw Object.assign(new Error('Missing issueId for bd-ralph'), {
         code: 'invalid_request'
       });
     }
-    return `$bd-ralph-v2 ${input.issueId}`;
+    return `$bd-ralph ${input.issueId}`;
   }
 
   const pr_target = input.prNumber ?? input.issueId;

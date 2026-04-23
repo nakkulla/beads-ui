@@ -76,7 +76,7 @@ export function createWorkerDetailView(mount_element, options = {}) {
                         }
                       }}
                     >
-                      Run bd-ralph-v2
+                      Run bd-ralph
                     </button>
                   </div>
                 </header>

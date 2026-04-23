@@ -62,10 +62,10 @@ describe('worker jobs route', () => {
     getJobLog.mockReset();
   });
 
-  test('POST /api/worker/jobs enqueues bd-ralph-v2 issue job', async () => {
+  test('POST /api/worker/jobs enqueues bd-ralph issue job', async () => {
     enqueueJob.mockResolvedValueOnce({
       id: 'job-1',
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       status: 'running',
       issueId: 'UI-qclw',
       workspace: allowed_workspace
@@ -82,7 +82,7 @@ describe('worker jobs route', () => {
       response = await fetch(`http://127.0.0.1:${address.port}/api/worker/jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'bd-ralph-v2', issueId: 'UI-qclw', workspace: allowed_workspace })
+        body: JSON.stringify({ command: 'bd-ralph', issueId: 'UI-qclw', workspace: allowed_workspace })
       });
       body = await response.json();
     } finally {
@@ -90,7 +90,7 @@ describe('worker jobs route', () => {
     }
 
     expect(response.status).toBe(202);
-    expect(body.command).toBe('bd-ralph-v2');
+    expect(body.command).toBe('bd-ralph');
   });
 
   test('GET /api/worker/jobs requires a valid workspace', async () => {
@@ -111,7 +111,7 @@ describe('worker jobs route', () => {
 
   test('GET /api/worker/jobs returns worker items for workspace', async () => {
     listJobs.mockResolvedValueOnce([
-      { id: 'job-1', command: 'bd-ralph-v2', status: 'running', issueId: 'UI-qclw', workspace: allowed_workspace, elapsedMs: 1200, isCancellable: true }
+      { id: 'job-1', command: 'bd-ralph', status: 'running', issueId: 'UI-qclw', workspace: allowed_workspace, elapsedMs: 1200, isCancellable: true }
     ]);
 
     const { createApp } = await import('../app.js');

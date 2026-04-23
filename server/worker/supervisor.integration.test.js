@@ -184,7 +184,7 @@ describe('worker supervisor integration', () => {
 
     await supervisor.acquireOwnership({ port: 4201 });
     const job = await supervisor.createJob({
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       issueId: 'UI-qclw',
       workspace: root_dir
     });
@@ -241,7 +241,7 @@ describe('worker supervisor integration', () => {
 
     await supervisor.acquireOwnership({ port: 4202 });
     const job = await supervisor.createJob({
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       issueId: 'UI-qclw',
       workspace: root_dir
     });

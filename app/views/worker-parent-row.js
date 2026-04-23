@@ -145,7 +145,7 @@ export function workerParentRowTemplate(row, handlers) {
           ?disabled=${!row.runnable}
           @click=${handlers.onRunRalph}
         >
-          ▶ Run bd-ralph-v2
+          ▶ Run bd-ralph
         </button>
         <button
           type="button"

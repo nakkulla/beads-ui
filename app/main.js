@@ -810,7 +810,7 @@ export function bootstrap(root_element) {
     }
 
     /**
-     * @param {'bd-ralph-v2'|'pr-review'} command
+     * @param {'bd-ralph'|'pr-review'} command
      * @param {{ issueId?: string, prNumber?: number }} target
      */
     async function enqueueWorkerJob(command, target) {
@@ -855,7 +855,7 @@ export function bootstrap(root_element) {
       fetch_impl: fetch,
       getWorkerJobs: () => worker_jobs,
       onRunRalph: (issue_id) =>
-        void enqueueWorkerJob('bd-ralph-v2', { issueId: issue_id }),
+        void enqueueWorkerJob('bd-ralph', { issueId: issue_id }),
       onRunPrReview: (target) =>
         void enqueueWorkerJob('pr-review', {
           issueId:

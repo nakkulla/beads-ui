@@ -65,7 +65,7 @@ describe('worker supervisor', () => {
 
     await supervisor.acquireOwnership({ port: 4100 });
     const job = await supervisor.createJob({
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       issueId: 'UI-qclw',
       workspace: root_dir
     });
@@ -110,7 +110,7 @@ describe('worker supervisor', () => {
     await supervisor.acquireOwnership({ port: 4199 });
     await expect(
       supervisor.createJob({
-        command: 'bd-ralph-v2',
+        command: 'bd-ralph',
         issueId: 'UI-qclw',
         workspace: root_dir
       })
@@ -142,7 +142,7 @@ describe('worker supervisor', () => {
 
     await supervisor.acquireOwnership({ port: 4101 });
     const job = await supervisor.createJob({
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       issueId: 'UI-qclw',
       workspace: root_dir
     });
@@ -182,7 +182,7 @@ describe('worker supervisor', () => {
 
     await supervisor.acquireOwnership({ port: 4103 });
     const job = await supervisor.createJob({
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       issueId: 'UI-qclw',
       workspace: root_dir
     });
@@ -223,7 +223,7 @@ describe('worker supervisor', () => {
 
     await supervisor.acquireOwnership({ port: 4104 });
     const job = await supervisor.createJob({
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       issueId: 'UI-qclw',
       workspace: root_dir
     });
@@ -252,7 +252,7 @@ describe('worker supervisor', () => {
       now: () => '2026-04-17T03:00:00.000Z'
     });
     const job = store.createJob({
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       issueId: 'UI-qclw',
       workspace: root_dir
     });
@@ -283,7 +283,7 @@ describe('worker supervisor', () => {
       now: () => current_time
     });
     const job = store.createJob({
-      command: 'bd-ralph-v2',
+      command: 'bd-ralph',
       issueId: 'UI-qclw',
       workspace: root_dir
     });
