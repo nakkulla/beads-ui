@@ -186,29 +186,29 @@ describe('views/board', () => {
 
     await view.load();
 
-    // Blocked: priority asc, then created_at desc for equal priority
+    // Blocked: created_at desc, then priority asc for equal timestamps
     const blocked_ids = Array.from(
       mount.querySelectorAll('#blocked-col .board-card .mono')
     ).map((el) => el.textContent?.trim());
-    expect(blocked_ids).toEqual(['B-1', 'B-2']);
+    expect(blocked_ids).toEqual(['B-2', 'B-1']);
 
-    // Ready: priority asc, then created_at asc for equal priority
+    // Ready: created_at desc before priority tie-breaks
     const ready_ids = Array.from(
       mount.querySelectorAll('#ready-col .board-card .mono')
     ).map((el) => el.textContent?.trim());
-    expect(ready_ids).toEqual(['R-1', 'R-2', 'R-3']);
+    expect(ready_ids).toEqual(['R-3', 'R-1', 'R-2']);
 
-    // In progress: priority asc (default), then created_at asc
+    // In progress: created_at desc
     const prog_ids = Array.from(
       mount.querySelectorAll('#in-progress-col .board-card .mono')
     ).map((el) => el.textContent?.trim());
-    expect(prog_ids).toEqual(['P-2', 'P-1']);
+    expect(prog_ids).toEqual(['P-1', 'P-2']);
 
-    // Resolved: priority asc, then created_at asc
+    // Resolved: created_at desc
     const resolved_ids = Array.from(
       mount.querySelectorAll('#resolved-col .board-card .mono')
     ).map((el) => el.textContent?.trim());
-    expect(resolved_ids).toEqual(['RS-1', 'RS-2']);
+    expect(resolved_ids).toEqual(['RS-2', 'RS-1']);
 
     // Closed: closed_at desc
     const closed_ids = Array.from(
@@ -221,7 +221,7 @@ describe('views/board', () => {
       mount.querySelector('#ready-col .board-card')
     );
     first_ready?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(navigations[0]).toBe('R-1');
+    expect(navigations[0]).toBe('R-3');
   });
 
   test('shows column count badges next to titles', async () => {
@@ -520,7 +520,7 @@ describe('views/board', () => {
 
     expect(blocked_ids).toEqual(['B-1']);
     expect(ready_ids).toEqual(['R-1']);
-    expect(resolved_ids).toEqual(['RS-1', 'RS-2']);
+    expect(resolved_ids).toEqual(['RS-2', 'RS-1']);
   });
 
   test('renders filtered labels and relative created dates on cards', async () => {
@@ -571,8 +571,8 @@ describe('views/board', () => {
       await view.load();
 
       const cards = mount.querySelectorAll('#ready-col .board-card');
-      const first_card = /** @type {HTMLElement} */ (cards[0]);
-      const second_card = /** @type {HTMLElement} */ (cards[1]);
+      const first_card = /** @type {HTMLElement} */ (cards[1]);
+      const second_card = /** @type {HTMLElement} */ (cards[0]);
       const badge_text = Array.from(
         first_card.querySelectorAll('.label-badge')
       ).map((element) => element.textContent?.trim());
@@ -698,7 +698,7 @@ describe('views/board', () => {
     const deferred_cards = Array.from(
       mount.querySelectorAll('#deferred-col .board-card .mono')
     ).map((el) => el.textContent?.trim());
-    expect(deferred_cards).toEqual(['D-1', 'D-2']);
+    expect(deferred_cards).toEqual(['D-2', 'D-1']);
 
     button.click();
     expect(mount.querySelector('#deferred-col')).toBeNull();

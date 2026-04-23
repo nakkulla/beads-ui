@@ -6,7 +6,7 @@
 /**
  * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'deferred'|'resolved'|'closed', priority?: number, issue_type?: string, created_at?: number | string, updated_at?: number, closed_at?: number }} IssueLite
  */
-import { cmpClosedDesc, cmpPriorityThenCreated } from './sort.js';
+import { cmpClosedDesc, cmpCreatedDescThenPriority } from './sort.js';
 
 /**
  * Factory for list selectors.
@@ -20,7 +20,7 @@ export function createListSelectors(issue_stores = undefined) {
   // Sorting comparators are centralized in app/data/sort.js
 
   /**
-   * Get entities for a subscription id with Issues List sort (priority asc → created asc).
+   * Get entities for a subscription id with Issues List sort (created desc → priority asc).
    *
    * @param {string} client_id
    * @returns {IssueLite[]}
@@ -32,7 +32,7 @@ export function createListSelectors(issue_stores = undefined) {
     return issue_stores
       .snapshotFor(client_id)
       .slice()
-      .sort(cmpPriorityThenCreated);
+      .sort(cmpCreatedDescThenPriority);
   }
 
   /**
@@ -48,19 +48,19 @@ export function createListSelectors(issue_stores = undefined) {
         ? issue_stores.snapshotFor(client_id).slice()
         : [];
     if (mode === 'in_progress' || mode === 'resolved') {
-      arr.sort(cmpPriorityThenCreated);
+      arr.sort(cmpCreatedDescThenPriority);
     } else if (mode === 'closed') {
       arr.sort(cmpClosedDesc);
     } else {
       // ready/blocked share the same sort
-      arr.sort(cmpPriorityThenCreated);
+      arr.sort(cmpCreatedDescThenPriority);
     }
     return arr;
   }
 
   /**
    * Get children for an epic subscribed as client id `epic:${id}`.
-   * Sorted as Issues List (priority asc → created asc).
+   * Sorted as Issues List (created desc → priority asc).
    *
    * @param {string} epic_id
    * @returns {IssueLite[]}
@@ -77,7 +77,7 @@ export function createListSelectors(issue_stores = undefined) {
     const epic = arr.find((it) => String(it?.id || '') === String(epic_id));
     const dependents = Array.isArray(epic?.dependents) ? epic.dependents : [];
     return /** @type {IssueLite[]} */ (
-      dependents.slice().sort(cmpPriorityThenCreated)
+      dependents.slice().sort(cmpCreatedDescThenPriority)
     );
   }
 

@@ -67,7 +67,7 @@ describe('list-selectors', () => {
     expect(selectors.selectBoardColumn('tab:board:ready', 'ready')).toEqual([]);
   });
 
-  test('selectIssuesFor returns priority asc then created asc', async () => {
+  test('selectIssuesFor returns created_at desc before priority tie-breaks', async () => {
     const { issueStores, selectors } = setup();
     const store = issueStores.getStore('tab:issues');
     // Apply snapshot with items of varying priority and created_at
@@ -101,11 +101,11 @@ describe('list-selectors', () => {
     });
 
     const out = selectors.selectIssuesFor('tab:issues').map((x) => x.id);
-    // priority asc: B,C first (1), then A (2); within same priority sort by created asc
-    expect(out).toEqual(['B', 'C', 'A']);
+    // created_at desc first: C (11k), A (10k), B (9k)
+    expect(out).toEqual(['C', 'A', 'B']);
   });
 
-  test('selectBoardColumn sorts ready/blocked/in_progress by priority→created, closed by closed_at desc', async () => {
+  test('selectBoardColumn sorts open columns by created_at desc and closed by closed_at desc', async () => {
     const { issueStores, selectors } = setup();
     // Ready
     issueStores.getStore('tab:board:ready').applyPush({
@@ -162,12 +162,12 @@ describe('list-selectors', () => {
     const ready = selectors
       .selectBoardColumn('tab:board:ready', 'ready')
       .map((x) => x.id);
-    expect(ready).toEqual(['R2', 'R3', 'R1']);
+    expect(ready).toEqual(['R3', 'R1', 'R2']);
 
     const inprog = selectors
       .selectBoardColumn('tab:board:in-progress', 'in_progress')
       .map((x) => x.id);
-    expect(inprog).toEqual(['P3', 'P1', 'P2']);
+    expect(inprog).toEqual(['P2', 'P1', 'P3']);
 
     const closed = selectors
       .selectBoardColumn('tab:board:closed', 'closed')
@@ -176,7 +176,7 @@ describe('list-selectors', () => {
     expect(closed).toEqual(['C2', 'C1', 'C3']);
   });
 
-  test('selectEpicChildren uses detail:{id} dependents and list sorting (priority→created asc)', async () => {
+  test('selectEpicChildren uses detail:{id} dependents and latest-first sorting', async () => {
     const { issueStores, selectors } = setup();
     issueStores.getStore('detail:42').applyPush({
       type: 'snapshot',
@@ -206,7 +206,7 @@ describe('list-selectors', () => {
       ]
     });
     const out = selectors.selectEpicChildren('42').map((x) => x.id);
-    expect(out).toEqual(['E2', 'E1']);
+    expect(out).toEqual(['E1', 'E2']);
   });
 
   test('subscribe triggers once per issues envelope', async () => {
