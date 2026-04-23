@@ -116,7 +116,16 @@ function readRuntimeConfig(config_path) {
       workspace_config: normalizeWorkspaceConfig(parsed)
     };
   } catch (error) {
-    log('invalid bdui config %s: %o', config_path, error);
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'ENOENT'
+    ) {
+      log('missing bdui config %s', config_path);
+    } else {
+      log('invalid bdui config %s: %o', config_path, error);
+    }
     return {
       label_display_policy: {
         visible_prefixes: DEFAULT_VISIBLE_PREFIXES.slice()

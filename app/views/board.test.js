@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 import { createSubscriptionIssueStore } from '../data/subscription-issue-store.js';
 import { createStore } from '../state.js';
@@ -695,7 +696,10 @@ describe('views/board', () => {
   });
 
   test('defines shared min-width contract for six-column deferred layout', () => {
-    const stylesheet = readFileSync('app/styles.css', 'utf8');
+    const stylesheet = readFileSync(
+      join(import.meta.dirname, '../styles.css'),
+      'utf8'
+    );
 
     expect(stylesheet).toContain('--board-column-min-width: 300px;');
     expect(stylesheet).toContain('minmax(var(--board-column-min-width), 1fr)');
@@ -705,7 +709,10 @@ describe('views/board', () => {
   });
 
   test('defines route-shell and column-body scroll contract for board', () => {
-    const stylesheet = readFileSync('app/styles.css', 'utf8');
+    const stylesheet = readFileSync(
+      join(import.meta.dirname, '../styles.css'),
+      'utf8'
+    );
 
     expect(stylesheet).toContain('#board-root.route.board');
     expect(stylesheet).toContain('#board-root > .panel__body');

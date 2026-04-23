@@ -20,14 +20,6 @@ function writeTomlFixture(content) {
 }
 
 /**
- * @param {string} content
- * @returns {string}
- */
-function writeBrokenTomlFixture(content) {
-  return writeTomlFixture(content);
-}
-
-/**
  * @returns {string}
  */
 function missingConfigPath() {
@@ -103,9 +95,7 @@ visible_prefixes = ["has:", "reviewed:", "area:", "component:"]
   });
 
   test('falls back when config TOML is invalid', () => {
-    process.env.BDUI_CONFIG_PATH = writeBrokenTomlFixture(
-      'default_workspace = ['
-    );
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture('default_workspace = [');
 
     const config = getConfig();
 

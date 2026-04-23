@@ -69,4 +69,23 @@ describe('ws message handling', () => {
     expect(obj.ok).toBe(false);
     expect(obj.error.code).toBe('bad_request');
   });
+
+  test('set-workspace rejects relative paths', async () => {
+    const ws = makeStubSocket();
+    const req = {
+      id: 'workspace-2',
+      type: 'set-workspace',
+      payload: { path: 'relative/workspace' }
+    };
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(JSON.stringify(req))
+    );
+
+    const last = ws.sent[ws.sent.length - 1];
+    const obj = JSON.parse(last);
+    expect(obj.ok).toBe(false);
+    expect(obj.error.code).toBe('bad_request');
+  });
 });

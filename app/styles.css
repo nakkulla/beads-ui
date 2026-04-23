@@ -2365,7 +2365,6 @@ html[data-theme='dark'] {
 
 .worker-layout {
   display: grid;
-  min-height: calc(100vh - 92px);
   height: 100%;
   min-height: 0;
   overflow: hidden;

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 import { createWorkerDetailView } from './worker-detail.js';
 
@@ -122,7 +123,10 @@ describe('views/worker-detail', () => {
   });
 
   test('defines worker detail scroll owner styles', () => {
-    const stylesheet = readFileSync('app/styles.css', 'utf8');
+    const stylesheet = readFileSync(
+      join(import.meta.dirname, '../styles.css'),
+      'utf8'
+    );
 
     expect(stylesheet).toContain('#worker-detail-mount');
     expect(stylesheet).toContain('.worker-detail');

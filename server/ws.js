@@ -1416,7 +1416,11 @@ export async function handleMessage(ws, data) {
   if (req.type === 'set-workspace') {
     log('set-workspace');
     const { path: workspace_path } = /** @type {any} */ (req.payload || {});
-    if (typeof workspace_path !== 'string' || workspace_path.length === 0) {
+    if (
+      typeof workspace_path !== 'string' ||
+      workspace_path.length === 0 ||
+      !path.isAbsolute(workspace_path)
+    ) {
       ws.send(
         JSON.stringify(
           makeError(
@@ -1431,10 +1435,10 @@ export async function handleMessage(ws, data) {
 
     // Resolve and validate the path
     const resolved = path.resolve(workspace_path);
-    const allowed = getAvailableWorkspaces().map((workspace) =>
-      path.resolve(workspace.path)
+    const allowed = new Set(
+      getAvailableWorkspaces().map((workspace) => path.resolve(workspace.path))
     );
-    if (!allowed.includes(resolved)) {
+    if (!allowed.has(resolved)) {
       ws.send(
         JSON.stringify(
           makeError(
