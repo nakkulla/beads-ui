@@ -51,6 +51,7 @@ const issues = [
 
 expect(selectors.selectIssuesFor('tab:issues').map((it) => it.id)).toEqual(['UI-2', 'UI-1']);
 expect(selectors.selectBoardColumn('tab:board:closed', 'closed').map((it) => it.id)).toEqual(['UI-3']);
+expect(selectors.selectEpicChildren('EPIC-1').map((it) => it.id)).toEqual(['UI-2', 'UI-1']);
 ```
 
 - [ ] **Step 2: subscription snapshot도 같은 sorting contract를 따르는지 failing test를 추가한다**
@@ -99,7 +100,7 @@ export function cmpCreatedDescThenPriority(a, b) {
 import { cmpClosedDesc, cmpCreatedDescThenPriority } from './sort.js';
 ```
 
-- [ ] **Step 5: selector/store 주석과 targeted tests를 갱신 후 다시 실행한다**
+- [ ] **Step 5: selector/store 주석과 `issues list / board / epics children / subscription snapshot` coverage를 맞춘 뒤 targeted tests를 다시 실행한다**
 
 Run: `npm test -- app/data/list-selectors.test.js app/data/subscription-issue-store.test.js`
 Expected: PASS
