@@ -163,6 +163,19 @@ dotfiles의 `shell/bin/bdui-server`는 다음 두 파일을 별도로 읽는다.
 - picker 밖 arbitrary path 전환을 허용하면 config contract가 약해지고 검증/보안 경계가 흐려진다.
 - 컬럼형 UI의 scroll ownership을 body로 고정하면 header visibility와 operator ergonomics가 훨씬 안정적이다.
 
+## 실행면별 책임 분리
+
+이번 TOML 전환은 현재 코드베이스의 세 실행면을 동시에 건드린다. spec의 source-of-truth를 흔들리지 않게 하기 위해 책임을 다음처럼 분리한다.
+
+| 실행면 | 현재 상태 | 변경 후 책임 | legacy와의 관계 |
+|---|---|---|---|
+| `beads-ui` server (`server/config.js`, `server/workspace-discovery.js`, `server/index.js`) | JSON + line-based conf를 각각 읽음 | `config.toml`에서 runtime config와 workspace config를 로드하고 current workspace를 결정 | legacy 파일을 읽지 않음 |
+| dotfiles shared wrapper (`shell/bin/bdui-server`) | shell이 `bdui-default-workspace` / `bdui-workspaces.conf`를 직접 파싱 | shell은 bootstrap만 담당하고, repo-local Node helper를 호출해 startup cwd를 얻음 | legacy 파일을 읽지 않음 |
+| installer (`install-shell.sh`) | legacy 파일을 생성함 | `config.toml`을 생성/갱신하고 기존 legacy 파일을 cleanup | 새 설치에서는 legacy 생성 금지 |
+
+즉, 이번 설계는 “helper/loader 구조를 전제로 한 새 world”를 막연히 가정하는 것이 아니라, **server / wrapper / installer 세 실행면이 각각 어떤 loader를 맡는지**를 명시적으로 재배선하는 작업이다.
+
+
 ## 설계
 
 ## 1. 통합 TOML 설정 계약
@@ -228,6 +241,15 @@ visible_prefixes = ["has:", "reviewed:"]
 - `workspaces` entry가 workspace 검증을 통과하지 못하면 무시
 - parse 실패 또는 invalid entry는 debug/error log에 남기되, 서버는 fail-fast하지 않는다
 
+운영자가 먼저 보게 되는 신호 순서는 다음과 같다.
+
+1. runtime은 `config.toml`만 읽는다
+2. parse 실패/invalid entry는 warning/debug log로 남긴다
+3. runtime은 legacy 파일로 fallback하지 않는다
+4. installer가 실행되는 경우에만 legacy cleanup이 별도로 일어난다
+
+즉, runtime 무시 정책과 installer cleanup 정책은 같은 일이 아니라 **서로 다른 시점의 동작**이다.
+
 ### 1.6 legacy 정책
 
 다음 파일은 새 runtime에서 더 이상 읽지 않는다.
@@ -237,6 +259,12 @@ visible_prefixes = ["has:", "reviewed:"]
 - `~/.config/bdui-default-workspace`
 
 이번 설계는 **fallback 없음 / auto-migration 없음**을 기본 정책으로 한다.
+
+installer 정책은 다음으로 고정한다.
+
+- 새 install은 legacy 파일을 생성하지 않는다
+- dotfiles install은 기존 legacy 파일이 남아 있으면 **명시적으로 삭제(cleanup)** 한다
+- beads-ui runtime은 cleanup 유무와 무관하게 legacy 파일을 무시한다
 
 ## 2. beads-ui 서버 로더 재구성
 
@@ -327,6 +355,12 @@ dedupe key는 normalized `path`다.
 
 explicit workspaces를 먼저 두는 이유는 사용자가 직접 지정한 repo를 picker 상에서 더 예측 가능하게 유지하기 위해서다.
 
+추가 ordering 규칙은 다음과 같다.
+
+- `default_workspace`가 `workspaces`에 직접 포함되어 있으면 explicit ordering을 유지한 채 `available` 목록 안에 남는다
+- `default_workspace`가 explicit list에는 없지만 discovery로 발견되면 dedupe 후 그 위치를 유지한다
+- `default_workspace`가 invalid면 특별 취급하지 않는다
+
 ### 3.5 dynamic registry와의 관계
 
 `server/registry-watcher.js`의 registry/in-memory merge 모델은 유지한다.
@@ -341,12 +375,14 @@ explicit workspaces를 먼저 두는 이유는 사용자가 직접 지정한 rep
 
 ### 4.1 startup current workspace 우선순위
 
-서버 startup 시 current workspace는 다음 순서로 결정한다.
+`workspace current/default` 규칙은 **shared wrapper bootstrap** 과 **server runtime current resolution** 을 분리해서 본다.
 
-1. `workspace_config.default_workspace`가 유효하면 사용
-2. server process `root_dir`가 유효한 workspace면 사용
-3. configured/discovered workspace 목록의 첫 항목 사용
-4. 아무것도 없으면 `null`
+| 구분 | 우선순위 | 비고 |
+|---|---|---|
+| shared wrapper bootstrap cwd | `default_workspace -> first available configured workspace -> $HOME` | launchd/shared runtime 기동 전용 |
+| server runtime current workspace | `default_workspace -> process cwd if valid -> first available configured workspace -> null` | repo-local ad-hoc 실행도 수용 |
+
+즉, shared runtime에서는 wrapper가 이미 위 규칙으로 startup cwd를 정하므로 server current도 사실상 같은 workspace로 수렴한다. 반대로 repo-local 실행에서는 process `cwd` 기반 동작을 유지한다.
 
 ### 4.2 shared runtime wrapper와의 정합성
 
@@ -356,11 +392,22 @@ dotfiles의 `shell/bin/bdui-server`도 같은 `config.toml`을 읽어 startup cw
 
 wrapper 책임은 다음으로 단순화한다.
 
-- `config.toml` 존재 시 `default_workspace`를 우선 해석
-- 없거나 invalid면 repo checkout readiness 확인 후 안전한 fallback startup
+- shell wrapper 자체는 TOML을 직접 파싱하지 않는다
+- 대신 repo-pinned `beads-ui` checkout 안의 **작은 Node helper**를 one-shot으로 호출해 startup workspace를 계산한다
+- helper는 `config.toml`을 읽고 `default_workspace -> first available configured workspace -> $HOME` 규칙에 따라 startup cwd를 stdout으로 반환한다
+- wrapper는 그 stdout을 `cd` 대상으로 사용한 뒤 기존처럼 `server/index.js`를 실행한다
 - legacy `bdui-default-workspace`, `bdui-workspaces.conf`는 읽지 않음
 
-이렇게 해야 shared runtime startup cwd와 beads-ui server 내부 current workspace 결정 규칙이 같은 계약을 공유한다.
+즉, TOML parsing boundary는 shell이 아니라 **repo-local Node helper**이며, `bdui-server`는 bootstrap wrapper 역할만 유지한다.
+
+반면 beads-ui 서버 자체의 current workspace 결정은 다음처럼 정리한다.
+
+- `default_workspace`가 유효하면 그것을 current로 사용
+- 그렇지 않으면 process `cwd`가 유효 workspace일 때만 current로 사용
+- 그것도 아니면 configured/discovered workspace의 첫 항목을 current로 사용
+- 그래도 없으면 `null`
+
+shared wrapper가 위 fallback으로 startup cwd를 고르면 shared runtime에서는 server current도 자연스럽게 같은 값으로 수렴하고, repo-local ad-hoc 실행에서는 process `cwd` 기반 동작도 계속 보존된다.
 
 ### 4.3 localStorage 정책
 
@@ -371,8 +418,9 @@ wrapper 책임은 다음으로 단순화한다.
 - `default_workspace`가 존재하고 유효하면 그것이 우선
 - `default_workspace`가 없을 때만 saved workspace hint를 적용 가능
 - saved workspace가 available list에 없으면 무시
+- `default_workspace`가 존재하는데 saved hint가 다른 값을 가리키면, bootstrap 시 그 saved hint는 적용하지 않고 **현재값을 `default_workspace`로 재동기화하거나 stale hint를 삭제**한다
 
-즉, config가 브라우저 캐시보다 우선한다.
+즉, config가 브라우저 캐시보다 우선하고, stale hint가 이후 bootstrap에서 계속 충돌을 일으키지 않도록 정리한다.
 
 ## 5. picker / 전환 API 계약
 
@@ -461,11 +509,30 @@ wrapper 책임은 다음으로 단순화한다.
 
 Board 전체는 상단 nav/header 아래 남은 높이를 사용해야 한다.
 
-즉, `panel__body`와 `board-root`는 다음을 만족해야 한다.
+실제 route boundary는 `app/main.js`의 `#board-root.route.board`다. 현재 Board는 `#issues-root`처럼 별도 `.panel` wrapper를 두지 않고 route root에 직접 mount된다. 따라서 구현 선택지는 둘 중 하나로 고정해야 한다.
+
+1. `#board-root` 아래에 dedicated `.panel` host wrapper를 새로 도입한다.
+2. 또는 `#board-root.route.board` 자체를 panel shell처럼 취급한다.
+
+이번 설계는 두 방식 모두 허용하되, **최소 contract는 route root에서 시작**해야 한다고 본다. 즉, `#board-root`, optional `.panel`, `.panel__body`, `.board-root`는 다음을 만족해야 한다.
 
 - 부모가 height-bounded container
 - child grid/flex가 `min-height: 0`
 - 각 column이 동일 기준 높이 안에서 작동
+
+Board에서 page-level scroll이 아니라 column body scroll이 실제로 동작하려면 ancestor chain의 최소 계약을 다음처럼 고정한다.
+
+| Layer | 역할 | 필수 계약 |
+|---|---|---|
+| `#board-root.route.board` | board route shell | app shell 안에서 `height:100%` 또는 동등한 bounded height, `min-height:0`, `overflow:hidden` |
+| `.panel` (board host panel이 있을 경우) | board 전체 높이 경계 | `display:flex`, `flex-direction:column`, `height:100%`, `min-height:0`, `overflow:hidden` |
+| `.panel__body` | toolbar + board root를 담는 vertical container | `display:flex`, `flex-direction:column`, `flex:1`, `min-height:0`, `overflow:hidden` |
+| `.board-root` | column grid | `flex:1`, `min-height:0`, `overflow:hidden` |
+| `.board-column` | column shell | `display:flex`, `flex-direction:column`, `min-height:0`, `overflow:hidden` |
+| `.board-column__header` | sticky header/control area | `flex:0 0 auto`, `position:sticky`, `top:0`, 명시적 background/z-index |
+| `.board-column__body` | 실제 scroll owner | `flex:1`, `min-height:0`, `overflow-y:auto` |
+
+핵심은 `.panel__body -> .board-root -> .board-column -> .board-column__body` 체인 전체에 `min-height: 0` 과 non-visible overflow 경계를 주어, body가 독립 scroll container가 되도록 만드는 것이다.
 
 ### 7.2 scroll ownership 변경
 
@@ -501,10 +568,28 @@ Board column header에는 다음이 포함될 수 있다.
 
 Worker는 Board와 동일한 “여러 상태 column” 구조는 아니지만, operator가 오래 사용하는 pane형 UI라는 점에서 같은 scroll contract를 따라야 한다.
 
+실제 route boundary는 `app/main.js`의 `#worker-root.route.worker`다. 현재 Worker도 dedicated `.panel` wrapper 없이 route root에 직접 mount된다. 따라서 Worker 역시 route root 자체를 shell로 강화하거나, 새 host wrapper를 추가하는 방식 중 하나를 택해야 한다. spec의 최소 계약은 route root에서 시작한다.
+
 구체적으로:
 - left tree/toolbar 영역은 viewport 기준 높이에 맞춰야 함
 - right detail 영역도 독립 scroll 가능해야 함
 - 전체 page scroll에 의존하지 않아야 함
+
+Worker에서 필요한 최소 ancestor chain 계약은 다음과 같다.
+
+| Layer | 역할 | 필수 계약 |
+|---|---|---|
+| `#worker-root.route.worker` | worker route shell | app shell 안에서 `height:100%` 또는 동등한 bounded height, `min-height:0`, `overflow:hidden` |
+| worker host panel / direct mount | worker 전체 높이 경계 | parent와 함께 `height:100%`, `min-height:0`, `overflow:hidden` |
+| `.worker-layout` | left/right pane grid | `height:100%` 또는 shell 기준 `flex:1`, `min-height:0`, `overflow:hidden` |
+| `.worker-layout__left` | tree pane shell | `display:flex`, `flex-direction:column`, `min-height:0`, `overflow:hidden` |
+| left toolbar/header area | filter/search controls | `flex:0 0 auto` |
+| left tree/body area | parent/child 목록 scroll owner | `flex:1`, `min-height:0`, `overflow-y:auto` |
+| `.worker-layout__right` | detail pane shell | `display:flex`, `flex-direction:column`, `min-height:0`, `overflow:hidden` |
+| right detail header area | selected parent summary / actions | `flex:0 0 auto` |
+| right detail body area | spec/log/PR/detail scroll owner | `flex:1`, `min-height:0`, `overflow-y:auto` |
+
+즉 Worker는 `worker-layout` 하나에만 최소 높이를 주는 것으로는 충분하지 않고, left/right pane과 각 pane의 실제 body node까지 scroll ownership을 끌어내려야 한다.
 
 ### 8.2 공통성과 차이
 
