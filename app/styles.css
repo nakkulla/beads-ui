@@ -697,7 +697,11 @@ button:disabled {
     var(--panel-bg) 78%,
     var(--status-deferred-base)
   );
-  --badge-fg-deferred: color-mix(in srgb, var(--status-deferred-base) 90%, #000);
+  --badge-fg-deferred: color-mix(
+    in srgb,
+    var(--status-deferred-base) 90%,
+    #000
+  );
   --badge-bg-closed: color-mix(
     in srgb,
     var(--panel-bg) 85%,
@@ -837,7 +841,11 @@ html[data-theme='dark'] {
     var(--panel-bg) 80%,
     var(--status-deferred-base)
   );
-  --badge-fg-deferred: color-mix(in srgb, var(--status-deferred-base) 75%, #fff);
+  --badge-fg-deferred: color-mix(
+    in srgb,
+    var(--status-deferred-base) 75%,
+    #fff
+  );
   --badge-bg-closed: color-mix(
     in srgb,
     var(--panel-bg) 80%,
@@ -2774,7 +2782,11 @@ html[data-theme='dark'] {
 .worker-badge--status.is-deferred {
   background: var(--badge-bg-deferred);
   color: var(--badge-fg-deferred);
-  border-color: color-mix(in srgb, var(--status-deferred-base) 45%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--status-deferred-base) 45%,
+    transparent
+  );
 }
 .worker-badge--status.is-resolved {
   background: var(--badge-bg-resolved);

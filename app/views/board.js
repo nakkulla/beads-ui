@@ -118,8 +118,8 @@ export function createBoardView(
   }
 
   function getVisibleLabelPrefixes() {
-    const prefixes = store?.getState?.().config?.label_display_policy
-      ?.visible_prefixes;
+    const prefixes =
+      store?.getState?.().config?.label_display_policy?.visible_prefixes;
 
     if (!Array.isArray(prefixes)) {
       return ['has:', 'reviewed:'];
@@ -222,7 +222,10 @@ export function createBoardView(
    * @param {IssueLite} it
    */
   function cardTemplate(it) {
-    const card_labels = filterVisibleLabels(it.labels, getVisibleLabelPrefixes());
+    const card_labels = filterVisibleLabels(
+      it.labels,
+      getVisibleLabelPrefixes()
+    );
     return html`
       <article
         class="board-card"
