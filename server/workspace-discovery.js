@@ -1,32 +1,33 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { resolveWorkspaceDatabase } from './db.js';
 import { debug } from './logging.js';
 
 const log = debug('workspace-discovery');
-
-const DEFAULT_CONFIG_PATH = path.join(
-  os.homedir(),
-  '.config',
-  'bdui-workspaces.conf'
-);
 const MAX_SCAN_DEPTH = 2;
 
 /**
- * @param {string} config_path
- * @returns {string[]}
+ * @param {string} repo_path
+ * @returns {{ path: string, database: string } | null}
  */
-function readConfigLines(config_path) {
-  try {
-    const content = fs.readFileSync(config_path, 'utf8');
-    return content
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !line.startsWith('#'));
-  } catch {
-    return [];
+function toWorkspaceEntry(repo_path) {
+  const resolved = path.resolve(repo_path);
+  const db = resolveWorkspaceDatabase({ cwd: resolved });
+  if (db.source === 'home-default' || !db.exists) {
+    return null;
   }
+  return {
+    path: resolved,
+    database: db.path
+  };
+}
+
+/**
+ * @param {string} repo_path
+ * @returns {boolean}
+ */
+export function isWorkspacePath(repo_path) {
+  return toWorkspaceEntry(repo_path) !== null;
 }
 
 /**
@@ -80,33 +81,111 @@ function findBeadsRepos(base_dir, max_depth) {
 }
 
 /**
- * @param {string} [config_path]
- * @returns {Array<{ path: string, database: string }>}
+ * @param {unknown} value
+ * @returns {string[]}
  */
-export function discoverWorkspaces(config_path) {
-  const resolved_config =
-    config_path || process.env.BDUI_WORKSPACES_CONFIG || DEFAULT_CONFIG_PATH;
-  const scan_dirs = readConfigLines(resolved_config);
-
-  if (scan_dirs.length === 0) {
-    log('no scan directories configured in %s', resolved_config);
+function normalizePathList(value) {
+  if (!Array.isArray(value)) {
     return [];
   }
 
-  /** @type {Array<{ path: string, database: string }>} */
+  /** @type {string[]} */
+  const paths = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.trim().length === 0) {
+      continue;
+    }
+    if (!path.isAbsolute(entry)) {
+      continue;
+    }
+    paths.push(path.resolve(entry));
+  }
+  return paths;
+}
+
+/**
+ * @param {Array<{ path: string, database: string }>} workspaces
+ * @returns {Array<{ path: string, database: string }>}
+ */
+function dedupeWorkspaces(workspaces) {
+  /** @type {Array<{ path: string, database: string }>}
+   */
+  const deduped = [];
+  const seen = new Set();
+
+  for (const workspace of workspaces) {
+    const resolved = path.resolve(workspace.path);
+    if (seen.has(resolved)) {
+      continue;
+    }
+    seen.add(resolved);
+    deduped.push({
+      path: resolved,
+      database: workspace.database
+    });
+  }
+
+  return deduped;
+}
+
+/**
+ * @param {{ workspace_config?: { scan_roots?: unknown, workspaces?: unknown } }} [input]
+ * @returns {Array<{ path: string, database: string }>}
+ */
+export function discoverWorkspaces(input = {}) {
+  const workspace_config = input.workspace_config;
+  if (!workspace_config) {
+    return [];
+  }
+
+  /** @type {Array<{ path: string, database: string }>}
+   */
   const workspaces = [];
 
-  for (const scan_dir of scan_dirs) {
-    const repos = findBeadsRepos(scan_dir, MAX_SCAN_DEPTH);
-    for (const repo_path of repos) {
-      const db = resolveWorkspaceDatabase({ cwd: repo_path });
-      if (db.source !== 'home-default' && db.exists) {
-        log('discovered workspace: %s (db: %s)', repo_path, db.path);
-        workspaces.push({ path: repo_path, database: db.path });
+  for (const repo_path of normalizePathList(workspace_config.workspaces)) {
+    const workspace = toWorkspaceEntry(repo_path);
+    if (!workspace) {
+      continue;
+    }
+    workspaces.push(workspace);
+  }
+
+  for (const scan_dir of normalizePathList(workspace_config.scan_roots)) {
+    for (const repo_path of findBeadsRepos(scan_dir, MAX_SCAN_DEPTH)) {
+      const workspace = toWorkspaceEntry(repo_path);
+      if (!workspace) {
+        continue;
       }
+      workspaces.push(workspace);
     }
   }
 
-  log('discovered %d workspace(s) from %s', workspaces.length, resolved_config);
-  return workspaces;
+  const deduped = dedupeWorkspaces(workspaces);
+  log('discovered %d workspace(s) from normalized config', deduped.length);
+  return deduped;
+}
+
+/**
+ * @param {{
+ *   configured_workspaces: Array<{ path: string, database: string }>,
+ *   default_workspace?: string | null,
+ *   cwd?: string | null
+ * }} input
+ * @returns {string | null}
+ */
+export function resolveStartupWorkspace(input) {
+  if (
+    input.default_workspace &&
+    input.configured_workspaces.some(
+      (workspace) => workspace.path === path.resolve(input.default_workspace)
+    )
+  ) {
+    return path.resolve(input.default_workspace);
+  }
+
+  if (input.cwd && isWorkspacePath(input.cwd)) {
+    return path.resolve(input.cwd);
+  }
+
+  return input.configured_workspaces[0]?.path ?? null;
 }

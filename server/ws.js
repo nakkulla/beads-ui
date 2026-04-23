@@ -508,19 +508,26 @@ function applyClosedIssuesFilter(spec, items) {
  * Attach a WebSocket server to an existing HTTP server.
  *
  * @param {Server} http_server
- * @param {{ path?: string, heartbeat_ms?: number, refresh_debounce_ms?: number, root_dir?: string, watcher?: { rebind: (opts?: { root_dir?: string }) => void, path: string } }} [options]
+ * @param {{ path?: string, heartbeat_ms?: number, refresh_debounce_ms?: number, root_dir?: string, initial_workspace_root?: string | null, watcher?: { rebind: (opts?: { root_dir?: string }) => void, path: string } }} [options]
  * @returns {{ wss: WebSocketServer, broadcast: (type: MessageType, payload?: unknown) => void, scheduleListRefresh: () => void, setWorkspace: (root_dir: string) => { changed: boolean, workspace: { root_dir: string, db_path: string } } }}
  */
 export function attachWsServer(http_server, options = {}) {
   const ws_path = options.path || '/ws';
 
   // Initialize workspace state
-  const initial_root = options.root_dir || process.cwd();
-  const initial_db = resolveWorkspaceDatabase({ cwd: initial_root });
-  CURRENT_WORKSPACE = {
-    root_dir: initial_root,
-    db_path: initial_db.path
-  };
+  const initial_root =
+    options.initial_workspace_root === undefined
+      ? options.root_dir || process.cwd()
+      : options.initial_workspace_root;
+  if (initial_root) {
+    const initial_db = resolveWorkspaceDatabase({ cwd: initial_root });
+    CURRENT_WORKSPACE = {
+      root_dir: initial_root,
+      db_path: initial_db.path
+    };
+  } else {
+    CURRENT_WORKSPACE = null;
+  }
 
   if (options.watcher) {
     DB_WATCHER = options.watcher;
@@ -1424,6 +1431,21 @@ export async function handleMessage(ws, data) {
 
     // Resolve and validate the path
     const resolved = path.resolve(workspace_path);
+    const allowed = getAvailableWorkspaces().map((workspace) =>
+      path.resolve(workspace.path)
+    );
+    if (!allowed.includes(resolved)) {
+      ws.send(
+        JSON.stringify(
+          makeError(
+            req,
+            'bad_request',
+            'Workspace must be in the available workspace list'
+          )
+        )
+      );
+      return;
+    }
 
     // Update workspace (this will rebind watcher, clear registry, broadcast change)
     const new_db = resolveWorkspaceDatabase({ cwd: resolved });
