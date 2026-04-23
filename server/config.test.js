@@ -8,15 +8,23 @@ import { getConfig } from './config.js';
 const temp_dirs = [];
 
 /**
- * @param {unknown} payload
+ * @param {string} content
  * @returns {string}
  */
-function writeConfigFixture(payload) {
+function writeTomlFixture(content) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-config-'));
-  const file_path = path.join(dir, 'config.json');
+  const file_path = path.join(dir, 'config.toml');
   temp_dirs.push(dir);
-  fs.writeFileSync(file_path, JSON.stringify(payload));
+  fs.writeFileSync(file_path, content);
   return file_path;
+}
+
+/**
+ * @param {string} content
+ * @returns {string}
+ */
+function writeBrokenTomlFixture(content) {
+  return writeTomlFixture(content);
 }
 
 /**
@@ -25,7 +33,7 @@ function writeConfigFixture(payload) {
 function missingConfigPath() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-config-missing-'));
   temp_dirs.push(dir);
-  return path.join(dir, 'config.json');
+  return path.join(dir, 'config.toml');
 }
 
 afterEach(() => {
@@ -53,7 +61,7 @@ describe('getConfig', () => {
     expect(config.frontend_mode).toBe('static');
   });
 
-  test('returns default label policy when config file is missing', () => {
+  test('returns default config when config file is missing', () => {
     process.env.BDUI_CONFIG_PATH = missingConfigPath();
 
     const config = getConfig();
@@ -62,14 +70,22 @@ describe('getConfig', () => {
       'has:',
       'reviewed:'
     ]);
+    expect(config.workspace_config).toEqual({
+      default_workspace: null,
+      scan_roots: [],
+      workspaces: []
+    });
   });
 
-  test('reads label policy from global config file', () => {
-    process.env.BDUI_CONFIG_PATH = writeConfigFixture({
-      labels: {
-        visible_prefixes: ['has:', 'reviewed:', 'area:', 'component:']
-      }
-    });
+  test('reads label policy and workspace config from global TOML config file', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+default_workspace = "/repo-a"
+scan_roots = ["/scan-a", "", "relative/path"]
+workspaces = ["/repo-b", "/repo-b"]
+
+[labels]
+visible_prefixes = ["has:", "reviewed:", "area:", "component:"]
+`);
 
     const config = getConfig();
 
@@ -79,14 +95,15 @@ describe('getConfig', () => {
       'area:',
       'component:'
     ]);
+    expect(config.workspace_config).toEqual({
+      default_workspace: '/repo-a',
+      scan_roots: ['/scan-a'],
+      workspaces: ['/repo-b']
+    });
   });
 
-  test('falls back when config json is invalid', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-config-'));
-    const file_path = path.join(dir, 'config.json');
-    temp_dirs.push(dir);
-    fs.writeFileSync(file_path, '{"labels":');
-    process.env.BDUI_CONFIG_PATH = file_path;
+  test('falls back when config TOML is invalid', () => {
+    process.env.BDUI_CONFIG_PATH = writeBrokenTomlFixture('default_workspace = [');
 
     const config = getConfig();
 
@@ -94,12 +111,20 @@ describe('getConfig', () => {
       'has:',
       'reviewed:'
     ]);
+    expect(config.workspace_config).toEqual({
+      default_workspace: null,
+      scan_roots: [],
+      workspaces: []
+    });
   });
 
   test('falls back when config has no valid prefixes', () => {
-    process.env.BDUI_CONFIG_PATH = writeConfigFixture({
-      labels: { visible_prefixes: [null, 3, ''] }
-    });
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+scan_roots = ["/scan-a"]
+
+[labels]
+visible_prefixes = [1, true, ""]
+`);
 
     const config = getConfig();
 
@@ -107,15 +132,28 @@ describe('getConfig', () => {
       'has:',
       'reviewed:'
     ]);
+    expect(config.workspace_config).toEqual({
+      default_workspace: null,
+      scan_roots: ['/scan-a'],
+      workspaces: []
+    });
   });
 
   test('preserves explicit empty array to hide summary labels', () => {
-    process.env.BDUI_CONFIG_PATH = writeConfigFixture({
-      labels: { visible_prefixes: [] }
-    });
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+workspaces = ["/repo-a"]
+
+[labels]
+visible_prefixes = []
+`);
 
     const config = getConfig();
 
     expect(config.label_display_policy.visible_prefixes).toEqual([]);
+    expect(config.workspace_config).toEqual({
+      default_workspace: null,
+      scan_roots: [],
+      workspaces: ['/repo-a']
+    });
   });
 });
