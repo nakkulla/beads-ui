@@ -36,7 +36,7 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig }} AppConfig
+ * @typedef {{ label_display_policy?: LabelDisplayPolicy, workspace_config?: WorkspaceConfig }} AppConfig
  */
 
 /**
@@ -54,7 +54,7 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState, config: AppConfig }} AppState
+ * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState, config: { label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig } }} AppState
  */
 
 const DEFAULT_CONFIG = Object.freeze({
@@ -67,8 +67,8 @@ const DEFAULT_CONFIG = Object.freeze({
 });
 
 /**
- * @param {Partial<AppConfig> | undefined} input
- * @returns {AppConfig}
+ * @param {AppConfig | undefined} input
+ * @returns {{ label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig }}
  */
 function normalizeConfig(input) {
   const prefixes = input?.label_display_policy?.visible_prefixes;
@@ -81,8 +81,8 @@ function normalizeConfig(input) {
   if (!Array.isArray(prefixes)) {
     return {
       label_display_policy: {
-        visible_prefixes: DEFAULT_CONFIG.label_display_policy.visible_prefixes
-          .slice()
+        visible_prefixes:
+          DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice()
       },
       workspace_config: {
         default_workspace
@@ -103,7 +103,7 @@ function normalizeConfig(input) {
 /**
  * Create a simple store for application state.
  *
- * @param {Partial<AppState>} [initial]
+ * @param {{ selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }} [initial]
  * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
  */
 export function createStore(initial = {}) {
@@ -181,7 +181,9 @@ export function createStore(initial = {}) {
               : state.workspace.available
         },
         config:
-          patch.config !== undefined ? normalizeConfig(patch.config) : state.config
+          patch.config !== undefined
+            ? normalizeConfig(patch.config)
+            : state.config
       };
       const workspace_changed =
         next.workspace.current?.path !== state.workspace.current?.path ||

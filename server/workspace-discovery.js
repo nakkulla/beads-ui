@@ -129,7 +129,7 @@ function dedupeWorkspaces(workspaces) {
 }
 
 /**
- * @param {{ workspace_config?: { scan_roots?: unknown, workspaces?: unknown } }} [input]
+ * @param {{ workspace_config?: { default_workspace?: unknown, scan_roots?: unknown, workspaces?: unknown } }} [input]
  * @returns {Array<{ path: string, database: string }>}
  */
 export function discoverWorkspaces(input = {}) {
@@ -174,13 +174,18 @@ export function discoverWorkspaces(input = {}) {
  * @returns {string | null}
  */
 export function resolveStartupWorkspace(input) {
+  const default_workspace =
+    typeof input.default_workspace === 'string'
+      ? path.resolve(input.default_workspace)
+      : null;
+
   if (
-    input.default_workspace &&
+    default_workspace &&
     input.configured_workspaces.some(
-      (workspace) => workspace.path === path.resolve(input.default_workspace)
+      (workspace) => workspace.path === default_workspace
     )
   ) {
-    return path.resolve(input.default_workspace);
+    return default_workspace;
   }
 
   if (input.cwd && isWorkspacePath(input.cwd)) {

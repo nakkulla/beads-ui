@@ -5,11 +5,11 @@ import { getConfig } from './config.js';
 import { resolveWorkspaceDatabase } from './db.js';
 import { debug, enableAllDebug } from './logging.js';
 import { registerWorkspace, watchRegistry } from './registry-watcher.js';
+import { watchDb } from './watcher.js';
 import {
   discoverWorkspaces,
   resolveStartupWorkspace
 } from './workspace-discovery.js';
-import { watchDb } from './watcher.js';
 import { attachWsServer } from './ws.js';
 
 if (process.argv.includes('--debug') || process.argv.includes('-d')) {
@@ -45,10 +45,17 @@ const startup_workspace_root = resolveStartupWorkspace({
 
 if (
   startup_workspace_root &&
-  !configured_workspaces.some((workspace) => workspace.path === startup_workspace_root)
+  !configured_workspaces.some(
+    (workspace) => workspace.path === startup_workspace_root
+  )
 ) {
-  const workspace_database = resolveWorkspaceDatabase({ cwd: startup_workspace_root });
-  if (workspace_database.source !== 'home-default' && workspace_database.exists) {
+  const workspace_database = resolveWorkspaceDatabase({
+    cwd: startup_workspace_root
+  });
+  if (
+    workspace_database.source !== 'home-default' &&
+    workspace_database.exists
+  ) {
     registerWorkspace({
       path: startup_workspace_root,
       database: workspace_database.path

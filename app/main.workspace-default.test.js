@@ -23,17 +23,17 @@ function setupShell() {
 
 beforeEach(() => {
   window.localStorage.clear();
-  delete window.__BDUI_BOOTSTRAP__;
+  delete (/** @type {any} */ (window).__BDUI_BOOTSTRAP__);
 });
 
 afterEach(() => {
-  delete window.__BDUI_BOOTSTRAP__;
+  delete (/** @type {any} */ (window).__BDUI_BOOTSTRAP__);
 });
 
 describe('main default workspace precedence', () => {
   test('does not restore a saved workspace over configured default', async () => {
     window.localStorage.setItem('beads-ui.workspace', '/repo-b');
-    window.__BDUI_BOOTSTRAP__ = {
+    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
       label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
       workspace_config: { default_workspace: '/repo-a' }
     };
@@ -86,7 +86,7 @@ describe('main default workspace precedence', () => {
 
   test('removes stale saved workspace hints that are no longer available', async () => {
     window.localStorage.setItem('beads-ui.workspace', '/repo-missing');
-    window.__BDUI_BOOTSTRAP__ = {
+    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
       label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
       workspace_config: { default_workspace: null }
     };
@@ -95,9 +95,7 @@ describe('main default workspace precedence', () => {
       send: vi.fn(async (type) => {
         if (type === 'list-workspaces') {
           return {
-            workspaces: [
-              { path: '/repo-a', database: '/repo-a/.beads/ui.db' }
-            ],
+            workspaces: [{ path: '/repo-a', database: '/repo-a/.beads/ui.db' }],
             current: {
               root_dir: '/repo-a',
               db_path: '/repo-a/.beads/ui.db'

@@ -394,7 +394,6 @@ a {
   }
 }
 
-
 #board-root.route.board,
 #worker-root.route.worker {
   display: flex;

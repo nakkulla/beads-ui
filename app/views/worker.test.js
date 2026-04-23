@@ -163,5 +163,4 @@ describe('views/worker', () => {
     expect(stylesheet).toContain('.worker-detail');
     expect(stylesheet).toContain('min-height: 0;');
   });
-
 });

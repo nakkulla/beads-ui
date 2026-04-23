@@ -51,7 +51,8 @@ function readBootstrapConfig() {
   if (!Array.isArray(prefixes)) {
     return {
       label_display_policy: {
-        visible_prefixes: DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice()
+        visible_prefixes:
+          DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice()
       },
       workspace_config: {
         default_workspace
@@ -70,7 +71,7 @@ function readBootstrapConfig() {
 }
 
 /**
- * @param {{ setState: (patch: { config?: { label_display_policy: { visible_prefixes: string[] }, workspace_config?: { default_workspace: string | null } } }) => void }} store
+ * @param {{ setState: (patch: { config?: { label_display_policy?: { visible_prefixes: string[] }, workspace_config?: { default_workspace: string | null } } }) => void }} store
  * @param {(message: string, details: unknown) => void} log_error
  * @returns {Promise<void>}
  */
@@ -420,7 +421,10 @@ export function bootstrap(root_element) {
             window.localStorage.getItem('beads-ui.workspace');
 
           if (configuredDefault && current?.path === configuredDefault) {
-            window.localStorage.setItem('beads-ui.workspace', configuredDefault);
+            window.localStorage.setItem(
+              'beads-ui.workspace',
+              configuredDefault
+            );
             return;
           }
 

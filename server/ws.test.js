@@ -41,7 +41,10 @@ describe('ws message handling', () => {
   test('unknown message type returns unknown_type error', async () => {
     const ws = makeStubSocket();
     const req = { id: '1', type: 'some-unknown', payload: {} };
-    await handleMessage(/** @type {any} */ (ws), Buffer.from(JSON.stringify(req)));
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(JSON.stringify(req))
+    );
     const last = ws.sent[ws.sent.length - 1];
     const obj = JSON.parse(last);
     expect(obj.ok).toBe(false);
@@ -56,7 +59,10 @@ describe('ws message handling', () => {
       payload: { path: '/outside-configured' }
     };
 
-    await handleMessage(/** @type {any} */ (ws), Buffer.from(JSON.stringify(req)));
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(JSON.stringify(req))
+    );
 
     const last = ws.sent[ws.sent.length - 1];
     const obj = JSON.parse(last);

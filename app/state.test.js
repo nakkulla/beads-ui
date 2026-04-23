@@ -48,9 +48,9 @@ describe('state store', () => {
       }
     });
 
-    expect(store.getState().config.label_display_policy.visible_prefixes).toEqual(
-      ['area:', 'agent:']
-    );
+    expect(
+      store.getState().config.label_display_policy.visible_prefixes
+    ).toEqual(['area:', 'agent:']);
     expect(store.getState().config.workspace_config.default_workspace).toBe(
       '/repo-a'
     );

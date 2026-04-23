@@ -104,6 +104,7 @@ function normalizeWorkspaceConfig(parsed) {
 function readRuntimeConfig(config_path) {
   try {
     const raw = fs.readFileSync(config_path, 'utf8');
+    /** @type {any} */
     const parsed = parseToml(raw);
 
     return {
