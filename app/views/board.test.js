@@ -225,6 +225,70 @@ describe('views/board', () => {
     expect(navigations[0]).toBe('R-3');
   });
 
+  test('applies latest-first sorting in fallback fetch mode without push stores', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(
+      mount,
+      {
+        async getReady() {
+          return [
+            {
+              id: 'R-1',
+              title: 'older high priority',
+              priority: 0,
+              created_at: Date.parse('2025-10-20T08:00:00.000Z')
+            },
+            {
+              id: 'R-2',
+              title: 'newer lower priority',
+              priority: 3,
+              created_at: Date.parse('2025-10-22T08:00:00.000Z')
+            }
+          ];
+        },
+        async getBlocked() {
+          return [];
+        },
+        async getInProgress() {
+          return [];
+        },
+        async getResolved() {
+          return [
+            {
+              id: 'RS-1',
+              title: 'older resolved',
+              priority: 0,
+              created_at: Date.parse('2025-10-19T08:00:00.000Z')
+            },
+            {
+              id: 'RS-2',
+              title: 'newer resolved',
+              priority: 4,
+              created_at: Date.parse('2025-10-23T08:00:00.000Z')
+            }
+          ];
+        },
+        async getClosed() {
+          return [];
+        }
+      },
+      () => {}
+    );
+
+    await view.load();
+
+    const ready_ids = Array.from(
+      mount.querySelectorAll('#ready-col .board-card .mono')
+    ).map((el) => el.textContent?.trim());
+    const resolved_ids = Array.from(
+      mount.querySelectorAll('#resolved-col .board-card .mono')
+    ).map((el) => el.textContent?.trim());
+
+    expect(ready_ids).toEqual(['R-2', 'R-1']);
+    expect(resolved_ids).toEqual(['RS-2', 'RS-1']);
+  });
+
   test('shows column count badges next to titles', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
