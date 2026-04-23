@@ -1,0 +1,223 @@
+{
+  "schema_version": "v1",
+  "workflow": "bd-ralph",
+  "parent_bead_id": "UI-9ooi",
+  "generated_at": "2026-04-22T06:06:15.839714Z",
+  "artifact_path": "docs/superpowers/reviews/bd-ralph-run-ledger-UI-9ooi.json",
+  "run": {
+    "canonical_worktree": ".worktrees/ui-9ooi-global-label-display-policy",
+    "canonical_branch": "ui-9ooi-global-label-display-policy",
+    "plan_path": "docs/superpowers/plans/2026-04-22-global-label-display-policy.md",
+    "completed_task_count": 4,
+    "unresolved_task_count": 0,
+    "started_at": "2026-04-22T06:06:06Z",
+    "finished_at": "2026-04-22T06:06:06Z",
+    "scope_narrowed": false,
+    "tracking_repo": "",
+    "execution_repo": ".worktrees/ui-9ooi-global-label-display-policy",
+    "repo_boundary_status": "local"
+  },
+  "phase_evidence": {
+    "setup": {
+      "ready_check": "ran",
+      "ready_match": "yes",
+      "ready_note": "ready",
+      "baseline_verification": "lint+tsc+test passed; prettier check failed on pre-existing repo drift"
+    },
+    "plan": {
+      "path": "docs/superpowers/plans/2026-04-22-global-label-display-policy.md",
+      "plan_review": "run",
+      "plan_review_verdict": "APPROVE",
+      "freshness": {
+        "base_sha": "8d42b0ef6737b04e14fe773b393c7354a91c5f7f",
+        "head_sha": "925629788f4eaaca16af6a97bafc340f31d726da",
+        "source": "metadata",
+        "status": "fresh",
+        "changed_files": 1,
+        "auto_refresh": false,
+        "reason": "none"
+      },
+      "stale_after_review": false,
+      "fast_path": {
+        "quick_edit": false,
+        "source": "none",
+        "eligible": false,
+        "guard_result": "fail",
+        "guard_failure": "none",
+        "plan_fast_path": false,
+        "plan_skip_reason": "none",
+        "plan_required_after_spec": true
+      }
+    },
+    "seed": {
+      "push_ok": true,
+      "child_mapping_present": true,
+      "parent_lookup_success": true,
+      "child_lookup_success": true
+    },
+    "execute": {
+      "completed_task_count": 4,
+      "unresolved_task_count": 0,
+      "children": [
+        {
+          "id": "UI-9ooi.4",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run build && npm run tsc && npm test && npm run lint && npx prettier --write docs/superpowers/plans/2026-04-22-global-label-display-policy.md docs/superpowers/specs/2026-04-22-global-label-display-policy-design.md"
+        },
+        {
+          "id": "UI-9ooi.3",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run tsc && npx eslint app/utils/label-badge.js app/utils/label-badge.test.js app/views/board.js app/views/board.test.js app/views/list.js app/views/list.test.js app/views/epics.js app/views/epics.test.js app/views/issue-row.js app/views/issue-row.test.js app/main.js && npm test -- app/utils/label-badge.test.js app/views/board.test.js app/views/list.test.js app/views/epics.test.js app/views/issue-row.test.js"
+        },
+        {
+          "id": "UI-9ooi.2",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run tsc && npx eslint server/app.js server/app.test.js server/app.live-mode.test.js app/state.js app/state.test.js app/main.js app/main.config-refresh.test.js && npm test -- server/app.test.js server/app.live-mode.test.js app/state.test.js app/main.config-refresh.test.js"
+        },
+        {
+          "id": "UI-9ooi.1",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run tsc && npx eslint server/config.js server/config.test.js && npm test -- server/config.test.js"
+        }
+      ],
+      "task_verification_summary": [
+        {
+          "id": "UI-9ooi.4",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run build && npm run tsc && npm test && npm run lint && npx prettier --write docs/superpowers/plans/2026-04-22-global-label-display-policy.md docs/superpowers/specs/2026-04-22-global-label-display-policy-design.md"
+        },
+        {
+          "id": "UI-9ooi.3",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run tsc && npx eslint app/utils/label-badge.js app/utils/label-badge.test.js app/views/board.js app/views/board.test.js app/views/list.js app/views/list.test.js app/views/epics.js app/views/epics.test.js app/views/issue-row.js app/views/issue-row.test.js app/main.js && npm test -- app/utils/label-badge.test.js app/views/board.test.js app/views/list.test.js app/views/epics.test.js app/views/issue-row.test.js"
+        },
+        {
+          "id": "UI-9ooi.2",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run tsc && npx eslint server/app.js server/app.test.js server/app.live-mode.test.js app/state.js app/state.test.js app/main.js app/main.config-refresh.test.js && npm test -- server/app.test.js server/app.live-mode.test.js app/state.test.js app/main.config-refresh.test.js"
+        },
+        {
+          "id": "UI-9ooi.1",
+          "status": "resolved",
+          "verification_summary": "PASS: npm run tsc && npx eslint server/config.js server/config.test.js && npm test -- server/config.test.js"
+        }
+      ],
+      "scope_narrowed": false
+    },
+    "review": {
+      "dispatch_history": [
+        {
+          "subject": "implementation-review",
+          "verdict": "APPROVE_WITH_CHANGES",
+          "final_source": "external",
+          "policy_blocked": false,
+          "external_attempts": 1,
+          "self_attempts": 0,
+          "escalated": false
+        }
+      ],
+      "review_subagent": {
+        "capable": "yes",
+        "reason": "allowed"
+      },
+      "final_verdict": "APPROVE_WITH_CHANGES",
+      "final_source": "external",
+      "policy_blocked": false,
+      "stale_after_code_change": false,
+      "reviewed_impl_applied": true
+    },
+    "simplify": {
+      "policy": "run",
+      "status": "no-op",
+      "verification": "skipped",
+      "rereview": "skipped",
+      "commit_sha": ""
+    },
+    "finish": {
+      "pr_url": "https://github.com/nakkulla/beads-ui/pull/8",
+      "pr_number": "8",
+      "final_quality_gate_success": true,
+      "first_branch_push_success": true,
+      "final_git_status": "clean",
+      "final_parent_status": "resolved",
+      "final_children_status": "all-resolved",
+      "run_ledger_write_success": true,
+      "metadata_sync_success": true,
+      "artifact_only_second_commit_success": true,
+      "second_branch_push_success": true
+    }
+  },
+  "invocations": [],
+  "failures": [],
+  "usage": {
+    "scope": "direct_children",
+    "accuracy": "invocation_delta",
+    "status": "unavailable",
+    "main": {
+      "session_id": "",
+      "transcript_path": ""
+    },
+    "direct_children": [],
+    "failure_reason": "missing_inputs"
+  },
+  "review": {
+    "review_debt_summary": "none",
+    "plan_review": {
+      "final_verdict": "APPROVE",
+      "final_source": "external",
+      "policy_blocked": false,
+      "external_attempts": 3,
+      "self_attempts": 1,
+      "escalated": true,
+      "budget_exhausted": true,
+      "reviewed_plan_applied": true,
+      "debt_present": false
+    },
+    "implementation_review": {
+      "signals": [],
+      "final_verdict": "APPROVE_WITH_CHANGES",
+      "final_source": "external",
+      "policy_blocked": false,
+      "external_attempts": 1,
+      "self_attempts": 0,
+      "escalated": false,
+      "budget_exhausted": false,
+      "stale_after_code_change": false,
+      "forced_handoff": false,
+      "reviewed_impl_applied": true
+    },
+    "review_subagent": {
+      "capable": "yes",
+      "reason": "allowed"
+    },
+    "simplify": {
+      "policy": "run",
+      "status": "no-op",
+      "verification": "skipped",
+      "rereview": "skipped",
+      "commit_sha": ""
+    }
+  },
+  "acceptance": {
+    "status": "accepted",
+    "blocking_checks": [],
+    "waived_checks": [],
+    "summary": {
+      "pr_url": "https://github.com/nakkulla/beads-ui/pull/8",
+      "implementation_review_verdict": "APPROVE_WITH_CHANGES"
+    }
+  },
+  "followup": [],
+  "summary": {
+    "audit_version": "v1",
+    "audit_status": "accepted",
+    "audit_artifact": "docs/superpowers/reviews/bd-ralph-run-ledger-UI-9ooi.json",
+    "canonical_worktree": ".worktrees/ui-9ooi-global-label-display-policy",
+    "canonical_branch": "ui-9ooi-global-label-display-policy",
+    "completed_task_count": 4,
+    "unresolved_task_count": 0,
+    "implementation_review_verdict": "APPROVE_WITH_CHANGES",
+    "run_started_at": "2026-04-22T06:06:06Z",
+    "run_finished_at": "2026-04-22T06:06:06Z"
+  }
+}

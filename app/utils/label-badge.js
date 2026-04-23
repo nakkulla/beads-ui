@@ -1,19 +1,30 @@
 const CARD_PREFIXES = ['has:', 'reviewed:'];
 
 /**
+ * Filter labels using the provided visible prefixes.
+ *
+ * @param {string[] | null | undefined} labels
+ * @param {string[] | null | undefined} visible_prefixes
+ * @returns {string[]}
+ */
+export function filterVisibleLabels(labels, visible_prefixes) {
+  if (!Array.isArray(labels) || !Array.isArray(visible_prefixes)) {
+    return [];
+  }
+
+  return labels.filter((label) =>
+    visible_prefixes.some((prefix) => label.startsWith(prefix))
+  );
+}
+
+/**
  * Filter labels to only those shown on cards and rows.
  *
  * @param {string[] | null | undefined} labels
  * @returns {string[]}
  */
 export function filterCardLabels(labels) {
-  if (!Array.isArray(labels)) {
-    return [];
-  }
-
-  return labels.filter((label) =>
-    CARD_PREFIXES.some((prefix) => label.startsWith(prefix))
-  );
+  return filterVisibleLabels(labels, CARD_PREFIXES);
 }
 
 /**

@@ -1,6 +1,6 @@
 import { html } from 'lit-html';
 import { createIssueIdRenderer } from '../utils/issue-id-renderer.js';
-import { createLabelBadge, filterCardLabels } from '../utils/label-badge.js';
+import { createLabelBadge, filterVisibleLabels } from '../utils/label-badge.js';
 import { emojiForPriority } from '../utils/priority-badge.js';
 import { priority_levels } from '../utils/priority.js';
 import {
@@ -23,6 +23,7 @@ import { createTypeBadge } from '../utils/type-badge.js';
  *   onUpdate: (id: string, patch: { title?: string, assignee?: string, status?: 'open'|'in_progress'|'deferred'|'resolved'|'closed', priority?: number }) => Promise<void>,
  *   requestRender: () => void,
  *   getSelectedId?: () => string | null,
+ *   getVisibleLabelPrefixes?: () => string[],
  *   row_class?: string,
  *   show_deps?: boolean
  * }} options
@@ -33,6 +34,8 @@ export function createIssueRowRenderer(options) {
   const on_update = options.onUpdate;
   const request_render = options.requestRender;
   const get_selected_id = options.getSelectedId || (() => null);
+  const get_visible_label_prefixes =
+    options.getVisibleLabelPrefixes || (() => ['has:', 'reviewed:']);
   const row_class = options.row_class || 'issue-row';
   const show_deps = options.show_deps ?? true;
 
@@ -158,7 +161,10 @@ export function createIssueRowRenderer(options) {
       <td role="gridcell">${createTypeBadge(it.issue_type)}</td>
       <td role="gridcell">${editableText(it.id, 'title', it.title || '')}</td>
       <td role="gridcell">
-        ${filterCardLabels(it.labels).map((label) => createLabelBadge(label))}
+        ${filterVisibleLabels(
+          it.labels,
+          get_visible_label_prefixes()
+        ).map((label) => createLabelBadge(label))}
       </td>
       <td role="gridcell">
         <select

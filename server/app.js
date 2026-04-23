@@ -10,9 +10,38 @@ import { createWorkerPrsRouter } from './routes/worker-prs.js';
 import { createWorkerSpecRouter } from './routes/worker-spec.js';
 
 /**
+ * @param {{ label_display_policy?: { visible_prefixes: string[] } }} config
+ * @returns {{ label_display_policy: { visible_prefixes: string[] } }}
+ */
+function toBootstrapPayload(config) {
+  const visible_prefixes = Array.isArray(
+    config.label_display_policy?.visible_prefixes
+  )
+    ? config.label_display_policy.visible_prefixes.slice()
+    : ['has:', 'reviewed:'];
+
+  return {
+    label_display_policy: {
+      visible_prefixes
+    }
+  };
+}
+
+/**
+ * @param {string} json
+ * @returns {string}
+ */
+function escapeBootstrapJson(json) {
+  return json
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+/**
  * Create and configure the Express application.
  *
- * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static' }} config - Server configuration.
+ * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[] } }} config - Server configuration.
  * @returns {Express} Configured Express app instance.
  */
 export function createApp(config) {
@@ -67,6 +96,16 @@ export function createApp(config) {
     res.status(200).json({ ok: true, registered: workspace_path });
   });
 
+  /**
+   * @param {Request} _req
+   * @param {Response} res
+   */
+  app.get('/api/config', (_req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.type('application/json');
+    res.status(200).send(toBootstrapPayload(config));
+  });
+
   const use_live_bundle = config.frontend_mode === 'live';
   const bundle_missing = use_live_bundle
     ? false
@@ -112,18 +151,32 @@ export function createApp(config) {
     });
   }
 
-  // Static assets from /app
-  app.use(express.static(config.app_dir));
-
-  // Root serves index.html explicitly (even if static would catch it)
+  // Root serves bootstrapped index.html explicitly before static middleware.
   /**
    * @param {Request} _req
    * @param {Response} res
    */
   app.get('/', (_req, res) => {
     const index_path = path.join(config.app_dir, 'index.html');
-    res.sendFile(index_path);
+    const index_html = fs.readFileSync(index_path, 'utf8');
+    const payload = escapeBootstrapJson(
+      JSON.stringify(toBootstrapPayload(config))
+    );
+
+    res
+      .set('Cache-Control', 'no-store')
+      .status(200)
+      .type('html')
+      .send(
+        index_html.replace(
+          '</head>',
+          `<script>window.__BDUI_BOOTSTRAP__=${payload};</script></head>`
+        )
+      );
   });
+
+  // Static assets from /app
+  app.use(express.static(config.app_dir, { index: false }));
 
   return app;
 }

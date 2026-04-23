@@ -35,4 +35,44 @@ describe('state store', () => {
     expect(seen).toEqual([true, false]);
     expect(store.getState().board.show_deferred_column).toBe(false);
   });
+
+  test('hydrates config into initial state', () => {
+    const store = createStore({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['area:', 'agent:']
+        }
+      }
+    });
+
+    expect(store.getState().config.label_display_policy.visible_prefixes).toEqual(
+      ['area:', 'agent:']
+    );
+  });
+
+  test('emits when config visible prefixes change', () => {
+    const store = createStore();
+    /** @type {Array<{ label_display_policy: { visible_prefixes: string[] } }>} */
+    const seen = [];
+    const off = store.subscribe((state) => seen.push(state.config));
+
+    store.setState({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['area:']
+        }
+      }
+    });
+    store.setState({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['area:']
+        }
+      }
+    });
+    off();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].label_display_policy.visible_prefixes).toEqual(['area:']);
+  });
 });
