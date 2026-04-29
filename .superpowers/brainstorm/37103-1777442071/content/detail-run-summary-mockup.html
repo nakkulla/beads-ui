@@ -1,0 +1,78 @@
+
+<h2>Issue Detail: Run summary card</h2>
+<p class="subtitle">기존 issue detail 정보는 유지하고, bd-ralph-v3가 parent bead metadata에 남기는 실행 결과만 상세 화면에 추가합니다.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Bdui · Issue detail preview</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:1.45fr .75fr;gap:18px;align-items:start;">
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div style="border:1px solid #d7dce5;border-radius:12px;padding:16px;background:#fff;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <span style="font-family:monospace;font-weight:700;color:#475569;">UI-62lm</span>
+            <span style="font-size:12px;border:1px solid #cbd5e1;border-radius:999px;padding:2px 8px;background:#f8fafc;">resolved</span>
+            <span style="font-size:12px;border:1px solid #dbeafe;border-radius:999px;padding:2px 8px;background:#eff6ff;color:#1d4ed8;">feature</span>
+          </div>
+          <h3 style="margin:0 0 10px 0;">Worker 탭 추가</h3>
+          <p style="margin:0;color:#64748b;line-height:1.5;">기존 description, acceptance, notes, design 영역은 그대로 유지됩니다. Run summary는 본문 흐름을 방해하지 않고 오른쪽 detail sidebar에 추가됩니다.</p>
+        </div>
+
+        <div style="border:1px solid #d7dce5;border-radius:12px;padding:16px;background:#fff;min-height:130px;">
+          <div class="label">Description</div>
+          <div class="placeholder" style="margin-top:10px;">Existing markdown detail content</div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div style="border:1px solid #d7dce5;border-radius:12px;padding:14px;background:#fff;">
+          <div class="label">Properties</div>
+          <div style="display:grid;grid-template-columns:84px 1fr;gap:8px;margin-top:12px;font-size:13px;">
+            <span style="color:#64748b;">Priority</span><b>P1</b>
+            <span style="color:#64748b;">Assignee</span><span>agent</span>
+            <span style="color:#64748b;">Labels</span><span>has:spec reviewed:plan</span>
+          </div>
+        </div>
+
+        <div style="border:1px solid #bfdbfe;border-radius:12px;padding:14px;background:linear-gradient(180deg,#eff6ff,#fff);box-shadow:0 8px 22px rgba(37,99,235,.08);">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <div class="label" style="color:#1d4ed8;">Run summary</div>
+            <span style="font-size:12px;border:1px solid #bbf7d0;border-radius:999px;padding:2px 8px;background:#f0fdf4;color:#15803d;">Finished</span>
+          </div>
+          <div style="display:grid;grid-template-columns:82px 1fr;gap:9px;font-size:13px;line-height:1.35;">
+            <span style="color:#64748b;">Duration</span><b style="font-family:monospace;">2h 14m</b>
+            <span style="color:#64748b;">Started</span><span style="font-family:monospace;">2026-04-29 10:11</span>
+            <span style="color:#64748b;">Finished</span><span style="font-family:monospace;">2026-04-29 12:25</span>
+            <span style="color:#64748b;">PR</span><a href="#" style="color:#2563eb;text-decoration:underline;font-weight:700;">PR #42 ↗</a>
+          </div>
+        </div>
+
+        <div style="border:1px solid #d7dce5;border-radius:12px;padding:14px;background:#fff;">
+          <div class="label">Metadata paths</div>
+          <div style="display:grid;grid-template-columns:70px 1fr;gap:8px;margin-top:12px;font-size:13px;">
+            <span style="color:#64748b;">Spec</span><span style="font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">docs/superpowers/specs/...</span>
+            <span style="color:#64748b;">Plan</span><span style="font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">docs/superpowers/plans/...</span>
+            <span style="color:#64748b;">Handoff</span><span style="font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">docs/handoffs/...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Spec에 반영할 동작</h3>
+  <div class="options" data-multiselect>
+    <div class="option" data-choice="detail-only" onclick="toggleSelect(this)">
+      <div class="letter">✓</div>
+      <div class="content"><h3>Detail only</h3><p>목록/Worker row에는 추가하지 않고, 이슈 클릭 후 상세 화면에서만 표시합니다.</p></div>
+    </div>
+    <div class="option" data-choice="hide-empty" onclick="toggleSelect(this)">
+      <div class="letter">✓</div>
+      <div class="content"><h3>Hide when empty</h3><p>run_started_at/run_finished_at/pr_url이 모두 없으면 Run summary card를 숨깁니다.</p></div>
+    </div>
+    <div class="option" data-choice="partial" onclick="toggleSelect(this)">
+      <div class="letter">✓</div>
+      <div class="content"><h3>Partial metadata allowed</h3><p>PR만 있거나 timestamp 일부만 있어도 가능한 항목만 표시합니다.</p></div>
+    </div>
+  </div>
+</div>
