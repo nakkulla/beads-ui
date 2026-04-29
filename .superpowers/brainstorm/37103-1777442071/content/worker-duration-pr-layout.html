@@ -1,0 +1,81 @@
+
+<h2>Worker 탭: 이슈 소요시간 + PR URL 표시 위치</h2>
+<p class="subtitle">bd-ralph-v3가 parent bead metadata에 기록하는 <code>run_started_at</code>, <code>run_finished_at</code>, <code>pr_url</code>, <code>pr_number</code>를 Bdui에 어떻게 노출할지 선택합니다.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Option A · Detail 중심</div>
+        <div class="mockup-body">
+          <div style="display:flex;gap:12px;align-items:flex-start">
+            <div style="flex:1">
+              <div class="placeholder">Worker parent row<br><b>UI-123</b> Add feature · PR open</div>
+            </div>
+            <div style="width:42%">
+              <div class="placeholder" style="text-align:left">
+                <b>Run summary</b><br>
+                Duration: <code>2h 14m</code><br>
+                Started: 2026-04-29 10:11<br>
+                Finished: 2026-04-29 12:25<br>
+                PR: <u>#42</u>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Detail panel에만 명확히 표시</h3>
+      <p>목록은 깔끔하게 유지하고, 선택한 이슈의 상세 패널에서 duration/start/end/PR URL을 보여줍니다.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Option B · Row 요약 + Detail 상세</div>
+        <div class="mockup-body">
+          <div class="placeholder" style="text-align:left">
+            <b>UI-123</b> Add feature<br>
+            <span class="mock-button">PR #42</span>
+            <span class="mock-button">2h 14m</span>
+            <span class="mock-button">Finished</span>
+          </div>
+          <br>
+          <div class="placeholder" style="text-align:left">
+            <b>Run summary</b><br>
+            Started → Finished · PR URL · audit artifact
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. Row에는 요약, Detail에는 상세</h3>
+      <p>Worker 목록에서 바로 소요시간/PR 존재를 보고, 상세 패널에서 정확한 start/end와 링크를 확인합니다.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Option C · PR 패널 중심</div>
+        <div class="mockup-body">
+          <div class="placeholder" style="text-align:left">
+            <b>Open PRs</b><br>
+            <u>#42 Add feature</u> · Run pr-review
+          </div>
+          <br>
+          <div class="placeholder" style="text-align:left">
+            <b>Recent jobs</b><br>
+            bd-ralph · 2h 14m · succeeded
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. 기존 PR/job 영역만 보강</h3>
+      <p>PR URL은 PR 패널에서, 소요시간은 job 영역에서만 보강합니다. 변경 범위는 작지만 issue-level 요약성은 약합니다.</p>
+    </div>
+  </div>
+</div>
