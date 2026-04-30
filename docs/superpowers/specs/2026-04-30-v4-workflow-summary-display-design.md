@@ -154,6 +154,7 @@ Board card에는 metadata에서 파생한 workflow chip을 표시한다.
 - `skill_workflow=writing_skills|skill_creator`이면 skill chip 표시
 - `skill_workflow=none`은 board card에서 숨김
 - safe `http:`/`https:` `pr_url`이 있으면 `PR` chip 표시
+- `pr_number`만 있고 safe `pr_url`이 없으면 PR chip은 표시하지 않음
 - unknown enum value는 chip으로 표시하지 않음
 - empty string, `null`, `undefined`, unknown value, and case-mismatched values are
   normalized to absent, not to `none`.
@@ -185,6 +186,7 @@ Skill workflow skill_creator
 - 아무 row도 없으면 card 전체를 숨긴다.
 - `pr_url`이 safe URL일 때만 PR row를 표시한다.
 - `pr_number`가 있으면 link text는 `PR #<number>`, 없으면 `PR`이다.
+- `pr_number`만 있고 safe `pr_url`이 없으면 PR row를 표시하지 않는다.
 - `execution_lane=plan|quick_edit`만 표시한다.
 - `skill_workflow=none|writing_skills|skill_creator`만 표시한다.
 - `skill_workflow=none`은 detail에서는 표시해도 된다. 이는 “skill workflow 없음”을
@@ -294,6 +296,8 @@ app/utils/workflow-summary.js
 - board subscription/store path가 metadata를 보존하지 않는 것으로 확인되면, board
   selector/store boundary에서 해당 metadata passthrough를 보존하도록 같은 task 안에서
   보완한다. 새 backend RPC나 ledger file read는 추가하지 않는다.
+- board card가 사용하는 모든 issue data path는 workflow summary metadata keys를
+  보존해야 하며, metadata가 누락되는 path가 발견되면 같은 task에서 보완한다.
 
 ### `app/views/issue-row.js`
 
