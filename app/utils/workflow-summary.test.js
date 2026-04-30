@@ -108,9 +108,9 @@ describe('workflow summary utils', () => {
   });
 
   test('allows safe http and https PR URLs', () => {
-    expect(safeWorkflowUrl('https://github.com/nakkulla/beads-ui/pull/92')?.href).toBe(
-      'https://github.com/nakkulla/beads-ui/pull/92'
-    );
+    expect(
+      safeWorkflowUrl('https://github.com/nakkulla/beads-ui/pull/92')?.href
+    ).toBe('https://github.com/nakkulla/beads-ui/pull/92');
     expect(safeWorkflowUrl('http://example.test/pr/1')?.href).toBe(
       'http://example.test/pr/1'
     );
@@ -170,6 +170,8 @@ describe('workflow summary utils', () => {
     });
 
     expect(summary.detail_rows.some((row) => row.label === 'PR')).toBe(false);
-    expect(summary.board_chips.map((chip) => chip.label)).toEqual(['quick_edit']);
+    expect(summary.board_chips.map((chip) => chip.label)).toEqual([
+      'quick_edit'
+    ]);
   });
 });

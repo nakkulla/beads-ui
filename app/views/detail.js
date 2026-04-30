@@ -1021,19 +1021,20 @@ export function createDetailView(
             <div class="props-card__title">Workflow summary</div>
             <div class="workflow-summary__list">
               ${workflow_summary.detail_rows.map(
-                (row) => html`<div class="workflow-summary__row">
-                  <div class="workflow-summary__label">${row.label}</div>
-                  <div class="workflow-summary__value">
-                    ${row.kind === 'link' && row.href
-                      ? html`<a
-                          href=${row.href}
-                          target="_blank"
-                          rel="noreferrer noopener"
-                          >${row.value}</a
-                        >`
-                      : row.value}
-                  </div>
-                </div>`
+                (row) =>
+                  html`<div class="workflow-summary__row">
+                    <div class="workflow-summary__label">${row.label}</div>
+                    <div class="workflow-summary__value">
+                      ${row.kind === 'link' && row.href
+                        ? html`<a
+                            href=${row.href}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            >${row.value}</a
+                          >`
+                        : row.value}
+                    </div>
+                  </div>`
               )}
             </div>
           </div>`

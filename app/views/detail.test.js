@@ -531,7 +531,6 @@ describe('views/detail', () => {
     );
   });
 
-
   test('renders workflow summary before metadata paths in sidebar', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';

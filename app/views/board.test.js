@@ -226,7 +226,6 @@ describe('views/board', () => {
     expect(navigations[0]).toBe('R-3');
   });
 
-
   test('renders workflow chips from board card metadata', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));

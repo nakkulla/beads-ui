@@ -65,6 +65,8 @@ export function formatWorkflowTimestamp(timestamp_ms) {
  */
 export function formatWorkflowDuration(started_ms, finished_ms) {
   if (
+    typeof started_ms !== 'number' ||
+    typeof finished_ms !== 'number' ||
     !Number.isFinite(started_ms) ||
     !Number.isFinite(finished_ms) ||
     finished_ms < started_ms
