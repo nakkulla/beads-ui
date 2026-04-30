@@ -717,15 +717,15 @@ button:disabled {
 }
 
 .workflow-chip--skill {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--type-epic-base);
+  border-color: color-mix(in srgb, var(--type-epic-base) 38%, transparent);
+  background: color-mix(in srgb, var(--type-epic-base) 10%, transparent);
 }
 
 .workflow-chip--pr {
-  color: var(--success);
-  border-color: color-mix(in srgb, var(--success) 38%, transparent);
-  background: color-mix(in srgb, var(--success) 10%, transparent);
+  color: var(--status-open-base);
+  border-color: color-mix(in srgb, var(--status-open-base) 38%, transparent);
+  background: color-mix(in srgb, var(--status-open-base) 10%, transparent);
 }
 
 /* Status + Priority palette (light) derived from base */
