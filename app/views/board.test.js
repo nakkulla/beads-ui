@@ -226,6 +226,133 @@ describe('views/board', () => {
     expect(navigations[0]).toBe('R-3');
   });
 
+
+  test('renders workflow chips from board card metadata', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'WF-1',
+          title: 'workflow card',
+          created_at: Date.parse('2026-04-30T06:00:00Z'),
+          labels: ['has:spec'],
+          metadata: {
+            execution_lane: 'plan',
+            skill_workflow: 'skill_creator',
+            pr_url: 'https://github.com/nakkulla/beads-ui/pull/92'
+          }
+        }
+      ]
+    });
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      createStore(),
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const card = /** @type {HTMLElement | null} */ (
+      mount.querySelector('[data-issue-id="WF-1"]')
+    );
+    const chip_text = Array.from(
+      card?.querySelectorAll('.workflow-chip') || []
+    ).map((el) => el.textContent?.trim());
+    expect(chip_text).toEqual(['plan', 'skill_creator', 'PR']);
+    expect(card?.querySelector('.label-badge')?.textContent).toBe('has:spec');
+  });
+
+  test('suppresses workflow chips for invalid metadata values', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'WF-2',
+          title: 'invalid workflow card',
+          created_at: Date.parse('2026-04-30T06:00:00Z'),
+          metadata: {
+            execution_lane: 'Plan',
+            skill_workflow: 'none',
+            pr_url: 'data:text/html,<h1>x</h1>'
+          }
+        }
+      ]
+    });
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      createStore(),
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    expect(
+      mount.querySelector('[data-issue-id="WF-2"] .workflow-chip')
+    ).toBeNull();
+  });
+
+  test('preserves workflow metadata in fallback fetch mode', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(
+      mount,
+      {
+        async getReady() {
+          return [
+            {
+              id: 'WF-3',
+              title: 'fallback workflow card',
+              created_at: Date.parse('2026-04-30T06:00:00Z'),
+              metadata: {
+                execution_lane: 'quick_edit',
+                skill_workflow: 'writing_skills'
+              }
+            }
+          ];
+        },
+        async getBlocked() {
+          return [];
+        },
+        async getInProgress() {
+          return [];
+        },
+        async getResolved() {
+          return [];
+        },
+        async getClosed() {
+          return [];
+        }
+      },
+      () => {},
+      undefined,
+      { selectors: { getIds: () => [], count: () => 0 } },
+      undefined
+    );
+
+    await view.load();
+
+    const chip_text = Array.from(
+      mount.querySelectorAll('[data-issue-id="WF-3"] .workflow-chip')
+    ).map((el) => el.textContent?.trim());
+    expect(chip_text).toEqual(['quick_edit', 'writing_skills']);
+  });
+
   test('applies latest-first sorting in fallback fetch mode without push stores', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));

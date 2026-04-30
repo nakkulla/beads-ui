@@ -697,6 +697,37 @@ button:disabled {
   margin-left: var(--space-1);
 }
 
+.workflow-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  line-height: 16px;
+  min-height: 18px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  border: 1px solid;
+  text-wrap: nowrap;
+}
+
+.workflow-chip--lane {
+  color: var(--link);
+  border-color: color-mix(in srgb, var(--link) 36%, transparent);
+  background: color-mix(in srgb, var(--link) 10%, transparent);
+}
+
+.workflow-chip--skill {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.workflow-chip--pr {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 38%, transparent);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+
 /* Status + Priority palette (light) derived from base */
 :root {
   /* Status badges */
@@ -1500,6 +1531,13 @@ input.inline-edit:focus {
   margin-top: var(--space-2);
 }
 
+.board-card__workflow {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+
 .board-card__date {
   margin-left: auto;
   font-size: 11px;
@@ -1892,6 +1930,30 @@ html[data-theme='dark'] {
   overflow: visible;
   text-overflow: clip;
   white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+#detail-root .workflow-summary__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+#detail-root .workflow-summary__row {
+  display: grid;
+  grid-template-columns: minmax(84px, max-content) minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: baseline;
+}
+
+#detail-root .workflow-summary__label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#detail-root .workflow-summary__value {
+  min-width: 0;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 

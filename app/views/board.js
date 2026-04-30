@@ -11,6 +11,7 @@ import {
 } from '../utils/relative-time.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
+import { workflowSummaryFromIssue } from '../utils/workflow-summary.js';
 
 /**
  * @typedef {{
@@ -22,7 +23,12 @@ import { createTypeBadge } from '../utils/type-badge.js';
  *   labels?: string[],
  *   created_at?: number | string,
  *   updated_at?: number,
- *   closed_at?: number
+ *   closed_at?: number,
+ *   metadata?: {
+ *     execution_lane?: string | null,
+ *     skill_workflow?: string | null,
+ *     pr_url?: string | null
+ *   }
  * }} IssueLite
  */
 
@@ -228,6 +234,7 @@ export function createBoardView(
       it.labels,
       getVisibleLabelPrefixes()
     );
+    const workflow_chips = workflowSummaryFromIssue(it).board_chips;
     return html`
       <article
         class="board-card"
@@ -245,6 +252,17 @@ export function createBoardView(
         ${card_labels.length > 0
           ? html`<div class="board-card__labels">
               ${card_labels.map((label) => createLabelBadge(label))}
+            </div>`
+          : ''}
+        ${workflow_chips.length > 0
+          ? html`<div class="board-card__workflow">
+              ${workflow_chips.map(
+                (chip) =>
+                  html`<span
+                    class=${`workflow-chip workflow-chip--${chip.kind}`}
+                    >${chip.label}</span
+                  >`
+              )}
             </div>`
           : ''}
         <div class="board-card__meta">
