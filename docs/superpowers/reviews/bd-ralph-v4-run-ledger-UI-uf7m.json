@@ -194,20 +194,22 @@
       },
       "post_finish": {
         "self_audit": {
-          "policy": "unknown",
-          "verdict": "unknown"
+          "policy": "light",
+          "verdict": "clean_with_suggestions",
+          "note": "Delivery evidence passed; recovered seed-helper cwd invocation gap was already covered by authoritative worktree helper guidance, so no new delta appended."
         },
         "self_improve": {
-          "delta_path": "",
-          "target_skill": "",
-          "target_repo_root": "",
+          "delta_path": "none",
+          "target_skill": "shared/skills/bd-ralph-v4",
+          "target_repo_root": "/Users/isy_macstudio/Documents/GitHub/dotfiles",
           "appended": 0,
           "deduped": 0,
-          "skipped": "unknown",
-          "persistence": ""
+          "skipped": "no-append-worthy-candidates",
+          "persistence": "report-only"
         },
         "final_summary_gate": {
-          "status": "unknown"
+          "status": "pass",
+          "evidence_json": "tmp/bd-ralph-v4-final-summary-UI-uf7m.json"
         }
       }
     }
@@ -477,20 +479,22 @@
   "followups": [],
   "maintenance": {
     "self_audit": {
-      "policy": "unknown",
-      "verdict": "unknown"
+      "policy": "light",
+      "verdict": "clean_with_suggestions",
+      "note": "Delivery evidence passed; recovered seed-helper cwd invocation gap was already covered by authoritative worktree helper guidance, so no new delta appended."
     },
     "self_improve": {
-      "delta_path": "",
-      "target_skill": "",
-      "target_repo_root": "",
+      "delta_path": "none",
+      "target_skill": "shared/skills/bd-ralph-v4",
+      "target_repo_root": "/Users/isy_macstudio/Documents/GitHub/dotfiles",
       "appended": 0,
       "deduped": 0,
-      "skipped": "unknown",
-      "persistence": ""
+      "skipped": "no-append-worthy-candidates",
+      "persistence": "report-only"
     },
     "final_summary_gate": {
-      "status": "unknown"
+      "status": "pass",
+      "evidence_json": "tmp/bd-ralph-v4-final-summary-UI-uf7m.json"
     }
   },
   "invocations": [],
@@ -567,20 +571,22 @@
   },
   "post_finish": {
     "self_audit": {
-      "policy": "unknown",
-      "verdict": "unknown"
+      "policy": "light",
+      "verdict": "clean_with_suggestions",
+      "note": "Delivery evidence passed; recovered seed-helper cwd invocation gap was already covered by authoritative worktree helper guidance, so no new delta appended."
     },
     "self_improve": {
-      "delta_path": "",
-      "target_skill": "",
-      "target_repo_root": "",
+      "delta_path": "none",
+      "target_skill": "shared/skills/bd-ralph-v4",
+      "target_repo_root": "/Users/isy_macstudio/Documents/GitHub/dotfiles",
       "appended": 0,
       "deduped": 0,
-      "skipped": "unknown",
-      "persistence": ""
+      "skipped": "no-append-worthy-candidates",
+      "persistence": "report-only"
     },
     "final_summary_gate": {
-      "status": "unknown"
+      "status": "pass",
+      "evidence_json": "tmp/bd-ralph-v4-final-summary-UI-uf7m.json"
     }
   },
   "acceptance": {
@@ -604,6 +610,7 @@
     "implementation_review_verdict": "APPROVE",
     "run_started_at": "2026-04-30T06:05:25Z",
     "run_finished_at": "2026-04-30T06:24:39Z",
-    "self_improve_persistence": ""
+    "self_improve_persistence": "report-only",
+    "final_summary_gate": "pass"
   }
 }
