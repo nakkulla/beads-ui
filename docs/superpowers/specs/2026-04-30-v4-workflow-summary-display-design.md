@@ -205,8 +205,9 @@ Skill workflow skill_creator
 
 - `started_ms = Date.parse(metadata.run_started_at)`
 - `finished_ms = Date.parse(metadata.run_finished_at)`
-- 두 값이 모두 valid이고 `finished_ms > started_ms`일 때만 duration을 표시한다.
-- `finished_ms <= started_ms`는 잘못된 metadata로 보고 duration row를 숨긴다.
+- 두 값이 모두 valid이고 `finished_ms >= started_ms`일 때 duration을 표시한다.
+- `finished_ms === started_ms`인 same-second run은 valid로 보고 `0s`로 표시한다.
+- `finished_ms < started_ms`는 잘못된 metadata로 보고 duration row를 숨긴다.
 
 ### Duration format
 
@@ -331,7 +332,8 @@ app/utils/workflow-summary.js
 ### `app/utils/workflow-summary.test.js`
 
 - valid timestamps로 duration을 계산한다.
-- invalid timestamp 또는 `finished <= started`에서는 duration을 숨긴다.
+- same-second start/finish는 `0s` duration으로 표시한다.
+- invalid timestamp 또는 `finished < started`에서는 duration을 숨긴다.
 - safe `http:`/`https:` PR URL만 허용한다.
 - `execution_lane`은 `plan|quick_edit`만 normalize한다.
 - `skill_workflow`은 `none|writing_skills|skill_creator`만 normalize한다.
