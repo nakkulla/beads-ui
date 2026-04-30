@@ -531,6 +531,139 @@ describe('views/detail', () => {
     );
   });
 
+  test('renders workflow summary before metadata paths in sidebar', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const issue = {
+      id: 'UI-192',
+      title: 'Workflow issue',
+      dependencies: [],
+      dependents: [],
+      spec_id: 'docs/superpowers/specs/workflow.md',
+      metadata: {
+        plan: 'docs/superpowers/plans/workflow.md',
+        run_started_at: '2026-04-30T06:00:00Z',
+        run_finished_at: '2026-04-30T06:46:38Z',
+        pr_url: 'https://github.com/nakkulla/beads-ui/pull/92',
+        pr_number: 92,
+        execution_lane: 'plan',
+        skill_workflow: 'none'
+      }
+    };
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-192' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const view = createDetailView(mount, async () => ({}), undefined, stores);
+
+    await view.load('UI-192');
+
+    const workflow_card = mount.querySelector('.workflow-summary');
+    expect(workflow_card?.textContent).toContain('Workflow summary');
+    expect(workflow_card?.textContent).toContain('Duration');
+    expect(workflow_card?.textContent).toContain('46m 38s');
+    expect(workflow_card?.textContent).toContain('Started');
+    expect(workflow_card?.textContent).toContain('Finished');
+    expect(workflow_card?.textContent).toContain('Lane');
+    expect(workflow_card?.textContent).toContain('plan');
+    expect(workflow_card?.textContent).toContain('Skill workflow');
+    expect(workflow_card?.textContent).toContain('none');
+
+    const pr_link = /** @type {HTMLAnchorElement | null} */ (
+      workflow_card?.querySelector('a') || null
+    );
+    expect(pr_link?.textContent).toBe('PR #92');
+    expect(pr_link?.getAttribute('href')).toBe(
+      'https://github.com/nakkulla/beads-ui/pull/92'
+    );
+    expect(pr_link?.getAttribute('target')).toBe('_blank');
+    expect(pr_link?.getAttribute('rel')).toBe('noreferrer noopener');
+
+    const side_titles = Array.from(
+      mount.querySelectorAll('.detail-side .props-card__title')
+    ).map((el) => el.textContent?.trim());
+    expect(side_titles.indexOf('Workflow summary')).toBeGreaterThan(-1);
+    expect(side_titles.indexOf('Metadata')).toBeGreaterThan(-1);
+    expect(side_titles.indexOf('Workflow summary')).toBeLessThan(
+      side_titles.indexOf('Metadata')
+    );
+  });
+
+  test('renders partial workflow summary and hides unsafe PR links', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const issue = {
+      id: 'UI-193',
+      title: 'Partial workflow issue',
+      dependencies: [],
+      dependents: [],
+      metadata: {
+        pr_url: 'javascript:alert(1)',
+        pr_number: 93,
+        execution_lane: 'quick_edit'
+      }
+    };
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-193' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const view = createDetailView(mount, async () => ({}), undefined, stores);
+
+    await view.load('UI-193');
+
+    const workflow_card = mount.querySelector('.workflow-summary');
+    expect(workflow_card?.textContent).toContain('Lane');
+    expect(workflow_card?.textContent).toContain('quick_edit');
+    expect(workflow_card?.textContent).not.toContain('PR #93');
+    expect(workflow_card?.querySelector('a')).toBeNull();
+  });
+
+  test('hides workflow summary when metadata has no displayable values', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+
+    const issue = {
+      id: 'UI-194',
+      title: 'No workflow issue',
+      dependencies: [],
+      dependents: [],
+      metadata: {
+        run_started_at: 'not a date',
+        execution_lane: 'Plan',
+        skill_workflow: ''
+      }
+    };
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-194' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const view = createDetailView(mount, async () => ({}), undefined, stores);
+
+    await view.load('UI-194');
+
+    expect(mount.querySelector('.workflow-summary')).toBeNull();
+  });
+
   test('hides metadata section when all metadata paths are missing', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';

@@ -9,6 +9,7 @@ import { priority_levels } from '../utils/priority.js';
 import { STATUSES, statusLabel } from '../utils/status.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
+import { workflowSummaryFromIssue } from '../utils/workflow-summary.js';
 
 /**
  * Format a date string for display.
@@ -76,7 +77,7 @@ function normalizePath(value) {
  * @property {number} [priority]
  * @property {string[]} [labels]
  * @property {string} [spec_id]
- * @property {{ plan?: string | null, handoff?: string | null }} [metadata]
+ * @property {{ plan?: string | null, handoff?: string | null, run_started_at?: string | null, run_finished_at?: string | null, pr_url?: string | null, pr_number?: string | number | null, execution_lane?: string | null, skill_workflow?: string | null }} [metadata]
  * @property {Dependency[]} [dependencies]
  * @property {Dependency[]} [dependents]
  * @property {Comment[]} [comments]
@@ -1013,6 +1014,31 @@ export function createDetailView(
             </div>
           </div>`
         : null;
+    const workflow_summary = workflowSummaryFromIssue(issue);
+    const workflow_block =
+      workflow_summary.detail_rows.length > 0
+        ? html`<div class="props-card workflow-summary">
+            <div class="props-card__title">Workflow summary</div>
+            <div class="workflow-summary__list">
+              ${workflow_summary.detail_rows.map(
+                (row) =>
+                  html`<div class="workflow-summary__row">
+                    <div class="workflow-summary__label">${row.label}</div>
+                    <div class="workflow-summary__value">
+                      ${row.kind === 'link' && row.href
+                        ? html`<a
+                            href=${row.href}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            >${row.value}</a
+                          >`
+                        : row.value}
+                    </div>
+                  </div>`
+              )}
+            </div>
+          </div>`
+        : null;
 
     const title_zone = edit_title
       ? html`<div class="detail-title">
@@ -1418,6 +1444,7 @@ export function createDetailView(
                 </div>
               </div>
               ${labels_block}
+              ${workflow_block}
               ${metadata_block}
               ${depsSection('Dependencies', issue.dependencies || [])}
               ${depsSection('Dependents', issue.dependents || [])}
