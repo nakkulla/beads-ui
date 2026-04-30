@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import * as config from '../config.js';
 import * as logging from '../logging.js';
 import * as commands from './commands.js';
 import { main, parseArgs } from './index.js';
@@ -11,6 +12,16 @@ vi.mock('node:fs/promises', () => ({
 vi.mock('../logging.js', () => ({
   enableAllDebug: vi.fn(),
   debug: () => () => {}
+}));
+
+vi.mock('../config.js', () => ({
+  getConfig: vi.fn(() => ({
+    workspace_config: {
+      default_workspace: '/tmp/bdui-workspace',
+      scan_roots: [],
+      workspaces: []
+    }
+  }))
 }));
 
 vi.mock('./commands.js', () => ({
@@ -43,6 +54,9 @@ describe('parseArgs', () => {
     expect(parseArgs(['start']).command).toBe('start');
     expect(parseArgs(['stop']).command).toBe('stop');
     expect(parseArgs(['restart']).command).toBe('restart');
+    expect(parseArgs(['resolve-startup-cwd']).command).toBe(
+      'resolve-startup-cwd'
+    );
   });
 
   test('recognizes --debug and -d flags', () => {
@@ -108,6 +122,38 @@ describe('main', () => {
     await main(['--debug', '--help']);
 
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test('prints configured startup workspace for shared service helper', async () => {
+    const code = await main(['resolve-startup-cwd']);
+
+    expect(code).toBe(0);
+    const output = write_mock.mock.calls.map((c) => String(c[0])).join('');
+    expect(output.trim()).toBe('/tmp/bdui-workspace');
+  });
+
+  test('falls back to current directory for startup workspace without default', async () => {
+    vi.mocked(config.getConfig).mockReturnValueOnce({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir: '/tmp/bdui-app',
+      root_dir: process.cwd(),
+      frontend_mode: 'static',
+      url: 'http://127.0.0.1:3000',
+      config_path: '/tmp/bdui-config.toml',
+      label_display_policy: { visible_prefixes: [] },
+      workspace_config: {
+        default_workspace: null,
+        scan_roots: [],
+        workspaces: []
+      }
+    });
+
+    const code = await main(['resolve-startup-cwd']);
+
+    expect(code).toBe(0);
+    const output = write_mock.mock.calls.map((c) => String(c[0])).join('');
+    expect(output.trim()).toBe(process.cwd());
   });
 
   test('prints usage and exits 1 on no command', async () => {

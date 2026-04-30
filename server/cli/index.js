@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
-import { enableAllDebug } from '../logging.js';
+import { pathToFileURL } from 'node:url';
+import { getConfig } from '../config.js';
+import { debug, enableAllDebug } from '../logging.js';
 import { handleRestart, handleStart, handleStop } from './commands.js';
 import { printUsage } from './usage.js';
 
@@ -48,7 +50,10 @@ export function parseArgs(args) {
     }
     if (
       !command &&
-      (token === 'start' || token === 'stop' || token === 'restart')
+      (token === 'start' ||
+        token === 'stop' ||
+        token === 'restart' ||
+        token === 'resolve-startup-cwd')
     ) {
       command = token;
       continue;
@@ -64,6 +69,20 @@ export function parseArgs(args) {
  *
  * @returns {Promise<string>}
  */
+/**
+ * Resolve the workspace cwd used by the shared launchd service.
+ *
+ * @returns {string}
+ */
+function resolveStartupCwd() {
+  const config = getConfig();
+  const configured_workspace = config.workspace_config.default_workspace;
+  if (configured_workspace) {
+    return configured_workspace;
+  }
+  return process.cwd();
+}
+
 async function loadVersion() {
   const package_url = new URL('../../package.json', import.meta.url);
   const package_text = await readFile(package_url, 'utf8');
@@ -104,6 +123,11 @@ export async function main(args) {
     return 1;
   }
 
+  if (command === 'resolve-startup-cwd') {
+    process.stdout.write(`${resolveStartupCwd()}\n`);
+    return 0;
+  }
+
   if (command === 'start') {
     /**
      * Default behavior: do NOT open a browser. `--open` explicitly opens.
@@ -132,4 +156,19 @@ export async function main(args) {
   // Unknown command path (should not happen due to parseArgs guard)
   printUsage(process.stdout);
   return 1;
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  try {
+    const code = await main(process.argv.slice(2));
+    if (Number.isFinite(code)) {
+      process.exitCode = code;
+    }
+  } catch (err) {
+    debug('cli')('fatal %o', err);
+    process.exitCode = 1;
+  }
 }
