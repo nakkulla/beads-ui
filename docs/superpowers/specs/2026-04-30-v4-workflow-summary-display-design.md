@@ -218,10 +218,12 @@ Compact human format을 사용한다.
 - 24시간 미만: `Xh Ym`
 - 24시간 이상: `Xd Xh`
 
+Seconds are not zero-padded. Use `7m 3s`, not `7m 03s`.
+
 예:
 
 - `45s`
-- `7m 03s`
+- `7m 3s`
 - `2h 14m`
 - `1d 3h`
 
