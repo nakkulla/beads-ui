@@ -65,6 +65,12 @@ describe('server/protocol', () => {
     expect(res).toBe(true);
   });
 
+  test('recognizes update-route-metadata message type', () => {
+    const res = isMessageType('update-route-metadata');
+
+    expect(res).toBe(true);
+  });
+
   test('isMessageType returns true for sync-workspace', () => {
     const res = isMessageType('sync-workspace');
 

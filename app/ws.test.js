@@ -114,6 +114,27 @@ describe('app/ws client', () => {
     await expect(p1).resolves.toEqual([{ id: 'UI-1' }]);
   });
 
+  test('allows update-route-metadata requests', async () => {
+    const sockets = setupFakeWebSocket();
+    const client = createWsClient({ url: 'ws://example.test/ws' });
+    sockets[0].openNow();
+
+    const promise = client.send('update-route-metadata', {
+      id: 'UI-1',
+      values: { execution_lane: 'plan', topology: 'pr' }
+    });
+    const frame = JSON.parse(sockets[0].sent.at(-1));
+    sockets[0].emitMessage({
+      id: frame.id,
+      ok: true,
+      type: 'update-route-metadata',
+      payload: { id: 'UI-1' }
+    });
+
+    await expect(promise).resolves.toEqual({ id: 'UI-1' });
+    client.close();
+  });
+
   test('reconnects after close', async () => {
     vi.useFakeTimers();
     const sockets = setupFakeWebSocket();
