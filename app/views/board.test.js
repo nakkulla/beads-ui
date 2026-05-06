@@ -226,7 +226,7 @@ describe('views/board', () => {
     expect(navigations[0]).toBe('R-3');
   });
 
-  test('renders workflow chips from board card metadata', async () => {
+  test('renders labels only and no workflow chips', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const issueStores = createTestIssueStores();
@@ -239,7 +239,7 @@ describe('views/board', () => {
           id: 'WF-1',
           title: 'workflow card',
           created_at: Date.parse('2026-04-30T06:00:00Z'),
-          labels: ['has:spec'],
+          labels: ['has:spec', 'lane:plan', 'pr'],
           metadata: {
             execution_lane: 'plan',
             skill_workflow: 'skill_creator',
@@ -248,11 +248,19 @@ describe('views/board', () => {
         }
       ]
     });
+    const store = createStore({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['has:', 'lane:'],
+          visible_exact: ['pr']
+        }
+      }
+    });
     const view = createBoardView(
       mount,
       null,
       () => {},
-      createStore(),
+      store,
       undefined,
       issueStores
     );
@@ -262,11 +270,11 @@ describe('views/board', () => {
     const card = /** @type {HTMLElement | null} */ (
       mount.querySelector('[data-issue-id="WF-1"]')
     );
-    const chip_text = Array.from(
-      card?.querySelectorAll('.workflow-chip') || []
+    const label_text = Array.from(
+      card?.querySelectorAll('.label-badge') || []
     ).map((el) => el.textContent?.trim());
-    expect(chip_text).toEqual(['plan', 'skill_creator', 'PR']);
-    expect(card?.querySelector('.label-badge')?.textContent).toBe('has:spec');
+    expect(card?.querySelector('.board-card__workflow')).toBeNull();
+    expect(label_text).toEqual(['has:spec', 'lane:plan', 'pr']);
   });
 
   test('suppresses workflow chips for invalid metadata values', async () => {
@@ -306,7 +314,7 @@ describe('views/board', () => {
     ).toBeNull();
   });
 
-  test('preserves workflow metadata in fallback fetch mode', async () => {
+  test('does not render workflow chips in fallback fetch mode', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const view = createBoardView(
@@ -346,10 +354,9 @@ describe('views/board', () => {
 
     await view.load();
 
-    const chip_text = Array.from(
-      mount.querySelectorAll('[data-issue-id="WF-3"] .workflow-chip')
-    ).map((el) => el.textContent?.trim());
-    expect(chip_text).toEqual(['quick_edit', 'writing_skills']);
+    expect(
+      mount.querySelector('[data-issue-id="WF-3"] .workflow-chip')
+    ).toBeNull();
   });
 
   test('applies latest-first sorting in fallback fetch mode without push stores', async () => {

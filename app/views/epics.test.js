@@ -587,12 +587,21 @@ describe('views/epics', () => {
         ]
       });
 
+      const store = createStore({
+        config: {
+          label_display_policy: {
+            visible_prefixes: ['has:', 'reviewed:'],
+            visible_exact: ['human']
+          }
+        }
+      });
       const view = createEpicsView(
         mount,
         /** @type {any} */ (data),
         () => {},
         subscriptions,
-        /** @type {any} */ (issueStores)
+        /** @type {any} */ (issueStores),
+        store
       );
       await view.load();
       issueStores.getStore('detail:UI-90');
@@ -612,7 +621,7 @@ describe('views/epics', () => {
                 status: 'open',
                 priority: 1,
                 issue_type: 'task',
-                labels: ['has:spec', 'component:api', 'reviewed:code'],
+                labels: ['has:spec', 'component:api', 'reviewed:code', 'human'],
                 created_at: '2025-10-24T10:00:00.000Z'
               },
               {
@@ -659,7 +668,11 @@ describe('views/epics', () => {
       expect(
         mount.querySelectorAll('tr.epic-row:nth-child(1) td')
       ).toHaveLength(8);
-      expect(labeled_row_badges).toEqual(['has:spec', 'reviewed:code']);
+      expect(labeled_row_badges).toEqual([
+        'has:spec',
+        'reviewed:code',
+        'human'
+      ]);
       expect(labeled_row_date).toBe('1일 전');
       expect(newest_row_date).toBe('2시간 전');
     } finally {
@@ -802,7 +815,8 @@ describe('views/epics', () => {
     const store = createStore({
       config: {
         label_display_policy: {
-          visible_prefixes: ['area:']
+          visible_prefixes: ['area:'],
+          visible_exact: []
         }
       }
     });
@@ -835,7 +849,7 @@ describe('views/epics', () => {
               status: 'open',
               priority: 1,
               issue_type: 'task',
-              labels: ['area:auth', 'agent:codex']
+              labels: ['area:auth', 'agent:codex', 'human']
             }
           ]
         }
@@ -858,13 +872,15 @@ describe('views/epics', () => {
     store.setState({
       config: {
         label_display_policy: {
-          visible_prefixes: ['agent:']
+          visible_prefixes: ['agent:'],
+          visible_exact: ['human']
         }
       }
     });
     await Promise.resolve();
 
     expect(mount.textContent).toContain('agent:codex');
+    expect(mount.textContent).toContain('human');
     expect(mount.textContent).not.toContain('area:auth');
   });
 });

@@ -24,6 +24,7 @@ import { createTypeBadge } from '../utils/type-badge.js';
  *   requestRender: () => void,
  *   getSelectedId?: () => string | null,
  *   getVisibleLabelPrefixes?: () => string[],
+ *   getVisibleLabelExact?: () => string[],
  *   row_class?: string,
  *   show_deps?: boolean
  * }} options
@@ -36,6 +37,7 @@ export function createIssueRowRenderer(options) {
   const get_selected_id = options.getSelectedId || (() => null);
   const get_visible_label_prefixes =
     options.getVisibleLabelPrefixes || (() => ['has:', 'reviewed:']);
+  const get_visible_label_exact = options.getVisibleLabelExact || (() => []);
   const row_class = options.row_class || 'issue-row';
   const show_deps = options.show_deps ?? true;
 
@@ -163,7 +165,8 @@ export function createIssueRowRenderer(options) {
       <td role="gridcell">
         ${filterVisibleLabels(
           it.labels,
-          get_visible_label_prefixes()
+          get_visible_label_prefixes(),
+          get_visible_label_exact()
         ).map((label) => createLabelBadge(label))}
       </td>
       <td role="gridcell">

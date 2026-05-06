@@ -11,7 +11,6 @@ import {
 } from '../utils/relative-time.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
-import { workflowSummaryFromIssue } from '../utils/workflow-summary.js';
 
 /**
  * @typedef {{
@@ -125,15 +124,17 @@ export function createBoardView(
     }
   }
 
-  function getVisibleLabelPrefixes() {
-    const prefixes =
-      store?.getState?.().config?.label_display_policy?.visible_prefixes;
+  function getVisibleLabelPolicy() {
+    const policy = store?.getState?.().config?.label_display_policy;
+    const prefixes = policy?.visible_prefixes;
+    const exact = policy?.visible_exact;
 
-    if (!Array.isArray(prefixes)) {
-      return ['has:', 'reviewed:'];
-    }
-
-    return prefixes;
+    return {
+      visible_prefixes: Array.isArray(prefixes)
+        ? prefixes
+        : ['has:', 'reviewed:'],
+      visible_exact: Array.isArray(exact) ? exact : []
+    };
   }
 
   function template() {
@@ -230,11 +231,12 @@ export function createBoardView(
    * @param {IssueLite} it
    */
   function cardTemplate(it) {
+    const label_policy = getVisibleLabelPolicy();
     const card_labels = filterVisibleLabels(
       it.labels,
-      getVisibleLabelPrefixes()
+      label_policy.visible_prefixes,
+      label_policy.visible_exact
     );
-    const workflow_chips = workflowSummaryFromIssue(it).board_chips;
     return html`
       <article
         class="board-card"
@@ -252,17 +254,6 @@ export function createBoardView(
         ${card_labels.length > 0
           ? html`<div class="board-card__labels">
               ${card_labels.map((label) => createLabelBadge(label))}
-            </div>`
-          : ''}
-        ${workflow_chips.length > 0
-          ? html`<div class="board-card__workflow">
-              ${workflow_chips.map(
-                (chip) =>
-                  html`<span
-                    class=${`workflow-chip workflow-chip--${chip.kind}`}
-                    >${chip.label}</span
-                  >`
-              )}
             </div>`
           : ''}
         <div class="board-card__meta">
@@ -747,9 +738,9 @@ export function createBoardView(
   /** @type {null | (() => void)} */
   let unsubscribe_store = null;
   if (store?.subscribe) {
-    let config_prefix_key = JSON.stringify(getVisibleLabelPrefixes());
+    let config_prefix_key = JSON.stringify(getVisibleLabelPolicy());
     unsubscribe_store = store.subscribe(() => {
-      const next_key = JSON.stringify(getVisibleLabelPrefixes());
+      const next_key = JSON.stringify(getVisibleLabelPolicy());
       if (next_key !== config_prefix_key) {
         config_prefix_key = next_key;
         doRender();
