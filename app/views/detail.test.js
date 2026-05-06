@@ -3,6 +3,142 @@ import { describe, expect, test } from 'vitest';
 import { createDetailView } from './detail.js';
 
 describe('views/detail', () => {
+  test('renders configured workflow sections and artifact paths', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issue = {
+      id: 'UI-1',
+      title: 'Workflow detail',
+      labels: ['reviewed:spec'],
+      spec_id: 'docs/superpowers/specs/detail.md',
+      metadata: {
+        execution_lane: 'spec_backed',
+        workspace_policy: 'worktree',
+        branch_policy: 'feature',
+        finish_action: 'pr',
+        spec_review_verdict: 'APPROVE',
+        spec_handoff_at_sha: 'abc123'
+      },
+      dependencies: [],
+      dependents: []
+    };
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['route', 'artifacts', 'review_gates', 'freshness'],
+                route: { fields: ['execution_lane', 'topology'] },
+                artifacts: { fields: ['spec_id', 'plan'] },
+                review_gates: { fields: ['status', 'verdict'] },
+                freshness: {
+                  fields: ['spec_handoff_at_sha', 'execution_base_sha']
+                }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-1' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      stores,
+      store
+    );
+    await view.load('UI-1');
+
+    expect(mount.querySelector('.metadata-paths')).toBeNull();
+    expect(mount.querySelector('.workflow-summary')).toBeTruthy();
+    expect(mount.textContent).toContain('Execution lane');
+    expect(mount.textContent).toContain('spec_backed');
+    expect(mount.textContent).toContain('Topology');
+    expect(mount.textContent).toContain('pr');
+    expect(mount.textContent).toContain('Spec');
+    expect(mount.textContent).toContain('docs/superpowers/specs/detail.md');
+    expect(mount.textContent).toContain('Spec handoff SHA');
+    expect(mount.textContent).not.toContain('Execution base SHA');
+  });
+
+  test('renders invalid topology warning', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issue = {
+      id: 'UI-2',
+      title: 'Invalid route',
+      metadata: {
+        execution_lane: 'plan',
+        workspace_policy: 'current',
+        branch_policy: 'feature',
+        finish_action: 'direct'
+      },
+      dependencies: [],
+      dependents: []
+    };
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['route'],
+                route: {
+                  fields: [
+                    'execution_lane',
+                    'topology',
+                    'workspace_policy',
+                    'branch_policy',
+                    'finish_action'
+                  ]
+                }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-2' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      stores,
+      store
+    );
+    await view.load('UI-2');
+
+    expect(mount.textContent).toContain('Invalid route metadata');
+  });
+
   test('renders fields, markdown description, and dependency links', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
@@ -481,14 +617,14 @@ describe('views/detail', () => {
     expect(closeReasonProp).toBeUndefined();
   });
 
-  test('renders metadata paths in sidebar when values exist', async () => {
+  test('renders artifact paths in workflow summary when values exist', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
 
     const issue = {
       id: 'UI-120',
-      title: 'Has metadata',
+      title: 'Has artifacts',
       dependencies: [],
       dependents: [],
       spec_id:
@@ -508,30 +644,56 @@ describe('views/detail', () => {
         return () => {};
       }
     };
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['artifacts'],
+                artifacts: { fields: ['spec_id', 'plan', 'handoff'] }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
 
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      stores,
+      store
+    );
     await view.load('UI-120');
 
-    const metadataCard = Array.from(mount.querySelectorAll('.props-card')).find(
-      (card) => card.textContent?.includes('Metadata')
+    const workflow_card = mount.querySelector('.workflow-summary');
+    const values = Array.from(
+      mount.querySelectorAll('.workflow-artifact__value')
     );
 
-    expect(metadataCard).toBeTruthy();
-    expect(metadataCard && metadataCard.textContent).toContain('Spec');
-    expect(metadataCard && metadataCard.textContent).toContain('Plan');
-    expect(metadataCard && metadataCard.textContent).toContain('Handoff');
-    expect(metadataCard && metadataCard.textContent).toContain(
-      'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md'
-    );
-    expect(metadataCard && metadataCard.textContent).toContain(
-      'docs/superpowers/plans/2026-04-06-detail-metadata-paths.md'
-    );
-    expect(metadataCard && metadataCard.textContent).toContain(
+    expect(mount.querySelector('.metadata-paths')).toBeNull();
+    expect(workflow_card?.textContent).toContain('Artifacts');
+    expect(workflow_card?.textContent).toContain('Spec');
+    expect(workflow_card?.textContent).toContain('Plan');
+    expect(workflow_card?.textContent).toContain('Handoff');
+    expect(values.map((value) => value.textContent?.trim())).toEqual([
+      'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md',
+      'docs/superpowers/plans/2026-04-06-detail-metadata-paths.md',
       'docs/handoffs/2026-04-06_12-00-00_detail-metadata.md'
-    );
+    ]);
+    expect(values.map((value) => value.getAttribute('title'))).toEqual([
+      'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md',
+      'docs/superpowers/plans/2026-04-06-detail-metadata-paths.md',
+      'docs/handoffs/2026-04-06_12-00-00_detail-metadata.md'
+    ]);
   });
 
-  test('renders workflow summary before metadata paths in sidebar', async () => {
+  test('renders route artifacts and delivery sections in configured order', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
@@ -544,12 +706,11 @@ describe('views/detail', () => {
       spec_id: 'docs/superpowers/specs/workflow.md',
       metadata: {
         plan: 'docs/superpowers/plans/workflow.md',
-        run_started_at: '2026-04-30T06:00:00Z',
-        run_finished_at: '2026-04-30T06:46:38Z',
         pr_url: 'https://github.com/nakkulla/beads-ui/pull/92',
-        pr_number: 92,
         execution_lane: 'plan',
-        skill_workflow: 'none'
+        workspace_policy: 'worktree',
+        branch_policy: 'feature',
+        finish_action: 'pr'
       }
     };
     const stores = {
@@ -561,39 +722,62 @@ describe('views/detail', () => {
         return () => {};
       }
     };
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['route', 'artifacts', 'delivery'],
+                route: { fields: ['execution_lane', 'topology'] },
+                artifacts: { fields: ['spec_id', 'plan'] },
+                delivery: { fields: ['pr_url'] }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      stores,
+      store
+    );
 
     await view.load('UI-192');
 
     const workflow_card = mount.querySelector('.workflow-summary');
     expect(workflow_card?.textContent).toContain('Workflow summary');
-    expect(workflow_card?.textContent).toContain('Duration');
-    expect(workflow_card?.textContent).toContain('46m 38s');
-    expect(workflow_card?.textContent).toContain('Started');
-    expect(workflow_card?.textContent).toContain('Finished');
-    expect(workflow_card?.textContent).toContain('Lane');
+    expect(workflow_card?.textContent).toContain('Route');
+    expect(workflow_card?.textContent).toContain('Execution lane');
     expect(workflow_card?.textContent).toContain('plan');
-    expect(workflow_card?.textContent).toContain('Skill workflow');
-    expect(workflow_card?.textContent).toContain('none');
+    expect(workflow_card?.textContent).toContain('Topology');
+    expect(workflow_card?.textContent).toContain('pr');
+    expect(workflow_card?.textContent).toContain('Artifacts');
+    expect(workflow_card?.textContent).toContain('Spec');
+    expect(workflow_card?.textContent).toContain('Plan');
+    expect(workflow_card?.textContent).toContain('Delivery');
 
     const pr_link = /** @type {HTMLAnchorElement | null} */ (
       workflow_card?.querySelector('a') || null
     );
-    expect(pr_link?.textContent).toBe('PR #92');
+    expect(pr_link?.textContent).toBe('PR');
     expect(pr_link?.getAttribute('href')).toBe(
       'https://github.com/nakkulla/beads-ui/pull/92'
     );
     expect(pr_link?.getAttribute('target')).toBe('_blank');
     expect(pr_link?.getAttribute('rel')).toBe('noreferrer noopener');
 
-    const side_titles = Array.from(
-      mount.querySelectorAll('.detail-side .props-card__title')
+    const section_titles = Array.from(
+      mount.querySelectorAll('.workflow-summary__section-title')
     ).map((el) => el.textContent?.trim());
-    expect(side_titles.indexOf('Workflow summary')).toBeGreaterThan(-1);
-    expect(side_titles.indexOf('Metadata')).toBeGreaterThan(-1);
-    expect(side_titles.indexOf('Workflow summary')).toBeLessThan(
-      side_titles.indexOf('Metadata')
-    );
+    expect(section_titles).toEqual(['Route', 'Artifacts', 'Delivery']);
+    expect(mount.textContent || '').not.toContain('Metadata');
   });
 
   test('renders partial workflow summary and hides unsafe PR links', async () => {
@@ -608,8 +792,10 @@ describe('views/detail', () => {
       dependents: [],
       metadata: {
         pr_url: 'javascript:alert(1)',
-        pr_number: 93,
-        execution_lane: 'quick_edit'
+        execution_lane: 'quick_edit',
+        workspace_policy: 'current',
+        branch_policy: 'same',
+        finish_action: 'direct'
       }
     };
     const stores = {
@@ -621,14 +807,40 @@ describe('views/detail', () => {
         return () => {};
       }
     };
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['route', 'delivery'],
+                route: { fields: ['execution_lane', 'topology'] },
+                delivery: { fields: ['pr_url'] }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      stores,
+      store
+    );
 
     await view.load('UI-193');
 
     const workflow_card = mount.querySelector('.workflow-summary');
-    expect(workflow_card?.textContent).toContain('Lane');
+    expect(workflow_card?.textContent).toContain('Execution lane');
     expect(workflow_card?.textContent).toContain('quick_edit');
-    expect(workflow_card?.textContent).not.toContain('PR #93');
+    expect(workflow_card?.textContent).toContain('Topology');
+    expect(workflow_card?.textContent).toContain('direct');
+    expect(workflow_card?.textContent).not.toContain('javascript:alert(1)');
     expect(workflow_card?.querySelector('a')).toBeNull();
   });
 
@@ -643,9 +855,8 @@ describe('views/detail', () => {
       dependencies: [],
       dependents: [],
       metadata: {
-        run_started_at: 'not a date',
         execution_lane: 'Plan',
-        skill_workflow: ''
+        workspace_policy: 'current'
       }
     };
     const stores = {
@@ -657,21 +868,44 @@ describe('views/detail', () => {
         return () => {};
       }
     };
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['route'],
+                route: { fields: ['execution_lane'] }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      stores,
+      store
+    );
 
     await view.load('UI-194');
 
     expect(mount.querySelector('.workflow-summary')).toBeNull();
   });
 
-  test('hides metadata section when all metadata paths are missing', async () => {
+  test('hides artifact section when all artifact paths are missing', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
 
     const issue = {
       id: 'UI-121',
-      title: 'No metadata',
+      title: 'No artifacts',
       dependencies: [],
       dependents: []
     };
@@ -685,31 +919,55 @@ describe('views/detail', () => {
         return () => {};
       }
     };
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['artifacts'],
+                artifacts: { fields: ['spec_id', 'plan', 'handoff'] }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
 
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      stores,
+      store
+    );
     await view.load('UI-121');
 
+    expect(mount.querySelector('.workflow-summary')).toBeNull();
     expect(mount.textContent || '').not.toContain('Metadata');
     expect(mount.textContent || '').not.toContain('Spec');
     expect(mount.textContent || '').not.toContain('Plan');
     expect(mount.textContent || '').not.toContain('Handoff');
   });
 
-  test('renders only present metadata values and keeps full path in title', async () => {
+  test('renders only present artifact values and keeps full path in title', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
 
-    const planPath =
+    const plan_path =
       'docs/superpowers/plans/2026-04-06-detail-metadata-paths-with-a-very-long-name-for-truncation.md';
     const issue = {
       id: 'UI-122',
-      title: 'Partial metadata',
+      title: 'Partial artifacts',
       dependencies: [],
       dependents: [],
       spec_id: '   ',
       metadata: {
-        plan: planPath,
+        plan: plan_path,
         handoff: null
       }
     };
@@ -723,230 +981,51 @@ describe('views/detail', () => {
         return () => {};
       }
     };
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['artifacts'],
+                artifacts: { fields: ['spec_id', 'plan', 'handoff'] }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
 
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      stores,
+      store
+    );
     await view.load('UI-122');
 
-    expect(mount.textContent || '').toContain('Metadata');
+    expect(mount.textContent || '').toContain('Artifacts');
     expect(mount.textContent || '').toContain('Plan');
     expect(mount.textContent || '').not.toContain('Spec');
     expect(mount.textContent || '').not.toContain('Handoff');
 
     const value = /** @type {HTMLElement|null} */ (
-      mount.querySelector('.metadata-path__value')
+      mount.querySelector('.workflow-artifact__value')
     );
     expect(value).toBeTruthy();
-    expect(value && value.getAttribute('title')).toBe(planPath);
+    expect(value && value.getAttribute('title')).toBe(plan_path);
   });
 
-  test('expands and collapses metadata path on click', async () => {
-    document.body.innerHTML =
-      '<section class="panel"><div id="mount"></div></section>';
-    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+  test('defines workflow artifact wrapping styles in the shared stylesheet', () => {
+    const stylesheet = readFileSync('app/styles.css', 'utf8');
 
-    const issue = {
-      id: 'UI-123',
-      title: 'Toggle metadata',
-      dependencies: [],
-      dependents: [],
-      spec_id:
-        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md'
-    };
-
-    const stores = {
-      /** @param {string} id */
-      snapshotFor(id) {
-        return id === 'detail:UI-123' ? [issue] : [];
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
-
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
-    await view.load('UI-123');
-
-    const value = /** @type {HTMLElement|null} */ (
-      mount.querySelector('.metadata-path__value')
-    );
-    expect(value?.getAttribute('aria-expanded')).toBe('false');
-    expect(value?.classList.contains('is-expanded')).toBe(false);
-
-    value?.click();
-
-    const expanded = /** @type {HTMLElement|null} */ (
-      mount.querySelector('.metadata-path__value')
-    );
-    expect(expanded?.getAttribute('aria-expanded')).toBe('true');
-    expect(expanded?.classList.contains('is-expanded')).toBe(true);
-
-    expanded?.click();
-
-    const collapsed = /** @type {HTMLElement|null} */ (
-      mount.querySelector('.metadata-path__value')
-    );
-    expect(collapsed?.getAttribute('aria-expanded')).toBe('false');
-    expect(collapsed?.classList.contains('is-expanded')).toBe(false);
-  });
-
-  test('expands only the clicked metadata row', async () => {
-    document.body.innerHTML =
-      '<section class="panel"><div id="mount"></div></section>';
-    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
-
-    const issue = {
-      id: 'UI-124',
-      title: 'Independent rows',
-      dependencies: [],
-      dependents: [],
-      spec_id:
-        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md',
-      metadata: {
-        plan: 'docs/superpowers/plans/2026-04-06-detail-metadata-paths.md'
-      }
-    };
-
-    const stores = {
-      /** @param {string} id */
-      snapshotFor(id) {
-        return id === 'detail:UI-124' ? [issue] : [];
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
-
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
-    await view.load('UI-124');
-
-    const values = /** @type {HTMLElement[]} */ (
-      Array.from(mount.querySelectorAll('.metadata-path__value'))
-    );
-    expect(values).toHaveLength(2);
-
-    values[0].click();
-
-    const afterClick = /** @type {HTMLElement[]} */ (
-      Array.from(mount.querySelectorAll('.metadata-path__value'))
-    );
-    expect(afterClick[0]?.getAttribute('aria-expanded')).toBe('true');
-    expect(afterClick[1]?.getAttribute('aria-expanded')).toBe('false');
-  });
-
-  test('resets metadata expanded state when a new issue loads', async () => {
-    document.body.innerHTML =
-      '<section class="panel"><div id="mount"></div></section>';
-    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
-
-    const firstIssue = {
-      id: 'UI-125',
-      title: 'First metadata',
-      dependencies: [],
-      dependents: [],
-      spec_id:
-        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md'
-    };
-    const secondIssue = {
-      id: 'UI-126',
-      title: 'Second metadata',
-      dependencies: [],
-      dependents: [],
-      spec_id:
-        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md'
-    };
-
-    const stores = {
-      /** @param {string} id */
-      snapshotFor(id) {
-        if (id === 'detail:UI-125') {
-          return [firstIssue];
-        }
-        if (id === 'detail:UI-126') {
-          return [secondIssue];
-        }
-        return [];
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
-
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
-    await view.load('UI-125');
-
-    const firstValue = /** @type {HTMLElement|null} */ (
-      mount.querySelector('.metadata-path__value')
-    );
-    firstValue?.click();
-    expect(firstValue?.getAttribute('aria-expanded')).toBe('true');
-
-    await view.load('UI-126');
-
-    const secondValue = /** @type {HTMLElement|null} */ (
-      mount.querySelector('.metadata-path__value')
-    );
-    expect(secondValue?.getAttribute('aria-expanded')).toBe('false');
-    expect(secondValue?.classList.contains('is-expanded')).toBe(false);
-  });
-
-  test('does not collapse metadata path when text selection exists inside it', async () => {
-    document.body.innerHTML =
-      '<section class="panel"><div id="mount"></div></section>';
-    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
-
-    const issue = {
-      id: 'UI-127',
-      title: 'Selected metadata text',
-      dependencies: [],
-      dependents: [],
-      spec_id:
-        'docs/superpowers/specs/2026-04-06-detail-metadata-paths-design.md'
-    };
-
-    const stores = {
-      /** @param {string} id */
-      snapshotFor(id) {
-        return id === 'detail:UI-127' ? [issue] : [];
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
-
-    const view = createDetailView(mount, async () => ({}), undefined, stores);
-    await view.load('UI-127');
-
-    const value = /** @type {HTMLElement|null} */ (
-      mount.querySelector('.metadata-path__value')
-    );
-    value?.click();
-
-    const expanded = /** @type {HTMLElement|null} */ (
-      mount.querySelector('.metadata-path__value')
-    );
-    expect(expanded?.getAttribute('aria-expanded')).toBe('true');
-
-    const originalGetSelection = window.getSelection;
-    const anchorNode = expanded?.firstChild ?? expanded;
-    window.getSelection = /** @type {typeof window.getSelection} */ (
-      () =>
-        /** @type {Selection} */ ({
-          anchorNode,
-          focusNode: anchorNode,
-          toString() {
-            return 'docs/superpowers/specs';
-          }
-        })
-    );
-
-    expanded?.click();
-
-    const stillExpanded = /** @type {HTMLElement|null} */ (
-      mount.querySelector('.metadata-path__value')
-    );
-    expect(stillExpanded?.getAttribute('aria-expanded')).toBe('true');
-
-    window.getSelection = originalGetSelection;
+    expect(stylesheet).toContain('.workflow-artifact__value');
+    expect(stylesheet).toContain('overflow-wrap: anywhere');
+    expect(stylesheet).toContain('word-break: break-word');
   });
 
   describe('delete issue', () => {

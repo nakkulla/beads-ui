@@ -1,6 +1,7 @@
 // Issue Detail view implementation (lit-html based)
 import { html, render } from 'lit-html';
 import { parseView } from '../router.js';
+import { buildWorkflowSections } from '../utils/workflow-fields.js';
 import { issueHashFor } from '../utils/issue-url.js';
 import { debug } from '../utils/logging.js';
 import { renderMarkdown } from '../utils/markdown.js';
@@ -9,7 +10,6 @@ import { priority_levels } from '../utils/priority.js';
 import { STATUSES, statusLabel } from '../utils/status.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
-import { workflowSummaryFromIssue } from '../utils/workflow-summary.js';
 
 /**
  * Format a date string for display.
@@ -31,19 +31,6 @@ function formatCommentDate(dateStr) {
   } catch {
     return dateStr;
   }
-}
-
-/**
- * @param {unknown} value
- * @returns {string}
- */
-function normalizePath(value) {
-  if (typeof value !== 'string') {
-    return '';
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : '';
 }
 
 /**
@@ -97,13 +84,15 @@ function defaultNavigateFn(hash) {
  * @param {(type: string, payload?: unknown) => Promise<unknown>} sendFn - RPC transport.
  * @param {(hash: string) => void} [navigateFn] - Navigation function; defaults to setting location.hash.
  * @param {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issue_stores] - Optional issue stores for live updates.
+ * @param {{ getState?: () => { config?: { detail?: { workflow_summary?: unknown } } }, subscribe?: (fn: () => void) => () => void }} [store]
  * @returns {{ load: (id: string) => Promise<void>, clear: () => void, destroy: () => void }} View API.
  */
 export function createDetailView(
   mount_element,
   sendFn,
   navigateFn = defaultNavigateFn,
-  issue_stores = undefined
+  issue_stores = undefined,
+  store = undefined
 ) {
   const log = debug('views:detail');
   /** @type {IssueDetail | null} */
@@ -130,11 +119,9 @@ export function createDetailView(
   let comment_text = '';
   /** @type {boolean} */
   let comment_pending = false;
-  /** @type {Set<string>} */
-  let expanded_metadata_labels = new Set();
-
   /** @type {HTMLDialogElement | null} */
   let delete_dialog = null;
+  let unsubscribe_store = () => {};
 
   function ensureDeleteDialog() {
     if (delete_dialog) return delete_dialog;
@@ -279,6 +266,16 @@ export function createDetailView(
         doRender();
       } catch (err) {
         log('issue stores listener error %o', err);
+      }
+    });
+  }
+
+  if (store && typeof store.subscribe === 'function') {
+    unsubscribe_store = store.subscribe(() => {
+      try {
+        doRender();
+      } catch (err) {
+        log('store listener error %o', err);
       }
     });
   }
@@ -881,54 +878,6 @@ export function createDetailView(
   };
 
   /**
-   * @param {string} label
-   */
-  /**
-   * @param {Event} ev
-   * @returns {boolean}
-   */
-  function hasSelectedTextWithin(ev) {
-    const target = ev.currentTarget;
-    if (!(target instanceof HTMLElement)) {
-      return false;
-    }
-
-    const selection = window.getSelection?.();
-    if (!selection) {
-      return false;
-    }
-
-    const selectedText = selection.toString().trim();
-    if (selectedText.length === 0) {
-      return false;
-    }
-
-    const anchorNode = selection.anchorNode;
-    const focusNode = selection.focusNode;
-    return Boolean(
-      (anchorNode && target.contains(anchorNode)) ||
-      (focusNode && target.contains(focusNode))
-    );
-  }
-
-  /**
-   * @param {string} label
-   * @param {Event} ev
-   */
-  function toggleMetadataPath(label, ev) {
-    if (hasSelectedTextWithin(ev)) {
-      return;
-    }
-
-    if (expanded_metadata_labels.has(label)) {
-      expanded_metadata_labels.delete(label);
-    } else {
-      expanded_metadata_labels.add(label);
-    }
-    doRender();
-  }
-
-  /**
    * @param {'Dependencies'|'Dependents'} title
    * @param {Dependency[]} items
    */
@@ -970,73 +919,90 @@ export function createDetailView(
   }
 
   /**
+   * @param {string} value
+   */
+  async function copyArtifactPath(value) {
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast('Copied path');
+    } catch (err) {
+      log('copy artifact path failed %o', err);
+      showToast('Failed to copy path', 'error');
+    }
+  }
+
+  function getWorkflowSummaryConfig() {
+    return store?.getState?.().config?.detail?.workflow_summary || null;
+  }
+
+  /**
+   * @param {Record<string, unknown>} row
+   */
+  function workflowRowTemplate(row) {
+    const kind = String(row.kind || 'value');
+    const label = String(row.label || '');
+    const value = String(row.value || '');
+    const href = typeof row.href === 'string' ? row.href : '';
+
+    if (kind === 'artifact') {
+      return html`<div class="workflow-summary__row workflow-artifact">
+        <div class="workflow-summary__label">${label}</div>
+        <button
+          type="button"
+          class="workflow-summary__value workflow-artifact__value"
+          title=${value}
+          @click=${() => copyArtifactPath(value)}
+        >
+          ${value}
+        </button>
+      </div>`;
+    }
+
+    if (kind === 'link' && href) {
+      return html`<div class="workflow-summary__row">
+        <div class="workflow-summary__label">${label}</div>
+        <div class="workflow-summary__value">
+          <a href=${href} target="_blank" rel="noreferrer noopener"
+            >${value}</a
+          >
+        </div>
+      </div>`;
+    }
+
+    return html`<div
+      class=${`workflow-summary__row ${kind === 'invalid' ? 'is-invalid' : ''}`}
+    >
+      <div class="workflow-summary__label">${label}</div>
+      <div class="workflow-summary__value">${value}</div>
+    </div>`;
+  }
+
+  /**
    * @param {IssueDetail} issue
    */
   function detailTemplate(issue) {
-    const spec_value = normalizePath(issue.spec_id);
-    const plan_value = normalizePath(issue.metadata?.plan);
-    const handoff_value = normalizePath(issue.metadata?.handoff);
-    const metadata_rows = [
-      { label: 'Spec', value: spec_value },
-      { label: 'Plan', value: plan_value },
-      { label: 'Handoff', value: handoff_value }
-    ].filter((entry) => entry.value.length > 0);
-
-    const metadata_block =
-      metadata_rows.length > 0
-        ? html`<div class="props-card metadata-paths">
-            <div class="props-card__title">Metadata</div>
-            <div class="metadata-paths__list">
-              ${metadata_rows.map(
-                (entry) =>
-                  html`<div class="metadata-path">
-                    <div class="metadata-path__label">${entry.label}</div>
-                    <button
-                      type="button"
-                      class=${`metadata-path__value${
-                        expanded_metadata_labels.has(entry.label)
-                          ? ' is-expanded'
-                          : ''
-                      }`}
-                      aria-expanded=${expanded_metadata_labels.has(entry.label)
-                        ? 'true'
-                        : 'false'}
-                      title=${entry.value}
-                      @click=${
-                        /** @param {Event} ev */ (ev) =>
-                          toggleMetadataPath(entry.label, ev)
-                      }
-                    >
-                      ${entry.value}
-                    </button>
-                  </div>`
-              )}
-            </div>
-          </div>`
-        : null;
-    const workflow_summary = workflowSummaryFromIssue(issue);
+    const workflow_sections = buildWorkflowSections(
+      issue,
+      getWorkflowSummaryConfig()
+    );
     const workflow_block =
-      workflow_summary.detail_rows.length > 0
+      workflow_sections.length > 0
         ? html`<div class="props-card workflow-summary">
             <div class="props-card__title">Workflow summary</div>
-            <div class="workflow-summary__list">
-              ${workflow_summary.detail_rows.map(
-                (row) =>
-                  html`<div class="workflow-summary__row">
-                    <div class="workflow-summary__label">${row.label}</div>
-                    <div class="workflow-summary__value">
-                      ${row.kind === 'link' && row.href
-                        ? html`<a
-                            href=${row.href}
-                            target="_blank"
-                            rel="noreferrer noopener"
-                            >${row.value}</a
-                          >`
-                        : row.value}
-                    </div>
-                  </div>`
-              )}
-            </div>
+            ${workflow_sections.map(
+              (section) =>
+                html`<section
+                  class="workflow-summary__section"
+                  data-section=${section.id}
+                >
+                  <div class="workflow-summary__section-title">
+                    ${section.label}
+                  </div>
+                  <div class="workflow-summary__list">
+                    ${section.rows.map((row) => workflowRowTemplate(row))}
+                  </div>
+                </section>`
+            )}
           </div>`
         : null;
 
@@ -1445,7 +1411,6 @@ export function createDetailView(
               </div>
               ${labels_block}
               ${workflow_block}
-              ${metadata_block}
               ${depsSection('Dependencies', issue.dependencies || [])}
               ${depsSection('Dependents', issue.dependents || [])}
             </div>
@@ -1626,7 +1591,6 @@ export function createDetailView(
         return;
       }
       current_id = String(id);
-      expanded_metadata_labels = new Set();
       // Try from store first; show placeholder while waiting for snapshot
       current = null;
       refreshFromStore();
@@ -1656,6 +1620,7 @@ export function createDetailView(
       renderPlaceholder('Select an issue to view details');
     },
     destroy() {
+      unsubscribe_store();
       mount_element.replaceChildren();
       if (delete_dialog && delete_dialog.parentNode) {
         delete_dialog.parentNode.removeChild(delete_dialog);

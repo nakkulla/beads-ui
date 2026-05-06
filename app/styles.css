@@ -1939,6 +1939,18 @@ html[data-theme='dark'] {
   gap: var(--space-5);
 }
 
+#detail-root .workflow-summary__section + .workflow-summary__section {
+  margin-top: 0.75rem;
+}
+
+#detail-root .workflow-summary__section-title {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
 #detail-root .workflow-summary__row {
   display: grid;
   grid-template-columns: minmax(84px, max-content) minmax(0, 1fr);
@@ -1955,6 +1967,23 @@ html[data-theme='dark'] {
   min-width: 0;
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+#detail-root .workflow-artifact__value {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#detail-root .workflow-summary__row.is-invalid .workflow-summary__value {
+  color: var(--danger, #b00020);
 }
 
 /* --- Issue Details Dialog (UI-104) --- */

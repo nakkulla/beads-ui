@@ -776,7 +776,8 @@ export function bootstrap(root_element) {
           router.gotoView(view);
         }
       },
-      sub_issue_stores
+      sub_issue_stores,
+      store
     );
 
     // If router already set a selected id (deep-link), open dialog now
