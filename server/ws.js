@@ -319,6 +319,23 @@ function validateRouteMetadataPayload(payload) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {Record<string, unknown> | null}
+ */
+function normalizeShownIssue(value) {
+  if (Array.isArray(value)) {
+    const first = value[0];
+    return first && typeof first === 'object' && !Array.isArray(first)
+      ? /** @type {Record<string, unknown>} */ (first)
+      : null;
+  }
+
+  return value && typeof value === 'object'
+    ? /** @type {Record<string, unknown>} */ (value)
+    : null;
+}
+
+/**
  * Get or initialize the subscription state for a socket.
  *
  * @param {WebSocket} ws
@@ -1007,7 +1024,8 @@ export async function handleMessage(ws, data) {
     }
 
     const shown = await runBdJsonInWorkspace(['show', validation.id, '--json']);
-    if (shown.code !== 0 || !shown.stdoutJson) {
+    const issue = normalizeShownIssue(shown.stdoutJson);
+    if (shown.code !== 0 || !issue) {
       ws.send(
         JSON.stringify(
           makeError(
@@ -1021,7 +1039,7 @@ export async function handleMessage(ws, data) {
       return;
     }
 
-    ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+    ws.send(JSON.stringify(makeOk(req, issue)));
     try {
       triggerMutationRefreshOnce();
     } catch {

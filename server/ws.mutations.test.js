@@ -258,16 +258,18 @@ describe('ws mutation handlers', () => {
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
     mJson.mockResolvedValueOnce({
       code: 0,
-      stdoutJson: {
-        id: 'UI-7',
-        metadata: {
-          execution_lane: 'plan',
-          workspace_policy: 'worktree',
-          branch_policy: 'feature',
-          finish_action: 'pr'
-        },
-        labels: ['lane:plan']
-      }
+      stdoutJson: [
+        {
+          id: 'UI-7',
+          metadata: {
+            execution_lane: 'plan',
+            workspace_policy: 'worktree',
+            branch_policy: 'feature',
+            finish_action: 'pr'
+          },
+          labels: ['lane:plan']
+        }
+      ]
     });
     const ws = makeStubSocket();
 
@@ -305,7 +307,18 @@ describe('ws mutation handlers', () => {
       '--add-label',
       'lane:plan'
     ]);
-    expect(JSON.parse(ws.sent[ws.sent.length - 1]).ok).toBe(true);
+    const response = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(response.ok).toBe(true);
+    expect(response.payload).toEqual({
+      id: 'UI-7',
+      metadata: {
+        execution_lane: 'plan',
+        workspace_policy: 'worktree',
+        branch_policy: 'feature',
+        finish_action: 'pr'
+      },
+      labels: ['lane:plan']
+    });
   });
 
   test('update-route-metadata rejects invalid enum before bd', async () => {

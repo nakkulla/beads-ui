@@ -261,6 +261,88 @@ describe('views/detail', () => {
     ).toBe(false);
   });
 
+  test('disables route controls while save is pending', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issue = {
+      id: 'UI-4',
+      title: 'Pending route edit',
+      labels: ['lane:plan'],
+      metadata: {
+        execution_lane: 'plan',
+        workspace_policy: 'worktree',
+        branch_policy: 'feature',
+        finish_action: 'pr'
+      },
+      dependencies: [],
+      dependents: [],
+      comments: []
+    };
+    /** @type {(value: unknown) => void} */
+    let resolve_save = () => {};
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['route'],
+                route: {
+                  fields: ['execution_lane', 'topology'],
+                  editable_fields: ['execution_lane', 'topology']
+                }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const view = createDetailView(
+      mount,
+      async () =>
+        new Promise((resolve) => {
+          resolve_save = resolve;
+        }),
+      undefined,
+      {
+        snapshotFor(id) {
+          return id === 'detail:UI-4' ? [issue] : [];
+        },
+        subscribe() {
+          return () => {};
+        }
+      },
+      store
+    );
+
+    await view.load('UI-4');
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="route-edit"]')
+    )?.click();
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="route-save"]')
+    )?.click();
+    await Promise.resolve();
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('[data-testid="route-save"]')
+      ).disabled
+    ).toBe(true);
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('[data-testid="route-cancel"]')
+      ).disabled
+    ).toBe(true);
+
+    resolve_save(issue);
+    await Promise.resolve();
+  });
+
   test('requires topology selection before saving invalid route', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';

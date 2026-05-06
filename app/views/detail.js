@@ -962,12 +962,13 @@ export function createDetailView(
       return;
     }
     pending = true;
+    doRender();
     try {
       const updated = await sendFn('update-route-metadata', {
         id: current.id,
         values
       });
-      if (updated && typeof updated === 'object') {
+      if (updated && typeof updated === 'object' && !Array.isArray(updated)) {
         current = /** @type {IssueDetail} */ (updated);
       }
       edit_route = false;
