@@ -89,9 +89,7 @@ function normalizeVisibleExact(value) {
     return DEFAULT_VISIBLE_EXACT.slice();
   }
 
-  return value.filter(
-    (entry) => typeof entry === 'string' && entry.length > 0
-  );
+  return value.filter((entry) => typeof entry === 'string' && entry.length > 0);
 }
 
 /**
@@ -172,8 +170,9 @@ function normalizeWorkflowSummaryConfig(parsed) {
   return /** @type {any} */ ({ sections, ...section_config });
 }
 
-export const DEFAULT_WORKFLOW_SUMMARY_CONFIG =
-  normalizeWorkflowSummaryConfig({});
+export const DEFAULT_WORKFLOW_SUMMARY_CONFIG = normalizeWorkflowSummaryConfig(
+  {}
+);
 
 /**
  * @param {unknown} value

@@ -3,10 +3,10 @@
 ## 문제 정의
 
 Bdui의 issue detail 화면은 현재 title, status, priority, labels, dependency,
-comments, description, acceptance, notes, design, 그리고 일부 metadata path(spec,
-plan, handoff)를 보여준다. 그러나 `bd-ralph-v3` 실행이 끝난 parent bead에는 실행
-요약 metadata가 저장되어 있어도, 사용자가 Bdui에서 선택한 이슈의 실제 실행 시간과
-연결된 PR을 바로 확인할 수 없다.
+comments, description, acceptance, notes, design, 그리고 일부 metadata
+path(spec, plan, handoff)를 보여준다. 그러나 `bd-ralph-v3` 실행이 끝난 parent
+bead에는 실행 요약 metadata가 저장되어 있어도, 사용자가 Bdui에서 선택한 이슈의
+실제 실행 시간과 연결된 PR을 바로 확인할 수 없다.
 
 `bd-ralph-v3` finish flow는 parent bead metadata에 다음 실행 결과를 sync한다.
 
@@ -30,8 +30,10 @@ link를 확인할 수 있게 하는 것**이다. 목록 row, worker parent row, 
 
 ## 비목표
 
-- Issues list, Board, Worker parent row에 duration 또는 PR URL을 추가하지 않는다.
-- issue `created_at`, `updated_at`, `closed_at`으로 실행 소요시간을 추정하지 않는다.
+- Issues list, Board, Worker parent row에 duration 또는 PR URL을 추가하지
+  않는다.
+- issue `created_at`, `updated_at`, `closed_at`으로 실행 소요시간을 추정하지
+  않는다.
 - `bd-ralph-v3`가 metadata를 쓰는 방식은 변경하지 않는다.
 - 모든 raw metadata를 노출하는 generic metadata viewer를 만들지 않는다.
 - PR 목록 조회 API나 worker PR panel의 데이터 contract를 변경하지 않는다.
@@ -55,9 +57,9 @@ link를 확인할 수 있게 하는 것**이다. 목록 row, worker parent row, 
 - `run_finished_at`
 - `audit_artifact`
 
-Bdui server는 `bd show <id> --json` 결과와 list subscription 결과를 normalize하면서
-원본 issue field를 보존한다. 따라서 detail view가 받는 issue object의
-`metadata`에 위 key가 들어오면 client-side에서 바로 렌더링할 수 있다.
+Bdui server는 `bd show <id> --json` 결과와 list subscription 결과를
+normalize하면서 원본 issue field를 보존한다. 따라서 detail view가 받는 issue
+object의 `metadata`에 위 key가 들어오면 client-side에서 바로 렌더링할 수 있다.
 
 ### Existing duration helper
 
@@ -73,16 +75,16 @@ helper로 두거나 detail-local helper로 시작하는 편이 영향 범위가 
 
 표시 항목은 다음으로 제한한다.
 
-| Field    | Source metadata                             | 표시 조건                         |
-| -------- | ------------------------------------------- | --------------------------------- |
-| Duration | `run_started_at` + `run_finished_at` 차이   | 두 timestamp가 모두 valid일 때    |
-| Started  | `run_started_at`                            | timestamp가 valid일 때            |
-| Finished | `run_finished_at`                           | timestamp가 valid일 때            |
-| PR       | `pr_url`, optional `pr_number`              | safe `http:`/`https:` URL일 때    |
+| Field    | Source metadata                           | 표시 조건                      |
+| -------- | ----------------------------------------- | ------------------------------ |
+| Duration | `run_started_at` + `run_finished_at` 차이 | 두 timestamp가 모두 valid일 때 |
+| Started  | `run_started_at`                          | timestamp가 valid일 때         |
+| Finished | `run_finished_at`                         | timestamp가 valid일 때         |
+| PR       | `pr_url`, optional `pr_number`            | safe `http:`/`https:` URL일 때 |
 
-`audit_artifact`는 이번 UI에는 표시하지 않는다. 사용자가 요청한 핵심은 소요시간과
-PR URL이며, audit artifact까지 추가하면 detail sidebar가 execution audit surface로
-확장되어 범위가 커진다.
+`audit_artifact`는 이번 UI에는 표시하지 않는다. 사용자가 요청한 핵심은
+소요시간과 PR URL이며, audit artifact까지 추가하면 detail sidebar가 execution
+audit surface로 확장되어 범위가 커진다.
 
 ### 왜 이 방향인가
 
@@ -94,9 +96,9 @@ PR URL이며, audit artifact까지 추가하면 detail sidebar가 execution audi
 
 ## UI 설계
 
-Run summary card는 기존 properties/metadata path card와 같은 detail sidebar 흐름에
-배치한다. 정확한 위치는 기존 detail layout을 따르되, metadata path card와 가까운
-곳에 둔다.
+Run summary card는 기존 properties/metadata path card와 같은 detail sidebar
+흐름에 배치한다. 정확한 위치는 기존 detail layout을 따르되, metadata path card와
+가까운 곳에 둔다.
 
 예상 표시 형태:
 
@@ -230,14 +232,15 @@ Pre-handoff validation은 repo 표준을 따른다.
 
 ## Acceptance criteria
 
-- 이슈 detail 화면에서 `bd-ralph-v3` run metadata가 있는 이슈는 Run summary card를
-  표시한다.
+- 이슈 detail 화면에서 `bd-ralph-v3` run metadata가 있는 이슈는 Run summary
+  card를 표시한다.
 - 소요시간은 `metadata.run_started_at`과 `metadata.run_finished_at` 차이로만
   계산한다.
 - PR URL은 detail 화면에서 클릭 가능한 link로 보인다.
 - 기존 spec/plan/handoff metadata path 표시는 유지된다.
 - run metadata가 없는 이슈에서는 Run summary card가 표시되지 않는다.
-- invalid timestamp나 negative duration은 UI 오류를 만들지 않고 해당 row만 숨긴다.
+- invalid timestamp나 negative duration은 UI 오류를 만들지 않고 해당 row만
+  숨긴다.
 
 ## Classification
 

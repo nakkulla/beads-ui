@@ -291,7 +291,8 @@ export function createStore(initial = {}) {
         ) ||
         next.config.workspace_config.default_workspace !==
           state.config.workspace_config.default_workspace ||
-        JSON.stringify(next.config.detail) !== JSON.stringify(state.config.detail);
+        JSON.stringify(next.config.detail) !==
+          JSON.stringify(state.config.detail);
       if (
         next.selected_id === state.selected_id &&
         next.view === state.view &&

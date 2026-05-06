@@ -1,36 +1,65 @@
 # Detail Workflow Config Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build config-driven workflow sections in Detail, remove Board workflow chips, add exact-label policy, and make only route metadata editable through a validated Save flow.
+**Goal:** Build config-driven workflow sections in Detail, remove Board workflow
+chips, add exact-label policy, and make only route metadata editable through a
+validated Save flow.
 
-**Architecture:** Add small workflow contract UI utilities owned by `beads-ui`; keep TOML config as display policy only. Server normalizes config and exposes it through bootstrap/API, while WebSocket route mutation validates enum/topology values and delegates to one `bd update` plus readback. Detail consumes the normalized config, renders read-only contract sections, and uses one explicit route-edit mutation.
+**Architecture:** Add small workflow contract UI utilities owned by `beads-ui`;
+keep TOML config as display policy only. Server normalizes config and exposes it
+through bootstrap/API, while WebSocket route mutation validates enum/topology
+values and delegates to one `bd update` plus readback. Detail consumes the
+normalized config, renders read-only contract sections, and uses one explicit
+route-edit mutation.
 
-**Tech Stack:** ECMAScript modules, lit-html, JSDoc type annotations, Vitest, `smol-toml`, existing `bd` CLI wrappers.
+**Tech Stack:** ECMAScript modules, lit-html, JSDoc type annotations, Vitest,
+`smol-toml`, existing `bd` CLI wrappers.
 
 ---
 
 ## Authority and reviewed baseline
 
 - Bead: `UI-hjii`
-- Reviewed spec: `docs/superpowers/specs/2026-05-05-detail-workflow-config-design.md`
+- Reviewed spec:
+  `docs/superpowers/specs/2026-05-05-detail-workflow-config-design.md`
 - Reviewed spec SHA: `e382d98e23fa6e9a0e12740e72365fba5572a0d9`
-- Reviewed spec hash: `8cd58b8a81e6f13b1e7e16f8ee7b282bc10b478eb55e576789330f48ca35e395`
-- Gate evidence: external spec review `APPROVE_WITH_CHANGES`, fixes committed, compact self-review `APPROVE` recorded on `UI-hjii`.
+- Reviewed spec hash:
+  `8cd58b8a81e6f13b1e7e16f8ee7b282bc10b478eb55e576789330f48ca35e395`
+- Gate evidence: external spec review `APPROVE_WITH_CHANGES`, fixes committed,
+  compact self-review `APPROVE` recorded on `UI-hjii`.
 - Worktree: `/Users/isy_macstudio/Documents/GitHub/beads-ui/.worktrees/UI-hjii`
 
 ## File structure
 
-- Modify: `server/config.js` — normalize `labels.visible_exact` plus `detail.workflow_summary` sections/fields/editable fields.
-- Modify: `server/app.js` — include full normalized config in bootstrap and `/api/config`.
-- Modify: `app/state.js` and `app/main.js` — preserve normalized config client-side; pass store/config access to Detail.
-- Modify: `app/utils/label-badge.js` — support prefix plus exact label filtering.
-- Modify: `app/views/board.js`, `app/views/list.js`, `app/views/epics.js` — read prefix/exact config; remove Board workflow chip rendering.
-- Create: `app/utils/workflow-fields.js` — app-owned field registry, topology derivation, section normalization, row builders, route payload validation helpers.
-- Modify: `app/views/detail.js` — replace fixed workflow summary + metadata path card with config-driven workflow summary; add route edit/save/cancel and copy artifact UX.
-- Modify: `app/protocol.js`, `app/ws.js` tests — add `update-route-metadata` message type and prove client allowlist accepts it.
+- Modify: `server/config.js` — normalize `labels.visible_exact` plus
+  `detail.workflow_summary` sections/fields/editable fields.
+- Modify: `server/app.js` — include full normalized config in bootstrap and
+  `/api/config`.
+- Modify: `app/state.js` and `app/main.js` — preserve normalized config
+  client-side; pass store/config access to Detail.
+- Modify: `app/utils/label-badge.js` — support prefix plus exact label
+  filtering.
+- Modify: `app/views/board.js`, `app/views/list.js`, `app/views/epics.js` — read
+  prefix/exact config; remove Board workflow chip rendering.
+- Create: `app/utils/workflow-fields.js` — app-owned field registry, topology
+  derivation, section normalization, row builders, route payload validation
+  helpers.
+- Modify: `app/views/detail.js` — replace fixed workflow summary + metadata path
+  card with config-driven workflow summary; add route edit/save/cancel and copy
+  artifact UX.
+- Modify: `app/protocol.js`, `app/ws.js` tests — add `update-route-metadata`
+  message type and prove client allowlist accepts it.
 - Modify: `server/ws.js` — add route metadata mutation handler.
-- Modify tests: `server/config.test.js`, `app/state.test.js`, `app/main.config-refresh.test.js`, `app/utils/label-badge.test.js`, `app/views/board.test.js`, `app/views/list.test.js`, `app/views/epics.test.js`, `app/views/detail.test.js`, `app/views/detail.toast.test.js`, `server/ws.mutations.test.js`, `app/protocol.test.js`, `app/ws.test.js`.
+- Modify tests: `server/config.test.js`, `app/state.test.js`,
+  `app/main.config-refresh.test.js`, `app/utils/label-badge.test.js`,
+  `app/views/board.test.js`, `app/views/list.test.js`,
+  `app/views/epics.test.js`, `app/views/detail.test.js`,
+  `app/views/detail.toast.test.js`, `server/ws.mutations.test.js`,
+  `app/protocol.test.js`, `app/ws.test.js`.
 - Do not modify: `CHANGES.md`.
 
 ## Defaults and constants
@@ -102,10 +131,12 @@ const DEFAULT_WORKFLOW_SUMMARY_CONFIG = {
 ### Task 1: Server config normalization
 
 **Files:**
+
 - Modify: `server/config.js`
 - Modify: `server/config.test.js`
 
-- [ ] **Step 1: Write failing config tests for exact labels and workflow defaults**
+- [ ] **Step 1: Write failing config tests for exact labels and workflow
+      defaults**
 
 Add tests to `server/config.test.js`:
 
@@ -194,11 +225,13 @@ Run:
 npm test -- server/config.test.js
 ```
 
-Expected: tests fail because `visible_exact`, `detail.workflow_summary`, and/or `readRuntimeConfigForTest` export do not exist.
+Expected: tests fail because `visible_exact`, `detail.workflow_summary`, and/or
+`readRuntimeConfigForTest` export do not exist.
 
 - [ ] **Step 3: Implement config normalization**
 
-In `server/config.js`, export the test helper and add these helpers near existing prefix normalization:
+In `server/config.js`, export the test helper and add these helpers near
+existing prefix normalization:
 
 ```js
 const DEFAULT_VISIBLE_EXACT = [];
@@ -307,13 +340,16 @@ function normalizeWorkflowSummaryConfig(parsed) {
       EDITABLE_WORKFLOW_FIELDS[section] || [],
       EDITABLE_WORKFLOW_FIELDS[section] || []
     );
-    section_config[section] = editable_fields.length > 0 ? { fields, editable_fields } : { fields };
+    section_config[section] =
+      editable_fields.length > 0 ? { fields, editable_fields } : { fields };
   }
 
   return { sections, ...section_config };
 }
 
-export const DEFAULT_WORKFLOW_SUMMARY_CONFIG = normalizeWorkflowSummaryConfig({});
+export const DEFAULT_WORKFLOW_SUMMARY_CONFIG = normalizeWorkflowSummaryConfig(
+  {}
+);
 ```
 
 Then update `readRuntimeConfig` return objects to include:
@@ -328,7 +364,8 @@ detail: {
 },
 ```
 
-On fallback, return `visible_exact: []` and `detail.workflow_summary: normalizeWorkflowSummaryConfig({})`.
+On fallback, return `visible_exact: []` and
+`detail.workflow_summary: normalizeWorkflowSummaryConfig({})`.
 
 Export the test helper without changing production use:
 
@@ -336,7 +373,9 @@ Export the test helper without changing production use:
 export const readRuntimeConfigForTest = readRuntimeConfig;
 ```
 
-`server/app.js` will import `DEFAULT_WORKFLOW_SUMMARY_CONFIG` from `./config.js` for its absent-config fallback so bootstrap/API defaults stay aligned with server normalization.
+`server/app.js` will import `DEFAULT_WORKFLOW_SUMMARY_CONFIG` from `./config.js`
+for its absent-config fallback so bootstrap/API defaults stay aligned with
+server normalization.
 
 - [ ] **Step 4: Run config tests and verify pass**
 
@@ -362,6 +401,7 @@ git commit -m "UI-hjii 설정 정규화 추가"
 ### Task 2: Bootstrap, state, and label display policy
 
 **Files:**
+
 - Modify: `server/app.js`
 - Modify: `app/state.js`
 - Modify: `app/main.js`
@@ -400,7 +440,10 @@ test('stores exact labels and workflow summary config', () => {
       detail: {
         workflow_summary: {
           sections: ['route'],
-          route: { fields: ['execution_lane'], editable_fields: ['execution_lane'] }
+          route: {
+            fields: ['execution_lane'],
+            editable_fields: ['execution_lane']
+          }
         }
       }
     }
@@ -414,7 +457,8 @@ test('stores exact labels and workflow summary config', () => {
 });
 ```
 
-Add bootstrap/API assertions to `server/app.test.js` using the existing app test style:
+Add bootstrap/API assertions to `server/app.test.js` using the existing app test
+style:
 
 ```js
 test('exposes exact labels and detail workflow config', async () => {
@@ -431,7 +475,10 @@ test('exposes exact labels and detail workflow config', async () => {
     detail: {
       workflow_summary: {
         sections: ['route'],
-        route: { fields: ['execution_lane'], editable_fields: ['execution_lane'] }
+        route: {
+          fields: ['execution_lane'],
+          editable_fields: ['execution_lane']
+        }
       }
     }
   });
@@ -455,7 +502,9 @@ test('uses workflow summary defaults when detail config is absent', async () => 
   const response = await request(app).get('/api/config');
 
   expect(response.body.detail.workflow_summary.sections).toContain('route');
-  expect(response.body.detail.workflow_summary.route.fields).toContain('topology');
+  expect(response.body.detail.workflow_summary.route.fields).toContain(
+    'topology'
+  );
 });
 ```
 
@@ -471,7 +520,8 @@ Expected: failures show old config shape and two-argument label filter.
 
 - [ ] **Step 3: Implement config propagation**
 
-Update `server/app.js` `toBootstrapPayload(config)` to copy full config shape. First import the shared default:
+Update `server/app.js` `toBootstrapPayload(config)` to copy full config shape.
+First import the shared default:
 
 ```js
 import { DEFAULT_WORKFLOW_SUMMARY_CONFIG } from './config.js';
@@ -483,17 +533,19 @@ Then normalize detail config:
 const visible_exact = Array.isArray(config.label_display_policy?.visible_exact)
   ? config.label_display_policy.visible_exact.slice()
   : [];
-const detail = config.detail && typeof config.detail === 'object'
-  ? structuredClone(config.detail)
-  : { workflow_summary: DEFAULT_WORKFLOW_SUMMARY_CONFIG };
+const detail =
+  config.detail && typeof config.detail === 'object'
+    ? structuredClone(config.detail)
+    : { workflow_summary: DEFAULT_WORKFLOW_SUMMARY_CONFIG };
 ```
 
 If `structuredClone` is not available in the test runtime, use JSON clone:
 
 ```js
-const detail = config.detail && typeof config.detail === 'object'
-  ? JSON.parse(JSON.stringify(config.detail))
-  : { workflow_summary: DEFAULT_WORKFLOW_SUMMARY_CONFIG };
+const detail =
+  config.detail && typeof config.detail === 'object'
+    ? JSON.parse(JSON.stringify(config.detail))
+    : { workflow_summary: DEFAULT_WORKFLOW_SUMMARY_CONFIG };
 ```
 
 Return:
@@ -506,7 +558,8 @@ return {
 };
 ```
 
-Update JSDoc types in `server/app.js`, `app/state.js`, and `app/main.js` to include:
+Update JSDoc types in `server/app.js`, `app/state.js`, and `app/main.js` to
+include:
 
 ```js
 /** @typedef {{ visible_prefixes: string[], visible_exact: string[] }} LabelDisplayPolicy */
@@ -514,9 +567,13 @@ Update JSDoc types in `server/app.js`, `app/state.js`, and `app/main.js` to incl
 /** @typedef {{ workflow_summary: WorkflowSummaryConfig }} DetailConfig */
 ```
 
-Update `app/state.js` defaults and `normalizeConfig(input)` so missing `visible_exact` becomes `[]`, missing `detail.workflow_summary` becomes the app default, and `config_changed` compares prefixes, exact labels, workspace, and detail JSON string.
+Update `app/state.js` defaults and `normalizeConfig(input)` so missing
+`visible_exact` becomes `[]`, missing `detail.workflow_summary` becomes the app
+default, and `config_changed` compares prefixes, exact labels, workspace, and
+detail JSON string.
 
-Update `app/main.js` `DEFAULT_CONFIG`, `readBootstrapConfig()`, and `refreshConfigSnapshot()` types to preserve `visible_exact` and `detail`.
+Update `app/main.js` `DEFAULT_CONFIG`, `readBootstrapConfig()`, and
+`refreshConfigSnapshot()` types to preserve `visible_exact` and `detail`.
 
 - [ ] **Step 4: Implement exact label filtering**
 
@@ -531,7 +588,11 @@ Change `app/utils/label-badge.js`:
  * @param {string[] | null | undefined} visible_exact
  * @returns {string[]}
  */
-export function filterVisibleLabels(labels, visible_prefixes, visible_exact = []) {
+export function filterVisibleLabels(
+  labels,
+  visible_prefixes,
+  visible_exact = []
+) {
   if (!Array.isArray(labels)) {
     return [];
   }
@@ -540,12 +601,14 @@ export function filterVisibleLabels(labels, visible_prefixes, visible_exact = []
 
   return labels.filter(
     (label) =>
-      exact.includes(label) || prefixes.some((prefix) => label.startsWith(prefix))
+      exact.includes(label) ||
+      prefixes.some((prefix) => label.startsWith(prefix))
   );
 }
 ```
 
-Keep `filterCardLabels(labels)` backward compatible by calling `filterVisibleLabels(labels, CARD_PREFIXES, [])`.
+Keep `filterCardLabels(labels)` backward compatible by calling
+`filterVisibleLabels(labels, CARD_PREFIXES, [])`.
 
 - [ ] **Step 5: Run focused tests and verify pass**
 
@@ -571,6 +634,7 @@ git commit -m "UI-hjii 라벨 표시 정책 확장"
 ### Task 3: Remove Board workflow chips and update scan surfaces
 
 **Files:**
+
 - Modify: `app/views/board.js`
 - Modify: `app/views/list.js`
 - Modify: `app/views/epics.js`
@@ -603,7 +667,12 @@ test('renders labels only and no workflow chips', async () => {
       return () => {};
     }
   };
-  const view = createBoardView(mount, async () => [], () => {}, store);
+  const view = createBoardView(
+    mount,
+    async () => [],
+    () => {},
+    store
+  );
 
   await view.setItems([
     {
@@ -617,15 +686,17 @@ test('renders labels only and no workflow chips', async () => {
   ]);
 
   expect(mount.querySelector('.board-card__workflow')).toBeNull();
-  expect(Array.from(mount.querySelectorAll('.label-badge')).map((el) => el.textContent)).toEqual([
-    'has:spec',
-    'lane:plan',
-    'pr'
-  ]);
+  expect(
+    Array.from(mount.querySelectorAll('.label-badge')).map(
+      (el) => el.textContent
+    )
+  ).toEqual(['has:spec', 'lane:plan', 'pr']);
 });
 ```
 
-Add equivalent one-behavior assertions to `app/views/list.test.js` and `app/views/epics.test.js`: when config has `visible_exact: ['human']`, exact `human` label renders; unconfigured `quick_edit` does not render.
+Add equivalent one-behavior assertions to `app/views/list.test.js` and
+`app/views/epics.test.js`: when config has `visible_exact: ['human']`, exact
+`human` label renders; unconfigured `quick_edit` does not render.
 
 - [ ] **Step 2: Run scan tests and verify failure**
 
@@ -635,21 +706,27 @@ Run:
 npm test -- app/views/board.test.js app/views/list.test.js app/views/epics.test.js
 ```
 
-Expected: Board test fails because workflow chips still render and exact label config is not used in all views.
+Expected: Board test fails because workflow chips still render and exact label
+config is not used in all views.
 
 - [ ] **Step 3: Remove Board workflow chips**
 
 In `app/views/board.js`:
 
-- Remove `import { workflowSummaryFromIssue } from '../utils/workflow-summary.js';`
+- Remove
+  `import { workflowSummaryFromIssue } from '../utils/workflow-summary.js';`
 - Change config helper to return both arrays:
 
 ```js
 function getVisibleLabelPolicy() {
   const policy = store?.getState?.().config?.label_display_policy;
   return {
-    visible_prefixes: Array.isArray(policy?.visible_prefixes) ? policy.visible_prefixes : ['has:', 'reviewed:'],
-    visible_exact: Array.isArray(policy?.visible_exact) ? policy.visible_exact : []
+    visible_prefixes: Array.isArray(policy?.visible_prefixes)
+      ? policy.visible_prefixes
+      : ['has:', 'reviewed:'],
+    visible_exact: Array.isArray(policy?.visible_exact)
+      ? policy.visible_exact
+      : []
   };
 }
 ```
@@ -665,18 +742,24 @@ const card_labels = filterVisibleLabels(
 );
 ```
 
-- Delete `const workflow_chips = ...` and the `.board-card__workflow` template block.
+- Delete `const workflow_chips = ...` and the `.board-card__workflow` template
+  block.
 
 - [ ] **Step 4: Update List and Epics label helpers**
 
-In `app/views/list.js` and `app/views/epics.js`, replace prefix-only helper calls with:
+In `app/views/list.js` and `app/views/epics.js`, replace prefix-only helper
+calls with:
 
 ```js
 function getVisibleLabelPolicy() {
   const policy = store?.getState?.().config?.label_display_policy;
   return {
-    visible_prefixes: Array.isArray(policy?.visible_prefixes) ? policy.visible_prefixes : ['has:', 'reviewed:'],
-    visible_exact: Array.isArray(policy?.visible_exact) ? policy.visible_exact : []
+    visible_prefixes: Array.isArray(policy?.visible_prefixes)
+      ? policy.visible_prefixes
+      : ['has:', 'reviewed:'],
+    visible_exact: Array.isArray(policy?.visible_exact)
+      ? policy.visible_exact
+      : []
   };
 }
 ```
@@ -716,6 +799,7 @@ git commit -m "UI-hjii 스캔 화면 라벨 정책 적용"
 ### Task 4: Workflow field registry utilities
 
 **Files:**
+
 - Create: `app/utils/workflow-fields.js`
 - Create: `app/utils/workflow-fields.test.js`
 
@@ -785,7 +869,10 @@ describe('workflow fields', () => {
       }
     );
 
-    expect(sections.map((section) => section.id)).toEqual(['route', 'artifacts']);
+    expect(sections.map((section) => section.id)).toEqual([
+      'route',
+      'artifacts'
+    ]);
     expect(sections[0].rows.map((row) => row.id)).toEqual([
       'execution_lane',
       'topology'
@@ -822,7 +909,8 @@ Expected: module missing.
 
 - [ ] **Step 3: Implement workflow field utilities**
 
-Create `app/utils/workflow-fields.js` with JSDoc types and these exported functions:
+Create `app/utils/workflow-fields.js` with JSDoc types and these exported
+functions:
 
 ```js
 const EXECUTION_LANES = ['quick_edit', 'spec_backed', 'plan'];
@@ -924,7 +1012,9 @@ export function deriveTopology(metadata) {
       return { kind: 'valid', value: name };
     }
   }
-  return has_any ? { kind: 'invalid', value: null } : { kind: 'absent', value: null };
+  return has_any
+    ? { kind: 'invalid', value: null }
+    : { kind: 'absent', value: null };
 }
 
 /**
@@ -932,14 +1022,18 @@ export function deriveTopology(metadata) {
  * @param {unknown} topology
  */
 export function routeMutationValues(lane, topology) {
-  if (!EXECUTION_LANES.includes(String(lane)) || !Object.hasOwn(TOPOLOGIES, String(topology))) {
+  if (
+    !EXECUTION_LANES.includes(String(lane)) ||
+    !Object.hasOwn(TOPOLOGIES, String(topology))
+  ) {
     return null;
   }
   return { execution_lane: String(lane), topology: String(topology) };
 }
 ```
 
-Then implement `buildWorkflowSections(issue, workflow_config)` using registry-specific row builders:
+Then implement `buildWorkflowSections(issue, workflow_config)` using
+registry-specific row builders:
 
 ```js
 /**
@@ -947,9 +1041,12 @@ Then implement `buildWorkflowSections(issue, workflow_config)` using registry-sp
  * @param {any} workflow_config
  */
 export function buildWorkflowSections(issue, workflow_config) {
-  const metadata = issue?.metadata && typeof issue.metadata === 'object' ? issue.metadata : {};
+  const metadata =
+    issue?.metadata && typeof issue.metadata === 'object' ? issue.metadata : {};
   const labels = Array.isArray(issue?.labels) ? issue.labels : [];
-  const sections = Array.isArray(workflow_config?.sections) ? workflow_config.sections : [];
+  const sections = Array.isArray(workflow_config?.sections)
+    ? workflow_config.sections
+    : [];
   /** @type {Array<{ id: string, label: string, rows: Array<Record<string, unknown>> }>} */
   const result = [];
 
@@ -959,7 +1056,11 @@ export function buildWorkflowSections(issue, workflow_config) {
       : [];
     const rows = buildRowsForSection(section, fields, issue, metadata, labels);
     if (rows.length > 0) {
-      result.push({ id: section, label: SECTION_LABELS[section] || section, rows });
+      result.push({
+        id: section,
+        label: SECTION_LABELS[section] || section,
+        rows
+      });
     }
   }
 
@@ -969,11 +1070,19 @@ export function buildWorkflowSections(issue, workflow_config) {
 
 `buildRowsForSection` must:
 
-- Route: display valid lane values (`quick_edit`, `spec_backed`, `plan`), topology (`direct`, `pr`, or row with `kind: 'invalid'` and value `Invalid route metadata`), and raw route metadata only when present.
-- Artifacts: source `issue.spec_id`, `metadata.plan`, `metadata.handoff`, row kind `artifact`.
-- Review gates: for gates `spec`, `plan`, `impl`, build grouped row values from labels and metadata keys (`spec_review_verdict`, `spec_review_final_source`, `spec_review_external_attempts`, `spec_reviewed_at_sha`, `spec_content_hash`, etc.).
-- Freshness/followup/human: display configured fields only when `displayValue(...)` is non-empty.
-- Delivery: display `pr_url` only when `safeWorkflowUrl` returns URL, row kind `link`.
+- Route: display valid lane values (`quick_edit`, `spec_backed`, `plan`),
+  topology (`direct`, `pr`, or row with `kind: 'invalid'` and value
+  `Invalid route metadata`), and raw route metadata only when present.
+- Artifacts: source `issue.spec_id`, `metadata.plan`, `metadata.handoff`, row
+  kind `artifact`.
+- Review gates: for gates `spec`, `plan`, `impl`, build grouped row values from
+  labels and metadata keys (`spec_review_verdict`, `spec_review_final_source`,
+  `spec_review_external_attempts`, `spec_reviewed_at_sha`, `spec_content_hash`,
+  etc.).
+- Freshness/followup/human: display configured fields only when
+  `displayValue(...)` is non-empty.
+- Delivery: display `pr_url` only when `safeWorkflowUrl` returns URL, row kind
+  `link`.
 
 - [ ] **Step 4: Run utility tests and verify pass**
 
@@ -999,6 +1108,7 @@ git commit -m "UI-hjii 워크플로 필드 레지스트리 추가"
 ### Task 5: Detail workflow rendering and artifact copy UX
 
 **Files:**
+
 - Modify: `app/views/detail.js`
 - Modify: `app/styles.css`
 - Modify: `app/views/detail.test.js`
@@ -1010,7 +1120,8 @@ Add focused tests to `app/views/detail.test.js`:
 
 ```js
 test('renders configured workflow sections and artifact paths', async () => {
-  document.body.innerHTML = '<section class="panel"><div id="mount"></div></section>';
+  document.body.innerHTML =
+    '<section class="panel"><div id="mount"></div></section>';
   const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
   const issue = {
     id: 'UI-1',
@@ -1038,7 +1149,9 @@ test('renders configured workflow sections and artifact paths', async () => {
               route: { fields: ['execution_lane', 'topology'] },
               artifacts: { fields: ['spec_id', 'plan'] },
               review_gates: { fields: ['status', 'verdict'] },
-              freshness: { fields: ['spec_handoff_at_sha', 'execution_base_sha'] }
+              freshness: {
+                fields: ['spec_handoff_at_sha', 'execution_base_sha']
+              }
             }
           }
         }
@@ -1057,7 +1170,13 @@ test('renders configured workflow sections and artifact paths', async () => {
     }
   };
 
-  const view = createDetailView(mount, async () => ({}), undefined, stores, store);
+  const view = createDetailView(
+    mount,
+    async () => ({}),
+    undefined,
+    stores,
+    store
+  );
   await view.load('UI-1');
 
   expect(mount.querySelector('.metadata-paths')).toBeNull();
@@ -1094,7 +1213,8 @@ test('copies artifact path and shows success toast', async () => {
 });
 ```
 
-Use the current test helper style in each file; keep each test focused on one behavior.
+Use the current test helper style in each file; keep each test focused on one
+behavior.
 
 - [ ] **Step 2: Run Detail tests and verify failure**
 
@@ -1104,7 +1224,8 @@ Run:
 npm test -- app/views/detail.test.js app/views/detail.toast.test.js
 ```
 
-Expected: failures show `createDetailView` lacks store argument and old metadata/workflow rendering remains.
+Expected: failures show `createDetailView` lacks store argument and old
+metadata/workflow rendering remains.
 
 - [ ] **Step 3: Pass config access to Detail**
 
@@ -1129,7 +1250,13 @@ Update its JSDoc:
 In `app/main.js`, pass `store` as the fifth argument:
 
 ```js
-detail = createDetailView(dialog.getMount(), transport, navigate_fn, sub_issue_stores, store);
+detail = createDetailView(
+  dialog.getMount(),
+  transport,
+  navigate_fn,
+  sub_issue_stores,
+  store
+);
 ```
 
 Subscribe to store config changes in Detail only to re-render:
@@ -1171,7 +1298,8 @@ In `app/views/detail.js`:
 import { buildWorkflowSections } from '../utils/workflow-fields.js';
 ```
 
-- Delete `expanded_metadata_labels`, `normalizePath()`, `toggleMetadataPath()`, and `metadata_block` use for `spec_id`/`plan`/`handoff`.
+- Delete `expanded_metadata_labels`, `normalizePath()`, `toggleMetadataPath()`,
+  and `metadata_block` use for `spec_id`/`plan`/`handoff`.
 - Add copy handler:
 
 ```js
@@ -1195,7 +1323,8 @@ function getWorkflowSummaryConfig() {
 }
 ```
 
-- Replace old `workflow_block` construction with a renderer that maps `buildWorkflowSections(issue, getWorkflowSummaryConfig())`.
+- Replace old `workflow_block` construction with a renderer that maps
+  `buildWorkflowSections(issue, getWorkflowSummaryConfig())`.
 
 Use row classes:
 
@@ -1209,16 +1338,24 @@ function workflowRowTemplate(row) {
         class="workflow-summary__value workflow-artifact__value"
         title=${row.value}
         @click=${() => copyArtifactPath(String(row.value))}
-      >${row.value}</button>
+      >
+        ${row.value}
+      </button>
     </div>`;
   }
   if (row.kind === 'link' && row.href) {
     return html`<div class="workflow-summary__row">
       <div class="workflow-summary__label">${row.label}</div>
-      <div class="workflow-summary__value"><a href=${row.href} target="_blank" rel="noreferrer noopener">${row.value}</a></div>
+      <div class="workflow-summary__value">
+        <a href=${row.href} target="_blank" rel="noreferrer noopener"
+          >${row.value}</a
+        >
+      </div>
     </div>`;
   }
-  return html`<div class="workflow-summary__row ${row.kind === 'invalid' ? 'is-invalid' : ''}">
+  return html`<div
+    class="workflow-summary__row ${row.kind === 'invalid' ? 'is-invalid' : ''}"
+  >
     <div class="workflow-summary__label">${row.label}</div>
     <div class="workflow-summary__value">${row.value}</div>
   </div>`;
@@ -1228,18 +1365,30 @@ function workflowRowTemplate(row) {
 Render sections:
 
 ```js
-const workflow_sections = buildWorkflowSections(issue, getWorkflowSummaryConfig());
-const workflow_block = workflow_sections.length > 0
-  ? html`<div class="props-card workflow-summary">
-      <div class="props-card__title">Workflow summary</div>
-      ${workflow_sections.map(
-        (section) => html`<section class="workflow-summary__section" data-section=${section.id}>
-          <div class="workflow-summary__section-title">${section.label}</div>
-          <div class="workflow-summary__list">${section.rows.map(workflowRowTemplate)}</div>
-        </section>`
-      )}
-    </div>`
-  : null;
+const workflow_sections = buildWorkflowSections(
+  issue,
+  getWorkflowSummaryConfig()
+);
+const workflow_block =
+  workflow_sections.length > 0
+    ? html`<div class="props-card workflow-summary">
+        <div class="props-card__title">Workflow summary</div>
+        ${workflow_sections.map(
+          (section) =>
+            html`<section
+              class="workflow-summary__section"
+              data-section=${section.id}
+            >
+              <div class="workflow-summary__section-title">
+                ${section.label}
+              </div>
+              <div class="workflow-summary__list">
+                ${section.rows.map(workflowRowTemplate)}
+              </div>
+            </section>`
+        )}
+      </div>`
+    : null;
 ```
 
 Keep `${workflow_block}` in the sidebar and remove `${metadata_block}`.
@@ -1279,7 +1428,8 @@ In `app/styles.css`, replace or extend old metadata path styles:
 }
 ```
 
-Remove `.metadata-path__value.is-expanded` behavior only if no tests still rely on old Metadata path card.
+Remove `.metadata-path__value.is-expanded` behavior only if no tests still rely
+on old Metadata path card.
 
 - [ ] **Step 6: Run Detail tests and verify pass**
 
@@ -1305,6 +1455,7 @@ git commit -m "UI-hjii 상세 워크플로 표시 갱신"
 ### Task 6: Route edit client UX
 
 **Files:**
+
 - Modify: `app/views/detail.js`
 - Modify: `app/utils/workflow-fields.js`
 - Modify: `app/views/detail.test.js`
@@ -1316,7 +1467,8 @@ Add to `app/views/detail.test.js`:
 
 ```js
 test('edits route metadata with explicit save and cancel', async () => {
-  document.body.innerHTML = '<section class="panel"><div id="mount"></div></section>';
+  document.body.innerHTML =
+    '<section class="panel"><div id="mount"></div></section>';
   const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
   const issue = {
     id: 'UI-2',
@@ -1357,7 +1509,13 @@ test('edits route metadata with explicit save and cancel', async () => {
             workflow_summary: {
               sections: ['route'],
               route: {
-                fields: ['execution_lane', 'topology', 'workspace_policy', 'branch_policy', 'finish_action'],
+                fields: [
+                  'execution_lane',
+                  'topology',
+                  'workspace_policy',
+                  'branch_policy',
+                  'finish_action'
+                ],
                 editable_fields: ['execution_lane', 'topology']
               }
             }
@@ -1370,8 +1528,12 @@ test('edits route metadata with explicit save and cancel', async () => {
 
   await view.load('UI-2');
   mount.querySelector('[data-testid="route-edit"]')?.click();
-  const lane = /** @type {HTMLSelectElement} */ (mount.querySelector('[data-testid="route-lane"]'));
-  const topology = /** @type {HTMLSelectElement} */ (mount.querySelector('[data-testid="route-topology"]'));
+  const lane = /** @type {HTMLSelectElement} */ (
+    mount.querySelector('[data-testid="route-lane"]')
+  );
+  const topology = /** @type {HTMLSelectElement} */ (
+    mount.querySelector('[data-testid="route-topology"]')
+  );
   lane.value = 'quick_edit';
   lane.dispatchEvent(new Event('change'));
   topology.value = 'direct';
@@ -1382,7 +1544,10 @@ test('edits route metadata with explicit save and cancel', async () => {
   expect(sends).toEqual([
     {
       type: 'update-route-metadata',
-      payload: { id: 'UI-2', values: { execution_lane: 'quick_edit', topology: 'direct' } }
+      payload: {
+        id: 'UI-2',
+        values: { execution_lane: 'quick_edit', topology: 'direct' }
+      }
     }
   ]);
   expect(mount.textContent).toContain('quick_edit');
@@ -1433,8 +1598,10 @@ function beginRouteEdit() {
   }
   const metadata = current.metadata || {};
   const topology = deriveTopology(metadata);
-  route_draft_lane = typeof metadata.execution_lane === 'string' ? metadata.execution_lane : '';
-  route_draft_topology = topology.kind === 'valid' && topology.value ? topology.value : '';
+  route_draft_lane =
+    typeof metadata.execution_lane === 'string' ? metadata.execution_lane : '';
+  route_draft_topology =
+    topology.kind === 'valid' && topology.value ? topology.value : '';
   edit_route = true;
   doRender();
 }
@@ -1484,15 +1651,26 @@ Import `deriveTopology` and `routeMutationValues` from `workflow-fields.js`.
 
 - [ ] **Step 4: Render route edit controls in workflow block**
 
-In `workflowRowTemplate(row)`, when `section.id === 'route'` and `edit_route` is true, render select controls for editable fields instead of read-only rows. The simplest structure is a `routeSectionTemplate(section)` branch:
+In `workflowRowTemplate(row)`, when `section.id === 'route'` and `edit_route` is
+true, render select controls for editable fields instead of read-only rows. The
+simplest structure is a `routeSectionTemplate(section)` branch:
 
 ```js
 function routeSectionTemplate(section) {
   if (!edit_route) {
     return html`<section class="workflow-summary__section" data-section="route">
       <div class="workflow-summary__section-title">Route</div>
-      <div class="workflow-summary__list">${section.rows.map(workflowRowTemplate)}</div>
-      <button type="button" class="btn" data-testid="route-edit" @click=${beginRouteEdit}>Edit</button>
+      <div class="workflow-summary__list">
+        ${section.rows.map(workflowRowTemplate)}
+      </div>
+      <button
+        type="button"
+        class="btn"
+        data-testid="route-edit"
+        @click=${beginRouteEdit}
+      >
+        Edit
+      </button>
     </section>`;
   }
 
@@ -1501,8 +1679,16 @@ function routeSectionTemplate(section) {
     <div class="workflow-summary__section-title">Route</div>
     <div class="workflow-summary__list">
       <div class="workflow-summary__row">
-        <label class="workflow-summary__label" for="route-lane">Execution lane</label>
-        <select id="route-lane" data-testid="route-lane" .value=${route_draft_lane} ?disabled=${pending} @change=${onRouteLaneChange}>
+        <label class="workflow-summary__label" for="route-lane"
+          >Execution lane</label
+        >
+        <select
+          id="route-lane"
+          data-testid="route-lane"
+          .value=${route_draft_lane}
+          ?disabled=${pending}
+          @change=${onRouteLaneChange}
+        >
           <option value="">Choose lane</option>
           <option value="quick_edit">quick_edit</option>
           <option value="spec_backed">spec_backed</option>
@@ -1510,18 +1696,46 @@ function routeSectionTemplate(section) {
         </select>
       </div>
       <div class="workflow-summary__row">
-        <label class="workflow-summary__label" for="route-topology">Topology</label>
-        <select id="route-topology" data-testid="route-topology" .value=${route_draft_topology} ?disabled=${pending} @change=${onRouteTopologyChange}>
+        <label class="workflow-summary__label" for="route-topology"
+          >Topology</label
+        >
+        <select
+          id="route-topology"
+          data-testid="route-topology"
+          .value=${route_draft_topology}
+          ?disabled=${pending}
+          @change=${onRouteTopologyChange}
+        >
           <option value="">Choose topology</option>
           <option value="direct">direct</option>
           <option value="pr">pr</option>
         </select>
       </div>
-      ${section.rows.filter((row) => !['execution_lane', 'topology'].includes(String(row.id))).map(workflowRowTemplate)}
+      ${section.rows
+        .filter(
+          (row) => !['execution_lane', 'topology'].includes(String(row.id))
+        )
+        .map(workflowRowTemplate)}
     </div>
     <div class="workflow-summary__actions">
-      <button type="button" class="btn" data-testid="route-save" ?disabled=${pending || !can_save} @click=${saveRouteEdit}>Save</button>
-      <button type="button" class="btn" data-testid="route-cancel" ?disabled=${pending} @click=${cancelRouteEdit}>Cancel</button>
+      <button
+        type="button"
+        class="btn"
+        data-testid="route-save"
+        ?disabled=${pending || !can_save}
+        @click=${saveRouteEdit}
+      >
+        Save
+      </button>
+      <button
+        type="button"
+        class="btn"
+        data-testid="route-cancel"
+        ?disabled=${pending}
+        @click=${cancelRouteEdit}
+      >
+        Cancel
+      </button>
     </div>
   </section>`;
 }
@@ -1538,7 +1752,8 @@ function onRouteLaneChange(ev) {
 
 /** @param {Event} ev */
 function onRouteTopologyChange(ev) {
-  route_draft_topology = /** @type {HTMLSelectElement} */ (ev.currentTarget).value;
+  route_draft_topology = /** @type {HTMLSelectElement} */ (ev.currentTarget)
+    .value;
   doRender();
 }
 ```
@@ -1567,6 +1782,7 @@ git commit -m "UI-hjii 라우트 편집 UI 추가"
 ### Task 7: Protocol and server route metadata mutation
 
 **Files:**
+
 - Modify: `app/protocol.js`
 - Modify: `app/protocol.test.js`
 - Modify: `app/ws.test.js`
@@ -1598,7 +1814,8 @@ test('allows update-route-metadata requests', async () => {
 });
 ```
 
-Adapt the promise resolution to the current mock helper; the point is to prove `send()` does not reject with `unknown message type`.
+Adapt the promise resolution to the current mock helper; the point is to prove
+`send()` does not reject with `unknown message type`.
 
 - [ ] **Step 2: Write failing server mutation tests**
 
@@ -1630,7 +1847,10 @@ test('update-route-metadata writes pr topology and lane labels', async () => {
       JSON.stringify({
         id: 'route-1',
         type: 'update-route-metadata',
-        payload: { id: 'UI-7', values: { execution_lane: 'plan', topology: 'pr' } }
+        payload: {
+          id: 'UI-7',
+          values: { execution_lane: 'plan', topology: 'pr' }
+        }
       })
     )
   );
@@ -1667,7 +1887,10 @@ test('update-route-metadata rejects invalid enum before bd', async () => {
       JSON.stringify({
         id: 'route-bad',
         type: 'update-route-metadata',
-        payload: { id: 'UI-7', values: { execution_lane: 'bogus', topology: 'pr' } }
+        payload: {
+          id: 'UI-7',
+          values: { execution_lane: 'bogus', topology: 'pr' }
+        }
       })
     )
   );
@@ -1689,7 +1912,8 @@ Expected: new message type and server handler missing.
 
 - [ ] **Step 4: Add protocol message type**
 
-In `app/protocol.js`, add `'update-route-metadata'` to the `MessageType` typedef union and `MESSAGE_TYPES` array near other mutation types.
+In `app/protocol.js`, add `'update-route-metadata'` to the `MessageType` typedef
+union and `MESSAGE_TYPES` array near other mutation types.
 
 - [ ] **Step 5: Implement route mutation validation in `server/ws.js`**
 
@@ -1719,17 +1943,33 @@ Add helper:
 function validateRouteMetadataPayload(payload) {
   const body = /** @type {any} */ (payload || {});
   const id = typeof body.id === 'string' ? body.id.trim() : '';
-  const values = body.values && typeof body.values === 'object' ? body.values : null;
+  const values =
+    body.values && typeof body.values === 'object' ? body.values : null;
   if (!id || !values) {
-    return { ok: false, code: 'bad_request', message: 'Invalid route metadata payload' };
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid route metadata payload'
+    };
   }
   const lane = values.execution_lane;
   const topology = values.topology;
   if (typeof lane !== 'string' || !ROUTE_LANES.has(lane)) {
-    return { ok: false, code: 'bad_request', message: 'Invalid execution lane' };
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid execution lane'
+    };
   }
-  if (typeof topology !== 'string' || !Object.hasOwn(ROUTE_TOPOLOGIES, topology)) {
-    return { ok: false, code: 'bad_request', message: 'Invalid route topology' };
+  if (
+    typeof topology !== 'string' ||
+    !Object.hasOwn(ROUTE_TOPOLOGIES, topology)
+  ) {
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid route topology'
+    };
   }
   return { ok: true, id, lane, topology };
 }
@@ -1804,12 +2044,15 @@ git commit -m "UI-hjii 라우트 메타데이터 저장 추가"
 ### Task 8: Follow-up tracking and final verification
 
 **Files:**
+
 - Modify only if needed: Beads metadata/notes for `UI-hjii`
 - Do not modify: `CHANGES.md`
 
 - [ ] **Step 1: Create or reuse the dotfiles follow-up**
 
-Because the reviewed spec intentionally excludes dotfiles runtime config rollout from this repo implementation, create or reuse a target-owned dotfiles follow-up with this content:
+Because the reviewed spec intentionally excludes dotfiles runtime config rollout
+from this repo implementation, create or reuse a target-owned dotfiles follow-up
+with this content:
 
 ```text
 Title: beads-ui workflow summary config rollout
@@ -1824,7 +2067,9 @@ Metadata:
 Required action: update dotfiles-owned ~/.config/bdui/config.toml generation and safe existing-config migration guidance for current beads-ui workflow summary config.
 ```
 
-If a compatible existing dotfiles Bead already exists, reuse it. Record the target follow-up id in `UI-hjii` notes or `metadata.followup_refs` and read it back.
+If a compatible existing dotfiles Bead already exists, reuse it. Record the
+target follow-up id in `UI-hjii` notes or `metadata.followup_refs` and read it
+back.
 
 - [ ] **Step 2: Run required validation**
 
@@ -1842,11 +2087,14 @@ Expected:
 - `npm run tsc` exits 0.
 - `npm test` exits 0.
 - `npm run lint` exits 0.
-- `npm run prettier:write` exits 0; if it changes files, inspect `git diff`, commit formatting changes with the relevant code commit or a separate Korean commit.
+- `npm run prettier:write` exits 0; if it changes files, inspect `git diff`,
+  commit formatting changes with the relevant code commit or a separate Korean
+  commit.
 
 - [ ] **Step 3: Run spec prompt-to-artifact audit**
 
-Build a checklist mapping each reviewed spec requirement to implementation evidence:
+Build a checklist mapping each reviewed spec requirement to implementation
+evidence:
 
 ```text
 Board/List/Epics workflow chips removed -> app/views/board.js no workflowSummaryFromIssue import; tests assert no .board-card__workflow.
@@ -1862,11 +2110,18 @@ Required validation -> command outputs recorded.
 
 - [ ] **Step 4: Implementation review gate**
 
-Before PR Delivery, run `implementation-review` per workflow. Use external review unless contract cap already reached for the same gate identity. Fix required findings in scope, then re-run focused verification for changed paths.
+Before PR Delivery, run `implementation-review` per workflow. Use external
+review unless contract cap already reached for the same gate identity. Fix
+required findings in scope, then re-run focused verification for changed paths.
 
 - [ ] **Step 5: PR Delivery stop boundary**
 
-After non-blocking implementation review and fixes, create PR against `nakkulla/beads-ui` from branch `UI-hjii`. Record `metadata.pr_url`, add label `pr`, and update `UI-hjii` status to `resolved` as PR Delivery evidence. Read back and push Beads. Keep `closed` reserved for explicit PR Finish after merge/base verification. Stop at PR Delivery unless user explicitly asks for PR Finish/merge.
+After non-blocking implementation review and fixes, create PR against
+`nakkulla/beads-ui` from branch `UI-hjii`. Record `metadata.pr_url`, add label
+`pr`, and update `UI-hjii` status to `resolved` as PR Delivery evidence. Read
+back and push Beads. Keep `closed` reserved for explicit PR Finish after
+merge/base verification. Stop at PR Delivery unless user explicitly asks for PR
+Finish/merge.
 
 Example Beads write after PR URL exists:
 
@@ -1885,7 +2140,12 @@ bd dolt push
 
 ## Self-review checklist
 
-- Spec coverage: every goal/non-goal has a task and at least one test or validation item.
-- Follow-up coverage: dotfiles runtime config rollout is explicit in Task 8 and not mixed into this repo implementation.
-- Placeholder scan: no `TBD`, no vague “add tests” without examples, no implementation-only steps without commands.
-- Type consistency: `visible_prefixes`, `visible_exact`, `detail.workflow_summary`, `update-route-metadata`, `execution_lane`, and `topology` names are consistent across tasks.
+- Spec coverage: every goal/non-goal has a task and at least one test or
+  validation item.
+- Follow-up coverage: dotfiles runtime config rollout is explicit in Task 8 and
+  not mixed into this repo implementation.
+- Placeholder scan: no `TBD`, no vague “add tests” without examples, no
+  implementation-only steps without commands.
+- Type consistency: `visible_prefixes`, `visible_exact`,
+  `detail.workflow_summary`, `update-route-metadata`, `execution_lane`, and
+  `topology` names are consistent across tasks.

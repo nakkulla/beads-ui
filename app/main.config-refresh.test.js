@@ -23,7 +23,7 @@ function setupShell() {
 }
 
 afterEach(() => {
-  delete /** @type {any} */ (window).__BDUI_BOOTSTRAP__;
+  delete (/** @type {any} */ (window).__BDUI_BOOTSTRAP__);
   vi.unstubAllGlobals();
 });
 

@@ -8,14 +8,14 @@ Parent bead: UI-pw5u
 > checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 현재 선택된 workspace에 대해 header의 Sync 버튼으로 실제
-`bd dolt pull` 을 실행하고, 성공 시 기존 active subscription refresh 경로로
-활성 구독 화면을 최신 상태로 갱신한다.
+`bd dolt pull` 을 실행하고, 성공 시 기존 active subscription refresh 경로로 활성
+구독 화면을 최신 상태로 갱신한다.
 
 **Architecture:** `server/bd.js` 에 per-call sandbox override를 추가해
 `sync-workspace` 만 실제 pull을 수행할 수 있게 한다. `server/ws.js` 는
-`CURRENT_WORKSPACE.root_dir` 기준으로 `bd dolt pull` 을 실행한 뒤 기존
-mutation refresh gate를 재사용한다. 클라이언트는 `workspace-picker` 에 Sync
-버튼을 추가하고, `app/main.js` 에서 sync 요청/disabled/toast 흐름만 연결한다.
+`CURRENT_WORKSPACE.root_dir` 기준으로 `bd dolt pull` 을 실행한 뒤 기존 mutation
+refresh gate를 재사용한다. 클라이언트는 `workspace-picker` 에 Sync 버튼을
+추가하고, `app/main.js` 에서 sync 요청/disabled/toast 흐름만 연결한다.
 
 **Tech Stack:** Node.js, WebSocket, lit-html, vitest, Beads (`bd`)
 
@@ -47,19 +47,19 @@ mutation refresh gate를 재사용한다. 클라이언트는 `workspace-picker` 
 
 ## File Structure
 
-| Action | File                                      | Responsibility                                                       |
-| ------ | ----------------------------------------- | -------------------------------------------------------------------- |
-| Modify | `app/protocol.js`                         | `sync-workspace` message type 추가                                   |
-| Modify | `app/protocol.test.js`                    | 새 protocol type 회귀 검증                                           |
-| Modify | `server/bd.js`                            | per-call sandbox override 지원                                       |
-| Modify | `server/bd.test.js`                       | sandbox override 테스트 추가                                         |
-| Modify | `server/ws.js`                            | `sync-workspace` handler 추가                                        |
-| Create | `server/ws.sync-workspace.test.js`        | sync 성공/실패 + refresh gate 테스트                                 |
-| Modify | `app/views/workspace-picker.js`           | Sync 버튼 + imperative syncing state API                             |
-| Create | `app/views/workspace-picker.test.js`      | single/multi workspace + sync UI 상태 테스트                         |
-| Modify | `app/styles.css`                          | header workspace sync button/loading 스타일                          |
-| Modify | `app/main.js`                             | sync action wiring, toast, component state 연결                      |
-| Create | `app/main.workspace-sync.test.js`         | bootstrap 기준 sync 성공/실패 통합 흐름 테스트                       |
+| Action | File                                 | Responsibility                                  |
+| ------ | ------------------------------------ | ----------------------------------------------- |
+| Modify | `app/protocol.js`                    | `sync-workspace` message type 추가              |
+| Modify | `app/protocol.test.js`               | 새 protocol type 회귀 검증                      |
+| Modify | `server/bd.js`                       | per-call sandbox override 지원                  |
+| Modify | `server/bd.test.js`                  | sandbox override 테스트 추가                    |
+| Modify | `server/ws.js`                       | `sync-workspace` handler 추가                   |
+| Create | `server/ws.sync-workspace.test.js`   | sync 성공/실패 + refresh gate 테스트            |
+| Modify | `app/views/workspace-picker.js`      | Sync 버튼 + imperative syncing state API        |
+| Create | `app/views/workspace-picker.test.js` | single/multi workspace + sync UI 상태 테스트    |
+| Modify | `app/styles.css`                     | header workspace sync button/loading 스타일     |
+| Modify | `app/main.js`                        | sync action wiring, toast, component state 연결 |
+| Create | `app/main.workspace-sync.test.js`    | bootstrap 기준 sync 성공/실패 통합 흐름 테스트  |
 
 ---
 
@@ -75,8 +75,8 @@ mutation refresh gate를 재사용한다. 클라이언트는 `workspace-picker` 
 - [ ] **Step 1: protocol type와 sandbox override 테스트를 먼저 추가**
 
 `app/protocol.test.js` 에는 새 message type이 등록되는지 확인하는 assertion을
-추가하고, `server/bd.test.js` 에는 per-call override가 환경 기본값보다 우선하는지
-확인하는 테스트를 추가한다.
+추가하고, `server/bd.test.js` 에는 per-call override가 환경 기본값보다
+우선하는지 확인하는 테스트를 추가한다.
 
 추가할 핵심 테스트 예시:
 
@@ -103,13 +103,15 @@ npx vitest run app/protocol.test.js server/bd.test.js
 ```
 
 Expected:
+
 - `sync-workspace` 가 아직 `MESSAGE_TYPES` 에 없어서 protocol assertion FAIL
-- `runBd(..., { sandbox: false })` 옵션이 아직 없어서 sandbox override assertion FAIL
+- `runBd(..., { sandbox: false })` 옵션이 아직 없어서 sandbox override assertion
+  FAIL
 
 - [ ] **Step 3: `app/protocol.js` 와 `server/bd.js` 구현 추가**
 
-`app/protocol.js` 에는 `sync-workspace` 를 `MessageType` union과
-`MESSAGE_TYPES` 배열에 추가한다.
+`app/protocol.js` 에는 `sync-workspace` 를 `MessageType` union과 `MESSAGE_TYPES`
+배열에 추가한다.
 
 `server/bd.js` 는 `runBd()` 옵션에 `sandbox?: boolean` 을 추가하고,
 `buildBdArgs()` 가 per-call 옵션을 우선 해석하도록 바꾼다.
@@ -161,20 +163,27 @@ Expected: PASS
    를 현재 workspace 기준으로 호출한다.
 2. 성공 후 기존 mutation refresh gate가 트리거되어 active subscription refresh가
    한 번 실행된다.
-3. `runBd()` 가 실패하면 websocket error envelope을 반환하고 refresh를 트리거하지 않는다.
+3. `runBd()` 가 실패하면 websocket error envelope을 반환하고 refresh를
+   트리거하지 않는다.
 
-테스트 구조는 `attachWsServer(createServer(), { root_dir: '/repo-a', refresh_debounce_ms: 50 })`
-로 `CURRENT_WORKSPACE` 를 실제처럼 초기화하고, `subscribe-list` 로 active subscription
-하나를 만든 뒤 `sync-workspace` 요청을 보내는 방식으로 맞춘다.
+테스트 구조는
+`attachWsServer(createServer(), { root_dir: '/repo-a', refresh_debounce_ms: 50 })`
+로 `CURRENT_WORKSPACE` 를 실제처럼 초기화하고, `subscribe-list` 로 active
+subscription 하나를 만든 뒤 `sync-workspace` 요청을 보내는 방식으로 맞춘다.
 
 핵심 테스트 스케치:
 
 ```js
-await handleMessage(sock, Buffer.from(JSON.stringify({
-  id: 'sync-1',
-  type: 'sync-workspace',
-  payload: {}
-})));
+await handleMessage(
+  sock,
+  Buffer.from(
+    JSON.stringify({
+      id: 'sync-1',
+      type: 'sync-workspace',
+      payload: {}
+    })
+  )
+);
 
 expect(runBd).toHaveBeenCalledWith(
   ['dolt', 'pull'],
@@ -263,10 +272,12 @@ Expected: PASS
 2. single workspace label 모드에서도 Sync 버튼이 보인다.
 3. multi workspace dropdown 모드에서도 Sync 버튼이 보인다.
 4. Sync 버튼 클릭 시 `onSync()` callback 이 호출된다.
-5. component의 syncing 상태가 켜지면 버튼이 disabled 되고 spinner/텍스트 상태가 반영된다.
+5. component의 syncing 상태가 켜지면 버튼이 disabled 되고 spinner/텍스트 상태가
+   반영된다.
 
-테스트용 store는 `createStore()` 로 만들고, `createWorkspacePicker()` 의 반환값에
-`setSyncing(true|false)` 같은 imperative API를 추가하는 방향으로 고정한다.
+테스트용 store는 `createStore()` 로 만들고, `createWorkspacePicker()` 의
+반환값에 `setSyncing(true|false)` 같은 imperative API를 추가하는 방향으로
+고정한다.
 
 핵심 테스트 스케치:
 
@@ -359,11 +370,13 @@ Expected: PASS
 
 - [ ] **Step 1: main integration 테스트를 먼저 추가**
 
-`app/main.workspace-sync.test.js` 를 새로 만들고, bootstrap 기준으로 다음 두 흐름을
-검증한다.
+`app/main.workspace-sync.test.js` 를 새로 만들고, bootstrap 기준으로 다음 두
+흐름을 검증한다.
 
-1. Sync 버튼 클릭 시 `client.send('sync-workspace', {})` 가 호출되고 success toast가 보인다.
-2. `sync-workspace` 요청이 reject 되면 error toast가 보이고 버튼 disabled 상태가 해제된다.
+1. Sync 버튼 클릭 시 `client.send('sync-workspace', {})` 가 호출되고 success
+   toast가 보인다.
+2. `sync-workspace` 요청이 reject 되면 error toast가 보이고 버튼 disabled 상태가
+   해제된다.
 
 이 테스트는 `./ws.js` mock client를 사용하고, `document.body.innerHTML` 에
 `<div id="workspace-picker"></div>` 를 포함한 최소 header DOM을 만든 뒤
@@ -375,15 +388,19 @@ mock send 예시:
 send: vi.fn(async (type) => {
   if (type === 'list-workspaces') {
     return {
-      workspaces: [{ path: '/repo-a', database: '/repo-a/.beads/workspace.db' }],
+      workspaces: [
+        { path: '/repo-a', database: '/repo-a/.beads/workspace.db' }
+      ],
       current: { root_dir: '/repo-a', db_path: '/repo-a/.beads/workspace.db' }
     };
   }
   if (type === 'sync-workspace') {
-    return { workspace: { root_dir: '/repo-a', db_path: '/repo-a/.beads/workspace.db' } };
+    return {
+      workspace: { root_dir: '/repo-a', db_path: '/repo-a/.beads/workspace.db' }
+    };
   }
   return [];
-})
+});
 ```
 
 - [ ] **Step 2: main integration 테스트를 실행해 실패를 확인**
@@ -394,17 +411,19 @@ Run:
 npx vitest run app/main.workspace-sync.test.js
 ```
 
-Expected: FAIL — bootstrap이 아직 Sync 버튼 callback과 toast 흐름을 연결하지 않았다.
+Expected: FAIL — bootstrap이 아직 Sync 버튼 callback과 toast 흐름을 연결하지
+않았다.
 
 - [ ] **Step 3: `app/main.js` 에 sync action wiring을 추가**
 
-`handleWorkspaceSync()` 함수를 추가하고, `createWorkspacePicker()` 반환값을 변수에
-담아 `setSyncing(true|false)` 를 제어한다.
+`handleWorkspaceSync()` 함수를 추가하고, `createWorkspacePicker()` 반환값을
+변수에 담아 `setSyncing(true|false)` 를 제어한다.
 
 구현 원칙:
 
 - `tracked_send('sync-workspace', {})` 사용
-- 성공 시 응답 payload의 `workspace.root_dir` 에서 project name을 추출해 toast 표시
+- 성공 시 응답 payload의 `workspace.root_dir` 에서 project name을 추출해 toast
+  표시
 - 실패 시 `Sync failed` toast
 - `finally` 에서 `setSyncing(false)`
 
@@ -412,14 +431,22 @@ Expected: FAIL — bootstrap이 아직 Sync 버튼 callback과 toast 흐름을 �
 
 ```js
 const workspace_picker = workspace_mount
-  ? createWorkspacePicker(workspace_mount, store, handleWorkspaceChange, handleWorkspaceSync)
+  ? createWorkspacePicker(
+      workspace_mount,
+      store,
+      handleWorkspaceChange,
+      handleWorkspaceSync
+    )
   : null;
 
 async function handleWorkspaceSync() {
   workspace_picker?.setSyncing(true);
   try {
     const result = await client.send('sync-workspace', {});
-    const root_dir = result?.workspace?.root_dir || store.getState().workspace.current?.path || '';
+    const root_dir =
+      result?.workspace?.root_dir ||
+      store.getState().workspace.current?.path ||
+      '';
     showToast('Synced ' + getProjectName(root_dir), 'success', 2000);
   } catch (err) {
     log('workspace sync failed: %o', err);

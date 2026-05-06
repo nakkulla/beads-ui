@@ -1,7 +1,8 @@
 <h2>Contract metadata display: card vs detail</h2>
 <p class="subtitle">
-  v4 contract 기준으로 execution summary, PR URL, execution lane, skill workflow를 어디에 노출할지 비교합니다.
-  마음에 드는 방향을 클릭해 선택하거나, 터미널에 의견을 적어주세요.
+  v4 contract 기준으로 execution summary, PR URL, execution lane, skill
+  workflow를 어디에 노출할지 비교합니다. 마음에 드는 방향을 클릭해 선택하거나,
+  터미널에 의견을 적어주세요.
 </p>
 
 <style>
@@ -55,9 +56,21 @@
     color: #cbd5e1;
     border: 1px solid #3b4a63;
   }
-  .chip--lane { background: #173554; color: #bfdbfe; border-color: #2563eb; }
-  .chip--skill { background: #3b255f; color: #ddd6fe; border-color: #7c3aed; }
-  .chip--pr { background: #143b2b; color: #bbf7d0; border-color: #16a34a; }
+  .chip--lane {
+    background: #173554;
+    color: #bfdbfe;
+    border-color: #2563eb;
+  }
+  .chip--skill {
+    background: #3b255f;
+    color: #ddd6fe;
+    border-color: #7c3aed;
+  }
+  .chip--pr {
+    background: #143b2b;
+    color: #bbf7d0;
+    border-color: #16a34a;
+  }
   .muted-line {
     color: #9ca3af;
     font-size: 12px;
@@ -80,14 +93,18 @@
     font-size: 12px;
     color: #d1d5db;
   }
-  .kv .k { color: #9ca3af; }
+  .kv .k {
+    color: #9ca3af;
+  }
   .tiny-note {
     margin-top: 10px;
     color: #93a3b8;
     font-size: 11px;
   }
   @media (max-width: 1100px) {
-    .bdui-layout-grid { grid-template-columns: 1fr; }
+    .bdui-layout-grid {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
 
@@ -95,10 +112,14 @@
   <div class="card" data-choice="a" onclick="toggleSelect(this)">
     <div class="card-image">
       <div class="bdui-preview">
-        <div class="bdui-preview__bar">A. Hybrid — 카드에는 스캔용 chip, 상세에는 전체 요약</div>
+        <div class="bdui-preview__bar">
+          A. Hybrid — 카드에는 스캔용 chip, 상세에는 전체 요약
+        </div>
         <div class="bdui-preview__body">
           <div class="lane-card">
-            <div class="lane-card__title">v4 workflow contract metadata 표시 정합성 반영</div>
+            <div class="lane-card__title">
+              v4 workflow contract metadata 표시 정합성 반영
+            </div>
             <div class="chip-row">
               <span class="chip">has:spec</span>
               <span class="chip chip--lane">plan</span>
@@ -132,17 +153,24 @@
     </div>
     <div class="card-body">
       <h3>A. Hybrid 추천</h3>
-      <p>카드는 스캔용 chip만, 상세는 실행요약/PR/lane/skill workflow를 완전하게 보여줍니다.</p>
+      <p>
+        카드는 스캔용 chip만, 상세는 실행요약/PR/lane/skill workflow를 완전하게
+        보여줍니다.
+      </p>
     </div>
   </div>
 
   <div class="card" data-choice="b" onclick="toggleSelect(this)">
     <div class="card-image">
       <div class="bdui-preview">
-        <div class="bdui-preview__bar">B. Detail-only — 카드는 기존 밀도 유지</div>
+        <div class="bdui-preview__bar">
+          B. Detail-only — 카드는 기존 밀도 유지
+        </div>
         <div class="bdui-preview__body">
           <div class="lane-card">
-            <div class="lane-card__title">v4 workflow contract metadata 표시 정합성 반영</div>
+            <div class="lane-card__title">
+              v4 workflow contract metadata 표시 정합성 반영
+            </div>
             <div class="chip-row">
               <span class="chip">has:spec</span>
             </div>
@@ -171,17 +199,24 @@
     </div>
     <div class="card-body">
       <h3>B. Detail-only</h3>
-      <p>노이즈는 가장 적지만, board/list에서 skill workflow가 필요한 이슈를 바로 찾기 어렵습니다.</p>
+      <p>
+        노이즈는 가장 적지만, board/list에서 skill workflow가 필요한 이슈를 바로
+        찾기 어렵습니다.
+      </p>
     </div>
   </div>
 
   <div class="card" data-choice="c" onclick="toggleSelect(this)">
     <div class="card-image">
       <div class="bdui-preview">
-        <div class="bdui-preview__bar">C. Card-heavy — 카드에 실행 정보까지 노출</div>
+        <div class="bdui-preview__bar">
+          C. Card-heavy — 카드에 실행 정보까지 노출
+        </div>
         <div class="bdui-preview__body">
           <div class="lane-card">
-            <div class="lane-card__title">v4 workflow contract metadata 표시 정합성 반영</div>
+            <div class="lane-card__title">
+              v4 workflow contract metadata 표시 정합성 반영
+            </div>
             <div class="chip-row">
               <span class="chip">has:spec</span>
               <span class="chip chip--lane">plan</span>
@@ -189,7 +224,9 @@
               <span class="chip chip--pr">PR #92</span>
               <span class="chip">46m 38s</span>
             </div>
-            <div class="muted-line">Started 20:42 · Finished 21:28 · UI-uyoa</div>
+            <div class="muted-line">
+              Started 20:42 · Finished 21:28 · UI-uyoa
+            </div>
           </div>
           <div class="lane-card">
             <div class="lane-card__title">이슈 상세 화면에 실행 요약 표시</div>
@@ -208,14 +245,19 @@
               <span class="k">Lane</span><span>plan</span>
               <span class="k">Skill</span><span>skill_creator</span>
             </div>
-            <div class="tiny-note">상세는 보조 역할이 되고, 카드가 더 복잡해집니다.</div>
+            <div class="tiny-note">
+              상세는 보조 역할이 되고, 카드가 더 복잡해집니다.
+            </div>
           </div>
         </div>
       </div>
     </div>
     <div class="card-body">
       <h3>C. Card-heavy</h3>
-      <p>스캔성은 좋지만 카드가 빨리 복잡해지고, board column 밀도와 충돌할 가능성이 큽니다.</p>
+      <p>
+        스캔성은 좋지만 카드가 빨리 복잡해지고, board column 밀도와 충돌할
+        가능성이 큽니다.
+      </p>
     </div>
   </div>
 </div>
