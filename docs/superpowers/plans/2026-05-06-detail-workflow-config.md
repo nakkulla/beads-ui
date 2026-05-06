@@ -312,6 +312,8 @@ function normalizeWorkflowSummaryConfig(parsed) {
 
   return { sections, ...section_config };
 }
+
+export const DEFAULT_WORKFLOW_SUMMARY_CONFIG = normalizeWorkflowSummaryConfig({});
 ```
 
 Then update `readRuntimeConfig` return objects to include:
@@ -328,11 +330,13 @@ detail: {
 
 On fallback, return `visible_exact: []` and `detail.workflow_summary: normalizeWorkflowSummaryConfig({})`.
 
-Export a test helper without changing production use:
+Export the test helper without changing production use:
 
 ```js
 export const readRuntimeConfigForTest = readRuntimeConfig;
 ```
+
+`server/app.js` will import `DEFAULT_WORKFLOW_SUMMARY_CONFIG` from `./config.js` for its absent-config fallback so bootstrap/API defaults stay aligned with server normalization.
 
 - [ ] **Step 4: Run config tests and verify pass**
 
@@ -410,7 +414,7 @@ test('stores exact labels and workflow summary config', () => {
 });
 ```
 
-Add a bootstrap/API assertion to `server/app.test.js` using the existing app test style:
+Add bootstrap/API assertions to `server/app.test.js` using the existing app test style:
 
 ```js
 test('exposes exact labels and detail workflow config', async () => {
@@ -437,6 +441,22 @@ test('exposes exact labels and detail workflow config', async () => {
   expect(response.body.label_display_policy.visible_exact).toEqual(['pr']);
   expect(response.body.detail.workflow_summary.sections).toEqual(['route']);
 });
+
+test('uses workflow summary defaults when detail config is absent', async () => {
+  const app = createApp({
+    host: '127.0.0.1',
+    port: 0,
+    app_dir: new URL('../app', import.meta.url).pathname,
+    root_dir: process.cwd(),
+    frontend_mode: 'live',
+    label_display_policy: { visible_prefixes: ['has:'], visible_exact: [] }
+  });
+
+  const response = await request(app).get('/api/config');
+
+  expect(response.body.detail.workflow_summary.sections).toContain('route');
+  expect(response.body.detail.workflow_summary.route.fields).toContain('topology');
+});
 ```
 
 - [ ] **Step 2: Run focused tests and verify failure**
@@ -451,7 +471,13 @@ Expected: failures show old config shape and two-argument label filter.
 
 - [ ] **Step 3: Implement config propagation**
 
-Update `server/app.js` `toBootstrapPayload(config)` to copy full config shape:
+Update `server/app.js` `toBootstrapPayload(config)` to copy full config shape. First import the shared default:
+
+```js
+import { DEFAULT_WORKFLOW_SUMMARY_CONFIG } from './config.js';
+```
+
+Then normalize detail config:
 
 ```js
 const visible_exact = Array.isArray(config.label_display_policy?.visible_exact)
@@ -1109,14 +1135,28 @@ detail = createDetailView(dialog.getMount(), transport, navigate_fn, sub_issue_s
 Subscribe to store config changes in Detail only to re-render:
 
 ```js
+let unsubscribe_store = () => {};
 if (store && typeof store.subscribe === 'function') {
-  store.subscribe(() => {
+  unsubscribe_store = store.subscribe(() => {
     try {
       doRender();
     } catch (err) {
       log('store listener error %o', err);
     }
   });
+}
+```
+
+Call the unsubscribe in the returned `destroy()` method before clearing DOM:
+
+```js
+destroy() {
+  unsubscribe_store();
+  mount_element.replaceChildren();
+  if (delete_dialog && delete_dialog.parentNode) {
+    delete_dialog.parentNode.removeChild(delete_dialog);
+    delete_dialog = null;
+  }
 }
 ```
 
@@ -1826,7 +1866,20 @@ Before PR Delivery, run `implementation-review` per workflow. Use external revie
 
 - [ ] **Step 5: PR Delivery stop boundary**
 
-After non-blocking implementation review and fixes, create PR against `nakkulla/beads-ui` from branch `UI-hjii`. Record `metadata.pr_url` and label `pr` on `UI-hjii`, read back, push Beads. Stop at PR Delivery unless user explicitly asks for PR Finish/merge.
+After non-blocking implementation review and fixes, create PR against `nakkulla/beads-ui` from branch `UI-hjii`. Record `metadata.pr_url`, add label `pr`, and update `UI-hjii` status to `resolved` as PR Delivery evidence. Read back and push Beads. Keep `closed` reserved for explicit PR Finish after merge/base verification. Stop at PR Delivery unless user explicitly asks for PR Finish/merge.
+
+Example Beads write after PR URL exists:
+
+```bash
+bd update UI-hjii \
+  --status resolved \
+  --set-metadata pr_url=https://github.com/nakkulla/beads-ui/pull/<number> \
+  --add-label pr \
+  --append-notes "PR Delivery: implementation reviewed and delivered in https://github.com/nakkulla/beads-ui/pull/<number>." \
+  --json
+bd show UI-hjii --json
+bd dolt push
+```
 
 ---
 
