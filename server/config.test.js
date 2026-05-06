@@ -94,6 +94,81 @@ visible_prefixes = ["has:", "reviewed:", "area:", "component:"]
     });
   });
 
+  test('reads visible exact labels from TOML', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[labels]
+visible_prefixes = ["has:", "lane:"]
+visible_exact = ["pr", "human", "skill-related"]
+`);
+
+    const config = getConfig();
+
+    expect(config.label_display_policy.visible_prefixes).toEqual([
+      'has:',
+      'lane:'
+    ]);
+    expect(config.label_display_policy.visible_exact).toEqual([
+      'pr',
+      'human',
+      'skill-related'
+    ]);
+  });
+
+  test('normalizes default workflow summary config', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture('');
+
+    const config = getConfig();
+
+    expect(config.detail.workflow_summary.sections).toEqual([
+      'route',
+      'artifacts',
+      'review_gates',
+      'freshness',
+      'delivery',
+      'followup',
+      'human'
+    ]);
+    expect(config.detail.workflow_summary.route.fields).toContain('topology');
+    expect(config.detail.workflow_summary.route.editable_fields).toEqual([
+      'execution_lane',
+      'topology'
+    ]);
+  });
+
+  test('ignores unknown workflow section fields and non-editable edit config', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[detail.workflow_summary]
+sections = ["route", "bogus"]
+
+[detail.workflow_summary.route]
+fields = ["execution_lane", "bogus"]
+editable_fields = ["execution_lane", "workspace_policy", "bogus"]
+`);
+
+    const config = getConfig();
+
+    expect(config.detail.workflow_summary.sections).toEqual(['route']);
+    expect(config.detail.workflow_summary.route.fields).toEqual([
+      'execution_lane'
+    ]);
+    expect(config.detail.workflow_summary.route.editable_fields).toEqual([
+      'execution_lane'
+    ]);
+  });
+
+  test('keeps backward compatibility for prefix-only configs', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[labels]
+visible_prefixes = ["has:"]
+`);
+
+    const config = getConfig();
+
+    expect(config.label_display_policy.visible_prefixes).toEqual(['has:']);
+    expect(config.label_display_policy.visible_exact).toEqual([]);
+    expect(config.detail.workflow_summary.route.fields).toContain('topology');
+  });
+
   test('falls back when config TOML is invalid', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture('default_workspace = [');
 

@@ -7,10 +7,52 @@ import { debug } from './logging.js';
 
 const log = debug('config');
 const DEFAULT_VISIBLE_PREFIXES = ['has:', 'reviewed:'];
+const DEFAULT_VISIBLE_EXACT = [];
 const DEFAULT_WORKSPACE_CONFIG = {
   default_workspace: null,
   scan_roots: [],
   workspaces: []
+};
+const WORKFLOW_SECTION_FIELDS = {
+  route: [
+    'execution_lane',
+    'topology',
+    'workspace_policy',
+    'branch_policy',
+    'finish_action'
+  ],
+  artifacts: ['spec_id', 'plan', 'handoff'],
+  review_gates: [
+    'status',
+    'verdict',
+    'final_source',
+    'external_attempts',
+    'reviewed_at_sha',
+    'content_hash'
+  ],
+  freshness: [
+    'execution_base_sha',
+    'spec_freshness_checked_at_sha',
+    'plan_freshness_checked_at_sha',
+    'spec_handoff_at_sha',
+    'spec_handoff_content_hash'
+  ],
+  delivery: ['pr_url'],
+  followup: [
+    'followup_kind',
+    'source_repo',
+    'source_bead',
+    'source_artifact',
+    'source_pr',
+    'target_repo',
+    'target_paths',
+    'required_action'
+  ],
+  human: ['human_decision_required']
+};
+const WORKFLOW_SECTIONS = Object.keys(WORKFLOW_SECTION_FIELDS);
+const EDITABLE_WORKFLOW_FIELDS = {
+  route: ['execution_lane', 'topology']
 };
 
 /**
@@ -36,6 +78,101 @@ function normalizeVisiblePrefixes(value) {
 
   return normalized;
 }
+
+/**
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function normalizeVisibleExact(value) {
+  if (!Array.isArray(value)) {
+    return DEFAULT_VISIBLE_EXACT.slice();
+  }
+
+  return value.filter(
+    (entry) => typeof entry === 'string' && entry.length > 0
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @param {string[]} allowed
+ * @param {string[]} fallback
+ * @returns {string[]}
+ */
+function normalizeStringAllowlist(value, allowed, fallback) {
+  if (!Array.isArray(value)) {
+    return fallback.slice();
+  }
+
+  const allowed_set = new Set(allowed);
+  /** @type {string[]} */
+  const normalized = [];
+  for (const entry of value) {
+    if (
+      typeof entry === 'string' &&
+      allowed_set.has(entry) &&
+      !normalized.includes(entry)
+    ) {
+      normalized.push(entry);
+    }
+  }
+
+  return normalized;
+}
+
+/**
+ * @param {any} parsed
+ * @returns {{
+ *   sections: string[],
+ *   route: { fields: string[], editable_fields: string[] },
+ *   artifacts: { fields: string[] },
+ *   review_gates: { fields: string[] },
+ *   freshness: { fields: string[] },
+ *   delivery: { fields: string[] },
+ *   followup: { fields: string[] },
+ *   human: { fields: string[] }
+ * }}
+ */
+function normalizeWorkflowSummaryConfig(parsed) {
+  const raw = parsed?.detail?.workflow_summary;
+  const sections = normalizeStringAllowlist(
+    raw?.sections,
+    WORKFLOW_SECTIONS,
+    WORKFLOW_SECTIONS
+  );
+
+  /** @type {Record<string, { fields: string[], editable_fields?: string[] }>} */
+  const section_config = {};
+  for (const section of WORKFLOW_SECTIONS) {
+    const allowed_fields =
+      WORKFLOW_SECTION_FIELDS[
+        /** @type {keyof typeof WORKFLOW_SECTION_FIELDS} */ (section)
+      ] || [];
+    const section_raw = raw?.[section];
+    const fields = normalizeStringAllowlist(
+      section_raw?.fields,
+      allowed_fields,
+      allowed_fields
+    );
+    const editable_fields = normalizeStringAllowlist(
+      section_raw?.editable_fields,
+      EDITABLE_WORKFLOW_FIELDS[
+        /** @type {keyof typeof EDITABLE_WORKFLOW_FIELDS} */ (section)
+      ] || [],
+      EDITABLE_WORKFLOW_FIELDS[
+        /** @type {keyof typeof EDITABLE_WORKFLOW_FIELDS} */ (section)
+      ] || []
+    );
+
+    section_config[section] =
+      editable_fields.length > 0 ? { fields, editable_fields } : { fields };
+  }
+
+  return /** @type {any} */ ({ sections, ...section_config });
+}
+
+export const DEFAULT_WORKFLOW_SUMMARY_CONFIG =
+  normalizeWorkflowSummaryConfig({});
 
 /**
  * @param {unknown} value
@@ -93,7 +230,8 @@ function normalizeWorkspaceConfig(parsed) {
 /**
  * @param {string} config_path
  * @returns {{
- *   label_display_policy: { visible_prefixes: string[] },
+ *   label_display_policy: { visible_prefixes: string[], visible_exact: string[] },
+ *   detail: { workflow_summary: typeof DEFAULT_WORKFLOW_SUMMARY_CONFIG },
  *   workspace_config: {
  *     default_workspace: string | null,
  *     scan_roots: string[],
@@ -111,7 +249,11 @@ function readRuntimeConfig(config_path) {
       label_display_policy: {
         visible_prefixes: normalizeVisiblePrefixes(
           parsed?.labels?.visible_prefixes
-        )
+        ),
+        visible_exact: normalizeVisibleExact(parsed?.labels?.visible_exact)
+      },
+      detail: {
+        workflow_summary: normalizeWorkflowSummaryConfig(parsed)
       },
       workspace_config: normalizeWorkspaceConfig(parsed)
     };
@@ -128,7 +270,11 @@ function readRuntimeConfig(config_path) {
     }
     return {
       label_display_policy: {
-        visible_prefixes: DEFAULT_VISIBLE_PREFIXES.slice()
+        visible_prefixes: DEFAULT_VISIBLE_PREFIXES.slice(),
+        visible_exact: DEFAULT_VISIBLE_EXACT.slice()
+      },
+      detail: {
+        workflow_summary: normalizeWorkflowSummaryConfig({})
       },
       workspace_config: {
         default_workspace: DEFAULT_WORKSPACE_CONFIG.default_workspace,
@@ -138,6 +284,8 @@ function readRuntimeConfig(config_path) {
     };
   }
 }
+
+export const readRuntimeConfigForTest = readRuntimeConfig;
 
 /**
  * Resolve runtime configuration for the server.
@@ -155,7 +303,8 @@ function readRuntimeConfig(config_path) {
  *   frontend_mode: 'live' | 'static',
  *   url: string,
  *   config_path: string,
- *   label_display_policy: { visible_prefixes: string[] },
+ *   label_display_policy: { visible_prefixes: string[], visible_exact: string[] },
+ *   detail: { workflow_summary: typeof DEFAULT_WORKFLOW_SUMMARY_CONFIG },
  *   workspace_config: {
  *     default_workspace: string | null,
  *     scan_roots: string[],
