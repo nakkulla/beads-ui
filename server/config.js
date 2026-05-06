@@ -7,6 +7,7 @@ import { debug } from './logging.js';
 
 const log = debug('config');
 const DEFAULT_VISIBLE_PREFIXES = ['has:', 'reviewed:'];
+/** @type {string[]} */
 const DEFAULT_VISIBLE_EXACT = [];
 const DEFAULT_WORKSPACE_CONFIG = {
   default_workspace: null,

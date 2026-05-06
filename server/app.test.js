@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -25,6 +26,35 @@ function missingConfigPath() {
   );
 }
 
+/**
+ * @param {import('express').Express} app
+ * @param {string} pathname
+ * @returns {Promise<any>}
+ */
+async function fetchJsonFromApp(app, pathname) {
+  const server = createServer(app);
+  await new Promise((resolve) => server.listen(0, () => resolve(undefined)));
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('missing test server address');
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}${pathname}`);
+    return await response.json();
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(undefined);
+      });
+    });
+  }
+}
+
 afterEach(() => {
   delete process.env.BDUI_CONFIG_PATH;
 });
@@ -48,6 +78,46 @@ describe('server app wiring (no listen)', () => {
       'has:',
       'reviewed:'
     ]);
+  });
+
+  test('exposes exact labels and detail workflow config', async () => {
+    process.env.BDUI_CONFIG_PATH = missingConfigPath();
+    const config = getConfig();
+    const app = createApp({
+      ...config,
+      label_display_policy: {
+        visible_prefixes: ['has:'],
+        visible_exact: ['pr']
+      },
+      detail: {
+        workflow_summary: {
+          sections: ['route'],
+          route: {
+            fields: ['execution_lane'],
+            editable_fields: ['execution_lane']
+          }
+        }
+      }
+    });
+
+    const body = await fetchJsonFromApp(app, '/api/config');
+
+    expect(body.label_display_policy.visible_exact).toEqual(['pr']);
+    expect(body.detail.workflow_summary.sections).toEqual(['route']);
+  });
+
+  test('uses workflow summary defaults when detail config is absent', async () => {
+    process.env.BDUI_CONFIG_PATH = missingConfigPath();
+    const config = getConfig();
+    const app = createApp({
+      ...config,
+      detail: undefined
+    });
+
+    const body = await fetchJsonFromApp(app, '/api/config');
+
+    expect(body.detail.workflow_summary.sections).toContain('route');
+    expect(body.detail.workflow_summary.route.fields).toContain('topology');
   });
 
   test('index.html exists in configured app_dir', () => {

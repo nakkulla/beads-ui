@@ -25,22 +25,82 @@ import { createWsClient } from './ws.js';
 
 const DEFAULT_CONFIG = {
   label_display_policy: {
-    visible_prefixes: ['has:', 'reviewed:']
+    visible_prefixes: ['has:', 'reviewed:'],
+    visible_exact: []
   },
   workspace_config: {
     default_workspace: null
+  },
+  detail: {
+    workflow_summary: {
+      sections: [
+        'route',
+        'artifacts',
+        'review_gates',
+        'freshness',
+        'delivery',
+        'followup',
+        'human'
+      ],
+      route: {
+        fields: [
+          'execution_lane',
+          'topology',
+          'workspace_policy',
+          'branch_policy',
+          'finish_action'
+        ],
+        editable_fields: ['execution_lane', 'topology']
+      },
+      artifacts: { fields: ['spec_id', 'plan', 'handoff'] },
+      review_gates: {
+        fields: [
+          'status',
+          'verdict',
+          'final_source',
+          'external_attempts',
+          'reviewed_at_sha',
+          'content_hash'
+        ]
+      },
+      freshness: {
+        fields: [
+          'execution_base_sha',
+          'spec_freshness_checked_at_sha',
+          'plan_freshness_checked_at_sha',
+          'spec_handoff_at_sha',
+          'spec_handoff_content_hash'
+        ]
+      },
+      delivery: { fields: ['pr_url'] },
+      followup: {
+        fields: [
+          'followup_kind',
+          'source_repo',
+          'source_bead',
+          'source_artifact',
+          'source_pr',
+          'target_repo',
+          'target_paths',
+          'required_action'
+        ]
+      },
+      human: { fields: ['human_decision_required'] }
+    }
   }
 };
 
 /**
  * @returns {{
- *   label_display_policy: { visible_prefixes: string[] },
- *   workspace_config: { default_workspace: string | null }
+ *   label_display_policy: { visible_prefixes: string[], visible_exact: string[] },
+ *   workspace_config: { default_workspace: string | null },
+ *   detail: any
  * }}
  */
 function readBootstrapConfig() {
   const bootstrap = /** @type {any} */ (window).__BDUI_BOOTSTRAP__;
   const prefixes = bootstrap?.label_display_policy?.visible_prefixes;
+  const exact = bootstrap?.label_display_policy?.visible_exact;
 
   const default_workspace =
     typeof bootstrap?.workspace_config?.default_workspace === 'string' &&
@@ -52,26 +112,40 @@ function readBootstrapConfig() {
     return {
       label_display_policy: {
         visible_prefixes:
-          DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice()
+          DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice(),
+        visible_exact: Array.isArray(exact)
+          ? exact.filter((value) => typeof value === 'string')
+          : DEFAULT_CONFIG.label_display_policy.visible_exact.slice()
       },
       workspace_config: {
         default_workspace
-      }
+      },
+      detail:
+        bootstrap?.detail && typeof bootstrap.detail === 'object'
+          ? JSON.parse(JSON.stringify(bootstrap.detail))
+          : JSON.parse(JSON.stringify(DEFAULT_CONFIG.detail))
     };
   }
 
   return {
     label_display_policy: {
-      visible_prefixes: prefixes.filter((value) => typeof value === 'string')
+      visible_prefixes: prefixes.filter((value) => typeof value === 'string'),
+      visible_exact: Array.isArray(exact)
+        ? exact.filter((value) => typeof value === 'string')
+        : DEFAULT_CONFIG.label_display_policy.visible_exact.slice()
     },
     workspace_config: {
       default_workspace
-    }
+    },
+    detail:
+      bootstrap?.detail && typeof bootstrap.detail === 'object'
+        ? JSON.parse(JSON.stringify(bootstrap.detail))
+        : JSON.parse(JSON.stringify(DEFAULT_CONFIG.detail))
   };
 }
 
 /**
- * @param {{ setState: (patch: { config?: { label_display_policy?: { visible_prefixes: string[] }, workspace_config?: { default_workspace: string | null } } }) => void }} store
+ * @param {{ setState: (patch: { config?: any }) => void }} store
  * @param {(message: string, details: unknown) => void} log_error
  * @returns {Promise<void>}
  */
