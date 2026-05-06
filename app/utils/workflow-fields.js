@@ -210,7 +210,9 @@ function buildRouteRows(fields, metadata) {
       if (topology.kind === 'valid') {
         rows.push(makeRow(field, topology.value));
       } else if (topology.kind === 'invalid') {
-        rows.push(makeRow(field, 'Invalid route metadata', { kind: 'invalid' }));
+        rows.push(
+          makeRow(field, 'Invalid route metadata', { kind: 'invalid' })
+        );
       }
       continue;
     }
@@ -236,7 +238,9 @@ function buildArtifactRows(fields, issue, metadata) {
     handoff: metadata.handoff
   };
   for (const field of fields) {
-    const value = displayValue(values[/** @type {keyof typeof values} */ (field)]);
+    const value = displayValue(
+      values[/** @type {keyof typeof values} */ (field)]
+    );
     if (value) {
       rows.push(makeRow(field, value, { kind: 'artifact' }));
     }
@@ -339,7 +343,7 @@ function buildMetadataRows(fields, metadata) {
 /**
  * @param {any} issue
  * @param {any} workflow_config
- * @returns {Array<{ id: string, label: string, rows: Array<Record<string, unknown>> }>}
+ * @returns {Array<{ id: string, label: string, rows: Array<Record<string, unknown>>, editable_fields: string[] }>}
  */
 export function buildWorkflowSections(issue, workflow_config) {
   const metadata = isRecord(issue?.metadata) ? issue.metadata : {};
@@ -347,19 +351,25 @@ export function buildWorkflowSections(issue, workflow_config) {
   const sections = Array.isArray(workflow_config?.sections)
     ? workflow_config.sections
     : [];
-  /** @type {Array<{ id: string, label: string, rows: Array<Record<string, unknown>> }>} */
+  /** @type {Array<{ id: string, label: string, rows: Array<Record<string, unknown>>, editable_fields: string[] }>} */
   const result = [];
 
   for (const section of sections) {
     const fields = Array.isArray(workflow_config?.[section]?.fields)
       ? workflow_config[section].fields
       : [];
+    const editable_fields = Array.isArray(
+      workflow_config?.[section]?.editable_fields
+    )
+      ? workflow_config[section].editable_fields
+      : [];
     const rows = buildRowsForSection(section, fields, issue, metadata, labels);
     if (rows.length > 0) {
       result.push({
         id: section,
         label: SECTION_LABELS[section] || section,
-        rows
+        rows,
+        editable_fields
       });
     }
   }

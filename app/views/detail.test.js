@@ -139,6 +139,205 @@ describe('views/detail', () => {
     expect(mount.textContent).toContain('Invalid route metadata');
   });
 
+  test('edits route metadata with explicit save and cancel', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issue = {
+      id: 'UI-2',
+      title: 'Route edit',
+      labels: ['lane:plan'],
+      metadata: {
+        execution_lane: 'plan',
+        workspace_policy: 'worktree',
+        branch_policy: 'feature',
+        finish_action: 'pr'
+      },
+      dependencies: [],
+      dependents: [],
+      comments: []
+    };
+    /** @type {Array<{type: string, payload: unknown}>} */
+    const sends = [];
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-2' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['route'],
+                route: {
+                  fields: [
+                    'execution_lane',
+                    'topology',
+                    'workspace_policy',
+                    'branch_policy',
+                    'finish_action'
+                  ],
+                  editable_fields: ['execution_lane', 'topology']
+                }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const view = createDetailView(
+      mount,
+      async (type, payload) => {
+        sends.push({ type, payload });
+        return {
+          ...issue,
+          labels: ['lane:quick_edit'],
+          metadata: {
+            ...issue.metadata,
+            execution_lane: 'quick_edit',
+            workspace_policy: 'current',
+            branch_policy: 'same',
+            finish_action: 'direct'
+          }
+        };
+      },
+      undefined,
+      stores,
+      store
+    );
+
+    await view.load('UI-2');
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="route-edit"]')
+    )?.click();
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="route-cancel"]')
+    )?.click();
+    expect(mount.querySelector('[data-testid="route-lane"]')).toBeNull();
+
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="route-edit"]')
+    )?.click();
+    const lane = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-testid="route-lane"]')
+    );
+    const topology = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-testid="route-topology"]')
+    );
+    lane.value = 'quick_edit';
+    lane.dispatchEvent(new Event('change'));
+    topology.value = 'direct';
+    topology.dispatchEvent(new Event('change'));
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="route-save"]')
+    )?.click();
+    await Promise.resolve();
+
+    expect(sends).toEqual([
+      {
+        type: 'update-route-metadata',
+        payload: {
+          id: 'UI-2',
+          values: { execution_lane: 'quick_edit', topology: 'direct' }
+        }
+      }
+    ]);
+    expect(mount.textContent).toContain('quick_edit');
+    expect(mount.textContent).toContain('direct');
+    expect(mount.querySelector('[data-testid="route-lane"]')).toBeNull();
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('[data-testid="route-edit"]')
+      ).disabled
+    ).toBe(false);
+  });
+
+  test('requires topology selection before saving invalid route', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issue = {
+      id: 'UI-3',
+      title: 'Invalid route edit',
+      metadata: {
+        execution_lane: 'plan',
+        workspace_policy: 'current',
+        branch_policy: 'feature',
+        finish_action: 'direct'
+      },
+      dependencies: [],
+      dependents: [],
+      comments: []
+    };
+    const stores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        return id === 'detail:UI-3' ? [issue] : [];
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['route'],
+                route: {
+                  fields: ['execution_lane', 'topology'],
+                  editable_fields: ['execution_lane', 'topology']
+                }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      stores,
+      store
+    );
+
+    await view.load('UI-3');
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="route-edit"]')
+    )?.click();
+
+    const save_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-testid="route-save"]')
+    );
+    const topology = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-testid="route-topology"]')
+    );
+    expect(topology.value).toBe('');
+    expect(save_button.disabled).toBe(true);
+
+    topology.value = 'pr';
+    topology.dispatchEvent(new Event('change'));
+
+    const enabled_save_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-testid="route-save"]')
+    );
+    expect(enabled_save_button.disabled).toBe(false);
+  });
+
   test('renders fields, markdown description, and dependency links', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';

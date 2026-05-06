@@ -1,7 +1,6 @@
 // Issue Detail view implementation (lit-html based)
 import { html, render } from 'lit-html';
 import { parseView } from '../router.js';
-import { buildWorkflowSections } from '../utils/workflow-fields.js';
 import { issueHashFor } from '../utils/issue-url.js';
 import { debug } from '../utils/logging.js';
 import { renderMarkdown } from '../utils/markdown.js';
@@ -10,6 +9,11 @@ import { priority_levels } from '../utils/priority.js';
 import { STATUSES, statusLabel } from '../utils/status.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
+import {
+  buildWorkflowSections,
+  deriveTopology,
+  routeMutationValues
+} from '../utils/workflow-fields.js';
 
 /**
  * Format a date string for display.
@@ -113,6 +117,12 @@ export function createDetailView(
   let edit_accept = false;
   /** @type {boolean} */
   let edit_assignee = false;
+  /** @type {boolean} */
+  let edit_route = false;
+  /** @type {string} */
+  let route_draft_lane = '';
+  /** @type {string} */
+  let route_draft_topology = '';
   /** @type {string} */
   let new_label_text = '';
   /** @type {string} */
@@ -918,6 +928,79 @@ export function createDetailView(
     `;
   }
 
+  function beginRouteEdit() {
+    if (!current || pending) {
+      return;
+    }
+    const metadata = current.metadata || {};
+    const topology = deriveTopology(metadata);
+    route_draft_lane =
+      typeof metadata.execution_lane === 'string'
+        ? metadata.execution_lane
+        : '';
+    route_draft_topology =
+      topology.kind === 'valid' && topology.value ? topology.value : '';
+    edit_route = true;
+    doRender();
+  }
+
+  function cancelRouteEdit() {
+    edit_route = false;
+    route_draft_lane = '';
+    route_draft_topology = '';
+    doRender();
+  }
+
+  async function saveRouteEdit() {
+    if (!current || pending) {
+      return;
+    }
+    const values = routeMutationValues(route_draft_lane, route_draft_topology);
+    if (!values) {
+      showToast('Choose valid route metadata', 'error');
+      doRender();
+      return;
+    }
+    pending = true;
+    try {
+      const updated = await sendFn('update-route-metadata', {
+        id: current.id,
+        values
+      });
+      if (updated && typeof updated === 'object') {
+        current = /** @type {IssueDetail} */ (updated);
+      }
+      edit_route = false;
+      route_draft_lane = '';
+      route_draft_topology = '';
+    } catch (err) {
+      log('save route metadata failed %o', err);
+      edit_route = false;
+      showToast('Failed to save route metadata', 'error');
+    } finally {
+      pending = false;
+      doRender();
+    }
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onRouteLaneChange(ev) {
+    route_draft_lane = /** @type {HTMLSelectElement} */ (ev.currentTarget)
+      .value;
+    doRender();
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onRouteTopologyChange(ev) {
+    route_draft_topology = /** @type {HTMLSelectElement} */ (ev.currentTarget)
+      .value;
+    doRender();
+  }
+
   /**
    * @param {string} value
    */
@@ -962,9 +1045,7 @@ export function createDetailView(
       return html`<div class="workflow-summary__row">
         <div class="workflow-summary__label">${label}</div>
         <div class="workflow-summary__value">
-          <a href=${href} target="_blank" rel="noreferrer noopener"
-            >${value}</a
-          >
+          <a href=${href} target="_blank" rel="noreferrer noopener">${value}</a>
         </div>
       </div>`;
     }
@@ -975,6 +1056,126 @@ export function createDetailView(
       <div class="workflow-summary__label">${label}</div>
       <div class="workflow-summary__value">${value}</div>
     </div>`;
+  }
+
+  /**
+   * @param {{ id: string, label: string, rows: Array<Record<string, unknown>>, editable_fields?: string[] }} section
+   */
+  function routeSectionTemplate(section) {
+    const editable_fields = Array.isArray(section.editable_fields)
+      ? section.editable_fields
+      : [];
+    const can_edit =
+      editable_fields.includes('execution_lane') &&
+      editable_fields.includes('topology');
+
+    if (!edit_route) {
+      return html`<section
+        class="workflow-summary__section"
+        data-section="route"
+      >
+        <div class="workflow-summary__section-title">Route</div>
+        <div class="workflow-summary__list">
+          ${section.rows.map((row) => workflowRowTemplate(row))}
+        </div>
+        ${can_edit
+          ? html`<button
+              type="button"
+              class="btn"
+              data-testid="route-edit"
+              ?disabled=${pending}
+              @click=${beginRouteEdit}
+            >
+              Edit
+            </button>`
+          : null}
+      </section>`;
+    }
+
+    const can_save = Boolean(route_draft_lane && route_draft_topology);
+    return html`<section class="workflow-summary__section" data-section="route">
+      <div class="workflow-summary__section-title">Route</div>
+      <div class="workflow-summary__list">
+        <div class="workflow-summary__row">
+          <label class="workflow-summary__label" for="route-lane"
+            >Execution lane</label
+          >
+          <select
+            id="route-lane"
+            data-testid="route-lane"
+            .value=${route_draft_lane}
+            ?disabled=${pending}
+            @change=${onRouteLaneChange}
+          >
+            <option value="">Choose lane</option>
+            <option value="quick_edit">quick_edit</option>
+            <option value="spec_backed">spec_backed</option>
+            <option value="plan">plan</option>
+          </select>
+        </div>
+        <div class="workflow-summary__row">
+          <label class="workflow-summary__label" for="route-topology"
+            >Topology</label
+          >
+          <select
+            id="route-topology"
+            data-testid="route-topology"
+            .value=${route_draft_topology}
+            ?disabled=${pending}
+            @change=${onRouteTopologyChange}
+          >
+            <option value="">Choose topology</option>
+            <option value="direct">direct</option>
+            <option value="pr">pr</option>
+          </select>
+        </div>
+        ${section.rows
+          .filter(
+            (row) =>
+              !['execution_lane', 'topology'].includes(String(row.id || ''))
+          )
+          .map((row) => workflowRowTemplate(row))}
+      </div>
+      <div class="workflow-summary__actions">
+        <button
+          type="button"
+          class="btn"
+          data-testid="route-save"
+          ?disabled=${pending || !can_save}
+          @click=${saveRouteEdit}
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          class="btn"
+          data-testid="route-cancel"
+          ?disabled=${pending}
+          @click=${cancelRouteEdit}
+        >
+          Cancel
+        </button>
+      </div>
+    </section>`;
+  }
+
+  /**
+   * @param {{ id: string, label: string, rows: Array<Record<string, unknown>>, editable_fields?: string[] }} section
+   */
+  function workflowSectionTemplate(section) {
+    if (section.id === 'route') {
+      return routeSectionTemplate(section);
+    }
+
+    return html`<section
+      class="workflow-summary__section"
+      data-section=${section.id}
+    >
+      <div class="workflow-summary__section-title">${section.label}</div>
+      <div class="workflow-summary__list">
+        ${section.rows.map((row) => workflowRowTemplate(row))}
+      </div>
+    </section>`;
   }
 
   /**
@@ -989,19 +1190,8 @@ export function createDetailView(
       workflow_sections.length > 0
         ? html`<div class="props-card workflow-summary">
             <div class="props-card__title">Workflow summary</div>
-            ${workflow_sections.map(
-              (section) =>
-                html`<section
-                  class="workflow-summary__section"
-                  data-section=${section.id}
-                >
-                  <div class="workflow-summary__section-title">
-                    ${section.label}
-                  </div>
-                  <div class="workflow-summary__list">
-                    ${section.rows.map((row) => workflowRowTemplate(row))}
-                  </div>
-                </section>`
+            ${workflow_sections.map((section) =>
+              workflowSectionTemplate(section)
             )}
           </div>`
         : null;
