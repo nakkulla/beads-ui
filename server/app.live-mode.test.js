@@ -139,13 +139,16 @@ describe('createApp live frontend mode', () => {
     expect(root_text).toContain('\\u003c');
     expect(config_response.status).toBe(200);
     expect(config_response.headers.get('cache-control')).toBe('no-store');
-    expect(config_payload).toEqual({
-      label_display_policy: {
-        visible_prefixes: ['area:<tag>', '</script>']
-      },
-      workspace_config: {
-        default_workspace: null
-      }
+    expect(config_payload.label_display_policy).toEqual({
+      visible_prefixes: ['area:<tag>', '</script>'],
+      visible_exact: []
+    });
+    expect(config_payload.detail.workflow_summary.sections).toContain('route');
+    expect(config_payload.detail.workflow_summary.route.fields).toContain(
+      'topology'
+    );
+    expect(config_payload.workspace_config).toEqual({
+      default_workspace: null
     });
   });
 });
