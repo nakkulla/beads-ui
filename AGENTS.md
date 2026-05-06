@@ -112,6 +112,8 @@ Never update `CHANGES.md`.
 - Run tests: `npm test`
 - Run eslint: `npm run lint`
 - Run prettier: `npm run prettier:write`
+- After frontend source edits, run `npm run build` and include the updated
+  `app/main.bundle.js` and `app/main.bundle.js.map`.
 
 ## Post‑Merge Runtime Validation
 
@@ -120,6 +122,9 @@ Never update `CHANGES.md`.
 - If the merged change affects runtime behavior, re-run the modified program and
   verify that the real server process comes up from the merged workspace, not a
   stale worktree or pre-merge checkout.
+- For frontend source changes, rebuild the static bundle from the merged
+  checkout with `npm run build` before restarting or claiming the shared UI is
+  current.
 - For the canonical shared server path, prefer:
   ```bash
   bdui-shared restart
