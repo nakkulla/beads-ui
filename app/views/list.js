@@ -85,11 +85,16 @@ export function createListView(
     return [];
   }
 
-  function getVisibleLabelPrefixes() {
-    return store?.getState?.().config?.label_display_policy?.visible_prefixes ?? [
-      'has:',
-      'reviewed:'
-    ];
+  function getVisibleLabelPolicy() {
+    const policy = store?.getState?.().config?.label_display_policy;
+    return {
+      visible_prefixes: Array.isArray(policy?.visible_prefixes)
+        ? policy.visible_prefixes
+        : ['has:', 'reviewed:'],
+      visible_exact: Array.isArray(policy?.visible_exact)
+        ? policy.visible_exact
+        : []
+    };
   }
 
   // Shared row renderer (used in template below)
@@ -103,7 +108,8 @@ export function createListView(
     onUpdate: updateInline,
     requestRender: doRender,
     getSelectedId: () => selected_id,
-    getVisibleLabelPrefixes: () => getVisibleLabelPrefixes(),
+    getVisibleLabelPrefixes: () => getVisibleLabelPolicy().visible_prefixes,
+    getVisibleLabelExact: () => getVisibleLabelPolicy().visible_exact,
     row_class: 'issue-row'
   });
 
@@ -576,7 +582,7 @@ export function createListView(
 
   // Keep selection in sync with store
   if (store) {
-    let config_prefix_key = JSON.stringify(getVisibleLabelPrefixes());
+    let config_prefix_key = JSON.stringify(getVisibleLabelPolicy());
     unsubscribe = store.subscribe((s) => {
       if (s.selected_id !== selected_id) {
         selected_id = s.selected_id;
@@ -606,12 +612,7 @@ export function createListView(
           type_filters = next_type_arr;
           needs_render = true;
         }
-        const next_config_key = JSON.stringify(
-          s.config?.label_display_policy?.visible_prefixes ?? [
-            'has:',
-            'reviewed:'
-          ]
-        );
+        const next_config_key = JSON.stringify(getVisibleLabelPolicy());
         if (next_config_key !== config_prefix_key) {
           config_prefix_key = next_config_key;
           needs_render = true;

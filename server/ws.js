@@ -23,6 +23,21 @@ const UPDATE_STATUS_ALLOWED = new Set([
   'closed'
 ]);
 
+const ROUTE_LANES = new Set(['quick_edit', 'spec_backed', 'plan']);
+const ROUTE_TOPOLOGIES = {
+  direct: {
+    workspace_policy: 'current',
+    branch_policy: 'same',
+    finish_action: 'direct'
+  },
+  pr: {
+    workspace_policy: 'worktree',
+    branch_policy: 'feature',
+    finish_action: 'pr'
+  }
+};
+const LANE_LABELS = ['lane:quick_edit', 'lane:spec_backed', 'lane:plan'];
+
 /**
  * Debounced refresh scheduling for active list subscriptions.
  * A trailing window coalesces rapid change bursts into a single refresh run.
@@ -256,6 +271,68 @@ function getGitUserNameInWorkspace() {
   }
 
   return getGitUserName({ cwd: CURRENT_WORKSPACE.root_dir });
+}
+
+/**
+ * @param {unknown} payload
+ * @returns {{ ok: true, id: string, lane: string, topology: 'direct' | 'pr' } | { ok: false, code: string, message: string }}
+ */
+function validateRouteMetadataPayload(payload) {
+  const body = /** @type {any} */ (payload || {});
+  const id = typeof body.id === 'string' ? body.id.trim() : '';
+  const values =
+    body.values && typeof body.values === 'object' ? body.values : null;
+  if (!id || !values) {
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid route metadata payload'
+    };
+  }
+
+  const lane = values.execution_lane;
+  const topology = values.topology;
+  if (typeof lane !== 'string' || !ROUTE_LANES.has(lane)) {
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid execution lane'
+    };
+  }
+  if (
+    typeof topology !== 'string' ||
+    !Object.prototype.hasOwnProperty.call(ROUTE_TOPOLOGIES, topology)
+  ) {
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid route topology'
+    };
+  }
+
+  return {
+    ok: true,
+    id,
+    lane,
+    topology: /** @type {'direct' | 'pr'} */ (topology)
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Record<string, unknown> | null}
+ */
+function normalizeShownIssue(value) {
+  if (Array.isArray(value)) {
+    const first = value[0];
+    return first && typeof first === 'object' && !Array.isArray(first)
+      ? /** @type {Record<string, unknown>} */ (first)
+      : null;
+  }
+
+  return value && typeof value === 'object'
+    ? /** @type {Record<string, unknown>} */ (value)
+    : null;
 }
 
 /**
@@ -895,6 +972,74 @@ export async function handleMessage(ws, data) {
       return;
     }
     ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+    try {
+      triggerMutationRefreshOnce();
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  // update-route-metadata
+  if (req.type === 'update-route-metadata') {
+    const validation = validateRouteMetadataPayload(req.payload);
+    if (!validation.ok) {
+      ws.send(
+        JSON.stringify(makeError(req, validation.code, validation.message))
+      );
+      return;
+    }
+
+    const route = ROUTE_TOPOLOGIES[validation.topology];
+    const args = [
+      'update',
+      validation.id,
+      '--set-metadata',
+      `execution_lane=${validation.lane}`,
+      '--set-metadata',
+      `workspace_policy=${route.workspace_policy}`,
+      '--set-metadata',
+      `branch_policy=${route.branch_policy}`,
+      '--set-metadata',
+      `finish_action=${route.finish_action}`
+    ];
+    for (const label of LANE_LABELS) {
+      args.push('--remove-label', label);
+    }
+    args.push('--add-label', `lane:${validation.lane}`);
+
+    const res = await runBdInWorkspace(args);
+    if (res.code !== 0) {
+      ws.send(
+        JSON.stringify(
+          makeError(
+            req,
+            'bd_error',
+            'Failed to update route metadata',
+            res.stderr
+          )
+        )
+      );
+      return;
+    }
+
+    const shown = await runBdJsonInWorkspace(['show', validation.id, '--json']);
+    const issue = normalizeShownIssue(shown.stdoutJson);
+    if (shown.code !== 0 || !issue) {
+      ws.send(
+        JSON.stringify(
+          makeError(
+            req,
+            'bd_error',
+            'Failed to read updated issue',
+            shown.stderr
+          )
+        )
+      );
+      return;
+    }
+
+    ws.send(JSON.stringify(makeOk(req, issue)));
     try {
       triggerMutationRefreshOnce();
     } catch {

@@ -113,6 +113,11 @@ with config-driven workflow sections and full-wrap/copy artifact paths.
 `label_display_policy.visible_prefixes` plus workspace config. They need to
 carry `visible_exact` and `detail.workflow_summary` config.
 
+`app/protocol.js` owns client-visible message type constants, and `app/ws.js`
+rejects unknown outbound message types before sending. Route metadata mutation
+therefore needs protocol/client allowlist updates in addition to server
+WebSocket handling.
+
 ### dotfiles config rollout state
 
 Dotfiles `install-shell.sh` currently creates `~/.config/bdui/config.toml` only
@@ -304,7 +309,8 @@ authorize PR Finish/closure.
 | `spec_handoff_content_hash`     | `metadata.spec_handoff_content_hash`     | no       |
 
 These fields are advanced but important for current dotfiles workflow freshness
-checks. They should be displayed only when present or explicitly configured.
+checks. They should be displayed when configured and present. Configuring a
+freshness field does not force an absent-value placeholder.
 
 ### `delivery`
 
@@ -388,7 +394,10 @@ Behavior:
 
 - `Edit` creates a draft from current valid values.
 - `Cancel` discards the draft.
-- `Save` writes all changed route values in one mutation.
+- `Save` sends the selected `execution_lane` and `topology` in one route
+  mutation. The server may skip unchanged metadata values, but it must sync lane
+  mirror labels for the provided `execution_lane` even when the lane value did
+  not change.
 - During save, controls are disabled.
 - On success, the server returns the readback issue and UI leaves edit mode.
 - On failure, existing issue state remains visible and an error toast is shown.
@@ -396,6 +405,15 @@ Behavior:
 ## Route metadata mutation
 
 Add a WebSocket request type such as `update-route-metadata`.
+
+Protocol/client integration:
+
+- Add the new message type to `app/protocol.js` `MessageType` and
+  `MESSAGE_TYPES`.
+- Ensure `app/ws.js` accepts the message type through the existing protocol
+  allowlist.
+- Cover the client protocol/allowlist path in tests so route save cannot fail
+  before reaching the server.
 
 Payload shape:
 
@@ -419,7 +437,8 @@ Server behavior:
      `finish_action=pr`
 3. Build one `bd update <id>` command with repeated `--set-metadata key=value`
    flags.
-4. If `execution_lane` is provided, sync lane mirror labels in the same command:
+4. If `execution_lane` is provided, sync lane mirror labels in the same command,
+   even when the stored metadata already has the same lane:
    - remove `lane:quick_edit`, `lane:spec_backed`, `lane:plan`
    - add `lane:<execution_lane>`
 5. Do not write any non-route metadata or non-lane labels.
@@ -485,7 +504,9 @@ The old expand/collapse path toggle is removed for these fields.
 
 - Invalid config file: use existing fallback config and log debug output.
 - Unknown config ids: ignore them.
-- Missing field value: do not render the row.
+- Missing field value: do not render the row, even when that field id is
+  explicitly configured. Config selects eligible sections/fields; it does not
+  force empty placeholders.
 - Existing invalid enum: render as invalid/absent, never offer it as a select
   option.
 - Existing invalid topology: show warning and require valid topology preset
@@ -538,7 +559,10 @@ The old expand/collapse path toggle is removed for these fields.
 - `Edit` switches `execution_lane` and `topology` to select controls.
 - `Cancel` discards draft values.
 - Invalid topology requires selecting a valid topology before Save.
-- `Save` sends one route metadata mutation with changed values.
+- `Save` sends one route metadata mutation with selected `execution_lane` and
+  `topology` values.
+- Saving an unchanged `execution_lane` still repairs stale or missing `lane:*`
+  mirror labels.
 - Save success updates from returned issue and exits edit mode.
 - Save failure shows error toast and preserves existing state.
 - No UI path attempts to write review, freshness, artifact, delivery, follow-up,

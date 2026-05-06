@@ -252,6 +252,98 @@ describe('ws mutation handlers', () => {
 
   // update-type removed; no server handler remains
 
+  test('update-route-metadata writes pr topology and lane labels', async () => {
+    const mRun = /** @type {import('vitest').Mock} */ (runBd);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    mJson.mockResolvedValueOnce({
+      code: 0,
+      stdoutJson: [
+        {
+          id: 'UI-7',
+          metadata: {
+            execution_lane: 'plan',
+            workspace_policy: 'worktree',
+            branch_policy: 'feature',
+            finish_action: 'pr'
+          },
+          labels: ['lane:plan']
+        }
+      ]
+    });
+    const ws = makeStubSocket();
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(
+        JSON.stringify({
+          id: 'route-1',
+          type: 'update-route-metadata',
+          payload: {
+            id: 'UI-7',
+            values: { execution_lane: 'plan', topology: 'pr' }
+          }
+        })
+      )
+    );
+
+    expect(mRun.mock.calls[0][0]).toEqual([
+      'update',
+      'UI-7',
+      '--set-metadata',
+      'execution_lane=plan',
+      '--set-metadata',
+      'workspace_policy=worktree',
+      '--set-metadata',
+      'branch_policy=feature',
+      '--set-metadata',
+      'finish_action=pr',
+      '--remove-label',
+      'lane:quick_edit',
+      '--remove-label',
+      'lane:spec_backed',
+      '--remove-label',
+      'lane:plan',
+      '--add-label',
+      'lane:plan'
+    ]);
+    const response = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(response.ok).toBe(true);
+    expect(response.payload).toEqual({
+      id: 'UI-7',
+      metadata: {
+        execution_lane: 'plan',
+        workspace_policy: 'worktree',
+        branch_policy: 'feature',
+        finish_action: 'pr'
+      },
+      labels: ['lane:plan']
+    });
+  });
+
+  test('update-route-metadata rejects invalid enum before bd', async () => {
+    const ws = makeStubSocket();
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(
+        JSON.stringify({
+          id: 'route-bad',
+          type: 'update-route-metadata',
+          payload: {
+            id: 'UI-7',
+            values: { execution_lane: 'bogus', topology: 'pr' }
+          }
+        })
+      )
+    );
+
+    expect(runBd).not.toHaveBeenCalled();
+    expect(JSON.parse(ws.sent[ws.sent.length - 1]).error.code).toBe(
+      'bad_request'
+    );
+  });
+
   test('update-assignee validates and returns updated issue', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
     const mJson = /** @type {import('vitest').Mock} */ (runBdJson);

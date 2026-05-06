@@ -1,6 +1,8 @@
-
 <h2>Worker Jobs: 현재 구조 vs 추천 구조</h2>
-<p class="subtitle">추천안은 <strong>Backend/Supervisor 분리</strong>입니다. 핵심은 job의 truth source를 UI 서버 밖으로 분리하는 것입니다.</p>
+<p class="subtitle">
+  추천안은 <strong>Backend/Supervisor 분리</strong>입니다. 핵심은 job의 truth
+  source를 UI 서버 밖으로 분리하는 것입니다.
+</p>
 
 <div class="split">
   <div class="mockup">
@@ -9,7 +11,9 @@
       <div class="section">
         <div class="label">Flow</div>
         <div class="mock-nav">Browser UI</div>
-        <div class="placeholder">beads-ui server<br>API + in-memory jobs + spawn(codex exec)</div>
+        <div class="placeholder">
+          beads-ui server<br />API + in-memory jobs + spawn(codex exec)
+        </div>
         <div class="placeholder">child process</div>
       </div>
       <div class="pros-cons">
@@ -38,11 +42,16 @@
       <div class="section">
         <div class="label">Flow</div>
         <div class="mock-nav">Browser UI</div>
-        <div class="placeholder">beads-ui server<br>UI + API gateway</div>
-        <div class="placeholder">Local Job Backend / Supervisor<br>job store + runner + cancel + recovery</div>
-        <div style="display:flex; gap:12px;">
-          <div class="placeholder" style="flex:1;">Runner: direct process</div>
-          <div class="placeholder" style="flex:1;">Optional attach/debug: tmux</div>
+        <div class="placeholder">beads-ui server<br />UI + API gateway</div>
+        <div class="placeholder">
+          Local Job Backend / Supervisor<br />job store + runner + cancel +
+          recovery
+        </div>
+        <div style="display: flex; gap: 12px">
+          <div class="placeholder" style="flex: 1">Runner: direct process</div>
+          <div class="placeholder" style="flex: 1">
+            Optional attach/debug: tmux
+          </div>
         </div>
         <div class="placeholder">logs / events / elapsed time</div>
       </div>

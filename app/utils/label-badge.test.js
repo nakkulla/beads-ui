@@ -70,5 +70,15 @@ describe('utils/label-badge', () => {
         )
       ).toEqual(['area:auth', 'component:api']);
     });
+
+    test('keeps prefix and exact matches', () => {
+      const result = filterVisibleLabels(
+        ['has:spec', 'lane:plan', 'pr', 'human', 'quick_edit', 'misc'],
+        ['has:', 'lane:'],
+        ['pr', 'human']
+      );
+
+      expect(result).toEqual(['has:spec', 'lane:plan', 'pr', 'human']);
+    });
   });
 });

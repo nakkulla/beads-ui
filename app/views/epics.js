@@ -57,28 +57,33 @@ export function createEpicsView(
   }
 
   // Shared row renderer used for children rows
+  function getVisibleLabelPolicy() {
+    const policy = store?.getState?.().config?.label_display_policy;
+    return {
+      visible_prefixes: Array.isArray(policy?.visible_prefixes)
+        ? policy.visible_prefixes
+        : ['has:', 'reviewed:'],
+      visible_exact: Array.isArray(policy?.visible_exact)
+        ? policy.visible_exact
+        : []
+    };
+  }
+
   const renderRow = createIssueRowRenderer({
     navigate: (id) => goto_issue(id),
     onUpdate: updateInline,
     requestRender: doRender,
     getSelectedId: () => null,
-    getVisibleLabelPrefixes: () =>
-      store?.getState?.().config?.label_display_policy?.visible_prefixes ?? [
-        'has:',
-        'reviewed:'
-      ],
+    getVisibleLabelPrefixes: () => getVisibleLabelPolicy().visible_prefixes,
+    getVisibleLabelExact: () => getVisibleLabelPolicy().visible_exact,
     row_class: 'epic-row',
     show_deps: false
   });
 
   if (store?.subscribe) {
-    let config_prefix_key = JSON.stringify(
-      store.getState().config.label_display_policy.visible_prefixes
-    );
-    store.subscribe((state) => {
-      const next_key = JSON.stringify(
-        state.config.label_display_policy.visible_prefixes
-      );
+    let config_prefix_key = JSON.stringify(getVisibleLabelPolicy());
+    store.subscribe(() => {
+      const next_key = JSON.stringify(getVisibleLabelPolicy());
       if (next_key !== config_prefix_key) {
         config_prefix_key = next_key;
         doRender();

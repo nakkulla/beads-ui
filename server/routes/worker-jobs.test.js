@@ -72,18 +72,31 @@ describe('worker jobs route', () => {
     });
 
     const { createApp } = await import('../app.js');
-    const app = createApp({ host: '127.0.0.1', port: 3000, app_dir, root_dir, frontend_mode: 'static' });
+    const app = createApp({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir,
+      root_dir,
+      frontend_mode: 'static'
+    });
     const server = createServer(app);
     let response;
     let body;
 
     try {
       const address = await listen(server);
-      response = await fetch(`http://127.0.0.1:${address.port}/api/worker/jobs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'bd-ralph', issueId: 'UI-qclw', workspace: allowed_workspace })
-      });
+      response = await fetch(
+        `http://127.0.0.1:${address.port}/api/worker/jobs`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            command: 'bd-ralph',
+            issueId: 'UI-qclw',
+            workspace: allowed_workspace
+          })
+        }
+      );
       body = await response.json();
     } finally {
       await close(server);
@@ -95,13 +108,21 @@ describe('worker jobs route', () => {
 
   test('GET /api/worker/jobs requires a valid workspace', async () => {
     const { createApp } = await import('../app.js');
-    const app = createApp({ host: '127.0.0.1', port: 3000, app_dir, root_dir, frontend_mode: 'static' });
+    const app = createApp({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir,
+      root_dir,
+      frontend_mode: 'static'
+    });
     const server = createServer(app);
     let response;
 
     try {
       const address = await listen(server);
-      response = await fetch(`http://127.0.0.1:${address.port}/api/worker/jobs`);
+      response = await fetch(
+        `http://127.0.0.1:${address.port}/api/worker/jobs`
+      );
     } finally {
       await close(server);
     }
@@ -111,18 +132,34 @@ describe('worker jobs route', () => {
 
   test('GET /api/worker/jobs returns worker items for workspace', async () => {
     listJobs.mockResolvedValueOnce([
-      { id: 'job-1', command: 'bd-ralph', status: 'running', issueId: 'UI-qclw', workspace: allowed_workspace, elapsedMs: 1200, isCancellable: true }
+      {
+        id: 'job-1',
+        command: 'bd-ralph',
+        status: 'running',
+        issueId: 'UI-qclw',
+        workspace: allowed_workspace,
+        elapsedMs: 1200,
+        isCancellable: true
+      }
     ]);
 
     const { createApp } = await import('../app.js');
-    const app = createApp({ host: '127.0.0.1', port: 3000, app_dir, root_dir, frontend_mode: 'static' });
+    const app = createApp({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir,
+      root_dir,
+      frontend_mode: 'static'
+    });
     const server = createServer(app);
     let response;
     let body;
 
     try {
       const address = await listen(server);
-      response = await fetch(`http://127.0.0.1:${address.port}/api/worker/jobs?workspace=${encodeURIComponent(allowed_workspace)}`);
+      response = await fetch(
+        `http://127.0.0.1:${address.port}/api/worker/jobs?workspace=${encodeURIComponent(allowed_workspace)}`
+      );
       body = await response.json();
     } finally {
       await close(server);
@@ -134,16 +171,28 @@ describe('worker jobs route', () => {
   });
 
   test('GET /api/worker/jobs/:jobId returns 404 for cross-workspace detail access', async () => {
-    getJob.mockResolvedValueOnce({ id: 'job-1', workspace: '/other-workspace', status: 'running' });
+    getJob.mockResolvedValueOnce({
+      id: 'job-1',
+      workspace: '/other-workspace',
+      status: 'running'
+    });
 
     const { createApp } = await import('../app.js');
-    const app = createApp({ host: '127.0.0.1', port: 3000, app_dir, root_dir, frontend_mode: 'static' });
+    const app = createApp({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir,
+      root_dir,
+      frontend_mode: 'static'
+    });
     const server = createServer(app);
     let response;
 
     try {
       const address = await listen(server);
-      response = await fetch(`http://127.0.0.1:${address.port}/api/worker/jobs/job-1?workspace=${encodeURIComponent(allowed_workspace)}`);
+      response = await fetch(
+        `http://127.0.0.1:${address.port}/api/worker/jobs/job-1?workspace=${encodeURIComponent(allowed_workspace)}`
+      );
     } finally {
       await close(server);
     }
@@ -152,22 +201,39 @@ describe('worker jobs route', () => {
   });
 
   test('POST /api/worker/jobs/:jobId/cancel cancels active job in workspace', async () => {
-    getJob.mockResolvedValueOnce({ id: 'job-1', workspace: allowed_workspace, status: 'running' });
-    cancelJob.mockResolvedValueOnce({ id: 'job-1', status: 'cancelled', workspace: allowed_workspace });
+    getJob.mockResolvedValueOnce({
+      id: 'job-1',
+      workspace: allowed_workspace,
+      status: 'running'
+    });
+    cancelJob.mockResolvedValueOnce({
+      id: 'job-1',
+      status: 'cancelled',
+      workspace: allowed_workspace
+    });
 
     const { createApp } = await import('../app.js');
-    const app = createApp({ host: '127.0.0.1', port: 3000, app_dir, root_dir, frontend_mode: 'static' });
+    const app = createApp({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir,
+      root_dir,
+      frontend_mode: 'static'
+    });
     const server = createServer(app);
     let response;
     let body;
 
     try {
       const address = await listen(server);
-      response = await fetch(`http://127.0.0.1:${address.port}/api/worker/jobs/job-1/cancel`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace: allowed_workspace })
-      });
+      response = await fetch(
+        `http://127.0.0.1:${address.port}/api/worker/jobs/job-1/cancel`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspace: allowed_workspace })
+        }
+      );
       body = await response.json();
     } finally {
       await close(server);
@@ -179,13 +245,21 @@ describe('worker jobs route', () => {
 
   test('GET /api/worker/jobs/:jobId/log validates tail range', async () => {
     const { createApp } = await import('../app.js');
-    const app = createApp({ host: '127.0.0.1', port: 3000, app_dir, root_dir, frontend_mode: 'static' });
+    const app = createApp({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir,
+      root_dir,
+      frontend_mode: 'static'
+    });
     const server = createServer(app);
     let response;
 
     try {
       const address = await listen(server);
-      response = await fetch(`http://127.0.0.1:${address.port}/api/worker/jobs/job-1/log?workspace=${encodeURIComponent(allowed_workspace)}&tail=0`);
+      response = await fetch(
+        `http://127.0.0.1:${address.port}/api/worker/jobs/job-1/log?workspace=${encodeURIComponent(allowed_workspace)}&tail=0`
+      );
     } finally {
       await close(server);
     }

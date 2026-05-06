@@ -4,6 +4,7 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_WORKFLOW_SUMMARY_CONFIG } from './config.js';
 import { registerWorkspace } from './registry-watcher.js';
 import { createWorkerJobsRouter } from './routes/worker-jobs.js';
 import { createWorkerPrsRouter } from './routes/worker-prs.js';
@@ -11,11 +12,13 @@ import { createWorkerSpecRouter } from './routes/worker-spec.js';
 
 /**
  * @param {{
- *   label_display_policy?: { visible_prefixes: string[] },
+ *   label_display_policy?: { visible_prefixes: string[], visible_exact?: string[] },
+ *   detail?: { workflow_summary?: unknown },
  *   workspace_config?: { default_workspace: string | null }
  * }} config
  * @returns {{
- *   label_display_policy: { visible_prefixes: string[] },
+ *   label_display_policy: { visible_prefixes: string[], visible_exact: string[] },
+ *   detail: { workflow_summary: unknown },
  *   workspace_config: { default_workspace: string | null }
  * }}
  */
@@ -25,11 +28,22 @@ function toBootstrapPayload(config) {
   )
     ? config.label_display_policy.visible_prefixes.slice()
     : ['has:', 'reviewed:'];
+  const visible_exact = Array.isArray(
+    config.label_display_policy?.visible_exact
+  )
+    ? config.label_display_policy.visible_exact.slice()
+    : [];
+  const detail =
+    config.detail && typeof config.detail === 'object'
+      ? JSON.parse(JSON.stringify(config.detail))
+      : { workflow_summary: DEFAULT_WORKFLOW_SUMMARY_CONFIG };
 
   return {
     label_display_policy: {
-      visible_prefixes
+      visible_prefixes,
+      visible_exact
     },
+    detail,
     workspace_config: {
       default_workspace:
         typeof config.workspace_config?.default_workspace === 'string' &&
@@ -54,7 +68,7 @@ function escapeBootstrapJson(json) {
 /**
  * Create and configure the Express application.
  *
- * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[] } }} config - Server configuration.
+ * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[], visible_exact?: string[] }, detail?: { workflow_summary?: unknown } }} config - Server configuration.
  * @returns {Express} Configured Express app instance.
  */
 export function createApp(config) {

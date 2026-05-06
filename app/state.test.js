@@ -40,10 +40,20 @@ describe('state store', () => {
     const store = createStore({
       config: {
         label_display_policy: {
-          visible_prefixes: ['area:', 'agent:']
+          visible_prefixes: ['area:', 'agent:'],
+          visible_exact: ['pr']
         },
         workspace_config: {
           default_workspace: '/repo-a'
+        },
+        detail: {
+          workflow_summary: {
+            sections: ['route'],
+            route: {
+              fields: ['execution_lane'],
+              editable_fields: ['execution_lane']
+            }
+          }
         }
       }
     });
@@ -51,28 +61,36 @@ describe('state store', () => {
     expect(
       store.getState().config.label_display_policy.visible_prefixes
     ).toEqual(['area:', 'agent:']);
+    expect(store.getState().config.label_display_policy.visible_exact).toEqual([
+      'pr'
+    ]);
+    expect(store.getState().config.detail.workflow_summary.sections).toEqual([
+      'route'
+    ]);
     expect(store.getState().config.workspace_config.default_workspace).toBe(
       '/repo-a'
     );
   });
 
-  test('emits when config visible prefixes change', () => {
+  test('emits when config visible policy changes', () => {
     const store = createStore();
-    /** @type {Array<{ label_display_policy: { visible_prefixes: string[] } }>} */
+    /** @type {Array<{ label_display_policy: { visible_prefixes: string[], visible_exact: string[] } }>} */
     const seen = [];
     const off = store.subscribe((state) => seen.push(state.config));
 
     store.setState({
       config: {
         label_display_policy: {
-          visible_prefixes: ['area:']
+          visible_prefixes: ['area:'],
+          visible_exact: ['pr']
         }
       }
     });
     store.setState({
       config: {
         label_display_policy: {
-          visible_prefixes: ['area:']
+          visible_prefixes: ['area:'],
+          visible_exact: ['pr']
         }
       }
     });
@@ -80,5 +98,6 @@ describe('state store', () => {
 
     expect(seen).toHaveLength(1);
     expect(seen[0].label_display_policy.visible_prefixes).toEqual(['area:']);
+    expect(seen[0].label_display_policy.visible_exact).toEqual(['pr']);
   });
 });

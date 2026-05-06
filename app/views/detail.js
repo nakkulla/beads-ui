@@ -9,7 +9,12 @@ import { priority_levels } from '../utils/priority.js';
 import { STATUSES, statusLabel } from '../utils/status.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
-import { workflowSummaryFromIssue } from '../utils/workflow-summary.js';
+import {
+  EXECUTION_LANES,
+  buildWorkflowSections,
+  deriveTopology,
+  routeMutationValues
+} from '../utils/workflow-fields.js';
 
 /**
  * Format a date string for display.
@@ -31,19 +36,6 @@ function formatCommentDate(dateStr) {
   } catch {
     return dateStr;
   }
-}
-
-/**
- * @param {unknown} value
- * @returns {string}
- */
-function normalizePath(value) {
-  if (typeof value !== 'string') {
-    return '';
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : '';
 }
 
 /**
@@ -97,13 +89,15 @@ function defaultNavigateFn(hash) {
  * @param {(type: string, payload?: unknown) => Promise<unknown>} sendFn - RPC transport.
  * @param {(hash: string) => void} [navigateFn] - Navigation function; defaults to setting location.hash.
  * @param {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issue_stores] - Optional issue stores for live updates.
+ * @param {{ getState?: () => { config?: { detail?: { workflow_summary?: unknown } } }, subscribe?: (fn: () => void) => () => void }} [store]
  * @returns {{ load: (id: string) => Promise<void>, clear: () => void, destroy: () => void }} View API.
  */
 export function createDetailView(
   mount_element,
   sendFn,
   navigateFn = defaultNavigateFn,
-  issue_stores = undefined
+  issue_stores = undefined,
+  store = undefined
 ) {
   const log = debug('views:detail');
   /** @type {IssueDetail | null} */
@@ -124,17 +118,21 @@ export function createDetailView(
   let edit_accept = false;
   /** @type {boolean} */
   let edit_assignee = false;
+  /** @type {boolean} */
+  let edit_route = false;
+  /** @type {string} */
+  let route_draft_lane = '';
+  /** @type {string} */
+  let route_draft_topology = '';
   /** @type {string} */
   let new_label_text = '';
   /** @type {string} */
   let comment_text = '';
   /** @type {boolean} */
   let comment_pending = false;
-  /** @type {Set<string>} */
-  let expanded_metadata_labels = new Set();
-
   /** @type {HTMLDialogElement | null} */
   let delete_dialog = null;
+  let unsubscribe_store = () => {};
 
   function ensureDeleteDialog() {
     if (delete_dialog) return delete_dialog;
@@ -279,6 +277,16 @@ export function createDetailView(
         doRender();
       } catch (err) {
         log('issue stores listener error %o', err);
+      }
+    });
+  }
+
+  if (store && typeof store.subscribe === 'function') {
+    unsubscribe_store = store.subscribe(() => {
+      try {
+        doRender();
+      } catch (err) {
+        log('store listener error %o', err);
       }
     });
   }
@@ -881,54 +889,6 @@ export function createDetailView(
   };
 
   /**
-   * @param {string} label
-   */
-  /**
-   * @param {Event} ev
-   * @returns {boolean}
-   */
-  function hasSelectedTextWithin(ev) {
-    const target = ev.currentTarget;
-    if (!(target instanceof HTMLElement)) {
-      return false;
-    }
-
-    const selection = window.getSelection?.();
-    if (!selection) {
-      return false;
-    }
-
-    const selectedText = selection.toString().trim();
-    if (selectedText.length === 0) {
-      return false;
-    }
-
-    const anchorNode = selection.anchorNode;
-    const focusNode = selection.focusNode;
-    return Boolean(
-      (anchorNode && target.contains(anchorNode)) ||
-      (focusNode && target.contains(focusNode))
-    );
-  }
-
-  /**
-   * @param {string} label
-   * @param {Event} ev
-   */
-  function toggleMetadataPath(label, ev) {
-    if (hasSelectedTextWithin(ev)) {
-      return;
-    }
-
-    if (expanded_metadata_labels.has(label)) {
-      expanded_metadata_labels.delete(label);
-    } else {
-      expanded_metadata_labels.add(label);
-    }
-    doRender();
-  }
-
-  /**
    * @param {'Dependencies'|'Dependents'} title
    * @param {Dependency[]} items
    */
@@ -969,74 +929,271 @@ export function createDetailView(
     `;
   }
 
+  function beginRouteEdit() {
+    if (!current || pending) {
+      return;
+    }
+    const metadata = current.metadata || {};
+    const topology = deriveTopology(metadata);
+    route_draft_lane =
+      typeof metadata.execution_lane === 'string'
+        ? metadata.execution_lane
+        : '';
+    route_draft_topology =
+      topology.kind === 'valid' && topology.value ? topology.value : '';
+    edit_route = true;
+    doRender();
+  }
+
+  function cancelRouteEdit() {
+    edit_route = false;
+    route_draft_lane = '';
+    route_draft_topology = '';
+    doRender();
+  }
+
+  async function saveRouteEdit() {
+    if (!current || pending) {
+      return;
+    }
+    const values = routeMutationValues(route_draft_lane, route_draft_topology);
+    if (!values) {
+      showToast('Choose valid route metadata', 'error');
+      doRender();
+      return;
+    }
+    pending = true;
+    doRender();
+    try {
+      const updated = await sendFn('update-route-metadata', {
+        id: current.id,
+        values
+      });
+      if (updated && typeof updated === 'object' && !Array.isArray(updated)) {
+        current = /** @type {IssueDetail} */ (updated);
+      }
+      edit_route = false;
+      route_draft_lane = '';
+      route_draft_topology = '';
+    } catch (err) {
+      log('save route metadata failed %o', err);
+      showToast('Failed to save route metadata', 'error');
+    } finally {
+      pending = false;
+      doRender();
+    }
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onRouteLaneChange(ev) {
+    route_draft_lane = /** @type {HTMLSelectElement} */ (ev.currentTarget)
+      .value;
+    doRender();
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onRouteTopologyChange(ev) {
+    route_draft_topology = /** @type {HTMLSelectElement} */ (ev.currentTarget)
+      .value;
+    doRender();
+  }
+
+  /**
+   * @param {string} value
+   */
+  async function copyArtifactPath(value) {
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast('Copied path');
+    } catch (err) {
+      log('copy artifact path failed %o', err);
+      showToast('Failed to copy path', 'error');
+    }
+  }
+
+  function getWorkflowSummaryConfig() {
+    return store?.getState?.().config?.detail?.workflow_summary || null;
+  }
+
+  /**
+   * @param {Record<string, unknown>} row
+   */
+  function workflowRowTemplate(row) {
+    const kind = String(row.kind || 'value');
+    const label = String(row.label || '');
+    const value = String(row.value || '');
+    const href = typeof row.href === 'string' ? row.href : '';
+
+    if (kind === 'artifact') {
+      return html`<div class="workflow-summary__row workflow-artifact">
+        <div class="workflow-summary__label">${label}</div>
+        <button
+          type="button"
+          class="workflow-summary__value workflow-artifact__value"
+          title=${value}
+          @click=${() => copyArtifactPath(value)}
+        >
+          ${value}
+        </button>
+      </div>`;
+    }
+
+    if (kind === 'link' && href) {
+      return html`<div class="workflow-summary__row">
+        <div class="workflow-summary__label">${label}</div>
+        <div class="workflow-summary__value">
+          <a href=${href} target="_blank" rel="noreferrer noopener">${value}</a>
+        </div>
+      </div>`;
+    }
+
+    return html`<div
+      class=${`workflow-summary__row ${kind === 'invalid' ? 'is-invalid' : ''}`}
+    >
+      <div class="workflow-summary__label">${label}</div>
+      <div class="workflow-summary__value">${value}</div>
+    </div>`;
+  }
+
+  /**
+   * @param {{ id: string, label: string, rows: Array<Record<string, unknown>>, editable_fields?: string[] }} section
+   */
+  function routeSectionTemplate(section) {
+    const editable_fields = Array.isArray(section.editable_fields)
+      ? section.editable_fields
+      : [];
+    const can_edit =
+      editable_fields.includes('execution_lane') &&
+      editable_fields.includes('topology');
+
+    if (!edit_route) {
+      return html`<section
+        class="workflow-summary__section"
+        data-section="route"
+      >
+        <div class="workflow-summary__section-title">Route</div>
+        <div class="workflow-summary__list">
+          ${section.rows.map((row) => workflowRowTemplate(row))}
+        </div>
+        ${can_edit
+          ? html`<button
+              type="button"
+              class="btn"
+              data-testid="route-edit"
+              ?disabled=${pending}
+              @click=${beginRouteEdit}
+            >
+              Edit
+            </button>`
+          : null}
+      </section>`;
+    }
+
+    const can_save = Boolean(route_draft_lane && route_draft_topology);
+    return html`<section class="workflow-summary__section" data-section="route">
+      <div class="workflow-summary__section-title">Route</div>
+      <div class="workflow-summary__list">
+        <div class="workflow-summary__row">
+          <label class="workflow-summary__label" for="route-lane"
+            >Execution lane</label
+          >
+          <select
+            id="route-lane"
+            data-testid="route-lane"
+            .value=${route_draft_lane}
+            ?disabled=${pending}
+            @change=${onRouteLaneChange}
+          >
+            <option value="">Choose lane</option>
+            ${EXECUTION_LANES.map(
+              (lane) => html`<option value=${lane}>${lane}</option>`
+            )}
+          </select>
+        </div>
+        <div class="workflow-summary__row">
+          <label class="workflow-summary__label" for="route-topology"
+            >Topology</label
+          >
+          <select
+            id="route-topology"
+            data-testid="route-topology"
+            .value=${route_draft_topology}
+            ?disabled=${pending}
+            @change=${onRouteTopologyChange}
+          >
+            <option value="">Choose topology</option>
+            <option value="direct">direct</option>
+            <option value="pr">pr</option>
+          </select>
+        </div>
+        ${section.rows
+          .filter(
+            (row) =>
+              !['execution_lane', 'topology'].includes(String(row.id || ''))
+          )
+          .map((row) => workflowRowTemplate(row))}
+      </div>
+      <div class="workflow-summary__actions">
+        <button
+          type="button"
+          class="btn"
+          data-testid="route-save"
+          ?disabled=${pending || !can_save}
+          @click=${saveRouteEdit}
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          class="btn"
+          data-testid="route-cancel"
+          ?disabled=${pending}
+          @click=${cancelRouteEdit}
+        >
+          Cancel
+        </button>
+      </div>
+    </section>`;
+  }
+
+  /**
+   * @param {{ id: string, label: string, rows: Array<Record<string, unknown>>, editable_fields?: string[] }} section
+   */
+  function workflowSectionTemplate(section) {
+    if (section.id === 'route') {
+      return routeSectionTemplate(section);
+    }
+
+    return html`<section
+      class="workflow-summary__section"
+      data-section=${section.id}
+    >
+      <div class="workflow-summary__section-title">${section.label}</div>
+      <div class="workflow-summary__list">
+        ${section.rows.map((row) => workflowRowTemplate(row))}
+      </div>
+    </section>`;
+  }
+
   /**
    * @param {IssueDetail} issue
    */
   function detailTemplate(issue) {
-    const spec_value = normalizePath(issue.spec_id);
-    const plan_value = normalizePath(issue.metadata?.plan);
-    const handoff_value = normalizePath(issue.metadata?.handoff);
-    const metadata_rows = [
-      { label: 'Spec', value: spec_value },
-      { label: 'Plan', value: plan_value },
-      { label: 'Handoff', value: handoff_value }
-    ].filter((entry) => entry.value.length > 0);
-
-    const metadata_block =
-      metadata_rows.length > 0
-        ? html`<div class="props-card metadata-paths">
-            <div class="props-card__title">Metadata</div>
-            <div class="metadata-paths__list">
-              ${metadata_rows.map(
-                (entry) =>
-                  html`<div class="metadata-path">
-                    <div class="metadata-path__label">${entry.label}</div>
-                    <button
-                      type="button"
-                      class=${`metadata-path__value${
-                        expanded_metadata_labels.has(entry.label)
-                          ? ' is-expanded'
-                          : ''
-                      }`}
-                      aria-expanded=${expanded_metadata_labels.has(entry.label)
-                        ? 'true'
-                        : 'false'}
-                      title=${entry.value}
-                      @click=${
-                        /** @param {Event} ev */ (ev) =>
-                          toggleMetadataPath(entry.label, ev)
-                      }
-                    >
-                      ${entry.value}
-                    </button>
-                  </div>`
-              )}
-            </div>
-          </div>`
-        : null;
-    const workflow_summary = workflowSummaryFromIssue(issue);
+    const workflow_sections = buildWorkflowSections(
+      issue,
+      getWorkflowSummaryConfig()
+    );
     const workflow_block =
-      workflow_summary.detail_rows.length > 0
+      workflow_sections.length > 0
         ? html`<div class="props-card workflow-summary">
             <div class="props-card__title">Workflow summary</div>
-            <div class="workflow-summary__list">
-              ${workflow_summary.detail_rows.map(
-                (row) =>
-                  html`<div class="workflow-summary__row">
-                    <div class="workflow-summary__label">${row.label}</div>
-                    <div class="workflow-summary__value">
-                      ${row.kind === 'link' && row.href
-                        ? html`<a
-                            href=${row.href}
-                            target="_blank"
-                            rel="noreferrer noopener"
-                            >${row.value}</a
-                          >`
-                        : row.value}
-                    </div>
-                  </div>`
-              )}
-            </div>
+            ${workflow_sections.map((section) =>
+              workflowSectionTemplate(section)
+            )}
           </div>`
         : null;
 
@@ -1445,7 +1602,6 @@ export function createDetailView(
               </div>
               ${labels_block}
               ${workflow_block}
-              ${metadata_block}
               ${depsSection('Dependencies', issue.dependencies || [])}
               ${depsSection('Dependents', issue.dependents || [])}
             </div>
@@ -1626,7 +1782,6 @@ export function createDetailView(
         return;
       }
       current_id = String(id);
-      expanded_metadata_labels = new Set();
       // Try from store first; show placeholder while waiting for snapshot
       current = null;
       refreshFromStore();
@@ -1656,6 +1811,7 @@ export function createDetailView(
       renderPlaceholder('Select an issue to view details');
     },
     destroy() {
+      unsubscribe_store();
       mount_element.replaceChildren();
       if (delete_dialog && delete_dialog.parentNode) {
         delete_dialog.parentNode.removeChild(delete_dialog);

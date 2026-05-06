@@ -1068,7 +1068,7 @@ describe('views/list', () => {
           status: 'open',
           priority: 1,
           issue_type: 'task',
-          labels: ['area:auth', 'has:spec', 'reviewed:code'],
+          labels: ['area:auth', 'has:spec', 'reviewed:code', 'human'],
           created_at: Date.parse('2025-10-24T10:00:00.000Z')
         },
         {
@@ -1088,11 +1088,19 @@ describe('views/list', () => {
         revision: 1,
         issues
       });
+      const store = createStore({
+        config: {
+          label_display_policy: {
+            visible_prefixes: ['has:', 'reviewed:'],
+            visible_exact: ['human']
+          }
+        }
+      });
       const view = createListView(
         mount,
         async () => [],
         undefined,
-        undefined,
+        store,
         undefined,
         issueStores
       );
@@ -1128,7 +1136,7 @@ describe('views/list', () => {
       expect(
         mount.querySelectorAll('tbody tr.issue-row:nth-child(1) td')
       ).toHaveLength(9);
-      expect(label_badges).toEqual(['has:spec', 'reviewed:code']);
+      expect(label_badges).toEqual(['has:spec', 'reviewed:code', 'human']);
       expect(created_text).toBe('1일 전');
       expect(iso_created_text).toBe('2시간 전');
     } finally {
@@ -1188,14 +1196,15 @@ describe('views/list', () => {
           title: 'Label policy',
           status: 'open',
           priority: 1,
-          labels: ['area:auth', 'agent:codex']
+          labels: ['area:auth', 'agent:codex', 'human']
         }
       ]
     });
     const store = createStore({
       config: {
         label_display_policy: {
-          visible_prefixes: ['area:']
+          visible_prefixes: ['area:'],
+          visible_exact: []
         }
       }
     });
@@ -1215,13 +1224,15 @@ describe('views/list', () => {
     store.setState({
       config: {
         label_display_policy: {
-          visible_prefixes: ['agent:']
+          visible_prefixes: ['agent:'],
+          visible_exact: ['human']
         }
       }
     });
     await Promise.resolve();
 
     expect(mount.textContent).toContain('agent:codex');
+    expect(mount.textContent).toContain('human');
     expect(mount.textContent).not.toContain('area:auth');
   });
 });

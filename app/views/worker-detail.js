@@ -129,8 +129,12 @@ export function createWorkerDetailView(mount_element, options = {}) {
                         <li>
                           <span>${job.status}</span>
                           <span>${formatElapsedMs(job.elapsedMs)}</span>
-                          ${job.errorSummary ? html`<span>${job.errorSummary}</span>` : null}
-                          ${job.wasForceKilled ? html`<span>Force killed</span>` : null}
+                          ${job.errorSummary
+                            ? html`<span>${job.errorSummary}</span>`
+                            : null}
+                          ${job.wasForceKilled
+                            ? html`<span>Force killed</span>`
+                            : null}
                         </li>
                       `
                     )}
