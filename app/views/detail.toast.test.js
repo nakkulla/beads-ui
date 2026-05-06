@@ -145,14 +145,17 @@ describe('views/detail toast', () => {
     expect(document.body.querySelector('.toast')?.textContent).toContain(
       'Failed to save route metadata'
     );
-    expect(mount.textContent).toContain('plan');
-    expect(mount.textContent).toContain('pr');
-    expect(mount.textContent).not.toContain('quick_edit');
     expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('[data-testid="route-edit"]')
-      ).disabled
-    ).toBe(false);
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-testid="route-lane"]')
+      ).value
+    ).toBe('quick_edit');
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-testid="route-topology"]')
+      ).value
+    ).toBe('direct');
+    expect(mount.querySelector('[data-testid="route-edit"]')).toBeNull();
   });
 
   test('applies fixed positioning to toast', async () => {

@@ -10,6 +10,7 @@ import { STATUSES, statusLabel } from '../utils/status.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
 import {
+  EXECUTION_LANES,
   buildWorkflowSections,
   deriveTopology,
   routeMutationValues
@@ -976,7 +977,6 @@ export function createDetailView(
       route_draft_topology = '';
     } catch (err) {
       log('save route metadata failed %o', err);
-      edit_route = false;
       showToast('Failed to save route metadata', 'error');
     } finally {
       pending = false;
@@ -1109,9 +1109,9 @@ export function createDetailView(
             @change=${onRouteLaneChange}
           >
             <option value="">Choose lane</option>
-            <option value="quick_edit">quick_edit</option>
-            <option value="spec_backed">spec_backed</option>
-            <option value="plan">plan</option>
+            ${EXECUTION_LANES.map(
+              (lane) => html`<option value=${lane}>${lane}</option>`
+            )}
           </select>
         </div>
         <div class="workflow-summary__row">

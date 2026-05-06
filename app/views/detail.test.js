@@ -261,6 +261,93 @@ describe('views/detail', () => {
     ).toBe(false);
   });
 
+  test('keeps route edit draft after save failure', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issue = {
+      id: 'UI-route-failure',
+      title: 'Route failure',
+      labels: ['lane:plan'],
+      metadata: {
+        execution_lane: 'plan',
+        workspace_policy: 'worktree',
+        branch_policy: 'feature',
+        finish_action: 'pr'
+      },
+      dependencies: [],
+      dependents: [],
+      comments: []
+    };
+    const store = {
+      getState() {
+        return {
+          config: {
+            detail: {
+              workflow_summary: {
+                sections: ['route'],
+                route: {
+                  fields: ['execution_lane', 'topology'],
+                  editable_fields: ['execution_lane', 'topology']
+                }
+              }
+            }
+          }
+        };
+      },
+      subscribe() {
+        return () => {};
+      }
+    };
+    const view = createDetailView(
+      mount,
+      async () => {
+        throw new Error('network failed');
+      },
+      undefined,
+      {
+        snapshotFor(id) {
+          return id === 'detail:UI-route-failure' ? [issue] : [];
+        },
+        subscribe() {
+          return () => {};
+        }
+      },
+      store
+    );
+
+    await view.load('UI-route-failure');
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="route-edit"]')
+    )?.click();
+    const lane = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-testid="route-lane"]')
+    );
+    const topology = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-testid="route-topology"]')
+    );
+    lane.value = 'quick_edit';
+    lane.dispatchEvent(new Event('change'));
+    topology.value = 'direct';
+    topology.dispatchEvent(new Event('change'));
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="route-save"]')
+    )?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-testid="route-lane"]')
+      ).value
+    ).toBe('quick_edit');
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-testid="route-topology"]')
+      ).value
+    ).toBe('direct');
+  });
+
   test('disables route controls while save is pending', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
@@ -1136,7 +1223,6 @@ describe('views/detail', () => {
       dependencies: [],
       dependents: [],
       metadata: {
-        execution_lane: 'Plan',
         workspace_policy: 'current'
       }
     };

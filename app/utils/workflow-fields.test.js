@@ -70,6 +70,29 @@ describe('workflow fields', () => {
     expect(sections[1].rows.map((row) => row.id)).toEqual(['spec_id']);
   });
 
+  test('reports invalid execution lane when configured value is unknown', () => {
+    const sections = buildWorkflowSections(
+      {
+        id: 'UI-invalid-lane',
+        metadata: {
+          execution_lane: 'mystery_lane'
+        }
+      },
+      {
+        sections: ['route'],
+        route: { fields: ['execution_lane'] }
+      }
+    );
+
+    expect(sections[0].rows).toEqual([
+      expect.objectContaining({
+        id: 'execution_lane',
+        value: 'mystery_lane',
+        kind: 'invalid'
+      })
+    ]);
+  });
+
   test('rejects unsafe workflow URLs', () => {
     expect(safeWorkflowUrl('javascript:alert(1)')).toBeNull();
     expect(safeWorkflowUrl('/relative')).toBeNull();

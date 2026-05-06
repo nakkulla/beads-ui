@@ -1,4 +1,4 @@
-const EXECUTION_LANES = ['quick_edit', 'spec_backed', 'plan'];
+export const EXECUTION_LANES = ['quick_edit', 'spec_backed', 'plan'];
 const TOPOLOGIES = {
   direct: {
     workspace_policy: 'current',
@@ -202,6 +202,8 @@ function buildRouteRows(fields, metadata) {
       const lane = stringValue(metadata.execution_lane);
       if (EXECUTION_LANES.includes(lane)) {
         rows.push(makeRow(field, lane));
+      } else if (lane) {
+        rows.push(makeRow(field, lane, { kind: 'invalid' }));
       }
       continue;
     }
