@@ -226,7 +226,7 @@ describe('views/board', () => {
     expect(navigations[0]).toBe('R-3');
   });
 
-  test('renders derived pr label badge and no workflow chips', async () => {
+  test('renders workflow chips before labels without derived pr label', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const issueStores = createTestIssueStores();
@@ -242,7 +242,9 @@ describe('views/board', () => {
           labels: ['has:spec'],
           metadata: {
             execution_lane: 'plan',
-            skill_workflow: 'skill_creator',
+            workspace_policy: 'worktree',
+            branch_policy: 'feature',
+            finish_action: 'pr',
             pr_url: 'https://github.com/nakkulla/beads-ui/pull/92'
           }
         }
@@ -265,12 +267,18 @@ describe('views/board', () => {
     const label_text = Array.from(
       card?.querySelectorAll('.label-badge') || []
     ).map((el) => el.textContent?.trim());
-    const pr_badge = Array.from(
-      card?.querySelectorAll('.label-badge') || []
-    ).find((el) => el.textContent?.trim() === 'pr');
-    expect(card?.querySelector('.board-card__workflow')).toBeNull();
-    expect(label_text).toEqual(['has:spec', 'pr']);
-    expect(pr_badge?.classList.contains('label-badge--pr')).toBe(true);
+    const chip_text = Array.from(
+      card?.querySelectorAll('.workflow-chip') || []
+    ).map((el) => el.textContent?.trim());
+    const workflow_row = card?.querySelector('.board-card__workflow');
+    const title = card?.querySelector('.board-card__title');
+    const labels = card?.querySelector('.board-card__labels');
+
+    expect(chip_text).toEqual(['Plan', 'PR route', 'PR']);
+    expect(label_text).toEqual(['has:spec']);
+    expect(workflow_row?.previousElementSibling).toBe(title);
+    expect(labels?.previousElementSibling).toBe(workflow_row);
+    expect(card?.querySelector('.board-card__workflow a')).toBeNull();
   });
 
   test('ignores raw pr label without safe PR URL', async () => {
@@ -310,6 +318,88 @@ describe('views/board', () => {
     expect(label_text).toEqual(['has:spec']);
   });
 
+  test('maps execution lane values to human workflow chips', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'LANE-PLAN',
+          title: 'plan lane',
+          created_at: Date.parse('2026-04-30T06:00:00Z'),
+          metadata: { execution_lane: 'plan' }
+        },
+        {
+          id: 'LANE-QUICK',
+          title: 'quick lane',
+          created_at: Date.parse('2026-04-30T06:01:00Z'),
+          metadata: { execution_lane: 'quick_edit' }
+        },
+        {
+          id: 'LANE-SPEC',
+          title: 'spec lane',
+          created_at: Date.parse('2026-04-30T06:02:00Z'),
+          metadata: { execution_lane: 'spec_backed' }
+        }
+      ]
+    });
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      createStore(),
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const lane_text = Array.from(
+      mount.querySelectorAll('.workflow-chip--lane')
+    ).map((el) => el.textContent?.trim());
+    expect(lane_text).toEqual(['Spec-backed', 'Quick edit', 'Plan']);
+  });
+
+  test('renders direct route chip for exact direct topology', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'ROUTE-DIRECT',
+          title: 'direct route',
+          created_at: Date.parse('2026-04-30T06:00:00Z'),
+          metadata: {
+            workspace_policy: 'current',
+            branch_policy: 'same',
+            finish_action: 'direct'
+          }
+        }
+      ]
+    });
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      createStore(),
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const route_chip = mount.querySelector('.workflow-chip--route');
+    expect(route_chip?.textContent?.trim()).toBe('Direct');
+  });
+
   test('suppresses workflow chips for invalid metadata values', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
@@ -325,7 +415,9 @@ describe('views/board', () => {
           created_at: Date.parse('2026-04-30T06:00:00Z'),
           metadata: {
             execution_lane: 'Plan',
-            skill_workflow: 'none',
+            workspace_policy: 'current',
+            branch_policy: 'feature',
+            finish_action: 'pr',
             pr_url: 'data:text/html,<h1>x</h1>'
           }
         }
@@ -347,7 +439,7 @@ describe('views/board', () => {
     ).toBeNull();
   });
 
-  test('does not render workflow chips in fallback fetch mode', async () => {
+  test('renders workflow chips in fallback fetch mode', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const view = createBoardView(
@@ -387,9 +479,10 @@ describe('views/board', () => {
 
     await view.load();
 
-    expect(
-      mount.querySelector('[data-issue-id="WF-3"] .workflow-chip')
-    ).toBeNull();
+    const chip_text = Array.from(
+      mount.querySelectorAll('[data-issue-id="WF-3"] .workflow-chip')
+    ).map((el) => el.textContent?.trim());
+    expect(chip_text).toEqual(['Quick edit']);
   });
 
   test('applies latest-first sorting in fallback fetch mode without push stores', async () => {

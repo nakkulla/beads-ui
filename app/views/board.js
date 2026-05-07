@@ -11,6 +11,7 @@ import {
 } from '../utils/relative-time.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
+import { deriveTopology, safeWorkflowUrl } from '../utils/workflow-fields.js';
 
 /**
  * @typedef {{
@@ -26,10 +27,26 @@ import { createTypeBadge } from '../utils/type-badge.js';
  *   metadata?: {
  *     execution_lane?: string | null,
  *     skill_workflow?: string | null,
+ *     workspace_policy?: string | null,
+ *     branch_policy?: string | null,
+ *     finish_action?: string | null,
  *     pr_url?: string | null
  *   }
  * }} IssueLite
  */
+
+/** @type {Record<string, string>} */
+const LANE_CHIP_LABELS = {
+  plan: 'Plan',
+  quick_edit: 'Quick edit',
+  spec_backed: 'Spec-backed'
+};
+
+/** @type {Record<string, string>} */
+const TOPOLOGY_CHIP_LABELS = {
+  direct: 'Direct',
+  pr: 'PR route'
+};
 
 /**
  * Map column IDs to their corresponding status values.
@@ -128,35 +145,13 @@ export function createBoardView(
     const policy = store?.getState?.().config?.label_display_policy;
     const prefixes = policy?.visible_prefixes;
     const exact = policy?.visible_exact;
-    const visible_exact = Array.isArray(exact) ? exact.slice() : [];
-    if (!visible_exact.includes('pr')) {
-      visible_exact.push('pr');
-    }
 
     return {
       visible_prefixes: Array.isArray(prefixes)
         ? prefixes
         : ['has:', 'reviewed:'],
-      visible_exact
+      visible_exact: Array.isArray(exact) ? exact : []
     };
-  }
-
-  /**
-   * @param {IssueLite} issue
-   * @returns {boolean}
-   */
-  function hasSafePrUrl(issue) {
-    const value = issue.metadata?.pr_url;
-    if (typeof value !== 'string') {
-      return false;
-    }
-
-    try {
-      const url = new URL(value);
-      return url.protocol === 'http:' || url.protocol === 'https:';
-    } catch {
-      return false;
-    }
   }
 
   /**
@@ -164,13 +159,38 @@ export function createBoardView(
    * @returns {string[]}
    */
   function deriveBoardLabels(issue) {
-    const labels = Array.isArray(issue.labels)
+    return Array.isArray(issue.labels)
       ? issue.labels.filter((label) => label !== 'pr')
       : [];
-    if (hasSafePrUrl(issue)) {
-      return [...labels, 'pr'];
+  }
+
+  /**
+   * @param {IssueLite} issue
+   * @returns {{ kind: 'lane' | 'route' | 'delivery', text: string }[]}
+   */
+  function buildWorkflowChips(issue) {
+    const metadata = issue.metadata || {};
+    /** @type {{ kind: 'lane' | 'route' | 'delivery', text: string }[]} */
+    const chips = [];
+    const lane = metadata.execution_lane || '';
+    const lane_label = LANE_CHIP_LABELS[lane];
+    if (lane_label) {
+      chips.push({ kind: 'lane', text: lane_label });
     }
-    return labels;
+
+    const topology = deriveTopology(metadata);
+    if (topology.kind === 'valid') {
+      const topology_label = TOPOLOGY_CHIP_LABELS[topology.value];
+      if (topology_label) {
+        chips.push({ kind: 'route', text: topology_label });
+      }
+    }
+
+    if (safeWorkflowUrl(metadata.pr_url)) {
+      chips.push({ kind: 'delivery', text: 'PR' });
+    }
+
+    return chips;
   }
 
   function template() {
@@ -268,6 +288,7 @@ export function createBoardView(
    */
   function cardTemplate(it) {
     const label_policy = getVisibleLabelPolicy();
+    const workflow_chips = buildWorkflowChips(it);
     const card_labels = filterVisibleLabels(
       deriveBoardLabels(it),
       label_policy.visible_prefixes,
@@ -287,6 +308,16 @@ export function createBoardView(
         <div class="board-card__title text-truncate">
           ${it.title || '(no title)'}
         </div>
+        ${workflow_chips.length > 0
+          ? html`<div class="board-card__workflow">
+              ${workflow_chips.map(
+                (chip) =>
+                  html`<span class="workflow-chip workflow-chip--${chip.kind}"
+                    >${chip.text}</span
+                  >`
+              )}
+            </div>`
+          : ''}
         ${card_labels.length > 0
           ? html`<div class="board-card__labels">
               ${card_labels.map((label) => createLabelBadge(label))}
