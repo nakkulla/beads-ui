@@ -226,7 +226,7 @@ describe('views/board', () => {
     expect(navigations[0]).toBe('R-3');
   });
 
-  test('renders labels only and no workflow chips', async () => {
+  test('renders derived pr label badge and no workflow chips', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const issueStores = createTestIssueStores();
@@ -239,7 +239,7 @@ describe('views/board', () => {
           id: 'WF-1',
           title: 'workflow card',
           created_at: Date.parse('2026-04-30T06:00:00Z'),
-          labels: ['has:spec', 'lane:plan', 'pr'],
+          labels: ['has:spec'],
           metadata: {
             execution_lane: 'plan',
             skill_workflow: 'skill_creator',
@@ -248,19 +248,11 @@ describe('views/board', () => {
         }
       ]
     });
-    const store = createStore({
-      config: {
-        label_display_policy: {
-          visible_prefixes: ['has:', 'lane:'],
-          visible_exact: ['pr']
-        }
-      }
-    });
     const view = createBoardView(
       mount,
       null,
       () => {},
-      store,
+      createStore(),
       undefined,
       issueStores
     );
@@ -274,7 +266,44 @@ describe('views/board', () => {
       card?.querySelectorAll('.label-badge') || []
     ).map((el) => el.textContent?.trim());
     expect(card?.querySelector('.board-card__workflow')).toBeNull();
-    expect(label_text).toEqual(['has:spec', 'lane:plan', 'pr']);
+    expect(label_text).toEqual(['has:spec', 'pr']);
+  });
+
+  test('ignores raw pr label without safe PR URL', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'WF-RAW',
+          title: 'stale pr label',
+          created_at: Date.parse('2026-04-30T06:00:00Z'),
+          labels: ['has:spec', 'pr']
+        }
+      ]
+    });
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      createStore(),
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const card = /** @type {HTMLElement | null} */ (
+      mount.querySelector('[data-issue-id="WF-RAW"]')
+    );
+    const label_text = Array.from(
+      card?.querySelectorAll('.label-badge') || []
+    ).map((el) => el.textContent?.trim());
+    expect(label_text).toEqual(['has:spec']);
   });
 
   test('suppresses workflow chips for invalid metadata values', async () => {

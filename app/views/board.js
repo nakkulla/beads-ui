@@ -128,13 +128,49 @@ export function createBoardView(
     const policy = store?.getState?.().config?.label_display_policy;
     const prefixes = policy?.visible_prefixes;
     const exact = policy?.visible_exact;
+    const visible_exact = Array.isArray(exact) ? exact.slice() : [];
+    if (!visible_exact.includes('pr')) {
+      visible_exact.push('pr');
+    }
 
     return {
       visible_prefixes: Array.isArray(prefixes)
         ? prefixes
         : ['has:', 'reviewed:'],
-      visible_exact: Array.isArray(exact) ? exact : []
+      visible_exact
     };
+  }
+
+  /**
+   * @param {IssueLite} issue
+   * @returns {boolean}
+   */
+  function hasSafePrUrl(issue) {
+    const value = issue.metadata?.pr_url;
+    if (typeof value !== 'string') {
+      return false;
+    }
+
+    try {
+      const url = new URL(value);
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * @param {IssueLite} issue
+   * @returns {string[]}
+   */
+  function deriveBoardLabels(issue) {
+    const labels = Array.isArray(issue.labels)
+      ? issue.labels.filter((label) => label !== 'pr')
+      : [];
+    if (hasSafePrUrl(issue)) {
+      return [...labels, 'pr'];
+    }
+    return labels;
   }
 
   function template() {
@@ -233,7 +269,7 @@ export function createBoardView(
   function cardTemplate(it) {
     const label_policy = getVisibleLabelPolicy();
     const card_labels = filterVisibleLabels(
-      it.labels,
+      deriveBoardLabels(it),
       label_policy.visible_prefixes,
       label_policy.visible_exact
     );
