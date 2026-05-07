@@ -114,6 +114,61 @@ visible_exact = ["pr", "human", "skill-related"]
     ]);
   });
 
+  test('parses valid label color rules from TOML', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[labels.colors.prefix."has:"]
+fg = "#16a34a"
+
+[labels.colors.prefix."followup:"]
+fg = "#B45309"
+
+[labels.colors.exact."skill-related"]
+fg = "#7c3aed"
+`);
+
+    const config = getConfig();
+
+    expect(config.label_display_policy.colors).toEqual({
+      prefix: {
+        'has:': { fg: '#16a34a' },
+        'followup:': { fg: '#B45309' }
+      },
+      exact: {
+        'skill-related': { fg: '#7c3aed' }
+      }
+    });
+  });
+
+  test('drops invalid label color rules without dropping valid siblings', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[labels.colors.prefix."has:"]
+fg = "green"
+
+[labels.colors.prefix."needs:"]
+fg = "#dc2626"
+
+[labels.colors.prefix.empty]
+fg = ""
+
+[labels.colors.exact."pr"]
+fg = "#1234"
+
+[labels.colors.exact."reviewed:spec"]
+fg = "#2563eb"
+`);
+
+    const config = getConfig();
+
+    expect(config.label_display_policy.colors).toEqual({
+      prefix: {
+        'needs:': { fg: '#dc2626' }
+      },
+      exact: {
+        'reviewed:spec': { fg: '#2563eb' }
+      }
+    });
+  });
+
   test('normalizes default workflow summary config', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture('');
 
@@ -166,6 +221,10 @@ visible_prefixes = ["has:"]
 
     expect(config.label_display_policy.visible_prefixes).toEqual(['has:']);
     expect(config.label_display_policy.visible_exact).toEqual([]);
+    expect(config.label_display_policy.colors).toEqual({
+      prefix: {},
+      exact: {}
+    });
     expect(config.detail.workflow_summary.route.fields).toContain('topology');
   });
 

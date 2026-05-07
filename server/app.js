@@ -10,14 +10,76 @@ import { createWorkerJobsRouter } from './routes/worker-jobs.js';
 import { createWorkerPrsRouter } from './routes/worker-prs.js';
 import { createWorkerSpecRouter } from './routes/worker-spec.js';
 
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isObjectTable(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Record<string, { fg: string }>}
+ */
+function normalizeLabelColorTable(value) {
+  if (!isObjectTable(value)) {
+    return {};
+  }
+
+  /** @type {Record<string, { fg: string }>} */
+  const normalized = {};
+  for (const [key, rule] of Object.entries(value)) {
+    if (
+      key.length === 0 ||
+      !isObjectTable(rule) ||
+      typeof rule.fg !== 'string' ||
+      !HEX_COLOR_RE.test(rule.fg)
+    ) {
+      continue;
+    }
+    normalized[key] = { fg: rule.fg };
+  }
+
+  return normalized;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ prefix: Record<string, { fg: string }>, exact: Record<string, { fg: string }> }}
+ */
+function normalizeLabelColorPolicy(value) {
+  if (!isObjectTable(value)) {
+    return { prefix: {}, exact: {} };
+  }
+
+  return {
+    prefix: normalizeLabelColorTable(value.prefix),
+    exact: normalizeLabelColorTable(value.exact)
+  };
+}
+
 /**
  * @param {{
- *   label_display_policy?: { visible_prefixes: string[], visible_exact?: string[] },
+ *   label_display_policy?: {
+ *     visible_prefixes: string[],
+ *     visible_exact?: string[],
+ *     colors?: unknown
+ *   },
  *   detail?: { workflow_summary?: unknown },
  *   workspace_config?: { default_workspace: string | null }
  * }} config
  * @returns {{
- *   label_display_policy: { visible_prefixes: string[], visible_exact: string[] },
+ *   label_display_policy: {
+ *     visible_prefixes: string[],
+ *     visible_exact: string[],
+ *     colors: {
+ *       prefix: Record<string, { fg: string }>,
+ *       exact: Record<string, { fg: string }>
+ *     }
+ *   },
  *   detail: { workflow_summary: unknown },
  *   workspace_config: { default_workspace: string | null }
  * }}
@@ -41,7 +103,8 @@ function toBootstrapPayload(config) {
   return {
     label_display_policy: {
       visible_prefixes,
-      visible_exact
+      visible_exact,
+      colors: normalizeLabelColorPolicy(config.label_display_policy?.colors)
     },
     detail,
     workspace_config: {
@@ -68,7 +131,7 @@ function escapeBootstrapJson(json) {
 /**
  * Create and configure the Express application.
  *
- * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[], visible_exact?: string[] }, detail?: { workflow_summary?: unknown } }} config - Server configuration.
+ * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[], visible_exact?: string[], colors?: unknown }, detail?: { workflow_summary?: unknown } }} config - Server configuration.
  * @returns {Express} Configured Express app instance.
  */
 export function createApp(config) {

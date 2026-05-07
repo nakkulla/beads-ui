@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { bootstrap } from './main.js';
+import {
+  bootstrap,
+  readBootstrapConfig,
+  refreshConfigSnapshot
+} from './main.js';
+import { createStore } from './state.js';
 
 /** @type {any} */
 let CLIENT = null;
@@ -28,6 +33,67 @@ afterEach(() => {
 });
 
 describe('main config refresh', () => {
+  test('reads color policy from bootstrap config', () => {
+    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
+      label_display_policy: {
+        visible_prefixes: ['has:'],
+        visible_exact: [],
+        colors: {
+          prefix: {
+            'has:': { fg: '#16a34a' }
+          },
+          exact: {
+            pr: { fg: '#7c3aed' }
+          }
+        }
+      }
+    };
+
+    const config = readBootstrapConfig();
+
+    expect(config.label_display_policy.colors).toEqual({
+      prefix: {
+        'has:': { fg: '#16a34a' }
+      },
+      exact: {
+        pr: { fg: '#7c3aed' }
+      }
+    });
+  });
+
+  test('refresh propagates color policy to state', async () => {
+    const fetch_mock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          label_display_policy: {
+            visible_prefixes: ['followup:'],
+            colors: {
+              prefix: {
+                'followup:': { fg: '#b45309' }
+              },
+              exact: {}
+            }
+          }
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+    });
+    vi.stubGlobal('fetch', fetch_mock);
+    const store = createStore();
+
+    await refreshConfigSnapshot(store, vi.fn());
+
+    expect(store.getState().config.label_display_policy.colors).toEqual({
+      prefix: {
+        'followup:': { fg: '#b45309' }
+      },
+      exact: {}
+    });
+  });
+
   test('fetches latest config after websocket reconnects', async () => {
     const fetch_mock = vi.fn(async () => {
       return new Response(

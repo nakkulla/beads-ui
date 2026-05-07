@@ -87,7 +87,15 @@ describe('server app wiring (no listen)', () => {
       ...config,
       label_display_policy: {
         visible_prefixes: ['has:'],
-        visible_exact: ['pr']
+        visible_exact: ['pr'],
+        colors: {
+          prefix: {
+            'has:': { fg: '#16a34a' }
+          },
+          exact: {
+            pr: { fg: '#7c3aed' }
+          }
+        }
       },
       detail: {
         workflow_summary: {
@@ -103,6 +111,14 @@ describe('server app wiring (no listen)', () => {
     const body = await fetchJsonFromApp(app, '/api/config');
 
     expect(body.label_display_policy.visible_exact).toEqual(['pr']);
+    expect(body.label_display_policy.colors).toEqual({
+      prefix: {
+        'has:': { fg: '#16a34a' }
+      },
+      exact: {
+        pr: { fg: '#7c3aed' }
+      }
+    });
     expect(body.detail.workflow_summary.sections).toEqual(['route']);
   });
 

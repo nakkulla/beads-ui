@@ -141,7 +141,11 @@ describe('createApp live frontend mode', () => {
     expect(config_response.headers.get('cache-control')).toBe('no-store');
     expect(config_payload.label_display_policy).toEqual({
       visible_prefixes: ['area:<tag>', '</script>'],
-      visible_exact: []
+      visible_exact: [],
+      colors: {
+        prefix: {},
+        exact: {}
+      }
     });
     expect(config_payload.detail.workflow_summary.sections).toContain('route');
     expect(config_payload.detail.workflow_summary.route.fields).toContain(

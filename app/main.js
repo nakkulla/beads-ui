@@ -23,10 +23,16 @@ import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
 
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
 const DEFAULT_CONFIG = {
   label_display_policy: {
     visible_prefixes: ['has:', 'reviewed:'],
-    visible_exact: []
+    visible_exact: [],
+    colors: {
+      prefix: {},
+      exact: {}
+    }
   },
   workspace_config: {
     default_workspace: null
@@ -91,16 +97,75 @@ const DEFAULT_CONFIG = {
 };
 
 /**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isObjectTable(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Record<string, { fg: string }>}
+ */
+function normalizeLabelColorTable(value) {
+  if (!isObjectTable(value)) {
+    return {};
+  }
+
+  /** @type {Record<string, { fg: string }>} */
+  const normalized = {};
+  for (const [key, rule] of Object.entries(value)) {
+    if (
+      key.length === 0 ||
+      !isObjectTable(rule) ||
+      typeof rule.fg !== 'string' ||
+      !HEX_COLOR_RE.test(rule.fg)
+    ) {
+      continue;
+    }
+    normalized[key] = { fg: rule.fg };
+  }
+
+  return normalized;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ prefix: Record<string, { fg: string }>, exact: Record<string, { fg: string }> }}
+ */
+function normalizeLabelColorPolicy(value) {
+  if (!isObjectTable(value)) {
+    return { prefix: {}, exact: {} };
+  }
+
+  return {
+    prefix: normalizeLabelColorTable(value.prefix),
+    exact: normalizeLabelColorTable(value.exact)
+  };
+}
+
+/**
  * @returns {{
- *   label_display_policy: { visible_prefixes: string[], visible_exact: string[] },
+ *   label_display_policy: {
+ *     visible_prefixes: string[],
+ *     visible_exact: string[],
+ *     colors: {
+ *       prefix: Record<string, { fg: string }>,
+ *       exact: Record<string, { fg: string }>
+ *     }
+ *   },
  *   workspace_config: { default_workspace: string | null },
  *   detail: any
  * }}
  */
-function readBootstrapConfig() {
+export function readBootstrapConfig() {
   const bootstrap = /** @type {any} */ (window).__BDUI_BOOTSTRAP__;
   const prefixes = bootstrap?.label_display_policy?.visible_prefixes;
   const exact = bootstrap?.label_display_policy?.visible_exact;
+  const colors = normalizeLabelColorPolicy(
+    bootstrap?.label_display_policy?.colors
+  );
 
   const default_workspace =
     typeof bootstrap?.workspace_config?.default_workspace === 'string' &&
@@ -115,7 +180,8 @@ function readBootstrapConfig() {
           DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice(),
         visible_exact: Array.isArray(exact)
           ? exact.filter((value) => typeof value === 'string')
-          : DEFAULT_CONFIG.label_display_policy.visible_exact.slice()
+          : DEFAULT_CONFIG.label_display_policy.visible_exact.slice(),
+        colors
       },
       workspace_config: {
         default_workspace
@@ -132,7 +198,8 @@ function readBootstrapConfig() {
       visible_prefixes: prefixes.filter((value) => typeof value === 'string'),
       visible_exact: Array.isArray(exact)
         ? exact.filter((value) => typeof value === 'string')
-        : DEFAULT_CONFIG.label_display_policy.visible_exact.slice()
+        : DEFAULT_CONFIG.label_display_policy.visible_exact.slice(),
+      colors
     },
     workspace_config: {
       default_workspace
@@ -149,7 +216,7 @@ function readBootstrapConfig() {
  * @param {(message: string, details: unknown) => void} log_error
  * @returns {Promise<void>}
  */
-async function refreshConfigSnapshot(store, log_error) {
+export async function refreshConfigSnapshot(store, log_error) {
   try {
     const response = await fetch('/api/config');
     const config = await response.json();

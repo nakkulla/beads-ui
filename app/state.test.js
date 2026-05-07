@@ -41,7 +41,15 @@ describe('state store', () => {
       config: {
         label_display_policy: {
           visible_prefixes: ['area:', 'agent:'],
-          visible_exact: ['pr']
+          visible_exact: ['pr'],
+          colors: {
+            prefix: {
+              'area:': { fg: '#16a34a' }
+            },
+            exact: {
+              pr: { fg: '#7c3aed' }
+            }
+          }
         },
         workspace_config: {
           default_workspace: '/repo-a'
@@ -64,6 +72,14 @@ describe('state store', () => {
     expect(store.getState().config.label_display_policy.visible_exact).toEqual([
       'pr'
     ]);
+    expect(store.getState().config.label_display_policy.colors).toEqual({
+      prefix: {
+        'area:': { fg: '#16a34a' }
+      },
+      exact: {
+        pr: { fg: '#7c3aed' }
+      }
+    });
     expect(store.getState().config.detail.workflow_summary.sections).toEqual([
       'route'
     ]);
@@ -99,5 +115,60 @@ describe('state store', () => {
     expect(seen).toHaveLength(1);
     expect(seen[0].label_display_policy.visible_prefixes).toEqual(['area:']);
     expect(seen[0].label_display_policy.visible_exact).toEqual(['pr']);
+  });
+
+  test('emits when config color policy changes', () => {
+    const store = createStore({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['has:'],
+          colors: {
+            prefix: {
+              'has:': { fg: '#16a34a' }
+            },
+            exact: {}
+          }
+        }
+      }
+    });
+    /** @type {Array<{ label_display_policy: { colors: { prefix: Record<string, { fg: string }>, exact: Record<string, { fg: string }> } } }>} */
+    const seen = [];
+    const off = store.subscribe((state) => seen.push(state.config));
+
+    store.setState({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['has:'],
+          colors: {
+            prefix: {
+              'has:': { fg: '#dc2626' }
+            },
+            exact: {}
+          }
+        }
+      }
+    });
+    store.setState({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['has:'],
+          colors: {
+            prefix: {
+              'has:': { fg: '#dc2626' }
+            },
+            exact: {}
+          }
+        }
+      }
+    });
+    off();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].label_display_policy.colors).toEqual({
+      prefix: {
+        'has:': { fg: '#dc2626' }
+      },
+      exact: {}
+    });
   });
 });
