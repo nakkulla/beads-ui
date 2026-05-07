@@ -53,6 +53,13 @@ describe('utils/label-badge', () => {
       expect(element.textContent).toBe('reviewed:code');
     });
 
+    test('adds pr modifier for pr label', () => {
+      const element = createLabelBadge('pr');
+
+      expect(element.classList.contains('label-badge--pr')).toBe(true);
+      expect(element.textContent).toBe('pr');
+    });
+
     test('sets title and aria-label', () => {
       const element = createLabelBadge('has:spec');
 

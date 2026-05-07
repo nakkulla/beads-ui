@@ -265,8 +265,12 @@ describe('views/board', () => {
     const label_text = Array.from(
       card?.querySelectorAll('.label-badge') || []
     ).map((el) => el.textContent?.trim());
+    const pr_badge = Array.from(
+      card?.querySelectorAll('.label-badge') || []
+    ).find((el) => el.textContent?.trim() === 'pr');
     expect(card?.querySelector('.board-card__workflow')).toBeNull();
     expect(label_text).toEqual(['has:spec', 'pr']);
+    expect(pr_badge?.classList.contains('label-badge--pr')).toBe(true);
   });
 
   test('ignores raw pr label without safe PR URL', async () => {

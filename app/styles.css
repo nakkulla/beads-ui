@@ -88,6 +88,8 @@
   --label-has-border: color-mix(in srgb, #16a34a 35%, transparent);
   --label-reviewed-fg: #2563eb;
   --label-reviewed-border: color-mix(in srgb, #2563eb 35%, transparent);
+  --label-pr-fg: #7c3aed;
+  --label-pr-border: color-mix(in srgb, #7c3aed 35%, transparent);
 }
 
 html,
@@ -691,6 +693,12 @@ button:disabled {
   color: var(--label-reviewed-fg);
   border-color: var(--label-reviewed-border);
   background: color-mix(in srgb, var(--label-reviewed-fg) 8%, transparent);
+}
+
+.label-badge--pr {
+  color: var(--label-pr-fg);
+  border-color: var(--label-pr-border);
+  background: color-mix(in srgb, var(--label-pr-fg) 10%, transparent);
 }
 
 .label-badge + .label-badge {

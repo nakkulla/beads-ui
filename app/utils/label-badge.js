@@ -52,6 +52,8 @@ export function createLabelBadge(label) {
     modifier = 'has';
   } else if (label.startsWith('reviewed:')) {
     modifier = 'reviewed';
+  } else if (label === 'pr') {
+    modifier = 'pr';
   }
 
   if (modifier) {
