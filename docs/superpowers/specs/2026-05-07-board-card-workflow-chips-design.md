@@ -79,7 +79,9 @@ Each Board card should render a workflow chip row immediately below the title
 when at least one workflow chip is displayable.
 
 The row should be separate from `.board-card__labels`. Workflow chips are not
-label badges and are not controlled by the label display policy.
+label badges and are not controlled by the label display policy. Board cards
+rendered through the push-store path and the fallback fetch path should derive
+and render the same workflow chips from the same issue metadata.
 
 Recommended display order:
 
@@ -190,6 +192,9 @@ Add or update focused tests for:
   label.
 - Invalid lane and invalid route metadata are suppressed on Board.
 - Existing label display policy behavior remains unchanged for non-PR labels.
+- List and Epics remain unchanged and do not render Board workflow chip rows.
+- Push-store and fallback fetch Board cards both render the same workflow chips
+  from metadata.
 - Card click and drag tests continue to pass.
 
 Run the normal frontend validation after implementation:
