@@ -59,13 +59,18 @@ export function createEpicsView(
   // Shared row renderer used for children rows
   function getVisibleLabelPolicy() {
     const policy = store?.getState?.().config?.label_display_policy;
+    const colors = policy?.colors;
     return {
       visible_prefixes: Array.isArray(policy?.visible_prefixes)
         ? policy.visible_prefixes
         : ['has:', 'reviewed:'],
       visible_exact: Array.isArray(policy?.visible_exact)
         ? policy.visible_exact
-        : []
+        : [],
+      colors:
+        colors && typeof colors === 'object'
+          ? colors
+          : { prefix: {}, exact: {} }
     };
   }
 
@@ -76,6 +81,7 @@ export function createEpicsView(
     getSelectedId: () => null,
     getVisibleLabelPrefixes: () => getVisibleLabelPolicy().visible_prefixes,
     getVisibleLabelExact: () => getVisibleLabelPolicy().visible_exact,
+    getLabelColorPolicy: () => getVisibleLabelPolicy().colors,
     row_class: 'epic-row',
     show_deps: false
   });

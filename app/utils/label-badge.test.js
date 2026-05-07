@@ -66,6 +66,42 @@ describe('utils/label-badge', () => {
       expect(element.getAttribute('title')).toBe('has:spec');
       expect(element.getAttribute('aria-label')).toBe('Label: has:spec');
     });
+
+    test('applies exact color rule before prefix rule', () => {
+      const element = createLabelBadge('followup:scope-boundary', {
+        prefix: {
+          'followup:': { fg: '#b45309' }
+        },
+        exact: {
+          'followup:scope-boundary': { fg: '#dc2626' }
+        }
+      });
+
+      expect(element.style.getPropertyValue('--label-badge-fg')).toBe(
+        '#dc2626'
+      );
+    });
+
+    test('applies longest matching prefix color rule', () => {
+      const element = createLabelBadge('followup:scope-boundary', {
+        prefix: {
+          'followup:': { fg: '#b45309' },
+          'followup:scope-': { fg: '#2563eb' }
+        },
+        exact: {}
+      });
+
+      expect(element.style.getPropertyValue('--label-badge-fg')).toBe(
+        '#2563eb'
+      );
+    });
+
+    test('keeps fallback classes without color config', () => {
+      const element = createLabelBadge('has:spec');
+
+      expect(element.classList.contains('label-badge--has')).toBe(true);
+      expect(element.style.getPropertyValue('--label-badge-fg')).toBe('');
+    });
   });
 
   describe('filterVisibleLabels', () => {
@@ -86,6 +122,16 @@ describe('utils/label-badge', () => {
       );
 
       expect(result).toEqual(['has:spec', 'lane:plan', 'pr', 'human']);
+    });
+
+    test('ignores color config when filtering hidden labels', () => {
+      const result = filterVisibleLabels(
+        ['lane:plan', 'followup:scope-boundary'],
+        ['followup:'],
+        []
+      );
+
+      expect(result).toEqual(['followup:scope-boundary']);
     });
   });
 });

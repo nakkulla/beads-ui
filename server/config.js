@@ -9,6 +9,7 @@ const log = debug('config');
 const DEFAULT_VISIBLE_PREFIXES = ['has:', 'reviewed:'];
 /** @type {string[]} */
 const DEFAULT_VISIBLE_EXACT = [];
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const DEFAULT_WORKSPACE_CONFIG = {
   default_workspace: null,
   scan_roots: [],
@@ -90,6 +91,58 @@ function normalizeVisibleExact(value) {
   }
 
   return value.filter((entry) => typeof entry === 'string' && entry.length > 0);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isObjectTable(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+function isHexColor(value) {
+  return typeof value === 'string' && HEX_COLOR_RE.test(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Record<string, { fg: string }>}
+ */
+function normalizeLabelColorTable(value) {
+  if (!isObjectTable(value)) {
+    return {};
+  }
+
+  /** @type {Record<string, { fg: string }>} */
+  const normalized = {};
+  for (const [key, rule] of Object.entries(value)) {
+    if (key.length === 0 || !isObjectTable(rule) || !isHexColor(rule.fg)) {
+      continue;
+    }
+    normalized[key] = { fg: rule.fg };
+  }
+
+  return normalized;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ prefix: Record<string, { fg: string }>, exact: Record<string, { fg: string }> }}
+ */
+function normalizeLabelColorPolicy(value) {
+  if (!isObjectTable(value)) {
+    return { prefix: {}, exact: {} };
+  }
+
+  return {
+    prefix: normalizeLabelColorTable(value.prefix),
+    exact: normalizeLabelColorTable(value.exact)
+  };
 }
 
 /**
@@ -230,7 +283,14 @@ function normalizeWorkspaceConfig(parsed) {
 /**
  * @param {string} config_path
  * @returns {{
- *   label_display_policy: { visible_prefixes: string[], visible_exact: string[] },
+ *   label_display_policy: {
+ *     visible_prefixes: string[],
+ *     visible_exact: string[],
+ *     colors: {
+ *       prefix: Record<string, { fg: string }>,
+ *       exact: Record<string, { fg: string }>
+ *     }
+ *   },
  *   detail: { workflow_summary: typeof DEFAULT_WORKFLOW_SUMMARY_CONFIG },
  *   workspace_config: {
  *     default_workspace: string | null,
@@ -250,7 +310,8 @@ function readRuntimeConfig(config_path) {
         visible_prefixes: normalizeVisiblePrefixes(
           parsed?.labels?.visible_prefixes
         ),
-        visible_exact: normalizeVisibleExact(parsed?.labels?.visible_exact)
+        visible_exact: normalizeVisibleExact(parsed?.labels?.visible_exact),
+        colors: normalizeLabelColorPolicy(parsed?.labels?.colors)
       },
       detail: {
         workflow_summary: normalizeWorkflowSummaryConfig(parsed)
@@ -271,7 +332,8 @@ function readRuntimeConfig(config_path) {
     return {
       label_display_policy: {
         visible_prefixes: DEFAULT_VISIBLE_PREFIXES.slice(),
-        visible_exact: DEFAULT_VISIBLE_EXACT.slice()
+        visible_exact: DEFAULT_VISIBLE_EXACT.slice(),
+        colors: { prefix: {}, exact: {} }
       },
       detail: {
         workflow_summary: normalizeWorkflowSummaryConfig({})
@@ -303,7 +365,14 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *   frontend_mode: 'live' | 'static',
  *   url: string,
  *   config_path: string,
- *   label_display_policy: { visible_prefixes: string[], visible_exact: string[] },
+ *   label_display_policy: {
+ *     visible_prefixes: string[],
+ *     visible_exact: string[],
+ *     colors: {
+ *       prefix: Record<string, { fg: string }>,
+ *       exact: Record<string, { fg: string }>
+ *     }
+ *   },
  *   detail: { workflow_summary: typeof DEFAULT_WORKFLOW_SUMMARY_CONFIG },
  *   workspace_config: {
  *     default_workspace: string | null,

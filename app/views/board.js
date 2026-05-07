@@ -145,12 +145,17 @@ export function createBoardView(
     const policy = store?.getState?.().config?.label_display_policy;
     const prefixes = policy?.visible_prefixes;
     const exact = policy?.visible_exact;
+    const colors = policy?.colors;
 
     return {
       visible_prefixes: Array.isArray(prefixes)
         ? prefixes
         : ['has:', 'reviewed:'],
-      visible_exact: Array.isArray(exact) ? exact : []
+      visible_exact: Array.isArray(exact) ? exact : [],
+      colors:
+        colors && typeof colors === 'object'
+          ? colors
+          : { prefix: {}, exact: {} }
     };
   }
 
@@ -320,7 +325,9 @@ export function createBoardView(
           : ''}
         ${card_labels.length > 0
           ? html`<div class="board-card__labels">
-              ${card_labels.map((label) => createLabelBadge(label))}
+              ${card_labels.map((label) =>
+                createLabelBadge(label, label_policy.colors)
+              )}
             </div>`
           : ''}
         <div class="board-card__meta">

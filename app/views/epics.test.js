@@ -591,7 +591,15 @@ describe('views/epics', () => {
         config: {
           label_display_policy: {
             visible_prefixes: ['has:', 'reviewed:'],
-            visible_exact: ['human']
+            visible_exact: ['human'],
+            colors: {
+              prefix: {
+                'reviewed:': { fg: '#2563eb' }
+              },
+              exact: {
+                human: { fg: '#dc2626' }
+              }
+            }
           }
         }
       });
@@ -647,7 +655,10 @@ describe('views/epics', () => {
         mount.querySelectorAll(
           'tr.epic-row:nth-child(2) td:nth-child(4) .label-badge'
         )
-      ).map((element) => element.textContent?.trim());
+      );
+      const labeled_row_badge_text = labeled_row_badges.map((element) =>
+        element.textContent?.trim()
+      );
       const labeled_row_date = mount
         .querySelector('tr.epic-row:nth-child(2) td:nth-child(8)')
         ?.textContent?.trim();
@@ -668,11 +679,21 @@ describe('views/epics', () => {
       expect(
         mount.querySelectorAll('tr.epic-row:nth-child(1) td')
       ).toHaveLength(8);
-      expect(labeled_row_badges).toEqual([
+      expect(labeled_row_badge_text).toEqual([
         'has:spec',
         'reviewed:code',
         'human'
       ]);
+      expect(
+        /** @type {HTMLElement} */ (
+          labeled_row_badges[1]
+        ).style.getPropertyValue('--label-badge-fg')
+      ).toBe('#2563eb');
+      expect(
+        /** @type {HTMLElement} */ (
+          labeled_row_badges[2]
+        ).style.getPropertyValue('--label-badge-fg')
+      ).toBe('#dc2626');
       expect(labeled_row_date).toBe('1일 전');
       expect(newest_row_date).toBe('2시간 전');
     } finally {

@@ -25,6 +25,10 @@ import { createTypeBadge } from '../utils/type-badge.js';
  *   getSelectedId?: () => string | null,
  *   getVisibleLabelPrefixes?: () => string[],
  *   getVisibleLabelExact?: () => string[],
+ *   getLabelColorPolicy?: () => {
+ *     prefix?: Record<string, { fg: string }>,
+ *     exact?: Record<string, { fg: string }>
+ *   },
  *   row_class?: string,
  *   show_deps?: boolean
  * }} options
@@ -38,6 +42,8 @@ export function createIssueRowRenderer(options) {
   const get_visible_label_prefixes =
     options.getVisibleLabelPrefixes || (() => ['has:', 'reviewed:']);
   const get_visible_label_exact = options.getVisibleLabelExact || (() => []);
+  const get_label_color_policy =
+    options.getLabelColorPolicy || (() => ({ prefix: {}, exact: {} }));
   const row_class = options.row_class || 'issue-row';
   const show_deps = options.show_deps ?? true;
 
@@ -167,7 +173,7 @@ export function createIssueRowRenderer(options) {
           it.labels,
           get_visible_label_prefixes(),
           get_visible_label_exact()
-        ).map((label) => createLabelBadge(label))}
+        ).map((label) => createLabelBadge(label, get_label_color_policy()))}
       </td>
       <td role="gridcell">
         <select

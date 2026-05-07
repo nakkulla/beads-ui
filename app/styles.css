@@ -680,25 +680,60 @@ button:disabled {
   vertical-align: middle;
   user-select: none;
   border: 1px solid;
+  color: var(--label-badge-fg, inherit);
+  border-color: color-mix(
+    in srgb,
+    var(--label-badge-fg, currentColor) 35%,
+    transparent
+  );
+  background: color-mix(
+    in srgb,
+    var(--label-badge-fg, transparent) 8%,
+    transparent
+  );
   text-wrap: nowrap;
 }
 
 .label-badge--has {
-  color: var(--label-has-fg);
-  border-color: var(--label-has-border);
-  background: color-mix(in srgb, var(--label-has-fg) 8%, transparent);
+  color: var(--label-badge-fg, var(--label-has-fg));
+  border-color: color-mix(
+    in srgb,
+    var(--label-badge-fg, var(--label-has-fg)) 35%,
+    transparent
+  );
+  background: color-mix(
+    in srgb,
+    var(--label-badge-fg, var(--label-has-fg)) 8%,
+    transparent
+  );
 }
 
 .label-badge--reviewed {
-  color: var(--label-reviewed-fg);
-  border-color: var(--label-reviewed-border);
-  background: color-mix(in srgb, var(--label-reviewed-fg) 8%, transparent);
+  color: var(--label-badge-fg, var(--label-reviewed-fg));
+  border-color: color-mix(
+    in srgb,
+    var(--label-badge-fg, var(--label-reviewed-fg)) 35%,
+    transparent
+  );
+  background: color-mix(
+    in srgb,
+    var(--label-badge-fg, var(--label-reviewed-fg)) 8%,
+    transparent
+  );
 }
 
 .label-badge--pr {
-  color: var(--label-pr-fg);
-  border-color: var(--label-pr-border);
-  background: color-mix(in srgb, var(--label-pr-fg) 10%, transparent);
+  color: var(--label-badge-fg, var(--label-pr-fg));
+  border-color: color-mix(
+    in srgb,
+    var(--label-badge-fg, var(--label-pr-fg)) 35%,
+    transparent
+  );
+  background: color-mix(
+    in srgb,
+    var(--label-badge-fg, var(--label-pr-fg)) 8%,
+    transparent
+  );
 }
 
 .label-badge + .label-badge {

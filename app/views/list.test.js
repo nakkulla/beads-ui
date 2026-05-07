@@ -1092,7 +1092,15 @@ describe('views/list', () => {
         config: {
           label_display_policy: {
             visible_prefixes: ['has:', 'reviewed:'],
-            visible_exact: ['human']
+            visible_exact: ['human'],
+            colors: {
+              prefix: {
+                'has:': { fg: '#16a34a' }
+              },
+              exact: {
+                human: { fg: '#dc2626' }
+              }
+            }
           }
         }
       });
@@ -1114,7 +1122,10 @@ describe('views/list', () => {
         mount.querySelectorAll(
           'tbody tr.issue-row:nth-child(2) td:nth-child(4) .label-badge'
         )
-      ).map((element) => element.textContent?.trim());
+      );
+      const label_badge_text = label_badges.map((element) =>
+        element.textContent?.trim()
+      );
       const created_text = mount
         .querySelector('tbody tr.issue-row:nth-child(2) td:nth-child(8)')
         ?.textContent?.trim();
@@ -1136,7 +1147,17 @@ describe('views/list', () => {
       expect(
         mount.querySelectorAll('tbody tr.issue-row:nth-child(1) td')
       ).toHaveLength(9);
-      expect(label_badges).toEqual(['has:spec', 'reviewed:code', 'human']);
+      expect(label_badge_text).toEqual(['has:spec', 'reviewed:code', 'human']);
+      expect(
+        /** @type {HTMLElement} */ (label_badges[0]).style.getPropertyValue(
+          '--label-badge-fg'
+        )
+      ).toBe('#16a34a');
+      expect(
+        /** @type {HTMLElement} */ (label_badges[2]).style.getPropertyValue(
+          '--label-badge-fg'
+        )
+      ).toBe('#dc2626');
       expect(created_text).toBe('1일 전');
       expect(iso_created_text).toBe('2시간 전');
     } finally {

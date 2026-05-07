@@ -28,7 +28,15 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ visible_prefixes: string[], visible_exact: string[] }} LabelDisplayPolicy
+ * @typedef {{ fg: string }} LabelColorRule
+ */
+
+/**
+ * @typedef {{ prefix: Record<string, LabelColorRule>, exact: Record<string, LabelColorRule> }} LabelColorPolicy
+ */
+
+/**
+ * @typedef {{ visible_prefixes: string[], visible_exact: string[], colors: LabelColorPolicy }} LabelDisplayPolicy
  */
 
 /**
@@ -68,7 +76,11 @@ import { debug } from './utils/logging.js';
 const DEFAULT_CONFIG = Object.freeze({
   label_display_policy: {
     visible_prefixes: ['has:', 'reviewed:'],
-    visible_exact: []
+    visible_exact: [],
+    colors: {
+      prefix: {},
+      exact: {}
+    }
   },
   workspace_config: {
     default_workspace: null
@@ -132,6 +144,8 @@ const DEFAULT_CONFIG = Object.freeze({
   }
 });
 
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
 /**
  * @template T
  * @param {T} value
@@ -142,12 +156,62 @@ function cloneJson(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isObjectTable(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Record<string, LabelColorRule>}
+ */
+function normalizeLabelColorTable(value) {
+  if (!isObjectTable(value)) {
+    return {};
+  }
+
+  /** @type {Record<string, LabelColorRule>} */
+  const normalized = {};
+  for (const [key, rule] of Object.entries(value)) {
+    if (
+      key.length === 0 ||
+      !isObjectTable(rule) ||
+      typeof rule.fg !== 'string' ||
+      !HEX_COLOR_RE.test(rule.fg)
+    ) {
+      continue;
+    }
+    normalized[key] = { fg: rule.fg };
+  }
+
+  return normalized;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {LabelColorPolicy}
+ */
+function normalizeLabelColorPolicy(value) {
+  if (!isObjectTable(value)) {
+    return { prefix: {}, exact: {} };
+  }
+
+  return {
+    prefix: normalizeLabelColorTable(value.prefix),
+    exact: normalizeLabelColorTable(value.exact)
+  };
+}
+
+/**
  * @param {AppConfig | undefined} input
  * @returns {{ label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig, detail: DetailConfig }}
  */
 function normalizeConfig(input) {
   const prefixes = input?.label_display_policy?.visible_prefixes;
   const exact = input?.label_display_policy?.visible_exact;
+  const colors = normalizeLabelColorPolicy(input?.label_display_policy?.colors);
   const default_workspace =
     typeof input?.workspace_config?.default_workspace === 'string' &&
     input.workspace_config.default_workspace.length > 0
@@ -165,7 +229,8 @@ function normalizeConfig(input) {
           DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice(),
         visible_exact: Array.isArray(exact)
           ? exact.filter((value) => typeof value === 'string')
-          : DEFAULT_CONFIG.label_display_policy.visible_exact.slice()
+          : DEFAULT_CONFIG.label_display_policy.visible_exact.slice(),
+        colors
       },
       workspace_config: {
         default_workspace
@@ -179,7 +244,8 @@ function normalizeConfig(input) {
       visible_prefixes: prefixes.filter((value) => typeof value === 'string'),
       visible_exact: Array.isArray(exact)
         ? exact.filter((value) => typeof value === 'string')
-        : DEFAULT_CONFIG.label_display_policy.visible_exact.slice()
+        : DEFAULT_CONFIG.label_display_policy.visible_exact.slice(),
+      colors
     },
     workspace_config: {
       default_workspace
@@ -289,6 +355,8 @@ export function createStore(initial = {}) {
           (label, index) =>
             label !== state.config.label_display_policy.visible_exact[index]
         ) ||
+        JSON.stringify(next.config.label_display_policy.colors) !==
+          JSON.stringify(state.config.label_display_policy.colors) ||
         next.config.workspace_config.default_workspace !==
           state.config.workspace_config.default_workspace ||
         JSON.stringify(next.config.detail) !==

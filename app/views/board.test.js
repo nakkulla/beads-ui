@@ -1190,4 +1190,86 @@ describe('views/board', () => {
     expect(mount.textContent).toContain('agent:codex');
     expect(mount.textContent).not.toContain('area:auth');
   });
+
+  test('applies recommended label policy and configured label colors', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-2',
+          title: 'Recommended labels',
+          status: 'open',
+          labels: [
+            'has:spec',
+            'lane:spec_backed',
+            'followup:scope-boundary',
+            'needs:human-decision',
+            'pr',
+            'skill-related'
+          ],
+          metadata: {
+            execution_lane: 'spec_backed',
+            workspace_policy: 'worktree',
+            branch_policy: 'feature',
+            finish_action: 'pr',
+            pr_url: 'https://github.com/nakkulla/beads-ui/pull/2'
+          }
+        }
+      ]
+    });
+    const store = createStore({
+      config: {
+        label_display_policy: {
+          visible_prefixes: ['has:', 'reviewed:', 'followup:', 'needs:'],
+          visible_exact: [],
+          colors: {
+            prefix: {
+              'followup:': { fg: '#b45309' },
+              'needs:': { fg: '#dc2626' }
+            },
+            exact: {}
+          }
+        }
+      }
+    });
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      store,
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const label_badges = Array.from(
+      mount.querySelectorAll('.board-card__labels .label-badge')
+    );
+    const labels = label_badges.map((element) => element.textContent?.trim());
+    const followup_badge = /** @type {HTMLElement | undefined} */ (
+      label_badges.find(
+        (element) => element.textContent === 'followup:scope-boundary'
+      )
+    );
+
+    expect(labels).toEqual([
+      'has:spec',
+      'followup:scope-boundary',
+      'needs:human-decision'
+    ]);
+    expect(mount.textContent).toContain('Spec-backed');
+    expect(mount.textContent).toContain('PR route');
+    expect(mount.textContent).toContain('PR');
+    expect(mount.textContent).not.toContain('lane:spec_backed');
+    expect(mount.textContent).not.toContain('skill-related');
+    expect(followup_badge?.style.getPropertyValue('--label-badge-fg')).toBe(
+      '#b45309'
+    );
+  });
 });

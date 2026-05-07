@@ -141,7 +141,11 @@ describe('main', () => {
       frontend_mode: 'static',
       url: 'http://127.0.0.1:3000',
       config_path: '/tmp/bdui-config.toml',
-      label_display_policy: { visible_prefixes: [], visible_exact: [] },
+      label_display_policy: {
+        visible_prefixes: [],
+        visible_exact: [],
+        colors: { prefix: {}, exact: {} }
+      },
       detail: /** @type {any} */ ({
         workflow_summary: {
           sections: []
