@@ -1,19 +1,51 @@
 export const EXECUTION_LANES = ['quick_edit', 'spec_backed', 'plan'];
-const TOPOLOGIES = {
-  direct: {
+export const WORKSPACE_POLICIES = ['current', 'worktree'];
+export const BRANCH_POLICIES = ['same', 'feature'];
+export const FINISH_ACTIONS = ['direct', 'pr'];
+export const REVIEW_PROFILES = ['light', 'standard', 'deep'];
+export const DEFAULT_REVIEW_PROFILE_LABEL = 'Default (standard)';
+
+export const ROUTE_TUPLES = [
+  {
+    id: 'current_same_direct',
     workspace_policy: 'current',
     branch_policy: 'same',
-    finish_action: 'direct'
+    finish_action: 'direct',
+    label: 'Direct'
   },
-  pr: {
+  {
+    id: 'current_feature_direct',
+    workspace_policy: 'current',
+    branch_policy: 'feature',
+    finish_action: 'direct',
+    label: 'Current direct'
+  },
+  {
+    id: 'current_feature_pr',
+    workspace_policy: 'current',
+    branch_policy: 'feature',
+    finish_action: 'pr',
+    label: 'Current PR'
+  },
+  {
+    id: 'worktree_feature_direct',
     workspace_policy: 'worktree',
     branch_policy: 'feature',
-    finish_action: 'pr'
+    finish_action: 'direct',
+    label: 'Worktree direct'
+  },
+  {
+    id: 'worktree_feature_pr',
+    workspace_policy: 'worktree',
+    branch_policy: 'feature',
+    finish_action: 'pr',
+    label: 'Worktree PR'
   }
-};
+];
+
 /** @type {Record<string, string>} */
 const SECTION_LABELS = {
-  route: 'Route',
+  workflow_settings: 'Workflow settings',
   artifacts: 'Artifacts',
   review_gates: 'Review gates',
   freshness: 'Freshness',
@@ -24,10 +56,10 @@ const SECTION_LABELS = {
 /** @type {Record<string, string>} */
 const FIELD_LABELS = {
   execution_lane: 'Execution lane',
-  topology: 'Topology',
   workspace_policy: 'Workspace',
   branch_policy: 'Branch',
   finish_action: 'Finish',
+  review_profile: 'Review profile',
   spec_id: 'Spec',
   plan: 'Plan',
   handoff: 'Handoff',
@@ -99,21 +131,21 @@ export function safeWorkflowUrl(value) {
 
 /**
  * @param {Record<string, unknown>} metadata
- * @returns {{ kind: 'valid', value: string } | { kind: 'invalid' | 'absent', value: null }}
+ * @returns {{ kind: 'valid', id: string, label: string } | { kind: 'invalid' | 'absent', value: null }}
  */
-export function deriveTopology(metadata) {
+export function deriveRouteTuple(metadata) {
   const workspace_policy = stringValue(metadata.workspace_policy);
   const branch_policy = stringValue(metadata.branch_policy);
   const finish_action = stringValue(metadata.finish_action);
   const has_any = Boolean(workspace_policy || branch_policy || finish_action);
 
-  for (const [name, values] of Object.entries(TOPOLOGIES)) {
+  for (const tuple of ROUTE_TUPLES) {
     if (
-      workspace_policy === values.workspace_policy &&
-      branch_policy === values.branch_policy &&
-      finish_action === values.finish_action
+      workspace_policy === tuple.workspace_policy &&
+      branch_policy === tuple.branch_policy &&
+      finish_action === tuple.finish_action
     ) {
-      return { kind: 'valid', value: name };
+      return { kind: 'valid', id: tuple.id, label: tuple.label };
     }
   }
 
@@ -123,21 +155,75 @@ export function deriveTopology(metadata) {
 }
 
 /**
- * @param {unknown} lane
- * @param {unknown} topology
- * @returns {{ execution_lane: string, topology: string } | null}
+ * @param {Record<string, unknown>} metadata
+ * @returns {{ kind: 'default', value: null, label: string } | { kind: 'valid', value: string, label: string } | { kind: 'invalid', value: string, label: string }}
  */
-export function routeMutationValues(lane, topology) {
-  const lane_value = String(lane);
-  const topology_value = String(topology);
-  if (
-    !EXECUTION_LANES.includes(lane_value) ||
-    !Object.prototype.hasOwnProperty.call(TOPOLOGIES, topology_value)
-  ) {
+export function deriveReviewProfile(metadata) {
+  const review_profile = stringValue(metadata.review_profile);
+  if (!review_profile) {
+    return {
+      kind: 'default',
+      value: null,
+      label: DEFAULT_REVIEW_PROFILE_LABEL
+    };
+  }
+
+  if (REVIEW_PROFILES.includes(review_profile)) {
+    return { kind: 'valid', value: review_profile, label: review_profile };
+  }
+
+  return {
+    kind: 'invalid',
+    value: review_profile,
+    label: 'Invalid review profile'
+  };
+}
+
+/**
+ * @param {unknown} lane
+ * @param {unknown} workspace_policy
+ * @param {unknown} branch_policy
+ * @param {unknown} finish_action
+ * @param {unknown} review_profile
+ * @returns {{ execution_lane: string, workspace_policy: string, branch_policy: string, finish_action: string, review_profile: string | null } | null}
+ */
+export function workflowSettingsMutationValues(
+  lane,
+  workspace_policy,
+  branch_policy,
+  finish_action,
+  review_profile
+) {
+  const lane_value = stringValue(lane);
+  const workspace_value = stringValue(workspace_policy);
+  const branch_value = stringValue(branch_policy);
+  const finish_value = stringValue(finish_action);
+  const profile_value = review_profile === null ? '' : stringValue(review_profile);
+
+  if (!EXECUTION_LANES.includes(lane_value)) {
     return null;
   }
 
-  return { execution_lane: lane_value, topology: topology_value };
+  const route_tuple = deriveRouteTuple({
+    workspace_policy: workspace_value,
+    branch_policy: branch_value,
+    finish_action: finish_value
+  });
+  if (route_tuple.kind !== 'valid') {
+    return null;
+  }
+
+  if (profile_value && !REVIEW_PROFILES.includes(profile_value)) {
+    return null;
+  }
+
+  return {
+    execution_lane: lane_value,
+    workspace_policy: workspace_value,
+    branch_policy: branch_value,
+    finish_action: finish_value,
+    review_profile: profile_value || null
+  };
 }
 
 /**
@@ -173,8 +259,8 @@ function isRecord(value) {
  */
 function buildRowsForSection(section, fields, issue, metadata, labels) {
   switch (section) {
-    case 'route':
-      return buildRouteRows(fields, metadata);
+    case 'workflow_settings':
+      return buildWorkflowSettingsRows(fields, metadata);
     case 'artifacts':
       return buildArtifactRows(fields, issue, metadata);
     case 'review_gates':
@@ -191,36 +277,88 @@ function buildRowsForSection(section, fields, issue, metadata, labels) {
 }
 
 /**
+ * @param {string} field
+ * @param {string} value
+ * @param {string[]} allowed
+ * @param {boolean} [force_invalid]
+ */
+function buildEnumRow(field, value, allowed, force_invalid = false) {
+  if (allowed.includes(value) && !force_invalid) {
+    return makeRow(field, value);
+  }
+  if (value) {
+    return makeRow(field, value, { kind: 'invalid' });
+  }
+  return null;
+}
+
+/**
  * @param {string[]} fields
  * @param {Record<string, unknown>} metadata
  */
-function buildRouteRows(fields, metadata) {
+function buildWorkflowSettingsRows(fields, metadata) {
   /** @type {Array<Record<string, unknown>>} */
   const rows = [];
+  const route_tuple = deriveRouteTuple(metadata);
+  const route_invalid = route_tuple.kind === 'invalid';
   for (const field of fields) {
-    if (field === 'execution_lane') {
-      const lane = stringValue(metadata.execution_lane);
-      if (EXECUTION_LANES.includes(lane)) {
-        rows.push(makeRow(field, lane));
-      } else if (lane) {
-        rows.push(makeRow(field, lane, { kind: 'invalid' }));
-      }
-      continue;
-    }
     if (field === 'topology') {
-      const topology = deriveTopology(metadata);
-      if (topology.kind === 'valid') {
-        rows.push(makeRow(field, topology.value));
-      } else if (topology.kind === 'invalid') {
-        rows.push(
-          makeRow(field, 'Invalid route metadata', { kind: 'invalid' })
-        );
+      continue;
+    }
+    if (field === 'execution_lane') {
+      const row = buildEnumRow(
+        field,
+        stringValue(metadata.execution_lane),
+        EXECUTION_LANES
+      );
+      if (row) {
+        rows.push(row);
       }
       continue;
     }
-    const value = displayValue(metadata[field]);
-    if (value) {
-      rows.push(makeRow(field, value));
+    if (field === 'workspace_policy') {
+      const row = buildEnumRow(
+        field,
+        stringValue(metadata.workspace_policy),
+        WORKSPACE_POLICIES,
+        route_invalid
+      );
+      if (row) {
+        rows.push(row);
+      }
+      continue;
+    }
+    if (field === 'branch_policy') {
+      const row = buildEnumRow(
+        field,
+        stringValue(metadata.branch_policy),
+        BRANCH_POLICIES,
+        route_invalid
+      );
+      if (row) {
+        rows.push(row);
+      }
+      continue;
+    }
+    if (field === 'finish_action') {
+      const row = buildEnumRow(
+        field,
+        stringValue(metadata.finish_action),
+        FINISH_ACTIONS,
+        route_invalid
+      );
+      if (row) {
+        rows.push(row);
+      }
+      continue;
+    }
+    if (field === 'review_profile') {
+      const profile = deriveReviewProfile(metadata);
+      rows.push(
+        makeRow(field, profile.label, {
+          kind: profile.kind === 'invalid' ? 'invalid' : 'value'
+        })
+      );
     }
   }
   return rows;
