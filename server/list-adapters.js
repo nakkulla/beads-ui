@@ -2,6 +2,13 @@ import { runBdJson } from './bd.js';
 import { debug } from './logging.js';
 
 const log = debug('list-adapters');
+const DEPENDENCY_BLOCKED_ARGS = [
+  'ready',
+  '--explain',
+  '--limit',
+  '1000',
+  '--json'
+];
 
 /**
  * Build concrete `bd` CLI args for a subscription type + params.
@@ -144,6 +151,10 @@ export function normalizeIssueList(value) {
  * @returns {Promise<FetchListResultSuccess | FetchListResultFailure>}
  */
 export async function fetchListForSubscription(spec, options = {}) {
+  if (String(spec.type) === 'blocked-issues') {
+    return fetchBlockedIssues(options);
+  }
+
   /** @type {string[]} */
   let args;
   try {
@@ -171,14 +182,7 @@ export async function fetchListForSubscription(spec, options = {}) {
         res?.code,
         res?.stderr || ''
       );
-      return {
-        ok: false,
-        error: {
-          code: 'bd_error',
-          message: String(res?.stderr || 'bd failed'),
-          details: { exit_code: res?.code ?? -1 }
-        }
-      };
+      return bdCommandFailure(res);
     }
     // bd show may return a single object; normalize to an array first
     let raw = Array.isArray(res.stdoutJson)
@@ -246,6 +250,122 @@ export async function fetchListForSubscription(spec, options = {}) {
       }
     };
   }
+}
+
+/**
+ * Fetch Board Blocked-column issues from both stored blocked status and
+ * dependency-aware `bd ready --explain` blockers.
+ *
+ * @param {{ cwd?: string }} [options]
+ * @returns {Promise<FetchListResultSuccess | FetchListResultFailure>}
+ */
+async function fetchBlockedIssues(options = {}) {
+  const stored_args = mapSubscriptionToBdArgs({ type: 'blocked-issues' });
+  try {
+    const stored_res = await runBdJson(stored_args, { cwd: options.cwd });
+    if (!stored_res || stored_res.code !== 0 || !('stdoutJson' in stored_res)) {
+      log(
+        'bd failed for blocked stored issues (args=%o) code=%s stderr=%s',
+        stored_args,
+        stored_res?.code,
+        stored_res?.stderr || ''
+      );
+      return bdCommandFailure(stored_res);
+    }
+
+    const dependency_res = await runBdJson(DEPENDENCY_BLOCKED_ARGS, {
+      cwd: options.cwd
+    });
+    if (
+      !dependency_res ||
+      dependency_res.code !== 0 ||
+      !('stdoutJson' in dependency_res)
+    ) {
+      log(
+        'bd failed for dependency-blocked issues (args=%o) code=%s stderr=%s',
+        DEPENDENCY_BLOCKED_ARGS,
+        dependency_res?.code,
+        dependency_res?.stderr || ''
+      );
+      return bdCommandFailure(dependency_res);
+    }
+
+    const stored_raw = Array.isArray(stored_res.stdoutJson)
+      ? stored_res.stdoutJson
+      : [];
+    const dependency_raw = extractDependencyBlockedIssues(
+      dependency_res.stdoutJson
+    );
+    const items = mergeIssueLists(
+      normalizeIssueList(stored_raw),
+      normalizeIssueList(dependency_raw)
+    );
+    return { ok: true, items };
+  } catch (err) {
+    log(
+      'bd invocation failed for blocked issues (stored args=%o, dependency args=%o): %o',
+      stored_args,
+      DEPENDENCY_BLOCKED_ARGS,
+      err
+    );
+    return {
+      ok: false,
+      error: {
+        code: 'bd_error',
+        message:
+          (err && /** @type {any} */ (err).message) || 'bd invocation failed'
+      }
+    };
+  }
+}
+
+/**
+ * Extract the dependency-blocked array from `bd ready --explain --json`.
+ *
+ * @param {unknown} value
+ * @returns {unknown[]}
+ */
+function extractDependencyBlockedIssues(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return [];
+  }
+  const blocked = /** @type {{ blocked?: unknown }} */ (value).blocked;
+  return Array.isArray(blocked) ? blocked : [];
+}
+
+/**
+ * Merge issue lists by id while preserving first-seen order.
+ *
+ * @param {...Array<{ id: string, created_at: number, updated_at: number, closed_at: number | null } & Record<string, unknown>>} lists
+ * @returns {Array<{ id: string, created_at: number, updated_at: number, closed_at: number | null } & Record<string, unknown>>}
+ */
+function mergeIssueLists(...lists) {
+  /** @type {Map<string, { id: string, created_at: number, updated_at: number, closed_at: number | null } & Record<string, unknown>>} */
+  const by_id = new Map();
+  for (const list of lists) {
+    for (const item of list) {
+      const existing = by_id.get(item.id);
+      by_id.set(item.id, existing ? { ...existing, ...item } : item);
+    }
+  }
+  return Array.from(by_id.values());
+}
+
+/**
+ * Convert a failed bd command result to a fetch failure.
+ *
+ * @param {{ code?: number, stderr?: string } | undefined | null} res
+ * @returns {FetchListResultFailure}
+ */
+function bdCommandFailure(res) {
+  return {
+    ok: false,
+    error: {
+      code: 'bd_error',
+      message: String(res?.stderr || 'bd failed'),
+      details: { exit_code: res?.code ?? -1 }
+    }
+  };
 }
 
 /**

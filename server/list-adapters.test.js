@@ -139,6 +139,50 @@ describe('list adapters for subscription types', () => {
     }
   });
 
+  test('returns stored and dependency-blocked issues for blocked subscription', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson)
+      .mockResolvedValueOnce({
+        code: 0,
+        stdoutJson: [
+          {
+            id: 'S-1',
+            title: 'stored blocked',
+            status: 'blocked',
+            updated_at: '2024-01-01T00:00:00.000Z'
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        stdoutJson: {
+          ready: [],
+          blocked: [
+            {
+              id: 'D-1',
+              title: 'dependency blocked',
+              status: 'open',
+              updated_at: '2024-01-01T00:00:01.000Z',
+              blocked_by: [{ id: 'D-0', status: 'in_progress' }]
+            }
+          ],
+          summary: { total_ready: 0, total_blocked: 1 }
+        }
+      });
+
+    const res = await fetchListForSubscription({ type: 'blocked-issues' });
+
+    expect(runBdJson).toHaveBeenCalledTimes(2);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.items.map((it) => it.id)).toEqual(['S-1', 'D-1']);
+      expect(res.items[1]).toMatchObject({
+        id: 'D-1',
+        status: 'open',
+        blocked_by: [{ id: 'D-0', status: 'in_progress' }]
+      });
+    }
+  });
+
   test('filters tombstoned epics', async () => {
     /** @type {import('vitest').Mock} */ (runBdJson).mockResolvedValue({
       code: 0,
