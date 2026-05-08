@@ -2,6 +2,121 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { createDetailView } from './detail.js';
 
+
+/**
+ * @param {string} id
+ */
+function workflowIssue(id) {
+  return {
+    id,
+    title: 'Workflow settings edit',
+    labels: ['lane:plan'],
+    metadata: {
+      execution_lane: 'plan',
+      workspace_policy: 'worktree',
+      branch_policy: 'feature',
+      finish_action: 'pr'
+    },
+    dependencies: [],
+    dependents: [],
+    comments: []
+  };
+}
+
+/**
+ * @param {string} id
+ * @param {unknown} issue
+ */
+function detailStores(id, issue) {
+  return {
+    /** @param {string} client_id */
+    snapshotFor(client_id) {
+      return client_id === `detail:${id}` ? [issue] : [];
+    },
+    subscribe() {
+      return () => {};
+    }
+  };
+}
+
+function workflowStore() {
+  return {
+    getState() {
+      return {
+        config: {
+          detail: {
+            workflow_summary: {
+              sections: ['workflow_settings'],
+              workflow_settings: {
+                fields: [
+                  'execution_lane',
+                  'workspace_policy',
+                  'branch_policy',
+                  'finish_action',
+                  'review_profile'
+                ],
+                editable_fields: [
+                  'execution_lane',
+                  'workspace_policy',
+                  'branch_policy',
+                  'finish_action',
+                  'review_profile'
+                ]
+              }
+            }
+          }
+        }
+      };
+    },
+    subscribe() {
+      return () => {};
+    }
+  };
+}
+
+/**
+ * @param {HTMLElement} mount
+ * @param {string} test_id
+ * @param {string} value
+ */
+function setSelect(mount, test_id, value) {
+  const select = /** @type {HTMLSelectElement} */ (
+    mount.querySelector(`[data-testid="${test_id}"]`)
+  );
+  select.value = value;
+  select.dispatchEvent(new Event('change'));
+}
+
+/**
+ * @param {HTMLElement} mount
+ * @param {string} test_id
+ */
+function selectValue(mount, test_id) {
+  return /** @type {HTMLSelectElement} */ (
+    mount.querySelector(`[data-testid="${test_id}"]`)
+  ).value;
+}
+
+/**
+ * @param {HTMLElement} mount
+ * @param {string} test_id
+ */
+function selectDisabled(mount, test_id) {
+  return /** @type {HTMLSelectElement} */ (
+    mount.querySelector(`[data-testid="${test_id}"]`)
+  ).disabled;
+}
+
+/**
+ * @param {HTMLElement} mount
+ * @param {string} test_id
+ */
+function buttonDisabled(mount, test_id) {
+  return /** @type {HTMLButtonElement} */ (
+    mount.querySelector(`[data-testid="${test_id}"]`)
+  ).disabled;
+}
+
 describe('views/detail', () => {
   test('renders configured workflow sections and artifact paths', async () => {
     document.body.innerHTML =
@@ -29,8 +144,21 @@ describe('views/detail', () => {
           config: {
             detail: {
               workflow_summary: {
-                sections: ['route', 'artifacts', 'review_gates', 'freshness'],
-                route: { fields: ['execution_lane', 'topology'] },
+                sections: [
+                  'workflow_settings',
+                  'artifacts',
+                  'review_gates',
+                  'freshness'
+                ],
+                workflow_settings: {
+                  fields: [
+                    'execution_lane',
+                    'workspace_policy',
+                    'branch_policy',
+                    'finish_action',
+                    'review_profile'
+                  ]
+                },
                 artifacts: { fields: ['spec_id', 'plan'] },
                 review_gates: { fields: ['status', 'verdict'] },
                 freshness: {
@@ -66,17 +194,21 @@ describe('views/detail', () => {
 
     expect(mount.querySelector('.metadata-paths')).toBeNull();
     expect(mount.querySelector('.workflow-summary')).toBeTruthy();
+    expect(mount.textContent).toContain('Workflow settings');
     expect(mount.textContent).toContain('Execution lane');
     expect(mount.textContent).toContain('spec_backed');
-    expect(mount.textContent).toContain('Topology');
-    expect(mount.textContent).toContain('pr');
+    expect(mount.textContent).toContain('Workspace');
+    expect(mount.textContent).toContain('worktree');
+    expect(mount.textContent).toContain('Review profile');
+    expect(mount.textContent).toContain('Default (standard)');
+    expect(mount.textContent).not.toContain('Topology');
     expect(mount.textContent).toContain('Spec');
     expect(mount.textContent).toContain('docs/superpowers/specs/detail.md');
     expect(mount.textContent).toContain('Spec handoff SHA');
     expect(mount.textContent).not.toContain('Execution base SHA');
   });
 
-  test('renders invalid topology warning', async () => {
+  test('renders invalid workflow settings warning', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
@@ -86,46 +218,15 @@ describe('views/detail', () => {
       metadata: {
         execution_lane: 'plan',
         workspace_policy: 'current',
-        branch_policy: 'feature',
-        finish_action: 'direct'
+        branch_policy: 'same',
+        finish_action: 'pr',
+        review_profile: 'mystery'
       },
       dependencies: [],
       dependents: []
     };
-    const store = {
-      getState() {
-        return {
-          config: {
-            detail: {
-              workflow_summary: {
-                sections: ['route'],
-                route: {
-                  fields: [
-                    'execution_lane',
-                    'topology',
-                    'workspace_policy',
-                    'branch_policy',
-                    'finish_action'
-                  ]
-                }
-              }
-            }
-          }
-        };
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
-    const stores = {
-      /** @param {string} id */
-      snapshotFor(id) {
-        return id === 'detail:UI-2' ? [issue] : [];
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
+    const store = workflowStore();
+    const stores = detailStores('UI-2', issue);
 
     const view = createDetailView(
       mount,
@@ -136,64 +237,17 @@ describe('views/detail', () => {
     );
     await view.load('UI-2');
 
-    expect(mount.textContent).toContain('Invalid route metadata');
+    expect(mount.textContent).toContain('Invalid review profile');
+    expect(mount.querySelectorAll('.workflow-summary__row.is-invalid').length).toBeGreaterThan(0);
   });
 
-  test('edits route metadata with explicit save and cancel', async () => {
+  test('edits workflow settings with explicit save and cancel', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
-    const issue = {
-      id: 'UI-2',
-      title: 'Route edit',
-      labels: ['lane:plan'],
-      metadata: {
-        execution_lane: 'plan',
-        workspace_policy: 'worktree',
-        branch_policy: 'feature',
-        finish_action: 'pr'
-      },
-      dependencies: [],
-      dependents: [],
-      comments: []
-    };
+    const issue = workflowIssue('UI-2');
     /** @type {Array<{type: string, payload: unknown}>} */
     const sends = [];
-    const stores = {
-      /** @param {string} id */
-      snapshotFor(id) {
-        return id === 'detail:UI-2' ? [issue] : [];
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
-    const store = {
-      getState() {
-        return {
-          config: {
-            detail: {
-              workflow_summary: {
-                sections: ['route'],
-                route: {
-                  fields: [
-                    'execution_lane',
-                    'topology',
-                    'workspace_policy',
-                    'branch_policy',
-                    'finish_action'
-                  ],
-                  editable_fields: ['execution_lane', 'topology']
-                }
-              }
-            }
-          }
-        };
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
     const view = createDetailView(
       mount,
       async (type, payload) => {
@@ -211,183 +265,99 @@ describe('views/detail', () => {
         };
       },
       undefined,
-      stores,
-      store
+      detailStores('UI-2', issue),
+      workflowStore()
     );
 
     await view.load('UI-2');
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-edit"]')
+      mount.querySelector('[data-testid="workflow-settings-edit"]')
     )?.click();
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-cancel"]')
+      mount.querySelector('[data-testid="workflow-settings-cancel"]')
     )?.click();
-    expect(mount.querySelector('[data-testid="route-lane"]')).toBeNull();
+    expect(mount.querySelector('[data-testid="workflow-settings-lane"]')).toBeNull();
 
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-edit"]')
+      mount.querySelector('[data-testid="workflow-settings-edit"]')
     )?.click();
-    const lane = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('[data-testid="route-lane"]')
-    );
-    const topology = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('[data-testid="route-topology"]')
-    );
-    lane.value = 'quick_edit';
-    lane.dispatchEvent(new Event('change'));
-    topology.value = 'direct';
-    topology.dispatchEvent(new Event('change'));
+    setSelect(mount, 'workflow-settings-lane', 'quick_edit');
+    setSelect(mount, 'workflow-settings-workspace', 'current');
+    setSelect(mount, 'workflow-settings-branch', 'same');
+    setSelect(mount, 'workflow-settings-finish', 'direct');
+    setSelect(mount, 'workflow-settings-review-profile', '');
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-save"]')
+      mount.querySelector('[data-testid="workflow-settings-save"]')
     )?.click();
     await Promise.resolve();
 
     expect(sends).toEqual([
       {
-        type: 'update-route-metadata',
+        type: 'update-workflow-settings',
         payload: {
           id: 'UI-2',
-          values: { execution_lane: 'quick_edit', topology: 'direct' }
+          values: {
+            execution_lane: 'quick_edit',
+            workspace_policy: 'current',
+            branch_policy: 'same',
+            finish_action: 'direct',
+            review_profile: null
+          }
         }
       }
     ]);
     expect(mount.textContent).toContain('quick_edit');
     expect(mount.textContent).toContain('direct');
-    expect(mount.querySelector('[data-testid="route-lane"]')).toBeNull();
+    expect(mount.querySelector('[data-testid="workflow-settings-lane"]')).toBeNull();
     expect(
       /** @type {HTMLButtonElement} */ (
-        mount.querySelector('[data-testid="route-edit"]')
+        mount.querySelector('[data-testid="workflow-settings-edit"]')
       ).disabled
     ).toBe(false);
   });
 
-  test('keeps route edit draft after save failure', async () => {
+  test('keeps workflow settings draft after save failure', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
-    const issue = {
-      id: 'UI-route-failure',
-      title: 'Route failure',
-      labels: ['lane:plan'],
-      metadata: {
-        execution_lane: 'plan',
-        workspace_policy: 'worktree',
-        branch_policy: 'feature',
-        finish_action: 'pr'
-      },
-      dependencies: [],
-      dependents: [],
-      comments: []
-    };
-    const store = {
-      getState() {
-        return {
-          config: {
-            detail: {
-              workflow_summary: {
-                sections: ['route'],
-                route: {
-                  fields: ['execution_lane', 'topology'],
-                  editable_fields: ['execution_lane', 'topology']
-                }
-              }
-            }
-          }
-        };
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
+    const issue = workflowIssue('UI-route-failure');
     const view = createDetailView(
       mount,
       async () => {
         throw new Error('network failed');
       },
       undefined,
-      {
-        snapshotFor(id) {
-          return id === 'detail:UI-route-failure' ? [issue] : [];
-        },
-        subscribe() {
-          return () => {};
-        }
-      },
-      store
+      detailStores('UI-route-failure', issue),
+      workflowStore()
     );
 
     await view.load('UI-route-failure');
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-edit"]')
+      mount.querySelector('[data-testid="workflow-settings-edit"]')
     )?.click();
-    const lane = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('[data-testid="route-lane"]')
-    );
-    const topology = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('[data-testid="route-topology"]')
-    );
-    lane.value = 'quick_edit';
-    lane.dispatchEvent(new Event('change'));
-    topology.value = 'direct';
-    topology.dispatchEvent(new Event('change'));
+    setSelect(mount, 'workflow-settings-lane', 'quick_edit');
+    setSelect(mount, 'workflow-settings-workspace', 'current');
+    setSelect(mount, 'workflow-settings-branch', 'same');
+    setSelect(mount, 'workflow-settings-finish', 'direct');
+    setSelect(mount, 'workflow-settings-review-profile', 'deep');
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-save"]')
+      mount.querySelector('[data-testid="workflow-settings-save"]')
     )?.click();
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(
-      /** @type {HTMLSelectElement} */ (
-        mount.querySelector('[data-testid="route-lane"]')
-      ).value
-    ).toBe('quick_edit');
-    expect(
-      /** @type {HTMLSelectElement} */ (
-        mount.querySelector('[data-testid="route-topology"]')
-      ).value
-    ).toBe('direct');
+    expect(selectValue(mount, 'workflow-settings-lane')).toBe('quick_edit');
+    expect(selectValue(mount, 'workflow-settings-workspace')).toBe('current');
+    expect(selectValue(mount, 'workflow-settings-review-profile')).toBe('deep');
   });
 
-  test('disables route controls while save is pending', async () => {
+  test('disables workflow settings controls while save is pending', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
-    const issue = {
-      id: 'UI-4',
-      title: 'Pending route edit',
-      labels: ['lane:plan'],
-      metadata: {
-        execution_lane: 'plan',
-        workspace_policy: 'worktree',
-        branch_policy: 'feature',
-        finish_action: 'pr'
-      },
-      dependencies: [],
-      dependents: [],
-      comments: []
-    };
+    const issue = workflowIssue('UI-4');
     /** @type {(value: unknown) => void} */
     let resolve_save = () => {};
-    const store = {
-      getState() {
-        return {
-          config: {
-            detail: {
-              workflow_summary: {
-                sections: ['route'],
-                route: {
-                  fields: ['execution_lane', 'topology'],
-                  editable_fields: ['execution_lane', 'topology']
-                }
-              }
-            }
-          }
-        };
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
     const view = createDetailView(
       mount,
       async () =>
@@ -395,116 +365,69 @@ describe('views/detail', () => {
           resolve_save = resolve;
         }),
       undefined,
-      {
-        snapshotFor(id) {
-          return id === 'detail:UI-4' ? [issue] : [];
-        },
-        subscribe() {
-          return () => {};
-        }
-      },
-      store
+      detailStores('UI-4', issue),
+      workflowStore()
     );
 
     await view.load('UI-4');
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-edit"]')
+      mount.querySelector('[data-testid="workflow-settings-edit"]')
     )?.click();
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-save"]')
+      mount.querySelector('[data-testid="workflow-settings-save"]')
     )?.click();
     await Promise.resolve();
 
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('[data-testid="route-save"]')
-      ).disabled
-    ).toBe(true);
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('[data-testid="route-cancel"]')
-      ).disabled
-    ).toBe(true);
+    expect(buttonDisabled(mount, 'workflow-settings-save')).toBe(true);
+    expect(buttonDisabled(mount, 'workflow-settings-cancel')).toBe(true);
+    expect(selectDisabled(mount, 'workflow-settings-lane')).toBe(true);
+    expect(selectDisabled(mount, 'workflow-settings-review-profile')).toBe(true);
 
     resolve_save(issue);
     await Promise.resolve();
   });
 
-  test('requires topology selection before saving invalid route', async () => {
+  test('disables save for invalid route tuple and invalid review profile until corrected', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
     const issue = {
-      id: 'UI-3',
-      title: 'Invalid route edit',
+      ...workflowIssue('UI-3'),
+      labels: ['reviewed:spec'],
       metadata: {
         execution_lane: 'plan',
         workspace_policy: 'current',
-        branch_policy: 'feature',
-        finish_action: 'direct'
-      },
-      dependencies: [],
-      dependents: [],
-      comments: []
-    };
-    const stores = {
-      /** @param {string} id */
-      snapshotFor(id) {
-        return id === 'detail:UI-3' ? [issue] : [];
-      },
-      subscribe() {
-        return () => {};
-      }
-    };
-    const store = {
-      getState() {
-        return {
-          config: {
-            detail: {
-              workflow_summary: {
-                sections: ['route'],
-                route: {
-                  fields: ['execution_lane', 'topology'],
-                  editable_fields: ['execution_lane', 'topology']
-                }
-              }
-            }
-          }
-        };
-      },
-      subscribe() {
-        return () => {};
+        branch_policy: 'same',
+        finish_action: 'pr',
+        review_profile: 'unknown'
       }
     };
     const view = createDetailView(
       mount,
       async () => ({}),
       undefined,
-      stores,
-      store
+      detailStores('UI-3', issue),
+      workflowStore()
     );
 
     await view.load('UI-3');
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-edit"]')
+      mount.querySelector('[data-testid="workflow-settings-edit"]')
     )?.click();
 
-    const save_button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('[data-testid="route-save"]')
-    );
-    const topology = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('[data-testid="route-topology"]')
-    );
-    expect(topology.value).toBe('');
-    expect(save_button.disabled).toBe(true);
+    expect(selectValue(mount, 'workflow-settings-review-profile')).toBe('unknown');
+    expect(mount.textContent).toContain('Invalid route combination');
+    expect(mount.textContent).toContain('Invalid review profile');
+    expect(buttonDisabled(mount, 'workflow-settings-save')).toBe(true);
 
-    topology.value = 'pr';
-    topology.dispatchEvent(new Event('change'));
+    setSelect(mount, 'workflow-settings-branch', 'feature');
+    setSelect(mount, 'workflow-settings-review-profile', '');
 
-    const enabled_save_button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('[data-testid="route-save"]')
+    expect(mount.textContent).toContain(
+      'Review profile affects future formal review gates'
     );
-    expect(enabled_save_button.disabled).toBe(false);
+    expect(mount.textContent).toContain('existing review evidence');
+    expect(buttonDisabled(mount, 'workflow-settings-save')).toBe(false);
   });
 
   test('renders fields, markdown description, and dependency links', async () => {
@@ -1096,8 +1019,16 @@ describe('views/detail', () => {
           config: {
             detail: {
               workflow_summary: {
-                sections: ['route', 'artifacts', 'delivery'],
-                route: { fields: ['execution_lane', 'topology'] },
+                sections: ['workflow_settings', 'artifacts', 'delivery'],
+                workflow_settings: {
+                  fields: [
+                    'execution_lane',
+                    'workspace_policy',
+                    'branch_policy',
+                    'finish_action',
+                    'review_profile'
+                  ]
+                },
                 artifacts: { fields: ['spec_id', 'plan'] },
                 delivery: { fields: ['pr_url'] }
               }
@@ -1121,10 +1052,10 @@ describe('views/detail', () => {
 
     const workflow_card = mount.querySelector('.workflow-summary');
     expect(workflow_card?.textContent).toContain('Workflow summary');
-    expect(workflow_card?.textContent).toContain('Route');
+    expect(workflow_card?.textContent).toContain('Workflow settings');
     expect(workflow_card?.textContent).toContain('Execution lane');
     expect(workflow_card?.textContent).toContain('plan');
-    expect(workflow_card?.textContent).toContain('Topology');
+    expect(workflow_card?.textContent).toContain('Finish');
     expect(workflow_card?.textContent).toContain('pr');
     expect(workflow_card?.textContent).toContain('Artifacts');
     expect(workflow_card?.textContent).toContain('Spec');
@@ -1144,7 +1075,11 @@ describe('views/detail', () => {
     const section_titles = Array.from(
       mount.querySelectorAll('.workflow-summary__section-title')
     ).map((el) => el.textContent?.trim());
-    expect(section_titles).toEqual(['Route', 'Artifacts', 'Delivery']);
+    expect(section_titles).toEqual([
+      'Workflow settings',
+      'Artifacts',
+      'Delivery'
+    ]);
     expect(mount.textContent || '').not.toContain('Metadata');
   });
 
@@ -1181,8 +1116,15 @@ describe('views/detail', () => {
           config: {
             detail: {
               workflow_summary: {
-                sections: ['route', 'delivery'],
-                route: { fields: ['execution_lane', 'topology'] },
+                sections: ['workflow_settings', 'delivery'],
+                workflow_settings: {
+                  fields: [
+                    'execution_lane',
+                    'workspace_policy',
+                    'branch_policy',
+                    'finish_action'
+                  ]
+                },
                 delivery: { fields: ['pr_url'] }
               }
             }
@@ -1206,7 +1148,7 @@ describe('views/detail', () => {
     const workflow_card = mount.querySelector('.workflow-summary');
     expect(workflow_card?.textContent).toContain('Execution lane');
     expect(workflow_card?.textContent).toContain('quick_edit');
-    expect(workflow_card?.textContent).toContain('Topology');
+    expect(workflow_card?.textContent).toContain('Finish');
     expect(workflow_card?.textContent).toContain('direct');
     expect(workflow_card?.textContent).not.toContain('javascript:alert(1)');
     expect(workflow_card?.querySelector('a')).toBeNull();

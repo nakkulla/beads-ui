@@ -69,7 +69,7 @@ describe('views/detail toast', () => {
     );
   });
 
-  test('route save failure shows error toast and preserves issue state', async () => {
+  test('workflow settings save failure shows error toast and preserves issue state', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
@@ -101,10 +101,22 @@ describe('views/detail toast', () => {
           config: {
             detail: {
               workflow_summary: {
-                sections: ['route'],
-                route: {
-                  fields: ['execution_lane', 'topology'],
-                  editable_fields: ['execution_lane', 'topology']
+                sections: ['workflow_settings'],
+                workflow_settings: {
+                  fields: [
+                    'execution_lane',
+                    'workspace_policy',
+                    'branch_policy',
+                    'finish_action',
+                    'review_profile'
+                  ],
+                  editable_fields: [
+                    'execution_lane',
+                    'workspace_policy',
+                    'branch_policy',
+                    'finish_action',
+                    'review_profile'
+                  ]
                 }
               }
             }
@@ -116,7 +128,7 @@ describe('views/detail toast', () => {
       }
     };
     const send = mockSend(async (type) => {
-      if (type === 'update-route-metadata') {
+      if (type === 'update-workflow-settings') {
         throw new Error('boom');
       }
       throw new Error('Unexpected');
@@ -125,37 +137,47 @@ describe('views/detail toast', () => {
 
     await view.load('UI-112');
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-edit"]')
+      mount.querySelector('[data-testid="workflow-settings-edit"]')
     )?.click();
     const lane = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('[data-testid="route-lane"]')
+      mount.querySelector('[data-testid="workflow-settings-lane"]')
     );
     const topology = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('[data-testid="route-topology"]')
+      mount.querySelector('[data-testid="workflow-settings-finish"]')
     );
     lane.value = 'quick_edit';
     lane.dispatchEvent(new Event('change'));
+    const workspace = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-testid="workflow-settings-workspace"]')
+    );
+    const branch = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-testid="workflow-settings-branch"]')
+    );
+    workspace.value = 'current';
+    workspace.dispatchEvent(new Event('change'));
+    branch.value = 'same';
+    branch.dispatchEvent(new Event('change'));
     topology.value = 'direct';
     topology.dispatchEvent(new Event('change'));
     /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('[data-testid="route-save"]')
+      mount.querySelector('[data-testid="workflow-settings-save"]')
     )?.click();
     await Promise.resolve();
 
     expect(document.body.querySelector('.toast')?.textContent).toContain(
-      'Failed to save route metadata'
+      'Failed to save workflow settings'
     );
     expect(
       /** @type {HTMLSelectElement} */ (
-        mount.querySelector('[data-testid="route-lane"]')
+        mount.querySelector('[data-testid="workflow-settings-lane"]')
       ).value
     ).toBe('quick_edit');
     expect(
       /** @type {HTMLSelectElement} */ (
-        mount.querySelector('[data-testid="route-topology"]')
+        mount.querySelector('[data-testid="workflow-settings-finish"]')
       ).value
     ).toBe('direct');
-    expect(mount.querySelector('[data-testid="route-edit"]')).toBeNull();
+    expect(mount.querySelector('[data-testid="workflow-settings-edit"]')).toBeNull();
   });
 
   test('applies fixed positioning to toast', async () => {
