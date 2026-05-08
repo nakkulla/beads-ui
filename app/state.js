@@ -88,7 +88,7 @@ const DEFAULT_CONFIG = Object.freeze({
   detail: {
     workflow_summary: {
       sections: [
-        'route',
+        'workflow_settings',
         'artifacts',
         'review_gates',
         'freshness',
@@ -96,15 +96,21 @@ const DEFAULT_CONFIG = Object.freeze({
         'followup',
         'human'
       ],
-      route: {
+      workflow_settings: {
         fields: [
           'execution_lane',
-          'topology',
           'workspace_policy',
           'branch_policy',
-          'finish_action'
+          'finish_action',
+          'review_profile'
         ],
-        editable_fields: ['execution_lane', 'topology']
+        editable_fields: [
+          'execution_lane',
+          'workspace_policy',
+          'branch_policy',
+          'finish_action',
+          'review_profile'
+        ]
       },
       artifacts: { fields: ['spec_id', 'plan', 'handoff'] },
       review_gates: {

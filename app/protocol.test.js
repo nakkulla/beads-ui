@@ -65,8 +65,8 @@ describe('server/protocol', () => {
     expect(res).toBe(true);
   });
 
-  test('recognizes update-route-metadata message type', () => {
-    const res = isMessageType('update-route-metadata');
+  test('recognizes update-workflow-settings message type', () => {
+    const res = isMessageType('update-workflow-settings');
 
     expect(res).toBe(true);
   });

@@ -147,10 +147,16 @@ describe('createApp live frontend mode', () => {
         exact: {}
       }
     });
-    expect(config_payload.detail.workflow_summary.sections).toContain('route');
-    expect(config_payload.detail.workflow_summary.route.fields).toContain(
-      'topology'
+    expect(config_payload.detail.workflow_summary.sections).toContain(
+      'workflow_settings'
     );
+    expect(config_payload.detail.workflow_summary.workflow_settings.fields).toEqual([
+      'execution_lane',
+      'workspace_policy',
+      'branch_policy',
+      'finish_action',
+      'review_profile'
+    ]);
     expect(config_payload.workspace_config).toEqual({
       default_workspace: null
     });
