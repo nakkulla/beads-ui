@@ -181,37 +181,6 @@ export function deriveReviewProfile(metadata) {
 
 
 /**
- * @deprecated Use deriveRouteTuple.
- * @param {Record<string, unknown>} metadata
- * @returns {{ kind: 'valid', value: string } | { kind: 'invalid' | 'absent', value: null }}
- */
-export function deriveTopology(metadata) {
-  const tuple = deriveRouteTuple(metadata);
-  if (tuple.kind === 'valid') {
-    return { kind: 'valid', value: tuple.id };
-  }
-  return tuple;
-}
-
-/**
- * @deprecated Use workflowSettingsMutationValues.
- * @param {unknown} lane
- * @param {unknown} topology
- * @returns {{ execution_lane: string, topology: string } | null}
- */
-export function routeMutationValues(lane, topology) {
-  const lane_value = stringValue(lane);
-  const topology_value = stringValue(topology);
-  if (!EXECUTION_LANES.includes(lane_value)) {
-    return null;
-  }
-  if (topology_value !== 'direct' && topology_value !== 'pr') {
-    return null;
-  }
-  return { execution_lane: lane_value, topology: topology_value };
-}
-
-/**
  * @param {unknown} lane
  * @param {unknown} workspace_policy
  * @param {unknown} branch_policy

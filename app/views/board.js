@@ -11,7 +11,7 @@ import {
 } from '../utils/relative-time.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
-import { deriveTopology, safeWorkflowUrl } from '../utils/workflow-fields.js';
+import { deriveRouteTuple, safeWorkflowUrl } from '../utils/workflow-fields.js';
 
 /**
  * @typedef {{
@@ -40,12 +40,6 @@ const LANE_CHIP_LABELS = {
   plan: 'Plan',
   quick_edit: 'Quick edit',
   spec_backed: 'Spec-backed'
-};
-
-/** @type {Record<string, string>} */
-const TOPOLOGY_CHIP_LABELS = {
-  direct: 'Direct',
-  pr: 'PR route'
 };
 
 /**
@@ -183,12 +177,9 @@ export function createBoardView(
       chips.push({ kind: 'lane', text: lane_label });
     }
 
-    const topology = deriveTopology(metadata);
-    if (topology.kind === 'valid') {
-      const topology_label = TOPOLOGY_CHIP_LABELS[topology.value];
-      if (topology_label) {
-        chips.push({ kind: 'route', text: topology_label });
-      }
+    const route_tuple = deriveRouteTuple(metadata);
+    if (route_tuple.kind === 'valid') {
+      chips.push({ kind: 'route', text: route_tuple.label });
     }
 
     if (safeWorkflowUrl(metadata.pr_url)) {
