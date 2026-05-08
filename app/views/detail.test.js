@@ -242,6 +242,36 @@ describe('views/detail', () => {
     ).toBeGreaterThan(0);
   });
 
+  test('renders review profile helper text inside summary value', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issue = workflowIssue('UI-2');
+    const stores = detailStores('UI-2', issue);
+
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      stores,
+      workflowStore()
+    );
+    await view.load('UI-2');
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="workflow-settings-edit"]')
+    )?.click();
+
+    const helper = Array.from(
+      mount.querySelectorAll('.workflow-summary__value')
+    ).find((node) =>
+      node.textContent?.includes(
+        'Review profile affects future formal review gates'
+      )
+    );
+
+    expect(helper).toBeTruthy();
+  });
+
   test('edits workflow settings with explicit save and cancel', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';

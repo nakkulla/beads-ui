@@ -270,8 +270,11 @@ Please report this to https://github.com/markedjs/marked.`,t){let s="<p>An error
               Invalid review profile
             </div>`:null}
         <div class="workflow-summary__row">
-          Review profile affects future formal review gates and does not change
-          existing review evidence.
+          <div class="workflow-summary__label">Note</div>
+          <div class="workflow-summary__value">
+            Review profile affects future formal review gates and does not
+            change existing review evidence.
+          </div>
         </div>
       </div>
       <div class="workflow-summary__actions">
