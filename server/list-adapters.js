@@ -20,7 +20,15 @@ export function mapSubscriptionToBdArgs(spec) {
       return ['epic', 'status', '--json'];
     }
     case 'blocked-issues': {
-      return ['blocked', '--json'];
+      return [
+        'list',
+        '--json',
+        '--tree=false',
+        '--status',
+        'blocked',
+        '--limit',
+        '1000'
+      ];
     }
     case 'ready-issues': {
       return ['ready', '--limit', '1000', '--json'];
@@ -150,6 +158,12 @@ export async function fetchListForSubscription(spec, options = {}) {
   try {
     const res = await runBdJson(args, { cwd: options.cwd });
     if (!res || res.code !== 0 || !('stdoutJson' in res)) {
+      if (
+        String(spec.type) === 'resolved-issues' &&
+        isUnsupportedResolvedStatus(res?.stderr || '')
+      ) {
+        return { ok: true, items: [] };
+      }
       log(
         'bd failed for %o (args=%o) code=%s stderr=%s',
         spec,
@@ -244,6 +258,16 @@ function badRequest(message) {
   // @ts-expect-error add code
   e.code = 'bad_request';
   return e;
+}
+
+/**
+ * Return true when bd rejects the optional `resolved` custom status because a
+ * repository has not configured it yet.
+ *
+ * @param {string} stderr
+ */
+function isUnsupportedResolvedStatus(stderr) {
+  return stderr.includes('invalid status') && stderr.includes('resolved');
 }
 
 /**

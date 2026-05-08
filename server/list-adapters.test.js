@@ -24,8 +24,15 @@ describe('list adapters for subscription types', () => {
 
   test('mapSubscriptionToBdArgs returns args for blocked-issues', () => {
     const args = mapSubscriptionToBdArgs({ type: 'blocked-issues' });
-    // We choose dedicated subcommand mapping for blocked
-    expect(args).toEqual(['blocked', '--json']);
+    expect(args).toEqual([
+      'list',
+      '--json',
+      '--tree=false',
+      '--status',
+      'blocked',
+      '--limit',
+      '1000'
+    ]);
   });
 
   test('mapSubscriptionToBdArgs returns args for ready-issues', () => {
@@ -189,6 +196,21 @@ describe('list adapters for subscription types', () => {
       expect(res.error.code).toBe('bd_error');
       expect(res.error.message).toContain('boom');
       expect(res.error.details && res.error.details.exit_code).toBe(2);
+    }
+  });
+
+  test('fetchListForSubscription treats unsupported resolved status as empty', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockResolvedValue({
+      code: 1,
+      stderr:
+        'invalid status "resolved" (valid: open, in_progress, blocked, deferred, closed)'
+    });
+
+    const res = await fetchListForSubscription({ type: 'resolved-issues' });
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.items).toEqual([]);
     }
   });
 
