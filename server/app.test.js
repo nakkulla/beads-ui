@@ -119,7 +119,9 @@ describe('server app wiring (no listen)', () => {
         pr: { fg: '#7c3aed' }
       }
     });
-    expect(body.detail.workflow_summary.sections).toEqual(['workflow_settings']);
+    expect(body.detail.workflow_summary.sections).toEqual([
+      'workflow_settings'
+    ]);
   });
 
   test('uses workflow summary defaults when detail config is absent', async () => {

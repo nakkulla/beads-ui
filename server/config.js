@@ -195,7 +195,9 @@ function normalizeWorkflowSummaryConfig(parsed) {
   const raw = parsed?.detail?.workflow_summary;
   const raw_sections = Array.isArray(raw?.sections) ? raw.sections : undefined;
   const requested_sections = Array.isArray(raw_sections)
-    ? raw_sections.map((section) => (section === 'route' ? 'workflow_settings' : section))
+    ? raw_sections.map((section) =>
+        section === 'route' ? 'workflow_settings' : section
+      )
     : undefined;
   const sections = normalizeStringAllowlist(
     requested_sections,
@@ -214,7 +216,8 @@ function normalizeWorkflowSummaryConfig(parsed) {
       EDITABLE_WORKFLOW_FIELDS[
         /** @type {keyof typeof EDITABLE_WORKFLOW_FIELDS} */ (section)
       ] || [];
-    const legacy_section_raw = section === 'workflow_settings' ? raw?.route : null;
+    const legacy_section_raw =
+      section === 'workflow_settings' ? raw?.route : null;
     const section_raw = raw?.[section] || legacy_section_raw;
     const legacy_section = Boolean(!raw?.[section] && legacy_section_raw);
     let fields = normalizeStringAllowlist(

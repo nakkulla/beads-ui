@@ -177,7 +177,9 @@ describe('views/detail toast', () => {
         mount.querySelector('[data-testid="workflow-settings-finish"]')
       ).value
     ).toBe('direct');
-    expect(mount.querySelector('[data-testid="workflow-settings-edit"]')).toBeNull();
+    expect(
+      mount.querySelector('[data-testid="workflow-settings-edit"]')
+    ).toBeNull();
   });
 
   test('applies fixed positioning to toast', async () => {

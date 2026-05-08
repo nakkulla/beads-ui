@@ -256,9 +256,9 @@ editable_fields = ["execution_lane", "topology"]
       'finish_action',
       'review_profile'
     ]);
-    expect(config.detail.workflow_summary.workflow_settings.fields).not.toContain(
-      'topology'
-    );
+    expect(
+      config.detail.workflow_summary.workflow_settings.fields
+    ).not.toContain('topology');
   });
 
   test('keeps backward compatibility for prefix-only configs', () => {

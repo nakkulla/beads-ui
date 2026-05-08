@@ -179,7 +179,6 @@ export function deriveReviewProfile(metadata) {
   };
 }
 
-
 /**
  * @param {unknown} lane
  * @param {unknown} workspace_policy
@@ -199,7 +198,8 @@ export function workflowSettingsMutationValues(
   const workspace_value = stringValue(workspace_policy);
   const branch_value = stringValue(branch_policy);
   const finish_value = stringValue(finish_action);
-  const profile_value = review_profile === null ? '' : stringValue(review_profile);
+  const profile_value =
+    review_profile === null ? '' : stringValue(review_profile);
 
   if (!EXECUTION_LANES.includes(lane_value)) {
     return null;

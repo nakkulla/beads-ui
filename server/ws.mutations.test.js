@@ -261,7 +261,11 @@ describe('ws mutation handlers', () => {
       ['worktree', 'feature', 'pr']
     ];
 
-    for (const [workspace_policy, branch_policy, finish_action] of valid_tuples) {
+    for (const [
+      workspace_policy,
+      branch_policy,
+      finish_action
+    ] of valid_tuples) {
       /** @type {import('vitest').Mock} */ (runBd).mockReset();
       /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
       const mRun = /** @type {import('vitest').Mock} */ (runBd);
@@ -460,7 +464,10 @@ describe('ws mutation handlers', () => {
         'lane:quick_edit'
       ])
     );
-    expect(mRun.mock.calls[0][0].some((arg) => String(arg).includes('review_profile:'))).toBe(false);
+    const update_args = /** @type {string[]} */ (mRun.mock.calls[0][0]);
+    expect(
+      update_args.some((arg) => String(arg).includes('review_profile:'))
+    ).toBe(false);
   });
 
   test('update-assignee validates and returns updated issue', async () => {

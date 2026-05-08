@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { createDetailView } from './detail.js';
 
-
 /**
  * @param {string} id
  */
@@ -238,7 +237,9 @@ describe('views/detail', () => {
     await view.load('UI-2');
 
     expect(mount.textContent).toContain('Invalid review profile');
-    expect(mount.querySelectorAll('.workflow-summary__row.is-invalid').length).toBeGreaterThan(0);
+    expect(
+      mount.querySelectorAll('.workflow-summary__row.is-invalid').length
+    ).toBeGreaterThan(0);
   });
 
   test('edits workflow settings with explicit save and cancel', async () => {
@@ -276,7 +277,9 @@ describe('views/detail', () => {
     /** @type {HTMLButtonElement|null} */ (
       mount.querySelector('[data-testid="workflow-settings-cancel"]')
     )?.click();
-    expect(mount.querySelector('[data-testid="workflow-settings-lane"]')).toBeNull();
+    expect(
+      mount.querySelector('[data-testid="workflow-settings-lane"]')
+    ).toBeNull();
 
     /** @type {HTMLButtonElement|null} */ (
       mount.querySelector('[data-testid="workflow-settings-edit"]')
@@ -308,7 +311,9 @@ describe('views/detail', () => {
     ]);
     expect(mount.textContent).toContain('quick_edit');
     expect(mount.textContent).toContain('direct');
-    expect(mount.querySelector('[data-testid="workflow-settings-lane"]')).toBeNull();
+    expect(
+      mount.querySelector('[data-testid="workflow-settings-lane"]')
+    ).toBeNull();
     expect(
       /** @type {HTMLButtonElement} */ (
         mount.querySelector('[data-testid="workflow-settings-edit"]')
@@ -381,7 +386,9 @@ describe('views/detail', () => {
     expect(buttonDisabled(mount, 'workflow-settings-save')).toBe(true);
     expect(buttonDisabled(mount, 'workflow-settings-cancel')).toBe(true);
     expect(selectDisabled(mount, 'workflow-settings-lane')).toBe(true);
-    expect(selectDisabled(mount, 'workflow-settings-review-profile')).toBe(true);
+    expect(selectDisabled(mount, 'workflow-settings-review-profile')).toBe(
+      true
+    );
 
     resolve_save(issue);
     await Promise.resolve();
@@ -415,7 +422,9 @@ describe('views/detail', () => {
       mount.querySelector('[data-testid="workflow-settings-edit"]')
     )?.click();
 
-    expect(selectValue(mount, 'workflow-settings-review-profile')).toBe('unknown');
+    expect(selectValue(mount, 'workflow-settings-review-profile')).toBe(
+      'unknown'
+    );
     expect(mount.textContent).toContain('Invalid route combination');
     expect(mount.textContent).toContain('Invalid review profile');
     expect(buttonDisabled(mount, 'workflow-settings-save')).toBe(true);

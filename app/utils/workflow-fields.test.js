@@ -41,7 +41,11 @@ describe('workflow fields', () => {
       ['worktree', 'same', 'pr']
     ];
 
-    for (const [workspace_policy, branch_policy, finish_action] of invalid_tuples) {
+    for (const [
+      workspace_policy,
+      branch_policy,
+      finish_action
+    ] of invalid_tuples) {
       expect(
         deriveRouteTuple({ workspace_policy, branch_policy, finish_action })
       ).toEqual({ kind: 'invalid', value: null });
@@ -150,13 +154,7 @@ describe('workflow fields', () => {
 
   test('builds workflow settings mutation values', () => {
     expect(
-      workflowSettingsMutationValues(
-        'plan',
-        'worktree',
-        'feature',
-        'pr',
-        ''
-      )
+      workflowSettingsMutationValues('plan', 'worktree', 'feature', 'pr', '')
     ).toEqual({
       execution_lane: 'plan',
       workspace_policy: 'worktree',
@@ -166,13 +164,7 @@ describe('workflow fields', () => {
     });
 
     expect(
-      workflowSettingsMutationValues(
-        'plan',
-        'current',
-        'same',
-        'pr',
-        'deep'
-      )
+      workflowSettingsMutationValues('plan', 'current', 'same', 'pr', 'deep')
     ).toBeNull();
   });
 

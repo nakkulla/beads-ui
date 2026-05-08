@@ -150,7 +150,9 @@ describe('createApp live frontend mode', () => {
     expect(config_payload.detail.workflow_summary.sections).toContain(
       'workflow_settings'
     );
-    expect(config_payload.detail.workflow_summary.workflow_settings.fields).toEqual([
+    expect(
+      config_payload.detail.workflow_summary.workflow_settings.fields
+    ).toEqual([
       'execution_lane',
       'workspace_policy',
       'branch_policy',

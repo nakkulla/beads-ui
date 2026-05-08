@@ -74,7 +74,7 @@ function formatCommentDate(dateStr) {
  * @property {number} [priority]
  * @property {string[]} [labels]
  * @property {string} [spec_id]
- * @property {{ plan?: string | null, handoff?: string | null, run_started_at?: string | null, run_finished_at?: string | null, pr_url?: string | null, pr_number?: string | number | null, execution_lane?: string | null, skill_workflow?: string | null }} [metadata]
+ * @property {{ plan?: string | null, handoff?: string | null, run_started_at?: string | null, run_finished_at?: string | null, pr_url?: string | null, pr_number?: string | number | null, execution_lane?: string | null, workspace_policy?: string | null, branch_policy?: string | null, finish_action?: string | null, review_profile?: string | null, skill_workflow?: string | null }} [metadata]
  * @property {Dependency[]} [dependencies]
  * @property {Dependency[]} [dependents]
  * @property {Comment[]} [comments]
@@ -946,7 +946,9 @@ export function createDetailView(
     }
     const metadata = current.metadata || {};
     workflow_draft_lane =
-      typeof metadata.execution_lane === 'string' ? metadata.execution_lane : '';
+      typeof metadata.execution_lane === 'string'
+        ? metadata.execution_lane
+        : '';
     workflow_draft_workspace =
       typeof metadata.workspace_policy === 'string'
         ? metadata.workspace_policy
@@ -956,7 +958,9 @@ export function createDetailView(
     workflow_draft_finish =
       typeof metadata.finish_action === 'string' ? metadata.finish_action : '';
     workflow_draft_review_profile =
-      typeof metadata.review_profile === 'string' ? metadata.review_profile : '';
+      typeof metadata.review_profile === 'string'
+        ? metadata.review_profile
+        : '';
     edit_workflow_settings = true;
     doRender();
   }
@@ -1134,7 +1138,14 @@ export function createDetailView(
    * @param {(ev: Event) => void} onChange
    * @param {string} emptyLabel
    */
-  function workflowSelectTemplate(id, label, value, options, onChange, emptyLabel) {
+  function workflowSelectTemplate(
+    id,
+    label,
+    value,
+    options,
+    onChange,
+    emptyLabel
+  ) {
     return html`<div class="workflow-summary__row">
       <label class="workflow-summary__label" for=${id}>${label}</label>
       <select
@@ -1146,7 +1157,9 @@ export function createDetailView(
       >
         <option value="">${emptyLabel}</option>
         ${invalidOptionTemplate(value, options)}
-        ${options.map((option) => html`<option value=${option}>${option}</option>`)}
+        ${options.map(
+          (option) => html`<option value=${option}>${option}</option>`
+        )}
       </select>
     </div>`;
   }
@@ -1202,7 +1215,8 @@ export function createDetailView(
       workflow_draft_review_profile !== '' &&
       !REVIEW_PROFILES.includes(workflow_draft_review_profile);
     const lane_invalid =
-      workflow_draft_lane !== '' && !EXECUTION_LANES.includes(workflow_draft_lane);
+      workflow_draft_lane !== '' &&
+      !EXECUTION_LANES.includes(workflow_draft_lane);
     const values = workflowSettingsMutationValues(
       workflow_draft_lane,
       workflow_draft_workspace,
