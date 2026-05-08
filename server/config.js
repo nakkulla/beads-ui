@@ -16,12 +16,12 @@ const DEFAULT_WORKSPACE_CONFIG = {
   workspaces: []
 };
 const WORKFLOW_SECTION_FIELDS = {
-  route: [
+  workflow_settings: [
     'execution_lane',
-    'topology',
     'workspace_policy',
     'branch_policy',
-    'finish_action'
+    'finish_action',
+    'review_profile'
   ],
   artifacts: ['spec_id', 'plan', 'handoff'],
   review_gates: [
@@ -54,7 +54,13 @@ const WORKFLOW_SECTION_FIELDS = {
 };
 const WORKFLOW_SECTIONS = Object.keys(WORKFLOW_SECTION_FIELDS);
 const EDITABLE_WORKFLOW_FIELDS = {
-  route: ['execution_lane', 'topology']
+  workflow_settings: [
+    'execution_lane',
+    'workspace_policy',
+    'branch_policy',
+    'finish_action',
+    'review_profile'
+  ]
 };
 
 /**
@@ -176,7 +182,7 @@ function normalizeStringAllowlist(value, allowed, fallback) {
  * @param {any} parsed
  * @returns {{
  *   sections: string[],
- *   route: { fields: string[], editable_fields: string[] },
+ *   workflow_settings: { fields: string[], editable_fields: string[] },
  *   artifacts: { fields: string[] },
  *   review_gates: { fields: string[] },
  *   freshness: { fields: string[] },
@@ -187,8 +193,14 @@ function normalizeStringAllowlist(value, allowed, fallback) {
  */
 function normalizeWorkflowSummaryConfig(parsed) {
   const raw = parsed?.detail?.workflow_summary;
+  const raw_sections = Array.isArray(raw?.sections) ? raw.sections : undefined;
+  const requested_sections = Array.isArray(raw_sections)
+    ? raw_sections.map((section) =>
+        section === 'route' ? 'workflow_settings' : section
+      )
+    : undefined;
   const sections = normalizeStringAllowlist(
-    raw?.sections,
+    requested_sections,
     WORKFLOW_SECTIONS,
     WORKFLOW_SECTIONS
   );
@@ -200,21 +212,34 @@ function normalizeWorkflowSummaryConfig(parsed) {
       WORKFLOW_SECTION_FIELDS[
         /** @type {keyof typeof WORKFLOW_SECTION_FIELDS} */ (section)
       ] || [];
-    const section_raw = raw?.[section];
-    const fields = normalizeStringAllowlist(
+    const default_editable_fields =
+      EDITABLE_WORKFLOW_FIELDS[
+        /** @type {keyof typeof EDITABLE_WORKFLOW_FIELDS} */ (section)
+      ] || [];
+    const legacy_section_raw =
+      section === 'workflow_settings' ? raw?.route : null;
+    const section_raw = raw?.[section] || legacy_section_raw;
+    const legacy_section = Boolean(!raw?.[section] && legacy_section_raw);
+    let fields = normalizeStringAllowlist(
       section_raw?.fields,
       allowed_fields,
       allowed_fields
     );
-    const editable_fields = normalizeStringAllowlist(
+    let editable_fields = normalizeStringAllowlist(
       section_raw?.editable_fields,
-      EDITABLE_WORKFLOW_FIELDS[
-        /** @type {keyof typeof EDITABLE_WORKFLOW_FIELDS} */ (section)
-      ] || [],
-      EDITABLE_WORKFLOW_FIELDS[
-        /** @type {keyof typeof EDITABLE_WORKFLOW_FIELDS} */ (section)
-      ] || []
+      default_editable_fields,
+      default_editable_fields
     );
+
+    if (legacy_section && fields.length < allowed_fields.length) {
+      fields = allowed_fields.slice();
+    }
+    if (
+      legacy_section &&
+      editable_fields.length < default_editable_fields.length
+    ) {
+      editable_fields = default_editable_fields.slice();
+    }
 
     section_config[section] =
       editable_fields.length > 0 ? { fields, editable_fields } : { fields };

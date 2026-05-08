@@ -56,8 +56,8 @@ describe('state store', () => {
         },
         detail: {
           workflow_summary: {
-            sections: ['route'],
-            route: {
+            sections: ['workflow_settings'],
+            workflow_settings: {
               fields: ['execution_lane'],
               editable_fields: ['execution_lane']
             }
@@ -81,7 +81,7 @@ describe('state store', () => {
       }
     });
     expect(store.getState().config.detail.workflow_summary.sections).toEqual([
-      'route'
+      'workflow_settings'
     ]);
     expect(store.getState().config.workspace_config.default_workspace).toBe(
       '/repo-a'

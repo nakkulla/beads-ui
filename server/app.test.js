@@ -99,8 +99,8 @@ describe('server app wiring (no listen)', () => {
       },
       detail: {
         workflow_summary: {
-          sections: ['route'],
-          route: {
+          sections: ['workflow_settings'],
+          workflow_settings: {
             fields: ['execution_lane'],
             editable_fields: ['execution_lane']
           }
@@ -119,7 +119,9 @@ describe('server app wiring (no listen)', () => {
         pr: { fg: '#7c3aed' }
       }
     });
-    expect(body.detail.workflow_summary.sections).toEqual(['route']);
+    expect(body.detail.workflow_summary.sections).toEqual([
+      'workflow_settings'
+    ]);
   });
 
   test('uses workflow summary defaults when detail config is absent', async () => {
@@ -132,8 +134,16 @@ describe('server app wiring (no listen)', () => {
 
     const body = await fetchJsonFromApp(app, '/api/config');
 
-    expect(body.detail.workflow_summary.sections).toContain('route');
-    expect(body.detail.workflow_summary.route.fields).toContain('topology');
+    expect(body.detail.workflow_summary.sections).toContain(
+      'workflow_settings'
+    );
+    expect(body.detail.workflow_summary.workflow_settings.fields).toEqual([
+      'execution_lane',
+      'workspace_policy',
+      'branch_policy',
+      'finish_action',
+      'review_profile'
+    ]);
   });
 
   test('index.html exists in configured app_dir', () => {

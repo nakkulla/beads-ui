@@ -274,7 +274,7 @@ describe('views/board', () => {
     const title = card?.querySelector('.board-card__title');
     const labels = card?.querySelector('.board-card__labels');
 
-    expect(chip_text).toEqual(['Plan', 'PR route', 'PR']);
+    expect(chip_text).toEqual(['Plan', 'Worktree PR', 'PR']);
     expect(label_text).toEqual(['has:spec']);
     expect(workflow_row?.previousElementSibling).toBe(title);
     expect(labels?.previousElementSibling).toBe(workflow_row);
@@ -364,6 +364,93 @@ describe('views/board', () => {
     expect(lane_text).toEqual(['Spec-backed', 'Quick edit', 'Plan']);
   });
 
+  test('renders compact labels for all valid route tuples without review profile chips', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        {
+          id: 'ROUTE-1',
+          title: 'current same direct',
+          created_at: Date.parse('2026-04-30T06:00:00Z'),
+          metadata: {
+            workspace_policy: 'current',
+            branch_policy: 'same',
+            finish_action: 'direct',
+            review_profile: 'deep'
+          }
+        },
+        {
+          id: 'ROUTE-2',
+          title: 'current feature direct',
+          created_at: Date.parse('2026-04-30T06:01:00Z'),
+          metadata: {
+            workspace_policy: 'current',
+            branch_policy: 'feature',
+            finish_action: 'direct'
+          }
+        },
+        {
+          id: 'ROUTE-3',
+          title: 'current feature pr',
+          created_at: Date.parse('2026-04-30T06:02:00Z'),
+          metadata: {
+            workspace_policy: 'current',
+            branch_policy: 'feature',
+            finish_action: 'pr'
+          }
+        },
+        {
+          id: 'ROUTE-4',
+          title: 'worktree feature direct',
+          created_at: Date.parse('2026-04-30T06:03:00Z'),
+          metadata: {
+            workspace_policy: 'worktree',
+            branch_policy: 'feature',
+            finish_action: 'direct'
+          }
+        },
+        {
+          id: 'ROUTE-5',
+          title: 'worktree feature pr',
+          created_at: Date.parse('2026-04-30T06:04:00Z'),
+          metadata: {
+            workspace_policy: 'worktree',
+            branch_policy: 'feature',
+            finish_action: 'pr'
+          }
+        }
+      ]
+    });
+    const view = createBoardView(
+      mount,
+      null,
+      () => {},
+      createStore(),
+      undefined,
+      issueStores
+    );
+
+    await view.load();
+
+    const route_text = Array.from(
+      mount.querySelectorAll('.workflow-chip--route')
+    ).map((el) => el.textContent?.trim());
+    expect(route_text).toEqual([
+      'Worktree PR',
+      'Worktree direct',
+      'Current PR',
+      'Current direct',
+      'Direct'
+    ]);
+    expect(mount.textContent).not.toContain('deep');
+    expect(mount.textContent).not.toContain('Default (standard)');
+  });
+
   test('renders direct route chip for exact direct topology', async () => {
     document.body.innerHTML = '<div id="m"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
@@ -416,7 +503,7 @@ describe('views/board', () => {
           metadata: {
             execution_lane: 'Plan',
             workspace_policy: 'current',
-            branch_policy: 'feature',
+            branch_policy: 'same',
             finish_action: 'pr',
             pr_url: 'data:text/html,<h1>x</h1>'
           }
@@ -1264,7 +1351,7 @@ describe('views/board', () => {
       'needs:human-decision'
     ]);
     expect(mount.textContent).toContain('Spec-backed');
-    expect(mount.textContent).toContain('PR route');
+    expect(mount.textContent).toContain('Worktree PR');
     expect(mount.textContent).toContain('PR');
     expect(mount.textContent).not.toContain('lane:spec_backed');
     expect(mount.textContent).not.toContain('skill-related');

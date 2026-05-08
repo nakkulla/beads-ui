@@ -175,7 +175,7 @@ fg = "#2563eb"
     const config = getConfig();
 
     expect(config.detail.workflow_summary.sections).toEqual([
-      'route',
+      'workflow_settings',
       'artifacts',
       'review_gates',
       'freshness',
@@ -183,32 +183,82 @@ fg = "#2563eb"
       'followup',
       'human'
     ]);
-    expect(config.detail.workflow_summary.route.fields).toContain('topology');
-    expect(config.detail.workflow_summary.route.editable_fields).toEqual([
+    expect(config.detail.workflow_summary.workflow_settings.fields).toEqual([
       'execution_lane',
-      'topology'
+      'workspace_policy',
+      'branch_policy',
+      'finish_action',
+      'review_profile'
+    ]);
+    expect(
+      config.detail.workflow_summary.workflow_settings.editable_fields
+    ).toEqual([
+      'execution_lane',
+      'workspace_policy',
+      'branch_policy',
+      'finish_action',
+      'review_profile'
     ]);
   });
 
   test('ignores unknown workflow section fields and non-editable edit config', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
 [detail.workflow_summary]
-sections = ["route", "bogus"]
+sections = ["workflow_settings", "bogus"]
 
-[detail.workflow_summary.route]
+[detail.workflow_summary.workflow_settings]
 fields = ["execution_lane", "bogus"]
 editable_fields = ["execution_lane", "workspace_policy", "bogus"]
 `);
 
     const config = getConfig();
 
-    expect(config.detail.workflow_summary.sections).toEqual(['route']);
-    expect(config.detail.workflow_summary.route.fields).toEqual([
+    expect(config.detail.workflow_summary.sections).toEqual([
+      'workflow_settings'
+    ]);
+    expect(config.detail.workflow_summary.workflow_settings.fields).toEqual([
       'execution_lane'
     ]);
-    expect(config.detail.workflow_summary.route.editable_fields).toEqual([
-      'execution_lane'
+    expect(
+      config.detail.workflow_summary.workflow_settings.editable_fields
+    ).toEqual(['execution_lane', 'workspace_policy']);
+  });
+
+  test('normalizes legacy route and topology config to workflow settings', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[detail.workflow_summary]
+sections = ["route", "artifacts"]
+
+[detail.workflow_summary.route]
+fields = ["execution_lane", "topology"]
+editable_fields = ["execution_lane", "topology"]
+`);
+
+    const config = getConfig();
+
+    expect(config.detail.workflow_summary.sections).toEqual([
+      'workflow_settings',
+      'artifacts'
     ]);
+    expect(config.detail.workflow_summary.workflow_settings.fields).toEqual([
+      'execution_lane',
+      'workspace_policy',
+      'branch_policy',
+      'finish_action',
+      'review_profile'
+    ]);
+    expect(
+      config.detail.workflow_summary.workflow_settings.editable_fields
+    ).toEqual([
+      'execution_lane',
+      'workspace_policy',
+      'branch_policy',
+      'finish_action',
+      'review_profile'
+    ]);
+    expect(
+      config.detail.workflow_summary.workflow_settings.fields
+    ).not.toContain('topology');
   });
 
   test('keeps backward compatibility for prefix-only configs', () => {
@@ -225,7 +275,13 @@ visible_prefixes = ["has:"]
       prefix: {},
       exact: {}
     });
-    expect(config.detail.workflow_summary.route.fields).toContain('topology');
+    expect(config.detail.workflow_summary.workflow_settings.fields).toEqual([
+      'execution_lane',
+      'workspace_policy',
+      'branch_policy',
+      'finish_action',
+      'review_profile'
+    ]);
   });
 
   test('falls back when config TOML is invalid', () => {

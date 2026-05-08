@@ -10,10 +10,15 @@ import { STATUSES, statusLabel } from '../utils/status.js';
 import { showToast } from '../utils/toast.js';
 import { createTypeBadge } from '../utils/type-badge.js';
 import {
+  BRANCH_POLICIES,
+  DEFAULT_REVIEW_PROFILE_LABEL,
   EXECUTION_LANES,
+  FINISH_ACTIONS,
+  REVIEW_PROFILES,
+  WORKSPACE_POLICIES,
   buildWorkflowSections,
-  deriveTopology,
-  routeMutationValues
+  deriveRouteTuple,
+  workflowSettingsMutationValues
 } from '../utils/workflow-fields.js';
 
 /**
@@ -69,7 +74,7 @@ function formatCommentDate(dateStr) {
  * @property {number} [priority]
  * @property {string[]} [labels]
  * @property {string} [spec_id]
- * @property {{ plan?: string | null, handoff?: string | null, run_started_at?: string | null, run_finished_at?: string | null, pr_url?: string | null, pr_number?: string | number | null, execution_lane?: string | null, skill_workflow?: string | null }} [metadata]
+ * @property {{ plan?: string | null, handoff?: string | null, run_started_at?: string | null, run_finished_at?: string | null, pr_url?: string | null, pr_number?: string | number | null, execution_lane?: string | null, workspace_policy?: string | null, branch_policy?: string | null, finish_action?: string | null, review_profile?: string | null, skill_workflow?: string | null }} [metadata]
  * @property {Dependency[]} [dependencies]
  * @property {Dependency[]} [dependents]
  * @property {Comment[]} [comments]
@@ -119,11 +124,17 @@ export function createDetailView(
   /** @type {boolean} */
   let edit_assignee = false;
   /** @type {boolean} */
-  let edit_route = false;
+  let edit_workflow_settings = false;
   /** @type {string} */
-  let route_draft_lane = '';
+  let workflow_draft_lane = '';
   /** @type {string} */
-  let route_draft_topology = '';
+  let workflow_draft_workspace = '';
+  /** @type {string} */
+  let workflow_draft_branch = '';
+  /** @type {string} */
+  let workflow_draft_finish = '';
+  /** @type {string} */
+  let workflow_draft_review_profile = '';
   /** @type {string} */
   let new_label_text = '';
   /** @type {string} */
@@ -929,55 +940,76 @@ export function createDetailView(
     `;
   }
 
-  function beginRouteEdit() {
+  function beginWorkflowSettingsEdit() {
     if (!current || pending) {
       return;
     }
     const metadata = current.metadata || {};
-    const topology = deriveTopology(metadata);
-    route_draft_lane =
+    workflow_draft_lane =
       typeof metadata.execution_lane === 'string'
         ? metadata.execution_lane
         : '';
-    route_draft_topology =
-      topology.kind === 'valid' && topology.value ? topology.value : '';
-    edit_route = true;
+    workflow_draft_workspace =
+      typeof metadata.workspace_policy === 'string'
+        ? metadata.workspace_policy
+        : '';
+    workflow_draft_branch =
+      typeof metadata.branch_policy === 'string' ? metadata.branch_policy : '';
+    workflow_draft_finish =
+      typeof metadata.finish_action === 'string' ? metadata.finish_action : '';
+    workflow_draft_review_profile =
+      typeof metadata.review_profile === 'string'
+        ? metadata.review_profile
+        : '';
+    edit_workflow_settings = true;
     doRender();
   }
 
-  function cancelRouteEdit() {
-    edit_route = false;
-    route_draft_lane = '';
-    route_draft_topology = '';
+  function cancelWorkflowSettingsEdit() {
+    edit_workflow_settings = false;
+    workflow_draft_lane = '';
+    workflow_draft_workspace = '';
+    workflow_draft_branch = '';
+    workflow_draft_finish = '';
+    workflow_draft_review_profile = '';
     doRender();
   }
 
-  async function saveRouteEdit() {
+  async function saveWorkflowSettingsEdit() {
     if (!current || pending) {
       return;
     }
-    const values = routeMutationValues(route_draft_lane, route_draft_topology);
+    const values = workflowSettingsMutationValues(
+      workflow_draft_lane,
+      workflow_draft_workspace,
+      workflow_draft_branch,
+      workflow_draft_finish,
+      workflow_draft_review_profile
+    );
     if (!values) {
-      showToast('Choose valid route metadata', 'error');
+      showToast('Choose valid workflow settings', 'error');
       doRender();
       return;
     }
     pending = true;
     doRender();
     try {
-      const updated = await sendFn('update-route-metadata', {
+      const updated = await sendFn('update-workflow-settings', {
         id: current.id,
         values
       });
       if (updated && typeof updated === 'object' && !Array.isArray(updated)) {
         current = /** @type {IssueDetail} */ (updated);
       }
-      edit_route = false;
-      route_draft_lane = '';
-      route_draft_topology = '';
+      edit_workflow_settings = false;
+      workflow_draft_lane = '';
+      workflow_draft_workspace = '';
+      workflow_draft_branch = '';
+      workflow_draft_finish = '';
+      workflow_draft_review_profile = '';
     } catch (err) {
-      log('save route metadata failed %o', err);
-      showToast('Failed to save route metadata', 'error');
+      log('save workflow settings failed %o', err);
+      showToast('Failed to save workflow settings', 'error');
     } finally {
       pending = false;
       doRender();
@@ -987,8 +1019,8 @@ export function createDetailView(
   /**
    * @param {Event} ev
    */
-  function onRouteLaneChange(ev) {
-    route_draft_lane = /** @type {HTMLSelectElement} */ (ev.currentTarget)
+  function onWorkflowLaneChange(ev) {
+    workflow_draft_lane = /** @type {HTMLSelectElement} */ (ev.currentTarget)
       .value;
     doRender();
   }
@@ -996,9 +1028,38 @@ export function createDetailView(
   /**
    * @param {Event} ev
    */
-  function onRouteTopologyChange(ev) {
-    route_draft_topology = /** @type {HTMLSelectElement} */ (ev.currentTarget)
+  function onWorkflowWorkspaceChange(ev) {
+    workflow_draft_workspace = /** @type {HTMLSelectElement} */ (
+      ev.currentTarget
+    ).value;
+    doRender();
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onWorkflowBranchChange(ev) {
+    workflow_draft_branch = /** @type {HTMLSelectElement} */ (ev.currentTarget)
       .value;
+    doRender();
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onWorkflowFinishChange(ev) {
+    workflow_draft_finish = /** @type {HTMLSelectElement} */ (ev.currentTarget)
+      .value;
+    doRender();
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onWorkflowReviewProfileChange(ev) {
+    workflow_draft_review_profile = /** @type {HTMLSelectElement} */ (
+      ev.currentTarget
+    ).value;
     doRender();
   }
 
@@ -1060,22 +1121,70 @@ export function createDetailView(
   }
 
   /**
+   * @param {string} value
+   * @param {string[]} options
+   */
+  function invalidOptionTemplate(value, options) {
+    return value && !options.includes(value)
+      ? html`<option value=${value} selected>Invalid: ${value}</option>`
+      : null;
+  }
+
+  /**
+   * @param {string} id
+   * @param {string} label
+   * @param {string} value
+   * @param {string[]} options
+   * @param {(ev: Event) => void} onChange
+   * @param {string} emptyLabel
+   */
+  function workflowSelectTemplate(
+    id,
+    label,
+    value,
+    options,
+    onChange,
+    emptyLabel
+  ) {
+    return html`<div class="workflow-summary__row">
+      <label class="workflow-summary__label" for=${id}>${label}</label>
+      <select
+        id=${id}
+        data-testid=${id}
+        .value=${value}
+        ?disabled=${pending}
+        @change=${onChange}
+      >
+        <option value="">${emptyLabel}</option>
+        ${invalidOptionTemplate(value, options)}
+        ${options.map(
+          (option) => html`<option value=${option}>${option}</option>`
+        )}
+      </select>
+    </div>`;
+  }
+
+  /**
    * @param {{ id: string, label: string, rows: Array<Record<string, unknown>>, editable_fields?: string[] }} section
    */
-  function routeSectionTemplate(section) {
+  function workflowSettingsSectionTemplate(section) {
     const editable_fields = Array.isArray(section.editable_fields)
       ? section.editable_fields
       : [];
-    const can_edit =
-      editable_fields.includes('execution_lane') &&
-      editable_fields.includes('topology');
+    const can_edit = [
+      'execution_lane',
+      'workspace_policy',
+      'branch_policy',
+      'finish_action',
+      'review_profile'
+    ].every((field) => editable_fields.includes(field));
 
-    if (!edit_route) {
+    if (!edit_workflow_settings) {
       return html`<section
         class="workflow-summary__section"
-        data-section="route"
+        data-section="workflow_settings"
       >
-        <div class="workflow-summary__section-title">Route</div>
+        <div class="workflow-summary__section-title">Workflow settings</div>
         <div class="workflow-summary__list">
           ${section.rows.map((row) => workflowRowTemplate(row))}
         </div>
@@ -1083,9 +1192,9 @@ export function createDetailView(
           ? html`<button
               type="button"
               class="btn"
-              data-testid="route-edit"
+              data-testid="workflow-settings-edit"
               ?disabled=${pending}
-              @click=${beginRouteEdit}
+              @click=${beginWorkflowSettingsEdit}
             >
               Edit
             </button>`
@@ -1093,66 +1202,115 @@ export function createDetailView(
       </section>`;
     }
 
-    const can_save = Boolean(route_draft_lane && route_draft_topology);
-    return html`<section class="workflow-summary__section" data-section="route">
-      <div class="workflow-summary__section-title">Route</div>
+    const route_fields_complete = Boolean(
+      workflow_draft_workspace && workflow_draft_branch && workflow_draft_finish
+    );
+    const route_tuple = deriveRouteTuple({
+      workspace_policy: workflow_draft_workspace,
+      branch_policy: workflow_draft_branch,
+      finish_action: workflow_draft_finish
+    });
+    const route_invalid = route_fields_complete && route_tuple.kind !== 'valid';
+    const profile_invalid =
+      workflow_draft_review_profile !== '' &&
+      !REVIEW_PROFILES.includes(workflow_draft_review_profile);
+    const lane_invalid =
+      workflow_draft_lane !== '' &&
+      !EXECUTION_LANES.includes(workflow_draft_lane);
+    const values = workflowSettingsMutationValues(
+      workflow_draft_lane,
+      workflow_draft_workspace,
+      workflow_draft_branch,
+      workflow_draft_finish,
+      workflow_draft_review_profile
+    );
+    const can_save = Boolean(values);
+
+    return html`<section
+      class="workflow-summary__section"
+      data-section="workflow_settings"
+    >
+      <div class="workflow-summary__section-title">Workflow settings</div>
       <div class="workflow-summary__list">
+        ${workflowSelectTemplate(
+          'workflow-settings-lane',
+          'Execution lane',
+          workflow_draft_lane,
+          EXECUTION_LANES,
+          onWorkflowLaneChange,
+          'Choose lane'
+        )}
+        ${workflowSelectTemplate(
+          'workflow-settings-workspace',
+          'Workspace',
+          workflow_draft_workspace,
+          WORKSPACE_POLICIES,
+          onWorkflowWorkspaceChange,
+          'Choose workspace'
+        )}
+        ${workflowSelectTemplate(
+          'workflow-settings-branch',
+          'Branch',
+          workflow_draft_branch,
+          BRANCH_POLICIES,
+          onWorkflowBranchChange,
+          'Choose branch'
+        )}
+        ${workflowSelectTemplate(
+          'workflow-settings-finish',
+          'Finish',
+          workflow_draft_finish,
+          FINISH_ACTIONS,
+          onWorkflowFinishChange,
+          'Choose finish'
+        )}
+        ${workflowSelectTemplate(
+          'workflow-settings-review-profile',
+          'Review profile',
+          workflow_draft_review_profile,
+          REVIEW_PROFILES,
+          onWorkflowReviewProfileChange,
+          DEFAULT_REVIEW_PROFILE_LABEL
+        )}
+        ${lane_invalid
+          ? html`<div class="workflow-summary__row is-invalid">
+              Invalid execution lane
+            </div>`
+          : null}
+        ${route_invalid
+          ? html`<div class="workflow-summary__row is-invalid">
+              Invalid route combination
+            </div>`
+          : null}
+        ${profile_invalid
+          ? html`<div class="workflow-summary__row is-invalid">
+              Invalid review profile
+            </div>`
+          : null}
         <div class="workflow-summary__row">
-          <label class="workflow-summary__label" for="route-lane"
-            >Execution lane</label
-          >
-          <select
-            id="route-lane"
-            data-testid="route-lane"
-            .value=${route_draft_lane}
-            ?disabled=${pending}
-            @change=${onRouteLaneChange}
-          >
-            <option value="">Choose lane</option>
-            ${EXECUTION_LANES.map(
-              (lane) => html`<option value=${lane}>${lane}</option>`
-            )}
-          </select>
+          <div class="workflow-summary__label">Note</div>
+          <div class="workflow-summary__value">
+            Review profile affects future formal review gates and does not
+            change existing review evidence.
+          </div>
         </div>
-        <div class="workflow-summary__row">
-          <label class="workflow-summary__label" for="route-topology"
-            >Topology</label
-          >
-          <select
-            id="route-topology"
-            data-testid="route-topology"
-            .value=${route_draft_topology}
-            ?disabled=${pending}
-            @change=${onRouteTopologyChange}
-          >
-            <option value="">Choose topology</option>
-            <option value="direct">direct</option>
-            <option value="pr">pr</option>
-          </select>
-        </div>
-        ${section.rows
-          .filter(
-            (row) =>
-              !['execution_lane', 'topology'].includes(String(row.id || ''))
-          )
-          .map((row) => workflowRowTemplate(row))}
       </div>
       <div class="workflow-summary__actions">
         <button
           type="button"
           class="btn"
-          data-testid="route-save"
+          data-testid="workflow-settings-save"
           ?disabled=${pending || !can_save}
-          @click=${saveRouteEdit}
+          @click=${saveWorkflowSettingsEdit}
         >
           Save
         </button>
         <button
           type="button"
           class="btn"
-          data-testid="route-cancel"
+          data-testid="workflow-settings-cancel"
           ?disabled=${pending}
-          @click=${cancelRouteEdit}
+          @click=${cancelWorkflowSettingsEdit}
         >
           Cancel
         </button>
@@ -1164,8 +1322,8 @@ export function createDetailView(
    * @param {{ id: string, label: string, rows: Array<Record<string, unknown>>, editable_fields?: string[] }} section
    */
   function workflowSectionTemplate(section) {
-    if (section.id === 'route') {
-      return routeSectionTemplate(section);
+    if (section.id === 'workflow_settings') {
+      return workflowSettingsSectionTemplate(section);
     }
 
     return html`<section
