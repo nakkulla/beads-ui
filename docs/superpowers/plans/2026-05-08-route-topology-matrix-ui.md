@@ -32,6 +32,8 @@ CLI mutation calls, Vitest, TypeScript check via JSDoc.
   normalization from `route`/`topology`.
 - `server/config.test.js`: config default and legacy fallback tests.
 - `app/state.js`: bootstrap default config aligned with server defaults.
+- `app/main.js`: browser bootstrap fallback defaults aligned with
+  `workflow_settings`.
 - `app/state.test.js`: frontend default config and bootstrap import tests.
 - `app/protocol.js`: replace `update-route-metadata` message type with
   `update-workflow-settings`.
@@ -348,7 +350,10 @@ git commit -m "유틸 워크플로 설정 레지스트리 추가"
 - Modify: `server/config.js`
 - Modify: `server/config.test.js`
 - Modify: `app/state.js`
+- Modify: `app/main.js`
 - Modify: `app/state.test.js`
+- Modify: `server/app.test.js`
+- Modify: `server/app.live-mode.test.js`
 - Modify: `app/protocol.js`
 - Modify: `app/protocol.test.js`
 - Modify: `app/ws.test.js`
@@ -425,7 +430,7 @@ payload:
 Run:
 
 ```bash
-npm test -- server/config.test.js app/state.test.js app/protocol.test.js app/ws.test.js
+npm test -- server/config.test.js app/state.test.js server/app.test.js server/app.live-mode.test.js app/protocol.test.js app/ws.test.js
 ```
 
 Expected: FAIL because defaults and message allowlist still use `route`,
@@ -452,7 +457,10 @@ In `server/config.js`:
 - [ ] **Step 4: Implement frontend default config and protocol**
 
 In `app/state.js`, update `DEFAULT_CONFIG.detail.workflow_summary` to the same
-`workflow_settings` section and five-field list.
+`workflow_settings` section and five-field list. In `app/main.js`, update the
+browser bootstrap fallback/default config to the same `workflow_settings`
+section and fields so the no-config path cannot keep serving stale
+`route`/`topology` defaults.
 
 In `app/protocol.js`, replace `update-route-metadata` with
 `update-workflow-settings` in the typedef and `MESSAGE_TYPES` array. Remove the
@@ -464,7 +472,7 @@ explicitly added; this plan uses the new message consistently.
 Run:
 
 ```bash
-npm test -- server/config.test.js app/state.test.js app/protocol.test.js app/ws.test.js
+npm test -- server/config.test.js app/state.test.js server/app.test.js server/app.live-mode.test.js app/protocol.test.js app/ws.test.js
 ```
 
 Expected: PASS.
@@ -472,7 +480,7 @@ Expected: PASS.
 Commit:
 
 ```bash
-git add server/config.js server/config.test.js app/state.js app/state.test.js app/protocol.js app/protocol.test.js app/ws.test.js
+git add server/config.js server/config.test.js server/app.test.js server/app.live-mode.test.js app/state.js app/main.js app/state.test.js app/protocol.js app/protocol.test.js app/ws.test.js
 git commit -m "설정과 프로토콜 워크플로 설정으로 전환"
 ```
 
@@ -630,7 +638,11 @@ Replace route edit expectations with workflow settings expectations:
   `review_profile: null` for default.
 - Invalid route tuple disables Save and shows text `Invalid route combination`.
 - Unknown profile disables Save until user chooses `Default (standard)`,
-  `light`, `standard`, or `deep`.
+  `light`, `standard`, or `deep`; the unknown profile remains visible as an
+  invalid temporary option while editing.
+- Unknown current route field values remain visible as invalid temporary options
+  while editing, so existing invalid metadata can be corrected without being
+  silently blanked.
 - Failure preserves the five draft select values and shows toast
   `Failed to save workflow settings`.
 - Pending save disables all five selects plus Save/Cancel.
@@ -653,14 +665,17 @@ Expected: FAIL because Detail still renders route/topology editor and sends
 In `app/views/detail.js`, update imports to use:
 
 ```js
-(BRANCH_POLICIES,
+import {
+  BRANCH_POLICIES,
   EXECUTION_LANES,
   FINISH_ACTIONS,
   REVIEW_PROFILES,
   WORKSPACE_POLICIES,
   buildWorkflowSections,
   deriveReviewProfile,
-  workflowSettingsMutationValues);
+  deriveRouteTuple,
+  workflowSettingsMutationValues
+} from '../utils/workflow-fields.js';
 ```
 
 Replace `edit_route`, `route_draft_lane`, and `route_draft_topology` with:
@@ -682,7 +697,8 @@ Add `beginWorkflowSettingsEdit()` that preloads current metadata:
 - `workspace_policy`, `branch_policy`, `finish_action` string values, including
   unknown strings so invalid legacy state is visible.
 - `review_profile`: empty string for absent/default, existing string for
-  explicit or unknown.
+  explicit or unknown. Preserve unknown draft strings for all five fields so the
+  render step can show invalid temporary options.
 
 Add `cancelWorkflowSettingsEdit()` that clears all five draft values and exits
 edit mode.
@@ -717,18 +733,51 @@ const can_edit = [
 
 Render select options:
 
-- Lane: empty option plus `EXECUTION_LANES`.
-- Workspace: empty option plus `WORKSPACE_POLICIES`.
-- Branch: empty option plus `BRANCH_POLICIES`.
-- Finish: empty option plus `FINISH_ACTIONS`.
+- Lane: empty option plus `EXECUTION_LANES`; if `workflow_draft_lane` is
+  non-empty and not in `EXECUTION_LANES`, prepend
+  `<option value=${workflow_draft_lane}>Invalid: ${workflow_draft_lane}</option>`.
+- Workspace: empty option plus `WORKSPACE_POLICIES`; if the draft is non-empty
+  and unknown, prepend an `Invalid: ...` option.
+- Branch: empty option plus `BRANCH_POLICIES`; if the draft is non-empty and
+  unknown, prepend an `Invalid: ...` option.
+- Finish: empty option plus `FINISH_ACTIONS`; if the draft is non-empty and
+  unknown, prepend an `Invalid: ...` option.
 - Review profile: empty value label `Default (standard)`, then
-  `REVIEW_PROFILES`.
+  `REVIEW_PROFILES`; if `workflow_draft_review_profile` is non-empty and not in
+  `REVIEW_PROFILES`, prepend
+  `<option value=${workflow_draft_review_profile}>Invalid: ${workflow_draft_review_profile}</option>`.
 
-Compute `const values = workflowSettingsMutationValues(...)` and
-`const can_save = Boolean(values)`. If all three route fields are non-empty and
-`values` is null, render `Invalid route combination`. If review profile draft is
-non-empty and not in `REVIEW_PROFILES`, render `Invalid review profile`. Always
-render helper text:
+Compute validation pieces separately before `can_save`:
+
+```js
+const route_fields_complete = Boolean(
+  workflow_draft_workspace && workflow_draft_branch && workflow_draft_finish
+);
+const route_tuple = deriveRouteTuple({
+  workspace_policy: workflow_draft_workspace,
+  branch_policy: workflow_draft_branch,
+  finish_action: workflow_draft_finish
+});
+const route_invalid = route_fields_complete && route_tuple.kind !== 'valid';
+const profile_invalid =
+  workflow_draft_review_profile !== '' &&
+  !REVIEW_PROFILES.includes(workflow_draft_review_profile);
+const lane_invalid =
+  workflow_draft_lane !== '' && !EXECUTION_LANES.includes(workflow_draft_lane);
+const values = workflowSettingsMutationValues(
+  workflow_draft_lane,
+  workflow_draft_workspace,
+  workflow_draft_branch,
+  workflow_draft_finish,
+  workflow_draft_review_profile
+);
+const can_save = Boolean(values);
+```
+
+Render `Invalid route combination` only when `route_invalid` is true. Render
+`Invalid review profile` only when `profile_invalid` is true. Render
+`Invalid execution lane` only when `lane_invalid` is true. Always render helper
+text:
 `Review profile affects future formal review gates and does not change existing review evidence.`
 
 - [ ] **Step 6: Run Detail tests and commit**
@@ -918,5 +967,9 @@ finish/merge is a later explicit boundary.
   does not create one.
 - Placeholder scan: No placeholder markers are used; every task has concrete
   files, commands, expected results, and payload shapes.
-- Type consistency: Client payload shape, server validation fields, and utility
-  function names are consistent across tasks.
+- Type consistency: Client payload shape, server validation fields, utility
+  function names, and temporary invalid option handling are consistent across
+  tasks.
+- Plan-review fixes: M1 adds `app/main.js`, `server/app.test.js`, and
+  `server/app.live-mode.test.js`; M2 adds visible temporary invalid options; m1
+  separates route/profile/lane warning conditions.
