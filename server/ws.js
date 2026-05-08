@@ -23,19 +23,18 @@ const UPDATE_STATUS_ALLOWED = new Set([
   'closed'
 ]);
 
-const ROUTE_LANES = new Set(['quick_edit', 'spec_backed', 'plan']);
-const ROUTE_TOPOLOGIES = {
-  direct: {
-    workspace_policy: 'current',
-    branch_policy: 'same',
-    finish_action: 'direct'
-  },
-  pr: {
-    workspace_policy: 'worktree',
-    branch_policy: 'feature',
-    finish_action: 'pr'
-  }
-};
+const WORKFLOW_LANES = new Set(['quick_edit', 'spec_backed', 'plan']);
+const WORKSPACE_POLICIES = new Set(['current', 'worktree']);
+const BRANCH_POLICIES = new Set(['same', 'feature']);
+const FINISH_ACTIONS = new Set(['direct', 'pr']);
+const REVIEW_PROFILES = new Set(['light', 'standard', 'deep']);
+const VALID_ROUTE_TUPLES = new Set([
+  'current\0same\0direct',
+  'current\0feature\0direct',
+  'current\0feature\0pr',
+  'worktree\0feature\0direct',
+  'worktree\0feature\0pr'
+]);
 const LANE_LABELS = ['lane:quick_edit', 'lane:spec_backed', 'lane:plan'];
 
 /**
@@ -274,10 +273,19 @@ function getGitUserNameInWorkspace() {
 }
 
 /**
- * @param {unknown} payload
- * @returns {{ ok: true, id: string, lane: string, topology: 'direct' | 'pr' } | { ok: false, code: string, message: string }}
+ * @param {string} workspace_policy
+ * @param {string} branch_policy
+ * @param {string} finish_action
  */
-function validateRouteMetadataPayload(payload) {
+function routeTupleKey(workspace_policy, branch_policy, finish_action) {
+  return `${workspace_policy}\0${branch_policy}\0${finish_action}`;
+}
+
+/**
+ * @param {unknown} payload
+ * @returns {{ ok: true, id: string, values: { execution_lane: string, workspace_policy: string, branch_policy: string, finish_action: string, review_profile: string | null } } | { ok: false, code: string, message: string }}
+ */
+function validateWorkflowSettingsPayload(payload) {
   const body = /** @type {any} */ (payload || {});
   const id = typeof body.id === 'string' ? body.id.trim() : '';
   const values =
@@ -286,13 +294,19 @@ function validateRouteMetadataPayload(payload) {
     return {
       ok: false,
       code: 'bad_request',
-      message: 'Invalid route metadata payload'
+      message: 'Invalid workflow settings payload'
     };
   }
 
-  const lane = values.execution_lane;
-  const topology = values.topology;
-  if (typeof lane !== 'string' || !ROUTE_LANES.has(lane)) {
+  const execution_lane = values.execution_lane;
+  const workspace_policy = values.workspace_policy;
+  const branch_policy = values.branch_policy;
+  const finish_action = values.finish_action;
+  const review_profile = values.review_profile;
+  if (
+    typeof execution_lane !== 'string' ||
+    !WORKFLOW_LANES.has(execution_lane)
+  ) {
     return {
       ok: false,
       code: 'bad_request',
@@ -300,21 +314,64 @@ function validateRouteMetadataPayload(payload) {
     };
   }
   if (
-    typeof topology !== 'string' ||
-    !Object.prototype.hasOwnProperty.call(ROUTE_TOPOLOGIES, topology)
+    typeof workspace_policy !== 'string' ||
+    !WORKSPACE_POLICIES.has(workspace_policy)
   ) {
     return {
       ok: false,
       code: 'bad_request',
-      message: 'Invalid route topology'
+      message: 'Invalid workspace policy'
+    };
+  }
+  if (
+    typeof branch_policy !== 'string' ||
+    !BRANCH_POLICIES.has(branch_policy)
+  ) {
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid branch policy'
+    };
+  }
+  if (typeof finish_action !== 'string' || !FINISH_ACTIONS.has(finish_action)) {
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid finish action'
+    };
+  }
+  if (
+    !VALID_ROUTE_TUPLES.has(
+      routeTupleKey(workspace_policy, branch_policy, finish_action)
+    )
+  ) {
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid route tuple'
+    };
+  }
+  if (
+    review_profile !== null &&
+    (typeof review_profile !== 'string' || !REVIEW_PROFILES.has(review_profile))
+  ) {
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid review profile'
     };
   }
 
   return {
     ok: true,
     id,
-    lane,
-    topology: /** @type {'direct' | 'pr'} */ (topology)
+    values: {
+      execution_lane,
+      workspace_policy,
+      branch_policy,
+      finish_action,
+      review_profile
+    }
   };
 }
 
@@ -980,9 +1037,9 @@ export async function handleMessage(ws, data) {
     return;
   }
 
-  // update-route-metadata
-  if (req.type === 'update-route-metadata') {
-    const validation = validateRouteMetadataPayload(req.payload);
+  // update-workflow-settings
+  if (req.type === 'update-workflow-settings') {
+    const validation = validateWorkflowSettingsPayload(req.payload);
     if (!validation.ok) {
       ws.send(
         JSON.stringify(makeError(req, validation.code, validation.message))
@@ -990,23 +1047,28 @@ export async function handleMessage(ws, data) {
       return;
     }
 
-    const route = ROUTE_TOPOLOGIES[validation.topology];
+    const values = validation.values;
     const args = [
       'update',
       validation.id,
       '--set-metadata',
-      `execution_lane=${validation.lane}`,
+      `execution_lane=${values.execution_lane}`,
       '--set-metadata',
-      `workspace_policy=${route.workspace_policy}`,
+      `workspace_policy=${values.workspace_policy}`,
       '--set-metadata',
-      `branch_policy=${route.branch_policy}`,
+      `branch_policy=${values.branch_policy}`,
       '--set-metadata',
-      `finish_action=${route.finish_action}`
+      `finish_action=${values.finish_action}`
     ];
+    if (values.review_profile === null) {
+      args.push('--unset-metadata', 'review_profile');
+    } else {
+      args.push('--set-metadata', `review_profile=${values.review_profile}`);
+    }
     for (const label of LANE_LABELS) {
       args.push('--remove-label', label);
     }
-    args.push('--add-label', `lane:${validation.lane}`);
+    args.push('--add-label', `lane:${values.execution_lane}`);
 
     const res = await runBdInWorkspace(args);
     if (res.code !== 0) {
@@ -1015,7 +1077,7 @@ export async function handleMessage(ws, data) {
           makeError(
             req,
             'bd_error',
-            'Failed to update route metadata',
+            'Failed to update workflow settings',
             res.stderr
           )
         )

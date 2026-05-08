@@ -252,87 +252,100 @@ describe('ws mutation handlers', () => {
 
   // update-type removed; no server handler remains
 
-  test('update-route-metadata writes pr topology and lane labels', async () => {
-    const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
-    mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: [
-        {
+  test('writes each valid workflow settings route tuple', async () => {
+    const valid_tuples = [
+      ['current', 'same', 'direct'],
+      ['current', 'feature', 'direct'],
+      ['current', 'feature', 'pr'],
+      ['worktree', 'feature', 'direct'],
+      ['worktree', 'feature', 'pr']
+    ];
+
+    for (const [workspace_policy, branch_policy, finish_action] of valid_tuples) {
+      /** @type {import('vitest').Mock} */ (runBd).mockReset();
+      /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+      const mRun = /** @type {import('vitest').Mock} */ (runBd);
+      const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+      mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+      mJson.mockResolvedValueOnce({
+        code: 0,
+        stdoutJson: {
           id: 'UI-7',
           metadata: {
             execution_lane: 'plan',
-            workspace_policy: 'worktree',
-            branch_policy: 'feature',
-            finish_action: 'pr'
+            workspace_policy,
+            branch_policy,
+            finish_action
           },
           labels: ['lane:plan']
         }
-      ]
-    });
-    const ws = makeStubSocket();
+      });
+      const ws = makeStubSocket();
 
-    await handleMessage(
-      /** @type {any} */ (ws),
-      Buffer.from(
-        JSON.stringify({
-          id: 'route-1',
-          type: 'update-route-metadata',
-          payload: {
-            id: 'UI-7',
-            values: { execution_lane: 'plan', topology: 'pr' }
-          }
-        })
-      )
-    );
+      await handleMessage(
+        /** @type {any} */ (ws),
+        Buffer.from(
+          JSON.stringify({
+            id: `workflow-${workspace_policy}-${branch_policy}-${finish_action}`,
+            type: 'update-workflow-settings',
+            payload: {
+              id: 'UI-7',
+              values: {
+                execution_lane: 'plan',
+                workspace_policy,
+                branch_policy,
+                finish_action,
+                review_profile: null
+              }
+            }
+          })
+        )
+      );
 
-    expect(mRun.mock.calls[0][0]).toEqual([
-      'update',
-      'UI-7',
-      '--set-metadata',
-      'execution_lane=plan',
-      '--set-metadata',
-      'workspace_policy=worktree',
-      '--set-metadata',
-      'branch_policy=feature',
-      '--set-metadata',
-      'finish_action=pr',
-      '--remove-label',
-      'lane:quick_edit',
-      '--remove-label',
-      'lane:spec_backed',
-      '--remove-label',
-      'lane:plan',
-      '--add-label',
-      'lane:plan'
-    ]);
-    const response = JSON.parse(ws.sent[ws.sent.length - 1]);
-    expect(response.ok).toBe(true);
-    expect(response.payload).toEqual({
-      id: 'UI-7',
-      metadata: {
-        execution_lane: 'plan',
-        workspace_policy: 'worktree',
-        branch_policy: 'feature',
-        finish_action: 'pr'
-      },
-      labels: ['lane:plan']
-    });
+      expect(mRun.mock.calls[0][0]).toEqual([
+        'update',
+        'UI-7',
+        '--set-metadata',
+        'execution_lane=plan',
+        '--set-metadata',
+        `workspace_policy=${workspace_policy}`,
+        '--set-metadata',
+        `branch_policy=${branch_policy}`,
+        '--set-metadata',
+        `finish_action=${finish_action}`,
+        '--unset-metadata',
+        'review_profile',
+        '--remove-label',
+        'lane:quick_edit',
+        '--remove-label',
+        'lane:spec_backed',
+        '--remove-label',
+        'lane:plan',
+        '--add-label',
+        'lane:plan'
+      ]);
+      expect(JSON.parse(ws.sent[ws.sent.length - 1]).ok).toBe(true);
+    }
   });
 
-  test('update-route-metadata rejects invalid enum before bd', async () => {
+  test('rejects invalid workflow settings route tuple before bd', async () => {
     const ws = makeStubSocket();
 
     await handleMessage(
       /** @type {any} */ (ws),
       Buffer.from(
         JSON.stringify({
-          id: 'route-bad',
-          type: 'update-route-metadata',
+          id: 'workflow-bad-route',
+          type: 'update-workflow-settings',
           payload: {
             id: 'UI-7',
-            values: { execution_lane: 'bogus', topology: 'pr' }
+            values: {
+              execution_lane: 'plan',
+              workspace_policy: 'current',
+              branch_policy: 'same',
+              finish_action: 'pr',
+              review_profile: null
+            }
           }
         })
       )
@@ -342,6 +355,112 @@ describe('ws mutation handlers', () => {
     expect(JSON.parse(ws.sent[ws.sent.length - 1]).error.code).toBe(
       'bad_request'
     );
+  });
+
+  test('sets explicit review profile metadata', async () => {
+    const mRun = /** @type {import('vitest').Mock} */ (runBd);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    mJson.mockResolvedValueOnce({ code: 0, stdoutJson: { id: 'UI-7' } });
+    const ws = makeStubSocket();
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(
+        JSON.stringify({
+          id: 'workflow-profile',
+          type: 'update-workflow-settings',
+          payload: {
+            id: 'UI-7',
+            values: {
+              execution_lane: 'plan',
+              workspace_policy: 'worktree',
+              branch_policy: 'feature',
+              finish_action: 'pr',
+              review_profile: 'deep'
+            }
+          }
+        })
+      )
+    );
+
+    expect(mRun.mock.calls[0][0]).toContain('review_profile=deep');
+    expect(mRun.mock.calls[0][0]).not.toContain('--unset-metadata');
+    expect(JSON.parse(ws.sent[ws.sent.length - 1]).ok).toBe(true);
+  });
+
+  test('unsets review profile metadata for default', async () => {
+    const mRun = /** @type {import('vitest').Mock} */ (runBd);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    mJson.mockResolvedValueOnce({ code: 0, stdoutJson: { id: 'UI-7' } });
+    const ws = makeStubSocket();
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(
+        JSON.stringify({
+          id: 'workflow-default-profile',
+          type: 'update-workflow-settings',
+          payload: {
+            id: 'UI-7',
+            values: {
+              execution_lane: 'plan',
+              workspace_policy: 'worktree',
+              branch_policy: 'feature',
+              finish_action: 'pr',
+              review_profile: null
+            }
+          }
+        })
+      )
+    );
+
+    expect(mRun.mock.calls[0][0]).toContain('--unset-metadata');
+    expect(mRun.mock.calls[0][0]).toContain('review_profile');
+    expect(JSON.parse(ws.sent[ws.sent.length - 1]).ok).toBe(true);
+  });
+
+  test('syncs lane labels without review profile labels', async () => {
+    const mRun = /** @type {import('vitest').Mock} */ (runBd);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    mJson.mockResolvedValueOnce({ code: 0, stdoutJson: { id: 'UI-7' } });
+    const ws = makeStubSocket();
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(
+        JSON.stringify({
+          id: 'workflow-labels',
+          type: 'update-workflow-settings',
+          payload: {
+            id: 'UI-7',
+            values: {
+              execution_lane: 'quick_edit',
+              workspace_policy: 'current',
+              branch_policy: 'same',
+              finish_action: 'direct',
+              review_profile: 'light'
+            }
+          }
+        })
+      )
+    );
+
+    expect(mRun.mock.calls[0][0]).toEqual(
+      expect.arrayContaining([
+        '--remove-label',
+        'lane:quick_edit',
+        '--remove-label',
+        'lane:spec_backed',
+        '--remove-label',
+        'lane:plan',
+        '--add-label',
+        'lane:quick_edit'
+      ])
+    );
+    expect(mRun.mock.calls[0][0].some((arg) => String(arg).includes('review_profile:'))).toBe(false);
   });
 
   test('update-assignee validates and returns updated issue', async () => {
