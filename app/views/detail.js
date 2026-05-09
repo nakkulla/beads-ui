@@ -1155,10 +1155,13 @@ export function createDetailView(
         ?disabled=${pending}
         @change=${onChange}
       >
-        <option value="">${emptyLabel}</option>
+        <option value="" ?selected=${value === ''}>${emptyLabel}</option>
         ${invalidOptionTemplate(value, options)}
         ${options.map(
-          (option) => html`<option value=${option}>${option}</option>`
+          (option) =>
+            html`<option value=${option} ?selected=${option === value}>
+              ${option}
+            </option>`
         )}
       </select>
     </div>`;

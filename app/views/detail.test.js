@@ -272,6 +272,31 @@ describe('views/detail', () => {
     expect(helper).toBeTruthy();
   });
 
+  test('prefills workflow settings edit controls from metadata', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issue = workflowIssue('UI-prefill');
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      detailStores('UI-prefill', issue),
+      workflowStore()
+    );
+
+    await view.load('UI-prefill');
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="workflow-settings-edit"]')
+    )?.click();
+
+    expect(selectValue(mount, 'workflow-settings-lane')).toBe('plan');
+    expect(selectValue(mount, 'workflow-settings-workspace')).toBe('worktree');
+    expect(selectValue(mount, 'workflow-settings-branch')).toBe('feature');
+    expect(selectValue(mount, 'workflow-settings-finish')).toBe('pr');
+    expect(selectValue(mount, 'workflow-settings-review-profile')).toBe('');
+  });
+
   test('edits workflow settings with explicit save and cancel', async () => {
     document.body.innerHTML =
       '<section class="panel"><div id="mount"></div></section>';
