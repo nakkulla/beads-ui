@@ -4,6 +4,8 @@ export const BRANCH_POLICIES = ['same', 'feature'];
 export const FINISH_ACTIONS = ['direct', 'pr'];
 export const REVIEW_PROFILES = ['light', 'standard', 'deep'];
 export const DEFAULT_REVIEW_PROFILE_LABEL = 'Default (standard)';
+export const REVIEW_RUNTIMES = ['codex', 'claude'];
+export const DEFAULT_REVIEW_RUNTIME_LABEL = 'Default (config)';
 
 export const ROUTE_TUPLES = [
   {
@@ -60,6 +62,7 @@ const FIELD_LABELS = {
   branch_policy: 'Branch',
   finish_action: 'Finish',
   review_profile: 'Review profile',
+  review_runtime: 'Review runtime',
   spec_id: 'Spec',
   plan: 'Plan',
   handoff: 'Handoff',
@@ -180,19 +183,46 @@ export function deriveReviewProfile(metadata) {
 }
 
 /**
+ * @param {Record<string, unknown>} metadata
+ * @returns {{ kind: 'default', value: null, label: string } | { kind: 'valid', value: string, label: string } | { kind: 'invalid', value: string, label: string }}
+ */
+export function deriveReviewRuntime(metadata) {
+  const review_runtime = stringValue(metadata.review_runtime);
+  if (!review_runtime) {
+    return {
+      kind: 'default',
+      value: null,
+      label: DEFAULT_REVIEW_RUNTIME_LABEL
+    };
+  }
+
+  if (REVIEW_RUNTIMES.includes(review_runtime)) {
+    return { kind: 'valid', value: review_runtime, label: review_runtime };
+  }
+
+  return {
+    kind: 'invalid',
+    value: review_runtime,
+    label: 'Invalid review runtime'
+  };
+}
+
+/**
  * @param {unknown} lane
  * @param {unknown} workspace_policy
  * @param {unknown} branch_policy
  * @param {unknown} finish_action
  * @param {unknown} review_profile
- * @returns {{ execution_lane: string, workspace_policy: string, branch_policy: string, finish_action: string, review_profile: string | null } | null}
+ * @param {unknown} review_runtime
+ * @returns {{ execution_lane: string, workspace_policy: string, branch_policy: string, finish_action: string, review_profile: string | null, review_runtime: string | null } | null}
  */
 export function workflowSettingsMutationValues(
   lane,
   workspace_policy,
   branch_policy,
   finish_action,
-  review_profile
+  review_profile,
+  review_runtime
 ) {
   const lane_value = stringValue(lane);
   const workspace_value = stringValue(workspace_policy);
@@ -200,6 +230,8 @@ export function workflowSettingsMutationValues(
   const finish_value = stringValue(finish_action);
   const profile_value =
     review_profile === null ? '' : stringValue(review_profile);
+  const runtime_value =
+    review_runtime === null ? '' : stringValue(review_runtime);
 
   if (!EXECUTION_LANES.includes(lane_value)) {
     return null;
@@ -218,12 +250,17 @@ export function workflowSettingsMutationValues(
     return null;
   }
 
+  if (runtime_value && !REVIEW_RUNTIMES.includes(runtime_value)) {
+    return null;
+  }
+
   return {
     execution_lane: lane_value,
     workspace_policy: workspace_value,
     branch_policy: branch_value,
     finish_action: finish_value,
-    review_profile: profile_value || null
+    review_profile: profile_value || null,
+    review_runtime: runtime_value || null
   };
 }
 
