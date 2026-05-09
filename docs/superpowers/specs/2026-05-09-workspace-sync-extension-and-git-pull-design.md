@@ -179,6 +179,8 @@ if !CURRENT_WORKSPACE.root_dir → makeError('No active workspace')
 pull_res = runBd(['dolt', 'pull'], { cwd, sandbox: false })
 if pull_res.code != 0 → makeError('bd_error', pull_res.stderr)
 
+triggerMutationRefreshOnce()  // initial pull 성공 직후 1회 호출
+
 push_res = runBd(['dolt', 'push'], { cwd, sandbox: false })
 if push_res.code != 0:
   pull_retry_res = runBd(['dolt', 'pull'], { cwd, sandbox: false })
@@ -186,8 +188,6 @@ if push_res.code != 0:
     return makeOk({ workspace, pulled: true, pushed: false,
                      push_error: pull_retry_res.stderr_tail })
   push_res = runBd(['dolt', 'push'], { cwd, sandbox: false })
-
-triggerMutationRefreshOnce()
 
 if push_res.code != 0:
   return makeOk({ workspace, pulled: true, pushed: false,
@@ -201,10 +201,15 @@ return makeOk({ workspace, pulled: true, pushed: true })
 - push 가 실패하면 한 번만 `dolt pull → dolt push` 순으로 재시도한다.
 - 재시도 후에도 push 가 실패하면 응답 자체는 `ok` 로 두고, `pulled: true,
   pushed: false, push_error: …` 로 부분 성공을 표현한다.
-- pull 성공 후 항상 `triggerMutationRefreshOnce()` 를 호출해 기존 subscription
-  refresh 경로를 통해 화면을 갱신한다.
+- `triggerMutationRefreshOnce()` 는 **initial pull 성공 직후 1회**만 호출한다.
+  push 결과(성공/재시도 후 성공/부분 실패)와 무관하게, 첫 pull 이 가져온
+  변경이 항상 화면에 반영되도록 보장하기 위함이다. 부분 실패 조기 반환
+  경로(`pull_retry_res.code != 0`)에서도 이미 첫 pull 이 트리거한 refresh 가
+  유효하므로 추가 호출은 필요하지 않다.
 - `stderr_tail` 은 `stderr` 의 마지막 비어있지 않은 라인을 최대 200자까지
-  자른 값. 토큰성 정보 노출을 줄이기 위한 단순화이다.
+  자른 값. 토큰성 정보 노출을 줄이기 위한 단순화이다. 헬퍼는
+  `server/bd.js` 에 export 하여 `runBd`/`runShell` 결과에서 공통 사용한다
+  (별도 모듈로 분리하지 않는다).
 
 ### `git-pull-workspace` (신규)
 
@@ -323,6 +328,10 @@ return makeError('git_error', stderr_tail)
 
 ### 클라이언트
 
+- `app/utils/toast.test.js` (신규 또는 확장)
+  - `variant: 'warning'` 호출 시 적절한 색상(주황 계열, 예: `#a36a00`)이
+    적용되는지 검증한다. 기존 `info`/`success`/`error` variant 동작이
+    회귀하지 않는지도 함께 확인한다.
 - `app/views/workspace-picker.test.js`
   - `Git Pull` 버튼이 single/multi workspace 모드 모두에서 렌더된다.
   - `is_syncing`, `is_git_pulling` 둘 중 하나라도 true 면 두 버튼 모두
@@ -398,8 +407,11 @@ workspace-picker 행에 버튼이 두 개로 늘면 좁은 화면에서 줄바�
 
 1. `server/bd.js`
    - `runShell(bin, args, options)` 헬퍼 신규 추가
+   - `stderr_tail(text)` 헬퍼 신규 추가 (export). 마지막 비어있지 않은
+     라인을 최대 200자까지 자르며 `runBd`/`runShell` 결과에서 공통 사용한다.
 2. `server/ws.js`
-   - `sync-workspace` 알고리즘 갱신 (pull → push, push 실패 시 1회 재시도)
+   - `sync-workspace` 알고리즘 갱신 (pull → push, push 실패 시 1회 재시도,
+     `triggerMutationRefreshOnce()` 는 initial pull 성공 직후 1회 호출)
    - `git-pull-workspace` 핸들러 추가
 3. `app/protocol.js`
    - 메시지 타입과 응답 스키마 갱신
