@@ -188,7 +188,8 @@ fg = "#2563eb"
       'workspace_policy',
       'branch_policy',
       'finish_action',
-      'review_profile'
+      'review_profile',
+      'review_runtime'
     ]);
     expect(
       config.detail.workflow_summary.workflow_settings.editable_fields
@@ -197,7 +198,8 @@ fg = "#2563eb"
       'workspace_policy',
       'branch_policy',
       'finish_action',
-      'review_profile'
+      'review_profile',
+      'review_runtime'
     ]);
   });
 
@@ -245,7 +247,8 @@ editable_fields = ["execution_lane", "topology"]
       'workspace_policy',
       'branch_policy',
       'finish_action',
-      'review_profile'
+      'review_profile',
+      'review_runtime'
     ]);
     expect(
       config.detail.workflow_summary.workflow_settings.editable_fields
@@ -254,7 +257,8 @@ editable_fields = ["execution_lane", "topology"]
       'workspace_policy',
       'branch_policy',
       'finish_action',
-      'review_profile'
+      'review_profile',
+      'review_runtime'
     ]);
     expect(
       config.detail.workflow_summary.workflow_settings.fields
@@ -280,7 +284,8 @@ visible_prefixes = ["has:"]
       'workspace_policy',
       'branch_policy',
       'finish_action',
-      'review_profile'
+      'review_profile',
+      'review_runtime'
     ]);
   });
 

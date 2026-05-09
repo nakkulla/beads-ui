@@ -108,14 +108,16 @@ describe('views/detail toast', () => {
                     'workspace_policy',
                     'branch_policy',
                     'finish_action',
-                    'review_profile'
+                    'review_profile',
+                    'review_runtime'
                   ],
                   editable_fields: [
                     'execution_lane',
                     'workspace_policy',
                     'branch_policy',
                     'finish_action',
-                    'review_profile'
+                    'review_profile',
+                    'review_runtime'
                   ]
                 }
               }

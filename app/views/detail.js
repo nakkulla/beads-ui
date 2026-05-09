@@ -1334,8 +1334,8 @@ export function createDetailView(
           <div class="workflow-summary__value">
             Review profile affects future formal review gates and does not
             change existing review evidence. Review runtime overrides the
-            default reviewer (codex/claude) for this Bead's review gates;
-            select to match the runtime that will run review.
+            default reviewer (codex/claude) for this Bead's review gates; select
+            to match the runtime that will run review.
           </div>
         </div>
       </div>

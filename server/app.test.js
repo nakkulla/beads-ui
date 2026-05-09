@@ -142,7 +142,8 @@ describe('server app wiring (no listen)', () => {
       'workspace_policy',
       'branch_policy',
       'finish_action',
-      'review_profile'
+      'review_profile',
+      'review_runtime'
     ]);
   });
 

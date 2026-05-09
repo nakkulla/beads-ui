@@ -52,14 +52,16 @@ function workflowStore() {
                   'workspace_policy',
                   'branch_policy',
                   'finish_action',
-                  'review_profile'
+                  'review_profile',
+                  'review_runtime'
                 ],
                 editable_fields: [
                   'execution_lane',
                   'workspace_policy',
                   'branch_policy',
                   'finish_action',
-                  'review_profile'
+                  'review_profile',
+                  'review_runtime'
                 ]
               }
             }
@@ -295,6 +297,7 @@ describe('views/detail', () => {
     expect(selectValue(mount, 'workflow-settings-branch')).toBe('feature');
     expect(selectValue(mount, 'workflow-settings-finish')).toBe('pr');
     expect(selectValue(mount, 'workflow-settings-review-profile')).toBe('');
+    expect(selectValue(mount, 'workflow-settings-review-runtime')).toBe('');
   });
 
   test('edits workflow settings with explicit save and cancel', async () => {
@@ -344,6 +347,7 @@ describe('views/detail', () => {
     setSelect(mount, 'workflow-settings-branch', 'same');
     setSelect(mount, 'workflow-settings-finish', 'direct');
     setSelect(mount, 'workflow-settings-review-profile', '');
+    setSelect(mount, 'workflow-settings-review-runtime', 'claude');
     /** @type {HTMLButtonElement|null} */ (
       mount.querySelector('[data-testid="workflow-settings-save"]')
     )?.click();
@@ -359,7 +363,8 @@ describe('views/detail', () => {
             workspace_policy: 'current',
             branch_policy: 'same',
             finish_action: 'direct',
-            review_profile: null
+            review_profile: null,
+            review_runtime: 'claude'
           }
         }
       }
@@ -491,6 +496,44 @@ describe('views/detail', () => {
       'Review profile affects future formal review gates'
     );
     expect(mount.textContent).toContain('existing review evidence');
+    expect(buttonDisabled(mount, 'workflow-settings-save')).toBe(false);
+  });
+
+  test('disables save for invalid review runtime until corrected', async () => {
+    document.body.innerHTML =
+      '<section class="panel"><div id="mount"></div></section>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const issue = {
+      ...workflowIssue('UI-runtime-invalid'),
+      labels: ['lane:plan'],
+      metadata: {
+        execution_lane: 'plan',
+        workspace_policy: 'worktree',
+        branch_policy: 'feature',
+        finish_action: 'pr',
+        review_runtime: 'gpt'
+      }
+    };
+    const view = createDetailView(
+      mount,
+      async () => ({}),
+      undefined,
+      detailStores('UI-runtime-invalid', issue),
+      workflowStore()
+    );
+
+    await view.load('UI-runtime-invalid');
+    /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-testid="workflow-settings-edit"]')
+    )?.click();
+
+    expect(selectValue(mount, 'workflow-settings-review-runtime')).toBe('gpt');
+    expect(mount.textContent).toContain('Invalid review runtime');
+    expect(buttonDisabled(mount, 'workflow-settings-save')).toBe(true);
+
+    setSelect(mount, 'workflow-settings-review-runtime', 'codex');
+
+    expect(mount.textContent).not.toContain('Invalid review runtime');
     expect(buttonDisabled(mount, 'workflow-settings-save')).toBe(false);
   });
 

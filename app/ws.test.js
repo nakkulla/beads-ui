@@ -126,7 +126,8 @@ describe('app/ws client', () => {
         workspace_policy: 'worktree',
         branch_policy: 'feature',
         finish_action: 'pr',
-        review_profile: null
+        review_profile: null,
+        review_runtime: null
       }
     });
     const frame = JSON.parse(sockets[0].sent.at(-1));

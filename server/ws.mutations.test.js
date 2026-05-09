@@ -299,7 +299,8 @@ describe('ws mutation handlers', () => {
                 workspace_policy,
                 branch_policy,
                 finish_action,
-                review_profile: null
+                review_profile: null,
+                review_runtime: null
               }
             }
           })
@@ -319,6 +320,8 @@ describe('ws mutation handlers', () => {
         `finish_action=${finish_action}`,
         '--unset-metadata',
         'review_profile',
+        '--unset-metadata',
+        'review_runtime',
         '--remove-label',
         'lane:quick_edit',
         '--remove-label',
@@ -348,7 +351,8 @@ describe('ws mutation handlers', () => {
               workspace_policy: 'current',
               branch_policy: 'same',
               finish_action: 'pr',
-              review_profile: null
+              review_profile: null,
+              review_runtime: null
             }
           }
         })
@@ -381,15 +385,19 @@ describe('ws mutation handlers', () => {
               workspace_policy: 'worktree',
               branch_policy: 'feature',
               finish_action: 'pr',
-              review_profile: 'deep'
+              review_profile: 'deep',
+              review_runtime: null
             }
           }
         })
       )
     );
 
-    expect(mRun.mock.calls[0][0]).toContain('review_profile=deep');
-    expect(mRun.mock.calls[0][0]).not.toContain('--unset-metadata');
+    const args = /** @type {string[]} */ (mRun.mock.calls[0][0]);
+    expect(args).toContain('review_profile=deep');
+    expect(args).not.toContain('--unset-metadata review_profile');
+    const review_profile_idx = args.indexOf('review_profile=deep');
+    expect(args[review_profile_idx - 1]).toBe('--set-metadata');
     expect(JSON.parse(ws.sent[ws.sent.length - 1]).ok).toBe(true);
   });
 
@@ -413,7 +421,8 @@ describe('ws mutation handlers', () => {
               workspace_policy: 'worktree',
               branch_policy: 'feature',
               finish_action: 'pr',
-              review_profile: null
+              review_profile: null,
+              review_runtime: null
             }
           }
         })
@@ -445,7 +454,8 @@ describe('ws mutation handlers', () => {
               workspace_policy: 'current',
               branch_policy: 'same',
               finish_action: 'direct',
-              review_profile: 'light'
+              review_profile: 'light',
+              review_runtime: null
             }
           }
         })
@@ -468,6 +478,104 @@ describe('ws mutation handlers', () => {
     expect(
       update_args.some((arg) => String(arg).includes('review_profile:'))
     ).toBe(false);
+  });
+
+  test('sets explicit review runtime metadata', async () => {
+    const mRun = /** @type {import('vitest').Mock} */ (runBd);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    mJson.mockResolvedValueOnce({ code: 0, stdoutJson: { id: 'UI-7' } });
+    const ws = makeStubSocket();
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(
+        JSON.stringify({
+          id: 'workflow-runtime-claude',
+          type: 'update-workflow-settings',
+          payload: {
+            id: 'UI-7',
+            values: {
+              execution_lane: 'plan',
+              workspace_policy: 'worktree',
+              branch_policy: 'feature',
+              finish_action: 'pr',
+              review_profile: null,
+              review_runtime: 'claude'
+            }
+          }
+        })
+      )
+    );
+
+    expect(mRun.mock.calls[0][0]).toContain('review_runtime=claude');
+    expect(mRun.mock.calls[0][0]).toContain('--unset-metadata');
+    expect(mRun.mock.calls[0][0]).toContain('review_profile');
+    expect(JSON.parse(ws.sent[ws.sent.length - 1]).ok).toBe(true);
+  });
+
+  test('unsets review runtime metadata for default', async () => {
+    const mRun = /** @type {import('vitest').Mock} */ (runBd);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    mJson.mockResolvedValueOnce({ code: 0, stdoutJson: { id: 'UI-7' } });
+    const ws = makeStubSocket();
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(
+        JSON.stringify({
+          id: 'workflow-runtime-default',
+          type: 'update-workflow-settings',
+          payload: {
+            id: 'UI-7',
+            values: {
+              execution_lane: 'plan',
+              workspace_policy: 'worktree',
+              branch_policy: 'feature',
+              finish_action: 'pr',
+              review_profile: null,
+              review_runtime: null
+            }
+          }
+        })
+      )
+    );
+
+    const args = /** @type {string[]} */ (mRun.mock.calls[0][0]);
+    expect(args).toContain('--unset-metadata');
+    expect(args).toContain('review_runtime');
+    expect(JSON.parse(ws.sent[ws.sent.length - 1]).ok).toBe(true);
+  });
+
+  test('rejects invalid review runtime before bd', async () => {
+    const ws = makeStubSocket();
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(
+        JSON.stringify({
+          id: 'workflow-bad-runtime',
+          type: 'update-workflow-settings',
+          payload: {
+            id: 'UI-7',
+            values: {
+              execution_lane: 'plan',
+              workspace_policy: 'worktree',
+              branch_policy: 'feature',
+              finish_action: 'pr',
+              review_profile: null,
+              review_runtime: 'gpt'
+            }
+          }
+        })
+      )
+    );
+
+    expect(runBd).not.toHaveBeenCalled();
+    const sent = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(sent.error.code).toBe('bad_request');
+    expect(sent.error.message).toBe('Invalid review runtime');
   });
 
   test('update-assignee validates and returns updated issue', async () => {

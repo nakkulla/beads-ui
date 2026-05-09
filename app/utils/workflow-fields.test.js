@@ -73,6 +73,29 @@ describe('workflow fields', () => {
     });
   });
 
+  test('derives review runtime display states', () => {
+    expect(deriveReviewRuntime({})).toEqual({
+      kind: 'default',
+      value: null,
+      label: 'Default (config)'
+    });
+    expect(deriveReviewRuntime({ review_runtime: 'codex' })).toEqual({
+      kind: 'valid',
+      value: 'codex',
+      label: 'codex'
+    });
+    expect(deriveReviewRuntime({ review_runtime: 'claude' })).toEqual({
+      kind: 'valid',
+      value: 'claude',
+      label: 'claude'
+    });
+    expect(deriveReviewRuntime({ review_runtime: 'gpt' })).toEqual({
+      kind: 'invalid',
+      value: 'gpt',
+      label: 'Invalid review runtime'
+    });
+  });
+
   test('builds workflow settings rows without topology', () => {
     const sections = buildWorkflowSections(
       {
@@ -93,6 +116,7 @@ describe('workflow fields', () => {
             'branch_policy',
             'finish_action',
             'review_profile',
+            'review_runtime',
             'topology'
           ],
           editable_fields: [
@@ -100,7 +124,8 @@ describe('workflow fields', () => {
             'workspace_policy',
             'branch_policy',
             'finish_action',
-            'review_profile'
+            'review_profile',
+            'review_runtime'
           ]
         }
       }
@@ -113,10 +138,14 @@ describe('workflow fields', () => {
       'workspace_policy',
       'branch_policy',
       'finish_action',
-      'review_profile'
+      'review_profile',
+      'review_runtime'
     ]);
     expect(sections[0].rows.map((row) => row.value)).toContain(
       'Default (standard)'
+    );
+    expect(sections[0].rows.map((row) => row.value)).toContain(
+      'Default (config)'
     );
   });
 
@@ -129,7 +158,8 @@ describe('workflow fields', () => {
           workspace_policy: 'current',
           branch_policy: 'same',
           finish_action: 'pr',
-          review_profile: 'unknown'
+          review_profile: 'unknown',
+          review_runtime: 'gpt'
         }
       },
       {
@@ -140,7 +170,8 @@ describe('workflow fields', () => {
             'workspace_policy',
             'branch_policy',
             'finish_action',
-            'review_profile'
+            'review_profile',
+            'review_runtime'
           ]
         }
       }
@@ -151,23 +182,68 @@ describe('workflow fields', () => {
       expect.objectContaining({ id: 'workspace_policy', kind: 'invalid' }),
       expect.objectContaining({ id: 'branch_policy', kind: 'invalid' }),
       expect.objectContaining({ id: 'finish_action', kind: 'invalid' }),
-      expect.objectContaining({ id: 'review_profile', kind: 'invalid' })
+      expect.objectContaining({ id: 'review_profile', kind: 'invalid' }),
+      expect.objectContaining({ id: 'review_runtime', kind: 'invalid' })
     ]);
   });
 
   test('builds workflow settings mutation values', () => {
     expect(
-      workflowSettingsMutationValues('plan', 'worktree', 'feature', 'pr', '')
+      workflowSettingsMutationValues(
+        'plan',
+        'worktree',
+        'feature',
+        'pr',
+        '',
+        ''
+      )
     ).toEqual({
       execution_lane: 'plan',
       workspace_policy: 'worktree',
       branch_policy: 'feature',
       finish_action: 'pr',
-      review_profile: null
+      review_profile: null,
+      review_runtime: null
     });
 
     expect(
-      workflowSettingsMutationValues('plan', 'current', 'same', 'pr', 'deep')
+      workflowSettingsMutationValues(
+        'plan',
+        'worktree',
+        'feature',
+        'pr',
+        'deep',
+        'codex'
+      )
+    ).toEqual({
+      execution_lane: 'plan',
+      workspace_policy: 'worktree',
+      branch_policy: 'feature',
+      finish_action: 'pr',
+      review_profile: 'deep',
+      review_runtime: 'codex'
+    });
+
+    expect(
+      workflowSettingsMutationValues(
+        'plan',
+        'worktree',
+        'feature',
+        'pr',
+        '',
+        'gpt'
+      )
+    ).toBeNull();
+
+    expect(
+      workflowSettingsMutationValues(
+        'plan',
+        'current',
+        'same',
+        'pr',
+        'deep',
+        ''
+      )
     ).toBeNull();
   });
 

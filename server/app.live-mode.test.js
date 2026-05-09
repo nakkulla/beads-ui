@@ -157,7 +157,8 @@ describe('createApp live frontend mode', () => {
       'workspace_policy',
       'branch_policy',
       'finish_action',
-      'review_profile'
+      'review_profile',
+      'review_runtime'
     ]);
     expect(config_payload.workspace_config).toEqual({
       default_workspace: null
