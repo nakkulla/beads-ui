@@ -397,6 +397,15 @@ function buildWorkflowSettingsRows(fields, metadata) {
           kind: profile.kind === 'invalid' ? 'invalid' : 'value'
         })
       );
+      continue;
+    }
+    if (field === 'review_runtime') {
+      const runtime = deriveReviewRuntime(metadata);
+      rows.push(
+        makeRow(field, runtime.label, {
+          kind: runtime.kind === 'invalid' ? 'invalid' : 'value'
+        })
+      );
     }
   }
   return rows;

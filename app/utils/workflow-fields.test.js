@@ -4,10 +4,12 @@ import {
   EXECUTION_LANES,
   FINISH_ACTIONS,
   REVIEW_PROFILES,
+  REVIEW_RUNTIMES,
   ROUTE_TUPLES,
   WORKSPACE_POLICIES,
   buildWorkflowSections,
   deriveReviewProfile,
+  deriveReviewRuntime,
   deriveRouteTuple,
   safeWorkflowUrl,
   workflowSettingsMutationValues
@@ -20,6 +22,7 @@ describe('workflow fields', () => {
     expect(BRANCH_POLICIES).toEqual(['same', 'feature']);
     expect(FINISH_ACTIONS).toEqual(['direct', 'pr']);
     expect(REVIEW_PROFILES).toEqual(['light', 'standard', 'deep']);
+    expect(REVIEW_RUNTIMES).toEqual(['codex', 'claude']);
   });
 
   test('derives all valid route tuples', () => {

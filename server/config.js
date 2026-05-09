@@ -21,7 +21,8 @@ const WORKFLOW_SECTION_FIELDS = {
     'workspace_policy',
     'branch_policy',
     'finish_action',
-    'review_profile'
+    'review_profile',
+    'review_runtime'
   ],
   artifacts: ['spec_id', 'plan', 'handoff'],
   review_gates: [
@@ -59,7 +60,8 @@ const EDITABLE_WORKFLOW_FIELDS = {
     'workspace_policy',
     'branch_policy',
     'finish_action',
-    'review_profile'
+    'review_profile',
+    'review_runtime'
   ]
 };
 

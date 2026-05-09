@@ -12,9 +12,11 @@ import { createTypeBadge } from '../utils/type-badge.js';
 import {
   BRANCH_POLICIES,
   DEFAULT_REVIEW_PROFILE_LABEL,
+  DEFAULT_REVIEW_RUNTIME_LABEL,
   EXECUTION_LANES,
   FINISH_ACTIONS,
   REVIEW_PROFILES,
+  REVIEW_RUNTIMES,
   WORKSPACE_POLICIES,
   buildWorkflowSections,
   deriveRouteTuple,
@@ -74,7 +76,7 @@ function formatCommentDate(dateStr) {
  * @property {number} [priority]
  * @property {string[]} [labels]
  * @property {string} [spec_id]
- * @property {{ plan?: string | null, handoff?: string | null, run_started_at?: string | null, run_finished_at?: string | null, pr_url?: string | null, pr_number?: string | number | null, execution_lane?: string | null, workspace_policy?: string | null, branch_policy?: string | null, finish_action?: string | null, review_profile?: string | null, skill_workflow?: string | null }} [metadata]
+ * @property {{ plan?: string | null, handoff?: string | null, run_started_at?: string | null, run_finished_at?: string | null, pr_url?: string | null, pr_number?: string | number | null, execution_lane?: string | null, workspace_policy?: string | null, branch_policy?: string | null, finish_action?: string | null, review_profile?: string | null, review_runtime?: string | null, skill_workflow?: string | null }} [metadata]
  * @property {Dependency[]} [dependencies]
  * @property {Dependency[]} [dependents]
  * @property {Comment[]} [comments]
@@ -135,6 +137,8 @@ export function createDetailView(
   let workflow_draft_finish = '';
   /** @type {string} */
   let workflow_draft_review_profile = '';
+  /** @type {string} */
+  let workflow_draft_review_runtime = '';
   /** @type {string} */
   let new_label_text = '';
   /** @type {string} */
@@ -961,6 +965,10 @@ export function createDetailView(
       typeof metadata.review_profile === 'string'
         ? metadata.review_profile
         : '';
+    workflow_draft_review_runtime =
+      typeof metadata.review_runtime === 'string'
+        ? metadata.review_runtime
+        : '';
     edit_workflow_settings = true;
     doRender();
   }
@@ -972,6 +980,7 @@ export function createDetailView(
     workflow_draft_branch = '';
     workflow_draft_finish = '';
     workflow_draft_review_profile = '';
+    workflow_draft_review_runtime = '';
     doRender();
   }
 
@@ -984,7 +993,8 @@ export function createDetailView(
       workflow_draft_workspace,
       workflow_draft_branch,
       workflow_draft_finish,
-      workflow_draft_review_profile
+      workflow_draft_review_profile,
+      workflow_draft_review_runtime
     );
     if (!values) {
       showToast('Choose valid workflow settings', 'error');
@@ -1007,6 +1017,7 @@ export function createDetailView(
       workflow_draft_branch = '';
       workflow_draft_finish = '';
       workflow_draft_review_profile = '';
+      workflow_draft_review_runtime = '';
     } catch (err) {
       log('save workflow settings failed %o', err);
       showToast('Failed to save workflow settings', 'error');
@@ -1058,6 +1069,16 @@ export function createDetailView(
    */
   function onWorkflowReviewProfileChange(ev) {
     workflow_draft_review_profile = /** @type {HTMLSelectElement} */ (
+      ev.currentTarget
+    ).value;
+    doRender();
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onWorkflowReviewRuntimeChange(ev) {
+    workflow_draft_review_runtime = /** @type {HTMLSelectElement} */ (
       ev.currentTarget
     ).value;
     doRender();
@@ -1179,7 +1200,8 @@ export function createDetailView(
       'workspace_policy',
       'branch_policy',
       'finish_action',
-      'review_profile'
+      'review_profile',
+      'review_runtime'
     ].every((field) => editable_fields.includes(field));
 
     if (!edit_workflow_settings) {
@@ -1217,6 +1239,9 @@ export function createDetailView(
     const profile_invalid =
       workflow_draft_review_profile !== '' &&
       !REVIEW_PROFILES.includes(workflow_draft_review_profile);
+    const runtime_invalid =
+      workflow_draft_review_runtime !== '' &&
+      !REVIEW_RUNTIMES.includes(workflow_draft_review_runtime);
     const lane_invalid =
       workflow_draft_lane !== '' &&
       !EXECUTION_LANES.includes(workflow_draft_lane);
@@ -1225,7 +1250,8 @@ export function createDetailView(
       workflow_draft_workspace,
       workflow_draft_branch,
       workflow_draft_finish,
-      workflow_draft_review_profile
+      workflow_draft_review_profile,
+      workflow_draft_review_runtime
     );
     const can_save = Boolean(values);
 
@@ -1275,6 +1301,14 @@ export function createDetailView(
           onWorkflowReviewProfileChange,
           DEFAULT_REVIEW_PROFILE_LABEL
         )}
+        ${workflowSelectTemplate(
+          'workflow-settings-review-runtime',
+          'Review runtime',
+          workflow_draft_review_runtime,
+          REVIEW_RUNTIMES,
+          onWorkflowReviewRuntimeChange,
+          DEFAULT_REVIEW_RUNTIME_LABEL
+        )}
         ${lane_invalid
           ? html`<div class="workflow-summary__row is-invalid">
               Invalid execution lane
@@ -1290,11 +1324,18 @@ export function createDetailView(
               Invalid review profile
             </div>`
           : null}
+        ${runtime_invalid
+          ? html`<div class="workflow-summary__row is-invalid">
+              Invalid review runtime
+            </div>`
+          : null}
         <div class="workflow-summary__row">
           <div class="workflow-summary__label">Note</div>
           <div class="workflow-summary__value">
             Review profile affects future formal review gates and does not
-            change existing review evidence.
+            change existing review evidence. Review runtime overrides the
+            default reviewer (codex/claude) for this Bead's review gates;
+            select to match the runtime that will run review.
           </div>
         </div>
       </div>

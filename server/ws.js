@@ -34,6 +34,7 @@ const WORKSPACE_POLICIES = new Set(['current', 'worktree']);
 const BRANCH_POLICIES = new Set(['same', 'feature']);
 const FINISH_ACTIONS = new Set(['direct', 'pr']);
 const REVIEW_PROFILES = new Set(['light', 'standard', 'deep']);
+const REVIEW_RUNTIMES = new Set(['codex', 'claude']);
 const VALID_ROUTE_TUPLES = new Set([
   'current\0same\0direct',
   'current\0feature\0direct',
@@ -349,7 +350,7 @@ function routeTupleKey(workspace_policy, branch_policy, finish_action) {
 
 /**
  * @param {unknown} payload
- * @returns {{ ok: true, id: string, values: { execution_lane: string, workspace_policy: string, branch_policy: string, finish_action: string, review_profile: string | null } } | { ok: false, code: string, message: string }}
+ * @returns {{ ok: true, id: string, values: { execution_lane: string, workspace_policy: string, branch_policy: string, finish_action: string, review_profile: string | null, review_runtime: string | null } } | { ok: false, code: string, message: string }}
  */
 function validateWorkflowSettingsPayload(payload) {
   const body = /** @type {any} */ (payload || {});
@@ -369,6 +370,7 @@ function validateWorkflowSettingsPayload(payload) {
   const branch_policy = values.branch_policy;
   const finish_action = values.finish_action;
   const review_profile = values.review_profile;
+  const review_runtime = values.review_runtime;
   if (
     typeof execution_lane !== 'string' ||
     !WORKFLOW_LANES.has(execution_lane)
@@ -427,6 +429,16 @@ function validateWorkflowSettingsPayload(payload) {
       message: 'Invalid review profile'
     };
   }
+  if (
+    review_runtime !== null &&
+    (typeof review_runtime !== 'string' || !REVIEW_RUNTIMES.has(review_runtime))
+  ) {
+    return {
+      ok: false,
+      code: 'bad_request',
+      message: 'Invalid review runtime'
+    };
+  }
 
   return {
     ok: true,
@@ -436,7 +448,8 @@ function validateWorkflowSettingsPayload(payload) {
       workspace_policy,
       branch_policy,
       finish_action,
-      review_profile
+      review_profile,
+      review_runtime
     }
   };
 }
@@ -1130,6 +1143,11 @@ export async function handleMessage(ws, data) {
       args.push('--unset-metadata', 'review_profile');
     } else {
       args.push('--set-metadata', `review_profile=${values.review_profile}`);
+    }
+    if (values.review_runtime === null) {
+      args.push('--unset-metadata', 'review_runtime');
+    } else {
+      args.push('--set-metadata', `review_runtime=${values.review_runtime}`);
     }
     for (const label of LANE_LABELS) {
       args.push('--remove-label', label);
