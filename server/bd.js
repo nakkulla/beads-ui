@@ -211,6 +211,104 @@ async function withBdRunQueue(operation) {
 }
 
 /**
+ * Run an arbitrary binary and capture stdout/stderr/exit code.
+ *
+ * Behavior follows {@link runBd} (no shell, ENOENT normalized to non-zero
+ * code), but does not pass through the bd run queue or BEADS_DB env injection.
+ * Intended for non-bd binaries such as `git`.
+ *
+ * @param {string} bin - Binary name or absolute path.
+ * @param {string[]} args - Arguments (pre-split, no shell).
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
+ * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+ */
+export function runShell(bin, args, options = {}) {
+  const spawn_opts = {
+    cwd: options.cwd || process.cwd(),
+    env: options.env || process.env,
+    shell: false,
+    windowsHide: true
+  };
+
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, spawn_opts);
+
+    /** @type {string[]} */
+    const out_chunks = [];
+    /** @type {string[]} */
+    const err_chunks = [];
+
+    if (child.stdout) {
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => {
+        out_chunks.push(String(chunk));
+      });
+    }
+    if (child.stderr) {
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk) => {
+        err_chunks.push(String(chunk));
+      });
+    }
+
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let timer;
+    if (options.timeout_ms && options.timeout_ms > 0) {
+      timer = setTimeout(() => {
+        child.kill('SIGKILL');
+      }, options.timeout_ms);
+      timer.unref?.();
+    }
+
+    let settled = false;
+    /**
+     * @param {number | string | null} code
+     */
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      resolve({
+        code: Number(code || 0),
+        stdout: out_chunks.join(''),
+        stderr: err_chunks.join('')
+      });
+    };
+
+    child.on('error', (err) => {
+      log('spawn error running %s %o', bin, err);
+      finish(127);
+    });
+    child.on('close', (code) => {
+      finish(code);
+    });
+  });
+}
+
+/**
+ * Return the last non-empty line of `text`, truncated to at most 200 chars.
+ *
+ * Used to surface a single-line summary of stderr/stdout from `runBd` /
+ * `runShell` results to clients without leaking large or sensitive output.
+ *
+ * @param {string | null | undefined} text
+ * @returns {string}
+ */
+export function stderrTail(text) {
+  if (!text) return '';
+  const lines = String(text).split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].trim();
+    if (line.length > 0) {
+      return line.length > 200 ? line.slice(0, 200) : line;
+    }
+  }
+  return '';
+}
+
+/**
  * Run `bd` and parse JSON from stdout if exit code is 0.
  *
  * @param {string[]} args - Must include flags that cause JSON to be printed (e.g., `--json`).

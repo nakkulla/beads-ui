@@ -5,7 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { getBdBin, getGitUserName, runBd, runBdJson } from './bd.js';
+import {
+  getBdBin,
+  getGitUserName,
+  runBd,
+  runBdJson,
+  runShell,
+  stderrTail
+} from './bd.js';
 
 // Mock child_process.spawn before importing the module under test
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
@@ -185,6 +192,97 @@ describe('runBdJson', () => {
     const res = await runBdJson(['list', '--json']);
     expect(res.code).toBe(2);
     expect(res.stderr).toContain('oops');
+  });
+});
+
+describe('runShell', () => {
+  test('runs given binary with args without sandbox prepend', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('out', '', 0));
+    const res = await runShell('git', ['pull', '--rebase', '--autostash'], {
+      cwd: '/repo-a'
+    });
+    expect(res.code).toBe(0);
+    expect(res.stdout).toBe('out');
+
+    const callArgs = mockedSpawn.mock.calls[0];
+    expect(callArgs[0]).toBe('git');
+    expect(callArgs[1]).toEqual(['pull', '--rebase', '--autostash']);
+    expect(callArgs[2].cwd).toBe('/repo-a');
+    expect(callArgs[2].shell).toBe(false);
+  });
+
+  test('returns stderr and non-zero code on failure', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('', 'CONFLICT (content)', 1));
+    const res = await runShell('git', ['pull'], { cwd: '/repo-a' });
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain('CONFLICT');
+  });
+
+  test('normalizes ENOENT to non-zero code', async () => {
+    const cp = /** @type {any} */ (new EventEmitter());
+    cp.stdout = new PassThrough();
+    cp.stderr = new PassThrough();
+    setTimeout(() => {
+      cp.stdout.end();
+      cp.stderr.end();
+      cp.emit(
+        'error',
+        Object.assign(new Error('not found'), { code: 'ENOENT' })
+      );
+    }, 0);
+    mockedSpawn.mockReturnValueOnce(cp);
+
+    const res = await runShell('git-missing', ['pull'], { cwd: '/repo-a' });
+    expect(res.code).not.toBe(0);
+  });
+
+  test('does not use bd run queue (parallel git ops)', async () => {
+    let active = 0;
+    let max_active = 0;
+    mockedSpawn.mockImplementation(() => {
+      active += 1;
+      if (active > max_active) max_active = active;
+      const cp = /** @type {any} */ (new EventEmitter());
+      cp.stdout = new PassThrough();
+      cp.stderr = new PassThrough();
+      setTimeout(() => {
+        cp.stdout.end();
+        cp.stderr.end();
+        active -= 1;
+        cp.emit('close', 0);
+      }, 5);
+      return cp;
+    });
+
+    await Promise.all([
+      runShell('git', ['status'], { cwd: '/r1' }),
+      runShell('git', ['status'], { cwd: '/r2' })
+    ]);
+
+    expect(max_active).toBe(2);
+  });
+});
+
+describe('stderrTail', () => {
+  test('returns empty string for empty input', () => {
+    expect(stderrTail('')).toBe('');
+    expect(stderrTail(null)).toBe('');
+    expect(stderrTail(undefined)).toBe('');
+  });
+
+  test('returns last non-empty line', () => {
+    expect(stderrTail('first\nsecond\n\n')).toBe('second');
+  });
+
+  test('truncates very long line to 200 chars', () => {
+    const long = 'x'.repeat(500);
+    const out = stderrTail(long);
+    expect(out.length).toBe(200);
+    expect(out.startsWith('xxx')).toBe(true);
+  });
+
+  test('handles single-line input without trailing newline', () => {
+    expect(stderrTail('only line')).toBe('only line');
   });
 });
 

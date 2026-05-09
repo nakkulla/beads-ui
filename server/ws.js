@@ -6,7 +6,13 @@
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { isRequest, makeError, makeOk } from '../app/protocol.js';
-import { getGitUserName, runBd, runBdJson } from './bd.js';
+import {
+  getGitUserName,
+  runBd,
+  runBdJson,
+  runShell,
+  stderrTail
+} from './bd.js';
 import { resolveWorkspaceDatabase } from './db.js';
 import { fetchListForSubscription } from './list-adapters.js';
 import { debug } from './logging.js';
@@ -222,6 +228,66 @@ let CURRENT_WORKSPACE = null;
  * @type {{ rebind: (opts?: { root_dir?: string }) => void, path: string } | null}
  */
 let DB_WATCHER = null;
+
+/**
+ * In-flight workspace operations keyed by workspace `root_dir`. Prevents the
+ * same workspace from running `sync-workspace` and `git-pull-workspace`
+ * concurrently across multiple clients or raw requests.
+ *
+ * @type {Map<string, { kind: 'sync' | 'git-pull' }>}
+ */
+const ACTIVE_WORKSPACE_OPS = new Map();
+
+/**
+ * Classify the result of a successful `git pull --rebase --autostash` run.
+ * Stash pop conflict requires an explicit failure marker; absence of
+ * "Applied autostash" is not enough since no-op / no-stash cases also lack it.
+ *
+ * @param {string} combined - stdout and stderr concatenated.
+ * @returns {'updated' | 'up_to_date' | 'stash_pop_conflict'}
+ */
+function detectGitPullStatus(combined) {
+  const stash_failed_markers = [
+    'cannot apply stash',
+    'could not restore stash',
+    'Applied autostash failed'
+  ];
+  if (stash_failed_markers.some((m) => combined.includes(m))) {
+    return 'stash_pop_conflict';
+  }
+  if (
+    combined.includes('Already up to date') ||
+    combined.includes('Already up-to-date')
+  ) {
+    return 'up_to_date';
+  }
+  return 'updated';
+}
+
+/**
+ * Try to acquire a per-workspace operation lock.
+ *
+ * @param {string} root - Absolute workspace root directory.
+ * @param {'sync' | 'git-pull'} kind
+ * @returns {{ ok: true } | { ok: false, existing_kind: 'sync' | 'git-pull' }}
+ */
+function acquireWorkspaceLock(root, kind) {
+  const existing = ACTIVE_WORKSPACE_OPS.get(root);
+  if (existing) {
+    return { ok: false, existing_kind: existing.kind };
+  }
+  ACTIVE_WORKSPACE_OPS.set(root, { kind });
+  return { ok: true };
+}
+
+/**
+ * Release a per-workspace operation lock.
+ *
+ * @param {string} root
+ */
+function releaseWorkspaceLock(root) {
+  ACTIVE_WORKSPACE_OPS.delete(root);
+}
 
 /**
  * Run bd in the currently selected workspace when available.
@@ -1702,33 +1768,218 @@ export async function handleMessage(ws, data) {
   if (req.type === 'sync-workspace') {
     log('sync-workspace');
 
-    if (!CURRENT_WORKSPACE?.root_dir) {
+    const root_snapshot = CURRENT_WORKSPACE?.root_dir;
+    if (!root_snapshot) {
       ws.send(
         JSON.stringify(makeError(req, 'server_error', 'No active workspace'))
       );
       return;
     }
 
-    const res = await runBd(['dolt', 'pull'], {
-      cwd: CURRENT_WORKSPACE.root_dir,
-      sandbox: false
-    });
-
-    if (res.code !== 0) {
+    const lock = acquireWorkspaceLock(root_snapshot, 'sync');
+    if (!lock.ok) {
       ws.send(
-        JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
+        JSON.stringify(
+          makeError(
+            req,
+            'busy',
+            `${lock.existing_kind} in progress for workspace`
+          )
+        )
       );
       return;
     }
 
-    triggerMutationRefreshOnce();
-    ws.send(
-      JSON.stringify(
-        makeOk(req, {
-          workspace: CURRENT_WORKSPACE
-        })
-      )
-    );
+    const workspace_snapshot = { ...CURRENT_WORKSPACE };
+
+    try {
+      const pull_res = await runBd(['dolt', 'pull'], {
+        cwd: root_snapshot,
+        sandbox: false
+      });
+      if (pull_res.code !== 0) {
+        ws.send(
+          JSON.stringify(
+            makeError(
+              req,
+              'bd_error',
+              stderrTail(pull_res.stderr) || 'bd failed'
+            )
+          )
+        );
+        return;
+      }
+
+      triggerMutationRefreshOnce();
+
+      let push_res = await runBd(['dolt', 'push'], {
+        cwd: root_snapshot,
+        sandbox: false
+      });
+
+      if (push_res.code !== 0) {
+        const retry_pull = await runBd(['dolt', 'pull'], {
+          cwd: root_snapshot,
+          sandbox: false
+        });
+        if (retry_pull.code !== 0) {
+          triggerMutationRefreshOnce();
+          ws.send(
+            JSON.stringify(
+              makeOk(req, {
+                workspace: workspace_snapshot,
+                pulled: true,
+                pushed: false,
+                push_error: stderrTail(retry_pull.stderr)
+              })
+            )
+          );
+          return;
+        }
+        triggerMutationRefreshOnce();
+        push_res = await runBd(['dolt', 'push'], {
+          cwd: root_snapshot,
+          sandbox: false
+        });
+      }
+
+      if (push_res.code !== 0) {
+        ws.send(
+          JSON.stringify(
+            makeOk(req, {
+              workspace: workspace_snapshot,
+              pulled: true,
+              pushed: false,
+              push_error: stderrTail(push_res.stderr)
+            })
+          )
+        );
+        return;
+      }
+
+      ws.send(
+        JSON.stringify(
+          makeOk(req, {
+            workspace: workspace_snapshot,
+            pulled: true,
+            pushed: true
+          })
+        )
+      );
+    } finally {
+      releaseWorkspaceLock(root_snapshot);
+    }
+    return;
+  }
+
+  if (req.type === 'git-pull-workspace') {
+    log('git-pull-workspace');
+
+    const root_snapshot = CURRENT_WORKSPACE?.root_dir;
+    if (!root_snapshot) {
+      ws.send(
+        JSON.stringify(makeError(req, 'server_error', 'No active workspace'))
+      );
+      return;
+    }
+
+    const lock = acquireWorkspaceLock(root_snapshot, 'git-pull');
+    if (!lock.ok) {
+      ws.send(
+        JSON.stringify(
+          makeError(
+            req,
+            'busy',
+            `${lock.existing_kind} in progress for workspace`
+          )
+        )
+      );
+      return;
+    }
+
+    const workspace_snapshot = { ...CURRENT_WORKSPACE };
+
+    try {
+      const res = await runShell('git', ['pull', '--rebase', '--autostash'], {
+        cwd: root_snapshot
+      });
+
+      const combined = `${res.stdout}\n${res.stderr}`;
+      const conflict_markers = [
+        'CONFLICT',
+        'could not apply',
+        'Resolve all conflicts manually',
+        'rebase --abort',
+        'Failed to merge in the changes'
+      ];
+      const is_rebase_conflict = conflict_markers.some((m) =>
+        combined.includes(m)
+      );
+
+      if (res.code === 0 && !is_rebase_conflict) {
+        const status = detectGitPullStatus(combined);
+        ws.send(
+          JSON.stringify(
+            makeOk(req, {
+              workspace: workspace_snapshot,
+              status,
+              stdout_tail: stderrTail(res.stdout),
+              stderr_tail: stderrTail(res.stderr)
+            })
+          )
+        );
+        return;
+      }
+
+      if (is_rebase_conflict) {
+        const abort_res = await runShell('git', ['rebase', '--abort'], {
+          cwd: root_snapshot
+        });
+        if (abort_res.code === 0) {
+          ws.send(
+            JSON.stringify(
+              makeError(
+                req,
+                'rebase_conflict',
+                stderrTail(res.stderr) ||
+                  stderrTail(res.stdout) ||
+                  'rebase conflict'
+              )
+            )
+          );
+          return;
+        }
+        log(
+          'git rebase --abort failed (code=%d, stderr=%s)',
+          abort_res.code,
+          abort_res.stderr
+        );
+        ws.send(
+          JSON.stringify(
+            makeError(
+              req,
+              'rebase_conflict_abort_failed',
+              stderrTail(abort_res.stderr) ||
+                stderrTail(res.stderr) ||
+                'rebase abort failed'
+            )
+          )
+        );
+        return;
+      }
+
+      ws.send(
+        JSON.stringify(
+          makeError(
+            req,
+            'git_error',
+            stderrTail(res.stderr) || stderrTail(res.stdout) || 'git failed'
+          )
+        )
+      );
+    } finally {
+      releaseWorkspaceLock(root_snapshot);
+    }
     return;
   }
 

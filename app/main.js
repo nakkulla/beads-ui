@@ -520,10 +520,91 @@ export function bootstrap(root_element) {
           });
         }
 
+        if (result?.pulled === true && result?.pushed === false) {
+          const reason = result?.push_error ? `: ${result.push_error}` : '';
+          showToast(`Pulled, but push failed${reason}`, 'warning', 4000);
+          return;
+        }
+
         showToast('Synced ' + getProjectName(workspace_path), 'success', 2000);
       } catch (err) {
         log('workspace sync failed: %o', err);
-        showToast('Sync failed', 'error', 3000);
+        const code = /** @type {any} */ (err)?.code;
+        const detail = /** @type {any} */ (err)?.message;
+        if (code === 'busy') {
+          showToast(
+            'Sync skipped: another operation is running',
+            'warning',
+            3000
+          );
+          return;
+        }
+        const reason = detail ? `: ${detail}` : '';
+        showToast(`Sync failed${reason}`, 'error', 3000);
+        throw err;
+      }
+    }
+
+    /**
+     * Handle a manual git-pull request for the current workspace.
+     *
+     * @param {string} workspace_path
+     */
+    async function handleWorkspaceGitPull(workspace_path) {
+      log('requesting workspace git pull for %s', workspace_path);
+      try {
+        const result = await client.send('git-pull-workspace', {});
+        log('workspace git pull result: %o', result);
+
+        const status = /** @type {any} */ (result)?.status;
+        if (status === 'up_to_date') {
+          showToast('Already up to date', 'success', 2000);
+          return;
+        }
+        if (status === 'stash_pop_conflict') {
+          showToast(
+            'Git pulled, but stash pop conflicted (check git stash list)',
+            'warning',
+            4000
+          );
+          return;
+        }
+        // status === 'updated' (or unknown — treat as success)
+        showToast(
+          'Git pulled ' + getProjectName(workspace_path),
+          'success',
+          2000
+        );
+      } catch (err) {
+        log('workspace git pull failed: %o', err);
+        const code = /** @type {any} */ (err)?.code;
+        const detail = /** @type {any} */ (err)?.message;
+        if (code === 'rebase_conflict') {
+          showToast(
+            'Git pull conflicts — reverted (manual resolve required)',
+            'error',
+            4000
+          );
+          return;
+        }
+        if (code === 'rebase_conflict_abort_failed') {
+          showToast(
+            "Git pull conflicts AND rebase --abort failed — repo left mid-rebase, run 'git rebase --abort' manually",
+            'error',
+            6000
+          );
+          return;
+        }
+        if (code === 'busy') {
+          showToast(
+            'Git pull skipped: another operation is running',
+            'warning',
+            3000
+          );
+          return;
+        }
+        const reason = detail ? `: ${detail}` : '';
+        showToast(`Git pull failed${reason}`, 'error', 3000);
         throw err;
       }
     }
@@ -745,7 +826,8 @@ export function bootstrap(root_element) {
         workspace_mount,
         store,
         handleWorkspaceChange,
-        handleWorkspaceSync
+        handleWorkspaceSync,
+        handleWorkspaceGitPull
       );
     }
     // Load workspaces after WebSocket is connected

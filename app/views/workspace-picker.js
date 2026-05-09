@@ -25,12 +25,14 @@ function getProjectName(workspace_path) {
  * @param {{ getState: () => any, subscribe: (fn: (s: any) => void) => () => void }} store
  * @param {(workspace_path: string) => Promise<void>} onWorkspaceChange
  * @param {(workspace_path: string) => Promise<void>} [onWorkspaceSync]
+ * @param {(workspace_path: string) => Promise<void>} [onWorkspaceGitPull]
  */
 export function createWorkspacePicker(
   mount_element,
   store,
   onWorkspaceChange,
-  onWorkspaceSync = async () => {}
+  onWorkspaceSync = async () => {},
+  onWorkspaceGitPull = async () => {}
 ) {
   const log = debug('views:workspace-picker');
   /** @type {(() => void) | null} */
@@ -39,6 +41,8 @@ export function createWorkspacePicker(
   let is_switching = false;
   /** @type {boolean} */
   let is_syncing = false;
+  /** @type {boolean} */
+  let is_git_pulling = false;
 
   /**
    * Handle workspace selection change.
@@ -70,7 +74,7 @@ export function createWorkspacePicker(
     const s = store.getState();
     const current_path =
       s.workspace?.current?.path || s.workspace?.available?.[0]?.path || '';
-    if (!current_path || is_syncing) {
+    if (!current_path || is_syncing || is_git_pulling) {
       return;
     }
 
@@ -83,6 +87,27 @@ export function createWorkspacePicker(
       log('workspace sync failed: %o', err);
     } finally {
       is_syncing = false;
+      doRender();
+    }
+  }
+
+  async function onGitPullClick() {
+    const s = store.getState();
+    const current_path =
+      s.workspace?.current?.path || s.workspace?.available?.[0]?.path || '';
+    if (!current_path || is_syncing || is_git_pulling) {
+      return;
+    }
+
+    log('git-pulling workspace %s', current_path);
+    is_git_pulling = true;
+    doRender();
+    try {
+      await onWorkspaceGitPull(current_path);
+    } catch (err) {
+      log('workspace git pull failed: %o', err);
+    } finally {
+      is_git_pulling = false;
       doRender();
     }
   }
@@ -100,10 +125,31 @@ export function createWorkspacePicker(
         type="button"
         class="workspace-picker__sync-button"
         @click=${onSyncClick}
-        ?disabled=${is_switching || is_syncing}
+        ?disabled=${is_switching || is_syncing || is_git_pulling}
         aria-label="Sync current workspace"
       >
         ${is_syncing ? 'Syncing…' : 'Sync'}
+      </button>
+    `;
+  }
+
+  /**
+   * @param {string} current_path
+   */
+  function renderGitPullButton(current_path) {
+    if (!current_path) {
+      return html``;
+    }
+
+    return html`
+      <button
+        type="button"
+        class="workspace-picker__git-pull-button"
+        @click=${onGitPullClick}
+        ?disabled=${is_switching || is_syncing || is_git_pulling}
+        aria-label="Git pull current workspace"
+      >
+        ${is_git_pulling ? 'Pulling…' : 'Git Pull'}
       </button>
     `;
   }
@@ -127,8 +173,8 @@ export function createWorkspacePicker(
           <span class="workspace-picker__label" title="${available[0].path}"
             >${name}</span
           >
-          ${renderSyncButton(current_path)}
-          ${is_syncing
+          ${renderSyncButton(current_path)} ${renderGitPullButton(current_path)}
+          ${is_syncing || is_git_pulling
             ? html`<span
                 class="workspace-picker__loading"
                 aria-hidden="true"
@@ -144,7 +190,7 @@ export function createWorkspacePicker(
         <select
           class="workspace-picker__select"
           @change=${onChange}
-          ?disabled=${is_switching || is_syncing}
+          ?disabled=${is_switching || is_syncing || is_git_pulling}
           aria-label="Select project workspace"
         >
           ${available.map(
@@ -159,8 +205,8 @@ export function createWorkspacePicker(
             `
           )}
         </select>
-        ${renderSyncButton(current_path)}
-        ${is_switching || is_syncing
+        ${renderSyncButton(current_path)} ${renderGitPullButton(current_path)}
+        ${is_switching || is_syncing || is_git_pulling
           ? html`<span
               class="workspace-picker__loading"
               aria-hidden="true"

@@ -107,6 +107,100 @@ describe('views/workspace-picker', () => {
     expect(select.disabled).toBe(false);
   });
 
+  test('renders Git Pull button alongside Sync and calls git-pull handler', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore({
+      current: { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+      available: [{ path: '/repo-a', database: '/repo-a/.beads/ui.db' }]
+    });
+    const onWorkspaceChange = vi.fn();
+    const onWorkspaceSync = vi.fn(async () => {});
+    const onWorkspaceGitPull = vi.fn(async () => {});
+
+    createWorkspacePicker(
+      mount,
+      /** @type {any} */ (store),
+      onWorkspaceChange,
+      onWorkspaceSync,
+      onWorkspaceGitPull
+    );
+
+    const gitPullButton = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.workspace-picker__git-pull-button')
+    );
+    expect(gitPullButton).not.toBeNull();
+    expect(gitPullButton.textContent?.trim()).toBe('Git Pull');
+
+    gitPullButton.click();
+    await Promise.resolve();
+
+    expect(onWorkspaceGitPull).toHaveBeenCalledWith('/repo-a');
+    expect(onWorkspaceSync).not.toHaveBeenCalled();
+  });
+
+  test('git-pull in flight disables both Sync and Git Pull buttons', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore({
+      current: { path: '/repo-b', database: '/repo-b/.beads/ui.db' },
+      available: [
+        { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
+      ]
+    });
+    const onWorkspaceChange = vi.fn();
+    const onWorkspaceSync = vi.fn(async () => {});
+    /** @type {() => void} */
+    let resolvePull = () => {};
+    const onWorkspaceGitPull = vi.fn(
+      () =>
+        /** @type {Promise<void>} */ (
+          new Promise((resolve) => {
+            resolvePull = () => resolve();
+          })
+        )
+    );
+
+    createWorkspacePicker(
+      mount,
+      /** @type {any} */ (store),
+      onWorkspaceChange,
+      onWorkspaceSync,
+      onWorkspaceGitPull
+    );
+
+    const gitPullButton = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.workspace-picker__git-pull-button')
+    );
+    const syncButton = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.workspace-picker__sync-button')
+    );
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.workspace-picker__select')
+    );
+
+    gitPullButton.click();
+    await Promise.resolve();
+
+    expect(gitPullButton.disabled).toBe(true);
+    expect(gitPullButton.textContent?.trim()).toBe('Pulling…');
+    expect(syncButton.disabled).toBe(true);
+    expect(select.disabled).toBe(true);
+
+    // Sync click while git pull in flight is a no-op
+    syncButton.click();
+    await Promise.resolve();
+    expect(onWorkspaceSync).not.toHaveBeenCalled();
+
+    resolvePull();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(gitPullButton.disabled).toBe(false);
+    expect(gitPullButton.textContent?.trim()).toBe('Git Pull');
+  });
+
   test('falls back to first available workspace when current workspace is absent', async () => {
     document.body.innerHTML = '<div id="mount"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
