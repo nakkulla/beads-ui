@@ -369,6 +369,106 @@ export function bootstrap(root_element) {
     // Derived list selectors: render from per-subscription snapshots
     const listSelectors = createListSelectors(sub_issue_stores);
 
+    /** @type {null | (() => Promise<void>)} */
+    let unsub_detail = null;
+    /** @type {string | null} */
+    let last_detail_sub_key = null;
+    /** @type {string | null} */
+    let pending_detail_sub_key = null;
+    /** @type {string | null} */
+    let pending_detail_id = null;
+    /** @type {() => void} */
+    let resolve_workspace_bootstrap = () => {};
+    const workspace_bootstrap_ready = new Promise((resolve) => {
+      resolve_workspace_bootstrap = () => resolve(undefined);
+    });
+    let workspace_bootstrap_done = false;
+    let is_switching_workspace = false;
+
+    /**
+     * Create a stable detail subscription key for the current workspace.
+     *
+     * @param {string} id
+     * @returns {string}
+     */
+    function detailSubscriptionKey(id) {
+      const workspace_path = store.getState().workspace.current?.path || '';
+      return `${workspace_path}\0${id}`;
+    }
+
+    /**
+     * Clear the active detail subscription bookkeeping.
+     */
+    function resetDetailSubscription() {
+      if (unsub_detail) {
+        void unsub_detail().catch(() => {});
+        unsub_detail = null;
+      }
+      last_detail_sub_key = null;
+      pending_detail_sub_key = null;
+    }
+
+    /**
+     * Subscribe to the selected issue detail after workspace restoration.
+     *
+     * @param {string} id
+     */
+    async function subscribeSelectedDetail(id) {
+      const key = detailSubscriptionKey(id);
+      if (key === last_detail_sub_key || key === pending_detail_sub_key) {
+        return;
+      }
+      pending_detail_sub_key = key;
+      const client_id = `detail:${id}`;
+      const spec = { type: 'issue-detail', params: { id } };
+      try {
+        sub_issue_stores.register(client_id, spec);
+      } catch (err) {
+        log('register detail store failed: %o', err);
+      }
+      try {
+        const unsub = await subscriptions.subscribeList(client_id, spec);
+        const state = store.getState();
+        if (state.selected_id !== id || detailSubscriptionKey(id) !== key) {
+          await unsub().catch(() => {});
+          return;
+        }
+        if (unsub_detail) {
+          await unsub_detail().catch(() => {});
+        }
+        unsub_detail = unsub;
+        last_detail_sub_key = key;
+      } catch (err) {
+        log('detail subscribe failed: %o', err);
+        showFatalFromError(err, 'issue details');
+      } finally {
+        if (pending_detail_sub_key === key) {
+          pending_detail_sub_key = null;
+        }
+      }
+    }
+
+    /**
+     * Defer selected issue detail subscription until startup workspace restore ends.
+     *
+     * @param {string} id
+     */
+    function scheduleDetailSubscription(id) {
+      pending_detail_id = id;
+      const run = () => {
+        if (pending_detail_id !== id || store.getState().selected_id !== id) {
+          return;
+        }
+        pending_detail_id = null;
+        void subscribeSelectedDetail(id);
+      };
+      if (!workspace_bootstrap_done) {
+        void workspace_bootstrap_ready.then(run);
+        return;
+      }
+      run();
+    }
+
     // --- Workspace management ---
     /**
      * Clear all subscriptions and stores, then re-establish them.
@@ -443,6 +543,7 @@ export function bootstrap(root_element) {
         }
       }
       // Also clear any detail stores
+      resetDetailSubscription();
       const s = store.getState();
       if (s.selected_id) {
         try {
@@ -454,7 +555,11 @@ export function bootstrap(root_element) {
       // Force re-subscribe by resetting last spec key
       last_issues_spec_key = null;
       // Re-establish subscriptions for current view
-      ensureTabSubscriptions(store.getState());
+      const current_state = store.getState();
+      ensureTabSubscriptions(current_state);
+      if (current_state.selected_id) {
+        scheduleDetailSubscription(current_state.selected_id);
+      }
     }
 
     /**
@@ -464,6 +569,7 @@ export function bootstrap(root_element) {
      */
     async function handleWorkspaceChange(workspace_path) {
       log('requesting workspace switch to %s', workspace_path);
+      is_switching_workspace = true;
       try {
         const result = await client.send('set-workspace', {
           path: workspace_path
@@ -495,6 +601,8 @@ export function bootstrap(root_element) {
         log('workspace switch failed: %o', err);
         showToast('Failed to switch workspace', 'error', 3000);
         throw err;
+      } finally {
+        is_switching_workspace = false;
       }
     }
 
@@ -830,9 +938,6 @@ export function bootstrap(root_element) {
         handleWorkspaceGitPull
       );
     }
-    // Load workspaces after WebSocket is connected
-    void loadWorkspaces();
-
     // Global New Issue dialog (UI-106) mounted at root so it is always visible
     const new_issue_dialog = createNewIssueDialog(
       root_element,
@@ -943,24 +1048,11 @@ export function bootstrap(root_element) {
       if (detail) {
         void detail.load(initial_id);
       }
-      // Ensure detail subscription is active on initial deep-link
-      const client_id = `detail:${initial_id}`;
-      const spec = { type: 'issue-detail', params: { id: initial_id } };
-      // Register store first to avoid dropping the initial snapshot
-      try {
-        sub_issue_stores.register(client_id, spec);
-      } catch (err) {
-        log('register detail store failed: %o', err);
-      }
-      void subscriptions.subscribeList(client_id, spec).catch((err) => {
-        log('detail subscribe failed: %o', err);
-        showFatalFromError(err, 'issue details');
-      });
+      // Ensure detail subscription is active after startup workspace restore.
+      scheduleDetailSubscription(initial_id);
     }
 
     // Open/close dialog based on selected_id (always dialog; no page variant)
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_detail = null;
     store.subscribe((s) => {
       const id = s.selected_id;
       if (id) {
@@ -969,29 +1061,10 @@ export function bootstrap(root_element) {
         if (detail) {
           void detail.load(id);
         }
-        // Wire per-issue subscription for detail
-        const client_id = `detail:${id}`;
-        const spec = { type: 'issue-detail', params: { id } };
-        // Ensure per-subscription issue store exists before subscribing
-        try {
-          sub_issue_stores.register(client_id, spec);
-        } catch {
-          // ignore
+        // Wire per-issue subscription for detail after workspace restore.
+        if (!is_switching_workspace) {
+          scheduleDetailSubscription(id);
         }
-        // Subscribe server-side
-        void subscriptions
-          .subscribeList(client_id, spec)
-          .then((unsub) => {
-            // Unsubscribe previous if any
-            if (unsub_detail) {
-              void unsub_detail().catch(() => {});
-            }
-            unsub_detail = unsub;
-          })
-          .catch((err) => {
-            log('detail subscribe failed: %o', err);
-            showFatalFromError(err, 'issue details');
-          });
       } else {
         try {
           dialog.close();
@@ -1002,10 +1075,7 @@ export function bootstrap(root_element) {
           detail.clear();
         }
         detail_mount.hidden = true;
-        if (unsub_detail) {
-          void unsub_detail().catch(() => {});
-          unsub_detail = null;
-        }
+        resetDetailSubscription();
       }
     });
 
@@ -1674,6 +1744,12 @@ export function bootstrap(root_element) {
     store.subscribe(onRouteChange);
     // Ensure initial state is reflected (fixes reload on #/epics)
     onRouteChange(store.getState());
+
+    // Load workspaces after all startup subscriptions can safely resubscribe.
+    void loadWorkspaces().finally(() => {
+      workspace_bootstrap_done = true;
+      resolve_workspace_bootstrap();
+    });
 
     // Removed redundant filter-change subscription: handled by ensureTabSubscriptions
 
