@@ -151,12 +151,12 @@ describe('add-comment handler', () => {
     expect(reply.ok).toBe(true);
     expect(reply.payload).toEqual(updatedComments);
 
-    // Verify bd was called with correct args including --author
+    // Verify bd was called with correct args including --actor
     expect(rb).toHaveBeenCalledWith([
       'comment',
       'UI-1',
       'New comment',
-      '--author',
+      '--actor',
       'Test User'
     ]);
   });

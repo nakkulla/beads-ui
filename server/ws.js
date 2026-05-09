@@ -1609,7 +1609,7 @@ export async function handleMessage(ws, data) {
     const author = await getGitUserNameInWorkspace();
     const args = ['comment', id, text.trim()];
     if (author) {
-      args.push('--author', author);
+      args.push('--actor', author);
     }
 
     const res = await runBdInWorkspace(args);
