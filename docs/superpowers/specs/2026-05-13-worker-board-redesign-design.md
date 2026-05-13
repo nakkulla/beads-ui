@@ -98,13 +98,24 @@ parent 단위 운영 화면을 도입했지만, 다음 한계가 굳어졌다.
 | `inbox` | 모든 active parent (open/in_progress, type=epic/feature/task) | 자동. metadata 없는 parent 도 inbox 로 간주 |
 | `waiting` | 자동 실행을 대기 중인 카드 | `spec_id` 보유 필수, `worker_queue_sort_key` 정수 보유 |
 | `progress` | codex 실행 중인 카드 | server-owned job 이 active (queued/starting/running/cancelling) |
-| `done` | 최근 종료된 카드 | `status in (resolved, closed)` 또는 마지막 job 이 failed/cancelled |
+| `done` | 최근 종료된 카드 (파생, metadata 미사용) | `status in (resolved, closed)` 또는 마지막 job 이 failed/cancelled. 표시 범위는 toolbar 의 done filter (`today` / `3` / `7`) 가 결정 |
 
 - `inbox` 의 후보 산정은 기존 `buildWorkerParents` 의 parent 정의를 재사용한다.
-- `done` 은 진짜 영구 lane 이 아니라 보드용 view 분류이다. 정렬은 `finished_at`
-  내림차순, 기본 10건만 보이고 toolbar 의 ‘Show more’ 로 확장.
+- `done` 은 진짜 영구 lane 이 아니라 **파생 view 분류**이다. metadata 에
+  `worker_lane=done` 을 쓰지 않는다. status / 마지막 job 결과만 보고 자동
+  분류한다.
+- `done` 표시 범위는 toolbar 의 done filter 가 결정:
+  - `today` (기본): 오늘 (local day start 이후) 종료된 카드
+  - `3` : 최근 3일
+  - `7` : 최근 7일
+- 기존 board view 의 `closed_filter` 패턴을 그대로 따른다
+  (`state.worker.done_filter`, 값 `today` / `3` / `7`).
+- 사용자가 done → inbox 로 카드를 드래그하면 그때만 `worker_lane=inbox` 를
+  명시 기록하여 done 분류에서 빠진다 (status 가 resolved/closed 라도 inbox 로
+  나타남).
 - 같은 카드가 동시에 두 lane 에 나타나지 않는다. lane 결정 우선순위:
-  `progress` > `waiting` (metadata) > `done` (status/job 결과) > `inbox` (default).
+  `progress` > `waiting` (metadata) > `inbox` (metadata override) >
+  `done` (status/job 결과) > `inbox` (default).
 
 ## Beads metadata 스키마
 
@@ -307,7 +318,12 @@ codex exec --json -m <model> -c model_reasoning_effort=<effort> "/goal <issueId>
 
 - 검색 input (기존 filter 재사용).
 - 상태 필터 dropdown (open/in_progress/resolved+closed).
-- Default model / effort 선택 dropdown (서버 config 에 저장; 미해결 — 아래 참조).
+- **Default model / effort 선택 dropdown** — `bdui-config.toml` 의
+  `[worker]` 섹션에 `default_model` / `default_effort` 키로 저장
+  (기존 `bdui-config.toml` 처리 패턴 재사용; 2026-04-23 spec 참조).
+  변경 시 즉시 토스트 + 새 spawn 부터 적용.
+- **Done filter** dropdown — `today` / `3` / `7`. `state.worker.done_filter`
+  에 저장. 기존 board `closed_filter` 와 같은 패턴.
 - `⏸ Pause queue` 토글 (server 에 POST, 서버가 broadcast).
 
 ## PR 데이터 흐름
@@ -426,19 +442,9 @@ codex exec --json -m <model> -c model_reasoning_effort=<effort> "/goal <issueId>
 - failed 종료 → 큐 정지 + 카운트다운 미발생.
 - children 펼치기 / 접기.
 
-## 미해결 항목 (plan 단계에서 확정)
+## 해결된 항목 (2026-05-13)
 
-1. **default model / effort 의 저장 위치** — 기존 `bdui-config.toml`?
-   `worker.default_model` / `worker.default_effort` 키를 신설할 가능성 높음.
-   plan 단계에서 config schema 확정.
-2. **done lane 자동 정리 정책** — 며칠 / 몇 건 유지? 첫 버전은 finished_at
-   내림차순 상위 10건만 표시하고 추가 정리 없음으로 진행. 추후 운영 데이터를
-   보고 조정.
-3. **worker_lane=done 의 영속 vs 파생** — done 을 metadata 로 영구 기록할지,
-   status / 마지막 job 만 보고 파생할지. 1차안은 _파생_ (metadata 미사용)으로
-   진행하고, 사용자 수동 inbox 복귀 시에는 `worker_lane=inbox` 를 기록.
-
-### 해결된 항목 (2026-05-13)
+본 spec 작성 과정에서 사전에 확정한 항목들. plan / 구현에서 그대로 사용.
 
 - **codex exec JSONL 스키마** — dry-run 으로 확정 (`thread.started` /
   `turn.started` / `item.completed` / `turn.completed`). 본문 "세션 ID / 라이브
@@ -449,6 +455,17 @@ codex exec --json -m <model> -c model_reasoning_effort=<effort> "/goal <issueId>
   모두 제거. PR 정보는 `metadata.pr_url` + `metadata.pr_number` 로 통일.
   supervisor 가 job 종료 시 `gh pr list --search <issueId>` 1회 호출로 캐시
   (본문 "PR 데이터 흐름" 섹션).
+- **default model / effort 저장 위치** — `bdui-config.toml` 의 `[worker]`
+  섹션에 `default_model` (기본 `gpt-5.5`), `default_effort` (기본 `high`).
+  toolbar dropdown 으로 사용자가 변경 가능. 2026-04-23 `bdui-config.toml`
+  spec 의 처리 파이프라인을 그대로 재사용.
+- **done lane 자동 정리 정책** — 시간 기준 파생 필터로 통일. toolbar 의
+  done filter dropdown 이 `today` / `3` / `7` 중 하나를 선택하고, 그
+  범위 안의 종료된 카드만 표시한다. 별도 자동 archive / cleanup 없음.
+- **worker_lane=done 영속 vs 파생** — 파생 으로 확정. metadata 에
+  `worker_lane=done` 을 쓰지 않는다. status / 마지막 job 결과만 보고
+  자동 분류한다. 사용자가 done → inbox 로 drag 한 경우에만 그때
+  `worker_lane=inbox` 를 명시 기록하여 done 파생에서 빠진다.
 
 ## Execution lane
 
