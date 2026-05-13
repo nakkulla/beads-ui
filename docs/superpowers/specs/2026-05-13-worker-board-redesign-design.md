@@ -119,6 +119,9 @@ parent 단위 운영 화면을 도입했지만, 다음 한계가 굳어졌다.
 | `worker_model` | 모델 ID (예: `"gpt-5.5"`) | 없으면 전역 default 사용 |
 | `worker_effort` | `"low" \| "medium" \| "high"` | 없으면 전역 default 사용 |
 | `worker_last_job_id` | string | 마지막으로 연결된 supervisor job id (UI hint 용) |
+| `worker_last_session_id` | string | 마지막 codex `thread_id` (디버깅용, UI 복사 보조) |
+| `pr_url` | string | 연결된 open PR 의 GitHub URL. supervisor 가 job 종료 시 `gh pr list --search <issueId>` 1회 호출 후 캐시. 없으면 PR 미연결 |
+| `pr_number` | string | 위와 한 쌍. 카드 배지에 `PR #<number>` 로 표시 |
 
 라벨 mirror 는 **추가하지 않는다**. lane 은 metadata 가 source of truth 이며,
 검색용 라벨이 추후 필요하면 별도 contract 변경으로 도입한다.
@@ -208,19 +211,29 @@ codex exec \
 - 추가 플래그: `-C <workspace>` (작업 디렉터리), `--skip-git-repo-check` 불필요
   (workspace 가 항상 git repo 가정).
 
-### 세션 ID / 라이브 로그 캡처
+### 세션 ID / 라이브 로그 캡처 (dry-run 으로 확정)
 
-- `--json` 출력은 JSONL. 각 이벤트는 `{ "type": ..., ... }` 형식.
-- 세션 ID 추출 위치는 **미해결 항목 (구현 진입 전 확인)**:
-  - 후보 1: 첫 이벤트 `session.started` 의 `session_id` 필드.
-  - 후보 2: 모든 이벤트의 `session` 키.
-  - 구현 진입 전 짧은 dry-run (`codex exec --json --ephemeral "hello"`) 으로
-    실제 스키마를 확인하고 spec 의 “Live event schema” 부록을 갱신한다.
-- supervisor 는 stdout 을 JSONL 파서로 라인 단위 처리하면서:
-  - 세션 ID 캡처 → store + WS `job.session_id` broadcast.
-  - 사용자에게 보일 stdout 1줄은 `agent_message` / `tool.call` / `tool.output`
-    이벤트의 short summary 를 추출해 `job.log_line` broadcast.
-  - 자세한 mapping 은 미해결 항목과 함께 구현 단계에서 확정.
+`codex exec --json --ephemeral` dry-run (2026-05-13) 으로 stdout JSONL 이벤트
+스키마를 확정했다:
+
+| 이벤트 `type` | 추가 필드 | supervisor 처리 |
+|---|---|---|
+| `thread.started` | `thread_id` (UUIDv7) | 즉시 `metadata.worker_last_session_id` 기록 + WS `job.session_id` broadcast |
+| `turn.started` | — | (no-op, 디버그용 로그만) |
+| `item.completed` | `item.type`, `item.id`, `item.text` (agent_message), `item.tool` 등 | `item.type==='agent_message'` 의 `item.text` 를 마지막 stdout 라인으로 → WS `job.log_line` broadcast |
+| `turn.completed` | `usage.input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens` | 종료 시 토큰 통계 store + WS `job.exited` payload 에 동봉 |
+
+운영 시 `--ephemeral` 은 **사용하지 않는다** (세션 rollout 영구 저장은 디버깅에
+유용하므로 그대로 둠). dry-run 검증 외에는 아래 옵션 조합만 사용:
+
+```bash
+codex exec --json -m <model> -c model_reasoning_effort=<effort> "/goal <issueId>"
+```
+
+`/goal <issueId>` 는 codex 바이너리 내장 슬래시 명령으로, **bd issue body 와
+관련 context 를 자동으로 prompt 에 끼워 넣는다** (dry-run 에서 input_tokens 약
+22k 소비 확인). 따라서 supervisor 는 별도 prompt 조립 / issue body 첨부를 하지
+않는다.
 
 ## 카드 UI
 
@@ -229,7 +242,7 @@ codex exec \
 ```
 [ ID | type badge ]
 [ Title (1~2 lines) ]
-[ Spec✓/No spec | ⚡ parallel | ⚙ model/effort ]
+[ Spec✓/No spec | ⚡ parallel | ⚙ model/effort | PR #123 ↗ ]
 [ ▰▰▰▱▱ 3/7 children ]
 ```
 
@@ -237,6 +250,9 @@ codex exec \
 - parallel 테그: `worker_parallel=true` 일 때만.
 - model/effort 테그: `worker_model` 또는 `worker_effort` 가 default 와 다를 때만.
 - 자식 진행률: `resolved + closed` / 전체 children. children 없으면 영역 생략.
+- **PR 배지**: `metadata.pr_number` + `metadata.pr_url` 보유 시 `PR #<number>`
+  표시 + 클릭 시 새 탭으로 `pr_url` 열기. PR 메타는 supervisor 가 job 종료 시
+  1회 `gh pr list --search <issueId>` 호출 결과를 캐시 (아래 PR 데이터 흐름).
 
 ### Progress 카드 (`worker-card-progress.js`)
 
@@ -294,14 +310,31 @@ codex exec \
 - Default model / effort 선택 dropdown (서버 config 에 저장; 미해결 — 아래 참조).
 - `⏸ Pause queue` 토글 (server 에 POST, 서버가 broadcast).
 
+## PR 데이터 흐름
+
+새 디자인은 PR 정보를 **bd metadata 캐시 단일 source** 로 통일한다.
+
+1. supervisor 의 codex `/goal` job 이 종료된 직후 (성공 / 실패 무관)
+   `gh pr list --state open --search <issueId> --json number,url,title,state`
+   를 1회 호출.
+2. 결과가 정확히 1건이면 `metadata.pr_number` + `metadata.pr_url` 을 bd 에
+   기록. 0건이면 두 키를 제거(또는 빈 문자열). 다건이면 첫 항목 사용.
+3. frontend 는 bd snapshot 만 읽어 카드 PR 배지를 렌더. 별도 `worker-prs` route
+   호출 없음.
+
+이로써 `pr-target-resolver`, `pr-reader`, `server/routes/worker-prs.js`,
+`worker-pr-panel`, `worker-pr-summary` 가 모두 불필요해진다. supervisor 안의
+가벼운 `gh pr list` 1회 호출만 남는다 (수십 줄).
+
 ## WS 이벤트 스키마 (초안)
 
 | 이벤트 | payload | 송신 시점 |
 |---|---|---|
 | `job.started` | `{ jobId, issueId, parallel, startedAt }` | supervisor spawn 직후 |
-| `job.session_id` | `{ jobId, issueId, sessionId }` | JSONL 첫 session 이벤트 파싱 시 |
-| `job.log_line` | `{ jobId, issueId, line, at }` | JSONL agent_message / tool 이벤트 요약 |
-| `job.exited` | `{ jobId, issueId, status, exitCode, finishedAt }` | child close |
+| `job.session_id` | `{ jobId, issueId, sessionId }` | JSONL `thread.started` 파싱 시 (`thread_id` 추출) |
+| `job.log_line` | `{ jobId, issueId, line, at }` | JSONL `item.completed` 의 `item.type==='agent_message'` 의 `item.text` |
+| `job.exited` | `{ jobId, issueId, status, exitCode, finishedAt, usage? }` | child close. 정상 종료 시 마지막 `turn.completed.usage` 동봉 |
+| `job.pr_linked` | `{ jobId, issueId, prNumber, prUrl }` | supervisor 가 `gh pr list` 결과로 metadata 캐시한 직후 |
 | `queue.countdown` | `{ remainingMs, nextIssueId }` | 1초 주기 |
 | `queue.advanced` | `{ spawnedIssueId, jobId }` | 카운트다운 만료 후 spawn 직후 |
 | `queue.paused` | `{ paused }` | 토글 시 |
@@ -342,10 +375,15 @@ codex exec \
 - `app/views/worker-tree.js`
 - `app/views/worker-parent-row.js`
 - `app/views/worker-child-row.js`
-- worker-pr-panel 및 pr-summary 관련 액션 버튼은 detail 패널의 read-only
-  요약만 유지하고, "Run pr-review" 액션 코드 제거.
-- `server/worker/pr-target-resolver*` 는 supervisor 가 pr-review 명령을 더 이상
-  spawn 하지 않으므로 사용처를 검토 후 제거 또는 read-only 용도로만 유지.
+- `app/views/worker-pr-panel.js` + 테스트
+- `app/views/worker-pr-summary.js` + 테스트
+- `server/worker/pr-target-resolver.js` + 테스트
+- `server/worker/pr-reader.js` (workspace-level PR 목록 사용처 없으면 함께 제거.
+  `worker-prs` route 와 한 묶음)
+- `server/routes/worker-prs.js` + 테스트
+
+> supervisor 안에서 `gh pr list --search <issueId>` 를 1회 호출하는 가벼운
+> 로직만 추가한다 (`pr-reader` 와 별개로, supervisor-local 헬퍼 또는 inline).
 
 ## 마이그레이션 / 데이터 호환성
 
@@ -388,24 +426,29 @@ codex exec \
 - failed 종료 → 큐 정지 + 카운트다운 미발생.
 - children 펼치기 / 접기.
 
-## 미해결 항목 (구현 진입 전 확정)
+## 미해결 항목 (plan 단계에서 확정)
 
-1. **codex exec JSONL 스키마** — 세션 ID / 라이브 로그용 이벤트 타입과 필드
-   이름. dry-run 으로 확인 후 spec 부록 또는 implementation plan 에 기록.
-2. **default model / effort 의 저장 위치** — 기존 `bdui-config.toml`?
+1. **default model / effort 의 저장 위치** — 기존 `bdui-config.toml`?
    `worker.default_model` / `worker.default_effort` 키를 신설할 가능성 높음.
    plan 단계에서 config schema 확정.
-3. **done lane 자동 정리 정책** — 며칠 / 몇 건 유지? 첫 버전은 finished_at
+2. **done lane 자동 정리 정책** — 며칠 / 몇 건 유지? 첫 버전은 finished_at
    내림차순 상위 10건만 표시하고 추가 정리 없음으로 진행. 추후 운영 데이터를
    보고 조정.
-4. **pr-target-resolver 의 잔존 여부** — PR 요약 read-only 만 남길지, 완전 제거할지.
-   detail 패널 PR 패널을 어디까지 유지할지 plan 단계에서 결정.
-5. **`/goal` 명령의 실제 prompt 처리 방식 검증** — codex `goals` feature 가
-   `/goal <id>` 를 어떻게 해석하는지 (issue 본문을 가져오는 prebuilt prompt?)
-   를 짧은 e2e 로 확인.
-6. **worker_lane=done 의 영속 vs 파생** — done 을 metadata 로 영구 기록할지,
+3. **worker_lane=done 의 영속 vs 파생** — done 을 metadata 로 영구 기록할지,
    status / 마지막 job 만 보고 파생할지. 1차안은 _파생_ (metadata 미사용)으로
    진행하고, 사용자 수동 inbox 복귀 시에는 `worker_lane=inbox` 를 기록.
+
+### 해결된 항목 (2026-05-13)
+
+- **codex exec JSONL 스키마** — dry-run 으로 확정 (`thread.started` /
+  `turn.started` / `item.completed` / `turn.completed`). 본문 "세션 ID / 라이브
+  로그 캡처" 표 참고.
+- **`/goal` 명령 prompt 처리** — dry-run 확인. codex 바이너리 내장 슬래시
+  명령이며 bd issue body 를 자동 context 화. supervisor 별도 조립 불필요.
+- **pr-target-resolver / pr-reader / worker-prs / worker-pr-* 잔존 여부** —
+  모두 제거. PR 정보는 `metadata.pr_url` + `metadata.pr_number` 로 통일.
+  supervisor 가 job 종료 시 `gh pr list --search <issueId>` 1회 호출로 캐시
+  (본문 "PR 데이터 흐름" 섹션).
 
 ## Execution lane
 
