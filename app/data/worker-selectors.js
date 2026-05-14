@@ -349,7 +349,7 @@ export function buildWorkerParents(issues, options = {}) {
       (typeof issue.total_children === 'number' && issue.total_children > 0) ||
       hasActiveJob(issue.id, jobs) ||
       open_pr_count > 0 ||
-      (isTopLevelParentCandidate(issue) && hasSpecId(issue));
+      isTopLevelParentCandidate(issue);
     if (!is_parent) {
       continue;
     }

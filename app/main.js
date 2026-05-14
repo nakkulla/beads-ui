@@ -1154,10 +1154,62 @@ export function bootstrap(root_element) {
       sub_issue_stores,
       transport
     );
-    /** @type {Array<{ status?: string, issueId?: string, workspace?: string, command?: string, prNumber?: number }>} */
+    /** @type {Array<{ id?: string, status?: string, issueId?: string, workspace?: string, command?: string, prNumber?: number, phase?: string, parallel?: boolean }>} */
     let worker_jobs = [];
-    /** @type {ReturnType<typeof setInterval> | null} */
-    let worker_jobs_timer = null;
+
+    /**
+     * @param {any} payload
+     * @returns {{ remainingMs: number, nextIssueId: string } | null}
+     */
+    function normalizeWorkerCountdown(payload) {
+      if (!payload || typeof payload !== 'object') {
+        return null;
+      }
+      const remaining_ms = Number(
+        payload.remainingMs ?? payload.remaining_ms ?? 0
+      );
+      const next_issue_id = String(
+        payload.nextIssueId ?? payload.next_issue_id ?? payload.issueId ?? ''
+      );
+      return {
+        remainingMs: Number.isFinite(remaining_ms) ? remaining_ms : 0,
+        nextIssueId: next_issue_id
+      };
+    }
+
+    /**
+     * @param {any[]} persisted_jobs
+     * @param {Record<string, unknown>} live_jobs
+     * @returns {any[]}
+     */
+    function mergeWorkerJobs(persisted_jobs, live_jobs) {
+      /** @type {Map<string, any>} */
+      const by_key = new Map();
+      for (const job of persisted_jobs) {
+        const key = String(job.id || job.issueId || job.issue_id || '');
+        if (key) {
+          by_key.set(key, job);
+        }
+      }
+      for (const job of Object.values(live_jobs || {})) {
+        const item = /** @type {any} */ (job);
+        const key = String(item.id || item.jobId || item.issueId || '');
+        if (key) {
+          by_key.set(key, { ...(by_key.get(key) || {}), ...item });
+        }
+      }
+      return Array.from(by_key.values());
+    }
+
+    /**
+     * @param {unknown} value
+     * @returns {Record<string, unknown>}
+     */
+    function objectTable(value) {
+      return value && typeof value === 'object' && !Array.isArray(value)
+        ? /** @type {Record<string, unknown>} */ (value)
+        : {};
+    }
 
     async function refreshWorkerJobs() {
       const workspace_path = store.getState().workspace.current?.path;
@@ -1176,20 +1228,64 @@ export function bootstrap(root_element) {
       }
     }
 
-    function stopWorkerJobsPolling() {
-      if (worker_jobs_timer) {
-        clearInterval(worker_jobs_timer);
-        worker_jobs_timer = null;
+    async function refreshWorkerQueue() {
+      const workspace_path = store.getState().workspace.current?.path;
+      if (!workspace_path) {
+        return;
+      }
+      try {
+        const response = await fetch(
+          `/api/worker/queue?workspace=${encodeURIComponent(workspace_path)}`
+        );
+        const payload = await response.json();
+        store.setState({
+          worker: {
+            paused: payload.paused === true,
+            countdown: normalizeWorkerCountdown(payload.countdown),
+            pr_review_waits: objectTable(payload.pr_review_waits),
+            pr_finish_available: payload.pr_finish_available !== false,
+            queue_blocked_reason:
+              typeof payload.queue_blocked_reason === 'string' &&
+              payload.queue_blocked_reason.length > 0
+                ? payload.queue_blocked_reason
+                : null
+          }
+        });
+      } catch {
+        // keep the current queue state on transient failures
       }
     }
 
-    async function startWorkerJobsPolling() {
-      stopWorkerJobsPolling();
-      await refreshWorkerJobs();
+    async function refreshWorkerRuntime() {
+      await Promise.all([refreshWorkerJobs(), refreshWorkerQueue()]);
       worker_view.load();
-      worker_jobs_timer = setInterval(() => {
-        void refreshWorkerJobs().then(() => worker_view.load());
-      }, 3000);
+    }
+
+    /**
+     * @param {string} path
+     * @param {Record<string, unknown>} [body]
+     * @returns {Promise<any | null>}
+     */
+    async function postWorkerQueue(path, body = {}) {
+      const workspace_path = store.getState().workspace.current?.path;
+      if (!workspace_path) {
+        return null;
+      }
+      const response = await fetch(`/api/worker/queue/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, workspace: workspace_path })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message =
+          typeof payload.error === 'string'
+            ? payload.error
+            : 'Worker queue request failed';
+        showToast(message, 'error', 3000);
+        return null;
+      }
+      return payload;
     }
 
     /**
@@ -1211,8 +1307,7 @@ export function bootstrap(root_element) {
           prNumber: target.prNumber
         })
       });
-      await refreshWorkerJobs();
-      worker_view.load();
+      await refreshWorkerRuntime();
     }
 
     /**
@@ -1228,17 +1323,227 @@ export function bootstrap(root_element) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspace: workspace_path })
       });
-      await refreshWorkerJobs();
+      await refreshWorkerRuntime();
+    }
+
+    /**
+     * @param {Record<string, unknown>} values
+     */
+    async function updateWorkerDefaults(values) {
+      try {
+        const response = await fetch('/api/config/worker', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(values)
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(
+            typeof payload.error === 'string'
+              ? payload.error
+              : 'Worker config update failed'
+          );
+        }
+        store.setState({ config: payload });
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Worker config update failed';
+        showToast(message, 'error', 3000);
+      }
+    }
+
+    /**
+     * @param {any} payload
+     * @returns {string}
+     */
+    function workerEventIssueId(payload) {
+      return String(
+        payload?.issueId ||
+          payload?.issue_id ||
+          payload?.parentId ||
+          payload?.parent_id ||
+          ''
+      );
+    }
+
+    /**
+     * @param {any} payload
+     * @returns {string}
+     */
+    function workerEventJobId(payload) {
+      return String(payload?.jobId || payload?.job_id || payload?.id || '');
+    }
+
+    /**
+     * @param {any} payload
+     * @param {Record<string, unknown>} [defaults]
+     */
+    function upsertWorkerLiveJob(payload, defaults = {}) {
+      const issue_id = workerEventIssueId(payload);
+      if (!issue_id) {
+        return;
+      }
+      const job_id = workerEventJobId(payload);
+      const worker_state = store.getState().worker;
+      const current = /** @type {any} */ (
+        worker_state.live_jobs[issue_id] || {}
+      );
+      const next_job = {
+        ...current,
+        ...defaults,
+        ...payload,
+        id: job_id || current.id,
+        jobId: job_id || current.jobId,
+        issueId: issue_id,
+        status: String(
+          payload?.status || defaults.status || current.status || 'running'
+        )
+      };
+      store.setState({
+        worker: {
+          live_jobs: {
+            ...worker_state.live_jobs,
+            [issue_id]: next_job
+          }
+        }
+      });
       worker_view.load();
+    }
+
+    /**
+     * @param {any} payload
+     */
+    function updateWorkerReviewWait(payload) {
+      const issue_id = workerEventIssueId(payload);
+      if (!issue_id) {
+        return;
+      }
+      const worker_state = store.getState().worker;
+      store.setState({
+        worker: {
+          pr_review_waits: {
+            ...worker_state.pr_review_waits,
+            [issue_id]: payload
+          }
+        }
+      });
+      worker_view.load();
+    }
+
+    /**
+     * @param {any} payload
+     */
+    function markWorkerReviewWaitCancelled(payload) {
+      const issue_id = workerEventIssueId(payload);
+      if (!issue_id) {
+        return;
+      }
+      const worker_state = store.getState().worker;
+      const waits = { ...worker_state.pr_review_waits };
+      delete waits[issue_id];
+      store.setState({ worker: { pr_review_waits: waits } });
+      worker_view.load();
+    }
+
+    /**
+     * @param {any} payload
+     */
+    function removeOrFinalizeWorkerLiveJob(payload) {
+      const issue_id = workerEventIssueId(payload);
+      if (!issue_id) {
+        return;
+      }
+      const worker_state = store.getState().worker;
+      const live_jobs = { ...worker_state.live_jobs };
+      delete live_jobs[issue_id];
+      store.setState({ worker: { live_jobs } });
+      void refreshWorkerRuntime();
     }
 
     const worker_view = createWorkerView(worker_root, {
       store,
       issue_stores: sub_issue_stores,
       fetch_impl: fetch,
-      getWorkerJobs: () => worker_jobs,
-      onRunRalph: (issue_id) =>
-        void enqueueWorkerJob('bd-ralph', { issueId: issue_id }),
+      getWorkerJobs: () =>
+        mergeWorkerJobs(worker_jobs, store.getState().worker.live_jobs),
+      onMoveCard: (input) => {
+        void postWorkerQueue('move', input).then((payload) => {
+          if (payload) {
+            void refreshWorkerRuntime();
+          }
+        });
+      },
+      onStartGoal: (issue_id) => {
+        void postWorkerQueue('start', { issueId: issue_id }).then((payload) => {
+          if (payload) {
+            void refreshWorkerRuntime();
+          }
+        });
+      },
+      onFinishNow: (issue_id) => {
+        void postWorkerQueue('finish-now', { issueId: issue_id }).then(
+          (payload) => {
+            if (payload) {
+              void refreshWorkerRuntime();
+            }
+          }
+        );
+      },
+      onCancelAutoPrFinish: (issue_id) => {
+        void postWorkerQueue('cancel-auto-pr-finish', {
+          issueId: issue_id
+        }).then((payload) => {
+          if (payload) {
+            void refreshWorkerRuntime();
+          }
+        });
+      },
+      onRunPrFinish: (issue_id) => {
+        void postWorkerQueue('run-pr-finish', { issueId: issue_id }).then(
+          (payload) => {
+            if (payload) {
+              void refreshWorkerRuntime();
+            }
+          }
+        );
+      },
+      onSkipAdvance: () => {
+        void postWorkerQueue('skip-advance').then((payload) => {
+          if (payload) {
+            void refreshWorkerRuntime();
+          }
+        });
+      },
+      onCancelAutoStart: () => {
+        void postWorkerQueue('cancel-auto-start').then((payload) => {
+          if (payload) {
+            void refreshWorkerRuntime();
+          }
+        });
+      },
+      onPauseToggle: (paused) => {
+        void postWorkerQueue('pause', { paused }).then((payload) => {
+          if (payload) {
+            store.setState({ worker: { paused } });
+            void refreshWorkerQueue().then(() => worker_view.load());
+          }
+        });
+      },
+      onDefaultModelChange: (model) => {
+        if (model.length > 0) {
+          void updateWorkerDefaults({ default_model: model });
+        }
+      },
+      onDefaultEffortChange: (effort) =>
+        void updateWorkerDefaults({ default_effort: effort }),
+      onShowToast: (message) => showToast(message),
+      onRunRalph: (issue_id) => {
+        void postWorkerQueue('start', { issueId: issue_id }).then((payload) => {
+          if (payload) {
+            void refreshWorkerRuntime();
+          }
+        });
+      },
       onRunPrReview: (target) =>
         void enqueueWorkerJob('pr-review', {
           issueId:
@@ -1253,6 +1558,37 @@ export function bootstrap(root_element) {
       onCancelJob: (/** @type {string} */ job_id) =>
         void cancelWorkerJob(job_id)
     });
+
+    client.on('queue.blocked', (payload) => {
+      const reason = String(
+        /** @type {any} */ (payload)?.reason || 'Worker queue blocked'
+      );
+      store.setState({ worker: { queue_blocked_reason: reason } });
+      showToast(reason, 'warning', 3000);
+      worker_view.load();
+    });
+    client.on('queue.paused', (payload) => {
+      store.setState({
+        worker: { paused: /** @type {any} */ (payload)?.paused === true }
+      });
+      worker_view.load();
+    });
+    client.on('queue.countdown', (payload) => {
+      store.setState({
+        worker: {
+          countdown: normalizeWorkerCountdown(payload)
+        }
+      });
+      worker_view.load();
+    });
+    client.on('job.started', (payload) =>
+      upsertWorkerLiveJob(payload, { status: 'running' })
+    );
+    client.on('job.session_id', (payload) => upsertWorkerLiveJob(payload));
+    client.on('job.log_line', (payload) => upsertWorkerLiveJob(payload));
+    client.on('job.pr_review_wait', updateWorkerReviewWait);
+    client.on('job.pr_review_wait_cancelled', markWorkerReviewWaitCancelled);
+    client.on('job.exited', removeOrFinalizeWorkerLiveJob);
     // Preload epics when switching to view
     /**
      * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'worker', filters: any }} s
@@ -1787,10 +2123,8 @@ export function bootstrap(root_element) {
         void board_view.load();
       }
       if (s.view === 'worker') {
-        void startWorkerJobsPolling();
+        void refreshWorkerRuntime();
         worker_view.load();
-      } else {
-        stopWorkerJobsPolling();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };

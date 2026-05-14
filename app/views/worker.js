@@ -1,15 +1,46 @@
 import { html, render } from 'lit-html';
+import { buildWorkerBoard } from '../data/worker-board-selectors.js';
 import {
   buildWorkerParents,
   filterWorkerParents
 } from '../data/worker-selectors.js';
+import { workerBoardTemplate } from './worker-board.js';
 import { createWorkerDetailView } from './worker-detail.js';
 import { workerToolbarTemplate } from './worker-toolbar.js';
-import { workerTreeTemplate } from './worker-tree.js';
 
 /**
  * @typedef {(input: string, init?: RequestInit) => Promise<{ json: () => Promise<any> }>} WorkerFetch
+ * @typedef {{ search: string, status: string }} WorkerFilters
  */
+
+/**
+ * @param {ReturnType<typeof buildWorkerParents>} parents
+ * @param {WorkerFilters} filters
+ */
+function filterBoardParents(parents, filters) {
+  if (filters.status === 'resolved_closed') {
+    return filterWorkerParents(parents, { ...filters, status: 'all' }).filter(
+      (parent) => parent.status === 'resolved' || parent.status === 'closed'
+    );
+  }
+  return filterWorkerParents(parents, filters);
+}
+
+/**
+ * @param {Record<string, any[]>} board
+ * @param {string | null} selected_parent_id
+ * @returns {any | null}
+ */
+function findSelectedCard(board, selected_parent_id) {
+  if (!selected_parent_id) {
+    return null;
+  }
+  return (
+    Object.values(board)
+      .flat()
+      .find((card) => card.id === selected_parent_id) || null
+  );
+}
 
 /**
  * @param {HTMLElement} mount_element
@@ -18,57 +49,54 @@ import { workerTreeTemplate } from './worker-tree.js';
  *   issue_stores: { snapshotFor: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void },
  *   fetch_impl?: WorkerFetch,
  *   getWorkerJobs?: () => any[],
+ *   onMoveCard?: (input: { issueId: string, fromLane: string, toLane: string, beforeId?: string | null, afterId?: string | null }) => void,
+ *   onStartGoal?: (issue_id: string) => void,
+ *   onFinishNow?: (issue_id: string) => void,
+ *   onCancelAutoPrFinish?: (issue_id: string) => void,
+ *   onRunPrFinish?: (issue_id: string) => void,
+ *   onSkipAdvance?: () => void,
+ *   onCancelAutoStart?: () => void,
+ *   onPauseToggle?: (paused: boolean) => void,
+ *   onUpdateWorkerMetadata?: (issue_id: string, values: { worker_parallel?: string, worker_model?: string, worker_effort?: string }) => void,
+ *   onDefaultModelChange?: (model: string) => void,
+ *   onDefaultEffortChange?: (effort: string) => void,
+ *   onShowToast?: (message: string) => void,
  *   onRunRalph?: (id: string) => void,
  *   onRunPrReview?: (target: any) => void,
  *   onCancelJob?: (job_id: string) => void
  * }} deps
  */
 export function createWorkerView(mount_element, deps) {
-  const expanded_ids = new Set();
   /** @type {ReturnType<typeof createWorkerDetailView> | null} */
   let detail_view = null;
+  /** @type {WorkerFilters} */
   let filters = {
     search: '',
-    status: 'all',
-    runnable_only: false,
-    has_open_pr_only: false
+    status: 'all'
   };
-
-  /**
-   * @param {string} parent_id
-   */
-  function toggleClosedParent(parent_id) {
-    const state = deps.store.getState();
-    const current = Array.isArray(state.worker?.show_closed_children)
-      ? state.worker.show_closed_children
-      : [];
-    const next = current.includes(parent_id)
-      ? current.filter((/** @type {string} */ id) => id !== parent_id)
-      : [...current, parent_id];
-    deps.store.setState({
-      worker: {
-        show_closed_children: next
-      }
-    });
-  }
 
   function renderView() {
     const state = deps.store.getState();
     const workspace_is_valid = !!state.workspace?.current;
     const jobs =
       typeof deps.getWorkerJobs === 'function' ? deps.getWorkerJobs() : [];
-    const selected_parent_id = state.worker?.selected_parent_id || null;
-    const rows = filterWorkerParents(
-      buildWorkerParents(deps.issue_stores.snapshotFor('tab:worker:all'), {
+    const worker_state = state.worker || {};
+    const selected_parent_id = worker_state.selected_parent_id || null;
+    const parents = buildWorkerParents(
+      deps.issue_stores.snapshotFor('tab:worker:all'),
+      {
         jobs,
         workspace_is_valid,
-        show_closed_children: state.worker?.show_closed_children || []
-      }),
-      filters
+        show_closed_children: worker_state.show_closed_children || []
+      }
     );
-    const selected = selected_parent_id
-      ? rows.find((row) => row.id === selected_parent_id) || null
-      : null;
+    const rows = filterBoardParents(parents, filters);
+    const board = buildWorkerBoard(rows, {
+      jobs,
+      done_filter: worker_state.done_filter || 'today',
+      now: new Date()
+    });
+    const selected = findSelectedCard(board, selected_parent_id);
 
     render(
       html`
@@ -78,7 +106,7 @@ export function createWorkerView(mount_element, deps) {
             : 'worker-layout--overview'}"
         >
           <aside class="worker-layout__left">
-            ${workerToolbarTemplate(filters, {
+            ${workerToolbarTemplate(filters, worker_state, {
               onSearchInput(value) {
                 filters = { ...filters, search: value };
                 renderView();
@@ -87,45 +115,51 @@ export function createWorkerView(mount_element, deps) {
                 filters = { ...filters, status: value };
                 renderView();
               },
-              onRunnableToggle(checked) {
-                filters = { ...filters, runnable_only: checked };
-                renderView();
+              onDoneFilterChange(value) {
+                deps.store.setState({ worker: { done_filter: value } });
               },
-              onOpenPrToggle(checked) {
-                filters = { ...filters, has_open_pr_only: checked };
-                renderView();
+              onDefaultModelChange(value) {
+                deps.onDefaultModelChange?.(value);
+              },
+              onDefaultEffortChange(value) {
+                deps.onDefaultEffortChange?.(value);
+              },
+              onPauseToggle(paused) {
+                deps.onPauseToggle?.(paused);
+              },
+              onSkipAdvance() {
+                deps.onSkipAdvance?.();
+              },
+              onCancelAutoStart() {
+                deps.onCancelAutoStart?.();
               }
             })}
-            ${workerTreeTemplate(rows, {
-              expanded_ids,
+            ${workerBoardTemplate(board, state, {
               selected_parent_id,
-              onSelectParent(id) {
+              onSelectCard(id) {
                 const next_selected_parent_id =
                   selected_parent_id === id ? null : id;
                 deps.store.setState({
                   worker: { selected_parent_id: next_selected_parent_id }
                 });
               },
-              onToggleExpand(id) {
-                if (expanded_ids.has(id)) {
-                  expanded_ids.delete(id);
-                } else {
-                  expanded_ids.add(id);
-                }
-                renderView();
+              onMoveCard(input) {
+                deps.onMoveCard?.(input);
               },
-              onToggleClosed(id) {
-                toggleClosedParent(id);
-                renderView();
-              },
-              onRunRalph(id) {
-                deps.onRunRalph?.(id);
-              },
-              onRunPrReview(id) {
-                deps.onRunPrReview?.(id);
+              onShowToast(message) {
+                deps.onShowToast?.(message);
               },
               onCancelJob(job_id) {
                 deps.onCancelJob?.(job_id);
+              },
+              onFinishNow(issue_id) {
+                deps.onFinishNow?.(issue_id);
+              },
+              onCancelAutoPrFinish(issue_id) {
+                deps.onCancelAutoPrFinish?.(issue_id);
+              },
+              onRunPrFinish(issue_id) {
+                deps.onRunPrFinish?.(issue_id);
               }
             })}
           </aside>
@@ -148,7 +182,7 @@ export function createWorkerView(mount_element, deps) {
       if (!detail_view) {
         detail_view = createWorkerDetailView(detail_mount, {
           fetch_impl: deps.fetch_impl,
-          onRunRalph: deps.onRunRalph,
+          onRunRalph: deps.onStartGoal || deps.onRunRalph,
           onRunPrReview: deps.onRunPrReview,
           onCancelJob: deps.onCancelJob
         });

@@ -25,15 +25,11 @@ function createIssueStores(snapshot) {
 }
 
 describe('views/worker', () => {
-  test('shows right detail panel only when a parent is selected', async () => {
+  test('renders four worker board lanes and selects a card', async () => {
     document.body.innerHTML = '<div id="mount"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
     const store = createStore({
       view: 'worker',
-      worker: {
-        selected_parent_id: null,
-        show_closed_children: []
-      },
       workspace: {
         current: {
           path: '/tmp/workspace',
@@ -47,110 +43,82 @@ describe('views/worker', () => {
       store,
       issue_stores: createIssueStores([
         {
-          id: 'UI-62lm',
-          title: 'Worker 탭 추가',
-          status: 'resolved',
-          priority: 1,
-          issue_type: 'feature',
-          spec_id: 'docs/spec.md',
-          updated_at: '2026-04-16T09:20:04Z',
-          open_pr_count: 1
+          id: 'UI-A',
+          title: 'Inbox',
+          status: 'open',
+          issue_type: 'epic',
+          spec_id: 'docs/a.md',
+          metadata: {}
+        },
+        {
+          id: 'UI-B',
+          title: 'Waiting',
+          status: 'open',
+          issue_type: 'epic',
+          spec_id: 'docs/b.md',
+          metadata: { worker_lane: 'waiting', worker_queue_sort_key: '1000' }
         }
       ]),
+      fetch_impl: vi.fn(async () => ({ ok: true, json: async () => ({}) })),
       getWorkerJobs: () => []
     });
 
-    expect(mount.querySelector('#worker-detail-mount')).toBeNull();
-    expect(mount.querySelector('.worker-layout--overview')).not.toBeNull();
+    expect(mount.querySelector('#worker-lane-inbox')).not.toBeNull();
+    expect(mount.querySelector('#worker-lane-waiting')).not.toBeNull();
+    expect(mount.querySelector('#worker-lane-progress')).not.toBeNull();
+    expect(mount.querySelector('#worker-lane-done')).not.toBeNull();
 
-    const summary_button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-parent-row__summary')
-    );
-    summary_button.click();
+    /** @type {HTMLElement} */ (
+      mount.querySelector('[data-worker-card="UI-A"]')
+    ).click();
     await Promise.resolve();
 
-    expect(mount.querySelector('#worker-detail-mount')).not.toBeNull();
-    expect(mount.querySelector('.worker-layout--with-detail')).not.toBeNull();
+    expect(store.getState().worker.selected_parent_id).toBe('UI-A');
   });
 
-  test('renders active job chip/elapsed and fires cancel action from parent row', async () => {
+  test('blocks spec-less drop into waiting and shows toast handler', () => {
+    const onMoveCard = vi.fn();
+    const onShowToast = vi.fn();
     document.body.innerHTML = '<div id="mount"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
-    const onRunRalph = vi.fn();
-    const onRunPrReview = vi.fn();
-    const onCancelJob = vi.fn();
-    const store = createStore({
-      view: 'worker',
-      worker: {
-        selected_parent_id: 'UI-62lm',
-        show_closed_children: []
-      },
-      workspace: {
-        current: {
-          path: '/tmp/workspace',
-          database: '/tmp/workspace/.beads/test.db'
-        },
-        available: []
-      }
-    });
+    const store = createStore({ view: 'worker' });
 
     createWorkerView(mount, {
       store,
       issue_stores: createIssueStores([
         {
-          id: 'UI-62lm',
-          title: 'Worker 탭 추가',
-          status: 'resolved',
-          priority: 1,
-          issue_type: 'feature',
-          spec_id: 'docs/spec.md',
-          updated_at: '2026-04-16T09:20:04Z',
-          open_pr_count: 1
+          id: 'UI-A',
+          title: 'No spec',
+          status: 'open',
+          issue_type: 'epic',
+          spec_id: '',
+          metadata: {}
         }
       ]),
-      getWorkerJobs: () => [
-        {
-          id: 'job-2',
-          issueId: 'UI-62lm',
-          status: 'running',
-          elapsedMs: 65000,
-          isCancellable: true,
-          workspace: '/tmp/workspace'
-        },
-        {
-          id: 'job-1',
-          issueId: 'UI-62lm',
-          status: 'failed',
-          elapsedMs: 5000,
-          errorSummary: 'boom',
-          workspace: '/tmp/workspace'
-        }
-      ],
-      onRunRalph,
-      onRunPrReview,
-      onCancelJob,
-      fetch_impl: vi.fn(async () => ({
-        ok: true,
-        json: async () => ({ items: [] })
-      }))
+      getWorkerJobs: () => [],
+      onMoveCard,
+      onShowToast
     });
 
-    expect(mount.textContent).toContain('Running');
-    expect(mount.textContent).toContain('1m 5s');
-
-    const ralph_button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('[data-run-ralph="UI-62lm"]')
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-worker-card="UI-A"]')
     );
-    expect(ralph_button.disabled).toBe(true);
-
-    const cancel_button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('[data-cancel-job="job-2"]')
+    const lane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-lane-waiting')
     );
-    cancel_button.click();
+    const drag_event = new Event('dragstart', { bubbles: true });
+    Object.defineProperty(drag_event, 'dataTransfer', {
+      value: { setData: vi.fn(), getData: () => 'UI-A' }
+    });
+    card.dispatchEvent(drag_event);
+    const drop_event = new Event('drop', { bubbles: true });
+    Object.defineProperty(drop_event, 'dataTransfer', {
+      value: { getData: () => 'UI-A' }
+    });
+    lane.dispatchEvent(drop_event);
 
-    expect(onCancelJob).toHaveBeenCalledWith('job-2');
-    expect(onRunRalph).not.toHaveBeenCalled();
-    expect(onRunPrReview).not.toHaveBeenCalled();
+    expect(onMoveCard).not.toHaveBeenCalled();
+    expect(onShowToast).toHaveBeenCalledWith('Spec required to enter queue');
   });
 
   test('defines route-shell and pane-body scroll contract for worker', () => {
@@ -162,9 +130,13 @@ describe('views/worker', () => {
     expect(stylesheet).toContain('#worker-root.route.worker');
     expect(stylesheet).toContain('#worker-root > .worker-layout');
     expect(stylesheet).toContain('.worker-layout__left');
-    expect(stylesheet).toContain('.worker-tree');
+    expect(stylesheet).toContain('.worker-board');
+    expect(stylesheet).toContain('.worker-board__lane');
+    expect(stylesheet).toContain('.worker-card');
+    expect(stylesheet).toContain('@keyframes worker-blink');
     expect(stylesheet).toContain('#worker-detail-mount');
     expect(stylesheet).toContain('.worker-detail');
     expect(stylesheet).toContain('min-height: 0;');
+    expect(stylesheet).not.toContain('.worker-tree');
   });
 });

@@ -5,6 +5,7 @@ import { createWsClient } from './ws.js';
 vi.mock('./ws.js', () => {
   /** @type {Record<string, (payload: any) => void>} */
   const handlers = {};
+  /** @type {any} */ (globalThis).__worker_test_ws_handlers = handlers;
   const singleton = {
     /**
      * @param {string} type
@@ -65,5 +66,21 @@ describe('app/main worker route', () => {
     worker_tab.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(window.location.hash).toBe('#/worker');
+  });
+
+  test('updates worker paused state from queue.paused event', async () => {
+    window.location.hash = '#/worker';
+    document.body.innerHTML =
+      '<header><div id="top-nav"></div></header><main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await Promise.resolve();
+    /** @type {Record<string, (payload: any) => void>} */ (
+      /** @type {any} */ (globalThis).__worker_test_ws_handlers
+    )['queue.paused']({ paused: true });
+    await Promise.resolve();
+
+    expect(root.textContent).toContain('Resume queue');
   });
 });
