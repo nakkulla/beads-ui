@@ -10,6 +10,16 @@
 Delivery 는 stop boundary; PR Finish 는 별도") 과 Copilot/Gemini 봇 리뷰 대기
 시간 확보를 위한 것이다.
 
+**Stop boundary 동의 모델**: 본 보드는 사용자가 카드를 명시적으로 waiting
+(또는 progress) lane 에 올린 시점에 해당 카드의 `/pr-finish` 자동 진행에
+사전 동의한 것으로 본다. 즉 5분 review-wait + `[Cancel auto pr-finish]`
+액션이 stop boundary 의 ergonomic 한 구현이며, 사람의 명시적 확인이 필요한
+경우 사용자는 `[Cancel auto pr-finish]` 로 자동 흐름을 끊고 PR 리뷰 후
+명시적 `[Run pr-finish]` 클릭으로 stop boundary 인가를 다시 부여한다.
+일반 Bead-tracked 실행 (worker 보드 외부) 의 stop boundary 정책 (자동 진행
+불가, 명시적 인가 필수) 은 그대로 유효하며, 본 보드의 자동 spawn 정책은
+"사용자 큐잉 == 자동 진행 인가" 라는 명시적 opt-in 컨텍스트로 한정된다.
+
 운영자는 큰 카드로 정보 밀도를 높여서 spec 유무, 자식 진행률, 모델/effort
 override, parallel 여부, 그리고 실행 중인 codex 세션 ID와 라이브 로그를 한 화면에서
 볼 수 있다.
@@ -85,13 +95,17 @@ parent 단위 운영 화면을 도입했지만, 다음 한계가 굳어졌다.
 │  state (app/state.js)                                       │
 │    worker: {                                                │
 │      paused: boolean,                                       │
-│      live_jobs: { [issueId]: LiveJob },                     │
-│      countdown: { issueId, remaining_ms, next_issue_id }    │
+│      live_jobs: { [issueId]: LiveJob (phase, sub_state) }, │
+│      countdown: { issueId, remaining_ms, next_issue_id },  │
+│      pr_review_waits: { [issueId]: {                       │
+│        jobId, prNumber, remaining_ms, total_ms } }         │
 │    }                                                        │
 │                                                             │
 │  WS (app/ws.js) ─ subscribes to:                            │
-│    job.started, job.session_id, job.log_line,               │
-│    job.exited, queue.countdown, queue.advanced              │
+│    job.started, job.session_id, job.log_line, job.exited,  │
+│    job.pr_linked, job.pr_review_wait,                       │
+│    job.pr_review_wait_cancelled,                            │
+│    queue.countdown, queue.advanced, queue.paused           │
 └─────────────────────────────────────────────────────────────┘
                             ▲ WS
                             │
@@ -146,6 +160,8 @@ parent 단위 운영 화면을 도입했지만, 다음 한계가 굳어졌다.
 | `worker_last_goal_session_id` | string | 마지막 `/goal` codex `thread_id` (디버깅용, UI 복사 보조) |
 | `worker_last_pr_finish_job_id` | string | 마지막 `/pr-finish` supervisor job id |
 | `worker_last_pr_finish_session_id` | string | 마지막 `/pr-finish` codex `thread_id` |
+| `worker_pr_review_wait_started_at` | ISO8601 string | review-wait 타이머 시작 시각. server 재시작 시 잔여 시간 복원에 사용. 만료 또는 cancel 시 제거 |
+| `worker_pr_review_wait_cancelled` | `"true"` 또는 미설정 | 사용자가 `[Cancel auto pr-finish]` 한 1회 카운트다운 취소 상태. 사용자가 `[Run pr-finish]` 클릭하면 제거하고 spawn. 새 `/goal` 재진입 시에도 제거 |
 | `pr_url` | string | 연결된 open PR 의 GitHub URL. supervisor 가 `/goal` job 종료 직후 `gh pr list --search <issueId>` 1회 호출 후 캐시. 없으면 PR 미연결 (main 직접 push/merge 로 간주) |
 | `pr_number` | string | 위와 한 쌍. 카드 배지에 `PR #<number>` 로 표시. `/pr-finish` spawn 시 인자로 사용 |
 
@@ -167,8 +183,10 @@ parent 단위 운영 화면을 도입했지만, 다음 한계가 굳어졌다.
   로 설정 후 무시 처리).
 - `inbox/waiting → progress`: supervisor 가 큐 픽업하면서 `worker_lane=progress`
   로 기록 (`worker_queue_sort_key` 제거).
-- `progress → done`: 작업 종료 hook 에서 `worker_lane=done` (그리고 자동 정리
-  rule 에 따라 24h 후 inbox 로 복귀하거나, status 변화에 위임).
+- `progress → done`: 별도 metadata 기록 없음. `done` 은 파생 view 분류이므로
+  status / 마지막 job 결과만 보고 자동 분류한다 (`worker_lane=done` 을 쓰지
+  않는다). 단계 종료 hook 은 `worker_lane` 제거 또는 빈 값으로 설정해 inbox 의
+  metadata override 가 남아있지 않게 한다.
 - `done → inbox`: 수동 drag 시 `worker_lane=inbox`.
 
 ## 큐 정책 (server-owned)
@@ -223,6 +241,16 @@ goal_running  →  pr_review_wait  →  pr_finish_running  →  (큐 auto-advanc
 - `/goal` failed / cancelled / killed → 큐 정지. PR 캐시 호출은 종료 상태와
   무관하게 1회 시도 (실패 PR 추적용).
 
+### review-wait cancel 후 serial slot 점유 정책
+
+`[Cancel auto pr-finish]` 후 카드는 사용자가 `[Run pr-finish]` 또는 `[Cancel job]`
+을 클릭하기 전까지 progress lane 의 `pr_review_wait (cancelled)` 상태로 머무르며
+**serial slot 을 무기한 점유한다**. 이는 의도된 동작 — 사용자가 PR 리뷰를
+직접 검토할 시간을 주기 위함 — 이며 별도 timeout safeguard 는 두지 않는다.
+slot 을 빠르게 비우려면 사용자가 `[Cancel job]` 으로 카드를 done 으로 보내야
+한다 (`/pr-finish` 미실행 → PR 은 그대로 GitHub 에 남으며 사용자가 별도로
+finish 진행).
+
 ### 단계 2: `/pr-finish` 종료 후 처리
 
 - `/pr-finish` succeeded → 단계 3 (큐 auto-advance) 로 진입.
@@ -240,8 +268,8 @@ goal_running  →  pr_review_wait  →  pr_finish_running  →  (큐 auto-advanc
 
 위 조건 모두 통과 시:
 
-1. queue-scheduler 가 60초 카운트다운 시작 (설정값 `worker.advance_delay_ms`,
-   기본 60000).
+1. queue-scheduler 가 60초 카운트다운 시작 (설정값
+   `bdui-config.toml [worker].advance_delay_ms`, 기본 60000).
 2. `queue.countdown` WS 이벤트로 매 1초 broadcast (`remaining_ms`).
 3. 카운트다운 중 사용자가 `Skip wait` 클릭 → 즉시 spawn.
 4. 카운트다운 중 사용자가 `Cancel auto-start` 클릭 → **이 1회의 자동 진행만
@@ -319,10 +347,29 @@ codex exec --json -m <model> -c model_reasoning_effort=<effort> "/goal <issueId>
 `/goal <issueId>` 는 codex 바이너리 내장 슬래시 명령으로, **bd issue body 와
 관련 context 를 자동으로 prompt 에 끼워 넣는다** (dry-run 에서 input_tokens 약
 22k 소비 확인). 따라서 supervisor 는 별도 prompt 조립 / issue body 첨부를 하지
-않는다. `/pr-finish <pr#>` 도 동일하게 PR 메타·diff·review 코멘트를 자동
-context 화 한다고 가정하며, JSONL 이벤트 스키마는 `/goal` 과 동일 (`thread.started`
-/ `turn.started` / `item.completed` / `turn.completed`) — 구현 시 dry-run 으로
-재확인한다.
+않는다.
+
+### `/pr-finish` 선결 dry-run (plan 진입 전 차단 항목)
+
+`/pr-finish` 는 본 spec 의 핵심 가정이지만 아직 dry-run 검증을 통과하지
+않았다. **plan 단계 task 분해 전에 다음을 확정해야 한다.**
+
+| 검증 항목 | 합격 기준 |
+|---|---|
+| 슬래시 명령 존재성 | `codex exec --json --ephemeral "/pr-finish 1"` 가 unknown command 오류 없이 실행 |
+| 인자 시그니처 | PR 번호 한 개 (정수 문자열) 만 받는지 확인. 추가 인자 필요 시 spec 인용 갱신 |
+| JSONL 이벤트 스키마 | `/goal` 과 동일 4종 (`thread.started` / `turn.started` / `item.completed` / `turn.completed`) 발화 확인 |
+| 자동 context 화 | PR 메타·diff·review 코멘트가 prompt 에 자동 포함되어 supervisor 가 별도 조립 불필요함을 확인 |
+
+- 책임자: plan 단계 시작 시점의 worker (writing-plans 진입 직전 본인 / 위임자).
+- 산출물: dry-run 명령·stdout snippet·합격 여부를 본 spec 의 "해결된 항목
+  (2026-05-14)" 섹션에 추가하고, 어긋난 항목이 있으면 spec 본문을 갱신.
+- **Fallback (위 검증 실패 시)**:
+  - 명령이 존재하지 않거나 시그니처가 다르면 → 외부 `pr-finish` superpower
+    skill 을 supervisor 가 직접 호출하는 경로로 전환 (별도 wrapper script).
+  - JSONL 스키마가 다르면 → supervisor JSONL 파서를 단계별 분기로 확장 (phase 별 별도 파서).
+  - 두 경우 모두 fallback 채택 시 본 spec 의 "Codex 실행 명령" / "WS 이벤트
+    스키마" 섹션을 동일 PR 에서 갱신.
 
 ## 카드 UI
 
@@ -357,13 +404,24 @@ context 화 한다고 가정하며, JSONL 이벤트 스키마는 `/goal` 과 동
 ─────────────────────────────────────
 ```
 
-**sub-state: `pr_review_wait`**
+**sub-state: `pr_review_wait` (자동 카운트다운 진행 중)**
 
 ```
 ─────────────────────────────────────
 ⏳ PR review wait   03:42 / 05:00   PR #123 ↗
 > Waiting for Copilot / Gemini review
 [ Finish now ] [ Cancel auto pr-finish ] [ Open PR ]
+─────────────────────────────────────
+```
+
+**sub-state: `pr_review_wait` (사용자가 자동 취소한 상태,
+`metadata.worker_pr_review_wait_cancelled=true`)**
+
+```
+─────────────────────────────────────
+⏸ PR review wait (auto pr-finish cancelled)   PR #123 ↗
+> Waiting for user action
+[ Run pr-finish ] [ Cancel job ] [ Open PR ]
 ─────────────────────────────────────
 ```
 
@@ -394,12 +452,21 @@ context 화 한다고 가정하며, JSONL 이벤트 스키마는 `/goal` 과 동
   다른 thread_id 를 가지므로 sub-state 별로 별도 표시.
 - log line: 최신 1줄. 너무 길면 ellipsis.
 - Cancel: 기존 `POST /jobs/:id/cancel` 재사용. 진행 중인 단계 job 만 취소
-  (review-wait 중에는 비활성, 대신 `[Cancel auto pr-finish]` 사용).
+  (review-wait 자동 카운트다운 중에는 비활성, 대신 `[Cancel auto pr-finish]` 사용).
 - Open log: 기존 `GET /jobs/:id/log` 재사용. `/goal` / `/pr-finish` 로그는 각자
   분리된 job id 로 조회.
-- Finish now: review-wait 카운트다운 즉시 만료시켜 `/pr-finish` spawn.
-- Cancel auto pr-finish: 자동 spawn 만 취소 (카드는 progress lane 의 review-wait
-  상태로 유지). 사용자가 다시 [Run pr-finish] 클릭하기 전까지 멈춤.
+- Finish now: review-wait 카운트다운 즉시 만료시켜 `/pr-finish` spawn (cancel
+  상태 여부와 무관하게 동작).
+- Cancel auto pr-finish: 자동 spawn 만 취소.
+  `metadata.worker_pr_review_wait_cancelled=true` 기록, 카드 UI 는 위 "사용자가
+  자동 취소한 상태" 레이아웃으로 전환되어 `[Run pr-finish]` 버튼 노출.
+- Run pr-finish: cancelled 상태에서 명시적으로 `/pr-finish` spawn. cancel
+  metadata 제거. cancel 상태가 아니면 노출되지 않음.
+- Cancel job: cancelled 상태에서 카드 자체를 큐에서 빼고 done 으로 분류 (job
+  실패와 동일 처리, 큐 정지 트리거 아님 — 사용자 명시 액션이므로).
+- 두 cancel 액션은 명명이 서로 다른 카운트다운을 가리킨다: `[Cancel auto
+  pr-finish]` 는 review-wait (5분), `[Cancel auto-start]` 는 큐 auto-advance
+  (60초, toolbar 또는 board 레벨).
 
 ### Inline children expand (`worker-card-children.js`)
 
@@ -415,10 +482,10 @@ context 화 한다고 가정하며, JSONL 이벤트 스키마는 `/goal` 과 동
 | From → To | 허용 | 처리 |
 |---|---|---|
 | inbox → waiting | ✅ (spec 있을 때만) | metadata 쓰기 (lane + sort_key) |
-| inbox → progress | ✅ (spec 있을 때만, parallel/serial slot 규칙) | 즉시 spawn |
+| inbox → progress | ✅ (spec 있을 때만, parallel/serial slot 규칙) | 즉시 `/goal` spawn. 이후 review-wait → `/pr-finish` 파이프라인 동일 적용 |
 | waiting → inbox | ✅ | sort_key 제거 |
 | waiting ↔ waiting | ✅ | drop 위치 prev / next 의 평균 sort_key |
-| waiting → progress | ✅ (spec 있을 때만, parallel/serial slot 규칙) | 카운트다운 건너뛰고 즉시 spawn |
+| waiting → progress | ✅ (spec 있을 때만, parallel/serial slot 규칙) | 큐 카운트다운 건너뛰고 즉시 `/goal` spawn. 이후 파이프라인 동일 적용 |
 | progress → inbox/waiting | ❌ | "Cancel first" 토스트 |
 | done → inbox | ✅ | metadata 쓰기 |
 | spec 없는 카드 → waiting/progress | ❌ | "Spec required to enter queue" 토스트 |
@@ -477,7 +544,7 @@ sub-state 라우팅에 사용한다. PR review-wait 단계는 별도 이벤트�
 | `job.pr_review_wait` | `{ jobId, issueId, prNumber, remainingMs, totalMs }` | `/goal` succeeded + PR 1건 이상일 때 5분 카운트다운, 1초 주기 |
 | `job.pr_review_wait_cancelled` | `{ jobId, issueId, prNumber, reason }` | 사용자가 `[Cancel auto pr-finish]` 클릭 시 (`reason: "user_cancel"`) |
 | `queue.countdown` | `{ remainingMs, nextIssueId }` | waiting → next spawn 60초 카운트다운, 1초 주기 |
-| `queue.advanced` | `{ spawnedIssueId, jobId }` | 카운트다운 만료 후 spawn 직후 |
+| `queue.advanced` | `{ spawnedIssueId, jobId }` | 카운트다운 만료 후 spawn 직후. 직후 `job.started` 가 `phase: "goal"` 로 broadcast 됨 (`queue.advanced` 자체는 phase 필드를 두지 않음 — 항상 새 `/goal` 시작이므로 생략) |
 | `queue.paused` | `{ paused }` | 토글 시 |
 
 `job.pr_review_wait` 와 `queue.countdown` 은 서로 다른 카운트다운임에 주의
@@ -499,7 +566,8 @@ sub-state 라우팅에 사용한다. PR review-wait 단계는 별도 이벤트�
 - `app/utils/queue-sort.js` — sort_key insert / rebalance 유틸.
 - `server/worker/queue-scheduler.js` — `/goal` 종료 → review-wait 타이머 →
   `/pr-finish` spawn → 큐 auto-advance 의 3단계 상태 머신 + skip / cancel
-  분기. `worker.pr_review_wait_ms` 와 `worker.advance_delay_ms` 모두 관리.
+  분기. `bdui-config.toml [worker].pr_review_wait_ms` 와
+  `bdui-config.toml [worker].advance_delay_ms` 모두 관리.
 - `server/worker/queue-state.js` — bd metadata read/write helpers (lane,
   sort_key, parallel, model, effort, 단계별 last_job_id / last_session_id,
   pr_url / pr_number).
@@ -548,6 +616,17 @@ sub-state 라우팅에 사용한다. PR review-wait 단계는 별도 이벤트�
 - 진행 중인 supervisor job 이 있는 상태에서 새 버전이 처음 마운트되면:
   - lane derive: job.status 가 running 이면 progress lane.
   - lane metadata 없으면 inbox 로 표시.
+- **server 재시작 시 sub-state 복구 정책**:
+  - `goal_running` / `pr_finish_running`: 자식 process 가 사망했으므로
+    supervisor 는 해당 job 을 `failed (status=killed)` 로 마킹하고 큐 정지.
+    카드는 progress lane 에 남아 사용자 개입 대기 (수동 재시작).
+  - `pr_review_wait`: `metadata.worker_pr_review_wait_started_at` 이 있고
+    아직 활성 job 이 없으면 review-wait 상태로 인식. supervisor 는 시작
+    시점부터 `pr_review_wait_ms` 까지 남은 시간으로 새 타이머를 set 한다
+    (이미 만료됐으면 즉시 `/pr-finish` spawn). `metadata.worker_pr_review_wait_cancelled=true`
+    면 타이머 set 하지 않고 사용자 액션 대기 상태로 마운트.
+  - 큐 정지 (`paused`) 는 server 메모리 상태이므로 재시작 시 `false` 로
+    초기화 (기존 정책 유지).
 - 대기열은 새 시스템 시작 시 비어있다고 가정. 기존 사용자 데이터에 `worker_*` 가
   존재할 가능성 낮음.
 
@@ -561,14 +640,27 @@ sub-state 라우팅에 사용한다. PR review-wait 단계는 별도 이벤트�
 - `server/worker/queue-scheduler.js`:
   - `/goal` succeeded + PR 1건 → 5분 review-wait → `/pr-finish` spawn.
   - `/goal` succeeded + PR 0건 → review-wait 건너뛰고 큐 60초 카운트다운.
+  - `/goal` succeeded + PR 다건 → 첫 항목 사용.
   - `/goal` failed → 큐 정지, review-wait / `/pr-finish` 미발생.
   - `/pr-finish` succeeded → 큐 60초 카운트다운.
   - `/pr-finish` failed → 큐 정지.
   - review-wait 중 `[Finish now]` → 즉시 `/pr-finish` spawn.
-  - review-wait 중 `[Cancel auto pr-finish]` → 이 1회만 취소 (paused 와 별개).
+  - review-wait 중 `[Cancel auto pr-finish]` → 이 1회만 취소, metadata
+    `worker_pr_review_wait_cancelled=true` 기록.
+  - cancelled 상태에서 `[Run pr-finish]` → `/pr-finish` spawn + metadata 제거.
+  - cancelled 상태에서 `[Cancel job]` → 카드 done 분류, 큐 정지 트리거 없음.
   - paused → 모든 단계 / 카운트다운 진행 안 함.
+  - server 재시작 + `worker_pr_review_wait_started_at` 보유 → 잔여 시간으로
+    타이머 재set (음수면 즉시 spawn). `cancelled=true` 면 타이머 set 하지 않음.
 - `server/worker/queue-state.js`: bd metadata read/write 라운드트립 (모킹된
-  bd 인터페이스), 단계별 last_*_job_id / last_*_session_id 분리 확인.
+  bd 인터페이스), 단계별 last_*_job_id / last_*_session_id 분리 확인,
+  `worker_pr_review_wait_*` 키 라이프사이클 (set / clear / cancelled) 확인.
+- `server/worker/supervisor.js` (PR 캐시 단위 분리 테스트 가능 시):
+  - `gh pr list` 결과 1건 → `metadata.pr_url/pr_number` 기록 + `job.pr_linked`
+    broadcast (`prNumber: 123`).
+  - `gh pr list` 결과 0건 → 두 키 제거 + `job.pr_linked` broadcast
+    (`prNumber: null`).
+  - `gh pr list` 결과 다건 → 첫 항목 사용.
 
 ### 통합 테스트
 
@@ -655,6 +747,18 @@ sub-state 라우팅에 사용한다. PR review-wait 단계는 별도 이벤트�
   필드로 분기한다.
 - **`/pr-finish` 단계 실패 처리** — `/goal` 실패와 동일하게 큐 정지. 카드는
   progress lane 의 `pr_finish_running` 상태로 남아 사용자 개입 대기.
+- **stop boundary 동의 모델** — 사용자가 카드를 waiting/progress lane 에 올린
+  시점에 `/pr-finish` 자동 진행에 사전 동의한 것으로 간주. 5분 review-wait +
+  `[Cancel auto pr-finish]` 가 stop boundary 의 ergonomic 구현. cancel 후
+  `[Run pr-finish]` 클릭으로 명시적 인가를 다시 부여한다. 일반 Bead-tracked
+  실행 (보드 외부) 의 stop boundary 정책에는 영향 없음.
+- **server 재시작 시 review-wait 복구** — `worker_pr_review_wait_started_at`
+  metadata 로 잔여 시간 복원. 만료됐으면 즉시 `/pr-finish` spawn,
+  `worker_pr_review_wait_cancelled=true` 면 타이머 set 안 함. `goal_running` /
+  `pr_finish_running` 은 자식 process 사망 처리 (job=killed, 큐 정지).
+- **review-wait cancel 후 slot 무기한 점유** — `[Cancel auto pr-finish]` 후
+  카드는 사용자 액션 (`[Run pr-finish]` / `[Cancel job]`) 전까지 serial slot
+  점유 유지. 의도된 동작이며 timeout safeguard 없음.
 
 ## Execution lane
 
