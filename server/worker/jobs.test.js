@@ -12,7 +12,18 @@ describe('worker job manager gateway', () => {
         path: 'log',
         tail: ['line'],
         truncated: false
-      }))
+      })),
+      getQueueSnapshot: vi.fn(async () => ({ paused: false })),
+      moveCard: vi.fn(async () => ({ ok: true })),
+      setPaused: vi.fn(async () => ({ paused: true })),
+      startGoal: vi.fn(async () => ({ id: 'job-goal' })),
+      finishNow: vi.fn(async () => ({ ok: true })),
+      cancelAutoPrFinish: vi.fn(async () => ({ ok: true })),
+      runPrFinish: vi.fn(async () => ({ ok: true })),
+      skipAdvance: vi.fn(async () => ({ ok: true })),
+      cancelAutoStart: vi.fn(async () => ({ ok: true })),
+      setWorkerOverrides: vi.fn(async () => ({ ok: true })),
+      listWorkerEvents: vi.fn(async () => [{ seq: 1 }])
     };
     const manager = createWorkerJobManager({ root_dir: '/repo', client });
 
@@ -25,6 +36,25 @@ describe('worker job manager gateway', () => {
     const detail = await manager.getJob({ jobId: 'job-1' });
     const cancelled = await manager.cancelJob({ jobId: 'job-1' });
     const log = await manager.getJobLog({ jobId: 'job-1', tail: 20 });
+    const snapshot = await manager.getQueueSnapshot({ workspace: '/repo' });
+    const moved = await manager.moveCard({
+      workspace: '/repo',
+      issueId: 'UI-A',
+      fromLane: 'inbox',
+      toLane: 'waiting'
+    });
+    const paused = await manager.setPaused({
+      workspace: '/repo',
+      paused: true
+    });
+    const goal = await manager.startGoal({
+      workspace: '/repo',
+      issueId: 'UI-A'
+    });
+    const events = await manager.listWorkerEvents({
+      workspace: '/repo',
+      since: 0
+    });
 
     expect(client.createJob).toHaveBeenCalledWith({
       command: 'bd-ralph',
@@ -35,11 +65,37 @@ describe('worker job manager gateway', () => {
     expect(client.getJob).toHaveBeenCalledWith({ jobId: 'job-1' });
     expect(client.cancelJob).toHaveBeenCalledWith({ jobId: 'job-1' });
     expect(client.getJobLog).toHaveBeenCalledWith({ jobId: 'job-1', tail: 20 });
+    expect(client.getQueueSnapshot).toHaveBeenCalledWith({
+      workspace: '/repo'
+    });
+    expect(client.moveCard).toHaveBeenCalledWith({
+      workspace: '/repo',
+      issueId: 'UI-A',
+      fromLane: 'inbox',
+      toLane: 'waiting'
+    });
+    expect(client.setPaused).toHaveBeenCalledWith({
+      workspace: '/repo',
+      paused: true
+    });
+    expect(client.startGoal).toHaveBeenCalledWith({
+      workspace: '/repo',
+      issueId: 'UI-A'
+    });
+    expect(client.listWorkerEvents).toHaveBeenCalledWith({
+      workspace: '/repo',
+      since: 0
+    });
     expect(created.status).toBe('running');
     expect(items).toHaveLength(1);
     expect(detail.workspace).toBe('/repo');
     expect(cancelled.status).toBe('cancelled');
     expect(log.tail).toEqual(['line']);
+    expect(snapshot.paused).toBe(false);
+    expect(moved.ok).toBe(true);
+    expect(paused.paused).toBe(true);
+    expect(goal.id).toBe('job-goal');
+    expect(events).toEqual([{ seq: 1 }]);
   });
 
   test('fails early when managed supervisor daemon does not start', async () => {

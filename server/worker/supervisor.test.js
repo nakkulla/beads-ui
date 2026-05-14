@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createJobStore } from './job-store.js';
 import {
   createWorkerSupervisor,
@@ -121,6 +121,85 @@ describe('worker supervisor', () => {
     expect(
       store.findActiveConflict({ workspace: root_dir, issueId: 'UI-qclw' })
     ).toBeNull();
+  });
+
+  test('exposes scheduler snapshot and forwards worker lifecycle events', async () => {
+    const root_dir = mkdtemp();
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
+    const child = /** @type {any} */ (new EventEmitter());
+    child.unref = () => {};
+    /** @type {((event: any) => void) | null} */
+    let on_codex_event = null;
+    const scheduler = {
+      getSnapshot: vi.fn(() => ({ paused: false, countdown: null })),
+      handleJobStart: vi.fn(async () => {}),
+      handleJobSession: vi.fn(async () => {}),
+      handleJobExit: vi.fn(async () => {}),
+      setPaused: vi.fn(),
+      canStart: vi.fn(() => true)
+    };
+    const supervisor = createWorkerSupervisor({
+      root_dir,
+      store,
+      scheduler,
+      runner: {
+        startJob(input) {
+          on_codex_event = input.onCodexEvent ?? null;
+          return { pid: 4321, child };
+        },
+        async cancelJob() {
+          return true;
+        }
+      },
+      owner_pid: 9010,
+      health_check_impl: async () => true,
+      is_process_running_impl: () => true,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
+
+    const snapshot = supervisor.getQueueSnapshot({ workspace: root_dir });
+    const job = await supervisor.createJob({
+      command: 'bd-ralph',
+      issueId: 'UI-qclw',
+      workspace: root_dir
+    });
+    const emit_codex_event = /** @type {(event: any) => void} */ (
+      /** @type {unknown} */ (on_codex_event)
+    );
+    emit_codex_event({ type: 'session_id', sessionId: '018f' });
+    await supervisor.cancelJob(job.id, { grace_timeout_ms: 250 });
+
+    expect(snapshot).toMatchObject({
+      paused: false,
+      pr_finish_available: true
+    });
+    expect(scheduler.handleJobStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: job.id,
+        issueId: 'UI-qclw',
+        phase: 'goal',
+        parallel: false
+      })
+    );
+    expect(scheduler.handleJobSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: job.id,
+        issueId: 'UI-qclw',
+        phase: 'goal',
+        sessionId: '018f'
+      })
+    );
+    expect(scheduler.handleJobExit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: job.id,
+        issueId: 'UI-qclw',
+        phase: 'goal',
+        status: 'cancelled'
+      })
+    );
   });
 
   test('persists codex event metadata from runner callbacks', async () => {

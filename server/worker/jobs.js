@@ -45,6 +45,72 @@ export function createWorkerJobManager(options) {
      */
     getJobLog(input) {
       return client.getJobLog(input);
+    },
+    /**
+     * @param {{ workspace?: string }} input
+     */
+    getQueueSnapshot(input) {
+      return client.getQueueSnapshot(input);
+    },
+    /**
+     * @param {Record<string, unknown>} input
+     */
+    moveCard(input) {
+      return client.moveCard(input);
+    },
+    /**
+     * @param {Record<string, unknown>} input
+     */
+    setWorkerOverrides(input) {
+      return client.setWorkerOverrides(input);
+    },
+    /**
+     * @param {Record<string, unknown>} input
+     */
+    setPaused(input) {
+      return client.setPaused(input);
+    },
+    /**
+     * @param {Record<string, unknown>} input
+     */
+    startGoal(input) {
+      return client.startGoal(input);
+    },
+    /**
+     * @param {Record<string, unknown>} input
+     */
+    finishNow(input) {
+      return client.finishNow(input);
+    },
+    /**
+     * @param {Record<string, unknown>} input
+     */
+    cancelAutoPrFinish(input) {
+      return client.cancelAutoPrFinish(input);
+    },
+    /**
+     * @param {Record<string, unknown>} input
+     */
+    runPrFinish(input) {
+      return client.runPrFinish(input);
+    },
+    /**
+     * @param {Record<string, unknown>} input
+     */
+    skipAdvance(input) {
+      return client.skipAdvance(input);
+    },
+    /**
+     * @param {Record<string, unknown>} input
+     */
+    cancelAutoStart(input) {
+      return client.cancelAutoStart(input);
+    },
+    /**
+     * @param {{ workspace?: string, since?: number }} input
+     */
+    listWorkerEvents(input) {
+      return client.listWorkerEvents(input);
     }
   };
 }
@@ -141,8 +207,93 @@ function createWorkerSupervisorClient(options) {
         fetch_impl,
         `${url}/jobs/${encodeURIComponent(input.jobId)}/log${query}`
       );
+    },
+    /**
+     * @param {{ workspace?: string }} input
+     */
+    async getQueueSnapshot(input) {
+      const url = await ensureBaseUrl();
+      const query = input.workspace
+        ? `?workspace=${encodeURIComponent(input.workspace)}`
+        : '';
+      return fetchJson(fetch_impl, `${url}/queue${query}`);
+    },
+
+    /** @param {Record<string, unknown>} input */
+    moveCard(input) {
+      return postSupervisor('queue/move', input);
+    },
+
+    /** @param {Record<string, unknown>} input */
+    setWorkerOverrides(input) {
+      return postSupervisor('queue/overrides', input);
+    },
+
+    /** @param {Record<string, unknown>} input */
+    setPaused(input) {
+      return postSupervisor('queue/pause', input);
+    },
+
+    /** @param {Record<string, unknown>} input */
+    startGoal(input) {
+      return postSupervisor('queue/start', input);
+    },
+
+    /** @param {Record<string, unknown>} input */
+    finishNow(input) {
+      return postSupervisor('queue/finish-now', input);
+    },
+
+    /** @param {Record<string, unknown>} input */
+    cancelAutoPrFinish(input) {
+      return postSupervisor('queue/cancel-auto-pr-finish', input);
+    },
+
+    /** @param {Record<string, unknown>} input */
+    runPrFinish(input) {
+      return postSupervisor('queue/run-pr-finish', input);
+    },
+
+    /** @param {Record<string, unknown>} input */
+    skipAdvance(input) {
+      return postSupervisor('queue/skip-advance', input);
+    },
+
+    /** @param {Record<string, unknown>} input */
+    cancelAutoStart(input) {
+      return postSupervisor('queue/cancel-auto-start', input);
+    },
+
+    /**
+     * @param {{ workspace?: string, since?: number }} input
+     */
+    async listWorkerEvents(input) {
+      const url = await ensureBaseUrl();
+      const params = new URLSearchParams();
+      if (input.workspace) {
+        params.set('workspace', input.workspace);
+      }
+      if (input.since != null) {
+        params.set('since', String(input.since));
+      }
+      const query = params.size > 0 ? `?${params.toString()}` : '';
+      const response = await fetchJson(fetch_impl, `${url}/events${query}`);
+      return Array.isArray(response.items) ? response.items : [];
     }
   };
+
+  /**
+   * @param {string} endpoint
+   * @param {Record<string, unknown>} input
+   */
+  async function postSupervisor(endpoint, input) {
+    const url = await ensureBaseUrl();
+    return fetchJson(fetch_impl, `${url}/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input)
+    });
+  }
 
   async function ensureBaseUrl() {
     if (base_url && (await isHealthy(base_url))) {

@@ -19,6 +19,7 @@ import { debug } from './logging.js';
 import { getAvailableWorkspaces } from './registry-watcher.js';
 import { keyOf, registry } from './subscriptions.js';
 import { validateSubscribeListPayload } from './validators.js';
+import { getWorkerJobManager } from './worker/jobs.js';
 
 const log = debug('ws');
 const UPDATE_STATUS_ALLOWED = new Set([
@@ -798,8 +799,54 @@ export function attachWsServer(http_server, options = {}) {
 
   interval.unref?.();
 
+  let worker_event_since = 0;
+  const worker_event_interval = setInterval(() => {
+    void pollWorkerEvents();
+  }, 1000);
+  worker_event_interval.unref?.();
+
+  async function pollWorkerEvents() {
+    if (!CURRENT_WORKSPACE?.root_dir) {
+      return;
+    }
+    const open_clients = Array.from(wss.clients).filter(
+      (ws) => ws.readyState === ws.OPEN
+    );
+    if (open_clients.length === 0) {
+      return;
+    }
+    try {
+      const manager = getWorkerJobManager({
+        root_dir: options.root_dir || CURRENT_WORKSPACE.root_dir
+      });
+      const events = await manager.listWorkerEvents({
+        workspace: CURRENT_WORKSPACE.root_dir,
+        since: worker_event_since
+      });
+      for (const event of events) {
+        if (typeof event.seq === 'number') {
+          worker_event_since = Math.max(worker_event_since, event.seq);
+        }
+        const msg = JSON.stringify({
+          id: `evt-worker-${event.seq || Date.now()}`,
+          ok: true,
+          type: event.type,
+          payload: event.payload
+        });
+        for (const ws of open_clients) {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(msg);
+          }
+        }
+      }
+    } catch {
+      // ignore transient worker event polling errors
+    }
+  }
+
   wss.on('close', () => {
     clearInterval(interval);
+    clearInterval(worker_event_interval);
   });
 
   /**

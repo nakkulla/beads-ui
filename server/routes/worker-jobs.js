@@ -10,7 +10,7 @@ import { getWorkerJobManager } from '../worker/jobs.js';
  * @param {Request} req
  * @param {string} root_dir
  */
-function resolveWorkspace(req, root_dir) {
+export function resolveWorkspace(req, root_dir) {
   const workspace =
     typeof req.query.workspace === 'string'
       ? req.query.workspace

@@ -11,7 +11,7 @@ import {
 } from './config.js';
 import { registerWorkspace } from './registry-watcher.js';
 import { createWorkerJobsRouter } from './routes/worker-jobs.js';
-import { createWorkerPrsRouter } from './routes/worker-prs.js';
+import { createWorkerQueueRouter } from './routes/worker-queue.js';
 import { createWorkerSpecRouter } from './routes/worker-spec.js';
 import { updateWorkerConfigFile } from './worker/worker-config-writer.js';
 
@@ -209,8 +209,8 @@ export function createApp(config) {
     createWorkerSpecRouter({ root_dir: config.root_dir })
   );
   app.use(
-    '/api/worker/prs',
-    createWorkerPrsRouter({ root_dir: config.root_dir })
+    '/api/worker/queue',
+    createWorkerQueueRouter({ root_dir: config.root_dir })
   );
   app.use(
     '/api/worker/jobs',
