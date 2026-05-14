@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const WORKER_EFFORTS = new Set(['low', 'medium', 'high']);
+const DEFAULT_MODEL = 'gpt-5.5';
+const DEFAULT_EFFORT = 'high';
 
 /**
  * @param {string} value
@@ -58,6 +60,44 @@ function isWorkerDefaultLine(line) {
 }
 
 /**
+ * @param {string} raw_value
+ * @returns {string}
+ */
+function parseTomlStringLike(raw_value) {
+  const trimmed = raw_value.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  return trimmed;
+}
+
+/**
+ * @param {string[]} lines
+ * @returns {{ default_model?: string, default_effort?: string }}
+ */
+function readExistingWorkerDefaults(lines) {
+  const worker_start = lines.findIndex((line) => isWorkerSectionHeader(line));
+  if (worker_start === -1) {
+    return {};
+  }
+  /** @type {{ default_model?: string, default_effort?: string }} */
+  const result = {};
+  for (let index = worker_start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (isSectionHeader(line)) {
+      break;
+    }
+    const match =
+      /^\s*(default_model|default_effort)\s*=\s*(.+?)\s*(?:#.*)?$/.exec(line);
+    if (match) {
+      result[/** @type {'default_model'|'default_effort'} */ (match[1])] =
+        parseTomlStringLike(match[2]);
+    }
+  }
+  return result;
+}
+
+/**
  * Update editable Worker defaults in the TOML config file.
  *
  * Only `default_model` and `default_effort` are persisted here. Queue timing
@@ -67,8 +107,6 @@ function isWorkerDefaultLine(line) {
  * @param {{ default_model?: unknown, default_effort?: unknown }} values
  */
 export function updateWorkerConfigFile(config_path, values) {
-  const default_model = normalizeModel(values.default_model);
-  const default_effort = normalizeEffort(values.default_effort);
   const file_content = fs.existsSync(config_path)
     ? fs.readFileSync(config_path, 'utf8')
     : '';
@@ -80,6 +118,15 @@ export function updateWorkerConfigFile(config_path, values) {
     lines.pop();
   }
 
+  const existing_defaults = readExistingWorkerDefaults(lines);
+  const default_model =
+    values.default_model === undefined
+      ? normalizeModel(existing_defaults.default_model || DEFAULT_MODEL)
+      : normalizeModel(values.default_model);
+  const default_effort =
+    values.default_effort === undefined
+      ? normalizeEffort(existing_defaults.default_effort || DEFAULT_EFFORT)
+      : normalizeEffort(values.default_effort);
   const worker_start = lines.findIndex((line) => isWorkerSectionHeader(line));
   const worker_lines = [
     `default_model = ${quoteTomlString(default_model)}`,

@@ -85,6 +85,12 @@ export function createWorkerJobManager(options) {
     /**
      * @param {Record<string, unknown>} input
      */
+    cancelReviewWaitJob(input) {
+      return client.cancelReviewWaitJob(input);
+    },
+    /**
+     * @param {Record<string, unknown>} input
+     */
     runPrFinish(input) {
       return client.runPrFinish(input);
     },
@@ -229,6 +235,11 @@ function createWorkerSupervisorClient(options) {
     /** @param {Record<string, unknown>} input */
     cancelAutoPrFinish(input) {
       return postSupervisor('queue/cancel-auto-pr-finish', input);
+    },
+
+    /** @param {Record<string, unknown>} input */
+    cancelReviewWaitJob(input) {
+      return postSupervisor('queue/cancel-review-wait', input);
     },
 
     /** @param {Record<string, unknown>} input */

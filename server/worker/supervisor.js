@@ -23,6 +23,7 @@ const ACTIVE_JOB_STATUSES = new Set([
   'cancelling'
 ]);
 const FINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+const WORKER_EFFORTS = new Set(['low', 'medium', 'high']);
 
 /**
  * @typedef {{
@@ -40,7 +41,7 @@ const FINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
  */
 
 /**
- * @param {{ root_dir: string, store?: ReturnType<typeof createJobStore>, runner?: WorkerRunner, scheduler?: any, queue_state?: any, worker_config?: { default_model?: string, default_effort?: string, pr_review_wait_ms?: number, advance_delay_ms?: number }, broadcast?: (type: string, payload: Record<string, unknown>, event?: Record<string, unknown>) => void, find_prs_impl?: (issue_id: string, workspace: string) => Promise<Array<{ number: number, url: string }>>, pr_finish_available?: boolean, health_check_impl?: (record: OwnerRecord) => Promise<boolean>, is_process_running_impl?: (pid: number) => boolean, owner_pid?: number, now?: () => string }} options
+ * @param {{ root_dir: string, store?: ReturnType<typeof createJobStore>, runner?: WorkerRunner, scheduler?: any, queue_state?: any, worker_config?: { default_model?: string, default_effort?: string, pr_review_wait_ms?: number, advance_delay_ms?: number }, get_worker_config?: () => { default_model?: string, default_effort?: string, pr_review_wait_ms?: number, advance_delay_ms?: number }, broadcast?: (type: string, payload: Record<string, unknown>, event?: Record<string, unknown>) => void, find_prs_impl?: (issue_id: string, workspace: string) => Promise<Array<{ number: number, url: string }>>, pr_finish_available?: boolean, health_check_impl?: (record: OwnerRecord) => Promise<boolean>, is_process_running_impl?: (pid: number) => boolean, owner_pid?: number, now?: () => string }} options
  */
 export function createWorkerSupervisor(options) {
   const store = options.store || createJobStore({ root_dir: options.root_dir });
@@ -70,7 +71,9 @@ export function createWorkerSupervisor(options) {
         return false;
       }
     });
-  const worker_config = normalizeWorkerConfig(options.worker_config || {});
+  const initial_worker_config = normalizeWorkerConfig(
+    options.worker_config || {}
+  );
   const pr_finish_available = options.pr_finish_available !== false;
   const queue_state =
     options.queue_state || createQueueState({ cwd: options.root_dir });
@@ -103,8 +106,8 @@ export function createWorkerSupervisor(options) {
     options.scheduler ||
     createQueueScheduler({
       queue_state,
-      pr_review_wait_ms: worker_config.pr_review_wait_ms,
-      advance_delay_ms: worker_config.advance_delay_ms,
+      pr_review_wait_ms: initial_worker_config.pr_review_wait_ms,
+      advance_delay_ms: initial_worker_config.advance_delay_ms,
       now,
       spawn_phase: async (input) => {
         if (input.phase === 'pr_finish' && !pr_finish_available) {
@@ -115,14 +118,17 @@ export function createWorkerSupervisor(options) {
           });
           return { id: '' };
         }
+        const run_settings = await resolveRunSettings({
+          issueId: input.issueId
+        });
         const job = await createJob({
           command: 'codex',
           phase: input.phase,
           issueId: input.issueId,
           prNumber: input.prNumber,
           workspace: options.root_dir,
-          model: worker_config.default_model,
-          effort: worker_config.default_effort,
+          model: run_settings.model,
+          effort: run_settings.effort,
           parallel: input.parallel
         });
         return { id: job.id };
@@ -132,6 +138,50 @@ export function createWorkerSupervisor(options) {
     });
   /** @type {Map<string, StartedWorkerProcess['child']>} */
   const active_children = new Map();
+
+  function getCurrentWorkerConfig() {
+    try {
+      return normalizeWorkerConfig(
+        options.get_worker_config
+          ? options.get_worker_config()
+          : initial_worker_config
+      );
+    } catch {
+      return initial_worker_config;
+    }
+  }
+
+  /**
+   * @param {{ issueId?: string | null, model?: string | null, effort?: string | null }} input
+   */
+  async function resolveRunSettings(input) {
+    const current_worker_config = getCurrentWorkerConfig();
+    const explicit_model = normalizeOptionalModel(input.model);
+    const explicit_effort = normalizeOptionalEffort(input.effort);
+    if (explicit_model && explicit_effort) {
+      return { model: explicit_model, effort: explicit_effort };
+    }
+
+    let issue = null;
+    if (input.issueId && typeof queue_state.getIssue === 'function') {
+      try {
+        issue = await queue_state.getIssue(input.issueId);
+      } catch {
+        issue = null;
+      }
+    }
+    const metadata = issue?.metadata || {};
+    return {
+      model:
+        explicit_model ||
+        normalizeOptionalModel(metadata.worker_model) ||
+        current_worker_config.default_model,
+      effort:
+        explicit_effort ||
+        normalizeOptionalEffort(metadata.worker_effort) ||
+        current_worker_config.default_effort
+    };
+  }
 
   /**
    * @param {{ port?: number | null }} [details]
@@ -201,8 +251,9 @@ export function createWorkerSupervisor(options) {
     const workspace = path.resolve(input.workspace);
     const command = input.command || 'codex';
     const phase = /** @type {'goal' | 'pr_finish'} */ (input.phase ?? 'goal');
-    const model = input.model || worker_config.default_model;
-    const effort = input.effort || worker_config.default_effort;
+    const current_worker_config = getCurrentWorkerConfig();
+    const model = input.model || current_worker_config.default_model;
+    const effort = input.effort || current_worker_config.default_effort;
     const parallel = input.parallel === true;
     const resolved_pr = { prNumber: input.prNumber ?? null };
     const conflict = store.findActiveConflict({
@@ -653,13 +704,18 @@ export function createWorkerSupervisor(options) {
    */
   async function startGoal(input) {
     const issue_id = requireString(input.issueId, 'issueId');
+    const run_settings = await resolveRunSettings({
+      issueId: issue_id,
+      model: input.model,
+      effort: input.effort
+    });
     return createJob({
       command: 'codex',
       phase: 'goal',
       issueId: issue_id,
       workspace: input.workspace || options.root_dir,
-      model: input.model || worker_config.default_model,
-      effort: input.effort || worker_config.default_effort,
+      model: run_settings.model,
+      effort: run_settings.effort,
       parallel: input.parallel === true
     });
   }
@@ -674,6 +730,13 @@ export function createWorkerSupervisor(options) {
   async function cancelAutoPrFinish(input) {
     const issue_id = requireString(input.issueId, 'issueId');
     await scheduler.cancelAutoPrFinish(issue_id);
+    return { ok: true };
+  }
+
+  /** @param {{ issueId?: unknown }} input */
+  async function cancelReviewWaitJob(input) {
+    const issue_id = requireString(input.issueId, 'issueId');
+    await scheduler.cancelReviewWaitJob(issue_id);
     return { ok: true };
   }
 
@@ -761,6 +824,7 @@ export function createWorkerSupervisor(options) {
     startGoal,
     finishNow,
     cancelAutoPrFinish,
+    cancelReviewWaitJob,
     runPrFinish,
     skipAdvance,
     cancelAutoStart,
@@ -769,7 +833,7 @@ export function createWorkerSupervisor(options) {
 }
 
 /**
- * @param {{ root_dir: string, host?: string, port?: number, supervisor?: ReturnType<typeof createWorkerSupervisor> | null, worker_config?: { default_model?: string, default_effort?: string, pr_review_wait_ms?: number, advance_delay_ms?: number }, pr_finish_available?: boolean }} options
+ * @param {{ root_dir: string, host?: string, port?: number, supervisor?: ReturnType<typeof createWorkerSupervisor> | null, worker_config?: { default_model?: string, default_effort?: string, pr_review_wait_ms?: number, advance_delay_ms?: number }, get_worker_config?: () => { default_model?: string, default_effort?: string, pr_review_wait_ms?: number, advance_delay_ms?: number }, pr_finish_available?: boolean }} options
  */
 export function createWorkerSupervisorServer(options) {
   const supervisor =
@@ -777,6 +841,7 @@ export function createWorkerSupervisorServer(options) {
     createWorkerSupervisor({
       root_dir: options.root_dir,
       worker_config: options.worker_config,
+      get_worker_config: options.get_worker_config,
       pr_finish_available: options.pr_finish_available
     });
   const app = express();
@@ -1175,6 +1240,24 @@ async function findPrsWithGh(issue_id, workspace) {
  */
 function ignoreAsync(promise) {
   void promise.catch(() => {});
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function normalizeOptionalModel(value) {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function normalizeOptionalEffort(value) {
+  return typeof value === 'string' && WORKER_EFFORTS.has(value) ? value : null;
 }
 
 /**

@@ -1485,6 +1485,15 @@ export function bootstrap(root_element) {
           }
         );
       },
+      onCancelReviewWait: (issue_id) => {
+        void postWorkerQueue('cancel-review-wait', { issueId: issue_id }).then(
+          (payload) => {
+            if (payload) {
+              void refreshWorkerRuntime();
+            }
+          }
+        );
+      },
       onSkipAdvance: () => {
         void postWorkerQueue('skip-advance').then((payload) => {
           if (payload) {

@@ -84,6 +84,90 @@ describe('worker supervisor', () => {
     ).toBe('job.exited');
   });
 
+  test('uses issue worker model and effort overrides for manual goal start', async () => {
+    const root_dir = mkdtemp();
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
+    const child = /** @type {any} */ (new EventEmitter());
+    child.unref = () => {};
+    const runner = {
+      startJob: vi.fn(() => ({ pid: 4321, child })),
+      async cancelJob() {
+        return true;
+      }
+    };
+    const queue_state = {
+      getIssue: vi.fn(async () => ({
+        id: 'UI-A',
+        metadata: { worker_model: 'gpt-5.4', worker_effort: 'medium' }
+      })),
+      moveToProgress: vi.fn(async () => {}),
+      setLastJob: vi.fn(async () => {}),
+      setLastSession: vi.fn(async () => {})
+    };
+    const supervisor = createWorkerSupervisor({
+      root_dir,
+      store,
+      runner,
+      queue_state,
+      owner_pid: 9001,
+      health_check_impl: async () => true,
+      is_process_running_impl: () => true,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
+
+    await supervisor.startGoal({ issueId: 'UI-A', workspace: root_dir });
+
+    expect(runner.startJob).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gpt-5.4', effort: 'medium' })
+    );
+  });
+
+  test('uses current worker config provider defaults for manual goal start', async () => {
+    const root_dir = mkdtemp();
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
+    const child = /** @type {any} */ (new EventEmitter());
+    child.unref = () => {};
+    const runner = {
+      startJob: vi.fn(() => ({ pid: 4321, child })),
+      async cancelJob() {
+        return true;
+      }
+    };
+    const queue_state = {
+      getIssue: vi.fn(async () => ({ id: 'UI-A', metadata: {} })),
+      moveToProgress: vi.fn(async () => {}),
+      setLastJob: vi.fn(async () => {}),
+      setLastSession: vi.fn(async () => {})
+    };
+    const supervisor = createWorkerSupervisor({
+      root_dir,
+      store,
+      runner,
+      queue_state,
+      worker_config: { default_model: 'gpt-5.5', default_effort: 'high' },
+      get_worker_config: () => ({
+        default_model: 'gpt-5.4',
+        default_effort: 'medium'
+      }),
+      owner_pid: 9001,
+      health_check_impl: async () => true,
+      is_process_running_impl: () => true,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
+
+    await supervisor.startGoal({ issueId: 'UI-A', workspace: root_dir });
+
+    expect(runner.startJob).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gpt-5.4', effort: 'medium' })
+    );
+  });
+
   test('marks job failed when runner.startJob throws synchronously', async () => {
     const root_dir = mkdtemp();
     const store = createJobStore({

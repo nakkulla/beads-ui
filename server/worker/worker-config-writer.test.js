@@ -47,4 +47,18 @@ visible_prefixes = ["has:"]
     expect(file_content).toContain('default_model = "gpt-5.4"');
     expect(file_content).toContain('default_effort = "medium"');
   });
+
+  test('updates one worker default while preserving the other default', () => {
+    const config_path = writeTomlFixture(`
+[worker]
+default_model = "gpt-5.5"
+default_effort = "high"
+`);
+
+    updateWorkerConfigFile(config_path, { default_model: 'gpt-5.4' });
+    const file_content = fs.readFileSync(config_path, 'utf8');
+
+    expect(file_content).toContain('default_model = "gpt-5.4"');
+    expect(file_content).toContain('default_effort = "high"');
+  });
 });

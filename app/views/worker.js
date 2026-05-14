@@ -54,6 +54,7 @@ function findSelectedCard(board, selected_parent_id) {
  *   onFinishNow?: (issue_id: string) => void,
  *   onCancelAutoPrFinish?: (issue_id: string) => void,
  *   onRunPrFinish?: (issue_id: string) => void,
+ *   onCancelReviewWait?: (issue_id: string) => void,
  *   onSkipAdvance?: () => void,
  *   onCancelAutoStart?: () => void,
  *   onPauseToggle?: (paused: boolean) => void,
@@ -158,6 +159,9 @@ export function createWorkerView(mount_element, deps) {
               },
               onRunPrFinish(issue_id) {
                 deps.onRunPrFinish?.(issue_id);
+              },
+              onCancelReviewWait(issue_id) {
+                deps.onCancelReviewWait?.(issue_id);
               }
             })}
           </aside>

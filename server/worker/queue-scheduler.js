@@ -132,15 +132,16 @@ export function createQueueScheduler(options) {
     const succeeded = input.status === SUCCESS_STATUS;
 
     if (input.phase === 'goal') {
-      const prs = await options.find_prs(input.issueId);
-      const pr = prs[0] || null;
-      await options.queue_state.cachePrLink(input.issueId, pr);
-
       if (!succeeded) {
         releaseActiveSlot(input.issueId, was_parallel);
         await options.queue_state.clearProgress(input.issueId);
+        pauseAfterTerminalFailure(input);
         return;
       }
+
+      const prs = await options.find_prs(input.issueId);
+      const pr = prs[0] || null;
+      await options.queue_state.cachePrLink(input.issueId, pr);
 
       if (pr) {
         await startReviewWait(
@@ -162,7 +163,11 @@ export function createQueueScheduler(options) {
 
     const released_serial = releaseActiveSlot(input.issueId, was_parallel);
     await options.queue_state.clearProgress(input.issueId);
-    if (succeeded && released_serial) {
+    if (!succeeded) {
+      pauseAfterTerminalFailure(input);
+      return;
+    }
+    if (released_serial) {
       void scheduleAdvance();
     }
   }
@@ -193,7 +198,7 @@ export function createQueueScheduler(options) {
    */
   async function runPrFinish(issue_id) {
     const wait = review_waits.get(issue_id);
-    if (!wait || wait.cancelled) {
+    if (!wait) {
       return null;
     }
     clearReviewTimer(issue_id);
@@ -252,9 +257,8 @@ export function createQueueScheduler(options) {
       if (typeof started_at !== 'string' || started_at.length === 0) {
         continue;
       }
-      if (String(metadata.worker_pr_review_wait_cancelled || '') === 'true') {
-        continue;
-      }
+      const cancelled =
+        String(metadata.worker_pr_review_wait_cancelled || '') === 'true';
       const pr_number = Number.parseInt(String(metadata.pr_number || ''), 10);
       if (!Number.isFinite(pr_number)) {
         continue;
@@ -273,9 +277,14 @@ export function createQueueScheduler(options) {
         pr_number,
         isParallelIssue(issue),
         remaining_ms,
-        options.pr_review_wait_ms
+        options.pr_review_wait_ms,
+        cancelled
       );
       review_waits.set(wait.issueId, wait);
+      occupyActiveSlot(wait.issueId, wait.parallel);
+      if (wait.cancelled) {
+        continue;
+      }
       if (remaining_ms <= 0) {
         await runPrFinish(wait.issueId);
       } else {
@@ -362,6 +371,30 @@ export function createQueueScheduler(options) {
     }, TICK_MS);
   }
 
+  /**
+   * @param {JobExitInput} input
+   */
+  function pauseAfterTerminalFailure(input) {
+    paused = true;
+    clearAdvanceTimer();
+    const reason = `${input.phase} ${input.status}; queue paused`;
+    options.broadcast('queue.paused', {
+      paused: true,
+      reason,
+      issueId: input.issueId,
+      phase: input.phase,
+      status: input.status,
+      jobId: input.jobId
+    });
+    options.broadcast('queue.blocked', {
+      reason,
+      issueId: input.issueId,
+      phase: input.phase,
+      status: input.status,
+      jobId: input.jobId
+    });
+  }
+
   function clearAdvanceTimer() {
     if (advance_timer) {
       clearInterval(advance_timer);
@@ -424,6 +457,18 @@ export function createQueueScheduler(options) {
 
   /**
    * @param {string} issue_id
+   * @param {boolean} parallel
+   */
+  function occupyActiveSlot(issue_id, parallel) {
+    if (parallel) {
+      active_parallel_issue_ids.add(issue_id);
+      return;
+    }
+    serial_active_issue_id = issue_id;
+  }
+
+  /**
+   * @param {string} issue_id
    * @param {boolean} was_parallel
    */
   function releaseActiveSlot(issue_id, was_parallel) {
@@ -470,6 +515,7 @@ function isParallelIssue(issue) {
  * @param {boolean} parallel
  * @param {number} remaining_ms
  * @param {number} total_ms
+ * @param {boolean} [cancelled]
  * @returns {ReviewWait}
  */
 function createReviewWait(
@@ -478,7 +524,8 @@ function createReviewWait(
   pr_number,
   parallel,
   remaining_ms,
-  total_ms
+  total_ms,
+  cancelled = false
 ) {
   return {
     jobId: job_id,
@@ -486,7 +533,7 @@ function createReviewWait(
     prNumber: pr_number,
     remainingMs: remaining_ms,
     totalMs: total_ms,
-    cancelled: false,
+    cancelled,
     parallel
   };
 }

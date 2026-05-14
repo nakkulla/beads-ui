@@ -41,12 +41,17 @@ function stopClick(event) {
  *   onCancelJob?: (job_id: string) => void,
  *   onFinishNow?: (issue_id: string) => void,
  *   onCancelAutoPrFinish?: (issue_id: string) => void,
- *   onRunPrFinish?: (issue_id: string) => void
+ *   onRunPrFinish?: (issue_id: string) => void,
+ *   onCancelReviewWait?: (issue_id: string) => void
  * }} handlers
  */
 export function workerCardProgressTemplate(card, state, handlers) {
   const wait = getReviewWait(card, state);
-  const sub_state = wait ? 'pr_review_wait' : card.sub_state;
+  const sub_state = wait
+    ? wait.cancelled === true
+      ? 'pr_review_cancelled'
+      : 'pr_review_wait'
+    : card.sub_state;
   const active_job = card.active_job || null;
 
   if (sub_state === 'goal_running') {
@@ -162,20 +167,32 @@ export function workerCardProgressTemplate(card, state, handlers) {
     `;
   }
 
-  if (card.metadata?.worker_pr_review_wait_cancelled === 'true') {
+  if (sub_state === 'pr_review_cancelled') {
     return html`
       <section class="worker-card-progress worker-card-progress--cancelled">
         <div class="worker-card-progress__title">Review wait cancelled</div>
-        <button
-          type="button"
-          class="worker-btn worker-btn--secondary"
-          @click=${(/** @type {Event} */ event) => {
-            stopClick(event);
-            handlers.onRunPrFinish?.(card.id);
-          }}
-        >
-          Run pr-finish
-        </button>
+        <div class="worker-card-progress__actions">
+          <button
+            type="button"
+            class="worker-btn worker-btn--secondary"
+            @click=${(/** @type {Event} */ event) => {
+              stopClick(event);
+              handlers.onRunPrFinish?.(card.id);
+            }}
+          >
+            Run pr-finish
+          </button>
+          <button
+            type="button"
+            class="worker-btn worker-btn--danger"
+            @click=${(/** @type {Event} */ event) => {
+              stopClick(event);
+              handlers.onCancelReviewWait?.(card.id);
+            }}
+          >
+            Cancel job
+          </button>
+        </div>
       </section>
     `;
   }

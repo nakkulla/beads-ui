@@ -18,6 +18,7 @@ describe('worker job manager gateway', () => {
       startGoal: vi.fn(async () => ({ id: 'job-goal' })),
       finishNow: vi.fn(async () => ({ ok: true })),
       cancelAutoPrFinish: vi.fn(async () => ({ ok: true })),
+      cancelReviewWaitJob: vi.fn(async () => ({ ok: true })),
       runPrFinish: vi.fn(async () => ({ ok: true })),
       skipAdvance: vi.fn(async () => ({ ok: true })),
       cancelAutoStart: vi.fn(async () => ({ ok: true })),
@@ -42,6 +43,10 @@ describe('worker job manager gateway', () => {
       paused: true
     });
     const goal = await manager.startGoal({
+      workspace: '/repo',
+      issueId: 'UI-A'
+    });
+    const cancelled_wait = await manager.cancelReviewWaitJob({
       workspace: '/repo',
       issueId: 'UI-A'
     });
@@ -71,6 +76,10 @@ describe('worker job manager gateway', () => {
       workspace: '/repo',
       issueId: 'UI-A'
     });
+    expect(client.cancelReviewWaitJob).toHaveBeenCalledWith({
+      workspace: '/repo',
+      issueId: 'UI-A'
+    });
     expect(client.listWorkerEvents).toHaveBeenCalledWith({
       workspace: '/repo',
       since: 0
@@ -83,6 +92,7 @@ describe('worker job manager gateway', () => {
     expect(moved.ok).toBe(true);
     expect(paused.paused).toBe(true);
     expect(goal.id).toBe('job-goal');
+    expect(cancelled_wait.ok).toBe(true);
     expect(events).toEqual([{ seq: 1 }]);
   });
 

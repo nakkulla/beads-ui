@@ -41,7 +41,8 @@ function statusModifier(status) {
  *   onCancelJob?: (job_id: string) => void,
  *   onFinishNow?: (issue_id: string) => void,
  *   onCancelAutoPrFinish?: (issue_id: string) => void,
- *   onRunPrFinish?: (issue_id: string) => void
+ *   onRunPrFinish?: (issue_id: string) => void,
+ *   onCancelReviewWait?: (issue_id: string) => void
  * }} handlers
  */
 export function workerCardTemplate(card, state, handlers) {

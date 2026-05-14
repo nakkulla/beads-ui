@@ -130,6 +130,27 @@ describe('worker-board-selectors', () => {
     expect(board.done).toEqual([]);
   });
 
+  test('derives cancelled review wait sub-state before active wait display', () => {
+    const board = buildWorkerBoard(
+      [
+        {
+          ...base_parent,
+          metadata: {
+            worker_pr_review_wait_started_at: '2026-05-14T00:00:00Z',
+            worker_pr_review_wait_cancelled: 'true'
+          }
+        }
+      ],
+      {
+        jobs: [],
+        done_filter: 'today',
+        now: new Date('2026-05-14T12:00:00Z')
+      }
+    );
+
+    expect(board.progress[0].sub_state).toBe('pr_review_cancelled');
+  });
+
   test('blocks queue moves for cards without spec', () => {
     const result = canMoveWorkerCard(
       { ...base_parent, spec_id: '', metadata: {} },

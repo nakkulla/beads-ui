@@ -94,6 +94,12 @@ export function createWorkerQueueRouter(options) {
     });
   });
 
+  router.post('/cancel-review-wait', async (req, res) => {
+    await forwardQueuePost(req, res, options.root_dir, 'cancelReviewWaitJob', {
+      issueId: req.body?.issueId
+    });
+  });
+
   router.post('/run-pr-finish', async (req, res) => {
     await forwardQueuePost(req, res, options.root_dir, 'runPrFinish', {
       issueId: req.body?.issueId

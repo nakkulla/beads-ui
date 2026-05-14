@@ -146,11 +146,17 @@ export function buildWorkerCard(issue, options = {}) {
   const active_job =
     jobs.find((job) => jobIssueId(job) === issue.id && isActiveJob(job)) ||
     null;
-  const phase =
-    active_job?.phase ||
-    (metadata.worker_pr_review_wait_started_at ? 'goal' : null);
-  const sub_state = metadata.worker_pr_review_wait_started_at
-    ? 'pr_review_wait'
+  const review_wait_started = Boolean(
+    metadata.worker_pr_review_wait_started_at
+  );
+  const review_wait_cancelled =
+    String(metadata.worker_pr_review_wait_cancelled || '').toLowerCase() ===
+    'true';
+  const phase = active_job?.phase || (review_wait_started ? 'goal' : null);
+  const sub_state = review_wait_started
+    ? review_wait_cancelled
+      ? 'pr_review_cancelled'
+      : 'pr_review_wait'
     : phase === 'pr_finish'
       ? 'pr_finish_running'
       : active_job

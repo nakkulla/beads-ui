@@ -15,6 +15,7 @@ const runtime = createWorkerSupervisorServer({
   host,
   port,
   worker_config: config.worker,
+  get_worker_config: () => getConfig().worker,
   pr_finish_available: pr_finish.available
 });
 runtime.start().catch((error) => {

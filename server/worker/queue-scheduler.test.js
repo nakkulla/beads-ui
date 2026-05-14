@@ -85,7 +85,7 @@ describe('queue-scheduler', () => {
     expect(harness.spawned).toContainEqual({ issueId: 'UI-B', phase: 'goal' });
   });
 
-  test('cancels auto pr-finish once and leaves review wait occupied', async () => {
+  test('cancels auto pr-finish once and allows manual pr-finish', async () => {
     const harness = createHarness({
       find_prs: async () => [{ number: 42, url: 'https://github.test/pull/42' }]
     });
@@ -101,6 +101,45 @@ describe('queue-scheduler', () => {
 
     expect(harness.queue_state.cancelReviewWait).toHaveBeenCalledWith('UI-A');
     expect(harness.spawned).toEqual([]);
+
+    await harness.scheduler.runPrFinish('UI-A');
+
+    expect(harness.spawned).toContainEqual({
+      issueId: 'UI-A',
+      phase: 'pr_finish',
+      prNumber: 42
+    });
+  });
+
+  test('restores cancelled review waits without auto spawn and keeps manual pr-finish available', async () => {
+    const harness = createHarness({
+      queue_state: {
+        listIssues: vi.fn(async () => [
+          {
+            id: 'UI-A',
+            metadata: {
+              worker_pr_review_wait_started_at: '2026-05-14T00:00:00.000Z',
+              worker_pr_review_wait_cancelled: 'true',
+              worker_last_goal_job_id: 'job-goal',
+              pr_number: '42'
+            }
+          }
+        ])
+      }
+    });
+
+    await harness.scheduler.restoreReviewWaits();
+    await vi.advanceTimersByTimeAsync(300000);
+
+    expect(harness.spawned).toEqual([]);
+
+    await harness.scheduler.runPrFinish('UI-A');
+
+    expect(harness.spawned).toContainEqual({
+      issueId: 'UI-A',
+      phase: 'pr_finish',
+      prNumber: 42
+    });
   });
 
   test('does not auto-advance while serial slot is occupied', async () => {
@@ -206,7 +245,7 @@ describe('queue-scheduler', () => {
     );
   });
 
-  test('clears progress without advancing when pr-finish fails', async () => {
+  test('pauses queue without advancing when pr-finish fails', async () => {
     const harness = createHarness();
 
     await harness.scheduler.handleJobStart({
@@ -224,6 +263,10 @@ describe('queue-scheduler', () => {
 
     expect(harness.queue_state.clearProgress).toHaveBeenCalledWith('UI-A');
     expect(harness.spawned).toEqual([]);
+    expect(harness.events).toContainEqual({
+      type: 'queue.paused',
+      payload: expect.objectContaining({ paused: true, issueId: 'UI-A' })
+    });
   });
 
   test('does not auto-advance while paused', async () => {

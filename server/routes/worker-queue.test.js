@@ -6,6 +6,7 @@ const moveCard = vi.fn();
 const setPaused = vi.fn();
 const startGoal = vi.fn();
 const listWorkerEvents = vi.fn();
+const cancelReviewWaitJob = vi.fn();
 
 vi.mock('../worker/jobs.js', () => ({
   getWorkerJobManager: () => ({
@@ -14,6 +15,7 @@ vi.mock('../worker/jobs.js', () => ({
     setPaused,
     startGoal,
     listWorkerEvents,
+    cancelReviewWaitJob,
     finishNow: vi.fn(),
     cancelAutoPrFinish: vi.fn(),
     runPrFinish: vi.fn(),
@@ -131,6 +133,40 @@ describe('worker queue route', () => {
       toLane: 'waiting',
       beforeId: null,
       afterId: null,
+      workspace: process.cwd()
+    });
+  });
+
+  test('POST /api/worker/queue/cancel-review-wait cancels held review wait', async () => {
+    cancelReviewWaitJob.mockResolvedValueOnce({ ok: true });
+    const { createApp } = await import('../app.js');
+    const app = createApp({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir: '.',
+      root_dir: process.cwd(),
+      frontend_mode: 'static'
+    });
+    const server = createServer(app);
+    let response;
+
+    try {
+      const address = await listen(server);
+      response = await fetch(
+        `http://127.0.0.1:${address.port}/api/worker/queue/cancel-review-wait`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspace: process.cwd(), issueId: 'UI-A' })
+        }
+      );
+    } finally {
+      await close(server);
+    }
+
+    expect(response.status).toBe(200);
+    expect(cancelReviewWaitJob).toHaveBeenCalledWith({
+      issueId: 'UI-A',
       workspace: process.cwd()
     });
   });
