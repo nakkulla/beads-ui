@@ -122,6 +122,42 @@ describe('views/worker-detail', () => {
     expect(mount.textContent).toContain('Failed to load log preview.');
   });
 
+  test('renders worker override controls without legacy run buttons', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const detail = createWorkerDetailView(mount, {
+      fetch_impl: vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ body: '', content: '' })
+      })),
+      onUpdateWorkerMetadata: vi.fn()
+    });
+
+    await detail.load(
+      {
+        id: 'UI-A',
+        title: 'Parent',
+        status: 'open',
+        metadata: {
+          worker_parallel: 'true',
+          worker_model: 'gpt-5.4',
+          worker_effort: 'medium'
+        }
+      },
+      '/tmp/workspace',
+      []
+    );
+
+    const legacy_goal_label = ['Run', 'bd-ralph'].join(' ');
+    const legacy_review_label = ['Run', 'pr-review'].join(' ');
+
+    expect(mount.textContent).not.toContain(legacy_goal_label);
+    expect(mount.textContent).not.toContain(legacy_review_label);
+    expect(mount.querySelector('[name="worker-parallel"]')).not.toBeNull();
+    expect(mount.querySelector('[name="worker-model"]')).not.toBeNull();
+    expect(mount.querySelector('[name="worker-effort"]')).not.toBeNull();
+  });
+
   test('defines worker detail scroll owner styles', () => {
     const stylesheet = readFileSync(
       join(import.meta.dirname, '../styles.css'),

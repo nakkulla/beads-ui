@@ -1536,6 +1536,16 @@ export function bootstrap(root_element) {
       },
       onDefaultEffortChange: (effort) =>
         void updateWorkerDefaults({ default_effort: effort }),
+      onUpdateWorkerMetadata: (issue_id, values) => {
+        void postWorkerQueue('overrides', {
+          issueId: issue_id,
+          values
+        }).then((payload) => {
+          if (payload) {
+            void refreshWorkerRuntime();
+          }
+        });
+      },
       onShowToast: (message) => showToast(message),
       onRunRalph: (issue_id) => {
         void postWorkerQueue('start', { issueId: issue_id }).then((payload) => {

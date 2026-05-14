@@ -1,13 +1,10 @@
 import { html, render } from 'lit-html';
 import { formatElapsedMs } from '../data/worker-selectors.js';
-import { workerPrPanelTemplate } from './worker-pr-panel.js';
-import { workerPrSummaryTemplate } from './worker-pr-summary.js';
 import { createWorkerSpecPanel } from './worker-spec-panel.js';
 
 /**
- * @typedef {{ id: string, title?: string, status?: string }} WorkerDetailIssue
+ * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, string> }} WorkerDetailIssue
  * @typedef {{ id?: string, status?: string, issueId?: string, command?: string, prNumber?: number, elapsedMs?: number, isCancellable?: boolean, errorSummary?: string, workspace?: string, wasForceKilled?: boolean }} WorkerDetailJob
- * @typedef {{ number: number, title: string, state?: string }} WorkerPullRequest
  * @typedef {(input: string, init?: RequestInit) => Promise<{ ok?: boolean, json: () => Promise<any> }>} WorkerFetch
  */
 
@@ -15,9 +12,8 @@ import { createWorkerSpecPanel } from './worker-spec-panel.js';
  * @param {HTMLElement} mount_element
  * @param {{
  *   fetch_impl?: WorkerFetch,
- *   onRunRalph?: (issue_id: string) => void,
- *   onRunPrReview?: (target: { issueId: string, prNumber?: number }) => void,
- *   onCancelJob?: (job_id: string) => void
+ *   onCancelJob?: (job_id: string) => void,
+ *   onUpdateWorkerMetadata?: (issue_id: string, values: { worker_parallel?: string, worker_model?: string, worker_effort?: string }) => void
  * }} [options]
  */
 export function createWorkerDetailView(mount_element, options = {}) {
@@ -31,12 +27,30 @@ export function createWorkerDetailView(mount_element, options = {}) {
   let log_tail = [];
   let log_error = '';
 
-  /**
-   * @param {WorkerPullRequest[]} [selected_prs]
-   * @param {WorkerPullRequest[]} [workspace_prs]
-   */
-  async function renderShell(selected_prs = [], workspace_prs = []) {
+  function saveWorkerOverrides() {
     const issue = current_issue;
+    if (!issue) {
+      return;
+    }
+    const parallel_input = /** @type {HTMLInputElement | null} */ (
+      mount_element.querySelector('[name="worker-parallel"]')
+    );
+    const model_input = /** @type {HTMLInputElement | null} */ (
+      mount_element.querySelector('[name="worker-model"]')
+    );
+    const effort_select = /** @type {HTMLSelectElement | null} */ (
+      mount_element.querySelector('[name="worker-effort"]')
+    );
+    options.onUpdateWorkerMetadata?.(issue.id, {
+      worker_parallel: parallel_input?.checked ? 'true' : 'false',
+      worker_model: (model_input?.value || '').trim(),
+      worker_effort: effort_select?.value || ''
+    });
+  }
+
+  async function renderShell() {
+    const issue = current_issue;
+    const metadata = issue?.metadata || {};
     const issue_jobs = issue
       ? jobs.filter((job) => job.issueId === issue.id)
       : [];
@@ -66,17 +80,43 @@ export function createWorkerDetailView(mount_element, options = {}) {
                         >`
                       : null}
                   </div>
-                  <div class="worker-detail__actions">
+                  <div class="worker-detail__overrides">
+                    <label class="worker-detail__override">
+                      <input
+                        type="checkbox"
+                        name="worker-parallel"
+                        .checked=${metadata.worker_parallel === 'true'}
+                      />
+                      <span>Parallel</span>
+                    </label>
+                    <label class="worker-detail__override">
+                      <span>Model</span>
+                      <input
+                        type="text"
+                        name="worker-model"
+                        .value=${metadata.worker_model || ''}
+                        placeholder="default"
+                      />
+                    </label>
+                    <label class="worker-detail__override">
+                      <span>Effort</span>
+                      <select
+                        name="worker-effort"
+                        .value=${metadata.worker_effort || ''}
+                      >
+                        <option value="">Default</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                      </select>
+                    </label>
                     <button
                       type="button"
-                      ?disabled=${!!current_job}
-                      @click=${() => {
-                        if (current_issue) {
-                          options.onRunRalph?.(current_issue.id);
-                        }
-                      }}
+                      class="worker-btn worker-btn--secondary"
+                      data-worker-overrides-save
+                      @click=${saveWorkerOverrides}
                     >
-                      Run bd-ralph
+                      Save overrides
                     </button>
                   </div>
                 </header>
@@ -144,27 +184,19 @@ export function createWorkerDetailView(mount_element, options = {}) {
             : null}
 
           <section id="worker-detail-spec-host"></section>
-          ${workerPrPanelTemplate(selected_prs, {
-            onRunPrReview: (item) =>
-              options.onRunPrReview?.({
-                issueId: issue?.id || '',
-                prNumber: item.number
-              })
-          })}
-          ${workerPrSummaryTemplate(workspace_prs)}
         </section>
       `,
       mount_element
     );
 
     if (current_issue) {
-      const issue = current_issue;
+      const detail_issue = current_issue;
       const host = /** @type {HTMLElement | null} */ (
         mount_element.querySelector('#worker-detail-spec-host')
       );
       if (host) {
         const nested_panel = createWorkerSpecPanel(host, { fetch_impl });
-        await nested_panel.load(issue.id, current_workspace);
+        await nested_panel.load(detail_issue.id, current_workspace);
       }
     }
   }
@@ -182,29 +214,8 @@ export function createWorkerDetailView(mount_element, options = {}) {
       log_tail = [];
       log_error = '';
       if (!issue || !workspace) {
-        await renderShell([], []);
+        await renderShell();
         return;
-      }
-
-      /** @type {{ items?: any[] }} */
-      let issue_payload = { items: [] };
-      /** @type {{ items?: any[] }} */
-      let workspace_payload = { items: [] };
-      try {
-        const issue_response = await fetch_impl(
-          `/api/worker/prs/${encodeURIComponent(issue.id)}?workspace=${encodeURIComponent(workspace)}`
-        );
-        issue_payload = await issue_response.json();
-      } catch {
-        issue_payload = { items: [] };
-      }
-      try {
-        const workspace_response = await fetch_impl(
-          `/api/worker/prs?workspace=${encodeURIComponent(workspace)}`
-        );
-        workspace_payload = await workspace_response.json();
-      } catch {
-        workspace_payload = { items: [] };
       }
 
       const current_job = jobs.find(
@@ -230,10 +241,7 @@ export function createWorkerDetailView(mount_element, options = {}) {
         }
       }
 
-      await renderShell(
-        Array.isArray(issue_payload.items) ? issue_payload.items : [],
-        Array.isArray(workspace_payload.items) ? workspace_payload.items : []
-      );
+      await renderShell();
     },
     clear() {
       current_issue = null;

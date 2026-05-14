@@ -182,9 +182,8 @@ export function createWorkerView(mount_element, deps) {
       if (!detail_view) {
         detail_view = createWorkerDetailView(detail_mount, {
           fetch_impl: deps.fetch_impl,
-          onRunRalph: deps.onStartGoal || deps.onRunRalph,
-          onRunPrReview: deps.onRunPrReview,
-          onCancelJob: deps.onCancelJob
+          onCancelJob: deps.onCancelJob,
+          onUpdateWorkerMetadata: deps.onUpdateWorkerMetadata
         });
       }
       void detail_view.load(

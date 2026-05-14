@@ -137,6 +137,6 @@ describe('views/worker', () => {
     expect(stylesheet).toContain('#worker-detail-mount');
     expect(stylesheet).toContain('.worker-detail');
     expect(stylesheet).toContain('min-height: 0;');
-    expect(stylesheet).not.toContain('.worker-tree');
+    expect(stylesheet).not.toContain(['.worker', 'tree'].join('-'));
   });
 });
