@@ -1,6 +1,6 @@
 /**
  * @import { Response } from 'express'
- * @import { StartedWorkerProcess, WorkerCancelResult } from './process-runner.js'
+ * @import { StartedWorkerProcess, WorkerCancelResult, CodexJsonlEvent } from './process-runner.js'
  */
 import express from 'express';
 import fs from 'node:fs';
@@ -27,7 +27,7 @@ const FINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 
 /**
  * @typedef {{
- *   startJob: (input: { command: string, issueId?: string | null, prNumber?: number | null, workspace: string, log_path: string }) => StartedWorkerProcess,
+ *   startJob: (input: { command?: string, phase?: 'goal' | 'pr_finish', issueId?: string | null, prNumber?: number | null, workspace: string, log_path: string, model?: string, effort?: string, onCodexEvent?: (event: CodexJsonlEvent) => void }) => StartedWorkerProcess,
  *   cancelJob: (pid: number, options: { grace_timeout_ms: number }) => Promise<WorkerCancelResult> | WorkerCancelResult
  * }} WorkerRunner
  */
@@ -130,12 +130,18 @@ export function createWorkerSupervisor(options) {
   }
 
   /**
-   * @param {{ command: string, issueId?: string | null, prNumber?: number | null, workspace: string }} input
+   * @param {{ command?: string, phase?: 'goal' | 'pr_finish' | null, issueId?: string | null, prNumber?: number | null, workspace: string, model?: string | null, effort?: string | null }} input
    */
   async function createJob(input) {
     const workspace = path.resolve(input.workspace);
+    const command = input.command || 'codex';
+    const phase = /** @type {'goal' | 'pr_finish'} */ (
+      input.phase ?? (command === 'pr-review' ? 'pr_finish' : 'goal')
+    );
+    const model = input.model || 'gpt-5.5';
+    const effort = input.effort || 'high';
     const resolved_pr =
-      input.command === 'pr-review'
+      phase === 'pr_finish'
         ? await resolve_pr_target_impl({
             issueId: input.issueId,
             prNumber: input.prNumber,
@@ -152,21 +158,61 @@ export function createWorkerSupervisor(options) {
     }
 
     const created_job = store.createJob({
-      command: input.command,
+      command,
+      phase,
       issueId: input.issueId,
       prNumber: resolved_pr.prNumber,
-      workspace
+      workspace,
+      model,
+      effort
     });
     const started_at = now();
+
+    /**
+     * @param {CodexJsonlEvent} event
+     */
+    function handleCodexEvent(event) {
+      if (event.type === 'session_id') {
+        store.updateJob(created_job.id, {
+          session_id: event.sessionId
+        });
+        store.appendEvent(created_job.id, 'job.session_id', {
+          phase,
+          sessionId: event.sessionId
+        });
+        return;
+      }
+
+      if (event.type === 'log_line') {
+        store.updateJob(created_job.id, {
+          last_log_line: event.line
+        });
+        store.appendEvent(created_job.id, 'job.log_line', {
+          phase,
+          line: event.line,
+          at: now()
+        });
+        return;
+      }
+
+      store.updateJob(created_job.id, {
+        usage_json: JSON.stringify(event.usage)
+      });
+    }
+
     /** @type {StartedWorkerProcess} */
     let started;
     try {
       started = runner.startJob({
-        command: input.command,
+        command,
+        phase,
         issueId: input.issueId,
         prNumber: resolved_pr.prNumber,
         workspace,
-        log_path: path.join(store.paths.root_dir, created_job.log_path)
+        log_path: path.join(store.paths.root_dir, created_job.log_path),
+        model,
+        effort,
+        onCodexEvent: handleCodexEvent
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -190,6 +236,7 @@ export function createWorkerSupervisor(options) {
     });
     store.appendEvent(created_job.id, 'job.started', {
       pid: started.pid,
+      phase,
       startedAt: started_at
     });
 
@@ -607,11 +654,17 @@ function serializeJob(job, get_events) {
   return {
     id: required_job.id,
     command: required_job.command,
+    phase: required_job.phase,
     issueId: required_job.issue_id,
     prNumber: required_job.pr_number,
     workspace: required_job.workspace_path,
+    model: required_job.model,
+    effort: required_job.effort,
     status: required_job.status,
     runnerKind: required_job.runner_kind,
+    sessionId: required_job.session_id,
+    lastLogLine: required_job.last_log_line,
+    usage: parseUsageJson(required_job.usage_json),
     startedAt: required_job.started_at,
     finishedAt: required_job.finished_at,
     cancelRequestedAt: required_job.cancel_requested_at,
@@ -626,6 +679,24 @@ function serializeJob(job, get_events) {
     createdAt: required_job.created_at,
     wasForceKilled: was_force_killed
   };
+}
+
+/**
+ * @param {string | null | undefined} usage_json
+ * @returns {Record<string, unknown> | null}
+ */
+function parseUsageJson(usage_json) {
+  if (!usage_json) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(usage_json);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? /** @type {Record<string, unknown>} */ (value)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

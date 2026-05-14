@@ -91,6 +91,36 @@ describe('worker job store', () => {
     ).toBeNull();
   });
 
+  test('persists worker phase, session id, log line, and usage', () => {
+    const root_dir = mkdtemp();
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-05-14T00:00:00.000Z'
+    });
+
+    const job = store.createJob({
+      command: 'codex',
+      phase: 'goal',
+      issueId: 'UI-A',
+      workspace: root_dir,
+      model: 'gpt-5.5',
+      effort: 'high'
+    });
+    store.updateJob(job.id, {
+      session_id: '018f',
+      last_log_line: 'Done',
+      usage_json: JSON.stringify({ input_tokens: 10 })
+    });
+
+    expect(store.getJob(job.id)).toMatchObject({
+      phase: 'goal',
+      session_id: '018f',
+      last_log_line: 'Done',
+      model: 'gpt-5.5',
+      effort: 'high'
+    });
+  });
+
   test('creates unique job ids across store restarts at the same timestamp', () => {
     const root_dir = mkdtemp();
     const first_store = createJobStore({

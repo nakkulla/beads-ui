@@ -17,9 +17,12 @@ const ACTIVE_JOB_STATUSES = ['queued', 'starting', 'running', 'cancelling'];
  * @typedef {{
  *   id: string,
  *   command: string,
+ *   phase: string | null,
  *   issue_id: string | null,
  *   pr_number: number | null,
  *   workspace_path: string,
+ *   model: string | null,
+ *   effort: string | null,
  *   status: string,
  *   runner_kind: string,
  *   pid: number | null,
@@ -32,7 +35,10 @@ const ACTIVE_JOB_STATUSES = ['queued', 'starting', 'running', 'cancelling'];
  *   log_path: string,
  *   last_heartbeat_at: string | null,
  *   created_by: string | null,
- *   error_summary: string | null
+ *   error_summary: string | null,
+ *   session_id: string | null,
+ *   last_log_line: string | null,
+ *   usage_json: string | null
  * }} JobRow
  */
 
@@ -64,9 +70,12 @@ export function createJobStore(options) {
     CREATE TABLE IF NOT EXISTS jobs (
       id TEXT PRIMARY KEY,
       command TEXT NOT NULL,
+      phase TEXT,
       issue_id TEXT,
       pr_number INTEGER,
       workspace_path TEXT NOT NULL,
+      model TEXT,
+      effort TEXT,
       status TEXT NOT NULL,
       runner_kind TEXT NOT NULL DEFAULT 'process',
       pid INTEGER,
@@ -79,7 +88,10 @@ export function createJobStore(options) {
       log_path TEXT NOT NULL,
       last_heartbeat_at TEXT,
       created_by TEXT,
-      error_summary TEXT
+      error_summary TEXT,
+      session_id TEXT,
+      last_log_line TEXT,
+      usage_json TEXT
     );
     CREATE TABLE IF NOT EXISTS job_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,19 +111,40 @@ export function createJobStore(options) {
       ON job_events (job_id, id);
   `);
 
+  for (const [column_name, column_definition] of [
+    ['phase', 'TEXT'],
+    ['model', 'TEXT'],
+    ['effort', 'TEXT'],
+    ['session_id', 'TEXT'],
+    ['last_log_line', 'TEXT'],
+    ['usage_json', 'TEXT']
+  ]) {
+    try {
+      db.exec(
+        `ALTER TABLE jobs ADD COLUMN ${column_name} ${column_definition}`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('duplicate column')) {
+        throw error;
+      }
+    }
+  }
   const select_job_stmt = db.prepare(`
-    SELECT id, command, issue_id, pr_number, workspace_path, status, runner_kind,
-           pid, created_at, started_at, finished_at, cancel_requested_at,
-           grace_deadline_at, exit_code, log_path, last_heartbeat_at, created_by,
-           error_summary
+    SELECT id, command, phase, issue_id, pr_number, workspace_path, model,
+           effort, status, runner_kind, pid, created_at, started_at,
+           finished_at, cancel_requested_at, grace_deadline_at, exit_code,
+           log_path, last_heartbeat_at, created_by, error_summary,
+           session_id, last_log_line, usage_json
       FROM jobs
      WHERE id = ?
   `);
   const list_jobs_stmt = db.prepare(`
-    SELECT id, command, issue_id, pr_number, workspace_path, status, runner_kind,
-           pid, created_at, started_at, finished_at, cancel_requested_at,
-           grace_deadline_at, exit_code, log_path, last_heartbeat_at, created_by,
-           error_summary
+    SELECT id, command, phase, issue_id, pr_number, workspace_path, model,
+           effort, status, runner_kind, pid, created_at, started_at,
+           finished_at, cancel_requested_at, grace_deadline_at, exit_code,
+           log_path, last_heartbeat_at, created_by, error_summary,
+           session_id, last_log_line, usage_json
       FROM jobs
      WHERE (?1 IS NULL OR workspace_path = ?1)
      ORDER BY created_at DESC, id DESC
@@ -124,11 +157,12 @@ export function createJobStore(options) {
   `);
   const insert_job_stmt = db.prepare(`
     INSERT INTO jobs (
-      id, command, issue_id, pr_number, workspace_path, status, runner_kind,
-      pid, created_at, started_at, finished_at, cancel_requested_at,
-      grace_deadline_at, exit_code, log_path, last_heartbeat_at, created_by,
-      error_summary
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, command, phase, issue_id, pr_number, workspace_path, model, effort,
+      status, runner_kind, pid, created_at, started_at, finished_at,
+      cancel_requested_at, grace_deadline_at, exit_code, log_path,
+      last_heartbeat_at, created_by, error_summary, session_id, last_log_line,
+      usage_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insert_event_stmt = db.prepare(`
     INSERT INTO job_events (job_id, event_type, created_at, payload_json)
@@ -153,7 +187,7 @@ export function createJobStore(options) {
   }
 
   /**
-   * @param {{ command: string, issueId?: string | null, prNumber?: number | null, workspace: string, createdBy?: string | null, runnerKind?: string }} input
+   * @param {{ command?: string, phase?: string | null, issueId?: string | null, prNumber?: number | null, workspace: string, model?: string | null, effort?: string | null, createdBy?: string | null, runnerKind?: string }} input
    * @returns {JobRow}
    */
   function createJob(input) {
@@ -162,6 +196,10 @@ export function createJobStore(options) {
     const log_path = buildWorkerLogRelativePath(job_id);
     const absolute_log_path = path.join(paths.root_dir, log_path);
     const workspace_path = path.resolve(input.workspace);
+    const command = input.command ?? 'codex';
+    const phase = input.phase ?? null;
+    const model = input.model ?? null;
+    const effort = input.effort ?? null;
 
     fs.mkdirSync(path.dirname(absolute_log_path), {
       recursive: true,
@@ -171,10 +209,13 @@ export function createJobStore(options) {
 
     insert_job_stmt.run(
       job_id,
-      input.command,
+      command,
+      phase,
       input.issueId ?? null,
       input.prNumber ?? null,
       workspace_path,
+      model,
+      effort,
       'queued',
       input.runnerKind ?? 'process',
       null,
@@ -187,14 +228,20 @@ export function createJobStore(options) {
       log_path,
       null,
       input.createdBy ?? null,
+      null,
+      null,
+      null,
       null
     );
 
     appendEvent(job_id, 'job.created', {
-      command: input.command,
+      command,
+      phase,
       issueId: input.issueId ?? null,
       prNumber: input.prNumber ?? null,
-      workspace: workspace_path
+      workspace: workspace_path,
+      model,
+      effort
     });
 
     const created_job = getJob(job_id);

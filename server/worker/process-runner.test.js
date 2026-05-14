@@ -4,7 +4,8 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
-  buildWorkerExecTarget,
+  buildWorkerExecArgs,
+  createCodexJsonlParser,
   createWorkerProcessRunner
 } from './process-runner.js';
 
@@ -28,22 +29,65 @@ afterEach(() => {
   }
 });
 
-describe('buildWorkerExecTarget', () => {
-  test('builds bd-ralph exec target from issue id', () => {
-    const exec_target = buildWorkerExecTarget({
-      command: 'bd-ralph',
-      issueId: 'UI-qclw'
-    });
-    expect(exec_target).toBe('$bd-ralph UI-qclw');
+describe('buildWorkerExecArgs', () => {
+  test('builds goal phase args with model and effort', () => {
+    expect(
+      buildWorkerExecArgs({
+        phase: 'goal',
+        issueId: 'UI-qclw',
+        model: 'gpt-5.5',
+        effort: 'high'
+      })
+    ).toEqual([
+      'exec',
+      '--json',
+      '-m',
+      'gpt-5.5',
+      '-c',
+      'model_reasoning_effort=high',
+      '/goal UI-qclw'
+    ]);
   });
 
-  test('builds pr-review exec target from explicit pr number', () => {
-    const exec_target = buildWorkerExecTarget({
-      command: 'pr-review',
-      issueId: 'UI-qclw',
-      prNumber: 42
-    });
-    expect(exec_target).toBe('$pr-review 42');
+  test('builds pr-finish phase args with quoted skill invocation target', () => {
+    expect(
+      buildWorkerExecArgs({
+        phase: 'pr_finish',
+        prNumber: 42,
+        model: 'gpt-5.5',
+        effort: 'high'
+      })
+    ).toEqual([
+      'exec',
+      '--json',
+      '-m',
+      'gpt-5.5',
+      '-c',
+      'model_reasoning_effort=high',
+      '$pr-finish 42'
+    ]);
+  });
+});
+
+describe('createCodexJsonlParser', () => {
+  test('extracts session id, agent message line, and usage events', () => {
+    /** @type {any[]} */
+    const events = [];
+    const parser = createCodexJsonlParser((event) => events.push(event));
+
+    parser.write('{"type":"thread.started","thread_id":"018f"}\n');
+    parser.write(
+      '{"type":"item.completed","item":{"type":"agent_message","text":"Done"}}\n'
+    );
+    parser.write(
+      '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\n'
+    );
+
+    expect(events).toEqual([
+      { type: 'session_id', sessionId: '018f' },
+      { type: 'log_line', line: 'Done' },
+      { type: 'usage', usage: { input_tokens: 10, output_tokens: 2 } }
+    ]);
   });
 });
 
@@ -61,10 +105,12 @@ describe('createWorkerProcessRunner', () => {
     const runner = createWorkerProcessRunner({ spawn_impl });
 
     const started = runner.startJob({
-      command: 'bd-ralph',
+      phase: 'goal',
       issueId: 'UI-qclw',
       workspace,
-      log_path
+      log_path,
+      model: 'gpt-5.5',
+      effort: 'high'
     });
 
     stdout.end('hello stdout\n');
@@ -74,7 +120,15 @@ describe('createWorkerProcessRunner', () => {
     expect(started.pid).toBe(4321);
     expect(spawn_impl).toHaveBeenCalledWith(
       'codex',
-      ['exec', '$bd-ralph UI-qclw'],
+      [
+        'exec',
+        '--json',
+        '-m',
+        'gpt-5.5',
+        '-c',
+        'model_reasoning_effort=high',
+        '/goal UI-qclw'
+      ],
       expect.objectContaining({
         cwd: workspace,
         detached: true,

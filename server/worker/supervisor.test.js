@@ -123,6 +123,67 @@ describe('worker supervisor', () => {
     ).toBeNull();
   });
 
+  test('persists codex event metadata from runner callbacks', async () => {
+    const root_dir = mkdtemp();
+    const store = createJobStore({
+      root_dir,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
+    const child = /** @type {any} */ (new EventEmitter());
+    child.unref = () => {};
+    /** @type {((event: any) => void) | null} */
+    let on_codex_event = null;
+    const supervisor = createWorkerSupervisor({
+      root_dir,
+      store,
+      runner: {
+        startJob(input) {
+          on_codex_event = input.onCodexEvent ?? null;
+          return { pid: 4321, child };
+        },
+        async cancelJob() {
+          return true;
+        }
+      },
+      owner_pid: 9008,
+      health_check_impl: async () => true,
+      is_process_running_impl: () => true,
+      now: () => '2026-04-17T03:00:00.000Z'
+    });
+
+    await supervisor.acquireOwnership({ port: 4105 });
+    const job = await supervisor.createJob({
+      command: 'bd-ralph',
+      issueId: 'UI-qclw',
+      workspace: root_dir
+    });
+    expect(on_codex_event).not.toBeNull();
+    const emit_codex_event = /** @type {(event: any) => void} */ (
+      /** @type {unknown} */ (on_codex_event)
+    );
+    emit_codex_event({ type: 'session_id', sessionId: '018f' });
+    emit_codex_event({ type: 'log_line', line: 'Done' });
+    emit_codex_event({ type: 'usage', usage: { input_tokens: 10 } });
+
+    expect(supervisor.getJob(job.id)).toMatchObject({
+      phase: 'goal',
+      model: 'gpt-5.5',
+      effort: 'high',
+      session_id: '018f',
+      last_log_line: 'Done',
+      usage_json: JSON.stringify({ input_tokens: 10 })
+    });
+    expect(
+      supervisor
+        .getEvents(job.id)
+        .map((event) => event.event_type)
+        .filter(
+          (event_type) =>
+            event_type === 'job.session_id' || event_type === 'job.log_line'
+        )
+    ).toEqual(['job.session_id', 'job.log_line']);
+  });
+
   test('moves running job into cancelling and cancelled during cancel flow', async () => {
     const root_dir = mkdtemp();
     const store = createJobStore({
