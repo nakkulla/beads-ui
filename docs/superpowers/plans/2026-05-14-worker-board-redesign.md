@@ -143,6 +143,52 @@ advance_delay_ms = 0
 ```
 
 ```js
+// server/app.test.js
+
+import { createServer } from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, test } from 'vitest';
+import { createApp } from './app.js';
+import { getConfig } from './config.js';
+
+afterEach(() => {
+  delete process.env.BDUI_CONFIG_PATH;
+});
+
+describe('worker config API', () => {
+  test('updates worker defaults and returns bootstrap worker config', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-worker-config-api-'));
+    const config_path = path.join(dir, 'config.toml');
+    fs.writeFileSync(config_path, '[worker]\npr_review_wait_ms = 120000\nadvance_delay_ms = 45000\n');
+    process.env.BDUI_CONFIG_PATH = config_path;
+    const config = getConfig();
+    const app = createApp({ ...config, host: '127.0.0.1', port: 0, app_dir: '.', root_dir: process.cwd(), frontend_mode: 'static' });
+    const server = createServer(app);
+    const address = await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address())));
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/config/worker`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ default_model: 'gpt-5.4', default_effort: 'medium', pr_review_wait_ms: 999 })
+    });
+    const body = await response.json();
+    await new Promise((resolve) => server.close(resolve));
+
+    const text = fs.readFileSync(config_path, 'utf8');
+    expect(response.status).toBe(200);
+    expect(body.worker.default_model).toBe('gpt-5.4');
+    expect(body.worker.default_effort).toBe('medium');
+    expect(body.worker.pr_review_wait_ms).toBe(120000);
+    expect(text).toContain('default_model = "gpt-5.4"');
+    expect(text).toContain('default_effort = "medium"');
+    expect(text).not.toContain('999');
+  });
+});
+```
+
+```js
 // app/state.test.js
 
 test('initializes worker board runtime state', () => {
@@ -278,7 +324,7 @@ test('dispatches worker queue events', () => {
 Run:
 
 ```bash
-npm test -- server/config.test.js server/worker/worker-config-writer.test.js app/state.test.js app/protocol.test.js app/ws.test.js
+npm test -- server/config.test.js server/worker/worker-config-writer.test.js server/app.test.js app/state.test.js app/protocol.test.js app/ws.test.js
 ```
 
 Expected: FAIL with missing `worker` config/state and invalid message types.
@@ -607,6 +653,20 @@ describe('worker-board-selectors', () => {
     expect(board.done.map((card) => card.id)).toEqual(['UI-A']);
   });
 
+  test('derives done from terminal killed job using job finished time', () => {
+    const board = buildWorkerBoard(
+      [{ ...base_parent, metadata: { worker_lane: 'progress' }, updated_at: '2026-05-01T01:00:00Z' }],
+      {
+        jobs: [{ id: 'job-1', issueId: 'UI-A', status: 'cancelled', wasForceKilled: true, finishedAt: '2026-05-14T02:00:00Z' }],
+        done_filter: 'today',
+        now: new Date('2026-05-14T12:00:00Z')
+      }
+    );
+
+    expect(board.done.map((card) => card.id)).toEqual(['UI-A']);
+    expect(board.progress).toEqual([]);
+  });
+
   test('lets done to inbox metadata override remove done classification', () => {
     const board = buildWorkerBoard(
       [{ ...base_parent, status: 'closed', metadata: { worker_lane: 'inbox' } }],
@@ -714,6 +774,20 @@ function isActiveJob(job) {
 }
 
 /**
+ * @param {any} job
+ */
+function isTerminalFailureJob(job) {
+  return FINAL_FAILURE_STATUSES.has(String(job?.status || '')) || job?.wasForceKilled === true;
+}
+
+/**
+ * @param {any} job
+ */
+function jobFinishedAt(job) {
+  return job?.finishedAt || job?.finished_at || '';
+}
+
+/**
  * @param {any} issue
  * @param {Date} now
  * @param {'today'|'3'|'7'} done_filter
@@ -723,11 +797,11 @@ function isDone(issue, now, done_filter, jobs) {
   if (metadataOf(issue).worker_lane === 'inbox') {
     return false;
   }
+  const terminal_job = jobs
+    .filter((job) => jobIssueId(job) === issue.id && isTerminalFailureJob(job))
+    .sort((a, b) => Date.parse(jobFinishedAt(b) || '0') - Date.parse(jobFinishedAt(a) || '0'))[0];
   const status_done = issue.status === 'resolved' || issue.status === 'closed';
-  const job_done = jobs.some(
-    (job) => jobIssueId(job) === issue.id && FINAL_FAILURE_STATUSES.has(String(job.status || ''))
-  );
-  if (!status_done && !job_done) {
+  if (!status_done && !terminal_job) {
     return false;
   }
   const days = done_filter === '7' ? 7 : done_filter === '3' ? 3 : 1;
@@ -736,8 +810,10 @@ function isDone(issue, now, done_filter, jobs) {
   if (days > 1) {
     since.setDate(since.getDate() - (days - 1));
   }
-  const updated = Date.parse(issue.updated_at || issue.created_at || '');
-  return !Number.isFinite(updated) || updated >= since.getTime();
+  const done_at = terminal_job
+    ? Date.parse(jobFinishedAt(terminal_job))
+    : Date.parse(issue.closed_at || issue.updated_at || issue.created_at || '');
+  return !Number.isFinite(done_at) || done_at >= since.getTime();
 }
 
 /**
@@ -1420,7 +1496,7 @@ onCodexEvent(event) {
 }
 ```
 
-Update `serializeJob` to include `phase`, `model`, `effort`, `sessionId`, `lastLogLine`, and parsed `usage`.
+Update `serializeJob` to include `phase`, `model`, `effort`, `sessionId`, `lastLogLine`, parsed `usage`, and existing `wasForceKilled` so frontend selectors can distinguish forced terminal cancels.
 
 - [ ] **Step 5: Run tests and commit**
 
@@ -1584,6 +1660,16 @@ describe('queue-scheduler', () => {
     expect(harness.events.some((event) => event.type === 'queue.blocked')).toBe(true);
   });
 
+  test('clears progress without advancing when pr-finish fails', async () => {
+    const harness = createHarness();
+
+    await harness.scheduler.handleJobStart({ issueId: 'UI-A', jobId: 'job-a', phase: 'pr_finish', parallel: false });
+    await harness.scheduler.handleJobExit({ issueId: 'UI-A', phase: 'pr_finish', status: 'failed', jobId: 'job-a' });
+
+    expect(harness.queue_state.clearProgress).toHaveBeenCalledWith('UI-A');
+    expect(harness.spawned).toEqual([]);
+  });
+
   test('does not auto-advance while paused', async () => {
     const harness = createHarness({
       queue_state: {
@@ -1686,13 +1772,13 @@ Add the remaining functions with these exact behaviors:
 
 - `handleJobExit({ issueId, phase, status, jobId })`
   - Broadcast `job.exited`.
-  - Maintain `serial_active_issue_id` and `active_parallel_issue_ids`; only a non-parallel card that finishes the whole pipeline releases the serial slot and may trigger serial auto-advance. A parallel card completion must not trigger serial queue advance.
+  - Maintain `serial_active_issue_id` and `active_parallel_issue_ids`; a non-parallel succeeded completion releases the serial slot and may trigger serial auto-advance, while failed/cancelled/killed terminal states release the slot but stop without auto-advance. A parallel card completion must not trigger serial queue advance.
   - For `phase === 'goal'`, always call `find_prs(issueId)` and cache first PR or clear PR metadata.
-  - If goal failed/cancelled: do not schedule review wait or advance.
+  - If goal failed/cancelled/killed: call `queue_state.clearProgress(issueId)`, release the slot, and do not schedule review wait or advance.
   - If goal succeeded and PR exists: call `startReviewWait(issueId, jobId, pr.number, parallel)` so the `$pr-finish` phase inherits the same parallel/serial class.
   - If goal succeeded and no PR: `queue_state.clearProgress(issueId)`; call `scheduleAdvance()` only when the completed card was non-parallel and released the serial slot.
   - If `phase === 'pr_finish'` and succeeded: clear progress; call `scheduleAdvance()` only when the completed card was non-parallel and released the serial slot.
-  - If `phase === 'pr_finish'` and failed/cancelled: do not clear progress and do not schedule advance.
+  - If `phase === 'pr_finish'` and failed/cancelled/killed: call `queue_state.clearProgress(issueId)`, release the slot, and do not schedule advance.
 - `startReviewWait(issueId, jobId, prNumber, parallel)` stores `worker_pr_review_wait_started_at`, keeps `{ parallel }` in `review_waits`, broadcasts `job.pr_review_wait` every second, and spawns `pr_finish` with the same `parallel` flag when remaining time reaches `0`.
 - `finishNow(issueId)` clears review timer for issue and immediately calls `runPrFinish(issueId)`.
 - `cancelAutoPrFinish(issueId)` marks review wait cancelled and broadcasts `job.pr_review_wait_cancelled`; it must not clear progress.
@@ -1808,7 +1894,7 @@ describe('worker queue route', () => {
     await new Promise((resolve) => server.close(resolve));
 
     expect(response.status).toBe(200);
-    expect(moveCard).toHaveBeenCalledWith({ issueId: 'UI-A', fromLane: 'inbox', toLane: 'waiting', beforeId: null, afterId: null });
+    expect(moveCard).toHaveBeenCalledWith({ issueId: 'UI-A', fromLane: 'inbox', toLane: 'waiting', beforeId: null, afterId: null, workspace: process.cwd() });
   });
 });
 ```
@@ -1818,6 +1904,8 @@ Extend `server/worker/supervisor.integration.test.js` to assert a goal command u
 Add `server/ws.test.js` coverage that stubs `getWorkerJobManager().listWorkerEvents({ workspace, since })` to return `[{ seq: 1, type: 'queue.countdown', payload: { remainingMs: 1000, nextIssueId: 'UI-A' } }]`, opens the app WebSocket, advances timers, and expects the client to receive a WebSocket envelope with `type: 'queue.countdown'`.
 
 Add `server/worker/pr-finish-skill-check.test.js` coverage for found/missing skill paths. Add `server/routes/worker-queue.test.js` cases for `moveCard` server-side validation: spec-less `inbox -> waiting` returns 409, waiting reorder passes `beforeId/afterId`, and `waiting -> progress` calls `startGoal` after validation.
+
+Add `server/worker/supervisor.test.js` coverage for terminal cleanup paths that currently bypass child close: successful `cancelJob()` calls `scheduler.handleJobExit({ status: 'cancelled' })` and clears progress; `reconcileJobs()` for a missing process calls `scheduler.handleJobExit({ status: 'failed' })` and clears progress; forced cancel exposes `wasForceKilled` in serialized job output so selectors can derive done from terminal killed jobs. Add startup recovery coverage where `createWorkerSupervisorServer.start()` runs `reconcileJobs()` before `scheduler.restoreReviewWaits()` and orphaned `goal` / `pr_finish` active jobs become failed/killed terminal jobs with `worker_lane` cleared.
 
 Run:
 
@@ -1852,6 +1940,9 @@ function broadcast(type, payload) {
 - In `createJob`, after a job enters running state, call `scheduler.handleJobStart({ jobId, issueId, phase, parallel, startedAt })`.
 - In JSONL session callback, call `scheduler.handleJobSession({ jobId, issueId, phase, sessionId })`.
 - In `finalizeFromChildClose`, after `job.exited`, call `void scheduler.handleJobExit({ issueId: job.issue_id, phase: job.phase, status: final_status, jobId: job.id, exitCode: exit_code })`.
+- Add a shared `notifyTerminalJob(job, status, details)` helper and call it from every terminal path: `finalizeFromChildClose`, `cancelJob()` after successful cancel, `reconcileJobs()` when a process is missing, and `finalizeFailure()`. The helper calls `scheduler.handleJobExit({ issueId: job.issue_id, phase: job.phase, status, jobId: job.id, ...details })`; scheduler owns `queue_state.clearProgress()` for failed/cancelled/killed terminal jobs. This prevents cancelled/reconciled jobs from remaining active progress.
+- In `reconcileJobs()`, preserve forced-kill evidence by appending `job.killed` when the terminal path came from a forced cancel, and ensure serialized jobs expose `wasForceKilled` for frontend done derivation.
+- In `createWorkerSupervisorServer.start()`, after `await supervisor.reconcileJobs()` call `await supervisor.restoreQueueState()` (or equivalent) that invokes `scheduler.restoreReviewWaits()` and handles orphaned `goal_running` / `pr_finish_running` records as terminal failed/killed with `worker_lane` cleared before accepting queue requests.
 - Expose `getQueueSnapshot`, `setPaused`, `moveCard`, `setWorkerOverrides`, `startGoal`, `finishNow`, `cancelAutoPrFinish`, `runPrFinish`, `skipAdvance`, `cancelAutoStart`, and `listWorkerEvents(since)` on the supervisor object. `getQueueSnapshot` must include `pr_finish_available` and blocked reason when unavailable.
 
 Create `server/worker/pr-finish-skill-check.js` with `checkPrFinishSkill({ env, home_dir, exists_impl })`. It should look under `$CODEX_HOME/skills/pr-finish/SKILL.md`, `$HOME/.codex/skills/pr-finish/SKILL.md`, and repo-installed skill mirrors if explicitly provided in env. `createWorkerSupervisorServer.start()` runs the check once. When unavailable, scheduler may still complete `/goal`, but `/goal` success with PR must broadcast `queue.blocked` and must not spawn `$pr-finish` until the user/environment fixes the precondition and restarts.
@@ -2466,6 +2557,7 @@ After Task 10 commit:
 - Config defaults for model/effort/wait/advance delay plus toolbar persistence to `bdui-config.toml`: Task 1 and Task 8.
 - Server-to-browser live event bridge for `job.*` / `queue.*`: Task 7 and Task 8.
 - Server-side drag/drop persistence and validation: Task 7.
+- Terminal failed/cancelled/killed cleanup, cancel/reconcile supervisor paths, and restart review-wait recovery: Task 3, Task 6, and Task 7.
 - Per-card override persistence and spawn derivation: Task 4, Task 7, Task 9.
 - `$pr-finish` skill precondition check and blocked behavior: Task 7.
 - Frontend bundle and required repo validation: Task 10.
