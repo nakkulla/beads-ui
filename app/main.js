@@ -24,6 +24,13 @@ import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+const DEFAULT_WORKER_CONFIG = {
+  default_model: 'gpt-5.5',
+  default_effort: 'high',
+  pr_review_wait_ms: 300000,
+  advance_delay_ms: 60000
+};
+const WORKER_EFFORTS = new Set(['low', 'medium', 'high']);
 
 const DEFAULT_CONFIG = {
   label_display_policy: {
@@ -37,6 +44,7 @@ const DEFAULT_CONFIG = {
   workspace_config: {
     default_workspace: null
   },
+  worker: DEFAULT_WORKER_CONFIG,
   detail: {
     workflow_summary: {
       sections: [
@@ -152,6 +160,47 @@ function normalizeLabelColorPolicy(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @param {number} fallback
+ * @returns {number}
+ */
+function normalizePositiveInteger(value, fallback) {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : fallback;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ default_model: string, default_effort: 'low'|'medium'|'high', pr_review_wait_ms: number, advance_delay_ms: number }}
+ */
+function normalizeWorkerConfig(value) {
+  const raw = isObjectTable(value) ? value : {};
+  const default_model =
+    typeof raw.default_model === 'string' && raw.default_model.trim().length > 0
+      ? raw.default_model.trim()
+      : DEFAULT_WORKER_CONFIG.default_model;
+  const default_effort =
+    typeof raw.default_effort === 'string' &&
+    WORKER_EFFORTS.has(raw.default_effort)
+      ? raw.default_effort
+      : DEFAULT_WORKER_CONFIG.default_effort;
+
+  return {
+    default_model,
+    default_effort: /** @type {'low'|'medium'|'high'} */ (default_effort),
+    pr_review_wait_ms: normalizePositiveInteger(
+      raw.pr_review_wait_ms,
+      DEFAULT_WORKER_CONFIG.pr_review_wait_ms
+    ),
+    advance_delay_ms: normalizePositiveInteger(
+      raw.advance_delay_ms,
+      DEFAULT_WORKER_CONFIG.advance_delay_ms
+    )
+  };
+}
+
+/**
  * @returns {{
  *   label_display_policy: {
  *     visible_prefixes: string[],
@@ -162,7 +211,8 @@ function normalizeLabelColorPolicy(value) {
  *     }
  *   },
  *   workspace_config: { default_workspace: string | null },
- *   detail: any
+ *   detail: any,
+ *   worker: { default_model: string, default_effort: 'low'|'medium'|'high', pr_review_wait_ms: number, advance_delay_ms: number }
  * }}
  */
 export function readBootstrapConfig() {
@@ -178,6 +228,7 @@ export function readBootstrapConfig() {
     bootstrap.workspace_config.default_workspace.length > 0
       ? bootstrap.workspace_config.default_workspace
       : null;
+  const worker = normalizeWorkerConfig(bootstrap?.worker);
 
   if (!Array.isArray(prefixes)) {
     return {
@@ -195,7 +246,8 @@ export function readBootstrapConfig() {
       detail:
         bootstrap?.detail && typeof bootstrap.detail === 'object'
           ? JSON.parse(JSON.stringify(bootstrap.detail))
-          : JSON.parse(JSON.stringify(DEFAULT_CONFIG.detail))
+          : JSON.parse(JSON.stringify(DEFAULT_CONFIG.detail)),
+      worker
     };
   }
 
@@ -213,7 +265,8 @@ export function readBootstrapConfig() {
     detail:
       bootstrap?.detail && typeof bootstrap.detail === 'object'
         ? JSON.parse(JSON.stringify(bootstrap.detail))
-        : JSON.parse(JSON.stringify(DEFAULT_CONFIG.detail))
+        : JSON.parse(JSON.stringify(DEFAULT_CONFIG.detail)),
+    worker
   };
 }
 

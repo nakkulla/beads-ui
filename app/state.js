@@ -24,7 +24,19 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ selected_parent_id: string | null, show_closed_children: string[] }} WorkerState
+ * @typedef {'low'|'medium'|'high'} WorkerEffort
+ */
+
+/**
+ * @typedef {{ default_model: string, default_effort: WorkerEffort, pr_review_wait_ms: number, advance_delay_ms: number }} WorkerConfig
+ */
+
+/**
+ * @typedef {{ remainingMs?: number, nextIssueId?: string }} WorkerCountdown
+ */
+
+/**
+ * @typedef {{ selected_parent_id: string | null, paused: boolean, live_jobs: Record<string, unknown>, countdown: WorkerCountdown | null, pr_review_waits: Record<string, unknown>, done_filter: ClosedFilter, default_model: string, default_effort: WorkerEffort, queue_blocked_reason: string | null, pr_finish_available: boolean, show_closed_children?: string[] }} WorkerState
  */
 
 /**
@@ -52,7 +64,7 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ label_display_policy?: Partial<LabelDisplayPolicy>, workspace_config?: WorkspaceConfig, detail?: any }} AppConfig
+ * @typedef {{ label_display_policy?: Partial<LabelDisplayPolicy>, workspace_config?: WorkspaceConfig, detail?: any, worker?: Partial<WorkerConfig> }} AppConfig
  */
 
 /**
@@ -70,8 +82,16 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState, config: { label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig, detail: DetailConfig } }} AppState
+ * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState, config: { label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig, detail: DetailConfig, worker: WorkerConfig } }} AppState
  */
+
+const DEFAULT_WORKER_CONFIG = Object.freeze({
+  default_model: 'gpt-5.5',
+  default_effort: 'high',
+  pr_review_wait_ms: 300000,
+  advance_delay_ms: 60000
+});
+const WORKER_EFFORTS = new Set(['low', 'medium', 'high']);
 
 const DEFAULT_CONFIG = Object.freeze({
   label_display_policy: {
@@ -85,6 +105,7 @@ const DEFAULT_CONFIG = Object.freeze({
   workspace_config: {
     default_workspace: null
   },
+  worker: DEFAULT_WORKER_CONFIG,
   detail: {
     workflow_summary: {
       sections: [
@@ -211,8 +232,105 @@ function normalizeLabelColorPolicy(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @param {number} fallback
+ * @returns {number}
+ */
+function normalizePositiveInteger(value, fallback) {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : fallback;
+}
+
+/**
+ * @param {Partial<WorkerConfig> | undefined} input
+ * @returns {WorkerConfig}
+ */
+function normalizeWorkerConfig(input) {
+  const default_model =
+    typeof input?.default_model === 'string' &&
+    input.default_model.trim().length > 0
+      ? input.default_model.trim()
+      : DEFAULT_WORKER_CONFIG.default_model;
+  const default_effort =
+    typeof input?.default_effort === 'string' &&
+    WORKER_EFFORTS.has(input.default_effort)
+      ? input.default_effort
+      : DEFAULT_WORKER_CONFIG.default_effort;
+
+  return {
+    default_model,
+    default_effort: /** @type {WorkerEffort} */ (default_effort),
+    pr_review_wait_ms: normalizePositiveInteger(
+      input?.pr_review_wait_ms,
+      DEFAULT_WORKER_CONFIG.pr_review_wait_ms
+    ),
+    advance_delay_ms: normalizePositiveInteger(
+      input?.advance_delay_ms,
+      DEFAULT_WORKER_CONFIG.advance_delay_ms
+    )
+  };
+}
+
+/**
+ * @param {Partial<WorkerState> | undefined} input
+ * @param {WorkerConfig} worker_config
+ * @returns {WorkerState}
+ */
+function normalizeWorkerState(input, worker_config) {
+  const default_effort =
+    typeof input?.default_effort === 'string' &&
+    WORKER_EFFORTS.has(input.default_effort)
+      ? input.default_effort
+      : worker_config.default_effort;
+  const default_model =
+    typeof input?.default_model === 'string' &&
+    input.default_model.trim().length > 0
+      ? input.default_model.trim()
+      : worker_config.default_model;
+  const done_filter =
+    input?.done_filter === '3' ||
+    input?.done_filter === '7' ||
+    input?.done_filter === 'today'
+      ? input.done_filter
+      : 'today';
+  const queue_blocked_reason =
+    typeof input?.queue_blocked_reason === 'string' &&
+    input.queue_blocked_reason.length > 0
+      ? input.queue_blocked_reason
+      : null;
+  const worker_state = {
+    selected_parent_id: input?.selected_parent_id ?? null,
+    paused: input?.paused === true,
+    live_jobs: isObjectTable(input?.live_jobs)
+      ? cloneJson(input.live_jobs)
+      : {},
+    countdown: isObjectTable(input?.countdown)
+      ? cloneJson(input.countdown)
+      : null,
+    pr_review_waits: isObjectTable(input?.pr_review_waits)
+      ? cloneJson(input.pr_review_waits)
+      : {},
+    done_filter: /** @type {ClosedFilter} */ (done_filter),
+    default_model,
+    default_effort: /** @type {WorkerEffort} */ (default_effort),
+    queue_blocked_reason,
+    pr_finish_available: input?.pr_finish_available !== false
+  };
+
+  if (Array.isArray(input?.show_closed_children)) {
+    return {
+      ...worker_state,
+      show_closed_children: input.show_closed_children
+    };
+  }
+
+  return worker_state;
+}
+
+/**
  * @param {AppConfig | undefined} input
- * @returns {{ label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig, detail: DetailConfig }}
+ * @returns {{ label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig, detail: DetailConfig, worker: WorkerConfig }}
  */
 function normalizeConfig(input) {
   const prefixes = input?.label_display_policy?.visible_prefixes;
@@ -227,6 +345,7 @@ function normalizeConfig(input) {
     input?.detail && typeof input.detail === 'object'
       ? cloneJson(input.detail)
       : cloneJson(DEFAULT_CONFIG.detail);
+  const worker = normalizeWorkerConfig(input?.worker);
 
   if (!Array.isArray(prefixes)) {
     return {
@@ -241,7 +360,8 @@ function normalizeConfig(input) {
       workspace_config: {
         default_workspace
       },
-      detail: /** @type {DetailConfig} */ (detail)
+      detail: /** @type {DetailConfig} */ (detail),
+      worker
     };
   }
 
@@ -256,7 +376,8 @@ function normalizeConfig(input) {
     workspace_config: {
       default_workspace
     },
-    detail: /** @type {DetailConfig} */ (detail)
+    detail: /** @type {DetailConfig} */ (detail),
+    worker
   };
 }
 
@@ -268,6 +389,7 @@ function normalizeConfig(input) {
  */
 export function createStore(initial = {}) {
   const log = debug('state');
+  const initial_config = normalizeConfig(initial.config);
   /** @type {AppState} */
   let state = {
     selected_id: initial.selected_id ?? null,
@@ -287,17 +409,12 @@ export function createStore(initial = {}) {
           : 'today',
       show_deferred_column: initial.board?.show_deferred_column === true
     },
-    worker: {
-      selected_parent_id: initial.worker?.selected_parent_id ?? null,
-      show_closed_children: Array.isArray(initial.worker?.show_closed_children)
-        ? initial.worker.show_closed_children
-        : []
-    },
+    worker: normalizeWorkerState(initial.worker, initial_config.worker),
     workspace: {
       current: initial.workspace?.current ?? null,
       available: initial.workspace?.available ?? []
     },
-    config: normalizeConfig(initial.config)
+    config: initial_config
   };
 
   /** @type {Set<(s: AppState) => void>} */
@@ -323,13 +440,26 @@ export function createStore(initial = {}) {
      * @param {{ selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, board?: Partial<BoardState>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }} patch
      */
     setState(patch) {
+      const next_config =
+        patch.config !== undefined
+          ? normalizeConfig(patch.config)
+          : state.config;
+      const worker_source =
+        patch.config !== undefined
+          ? {
+              ...state.worker,
+              default_model: next_config.worker.default_model,
+              default_effort: next_config.worker.default_effort,
+              ...(patch.worker || {})
+            }
+          : { ...state.worker, ...(patch.worker || {}) };
       /** @type {AppState} */
       const next = {
         ...state,
         ...patch,
         filters: { ...state.filters, ...(patch.filters || {}) },
         board: { ...state.board, ...(patch.board || {}) },
-        worker: { ...state.worker, ...(patch.worker || {}) },
+        worker: normalizeWorkerState(worker_source, next_config.worker),
         workspace: {
           current:
             patch.workspace?.current !== undefined
@@ -340,10 +470,7 @@ export function createStore(initial = {}) {
               ? patch.workspace.available
               : state.workspace.available
         },
-        config:
-          patch.config !== undefined
-            ? normalizeConfig(patch.config)
-            : state.config
+        config: next_config
       };
       const workspace_changed =
         next.workspace.current?.path !== state.workspace.current?.path ||
@@ -366,7 +493,11 @@ export function createStore(initial = {}) {
         next.config.workspace_config.default_workspace !==
           state.config.workspace_config.default_workspace ||
         JSON.stringify(next.config.detail) !==
-          JSON.stringify(state.config.detail);
+          JSON.stringify(state.config.detail) ||
+        JSON.stringify(next.config.worker) !==
+          JSON.stringify(state.config.worker);
+      const worker_changed =
+        JSON.stringify(next.worker) !== JSON.stringify(state.worker);
       if (
         next.selected_id === state.selected_id &&
         next.view === state.view &&
@@ -375,12 +506,7 @@ export function createStore(initial = {}) {
         next.filters.type === state.filters.type &&
         next.board.closed_filter === state.board.closed_filter &&
         next.board.show_deferred_column === state.board.show_deferred_column &&
-        next.worker.selected_parent_id === state.worker.selected_parent_id &&
-        next.worker.show_closed_children.length ===
-          state.worker.show_closed_children.length &&
-        next.worker.show_closed_children.every(
-          (id, index) => id === state.worker.show_closed_children[index]
-        ) &&
+        !worker_changed &&
         !workspace_changed &&
         !config_changed
       ) {
@@ -396,7 +522,8 @@ export function createStore(initial = {}) {
         workspace: state.workspace.current?.path,
         config: {
           visible_prefixes: state.config.label_display_policy.visible_prefixes,
-          default_workspace: state.config.workspace_config.default_workspace
+          default_workspace: state.config.workspace_config.default_workspace,
+          worker: state.config.worker
         }
       });
       emit();

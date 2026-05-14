@@ -155,6 +155,12 @@ describe('main', () => {
         default_workspace: null,
         scan_roots: [],
         workspaces: []
+      },
+      worker: {
+        default_model: 'gpt-5.5',
+        default_effort: 'high',
+        pr_review_wait_ms: 300000,
+        advance_delay_ms: 60000
       }
     });
 

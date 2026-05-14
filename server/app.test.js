@@ -6,6 +6,9 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { createApp } from './app.js';
 import { getConfig } from './config.js';
 
+/** @type {string[]} */
+const temp_dirs = [];
+
 /**
  * Narrow to function type for basic checks.
  *
@@ -14,6 +17,18 @@ import { getConfig } from './config.js';
  */
 function isFunction(value) {
   return typeof value === 'function';
+}
+
+/**
+ * @param {string} content
+ * @returns {string}
+ */
+function writeTomlFixture(content) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-app-config-'));
+  const file_path = path.join(dir, 'config.toml');
+  temp_dirs.push(dir);
+  fs.writeFileSync(file_path, content);
+  return file_path;
 }
 
 /**
@@ -29,9 +44,10 @@ function missingConfigPath() {
 /**
  * @param {import('express').Express} app
  * @param {string} pathname
+ * @param {RequestInit} [options]
  * @returns {Promise<any>}
  */
-async function fetchJsonFromApp(app, pathname) {
+async function fetchJsonFromApp(app, pathname, options) {
   const server = createServer(app);
   await new Promise((resolve) => server.listen(0, () => resolve(undefined)));
   const address = server.address();
@@ -40,7 +56,10 @@ async function fetchJsonFromApp(app, pathname) {
   }
 
   try {
-    const response = await fetch(`http://127.0.0.1:${address.port}${pathname}`);
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}${pathname}`,
+      options
+    );
     return await response.json();
   } finally {
     await new Promise((resolve, reject) => {
@@ -57,6 +76,9 @@ async function fetchJsonFromApp(app, pathname) {
 
 afterEach(() => {
   delete process.env.BDUI_CONFIG_PATH;
+  for (const dir of temp_dirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe('server app wiring (no listen)', () => {
@@ -145,6 +167,45 @@ describe('server app wiring (no listen)', () => {
       'review_profile',
       'review_runtime'
     ]);
+  });
+
+  test('updates worker defaults and returns bootstrap worker config', async () => {
+    const config_path = writeTomlFixture(`
+[worker]
+pr_review_wait_ms = 120000
+advance_delay_ms = 45000
+`);
+    process.env.BDUI_CONFIG_PATH = config_path;
+    const config = getConfig();
+    const app = createApp({
+      ...config,
+      host: '127.0.0.1',
+      port: 0,
+      app_dir: '.',
+      root_dir: process.cwd(),
+      frontend_mode: 'static'
+    });
+
+    const body = await fetchJsonFromApp(app, '/api/config/worker', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        default_model: 'gpt-5.4',
+        default_effort: 'medium',
+        pr_review_wait_ms: 999
+      })
+    });
+    const file_content = fs.readFileSync(config_path, 'utf8');
+
+    expect(body.worker).toEqual({
+      default_model: 'gpt-5.4',
+      default_effort: 'medium',
+      pr_review_wait_ms: 120000,
+      advance_delay_ms: 45000
+    });
+    expect(file_content).toContain('default_model = "gpt-5.4"');
+    expect(file_content).toContain('default_effort = "medium"');
+    expect(file_content).not.toContain('999');
   });
 
   test('index.html exists in configured app_dir', () => {

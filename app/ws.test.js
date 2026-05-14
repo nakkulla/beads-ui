@@ -198,5 +198,24 @@ describe('app/ws client', () => {
     client.close();
   });
 
+  test('dispatches worker queue events', () => {
+    const sockets = setupFakeWebSocket();
+    const client = createWsClient();
+    sockets[0].openNow();
+
+    /** @type {any[]} */
+    const events = [];
+    client.on('queue.countdown', (payload) => events.push(payload));
+    sockets[0].emitMessage({
+      id: 'evt-worker-1',
+      ok: true,
+      type: 'queue.countdown',
+      payload: { remainingMs: 1000, nextIssueId: 'UI-1' }
+    });
+
+    expect(events).toEqual([{ remainingMs: 1000, nextIssueId: 'UI-1' }]);
+    client.close();
+  });
+
   // Removed: subscription ack frames; no warnings to test
 });

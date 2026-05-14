@@ -15,6 +15,13 @@ const DEFAULT_WORKSPACE_CONFIG = {
   scan_roots: [],
   workspaces: []
 };
+export const DEFAULT_WORKER_CONFIG = Object.freeze({
+  default_model: 'gpt-5.5',
+  default_effort: 'high',
+  pr_review_wait_ms: 300000,
+  advance_delay_ms: 60000
+});
+const WORKER_EFFORTS = new Set(['low', 'medium', 'high']);
 const WORKFLOW_SECTION_FIELDS = {
   workflow_settings: [
     'execution_lane',
@@ -115,6 +122,47 @@ function isObjectTable(value) {
  */
 function isHexColor(value) {
   return typeof value === 'string' && HEX_COLOR_RE.test(value);
+}
+
+/**
+ * @param {unknown} value
+ * @param {number} fallback
+ * @returns {number}
+ */
+function normalizePositiveInteger(value, fallback) {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : fallback;
+}
+
+/**
+ * @param {any} parsed
+ * @returns {{ default_model: string, default_effort: string, pr_review_wait_ms: number, advance_delay_ms: number }}
+ */
+function normalizeWorkerConfig(parsed) {
+  const raw = isObjectTable(parsed?.worker) ? parsed.worker : {};
+  const default_model =
+    typeof raw.default_model === 'string' && raw.default_model.trim().length > 0
+      ? raw.default_model.trim()
+      : DEFAULT_WORKER_CONFIG.default_model;
+  const default_effort =
+    typeof raw.default_effort === 'string' &&
+    WORKER_EFFORTS.has(raw.default_effort)
+      ? raw.default_effort
+      : DEFAULT_WORKER_CONFIG.default_effort;
+
+  return {
+    default_model,
+    default_effort,
+    pr_review_wait_ms: normalizePositiveInteger(
+      raw.pr_review_wait_ms,
+      DEFAULT_WORKER_CONFIG.pr_review_wait_ms
+    ),
+    advance_delay_ms: normalizePositiveInteger(
+      raw.advance_delay_ms,
+      DEFAULT_WORKER_CONFIG.advance_delay_ms
+    )
+  };
 }
 
 /**
@@ -323,7 +371,8 @@ function normalizeWorkspaceConfig(parsed) {
  *     default_workspace: string | null,
  *     scan_roots: string[],
  *     workspaces: string[]
- *   }
+ *   },
+ *   worker: { default_model: string, default_effort: string, pr_review_wait_ms: number, advance_delay_ms: number }
  * }}
  */
 function readRuntimeConfig(config_path) {
@@ -343,7 +392,8 @@ function readRuntimeConfig(config_path) {
       detail: {
         workflow_summary: normalizeWorkflowSummaryConfig(parsed)
       },
-      workspace_config: normalizeWorkspaceConfig(parsed)
+      workspace_config: normalizeWorkspaceConfig(parsed),
+      worker: normalizeWorkerConfig(parsed)
     };
   } catch (error) {
     if (
@@ -369,7 +419,8 @@ function readRuntimeConfig(config_path) {
         default_workspace: DEFAULT_WORKSPACE_CONFIG.default_workspace,
         scan_roots: DEFAULT_WORKSPACE_CONFIG.scan_roots.slice(),
         workspaces: DEFAULT_WORKSPACE_CONFIG.workspaces.slice()
-      }
+      },
+      worker: { ...DEFAULT_WORKER_CONFIG }
     };
   }
 }
@@ -405,7 +456,8 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *     default_workspace: string | null,
  *     scan_roots: string[],
  *     workspaces: string[]
- *   }
+ *   },
+ *   worker: { default_model: string, default_effort: string, pr_review_wait_ms: number, advance_delay_ms: number }
  * }}
  */
 export function getConfig() {

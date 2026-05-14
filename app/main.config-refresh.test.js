@@ -61,6 +61,26 @@ describe('main config refresh', () => {
     });
   });
 
+  test('reads worker config from bootstrap config', () => {
+    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
+      worker: {
+        default_model: 'gpt-5.4',
+        default_effort: 'medium',
+        pr_review_wait_ms: 120000,
+        advance_delay_ms: 45000
+      }
+    };
+
+    const config = readBootstrapConfig();
+
+    expect(config.worker).toEqual({
+      default_model: 'gpt-5.4',
+      default_effort: 'medium',
+      pr_review_wait_ms: 120000,
+      advance_delay_ms: 45000
+    });
+  });
+
   test('refresh propagates color policy to state', async () => {
     const fetch_mock = vi.fn(async () => {
       return new Response(

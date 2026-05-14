@@ -52,6 +52,20 @@ describe('protocol', () => {
     expect(err2.error.code).toBe('not_found');
   });
 
+  test('accepts worker queue event message types', () => {
+    expect(isMessageType('job.started')).toBe(true);
+    expect(isMessageType('job.session_id')).toBe(true);
+    expect(isMessageType('job.log_line')).toBe(true);
+    expect(isMessageType('job.exited')).toBe(true);
+    expect(isMessageType('job.pr_linked')).toBe(true);
+    expect(isMessageType('job.pr_review_wait')).toBe(true);
+    expect(isMessageType('job.pr_review_wait_cancelled')).toBe(true);
+    expect(isMessageType('queue.countdown')).toBe(true);
+    expect(isMessageType('queue.advanced')).toBe(true);
+    expect(isMessageType('queue.paused')).toBe(true);
+    expect(isMessageType('queue.blocked')).toBe(true);
+  });
+
   test('invalid envelopes are rejected', () => {
     expect(() => decodeRequest({})).toThrow();
     expect(() => decodeReply({ ok: true })).toThrow();

@@ -9,7 +9,7 @@
  * - Server can also send unsolicited events (e.g., subscription `snapshot`).
  */
 
-/** @typedef {'list-issues'|'update-status'|'edit-text'|'update-priority'|'create-issue'|'list-ready'|'dep-add'|'dep-remove'|'epic-status'|'update-assignee'|'update-workflow-settings'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'get-workspace'|'workspace-changed'|'sync-workspace'|'git-pull-workspace'} MessageType */
+/** @typedef {'list-issues'|'update-status'|'edit-text'|'update-priority'|'create-issue'|'list-ready'|'dep-add'|'dep-remove'|'epic-status'|'update-assignee'|'update-workflow-settings'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'get-workspace'|'workspace-changed'|'sync-workspace'|'git-pull-workspace'|'job.started'|'job.session_id'|'job.log_line'|'job.exited'|'job.pr_linked'|'job.pr_review_wait'|'job.pr_review_wait_cancelled'|'queue.countdown'|'queue.advanced'|'queue.paused'|'queue.blocked'} MessageType */
 
 /**
  * @typedef {Object} RequestEnvelope
@@ -66,7 +66,19 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'get-workspace',
   'workspace-changed',
   'sync-workspace',
-  'git-pull-workspace'
+  'git-pull-workspace',
+  // Worker queue events
+  'job.started',
+  'job.session_id',
+  'job.log_line',
+  'job.exited',
+  'job.pr_linked',
+  'job.pr_review_wait',
+  'job.pr_review_wait_cancelled',
+  'queue.countdown',
+  'queue.advanced',
+  'queue.paused',
+  'queue.blocked'
 ]);
 
 /**

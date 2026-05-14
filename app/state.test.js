@@ -2,6 +2,25 @@ import { describe, expect, test } from 'vitest';
 import { createStore } from './state.js';
 
 describe('state store', () => {
+  test('initializes worker queue state defaults', () => {
+    const store = createStore();
+
+    const state = store.getState();
+
+    expect(state.worker).toEqual({
+      selected_parent_id: null,
+      paused: false,
+      live_jobs: {},
+      countdown: null,
+      pr_review_waits: {},
+      done_filter: 'today',
+      default_model: 'gpt-5.5',
+      default_effort: 'high',
+      queue_blocked_reason: null,
+      pr_finish_available: true
+    });
+  });
+
   test('get/set/subscribe works and dedupes unchanged', () => {
     const store = createStore();
     const seen = [];
@@ -34,6 +53,56 @@ describe('state store', () => {
 
     expect(seen).toEqual([true, false]);
     expect(store.getState().board.show_deferred_column).toBe(false);
+  });
+
+  test('emits when worker live job changes', () => {
+    const store = createStore();
+    /** @type {Array<Record<string, unknown>>} */
+    const seen = [];
+    const off = store.subscribe((state) => seen.push(state.worker.live_jobs));
+
+    store.setState({
+      worker: {
+        live_jobs: {
+          'job-1': { status: 'running' }
+        }
+      }
+    });
+    store.setState({
+      worker: {
+        live_jobs: {
+          'job-1': { status: 'running' }
+        }
+      }
+    });
+    off();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({
+      'job-1': { status: 'running' }
+    });
+  });
+
+  test('hydrates worker defaults from bootstrap config', () => {
+    const store = createStore({
+      config: {
+        worker: {
+          default_model: 'gpt-5.4',
+          default_effort: 'medium',
+          pr_review_wait_ms: 120000,
+          advance_delay_ms: 45000
+        }
+      }
+    });
+
+    expect(store.getState().worker.default_model).toBe('gpt-5.4');
+    expect(store.getState().worker.default_effort).toBe('medium');
+    expect(store.getState().config.worker).toEqual({
+      default_model: 'gpt-5.4',
+      default_effort: 'medium',
+      pr_review_wait_ms: 120000,
+      advance_delay_ms: 45000
+    });
   });
 
   test('hydrates config into initial state', () => {

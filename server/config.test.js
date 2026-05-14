@@ -94,6 +94,44 @@ visible_prefixes = ["has:", "reviewed:", "area:", "component:"]
     });
   });
 
+  test('reads worker queue defaults from TOML', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker]
+default_model = "gpt-5.4"
+default_effort = "medium"
+pr_review_wait_ms = 120000
+advance_delay_ms = 45000
+`);
+
+    const config = getConfig();
+
+    expect(config.worker).toEqual({
+      default_model: 'gpt-5.4',
+      default_effort: 'medium',
+      pr_review_wait_ms: 120000,
+      advance_delay_ms: 45000
+    });
+  });
+
+  test('falls back to worker queue defaults when TOML values are invalid', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker]
+default_model = "   "
+default_effort = "extreme"
+pr_review_wait_ms = 0
+advance_delay_ms = -10
+`);
+
+    const config = getConfig();
+
+    expect(config.worker).toEqual({
+      default_model: 'gpt-5.5',
+      default_effort: 'high',
+      pr_review_wait_ms: 300000,
+      advance_delay_ms: 60000
+    });
+  });
+
   test('reads visible exact labels from TOML', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
 [labels]
