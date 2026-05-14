@@ -33,6 +33,10 @@
 - `app/views/worker-card-children.js` — inline child rows.
 - `server/worker/queue-state.js` — Beads metadata read/write helpers for lane, sort key, parallel/model/effort, PR cache, review-wait fields.
 - `server/worker/queue-state.test.js` — mocked `bd` helper coverage.
+- `server/worker/worker-config-writer.js` — safe `[worker]` TOML section update helper for default model/effort changes.
+- `server/worker/worker-config-writer.test.js` — config writer coverage for preserving unrelated config and updating worker defaults.
+- `server/worker/pr-finish-skill-check.js` — `$pr-finish` skill availability probe used by supervisor startup.
+- `server/worker/pr-finish-skill-check.test.js` — skill probe coverage.
 - `server/worker/queue-scheduler.js` — queue state machine, timers, phase transitions, pause/skip/cancel actions.
 - `server/worker/queue-scheduler.test.js` — fake-clock scheduler coverage.
 - `server/routes/worker-queue.js` — Worker queue REST endpoints used by the board.
@@ -53,7 +57,10 @@
 - `server/worker/job-store.js` — add phase/session/log/usage columns with additive migration.
 - `server/worker/jobs.js` — expose queue operations and worker event snapshots from supervisor client.
 - `server/worker/process-runner.js` — replace `bd-ralph` / `pr-review` target builder with `/goal` / `$pr-finish` phase args, model/effort flags, JSONL event parser.
-- `server/worker/supervisor.js` — instantiate scheduler, cache PR metadata with `gh pr list`, emit worker events, serialize new job fields.
+- `server/worker/supervisor.js` — instantiate scheduler, cache PR metadata with `gh pr list`, emit worker events, serialize new job fields, enforce `$pr-finish` skill availability.
+- `server/worker/supervisor-entry.js` — pass parsed worker config and skill-check result into the supervisor daemon.
+- `server/ws.js` — bridge supervisor `job.*` / `queue.*` live events into browser WebSocket envelopes.
+- `server/ws.test.js` — prove worker live events are delivered over `/ws` to frontend subscribers.
 - Tests that assert old Worker tree/PR UI (`app/views/worker.test.js`, `app/views/worker-detail.test.js`, `server/worker/process-runner.test.js`, `server/worker/supervisor.test.js`, `server/worker/supervisor.integration.test.js`, `server/routes/worker-jobs.test.js`, `server/app.test.js`, `server/config.test.js`, `app/main.worker.test.js`, `app/ws.test.js`, `app/protocol.test.js`, `app/state.test.js`).
 - `app/main.bundle.js` and `app/main.bundle.js.map` after final frontend build.
 
@@ -80,6 +87,9 @@
 - Modify: `server/config.js`
 - Modify: `server/config.test.js`
 - Modify: `server/app.js`
+- Create: `server/worker/worker-config-writer.js`
+- Create: `server/worker/worker-config-writer.test.js`
+- Modify: `app/main.js`
 - Modify: `app/state.js`
 - Modify: `app/state.test.js`
 - Modify: `app/protocol.js`
@@ -146,7 +156,9 @@ test('initializes worker board runtime state', () => {
     pr_review_waits: {},
     done_filter: 'today',
     default_model: 'gpt-5.5',
-    default_effort: 'high'
+    default_effort: 'high',
+    queue_blocked_reason: null,
+    pr_finish_available: true
   });
 });
 
@@ -186,6 +198,52 @@ test('emits when worker live job changes', () => {
 ```
 
 ```js
+// server/worker/worker-config-writer.test.js
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, expect, test } from 'vitest';
+import { updateWorkerConfigFile } from './worker-config-writer.js';
+
+describe('worker-config-writer', () => {
+  test('updates worker defaults while preserving unrelated TOML text', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-worker-config-'));
+    const file_path = path.join(dir, 'config.toml');
+    fs.writeFileSync(file_path, 'default_workspace = "/repo"\n[labels]\nvisible_prefixes = ["has:"]\n');
+
+    updateWorkerConfigFile(file_path, { default_model: 'gpt-5.4', default_effort: 'medium' });
+
+    const text = fs.readFileSync(file_path, 'utf8');
+    expect(text).toContain('default_workspace = "/repo"');
+    expect(text).toContain('[worker]');
+    expect(text).toContain('default_model = "gpt-5.4"');
+    expect(text).toContain('default_effort = "medium"');
+  });
+});
+```
+
+```js
+// app/state.test.js
+
+test('hydrates worker defaults from bootstrap config', () => {
+  const store = createStore({
+    config: {
+      worker: {
+        default_model: 'gpt-5.4',
+        default_effort: 'medium',
+        pr_review_wait_ms: 120000,
+        advance_delay_ms: 45000
+      }
+    }
+  });
+
+  expect(store.getState().worker.default_model).toBe('gpt-5.4');
+  expect(store.getState().worker.default_effort).toBe('medium');
+});
+```
+
+```js
 // app/protocol.test.js
 
 test('accepts worker queue event message types', () => {
@@ -220,7 +278,7 @@ test('dispatches worker queue events', () => {
 Run:
 
 ```bash
-npm test -- server/config.test.js app/state.test.js app/protocol.test.js app/ws.test.js
+npm test -- server/config.test.js server/worker/worker-config-writer.test.js app/state.test.js app/protocol.test.js app/ws.test.js
 ```
 
 Expected: FAIL with missing `worker` config/state and invalid message types.
@@ -285,6 +343,10 @@ worker: config.worker || {
 }
 ```
 
+Create `server/worker/worker-config-writer.js` with `updateWorkerConfigFile(config_path, values)`. It must preserve existing unrelated TOML text, create a `[worker]` section when absent, replace only `default_model` and `default_effort` lines inside `[worker]`, and reject invalid effort values outside `low|medium|high`. Add `PATCH /api/config/worker` in `server/app.js` that writes defaults through this helper, re-reads config, and returns the new bootstrap config. The route must not write wait-duration keys from the toolbar.
+
+Update `app/main.js` `readBootstrapConfig` / bootstrap normalization so `window.__BDUI_CONFIG__.worker` flows into `createStore({ config })`. `createStore` then seeds `state.worker.default_model` and `state.worker.default_effort` from `config.worker`; later `PATCH /api/config/worker` responses update both `state.config.worker` and `state.worker.default_*`.
+
 - [ ] **Step 3: Implement worker state and protocol changes**
 
 In `app/state.js`, replace `WorkerState` with:
@@ -296,7 +358,7 @@ In `app/state.js`, replace `WorkerState` with:
  * @typedef {{ jobId: string, issueId: string, phase: WorkerJobPhase, sub_state: WorkerSubState, sessionId?: string, lastLogLine?: string, startedAt?: string, prNumber?: number | null, prUrl?: string | null, model?: string, effort?: string, parallel?: boolean }} WorkerLiveJob
  * @typedef {{ issueId: string, remaining_ms: number, next_issue_id?: string | null }} WorkerCountdown
  * @typedef {{ jobId: string, prNumber: number, remaining_ms: number, total_ms: number, cancelled?: boolean }} WorkerReviewWait
- * @typedef {{ selected_parent_id: string | null, paused: boolean, live_jobs: Record<string, WorkerLiveJob>, countdown: WorkerCountdown | null, pr_review_waits: Record<string, WorkerReviewWait>, done_filter: ClosedFilter, default_model: string, default_effort: 'low'|'medium'|'high' }} WorkerState
+ * @typedef {{ selected_parent_id: string | null, paused: boolean, live_jobs: Record<string, WorkerLiveJob>, countdown: WorkerCountdown | null, pr_review_waits: Record<string, WorkerReviewWait>, done_filter: ClosedFilter, default_model: string, default_effort: 'low'|'medium'|'high', queue_blocked_reason?: string | null, pr_finish_available?: boolean }} WorkerState
  */
 ```
 
@@ -320,7 +382,8 @@ In `app/protocol.js`, append these values to `MESSAGE_TYPES`:
 'job.pr_review_wait_cancelled',
 'queue.countdown',
 'queue.advanced',
-'queue.paused'
+'queue.paused',
+'queue.blocked'
 ```
 
 - [ ] **Step 4: Run targeted tests and commit**
@@ -328,7 +391,7 @@ In `app/protocol.js`, append these values to `MESSAGE_TYPES`:
 Run:
 
 ```bash
-npm test -- server/config.test.js app/state.test.js app/protocol.test.js app/ws.test.js server/app.test.js
+npm test -- server/config.test.js server/worker/worker-config-writer.test.js app/state.test.js app/protocol.test.js app/ws.test.js server/app.test.js
 npm run tsc
 ```
 
@@ -337,7 +400,7 @@ Expected: targeted tests PASS and typecheck PASS.
 Commit:
 
 ```bash
-git add server/config.js server/config.test.js server/app.js app/state.js app/state.test.js app/protocol.js app/protocol.test.js app/ws.test.js
+git add server/config.js server/config.test.js server/app.js server/worker/worker-config-writer.js server/worker/worker-config-writer.test.js app/main.js app/state.js app/state.test.js app/protocol.js app/protocol.test.js app/ws.test.js
 git commit -m "Worker 보드 설정과 이벤트 기반 추가"
 ```
 
@@ -847,6 +910,31 @@ describe('queue-state', () => {
     );
   });
 
+  test('persists worker override metadata', async () => {
+    const run_bd_impl = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const state = createQueueState({ cwd: '/repo', run_bd_impl });
+
+    await state.setWorkerOverrides('UI-A', {
+      worker_parallel: 'true',
+      worker_model: 'gpt-5.4',
+      worker_effort: 'medium'
+    });
+
+    expect(run_bd_impl).toHaveBeenCalledWith(
+      [
+        'update',
+        'UI-A',
+        '--set-metadata',
+        'worker_parallel=true',
+        '--set-metadata',
+        'worker_model=gpt-5.4',
+        '--set-metadata',
+        'worker_effort=medium'
+      ],
+      { cwd: '/repo' }
+    );
+  });
+
   test('clears PR metadata when no PR is linked', async () => {
     const run_bd_impl = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
     const state = createQueueState({ cwd: '/repo', run_bd_impl });
@@ -1012,6 +1100,29 @@ export function createQueueState(options) {
         '--unset-metadata',
         'worker_pr_review_wait_cancelled'
       ]);
+    },
+
+    async setWorkerOverrides(issue_id, values) {
+      const args = ['update', issue_id];
+      for (const key of ['worker_parallel', 'worker_model', 'worker_effort']) {
+        const value = values[key];
+        if (typeof value === 'string' && value.length > 0) {
+          args.push('--set-metadata', `${key}=${value}`);
+        } else {
+          args.push('--unset-metadata', key);
+        }
+      }
+      return runUpdate(args);
+    },
+
+    async getIssue(issue_id) {
+      return normalizeIssues(await run_bd_json_impl(['show', issue_id, '--json'], { cwd }))[0] || null;
+    },
+
+    async rebalanceWaiting(cards) {
+      for (const { id, sort_key } of cards) {
+        await runUpdate(['update', id, '--set-metadata', `worker_queue_sort_key=${String(sort_key)}`]);
+      }
     },
 
     async cachePrLink(issue_id, pr) {
@@ -1414,6 +1525,65 @@ describe('queue-scheduler', () => {
     expect(harness.spawned).toEqual([]);
   });
 
+  test('does not auto-advance while serial slot is occupied', async () => {
+    const harness = createHarness({
+      queue_state: {
+        listWaitingCards: vi.fn(async () => [{ id: 'UI-B', spec_id: 'docs/spec.md', metadata: {}, parallel: false }])
+      }
+    });
+
+    await harness.scheduler.handleJobStart({ issueId: 'UI-A', jobId: 'job-a', phase: 'goal', parallel: false });
+    harness.scheduler.setPaused(false);
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(harness.spawned).toEqual([]);
+  });
+
+  test('auto-advances a parallel head while serial slot is occupied', async () => {
+    const harness = createHarness({
+      queue_state: {
+        listWaitingCards: vi.fn(async () => [{ id: 'UI-X', spec_id: 'docs/spec.md', metadata: { worker_parallel: 'true' }, parallel: true }])
+      }
+    });
+
+    await harness.scheduler.handleJobStart({ issueId: 'UI-A', jobId: 'job-a', phase: 'goal', parallel: false });
+    harness.scheduler.setPaused(false);
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(harness.spawned).toContainEqual(expect.objectContaining({ issueId: 'UI-X', phase: 'goal', parallel: true }));
+  });
+
+  test('does not advance serial queue when a parallel card completes', async () => {
+    const harness = createHarness({
+      queue_state: {
+        listWaitingCards: vi.fn(async () => [{ id: 'UI-B', spec_id: 'docs/spec.md', metadata: {}, parallel: false }])
+      }
+    });
+
+    await harness.scheduler.handleJobStart({ issueId: 'UI-X', jobId: 'job-x', phase: 'goal', parallel: true });
+    await harness.scheduler.handleJobExit({ issueId: 'UI-X', phase: 'pr_finish', status: 'succeeded', jobId: 'job-finish' });
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(harness.spawned).toEqual([]);
+  });
+
+  test('stops auto-advance on a spec-less head waiting card', async () => {
+    const harness = createHarness({
+      queue_state: {
+        listWaitingCards: vi.fn(async () => [
+          { id: 'UI-B', spec_id: '', metadata: {}, parallel: false },
+          { id: 'UI-C', spec_id: 'docs/spec.md', metadata: {}, parallel: false }
+        ])
+      }
+    });
+
+    await harness.scheduler.handleJobExit({ issueId: 'UI-A', phase: 'pr_finish', status: 'succeeded', jobId: 'job-finish' });
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(harness.spawned).toEqual([]);
+    expect(harness.events.some((event) => event.type === 'queue.blocked')).toBe(true);
+  });
+
   test('does not auto-advance while paused', async () => {
     const harness = createHarness({
       queue_state: {
@@ -1444,14 +1614,16 @@ Create `server/worker/queue-scheduler.js` with this public shape:
 
 ```js
 /**
- * @param {{ queue_state: any, pr_review_wait_ms: number, advance_delay_ms: number, now?: () => string, spawn_phase: (input: { issueId?: string, phase: 'goal'|'pr_finish', prNumber?: number }) => Promise<{ id: string }>, find_prs: (issue_id: string) => Promise<Array<{ number: number, url: string }>>, broadcast: (type: string, payload: Record<string, unknown>) => void }} options
+ * @param {{ queue_state: any, pr_review_wait_ms: number, advance_delay_ms: number, now?: () => string, spawn_phase: (input: { issueId?: string, phase: 'goal'|'pr_finish', prNumber?: number, parallel?: boolean }) => Promise<{ id: string }>, find_prs: (issue_id: string) => Promise<Array<{ number: number, url: string }>>, broadcast: (type: string, payload: Record<string, unknown>) => void }} options
  */
 export function createQueueScheduler(options) {
   let paused = false;
   let advance_timer = null;
   let review_timer = null;
   let countdown_issue_id = null;
-  /** @type {Map<string, { jobId: string, issueId: string, prNumber: number, remainingMs: number, totalMs: number, cancelled: boolean }>} */
+  let serial_active_issue_id = null;
+  const active_parallel_issue_ids = new Set();
+  /** @type {Map<string, { jobId: string, issueId: string, prNumber: number, remainingMs: number, totalMs: number, cancelled: boolean, parallel: boolean }>} */
   const review_waits = new Map();
 
   return {
@@ -1466,7 +1638,8 @@ export function createQueueScheduler(options) {
     cancelReviewWaitJob,
     skipAdvance,
     cancelAutoStart,
-    restoreReviewWaits
+    restoreReviewWaits,
+    canStart
   };
 
   function getSnapshot() {
@@ -1487,7 +1660,17 @@ export function createQueueScheduler(options) {
     }
   }
 
+
+  function canStart(input) {
+    return input.parallel === true || serial_active_issue_id == null;
+  }
+
   async function handleJobStart(input) {
+    if (input.parallel === true) {
+      active_parallel_issue_ids.add(input.issueId);
+    } else {
+      serial_active_issue_id = input.issueId;
+    }
     await options.queue_state.moveToProgress(input.issueId);
     await options.queue_state.setLastJob(input.issueId, input.phase, input.jobId);
     options.broadcast('job.started', input);
@@ -1503,18 +1686,20 @@ Add the remaining functions with these exact behaviors:
 
 - `handleJobExit({ issueId, phase, status, jobId })`
   - Broadcast `job.exited`.
+  - Maintain `serial_active_issue_id` and `active_parallel_issue_ids`; only a non-parallel card that finishes the whole pipeline releases the serial slot and may trigger serial auto-advance. A parallel card completion must not trigger serial queue advance.
   - For `phase === 'goal'`, always call `find_prs(issueId)` and cache first PR or clear PR metadata.
   - If goal failed/cancelled: do not schedule review wait or advance.
-  - If goal succeeded and PR exists: call `startReviewWait(issueId, jobId, pr.number)`.
-  - If goal succeeded and no PR: `queue_state.clearProgress(issueId)` then `scheduleAdvance()`.
-  - If `phase === 'pr_finish'` and succeeded: clear progress then `scheduleAdvance()`.
+  - If goal succeeded and PR exists: call `startReviewWait(issueId, jobId, pr.number, parallel)` so the `$pr-finish` phase inherits the same parallel/serial class.
+  - If goal succeeded and no PR: `queue_state.clearProgress(issueId)`; call `scheduleAdvance()` only when the completed card was non-parallel and released the serial slot.
+  - If `phase === 'pr_finish'` and succeeded: clear progress; call `scheduleAdvance()` only when the completed card was non-parallel and released the serial slot.
   - If `phase === 'pr_finish'` and failed/cancelled: do not clear progress and do not schedule advance.
-- `startReviewWait(issueId, jobId, prNumber)` stores `worker_pr_review_wait_started_at`, broadcasts `job.pr_review_wait` every second, and spawns `pr_finish` when remaining time reaches `0`.
+- `startReviewWait(issueId, jobId, prNumber, parallel)` stores `worker_pr_review_wait_started_at`, keeps `{ parallel }` in `review_waits`, broadcasts `job.pr_review_wait` every second, and spawns `pr_finish` with the same `parallel` flag when remaining time reaches `0`.
 - `finishNow(issueId)` clears review timer for issue and immediately calls `runPrFinish(issueId)`.
 - `cancelAutoPrFinish(issueId)` marks review wait cancelled and broadcasts `job.pr_review_wait_cancelled`; it must not clear progress.
-- `runPrFinish(issueId)` clears review-wait metadata and calls `spawn_phase({ issueId, phase: 'pr_finish', prNumber })`.
+- `runPrFinish(issueId)` clears review-wait metadata and calls `spawn_phase({ issueId, phase: 'pr_finish', prNumber, parallel: wait.parallel })`.
 - `cancelReviewWaitJob(issueId)` clears review-wait metadata, clears progress metadata, removes map entry, and does not call `scheduleAdvance()`.
-- `scheduleAdvance()` exits when paused; otherwise picks first `queue_state.listWaitingCards()` entry with `spec_id`, broadcasts `queue.countdown` every second, and calls `spawn_phase({ issueId, phase: 'goal' })` at expiry.
+- `canStart({ parallel })` returns `true` for parallel cards and for non-parallel cards only when `serial_active_issue_id` is empty; manual `moveCard(... -> progress)` uses this helper.
+- `scheduleAdvance()` exits when paused. Otherwise it reads `queue_state.listWaitingCards()` and inspects the head card only. If the head card lacks `spec_id`, broadcast `queue.blocked` with `{ reason: 'Spec required to enter queue', issueId }` and do not skip to later cards. If the head is non-parallel and `serial_active_issue_id` is set, do not skip to later cards and do not spawn. If the head is `worker_parallel=true`, it may spawn even while `serial_active_issue_id` is set and must not occupy the serial slot. Broadcast `queue.countdown` every second and call `spawn_phase({ issueId, phase: 'goal', parallel })` at expiry.
 - `skipAdvance()` immediately spawns the current countdown card.
 - `cancelAutoStart()` cancels only the current advance timer and clears countdown state.
 - `restoreReviewWaits()` reads waiting/progress metadata from `queue_state.listIssues()` and restores review waits using `worker_pr_review_wait_started_at`; if elapsed >= total, immediately `runPrFinish(issueId)` unless `worker_pr_review_wait_cancelled === 'true'`.
@@ -1550,6 +1735,11 @@ git commit -m "Worker 큐 스케줄러 추가"
 - Modify: `server/worker/supervisor.test.js`
 - Modify: `server/worker/supervisor.integration.test.js`
 - Modify: `server/worker/jobs.js`
+- Create: `server/worker/pr-finish-skill-check.js`
+- Create: `server/worker/pr-finish-skill-check.test.js`
+- Modify: `server/worker/supervisor-entry.js`
+- Modify: `server/ws.js`
+- Modify: `server/ws.test.js`
 - Modify: `server/routes/worker-jobs.js`
 - Modify: `server/routes/worker-jobs.test.js`
 - Remove: `server/routes/worker-prs.js`
@@ -1623,7 +1813,11 @@ describe('worker queue route', () => {
 });
 ```
 
-Extend `server/worker/supervisor.integration.test.js` to assert a goal command uses `codex exec --json -m gpt-5.5 -c model_reasoning_effort=high /goal UI-A` and a review wait expiry starts `codex exec ... $pr-finish 42` after mocked `gh pr list` returns one PR.
+Extend `server/worker/supervisor.integration.test.js` to assert a goal command uses `codex exec --json -m gpt-5.5 -c model_reasoning_effort=high /goal UI-A` and a review wait expiry starts `codex exec ... $pr-finish 42` after mocked `gh pr list` returns one PR. Add a second integration test where `pr_finish_available=false`; expected result: `/goal` success + PR cache broadcasts `queue.blocked` with reason `$pr-finish skill unavailable` and no `$pr-finish` spawn.
+
+Add `server/ws.test.js` coverage that stubs `getWorkerJobManager().listWorkerEvents({ workspace, since })` to return `[{ seq: 1, type: 'queue.countdown', payload: { remainingMs: 1000, nextIssueId: 'UI-A' } }]`, opens the app WebSocket, advances timers, and expects the client to receive a WebSocket envelope with `type: 'queue.countdown'`.
+
+Add `server/worker/pr-finish-skill-check.test.js` coverage for found/missing skill paths. Add `server/routes/worker-queue.test.js` cases for `moveCard` server-side validation: spec-less `inbox -> waiting` returns 409, waiting reorder passes `beforeId/afterId`, and `waiting -> progress` calls `startGoal` after validation.
 
 Run:
 
@@ -1638,7 +1832,7 @@ Expected: FAIL because route and integrated scheduler do not exist.
 In `server/worker/supervisor.js`:
 
 - Import `createQueueScheduler`, `createQueueState`, and `runShell`.
-- Add `scheduler`, `queue_state`, `broadcast`, and `find_prs_impl` injection points to `createWorkerSupervisor` options.
+- Add `scheduler`, `queue_state`, `broadcast`, `find_prs_impl`, `worker_config`, and `pr_finish_available_impl` injection points to `createWorkerSupervisor` options.
 - Create a local `events` array with monotonically increasing `seq` for worker event bridge:
 
 ```js
@@ -1653,12 +1847,24 @@ function broadcast(type, payload) {
 }
 ```
 
-- Create scheduler with `spawn_phase` calling `createJob({ command: 'codex', phase, issueId, prNumber, workspace, model, effort })`.
+- Create scheduler with `spawn_phase` calling `createJob({ command: 'codex', phase, issueId, prNumber, workspace, model, effort, parallel })`. Resolve `model` and `effort` at spawn time from issue metadata first (`worker_model`, `worker_effort`), then `worker_config.default_model/default_effort`, then hard defaults `gpt-5.5/high`. Resolve `parallel` from `metadata.worker_parallel === 'true'`.
 - Implement `find_prs_impl(issue_id)` with `runShell('gh', ['pr', 'list', '--state', 'open', '--search', issue_id, '--json', 'number,url,title,state'], { cwd: workspace, timeout_ms: 30000 })`, JSON parse, return array.
 - In `createJob`, after a job enters running state, call `scheduler.handleJobStart({ jobId, issueId, phase, parallel, startedAt })`.
 - In JSONL session callback, call `scheduler.handleJobSession({ jobId, issueId, phase, sessionId })`.
 - In `finalizeFromChildClose`, after `job.exited`, call `void scheduler.handleJobExit({ issueId: job.issue_id, phase: job.phase, status: final_status, jobId: job.id, exitCode: exit_code })`.
-- Expose `getQueueSnapshot`, `setPaused`, `moveCard`, `startGoal`, `finishNow`, `cancelAutoPrFinish`, `runPrFinish`, `skipAdvance`, `cancelAutoStart`, and `listWorkerEvents(since)` on the supervisor object.
+- Expose `getQueueSnapshot`, `setPaused`, `moveCard`, `setWorkerOverrides`, `startGoal`, `finishNow`, `cancelAutoPrFinish`, `runPrFinish`, `skipAdvance`, `cancelAutoStart`, and `listWorkerEvents(since)` on the supervisor object. `getQueueSnapshot` must include `pr_finish_available` and blocked reason when unavailable.
+
+Create `server/worker/pr-finish-skill-check.js` with `checkPrFinishSkill({ env, home_dir, exists_impl })`. It should look under `$CODEX_HOME/skills/pr-finish/SKILL.md`, `$HOME/.codex/skills/pr-finish/SKILL.md`, and repo-installed skill mirrors if explicitly provided in env. `createWorkerSupervisorServer.start()` runs the check once. When unavailable, scheduler may still complete `/goal`, but `/goal` success with PR must broadcast `queue.blocked` and must not spawn `$pr-finish` until the user/environment fixes the precondition and restarts.
+
+Implement `moveCard(input)` in the supervisor, not only frontend. Required server semantics:
+- Load the issue with `queue_state.getIssue(issueId)` and validate `spec_id` for `waiting`/`progress`.
+- Reject `progress -> inbox/waiting` with `Cancel first`.
+- Reject non-parallel `-> progress` when `scheduler.canStart({ parallel: false })` returns false (serial slot occupied).
+- `inbox/done -> waiting`: compute sort key from `beforeId`/`afterId`; if no gap, call `queue_state.rebalanceWaiting()` then write the new key.
+- `waiting -> waiting`: same sort-key/rebalance path.
+- `waiting -> inbox`: set `worker_lane=inbox` and unset `worker_queue_sort_key`.
+- `done -> inbox`: set `worker_lane=inbox`.
+- `inbox/waiting -> progress`: validate, clear sort key, and call `startGoal({ issueId })` immediately.
 
 - [ ] **Step 3: Expose queue operations through worker manager client**
 
@@ -1667,6 +1873,7 @@ In `server/worker/jobs.js`, add methods to manager and supervisor client:
 ```js
 getQueueSnapshot(input) { return client.getQueueSnapshot(input); }
 moveCard(input) { return client.moveCard(input); }
+setWorkerOverrides(input) { return client.setWorkerOverrides(input); }
 setPaused(input) { return client.setPaused(input); }
 startGoal(input) { return client.startGoal(input); }
 finishNow(input) { return client.finishNow(input); }
@@ -1683,6 +1890,7 @@ Add supervisor server endpoints:
 GET  /queue?workspace=<path>
 GET  /events?since=<seq>&workspace=<path>
 POST /queue/move
+POST /queue/overrides
 POST /queue/pause
 POST /queue/start
 POST /queue/finish-now
@@ -1692,7 +1900,7 @@ POST /queue/skip-advance
 POST /queue/cancel-auto-start
 ```
 
-Each POST passes the JSON body to the supervisor method and returns JSON from that method.
+Each POST passes the JSON body to the supervisor method and returns JSON from that method. Default model/effort persistence stays on `PATCH /api/config/worker`; do not add a duplicate queue-defaults endpoint.
 
 - [ ] **Step 4: Add main app queue route and remove worker PR route**
 
@@ -1700,7 +1908,9 @@ Create `server/routes/worker-queue.js`. Reuse `resolveWorkspace` logic from `wor
 
 ```js
 router.get('/', async (req, res) => manager.getQueueSnapshot({ workspace }));
+router.get('/events', async (req, res) => manager.listWorkerEvents({ workspace, since: Number(req.query.since || 0) }));
 router.post('/move', async (req, res) => manager.moveCard({ ...req.body, workspace }));
+router.post('/overrides', async (req, res) => manager.setWorkerOverrides({ issueId: req.body?.issueId, values: req.body?.values || {}, workspace }));
 router.post('/pause', async (req, res) => manager.setPaused({ paused: req.body?.paused === true, workspace }));
 router.post('/start', async (req, res) => manager.startGoal({ issueId: req.body?.issueId, workspace }));
 router.post('/finish-now', async (req, res) => manager.finishNow({ issueId: req.body?.issueId, workspace }));
@@ -1720,12 +1930,14 @@ app.use('/api/worker/queue', createWorkerQueueRouter({ root_dir: config.root_dir
 
 Delete removed PR route/reader/resolver files and tests.
 
+In `server/ws.js`, add a Worker live-event bridge for the current workspace. While at least one browser socket is connected, poll `getWorkerJobManager({ root_dir }).listWorkerEvents({ workspace: CURRENT_WORKSPACE.root_dir, since })` every 1000ms, then send each returned event as an unsolicited envelope `{ id: `evt-worker-${seq}`, ok: true, type: event.type, payload: event.payload }`. This is the concrete server-to-browser transport for `job.*` / `queue.*` events; `app/main.js transport.on(...)` must not rely on supervisor-local memory without this bridge.
+
 - [ ] **Step 5: Run targeted tests and commit**
 
 Run:
 
 ```bash
-npm test -- server/routes/worker-queue.test.js server/routes/worker-jobs.test.js server/worker/supervisor.test.js server/worker/supervisor.integration.test.js server/app.test.js
+npm test -- server/routes/worker-queue.test.js server/routes/worker-jobs.test.js server/worker/pr-finish-skill-check.test.js server/worker/supervisor.test.js server/worker/supervisor.integration.test.js server/ws.test.js server/app.test.js
 npm run tsc
 ```
 
@@ -1734,7 +1946,7 @@ Expected: PASS.
 Commit:
 
 ```bash
-git add server/app.js server/app.test.js server/routes/worker-queue.js server/routes/worker-queue.test.js server/routes/worker-jobs.js server/routes/worker-jobs.test.js server/worker/supervisor.js server/worker/supervisor.test.js server/worker/supervisor.integration.test.js server/worker/jobs.js
+git add server/app.js server/app.test.js server/routes/worker-queue.js server/routes/worker-queue.test.js server/routes/worker-jobs.js server/routes/worker-jobs.test.js server/worker/pr-finish-skill-check.js server/worker/pr-finish-skill-check.test.js server/worker/supervisor-entry.js server/worker/supervisor.js server/worker/supervisor.test.js server/worker/supervisor.integration.test.js server/worker/jobs.js server/ws.js server/ws.test.js
 git rm server/routes/worker-prs.js server/routes/worker-prs.test.js server/worker/pr-reader.js server/worker/pr-target-resolver.js server/worker/pr-target-resolver.test.js
 git commit -m "Worker 큐 API와 supervisor 파이프라인 연결"
 ```
@@ -1831,7 +2043,7 @@ In `app/main.js`:
 
 - Remove `worker_jobs_timer` polling.
 - Keep `refreshWorkerJobs()` as a one-shot initial load if the detail view needs persisted recent jobs.
-- Add `refreshWorkerQueue()` fetching `/api/worker/queue?workspace=<workspace>` and setting `worker.paused`, `worker.countdown`, and `worker.pr_review_waits`.
+- Add `refreshWorkerQueue()` fetching `/api/worker/queue?workspace=<workspace>` and setting `worker.paused`, `worker.countdown`, `worker.pr_review_waits`, `worker.pr_finish_available`, and `worker.queue_blocked_reason`.
 - Add queue endpoint helpers:
 
 ```js
@@ -1852,6 +2064,10 @@ async function postWorkerQueue(path, body = {}) {
 - Register handlers on `transport` or `ws` client:
 
 ```js
+transport.on('queue.blocked', (payload) => {
+  store.setState({ worker: { queue_blocked_reason: String(payload.reason || '') } });
+  showToast(String(payload.reason || 'Worker queue blocked'));
+});
 transport.on('queue.paused', (payload) => {
   store.setState({ worker: { paused: payload.paused === true } });
 });
@@ -1889,6 +2105,9 @@ onRunPrFinish?: (issue_id: string) => void,
 onSkipAdvance?: () => void,
 onCancelAutoStart?: () => void,
 onPauseToggle?: (paused: boolean) => void,
+onUpdateWorkerMetadata?: (issue_id: string, values: { worker_parallel?: string, worker_model?: string, worker_effort?: string }) => void,
+onDefaultModelChange?: (model: string) => void,
+onDefaultEffortChange?: (effort: string) => void,
 onShowToast?: (message: string) => void
 ```
 
@@ -1949,8 +2168,8 @@ In `app/views/worker-toolbar.js`, replace old runnable/open-PR toggles with:
 - search input
 - status dropdown: `all`, `open`, `in_progress`, `resolved_closed`
 - done filter: `today`, `3`, `7`
-- default model input/select seeded from `state.worker.default_model`
-- default effort select: `low`, `medium`, `high`
+- default model input/select seeded from `state.worker.default_model`; change calls `PATCH /api/config/worker` through `onDefaultModelChange` and updates store from response.
+- default effort select: `low`, `medium`, `high`; change calls `PATCH /api/config/worker` through `onDefaultEffortChange` and updates store from response.
 - pause toggle button text `Pause queue` / `Resume queue`
 - Skip wait and Cancel auto-start buttons when `state.worker.countdown` exists
 
@@ -2061,6 +2280,8 @@ In `app/views/worker-detail.js`:
 ```js
 onUpdateWorkerMetadata?: (issue_id: string, values: { worker_parallel?: string, worker_model?: string, worker_effort?: string }) => void
 ```
+
+Wire `onUpdateWorkerMetadata` through `createWorkerView` and `app/main.js` to `POST /api/worker/queue/overrides`. After save, refresh the Worker issue subscription or rely on the next `upsert` so card tags reflect `worker_parallel`, `worker_model`, and `worker_effort`.
 
 The save handler sends only string metadata values:
 
@@ -2195,7 +2416,7 @@ Expected: no runtime/test hits. Historical hits in `docs/` are allowed only when
 Run:
 
 ```bash
-rg "worker_lane=done|lane:worker|worker_queue_sort_key" server app test
+rg "worker_lane=done|lane:(waiting|progress|inbox|done|worker)|worker_queue_sort_key" server app test
 ```
 
 Expected:
@@ -2242,7 +2463,11 @@ After Task 10 commit:
 - JSONL session/log/usage capture: Task 5.
 - PR cache through `gh pr list` and removal of `pr-reader`/`worker-prs`/PR panel files: Task 7 and Task 9.
 - Worker board/card/progress/children UI, drag-drop gate behavior, toasts: Task 8 and Task 9.
-- Config defaults for model/effort/wait/advance delay: Task 1.
+- Config defaults for model/effort/wait/advance delay plus toolbar persistence to `bdui-config.toml`: Task 1 and Task 8.
+- Server-to-browser live event bridge for `job.*` / `queue.*`: Task 7 and Task 8.
+- Server-side drag/drop persistence and validation: Task 7.
+- Per-card override persistence and spawn derivation: Task 4, Task 7, Task 9.
+- `$pr-finish` skill precondition check and blocked behavior: Task 7.
 - Frontend bundle and required repo validation: Task 10.
 
 ### Follow-up coverage
