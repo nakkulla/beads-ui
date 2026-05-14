@@ -17,12 +17,6 @@ export function createWorkerJobManager(options) {
 
   return {
     /**
-     * @param {{ command: string, issueId?: string, workspace: string, prNumber?: number }} input
-     */
-    enqueueJob(input) {
-      return client.createJob(input);
-    },
-    /**
      * @param {{ workspace?: string }} [filters]
      */
     listJobs(filters = {}) {
@@ -166,18 +160,6 @@ function createWorkerSupervisorClient(options) {
         `${url}/jobs/${encodeURIComponent(input.jobId)}`
       );
       return response.item || null;
-    },
-
-    /**
-     * @param {{ command: string, issueId?: string, workspace: string, prNumber?: number }} input
-     */
-    async createJob(input) {
-      const url = await ensureBaseUrl();
-      return fetchJson(fetch_impl, `${url}/jobs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(input)
-      });
     },
 
     /**

@@ -61,8 +61,6 @@ function findSelectedCard(board, selected_parent_id) {
  *   onDefaultModelChange?: (model: string) => void,
  *   onDefaultEffortChange?: (effort: string) => void,
  *   onShowToast?: (message: string) => void,
- *   onRunRalph?: (id: string) => void,
- *   onRunPrReview?: (target: any) => void,
  *   onCancelJob?: (job_id: string) => void
  * }} deps
  */

@@ -2,9 +2,8 @@ import { describe, expect, test, vi } from 'vitest';
 import { createWorkerJobManager } from './jobs.js';
 
 describe('worker job manager gateway', () => {
-  test('delegates create/list/detail/cancel/log calls to the supervisor client', async () => {
+  test('delegates list/detail/cancel/log and queue calls to the supervisor client', async () => {
     const client = {
-      createJob: vi.fn(async () => ({ id: 'job-1', status: 'running' })),
       listJobs: vi.fn(async () => [{ id: 'job-1', status: 'running' }]),
       getJob: vi.fn(async () => ({ id: 'job-1', workspace: '/repo' })),
       cancelJob: vi.fn(async () => ({ id: 'job-1', status: 'cancelled' })),
@@ -27,11 +26,6 @@ describe('worker job manager gateway', () => {
     };
     const manager = createWorkerJobManager({ root_dir: '/repo', client });
 
-    const created = await manager.enqueueJob({
-      command: 'bd-ralph',
-      issueId: 'UI-qclw',
-      workspace: '/repo'
-    });
     const items = await manager.listJobs({ workspace: '/repo' });
     const detail = await manager.getJob({ jobId: 'job-1' });
     const cancelled = await manager.cancelJob({ jobId: 'job-1' });
@@ -56,11 +50,6 @@ describe('worker job manager gateway', () => {
       since: 0
     });
 
-    expect(client.createJob).toHaveBeenCalledWith({
-      command: 'bd-ralph',
-      issueId: 'UI-qclw',
-      workspace: '/repo'
-    });
     expect(client.listJobs).toHaveBeenCalledWith({ workspace: '/repo' });
     expect(client.getJob).toHaveBeenCalledWith({ jobId: 'job-1' });
     expect(client.cancelJob).toHaveBeenCalledWith({ jobId: 'job-1' });
@@ -86,7 +75,6 @@ describe('worker job manager gateway', () => {
       workspace: '/repo',
       since: 0
     });
-    expect(created.status).toBe('running');
     expect(items).toHaveLength(1);
     expect(detail.workspace).toBe('/repo');
     expect(cancelled.status).toBe('cancelled');

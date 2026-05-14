@@ -1,7 +1,11 @@
 <style>
-  .board-wrap { padding: 0; }
+  .board-wrap {
+    padding: 0;
+  }
   .toolbar {
-    display: flex; align-items: center; gap: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
     padding: 10px 14px;
     background: var(--surface-2, #1e2230);
     border: 1px solid var(--border, #2a3040);
@@ -10,22 +14,39 @@
     font-size: 13px;
   }
   .toolbar .search {
-    flex: 1; padding: 6px 10px;
+    flex: 1;
+    padding: 6px 10px;
     background: var(--surface-3, #161a26);
     border: 1px solid var(--border, #2a3040);
     border-radius: 6px;
     color: inherit;
   }
   .pill {
-    padding: 4px 10px; border-radius: 999px;
+    padding: 4px 10px;
+    border-radius: 999px;
     background: var(--surface-3, #161a26);
     border: 1px solid var(--border, #2a3040);
-    font-size: 11px; line-height: 1.6;
+    font-size: 11px;
+    line-height: 1.6;
   }
-  .pill.active { background: #6b4cff22; border-color: #6b4cff; color: #b8a9ff; }
-  .pill.warn   { background: #ffb45a22; border-color: #ffb45a; color: #ffb45a; }
-  .pill.ok     { background: #4caf5022; border-color: #4caf50; color: #7ddf80; }
-  .pill.mute   { color: #888; }
+  .pill.active {
+    background: #6b4cff22;
+    border-color: #6b4cff;
+    color: #b8a9ff;
+  }
+  .pill.warn {
+    background: #ffb45a22;
+    border-color: #ffb45a;
+    color: #ffb45a;
+  }
+  .pill.ok {
+    background: #4caf5022;
+    border-color: #4caf50;
+    color: #7ddf80;
+  }
+  .pill.mute {
+    color: #888;
+  }
 
   .board {
     display: grid;
@@ -40,17 +61,27 @@
     min-height: 540px;
   }
   .lane-head {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin-bottom: 10px;
-    font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
     color: #aab;
   }
-  .lane-head b { color: #fff; font-size: 13px; letter-spacing: 0; text-transform: none; }
+  .lane-head b {
+    color: #fff;
+    font-size: 13px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
   .lane-count {
     background: var(--surface-3, #161a26);
     border: 1px solid var(--border, #2a3040);
     border-radius: 999px;
-    padding: 1px 8px; font-size: 11px;
+    padding: 1px 8px;
+    font-size: 11px;
   }
 
   .card {
@@ -62,99 +93,223 @@
     cursor: grab;
   }
   .card .row {
-    display: flex; align-items: center; gap: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin-bottom: 6px;
   }
   .card .id {
     font-family: ui-monospace, monospace;
-    font-size: 11px; color: #8a92a8;
+    font-size: 11px;
+    color: #8a92a8;
   }
   .card .title {
-    font-size: 13px; line-height: 1.35; color: #eef;
-    margin: 2px 0 8px; font-weight: 500;
+    font-size: 13px;
+    line-height: 1.35;
+    color: #eef;
+    margin: 2px 0 8px;
+    font-weight: 500;
   }
-  .badges { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 6px;
+  }
   .badge {
-    font-size: 10px; padding: 1.5px 7px; border-radius: 999px;
-    background: #2a3040; color: #cdd;
+    font-size: 10px;
+    padding: 1.5px 7px;
+    border-radius: 999px;
+    background: #2a3040;
+    color: #cdd;
   }
-  .badge.spec    { background: #4caf5022; color: #7ddf80; border: 1px solid #4caf5055; }
-  .badge.nospec  { background: #ffb45a22; color: #ffb45a; border: 1px solid #ffb45a55; }
-  .badge.parallel{ background: #6b4cff22; color: #b8a9ff; border: 1px solid #6b4cff55; }
-  .badge.model   { background: #16263a; color: #6db3ff; border: 1px solid #345a8e; }
-  .badge.epic    { background: #5a3a8e44; color: #d9c8ff; }
-  .badge.feature { background: #16323b; color: #6ddff0; }
-  .badge.task    { background: #2a3040; color: #cdd; }
-  .badge.bug     { background: #5a1f1f; color: #ffb0b0; }
+  .badge.spec {
+    background: #4caf5022;
+    color: #7ddf80;
+    border: 1px solid #4caf5055;
+  }
+  .badge.nospec {
+    background: #ffb45a22;
+    color: #ffb45a;
+    border: 1px solid #ffb45a55;
+  }
+  .badge.parallel {
+    background: #6b4cff22;
+    color: #b8a9ff;
+    border: 1px solid #6b4cff55;
+  }
+  .badge.model {
+    background: #16263a;
+    color: #6db3ff;
+    border: 1px solid #345a8e;
+  }
+  .badge.epic {
+    background: #5a3a8e44;
+    color: #d9c8ff;
+  }
+  .badge.feature {
+    background: #16323b;
+    color: #6ddff0;
+  }
+  .badge.task {
+    background: #2a3040;
+    color: #cdd;
+  }
+  .badge.bug {
+    background: #5a1f1f;
+    color: #ffb0b0;
+  }
 
-  .progress-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .progress-bar {
-    flex: 1; height: 5px; background: #2a3040; border-radius: 3px; overflow: hidden;
+  .progress-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
   }
-  .progress-bar .fill { height: 100%; background: linear-gradient(90deg, #6b4cff, #b8a9ff); }
-  .progress-text { font-size: 11px; color: #8a92a8; font-family: ui-monospace, monospace; }
+  .progress-bar {
+    flex: 1;
+    height: 5px;
+    background: #2a3040;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progress-bar .fill {
+    height: 100%;
+    background: linear-gradient(90deg, #6b4cff, #b8a9ff);
+  }
+  .progress-text {
+    font-size: 11px;
+    color: #8a92a8;
+    font-family: ui-monospace, monospace;
+  }
 
   /* progress lane card */
   .live {
-    margin-top: 8px; padding-top: 8px;
+    margin-top: 8px;
+    padding-top: 8px;
     border-top: 1px dashed #2a3040;
   }
   .live .runline {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 12px; color: #b8a9ff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #b8a9ff;
   }
-  .blink { width: 8px; height: 8px; border-radius: 50%; background: #7ddf80;
+  .blink {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #7ddf80;
     animation: blink 1s infinite;
   }
-  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
-  .elapsed { font-family: ui-monospace, monospace; font-size: 12px; color: #ddd; }
-  .session {
-    margin-left: auto; font-family: ui-monospace, monospace;
-    font-size: 11px; color: #8a92a8;
-    display: flex; align-items: center; gap: 4px;
+  @keyframes blink {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.25;
+    }
   }
-  .session .copy { opacity: 0.6; cursor: pointer; }
+  .elapsed {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    color: #ddd;
+  }
+  .session {
+    margin-left: auto;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: #8a92a8;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .session .copy {
+    opacity: 0.6;
+    cursor: pointer;
+  }
   .logline {
     margin-top: 6px;
-    font-family: ui-monospace, monospace; font-size: 11px;
-    color: #9ad7ff; background: #0e1622;
-    padding: 5px 8px; border-radius: 4px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: #9ad7ff;
+    background: #0e1622;
+    padding: 5px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     border-left: 2px solid #345a8e;
   }
   .actions {
-    display: flex; gap: 6px; margin-top: 8px;
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
   }
   .btn {
-    padding: 4px 10px; font-size: 11px;
-    border-radius: 4px; border: 1px solid #2a3040;
-    background: #1a1f2c; color: #cdd; cursor: pointer;
+    padding: 4px 10px;
+    font-size: 11px;
+    border-radius: 4px;
+    border: 1px solid #2a3040;
+    background: #1a1f2c;
+    color: #cdd;
+    cursor: pointer;
   }
-  .btn.danger { background: #5a1f1f33; color: #ffb0b0; border-color: #5a1f1f; }
-  .btn.primary { background: #6b4cff33; color: #b8a9ff; border-color: #6b4cff; }
+  .btn.danger {
+    background: #5a1f1f33;
+    color: #ffb0b0;
+    border-color: #5a1f1f;
+  }
+  .btn.primary {
+    background: #6b4cff33;
+    color: #b8a9ff;
+    border-color: #6b4cff;
+  }
 
   /* inline children */
   .expand {
-    margin-top: 8px; padding-top: 8px;
+    margin-top: 8px;
+    padding-top: 8px;
     border-top: 1px dashed #2a3040;
     font-size: 11px;
   }
   .child {
-    display: flex; align-items: center; gap: 7px;
-    padding: 3px 0; color: #cdd;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 0;
+    color: #cdd;
   }
-  .child .cid { font-family: ui-monospace, monospace; color: #8a92a8; min-width: 56px; }
-  .child .status { font-size: 13px; width: 14px; text-align: center; }
-  .child.done .status   { color: #7ddf80; }
-  .child.doing .status  { color: #b8a9ff; }
-  .child.open .status   { color: #666; }
+  .child .cid {
+    font-family: ui-monospace, monospace;
+    color: #8a92a8;
+    min-width: 56px;
+  }
+  .child .status {
+    font-size: 13px;
+    width: 14px;
+    text-align: center;
+  }
+  .child.done .status {
+    color: #7ddf80;
+  }
+  .child.doing .status {
+    color: #b8a9ff;
+  }
+  .child.open .status {
+    color: #666;
+  }
 
   /* done lane */
   .card.done {
     opacity: 0.62;
     border-style: dashed;
   }
-  .card.done .title { color: #aab; }
+  .card.done .title {
+    color: #aab;
+  }
 
   /* drop hint */
   .blocked-hint {
@@ -176,31 +331,40 @@
     padding: 7px 10px;
     font-size: 11px;
     margin-bottom: 10px;
-    display: flex; align-items: center; gap: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     color: #cdd;
   }
-  .countdown .timer { font-family: ui-monospace, monospace; color: #b8a9ff; font-weight: 600; }
-  .countdown .next { color: #aab; flex: 1; }
+  .countdown .timer {
+    font-family: ui-monospace, monospace;
+    color: #b8a9ff;
+    font-weight: 600;
+  }
+  .countdown .next {
+    color: #aab;
+    flex: 1;
+  }
 </style>
 
-<h2 style="margin-bottom:4px;">Worker Board Redesign — Overview Mockup</h2>
-<p class="subtitle" style="margin-bottom:14px;">4-lane Kanban with codex exec /goal. Cards scale with information density.</p>
+<h2 style="margin-bottom: 4px">Worker Board Redesign — Overview Mockup</h2>
+<p class="subtitle" style="margin-bottom: 14px">
+  4-lane Kanban with codex exec /goal. Cards scale with information density.
+</p>
 
 <div class="board-wrap">
-
   <!-- TOOLBAR -->
   <div class="toolbar">
     <span class="pill mute">🔍</span>
     <input class="search" placeholder="Search parents…" />
     <span class="pill">All statuses ▾</span>
     <span class="pill">Default: gpt-5.5 / high ▾</span>
-    <span style="flex:1;"></span>
+    <span style="flex: 1"></span>
     <span class="pill active">⏸ Pause queue</span>
   </div>
 
   <!-- BOARD -->
   <div class="board">
-
     <!-- INBOX -->
     <div class="lane">
       <div class="lane-head"><b>Inbox</b><span class="lane-count">5</span></div>
@@ -216,7 +380,9 @@
           <span class="badge parallel">⚡ parallel</span>
         </div>
         <div class="progress-row">
-          <div class="progress-bar"><div class="fill" style="width:42%"></div></div>
+          <div class="progress-bar">
+            <div class="fill" style="width: 42%"></div>
+          </div>
           <span class="progress-text">3/7</span>
         </div>
       </div>
@@ -231,7 +397,9 @@
           <span class="badge nospec">No spec</span>
         </div>
         <div class="progress-row">
-          <div class="progress-bar"><div class="fill" style="width:0%"></div></div>
+          <div class="progress-bar">
+            <div class="fill" style="width: 0%"></div>
+          </div>
           <span class="progress-text">0/0</span>
         </div>
       </div>
@@ -247,7 +415,9 @@
           <span class="badge model">⚙ gpt-5.5-mini / medium</span>
         </div>
         <div class="progress-row">
-          <div class="progress-bar"><div class="fill" style="width:33%"></div></div>
+          <div class="progress-bar">
+            <div class="fill" style="width: 33%"></div>
+          </div>
           <span class="progress-text">1/3</span>
         </div>
       </div>
@@ -266,20 +436,26 @@
 
     <!-- WAITING -->
     <div class="lane">
-      <div class="lane-head"><b>Waiting</b><span class="lane-count">3</span></div>
+      <div class="lane-head">
+        <b>Waiting</b><span class="lane-count">3</span>
+      </div>
 
       <div class="card">
         <div class="row">
           <span class="id">bd-188</span>
           <span class="badge feature">feature</span>
-          <span class="pill mute" style="margin-left:auto;font-size:10px;">#1</span>
+          <span class="pill mute" style="margin-left: auto; font-size: 10px"
+            >#1</span
+          >
         </div>
         <div class="title">Detail panel: workflow settings select</div>
         <div class="badges">
           <span class="badge spec">✓ Spec</span>
         </div>
         <div class="progress-row">
-          <div class="progress-bar"><div class="fill" style="width:60%"></div></div>
+          <div class="progress-bar">
+            <div class="fill" style="width: 60%"></div>
+          </div>
           <span class="progress-text">3/5</span>
         </div>
       </div>
@@ -288,7 +464,9 @@
         <div class="row">
           <span class="id">bd-194</span>
           <span class="badge task">task</span>
-          <span class="pill mute" style="margin-left:auto;font-size:10px;">#2</span>
+          <span class="pill mute" style="margin-left: auto; font-size: 10px"
+            >#2</span
+          >
         </div>
         <div class="title">Toolbar: add default model dropdown</div>
         <div class="badges">
@@ -301,7 +479,9 @@
         <div class="row">
           <span class="id">bd-203</span>
           <span class="badge feature">feature</span>
-          <span class="pill mute" style="margin-left:auto;font-size:10px;">#3</span>
+          <span class="pill mute" style="margin-left: auto; font-size: 10px"
+            >#3</span
+          >
         </div>
         <div class="title">Children inline-expand template</div>
         <div class="badges">
@@ -309,22 +489,26 @@
           <span class="badge parallel">⚡ parallel</span>
         </div>
         <div class="progress-row">
-          <div class="progress-bar"><div class="fill" style="width:0%"></div></div>
+          <div class="progress-bar">
+            <div class="fill" style="width: 0%"></div>
+          </div>
           <span class="progress-text">0/4</span>
         </div>
       </div>
 
       <div class="blocked-hint">
-        Drop blocked — bd-152 has no spec.<br/>Write a spec first.
+        Drop blocked — bd-152 has no spec.<br />Write a spec first.
       </div>
     </div>
 
     <!-- PROGRESS -->
     <div class="lane">
-      <div class="lane-head"><b>Progress</b><span class="lane-count">2</span></div>
+      <div class="lane-head">
+        <b>Progress</b><span class="lane-count">2</span>
+      </div>
 
       <!-- SERIAL slot -->
-      <div class="card" style="border-color:#6b4cff;">
+      <div class="card" style="border-color: #6b4cff">
         <div class="row">
           <span class="id">bd-201</span>
           <span class="badge epic">epic</span>
@@ -334,7 +518,9 @@
           <span class="badge spec">✓ Spec</span>
         </div>
         <div class="progress-row">
-          <div class="progress-bar"><div class="fill" style="width:42%"></div></div>
+          <div class="progress-bar">
+            <div class="fill" style="width: 42%"></div>
+          </div>
           <span class="progress-text">3/7</span>
         </div>
         <div class="live">
@@ -342,24 +528,40 @@
             <span class="blink"></span>
             <span>running</span>
             <span class="elapsed">02:14</span>
-            <span class="session">sess: ab12cd34 <span class="copy">📋</span></span>
+            <span class="session"
+              >sess: ab12cd34 <span class="copy">📋</span></span
+            >
           </div>
-          <div class="logline">› Editing app/views/worker.js (lit-html refactor)…</div>
+          <div class="logline">
+            › Editing app/views/worker.js (lit-html refactor)…
+          </div>
           <div class="actions">
             <button class="btn danger">Cancel</button>
             <button class="btn">Open log</button>
           </div>
           <div class="expand">
-            <div class="child done"><span class="status">✓</span><span class="cid">bd-202</span><span>Lane state schema</span></div>
-            <div class="child done"><span class="status">✓</span><span class="cid">bd-203</span><span>Card template</span></div>
-            <div class="child doing"><span class="status">▶</span><span class="cid">bd-204</span><span>Inline expand</span></div>
-            <div class="child open"><span class="status">▢</span><span class="cid">bd-205</span><span>Drag drop wiring</span></div>
+            <div class="child done">
+              <span class="status">✓</span><span class="cid">bd-202</span
+              ><span>Lane state schema</span>
+            </div>
+            <div class="child done">
+              <span class="status">✓</span><span class="cid">bd-203</span
+              ><span>Card template</span>
+            </div>
+            <div class="child doing">
+              <span class="status">▶</span><span class="cid">bd-204</span
+              ><span>Inline expand</span>
+            </div>
+            <div class="child open">
+              <span class="status">▢</span><span class="cid">bd-205</span
+              ><span>Drag drop wiring</span>
+            </div>
           </div>
         </div>
       </div>
 
       <!-- PARALLEL slot -->
-      <div class="card" style="border-color:#6b4cff;">
+      <div class="card" style="border-color: #6b4cff">
         <div class="row">
           <span class="id">bd-220</span>
           <span class="badge feature">feature</span>
@@ -374,9 +576,13 @@
             <span class="blink"></span>
             <span>running</span>
             <span class="elapsed">00:47</span>
-            <span class="session">sess: 9f3e21bd <span class="copy">📋</span></span>
+            <span class="session"
+              >sess: 9f3e21bd <span class="copy">📋</span></span
+            >
           </div>
-          <div class="logline">› Wrote server/worker/ws-stream.js (+114 lines)</div>
+          <div class="logline">
+            › Wrote server/worker/ws-stream.js (+114 lines)
+          </div>
           <div class="actions">
             <button class="btn danger">Cancel</button>
             <button class="btn">Open log</button>
@@ -388,8 +594,8 @@
       <div class="countdown">
         <span class="timer">00:48</span>
         <span class="next">Next: bd-188 (Detail panel)</span>
-        <button class="btn primary" style="padding:3px 8px;">Skip wait</button>
-        <button class="btn" style="padding:3px 8px;">Cancel auto-start</button>
+        <button class="btn primary" style="padding: 3px 8px">Skip wait</button>
+        <button class="btn" style="padding: 3px 8px">Cancel auto-start</button>
       </div>
     </div>
 
@@ -404,8 +610,14 @@
         </div>
         <div class="title">Workflow review_runtime select</div>
         <div class="badges">
-          <span class="badge ok" style="background:#4caf5022;color:#7ddf80;">✓ resolved</span>
-          <span class="badge mute" style="background:transparent;color:#8a92a8;">3h ago</span>
+          <span class="badge ok" style="background: #4caf5022; color: #7ddf80"
+            >✓ resolved</span
+          >
+          <span
+            class="badge mute"
+            style="background: transparent; color: #8a92a8"
+            >3h ago</span
+          >
         </div>
       </div>
 
@@ -416,8 +628,14 @@
         </div>
         <div class="title">Detail comments — actor option fix</div>
         <div class="badges">
-          <span class="badge ok" style="background:#4caf5022;color:#7ddf80;">✓ closed</span>
-          <span class="badge mute" style="background:transparent;color:#8a92a8;">yesterday</span>
+          <span class="badge ok" style="background: #4caf5022; color: #7ddf80"
+            >✓ closed</span
+          >
+          <span
+            class="badge mute"
+            style="background: transparent; color: #8a92a8"
+            >yesterday</span
+          >
         </div>
       </div>
 
@@ -428,8 +646,20 @@
         </div>
         <div class="title">Workflow settings value display</div>
         <div class="badges">
-          <span class="badge" style="background:#5a1f1f22;color:#ffb0b0;border:1px solid #5a1f1f55;">⚠ failed</span>
-          <span class="badge mute" style="background:transparent;color:#8a92a8;">2d ago</span>
+          <span
+            class="badge"
+            style="
+              background: #5a1f1f22;
+              color: #ffb0b0;
+              border: 1px solid #5a1f1f55;
+            "
+            >⚠ failed</span
+          >
+          <span
+            class="badge mute"
+            style="background: transparent; color: #8a92a8"
+            >2d ago</span
+          >
         </div>
       </div>
 
@@ -440,21 +670,49 @@
         </div>
         <div class="title">Push store stability</div>
         <div class="badges">
-          <span class="badge ok" style="background:#4caf5022;color:#7ddf80;">✓ closed</span>
-          <span class="badge mute" style="background:transparent;color:#8a92a8;">3d ago</span>
+          <span class="badge ok" style="background: #4caf5022; color: #7ddf80"
+            >✓ closed</span
+          >
+          <span
+            class="badge mute"
+            style="background: transparent; color: #8a92a8"
+            >3d ago</span
+          >
         </div>
       </div>
     </div>
-
   </div>
 </div>
 
-<div style="margin-top:20px; padding:12px 14px; background:#1a1f2c; border:1px solid #2a3040; border-radius:10px; font-size:13px; line-height:1.6;">
+<div
+  style="
+    margin-top: 20px;
+    padding: 12px 14px;
+    background: #1a1f2c;
+    border: 1px solid #2a3040;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+  "
+>
   <b>Highlights</b>
-  <ul style="margin:6px 0 0; padding-left:18px; color:#cdd;">
-    <li><b>Inbox</b>: 모든 active parent. spec 없는 항목은 <span class="badge nospec">No spec</span> 표시</li>
-    <li><b>Waiting</b>: spec 보유한 카드만 받음. 위에서 아래 순서대로 자동 실행 (#1, #2, #3 위치 번호). spec 없는 drop은 빨간 hint로 차단</li>
-    <li><b>Progress</b>: serial slot 1 + parallel 무제한. 카드 안에 blink·elapsed·session·log·cancel·자식 트리 표시. 아래에 다음 자동 실행 카운트다운</li>
-    <li><b>Done</b>: 최근 resolved/closed/failed. 회색·점선 처리. 사용자 마음대로 inbox로 다시 끌 수도 있음</li>
+  <ul style="margin: 6px 0 0; padding-left: 18px; color: #cdd">
+    <li>
+      <b>Inbox</b>: 모든 active parent. spec 없는 항목은
+      <span class="badge nospec">No spec</span> 표시
+    </li>
+    <li>
+      <b>Waiting</b>: spec 보유한 카드만 받음. 위에서 아래 순서대로 자동 실행
+      (#1, #2, #3 위치 번호). spec 없는 drop은 빨간 hint로 차단
+    </li>
+    <li>
+      <b>Progress</b>: serial slot 1 + parallel 무제한. 카드 안에
+      blink·elapsed·session·log·cancel·자식 트리 표시. 아래에 다음 자동 실행
+      카운트다운
+    </li>
+    <li>
+      <b>Done</b>: 최근 resolved/closed/failed. 회색·점선 처리. 사용자 마음대로
+      inbox로 다시 끌 수도 있음
+    </li>
   </ul>
 </div>

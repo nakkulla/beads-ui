@@ -78,31 +78,6 @@ export function createWorkerJobsRouter(options) {
     }
   });
 
-  router.post('/', async (req, res) => {
-    const manager = getWorkerJobManager({ root_dir: options.root_dir });
-    const workspace = resolveWorkspace(req, options.root_dir);
-    const { command, issueId, prNumber } = req.body || {};
-    if (
-      typeof command !== 'string' ||
-      (command !== 'bd-ralph' && command !== 'pr-review') ||
-      !workspace
-    ) {
-      res.status(400).json({ error: 'Invalid worker job request: workspace' });
-      return;
-    }
-    try {
-      const result = await manager.enqueueJob({
-        command,
-        issueId: typeof issueId === 'string' ? issueId : undefined,
-        workspace,
-        prNumber: typeof prNumber === 'number' ? prNumber : undefined
-      });
-      res.status(202).json(result);
-    } catch (error) {
-      sendError(res, error);
-    }
-  });
-
   router.post('/:jobId/cancel', async (req, res) => {
     const manager = getWorkerJobManager({ root_dir: options.root_dir });
     const workspace = resolveWorkspace(req, options.root_dir);

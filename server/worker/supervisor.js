@@ -200,9 +200,7 @@ export function createWorkerSupervisor(options) {
   async function createJob(input) {
     const workspace = path.resolve(input.workspace);
     const command = input.command || 'codex';
-    const phase = /** @type {'goal' | 'pr_finish'} */ (
-      input.phase ?? (command === 'pr-review' ? 'pr_finish' : 'goal')
-    );
+    const phase = /** @type {'goal' | 'pr_finish'} */ (input.phase ?? 'goal');
     const model = input.model || worker_config.default_model;
     const effort = input.effort || worker_config.default_effort;
     const parallel = input.parallel === true;
@@ -819,17 +817,6 @@ export function createWorkerSupervisorServer(options) {
         logPreview: supervisor.getJobLog(job.id, { tail: 200 })
       }
     });
-  });
-
-  app.post('/jobs', async (req, res) => {
-    try {
-      const job = await supervisor.createJob(req.body || {});
-      res
-        .status(202)
-        .json(serializeJob(job, (job_id) => supervisor.getEvents(job_id)));
-    } catch (error) {
-      sendSupervisorError(res, error);
-    }
   });
 
   app.post('/jobs/:jobId/cancel', async (req, res) => {

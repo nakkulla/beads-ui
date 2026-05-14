@@ -32,7 +32,7 @@ describe('worker job store', () => {
     });
 
     const job = store.createJob({
-      command: 'bd-ralph',
+      command: 'codex',
       issueId: 'UI-qclw',
       workspace: root_dir,
       createdBy: 'codex'
@@ -58,7 +58,7 @@ describe('worker job store', () => {
     });
 
     const first = store.createJob({
-      command: 'bd-ralph',
+      command: 'codex',
       issueId: 'UI-qclw',
       workspace: root_dir
     });
@@ -71,7 +71,8 @@ describe('worker job store', () => {
     ).toBeNull();
 
     const pr_job = store.createJob({
-      command: 'pr-review',
+      command: 'codex',
+      phase: 'pr_finish',
       issueId: 'UI-other',
       prNumber: 42,
       workspace: root_dir
@@ -128,7 +129,7 @@ describe('worker job store', () => {
       now: () => '2026-04-17T02:00:00.000Z'
     });
     const first_job = first_store.createJob({
-      command: 'bd-ralph',
+      command: 'codex',
       issueId: 'UI-qclw',
       workspace: root_dir
     });
@@ -139,7 +140,7 @@ describe('worker job store', () => {
       now: () => '2026-04-17T02:00:00.000Z'
     });
     const second_job = second_store.createJob({
-      command: 'bd-ralph',
+      command: 'codex',
       issueId: 'UI-qclw.1',
       workspace: root_dir
     });

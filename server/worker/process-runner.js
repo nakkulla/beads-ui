@@ -33,29 +33,6 @@ import { terminateProcess } from '../cli/daemon.js';
  */
 
 /**
- * @param {{ command: string, issueId?: string | null, prNumber?: number | null }} input
- * @returns {string}
- */
-export function buildWorkerExecTarget(input) {
-  if (input.command === 'bd-ralph') {
-    if (!input.issueId) {
-      throw Object.assign(new Error('Missing issueId for bd-ralph'), {
-        code: 'invalid_request'
-      });
-    }
-    return `$bd-ralph ${input.issueId}`;
-  }
-
-  const pr_target = input.prNumber ?? input.issueId;
-  if (!pr_target) {
-    throw Object.assign(new Error('Missing target for pr-review'), {
-      code: 'invalid_request'
-    });
-  }
-  return `$pr-review ${pr_target}`;
-}
-
-/**
  * @param {{ phase: 'goal' | 'pr_finish', issueId?: string | null, prNumber?: number | null, model: string, effort: string }} input
  * @returns {string[]}
  */

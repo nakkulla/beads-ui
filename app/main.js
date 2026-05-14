@@ -1289,28 +1289,6 @@ export function bootstrap(root_element) {
     }
 
     /**
-     * @param {'bd-ralph'|'pr-review'} command
-     * @param {{ issueId?: string, prNumber?: number }} target
-     */
-    async function enqueueWorkerJob(command, target) {
-      const workspace_path = store.getState().workspace.current?.path;
-      if (!workspace_path) {
-        return;
-      }
-      await fetch('/api/worker/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          command,
-          workspace: workspace_path,
-          issueId: target.issueId,
-          prNumber: target.prNumber
-        })
-      });
-      await refreshWorkerRuntime();
-    }
-
-    /**
      * @param {string} job_id
      */
     async function cancelWorkerJob(job_id) {
@@ -1547,24 +1525,6 @@ export function bootstrap(root_element) {
         });
       },
       onShowToast: (message) => showToast(message),
-      onRunRalph: (issue_id) => {
-        void postWorkerQueue('start', { issueId: issue_id }).then((payload) => {
-          if (payload) {
-            void refreshWorkerRuntime();
-          }
-        });
-      },
-      onRunPrReview: (target) =>
-        void enqueueWorkerJob('pr-review', {
-          issueId:
-            typeof target === 'string'
-              ? target
-              : (target?.issueId ?? undefined),
-          prNumber:
-            typeof target === 'object' && typeof target?.prNumber === 'number'
-              ? target.prNumber
-              : undefined
-        }),
       onCancelJob: (/** @type {string} */ job_id) =>
         void cancelWorkerJob(job_id)
     });

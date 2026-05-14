@@ -62,15 +62,7 @@ describe('worker jobs route', () => {
     getJobLog.mockReset();
   });
 
-  test('POST /api/worker/jobs enqueues bd-ralph issue job', async () => {
-    enqueueJob.mockResolvedValueOnce({
-      id: 'job-1',
-      command: 'bd-ralph',
-      status: 'running',
-      issueId: 'UI-qclw',
-      workspace: allowed_workspace
-    });
-
+  test('POST /api/worker/jobs is not a manual worker start path', async () => {
     const { createApp } = await import('../app.js');
     const app = createApp({
       host: '127.0.0.1',
@@ -81,7 +73,6 @@ describe('worker jobs route', () => {
     });
     const server = createServer(app);
     let response;
-    let body;
 
     try {
       const address = await listen(server);
@@ -91,19 +82,19 @@ describe('worker jobs route', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            command: 'bd-ralph',
+            command: 'codex',
+            phase: 'goal',
             issueId: 'UI-qclw',
             workspace: allowed_workspace
           })
         }
       );
-      body = await response.json();
     } finally {
       await close(server);
     }
 
-    expect(response.status).toBe(202);
-    expect(body.command).toBe('bd-ralph');
+    expect(response.status).toBe(404);
+    expect(enqueueJob).not.toHaveBeenCalled();
   });
 
   test('GET /api/worker/jobs requires a valid workspace', async () => {
@@ -134,7 +125,7 @@ describe('worker jobs route', () => {
     listJobs.mockResolvedValueOnce([
       {
         id: 'job-1',
-        command: 'bd-ralph',
+        command: 'codex',
         status: 'running',
         issueId: 'UI-qclw',
         workspace: allowed_workspace,

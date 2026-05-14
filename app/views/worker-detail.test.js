@@ -52,7 +52,7 @@ describe('views/worker-detail', () => {
           id: 'job-2',
           status: 'running',
           issueId: 'UI-62lm',
-          command: 'bd-ralph',
+          command: 'codex',
           elapsedMs: 65000,
           isCancellable: true,
           workspace: '/workspace',
@@ -62,7 +62,7 @@ describe('views/worker-detail', () => {
           id: 'job-1',
           status: 'failed',
           issueId: 'UI-62lm',
-          command: 'bd-ralph',
+          command: 'codex',
           elapsedMs: 5000,
           errorSummary: 'boom',
           workspace: '/workspace'
@@ -111,7 +111,7 @@ describe('views/worker-detail', () => {
           id: 'job-2',
           status: 'running',
           issueId: 'UI-62lm',
-          command: 'bd-ralph',
+          command: 'codex',
           elapsedMs: 65000,
           isCancellable: true,
           workspace: '/workspace'
@@ -148,8 +148,8 @@ describe('views/worker-detail', () => {
       []
     );
 
-    const legacy_goal_label = ['Run', 'bd-ralph'].join(' ');
-    const legacy_review_label = ['Run', 'pr-review'].join(' ');
+    const legacy_goal_label = ['Run', ['bd', 'ralph'].join('-')].join(' ');
+    const legacy_review_label = ['Run', ['pr', 'review'].join('-')].join(' ');
 
     expect(mount.textContent).not.toContain(legacy_goal_label);
     expect(mount.textContent).not.toContain(legacy_review_label);

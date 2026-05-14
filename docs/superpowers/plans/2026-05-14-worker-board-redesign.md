@@ -1,67 +1,124 @@
 # Worker Board Redesign Implementation Plan
 
-> **For agentic workers:** REQUIRED EXECUTION SKILL: use the workflow-selected execution skill to implement this plan task-by-task. For Beads-backed work, use `superpowers:executing-plans` by default; use `superpowers:subagent-driven-development` only when the parent Bead has `metadata.execution_mode=subagent_driven` or the user explicitly requested subagent implementation. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED EXECUTION SKILL: use the workflow-selected
+> execution skill to implement this plan task-by-task. For Beads-backed work,
+> use `superpowers:executing-plans` by default; use
+> `superpowers:subagent-driven-development` only when the parent Bead has
+> `metadata.execution_mode=subagent_driven` or the user explicitly requested
+> subagent implementation. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the Worker tree with a 4-lane queued worker board that runs `codex exec /goal <issueId>` and automatic delayed `codex exec $pr-finish <pr#>` under a server-owned scheduler.
+**Goal:** Replace the Worker tree with a 4-lane queued worker board that runs
+`codex exec /goal <issueId>` and automatic delayed `codex exec $pr-finish <pr#>`
+under a server-owned scheduler.
 
-**Architecture:** Keep the existing Worker tab mount and supervisor daemon boundaries, but move Worker command decisions into `server/worker/queue-scheduler.js` and Beads metadata helpers in `server/worker/queue-state.js`. Frontend derives cards with `app/data/worker-board-selectors.js`, renders board/card components, persists card moves through `server/routes/worker-queue.js`, and consumes worker live events over the existing app WebSocket event-dispatch path.
+**Architecture:** Keep the existing Worker tab mount and supervisor daemon
+boundaries, but move Worker command decisions into
+`server/worker/queue-scheduler.js` and Beads metadata helpers in
+`server/worker/queue-state.js`. Frontend derives cards with
+`app/data/worker-board-selectors.js`, renders board/card components, persists
+card moves through `server/routes/worker-queue.js`, and consumes worker live
+events over the existing app WebSocket event-dispatch path.
 
-**Tech Stack:** ECMAScript modules, Lit templates, Express routes, Node `child_process.spawn`, Node `node:sqlite`, Vitest, `bd` CLI via `server/bd.js`, `gh pr list` through `runShell`, `codex exec --json` JSONL parsing.
+**Tech Stack:** ECMAScript modules, Lit templates, Express routes, Node
+`child_process.spawn`, Node `node:sqlite`, Vitest, `bd` CLI via `server/bd.js`,
+`gh pr list` through `runShell`, `codex exec --json` JSONL parsing.
 
 ---
 
 ## Source and workflow context
 
 - Parent Bead: `UI-l3c3`.
-- Intent source: `docs/superpowers/specs/2026-05-13-worker-board-redesign-design.md`.
-- Current baseline: `npm test` passes in `.worktrees/UI-l3c3` (106 files, 569 tests).
-- Topology: Bead metadata says `workspace_policy=worktree`, `branch_policy=feature`, `finish_action=pr`.
-- Delivery order: implementation → verification → formal implementation-review → PR Delivery. Do not run `gh pr create` before the implementation-review gate.
+- Intent source:
+  `docs/superpowers/specs/2026-05-13-worker-board-redesign-design.md`.
+- Current baseline: `npm test` passes in `.worktrees/UI-l3c3` (106 files, 569
+  tests).
+- Topology: Bead metadata says `workspace_policy=worktree`,
+  `branch_policy=feature`, `finish_action=pr`.
+- Delivery order: implementation → verification → formal implementation-review →
+  PR Delivery. Do not run `gh pr create` before the implementation-review gate.
 - Do not modify `CHANGES.md`.
 
 ## File structure
 
 ### Create
 
-- `app/utils/queue-sort.js` — pure sort-key parse/insert/rebalance helpers for waiting lane ordering.
+- `app/utils/queue-sort.js` — pure sort-key parse/insert/rebalance helpers for
+  waiting lane ordering.
 - `app/utils/queue-sort.test.js` — queue-sort unit coverage.
-- `app/data/worker-board-selectors.js` — parent rows to `inbox` / `waiting` / `progress` / `done` card groups, move validation, parallel/override derivation.
+- `app/data/worker-board-selectors.js` — parent rows to `inbox` / `waiting` /
+  `progress` / `done` card groups, move validation, parallel/override
+  derivation.
 - `app/data/worker-board-selectors.test.js` — selector lane/order/gate coverage.
-- `app/views/worker-board.js` — 4-lane board root, drag/drop delegation, queue toolbar wiring.
+- `app/views/worker-board.js` — 4-lane board root, drag/drop delegation, queue
+  toolbar wiring.
 - `app/views/worker-card.js` — common worker card template.
-- `app/views/worker-card-progress.js` — progress/review-wait/pr-finish live section.
+- `app/views/worker-card-progress.js` — progress/review-wait/pr-finish live
+  section.
 - `app/views/worker-card-children.js` — inline child rows.
-- `server/worker/queue-state.js` — Beads metadata read/write helpers for lane, sort key, parallel/model/effort, PR cache, review-wait fields.
+- `server/worker/queue-state.js` — Beads metadata read/write helpers for lane,
+  sort key, parallel/model/effort, PR cache, review-wait fields.
 - `server/worker/queue-state.test.js` — mocked `bd` helper coverage.
-- `server/worker/worker-config-writer.js` — safe `[worker]` TOML section update helper for default model/effort changes.
-- `server/worker/worker-config-writer.test.js` — config writer coverage for preserving unrelated config and updating worker defaults.
-- `server/worker/pr-finish-skill-check.js` — `$pr-finish` skill availability probe used by supervisor startup.
+- `server/worker/worker-config-writer.js` — safe `[worker]` TOML section update
+  helper for default model/effort changes.
+- `server/worker/worker-config-writer.test.js` — config writer coverage for
+  preserving unrelated config and updating worker defaults.
+- `server/worker/pr-finish-skill-check.js` — `$pr-finish` skill availability
+  probe used by supervisor startup.
 - `server/worker/pr-finish-skill-check.test.js` — skill probe coverage.
-- `server/worker/queue-scheduler.js` — queue state machine, timers, phase transitions, pause/skip/cancel actions.
+- `server/worker/queue-scheduler.js` — queue state machine, timers, phase
+  transitions, pause/skip/cancel actions.
 - `server/worker/queue-scheduler.test.js` — fake-clock scheduler coverage.
-- `server/routes/worker-queue.js` — Worker queue REST endpoints used by the board.
+- `server/routes/worker-queue.js` — Worker queue REST endpoints used by the
+  board.
 - `server/routes/worker-queue.test.js` — route validation and response coverage.
 
 ### Modify
 
-- `app/protocol.js` — add worker event names to `MESSAGE_TYPES` so `app/ws.js` can dispatch them.
-- `app/state.js` — expand `worker` slice with `paused`, `live_jobs`, `countdown`, `pr_review_waits`, `done_filter`, `default_model`, `default_effort`.
-- `app/ws.js` — no transport rewrite; rely on existing event dispatch after `MESSAGE_TYPES` accepts worker event names.
-- `app/main.js` — replace Worker job polling/action callbacks with queue state refresh, queue endpoints, and worker WS event reducers.
-- `app/views/worker.js` — mount `worker-board.js`; keep detail panel only for selected card.
-- `app/views/worker-detail.js` — remove `bd-ralph` / `pr-review` controls; add parallel/model/effort controls and existing spec panel.
-- `app/views/worker-toolbar.js` — search/status/done filter/default model/default effort/pause controls.
-- `app/styles.css` — replace tree-specific Worker styles with board/card/progress/drag styles; keep route scroll contract.
-- `server/app.js` — register `worker-queue` route; remove `worker-prs` route registration.
-- `server/config.js` — parse `[worker] default_model/default_effort/pr_review_wait_ms/advance_delay_ms` and expose worker config in `/api/config` bootstrap payload.
-- `server/worker/job-store.js` — add phase/session/log/usage columns with additive migration.
-- `server/worker/jobs.js` — expose queue operations and worker event snapshots from supervisor client.
-- `server/worker/process-runner.js` — replace `bd-ralph` / `pr-review` target builder with `/goal` / `$pr-finish` phase args, model/effort flags, JSONL event parser.
-- `server/worker/supervisor.js` — instantiate scheduler, cache PR metadata with `gh pr list`, emit worker events, serialize new job fields, enforce `$pr-finish` skill availability.
-- `server/worker/supervisor-entry.js` — pass parsed worker config and skill-check result into the supervisor daemon.
-- `server/ws.js` — bridge supervisor `job.*` / `queue.*` live events into browser WebSocket envelopes.
-- `server/ws.test.js` — prove worker live events are delivered over `/ws` to frontend subscribers.
-- Tests that assert old Worker tree/PR UI (`app/views/worker.test.js`, `app/views/worker-detail.test.js`, `server/worker/process-runner.test.js`, `server/worker/supervisor.test.js`, `server/worker/supervisor.integration.test.js`, `server/routes/worker-jobs.test.js`, `server/app.test.js`, `server/config.test.js`, `app/main.worker.test.js`, `app/ws.test.js`, `app/protocol.test.js`, `app/state.test.js`).
+- `app/protocol.js` — add worker event names to `MESSAGE_TYPES` so `app/ws.js`
+  can dispatch them.
+- `app/state.js` — expand `worker` slice with `paused`, `live_jobs`,
+  `countdown`, `pr_review_waits`, `done_filter`, `default_model`,
+  `default_effort`.
+- `app/ws.js` — no transport rewrite; rely on existing event dispatch after
+  `MESSAGE_TYPES` accepts worker event names.
+- `app/main.js` — replace Worker job polling/action callbacks with queue state
+  refresh, queue endpoints, and worker WS event reducers.
+- `app/views/worker.js` — mount `worker-board.js`; keep detail panel only for
+  selected card.
+- `app/views/worker-detail.js` — remove `bd-ralph` / `pr-review` controls; add
+  parallel/model/effort controls and existing spec panel.
+- `app/views/worker-toolbar.js` — search/status/done filter/default
+  model/default effort/pause controls.
+- `app/styles.css` — replace tree-specific Worker styles with
+  board/card/progress/drag styles; keep route scroll contract.
+- `server/app.js` — register `worker-queue` route; remove `worker-prs` route
+  registration.
+- `server/config.js` — parse
+  `[worker] default_model/default_effort/pr_review_wait_ms/advance_delay_ms` and
+  expose worker config in `/api/config` bootstrap payload.
+- `server/worker/job-store.js` — add phase/session/log/usage columns with
+  additive migration.
+- `server/worker/jobs.js` — expose queue operations and worker event snapshots
+  from supervisor client.
+- `server/worker/process-runner.js` — replace `bd-ralph` / `pr-review` target
+  builder with `/goal` / `$pr-finish` phase args, model/effort flags, JSONL
+  event parser.
+- `server/worker/supervisor.js` — instantiate scheduler, cache PR metadata with
+  `gh pr list`, emit worker events, serialize new job fields, enforce
+  `$pr-finish` skill availability.
+- `server/worker/supervisor-entry.js` — pass parsed worker config and
+  skill-check result into the supervisor daemon.
+- `server/ws.js` — bridge supervisor `job.*` / `queue.*` live events into
+  browser WebSocket envelopes.
+- `server/ws.test.js` — prove worker live events are delivered over `/ws` to
+  frontend subscribers.
+- Tests that assert old Worker tree/PR UI (`app/views/worker.test.js`,
+  `app/views/worker-detail.test.js`, `server/worker/process-runner.test.js`,
+  `server/worker/supervisor.test.js`,
+  `server/worker/supervisor.integration.test.js`,
+  `server/routes/worker-jobs.test.js`, `server/app.test.js`,
+  `server/config.test.js`, `app/main.worker.test.js`, `app/ws.test.js`,
+  `app/protocol.test.js`, `app/state.test.js`).
 - `app/main.bundle.js` and `app/main.bundle.js.map` after final frontend build.
 
 ### Remove
@@ -84,6 +141,7 @@
 ## Task 1: Config, state, and protocol foundations
 
 **Files:**
+
 - Modify: `server/config.js`
 - Modify: `server/config.test.js`
 - Modify: `server/app.js`
@@ -96,7 +154,8 @@
 - Modify: `app/protocol.test.js`
 - Modify: `app/ws.test.js`
 
-- [ ] **Step 1: Write failing tests for worker config, state, and protocol events**
+- [ ] **Step 1: Write failing tests for worker config, state, and protocol
+      events**
 
 Add these tests before implementation:
 
@@ -144,9 +203,8 @@ advance_delay_ms = 0
 
 ```js
 // server/app.test.js
-
-import { createServer } from 'node:http';
 import fs from 'node:fs';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -159,20 +217,41 @@ afterEach(() => {
 
 describe('worker config API', () => {
   test('updates worker defaults and returns bootstrap worker config', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-worker-config-api-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'bdui-worker-config-api-')
+    );
     const config_path = path.join(dir, 'config.toml');
-    fs.writeFileSync(config_path, '[worker]\npr_review_wait_ms = 120000\nadvance_delay_ms = 45000\n');
+    fs.writeFileSync(
+      config_path,
+      '[worker]\npr_review_wait_ms = 120000\nadvance_delay_ms = 45000\n'
+    );
     process.env.BDUI_CONFIG_PATH = config_path;
     const config = getConfig();
-    const app = createApp({ ...config, host: '127.0.0.1', port: 0, app_dir: '.', root_dir: process.cwd(), frontend_mode: 'static' });
-    const server = createServer(app);
-    const address = await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address())));
-
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/config/worker`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ default_model: 'gpt-5.4', default_effort: 'medium', pr_review_wait_ms: 999 })
+    const app = createApp({
+      ...config,
+      host: '127.0.0.1',
+      port: 0,
+      app_dir: '.',
+      root_dir: process.cwd(),
+      frontend_mode: 'static'
     });
+    const server = createServer(app);
+    const address = await new Promise((resolve) =>
+      server.listen(0, '127.0.0.1', () => resolve(server.address()))
+    );
+
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/config/worker`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          default_model: 'gpt-5.4',
+          default_effort: 'medium',
+          pr_review_wait_ms: 999
+        })
+      }
+    );
     const body = await response.json();
     await new Promise((resolve) => server.close(resolve));
 
@@ -245,7 +324,6 @@ test('emits when worker live job changes', () => {
 
 ```js
 // server/worker/worker-config-writer.test.js
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -256,9 +334,15 @@ describe('worker-config-writer', () => {
   test('updates worker defaults while preserving unrelated TOML text', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-worker-config-'));
     const file_path = path.join(dir, 'config.toml');
-    fs.writeFileSync(file_path, 'default_workspace = "/repo"\n[labels]\nvisible_prefixes = ["has:"]\n');
+    fs.writeFileSync(
+      file_path,
+      'default_workspace = "/repo"\n[labels]\nvisible_prefixes = ["has:"]\n'
+    );
 
-    updateWorkerConfigFile(file_path, { default_model: 'gpt-5.4', default_effort: 'medium' });
+    updateWorkerConfigFile(file_path, {
+      default_model: 'gpt-5.4',
+      default_effort: 'medium'
+    });
 
     const text = fs.readFileSync(file_path, 'utf8');
     expect(text).toContain('default_workspace = "/repo"');
@@ -331,7 +415,8 @@ Expected: FAIL with missing `worker` config/state and invalid message types.
 
 - [ ] **Step 2: Implement worker config normalization and bootstrap exposure**
 
-In `server/config.js`, add worker defaults and normalizers near existing config constants:
+In `server/config.js`, add worker defaults and normalizers near existing config
+constants:
 
 ```js
 const DEFAULT_WORKER_CONFIG = Object.freeze({
@@ -378,7 +463,10 @@ function normalizeWorkerConfig(parsed) {
 }
 ```
 
-Add `worker: normalizeWorkerConfig(parsed)` to successful and missing-config returns, and add `worker` to the `getConfig()` return JSDoc. In `server/app.js`, extend `toBootstrapPayload` and `createApp` config JSDoc with `worker`, then include:
+Add `worker: normalizeWorkerConfig(parsed)` to successful and missing-config
+returns, and add `worker` to the `getConfig()` return JSDoc. In `server/app.js`,
+extend `toBootstrapPayload` and `createApp` config JSDoc with `worker`, then
+include:
 
 ```js
 worker: config.worker || {
@@ -386,12 +474,24 @@ worker: config.worker || {
   default_effort: 'high',
   pr_review_wait_ms: 300000,
   advance_delay_ms: 60000
-}
+};
 ```
 
-Create `server/worker/worker-config-writer.js` with `updateWorkerConfigFile(config_path, values)`. It must preserve existing unrelated TOML text, create a `[worker]` section when absent, replace only `default_model` and `default_effort` lines inside `[worker]`, and reject invalid effort values outside `low|medium|high`. Add `PATCH /api/config/worker` in `server/app.js` that writes defaults through this helper, re-reads config, and returns the new bootstrap config. The route must not write wait-duration keys from the toolbar.
+Create `server/worker/worker-config-writer.js` with
+`updateWorkerConfigFile(config_path, values)`. It must preserve existing
+unrelated TOML text, create a `[worker]` section when absent, replace only
+`default_model` and `default_effort` lines inside `[worker]`, and reject invalid
+effort values outside `low|medium|high`. Add `PATCH /api/config/worker` in
+`server/app.js` that writes defaults through this helper, re-reads config, and
+returns the new bootstrap config. The route must not write wait-duration keys
+from the toolbar.
 
-Update `app/main.js` `readBootstrapConfig` / bootstrap normalization so `window.__BDUI_CONFIG__.worker` flows into `createStore({ config })`. `createStore` then seeds `state.worker.default_model` and `state.worker.default_effort` from `config.worker`; later `PATCH /api/config/worker` responses update both `state.config.worker` and `state.worker.default_*`.
+Update `app/main.js` `readBootstrapConfig` / bootstrap normalization so
+`window.__BDUI_CONFIG__.worker` flows into `createStore({ config })`.
+`createStore` then seeds `state.worker.default_model` and
+`state.worker.default_effort` from `config.worker`; later
+`PATCH /api/config/worker` responses update both `state.config.worker` and
+`state.worker.default_*`.
 
 - [ ] **Step 3: Implement worker state and protocol changes**
 
@@ -408,28 +508,31 @@ In `app/state.js`, replace `WorkerState` with:
  */
 ```
 
-Initialize `state.worker` with defaults from the test. Replace the current worker equality block with JSON equality for the expanded worker slice:
+Initialize `state.worker` with defaults from the test. Replace the current
+worker equality block with JSON equality for the expanded worker slice:
 
 ```js
-const worker_changed = JSON.stringify(next.worker) !== JSON.stringify(state.worker);
+const worker_changed =
+  JSON.stringify(next.worker) !== JSON.stringify(state.worker);
 ```
 
-Then use `!worker_changed` in the no-op condition instead of comparing only `selected_parent_id` and `show_closed_children`.
+Then use `!worker_changed` in the no-op condition instead of comparing only
+`selected_parent_id` and `show_closed_children`.
 
 In `app/protocol.js`, append these values to `MESSAGE_TYPES`:
 
 ```js
-'job.started',
-'job.session_id',
-'job.log_line',
-'job.exited',
-'job.pr_linked',
-'job.pr_review_wait',
-'job.pr_review_wait_cancelled',
-'queue.countdown',
-'queue.advanced',
-'queue.paused',
-'queue.blocked'
+('job.started',
+  'job.session_id',
+  'job.log_line',
+  'job.exited',
+  'job.pr_linked',
+  'job.pr_review_wait',
+  'job.pr_review_wait_cancelled',
+  'queue.countdown',
+  'queue.advanced',
+  'queue.paused',
+  'queue.blocked');
 ```
 
 - [ ] **Step 4: Run targeted tests and commit**
@@ -455,6 +558,7 @@ git commit -m "Worker 보드 설정과 이벤트 기반 추가"
 ## Task 2: Queue sort-key utility
 
 **Files:**
+
 - Create: `app/utils/queue-sort.js`
 - Create: `app/utils/queue-sort.test.js`
 
@@ -484,11 +588,17 @@ describe('queue-sort', () => {
   });
 
   test('returns middle sort key between neighbors', () => {
-    expect(sortKeyBetween(1000, 3000)).toEqual({ sort_key: 2000, rebalance: false });
+    expect(sortKeyBetween(1000, 3000)).toEqual({
+      sort_key: 2000,
+      rebalance: false
+    });
   });
 
   test('requests rebalance when neighboring keys have no integer gap', () => {
-    expect(sortKeyBetween(1000, 1001)).toEqual({ sort_key: 0, rebalance: true });
+    expect(sortKeyBetween(1000, 1001)).toEqual({
+      sort_key: 0,
+      rebalance: true
+    });
   });
 
   test('rebalances cards into 1000-spaced keys', () => {
@@ -521,7 +631,10 @@ const MAX_SORT_KEY = 1_000_000_000;
  * @param {string | number | undefined | null} value
  */
 export function parseSortKey(value) {
-  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value || ''), 10);
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : Number.parseInt(String(value || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
@@ -596,6 +709,7 @@ git commit -m "Worker 대기열 정렬 키 유틸 추가"
 ## Task 3: Worker board selectors and move validation
 
 **Files:**
+
 - Create: `app/data/worker-board-selectors.js`
 - Create: `app/data/worker-board-selectors.test.js`
 - Modify: `app/data/worker-selectors.js`
@@ -607,7 +721,10 @@ Create `app/data/worker-board-selectors.test.js` with these behavior tests:
 
 ```js
 import { describe, expect, test } from 'vitest';
-import { buildWorkerBoard, canMoveWorkerCard } from './worker-board-selectors.js';
+import {
+  buildWorkerBoard,
+  canMoveWorkerCard
+} from './worker-board-selectors.js';
 
 const base_parent = {
   id: 'UI-A',
@@ -622,19 +739,37 @@ const base_parent = {
 
 describe('worker-board-selectors', () => {
   test('puts metadata waiting cards into sort-key order', () => {
-    const board = buildWorkerBoard([
-      { ...base_parent, id: 'UI-B', metadata: { worker_lane: 'waiting', worker_queue_sort_key: '3000' } },
-      { ...base_parent, id: 'UI-A', metadata: { worker_lane: 'waiting', worker_queue_sort_key: '1000' } }
-    ], { jobs: [], done_filter: 'today', now: new Date('2026-05-14T12:00:00Z') });
+    const board = buildWorkerBoard(
+      [
+        {
+          ...base_parent,
+          id: 'UI-B',
+          metadata: { worker_lane: 'waiting', worker_queue_sort_key: '3000' }
+        },
+        {
+          ...base_parent,
+          id: 'UI-A',
+          metadata: { worker_lane: 'waiting', worker_queue_sort_key: '1000' }
+        }
+      ],
+      { jobs: [], done_filter: 'today', now: new Date('2026-05-14T12:00:00Z') }
+    );
 
     expect(board.waiting.map((card) => card.id)).toEqual(['UI-A', 'UI-B']);
   });
 
   test('derives progress before waiting metadata', () => {
     const board = buildWorkerBoard(
-      [{ ...base_parent, metadata: { worker_lane: 'waiting', worker_queue_sort_key: '1000' } }],
+      [
+        {
+          ...base_parent,
+          metadata: { worker_lane: 'waiting', worker_queue_sort_key: '1000' }
+        }
+      ],
       {
-        jobs: [{ id: 'job-1', issueId: 'UI-A', status: 'running', phase: 'goal' }],
+        jobs: [
+          { id: 'job-1', issueId: 'UI-A', status: 'running', phase: 'goal' }
+        ],
         done_filter: 'today',
         now: new Date('2026-05-14T12:00:00Z')
       }
@@ -646,7 +781,13 @@ describe('worker-board-selectors', () => {
 
   test('derives done from resolved status inside local-day filter', () => {
     const board = buildWorkerBoard(
-      [{ ...base_parent, status: 'resolved', updated_at: '2026-05-14T01:00:00Z' }],
+      [
+        {
+          ...base_parent,
+          status: 'resolved',
+          updated_at: '2026-05-14T01:00:00Z'
+        }
+      ],
       { jobs: [], done_filter: 'today', now: new Date('2026-05-14T12:00:00Z') }
     );
 
@@ -655,9 +796,23 @@ describe('worker-board-selectors', () => {
 
   test('derives done from terminal killed job using job finished time', () => {
     const board = buildWorkerBoard(
-      [{ ...base_parent, metadata: { worker_lane: 'progress' }, updated_at: '2026-05-01T01:00:00Z' }],
+      [
+        {
+          ...base_parent,
+          metadata: { worker_lane: 'progress' },
+          updated_at: '2026-05-01T01:00:00Z'
+        }
+      ],
       {
-        jobs: [{ id: 'job-1', issueId: 'UI-A', status: 'cancelled', wasForceKilled: true, finishedAt: '2026-05-14T02:00:00Z' }],
+        jobs: [
+          {
+            id: 'job-1',
+            issueId: 'UI-A',
+            status: 'cancelled',
+            wasForceKilled: true,
+            finishedAt: '2026-05-14T02:00:00Z'
+          }
+        ],
         done_filter: 'today',
         now: new Date('2026-05-14T12:00:00Z')
       }
@@ -669,7 +824,9 @@ describe('worker-board-selectors', () => {
 
   test('lets done to inbox metadata override remove done classification', () => {
     const board = buildWorkerBoard(
-      [{ ...base_parent, status: 'closed', metadata: { worker_lane: 'inbox' } }],
+      [
+        { ...base_parent, status: 'closed', metadata: { worker_lane: 'inbox' } }
+      ],
       { jobs: [], done_filter: '7', now: new Date('2026-05-14T12:00:00Z') }
     );
 
@@ -685,7 +842,10 @@ describe('worker-board-selectors', () => {
       { serial_busy: false }
     );
 
-    expect(result).toEqual({ ok: false, reason: 'Spec required to enter queue' });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'Spec required to enter queue'
+    });
   });
 
   test('blocks non-parallel progress move when serial slot is busy', () => {
@@ -693,12 +853,17 @@ describe('worker-board-selectors', () => {
       serial_busy: true
     });
 
-    expect(result).toEqual({ ok: false, reason: 'Serial slot busy. Mark as parallel or wait.' });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'Serial slot busy. Mark as parallel or wait.'
+    });
   });
 });
 ```
 
-Update `app/data/worker-selectors.test.js` to include `issue_type: 'task'` in a parent candidate test and expect the row to appear. This locks the spec requirement that parent candidates include `task`.
+Update `app/data/worker-selectors.test.js` to include `issue_type: 'task'` in a
+parent candidate test and expect the row to appear. This locks the spec
+requirement that parent candidates include `task`.
 
 Run:
 
@@ -732,7 +897,12 @@ Create `app/data/worker-board-selectors.js` with these exports and names:
 ```js
 import { parseSortKey } from '../utils/queue-sort.js';
 
-const ACTIVE_STATUSES = new Set(['queued', 'starting', 'running', 'cancelling']);
+const ACTIVE_STATUSES = new Set([
+  'queued',
+  'starting',
+  'running',
+  'cancelling'
+]);
 const FINAL_FAILURE_STATUSES = new Set(['failed', 'cancelled']);
 const LANES = ['inbox', 'waiting', 'progress', 'done'];
 
@@ -777,7 +947,10 @@ function isActiveJob(job) {
  * @param {any} job
  */
 function isTerminalFailureJob(job) {
-  return FINAL_FAILURE_STATUSES.has(String(job?.status || '')) || job?.wasForceKilled === true;
+  return (
+    FINAL_FAILURE_STATUSES.has(String(job?.status || '')) ||
+    job?.wasForceKilled === true
+  );
 }
 
 /**
@@ -799,7 +972,11 @@ function isDone(issue, now, done_filter, jobs) {
   }
   const terminal_job = jobs
     .filter((job) => jobIssueId(job) === issue.id && isTerminalFailureJob(job))
-    .sort((a, b) => Date.parse(jobFinishedAt(b) || '0') - Date.parse(jobFinishedAt(a) || '0'))[0];
+    .sort(
+      (a, b) =>
+        Date.parse(jobFinishedAt(b) || '0') -
+        Date.parse(jobFinishedAt(a) || '0')
+    )[0];
   const status_done = issue.status === 'resolved' || issue.status === 'closed';
   if (!status_done && !terminal_job) {
     return false;
@@ -823,8 +1000,12 @@ function isDone(issue, now, done_filter, jobs) {
 export function buildWorkerCard(issue, options = {}) {
   const metadata = metadataOf(issue);
   const jobs = Array.isArray(options.jobs) ? options.jobs : [];
-  const active_job = jobs.find((job) => jobIssueId(job) === issue.id && isActiveJob(job)) || null;
-  const phase = active_job?.phase || (metadata.worker_pr_review_wait_started_at ? 'goal' : null);
+  const active_job =
+    jobs.find((job) => jobIssueId(job) === issue.id && isActiveJob(job)) ||
+    null;
+  const phase =
+    active_job?.phase ||
+    (metadata.worker_pr_review_wait_started_at ? 'goal' : null);
   const sub_state = metadata.worker_pr_review_wait_started_at
     ? 'pr_review_wait'
     : phase === 'pr_finish'
@@ -833,9 +1014,12 @@ export function buildWorkerCard(issue, options = {}) {
         ? 'goal_running'
         : null;
   const child_total = Array.isArray(issue.children) ? issue.children.length : 0;
-  const child_done = child_total === 0
-    ? 0
-    : issue.children.filter((child) => child.status === 'resolved' || child.status === 'closed').length;
+  const child_done =
+    child_total === 0
+      ? 0
+      : issue.children.filter(
+          (child) => child.status === 'resolved' || child.status === 'closed'
+        ).length;
   return {
     ...issue,
     metadata,
@@ -844,7 +1028,9 @@ export function buildWorkerCard(issue, options = {}) {
     parallel: isTrue(metadata.worker_parallel),
     model: metadata.worker_model || '',
     effort: metadata.worker_effort || '',
-    prNumber: metadata.pr_number ? Number.parseInt(metadata.pr_number, 10) : null,
+    prNumber: metadata.pr_number
+      ? Number.parseInt(metadata.pr_number, 10)
+      : null,
     prUrl: metadata.pr_url || '',
     active_job,
     phase,
@@ -863,7 +1049,10 @@ export function deriveWorkerLane(issue, options = {}) {
   const jobs = Array.isArray(options.jobs) ? options.jobs : [];
   const now = options.now || new Date();
   const done_filter = options.done_filter || 'today';
-  if (jobs.some((job) => jobIssueId(job) === issue.id && isActiveJob(job)) || metadata.worker_pr_review_wait_started_at) {
+  if (
+    jobs.some((job) => jobIssueId(job) === issue.id && isActiveJob(job)) ||
+    metadata.worker_pr_review_wait_started_at
+  ) {
     return 'progress';
   }
   if (metadata.worker_lane === 'waiting') {
@@ -888,7 +1077,9 @@ export function buildWorkerBoard(parents, options = {}) {
     const card = buildWorkerCard(parent, options);
     board[card.lane].push(card);
   }
-  board.waiting.sort((a, b) => a.sort_key - b.sort_key || a.id.localeCompare(b.id));
+  board.waiting.sort(
+    (a, b) => a.sort_key - b.sort_key || a.id.localeCompare(b.id)
+  );
   board.inbox.sort((a, b) => a.id.localeCompare(b.id));
   board.progress.sort((a, b) => a.id.localeCompare(b.id));
   board.done.sort((a, b) => a.id.localeCompare(b.id));
@@ -905,13 +1096,20 @@ export function canMoveWorkerCard(card, from_lane, to_lane, context = {}) {
   if (!LANES.includes(to_lane)) {
     return { ok: false, reason: 'Invalid worker lane' };
   }
-  if (from_lane === 'progress' && (to_lane === 'inbox' || to_lane === 'waiting')) {
+  if (
+    from_lane === 'progress' &&
+    (to_lane === 'inbox' || to_lane === 'waiting')
+  ) {
     return { ok: false, reason: 'Cancel first' };
   }
   if ((to_lane === 'waiting' || to_lane === 'progress') && !hasSpec(card)) {
     return { ok: false, reason: 'Spec required to enter queue' };
   }
-  if (to_lane === 'progress' && context.serial_busy && !isTrue(metadataOf(card).worker_parallel)) {
+  if (
+    to_lane === 'progress' &&
+    context.serial_busy &&
+    !isTrue(metadataOf(card).worker_parallel)
+  ) {
     return { ok: false, reason: 'Serial slot busy. Mark as parallel or wait.' };
   }
   return { ok: true };
@@ -941,12 +1139,14 @@ git commit -m "Worker 보드 lane selector 추가"
 ## Task 4: Beads queue metadata state helper
 
 **Files:**
+
 - Create: `server/worker/queue-state.js`
 - Create: `server/worker/queue-state.test.js`
 
 - [ ] **Step 1: Write failing queue-state tests**
 
-Create `server/worker/queue-state.test.js` with mocked `run_bd_json_impl` and `run_bd_impl`:
+Create `server/worker/queue-state.test.js` with mocked `run_bd_json_impl` and
+`run_bd_impl`:
 
 ```js
 import { describe, expect, test, vi } from 'vitest';
@@ -971,23 +1171,40 @@ describe('queue-state', () => {
     const waiting = await state.listWaitingCards();
 
     expect(waiting.map((card) => card.id)).toEqual(['UI-B', 'UI-A']);
-    expect(run_bd_json_impl).toHaveBeenCalledWith(['list', '--json'], { cwd: '/repo' });
+    expect(run_bd_json_impl).toHaveBeenCalledWith(['list', '--json'], {
+      cwd: '/repo'
+    });
   });
 
   test('moves card to waiting with lane and sort metadata', async () => {
-    const run_bd_impl = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const run_bd_impl = vi.fn(async () => ({
+      code: 0,
+      stdout: '',
+      stderr: ''
+    }));
     const state = createQueueState({ cwd: '/repo', run_bd_impl });
 
     await state.moveToWaiting('UI-A', 3000);
 
     expect(run_bd_impl).toHaveBeenCalledWith(
-      ['update', 'UI-A', '--set-metadata', 'worker_lane=waiting', '--set-metadata', 'worker_queue_sort_key=3000'],
+      [
+        'update',
+        'UI-A',
+        '--set-metadata',
+        'worker_lane=waiting',
+        '--set-metadata',
+        'worker_queue_sort_key=3000'
+      ],
       { cwd: '/repo' }
     );
   });
 
   test('persists worker override metadata', async () => {
-    const run_bd_impl = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const run_bd_impl = vi.fn(async () => ({
+      code: 0,
+      stdout: '',
+      stderr: ''
+    }));
     const state = createQueueState({ cwd: '/repo', run_bd_impl });
 
     await state.setWorkerOverrides('UI-A', {
@@ -1012,13 +1229,24 @@ describe('queue-state', () => {
   });
 
   test('clears PR metadata when no PR is linked', async () => {
-    const run_bd_impl = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const run_bd_impl = vi.fn(async () => ({
+      code: 0,
+      stdout: '',
+      stderr: ''
+    }));
     const state = createQueueState({ cwd: '/repo', run_bd_impl });
 
     await state.cachePrLink('UI-A', null);
 
     expect(run_bd_impl).toHaveBeenCalledWith(
-      ['update', 'UI-A', '--unset-metadata', 'pr_number', '--unset-metadata', 'pr_url'],
+      [
+        'update',
+        'UI-A',
+        '--unset-metadata',
+        'pr_number',
+        '--unset-metadata',
+        'pr_url'
+      ],
       { cwd: '/repo' }
     );
   });
@@ -1038,8 +1266,8 @@ Expected: FAIL because `queue-state.js` does not exist.
 Create `server/worker/queue-state.js` with these exported APIs:
 
 ```js
-import { runBd, runBdJson } from '../bd.js';
 import { parseSortKey } from '../../app/utils/queue-sort.js';
+import { runBd, runBdJson } from '../bd.js';
 
 /**
  * @param {{ cwd: string, run_bd_impl?: typeof runBd, run_bd_json_impl?: typeof runBdJson }} options
@@ -1055,9 +1283,12 @@ export function createQueueState(options) {
   async function runUpdate(args) {
     const result = await run_bd_impl(args, { cwd });
     if (result.code !== 0) {
-      throw Object.assign(new Error(result.stderr || result.stdout || 'bd update failed'), {
-        code: 'bd_failed'
-      });
+      throw Object.assign(
+        new Error(result.stderr || result.stdout || 'bd update failed'),
+        {
+          code: 'bd_failed'
+        }
+      );
     }
     return result;
   }
@@ -1074,7 +1305,9 @@ export function createQueueState(options) {
 
   return {
     async listIssues() {
-      return normalizeIssues(await run_bd_json_impl(['list', '--json'], { cwd }));
+      return normalizeIssues(
+        await run_bd_json_impl(['list', '--json'], { cwd })
+      );
     },
 
     async listWaitingCards() {
@@ -1084,9 +1317,14 @@ export function createQueueState(options) {
         .map((issue) => ({
           ...issue,
           sort_key: parseSortKey(issue?.metadata?.worker_queue_sort_key),
-          parallel: String(issue?.metadata?.worker_parallel || '').toLowerCase() === 'true'
+          parallel:
+            String(issue?.metadata?.worker_parallel || '').toLowerCase() ===
+            'true'
         }))
-        .sort((a, b) => a.sort_key - b.sort_key || String(a.id).localeCompare(String(b.id)));
+        .sort(
+          (a, b) =>
+            a.sort_key - b.sort_key || String(a.id).localeCompare(String(b.id))
+        );
     },
 
     async moveToWaiting(issue_id, sort_key) {
@@ -1138,13 +1376,29 @@ export function createQueueState(options) {
     },
 
     async setLastJob(issue_id, phase, job_id) {
-      const key = phase === 'pr_finish' ? 'worker_last_pr_finish_job_id' : 'worker_last_goal_job_id';
-      return runUpdate(['update', issue_id, '--set-metadata', `${key}=${job_id}`]);
+      const key =
+        phase === 'pr_finish'
+          ? 'worker_last_pr_finish_job_id'
+          : 'worker_last_goal_job_id';
+      return runUpdate([
+        'update',
+        issue_id,
+        '--set-metadata',
+        `${key}=${job_id}`
+      ]);
     },
 
     async setLastSession(issue_id, phase, session_id) {
-      const key = phase === 'pr_finish' ? 'worker_last_pr_finish_session_id' : 'worker_last_goal_session_id';
-      return runUpdate(['update', issue_id, '--set-metadata', `${key}=${session_id}`]);
+      const key =
+        phase === 'pr_finish'
+          ? 'worker_last_pr_finish_session_id'
+          : 'worker_last_goal_session_id';
+      return runUpdate([
+        'update',
+        issue_id,
+        '--set-metadata',
+        `${key}=${session_id}`
+      ]);
     },
 
     async startReviewWait(issue_id, started_at) {
@@ -1192,12 +1446,21 @@ export function createQueueState(options) {
     },
 
     async getIssue(issue_id) {
-      return normalizeIssues(await run_bd_json_impl(['show', issue_id, '--json'], { cwd }))[0] || null;
+      return (
+        normalizeIssues(
+          await run_bd_json_impl(['show', issue_id, '--json'], { cwd })
+        )[0] || null
+      );
     },
 
     async rebalanceWaiting(cards) {
       for (const { id, sort_key } of cards) {
-        await runUpdate(['update', id, '--set-metadata', `worker_queue_sort_key=${String(sort_key)}`]);
+        await runUpdate([
+          'update',
+          id,
+          '--set-metadata',
+          `worker_queue_sort_key=${String(sort_key)}`
+        ]);
       }
     },
 
@@ -1248,6 +1511,7 @@ git commit -m "Worker 큐 metadata 상태 헬퍼 추가"
 ## Task 5: Codex phase runner, JSONL capture, and job persistence
 
 **Files:**
+
 - Modify: `server/worker/process-runner.js`
 - Modify: `server/worker/process-runner.test.js`
 - Modify: `server/worker/job-store.js`
@@ -1257,7 +1521,8 @@ git commit -m "Worker 큐 metadata 상태 헬퍼 추가"
 
 - [ ] **Step 1: Write failing runner and store tests**
 
-Replace old `buildWorkerExecTarget` tests in `server/worker/process-runner.test.js` with:
+Replace old `buildWorkerExecTarget` tests in
+`server/worker/process-runner.test.js` with:
 
 ```js
 import {
@@ -1312,8 +1577,12 @@ describe('createCodexJsonlParser', () => {
     const parser = createCodexJsonlParser((event) => events.push(event));
 
     parser.write('{"type":"thread.started","thread_id":"018f"}\n');
-    parser.write('{"type":"item.completed","item":{"type":"agent_message","text":"Done"}}\n');
-    parser.write('{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\n');
+    parser.write(
+      '{"type":"item.completed","item":{"type":"agent_message","text":"Done"}}\n'
+    );
+    parser.write(
+      '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\n'
+    );
 
     expect(events).toEqual([
       { type: 'session_id', sessionId: '018f' },
@@ -1329,7 +1598,10 @@ In `server/worker/job-store.test.js`, add:
 ```js
 test('persists worker phase, session id, log line, and usage', () => {
   const root_dir = mkdtemp();
-  const store = createJobStore({ root_dir, now: () => '2026-05-14T00:00:00.000Z' });
+  const store = createJobStore({
+    root_dir,
+    now: () => '2026-05-14T00:00:00.000Z'
+  });
 
   const job = store.createJob({
     command: 'codex',
@@ -1361,11 +1633,13 @@ Run:
 npm test -- server/worker/process-runner.test.js server/worker/job-store.test.js
 ```
 
-Expected: FAIL because old command builders and schema do not support new fields.
+Expected: FAIL because old command builders and schema do not support new
+fields.
 
 - [ ] **Step 2: Implement runner args and JSONL parser**
 
-In `server/worker/process-runner.js`, replace `buildWorkerExecTarget` with `buildWorkerExecArgs` and add parser:
+In `server/worker/process-runner.js`, replace `buildWorkerExecTarget` with
+`buildWorkerExecArgs` and add parser:
 
 ```js
 /**
@@ -1373,9 +1647,10 @@ In `server/worker/process-runner.js`, replace `buildWorkerExecTarget` with `buil
  * @returns {string[]}
  */
 export function buildWorkerExecArgs(input) {
-  const target = input.phase === 'goal'
-    ? `/goal ${requireIssueId(input.issueId)}`
-    : `$pr-finish ${String(requirePrNumber(input.prNumber))}`;
+  const target =
+    input.phase === 'goal'
+      ? `/goal ${requireIssueId(input.issueId)}`
+      : `$pr-finish ${String(requirePrNumber(input.prNumber))}`;
   return [
     'exec',
     '--json',
@@ -1390,7 +1665,9 @@ export function buildWorkerExecArgs(input) {
 /** @param {string | null | undefined} issue_id */
 function requireIssueId(issue_id) {
   if (!issue_id) {
-    throw Object.assign(new Error('Missing issueId for /goal'), { code: 'invalid_request' });
+    throw Object.assign(new Error('Missing issueId for /goal'), {
+      code: 'invalid_request'
+    });
   }
   return issue_id;
 }
@@ -1398,7 +1675,9 @@ function requireIssueId(issue_id) {
 /** @param {number | null | undefined} pr_number */
 function requirePrNumber(pr_number) {
   if (!Number.isInteger(pr_number)) {
-    throw Object.assign(new Error('Missing prNumber for $pr-finish'), { code: 'invalid_request' });
+    throw Object.assign(new Error('Missing prNumber for $pr-finish'), {
+      code: 'invalid_request'
+    });
   }
   return pr_number;
 }
@@ -1428,9 +1707,17 @@ export function createCodexJsonlParser(on_event) {
 }
 ```
 
-Add `parseLine` that ignores invalid JSON, emits `session_id` for `thread.started.thread_id`, emits `log_line` for `item.completed.item.type === 'agent_message'`, and emits `usage` for `turn.completed.usage`.
+Add `parseLine` that ignores invalid JSON, emits `session_id` for
+`thread.started.thread_id`, emits `log_line` for
+`item.completed.item.type === 'agent_message'`, and emits `usage` for
+`turn.completed.usage`.
 
-Update `startJob(input)` to accept `phase`, `model`, `effort`, and `onCodexEvent`; call `spawn_impl('codex', buildWorkerExecArgs(input), spawn_options)`. When stdout emits data, write it to the log stream and pass chunks to `createCodexJsonlParser(input.onCodexEvent || (() => {}))`. Keep stderr appended to the same log stream.
+Update `startJob(input)` to accept `phase`, `model`, `effort`, and
+`onCodexEvent`; call
+`spawn_impl('codex', buildWorkerExecArgs(input), spawn_options)`. When stdout
+emits data, write it to the log stream and pass chunks to
+`createCodexJsonlParser(input.onCodexEvent || (() => {}))`. Keep stderr appended
+to the same log stream.
 
 - [ ] **Step 3: Add additive job-store migration**
 
@@ -1466,19 +1753,26 @@ for (const [column, definition] of Object.entries({
 }
 ```
 
-Extend select/list/insert statements and `JobRow` typedef with `phase`, `model`, `effort`, `session_id`, `last_log_line`, `usage_json`. In `createJob`, use `input.command ?? 'codex'`, `input.phase ?? null`, `input.model ?? null`, and `input.effort ?? null`.
+Extend select/list/insert statements and `JobRow` typedef with `phase`, `model`,
+`effort`, `session_id`, `last_log_line`, `usage_json`. In `createJob`, use
+`input.command ?? 'codex'`, `input.phase ?? null`, `input.model ?? null`, and
+`input.effort ?? null`.
 
 - [ ] **Step 4: Thread phase fields through supervisor serialization**
 
-In `server/worker/supervisor.js`, change `createJob(input)` to require `phase`, `model`, and `effort` for new callers. Existing route tests can keep `command: 'codex'` after Task 7, so for this task use defaults:
+In `server/worker/supervisor.js`, change `createJob(input)` to require `phase`,
+`model`, and `effort` for new callers. Existing route tests can keep
+`command: 'codex'` after Task 7, so for this task use defaults:
 
 ```js
-const phase = input.phase || (input.command === 'pr-review' ? 'pr_finish' : 'goal');
+const phase =
+  input.phase || (input.command === 'pr-review' ? 'pr_finish' : 'goal');
 const model = input.model || 'gpt-5.5';
 const effort = input.effort || 'high';
 ```
 
-Pass these values to `store.createJob` and `runner.startJob`. Handle `onCodexEvent`:
+Pass these values to `store.createJob` and `runner.startJob`. Handle
+`onCodexEvent`:
 
 ```js
 onCodexEvent(event) {
@@ -1496,7 +1790,9 @@ onCodexEvent(event) {
 }
 ```
 
-Update `serializeJob` to include `phase`, `model`, `effort`, `sessionId`, `lastLogLine`, parsed `usage`, and existing `wasForceKilled` so frontend selectors can distinguish forced terminal cancels.
+Update `serializeJob` to include `phase`, `model`, `effort`, `sessionId`,
+`lastLogLine`, parsed `usage`, and existing `wasForceKilled` so frontend
+selectors can distinguish forced terminal cancels.
 
 - [ ] **Step 5: Run tests and commit**
 
@@ -1521,6 +1817,7 @@ git commit -m "Worker codex 단계 실행 정보 저장"
 ## Task 6: Server-owned queue scheduler
 
 **Files:**
+
 - Create: `server/worker/queue-scheduler.js`
 - Create: `server/worker/queue-scheduler.test.js`
 
@@ -1567,33 +1864,61 @@ function createHarness(overrides = {}) {
 
 describe('queue-scheduler', () => {
   test('starts review wait after successful goal with a PR and spawns pr-finish after wait', async () => {
-    const harness = createHarness({ find_prs: async () => [{ number: 42, url: 'https://github.test/pull/42' }] });
+    const harness = createHarness({
+      find_prs: async () => [{ number: 42, url: 'https://github.test/pull/42' }]
+    });
 
-    await harness.scheduler.handleJobExit({ issueId: 'UI-A', phase: 'goal', status: 'succeeded', jobId: 'job-goal' });
+    await harness.scheduler.handleJobExit({
+      issueId: 'UI-A',
+      phase: 'goal',
+      status: 'succeeded',
+      jobId: 'job-goal'
+    });
     await vi.advanceTimersByTimeAsync(300000);
 
-    expect(harness.queue_state.cachePrLink).toHaveBeenCalledWith('UI-A', { number: 42, url: 'https://github.test/pull/42' });
-    expect(harness.spawned).toContainEqual({ issueId: 'UI-A', phase: 'pr_finish', prNumber: 42 });
+    expect(harness.queue_state.cachePrLink).toHaveBeenCalledWith('UI-A', {
+      number: 42,
+      url: 'https://github.test/pull/42'
+    });
+    expect(harness.spawned).toContainEqual({
+      issueId: 'UI-A',
+      phase: 'pr_finish',
+      prNumber: 42
+    });
   });
 
   test('skips review wait when successful goal has no PR and starts advance countdown', async () => {
     const harness = createHarness({
       queue_state: {
-        listWaitingCards: vi.fn(async () => [{ id: 'UI-B', spec_id: 'docs/spec.md', metadata: {}, parallel: false }])
+        listWaitingCards: vi.fn(async () => [
+          { id: 'UI-B', spec_id: 'docs/spec.md', metadata: {}, parallel: false }
+        ])
       },
       find_prs: async () => []
     });
 
-    await harness.scheduler.handleJobExit({ issueId: 'UI-A', phase: 'goal', status: 'succeeded', jobId: 'job-goal' });
+    await harness.scheduler.handleJobExit({
+      issueId: 'UI-A',
+      phase: 'goal',
+      status: 'succeeded',
+      jobId: 'job-goal'
+    });
     await vi.advanceTimersByTimeAsync(60000);
 
     expect(harness.spawned).toContainEqual({ issueId: 'UI-B', phase: 'goal' });
   });
 
   test('cancels auto pr-finish once and leaves review wait occupied', async () => {
-    const harness = createHarness({ find_prs: async () => [{ number: 42, url: 'https://github.test/pull/42' }] });
+    const harness = createHarness({
+      find_prs: async () => [{ number: 42, url: 'https://github.test/pull/42' }]
+    });
 
-    await harness.scheduler.handleJobExit({ issueId: 'UI-A', phase: 'goal', status: 'succeeded', jobId: 'job-goal' });
+    await harness.scheduler.handleJobExit({
+      issueId: 'UI-A',
+      phase: 'goal',
+      status: 'succeeded',
+      jobId: 'job-goal'
+    });
     await harness.scheduler.cancelAutoPrFinish('UI-A');
     await vi.advanceTimersByTimeAsync(300000);
 
@@ -1604,11 +1929,18 @@ describe('queue-scheduler', () => {
   test('does not auto-advance while serial slot is occupied', async () => {
     const harness = createHarness({
       queue_state: {
-        listWaitingCards: vi.fn(async () => [{ id: 'UI-B', spec_id: 'docs/spec.md', metadata: {}, parallel: false }])
+        listWaitingCards: vi.fn(async () => [
+          { id: 'UI-B', spec_id: 'docs/spec.md', metadata: {}, parallel: false }
+        ])
       }
     });
 
-    await harness.scheduler.handleJobStart({ issueId: 'UI-A', jobId: 'job-a', phase: 'goal', parallel: false });
+    await harness.scheduler.handleJobStart({
+      issueId: 'UI-A',
+      jobId: 'job-a',
+      phase: 'goal',
+      parallel: false
+    });
     harness.scheduler.setPaused(false);
     await vi.advanceTimersByTimeAsync(60000);
 
@@ -1618,26 +1950,56 @@ describe('queue-scheduler', () => {
   test('auto-advances a parallel head while serial slot is occupied', async () => {
     const harness = createHarness({
       queue_state: {
-        listWaitingCards: vi.fn(async () => [{ id: 'UI-X', spec_id: 'docs/spec.md', metadata: { worker_parallel: 'true' }, parallel: true }])
+        listWaitingCards: vi.fn(async () => [
+          {
+            id: 'UI-X',
+            spec_id: 'docs/spec.md',
+            metadata: { worker_parallel: 'true' },
+            parallel: true
+          }
+        ])
       }
     });
 
-    await harness.scheduler.handleJobStart({ issueId: 'UI-A', jobId: 'job-a', phase: 'goal', parallel: false });
+    await harness.scheduler.handleJobStart({
+      issueId: 'UI-A',
+      jobId: 'job-a',
+      phase: 'goal',
+      parallel: false
+    });
     harness.scheduler.setPaused(false);
     await vi.advanceTimersByTimeAsync(60000);
 
-    expect(harness.spawned).toContainEqual(expect.objectContaining({ issueId: 'UI-X', phase: 'goal', parallel: true }));
+    expect(harness.spawned).toContainEqual(
+      expect.objectContaining({
+        issueId: 'UI-X',
+        phase: 'goal',
+        parallel: true
+      })
+    );
   });
 
   test('does not advance serial queue when a parallel card completes', async () => {
     const harness = createHarness({
       queue_state: {
-        listWaitingCards: vi.fn(async () => [{ id: 'UI-B', spec_id: 'docs/spec.md', metadata: {}, parallel: false }])
+        listWaitingCards: vi.fn(async () => [
+          { id: 'UI-B', spec_id: 'docs/spec.md', metadata: {}, parallel: false }
+        ])
       }
     });
 
-    await harness.scheduler.handleJobStart({ issueId: 'UI-X', jobId: 'job-x', phase: 'goal', parallel: true });
-    await harness.scheduler.handleJobExit({ issueId: 'UI-X', phase: 'pr_finish', status: 'succeeded', jobId: 'job-finish' });
+    await harness.scheduler.handleJobStart({
+      issueId: 'UI-X',
+      jobId: 'job-x',
+      phase: 'goal',
+      parallel: true
+    });
+    await harness.scheduler.handleJobExit({
+      issueId: 'UI-X',
+      phase: 'pr_finish',
+      status: 'succeeded',
+      jobId: 'job-finish'
+    });
     await vi.advanceTimersByTimeAsync(60000);
 
     expect(harness.spawned).toEqual([]);
@@ -1653,18 +2015,35 @@ describe('queue-scheduler', () => {
       }
     });
 
-    await harness.scheduler.handleJobExit({ issueId: 'UI-A', phase: 'pr_finish', status: 'succeeded', jobId: 'job-finish' });
+    await harness.scheduler.handleJobExit({
+      issueId: 'UI-A',
+      phase: 'pr_finish',
+      status: 'succeeded',
+      jobId: 'job-finish'
+    });
     await vi.advanceTimersByTimeAsync(60000);
 
     expect(harness.spawned).toEqual([]);
-    expect(harness.events.some((event) => event.type === 'queue.blocked')).toBe(true);
+    expect(harness.events.some((event) => event.type === 'queue.blocked')).toBe(
+      true
+    );
   });
 
   test('clears progress without advancing when pr-finish fails', async () => {
     const harness = createHarness();
 
-    await harness.scheduler.handleJobStart({ issueId: 'UI-A', jobId: 'job-a', phase: 'pr_finish', parallel: false });
-    await harness.scheduler.handleJobExit({ issueId: 'UI-A', phase: 'pr_finish', status: 'failed', jobId: 'job-a' });
+    await harness.scheduler.handleJobStart({
+      issueId: 'UI-A',
+      jobId: 'job-a',
+      phase: 'pr_finish',
+      parallel: false
+    });
+    await harness.scheduler.handleJobExit({
+      issueId: 'UI-A',
+      phase: 'pr_finish',
+      status: 'failed',
+      jobId: 'job-a'
+    });
 
     expect(harness.queue_state.clearProgress).toHaveBeenCalledWith('UI-A');
     expect(harness.spawned).toEqual([]);
@@ -1673,12 +2052,19 @@ describe('queue-scheduler', () => {
   test('does not auto-advance while paused', async () => {
     const harness = createHarness({
       queue_state: {
-        listWaitingCards: vi.fn(async () => [{ id: 'UI-B', spec_id: 'docs/spec.md', metadata: {}, parallel: false }])
+        listWaitingCards: vi.fn(async () => [
+          { id: 'UI-B', spec_id: 'docs/spec.md', metadata: {}, parallel: false }
+        ])
       }
     });
 
     harness.scheduler.setPaused(true);
-    await harness.scheduler.handleJobExit({ issueId: 'UI-A', phase: 'pr_finish', status: 'succeeded', jobId: 'job-finish' });
+    await harness.scheduler.handleJobExit({
+      issueId: 'UI-A',
+      phase: 'pr_finish',
+      status: 'succeeded',
+      jobId: 'job-finish'
+    });
     await vi.advanceTimersByTimeAsync(60000);
 
     expect(harness.spawned).toEqual([]);
@@ -1772,23 +2158,58 @@ Add the remaining functions with these exact behaviors:
 
 - `handleJobExit({ issueId, phase, status, jobId })`
   - Broadcast `job.exited`.
-  - Maintain `serial_active_issue_id` and `active_parallel_issue_ids`; a non-parallel succeeded completion releases the serial slot and may trigger serial auto-advance, while failed/cancelled/killed terminal states release the slot but stop without auto-advance. A parallel card completion must not trigger serial queue advance.
-  - For `phase === 'goal'`, always call `find_prs(issueId)` and cache first PR or clear PR metadata.
-  - If goal failed/cancelled/killed: call `queue_state.clearProgress(issueId)`, release the slot, and do not schedule review wait or advance.
-  - If goal succeeded and PR exists: call `startReviewWait(issueId, jobId, pr.number, parallel)` so the `$pr-finish` phase inherits the same parallel/serial class.
-  - If goal succeeded and no PR: `queue_state.clearProgress(issueId)`; call `scheduleAdvance()` only when the completed card was non-parallel and released the serial slot.
-  - If `phase === 'pr_finish'` and succeeded: clear progress; call `scheduleAdvance()` only when the completed card was non-parallel and released the serial slot.
-  - If `phase === 'pr_finish'` and failed/cancelled/killed: call `queue_state.clearProgress(issueId)`, release the slot, and do not schedule advance.
-- `startReviewWait(issueId, jobId, prNumber, parallel)` stores `worker_pr_review_wait_started_at`, keeps `{ parallel }` in `review_waits`, broadcasts `job.pr_review_wait` every second, and spawns `pr_finish` with the same `parallel` flag when remaining time reaches `0`.
-- `finishNow(issueId)` clears review timer for issue and immediately calls `runPrFinish(issueId)`.
-- `cancelAutoPrFinish(issueId)` marks review wait cancelled and broadcasts `job.pr_review_wait_cancelled`; it must not clear progress.
-- `runPrFinish(issueId)` clears review-wait metadata and calls `spawn_phase({ issueId, phase: 'pr_finish', prNumber, parallel: wait.parallel })`.
-- `cancelReviewWaitJob(issueId)` clears review-wait metadata, clears progress metadata, removes map entry, and does not call `scheduleAdvance()`.
-- `canStart({ parallel })` returns `true` for parallel cards and for non-parallel cards only when `serial_active_issue_id` is empty; manual `moveCard(... -> progress)` uses this helper.
-- `scheduleAdvance()` exits when paused. Otherwise it reads `queue_state.listWaitingCards()` and inspects the head card only. If the head card lacks `spec_id`, broadcast `queue.blocked` with `{ reason: 'Spec required to enter queue', issueId }` and do not skip to later cards. If the head is non-parallel and `serial_active_issue_id` is set, do not skip to later cards and do not spawn. If the head is `worker_parallel=true`, it may spawn even while `serial_active_issue_id` is set and must not occupy the serial slot. Broadcast `queue.countdown` every second and call `spawn_phase({ issueId, phase: 'goal', parallel })` at expiry.
+  - Maintain `serial_active_issue_id` and `active_parallel_issue_ids`; a
+    non-parallel succeeded completion releases the serial slot and may trigger
+    serial auto-advance, while failed/cancelled/killed terminal states release
+    the slot but stop without auto-advance. A parallel card completion must not
+    trigger serial queue advance.
+  - For `phase === 'goal'`, always call `find_prs(issueId)` and cache first PR
+    or clear PR metadata.
+  - If goal failed/cancelled/killed: call `queue_state.clearProgress(issueId)`,
+    release the slot, and do not schedule review wait or advance.
+  - If goal succeeded and PR exists: call
+    `startReviewWait(issueId, jobId, pr.number, parallel)` so the `$pr-finish`
+    phase inherits the same parallel/serial class.
+  - If goal succeeded and no PR: `queue_state.clearProgress(issueId)`; call
+    `scheduleAdvance()` only when the completed card was non-parallel and
+    released the serial slot.
+  - If `phase === 'pr_finish'` and succeeded: clear progress; call
+    `scheduleAdvance()` only when the completed card was non-parallel and
+    released the serial slot.
+  - If `phase === 'pr_finish'` and failed/cancelled/killed: call
+    `queue_state.clearProgress(issueId)`, release the slot, and do not schedule
+    advance.
+- `startReviewWait(issueId, jobId, prNumber, parallel)` stores
+  `worker_pr_review_wait_started_at`, keeps `{ parallel }` in `review_waits`,
+  broadcasts `job.pr_review_wait` every second, and spawns `pr_finish` with the
+  same `parallel` flag when remaining time reaches `0`.
+- `finishNow(issueId)` clears review timer for issue and immediately calls
+  `runPrFinish(issueId)`.
+- `cancelAutoPrFinish(issueId)` marks review wait cancelled and broadcasts
+  `job.pr_review_wait_cancelled`; it must not clear progress.
+- `runPrFinish(issueId)` clears review-wait metadata and calls
+  `spawn_phase({ issueId, phase: 'pr_finish', prNumber, parallel: wait.parallel })`.
+- `cancelReviewWaitJob(issueId)` clears review-wait metadata, clears progress
+  metadata, removes map entry, and does not call `scheduleAdvance()`.
+- `canStart({ parallel })` returns `true` for parallel cards and for
+  non-parallel cards only when `serial_active_issue_id` is empty; manual
+  `moveCard(... -> progress)` uses this helper.
+- `scheduleAdvance()` exits when paused. Otherwise it reads
+  `queue_state.listWaitingCards()` and inspects the head card only. If the head
+  card lacks `spec_id`, broadcast `queue.blocked` with
+  `{ reason: 'Spec required to enter queue', issueId }` and do not skip to later
+  cards. If the head is non-parallel and `serial_active_issue_id` is set, do not
+  skip to later cards and do not spawn. If the head is `worker_parallel=true`,
+  it may spawn even while `serial_active_issue_id` is set and must not occupy
+  the serial slot. Broadcast `queue.countdown` every second and call
+  `spawn_phase({ issueId, phase: 'goal', parallel })` at expiry.
 - `skipAdvance()` immediately spawns the current countdown card.
-- `cancelAutoStart()` cancels only the current advance timer and clears countdown state.
-- `restoreReviewWaits()` reads waiting/progress metadata from `queue_state.listIssues()` and restores review waits using `worker_pr_review_wait_started_at`; if elapsed >= total, immediately `runPrFinish(issueId)` unless `worker_pr_review_wait_cancelled === 'true'`.
+- `cancelAutoStart()` cancels only the current advance timer and clears
+  countdown state.
+- `restoreReviewWaits()` reads waiting/progress metadata from
+  `queue_state.listIssues()` and restores review waits using
+  `worker_pr_review_wait_started_at`; if elapsed >= total, immediately
+  `runPrFinish(issueId)` unless `worker_pr_review_wait_cancelled === 'true'`.
 
 - [ ] **Step 3: Run scheduler tests and commit**
 
@@ -1813,6 +2234,7 @@ git commit -m "Worker 큐 스케줄러 추가"
 ## Task 7: Supervisor integration and Worker queue API
 
 **Files:**
+
 - Create: `server/routes/worker-queue.js`
 - Create: `server/routes/worker-queue.test.js`
 - Modify: `server/app.js`
@@ -1865,13 +2287,27 @@ afterEach(() => vi.clearAllMocks());
 
 describe('worker queue route', () => {
   test('GET /api/worker/queue returns queue snapshot', async () => {
-    getQueueSnapshot.mockResolvedValueOnce({ paused: false, countdown: null, pr_review_waits: {} });
+    getQueueSnapshot.mockResolvedValueOnce({
+      paused: false,
+      countdown: null,
+      pr_review_waits: {}
+    });
     const { createApp } = await import('../app.js');
-    const app = createApp({ host: '127.0.0.1', port: 3000, app_dir: '.', root_dir: process.cwd(), frontend_mode: 'static' });
+    const app = createApp({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir: '.',
+      root_dir: process.cwd(),
+      frontend_mode: 'static'
+    });
     const server = createServer(app);
-    const address = await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address())));
+    const address = await new Promise((resolve) =>
+      server.listen(0, '127.0.0.1', () => resolve(server.address()))
+    );
 
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/worker/queue?workspace=${encodeURIComponent(process.cwd())}`);
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/worker/queue?workspace=${encodeURIComponent(process.cwd())}`
+    );
     const body = await response.json();
     await new Promise((resolve) => server.close(resolve));
 
@@ -1882,30 +2318,78 @@ describe('worker queue route', () => {
   test('POST /api/worker/queue/move persists card move', async () => {
     moveCard.mockResolvedValueOnce({ ok: true });
     const { createApp } = await import('../app.js');
-    const app = createApp({ host: '127.0.0.1', port: 3000, app_dir: '.', root_dir: process.cwd(), frontend_mode: 'static' });
-    const server = createServer(app);
-    const address = await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address())));
-
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/worker/queue/move`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspace: process.cwd(), issueId: 'UI-A', fromLane: 'inbox', toLane: 'waiting', beforeId: null, afterId: null })
+    const app = createApp({
+      host: '127.0.0.1',
+      port: 3000,
+      app_dir: '.',
+      root_dir: process.cwd(),
+      frontend_mode: 'static'
     });
+    const server = createServer(app);
+    const address = await new Promise((resolve) =>
+      server.listen(0, '127.0.0.1', () => resolve(server.address()))
+    );
+
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/worker/queue/move`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspace: process.cwd(),
+          issueId: 'UI-A',
+          fromLane: 'inbox',
+          toLane: 'waiting',
+          beforeId: null,
+          afterId: null
+        })
+      }
+    );
     await new Promise((resolve) => server.close(resolve));
 
     expect(response.status).toBe(200);
-    expect(moveCard).toHaveBeenCalledWith({ issueId: 'UI-A', fromLane: 'inbox', toLane: 'waiting', beforeId: null, afterId: null, workspace: process.cwd() });
+    expect(moveCard).toHaveBeenCalledWith({
+      issueId: 'UI-A',
+      fromLane: 'inbox',
+      toLane: 'waiting',
+      beforeId: null,
+      afterId: null,
+      workspace: process.cwd()
+    });
   });
 });
 ```
 
-Extend `server/worker/supervisor.integration.test.js` to assert a goal command uses `codex exec --json -m gpt-5.5 -c model_reasoning_effort=high /goal UI-A` and a review wait expiry starts `codex exec ... $pr-finish 42` after mocked `gh pr list` returns one PR. Add a second integration test where `pr_finish_available=false`; expected result: `/goal` success + PR cache broadcasts `queue.blocked` with reason `$pr-finish skill unavailable` and no `$pr-finish` spawn.
+Extend `server/worker/supervisor.integration.test.js` to assert a goal command
+uses `codex exec --json -m gpt-5.5 -c model_reasoning_effort=high /goal UI-A`
+and a review wait expiry starts `codex exec ... $pr-finish 42` after mocked
+`gh pr list` returns one PR. Add a second integration test where
+`pr_finish_available=false`; expected result: `/goal` success + PR cache
+broadcasts `queue.blocked` with reason `$pr-finish skill unavailable` and no
+`$pr-finish` spawn.
 
-Add `server/ws.test.js` coverage that stubs `getWorkerJobManager().listWorkerEvents({ workspace, since })` to return `[{ seq: 1, type: 'queue.countdown', payload: { remainingMs: 1000, nextIssueId: 'UI-A' } }]`, opens the app WebSocket, advances timers, and expects the client to receive a WebSocket envelope with `type: 'queue.countdown'`.
+Add `server/ws.test.js` coverage that stubs
+`getWorkerJobManager().listWorkerEvents({ workspace, since })` to return
+`[{ seq: 1, type: 'queue.countdown', payload: { remainingMs: 1000, nextIssueId: 'UI-A' } }]`,
+opens the app WebSocket, advances timers, and expects the client to receive a
+WebSocket envelope with `type: 'queue.countdown'`.
 
-Add `server/worker/pr-finish-skill-check.test.js` coverage for found/missing skill paths. Add `server/routes/worker-queue.test.js` cases for `moveCard` server-side validation: spec-less `inbox -> waiting` returns 409, waiting reorder passes `beforeId/afterId`, and `waiting -> progress` calls `startGoal` after validation.
+Add `server/worker/pr-finish-skill-check.test.js` coverage for found/missing
+skill paths. Add `server/routes/worker-queue.test.js` cases for `moveCard`
+server-side validation: spec-less `inbox -> waiting` returns 409, waiting
+reorder passes `beforeId/afterId`, and `waiting -> progress` calls `startGoal`
+after validation.
 
-Add `server/worker/supervisor.test.js` coverage for terminal cleanup paths that currently bypass child close: successful `cancelJob()` calls `scheduler.handleJobExit({ status: 'cancelled' })` and clears progress; `reconcileJobs()` for a missing process calls `scheduler.handleJobExit({ status: 'failed' })` and clears progress; forced cancel exposes `wasForceKilled` in serialized job output so selectors can derive done from terminal killed jobs. Add startup recovery coverage where `createWorkerSupervisorServer.start()` runs `reconcileJobs()` before `scheduler.restoreReviewWaits()` and orphaned `goal` / `pr_finish` active jobs become failed/killed terminal jobs with `worker_lane` cleared.
+Add `server/worker/supervisor.test.js` coverage for terminal cleanup paths that
+currently bypass child close: successful `cancelJob()` calls
+`scheduler.handleJobExit({ status: 'cancelled' })` and clears progress;
+`reconcileJobs()` for a missing process calls
+`scheduler.handleJobExit({ status: 'failed' })` and clears progress; forced
+cancel exposes `wasForceKilled` in serialized job output so selectors can derive
+done from terminal killed jobs. Add startup recovery coverage where
+`createWorkerSupervisorServer.start()` runs `reconcileJobs()` before
+`scheduler.restoreReviewWaits()` and orphaned `goal` / `pr_finish` active jobs
+become failed/killed terminal jobs with `worker_lane` cleared.
 
 Run:
 
@@ -1920,8 +2404,11 @@ Expected: FAIL because route and integrated scheduler do not exist.
 In `server/worker/supervisor.js`:
 
 - Import `createQueueScheduler`, `createQueueState`, and `runShell`.
-- Add `scheduler`, `queue_state`, `broadcast`, `find_prs_impl`, `worker_config`, and `pr_finish_available_impl` injection points to `createWorkerSupervisor` options.
-- Create a local `events` array with monotonically increasing `seq` for worker event bridge:
+- Add `scheduler`, `queue_state`, `broadcast`, `find_prs_impl`, `worker_config`,
+  and `pr_finish_available_impl` injection points to `createWorkerSupervisor`
+  options.
+- Create a local `events` array with monotonically increasing `seq` for worker
+  event bridge:
 
 ```js
 let event_seq = 0;
@@ -1935,27 +2422,68 @@ function broadcast(type, payload) {
 }
 ```
 
-- Create scheduler with `spawn_phase` calling `createJob({ command: 'codex', phase, issueId, prNumber, workspace, model, effort, parallel })`. Resolve `model` and `effort` at spawn time from issue metadata first (`worker_model`, `worker_effort`), then `worker_config.default_model/default_effort`, then hard defaults `gpt-5.5/high`. Resolve `parallel` from `metadata.worker_parallel === 'true'`.
-- Implement `find_prs_impl(issue_id)` with `runShell('gh', ['pr', 'list', '--state', 'open', '--search', issue_id, '--json', 'number,url,title,state'], { cwd: workspace, timeout_ms: 30000 })`, JSON parse, return array.
-- In `createJob`, after a job enters running state, call `scheduler.handleJobStart({ jobId, issueId, phase, parallel, startedAt })`.
-- In JSONL session callback, call `scheduler.handleJobSession({ jobId, issueId, phase, sessionId })`.
-- In `finalizeFromChildClose`, after `job.exited`, call `void scheduler.handleJobExit({ issueId: job.issue_id, phase: job.phase, status: final_status, jobId: job.id, exitCode: exit_code })`.
-- Add a shared `notifyTerminalJob(job, status, details)` helper and call it from every terminal path: `finalizeFromChildClose`, `cancelJob()` after successful cancel, `reconcileJobs()` when a process is missing, and `finalizeFailure()`. The helper calls `scheduler.handleJobExit({ issueId: job.issue_id, phase: job.phase, status, jobId: job.id, ...details })`; scheduler owns `queue_state.clearProgress()` for failed/cancelled/killed terminal jobs. This prevents cancelled/reconciled jobs from remaining active progress.
-- In `reconcileJobs()`, preserve forced-kill evidence by appending `job.killed` when the terminal path came from a forced cancel, and ensure serialized jobs expose `wasForceKilled` for frontend done derivation.
-- In `createWorkerSupervisorServer.start()`, after `await supervisor.reconcileJobs()` call `await supervisor.restoreQueueState()` (or equivalent) that invokes `scheduler.restoreReviewWaits()` and handles orphaned `goal_running` / `pr_finish_running` records as terminal failed/killed with `worker_lane` cleared before accepting queue requests.
-- Expose `getQueueSnapshot`, `setPaused`, `moveCard`, `setWorkerOverrides`, `startGoal`, `finishNow`, `cancelAutoPrFinish`, `runPrFinish`, `skipAdvance`, `cancelAutoStart`, and `listWorkerEvents(since)` on the supervisor object. `getQueueSnapshot` must include `pr_finish_available` and blocked reason when unavailable.
+- Create scheduler with `spawn_phase` calling
+  `createJob({ command: 'codex', phase, issueId, prNumber, workspace, model, effort, parallel })`.
+  Resolve `model` and `effort` at spawn time from issue metadata first
+  (`worker_model`, `worker_effort`), then
+  `worker_config.default_model/default_effort`, then hard defaults
+  `gpt-5.5/high`. Resolve `parallel` from `metadata.worker_parallel === 'true'`.
+- Implement `find_prs_impl(issue_id)` with
+  `runShell('gh', ['pr', 'list', '--state', 'open', '--search', issue_id, '--json', 'number,url,title,state'], { cwd: workspace, timeout_ms: 30000 })`,
+  JSON parse, return array.
+- In `createJob`, after a job enters running state, call
+  `scheduler.handleJobStart({ jobId, issueId, phase, parallel, startedAt })`.
+- In JSONL session callback, call
+  `scheduler.handleJobSession({ jobId, issueId, phase, sessionId })`.
+- In `finalizeFromChildClose`, after `job.exited`, call
+  `void scheduler.handleJobExit({ issueId: job.issue_id, phase: job.phase, status: final_status, jobId: job.id, exitCode: exit_code })`.
+- Add a shared `notifyTerminalJob(job, status, details)` helper and call it from
+  every terminal path: `finalizeFromChildClose`, `cancelJob()` after successful
+  cancel, `reconcileJobs()` when a process is missing, and `finalizeFailure()`.
+  The helper calls
+  `scheduler.handleJobExit({ issueId: job.issue_id, phase: job.phase, status, jobId: job.id, ...details })`;
+  scheduler owns `queue_state.clearProgress()` for failed/cancelled/killed
+  terminal jobs. This prevents cancelled/reconciled jobs from remaining active
+  progress.
+- In `reconcileJobs()`, preserve forced-kill evidence by appending `job.killed`
+  when the terminal path came from a forced cancel, and ensure serialized jobs
+  expose `wasForceKilled` for frontend done derivation.
+- In `createWorkerSupervisorServer.start()`, after
+  `await supervisor.reconcileJobs()` call `await supervisor.restoreQueueState()`
+  (or equivalent) that invokes `scheduler.restoreReviewWaits()` and handles
+  orphaned `goal_running` / `pr_finish_running` records as terminal
+  failed/killed with `worker_lane` cleared before accepting queue requests.
+- Expose `getQueueSnapshot`, `setPaused`, `moveCard`, `setWorkerOverrides`,
+  `startGoal`, `finishNow`, `cancelAutoPrFinish`, `runPrFinish`, `skipAdvance`,
+  `cancelAutoStart`, and `listWorkerEvents(since)` on the supervisor object.
+  `getQueueSnapshot` must include `pr_finish_available` and blocked reason when
+  unavailable.
 
-Create `server/worker/pr-finish-skill-check.js` with `checkPrFinishSkill({ env, home_dir, exists_impl })`. It should look under `$CODEX_HOME/skills/pr-finish/SKILL.md`, `$HOME/.codex/skills/pr-finish/SKILL.md`, and repo-installed skill mirrors if explicitly provided in env. `createWorkerSupervisorServer.start()` runs the check once. When unavailable, scheduler may still complete `/goal`, but `/goal` success with PR must broadcast `queue.blocked` and must not spawn `$pr-finish` until the user/environment fixes the precondition and restarts.
+Create `server/worker/pr-finish-skill-check.js` with
+`checkPrFinishSkill({ env, home_dir, exists_impl })`. It should look under
+`$CODEX_HOME/skills/pr-finish/SKILL.md`,
+`$HOME/.codex/skills/pr-finish/SKILL.md`, and repo-installed skill mirrors if
+explicitly provided in env. `createWorkerSupervisorServer.start()` runs the
+check once. When unavailable, scheduler may still complete `/goal`, but `/goal`
+success with PR must broadcast `queue.blocked` and must not spawn `$pr-finish`
+until the user/environment fixes the precondition and restarts.
 
-Implement `moveCard(input)` in the supervisor, not only frontend. Required server semantics:
-- Load the issue with `queue_state.getIssue(issueId)` and validate `spec_id` for `waiting`/`progress`.
+Implement `moveCard(input)` in the supervisor, not only frontend. Required
+server semantics:
+
+- Load the issue with `queue_state.getIssue(issueId)` and validate `spec_id` for
+  `waiting`/`progress`.
 - Reject `progress -> inbox/waiting` with `Cancel first`.
-- Reject non-parallel `-> progress` when `scheduler.canStart({ parallel: false })` returns false (serial slot occupied).
-- `inbox/done -> waiting`: compute sort key from `beforeId`/`afterId`; if no gap, call `queue_state.rebalanceWaiting()` then write the new key.
+- Reject non-parallel `-> progress` when
+  `scheduler.canStart({ parallel: false })` returns false (serial slot
+  occupied).
+- `inbox/done -> waiting`: compute sort key from `beforeId`/`afterId`; if no
+  gap, call `queue_state.rebalanceWaiting()` then write the new key.
 - `waiting -> waiting`: same sort-key/rebalance path.
 - `waiting -> inbox`: set `worker_lane=inbox` and unset `worker_queue_sort_key`.
 - `done -> inbox`: set `worker_lane=inbox`.
-- `inbox/waiting -> progress`: validate, clear sort key, and call `startGoal({ issueId })` immediately.
+- `inbox/waiting -> progress`: validate, clear sort key, and call
+  `startGoal({ issueId })` immediately.
 
 - [ ] **Step 3: Expose queue operations through worker manager client**
 
@@ -1991,24 +2519,52 @@ POST /queue/skip-advance
 POST /queue/cancel-auto-start
 ```
 
-Each POST passes the JSON body to the supervisor method and returns JSON from that method. Default model/effort persistence stays on `PATCH /api/config/worker`; do not add a duplicate queue-defaults endpoint.
+Each POST passes the JSON body to the supervisor method and returns JSON from
+that method. Default model/effort persistence stays on
+`PATCH /api/config/worker`; do not add a duplicate queue-defaults endpoint.
 
 - [ ] **Step 4: Add main app queue route and remove worker PR route**
 
-Create `server/routes/worker-queue.js`. Reuse `resolveWorkspace` logic from `worker-jobs.js` by exporting it from `worker-jobs.js` or moving it to a shared helper inside `server/routes/worker-workspace.js`. Endpoints:
+Create `server/routes/worker-queue.js`. Reuse `resolveWorkspace` logic from
+`worker-jobs.js` by exporting it from `worker-jobs.js` or moving it to a shared
+helper inside `server/routes/worker-workspace.js`. Endpoints:
 
 ```js
 router.get('/', async (req, res) => manager.getQueueSnapshot({ workspace }));
-router.get('/events', async (req, res) => manager.listWorkerEvents({ workspace, since: Number(req.query.since || 0) }));
-router.post('/move', async (req, res) => manager.moveCard({ ...req.body, workspace }));
-router.post('/overrides', async (req, res) => manager.setWorkerOverrides({ issueId: req.body?.issueId, values: req.body?.values || {}, workspace }));
-router.post('/pause', async (req, res) => manager.setPaused({ paused: req.body?.paused === true, workspace }));
-router.post('/start', async (req, res) => manager.startGoal({ issueId: req.body?.issueId, workspace }));
-router.post('/finish-now', async (req, res) => manager.finishNow({ issueId: req.body?.issueId, workspace }));
-router.post('/cancel-auto-pr-finish', async (req, res) => manager.cancelAutoPrFinish({ issueId: req.body?.issueId, workspace }));
-router.post('/run-pr-finish', async (req, res) => manager.runPrFinish({ issueId: req.body?.issueId, workspace }));
-router.post('/skip-advance', async (_req, res) => manager.skipAdvance({ workspace }));
-router.post('/cancel-auto-start', async (_req, res) => manager.cancelAutoStart({ workspace }));
+router.get('/events', async (req, res) =>
+  manager.listWorkerEvents({ workspace, since: Number(req.query.since || 0) })
+);
+router.post('/move', async (req, res) =>
+  manager.moveCard({ ...req.body, workspace })
+);
+router.post('/overrides', async (req, res) =>
+  manager.setWorkerOverrides({
+    issueId: req.body?.issueId,
+    values: req.body?.values || {},
+    workspace
+  })
+);
+router.post('/pause', async (req, res) =>
+  manager.setPaused({ paused: req.body?.paused === true, workspace })
+);
+router.post('/start', async (req, res) =>
+  manager.startGoal({ issueId: req.body?.issueId, workspace })
+);
+router.post('/finish-now', async (req, res) =>
+  manager.finishNow({ issueId: req.body?.issueId, workspace })
+);
+router.post('/cancel-auto-pr-finish', async (req, res) =>
+  manager.cancelAutoPrFinish({ issueId: req.body?.issueId, workspace })
+);
+router.post('/run-pr-finish', async (req, res) =>
+  manager.runPrFinish({ issueId: req.body?.issueId, workspace })
+);
+router.post('/skip-advance', async (_req, res) =>
+  manager.skipAdvance({ workspace })
+);
+router.post('/cancel-auto-start', async (_req, res) =>
+  manager.cancelAutoStart({ workspace })
+);
 ```
 
 In `server/app.js`, remove `createWorkerPrsRouter` import/use and add:
@@ -2016,12 +2572,22 @@ In `server/app.js`, remove `createWorkerPrsRouter` import/use and add:
 ```js
 import { createWorkerQueueRouter } from './routes/worker-queue.js';
 
-app.use('/api/worker/queue', createWorkerQueueRouter({ root_dir: config.root_dir }));
+app.use(
+  '/api/worker/queue',
+  createWorkerQueueRouter({ root_dir: config.root_dir })
+);
 ```
 
 Delete removed PR route/reader/resolver files and tests.
 
-In `server/ws.js`, add a Worker live-event bridge for the current workspace. While at least one browser socket is connected, poll `getWorkerJobManager({ root_dir }).listWorkerEvents({ workspace: CURRENT_WORKSPACE.root_dir, since })` every 1000ms, then send each returned event as an unsolicited envelope `{ id: `evt-worker-${seq}`, ok: true, type: event.type, payload: event.payload }`. This is the concrete server-to-browser transport for `job.*` / `queue.*` events; `app/main.js transport.on(...)` must not rely on supervisor-local memory without this bridge.
+In `server/ws.js`, add a Worker live-event bridge for the current workspace.
+While at least one browser socket is connected, poll
+`getWorkerJobManager({ root_dir }).listWorkerEvents({ workspace: CURRENT_WORKSPACE.root_dir, since })`
+every 1000ms, then send each returned event as an unsolicited envelope
+`{ id: `evt-worker-${seq}`, ok: true, type: event.type, payload: event.payload }`.
+This is the concrete server-to-browser transport for `job.*` / `queue.*` events;
+`app/main.js transport.on(...)` must not rely on supervisor-local memory without
+this bridge.
 
 - [ ] **Step 5: Run targeted tests and commit**
 
@@ -2047,6 +2613,7 @@ git commit -m "Worker 큐 API와 supervisor 파이프라인 연결"
 ## Task 8: Frontend Worker board data flow and WebSocket reducers
 
 **Files:**
+
 - Modify: `app/main.js`
 - Modify: `app/main.worker.test.js`
 - Modify: `app/views/worker.js`
@@ -2059,7 +2626,8 @@ git commit -m "Worker 큐 API와 supervisor 파이프라인 연결"
 
 - [ ] **Step 1: Write failing frontend Worker board tests**
 
-Replace tree-specific assertions in `app/views/worker.test.js` with board assertions:
+Replace tree-specific assertions in `app/views/worker.test.js` with board
+assertions:
 
 ```js
 test('renders four worker board lanes and selects a card', async () => {
@@ -2067,14 +2635,34 @@ test('renders four worker board lanes and selects a card', async () => {
   const mount = document.getElementById('mount');
   const store = createStore({
     view: 'worker',
-    workspace: { current: { path: '/tmp/workspace', database: '/tmp/workspace/.beads/test.db' }, available: [] }
+    workspace: {
+      current: {
+        path: '/tmp/workspace',
+        database: '/tmp/workspace/.beads/test.db'
+      },
+      available: []
+    }
   });
 
   createWorkerView(mount, {
     store,
     issue_stores: createIssueStores([
-      { id: 'UI-A', title: 'Inbox', status: 'open', issue_type: 'epic', spec_id: 'docs/a.md', metadata: {} },
-      { id: 'UI-B', title: 'Waiting', status: 'open', issue_type: 'epic', spec_id: 'docs/b.md', metadata: { worker_lane: 'waiting', worker_queue_sort_key: '1000' } }
+      {
+        id: 'UI-A',
+        title: 'Inbox',
+        status: 'open',
+        issue_type: 'epic',
+        spec_id: 'docs/a.md',
+        metadata: {}
+      },
+      {
+        id: 'UI-B',
+        title: 'Waiting',
+        status: 'open',
+        issue_type: 'epic',
+        spec_id: 'docs/b.md',
+        metadata: { worker_lane: 'waiting', worker_queue_sort_key: '1000' }
+      }
     ]),
     fetch_impl: vi.fn(async () => ({ ok: true, json: async () => ({}) })),
     getWorkerJobs: () => []
@@ -2101,7 +2689,14 @@ test('blocks spec-less drop into waiting and shows toast handler', () => {
   createWorkerView(mount, {
     store,
     issue_stores: createIssueStores([
-      { id: 'UI-A', title: 'No spec', status: 'open', issue_type: 'epic', spec_id: '', metadata: {} }
+      {
+        id: 'UI-A',
+        title: 'No spec',
+        status: 'open',
+        issue_type: 'epic',
+        spec_id: '',
+        metadata: {}
+      }
     ]),
     getWorkerJobs: () => [],
     onMoveCard,
@@ -2110,15 +2705,23 @@ test('blocks spec-less drop into waiting and shows toast handler', () => {
 
   const card = mount.querySelector('[data-worker-card="UI-A"]');
   const lane = mount.querySelector('#worker-lane-waiting');
-  card.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: new DataTransfer() }));
-  lane.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: new DataTransfer() }));
+  card.dispatchEvent(
+    new DragEvent('dragstart', {
+      bubbles: true,
+      dataTransfer: new DataTransfer()
+    })
+  );
+  lane.dispatchEvent(
+    new DragEvent('drop', { bubbles: true, dataTransfer: new DataTransfer() })
+  );
 
   expect(onMoveCard).not.toHaveBeenCalled();
   expect(onShowToast).toHaveBeenCalledWith('Spec required to enter queue');
 });
 ```
 
-In `app/main.worker.test.js`, add a test that emits `queue.paused` through the fake transport and expects store `worker.paused` to update.
+In `app/main.worker.test.js`, add a test that emits `queue.paused` through the
+fake transport and expects store `worker.paused` to update.
 
 Run:
 
@@ -2133,8 +2736,11 @@ Expected: FAIL because board components and handlers are missing.
 In `app/main.js`:
 
 - Remove `worker_jobs_timer` polling.
-- Keep `refreshWorkerJobs()` as a one-shot initial load if the detail view needs persisted recent jobs.
-- Add `refreshWorkerQueue()` fetching `/api/worker/queue?workspace=<workspace>` and setting `worker.paused`, `worker.countdown`, `worker.pr_review_waits`, `worker.pr_finish_available`, and `worker.queue_blocked_reason`.
+- Keep `refreshWorkerJobs()` as a one-shot initial load if the detail view needs
+  persisted recent jobs.
+- Add `refreshWorkerQueue()` fetching `/api/worker/queue?workspace=<workspace>`
+  and setting `worker.paused`, `worker.countdown`, `worker.pr_review_waits`,
+  `worker.pr_finish_available`, and `worker.queue_blocked_reason`.
 - Add queue endpoint helpers:
 
 ```js
@@ -2156,7 +2762,9 @@ async function postWorkerQueue(path, body = {}) {
 
 ```js
 transport.on('queue.blocked', (payload) => {
-  store.setState({ worker: { queue_blocked_reason: String(payload.reason || '') } });
+  store.setState({
+    worker: { queue_blocked_reason: String(payload.reason || '') }
+  });
   showToast(String(payload.reason || 'Worker queue blocked'));
 });
 transport.on('queue.paused', (payload) => {
@@ -2185,7 +2793,9 @@ Use object spread to update `state.worker.live_jobs` immutably by `issueId`.
 
 - [ ] **Step 3: Implement Worker board mount**
 
-In `app/views/worker.js`, replace `workerTreeTemplate` import/use with `workerBoardTemplate`. Keep the detail mount behavior. `createWorkerView` dependencies become:
+In `app/views/worker.js`, replace `workerTreeTemplate` import/use with
+`workerBoardTemplate`. Keep the detail mount behavior. `createWorkerView`
+dependencies become:
 
 ```js
 onMoveCard?: (input: { issueId: string, fromLane: string, toLane: string, beforeId?: string | null, afterId?: string | null }) => void,
@@ -2205,11 +2815,14 @@ onShowToast?: (message: string) => void
 Build board rows with:
 
 ```js
-const parents = buildWorkerParents(deps.issue_stores.snapshotFor('tab:worker:all'), {
-  jobs,
-  workspace_is_valid,
-  show_closed_children: []
-});
+const parents = buildWorkerParents(
+  deps.issue_stores.snapshotFor('tab:worker:all'),
+  {
+    jobs,
+    workspace_is_valid,
+    show_closed_children: []
+  }
+);
 const board = buildWorkerBoard(parents, {
   jobs,
   done_filter: state.worker?.done_filter || 'today',
@@ -2219,7 +2832,8 @@ const board = buildWorkerBoard(parents, {
 
 - [ ] **Step 4: Create board/card templates**
 
-Create `app/views/worker-board.js` with `workerBoardTemplate(board, state, handlers)`. Use four lanes:
+Create `app/views/worker-board.js` with
+`workerBoardTemplate(board, state, handlers)`. Use four lanes:
 
 ```js
 const LANES = [
@@ -2233,24 +2847,41 @@ const LANES = [
 Each lane renders:
 
 ```html
-<section class="worker-board__lane" id="worker-lane-${lane}" data-worker-lane=${lane}>
-  <header class="worker-board__lane-header"><h3>${title}</h3><span>${cards.length}</span></header>
-  <div class="worker-board__lane-body">${cards.map(...workerCardTemplate...)}</div>
+<section
+  class="worker-board__lane"
+  id="worker-lane-${lane}"
+  data-worker-lane="${lane}"
+>
+  <header class="worker-board__lane-header">
+    <h3>${title}</h3>
+    <span>${cards.length}</span>
+  </header>
+  <div class="worker-board__lane-body">
+    ${cards.map(...workerCardTemplate...)}
+  </div>
 </section>
 ```
 
-Add delegated drag handlers that set `dataTransfer.setData('text/plain', issueId)`, compute source/target lane from `data-worker-lane`, call `canMoveWorkerCard`, show toast on failure, and call `handlers.onMoveCard({ issueId, fromLane, toLane, beforeId, afterId })` on success.
+Add delegated drag handlers that set
+`dataTransfer.setData('text/plain', issueId)`, compute source/target lane from
+`data-worker-lane`, call `canMoveWorkerCard`, show toast on failure, and call
+`handlers.onMoveCard({ issueId, fromLane, toLane, beforeId, afterId })` on
+success.
 
-Create `app/views/worker-card.js` showing ID/type/title/spec/parallel/model-effort/PR badge/child progress. Use `data-worker-card=${card.id}` and `draggable="true"`.
+Create `app/views/worker-card.js` showing
+ID/type/title/spec/parallel/model-effort/PR badge/child progress. Use
+`data-worker-card=${card.id}` and `draggable="true"`.
 
 Create `app/views/worker-card-progress.js` rendering the three states from spec:
 
 - `goal_running`: `/goal running`, elapsed/session/log, Cancel/Open log.
 - `pr_review_wait`: countdown, Finish now, Cancel auto pr-finish, Open PR.
 - cancelled review wait: Run pr-finish, Cancel job, Open PR.
-- `pr_finish_running`: `$pr-finish running`, session/log, Cancel/Open log/Open PR.
+- `pr_finish_running`: `$pr-finish running`, session/log, Cancel/Open log/Open
+  PR.
 
-Create `app/views/worker-card-children.js` rendering status icons `open=▢`, `in_progress=▶`, `resolved=✓`, `closed=✓`.
+Create `app/views/worker-card-children.js` rendering status icons `open=▢`,
+`in_progress=▶`, `resolved=✓`, `closed=✓`.
 
 - [ ] **Step 5: Update toolbar controls**
 
@@ -2259,12 +2890,18 @@ In `app/views/worker-toolbar.js`, replace old runnable/open-PR toggles with:
 - search input
 - status dropdown: `all`, `open`, `in_progress`, `resolved_closed`
 - done filter: `today`, `3`, `7`
-- default model input/select seeded from `state.worker.default_model`; change calls `PATCH /api/config/worker` through `onDefaultModelChange` and updates store from response.
-- default effort select: `low`, `medium`, `high`; change calls `PATCH /api/config/worker` through `onDefaultEffortChange` and updates store from response.
+- default model input/select seeded from `state.worker.default_model`; change
+  calls `PATCH /api/config/worker` through `onDefaultModelChange` and updates
+  store from response.
+- default effort select: `low`, `medium`, `high`; change calls
+  `PATCH /api/config/worker` through `onDefaultEffortChange` and updates store
+  from response.
 - pause toggle button text `Pause queue` / `Resume queue`
 - Skip wait and Cancel auto-start buttons when `state.worker.countdown` exists
 
-Use handlers `onDoneFilterChange`, `onDefaultModelChange`, `onDefaultEffortChange`, `onPauseToggle`, `onSkipAdvance`, and `onCancelAutoStart`.
+Use handlers `onDoneFilterChange`, `onDefaultModelChange`,
+`onDefaultEffortChange`, `onPauseToggle`, `onSkipAdvance`, and
+`onCancelAutoStart`.
 
 - [ ] **Step 6: Run targeted tests and commit**
 
@@ -2289,6 +2926,7 @@ git commit -m "Worker 보드 렌더링과 이벤트 reducer 연결"
 ## Task 9: Detail controls, styling, and obsolete PR/tree cleanup
 
 **Files:**
+
 - Modify: `app/views/worker-detail.js`
 - Modify: `app/views/worker-detail.test.js`
 - Modify: `app/styles.css`
@@ -2310,7 +2948,10 @@ test('renders worker override controls without legacy run buttons', async () => 
   document.body.innerHTML = '<div id="mount"></div>';
   const mount = document.getElementById('mount');
   const detail = createWorkerDetailView(mount, {
-    fetch_impl: vi.fn(async () => ({ ok: true, json: async () => ({ body: '' }) })),
+    fetch_impl: vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ body: '' })
+    })),
     onUpdateWorkerMetadata: vi.fn()
   });
 
@@ -2319,7 +2960,11 @@ test('renders worker override controls without legacy run buttons', async () => 
       id: 'UI-A',
       title: 'Parent',
       status: 'open',
-      metadata: { worker_parallel: 'true', worker_model: 'gpt-5.4', worker_effort: 'medium' }
+      metadata: {
+        worker_parallel: 'true',
+        worker_model: 'gpt-5.4',
+        worker_effort: 'medium'
+      }
     },
     '/tmp/workspace',
     []
@@ -2372,7 +3017,10 @@ In `app/views/worker-detail.js`:
 onUpdateWorkerMetadata?: (issue_id: string, values: { worker_parallel?: string, worker_model?: string, worker_effort?: string }) => void
 ```
 
-Wire `onUpdateWorkerMetadata` through `createWorkerView` and `app/main.js` to `POST /api/worker/queue/overrides`. After save, refresh the Worker issue subscription or rely on the next `upsert` so card tags reflect `worker_parallel`, `worker_model`, and `worker_effort`.
+Wire `onUpdateWorkerMetadata` through `createWorkerView` and `app/main.js` to
+`POST /api/worker/queue/overrides`. After save, refresh the Worker issue
+subscription or rely on the next `upsert` so card tags reflect
+`worker_parallel`, `worker_model`, and `worker_effort`.
 
 The save handler sends only string metadata values:
 
@@ -2386,28 +3034,72 @@ options.onUpdateWorkerMetadata?.(issue.id, {
 
 - [ ] **Step 3: Add board styles and remove tree styles**
 
-In `app/styles.css`, replace the `.worker-tree`, `.worker-parent-row`, and `.worker-child-row` blocks with Worker board classes. Keep `#worker-root.route.worker`, `#worker-root > .worker-layout`, `#worker-detail-mount`, and `.worker-detail` scroll contracts.
+In `app/styles.css`, replace the `.worker-tree`, `.worker-parent-row`, and
+`.worker-child-row` blocks with Worker board classes. Keep
+`#worker-root.route.worker`, `#worker-root > .worker-layout`,
+`#worker-detail-mount`, and `.worker-detail` scroll contracts.
 
 Add these class families:
 
 ```css
-.worker-board { display: grid; grid-template-columns: repeat(4, minmax(280px, 1fr)); gap: 1rem; min-height: 0; }
-.worker-board__lane { min-width: 280px; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
-.worker-board__lane-body { overflow: auto; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
-.worker-card { border: 1px solid var(--border); border-radius: 12px; padding: 0.875rem; background: var(--panel); cursor: pointer; }
-.worker-card--dragging { opacity: 0.45; }
-.worker-card-progress__blink { animation: worker-blink 1s ease-in-out infinite; }
-@keyframes worker-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.worker-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(280px, 1fr));
+  gap: 1rem;
+  min-height: 0;
+}
+.worker-board__lane {
+  min-width: 280px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.worker-board__lane-body {
+  overflow: auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.worker-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.875rem;
+  background: var(--panel);
+  cursor: pointer;
+}
+.worker-card--dragging {
+  opacity: 0.45;
+}
+.worker-card-progress__blink {
+  animation: worker-blink 1s ease-in-out infinite;
+}
+@keyframes worker-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
 ```
 
 Add responsive fallback:
 
 ```css
 @media (max-width: 1200px) {
-  .worker-board { grid-template-columns: repeat(2, minmax(280px, 1fr)); }
+  .worker-board {
+    grid-template-columns: repeat(2, minmax(280px, 1fr));
+  }
 }
 @media (max-width: 760px) {
-  .worker-board { grid-template-columns: 1fr; }
+  .worker-board {
+    grid-template-columns: 1fr;
+  }
 }
 ```
 
@@ -2420,7 +3112,9 @@ git rm app/views/worker-tree.js app/views/worker-parent-row.js app/views/worker-
 rg "worker-tree|worker-parent-row|worker-child-row|worker-pr-panel|worker-pr-summary|Run bd-ralph|Run pr-review" app server test
 ```
 
-Expected `rg` output: none, except historical docs/spec files under `docs/` if the command includes docs. Use scoped `rg` above and remove remaining runtime/test references.
+Expected `rg` output: none, except historical docs/spec files under `docs/` if
+the command includes docs. Use scoped `rg` above and remove remaining
+runtime/test references.
 
 - [ ] **Step 5: Run targeted tests and commit**
 
@@ -2447,6 +3141,7 @@ git commit -m "Worker 상세와 스타일을 보드 UI로 전환"
 ## Task 10: End-to-end verification, bundle, and PR delivery gate preparation
 
 **Files:**
+
 - Modify: `app/main.bundle.js`
 - Modify: `app/main.bundle.js.map`
 - Modify: any test files needed to keep final suite green
@@ -2465,10 +3160,12 @@ npm run lint
 Expected:
 
 - `npm run tsc` PASS.
-- `npm test` PASS with all Worker queue, scheduler, board, and existing tests green.
+- `npm test` PASS with all Worker queue, scheduler, board, and existing tests
+  green.
 - `npm run lint` PASS.
 
-If one command fails, fix the failing code or test in the smallest relevant file and rerun the failing command.
+If one command fails, fix the failing code or test in the smallest relevant file
+and rerun the failing command.
 
 - [ ] **Step 2: Build frontend bundle after source edits**
 
@@ -2492,7 +3189,9 @@ npm run prettier:write
 npm run build
 ```
 
-Expected: all commands PASS. Running `prettier:write` may format files; run `npm run build` again after formatting so bundled frontend matches formatted source.
+Expected: all commands PASS. Running `prettier:write` may format files; run
+`npm run build` again after formatting so bundled frontend matches formatted
+source.
 
 - [ ] **Step 4: Audit old PR/tree runtime removals**
 
@@ -2502,7 +3201,8 @@ Run:
 rg "bd-ralph|pr-review|worker-prs|worker-pr-panel|worker-pr-summary|worker-tree|worker-parent-row|worker-child-row" app server test
 ```
 
-Expected: no runtime/test hits. Historical hits in `docs/` are allowed only when using a broader search.
+Expected: no runtime/test hits. Historical hits in `docs/` are allowed only when
+using a broader search.
 
 Run:
 
@@ -2514,7 +3214,8 @@ Expected:
 
 - No code writes `worker_lane=done`.
 - No code adds lane mirror labels for worker lane metadata.
-- `worker_queue_sort_key` writes only in queue-state/move tests and waiting move logic.
+- `worker_queue_sort_key` writes only in queue-state/move tests and waiting move
+  logic.
 
 - [ ] **Step 5: Commit final bundle and formatting changes**
 
@@ -2527,18 +3228,23 @@ git add app/main.bundle.js app/main.bundle.js.map app server test package-lock.j
 git commit -m "Worker 보드 자동 실행 파이프라인 완성"
 ```
 
-Expected: commit succeeds. If no changes remain because previous task commits already captured everything except bundle, commit only the bundle files with the same message.
+Expected: commit succeeds. If no changes remain because previous task commits
+already captured everything except bundle, commit only the bundle files with the
+same message.
 
 - [ ] **Step 6: Formal implementation review and PR Delivery**
 
 After Task 10 commit:
 
-1. Run the workflow-selected `implementation-review` gate against the diff for this Bead.
-2. Fix any `REVISE` findings in scope and rerun review until verdict is `APPROVE` or `APPROVE_WITH_CHANGES`.
+1. Run the workflow-selected `implementation-review` gate against the diff for
+   this Bead.
+2. Fix any `REVISE` findings in scope and rerun review until verdict is
+   `APPROVE` or `APPROVE_WITH_CHANGES`.
 3. Push branch `UI-l3c3` to `origin`.
 4. Create PR against `nakkulla/beads-ui` (origin target), not upstream.
 5. Record PR URL and review metadata in `UI-l3c3` per workflow policy.
-6. Stop at PR Delivery. Do not merge or run PR Finish without a separate explicit PR-finish request.
+6. Stop at PR Delivery. Do not merge or run PR Finish without a separate
+   explicit PR-finish request.
 
 ---
 
@@ -2546,30 +3252,45 @@ After Task 10 commit:
 
 ### Spec coverage
 
-- 4 lanes, lane precedence, done filter, and `task` parent inclusion: Task 3 and Task 8.
+- 4 lanes, lane precedence, done filter, and `task` parent inclusion: Task 3 and
+  Task 8.
 - Beads metadata schema and no lane mirror labels: Task 4 and Task 10 audit.
 - Sort-key tail/middle/rebalance policy: Task 2.
-- Server-owned queue scheduler, serial/parallel slots, pause, review-wait, advance countdown, cancel/skip actions: Task 6 and Task 7.
-- `/goal` and `$pr-finish` codex command args with `--json`, `-m`, `-c model_reasoning_effort`: Task 5.
+- Server-owned queue scheduler, serial/parallel slots, pause, review-wait,
+  advance countdown, cancel/skip actions: Task 6 and Task 7.
+- `/goal` and `$pr-finish` codex command args with `--json`, `-m`,
+  `-c model_reasoning_effort`: Task 5.
 - JSONL session/log/usage capture: Task 5.
-- PR cache through `gh pr list` and removal of `pr-reader`/`worker-prs`/PR panel files: Task 7 and Task 9.
-- Worker board/card/progress/children UI, drag-drop gate behavior, toasts: Task 8 and Task 9.
-- Config defaults for model/effort/wait/advance delay plus toolbar persistence to `bdui-config.toml`: Task 1 and Task 8.
-- Server-to-browser live event bridge for `job.*` / `queue.*`: Task 7 and Task 8.
+- PR cache through `gh pr list` and removal of `pr-reader`/`worker-prs`/PR panel
+  files: Task 7 and Task 9.
+- Worker board/card/progress/children UI, drag-drop gate behavior, toasts: Task
+  8 and Task 9.
+- Config defaults for model/effort/wait/advance delay plus toolbar persistence
+  to `bdui-config.toml`: Task 1 and Task 8.
+- Server-to-browser live event bridge for `job.*` / `queue.*`: Task 7 and
+  Task 8.
 - Server-side drag/drop persistence and validation: Task 7.
-- Terminal failed/cancelled/killed cleanup, cancel/reconcile supervisor paths, and restart review-wait recovery: Task 3, Task 6, and Task 7.
+- Terminal failed/cancelled/killed cleanup, cancel/reconcile supervisor paths,
+  and restart review-wait recovery: Task 3, Task 6, and Task 7.
 - Per-card override persistence and spawn derivation: Task 4, Task 7, Task 9.
 - `$pr-finish` skill precondition check and blocked behavior: Task 7.
 - Frontend bundle and required repo validation: Task 10.
 
 ### Follow-up coverage
 
-The spec marks multi-workspace board, child issue execution, custom command wrappers, priority queues, session deep links, and spec wizard as non-goals. This plan does not create follow-up Beads for non-goals.
+The spec marks multi-workspace board, child issue execution, custom command
+wrappers, priority queues, session deep links, and spec wizard as non-goals.
+This plan does not create follow-up Beads for non-goals.
 
 ### Placeholder scan
 
-Checked for forbidden placeholder phrases from the writing-plans skill; none remain in executable task instructions. Every task names concrete files, commands, expected failing/passing states, and commit boundaries.
+Checked for forbidden placeholder phrases from the writing-plans skill; none
+remain in executable task instructions. Every task names concrete files,
+commands, expected failing/passing states, and commit boundaries.
 
 ### Type and naming consistency
 
-The plan uses runtime `.js` files with JSDoc types, keeps worker metadata values as strings for Beads, uses `goal` / `pr_finish` as phase names, uses `goal_running` / `pr_review_wait` / `pr_finish_running` as sub-state names, and keeps PR metadata as `pr_number` / `pr_url`.
+The plan uses runtime `.js` files with JSDoc types, keeps worker metadata values
+as strings for Beads, uses `goal` / `pr_finish` as phase names, uses
+`goal_running` / `pr_review_wait` / `pr_finish_running` as sub-state names, and
+keeps PR metadata as `pr_number` / `pr_url`.
