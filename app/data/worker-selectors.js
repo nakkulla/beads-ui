@@ -36,7 +36,8 @@ const STATUS_SORT_ORDER = {
  *   created_at?: number | string,
  *   dependents?: WorkerIssue[],
  *   total_children?: number,
- *   open_pr_count?: number
+ *   open_pr_count?: number,
+ *   metadata?: Record<string, string>
  * }} WorkerIssue
  */
 
@@ -139,7 +140,9 @@ function hasSpecId(issue) {
 function isTopLevelParentCandidate(issue) {
   return (
     (!issue.parent || issue.parent.length === 0) &&
-    (issue.issue_type === 'feature' || issue.issue_type === 'epic')
+    (issue.issue_type === 'feature' ||
+      issue.issue_type === 'epic' ||
+      issue.issue_type === 'task')
   );
 }
 

@@ -188,6 +188,25 @@ describe('worker-selectors', () => {
     expect(items.map((item) => item.id)).toEqual(['UI-A', 'UI-B', 'UI-C']);
   });
 
+  test('includes task issues with specs as parent candidates', () => {
+    const items = buildWorkerParents(
+      [
+        {
+          id: 'UI-TASK',
+          title: 'Task parent',
+          status: 'open',
+          priority: 2,
+          issue_type: 'task',
+          spec_id: 'docs/task.md',
+          updated_at: '2026-05-14T00:00:00Z'
+        }
+      ],
+      { workspace_is_valid: true }
+    );
+
+    expect(items.map((item) => item.id)).toEqual(['UI-TASK']);
+  });
+
   test('applies runnable, open pr, search, and status filters with AND semantics', () => {
     const items = buildWorkerParents(
       [
