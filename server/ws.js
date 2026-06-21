@@ -17,7 +17,7 @@ import { resolveWorkspaceDatabase } from './db.js';
 import { fetchListForSubscription } from './list-adapters.js';
 import { debug } from './logging.js';
 import { getAvailableWorkspaces } from './registry-watcher.js';
-import { keyOf, registry } from './subscriptions.js';
+import { SubscriptionRegistry, keyOf } from './subscriptions.js';
 import { validateSubscribeListPayload } from './validators.js';
 
 const log = debug('ws');
@@ -130,18 +130,22 @@ function triggerMutationRefreshOnce(timeout_ms = 500) {
 }
 
 /**
- * Collect unique active list subscription specs across all connected clients.
+ * Collect unique active list subscriptions across all connected clients,
+ * scoped to each connection's workspace. De-duplicated by the
+ * (`root_dir` + `key`) pair so the same spec in two different workspaces is
+ * refreshed independently (each with its own cwd) instead of being collapsed
+ * into a single workspace's data.
  *
- * @returns {Array<{ type: string, params?: Record<string,string|number|boolean> }>}
+ * @returns {Array<{ root_dir: string, spec: { type: string, params?: Record<string,string|number|boolean> }, key: string }>}
  */
-function collectActiveListSpecs() {
-  /** @type {Array<{ type: string, params?: Record<string,string|number|boolean> }>} */
-  const specs = [];
+function collectActiveListSubscriptions() {
+  /** @type {Array<{ root_dir: string, spec: { type: string, params?: Record<string,string|number|boolean> }, key: string }>} */
+  const pairs = [];
   /** @type {Set<string>} */
   const seen = new Set();
   const wss = CURRENT_WSS;
   if (!wss) {
-    return specs;
+    return pairs;
   }
   for (const ws of wss.clients) {
     if (ws.readyState !== ws.OPEN) {
@@ -151,28 +155,30 @@ function collectActiveListSpecs() {
     if (!s.list_subs) {
       continue;
     }
+    const root_dir = getConnWorkspace(/** @type {any} */ (ws))?.root_dir || '';
     for (const { key, spec } of s.list_subs.values()) {
-      if (!seen.has(key)) {
-        seen.add(key);
-        specs.push(spec);
+      const dedupe_key = `${root_dir}\0${key}`;
+      if (!seen.has(dedupe_key)) {
+        seen.add(dedupe_key);
+        pairs.push({ root_dir, spec, key });
       }
     }
   }
-  return specs;
+  return pairs;
 }
 
 /**
- * Run refresh for all active list subscription specs and publish deltas.
+ * Run refresh for all active (workspace, spec) pairs and publish deltas.
  */
 async function refreshAllActiveListSubscriptions() {
-  const specs = collectActiveListSpecs();
-  // Run refreshes concurrently; locking is handled per key in the registry
+  const pairs = collectActiveListSubscriptions();
+  // Run refreshes concurrently; locking is handled per key per registry
   await Promise.all(
-    specs.map(async (spec) => {
+    pairs.map(async ({ root_dir, spec }) => {
       try {
-        await refreshAndPublish(spec);
+        await refreshAndPublish(root_dir, spec);
       } catch {
-        // ignore refresh errors per spec
+        // ignore refresh errors per (workspace, spec) pair
       }
     })
   );
@@ -205,6 +211,7 @@ export function scheduleListRefresh() {
 /**
  * @typedef {{
  *   show_id?: string | null,
+ *   workspace?: Workspace | null,
  *   list_subs?: Map<string, { key: string, spec: { type: string, params?: Record<string, string | number | boolean> } }>,
  *   list_revisions?: Map<string, number>
  * }} ConnectionSubs
@@ -217,18 +224,88 @@ const SUBS = new WeakMap();
 let CURRENT_WSS = null;
 
 /**
- * Current workspace configuration.
- *
- * @type {{ root_dir: string, db_path: string } | null}
+ * @typedef {{ root_dir: string, db_path: string }} Workspace
  */
-let CURRENT_WORKSPACE = null;
 
 /**
- * Reference to the database watcher for rebinding on workspace change.
+ * Default workspace configuration applied to newly connected clients.
+ *
+ * Set once during `attachWsServer` from the startup workspace and READ-ONLY
+ * afterwards; per-connection `set-workspace` never mutates it. The returned
+ * `setWorkspace` closure repoints it to affect FUTURE connections only.
+ *
+ * @type {Workspace | null}
+ */
+let DEFAULT_WORKSPACE = null;
+
+/**
+ * Reference to the database watcher, retained for lifetime/ownership. The
+ * single fs watcher follows only the startup workspace's local DB file;
+ * central-dolt workspaces have no local DB writes, so cross-device live refresh
+ * relies on mutation-driven `triggerMutationRefreshOnce` rather than rebinding
+ * this watcher. It is intentionally write-only now that rebinding is gone.
  *
  * @type {{ rebind: (opts?: { root_dir?: string }) => void, path: string } | null}
  */
+// eslint-disable-next-line no-unused-vars -- retained reference; no longer read after rebind removal
 let DB_WATCHER = null;
+
+/**
+ * Per-workspace subscription registries keyed by `root_dir`. Each workspace
+ * gets an independent {@link SubscriptionRegistry} so connections in different
+ * workspaces never share entries, cached snapshots, locks, or generations.
+ *
+ * @type {Map<string, SubscriptionRegistry>}
+ */
+const REGISTRIES = new Map();
+
+/**
+ * Lazily create and cache the {@link SubscriptionRegistry} for a workspace
+ * `root_dir`. Uses `String(root_dir || '')` as the stable map key so that a
+ * null/undefined workspace maps to a single shared empty-key registry.
+ *
+ * Exported for tests so they can observe the active per-workspace registry.
+ *
+ * @param {string | null | undefined} root_dir
+ * @returns {SubscriptionRegistry}
+ */
+export function registryFor(root_dir) {
+  const map_key = String(root_dir || '');
+  let reg = REGISTRIES.get(map_key);
+  if (!reg) {
+    reg = new SubscriptionRegistry();
+    REGISTRIES.set(map_key, reg);
+  }
+  return reg;
+}
+
+/**
+ * Reset all per-workspace registries. Test-only cleanup hook.
+ */
+export function __resetRegistriesForTest() {
+  REGISTRIES.clear();
+}
+
+/**
+ * Resolve the effective workspace for a connection: the per-connection
+ * workspace when set, otherwise the server-wide {@link DEFAULT_WORKSPACE}.
+ *
+ * @param {WebSocket} ws
+ * @returns {Workspace | null}
+ */
+function getConnWorkspace(ws) {
+  return ensureSubs(ws).workspace || DEFAULT_WORKSPACE;
+}
+
+/**
+ * Set the per-connection workspace for a connection.
+ *
+ * @param {WebSocket} ws
+ * @param {Workspace | null} wsObj
+ */
+function setConnWorkspace(ws, wsObj) {
+  ensureSubs(ws).workspace = wsObj;
+}
 
 /**
  * In-flight workspace operations keyed by workspace `root_dir`. Prevents the
@@ -291,52 +368,58 @@ function releaseWorkspaceLock(root) {
 }
 
 /**
- * Run bd in the currently selected workspace when available.
+ * Run bd in the connection's selected workspace when available.
  *
+ * @param {WebSocket} ws
  * @param {string[]} args
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean }} [options]
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
-function runBdInWorkspace(args, options = undefined) {
-  if (!CURRENT_WORKSPACE?.root_dir) {
+function runBdInWorkspace(ws, args, options = undefined) {
+  const root_dir = getConnWorkspace(ws)?.root_dir;
+  if (!root_dir) {
     return options === undefined ? runBd(args) : runBd(args, options);
   }
 
   return runBd(args, {
     ...(options || {}),
-    cwd: CURRENT_WORKSPACE.root_dir
+    cwd: root_dir
   });
 }
 
 /**
- * Run bd JSON commands in the currently selected workspace when available.
+ * Run bd JSON commands in the connection's selected workspace when available.
  *
+ * @param {WebSocket} ws
  * @param {string[]} args
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
  * @returns {Promise<{ code: number, stdoutJson?: unknown, stderr?: string }>}
  */
-function runBdJsonInWorkspace(args, options = undefined) {
-  if (!CURRENT_WORKSPACE?.root_dir) {
+function runBdJsonInWorkspace(ws, args, options = undefined) {
+  const root_dir = getConnWorkspace(ws)?.root_dir;
+  if (!root_dir) {
     return options === undefined ? runBdJson(args) : runBdJson(args, options);
   }
 
   return runBdJson(args, {
     ...(options || {}),
-    cwd: CURRENT_WORKSPACE.root_dir
+    cwd: root_dir
   });
 }
 
 /**
- * Resolve git user name from the currently selected workspace when available.
+ * Resolve git user name from the connection's selected workspace when available.
  *
+ * @param {WebSocket} ws
  * @returns {Promise<string>}
  */
-function getGitUserNameInWorkspace() {
-  if (!CURRENT_WORKSPACE?.root_dir) {
+function getGitUserNameInWorkspace(ws) {
+  const root_dir = getConnWorkspace(ws)?.root_dir;
+  if (!root_dir) {
     return getGitUserName();
   }
 
-  return getGitUserName({ cwd: CURRENT_WORKSPACE.root_dir });
+  return getGitUserName({ cwd: root_dir });
 }
 
 /**
@@ -482,6 +565,7 @@ function ensureSubs(ws) {
   if (!s) {
     s = {
       show_id: null,
+      workspace: null,
       list_subs: new Map(),
       list_revisions: new Map()
     };
@@ -598,13 +682,15 @@ function emitSubscriptionDelete(ws, client_id, key, issue_id) {
 // issues-changed removed in v2: detail and lists are pushed via subscriptions
 
 /**
- * Replace a registry entry's cached snapshot with a filtered immutable array.
+ * Replace a registry entry's cached snapshot with a filtered immutable array,
+ * operating on the workspace registry for `root_dir`.
  *
+ * @param {string} root_dir
  * @param {string} key
  * @param {Array<Record<string, unknown>>} items
  */
-function setCachedSnapshot(key, items) {
-  const entry = registry.get(key);
+function setCachedSnapshot(root_dir, key, items) {
+  const entry = registryFor(root_dir).get(key);
   if (!entry) {
     return;
   }
@@ -612,44 +698,49 @@ function setCachedSnapshot(key, items) {
 }
 
 /**
- * Run a refresh in the background for a subscription spec.
+ * Run a refresh in the background for a subscription spec in a workspace.
  *
+ * @param {string} root_dir
  * @param {{ type: string, params?: Record<string, string|number|boolean> }} spec
  */
-function scheduleBackgroundRefresh(spec) {
-  void refreshAndPublish(spec).catch((err) => {
+function scheduleBackgroundRefresh(root_dir, spec) {
+  void refreshAndPublish(root_dir, spec).catch((err) => {
     log('background refresh failed for %s: %o', keyOf(spec), err);
   });
 }
 
 /**
- * Refresh a subscription spec: fetch via adapter, apply to registry and emit
- * per-subscription full-issue envelopes to subscribers. Serialized per key.
+ * Refresh a subscription spec within a workspace: fetch via adapter (cwd =
+ * `root_dir`), apply to that workspace's registry and emit per-subscription
+ * full-issue envelopes ONLY to subscribers currently in that workspace.
+ * Serialized per key within the workspace registry.
  *
+ * @param {string} root_dir
  * @param {{ type: string, params?: Record<string, string|number|boolean> }} spec
  */
-async function refreshAndPublish(spec) {
-  const gen = registry.generation;
+async function refreshAndPublish(root_dir, spec) {
+  const reg = registryFor(root_dir);
+  const gen = reg.generation;
   const key = keyOf(spec);
-  await registry.withKeyLock(key, async () => {
-    if (registry.generation !== gen) {
+  await reg.withKeyLock(key, async () => {
+    if (reg.generation !== gen) {
       return;
     }
     const res = await fetchListForSubscription(spec, {
-      cwd: CURRENT_WORKSPACE?.root_dir
+      cwd: root_dir || undefined
     });
     if (!res.ok) {
       log('refresh failed for %s: %s %o', key, res.error.message, res.error);
       return;
     }
-    if (registry.generation !== gen) {
+    if (reg.generation !== gen) {
       return;
     }
     const items = applyClosedIssuesFilter(spec, res.items);
-    const prev_size = registry.get(key)?.itemsById.size || 0;
-    const delta = registry.applyItems(key, items);
-    setCachedSnapshot(key, items);
-    const entry = registry.get(key);
+    const prev_size = reg.get(key)?.itemsById.size || 0;
+    const delta = reg.applyItems(key, items);
+    setCachedSnapshot(root_dir, key, items);
+    const entry = reg.get(key);
     if (!entry || entry.subscribers.size === 0) {
       return;
     }
@@ -727,19 +818,19 @@ function applyClosedIssuesFilter(spec, items) {
 export function attachWsServer(http_server, options = {}) {
   const ws_path = options.path || '/ws';
 
-  // Initialize workspace state
+  // Initialize the default workspace applied to newly connected clients.
   const initial_root =
     options.initial_workspace_root === undefined
       ? options.root_dir || process.cwd()
       : options.initial_workspace_root;
   if (initial_root) {
     const initial_db = resolveWorkspaceDatabase({ cwd: initial_root });
-    CURRENT_WORKSPACE = {
+    DEFAULT_WORKSPACE = {
       root_dir: initial_root,
       db_path: initial_db.path
     };
   } else {
-    CURRENT_WORKSPACE = null;
+    DEFAULT_WORKSPACE = null;
   }
 
   if (options.watcher) {
@@ -762,8 +853,11 @@ export function attachWsServer(http_server, options = {}) {
     // @ts-expect-error add marker property
     ws.isAlive = true;
 
-    // Initialize subscription state for this connection
+    // Initialize subscription state for this connection and seed its workspace
+    // from a COPY of the current default so per-connection switches never
+    // mutate the shared default.
     ensureSubs(ws);
+    setConnWorkspace(ws, DEFAULT_WORKSPACE ? { ...DEFAULT_WORKSPACE } : null);
 
     ws.on('pong', () => {
       // @ts-expect-error marker
@@ -776,7 +870,10 @@ export function attachWsServer(http_server, options = {}) {
 
     ws.on('close', () => {
       try {
-        registry.onDisconnect(ws);
+        // Detach this connection from every workspace registry.
+        for (const reg of REGISTRIES.values()) {
+          reg.onDisconnect(ws);
+        }
       } catch {
         // ignore cleanup errors
       }
@@ -823,17 +920,20 @@ export function attachWsServer(http_server, options = {}) {
   }
 
   /**
-   * Change the current workspace and rebind the database watcher.
+   * Repoint the DEFAULT workspace for FUTURE connections. Does not affect
+   * existing connections (which each carry their own workspace) and performs
+   * no broadcast, registry clear, or watcher rebind. To switch an existing
+   * connection, that connection must send a `set-workspace` message.
    *
    * @param {string} new_root_dir - Absolute path to the new workspace root.
-   * @returns {{ changed: boolean, workspace: { root_dir: string, db_path: string } }}
+   * @returns {{ changed: boolean, workspace: Workspace }}
    */
   function setWorkspace(new_root_dir) {
     const resolved_root = path.resolve(new_root_dir);
     const new_db = resolveWorkspaceDatabase({ cwd: resolved_root });
-    const old_path = CURRENT_WORKSPACE?.db_path || '';
+    const old_path = DEFAULT_WORKSPACE?.db_path || '';
 
-    CURRENT_WORKSPACE = {
+    DEFAULT_WORKSPACE = {
       root_dir: resolved_root,
       db_path: new_db.path
     };
@@ -841,24 +941,10 @@ export function attachWsServer(http_server, options = {}) {
     const changed = new_db.path !== old_path;
 
     if (changed) {
-      log('workspace changed: %s → %s', old_path, new_db.path);
-
-      // Rebind the database watcher to the new workspace
-      if (DB_WATCHER) {
-        DB_WATCHER.rebind({ root_dir: resolved_root });
-      }
-
-      // Clear existing registry entries and refresh all subscriptions
-      registry.clear();
-
-      // Broadcast workspace-changed event to all clients
-      broadcast('workspace-changed', CURRENT_WORKSPACE);
-
-      // Schedule refresh of all active list subscriptions
-      scheduleListRefresh();
+      log('default workspace changed: %s → %s', old_path, new_db.path);
     }
 
-    return { changed, workspace: CURRENT_WORKSPACE };
+    return { changed, workspace: DEFAULT_WORKSPACE };
   }
 
   return {
@@ -928,7 +1014,9 @@ export async function handleMessage(ws, data) {
     const client_id = validation.id;
     const spec = validation.spec;
     const key = keyOf(spec);
-    const { entry: existing_entry } = registry.ensure(spec);
+    const root_dir = getConnWorkspace(ws)?.root_dir || '';
+    const reg = registryFor(root_dir);
+    const { entry: existing_entry } = reg.ensure(spec);
 
     /**
      * Reply with an error and avoid attaching the subscription when
@@ -944,7 +1032,7 @@ export async function handleMessage(ws, data) {
 
     if (existing_entry.cachedSnapshot !== null) {
       const s = ensureSubs(ws);
-      const { key: attached_key } = registry.attach(spec, ws);
+      const { key: attached_key } = reg.attach(spec, ws);
       s.list_subs?.set(client_id, { key: attached_key, spec });
 
       try {
@@ -958,7 +1046,7 @@ export async function handleMessage(ws, data) {
         log('cache hit snapshot send failed for %s: %o', attached_key, err);
         s.list_subs?.delete(client_id);
         try {
-          registry.detach(spec, ws);
+          reg.detach(spec, ws);
         } catch {
           // ignore detach errors
         }
@@ -971,7 +1059,7 @@ export async function handleMessage(ws, data) {
       ws.send(
         JSON.stringify(makeOk(req, { id: client_id, key: attached_key }))
       );
-      scheduleBackgroundRefresh(spec);
+      scheduleBackgroundRefresh(root_dir, spec);
       return;
     }
 
@@ -979,7 +1067,7 @@ export async function handleMessage(ws, data) {
     let initial = null;
     try {
       initial = await fetchListForSubscription(spec, {
-        cwd: CURRENT_WORKSPACE?.root_dir
+        cwd: root_dir || undefined
       });
     } catch (err) {
       log('subscribe-list snapshot error for %s: %o', key, err);
@@ -1002,24 +1090,24 @@ export async function handleMessage(ws, data) {
     }
 
     const s = ensureSubs(ws);
-    const { key: attached_key } = registry.attach(spec, ws);
+    const { key: attached_key } = reg.attach(spec, ws);
     s.list_subs?.set(client_id, { key: attached_key, spec });
 
     try {
-      await registry.withKeyLock(attached_key, async () => {
+      await reg.withKeyLock(attached_key, async () => {
         const items = applyClosedIssuesFilter(
           spec,
           initial ? initial.items : []
         );
-        void registry.applyItems(attached_key, items);
-        setCachedSnapshot(attached_key, items);
+        void reg.applyItems(attached_key, items);
+        setCachedSnapshot(root_dir, attached_key, items);
         emitSubscriptionSnapshot(ws, client_id, attached_key, items);
       });
     } catch (err) {
       log('subscribe-list snapshot error for %s: %o', attached_key, err);
       s.list_subs?.delete(client_id);
       try {
-        registry.detach(spec, ws);
+        reg.detach(spec, ws);
       } catch {
         // ignore detach errors
       }
@@ -1048,7 +1136,10 @@ export async function handleMessage(ws, data) {
     let removed = false;
     if (sub) {
       try {
-        removed = registry.detach(sub.spec, ws);
+        removed = registryFor(getConnWorkspace(ws)?.root_dir).detach(
+          sub.spec,
+          ws
+        );
       } catch {
         removed = false;
       }
@@ -1093,14 +1184,19 @@ export async function handleMessage(ws, data) {
       return;
     }
     // Pass empty string to clear assignee when requested
-    const res = await runBdInWorkspace(['update', id, '--assignee', assignee]);
+    const res = await runBdInWorkspace(ws, [
+      'update',
+      id,
+      '--assignee',
+      assignee
+    ]);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
       );
       return;
     }
-    const shown = await runBdJsonInWorkspace(['show', id, '--json']);
+    const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
     if (shown.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
@@ -1154,7 +1250,7 @@ export async function handleMessage(ws, data) {
     }
     args.push('--add-label', `lane:${values.execution_lane}`);
 
-    const res = await runBdInWorkspace(args);
+    const res = await runBdInWorkspace(ws, args);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(
@@ -1169,7 +1265,11 @@ export async function handleMessage(ws, data) {
       return;
     }
 
-    const shown = await runBdJsonInWorkspace(['show', validation.id, '--json']);
+    const shown = await runBdJsonInWorkspace(ws, [
+      'show',
+      validation.id,
+      '--json'
+    ]);
     const issue = normalizeShownIssue(shown.stdoutJson);
     if (shown.code !== 0 || !issue) {
       ws.send(
@@ -1215,14 +1315,14 @@ export async function handleMessage(ws, data) {
       );
       return;
     }
-    const res = await runBdInWorkspace(['update', id, '--status', status]);
+    const res = await runBdInWorkspace(ws, ['update', id, '--status', status]);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
       );
       return;
     }
-    const shown = await runBdJsonInWorkspace(['show', id, '--json']);
+    const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
     if (shown.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
@@ -1261,7 +1361,7 @@ export async function handleMessage(ws, data) {
       );
       return;
     }
-    const res = await runBdInWorkspace([
+    const res = await runBdInWorkspace(ws, [
       'update',
       id,
       '--priority',
@@ -1273,7 +1373,7 @@ export async function handleMessage(ws, data) {
       );
       return;
     }
-    const shown = await runBdJsonInWorkspace(['show', id, '--json']);
+    const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
     if (shown.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
@@ -1330,14 +1430,14 @@ export async function handleMessage(ws, data) {
             : field === 'notes'
               ? '--notes'
               : '--design';
-    const res = await runBdInWorkspace(['update', id, flag, value]);
+    const res = await runBdInWorkspace(ws, ['update', id, flag, value]);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
       );
       return;
     }
-    const shown = await runBdJsonInWorkspace(['show', id, '--json']);
+    const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
     if (shown.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
@@ -1388,7 +1488,7 @@ export async function handleMessage(ws, data) {
     if (typeof description === 'string' && description.length > 0) {
       args.push('-d', description);
     }
-    const res = await runBdInWorkspace(args);
+    const res = await runBdInWorkspace(ws, args);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
@@ -1426,7 +1526,7 @@ export async function handleMessage(ws, data) {
       );
       return;
     }
-    const res = await runBdInWorkspace(['dep', 'add', a, b]);
+    const res = await runBdInWorkspace(ws, ['dep', 'add', a, b]);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
@@ -1434,7 +1534,7 @@ export async function handleMessage(ws, data) {
       return;
     }
     const id = typeof view_id === 'string' && view_id.length > 0 ? view_id : a;
-    const shown = await runBdJsonInWorkspace(['show', id, '--json']);
+    const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
     if (shown.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
@@ -1470,7 +1570,7 @@ export async function handleMessage(ws, data) {
       );
       return;
     }
-    const res = await runBdInWorkspace(['dep', 'remove', a, b]);
+    const res = await runBdInWorkspace(ws, ['dep', 'remove', a, b]);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
@@ -1478,7 +1578,7 @@ export async function handleMessage(ws, data) {
       return;
     }
     const id = typeof view_id === 'string' && view_id.length > 0 ? view_id : a;
-    const shown = await runBdJsonInWorkspace(['show', id, '--json']);
+    const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
     if (shown.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
@@ -1514,14 +1614,14 @@ export async function handleMessage(ws, data) {
       );
       return;
     }
-    const res = await runBdInWorkspace(['label', 'add', id, label.trim()]);
+    const res = await runBdInWorkspace(ws, ['label', 'add', id, label.trim()]);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
       );
       return;
     }
-    const shown = await runBdJsonInWorkspace(['show', id, '--json']);
+    const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
     if (shown.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
@@ -1557,14 +1657,19 @@ export async function handleMessage(ws, data) {
       );
       return;
     }
-    const res = await runBdInWorkspace(['label', 'remove', id, label.trim()]);
+    const res = await runBdInWorkspace(ws, [
+      'label',
+      'remove',
+      id,
+      label.trim()
+    ]);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
       );
       return;
     }
-    const shown = await runBdJsonInWorkspace(['show', id, '--json']);
+    const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
     if (shown.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
@@ -1591,7 +1696,7 @@ export async function handleMessage(ws, data) {
       );
       return;
     }
-    const res = await runBdJsonInWorkspace(['comments', id, '--json']);
+    const res = await runBdJsonInWorkspace(ws, ['comments', id, '--json']);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
@@ -1624,13 +1729,13 @@ export async function handleMessage(ws, data) {
     }
 
     // Get git user name for author attribution
-    const author = await getGitUserNameInWorkspace();
+    const author = await getGitUserNameInWorkspace(ws);
     const args = ['comment', id, text.trim()];
     if (author) {
       args.push('--actor', author);
     }
 
-    const res = await runBdInWorkspace(args);
+    const res = await runBdInWorkspace(ws, args);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
@@ -1639,7 +1744,7 @@ export async function handleMessage(ws, data) {
     }
 
     // Return updated comments list
-    const comments = await runBdJsonInWorkspace(['comments', id, '--json']);
+    const comments = await runBdJsonInWorkspace(ws, ['comments', id, '--json']);
     if (comments.code !== 0) {
       ws.send(
         JSON.stringify(
@@ -1663,7 +1768,7 @@ export async function handleMessage(ws, data) {
       );
       return;
     }
-    const res = await runBdInWorkspace(['delete', id, '--force']);
+    const res = await runBdInWorkspace(ws, ['delete', id, '--force']);
     if (res.code !== 0) {
       ws.send(
         JSON.stringify(
@@ -1689,21 +1794,21 @@ export async function handleMessage(ws, data) {
       JSON.stringify(
         makeOk(req, {
           workspaces,
-          current: CURRENT_WORKSPACE
+          current: getConnWorkspace(ws)
         })
       )
     );
     return;
   }
 
-  // get-workspace: returns the current workspace
+  // get-workspace: returns this connection's current workspace
   if (req.type === 'get-workspace') {
     log('get-workspace');
-    ws.send(JSON.stringify(makeOk(req, CURRENT_WORKSPACE)));
+    ws.send(JSON.stringify(makeOk(req, getConnWorkspace(ws))));
     return;
   }
 
-  // set-workspace: payload { path: string }
+  // set-workspace: payload { path: string } — switches THIS connection only
   if (req.type === 'set-workspace') {
     log('set-workspace');
     const { path: workspace_path } = /** @type {any} */ (req.payload || {});
@@ -1724,7 +1829,7 @@ export async function handleMessage(ws, data) {
       return;
     }
 
-    // Resolve and validate the path
+    // Resolve and validate the path against the available workspace allowlist.
     const resolved = path.resolve(workspace_path);
     const allowed = new Set(
       getAvailableWorkspaces().map((workspace) => path.resolve(workspace.path))
@@ -1742,41 +1847,45 @@ export async function handleMessage(ws, data) {
       return;
     }
 
-    // Update workspace (this will rebind watcher, clear registry, broadcast change)
+    const old = getConnWorkspace(ws);
     const new_db = resolveWorkspaceDatabase({ cwd: resolved });
-    const old_path = CURRENT_WORKSPACE?.db_path || '';
 
-    CURRENT_WORKSPACE = {
-      root_dir: resolved,
-      db_path: new_db.path
-    };
+    // Detach this connection from its OLD workspace registry and drop its
+    // subscription bookkeeping so it only ever holds subscriptions in its
+    // current workspace registry.
+    const s = ensureSubs(ws);
+    const old_reg = registryFor(old?.root_dir);
+    if (s.list_subs) {
+      for (const { spec } of s.list_subs.values()) {
+        try {
+          old_reg.detach(spec, ws);
+        } catch {
+          // ignore detach errors
+        }
+      }
+      s.list_subs.clear();
+    }
+    if (s.list_revisions) {
+      s.list_revisions.clear();
+    }
 
-    const changed = new_db.path !== old_path;
+    setConnWorkspace(ws, { root_dir: resolved, db_path: new_db.path });
+
+    const changed = new_db.path !== (old?.db_path || '');
 
     if (changed) {
       log(
-        'workspace changed via set-workspace: %s → %s',
-        old_path,
+        'connection workspace changed via set-workspace: %s → %s',
+        old?.db_path || '',
         new_db.path
       );
-
-      // Rebind the database watcher
-      if (DB_WATCHER) {
-        DB_WATCHER.rebind({ root_dir: resolved });
-      }
-
-      // Clear existing registry entries
-      registry.clear();
-
-      // Schedule refresh of all active list subscriptions
-      scheduleListRefresh();
     }
 
     ws.send(
       JSON.stringify(
         makeOk(req, {
           changed,
-          workspace: CURRENT_WORKSPACE
+          workspace: getConnWorkspace(ws)
         })
       )
     );
@@ -1786,7 +1895,8 @@ export async function handleMessage(ws, data) {
   if (req.type === 'sync-workspace') {
     log('sync-workspace');
 
-    const root_snapshot = CURRENT_WORKSPACE?.root_dir;
+    const conn_ws = getConnWorkspace(ws);
+    const root_snapshot = conn_ws?.root_dir;
     if (!root_snapshot) {
       ws.send(
         JSON.stringify(makeError(req, 'server_error', 'No active workspace'))
@@ -1808,7 +1918,7 @@ export async function handleMessage(ws, data) {
       return;
     }
 
-    const workspace_snapshot = { ...CURRENT_WORKSPACE };
+    const workspace_snapshot = { ...conn_ws };
 
     try {
       const pull_res = await runBd(['dolt', 'pull'], {
@@ -1893,7 +2003,8 @@ export async function handleMessage(ws, data) {
   if (req.type === 'git-pull-workspace') {
     log('git-pull-workspace');
 
-    const root_snapshot = CURRENT_WORKSPACE?.root_dir;
+    const conn_ws = getConnWorkspace(ws);
+    const root_snapshot = conn_ws?.root_dir;
     if (!root_snapshot) {
       ws.send(
         JSON.stringify(makeError(req, 'server_error', 'No active workspace'))
@@ -1915,7 +2026,7 @@ export async function handleMessage(ws, data) {
       return;
     }
 
-    const workspace_snapshot = { ...CURRENT_WORKSPACE };
+    const workspace_snapshot = { ...conn_ws };
 
     try {
       const res = await runShell('git', ['pull', '--rebase', '--autostash'], {

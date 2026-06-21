@@ -2,7 +2,12 @@ import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { runBd, runBdJson, runShell } from './bd.js';
 import { fetchListForSubscription } from './list-adapters.js';
-import { attachWsServer, handleMessage } from './ws.js';
+import { registerWorkspace } from './registry-watcher.js';
+import {
+  __resetRegistriesForTest,
+  attachWsServer,
+  handleMessage
+} from './ws.js';
 
 vi.mock('./bd.js', () => ({
   runBdJson: vi.fn(),
@@ -26,6 +31,7 @@ vi.mock('./list-adapters.js', () => ({
 
 beforeEach(() => {
   vi.useFakeTimers();
+  __resetRegistriesForTest();
   /** @type {import('vitest').Mock} */ (runBd).mockReset();
   /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
   /** @type {import('vitest').Mock} */ (runShell).mockReset();
@@ -33,6 +39,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetRegistriesForTest();
   vi.useRealTimers();
 });
 
@@ -382,13 +389,16 @@ describe('git-pull-workspace handler', () => {
     }
   });
 
-  test('uses snapshotted root_dir even if CURRENT_WORKSPACE changes mid-op', async () => {
+  test('uses snapshotted root_dir even if this connection switches workspace mid-op', async () => {
     const server = createServer();
-    const { wss, setWorkspace } = attachWsServer(server, {
+    const { wss } = attachWsServer(server, {
       path: '/ws',
       root_dir: '/repo-a',
       refresh_debounce_ms: 50
     });
+
+    // Make /repo-b a valid set-workspace target for this connection.
+    registerWorkspace({ path: '/repo-b', database: '/repo-b/.beads/beads.db' });
 
     try {
       let release = () => {};
@@ -425,15 +435,27 @@ describe('git-pull-workspace handler', () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      // mid-op workspace change
-      setWorkspace('/repo-b');
+      // mid-op: switch THIS connection's workspace via a set-workspace message
+      await handleMessage(
+        /** @type {any} */ (ws),
+        Buffer.from(
+          JSON.stringify({
+            id: 'set-mid',
+            type: 'set-workspace',
+            payload: { path: '/repo-b' }
+          })
+        )
+      );
 
       release();
       await inflight;
 
-      const reply = JSON.parse(ws.sent[0]);
+      // The git-pull reply (found by id, since set-workspace also replied) must
+      // use the snapshot root captured before the mid-op switch.
+      const reply = ws.sent
+        .map((m) => JSON.parse(m))
+        .find((o) => o && o.id === 'gp-snap');
       expect(reply.ok).toBe(true);
-      // Response uses snapshot root, not the new CURRENT_WORKSPACE
       expect(reply.payload.workspace.root_dir).toBe('/repo-a');
     } finally {
       await closeSocketServer(wss, server);

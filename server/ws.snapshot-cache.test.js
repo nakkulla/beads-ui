@@ -1,8 +1,14 @@
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { fetchListForSubscription } from './list-adapters.js';
-import { keyOf, registry } from './subscriptions.js';
-import { attachWsServer, handleMessage, scheduleListRefresh } from './ws.js';
+import { keyOf } from './subscriptions.js';
+import {
+  __resetRegistriesForTest,
+  attachWsServer,
+  handleMessage,
+  registryFor,
+  scheduleListRefresh
+} from './ws.js';
 
 vi.mock('./list-adapters.js', () => ({
   fetchListForSubscription: vi.fn(async () => ({
@@ -14,9 +20,14 @@ vi.mock('./list-adapters.js', () => ({
   }))
 }));
 
+// With no explicit root_dir, attachWsServer seeds DEFAULT_WORKSPACE from
+// process.cwd(); connections in these tests therefore use the workspace
+// registry keyed by process.cwd().
+const activeRegistry = () => registryFor(process.cwd());
+
 describe('snapshot cache', () => {
   afterEach(() => {
-    registry.clear();
+    __resetRegistriesForTest();
     vi.useRealTimers();
   });
 
@@ -50,7 +61,7 @@ describe('snapshot cache', () => {
     );
 
     const key = keyOf({ type: 'all-issues' });
-    const entry = registry.get(key);
+    const entry = activeRegistry().get(key);
     expect(entry?.cachedSnapshot).not.toBeNull();
     expect(entry?.cachedSnapshot?.length).toBe(2);
   });
@@ -102,7 +113,7 @@ describe('snapshot cache', () => {
     scheduleListRefresh();
     await vi.advanceTimersByTimeAsync(60);
 
-    const entry = registry.get(key);
+    const entry = activeRegistry().get(key);
     expect(entry?.cachedSnapshot?.length).toBe(2);
     const ids = entry?.cachedSnapshot?.map((it) => it.id).sort();
     expect(ids).toEqual(['A', 'C']);
@@ -157,7 +168,7 @@ describe('snapshot cache', () => {
     await vi.advanceTimersByTimeAsync(60);
     await Promise.resolve();
 
-    registry.clear();
+    activeRegistry().clear();
 
     resolve_refresh({
       ok: true,
@@ -165,7 +176,7 @@ describe('snapshot cache', () => {
     });
     await Promise.resolve();
 
-    const entry = registry.get(key);
+    const entry = activeRegistry().get(key);
     expect(entry?.cachedSnapshot ?? null).toBeNull();
   });
 
@@ -332,7 +343,7 @@ describe('snapshot cache', () => {
     await vi.advanceTimersByTimeAsync(1);
 
     const key = keyOf({ type: 'resolved-issues' });
-    const entry = registry.get(key);
+    const entry = activeRegistry().get(key);
     const ids = entry?.cachedSnapshot?.map((it) => it.id).sort();
     expect(ids).toEqual(['A', 'D']);
   });

@@ -1,8 +1,14 @@
 import { createServer } from 'node:http';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { fetchListForSubscription } from './list-adapters.js';
-import { keyOf, registry } from './subscriptions.js';
-import { attachWsServer, handleMessage, scheduleListRefresh } from './ws.js';
+import { keyOf } from './subscriptions.js';
+import {
+  __resetRegistriesForTest,
+  attachWsServer,
+  handleMessage,
+  registryFor,
+  scheduleListRefresh
+} from './ws.js';
 
 // Mock adapters BEFORE importing ws.js to ensure the mock is applied
 vi.mock('./list-adapters.js', () => ({
@@ -18,8 +24,18 @@ vi.mock('./list-adapters.js', () => ({
   })
 }));
 
+// Seed DEFAULT_WORKSPACE from process.cwd() so bare-socket connections
+// (used directly without going through wss.on('connection')) resolve a
+// deterministic per-workspace registry keyed by process.cwd().
+const activeRegistry = () => registryFor(process.cwd());
+
+beforeEach(() => {
+  __resetRegistriesForTest();
+  attachWsServer(createServer(), { path: '/ws', refresh_debounce_ms: 50 });
+});
+
 afterEach(() => {
-  registry.clear();
+  __resetRegistriesForTest();
   vi.useRealTimers();
 });
 
@@ -134,7 +150,7 @@ describe('ws list subscriptions', () => {
     expect(snapshot_envelope.payload.issues.length).toBeGreaterThan(0);
 
     const key = keyOf({ type: 'in-progress-issues' });
-    const entry = registry.get(key);
+    const entry = activeRegistry().get(key);
     const before_size = entry ? entry.subscribers.size : 0;
     expect(before_size).toBeGreaterThanOrEqual(1);
   });
@@ -207,7 +223,7 @@ describe('ws list subscriptions', () => {
     );
 
     const key = keyOf({ type: 'all-issues' });
-    const entry = registry.get(key);
+    const entry = activeRegistry().get(key);
     const before = entry ? entry.subscribers.size : 0;
     expect(before).toBeGreaterThanOrEqual(1);
 
@@ -223,7 +239,7 @@ describe('ws list subscriptions', () => {
       )
     );
 
-    const entry2 = registry.get(key);
+    const entry2 = activeRegistry().get(key);
     const after_size = entry2 ? entry2.subscribers.size : 0;
     expect(after_size).toBeLessThan(before);
 
@@ -268,7 +284,7 @@ describe('ws list subscriptions', () => {
     );
 
     const key = keyOf({ type: 'closed-issues', params: { since } });
-    const entry = registry.get(key);
+    const entry = activeRegistry().get(key);
     const ids = entry ? Array.from(entry.itemsById.keys()).sort() : [];
     expect(ids).toEqual(['recent']);
   });
