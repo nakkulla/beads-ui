@@ -809,6 +809,54 @@ function applyClosedIssuesFilter(spec, items) {
 }
 
 /**
+ * WebSocket Origin allowlist — browser cross-site WS hijack defense.
+ *
+ * Workspace mutations/queries are reachable over the WS protocol, so a
+ * malicious web page the user visits must not be able to open a WS to this
+ * server from the user's browser. Browsers always attach an `Origin` header to
+ * WS handshakes, so a present-but-disallowed Origin (including the sandboxed
+ * `"null"` origin) is rejected. An ABSENT Origin denotes a non-browser client
+ * (CLI/tests); those are governed by network isolation (tailnet-only + ACL),
+ * not by this check, so they are allowed here.
+ *
+ * Allowed origins come from `BDUI_ALLOWED_ORIGINS` (comma-separated exact
+ * origins, e.g. `https://mong-nas.<tailnet>.ts.net`). When unset, only loopback
+ * dev origins are permitted (fail-closed for remote origins).
+ *
+ * @param {string | undefined} origin - The request `Origin` header value.
+ * @returns {boolean}
+ */
+export function isOriginAllowed(origin) {
+  // Header absent → non-browser client; not the browser-hijack threat.
+  if (origin === undefined) {
+    return true;
+  }
+  // Present but empty or the sandboxed "null" origin → reject.
+  if (typeof origin !== 'string' || origin.length === 0 || origin === 'null') {
+    return false;
+  }
+  const allowed = (process.env.BDUI_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (allowed.length > 0) {
+    return allowed.includes(origin);
+  }
+  // No explicit allowlist configured → permit loopback dev origins only.
+  try {
+    const { hostname } = new URL(origin);
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '::1' ||
+      hostname === '[::1]'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Attach a WebSocket server to an existing HTTP server.
  *
  * @param {Server} http_server
@@ -844,7 +892,18 @@ export function attachWsServer(http_server, options = {}) {
     }
   }
 
-  const wss = new WebSocketServer({ server: http_server, path: ws_path });
+  const wss = new WebSocketServer({
+    server: http_server,
+    path: ws_path,
+    verifyClient: (info, cb) => {
+      if (isOriginAllowed(info.origin)) {
+        cb(true);
+        return;
+      }
+      log('WS upgrade rejected: disallowed Origin %o', info.origin);
+      cb(false, 403, 'Forbidden origin');
+    }
+  });
   CURRENT_WSS = wss;
 
   // Heartbeat: track if client answered the last ping
