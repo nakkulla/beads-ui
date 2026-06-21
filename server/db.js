@@ -119,6 +119,13 @@ export function findNearestBeadsDb(start) {
       if (dbs.length > 0) {
         return path.join(beads_dir, dbs[0]);
       }
+      // Workspace boundary: a `.beads` with `metadata.json` but no local `*.db`
+      // marks a non-SQLite workspace (e.g. Dolt/server mode). Do NOT borrow an
+      // ancestor workspace's SQLite DB onto it — stop here so callers fall back
+      // to metadata/server resolution instead of forcing an embedded DB.
+      if (entries.some((e) => e.isFile() && e.name === 'metadata.json')) {
+        return null;
+      }
     } catch {
       // ignore and walk up
     }

@@ -62,6 +62,28 @@ describe('resolveDbPath', () => {
     expect(res.source).toBe('nearest');
   });
 
+  test('stops at a metadata-only (Dolt/server) workspace, not ancestor SQLite db', () => {
+    const root = mkdtemp();
+    // Ancestor SQLite workspace with a local *.db.
+    const root_beads = path.join(root, '.beads');
+    fs.mkdirSync(root_beads);
+    fs.writeFileSync(path.join(root_beads, 'beads.db'), '');
+    // Nested Dolt/server workspace: metadata.json present, no local *.db.
+    const nested = path.join(root, 'workspaces', 'dotfiles');
+    const nested_beads = path.join(nested, '.beads');
+    fs.mkdirSync(nested_beads, { recursive: true });
+    fs.writeFileSync(
+      path.join(nested_beads, 'metadata.json'),
+      JSON.stringify({ backend: 'dolt', dolt_mode: 'server' })
+    );
+
+    // Must NOT borrow the ancestor's SQLite db onto the Dolt workspace
+    // (doing so forces BEADS_DB and breaks server-mode with an embedded build).
+    expect(findNearestBeadsDb(nested)).toBeNull();
+    const res = resolveDbPath({ cwd: nested, env: {} });
+    expect(res.source).not.toBe('nearest');
+  });
+
   test('falls back to ~/.beads/default.db when none found', async () => {
     // Mock os.homedir to a deterministic location using spy
     const home = mkdtemp();
