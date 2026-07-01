@@ -54,4 +54,3 @@
 # - github.repo
 sync:
   git-remote: origin
-  remote-url: https://doltremoteapi.dolthub.com/nakkulla/beads-ui-beads
