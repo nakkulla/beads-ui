@@ -154,8 +154,9 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
 4. **Artifacts**: `spec_id`·`plan` 경로(축약 표시 + 복사 버튼), `pr_url` → **PR #번호** 링크
    (URL 끝 숫자 파싱, 실패 시 "PR" 텍스트; `safeWorkflowUrl` 검증 유지). bare `handoff`
    행은 폐기 키로 Legacy행.
-5. **Flags**: `human_decision_required`·`brainstorming_required`·`skill_creator_required`가
-   `yes`일 때만 경고 톤 행 표시.
+5. **Flags**: `human_decision_required`·`brainstorming_required`·`skill_creator_required`는
+   값이 존재하면 항상 행을 표시한다 — `yes`는 경고 톤, `no`는 일반 톤(§2.2 불변조건 준수:
+   계약상 유효 enum 값을 비표시로 소실시키지 않음).
 6. **Review runtime** 편집 셀렉트(default(config)/codex/claude) — 유일한 쓰기. 저장은
    `update-review-runtime`, 실패 시 기존 토스트 + 드래프트 유지 패턴.
 7. **Legacy 접힘**: 폐기 키·`lane:*` 라벨의 key=value 나열(read-only, 개수 뱃지).
@@ -184,7 +185,11 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
   (카드 클릭 내비게이션과 이벤트 분리 — stopPropagation).
 - **라벨 행**: `has:*`·`reviewed:*`는 요약에 흡수되므로 보드 카드에서 숨김.
   `needs:*`·일반 라벨만 기존 표시 정책으로 렌더. (List·상세의 라벨 표시는 현행 유지.)
-- workflow 메타데이터 없는 bead: 트랙·요약 행 생략(카드 낮게 유지).
+- 트랙·요약 행 생략 조건은 "메타데이터 없음"이 아니라 **workflow signal 없음**이다 —
+  signal = `next_gate`·`resolveSpecId(issue)`·`metadata.plan`·`pr_url` 중 하나 이상 또는
+  `has:*`/`reviewed:*` 라벨 존재. `reviewed:*` 라벨만 있는 bead(구 bead 포함)도 S/P/I
+  요약을 렌더한다(라벨 행 흡수 규칙과 짝 — 흡수된 증거가 보드에서 사라지지 않도록).
+  게이트 트랙은 `next_gate` 있을 때만. signal이 전혀 없으면 두 행 모두 생략(카드 낮게 유지).
 - lane/route 칩·`LANE_CHIP_LABELS`·route 칩 로직 제거.
 
 ### 5.2 컬럼 모드 토글 (목업 board-columns B안)
@@ -250,6 +255,10 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
 
 - 피커에 "+ 등록" 버튼 → 다이얼로그: (a) 서버가 `scan_roots` 재스캔으로 찾은 미등록
   워크스페이스 목록에서 선택, (b) 절대경로 직접 입력.
+- 신규 WS 메시지 `list-workspace-candidates`: 서버가 `scan_roots` 재스캔
+  (`discoverWorkspaces` 재사용) 후 registry에 **없는** 항목만 `{ path, name }[]`로 반환 —
+  등록 다이얼로그 (a)의 데이터 소스(현행 `list-workspaces`는 등록된 워크스페이스만
+  반환하므로 별도 메시지가 필요).
 - 신규 WS 메시지 `register-workspace { path }`: 서버가 `resolveWorkspaceDatabase`로 `.beads`
   유효성 검증 후 registry 등록(기존 `registerWorkspace()` 재사용), 갱신된 목록 반환.
   실패 시 사유 메시지(경로 없음/beads 아님). 기존 HTTP `/api/register-workspace`는 유지.
@@ -315,14 +324,17 @@ dotfiles 레포의 별도 follow-up Bead로 추적하며(생성은 workflow 라�
 - **신규**: 등록부-계약 동등성(§2.4, 전 키 type/kind 포함), 게이트 트랙 채색(커서/blocked
   유도/부재 + blocked 추정 경계 케이스: 게이트 명시 스킵·앞 게이트 증거 없이 뒤 증거 존재·
   pr_url 이후 blocked·증거 전무), S/P/I 3단계(✓=증거 존재, spec 소스 우선순위),
-  PR #번호 파싱·폴백, 게이트 모드 그룹핑(next_gate 배정·closed 제외·미보유 제외),
+  PR #번호 파싱·폴백, workflow signal 렌더 조건(`reviewed:*` 라벨만 있는 bead의 S/P/I
+  렌더·signal 전무 시 생략), Flags `yes`/`no` 행 렌더(경고 톤/일반 톤),
+  게이트 모드 그룹핑(next_gate 배정·closed 제외·미보유 제외),
   child 판별(점 ID)·rollup 카운트·인라인 전개(중첩 점 ID·closed 포함 카운트·tracked 후손
   중복 표시·필터 비적용 케이스 포함), Legacy/기타 접힘 분류(3계층 불변조건 —
   미등록 키만 있는 bead도 카드 렌더), **관리 라벨 쓰기 거부**(`label-add`/`label-remove`
   denylist), `update-workflow-settings` 제거 확인(unknown type 에러), `update-review-runtime`
   검증/readback/unset, 폐기 키 어떤 경로로도 미기입, 보드 필터 공유, Deferred 영속화,
   Blocked↔Ready 드롭 불가, 재연결 `set-workspace` 재선언·실패 폴백, 부트스트랩 복원 우선순위,
-  `list-workspaces` backend/has_git, `register-workspace` 검증, 폴링(single-flight·동시성 캡·
+  `list-workspaces` backend/has_git, `list-workspace-candidates`(미등록 항목만 반환),
+  `register-workspace` 검증, 폴링(single-flight·동시성 캡·
   빈 리스트 포함 변경 없음 push 생략·주기 오류 무시), `/healthz` 캐시·503.
 - **갱신**: `board.test.js`(lane/route 칩 테스트 제거→트랙/요약), `detail.test.js`
   (workflow settings 편집 스위트 제거→신 카드), `ws.mutations.test.js`(settings 스위트 교체),
