@@ -42,10 +42,16 @@ Legacy 정리 쓰기 액션(CLI 몫), `next_gate` 편집(계약상 display-only)
 
 - `GATES`: `['spec_review','plan_review','execution','implementation_review','pr_delivery','pr_finish']`
   — 순서 = 진행 순서. `NEXT_GATE_VALUES = [...GATES, 'blocked']`.
-- `METADATA_KEYS`: 키 → `{ section, label, kind }`. `kind`는 `sha | hash | path | url | enum |
-  integer | diff-range | flag`. enum 키는 `values` 포함(`review_runtime: ['codex','claude']`,
+- `METADATA_KEYS`: 키 → `{ section, label, kind, display? }`. `kind`는 **계약 `type`과 1:1
+  매핑되는 값만** 사용: `sha | hash | path | url | enum | integer | diff-range`.
+  enum 키는 `values` 포함(`review_runtime: ['codex','claude']`,
   `*_review_verdict: ['APPROVE','APPROVE_WITH_CHANGES']`, `*_review_final_source:
-  ['external','self']`, flag 3종: `['yes','no']`).
+  ['external','self']`, flag 3종 `human_decision_required` 등: `['yes','no']` — 계약상
+  **enum**이며, 경고 행 표시는 별도 표시 속성 `display: 'flag'`로 분리한다. §2.4 동등성
+  테스트는 `kind`/`values`만 계약과 대조하고 `display`는 대상이 아니다).
+- `resolveSpecId(issue)` 공용 헬퍼: `metadata.spec_id` 우선, top-level `issue.spec_id`는
+  bd JSON 호환 fallback — 보드 S/P/I·상세 Artifacts·has:spec 판정이 전부 이 헬퍼를 공유
+  (보드/상세가 서로 다른 "spec 존재" 판정을 하지 않도록).
 - `section` 분류: `core`(next_gate, execution_base_sha, review_runtime) /
   `evidence.spec|plan|impl`(reviewed_at_sha, spec_reviewed_sha(spec 한정 legacy 대체 키),
   content_hash, freshness_checked_at_sha, handoff 계열, verdict, final_source,
@@ -60,6 +66,9 @@ Legacy 정리 쓰기 액션(CLI 몫), `next_gate` 편집(계약상 display-only)
 - `EDITABLE_KEYS = ['review_runtime']` — UI 쓰기 허용 유일 키.
 - `MANAGED_LABEL_RULES`: 워크플로우 관리 라벨 판별(prefix `reviewed:`·`has:`·`needs:`·`lane:`,
   정확 일치 `pr`·`skill-related`) — 라벨 쓰기 가드(§3)와 클라이언트 편집 UI가 공유.
+  **의도적 광폭 가드**: 계약의 derived `needs:*`는 현재 3종뿐이지만 prefix 전체를 예약해
+  미래 derived 라벨 추가 시에도 UI 쓰기가 자동 차단되도록 한다(계약 3종 정확 일치보다
+  넓게 막는 정책임을 명시).
 - 모듈은 npm 패키징에 포함되어야 한다: `package.json` `files`에 `shared` 추가
   (서버가 top-level 공유 모듈을 런타임 import하므로 누락 시 패키징 실행 파손).
 
@@ -122,8 +131,10 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
 기존 "Workflow settings" 카드를 **Workflow 카드**로 교체. 사이드 패널 내 구성(위→아래):
 
 1. **게이트 트랙**: 6점 + 현재 게이트명. 채색 규칙 —
-   - `next_gate`가 게이트값이면: 진행 순서상 커서 이전 게이트 = 초록(done), 커서 = 보라(cur),
-     이후 = 회색.
+   - `next_gate`가 게이트값이면: 진행 순서상 커서 이전 게이트 = 초록, 커서 = 보라,
+     이후 = 회색. 초록의 의미는 **"커서 기준 통과(명시 스킵 포함)"**이지 리뷰 증거 완료가
+     아니다 — 증거 여부는 S/P/I 요약(§5.1)과 evidence 블록이 담당하며, 트랙 툴팁에 이 구분
+     ("커서 위치 기준, 스킵 포함")을 명시한다.
    - `next_gate=blocked`이면: done 판정을 증거로 유도(reviewed:spec → spec_review done,
      reviewed:plan → plan_review done, reviewed:impl → execution·implementation_review done,
      pr_url → pr_delivery done), 첫 미완 게이트 점을 빨강 + 게이트명 자리에 빨간 "blocked".
@@ -186,11 +197,19 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
 - **게이트 모드**: 컬럼 = 6게이트 + blocked(빨강 톤). 표시 대상 = `next_gate` 보유 &&
   status ≠ closed. 컬럼 배정 = `next_gate` 값. **드래그 없음**(read-only — next_gate는
   계약상 display-only 커서).
-- **child 처리(목업 gate-children A+전개 하이브리드)**: child = ID가 `<parent-id>.` 접두인
-  계층 이슈(bd `--parent` 점 표기). 게이트 모드에서 자기 `next_gate`가 없는 child는 자기
-  카드를 갖지 않는다. 대신 parent 카드 하단에 진행 바 + `닫힘 n/전체 m` 카운트를 표시하고,
-  그 영역 클릭 시 카드 안에 child 목록(제목·상태)이 인라인 전개/접힘된다(카드 내비게이션과
-  이벤트 분리). child가 자기 `next_gate`를 가지면 일반 규칙대로 자기 카드로 표시된다.
+- **child 처리(목업 gate-children A+전개 하이브리드)** — 집합을 분리해 정의한다:
+  - **소스 집합**: 상태 모드와 동일한 보드 구독 데이터 전체(게이트 모드용 추가 fetch 없음).
+  - **카드 집합**(자기 카드 렌더): 소스 집합 중 `next_gate` 보유 && status ≠ closed.
+    child도 자기 `next_gate`가 있으면 이 규칙으로 자기 카드를 가진다.
+  - **rollup 집합**: 카드 집합의 각 이슈에 대해 ID가 `<자기 ID>.` 접두인 **모든 후손**
+    (중첩 점 표기 `X.1.2` 포함). 진행 카운트 `n/m` = 후손 중 closed 수 / 후손 전체 수.
+    자기 카드를 가진 tracked 후손도 카운트에 포함(진행률 지표이므로 집합 중복 허용).
+  - **인라인 전개 목록** = rollup 집합 전체(제목·상태, closed 포함), 클릭 이벤트는 카드
+    내비게이션과 분리.
+  - **필터**: search/type 필터(§5.3)는 카드 집합에만 적용, rollup 카운트·전개 목록에는
+    미적용(부분 진행률로 오독 방지).
+  - parent 자신이 `next_gate` 미보유면 게이트 보드에 카드가 없으므로 rollup도 없음 —
+    그 경우 진행은 상태 모드에서 본다(명시적 비범위).
 - 게이트 모드 정렬: 컬럼 내 `created_at` desc(상태 모드와 동일 비교기 재사용).
 
 ### 5.3 보드 필터·영속화
@@ -267,6 +286,11 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
 
 ### 7.2 dotfiles 소유 (요구사항만 — 구현은 dotfiles 레포 별도 커밋)
 
+**Disposition(확정)**: 아래 3건은 **UI-32ih의 수용 기준·beads-ui PR 범위에서 제외**(비차단).
+dotfiles 레포의 별도 follow-up Bead로 추적하며(생성은 workflow 라우팅 경유), beads-ui
+배포(§10)는 이 3건 없이도 진행 가능하다 — 재시작 옵션 미구현 시 runbook의 수동 재시작
+경로를 쓴다.
+
 - `beads-ui-supervise.sh`·`beads-ui-expose.sh`의 준비/상태 판정을 `/healthz` 호출로 일원화
   (현행: `/` 200 + 셸 `bd list` 사이드채널). 단 §7.1의 readiness 의미론을 따를 것 —
   healthz 실패(예: 중앙 dolt 장애)가 supervisor의 무한 재시작 루프(churn)로 이어지지 않도록
@@ -282,7 +306,8 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
 - `register-workspace` 실패: 다이얼로그 내 사유 표시(경로 검증 실패/이미 등록됨).
 - PR 번호 파싱 실패: 칩 텍스트 "PR"로 폴백(링크는 유지).
 - 폴링 bd 오류: 해당 주기 skip + debug 로그(연쇄 재시도로 부하 증폭 금지).
-- `/healthz` 실패: 503 + checks 상세 — supervisor가 재시작 판단에 사용.
+- `/healthz` 실패: 503 + checks 상세 — readiness/status 판정용(§7.1). supervisor 프로세스
+  재시작 트리거가 아니다(DB 장애 시 재시작 churn 방지).
 - 등록부에 없는 enum 값(예: 구 bead의 이상값): invalid 스타일 행으로 표시(숨기지 않음).
 
 ## 9. 테스트 전략
@@ -291,7 +316,8 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
   유도/부재 + blocked 추정 경계 케이스: 게이트 명시 스킵·앞 게이트 증거 없이 뒤 증거 존재·
   pr_url 이후 blocked·증거 전무), S/P/I 3단계(✓=증거 존재, spec 소스 우선순위),
   PR #번호 파싱·폴백, 게이트 모드 그룹핑(next_gate 배정·closed 제외·미보유 제외),
-  child 판별(점 ID)·rollup 카운트·인라인 전개, Legacy/기타 접힘 분류(3계층 불변조건 —
+  child 판별(점 ID)·rollup 카운트·인라인 전개(중첩 점 ID·closed 포함 카운트·tracked 후손
+  중복 표시·필터 비적용 케이스 포함), Legacy/기타 접힘 분류(3계층 불변조건 —
   미등록 키만 있는 bead도 카드 렌더), **관리 라벨 쓰기 거부**(`label-add`/`label-remove`
   denylist), `update-workflow-settings` 제거 확인(unknown type 에러), `update-review-runtime`
   검증/readback/unset, 폐기 키 어떤 경로로도 미기입, 보드 필터 공유, Deferred 영속화,
@@ -302,7 +328,8 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
   (workflow settings 편집 스위트 제거→신 카드), `ws.mutations.test.js`(settings 스위트 교체),
   `config.test.js`(allowlist→등록부), persist/navigation 테스트.
 - **최종**: `npm run all`(lint·tsc·vitest·prettier — 현행 스크립트에 build 없음) green
-  **+ `npm run build`**로 `app/main.bundle.js`(.map) 갱신 확인. 로컬 서버로 구 bead
+  **+ `npm run build`**로 `app/main.bundle.js`(.map) 갱신 확인
+  **+ `npm pack --dry-run`**으로 `shared/` 패키징 포함 확인(§2.1 요구). 로컬 서버로 구 bead
   (폐기 값 보유 — Legacy 표시)·신 bead(`next_gate`·증거 — 트랙/카드 표시) 양쪽 렌더 확인.
   UI 편집 경로에서 폐기 키가 중앙 dolt에 기입되지 않음을 `bd show --json` readback으로 확인.
 - **최종 안전 수용**: 폐기 키 6종·followup/source/target 계열·`lane:*` 라벨을 **쓰는** 코드
