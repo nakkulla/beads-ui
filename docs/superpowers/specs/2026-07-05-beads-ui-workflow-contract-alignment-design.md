@@ -1,7 +1,9 @@
 # beads-ui 신 workflow 계약 정합 + 전면 개선 — 설계 스펙
 
 - **날짜:** 2026-07-05
-- **상태:** 설계 승인됨 (브레인스토밍 세션, 목업 기반 확정)
+- **상태:** 설계 승인됨 (브레인스토밍 세션, 목업 기반 확정) + 2026-07-06 spec-final advisor
+  패널(default gpt-5.5 + Pro gpt-5.5-pro, 양측 adjust) 지적 12건 반영
+- **Bead:** UI-32ih (epic)
 - **정본 계약:** dotfiles `docs/contracts/workflow.yaml` (PR2 `d3998ef6`에서 도입, 2026-07-05 기준 최신 확인)
 - **참고:** `docs/superpowers/plans/2026-07-02-workflow-contract-slim-re-registration.md`
   (구 실행 플랜 — 탐색 결과·배포 절차 참고용. 본 스펙이 설계를 대체하며, 구 플랜의
@@ -41,7 +43,7 @@ Legacy 정리 쓰기 액션(CLI 몫), `next_gate` 편집(계약상 display-only)
 - `GATES`: `['spec_review','plan_review','execution','implementation_review','pr_delivery','pr_finish']`
   — 순서 = 진행 순서. `NEXT_GATE_VALUES = [...GATES, 'blocked']`.
 - `METADATA_KEYS`: 키 → `{ section, label, kind }`. `kind`는 `sha | hash | path | url | enum |
-  int | flag`. enum 키는 `values` 포함(`review_runtime: ['codex','claude']`,
+  integer | diff-range | flag`. enum 키는 `values` 포함(`review_runtime: ['codex','claude']`,
   `*_review_verdict: ['APPROVE','APPROVE_WITH_CHANGES']`, `*_review_final_source:
   ['external','self']`, flag 3종: `['yes','no']`).
 - `section` 분류: `core`(next_gate, execution_base_sha, review_runtime) /
@@ -56,6 +58,10 @@ Legacy 정리 쓰기 액션(CLI 몫), `next_gate` 편집(계약상 display-only)
 - `EVENT_LABELS`(`reviewed:spec/plan/impl`, `skill-related`)·`DERIVED_LABELS`(has:spec,
   has:plan, needs:* 3종, pr — 계약의 derived 정의 재기술).
 - `EDITABLE_KEYS = ['review_runtime']` — UI 쓰기 허용 유일 키.
+- `MANAGED_LABEL_RULES`: 워크플로우 관리 라벨 판별(prefix `reviewed:`·`has:`·`needs:`·`lane:`,
+  정확 일치 `pr`·`skill-related`) — 라벨 쓰기 가드(§3)와 클라이언트 편집 UI가 공유.
+- 모듈은 npm 패키징에 포함되어야 한다: `package.json` `files`에 `shared` 추가
+  (서버가 top-level 공유 모듈을 런타임 import하므로 누락 시 패키징 실행 파손).
 
 ### 2.2 렌더링 3계층 (핵심 불변조건)
 
@@ -86,9 +92,12 @@ vitest `test/workflow-registry.contract.test.js`: dotfiles 계약 파일을
 에서 읽어, 존재할 때만 다음을 검증하고 없으면 skip(CI/NAS 안전):
 
 - 계약 `metadata.keys` 키셋 == 등록부 `METADATA_KEYS` 키셋.
-- 계약 enum 값 == 등록부 enum 값 (`next_gate`, verdict, final_source, review_runtime, flag).
+- **전 키의 type/kind 동등성** — enum 값만이 아니라 `sha`·`hash`·`path`·`url`·`integer`·
+  `diff-range`·enum 전부(계약 `type` ↔ 등록부 `kind` 매핑 표를 테스트에 명시).
 - 계약 라벨(event/derived) == 등록부 라벨 정의.
 
+YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 구조만 읽는 최소 파서)를
+사용하고, 계약 파일 부재 시 skip이라는 동작을 테스트 이름/메시지에 명시한다.
 계약이 바뀌면 이 테스트가 로컬에서 즉시 실패해 의도적 등록부 갱신을 강제한다.
 
 ## 3. 쓰기 경로 — 차단과 축소 (구현 1순위)
@@ -101,7 +110,12 @@ vitest `test/workflow-registry.contract.test.js`: dotfiles 계약 파일을
   (null이면 `--unset-metadata review_runtime`), 성공 시 `bd show <id> --json` readback 반환.
   다른 어떤 workflow 키도 이 경로로 쓸 수 없다.
 - 프로토콜(`app/protocol.js`)에서 `update-workflow-settings` 제거, `update-review-runtime` 추가.
-- 일반 필드 편집(제목·설명·상태·우선순위·라벨·의존성·댓글·삭제)은 현행 유지.
+- **워크플로우 관리 라벨 쓰기 가드**: `label-add`/`label-remove`는 `MANAGED_LABEL_RULES`
+  (prefix `reviewed:`·`has:`·`needs:`·`lane:`, 정확 일치 `pr`·`skill-related`)에 걸리는 라벨을
+  서버에서 거부(사유 메시지 반환)한다 — 현행 핸들러는 임의 라벨을 허용해 UI·구버전 클라이언트가
+  계약 소유 라벨을 쓸 수 있는 우회로다. 클라이언트도 관리 라벨에는 추가/제거 UI를 노출하지
+  않는다. 일반 라벨 편집은 유지.
+- 일반 필드 편집(제목·설명·상태·우선순위·의존성·댓글·삭제)은 현행 유지.
 
 ## 4. 상세 뷰 — Workflow 카드 재구성 (목업 detail-workflow-v2 B안)
 
@@ -113,6 +127,9 @@ vitest `test/workflow-registry.contract.test.js`: dotfiles 계약 파일을
    - `next_gate=blocked`이면: done 판정을 증거로 유도(reviewed:spec → spec_review done,
      reviewed:plan → plan_review done, reviewed:impl → execution·implementation_review done,
      pr_url → pr_delivery done), 첫 미완 게이트 점을 빨강 + 게이트명 자리에 빨간 "blocked".
+     이 표시는 **증거 기반 추정 위치(첫 미완 증거)**이며 실제 차단 원인·게이트로 단정하지
+     않는다 — 게이트 명시 스킵·증거 지연 시 실제와 다를 수 있으므로 툴팁/보조 문구로
+     "inferred from evidence"를 명시한다(계약상 blocked는 위치 없는 마커).
    - `next_gate` 부재(구 bead·일반 bead): 트랙 미표시.
 2. **게이트별 evidence 블록** (Spec/Plan/Impl 서브카드, 전부 상시 노출):
    - 헤더: 게이트명 + 상태(✓ 초록 = reviewed:* 라벨) + verdict 배지
@@ -133,7 +150,9 @@ vitest `test/workflow-registry.contract.test.js`: dotfiles 계약 파일을
 7. **Legacy 접힘**: 폐기 키·`lane:*` 라벨의 key=value 나열(read-only, 개수 뱃지).
 8. **기타 메타데이터 접힘**: 미등록 키 제네릭 행(개수 뱃지).
 
-workflow 관련 메타데이터·라벨이 전혀 없으면 카드 자체를 렌더하지 않음(현행과 동일).
+카드 렌더 트리거: 메타데이터 키(등록/폐기/**미등록 불문**)나 workflow 관련 라벨이 하나라도
+있으면 카드를 렌더하고, 전혀 없을 때만 생략. 미등록 키만 있는 bead도 "기타" 섹션으로
+표시되어야 3계층 불변조건(§2.2, 조용한 소실 금지)이 유지된다.
 
 **내부 품질 수정:** `onDescSave`의 전역 셀렉터(`#detail-root textarea`)를 다른 섹션과 같은
 섹션 스코프 셀렉터로 수정(섹션 리오더 시 파손 방지).
@@ -144,8 +163,10 @@ workflow 관련 메타데이터·라벨이 전혀 없으면 카드 자체를 렌
 
 위→아래: 제목 → 게이트 트랙(§4와 동일 채색 규칙, 소형) → 요약 행 → 라벨 행 → 메타 행.
 
-- **S/P/I 3단계 요약**: 글자 = 산출물 존재, ✓ = 리뷰 통과.
-  - S: 흐림 = spec 없음 / 보통 = `has:spec`(또는 spec_id) / 초록 `S✓` = `reviewed:spec`.
+- **S/P/I 3단계 요약**: 글자 = 산출물 존재, ✓ = **리뷰 증거 존재**(`reviewed:*` 라벨 —
+  verdict가 APPROVE_WITH_CHANGES여도 ✓; "깨끗한 통과" 의미가 아님).
+  - S: 흐림 = spec 없음 / 보통 = has:spec 또는 spec 존재(소스: `metadata.spec_id` 우선,
+    bd JSON 호환용 top-level `spec_id`는 fallback) / 초록 `S✓` = `reviewed:spec`.
   - P: 동일 규칙(`metadata.plan` / `reviewed:plan`).
   - I: 2단계 — 흐림 = 미리뷰 / 초록 `I✓` = `reviewed:impl` (`has:impl` 라벨은 계약에 없음).
 - **PR 칩**: `pr_url` 유효 시 **PR #번호**, 클릭하면 새 탭으로 PR 열기
@@ -190,6 +211,10 @@ workflow 관련 메타데이터·라벨이 전혀 없으면 카드 자체를 렌
 - **WS 재연결 시**: 클라이언트가 재구독 전에 `store.workspace.current`로 `set-workspace`를
   재선언(현재 서버가 연결을 DEFAULT_WORKSPACE로 재시드하는데 클라이언트가 침묵 — 모바일/탭
   복귀 시 dotfiles로 되돌아가는 주원인).
+- **실패 폴백**: 복원/재선언 대상 워크스페이스가 더 이상 등록되어 있지 않으면(레포 이동·제거)
+  서버 current/default로 폴백하고 stale localStorage 값을 정리하며 토스트로 알린다.
+- **멀티탭 의미론(문서화)**: 활성 워크스페이스는 탭(연결) 단위, localStorage 기억값은
+  브라우저 단위 공유 — 탭마다 다른 워크스페이스를 볼 수 있고, 기억값은 마지막 선택이 이긴다.
 
 ### 6.2 Sync / Git Pull 정리 (모드 인지 버튼)
 
@@ -214,9 +239,15 @@ workflow 관련 메타데이터·라벨이 전혀 없으면 카드 자체를 렌
 
 - 서버가 **구독자가 있는 워크스페이스**의 활성 리스트 구독을 주기적으로 refresh
   (기본 30초, env `BDUI_POLL_INTERVAL_MS`로 조정, `0` = 비활성).
-  기존 `refreshAllActiveListSubscriptions` 경로 재사용.
-- 스냅샷 비교로 변경 없으면 push 생략(기존 SubscriptionRegistry 스냅샷/서명 비교를 publish
-  경로에서 보장 — 구현 시 확인·보강). 폴링 주기 오류는 로그만 남기고 다음 주기 계속.
+  기존 `refreshAllActiveListSubscriptions` 경로 재사용하되 아래 백프레셔를 추가한다.
+- **백프레셔(필수)** — push 생략만으론 bd 프로세스 스폰·중앙 Dolt 질의 부하가 그대로다:
+  - single-flight: 이전 폴링 사이클이 아직 도는 중이면 이번 사이클 전체 skip.
+  - 동시 bd 호출 상한(기본 2) — 현행 `Promise.all` 전면 병렬을 (root_dir, spec) 단위 큐로 교체.
+  - 사이클 시작 jitter(수 초), 호출별 timeout, 실패 시 해당 워크스페이스 지수 backoff.
+  - 관측: 사이클당 bd 호출 수·소요 시간 debug 로그 — NAS 수용 검사(9 워크스페이스에서 분당
+    bd 호출 수 확인)를 검증 항목에 포함.
+- 스냅샷 비교로 변경 없으면 push 생략 — **빈 리스트 포함**(현행 refresh 경로는 이전 크기 0이면
+  무조건 재전송하는 동작이 있어 폴링 도입 전에 수정). 폴링 주기 오류는 로그만 남기고 계속.
 - 파일 watcher(시작 워크스페이스 한정)와 뮤테이션 트리거는 현행 유지 — 폴링은 보완 계층.
 
 ### 6.5 정리·문서화
@@ -231,12 +262,15 @@ workflow 관련 메타데이터·라벨이 전혀 없으면 카드 자체를 렌
 
 - **`/healthz` 심화**: `{ ok, checks: { bd: {ok}, db: {ok} } }` — 기본 워크스페이스에서
   경량 `bd` 호출로 중앙 DB 접근을 검증. 결과 10초 캐시(폭주 방지), 실패 시 HTTP 503.
-  기존 정적 `{ok:true}` 대체.
+  기존 정적 `{ok:true}` 대체. **liveness/readiness 구분**: 503은 "준비 안 됨"(readiness)
+  신호이지 프로세스 재시작 트리거가 아니다 — DB 장애 시 재시작해도 낫지 않으므로.
 
 ### 7.2 dotfiles 소유 (요구사항만 — 구현은 dotfiles 레포 별도 커밋)
 
 - `beads-ui-supervise.sh`·`beads-ui-expose.sh`의 준비/상태 판정을 `/healthz` 호출로 일원화
-  (현행: `/` 200 + 셸 `bd list` 사이드채널).
+  (현행: `/` 200 + 셸 `bd list` 사이드채널). 단 §7.1의 readiness 의미론을 따를 것 —
+  healthz 실패(예: 중앙 dolt 장애)가 supervisor의 무한 재시작 루프(churn)로 이어지지 않도록
+  기존 FAIL_LIMIT/backoff 구조를 유지한 채 판정만 교체한다.
 - `beads-ui-deploy.sh`에 재시작 옵션(예: `--restart`): symlink 교체 후 supervisor pidfile의
   node 프로세스 그룹 TERM → supervisor 루프가 신 릴리스로 재기동. 기본은 현행(재시작 없음).
 - `beads-ui-supervise.sh`(·가능하면 `dolt-supervise.sh`) 로그 회전 — tunnel supervisor의
@@ -253,20 +287,26 @@ workflow 관련 메타데이터·라벨이 전혀 없으면 카드 자체를 렌
 
 ## 9. 테스트 전략
 
-- **신규**: 등록부-계약 동등성(§2.4), 게이트 트랙 채색(커서/blocked 유도/부재), S/P/I 3단계,
+- **신규**: 등록부-계약 동등성(§2.4, 전 키 type/kind 포함), 게이트 트랙 채색(커서/blocked
+  유도/부재 + blocked 추정 경계 케이스: 게이트 명시 스킵·앞 게이트 증거 없이 뒤 증거 존재·
+  pr_url 이후 blocked·증거 전무), S/P/I 3단계(✓=증거 존재, spec 소스 우선순위),
   PR #번호 파싱·폴백, 게이트 모드 그룹핑(next_gate 배정·closed 제외·미보유 제외),
-  child 판별(점 ID)·rollup 카운트·인라인 전개, Legacy/기타 접힘 분류(3계층 불변조건),
-  `update-workflow-settings` 제거 확인(unknown type 에러), `update-review-runtime`
+  child 판별(점 ID)·rollup 카운트·인라인 전개, Legacy/기타 접힘 분류(3계층 불변조건 —
+  미등록 키만 있는 bead도 카드 렌더), **관리 라벨 쓰기 거부**(`label-add`/`label-remove`
+  denylist), `update-workflow-settings` 제거 확인(unknown type 에러), `update-review-runtime`
   검증/readback/unset, 폐기 키 어떤 경로로도 미기입, 보드 필터 공유, Deferred 영속화,
-  Blocked↔Ready 드롭 불가, 재연결 `set-workspace` 재선언, 부트스트랩 복원 우선순위,
-  `list-workspaces` backend/has_git, `register-workspace` 검증, 폴링(변경 없음 push 생략·
-  주기 오류 무시), `/healthz` 캐시·503.
+  Blocked↔Ready 드롭 불가, 재연결 `set-workspace` 재선언·실패 폴백, 부트스트랩 복원 우선순위,
+  `list-workspaces` backend/has_git, `register-workspace` 검증, 폴링(single-flight·동시성 캡·
+  빈 리스트 포함 변경 없음 push 생략·주기 오류 무시), `/healthz` 캐시·503.
 - **갱신**: `board.test.js`(lane/route 칩 테스트 제거→트랙/요약), `detail.test.js`
   (workflow settings 편집 스위트 제거→신 카드), `ws.mutations.test.js`(settings 스위트 교체),
   `config.test.js`(allowlist→등록부), persist/navigation 테스트.
-- **최종**: `npm run all`(lint·typecheck·vitest·build) green. 로컬 서버로 구 bead
+- **최종**: `npm run all`(lint·tsc·vitest·prettier — 현행 스크립트에 build 없음) green
+  **+ `npm run build`**로 `app/main.bundle.js`(.map) 갱신 확인. 로컬 서버로 구 bead
   (폐기 값 보유 — Legacy 표시)·신 bead(`next_gate`·증거 — 트랙/카드 표시) 양쪽 렌더 확인.
   UI 편집 경로에서 폐기 키가 중앙 dolt에 기입되지 않음을 `bd show --json` readback으로 확인.
+- **최종 안전 수용**: 폐기 키 6종·followup/source/target 계열·`lane:*` 라벨을 **쓰는** 코드
+  경로가 남아있지 않음을 grep 스윕 + 서버 쓰기 거부 테스트로 이중 확인.
 
 ## 10. 구현 순서(플랜 지침)와 배포
 
@@ -276,7 +316,7 @@ workflow 관련 메타데이터·라벨이 전혀 없으면 카드 자체를 렌
 
 **배포(NAS 게이트):**
 
-1. `npm run all` green + 로컬 렌더 확인 후 origin push.
+1. `npm run all` + `npm run build`(번들·맵 갱신 포함) green + 로컬 렌더 확인 후 origin push.
 2. NAS: `beads-ui-deploy.sh <ref>` (+재시작 옵션 구현 시 `--restart`, 아니면 runbook의
    수동 재시작 절차).
 3. **배포 직전 사용자 확인 필수** — tailnet 노출 공유 서비스(9 워크스페이스) 라이브 반영.
