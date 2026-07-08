@@ -3,6 +3,7 @@
 - **날짜:** 2026-07-05
 - **상태:** 설계 승인됨 (브레인스토밍 세션, 목업 기반 확정) + 2026-07-06 spec-final advisor
   패널(default gpt-5.5 + Pro gpt-5.5-pro, 양측 adjust) 지적 12건 반영
+  + 2026-07-08 Artifact 문서 뷰어 추가(§4.1, 브레인스토밍 세션 승인)
 - **Bead:** UI-32ih (epic)
 - **정본 계약:** dotfiles `docs/contracts/workflow.yaml` (PR2 `d3998ef6`에서 도입, 2026-07-05 기준 최신 확인)
 - **참고:** `docs/superpowers/plans/2026-07-02-workflow-contract-slim-re-registration.md`
@@ -151,9 +152,11 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
      Impl 한정 `impl_reviewed_diff_range`. 값 없는 행은 생략.
    - SHA/hash 값은 7자 축약 + 전체값 title 툴팁 + 복사 버튼(기존 copy 토스트 패턴).
 3. `execution_base_sha` 행(있을 때).
-4. **Artifacts**: `spec_id`·`plan` 경로(축약 표시 + 복사 버튼), `pr_url` → **PR #번호** 링크
-   (URL 끝 숫자 파싱, 실패 시 "PR" 텍스트; `safeWorkflowUrl` 검증 유지). bare `handoff`
-   행은 폐기 키로 Legacy행.
+4. **Artifacts**: `spec_id`·`plan` 경로(축약 표시). 값이 문서 화이트리스트 형태
+   (`docs/` 하위 `.md`)에 맞으면 **클릭 = 문서 뷰어 모달 열람**(§4.1), 복사는 행의 별도
+   아이콘 버튼으로 분리. 화이트리스트 불일치 값은 현행처럼 복사 전용 폴백.
+   `pr_url` → **PR #번호** 링크(URL 끝 숫자 파싱, 실패 시 "PR" 텍스트; `safeWorkflowUrl`
+   검증 유지). bare `handoff` 행은 폐기 키로 Legacy행.
 5. **Flags**: `human_decision_required`·`brainstorming_required`·`skill_creator_required`는
    값이 존재하면 항상 행을 표시한다 — `yes`는 경고 톤, `no`는 일반 톤(§2.2 불변조건 준수:
    계약상 유효 enum 값을 비표시로 소실시키지 않음).
@@ -168,6 +171,46 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
 
 **내부 품질 수정:** `onDescSave`의 전역 셀렉터(`#detail-root textarea`)를 다른 섹션과 같은
 섹션 스코프 셀렉터로 수정(섹션 리오더 시 파손 방지).
+
+### 4.1 Artifact 문서 뷰어 (2026-07-08 추가)
+
+Artifacts 행의 path 값을 클릭하면 spec/plan 문서 내용을 **읽기 전용 모달**로 보여준다.
+편집은 비범위(쓰기 경로 최소화 철학 §3과 일치 — spec/plan은 워크플로우 게이트 산출물).
+
+**UI (모달):**
+
+- 기존 `<dialog>` 패턴(issue-dialog) 재사용. 헤더 = 파일 경로 + 경로 복사 버튼 + 닫기,
+  본문 = `renderMarkdown()`(marked+DOMPurify, description 등과 동일 파이프라인) 렌더링,
+  스크롤. Esc/배경 클릭 닫기.
+- **모바일**: 좁은 뷰포트(기존 스타일 브레이크포인트 관례, 예 ≤640px)에서 전체 화면
+  전환(`100dvh`) + 터치 스크롤, 데스크톱은 최대 폭 제한(예 720px) 중앙 모달.
+- **출처 배지**: 응답의 `source`가 `mirror`면 "미러 기준 · 커밋 `<short sha>`"를 헤더에
+  표시(로컬 미푸시 수정이 반영 안 될 수 있음을 알림). `workspace`(직접 읽기)면 배지 없음.
+
+**서버 API — `GET /api/doc?workspace=<path>&path=<relative>`:**
+
+문서 해석 순서(둘 다 실패 시 404 + 사유):
+
+1. **워크스페이스 파일시스템**: `resolveWithinDocs(root_dir, path)`(기존 path-safety,
+   `docs/` 하위 `.md`만) → 성공 시 `{ path, content, source: 'workspace' }`.
+2. **git 미러 폴백**: `<mirror_root>/<워크스페이스 디렉토리 basename>.git`이 존재하면
+   `git show HEAD:<path>`로 읽기 → `{ path, content, source: 'mirror', commit }`
+   (`git rev-parse --short HEAD`). 경로 화이트리스트 검증은 git 접근 **전에** 동일 적용.
+
+**미러 규약:**
+
+- `mirror_root`는 서버 config TOML 신규 키(기본값 없음 — 미설정이면 폴백 자체를 건너뜀).
+  NAS 값: `/home/ubuntu/beads-mirrors`.
+- 미러 = blob-less bare 미러(`git clone --mirror --filter=blob:none`) — 대형 레포도
+  수 MB(검증: microbiome_bile 1.8G→5.3M). `git show` 시 필요한 blob만 지연 fetch되므로
+  미보유 blob 첫 열람은 네트워크 필요(NAS에서 2.5초 실측, 이후 로컬 캐시).
+- **갱신(백프레셔 — §6.4와 같은 철학)**: 열람 요청 시 on-demand `git fetch`, 단 미러당
+  최소 간격(기본 60초) + single-flight + 실패 시 지수 backoff. fetch 실패 시 마지막
+  fetch 상태로 서빙(오프라인 내성). git 호출별 timeout 적용.
+- **운영 상태(2026-07-08)**: NAS에 9개 미러 수동 생성·검증 완료
+  (`/home/ubuntu/beads-mirrors/<db>.git`, DB명↔레포 매핑은 dotfiles
+  `scripts/nas-dolt-server/repo-db-registry.yaml` 기준, SSH 자격증명은 기존 키 재사용).
+  설치·재생성 스크립트화는 dotfiles follow-up(§7.2).
 
 ## 5. 보드 — 카드·컬럼 재구성
 
@@ -295,9 +338,9 @@ YAML 파싱은 devDependency로 추가하는 파서(또는 이 계약의 좁은 
 
 ### 7.2 dotfiles 소유 (요구사항만 — 구현은 dotfiles 레포 별도 커밋)
 
-**Disposition(확정)**: 아래 3건은 **UI-32ih의 수용 기준·beads-ui PR 범위에서 제외**(비차단).
+**Disposition(확정)**: 아래 4건은 **UI-32ih의 수용 기준·beads-ui PR 범위에서 제외**(비차단).
 dotfiles 레포의 별도 follow-up Bead로 추적하며(생성은 workflow 라우팅 경유), beads-ui
-배포(§10)는 이 3건 없이도 진행 가능하다 — 재시작 옵션 미구현 시 runbook의 수동 재시작
+배포(§10)는 이 4건 없이도 진행 가능하다 — 재시작 옵션 미구현 시 runbook의 수동 재시작
 경로를 쓴다.
 
 - `beads-ui-supervise.sh`·`beads-ui-expose.sh`의 준비/상태 판정을 `/healthz` 호출로 일원화
@@ -308,6 +351,9 @@ dotfiles 레포의 별도 follow-up Bead로 추적하며(생성은 workflow 라�
   node 프로세스 그룹 TERM → supervisor 루프가 신 릴리스로 재기동. 기본은 현행(재시작 없음).
 - `beads-ui-supervise.sh`(·가능하면 `dolt-supervise.sh`) 로그 회전 — tunnel supervisor의
   `rotate_log()` 패턴(1MB/2000행) 재사용.
+- **문서 뷰어 미러 설치·재생성 스크립트**(§4.1): `beads-ui-stubs-install.sh` 패턴을 따라
+  `repo-db-registry.yaml` 매핑 기준 blob-less 미러 생성/검증(신규 워크스페이스 추가 시
+  재실행 가능). 미러 자체는 2026-07-08 수동 생성 완료라 비차단(§4.1 운영 상태 참조).
 
 ## 8. 에러 처리
 
@@ -318,6 +364,9 @@ dotfiles 레포의 별도 follow-up Bead로 추적하며(생성은 workflow 라�
 - `/healthz` 실패: 503 + checks 상세 — readiness/status 판정용(§7.1). supervisor 프로세스
   재시작 트리거가 아니다(DB 장애 시 재시작 churn 방지).
 - 등록부에 없는 enum 값(예: 구 bead의 이상값): invalid 스타일 행으로 표시(숨기지 않음).
+- 문서 뷰어(§4.1): 파일·미러 모두 부재 → 모달 내 사유 표시("이 서버에 체크아웃/미러 없음",
+  모달 유지). 미러 fetch 실패 → 마지막 fetch 상태 서빙(출처 배지로 staleness 인지 가능).
+  git 호출 timeout/실패 → 모달 내 오류 표시. 경로 화이트리스트 거부 → 4xx + 사유.
 
 ## 9. 테스트 전략
 
@@ -335,7 +384,11 @@ dotfiles 레포의 별도 follow-up Bead로 추적하며(생성은 workflow 라�
   Blocked↔Ready 드롭 불가, 재연결 `set-workspace` 재선언·실패 폴백, 부트스트랩 복원 우선순위,
   `list-workspaces` backend/has_git, `list-workspace-candidates`(미등록 항목만 반환),
   `register-workspace` 검증, 폴링(single-flight·동시성 캡·
-  빈 리스트 포함 변경 없음 push 생략·주기 오류 무시), `/healthz` 캐시·503.
+  빈 리스트 포함 변경 없음 push 생략·주기 오류 무시), `/healthz` 캐시·503,
+  문서 뷰어(§4.1 — `/api/doc` 해석 순서: 파일시스템 우선→미러 폴백→404 사유,
+  경로 화이트리스트 거부(`..`·`docs/` 밖·비-md), 미러 fetch rate-limit·single-flight,
+  응답 payload `source`/`commit`, 모달 열림·마크다운 렌더·에러 표시·복사 버튼 분리,
+  화이트리스트 불일치 path 복사 전용 폴백, 모바일 레이아웃 조건).
 - **갱신**: `board.test.js`(lane/route 칩 테스트 제거→트랙/요약), `detail.test.js`
   (workflow settings 편집 스위트 제거→신 카드), `ws.mutations.test.js`(settings 스위트 교체),
   `config.test.js`(allowlist→등록부), persist/navigation 테스트.
@@ -350,8 +403,9 @@ dotfiles 레포의 별도 follow-up Bead로 추적하며(생성은 workflow 라�
 ## 10. 구현 순서(플랜 지침)와 배포
 
 구현 플랜은 다음 순서를 따른다: **(1) 쓰기 차단(§3) → (2) 공유 등록부 + 사본 해소(§2) →
-(3) 상세 뷰(§4) → (4) 보드(§5) → (5) 워크스페이스(§6) → (6) healthz(§7.1) → (7) 죽은 코드
-삭제·문서화 → (8) 테스트 정비 → (9) 배포. dotfiles 측 3건(§7.2)은 병행 가능한 별도 트랙.**
+(3) 상세 뷰(§4, 문서 뷰어 §4.1 포함) → (4) 보드(§5) → (5) 워크스페이스(§6) →
+(6) healthz(§7.1) → (7) 죽은 코드 삭제·문서화 → (8) 테스트 정비 → (9) 배포.
+dotfiles 측 4건(§7.2)은 병행 가능한 별도 트랙.**
 
 **배포(NAS 게이트):**
 
@@ -360,4 +414,4 @@ dotfiles 레포의 별도 follow-up Bead로 추적하며(생성은 workflow 라�
    수동 재시작 절차).
 3. **배포 직전 사용자 확인 필수** — tailnet 노출 공유 서비스(9 워크스페이스) 라이브 반영.
 4. 배포 후: `https://mong-nas.<tailnet>.ts.net` 응답, `/healthz` ok, 구/신 bead 렌더,
-   워크스페이스 기억·폴링 동작 확인.
+   워크스페이스 기억·폴링 동작, 문서 뷰어 미러 폴백(§4.1 — 모바일 뷰포트 포함) 확인.
