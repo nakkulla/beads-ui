@@ -16,12 +16,6 @@ function makeTransportRecorder() {
     async send(type, payload) {
       calls.push({ type, payload });
       // default fake payloads
-      if (type === 'epic-status') {
-        return [];
-      }
-      if (type === 'list-issues') {
-        return [];
-      }
       if (
         type === 'update-status' ||
         type === 'update-priority' ||

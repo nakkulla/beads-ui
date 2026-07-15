@@ -4,11 +4,12 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_WORKFLOW_SUMMARY_CONFIG } from './config.js';
+import { bearerAuthMiddleware } from './auth.js';
+import { checkHealth } from './health.js';
 import { registerWorkspace } from './registry-watcher.js';
-import { createWorkerJobsRouter } from './routes/worker-jobs.js';
-import { createWorkerPrsRouter } from './routes/worker-prs.js';
-import { createWorkerSpecRouter } from './routes/worker-spec.js';
+import { docHandler } from './routes/doc.js';
+import { createMergeLockRouter } from './worker/merge-lock-route.js';
+import { getWorkerRuntime } from './worker/runtime.js';
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
@@ -68,7 +69,6 @@ function normalizeLabelColorPolicy(value) {
  *     visible_exact?: string[],
  *     colors?: unknown
  *   },
- *   detail?: { workflow_summary?: unknown },
  *   workspace_config?: { default_workspace: string | null }
  * }} config
  * @returns {{
@@ -80,7 +80,6 @@ function normalizeLabelColorPolicy(value) {
  *       exact: Record<string, { fg: string }>
  *     }
  *   },
- *   detail: { workflow_summary: unknown },
  *   workspace_config: { default_workspace: string | null }
  * }}
  */
@@ -95,10 +94,6 @@ function toBootstrapPayload(config) {
   )
     ? config.label_display_policy.visible_exact.slice()
     : [];
-  const detail =
-    config.detail && typeof config.detail === 'object'
-      ? JSON.parse(JSON.stringify(config.detail))
-      : { workflow_summary: DEFAULT_WORKFLOW_SUMMARY_CONFIG };
 
   return {
     label_display_policy: {
@@ -106,7 +101,6 @@ function toBootstrapPayload(config) {
       visible_exact,
       colors: normalizeLabelColorPolicy(config.label_display_policy?.colors)
     },
-    detail,
     workspace_config: {
       default_workspace:
         typeof config.workspace_config?.default_workspace === 'string' &&
@@ -131,7 +125,7 @@ function escapeBootstrapJson(json) {
 /**
  * Create and configure the Express application.
  *
- * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[], visible_exact?: string[], colors?: unknown }, detail?: { workflow_summary?: unknown } }} config - Server configuration.
+ * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[], visible_exact?: string[], colors?: unknown }, auth?: { token?: string | null }, health_probes?: { bd_probe?: () => boolean | Promise<boolean>, db_probe?: () => boolean | Promise<boolean> } }} config - Server configuration.
  * @returns {Express} Configured Express app instance.
  */
 export function createApp(config) {
@@ -140,31 +134,47 @@ export function createApp(config) {
   // Basic hardening and config
   app.disable('x-powered-by');
 
-  // Health endpoint
+  // Bearer-token gate for state-touching REST surfaces. The token is the real
+  // access gate; /healthz and static app assets stay unauthenticated.
+  const requireBearer = bearerAuthMiddleware(config.auth?.token || '');
+
+  // Health endpoint (unauthenticated readiness probe). Overall ok=false → 503.
   /**
    * @param {Request} _req
    * @param {Response} res
    */
-  app.get('/healthz', (_req, res) => {
+  app.get('/healthz', async (_req, res) => {
+    const result = await checkHealth({
+      root_dir: config.root_dir,
+      bd_probe: config.health_probes?.bd_probe,
+      db_probe: config.health_probes?.db_probe
+    });
     res.type('application/json');
-    res.status(200).send({ ok: true });
+    res.status(result.ok ? 200 : 503).send(result);
   });
 
   // Enable JSON body parsing for API endpoints
   app.use(express.json());
 
-  app.use(
-    '/api/worker/spec',
-    createWorkerSpecRouter({ root_dir: config.root_dir })
-  );
-  app.use(
-    '/api/worker/prs',
-    createWorkerPrsRouter({ root_dir: config.root_dir })
-  );
-  app.use(
-    '/api/worker/jobs',
-    createWorkerJobsRouter({ root_dir: config.root_dir })
-  );
+  // Merge-lock endpoint (spec §5.2). Auth is the per-session Worker token (NOT
+  // the config bearer): a session's finishing preamble acquires/releases the
+  // (repo, target_base) merge lock. Breaker-tripped repos are refused (423).
+  const worker_runtime = getWorkerRuntime();
+  const merge_lock_router = createMergeLockRouter({
+    locks: worker_runtime.locks,
+    tokens: worker_runtime.tokens,
+    breaker: worker_runtime.breaker
+  });
+  // Publish the merge-lock ledger on the runtime so the session-side merge guard
+  // (session.js) can query whether a session holds the (repo, base) lock (F3).
+  worker_runtime.setMergeLock({
+    isHeldBy: (token) => merge_lock_router.isHeldBy(token),
+    releaseAllForToken: (token) => merge_lock_router.releaseAllForToken(token)
+  });
+  app.use('/api/worker/merge-lock', merge_lock_router);
+
+  // Serve a markdown document from a registered workspace's docs/ directory.
+  app.get('/api/doc', requireBearer, docHandler);
 
   // Register workspace endpoint - allows CLI to register workspaces dynamically
   // when the server is already running
@@ -172,7 +182,7 @@ export function createApp(config) {
    * @param {Request} req
    * @param {Response} res
    */
-  app.post('/api/register-workspace', (req, res) => {
+  app.post('/api/register-workspace', requireBearer, (req, res) => {
     const { path: workspace_path, database } = req.body || {};
     if (!workspace_path || typeof workspace_path !== 'string') {
       res.status(400).json({ ok: false, error: 'Missing or invalid path' });

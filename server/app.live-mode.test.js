@@ -147,19 +147,6 @@ describe('createApp live frontend mode', () => {
         exact: {}
       }
     });
-    expect(config_payload.detail.workflow_summary.sections).toContain(
-      'workflow_settings'
-    );
-    expect(
-      config_payload.detail.workflow_summary.workflow_settings.fields
-    ).toEqual([
-      'execution_lane',
-      'workspace_policy',
-      'branch_policy',
-      'finish_action',
-      'review_profile',
-      'review_runtime'
-    ]);
     expect(config_payload.workspace_config).toEqual({
       default_workspace: null
     });

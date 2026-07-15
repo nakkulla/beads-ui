@@ -1,40 +1,87 @@
-import fs from 'node:fs';
+/**
+ * XDG-based state path derivation for the Worker queue.
+ *
+ * The queue lives OUTSIDE the repo checkout on a stable path so it survives
+ * `git clean`, branch switches, and worktree churn (spec §5.1). One queue file
+ * per workspace, keyed by a stable directory name derived from the workspace
+ * absolute path.
+ *
+ * Directory-naming choice: `<sanitized-basename>-<sha256(abs)[:12]>`. The
+ * sanitized basename keeps the path human-recognizable when browsing
+ * `$XDG_STATE_HOME/bdui/`; the 12-hex SHA-256 suffix of the ABSOLUTE path
+ * guarantees stability and collision-resistance across two different workspaces
+ * that happen to share a basename.
+ */
+import crypto from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 
-const WORKER_STATE_SEGMENTS = ['.bdui', 'worker-jobs'];
-
 /**
- * @param {string} root_dir
+ * Resolve the XDG state home directory. Uses `$XDG_STATE_HOME` when set to a
+ * non-empty value; otherwise falls back to `~/.local/state` per the XDG Base
+ * Directory Specification.
+ *
+ * @returns {string} Absolute path to the state home root.
  */
-export function createWorkerStatePaths(root_dir) {
-  const resolved_root = path.resolve(root_dir);
-  const state_root = path.join(resolved_root, ...WORKER_STATE_SEGMENTS);
-  const runtime_dir = path.join(state_root, 'runtime');
-
-  return {
-    root_dir: resolved_root,
-    state_root,
-    database_path: path.join(state_root, 'jobs.sqlite'),
-    logs_dir: path.join(state_root, 'logs'),
-    runtime_dir,
-    lock_path: path.join(runtime_dir, 'supervisor.lock'),
-    pid_file_path: path.join(runtime_dir, 'supervisor.pid'),
-    supervisor_log_path: path.join(runtime_dir, 'supervisor.log')
-  };
+export function stateHome() {
+  const xdg = process.env.XDG_STATE_HOME;
+  if (typeof xdg === 'string' && xdg.trim().length > 0) {
+    return xdg;
+  }
+  return path.join(os.homedir(), '.local', 'state');
 }
 
 /**
- * @param {{ state_root: string, logs_dir: string, runtime_dir: string }} paths
+ * Derive a stable, filesystem-safe directory name for a workspace.
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @returns {string} A stable slug of the form `<basename>-<hash12>`.
  */
-export function ensureWorkerStateDirs(paths) {
-  fs.mkdirSync(paths.state_root, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(paths.logs_dir, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(paths.runtime_dir, { recursive: true, mode: 0o700 });
+export function workspaceSlug(workspace_root) {
+  const abs = path.resolve(String(workspace_root || ''));
+  const raw_base = path.basename(abs) || 'ws';
+  const base = raw_base.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40) || 'ws';
+  const hash = crypto
+    .createHash('sha256')
+    .update(abs)
+    .digest('hex')
+    .slice(0, 12);
+  return `${base}-${hash}`;
 }
 
 /**
- * @param {string} job_id
+ * Absolute directory that holds a workspace's Worker state.
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>`.
  */
-export function buildWorkerLogRelativePath(job_id) {
-  return path.join('.bdui', 'worker-jobs', 'logs', `${job_id}.log`);
+export function workspaceStateDir(workspace_root) {
+  return path.join(stateHome(), 'bdui', workspaceSlug(workspace_root));
+}
+
+/**
+ * Absolute path to a workspace's queue persistence file.
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/queue.json`.
+ */
+export function queueFilePath(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'queue.json');
+}
+
+/**
+ * Absolute path to a per-attempt session-log jsonl file (spec §5.2 / §5.6).
+ * The raw runner event stream is persisted here for the transcript viewer.
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @param {string} attempt_id - Stable attempt id.
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/sessions/<attempt_id>.jsonl`.
+ */
+export function sessionLogPath(workspace_root, attempt_id) {
+  const safe = String(attempt_id || 'attempt').replace(/[^A-Za-z0-9._-]/g, '_');
+  return path.join(
+    workspaceStateDir(workspace_root),
+    'sessions',
+    `${safe}.jsonl`
+  );
 }

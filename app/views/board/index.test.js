@@ -1,0 +1,268 @@
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
+import { createBoardView } from './index.js';
+
+function createTestIssueStores() {
+  /** @type {Map<string, any>} */
+  const stores = new Map();
+  /** @type {Set<() => void>} */
+  const listeners = new Set();
+  /**
+   * @param {string} id
+   * @returns {any}
+   */
+  function getStore(id) {
+    let s = stores.get(id);
+    if (!s) {
+      s = createSubscriptionIssueStore(id);
+      stores.set(id, s);
+      s.subscribe(() => {
+        for (const fn of Array.from(listeners)) {
+          try {
+            fn();
+          } catch {
+            /* ignore */
+          }
+        }
+      });
+    }
+    return s;
+  }
+  return {
+    getStore,
+    /** @param {string} id */
+    snapshotFor(id) {
+      return getStore(id).snapshot().slice();
+    },
+    /** @param {() => void} fn */
+    subscribe(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    }
+  };
+}
+
+/**
+ * @param {any} stores
+ * @param {string} key
+ * @param {any[]} issues
+ */
+function seed(stores, key, issues) {
+  stores
+    .getStore(key)
+    .applyPush({ type: 'snapshot', id: key, revision: 1, issues });
+}
+
+function seedAll() {
+  const stores = createTestIssueStores();
+  const now = Date.now();
+  seed(stores, 'tab:board:blocked', [
+    {
+      id: 'BL-1',
+      title: 'blocked one',
+      status: 'open',
+      priority: 1,
+      updated_at: now
+    }
+  ]);
+  seed(stores, 'tab:board:ready', [
+    {
+      id: 'RD-1',
+      title: 'ready one',
+      status: 'open',
+      priority: 0,
+      updated_at: now
+    },
+    {
+      id: 'RD-2',
+      title: 'ready two',
+      status: 'open',
+      priority: 2,
+      updated_at: now
+    }
+  ]);
+  seed(stores, 'tab:board:in-progress', [
+    { id: 'IP-1', title: 'prog one', status: 'in_progress', updated_at: now }
+  ]);
+  seed(stores, 'tab:board:resolved', [
+    { id: 'RS-1', title: 'resolved one', status: 'resolved', updated_at: now }
+  ]);
+  seed(stores, 'tab:board:closed', [
+    {
+      id: 'CL-1',
+      title: 'closed one',
+      status: 'closed',
+      closed_at: now,
+      updated_at: now
+    }
+  ]);
+  return stores;
+}
+
+describe('views/board', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  test('renders five columns and partitions issues by status', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedAll()
+    });
+    await view.load();
+
+    expect(mount.querySelectorAll('.board-column').length).toBe(5);
+    expect(mount.querySelectorAll('#blocked-col .board-card').length).toBe(1);
+    expect(mount.querySelectorAll('#ready-col .board-card').length).toBe(2);
+    expect(mount.querySelectorAll('#in-progress-col .board-card').length).toBe(
+      1
+    );
+    expect(mount.querySelectorAll('#resolved-col .board-card').length).toBe(1);
+
+    // Closed is a collapsed strip by default — body hidden.
+    const closed = /** @type {HTMLElement} */ (
+      mount.querySelector('#closed-col')
+    );
+    expect(closed.classList.contains('is-collapsed')).toBe(true);
+    expect(mount.querySelectorAll('#closed-col .board-card').length).toBe(0);
+
+    // Expanding reveals the recent closed items.
+    const header = /** @type {HTMLElement} */ (
+      closed.querySelector('.board-column__header')
+    );
+    header.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(mount.querySelectorAll('#closed-col .board-card').length).toBe(1);
+  });
+
+  test('clicking the id chip copies the id and shows a toast', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedAll()
+    });
+    await view.load();
+
+    const idBtn = /** @type {HTMLElement} */ (
+      mount.querySelector('#ready-col .board-card .board-card__id')
+    );
+    idBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(writeText).toHaveBeenCalledWith('RD-1');
+    await Promise.resolve();
+    await Promise.resolve();
+    const toast = document.body.querySelector('.toast');
+    expect(toast?.textContent).toContain('복사됨');
+  });
+
+  test('id click does not navigate (stops propagation)', async () => {
+    const gotoIssue = vi.fn();
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true
+    });
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, { gotoIssue, issueStores: seedAll() });
+    await view.load();
+    const idBtn = /** @type {HTMLElement} */ (
+      mount.querySelector('#ready-col .board-card .board-card__id')
+    );
+    idBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(gotoIssue).not.toHaveBeenCalled();
+  });
+
+  test('clicking a card navigates to the issue', async () => {
+    const gotoIssue = vi.fn();
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, { gotoIssue, issueStores: seedAll() });
+    await view.load();
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('#ready-col .board-card')
+    );
+    card.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(gotoIssue).toHaveBeenCalledWith('RD-1');
+  });
+
+  test('allowed drag sends update-status; disallowed (Blocked) is ignored', async () => {
+    const transport = vi.fn().mockResolvedValue({});
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedAll(),
+      transport
+    });
+    await view.load();
+
+    /**
+     * @param {string} columnId
+     * @param {string} issueId
+     */
+    function drop(columnId, issueId) {
+      const col = /** @type {HTMLElement} */ (
+        mount.querySelector('#' + columnId)
+      );
+      const ev = new Event('drop', { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, 'dataTransfer', {
+        value: { getData: () => issueId }
+      });
+      col.dispatchEvent(ev);
+    }
+
+    // Allowed: Ready (open) → In progress (in_progress).
+    drop('in-progress-col', 'RD-1');
+    expect(transport).toHaveBeenCalledWith('update-status', {
+      id: 'RD-1',
+      status: 'in_progress'
+    });
+
+    transport.mockClear();
+    // Disallowed: Blocked column is not a status target.
+    drop('blocked-col', 'RD-2');
+    expect(transport).not.toHaveBeenCalled();
+
+    transport.mockClear();
+    // No-op: dropping onto the same status column (Ready→open).
+    drop('ready-col', 'RD-2');
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('search filter narrows visible cards', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedAll()
+    });
+    await view.load();
+    expect(mount.querySelectorAll('#ready-col .board-card').length).toBe(2);
+
+    const search = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.board-filter__search')
+    );
+    search.value = 'ready two';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(mount.querySelectorAll('#ready-col .board-card').length).toBe(1);
+    expect(mount.querySelectorAll('#blocked-col .board-card').length).toBe(0);
+  });
+
+  test('new issue button invokes the onNewIssue callback', async () => {
+    const onNewIssue = vi.fn();
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedAll(),
+      onNewIssue
+    });
+    await view.load();
+    const btn = /** @type {HTMLElement} */ (
+      mount.querySelector('.board-filter__new')
+    );
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onNewIssue).toHaveBeenCalled();
+  });
+});

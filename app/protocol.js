@@ -9,7 +9,7 @@
  * - Server can also send unsolicited events (e.g., subscription `snapshot`).
  */
 
-/** @typedef {'list-issues'|'update-status'|'edit-text'|'update-priority'|'create-issue'|'list-ready'|'dep-add'|'dep-remove'|'epic-status'|'update-assignee'|'update-workflow-settings'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'get-workspace'|'workspace-changed'|'sync-workspace'|'git-pull-workspace'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'dep-add'|'dep-remove'|'update-assignee'|'update-exec-settings'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'get-workspace'|'workspace-changed'|'sync-workspace'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-queue-remove'|'worker-attempt-stop'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'} MessageType */
 
 /**
  * @typedef {Object} RequestEnvelope
@@ -36,17 +36,15 @@
 
 /** @type {MessageType[]} */
 export const MESSAGE_TYPES = /** @type {const} */ ([
-  'list-issues',
   'update-status',
   'edit-text',
   'update-priority',
   'create-issue',
-  'list-ready',
   'dep-add',
   'dep-remove',
-  'epic-status',
   'update-assignee',
-  'update-workflow-settings',
+  // Execution-preference metadata (5 keys + workflow_mode)
+  'update-exec-settings',
   'label-add',
   'label-remove',
   'subscribe-list',
@@ -66,7 +64,21 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'get-workspace',
   'workspace-changed',
   'sync-workspace',
-  'git-pull-workspace'
+  'git-pull-workspace',
+  // Worker queue channel (subscription + CAS-guarded mutations + push snapshot)
+  'subscribe-worker-queue',
+  'unsubscribe-worker-queue',
+  'worker-queue-snapshot',
+  'worker-queue-place',
+  'worker-queue-reorder',
+  'worker-queue-toggle',
+  'worker-queue-remove',
+  'worker-attempt-stop',
+  // Session-log (transcript) channel: subscribe → snapshot + live appends (§5.6)
+  'subscribe-session-log',
+  'unsubscribe-session-log',
+  'session-log-snapshot',
+  'session-log-append'
 ]);
 
 /**

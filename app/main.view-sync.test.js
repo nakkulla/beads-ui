@@ -21,25 +21,23 @@ vi.mock('./ws.js', () => ({
   })
 }));
 
-describe('initial view sync on reload (#/epics)', () => {
-  test('shows Epics view when hash is #/epics', async () => {
-    window.location.hash = '#/epics';
+describe('initial view sync on reload', () => {
+  test('shows the Worker view when hash is #/worker', async () => {
+    window.location.hash = '#/worker';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
-
-    // Allow any microtasks to flush
     await Promise.resolve();
 
-    const issuesRoot = /** @type {HTMLElement} */ (
-      document.getElementById('issues-root')
+    const boardRoot = /** @type {HTMLElement} */ (
+      document.getElementById('board-root')
     );
-    const epicsRoot = /** @type {HTMLElement} */ (
-      document.getElementById('epics-root')
+    const workerRoot = /** @type {HTMLElement} */ (
+      document.getElementById('worker-root')
     );
 
-    expect(issuesRoot.hidden).toBe(true);
-    expect(epicsRoot.hidden).toBe(false);
+    expect(boardRoot.hidden).toBe(true);
+    expect(workerRoot.hidden).toBe(false);
   });
 });

@@ -79,10 +79,54 @@ describe('isOriginAllowed — no allowlist configured (loopback-only default)', 
   });
 });
 
+describe('isOriginAllowed — same-origin acceptance (F7)', () => {
+  test('Origin host:port equal to the request Host is allowed (tailscale-IP deploy)', () => {
+    // No allowlist configured; a remote (non-loopback) origin is still accepted
+    // when it matches the Host the client connected to.
+    expect(
+      isOriginAllowed('http://100.122.98.8:3000', '100.122.98.8:3000')
+    ).toBe(true);
+  });
+
+  test('Origin whose host differs from the request Host is rejected', () => {
+    expect(
+      isOriginAllowed('http://100.122.98.8:3000', 'evil.example.com')
+    ).toBe(false);
+    // A port mismatch is not same-origin either.
+    expect(
+      isOriginAllowed('http://100.122.98.8:3000', '100.122.98.8:9999')
+    ).toBe(false);
+  });
+
+  test('loopback origins still pass (with or without a Host)', () => {
+    expect(isOriginAllowed('http://localhost:3000', 'localhost:3000')).toBe(
+      true
+    );
+    expect(isOriginAllowed('http://127.0.0.1:5173')).toBe(true);
+  });
+
+  test('the explicit allowlist still works alongside same-origin', () => {
+    process.env.BDUI_ALLOWED_ORIGINS = TAILNET;
+    // Allowlisted origin passes even when the Host does not match.
+    expect(isOriginAllowed(TAILNET, 'some-other-host:3000')).toBe(true);
+    // Same-origin still passes even though it is NOT in the allowlist.
+    expect(
+      isOriginAllowed('http://100.122.98.8:3000', '100.122.98.8:3000')
+    ).toBe(true);
+    // Neither allowlisted nor same-origin → rejected.
+    expect(
+      isOriginAllowed('https://evil.example.com', '100.122.98.8:3000')
+    ).toBe(false);
+  });
+});
+
 describe('attachWsServer wires verifyClient', () => {
   test('the WebSocketServer is constructed with an Origin verifyClient', () => {
     const server = createServer();
-    const { wss } = attachWsServer(server, { path: '/ws', root_dir: '/repo-a' });
+    const { wss } = attachWsServer(server, {
+      path: '/ws',
+      root_dir: '/repo-a'
+    });
     expect(typeof wss.options.verifyClient).toBe('function');
     wss.close();
     server.close();

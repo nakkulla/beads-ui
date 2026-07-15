@@ -1,5 +1,6 @@
 import { runBdJson } from './bd.js';
 import { debug } from './logging.js';
+import { enrichIssuesWorkflow } from './workflow-enrich.js';
 
 const log = debug('list-adapters');
 const DEPENDENCY_BLOCKED_ARGS = [
@@ -22,9 +23,6 @@ export function mapSubscriptionToBdArgs(spec) {
   switch (t) {
     case 'all-issues': {
       return ['list', '--json', '--tree=false'];
-    }
-    case 'epics': {
-      return ['epic', 'status', '--json'];
     }
     case 'blocked-issues': {
       return [
@@ -61,17 +59,6 @@ export function mapSubscriptionToBdArgs(spec) {
         '--tree=false',
         '--status',
         'resolved',
-        '--limit',
-        '1000'
-      ];
-    }
-    case 'deferred-issues': {
-      return [
-        'list',
-        '--json',
-        '--tree=false',
-        '--status',
-        'deferred',
         '--limit',
         '1000'
       ];
@@ -146,11 +133,35 @@ export function normalizeIssueList(value) {
  * Execute the mapped `bd` command for a subscription spec and return normalized items.
  * Errors do not throw; they are surfaced as a structured object.
  *
+ * Enriches each returned issue with a compact `workflow` object (route,
+ * stepper stages incl. computed stale, chips) via `enrichIssuesWorkflow` using
+ * the workspace root as git cwd. Enrichment is fail-quiet and never blocks
+ * shaping.
+ *
  * @param {{ type: string, params?: Record<string, string | number | boolean> }} spec
  * @param {{ cwd?: string }} [options] - Optional working directory for bd command
  * @returns {Promise<FetchListResultSuccess | FetchListResultFailure>}
  */
 export async function fetchListForSubscription(spec, options = {}) {
+  const result = await fetchListForSubscriptionRaw(spec, options);
+  if (result.ok) {
+    result.items = enrichIssuesWorkflow(
+      /** @type {any} */ (result.items),
+      options.cwd
+    );
+  }
+  return result;
+}
+
+/**
+ * Fetch + normalize the mapped `bd` command for a subscription spec, without
+ * workflow enrichment.
+ *
+ * @param {{ type: string, params?: Record<string, string | number | boolean> }} spec
+ * @param {{ cwd?: string }} [options]
+ * @returns {Promise<FetchListResultSuccess | FetchListResultFailure>}
+ */
+async function fetchListForSubscriptionRaw(spec, options = {}) {
   if (String(spec.type) === 'blocked-issues') {
     return fetchBlockedIssues(options);
   }
@@ -185,57 +196,11 @@ export async function fetchListForSubscription(spec, options = {}) {
       return bdCommandFailure(res);
     }
     // bd show may return a single object; normalize to an array first
-    let raw = Array.isArray(res.stdoutJson)
+    const raw = Array.isArray(res.stdoutJson)
       ? res.stdoutJson
       : res.stdoutJson && typeof res.stdoutJson === 'object'
         ? [res.stdoutJson]
         : [];
-
-    // Special-case mapping for `epics`: current bd output nests the epic under
-    // an `epic` key and exposes counters at the top level. Flatten so that
-    // each entry has a top-level `id` and core fields expected by the registry.
-    if (String(spec.type) === 'epics') {
-      raw = raw.map((it) => {
-        if (it && typeof it === 'object' && 'epic' in it) {
-          const e = /** @type {any} */ (it).epic || {};
-          /** @type {Record<string, unknown>} */
-          const flat = {
-            // Required minimal fields for registry + client rendering
-            id: String(e.id ?? ''),
-            title: e.title,
-            status: e.status,
-            issue_type: e.issue_type || 'epic',
-            created_at: e.created_at,
-            updated_at: e.updated_at,
-            closed_at: e.closed_at ?? null,
-            deleted_at: e.deleted_at ?? null,
-            // Preserve useful counters from bd output
-            total_children: /** @type {any} */ (it).total_children,
-            closed_children: /** @type {any} */ (it).closed_children,
-            eligible_for_close: /** @type {any} */ (it).eligible_for_close
-          };
-          return flat;
-        }
-        return it;
-      });
-      raw = raw.filter((it) => {
-        if (!it || typeof it !== 'object') {
-          return false;
-        }
-        const status =
-          typeof (/** @type {any} */ (it).status) === 'string'
-            ? /** @type {any} */ (it).status
-            : '';
-        if (status === 'tombstone') {
-          return false;
-        }
-        const deleted_at = /** @type {any} */ (it).deleted_at;
-        if (deleted_at !== undefined && deleted_at !== null) {
-          return false;
-        }
-        return true;
-      });
-    }
 
     const items = normalizeIssueList(raw);
     return { ok: true, items };

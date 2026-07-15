@@ -2,11 +2,11 @@ import { html, render } from 'lit-html';
 import { debug } from '../utils/logging.js';
 
 /**
- * Render the top navigation with four tabs and handle route changes.
+ * Render the two-tab control-tower navigation (Board / Worker).
  *
  * @param {HTMLElement} mount_element
  * @param {{ getState: () => any, subscribe: (fn: (s: any) => void) => () => void }} store
- * @param {{ gotoView: (v: 'issues'|'epics'|'board'|'worker') => void }} router
+ * @param {{ gotoView: (v: 'board'|'worker') => void }} router
  */
 export function createTopNav(mount_element, store, router) {
   const log = debug('views:nav');
@@ -14,7 +14,7 @@ export function createTopNav(mount_element, store, router) {
   let unsubscribe = null;
 
   /**
-   * @param {'issues'|'epics'|'board'|'worker'} view
+   * @param {'board'|'worker'} view
    * @returns {(ev: MouseEvent) => void}
    */
   function onClick(view) {
@@ -27,34 +27,22 @@ export function createTopNav(mount_element, store, router) {
 
   function template() {
     const s = store.getState();
-    const active = s.view || 'issues';
+    const active = s.view === 'worker' ? 'worker' : 'board';
     return html`
-      <nav class="header-nav" aria-label="Primary">
-        <a
-          href="#/issues"
-          class="tab ${active === 'issues' ? 'active' : ''}"
-          @click=${onClick('issues')}
-          >Issues</a
-        >
-        <a
-          href="#/epics"
-          class="tab ${active === 'epics' ? 'active' : ''}"
-          @click=${onClick('epics')}
-          >Epics</a
-        >
+      <div class="ctl-tabs" aria-label="Primary">
         <a
           href="#/board"
-          class="tab ${active === 'board' ? 'active' : ''}"
+          class="ctl-tab ${active === 'board' ? 'is-active' : ''}"
           @click=${onClick('board')}
           >Board</a
         >
         <a
           href="#/worker"
-          class="tab ${active === 'worker' ? 'active' : ''}"
+          class="ctl-tab ${active === 'worker' ? 'is-active' : ''}"
           @click=${onClick('worker')}
           >Worker</a
         >
-      </nav>
+      </div>
     `;
   }
 

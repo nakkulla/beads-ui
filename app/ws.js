@@ -7,7 +7,7 @@
  *
  * Usage:
  *   const ws = createWsClient();
- *   const data = await ws.send('list-issues', { filters: {} });
+ *   const data = await ws.send('update-status', { id, status: 'open' });
  *   const off = ws.on('snapshot', (payload) => { <push event> });
  */
 import { MESSAGE_TYPES, makeRequest, nextId } from './protocol.js';
@@ -32,6 +32,21 @@ import { debug } from './utils/logging.js';
  */
 export function createWsClient(options = {}) {
   const log = debug('ws');
+
+  /** localStorage key holding the WS/REST auth token. */
+  const AUTH_TOKEN_KEY = 'bdui:auth-token';
+
+  /** @returns {string} */
+  const readToken = () => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return window.localStorage.getItem(AUTH_TOKEN_KEY) || '';
+      }
+    } catch {
+      // ignore storage access errors
+    }
+    return '';
+  };
 
   /** @type {BackoffOptions} */
   const backoff = {
@@ -75,6 +90,31 @@ export function createWsClient(options = {}) {
   const handlers = new Map();
   /** @type {Set<(s: ConnectionState) => void>} */
   const connection_handlers = new Set();
+  /** @type {Set<() => void>} */
+  const auth_failure_handlers = new Set();
+
+  function notifyAuthFailure() {
+    for (const fn of Array.from(auth_failure_handlers)) {
+      try {
+        fn();
+      } catch {
+        // ignore listener errors
+      }
+    }
+  }
+
+  /**
+   * Send the first-frame auth handshake. The server (when token auth is on)
+   * requires `{ type: 'auth', token }` as the FIRST frame after connect; a
+   * wrong/missing token closes the socket with code 4401.
+   */
+  function sendAuthFrame() {
+    try {
+      ws?.send(JSON.stringify({ type: 'auth', token: readToken() }));
+    } catch (err) {
+      log('ws auth send failed', err);
+    }
+  }
 
   /**
    * @param {ConnectionState} s
@@ -126,6 +166,9 @@ export function createWsClient(options = {}) {
     log('ws open');
     notifyConnection(state);
     attempts = 0;
+    // Auth handshake MUST be the first frame on every (re)connect, before any
+    // queued application messages are flushed.
+    sendAuthFrame();
     // flush queue
     while (queue.length) {
       const req = queue.shift();
@@ -176,7 +219,8 @@ export function createWsClient(options = {}) {
     }
   }
 
-  function onClose() {
+  /** @param {CloseEvent} [event] */
+  function onClose(event) {
     state = 'closed';
     log('ws closed');
     notifyConnection(state);
@@ -184,6 +228,15 @@ export function createWsClient(options = {}) {
     for (const [id, p] of pending.entries()) {
       p.reject(new Error('ws disconnected'));
       pending.delete(id);
+    }
+    const code =
+      event && typeof event.code === 'number' ? event.code : undefined;
+    if (code === 4401) {
+      // Auth rejected. Do not blindly reconnect (it would fail identically);
+      // surface the failure so the UI can prompt for a token, then reconnect.
+      log('ws auth rejected (4401)');
+      notifyAuthFailure();
+      return;
     }
     attempts += 1;
     scheduleReconnect();
@@ -267,6 +320,30 @@ export function createWsClient(options = {}) {
       return () => {
         connection_handlers.delete(handler);
       };
+    },
+    /**
+     * Subscribe to auth-failure events (server closed the socket with 4401).
+     * Register a token-prompt here and call {@link reconnect} once a token is
+     * saved.
+     *
+     * @param {() => void} handler
+     * @returns {() => void}
+     */
+    onAuthFailure(handler) {
+      auth_failure_handlers.add(handler);
+      return () => {
+        auth_failure_handlers.delete(handler);
+      };
+    },
+    /** Force a fresh connection attempt (e.g. after saving a new token). */
+    reconnect() {
+      should_reconnect = true;
+      if (reconnect_timer) {
+        clearTimeout(reconnect_timer);
+        reconnect_timer = null;
+      }
+      attempts = 0;
+      connect();
     },
     /** Close and stop reconnecting. */
     close() {

@@ -6,11 +6,9 @@ import { priority_levels } from '../utils/priority.js';
  *
  * @param {HTMLElement} mount_element - Container to attach dialog (e.g., main#app)
  * @param {(type: import('../protocol.js').MessageType, payload?: unknown) => Promise<unknown>} sendFn - Transport function
- * @param {{ gotoIssue: (id: string) => void }} router - Router for opening details after create
- * @param {{ setState: (patch: any) => void, getState: () => any }} [store]
  * @returns {{ open: () => void, close: () => void }}
  */
-export function createNewIssueDialog(mount_element, sendFn, router, store) {
+export function createNewIssueDialog(mount_element, sendFn) {
   const dialog = /** @type {HTMLDialogElement} */ (
     document.createElement('dialog')
   );
@@ -180,16 +178,6 @@ export function createNewIssueDialog(mount_element, sendFn, router, store) {
   }
 
   /**
-   * Extract numeric suffix from an id like "UI-123"; return -1 when absent.
-   *
-   * @param {string} id
-   */
-  function idNumeric(id) {
-    const m = /-(\d+)$/.exec(String(id || ''));
-    return m && m[1] ? Number(m[1]) : -1;
-  }
-
-  /**
    * Submit handler: validate, create, then open the created issue details.
    *
    * @returns {Promise<void>}
@@ -210,10 +198,6 @@ export function createNewIssueDialog(mount_element, sendFn, router, store) {
     }
     const type = String(sel_type.value || '');
     const desc = String(input_description.value || '');
-    const labels = String(input_labels.value || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
 
     /** @type {{ title: string, type?: string, priority?: number, description?: string }} */
     const payload = { title };
@@ -237,60 +221,6 @@ export function createNewIssueDialog(mount_element, sendFn, router, store) {
     }
 
     saveDefaults();
-
-    // Best-effort: find the created id by matching title among open issues and picking the highest numeric id
-    /** @type {any} */
-    let list = null;
-    try {
-      list = await sendFn('list-issues', {
-        filters: { status: 'open', limit: 50 }
-      });
-    } catch {
-      list = null;
-    }
-    let created_id = '';
-    if (Array.isArray(list)) {
-      const matches = list.filter((it) => String(it.title || '') === title);
-      if (matches.length > 0) {
-        let best = matches[0];
-        for (const it of matches) {
-          const ai = idNumeric(best.id || '');
-          const bi = idNumeric(it.id || '');
-          if (bi > ai) {
-            best = it;
-          }
-        }
-        created_id = String(best.id || '');
-      }
-    }
-
-    // Apply labels if any
-    if (created_id && labels.length > 0) {
-      for (const label of labels) {
-        try {
-          await sendFn('label-add', { id: created_id, label });
-        } catch {
-          // ignore label failures
-        }
-      }
-    }
-
-    // Navigate to created issue if found
-    if (created_id) {
-      try {
-        router.gotoIssue(created_id);
-      } catch {
-        // ignore routing errors
-      }
-      // Also set state directly to ensure dialog opens even if hash routing is suppressed in tests
-      try {
-        if (store) {
-          store.setState({ selected_id: created_id });
-        }
-      } catch {
-        // ignore
-      }
-    }
 
     setBusy(false);
     requestClose();

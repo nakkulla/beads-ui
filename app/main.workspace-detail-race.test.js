@@ -56,7 +56,7 @@ async function flushPromises(count = 20) {
 
 describe('main workspace detail race', () => {
   test('waits for saved workspace before subscribing initial detail', async () => {
-    window.location.hash = '#/issues?issue=researchvault-w4a';
+    window.location.hash = '#/board?issue=researchvault-w4a';
     window.localStorage.setItem('beads-ui.workspace', '/repo-b');
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
       label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
@@ -123,7 +123,7 @@ describe('main workspace detail race', () => {
   });
 
   test('keeps detail subscribed after manual workspace switch', async () => {
-    window.location.hash = '#/issues?issue=UI-1';
+    window.location.hash = '#/board?issue=UI-1';
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
       label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
       workspace_config: { default_workspace: null }

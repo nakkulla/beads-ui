@@ -1,0 +1,468 @@
+/**
+ * Worker end-to-end flow (spec §11 criterion 4).
+ *
+ * Exercises the FULL auto-advance loop through the REAL server modules with a
+ * FAKE runner (Phase 10's `makeFixtureSpawn` replaying the REAL runner
+ * fixtures) — no subprocess, no network, no real claude/codex:
+ *
+ *   enqueue → scheduler dispatch (real `createRunner` + real `runSession`
+ *   normalizing a fixture) → merge-lock acquire/release → INDEPENDENT verify
+ *   (real tmp git repo ancestry + faked bd readback) → Done → next dispatch.
+ *
+ * Then a FAILURE-injection variant: a fixture whose verdict fails trips the
+ * circuit breaker, reverts `workflow_mode`, turns auto_advance off, and blocks
+ * the repo's next launch until the breaker is reset.
+ *
+ * The `runtime.js` attach seam Phase 10 deferred is wired here:
+ * `setRunningCountProvider(() => scheduler.runningCount())` so `/healthz`-style
+ * `runtime.status()` reflects the LIVE scheduler.
+ */
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { makeFixtureSpawn } from '../worker/runner/fixture-spawn.js';
+import { createRunner } from '../worker/runner/index.js';
+import { createWorkerRuntime } from '../worker/runtime.js';
+import { createScheduler } from '../worker/scheduler.js';
+import { createVerifier } from '../worker/verify.js';
+
+const execFileAsync = promisify(execFile);
+const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
+
+/** @type {string} */
+let tmp_state;
+/** @type {string} */
+let repo_dir;
+/**
+ * Per-test workspace root — its slug keys the on-disk queue file. Unique per
+ * test so a dangling async session from a prior test (which writes the WHOLE
+ * queue to `$XDG_STATE_HOME/bdui/<slug>/queue.json` on completion) can never
+ * pollute the next test's cold-loaded queue.
+ *
+ * @type {string}
+ */
+let WS;
+
+/**
+ * @param {string[]} args
+ * @param {{ cwd?: string }} options
+ * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+ */
+async function gitRun(args, options) {
+  try {
+    const { stdout, stderr } = await execFileAsync('git', args, {
+      cwd: options.cwd
+    });
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    const e = /** @type {any} */ (err);
+    return {
+      code: e.code ?? 1,
+      stdout: e.stdout ?? '',
+      stderr: e.stderr ?? ''
+    };
+  }
+}
+
+/**
+ * Poll a predicate until true or timeout — the verify chain runs off async git.
+ *
+ * @param {() => boolean} pred
+ * @param {number} [timeout_ms]
+ */
+async function waitFor(pred, timeout_ms = 2000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout_ms) {
+    if (pred()) {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  if (!pred()) {
+    throw new Error('waitFor timed out');
+  }
+}
+
+/**
+ * A fake bd that snapshots each bead and records metadata mutations.
+ *
+ * @param {Record<string, any>} config
+ */
+function makeFakeBd(config) {
+  /** @type {Array<{ method: string, bead_id: string, key?: string, value?: string }>} */
+  const calls = [];
+  return {
+    calls,
+    async snapshotBead(/** @type {string} */ bead_id) {
+      const c = config[bead_id] || {};
+      return {
+        ready: c.ready ?? true,
+        blocked: c.blocked ?? false,
+        repo: c.repo ?? repo_dir,
+        target_base: c.target_base ?? 'main',
+        runner: c.runner ?? 'claude',
+        model: c.model ?? 'opus',
+        effort: c.effort ?? 'high',
+        workflow_mode: c.workflow_mode ?? null,
+        route: c.route ?? null,
+        plan_path: c.plan_path ?? null,
+        deps: c.deps ?? []
+      };
+    },
+    async setMetadata(
+      /** @type {string} */ bead_id,
+      /** @type {string} */ key,
+      /** @type {string} */ value
+    ) {
+      calls.push({ method: 'setMetadata', bead_id, key, value });
+    },
+    async unsetMetadata(
+      /** @type {string} */ bead_id,
+      /** @type {string} */ key
+    ) {
+      calls.push({ method: 'unsetMetadata', bead_id, key });
+    },
+    async readMetadata(
+      /** @type {string} */ bead_id,
+      /** @type {string} */ key
+    ) {
+      const last = [...calls]
+        .reverse()
+        .find(
+          (c) =>
+            c.method === 'setMetadata' && c.bead_id === bead_id && c.key === key
+        );
+      return last?.value ?? null;
+    }
+  };
+}
+
+/**
+ * Simulate a session's real git work: create the per-session work branch
+ * `refs/heads/<bead_id>` off `main` with a commit, and (when `merge`) land it
+ * into `main` so the INDEPENDENT verifier's ancestry check operates on the true
+ * work tip. When `merge` is false the branch stays UNMERGED, exercising the
+ * fail-closed path (session claims success but never landed on base).
+ *
+ * @param {string} bead_id
+ * @param {boolean} merge
+ * @returns {Promise<string>} The resolved work-branch tip sha.
+ */
+async function landWorkBranch(bead_id, merge) {
+  const wt = path.join(repo_dir, '.wt', bead_id);
+  await gitRun(['worktree', 'add', '-b', bead_id, wt, 'main'], {
+    cwd: repo_dir
+  });
+  fs.writeFileSync(path.join(wt, `${bead_id}.txt`), 'work\n');
+  await gitRun(['add', '.'], { cwd: wt });
+  await gitRun(['commit', '-q', '-m', `work ${bead_id}`], { cwd: wt });
+  if (merge) {
+    await gitRun(['merge', '--no-ff', '--no-edit', bead_id], { cwd: repo_dir });
+  }
+  await gitRun(['worktree', 'remove', '--force', wt], { cwd: repo_dir });
+  const rev = await gitRun(['rev-parse', bead_id], { cwd: repo_dir });
+  return rev.stdout.trim();
+}
+
+/**
+ * Build a scheduler wired to the shared runtime + real runner/verify. The fake
+ * runner replays a real fixture through the REAL `runSession` engine.
+ *
+ * @param {{ fixture: string, exit?: number, config: Record<string, any>, bdStatus?: string, landWork?: boolean }} opts
+ */
+function buildSystem(opts) {
+  const runtime = createWorkerRuntime();
+  const bd = makeFakeBd(opts.config);
+  const verify = createVerifier({
+    gitRun,
+    bdShow: async () => ({ status: opts.bdStatus ?? 'closed' })
+  });
+  const land = opts.landWork ?? true;
+  const worktree = {
+    add: async (/** @type {{ bead_id: string }} */ { bead_id }) => {
+      // Real branch + (optional) merge so verify's ancestry check is genuine.
+      const base_oid = await landWorkBranch(bead_id, land);
+      return {
+        path: path.join(repo_dir, '.wt', bead_id),
+        branch: bead_id,
+        base_oid
+      };
+    },
+    remove: async () => ({ code: 0 })
+  };
+  const scheduler = createScheduler({
+    store: runtime.queueStore,
+    // Real runner registry, but with the fixture-replaying fake spawn injected.
+    makeRunner: (name) =>
+      createRunner(name, {
+        spawn_impl: makeFixtureSpawn({
+          file: path.join(FIXTURES, opts.fixture),
+          exit: opts.exit ?? 0
+        })
+      }),
+    bd,
+    worktree,
+    tokens: runtime.tokens,
+    verify,
+    breaker: runtime.breaker,
+    sessionLog: runtime.sessionLog,
+    parallel_slots: 2
+  });
+  // Wire the runtime attach seam Phase 10 deferred.
+  runtime.setRunningCountProvider(() => scheduler.runningCount());
+  return { runtime, bd, scheduler };
+}
+
+/**
+ * @param {any} store
+ * @param {string[]} serial
+ * @param {string[]} parallel
+ */
+function seedQueue(store, serial, parallel) {
+  let rev = store.snapshot(WS).revision;
+  for (const id of serial) {
+    rev = store.place(WS, {
+      expected_revision: rev,
+      bead_id: id,
+      lane: 'serial'
+    }).queue.revision;
+  }
+  for (const id of parallel) {
+    rev = store.place(WS, {
+      expected_revision: rev,
+      bead_id: id,
+      lane: 'parallel'
+    }).queue.revision;
+  }
+  store.setAutoAdvance(WS, true);
+}
+
+beforeEach(async () => {
+  tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-e2e-state-'));
+  process.env.XDG_STATE_HOME = tmp_state;
+  WS = path.join(tmp_state, 'workspace');
+  repo_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-e2e-repo-'));
+  // A real git repo so the INDEPENDENT ancestry check runs for real.
+  await gitRun(['init', '-q'], { cwd: repo_dir });
+  await gitRun(['checkout', '-q', '-b', 'main'], { cwd: repo_dir });
+  await gitRun(['config', 'user.email', 'e2e@test'], { cwd: repo_dir });
+  await gitRun(['config', 'user.name', 'e2e'], { cwd: repo_dir });
+  fs.writeFileSync(path.join(repo_dir, 'f.txt'), 'base\n');
+  await gitRun(['add', '.'], { cwd: repo_dir });
+  await gitRun(['commit', '-q', '-m', 'base'], { cwd: repo_dir });
+});
+
+afterEach(() => {
+  delete process.env.XDG_STATE_HOME;
+  for (const dir of [tmp_state, repo_dir]) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+});
+
+describe('worker e2e — full success flow', () => {
+  test('enqueue → dispatch → merge-lock → verify → Done → next dispatch', async () => {
+    const { runtime, bd, scheduler } = buildSystem({
+      fixture: 'claude-success.jsonl',
+      config: { S1: { runner: 'claude' }, S2: { runner: 'claude' } }
+    });
+    seedQueue(runtime.queueStore, ['S1', 'S2'], []);
+
+    // First tick dispatches the serial head (cap 1) — S1 only.
+    await scheduler.tick(WS);
+    expect(scheduler.isRunning('S1')).toBe(true);
+    expect(scheduler.isRunning('S2')).toBe(false);
+
+    // The merge gate: a session token exists and the (repo, base) merge lock is
+    // acquirable through the runtime's breaker-aware lock manager.
+    expect(runtime.tokens.size()).toBeGreaterThanOrEqual(1);
+    const release = await runtime.locks.acquireMerge(repo_dir, 'main');
+    release();
+
+    // S1's session replays the success fixture → verdict success → INDEPENDENT
+    // verify (real ancestry + bd readback) → Done; then S2 auto-dispatches and
+    // also completes.
+    await waitFor(() => {
+      const done = runtime.queueStore.snapshot(WS).done.map((e) => e.bead_id);
+      return done.includes('S1') && done.includes('S2');
+    });
+
+    const snap = runtime.queueStore.snapshot(WS);
+    const attempts = /** @type {any[]} */ (Object.values(snap.attempts));
+    expect(attempts.every((a) => a.status === 'done')).toBe(true);
+    // Independent verify recorded a real merge sha + ok result.
+    const a1 = /** @type {any} */ (attempts.find((a) => a.bead_id === 'S1'));
+    expect(a1.verify_result.ok).toBe(true);
+    expect(a1.merge_sha).toMatch(/^[0-9a-f]{7,40}$/);
+
+    // A closed bead does NOT revert workflow_mode.
+    expect(bd.calls.some((c) => c.method === 'unsetMetadata')).toBe(false);
+    // All tokens revoked + no live sessions → the runtime seam reads 0.
+    expect(runtime.tokens.size()).toBe(0);
+    expect(scheduler.runningCount()).toBe(0);
+    expect(runtime.status(WS).running_count).toBe(0);
+  });
+});
+
+describe('worker e2e — failure injection trips the breaker', () => {
+  test('failed session → breaker + workflow_mode revert + repo blocked', async () => {
+    const { runtime, bd, scheduler } = buildSystem({
+      // codex-failure.jsonl: a turn.failed/error stream → verdict fail.
+      fixture: 'codex-failure.jsonl',
+      exit: 1,
+      config: { S1: { runner: 'codex' }, P1: { runner: 'codex' } }
+    });
+    seedQueue(runtime.queueStore, ['S1'], []);
+
+    await scheduler.tick(WS);
+    expect(scheduler.isRunning('S1')).toBe(true);
+
+    await waitFor(() => runtime.breaker.isTripped(repo_dir));
+
+    // Breaker tripped, auto_advance forced off, workflow_mode reverted (unset),
+    // attempt marked failed.
+    expect(runtime.breaker.isTripped(repo_dir)).toBe(true);
+    expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(false);
+    expect(
+      bd.calls.some(
+        (c) =>
+          c.method === 'unsetMetadata' &&
+          c.bead_id === 'S1' &&
+          c.key === 'workflow_mode'
+      )
+    ).toBe(true);
+    const failed = /** @type {any} */ (
+      Object.values(runtime.queueStore.snapshot(WS).attempts).find(
+        (/** @type {any} */ a) => a.bead_id === 'S1'
+      )
+    );
+    expect(failed.status).toBe('failed');
+
+    // A tripped repo refuses the merge-lock entry (423-class block).
+    await expect(
+      runtime.locks.acquireMerge(repo_dir, 'main')
+    ).rejects.toThrow();
+
+    // Queue P1 into the same (blocked) repo + re-enable auto → no new launch.
+    runtime.queueStore.place(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      bead_id: 'P1',
+      lane: 'parallel'
+    });
+    runtime.queueStore.setAutoAdvance(WS, true);
+    await scheduler.tick(WS);
+    expect(scheduler.isRunning('P1')).toBe(false);
+
+    // Manual recovery: reset the breaker → P1 launches on the next tick.
+    runtime.breaker.reset(repo_dir);
+    await scheduler.tick(WS);
+    expect(scheduler.isRunning('P1')).toBe(true);
+  });
+});
+
+describe('worker e2e — a session that never merged fails verification (fail-closed)', () => {
+  test('success verdict but UNMERGED work branch → verify fails → breaker trips', async () => {
+    // The session replays a SUCCESS fixture (verdict success), but the work
+    // branch is never merged into main, so the INDEPENDENT ancestry check fails.
+    const { runtime, bd, scheduler } = buildSystem({
+      fixture: 'claude-success.jsonl',
+      config: { S1: { runner: 'claude' } },
+      landWork: false
+    });
+    seedQueue(runtime.queueStore, ['S1'], []);
+
+    await scheduler.tick(WS);
+    expect(scheduler.isRunning('S1')).toBe(true);
+
+    // Session succeeds, but verify (work tip NOT ancestor of base) fails closed →
+    // breaker trips, auto_advance off, workflow_mode reverted, attempt failed.
+    await waitFor(() => runtime.breaker.isTripped(repo_dir));
+    expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(false);
+
+    const attempt = /** @type {any} */ (
+      Object.values(runtime.queueStore.snapshot(WS).attempts).find(
+        (/** @type {any} */ a) => a.bead_id === 'S1'
+      )
+    );
+    expect(attempt.status).toBe('failed');
+    expect(attempt.verify_result.ok).toBe(false);
+    expect(attempt.verify_result.reason).toBe('work_not_in_base');
+    // S1 was NOT moved to Done.
+    expect(
+      runtime.queueStore.snapshot(WS).done.map((e) => e.bead_id)
+    ).not.toContain('S1');
+    // workflow_mode reverted (prior unset → unsetMetadata).
+    expect(
+      bd.calls.some((c) => c.method === 'unsetMetadata' && c.bead_id === 'S1')
+    ).toBe(true);
+  });
+});
+
+describe('worker e2e — runtime seam reflects the live scheduler', () => {
+  test('setRunningCountProvider drives runtime.status().running_count', async () => {
+    // A pending fake runner so the session stays "running" for the assertion.
+    const runtime = createWorkerRuntime();
+    /** @type {Array<() => void>} */
+    const finishers = [];
+    const scheduler = createScheduler({
+      store: runtime.queueStore,
+      makeRunner: () => ({
+        name: 'claude',
+        spawn() {
+          /** @type {(v: any) => void} */
+          let resolveDone = () => {};
+          const done = new Promise((res) => {
+            resolveDone = res;
+          });
+          finishers.push(() =>
+            resolveDone({
+              success: true,
+              reason: 'ok',
+              exit: 0,
+              blocked: false,
+              events: [],
+              raw: []
+            })
+          );
+          return /** @type {any} */ ({
+            pid: 4242,
+            kill() {},
+            events: { on() {} },
+            done
+          });
+        }
+      }),
+      bd: makeFakeBd({ S1: {} }),
+      worktree: {
+        add: async (/** @type {{ bead_id: string }} */ { bead_id }) => ({
+          path: `/wt/${bead_id}`,
+          branch: bead_id,
+          base_oid: 'oid'
+        }),
+        remove: async () => ({ code: 0 })
+      },
+      tokens: runtime.tokens,
+      verify: { verifyMerge: async () => ({ ok: true, reason: 'ok' }) },
+      breaker: runtime.breaker,
+      sessionLog: runtime.sessionLog,
+      parallel_slots: 1
+    });
+    runtime.setRunningCountProvider(() => scheduler.runningCount());
+
+    seedQueue(runtime.queueStore, ['S1'], []);
+    await scheduler.tick(WS);
+
+    expect(scheduler.runningCount()).toBe(1);
+    expect(runtime.status(WS).running_count).toBe(1);
+
+    finishers.forEach((f) => f());
+    await waitFor(() => scheduler.runningCount() === 0);
+    expect(runtime.status(WS).running_count).toBe(0);
+  });
+});

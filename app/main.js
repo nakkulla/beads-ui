@@ -2,23 +2,21 @@
  * @import { MessageType } from './protocol.js'
  */
 import { html, render } from 'lit-html';
-import { createListSelectors } from './data/list-selectors.js';
-import { createDataLayer } from './data/providers.js';
+import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
-import { createHashRouter, parseHash, parseView } from './router.js';
+import { createWorkerQueueStore } from './data/worker-queue-store.js';
+import { createHashRouter } from './router.js';
 import { createStore } from './state.js';
 import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
-import { createBoardView } from './views/board.js';
-import { createDetailView } from './views/detail.js';
-import { createEpicsView } from './views/epics.js';
+import { createBoardView } from './views/board/index.js';
+import { createDetailPanel } from './views/detail-panel/index.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
-import { createIssueDialog } from './views/issue-dialog.js';
-import { createListView } from './views/list.js';
 import { createTopNav } from './views/nav.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
+import { createTokenDialog } from './views/token-dialog.js';
 import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
@@ -36,69 +34,6 @@ const DEFAULT_CONFIG = {
   },
   workspace_config: {
     default_workspace: null
-  },
-  detail: {
-    workflow_summary: {
-      sections: [
-        'workflow_settings',
-        'artifacts',
-        'review_gates',
-        'freshness',
-        'delivery',
-        'followup',
-        'human'
-      ],
-      workflow_settings: {
-        fields: [
-          'execution_lane',
-          'workspace_policy',
-          'branch_policy',
-          'finish_action',
-          'review_profile'
-        ],
-        editable_fields: [
-          'execution_lane',
-          'workspace_policy',
-          'branch_policy',
-          'finish_action',
-          'review_profile'
-        ]
-      },
-      artifacts: { fields: ['spec_id', 'plan', 'handoff'] },
-      review_gates: {
-        fields: [
-          'status',
-          'verdict',
-          'final_source',
-          'external_attempts',
-          'reviewed_at_sha',
-          'content_hash'
-        ]
-      },
-      freshness: {
-        fields: [
-          'execution_base_sha',
-          'spec_freshness_checked_at_sha',
-          'plan_freshness_checked_at_sha',
-          'spec_handoff_at_sha',
-          'spec_handoff_content_hash'
-        ]
-      },
-      delivery: { fields: ['pr_url'] },
-      followup: {
-        fields: [
-          'followup_kind',
-          'source_repo',
-          'source_bead',
-          'source_artifact',
-          'source_pr',
-          'target_repo',
-          'target_paths',
-          'required_action'
-        ]
-      },
-      human: { fields: ['human_decision_required'] }
-    }
   }
 };
 
@@ -161,8 +96,7 @@ function normalizeLabelColorPolicy(value) {
  *       exact: Record<string, { fg: string }>
  *     }
  *   },
- *   workspace_config: { default_workspace: string | null },
- *   detail: any
+ *   workspace_config: { default_workspace: string | null }
  * }}
  */
 export function readBootstrapConfig() {
@@ -191,11 +125,7 @@ export function readBootstrapConfig() {
       },
       workspace_config: {
         default_workspace
-      },
-      detail:
-        bootstrap?.detail && typeof bootstrap.detail === 'object'
-          ? JSON.parse(JSON.stringify(bootstrap.detail))
-          : JSON.parse(JSON.stringify(DEFAULT_CONFIG.detail))
+      }
     };
   }
 
@@ -209,11 +139,7 @@ export function readBootstrapConfig() {
     },
     workspace_config: {
       default_workspace
-    },
-    detail:
-      bootstrap?.detail && typeof bootstrap.detail === 'object'
-        ? JSON.parse(JSON.stringify(bootstrap.detail))
-        : JSON.parse(JSON.stringify(DEFAULT_CONFIG.detail))
+    }
   };
 }
 
@@ -233,7 +159,39 @@ export async function refreshConfigSnapshot(store, log_error) {
 }
 
 /**
- * Bootstrap the SPA shell with two panels.
+ * Board subscription keys and their bd list-adapter types. The board composes
+ * its 5 columns from these push-only stores (Blocked comes from the server
+ * `blocked-issues` adapter; the Blocked column itself is not a status target).
+ *
+ * @type {ReadonlyArray<[string, string]>}
+ */
+const BOARD_SUBS = [
+  ['tab:board:ready', 'ready-issues'],
+  ['tab:board:blocked', 'blocked-issues'],
+  ['tab:board:in-progress', 'in-progress-issues'],
+  ['tab:board:resolved', 'resolved-issues'],
+  ['tab:board:closed', 'closed-issues']
+];
+
+/**
+ * Worker candidate subscription keys (spec §5.1): the Worker console's candidate
+ * lane is live Board Ready/Blocked data. These reuse the same list adapters as
+ * the Board but under Worker-scoped client ids so the Worker tab keeps its
+ * candidate stores independent of Board tab (de)registration.
+ *
+ * @type {ReadonlyArray<[string, string]>}
+ */
+const WORKER_SUBS = [
+  ['tab:worker:ready', 'ready-issues'],
+  ['tab:worker:blocked', 'blocked-issues']
+];
+
+/** Client id for the singleton per-workspace worker-queue subscription. */
+const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
+
+/**
+ * Bootstrap the two-tab control-tower shell (Board / Worker) with a shared
+ * detail overlay.
  *
  * @param {HTMLElement} root_element - The container element to render into.
  */
@@ -241,13 +199,9 @@ export function bootstrap(root_element) {
   const log = debug('main');
   log('bootstrap start');
 
-  // Render route shells (nav is mounted in header)
+  // Render route shells (nav + workspace picker live in the header).
   const shell = html`
-    <section id="issues-root" class="route issues">
-      <aside id="list-panel" class="panel"></aside>
-    </section>
-    <section id="epics-root" class="route epics" hidden></section>
-    <section id="board-root" class="route board" hidden></section>
+    <section id="board-root" class="route board"></section>
     <section id="worker-root" class="route worker" hidden></section>
     <section id="detail-panel" class="route detail" hidden></section>
   `;
@@ -256,26 +210,13 @@ export function bootstrap(root_element) {
   /** @type {HTMLElement|null} */
   const nav_mount = document.getElementById('top-nav');
   /** @type {HTMLElement|null} */
-  const issues_root = document.getElementById('issues-root');
-  /** @type {HTMLElement|null} */
-  const epics_root = document.getElementById('epics-root');
-  /** @type {HTMLElement|null} */
   const board_root = document.getElementById('board-root');
   /** @type {HTMLElement|null} */
   const worker_root = document.getElementById('worker-root');
-
-  /** @type {HTMLElement|null} */
-  const list_mount = document.getElementById('list-panel');
   /** @type {HTMLElement|null} */
   const detail_mount = document.getElementById('detail-panel');
-  if (
-    list_mount &&
-    issues_root &&
-    epics_root &&
-    board_root &&
-    worker_root &&
-    detail_mount
-  ) {
+
+  if (board_root && worker_root && detail_mount) {
     /** @type {HTMLElement|null} */
     const header_loading = document.getElementById('header-loading');
     const activity = createActivityIndicator(header_loading);
@@ -322,14 +263,70 @@ export function bootstrap(root_element) {
     }
 
     const client = createWsClient();
+
+    // Auth-token prompt (Phase 6): on a 4401 auth-rejected close, prompt for a
+    // token, persist it (inside the dialog), and reconnect.
+    const token_dialog = createTokenDialog(root_element, {
+      onSubmit: () => {
+        if (typeof client.reconnect === 'function') {
+          client.reconnect();
+        }
+      }
+    });
+    if (typeof client.onAuthFailure === 'function') {
+      client.onAuthFailure(() => {
+        token_dialog.open();
+      });
+    }
+
     const tracked_send = activity.wrapSend((type, payload) =>
       client.send(type, payload)
     );
-    // Subscriptions: wire client events and expose subscribe/unsubscribe helpers
     const subscriptions = createSubscriptionStore(tracked_send);
-    // Per-subscription stores (source of truth)
     const sub_issue_stores = createSubscriptionIssueStores();
-    // Route per-subscription push envelopes to the owning store
+    const worker_queue_store = createWorkerQueueStore();
+    const session_log_store = createSessionLogStore();
+
+    // Route worker-queue snapshots (unified push protocol; distinct top-level
+    // event type) into the client-side queue store.
+    client.on('worker-queue-snapshot', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (p && p.queue) {
+        try {
+          worker_queue_store.set(p.queue);
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    // Route session-log (transcript) pushes: a snapshot on subscribe, then live
+    // appends for a running attempt (spec §5.6).
+    client.on('session-log-snapshot', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (p && typeof p.attempt_id === 'string') {
+        try {
+          session_log_store.set(
+            p.attempt_id,
+            Array.isArray(p.lines) ? p.lines : []
+          );
+        } catch {
+          // ignore
+        }
+      }
+    });
+    client.on('session-log-append', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (p && typeof p.attempt_id === 'string') {
+        try {
+          session_log_store.append(p.attempt_id, p.event);
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    // Route per-subscription push envelopes to the owning store.
     client.on('snapshot', (payload) => {
       const p = /** @type {any} */ (payload);
       const id = p && typeof p.id === 'string' ? p.id : '';
@@ -366,9 +363,8 @@ export function bootstrap(root_element) {
         }
       }
     });
-    // Derived list selectors: render from per-subscription snapshots
-    const listSelectors = createListSelectors(sub_issue_stores);
 
+    // --- Detail subscription lifecycle (shared by the overlay) ---
     /** @type {null | (() => Promise<void>)} */
     let unsub_detail = null;
     /** @type {string | null} */
@@ -386,8 +382,6 @@ export function bootstrap(root_element) {
     let is_switching_workspace = false;
 
     /**
-     * Create a stable detail subscription key for the current workspace.
-     *
      * @param {string} id
      * @returns {string}
      */
@@ -396,9 +390,6 @@ export function bootstrap(root_element) {
       return `${workspace_path}\0${id}`;
     }
 
-    /**
-     * Clear the active detail subscription bookkeeping.
-     */
     function resetDetailSubscription() {
       if (unsub_detail) {
         void unsub_detail().catch(() => {});
@@ -409,8 +400,6 @@ export function bootstrap(root_element) {
     }
 
     /**
-     * Subscribe to the selected issue detail after workspace restoration.
-     *
      * @param {string} id
      */
     async function subscribeSelectedDetail(id) {
@@ -449,8 +438,6 @@ export function bootstrap(root_element) {
     }
 
     /**
-     * Defer selected issue detail subscription until startup workspace restore ends.
-     *
      * @param {string} id
      */
     function scheduleDetailSubscription(id) {
@@ -469,80 +456,145 @@ export function bootstrap(root_element) {
       run();
     }
 
+    // --- Board subscription lifecycle ---
+    /** @type {Map<string, () => Promise<void>>} */
+    const board_unsubs = new Map();
+    /** @type {Set<string>} */
+    const pending_subscriptions = new Set();
+
+    /**
+     * @param {boolean} active
+     */
+    function ensureBoardSubscriptions(active) {
+      if (active) {
+        for (const [client_id, type] of BOARD_SUBS) {
+          if (
+            board_unsubs.has(client_id) ||
+            pending_subscriptions.has(client_id)
+          ) {
+            continue;
+          }
+          try {
+            sub_issue_stores.register(client_id, { type });
+          } catch (err) {
+            log('register %s store failed: %o', client_id, err);
+          }
+          pending_subscriptions.add(client_id);
+          void subscriptions
+            .subscribeList(client_id, { type })
+            .then((unsub) => {
+              board_unsubs.set(client_id, unsub);
+            })
+            .catch((err) => {
+              log('subscribe %s failed: %o', client_id, err);
+              showFatalFromError(err, 'board');
+            })
+            .finally(() => {
+              pending_subscriptions.delete(client_id);
+            });
+        }
+      } else {
+        clearBoardSubscriptions();
+      }
+    }
+
+    function clearBoardSubscriptions() {
+      for (const [client_id] of BOARD_SUBS) {
+        const unsub = board_unsubs.get(client_id);
+        if (unsub) {
+          void unsub().catch(() => {});
+          board_unsubs.delete(client_id);
+        }
+        try {
+          sub_issue_stores.unregister(client_id);
+        } catch (err) {
+          log('unregister %s failed: %o', client_id, err);
+        }
+      }
+    }
+
+    // --- Worker subscription lifecycle (candidate lanes + queue channel) ---
+    /** @type {Map<string, () => Promise<void>>} */
+    const worker_unsubs = new Map();
+    /** @type {(() => Promise<unknown>) | null} */
+    let worker_queue_unsub = null;
+
+    /**
+     * @param {boolean} active
+     */
+    function ensureWorkerSubscriptions(active) {
+      if (!active) {
+        clearWorkerSubscriptions();
+        return;
+      }
+      for (const [client_id, type] of WORKER_SUBS) {
+        if (
+          worker_unsubs.has(client_id) ||
+          pending_subscriptions.has(client_id)
+        ) {
+          continue;
+        }
+        try {
+          sub_issue_stores.register(client_id, { type });
+        } catch (err) {
+          log('register %s store failed: %o', client_id, err);
+        }
+        pending_subscriptions.add(client_id);
+        void subscriptions
+          .subscribeList(client_id, { type })
+          .then((unsub) => {
+            worker_unsubs.set(client_id, unsub);
+          })
+          .catch((err) => {
+            log('subscribe %s failed: %o', client_id, err);
+            showFatalFromError(err, 'worker');
+          })
+          .finally(() => {
+            pending_subscriptions.delete(client_id);
+          });
+      }
+      // Per-workspace worker-queue channel (reuses the authenticated ws).
+      if (!worker_queue_unsub) {
+        void tracked_send('subscribe-worker-queue', {
+          id: WORKER_QUEUE_CLIENT_ID
+        }).catch((err) => {
+          log('subscribe-worker-queue failed: %o', err);
+        });
+        worker_queue_unsub = () =>
+          tracked_send('unsubscribe-worker-queue', {
+            id: WORKER_QUEUE_CLIENT_ID
+          });
+      }
+    }
+
+    function clearWorkerSubscriptions() {
+      for (const [client_id] of WORKER_SUBS) {
+        const unsub = worker_unsubs.get(client_id);
+        if (unsub) {
+          void unsub().catch(() => {});
+          worker_unsubs.delete(client_id);
+        }
+        try {
+          sub_issue_stores.unregister(client_id);
+        } catch (err) {
+          log('unregister %s failed: %o', client_id, err);
+        }
+      }
+      if (worker_queue_unsub) {
+        void worker_queue_unsub().catch(() => {});
+        worker_queue_unsub = null;
+      }
+    }
+
     // --- Workspace management ---
     /**
-     * Clear all subscriptions and stores, then re-establish them.
-     * Called when switching workspaces.
+     * Clear all subscriptions and stores, then re-establish for the active view.
      */
     async function clearAndResubscribe() {
       log('clearing all subscriptions for workspace switch');
-      // Unsubscribe from server-side subscriptions first
-      if (unsub_issues_tab) {
-        void unsub_issues_tab().catch(() => {});
-        unsub_issues_tab = null;
-      }
-      if (unsub_issues_deferred) {
-        void unsub_issues_deferred().catch(() => {});
-        unsub_issues_deferred = null;
-      }
-      if (unsub_epics_tab) {
-        void unsub_epics_tab().catch(() => {});
-        unsub_epics_tab = null;
-      }
-      if (unsub_board_ready) {
-        void unsub_board_ready().catch(() => {});
-        unsub_board_ready = null;
-      }
-      if (unsub_board_in_progress) {
-        void unsub_board_in_progress().catch(() => {});
-        unsub_board_in_progress = null;
-      }
-      if (unsub_board_deferred) {
-        void unsub_board_deferred().catch(() => {});
-        unsub_board_deferred = null;
-      }
-      if (unsub_issues_resolved) {
-        void unsub_issues_resolved().catch(() => {});
-        unsub_issues_resolved = null;
-      }
-      if (unsub_worker_all) {
-        void unsub_worker_all().catch(() => {});
-        unsub_worker_all = null;
-      }
-      if (unsub_board_resolved) {
-        void unsub_board_resolved().catch(() => {});
-        unsub_board_resolved = null;
-      }
-      if (unsub_board_closed) {
-        void unsub_board_closed().catch(() => {});
-        unsub_board_closed = null;
-      }
-      if (unsub_board_blocked) {
-        void unsub_board_blocked().catch(() => {});
-        unsub_board_blocked = null;
-      }
-      // Clear all subscription stores
-      const storeIds = [
-        'tab:issues',
-        'tab:issues:resolved',
-        'tab:issues:deferred',
-        'tab:worker:all',
-        'tab:epics',
-        'tab:board:ready',
-        'tab:board:in-progress',
-        'tab:board:deferred',
-        'tab:board:resolved',
-        'tab:board:closed',
-        'tab:board:blocked'
-      ];
-      for (const id of storeIds) {
-        try {
-          sub_issue_stores.unregister(id);
-        } catch {
-          // ignore
-        }
-      }
-      // Also clear any detail stores
+      clearBoardSubscriptions();
+      clearWorkerSubscriptions();
+      worker_queue_store.clear();
       resetDetailSubscription();
       const s = store.getState();
       if (s.selected_id) {
@@ -552,19 +604,15 @@ export function bootstrap(root_element) {
           // ignore
         }
       }
-      // Force re-subscribe by resetting last spec key
-      last_issues_spec_key = null;
-      // Re-establish subscriptions for current view
       const current_state = store.getState();
-      ensureTabSubscriptions(current_state);
+      ensureBoardSubscriptions(current_state.view === 'board');
+      ensureWorkerSubscriptions(current_state.view === 'worker');
       if (current_state.selected_id) {
         scheduleDetailSubscription(current_state.selected_id);
       }
     }
 
     /**
-     * Handle workspace change request from the picker.
-     *
      * @param {string} workspace_path
      */
     async function handleWorkspaceChange(workspace_path) {
@@ -576,7 +624,6 @@ export function bootstrap(root_element) {
         });
         log('workspace switch result: %o', result);
         if (result && result.workspace) {
-          // Update state with new workspace
           store.setState({
             workspace: {
               current: {
@@ -585,9 +632,7 @@ export function bootstrap(root_element) {
               }
             }
           });
-          // Persist preference
           window.localStorage.setItem('beads-ui.workspace', workspace_path);
-          // Clear and resubscribe if workspace actually changed
           if (result.changed) {
             await clearAndResubscribe();
             showToast(
@@ -607,8 +652,6 @@ export function bootstrap(root_element) {
     }
 
     /**
-     * Handle a manual sync request for the current workspace.
-     *
      * @param {string} workspace_path
      */
     async function handleWorkspaceSync(workspace_path) {
@@ -654,8 +697,6 @@ export function bootstrap(root_element) {
     }
 
     /**
-     * Handle a manual git-pull request for the current workspace.
-     *
      * @param {string} workspace_path
      */
     async function handleWorkspaceGitPull(workspace_path) {
@@ -677,7 +718,6 @@ export function bootstrap(root_element) {
           );
           return;
         }
-        // status === 'updated' (or unknown — treat as success)
         showToast(
           'Git pulled ' + getProjectName(workspace_path),
           'success',
@@ -718,8 +758,6 @@ export function bootstrap(root_element) {
     }
 
     /**
-     * Extract project name from path.
-     *
      * @param {string} path
      * @returns {string}
      */
@@ -781,7 +819,6 @@ export function bootstrap(root_element) {
       }
     }
 
-    // Handle workspace-changed events from server (e.g., if another client changes workspace)
     client.on('workspace-changed', (payload) => {
       log('workspace-changed event: %o', payload);
       if (payload && payload.root_dir) {
@@ -793,16 +830,12 @@ export function bootstrap(root_element) {
             }
           }
         });
-        // Reload workspaces to get fresh list
         void loadWorkspaces();
-        // Clear and resubscribe
         void clearAndResubscribe();
       }
     });
 
-    // --- End workspace management (mounting happens after store is created) ---
-
-    // Show toasts for WebSocket connectivity changes
+    // --- WebSocket connectivity toasts ---
     /** @type {boolean} */
     let had_disconnect = false;
     if (typeof client.onConnection === 'function') {
@@ -822,95 +855,26 @@ export function bootstrap(root_element) {
       };
       client.onConnection(onConn);
     }
-    // Load persisted filters (status/search/type) from localStorage
-    /** @type {{ status: 'all'|'open'|'in_progress'|'deferred'|'resolved'|'closed'|'ready', search: string, type: string }} */
-    let persisted_filters = { status: 'all', search: '', type: '' };
-    try {
-      const raw = window.localStorage.getItem('beads-ui.filters');
-      if (raw) {
-        const obj = JSON.parse(raw);
-        if (obj && typeof obj === 'object') {
-          const ALLOWED = ['bug', 'feature', 'task', 'epic', 'chore'];
-          let parsed_type = '';
-          if (typeof obj.type === 'string' && ALLOWED.includes(obj.type)) {
-            parsed_type = obj.type;
-          } else if (Array.isArray(obj.types)) {
-            // Backwards compatibility: pick first valid from previous array format
-            let first_valid = '';
-            for (const it of obj.types) {
-              if (ALLOWED.includes(String(it))) {
-                first_valid = /** @type {string} */ (it);
-                break;
-              }
-            }
-            parsed_type = first_valid;
-          }
-          persisted_filters = {
-            status: [
-              'all',
-              'open',
-              'in_progress',
-              'deferred',
-              'resolved',
-              'closed',
-              'ready'
-            ].includes(obj.status)
-              ? obj.status
-              : 'all',
-            search: typeof obj.search === 'string' ? obj.search : '',
-            type: parsed_type
-          };
-        }
-      }
-    } catch (err) {
-      log('filters parse error: %o', err);
-    }
-    // Load last-view from storage
-    /** @type {'issues'|'epics'|'board'|'worker'} */
-    let last_view = 'issues';
+
+    // Load last-view from storage (board/worker only).
+    /** @type {'board'|'worker'} */
+    let last_view = 'board';
     try {
       const raw_view = window.localStorage.getItem('beads-ui.view');
-      if (
-        raw_view === 'issues' ||
-        raw_view === 'epics' ||
-        raw_view === 'board' ||
-        raw_view === 'worker'
-      ) {
+      if (raw_view === 'board' || raw_view === 'worker') {
         last_view = raw_view;
       }
     } catch (err) {
       log('view parse error: %o', err);
     }
-    // Load persisted board preferences. The deferred column remains
-    // session-local, so it always starts hidden on bootstrap.
-    /** @type {{ closed_filter: 'today'|'3'|'7', show_deferred_column: boolean }} */
-    let initial_board_state = {
-      closed_filter: 'today',
-      show_deferred_column: false
-    };
-    try {
-      const raw_board = window.localStorage.getItem('beads-ui.board');
-      if (raw_board) {
-        const obj = JSON.parse(raw_board);
-        if (obj && typeof obj === 'object') {
-          const cf = String(obj.closed_filter || 'today');
-          if (cf === 'today' || cf === '3' || cf === '7') {
-            initial_board_state.closed_filter = cf;
-          }
-        }
-      }
-    } catch (err) {
-      log('board prefs parse error: %o', err);
-    }
 
     const store = createStore({
       config: readBootstrapConfig(),
-      filters: persisted_filters,
-      view: last_view,
-      board: initial_board_state
+      view: last_view
     });
     const router = createHashRouter(store);
     router.start();
+
     /**
      * @param {string} type
      * @param {unknown} payload
@@ -922,12 +886,11 @@ export function bootstrap(root_element) {
         return [];
       }
     };
-    // Top navigation (optional mount)
+
     if (nav_mount) {
       createTopNav(nav_mount, store, router);
     }
 
-    // Workspace picker (mount now that store exists)
     const workspace_mount = document.getElementById('workspace-picker');
     if (workspace_mount) {
       createWorkspacePicker(
@@ -938,14 +901,12 @@ export function bootstrap(root_element) {
         handleWorkspaceGitPull
       );
     }
-    // Global New Issue dialog (UI-106) mounted at root so it is always visible
+
+    // Global New Issue dialog mounted at root so it is always available.
     const new_issue_dialog = createNewIssueDialog(
       root_element,
-      (type, payload) => tracked_send(type, payload),
-      router,
-      store
+      (type, payload) => tracked_send(type, payload)
     );
-    // Header button
     try {
       const btn_new = /** @type {HTMLButtonElement|null} */ (
         document.getElementById('new-issue-btn')
@@ -957,803 +918,94 @@ export function bootstrap(root_element) {
       // ignore missing header
     }
 
-    // Local transport shim: for list-issues, serve from local listSelectors;
-    // otherwise forward to ws transport for mutations/show.
-    /**
-     * @param {MessageType} type
-     * @param {unknown} payload
-     */
-    const listTransport = async (type, payload) => {
-      if (type === 'list-issues') {
-        try {
-          return listSelectors.selectIssuesFor('tab:issues');
-        } catch (err) {
-          log('list selectors failed: %o', err);
-          return [];
-        }
-      }
-      return transport(type, payload);
-    };
-
-    const issues_view = createListView(
-      list_mount,
-      /** @type {any} */ (listTransport),
-      (hash) => {
-        const id = parseHash(hash);
-        if (id) {
-          router.gotoIssue(id);
-        }
-      },
-      store,
-      subscriptions,
-      sub_issue_stores
-    );
-    // Persist filter changes to localStorage
-    store.subscribe((s) => {
-      const data = {
-        status: s.filters.status,
-        search: s.filters.search,
-        type: typeof s.filters.type === 'string' ? s.filters.type : ''
-      };
-      window.localStorage.setItem('beads-ui.filters', JSON.stringify(data));
-    });
-    // Persist board preferences
-    store.subscribe((s) => {
-      window.localStorage.setItem(
-        'beads-ui.board',
-        JSON.stringify({ closed_filter: s.board.closed_filter })
-      );
-    });
-    void issues_view.load();
-
-    // Dialog for issue details (UI-104)
-    const dialog = createIssueDialog(detail_mount, store, () => {
-      // Close: clear selection and return to current view
-      const s = store.getState();
-      store.setState({ selected_id: null });
-      try {
-        /** @type {'issues'|'epics'|'board'|'worker'} */
-        const v = s.view || 'issues';
-        router.gotoView(v);
-      } catch {
-        // ignore
-      }
-    });
-
-    /** @type {ReturnType<typeof createDetailView> | null} */
-    let detail = null;
-    // Mount details into the dialog body only
-    detail = createDetailView(
-      dialog.getMount(),
+    // Board view (default tab).
+    const board_view = createBoardView(board_root, {
+      gotoIssue: (id) => router.gotoIssue(id),
+      issueStores: sub_issue_stores,
       transport,
-      (hash) => {
-        const id = parseHash(hash);
-        if (id) {
-          router.gotoIssue(id);
-        } else {
-          // No issue ID - navigate to view (closes dialog)
-          const view = parseView(hash);
-          router.gotoView(view);
-        }
-      },
-      sub_issue_stores,
-      store
-    );
+      onNewIssue: () => new_issue_dialog.open()
+    });
 
-    // If router already set a selected id (deep-link), open dialog now
+    // Worker console (second tab): candidate lanes + Serial/Parallel queue.
+    const worker_view = createWorkerView(worker_root, {
+      transport,
+      issueStores: sub_issue_stores,
+      queueStore: worker_queue_store,
+      sessionLogStore: session_log_store,
+      gotoIssue: (id) => router.gotoIssue(id)
+    });
+
+    // Shared detail overlay.
+    const detail_panel = createDetailPanel(detail_mount, {
+      issueStores: sub_issue_stores,
+      transport,
+      queueStore: worker_queue_store,
+      sessionLogStore: session_log_store,
+      getWorkspacePath: () => store.getState().workspace.current?.path,
+      onNavigate: (id) => router.gotoIssue(id),
+      onClose: () => {
+        const s = store.getState();
+        store.setState({ selected_id: null });
+        try {
+          router.gotoView(s.view === 'worker' ? 'worker' : 'board');
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    // Deep-link: open the overlay if a selection is already present.
     const initial_id = store.getState().selected_id;
     if (initial_id) {
       detail_mount.hidden = false;
-      dialog.open(initial_id);
-      if (detail) {
-        void detail.load(initial_id);
-      }
-      // Ensure detail subscription is active after startup workspace restore.
+      detail_panel.load(initial_id);
       scheduleDetailSubscription(initial_id);
     }
 
-    // Open/close dialog based on selected_id (always dialog; no page variant)
+    // Open/close the overlay based on the selected id.
     store.subscribe((s) => {
       const id = s.selected_id;
       if (id) {
         detail_mount.hidden = false;
-        dialog.open(id);
-        if (detail) {
-          void detail.load(id);
-        }
-        // Wire per-issue subscription for detail after workspace restore.
+        detail_panel.load(id);
         if (!is_switching_workspace) {
           scheduleDetailSubscription(id);
         }
       } else {
-        try {
-          dialog.close();
-        } catch {
-          // ignore
-        }
-        if (detail) {
-          detail.clear();
-        }
+        detail_panel.clear();
         detail_mount.hidden = true;
         resetDetailSubscription();
       }
     });
 
-    // Removed: issues-changed handling. All views re-render from
-    // per-subscription stores which are updated by snapshot/upsert/delete.
-
-    // Toggle route shells on view/detail change and persist
-    const data = createDataLayer(transport);
-    const epics_view = createEpicsView(
-      epics_root,
-      data,
-      (id) => router.gotoIssue(id),
-      subscriptions,
-      sub_issue_stores,
-      store
-    );
-    const board_view = createBoardView(
-      board_root,
-      data,
-      (id) => router.gotoIssue(id),
-      store,
-      subscriptions,
-      sub_issue_stores,
-      transport
-    );
-    /** @type {Array<{ status?: string, issueId?: string, workspace?: string, command?: string, prNumber?: number }>} */
-    let worker_jobs = [];
-    /** @type {ReturnType<typeof setInterval> | null} */
-    let worker_jobs_timer = null;
-
-    async function refreshWorkerJobs() {
-      const workspace_path = store.getState().workspace.current?.path;
-      if (!workspace_path) {
-        worker_jobs = [];
-        return;
-      }
-      try {
-        const response = await fetch(
-          `/api/worker/jobs?workspace=${encodeURIComponent(workspace_path)}`
-        );
-        const payload = await response.json();
-        worker_jobs = Array.isArray(payload.items) ? payload.items : [];
-      } catch {
-        worker_jobs = [];
-      }
-    }
-
-    function stopWorkerJobsPolling() {
-      if (worker_jobs_timer) {
-        clearInterval(worker_jobs_timer);
-        worker_jobs_timer = null;
-      }
-    }
-
-    async function startWorkerJobsPolling() {
-      stopWorkerJobsPolling();
-      await refreshWorkerJobs();
-      worker_view.load();
-      worker_jobs_timer = setInterval(() => {
-        void refreshWorkerJobs().then(() => worker_view.load());
-      }, 3000);
-    }
-
     /**
-     * @param {'bd-ralph'|'pr-review'} command
-     * @param {{ issueId?: string, prNumber?: number }} target
-     */
-    async function enqueueWorkerJob(command, target) {
-      const workspace_path = store.getState().workspace.current?.path;
-      if (!workspace_path) {
-        return;
-      }
-      await fetch('/api/worker/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          command,
-          workspace: workspace_path,
-          issueId: target.issueId,
-          prNumber: target.prNumber
-        })
-      });
-      await refreshWorkerJobs();
-      worker_view.load();
-    }
-
-    /**
-     * @param {string} job_id
-     */
-    async function cancelWorkerJob(job_id) {
-      const workspace_path = store.getState().workspace.current?.path;
-      if (!workspace_path) {
-        return;
-      }
-      await fetch(`/api/worker/jobs/${encodeURIComponent(job_id)}/cancel`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace: workspace_path })
-      });
-      await refreshWorkerJobs();
-      worker_view.load();
-    }
-
-    const worker_view = createWorkerView(worker_root, {
-      store,
-      issue_stores: sub_issue_stores,
-      fetch_impl: fetch,
-      getWorkerJobs: () => worker_jobs,
-      onRunRalph: (issue_id) =>
-        void enqueueWorkerJob('bd-ralph', { issueId: issue_id }),
-      onRunPrReview: (target) =>
-        void enqueueWorkerJob('pr-review', {
-          issueId:
-            typeof target === 'string'
-              ? target
-              : (target?.issueId ?? undefined),
-          prNumber:
-            typeof target === 'object' && typeof target?.prNumber === 'number'
-              ? target.prNumber
-              : undefined
-        }),
-      onCancelJob: (/** @type {string} */ job_id) =>
-        void cancelWorkerJob(job_id)
-    });
-    // Preload epics when switching to view
-    /**
-     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'worker', filters: any }} s
-     */
-    // --- Subscriptions: tab-level management and filter-driven updates ---
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_issues_tab = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_epics_tab = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_issues_resolved = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_issues_deferred = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_worker_all = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_board_ready = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_board_in_progress = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_board_deferred = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_board_resolved = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_board_closed = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_board_blocked = null;
-
-    // Track in-flight subscriptions to prevent duplicates during rapid view switching
-    /** @type {Set<string>} */
-    const pending_subscriptions = new Set();
-
-    // Expose activity debug info globally for diagnostics
-    // @ts-ignore
-    window.__bdui_debug = {
-      getPendingSubscriptions: () => Array.from(pending_subscriptions),
-      getActivityCount: () => activity.getCount(),
-      getActiveRequests: () => activity.getActiveRequests()
-    };
-
-    /**
-     * Compute subscription spec for Issues tab based on filters.
+     * Manage route visibility and board subscriptions per view.
      *
-     * @param {any} filters
-     * @returns {string[]}
-     */
-    function getStatusFilterArray(filters) {
-      const raw = filters?.status;
-      if (Array.isArray(raw)) {
-        return raw.map((it) => String(it)).filter(Boolean);
-      }
-      if (typeof raw === 'string' && raw !== '' && raw !== 'all') {
-        return [raw];
-      }
-      return [];
-    }
-
-    /**
-     * @param {any} filters
-     * @returns {{ type: string, params?: Record<string, string|number|boolean> }}
-     */
-    function computeIssuesSpec(filters) {
-      const status_filters = getStatusFilterArray(filters);
-      const [st] = status_filters;
-      if (status_filters.length === 1 && st === 'ready') {
-        return { type: 'ready-issues' };
-      }
-      if (status_filters.length === 1 && st === 'in_progress') {
-        return { type: 'in-progress-issues' };
-      }
-      if (status_filters.length === 1 && st === 'deferred') {
-        return { type: 'deferred-issues' };
-      }
-      if (status_filters.length === 1 && st === 'closed') {
-        return { type: 'closed-issues' };
-      }
-      if (status_filters.length === 1 && st === 'resolved') {
-        return { type: 'resolved-issues' };
-      }
-      // "all" and "open" map to all-issues; client filters apply locally
-      return { type: 'all-issues' };
-    }
-
-    /** @type {string|null} */
-    let last_issues_spec_key = null;
-    /**
-     * Ensure only the active tab has subscriptions; clean up previous.
-     *
-     * @param {{ view: 'issues'|'epics'|'board'|'worker', filters: any }} s
-     */
-    function ensureTabSubscriptions(s) {
-      // Issues tab
-      if (s.view === 'issues') {
-        const spec = computeIssuesSpec(s.filters || {});
-        const status_filters = getStatusFilterArray(s.filters || {});
-        const needs_aux_resolved =
-          status_filters.includes('resolved') &&
-          !status_filters.includes('ready') &&
-          !(status_filters.length === 1 && status_filters[0] === 'resolved');
-        const needs_aux_deferred =
-          status_filters.includes('deferred') &&
-          !(status_filters.length === 1 && status_filters[0] === 'deferred');
-        const key = JSON.stringify(spec);
-        // Register store first to capture the initial snapshot
-        try {
-          sub_issue_stores.register('tab:issues', spec);
-        } catch (err) {
-          log('register issues store failed: %o', err);
-        }
-        // Only (re)subscribe if not yet subscribed, spec changed, and not already in-flight
-        const issues_sub_key = `tab:issues:${key}`;
-        if (
-          (!unsub_issues_tab || key !== last_issues_spec_key) &&
-          !pending_subscriptions.has(issues_sub_key)
-        ) {
-          pending_subscriptions.add(issues_sub_key);
-          void subscriptions
-            .subscribeList('tab:issues', spec)
-            .then((unsub) => {
-              unsub_issues_tab = unsub;
-              last_issues_spec_key = key;
-            })
-            .catch((err) => {
-              log('subscribe issues failed: %o', err);
-              showFatalFromError(err, 'issues list');
-            })
-            .finally(() => {
-              pending_subscriptions.delete(issues_sub_key);
-            });
-        }
-        if (
-          needs_aux_resolved &&
-          !unsub_issues_resolved &&
-          !pending_subscriptions.has('tab:issues:resolved')
-        ) {
-          try {
-            sub_issue_stores.register('tab:issues:resolved', {
-              type: 'resolved-issues'
-            });
-          } catch (err) {
-            log('register issues:resolved store failed: %o', err);
-          }
-          pending_subscriptions.add('tab:issues:resolved');
-          void subscriptions
-            .subscribeList('tab:issues:resolved', { type: 'resolved-issues' })
-            .then((u) => (unsub_issues_resolved = u))
-            .catch((err) => {
-              log('subscribe issues resolved failed: %o', err);
-              showFatalFromError(err, 'issues list (Resolved)');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:issues:resolved');
-            });
-        }
-        if (
-          needs_aux_deferred &&
-          !unsub_issues_deferred &&
-          !pending_subscriptions.has('tab:issues:deferred')
-        ) {
-          try {
-            sub_issue_stores.register('tab:issues:deferred', {
-              type: 'deferred-issues'
-            });
-          } catch (err) {
-            log('register issues:deferred store failed: %o', err);
-          }
-          pending_subscriptions.add('tab:issues:deferred');
-          void subscriptions
-            .subscribeList('tab:issues:deferred', {
-              type: 'deferred-issues'
-            })
-            .then((u) => (unsub_issues_deferred = u))
-            .catch((err) => {
-              log('subscribe issues deferred failed: %o', err);
-              showFatalFromError(err, 'issues list (Deferred)');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:issues:deferred');
-            });
-        }
-        if (!needs_aux_resolved && unsub_issues_resolved) {
-          void unsub_issues_resolved().catch(() => {});
-          unsub_issues_resolved = null;
-          try {
-            sub_issue_stores.unregister('tab:issues:resolved');
-          } catch (err) {
-            log('unregister issues:resolved failed: %o', err);
-          }
-        }
-        if (!needs_aux_deferred && unsub_issues_deferred) {
-          void unsub_issues_deferred().catch(() => {});
-          unsub_issues_deferred = null;
-          try {
-            sub_issue_stores.unregister('tab:issues:deferred');
-          } catch (err) {
-            log('unregister issues:deferred failed: %o', err);
-          }
-        }
-      } else if (unsub_issues_tab) {
-        void unsub_issues_tab().catch(() => {});
-        unsub_issues_tab = null;
-        last_issues_spec_key = null;
-        try {
-          sub_issue_stores.unregister('tab:issues');
-        } catch (err) {
-          log('unregister issues store failed: %o', err);
-        }
-        if (unsub_issues_resolved) {
-          void unsub_issues_resolved().catch(() => {});
-          unsub_issues_resolved = null;
-          try {
-            sub_issue_stores.unregister('tab:issues:resolved');
-          } catch (err) {
-            log('unregister issues:resolved failed: %o', err);
-          }
-        }
-        if (unsub_issues_deferred) {
-          void unsub_issues_deferred().catch(() => {});
-          unsub_issues_deferred = null;
-          try {
-            sub_issue_stores.unregister('tab:issues:deferred');
-          } catch (err) {
-            log('unregister issues:deferred failed: %o', err);
-          }
-        }
-      }
-
-      // Worker tab
-      if (s.view === 'worker') {
-        try {
-          sub_issue_stores.register('tab:worker:all', { type: 'all-issues' });
-        } catch (err) {
-          log('register worker store failed: %o', err);
-        }
-        if (!unsub_worker_all && !pending_subscriptions.has('tab:worker:all')) {
-          pending_subscriptions.add('tab:worker:all');
-          void subscriptions
-            .subscribeList('tab:worker:all', { type: 'all-issues' })
-            .then((unsub) => {
-              unsub_worker_all = unsub;
-            })
-            .catch((err) => {
-              log('subscribe worker failed: %o', err);
-              showFatalFromError(err, 'worker');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:worker:all');
-            });
-        }
-      } else if (unsub_worker_all) {
-        void unsub_worker_all().catch(() => {});
-        unsub_worker_all = null;
-        try {
-          sub_issue_stores.unregister('tab:worker:all');
-        } catch (err) {
-          log('unregister worker store failed: %o', err);
-        }
-      }
-
-      // Epics tab
-      if (s.view === 'epics') {
-        // Register store first to avoid race with initial snapshot
-        try {
-          sub_issue_stores.register('tab:epics', { type: 'epics' });
-        } catch (err) {
-          log('register epics store failed: %o', err);
-        }
-        // Only subscribe if not already subscribed and not in-flight
-        if (!unsub_epics_tab && !pending_subscriptions.has('tab:epics')) {
-          pending_subscriptions.add('tab:epics');
-          void subscriptions
-            .subscribeList('tab:epics', { type: 'epics' })
-            .then((unsub) => {
-              unsub_epics_tab = unsub;
-            })
-            .catch((err) => {
-              log('subscribe epics failed: %o', err);
-              showFatalFromError(err, 'epics');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:epics');
-            });
-        }
-      } else if (unsub_epics_tab) {
-        void unsub_epics_tab().catch(() => {});
-        unsub_epics_tab = null;
-        try {
-          sub_issue_stores.unregister('tab:epics');
-        } catch (err) {
-          log('unregister epics store failed: %o', err);
-        }
-      }
-
-      // Board tab subscribes to lists used by columns
-      if (s.view === 'board') {
-        // Ready column
-        if (
-          !unsub_board_ready &&
-          !pending_subscriptions.has('tab:board:ready')
-        ) {
-          try {
-            sub_issue_stores.register('tab:board:ready', {
-              type: 'ready-issues'
-            });
-          } catch (err) {
-            log('register board:ready store failed: %o', err);
-          }
-          pending_subscriptions.add('tab:board:ready');
-          void subscriptions
-            .subscribeList('tab:board:ready', { type: 'ready-issues' })
-            .then((u) => (unsub_board_ready = u))
-            .catch((err) => {
-              log('subscribe board ready failed: %o', err);
-              showFatalFromError(err, 'board (Ready)');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:board:ready');
-            });
-        }
-        // In Progress column
-        if (
-          !unsub_board_in_progress &&
-          !pending_subscriptions.has('tab:board:in-progress')
-        ) {
-          try {
-            sub_issue_stores.register('tab:board:in-progress', {
-              type: 'in-progress-issues'
-            });
-          } catch (err) {
-            log('register board:in-progress store failed: %o', err);
-          }
-          pending_subscriptions.add('tab:board:in-progress');
-          void subscriptions
-            .subscribeList('tab:board:in-progress', {
-              type: 'in-progress-issues'
-            })
-            .then((u) => (unsub_board_in_progress = u))
-            .catch((err) => {
-              log('subscribe board in-progress failed: %o', err);
-              showFatalFromError(err, 'board (In Progress)');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:board:in-progress');
-            });
-        }
-        // Deferred column
-        if (
-          !unsub_board_deferred &&
-          !pending_subscriptions.has('tab:board:deferred')
-        ) {
-          try {
-            sub_issue_stores.register('tab:board:deferred', {
-              type: 'deferred-issues'
-            });
-          } catch (err) {
-            log('register board:deferred store failed: %o', err);
-          }
-          pending_subscriptions.add('tab:board:deferred');
-          void subscriptions
-            .subscribeList('tab:board:deferred', {
-              type: 'deferred-issues'
-            })
-            .then((u) => (unsub_board_deferred = u))
-            .catch((err) => {
-              log('subscribe board deferred failed: %o', err);
-              showFatalFromError(err, 'board (Deferred)');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:board:deferred');
-            });
-        }
-        // Resolved column
-        if (
-          !unsub_board_resolved &&
-          !pending_subscriptions.has('tab:board:resolved')
-        ) {
-          try {
-            sub_issue_stores.register('tab:board:resolved', {
-              type: 'resolved-issues'
-            });
-          } catch (err) {
-            log('register board:resolved store failed: %o', err);
-          }
-          pending_subscriptions.add('tab:board:resolved');
-          void subscriptions
-            .subscribeList('tab:board:resolved', {
-              type: 'resolved-issues'
-            })
-            .then((u) => (unsub_board_resolved = u))
-            .catch((err) => {
-              log('subscribe board resolved failed: %o', err);
-              showFatalFromError(err, 'board (Resolved)');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:board:resolved');
-            });
-        }
-        // Closed column
-        if (
-          !unsub_board_closed &&
-          !pending_subscriptions.has('tab:board:closed')
-        ) {
-          try {
-            sub_issue_stores.register('tab:board:closed', {
-              type: 'closed-issues'
-            });
-          } catch (err) {
-            log('register board:closed store failed: %o', err);
-          }
-          pending_subscriptions.add('tab:board:closed');
-          void subscriptions
-            .subscribeList('tab:board:closed', { type: 'closed-issues' })
-            .then((u) => (unsub_board_closed = u))
-            .catch((err) => {
-              log('subscribe board closed failed: %o', err);
-              showFatalFromError(err, 'board (Closed)');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:board:closed');
-            });
-        }
-        // Blocked column
-        if (
-          !unsub_board_blocked &&
-          !pending_subscriptions.has('tab:board:blocked')
-        ) {
-          try {
-            sub_issue_stores.register('tab:board:blocked', {
-              type: 'blocked-issues'
-            });
-          } catch (err) {
-            log('register board:blocked store failed: %o', err);
-          }
-          pending_subscriptions.add('tab:board:blocked');
-          void subscriptions
-            .subscribeList('tab:board:blocked', { type: 'blocked-issues' })
-            .then((u) => (unsub_board_blocked = u))
-            .catch((err) => {
-              log('subscribe board blocked failed: %o', err);
-              showFatalFromError(err, 'board (Blocked)');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:board:blocked');
-            });
-        }
-      } else {
-        // Unsubscribe all board lists when leaving the board view
-        if (unsub_board_ready) {
-          void unsub_board_ready().catch(() => {});
-          unsub_board_ready = null;
-          try {
-            sub_issue_stores.unregister('tab:board:ready');
-          } catch (err) {
-            log('unregister board:ready failed: %o', err);
-          }
-        }
-        if (unsub_board_in_progress) {
-          void unsub_board_in_progress().catch(() => {});
-          unsub_board_in_progress = null;
-          try {
-            sub_issue_stores.unregister('tab:board:in-progress');
-          } catch (err) {
-            log('unregister board:in-progress failed: %o', err);
-          }
-        }
-        if (unsub_board_deferred) {
-          void unsub_board_deferred().catch(() => {});
-          unsub_board_deferred = null;
-          try {
-            sub_issue_stores.unregister('tab:board:deferred');
-          } catch (err) {
-            log('unregister board:deferred failed: %o', err);
-          }
-        }
-        if (unsub_board_resolved) {
-          void unsub_board_resolved().catch(() => {});
-          unsub_board_resolved = null;
-          try {
-            sub_issue_stores.unregister('tab:board:resolved');
-          } catch (err) {
-            log('unregister board:resolved failed: %o', err);
-          }
-        }
-        if (unsub_board_closed) {
-          void unsub_board_closed().catch(() => {});
-          unsub_board_closed = null;
-          try {
-            sub_issue_stores.unregister('tab:board:closed');
-          } catch (err) {
-            log('unregister board:closed failed: %o', err);
-          }
-        }
-        if (unsub_board_blocked) {
-          void unsub_board_blocked().catch(() => {});
-          unsub_board_blocked = null;
-          try {
-            sub_issue_stores.unregister('tab:board:blocked');
-          } catch (err) {
-            log('unregister board:blocked failed: %o', err);
-          }
-        }
-      }
-    }
-
-    /**
-     * Manage route visibility and list subscriptions per view.
-     *
-     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'worker', filters: any }} s
+     * @param {{ selected_id: string | null, view: 'board'|'worker' }} s
      */
     const onRouteChange = (s) => {
-      if (
-        issues_root &&
-        epics_root &&
-        board_root &&
-        worker_root &&
-        detail_mount
-      ) {
-        // Underlying route visibility is controlled only by selected view
-        issues_root.hidden = s.view !== 'issues';
-        epics_root.hidden = s.view !== 'epics';
-        board_root.hidden = s.view !== 'board';
-        worker_root.hidden = s.view !== 'worker';
-        // detail_mount visibility handled in subscription above
-      }
-      // Ensure subscriptions for the active tab before loading the view to
-      // avoid empty initial renders due to racing list-delta.
-      ensureTabSubscriptions(s);
-      if (!s.selected_id && s.view === 'epics') {
-        void epics_view.load();
-      }
+      board_root.hidden = s.view !== 'board';
+      worker_root.hidden = s.view !== 'worker';
+      ensureBoardSubscriptions(s.view === 'board');
+      ensureWorkerSubscriptions(s.view === 'worker');
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
       }
       if (s.view === 'worker') {
-        void startWorkerJobsPolling();
         worker_view.load();
-      } else {
-        stopWorkerJobsPolling();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };
     store.subscribe(onRouteChange);
-    // Ensure initial state is reflected (fixes reload on #/epics)
     onRouteChange(store.getState());
 
-    // Load workspaces after all startup subscriptions can safely resubscribe.
+    // Load workspaces after startup subscriptions can safely resubscribe.
     void loadWorkspaces().finally(() => {
       workspace_bootstrap_done = true;
       resolve_workspace_bootstrap();
     });
 
-    // Removed redundant filter-change subscription: handled by ensureTabSubscriptions
-
-    // Keyboard shortcuts: Ctrl/Cmd+N opens new issue; Ctrl/Cmd+Enter submits inside dialog
+    // Keyboard shortcut: Ctrl/Cmd+N opens the new-issue dialog.
     window.addEventListener('keydown', (ev) => {
       const is_modifier = ev.ctrlKey || ev.metaKey;
       const key = String(ev.key || '').toLowerCase();
@@ -1768,7 +1020,6 @@ export function bootstrap(root_element) {
           typeof target.isContentEditable === 'boolean' &&
           target.isContentEditable);
       if (is_modifier && key === 'n') {
-        // Do not hijack when typing in inputs; common UX
         if (!is_editable) {
           ev.preventDefault();
           new_issue_dialog.open();
@@ -1780,7 +1031,7 @@ export function bootstrap(root_element) {
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   window.addEventListener('DOMContentLoaded', () => {
-    // Initialize theme from saved preference or OS preference
+    // Initialize theme from saved preference or OS preference.
     try {
       const saved = window.localStorage.getItem('beads-ui.theme');
       const prefersDark =
@@ -1803,7 +1054,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // ignore theme init errors
     }
 
-    // Wire up theme switch in header
+    // Wire up theme switch in header.
     const themeSwitch = /** @type {HTMLInputElement|null} */ (
       document.getElementById('theme-switch')
     );

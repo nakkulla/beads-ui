@@ -80,7 +80,7 @@ describe('server app wiring (no listen)', () => {
     ]);
   });
 
-  test('exposes exact labels and detail workflow config', async () => {
+  test('exposes exact labels and colors config', async () => {
     process.env.BDUI_CONFIG_PATH = missingConfigPath();
     const config = getConfig();
     const app = createApp({
@@ -94,15 +94,6 @@ describe('server app wiring (no listen)', () => {
           },
           exact: {
             pr: { fg: '#7c3aed' }
-          }
-        }
-      },
-      detail: {
-        workflow_summary: {
-          sections: ['workflow_settings'],
-          workflow_settings: {
-            fields: ['execution_lane'],
-            editable_fields: ['execution_lane']
           }
         }
       }
@@ -119,32 +110,6 @@ describe('server app wiring (no listen)', () => {
         pr: { fg: '#7c3aed' }
       }
     });
-    expect(body.detail.workflow_summary.sections).toEqual([
-      'workflow_settings'
-    ]);
-  });
-
-  test('uses workflow summary defaults when detail config is absent', async () => {
-    process.env.BDUI_CONFIG_PATH = missingConfigPath();
-    const config = getConfig();
-    const app = createApp({
-      ...config,
-      detail: undefined
-    });
-
-    const body = await fetchJsonFromApp(app, '/api/config');
-
-    expect(body.detail.workflow_summary.sections).toContain(
-      'workflow_settings'
-    );
-    expect(body.detail.workflow_summary.workflow_settings.fields).toEqual([
-      'execution_lane',
-      'workspace_policy',
-      'branch_policy',
-      'finish_action',
-      'review_profile',
-      'review_runtime'
-    ]);
   });
 
   test('index.html exists in configured app_dir', () => {

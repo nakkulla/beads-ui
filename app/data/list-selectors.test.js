@@ -63,46 +63,7 @@ function setup() {
 describe('list-selectors', () => {
   test('returns empty arrays for empty stores', async () => {
     const { selectors } = setup();
-    expect(selectors.selectIssuesFor('tab:issues')).toEqual([]);
     expect(selectors.selectBoardColumn('tab:board:ready', 'ready')).toEqual([]);
-  });
-
-  test('selectIssuesFor returns created_at desc before priority tie-breaks', async () => {
-    const { issueStores, selectors } = setup();
-    const store = issueStores.getStore('tab:issues');
-    // Apply snapshot with items of varying priority and created_at
-    store.applyPush({
-      type: 'snapshot',
-      id: 'tab:issues',
-      revision: 1,
-      issues: [
-        {
-          id: 'A',
-          priority: 2,
-          created_at: 10_000,
-          updated_at: 10_000,
-          closed_at: null
-        },
-        {
-          id: 'B',
-          priority: 1,
-          created_at: 9_000,
-          updated_at: 9_000,
-          closed_at: null
-        },
-        {
-          id: 'C',
-          priority: 1,
-          created_at: 11_000,
-          updated_at: 11_000,
-          closed_at: null
-        }
-      ]
-    });
-
-    const out = selectors.selectIssuesFor('tab:issues').map((x) => x.id);
-    // created_at desc first: C (11k), A (10k), B (9k)
-    expect(out).toEqual(['C', 'A', 'B']);
   });
 
   test('selectBoardColumn sorts open columns by created_at desc and closed by closed_at desc', async () => {
@@ -176,49 +137,16 @@ describe('list-selectors', () => {
     expect(closed).toEqual(['C2', 'C1', 'C3']);
   });
 
-  test('selectEpicChildren uses detail:{id} dependents and latest-first sorting', async () => {
-    const { issueStores, selectors } = setup();
-    issueStores.getStore('detail:42').applyPush({
-      type: 'snapshot',
-      id: 'detail:42',
-      revision: 1,
-      issues: [
-        {
-          id: '42',
-          issue_type: 'epic',
-          dependents: [
-            {
-              id: 'E1',
-              priority: 1,
-              created_at: 10_000,
-              updated_at: 10_000,
-              closed_at: null
-            },
-            {
-              id: 'E2',
-              priority: 1,
-              created_at: 9_000,
-              updated_at: 9_000,
-              closed_at: null
-            }
-          ]
-        }
-      ]
-    });
-    const out = selectors.selectEpicChildren('42').map((x) => x.id);
-    expect(out).toEqual(['E1', 'E2']);
-  });
-
   test('subscribe triggers once per issues envelope', async () => {
     const { issueStores, selectors } = setup();
     let calls = 0;
     const off = selectors.subscribe(() => {
       calls += 1;
     });
-    const st = issueStores.getStore('tab:issues');
+    const st = issueStores.getStore('tab:board:ready');
     st.applyPush({
       type: 'snapshot',
-      id: 'tab:issues',
+      id: 'tab:board:ready',
       revision: 1,
       issues: []
     });

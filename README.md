@@ -16,14 +16,26 @@
 
 ## Features
 
-- ✨ **Zero setup** – just run `bdui start`
-- 📺 **Live updates** – Monitors the beads database for changes
-- 🔎 **Issues view** – Filter and search issues, edit inline
-- ⛰️ **Epics view** – Show progress per epic, expand rows, edit inline
-- 🏂 **Board view** – Blocked / Ready / In progress / Closed columns
-- ⌨️ **Keyboard navigation** – Navigate and edit without touching the mouse
-- 🔀 **Multi-workspace** – Switch between projects via dropdown, auto-registers
-  workspaces
+A dark-first control tower with **two tabs** plus a shared detail panel:
+
+- 🏂 **Board tab** – Blocked / Ready / In progress / Resolved / Closed columns
+  with a route-driven workflow stepper, drag-to-restatus, and keyboard
+  navigation. Click a card to open the shared detail panel.
+- 🤖 **Worker tab** – A session queue console: drag Board candidates into the
+  Serial / Parallel lanes, ▶/⏸ auto-advance, live running-session tiles, and a
+  circuit-breaker banner on failure.
+- 🎞️ **Transcript viewer** – Click a running tile (or a session-history row) to
+  open the session drawer: parsed assistant / tool / gate / phase lines with
+  live-follow for a running attempt and the same viewer for a Done/Failed log.
+- 🗂️ **Detail panel** – id/title/deps/workflow, Artifacts (open the embedded
+  markdown viewer), the 5-key execution settings + `workflow_mode` editor, and
+  the session history.
+- 📺 **Live updates** – A single WebSocket per-subscription push protocol
+  (`snapshot`/`upsert`/`delete`); no polling.
+- ⌨️ **Keyboard navigation** – Navigate and edit without touching the mouse.
+- 🔀 **Multi-workspace** – Switch between projects via the header dropdown.
+- 📱 **Phone-ready** – Columns/lanes stack and the panels/viewers go fullscreen
+  at ≤640px (reachable over Tailscale).
 
 ## Setup
 
@@ -35,15 +47,37 @@ bdui start --open
 
 See `bdui --help` for options.
 
+### Token authentication
+
+Tailscale binding is network isolation, not authentication. Mutating WebSocket
+messages and the worker/doc REST surfaces are gated by a **token**. Set it in
+`config.toml`:
+
+```toml
+[auth]
+token = "a-long-random-secret"
+```
+
+When a token is configured, the UI prompts for it once and stores it locally,
+then sends it as the first WebSocket frame. `/healthz` and the static assets
+stay unauthenticated. As defense-in-depth against browser cross-site WS hijacks,
+browser sockets must additionally present an acceptable `Origin`: a
+**same-origin** request (the `Origin`'s host:port equals the request `Host` —
+i.e. the page was served by this same server, which covers the tailscale-IP
+deployment) is accepted, as is any origin listed in `BDUI_ALLOWED_ORIGINS`
+(comma-separated). With no allowlist configured, only loopback dev origins are
+accepted. Non-browser clients (no `Origin` header) are governed by network
+isolation, not this check.
+
+## Data topology
+
+The canonical Beads database is a single Dolt server (Mac Studio, port `3307`);
+every workspace resolves against it, so there is no per-repo local DB to sync.
+`/healthz` reports `{ ok, checks: { bd, db, worker } }` for readiness. See
+`docs/superpowers/specs/2026-07-15-beads-ui-redesign-mac-studio-canonical-design.md`
+for the full design.
+
 ## Screenshots
-
-**Issues**
-
-![Issues view](https://github.com/mantoni/beads-ui/raw/main/media/bdui-issues.png)
-
-**Epics**
-
-![Epics view](https://github.com/mantoni/beads-ui/raw/main/media/bdui-epics.png)
 
 **Board**
 
