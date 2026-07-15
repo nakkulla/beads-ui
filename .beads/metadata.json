@@ -1,7 +1,9 @@
 {
-  "database": "dolt",
+  "database": "beads_ui",
   "backend": "dolt",
   "dolt_mode": "server",
-  "dolt_database": "dolt",
-  "project_id": "71128859-031b-4795-897b-0be846de97ad"
+  "dolt_database": "beads_ui",
+  "project_id": "71128859-031b-4795-897b-0be846de97ad",
+  "dolt_server_host": "127.0.0.1",
+  "dolt_server_port": 3307
 }
