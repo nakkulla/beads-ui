@@ -20,22 +20,6 @@ export function createListSelectors(issue_stores = undefined) {
   // Sorting comparators are centralized in app/data/sort.js
 
   /**
-   * Get entities for a subscription id with Issues List sort (created desc → priority asc).
-   *
-   * @param {string} client_id
-   * @returns {IssueLite[]}
-   */
-  function selectIssuesFor(client_id) {
-    if (!issue_stores || typeof issue_stores.snapshotFor !== 'function') {
-      return [];
-    }
-    return issue_stores
-      .snapshotFor(client_id)
-      .slice()
-      .sort(cmpCreatedDescThenPriority);
-  }
-
-  /**
    * Get entities for a Board column with column-specific sort.
    *
    * @param {string} client_id
@@ -59,29 +43,6 @@ export function createListSelectors(issue_stores = undefined) {
   }
 
   /**
-   * Get children for an epic subscribed as client id `epic:${id}`.
-   * Sorted as Issues List (created desc → priority asc).
-   *
-   * @param {string} epic_id
-   * @returns {IssueLite[]}
-   */
-  function selectEpicChildren(epic_id) {
-    if (!issue_stores || typeof issue_stores.snapshotFor !== 'function') {
-      return [];
-    }
-    // Epic detail subscription uses client id `detail:<id>` and contains the
-    // epic entity with a `dependents` array. Render children from that list.
-    const arr = /** @type {any[]} */ (
-      issue_stores.snapshotFor(`detail:${epic_id}`) || []
-    );
-    const epic = arr.find((it) => String(it?.id || '') === String(epic_id));
-    const dependents = Array.isArray(epic?.dependents) ? epic.dependents : [];
-    return /** @type {IssueLite[]} */ (
-      dependents.slice().sort(cmpCreatedDescThenPriority)
-    );
-  }
-
-  /**
    * Subscribe for re-render; triggers once per issues envelope.
    *
    * @param {() => void} fn
@@ -95,9 +56,7 @@ export function createListSelectors(issue_stores = undefined) {
   }
 
   return {
-    selectIssuesFor,
     selectBoardColumn,
-    selectEpicChildren,
     subscribe
   };
 }

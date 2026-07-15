@@ -4,7 +4,7 @@ import { createStore } from './state.js';
 
 describe('router', () => {
   test('parseHash extracts id', () => {
-    expect(parseHash('#/issues?issue=UI-5')).toBe('UI-5');
+    expect(parseHash('#/board?issue=UI-5')).toBe('UI-5');
     expect(parseHash('#/issue/UI-5')).toBe('UI-5');
     expect(parseHash('#/anything')).toBeNull();
   });
@@ -16,12 +16,13 @@ describe('router', () => {
     router.start();
 
     window.location.hash = '#/issue/UI-10';
-    // Trigger handler synchronously
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     expect(store.getState().selected_id).toBe('UI-10');
+    // Legacy single-issue hash normalizes to the canonical board form.
+    expect(window.location.hash).toBe('#/board?issue=UI-10');
 
     router.gotoIssue('UI-11');
-    expect(window.location.hash).toBe('#/issues?issue=UI-11');
+    expect(window.location.hash).toBe('#/board?issue=UI-11');
     router.stop();
   });
 
@@ -41,12 +42,13 @@ describe('router', () => {
     router.stop();
   });
 
-  test('parseView resolves from hash and defaults to issues', () => {
-    expect(parseView('#/issues')).toBe('issues');
-    expect(parseView('#/epics')).toBe('epics');
-    expect(parseView('#/board')).toBe('board');
+  test('parseView resolves worker and defaults everything else to board', () => {
     expect(parseView('#/worker')).toBe('worker');
-    expect(parseView('')).toBe('issues');
-    expect(parseView('#/unknown')).toBe('issues');
+    expect(parseView('#/board')).toBe('board');
+    // Legacy tab hashes collapse to board.
+    expect(parseView('#/issues')).toBe('board');
+    expect(parseView('#/epics')).toBe('board');
+    expect(parseView('')).toBe('board');
+    expect(parseView('#/unknown')).toBe('board');
   });
 });

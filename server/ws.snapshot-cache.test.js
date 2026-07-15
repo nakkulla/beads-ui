@@ -204,7 +204,7 @@ describe('snapshot cache', () => {
         JSON.stringify({
           id: 'sub-first',
           type: /** @type {any} */ ('subscribe-list'),
-          payload: { id: 'c-first', type: 'epics' }
+          payload: { id: 'c-first', type: 'all-issues' }
         })
       )
     );
@@ -237,7 +237,7 @@ describe('snapshot cache', () => {
         JSON.stringify({
           id: 'sub-cached',
           type: /** @type {any} */ ('subscribe-list'),
-          payload: { id: 'c-cached', type: 'epics' }
+          payload: { id: 'c-cached', type: 'all-issues' }
         })
       )
     );

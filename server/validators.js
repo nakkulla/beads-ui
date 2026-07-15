@@ -11,13 +11,11 @@
  */
 const SUBSCRIPTION_TYPES = new Set([
   'all-issues',
-  'epics',
   'blocked-issues',
   'ready-issues',
   'in-progress-issues',
   'closed-issues',
   'resolved-issues',
-  'deferred-issues',
   'issue-detail'
 ]);
 

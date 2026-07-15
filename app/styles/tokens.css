@@ -1,0 +1,160 @@
+/*
+ * Control-tower design tokens (Beads UI redesign, Phase 7).
+ *
+ * `:root` carries the DARK defaults distilled verbatim from the 4 canonical
+ * mockups (docs/superpowers/specs/assets/2026-07-15-beads-ui-redesign/*.html).
+ * `[data-theme='light']` carries the light overrides bound by the controller
+ * design-gap decisions. The theme is stamped onto <html data-theme> by the
+ * bootstrap theme init (main.js) — dark is the default when no attribute is
+ * present.
+ *
+ * These tokens are the single color source for every new (control-tower) view.
+ * View stylesheets MUST reference these variables, never raw hex.
+ */
+
+:root {
+  /* --- surfaces (deepest -> raised) --- */
+  --bg-app: #0b0e14;
+  --bg-panel: #11151d;
+  --bg-tile-run: #141d1a;
+  --bg-card: #171c26;
+  --bg-drawer: #0d1118;
+  --bg-candidate: #0e1219;
+  --bg-gate-pill: #14231c;
+
+  /* --- borders --- */
+  --border-card: #262e3d;
+  --border-panel: #1e2530;
+  --border-chip: #2a3342;
+  --border-tile-run: #2b4a3a;
+  --border-kv-row: #1a212c;
+  --border-empty-fill: #242c3a;
+  --border-danger: #4a2b2b;
+  --border-warn: #4a3f2b;
+  --border-info: #1e4a44;
+  --border-pr: #5a2b45;
+  --border-ft: #43315a;
+  --border-route: #2b3f5a;
+
+  /* --- text tiers --- */
+  --text-title: #dbe2ee;
+  --text-primary: #c8d2e0;
+  --text-secondary: #a9b4c6;
+  --text-muted: #8b96a8;
+  --text-dim: #5c6778;
+  --text-id-mono: #7ee2d8;
+  --text-tool-mono: #7a8699;
+  --text-gripline: #3a4356;
+  --h1-md: #e8eef8;
+
+  /* --- 5 stage colors (dim = artifact exists, on = reviewed/current) --- */
+  --stage-spec-dim: #17695e;
+  --stage-spec-on: #2dd4bf;
+  --stage-plan-dim: #2b5687;
+  --stage-plan-on: #60a5fa;
+  --stage-impl-dim: #54418a;
+  --stage-impl-on: #a78bfa;
+  --stage-pr-dim: #7c3a5d;
+  --stage-pr-on: #f472b6;
+  --stage-merge-dim: #2b6b40;
+  --stage-merge-on: #4ade80;
+
+  /* --- chip variant colors --- */
+  --chip-neutral: #9aa6ba;
+  --chip-route: #8ab4f8;
+  --chip-ft: #c792ea;
+  --chip-pr: #f472b6;
+
+  /* --- recurring semantic accents --- */
+  --accent-success: #5ad198;
+  --accent-danger: #e8756a;
+  --accent-warn: #e8b45a;
+  --accent-child: #6cb6ff;
+
+  /* --- font families --- */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Menlo', monospace;
+
+  /* --- radii --- */
+  --r-2: 2px;
+  --r-3: 3px;
+  --r-4: 4px;
+  --r-5: 5px;
+  --r-6: 6px;
+  --r-7: 7px;
+  --r-8: 8px;
+  --r-9: 9px;
+  --r-10: 10px;
+
+  /* --- spacing scale --- */
+  --sp-1: 1px;
+  --sp-2: 2px;
+  --sp-3: 3px;
+  --sp-4: 4px;
+  --sp-5: 5px;
+  --sp-6: 6px;
+  --sp-7: 7px;
+  --sp-8: 8px;
+  --sp-9: 9px;
+  --sp-10: 10px;
+  --sp-12: 12px;
+  --sp-14: 14px;
+  --sp-16: 16px;
+
+  /* --- font sizes (by role) --- */
+  --fs-label-tiny: 8px;
+  --fs-caption: 8.5px;
+  --fs-chip: 9px;
+  --fs-chip-lg: 9.5px;
+  --fs-small: 10px;
+  --fs-body-sm: 10.5px;
+  --fs-body: 11px;
+  --fs-body-lg: 12px;
+  --fs-title-sm: 13px;
+  --fs-title: 14px;
+  --fs-title-lg: 15px;
+
+  /* --- glows / accent shadows (flat design; no elevation shadows) --- */
+  --glow-current: 0 0 8px currentColor;
+  --glow-dot: 0 0 6px #5ad198;
+  --glow-stage-cur: 0 0 5px #60a5fa88;
+  --ring-selected: 0 0 0 1px #5ad19855;
+}
+
+/*
+ * Light theme overrides (controller design-gap decisions §3). Stage `on`
+ * hues and semantic accents keep their hue; only surfaces, borders, text
+ * tiers, id-mono, and the 5 stage `dim` variants shift for light contrast.
+ */
+:root[data-theme='light'] {
+  /* surfaces */
+  --bg-app: #f4f6fa;
+  --bg-panel: #ffffff;
+  --bg-tile-run: #eef4f0;
+  --bg-card: #f7f9fc;
+  --bg-drawer: #f0f3f8;
+  --bg-candidate: #f2f5f9;
+  --bg-gate-pill: #e6f2ea;
+
+  /* borders */
+  --border-card: #d5dbe6;
+  --border-panel: #e2e7ef;
+  --border-chip: #c9d2df;
+  --border-empty-fill: #dfe5ee;
+
+  /* text tiers */
+  --text-title: #1a2233;
+  --text-primary: #2a3547;
+  --text-secondary: #47536a;
+  --text-muted: #67748c;
+  --text-dim: #8b96a8;
+  --text-id-mono: #0d7d72;
+
+  /* stage dim variants (light-adjusted) */
+  --stage-spec-dim: #9fdbd3;
+  --stage-plan-dim: #b5d3f5;
+  --stage-impl-dim: #cdc2ee;
+  --stage-pr-dim: #f2c3d8;
+  --stage-merge-dim: #b9e6c8;
+}

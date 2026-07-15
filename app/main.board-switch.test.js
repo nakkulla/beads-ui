@@ -1,23 +1,20 @@
 import { describe, expect, test, vi } from 'vitest';
 import { bootstrap } from './main.js';
 
-// Mock the Board view to manipulate DOM content deterministically
-vi.mock('./views/board.js', () => ({
+// Mock the Board view to render a deterministic marker.
+vi.mock('./views/board/index.js', () => ({
   /**
    * @param {HTMLElement} mount
    */
   createBoardView: (mount) => ({
     async load() {
-      // Simulate a rendered board shell
-      mount.innerHTML = '<div class="panel__body board-root"></div>';
+      mount.innerHTML = '<div class="board-view board-root"></div>';
     },
-    clear() {
-      // No-op in this test; we no longer depend on clearing when switching views
-    }
+    clear() {}
   })
 }));
 
-// Mock WS client to avoid network and provide minimal data
+// Mock WS client to avoid network.
 vi.mock('./ws.js', () => ({
   createWsClient: () => ({
     /**
@@ -37,50 +34,43 @@ vi.mock('./ws.js', () => ({
   })
 }));
 
-describe('board visibility on view change', () => {
-  test('hides board when leaving and shows again when returning', async () => {
-    // Start on issues, then go to board so subscribers are active
-    window.location.hash = '#/issues';
+describe('board / worker visibility on view change', () => {
+  test('toggles route visibility between Board and Worker', async () => {
+    window.location.hash = '#/board';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
-
-    // Allow initial render to flush
     await Promise.resolve();
     await Promise.resolve();
 
     const boardRoot = /** @type {HTMLElement} */ (
       document.getElementById('board-root')
     );
+    const workerRoot = /** @type {HTMLElement} */ (
+      document.getElementById('worker-root')
+    );
 
-    // Navigate to board
-    window.location.hash = '#/board';
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // Board is visible and rendered with its internal shell
+    // Board is the default active view.
     expect(boardRoot.hidden).toBe(false);
+    expect(workerRoot.hidden).toBe(true);
     expect(boardRoot.querySelector('.board-root')).not.toBeNull();
 
-    // Navigate away to issues
-    window.location.hash = '#/issues';
+    // Navigate to Worker.
+    window.location.hash = '#/worker';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
-
     await Promise.resolve();
     await Promise.resolve();
-
-    // Board route gets hidden but DOM may remain; CSS [hidden] must hide it
     expect(boardRoot.hidden).toBe(true);
-    expect(boardRoot.querySelector('.board-root')).not.toBeNull();
+    expect(workerRoot.hidden).toBe(false);
 
-    // Go back to Board, content is still there (or re-rendered by load)
+    // Back to Board.
     window.location.hash = '#/board';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     await Promise.resolve();
     await Promise.resolve();
     expect(boardRoot.hidden).toBe(false);
+    expect(workerRoot.hidden).toBe(true);
     expect(boardRoot.querySelector('.board-root')).not.toBeNull();
   });
 });

@@ -1,11 +1,10 @@
 /**
- * Build a canonical issue hash that retains the view.
+ * Build a canonical issue hash that retains the active view.
  *
- * @param {'issues'|'epics'|'board'|'worker'} view
+ * @param {'board'|'worker'} view
  * @param {string} id
  */
 export function issueHashFor(view, id) {
-  const v =
-    view === 'epics' || view === 'board' || view === 'worker' ? view : 'issues';
+  const v = view === 'worker' ? 'worker' : 'board';
   return `#/${v}?issue=${encodeURIComponent(id)}`;
 }

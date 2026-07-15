@@ -12,7 +12,7 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {'issues'|'epics'|'board'|'worker'} ViewName
+ * @typedef {'board'|'worker'} ViewName
  */
 
 /**
@@ -185,7 +185,7 @@ export function createStore(initial = {}) {
   /** @type {AppState} */
   let state = {
     selected_id: initial.selected_id ?? null,
-    view: initial.view ?? 'issues',
+    view: initial.view ?? 'board',
     filters: {
       status: initial.filters?.status ?? 'all',
       search: initial.filters?.search ?? '',
