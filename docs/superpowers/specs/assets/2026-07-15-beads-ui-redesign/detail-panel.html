@@ -1,0 +1,65 @@
+<style>
+  .dt { background:#11151d; border:1px solid #1e2530; border-radius:10px; padding:12px; font-family:-apple-system,sans-serif; max-width:380px; }
+  .dt .id { font-family:ui-monospace,monospace; font-size:12px; color:#7ee2d8; border-bottom:1px dotted #7ee2d855; }
+  .dt h4 { font-size:14px; color:#dbe2ee; margin:6px 0 10px; font-weight:600; }
+  .dt .sect { font-size:9px; letter-spacing:.08em; text-transform:uppercase; color:#5c6778; margin:12px 0 6px; }
+  .dt .art { display:flex; align-items:center; gap:6px; background:#171c26; border:1px solid #262e3d; border-radius:6px; padding:6px 8px; margin-bottom:5px; }
+  .dt .art .ic { color:#8ab4f8; font-size:11px; }
+  .dt .art .path { flex:1; font-family:ui-monospace,monospace; font-size:9.5px; color:#9db4d4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+  .dt .art .op { font-size:9px; color:#5ad198; border:1px solid #2b4a3a; border-radius:5px; padding:1px 7px; }
+  .dt .kv { display:flex; align-items:center; justify-content:space-between; padding:4px 0; border-bottom:1px solid #1a212c; }
+  .dt .kv .k { font-size:10px; color:#8b96a8; }
+  .dt .kv .v { font-size:10px; color:#c8d2e0; border:1px solid #2a3342; border-radius:5px; padding:1px 8px; }
+  .dt .kv .v.sel { color:#8ab4f8; }
+  .mv { background:#0d1118; border:1px solid #262e3d; border-radius:10px; padding:0; font-family:-apple-system,sans-serif; overflow:hidden; }
+  .mv .bar { display:flex; justify-content:space-between; align-items:center; background:#11151d; border-bottom:1px solid #1e2530; padding:7px 12px; }
+  .mv .bar .p { font-family:ui-monospace,monospace; font-size:9.5px; color:#7ee2d8; }
+  .mv .bar .x { color:#5c6778; font-size:12px; }
+  .mv .body { padding:14px 16px; }
+  .mv h1v { display:block; font-size:15px; color:#e8eef8; font-weight:700; margin-bottom:8px; }
+  .mv h2v { display:block; font-size:12px; color:#8ab4f8; font-weight:600; margin:12px 0 5px; }
+  .mv p2 { display:block; font-size:10.5px; color:#a9b4c6; line-height:1.7; }
+  .mv codev { font-family:ui-monospace,monospace; background:#171c26; border:1px solid #262e3d; border-radius:4px; font-size:9.5px; color:#7ee2d8; padding:0 4px; }
+  .mv ul2 { display:block; font-size:10.5px; color:#a9b4c6; line-height:1.8; margin:4px 0 0 14px; }
+</style>
+
+<h2>이슈 상세 패널 + md 뷰어 (확정본)</h2>
+<p class="subtitle">경로 클릭=복사 · 열기=뷰어 · 실행 설정 5키+workflow_mode 편집(standard 선택=키 삭제) · 병렬 허용은 Worker 레인 배치로만 결정(패널에 별도 행 없음)</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">상세 패널 — Artifacts & 실행 설정</div>
+    <div class="mockup-body" style="background:#0b0e14">
+      <div class="dt">
+        <span class="id">UI-ab12</span>
+        <h4>인증 모듈 재설계</h4>
+        <div class="sect">Artifacts</div>
+        <div class="art"><span class="ic">▤</span><span class="path">docs/superpowers/specs/2026-07-12-auth-redesign.md</span><span class="op">열기</span></div>
+        <div class="art"><span class="ic">▤</span><span class="path">docs/superpowers/plans/2026-07-13-auth-redesign.md</span><span class="op">열기</span></div>
+        <div style="font-size:8.5px;color:#5c6778;margin:2px 0 0 4px">경로 클릭 = 복사 · 열기 = 뷰어</div>
+        <div class="sect">실행 설정 (수정 가능)</div>
+        <div class="kv"><span class="k">worker_runner</span><span class="v sel">claude ▾</span></div>
+        <div class="kv"><span class="k">orchestration_model / effort</span><span class="v">sol · high ▾</span></div>
+        <div class="kv"><span class="k">review_model</span><span class="v">codex ▾</span></div>
+        <div class="kv"><span class="k">impl_model</span><span class="v">opus ▾</span></div>
+        <div class="kv"><span class="k">workflow_mode</span><span class="v sel">fast_track ▾</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-header">md 뷰어 — "열기" 클릭 시 (모바일=전체화면)</div>
+    <div class="mockup-body" style="background:#0b0e14">
+      <div class="mv">
+        <div class="bar"><span class="p">specs/2026-07-12-auth-redesign.md</span><span class="x">✕</span></div>
+        <div class="body">
+          <h1v>인증 모듈 재설계</h1v>
+          <p2>세션 저장소를 <codev>redis</codev>에서 파일 기반으로 교체하고 토큰 발급 경로를 단순화한다.</p2>
+          <h2v>## 범위</h2v>
+          <ul2>• 토큰 발급 / 갱신 경로 통합<br>• 세션 스토어 어댑터 교체<br>• e2e 시나리오 3종</ul2>
+          <h2v>## 비범위</h2v>
+          <p2>OAuth 공급자 추가, 권한 모델 변경.</p2>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

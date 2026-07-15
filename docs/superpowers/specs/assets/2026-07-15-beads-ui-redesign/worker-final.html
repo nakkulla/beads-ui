@@ -1,0 +1,107 @@
+<style>
+  .wk { background:#0b0e14; border:1px solid #1e2530; border-radius:10px; padding:12px; font-family:-apple-system,sans-serif; }
+  .wk * { box-sizing:border-box; }
+  .wk .ctrl { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .wk .play { font-size:11px; color:#0b0e14; background:#5ad198; border-radius:6px; padding:3px 12px; font-weight:700; }
+  .wk .pausebtn { font-size:11px; color:#e8756a; border:1px solid #4a2b2b; border-radius:6px; padding:3px 12px; }
+  .wk .stat { font-size:10px; color:#8b96a8; } .wk .stat b { color:#5ad198; }
+  .wk .tgl { font-size:9px; color:#9aa6ba; border:1px solid #2a3342; border-radius:10px; padding:1px 8px; margin-left:auto; }
+  .wk .tgl b { color:#5ad198; }
+  /* auto-fill running grid: 늘어나면 자동 줄바꿈 */
+  .wk .rungrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(215px, 1fr)); gap:6px; margin-bottom:10px; }
+  .wk .rtile { background:#141d1a; border:1px solid #2b4a3a; border-radius:8px; padding:7px 9px; cursor:pointer; }
+  .wk .rtile .hd { display:flex; align-items:center; gap:6px; }
+  .wk .rtile .dot { width:6px; height:6px; border-radius:3px; background:#5ad198; box-shadow:0 0 6px #5ad198; }
+  .wk .rtile .id { font-family:ui-monospace,monospace; font-size:9.5px; color:#7ee2d8; }
+  .wk .rtile .el { font-size:8.5px; color:#5c6778; margin-left:auto; }
+  .wk .rtile .stop { font-size:8.5px; color:#e8756a; border:1px solid #4a2b2b; border-radius:4px; padding:0 6px; }
+  .wk .rtile .t { font-size:10.5px; color:#c8d2e0; margin:4px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .wk .stage { display:flex; gap:3px; margin:5px 0; }
+  .wk .sg { flex:1; height:4px; border-radius:2px; background:#242c3a; }
+  .wk .sg.on { background:#4ade80; } .wk .sg.cur { background:#60a5fa; box-shadow:0 0 5px #60a5fa88; }
+  .wk .rtile .tail { font-family:ui-monospace,monospace; font-size:8.5px; color:#6cb6ff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .wk .badge-s { font-size:8px; color:#e8b45a; border:1px solid #4a3f2b; border-radius:7px; padding:0 5px; }
+  .wk .badge-p { font-size:8px; color:#7ee2d8; border:1px solid #1e4a44; border-radius:7px; padding:0 5px; }
+  .wk .lanes { display:flex; gap:8px; }
+  .wk .pane { background:#11151d; border:1px solid #1e2530; border-radius:8px; padding:8px; flex:1; min-width:0; }
+  .wk .pane.src { background:#0e1219; border-style:dashed; }
+  .wk .ph { font-size:9.5px; letter-spacing:.08em; text-transform:uppercase; color:#8b96a8; margin-bottom:6px; }
+  .wk .mini { background:#171c26; border:1px solid #262e3d; border-radius:6px; padding:5px 8px; margin-bottom:5px; display:flex; gap:6px; cursor:pointer; }
+  .wk .mini .grip { color:#3a4356; font-size:10px; cursor:grab; }
+  .wk .mini .bodyc { flex:1; min-width:0; }
+  .wk .mini .id { font-family:ui-monospace,monospace; font-size:9px; color:#7ee2d8; }
+  .wk .mini .t { font-size:10px; color:#c8d2e0; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cap { font-size:11px; color:#8b96a8; line-height:1.7; margin-top:10px; }
+  .cap b { color:#c8d2e0; }
+</style>
+
+<h2>Worker v6 — Running 그리드 자동 확장</h2>
+<p class="subtitle">고정 3열 → auto-fill: 타일 최소폭(≈215px) 기준으로 화면에 맞게 열 수가 정해지고, 넘치면 자동 줄바꿈. 예시: 동시 5세션.</p>
+
+<div class="wk">
+
+  <div class="ctrl">
+    <span class="play">▶ 자동 진행</span>
+    <span class="pausebtn">⏸ 정지</span>
+    <span class="stat">실행 <b>5</b> · serial 다음 <b>UI-fe12</b></span>
+    <span class="tgl">parallel slot <b>4</b></span>
+  </div>
+
+  <div class="rungrid">
+    <div class="rtile">
+      <div class="hd"><span class="dot"></span><span class="id">UI-ab12</span><span class="badge-s">① serial</span><span class="el">14분</span><span class="stop">■</span></div>
+      <div class="t">인증 모듈 재설계</div>
+      <div class="stage"><div class="sg on"></div><div class="sg on"></div><div class="sg cur"></div><div class="sg"></div><div class="sg"></div></div>
+      <div class="tail">Phase 2/4: 토큰 발급 경로 구현…</div>
+    </div>
+    <div class="rtile">
+      <div class="hd"><span class="dot"></span><span class="id">UI-77zz</span><span class="badge-p">∥</span><span class="el">2분</span><span class="stop">■</span></div>
+      <div class="t">README 정리</div>
+      <div class="stage"><div class="sg on"></div><div class="sg cur"></div><div class="sg"></div><div class="sg"></div></div>
+      <div class="tail">spec 게이트: codex 리뷰 대기</div>
+    </div>
+    <div class="rtile">
+      <div class="hd"><span class="dot"></span><span class="id">UI-hh31</span><span class="badge-p">∥</span><span class="el">8분</span><span class="stop">■</span></div>
+      <div class="t">favicon 갱신</div>
+      <div class="stage"><div class="sg on"></div><div class="sg on"></div><div class="sg on"></div><div class="sg cur"></div></div>
+      <div class="tail">PR #44 생성 · CI 대기</div>
+    </div>
+    <div class="rtile">
+      <div class="hd"><span class="dot"></span><span class="id">UI-m2q8</span><span class="badge-p">∥</span><span class="el">21분</span><span class="stop">■</span></div>
+      <div class="t">워크스페이스 등록 정리</div>
+      <div class="stage"><div class="sg on"></div><div class="sg on"></div><div class="sg cur"></div><div class="sg"></div></div>
+      <div class="tail">vitest 12 passed · lint 진행</div>
+    </div>
+    <div class="rtile">
+      <div class="hd"><span class="dot"></span><span class="id">UI-x0c4</span><span class="badge-p">∥</span><span class="el">1분</span><span class="stop">■</span></div>
+      <div class="t">칩 색상 토큰화</div>
+      <div class="stage"><div class="sg cur"></div><div class="sg"></div><div class="sg"></div><div class="sg"></div></div>
+      <div class="tail">worktree .worktrees/UI-x0c4 생성</div>
+    </div>
+  </div>
+
+  <div class="lanes">
+    <div class="pane src">
+      <div class="ph">후보 · Board 연동</div>
+      <div class="mini"><span class="grip">⠿</span><div class="bodyc"><span class="id">UI-fe12</span><div class="t">에러 토스트 정리</div></div></div>
+    </div>
+    <div class="pane">
+      <div class="ph">Serial 큐</div>
+      <div class="mini"><span class="grip">⠿</span><div class="bodyc"><span class="id">UI-de44</span><div class="t">ws 스냅샷 캐시</div></div></div>
+    </div>
+    <div class="pane">
+      <div class="ph">Parallel 풀</div>
+      <div class="mini"><span class="grip">⠿</span><div class="bodyc"><span class="id">UI-pp19</span><div class="t">단축키 도움말</div></div></div>
+    </div>
+    <div class="pane">
+      <div class="ph">Done · 오늘 3</div>
+      <div class="mini" style="opacity:.6"><div class="bodyc"><span class="id">UI-77aq</span><div class="t">라벨 정책 정리</div></div></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="cap">
+  <b>확장 규칙:</b> 데스크톱 와이드=4열, 좁으면 3→2열, 모바일=1열(세로 리스트로 자연 전환). 타일이 화면을 넘치면 Running 영역만 내부 스크롤 — 레인은 항상 보임. 폰에서도 같은 마크업이 1열 스택으로 동작.
+</div>
+

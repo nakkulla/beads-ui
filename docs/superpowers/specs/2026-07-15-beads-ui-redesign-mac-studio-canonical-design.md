@@ -22,16 +22,17 @@
 ### 2.1 목표 토폴로지
 
 - **canonical dolt**: Mac Studio 기존 launchd `com.local.dolt-server`(127.0.0.1:3307, projectmgr 관리)를 승격. 신규 서버 생성 없음.
+- **이전 범위는 NAS 서버가 서빙하는 DB 전수**(beads_ui·dotfiles만이 아님 — fence 시점 실측 기준 9개 내외: microbiome_bile, oliveyoung, prostate 등 포함)와, `127.0.0.1:13307`(터널)을 가리키는 **모든 repo의 `.beads/metadata.json`**. beads-ui의 멀티 워크스페이스 전환(§3)이 깨지지 않는 것이 전제 조건.
 - **beads-ui**: Mac Studio 단일 인스턴스(projectmgr 서비스 재활성화), Tailscale 인터페이스 바인드로 폰/노트북 접근. NAS 인스턴스·"worker 전용 :3002 인스턴스" 분리 개념 폐기 — 단일 인스턴스가 조회+worker 담당.
 - **NAS**: 서버·설정 없는 순수 백업 수신 폴더로 강등.
 
 ### 2.2 마이그레이션 절차 (쓰기 fence 강제)
 
-1. **Fence**: Worker 자동진행 OFF + 활성 세션 0 확인 → 모든 beads-ui/bd writer 중지 → NAS dolt sql-server 종료 → NAS 컨테이너에서 dolt 프로세스·포트·데이터 디렉토리 오픈 핸들 0 확인.
-2. **복사**: NAS의 `beads_ui`·`dotfiles` dolt 데이터 디렉토리를 SSH로 통째 복사(전체 히스토리 보존). data_dir 밖의 `config.yaml`·privilege/branch-control 파일이 있으면 함께. 로컬의 정체된 구 사본(`~/.local/share/dolt-server/data/{beads,dotfiles}`)은 삭제하지 않고 아카이브 디렉토리로 이동(이름 충돌 방지 + 복구 여지).
-3. **cutover manifest**: 변경 전 각 repo `.beads/metadata.json` 원본 바이트·체크섬과 대상 파일 목록을 manifest로 기록하고, all-or-restore 원복 스크립트를 먼저 작성.
-4. **패리티 검증**: `bd list --json` 건수 비교가 아니라 — DB별 dolt HEAD 해시 일치 + 전체 이슈 덤프(상태·의존성·메타데이터 포함) diff + 브랜치/스키마 목록 비교.
-5. **전환**: 각 repo `.beads/metadata.json`을 `127.0.0.1:3307`로 변경 → `bd show/list --json` readback.
+1. **Fence**: Worker 자동진행 OFF + 활성 세션 0 확인 → NAS 서버에 `SHOW DATABASES`로 **이전 대상 DB 전수 열거·기록** → 13307을 가리키는 repo 전수 열거(`~/Documents/GitHub/*/.beads/metadata.json` 스캔) → 모든 beads-ui/bd writer 중지 → NAS dolt sql-server 종료 → NAS 컨테이너에서 dolt 프로세스·포트·데이터 디렉토리 오픈 핸들 0 확인 → **목적지 `com.local.dolt-server`도 launchctl bootout으로 정지**(KeepAlive 재기동 차단 확인; 같은 서버의 무관 DB `ProjectVault` writer 중지·재개도 fence 항목 — 다운타임 고지 포함).
+2. **복사**: 1에서 열거한 **전체 DB**의 dolt 데이터 디렉토리를 SSH로 통째 복사(전체 히스토리 보존). data_dir 밖의 `config.yaml`·privilege/branch-control 파일이 있으면 함께. 로컬의 정체된 구 사본(`~/.local/share/dolt-server/data/{beads,dotfiles}`)은 삭제하지 않고 아카이브 디렉토리로 이동(이름 충돌 방지 + 복구 여지). 복사·아카이브 완료 후 목적지 서버 재기동.
+3. **cutover manifest**: 변경 전 **13307을 가리키는 모든 repo**의 `.beads/metadata.json` 원본 바이트·체크섬과 대상 파일 목록을 manifest로 기록하고, all-or-restore 원복 스크립트를 먼저 작성.
+4. **패리티 검증**: `bd list --json` 건수 비교가 아니라 — **DB 전수**에 대해 dolt HEAD 해시 일치 + 전체 이슈 덤프(상태·의존성·메타데이터 포함) diff + 브랜치/스키마 목록 비교.
+5. **전환**: 1에서 열거한 모든 repo의 `.beads/metadata.json`을 `127.0.0.1:3307`로 변경 → repo별 `bd show/list --json` readback.
 6. **커밋 포인트**: 로컬에서 **첫 쓰기 발생 전** 실패 시 manifest 원복 + NAS 재기동으로 복귀 가능. **첫 쓰기 후**에는 단순 복귀 금지 — 역방향 fence+복사만 허용(문서화).
 7. **해체(패리티 통과 후에만)**: `com.local.dolt-tunnel` launchd 제거 → NAS dolt 컨테이너 중지 → NAS beads-ui 인스턴스 폐기 → NAS git 미러 9개 폐기.
 
@@ -52,7 +53,7 @@
 - **카드**:
   - ID(모노스페이스, **클릭=복사**+토스트) · P우선순위 · 제목.
   - 칩: `route`(spec_backed/full_plan) · `⚡fast_track`(workflow_mode) · `PR #n · CI상태`(pr_url 있을 때만 — 스테퍼 PR 칸과 항상 일치).
-  - **단계색 스테퍼**: SPEC(teal)→PLAN(blue, full_plan만)→IMPL(violet)→PR(pink)→MERGE(green). 칸 의미: **빈 칸=산출물 없음 / 흐린 채움=산출물 존재**(spec_id·plan_path·실행 시작·pr_url·머지 확인) / **밝은 채움+✓=리뷰 영수증** / **밝은 채움+⊘=skip 영수증** / glow=현재 진행 칸. 영수증 SHA가 현재 대상 SHA와 다르면(계약상 stale) ✓를 회색 stale 표시로 강등. `reviewed:*`/`skipped:*` 라벨은 display-only 계약 그대로 필터용으로만 쓰고 카드 칩으로는 중복 표기하지 않음.
+  - **단계색 스테퍼**: SPEC(teal)→PLAN(blue, full_plan만)→IMPL(violet)→PR(pink)→MERGE(green). 칸 의미: **빈 칸=산출물 없음 / 흐린 채움=산출물 존재**(spec_id·plan_path·실행 시작·pr_url·머지 확인) / **밝은 채움+✓=리뷰 영수증** / **밝은 채움+⊘=skip 영수증** / glow=현재 진행 칸. stale 판정 기준(게이트별): `spec_review`는 `git log <receipt-sha>..HEAD -- <spec_id 경로>`가 비어 있지 않으면 stale(스펙 문서 자체의 후속 변경만 stale 유발 — 무관 커밋은 무영향), `impl_review`는 대상 브랜치 head ≠ receipt SHA면 stale. stale이면 ✓를 회색 표시로 강등. `reviewed:*`/`skipped:*` 라벨은 display-only 계약 그대로 필터용으로만 쓰고 카드 칩으로는 중복 표기하지 않음.
   - **child rollup**: `children 2/4` + **in_progress child(Phase) 제목 한 줄 상시 표시**, 클릭 시 전체 child 목록(Phase 앵커·상태 점) 인라인 펼침.
   - 마지막 갱신 경과시간.
 - 모델/effort 등 실행 설정은 카드에 표시하지 않음(상세 패널 전용).
@@ -69,7 +70,7 @@
 ### 5.2 세션 수명주기
 
 - 실행 = bead당 headless 세션 1개, 전용 `.worktrees/<bead-id>` 격리, runner 어댑터(§5.4) 경유 spawn.
-- 세션은 launch 전 Worker가 기록·readback한 `workflow_mode=fast_track`(bead metadata) + 프롬프트 패킷 내 명시 이중 전달로 fast_track 확정. 흐름: spec 게이트(영수증 없으면 자동 디스패치)→구현→implementation 게이트→PR→CI→머지→sweep, 전 과정 계약 네이티브.
+- 세션은 launch 전 Worker가 기록·readback한 `workflow_mode=fast_track`(bead metadata) + 프롬프트 패킷 내 명시 이중 전달로 fast_track 확정. Worker는 launch 전 기존 `workflow_mode` 값을 attempt에 스냅샷하고, **attempt가 bead close 없이 종료되면(실패·중지·orphan 포함) 그 값을 원복**(원래 없었으면 unset) — 잔존 fast_track이 이후 수동 세션을 조용히 무인 모드로 전환시키는 것을 방지. 흐름: spec 게이트(영수증 없으면 자동 디스패치)→구현→implementation 게이트→PR→CI→머지→sweep, 전 과정 계약 네이티브.
 - **머지 락 게이트**: 세션의 머지 단계는 Worker 소유 `(repo, target_base)` 락 획득이 선행 조건 — 프리앰블이 머지 진입 전 Worker의 로컬 lock API(`POST /api/worker/merge-lock`, 토큰 인증) 호출·대기를 지시하고, 어댑터는 락 미획득 상태의 머지 시도를 감지하면 강제 종료한다. base 재검사부터 머지·sweep까지 한 세션만. 첫 세션 머지로 base가 이동하면 다음 세션은 락 안에서 base drift를 재평가(계약의 fail-closed 규칙 그대로).
 - **완료 판정**: 세션 exit 0만으로 Done 처리하지 않음 — Worker가 **독립 검증**(머지 SHA의 base 포함 + bd status/영수증 readback) 후 Done 이동·다음 디스패치. 스테퍼·단계 표시의 진실원천은 항상 bd metadata readback(세션 출력 아님).
 - **attempt 기록**: attempt_id·디스패치 시점 base/head OID·시작 시각·PID·러너/모델 스냅샷·exit·검증 결과를 큐 상태에 기록.
@@ -102,7 +103,7 @@
 
 ## 6. 실행 preference metadata + 계약 정합 (dotfiles bead)
 
-bead metadata 키 신설. 우선순위는 기존 계약(현재 사용자 지시 > Bead metadata > harness 기본값) 그대로.
+bead metadata **5키** 신설. 우선순위는 기존 계약(현재 사용자 지시 > Bead metadata > harness 기본값) 그대로.
 
 | 키 | 값 | 소비자 |
 |---|---|---|
@@ -111,8 +112,8 @@ bead metadata 키 신설. 우선순위는 기존 계약(현재 사용자 지시 
 | `review_model` | `codex`·`opus`·`fable`·`self`·`skip` (reviewer selector, **두 게이트 공통**) | **workflow 스킬**(게이트 디스패치 시 harness 기본 대신 사용) |
 | `impl_model` | 구현 위임 tier override | **workflow 스킬**(위임 시 model_tiers 대신 사용) |
 
-- dotfiles 작업: ① `workflow.yaml` parent_keys에 위 4키 등재(Worker-소비/skill-소비 구분 주석 포함) + workflow 스킬 위임 규칙에 한 줄 반영 ② projectmgr 서비스 갱신(beads-ui 활성화, Tailscale 바인드) ③ 백업 launchd job(§2.3) ④ 터널 launchd 해체. **계약 변경 단위**: canonical 문서 + UI 파서/에디터 + Worker launcher + 스킬 + 체커/테스트 + 설치 사본을 한 변경으로 검증.
-- UI: 상세 패널 "실행 설정"에서 4키 + `workflow_mode` 편집(드롭다운, 러너별 허용 조합만 노출).
+- dotfiles 작업: ① `workflow.yaml` parent_keys에 위 5키 등재(Worker-소비/skill-소비 구분 주석 포함) + workflow 스킬 위임 규칙에 한 줄 반영 ② projectmgr 서비스 갱신(beads-ui 활성화, Tailscale 바인드) ③ 백업 launchd job(§2.3) ④ 터널 launchd 해체. **계약 변경 단위**: canonical 문서 + UI 파서/에디터 + Worker launcher + 스킬 + 체커/테스트 + 설치 사본을 한 변경으로 검증.
+- UI: 상세 패널 "실행 설정"에서 5키 + `workflow_mode` 편집(드롭다운, 러너별 허용 조합만 노출). `workflow_mode`는 계약 enum이 `[fast_track]`, 부재=standard이므로 — 드롭다운에서 "standard" 선택 = **키 삭제**(unset)로 기록하고 "standard" 값을 저장하지 않는다.
 
 ## 7. 서버 재구성
 
@@ -123,7 +124,8 @@ bead metadata 키 신설. 우선순위는 기존 계약(현재 사용자 지시 
 
 ## 8. 디자인 시스템
 
-- 다크 우선 관제탑 + 라이트 지원. 토큰 파일 단일 소스: 배경 `#0b0e14`/서피스 `#11151d`/카드 `#171c26`, 단계색(§4), 상태색(ready=green·progress=blue·blocked=red·resolved=violet), ID·로그·경로=모노스페이스. 정보 밀도 높게, 모든 목록은 키보드 내비 유지. 기존 `app/` 뷰 전면 재작성(lit-html 유지), 목업(브레인스토밍 세션 `.superpowers/brainstorm/` 산출) 기준.
+- 다크 우선 관제탑 + 라이트 지원. 토큰 파일 단일 소스: 배경 `#0b0e14`/서피스 `#11151d`/카드 `#171c26`, 단계색(§4), 상태색(ready=green·progress=blue·blocked=red·resolved=violet), ID·로그·경로=모노스페이스. 정보 밀도 높게, 모든 목록은 키보드 내비 유지. 기존 `app/` 뷰 전면 재작성(lit-html 유지).
+- **canonical 시각 기준**: 사용자 확정 목업 4본을 `docs/superpowers/specs/assets/2026-07-15-beads-ui-redesign/`에 추적 고정 — `board-card-final.html`(카드 규칙·단계색·범례), `worker-final.html`(Worker 레이아웃·레인·Running 그리드), `worker-session-log.html`(세션 뷰어), `detail-panel.html`(상세 패널·md 뷰어). 승인 기준 3은 이 파일들에 바인딩.
 
 ## 9. 테스트/검증
 
@@ -137,9 +139,9 @@ bead metadata 키 신설. 우선순위는 기존 계약(현재 사용자 지시 
 
 ## 11. 승인 기준 (전체)
 
-1. Mac Studio dolt(3307)가 유일한 활성 서버 — 터널·NAS 컨테이너·NAS 미러 부재, 두 repo bd 정상 readback.
+1. Mac Studio dolt(3307)가 유일한 활성 서버 — 터널·NAS 컨테이너·NAS 미러 부재, **13307을 가리키던 모든 repo**의 bd 정상 readback + beads-ui 워크스페이스 전환 정상.
 2. NAS에 날짜별 백업 세대 생성 + restore 리허설 1회 통과.
-3. Board/Worker 2탭 + 상세 패널 + md 뷰어가 목업 확정안대로 동작(스테퍼 의미론·stale 표시·ID 복사·child rollup 포함), 폰(Tailscale)에서 접근 가능.
+3. Board/Worker 2탭 + 상세 패널 + md 뷰어가 §8 추적 목업 4본대로 동작(스테퍼 의미론·stale 표시·ID 복사·child rollup 포함), 폰(Tailscale)에서 접근 가능.
 4. Worker: 드래그 큐잉→자동 진행→fast_track 세션→머지→독립 검증→Done 전체 흐름이 실 bead 1건으로 검증, 실패 주입 시 circuit breaker 동작.
-5. metadata 4키가 계약·스킬·UI·Worker에서 일관 동작.
+5. metadata 5키가 계약·스킬·UI·Worker에서 일관 동작.
 6. 구 이슈 4건 export+삭제, 신규 2건 생성, 구 스펙 2건 superseded 표기.

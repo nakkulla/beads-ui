@@ -1,0 +1,100 @@
+<style>
+  .row3 { display:flex; gap:14px; flex-wrap:wrap; }
+  .card2 { background:#171c26; border:1px solid #262e3d; border-radius:8px; padding:10px; width:300px; font-family:-apple-system,sans-serif; }
+  .card2 .id { font-family:ui-monospace,monospace; font-size:11px; color:#7ee2d8; cursor:pointer; border-bottom:1px dotted #7ee2d855; }
+  .card2 .pri { font-size:9px; color:#e8b45a; margin-left:6px; }
+  .card2 .t { font-size:13px; color:#dbe2ee; margin:4px 0 8px; line-height:1.35; font-weight:500; }
+  .card2 .chips { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px; }
+  .card2 .chip { font-size:9.5px; padding:1.5px 7px; border-radius:9px; border:1px solid #2a3342; color:#9aa6ba; }
+  .card2 .chip.route { color:#8ab4f8; border-color:#2b3f5a; }
+  .card2 .chip.ft { color:#c792ea; border-color:#43315a; }
+  .card2 .chip.pr { color:#f472b6; border-color:#5a2b45; }
+  .stp { display:flex; gap:4px; margin-bottom:2px; }
+  .stp .seg { flex:1; text-align:center; }
+  .stp .bar { height:12px; border-radius:3px; background:#242c3a; font-size:9px; line-height:12px; color:#0b0e14; font-weight:700; }
+  .stp .lbl { font-size:8px; letter-spacing:.06em; color:#5c6778; margin-top:3px; text-transform:uppercase; }
+  /* 단계별 색: spec=teal, plan=blue, impl=violet, pr=pink, merge=green */
+  .b-spec.dim { background:#17695e; } .b-spec.on { background:#2dd4bf; } .l-spec.on { color:#2dd4bf; }
+  .b-plan.dim { background:#2b5687; } .b-plan.on { background:#60a5fa; } .l-plan.on { color:#60a5fa; }
+  .b-impl.dim { background:#54418a; } .b-impl.on { background:#a78bfa; } .l-impl.on { color:#a78bfa; }
+  .b-pr.dim   { background:#7c3a5d; } .b-pr.on   { background:#f472b6; } .l-pr.on   { color:#f472b6; }
+  .b-mrg.dim  { background:#2b6b40; } .b-mrg.on  { background:#4ade80; } .l-mrg.on  { color:#4ade80; }
+  .glow { box-shadow:0 0 8px currentColor; }
+  .card2 .roll { font-size:10px; color:#8b96a8; margin-top:8px; border-top:1px dashed #242c3a; padding-top:6px; }
+  .card2 .roll .cur-child { color:#6cb6ff; }
+  .card2 .roll .meta { display:flex; justify-content:space-between; color:#5c6778; }
+  .cap { font-size:10.5px; color:#5c6778; margin:6px 2px 0; line-height:1.5; }
+  .legend { font-size:11px; color:#8b96a8; line-height:2; }
+  .legend .sw { display:inline-block; width:26px; height:12px; border-radius:3px; vertical-align:middle; margin-right:6px; text-align:center; font-size:9px; line-height:12px; font-weight:700; color:#0b0e14; }
+</style>
+
+<h2>스테퍼 단계별 색 분리 — 진행 3단계 예시</h2>
+<p class="subtitle">spec=teal · plan=blue · impl=violet · pr=pink · merge=green. 흐린 채움=산출물 존재, 밝은 채움+✓=리뷰됨, 밝은 채움+⊘=skip. child 표시는 B안 적용.</p>
+
+<div class="row3">
+
+  <div>
+    <div class="card2">
+      <div><span class="id">UI-9k2f</span><span class="pri">P2</span></div>
+      <div class="t">문서 뷰어 API</div>
+      <div class="chips"><span class="chip route">spec_backed</span></div>
+      <div class="stp">
+        <div class="seg"><div class="bar b-spec dim"></div><div class="lbl l-spec on">spec</div></div>
+        <div class="seg"><div class="bar"></div><div class="lbl">impl</div></div>
+        <div class="seg"><div class="bar"></div><div class="lbl">pr</div></div>
+        <div class="seg"><div class="bar"></div><div class="lbl">merge</div></div>
+      </div>
+      <div class="roll"><div class="meta"><span>children 없음</span><span>1d</span></div></div>
+    </div>
+    <div class="cap">초기: spec 작성됨(흐린 teal), 아직 리뷰 전.<br>spec_backed → PLAN 칸 없음.</div>
+  </div>
+
+  <div>
+    <div class="card2">
+      <div><span class="id">UI-ab12</span><span class="pri">P1</span></div>
+      <div class="t">인증 모듈 재설계</div>
+      <div class="chips"><span class="chip route">full_plan</span><span class="chip ft">⚡ fast_track</span></div>
+      <div class="stp">
+        <div class="seg"><div class="bar b-spec on">✓</div><div class="lbl l-spec on">spec</div></div>
+        <div class="seg"><div class="bar b-plan on"></div><div class="lbl l-plan on">plan</div></div>
+        <div class="seg"><div class="bar b-impl dim glow" style="color:#a78bfa"></div><div class="lbl l-impl on">impl</div></div>
+        <div class="seg"><div class="bar"></div><div class="lbl">pr</div></div>
+        <div class="seg"><div class="bar"></div><div class="lbl">merge</div></div>
+      </div>
+      <div class="roll">
+        <div class="meta"><span>children 2/4 ▾</span><span>3d</span></div>
+        <div style="margin-top:4px">└ <span class="cur-child">● Phase 3: 세션 저장소 교체</span></div>
+      </div>
+    </div>
+    <div class="cap">중반: spec 리뷰✓(teal), plan 저장(blue),<br>impl 진행 중(흐린 violet + glow), 현재 Phase 상시 표시.</div>
+  </div>
+
+  <div>
+    <div class="card2">
+      <div><span class="id">UI-cc81</span><span class="pri">P2</span></div>
+      <div class="t">보드 카드 rollup</div>
+      <div class="chips"><span class="chip route">spec_backed</span><span class="chip pr">PR #42 · CI ✓</span></div>
+      <div class="stp">
+        <div class="seg"><div class="bar b-spec on">⊘</div><div class="lbl l-spec on">spec</div></div>
+        <div class="seg"><div class="bar b-impl on">✓</div><div class="lbl l-impl on">impl</div></div>
+        <div class="seg"><div class="bar b-pr on"></div><div class="lbl l-pr on">pr</div></div>
+        <div class="seg"><div class="bar b-mrg dim glow" style="color:#4ade80"></div><div class="lbl l-mrg on">merge</div></div>
+      </div>
+      <div class="roll"><div class="meta"><span>children 없음</span><span>6h</span></div></div>
+    </div>
+    <div class="cap">후반: spec은 skip(⊘), impl 리뷰✓(violet),<br>PR 생성(pink), 머지 진행 중(흐린 green).</div>
+  </div>
+
+</div>
+
+<div class="section" style="margin-top:20px">
+  <div class="label">범례</div>
+  <div class="legend">
+    <span class="sw" style="background:#242c3a"></span>없음 &nbsp;·&nbsp;
+    <span class="sw" style="background:#17695e"></span>산출물 존재 (흐린 단계색) &nbsp;·&nbsp;
+    <span class="sw" style="background:#2dd4bf">✓</span>리뷰됨 (밝은 단계색) &nbsp;·&nbsp;
+    <span class="sw" style="background:#2dd4bf">⊘</span>skip 영수증 &nbsp;·&nbsp;
+    glow = 현재 진행 칸
+  </div>
+</div>
+
