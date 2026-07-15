@@ -43,13 +43,19 @@ beforeAll(() => {
   // Snapshot selected env vars to restore later
   prev_env = {
     BDUI_RUNTIME_DIR: process.env.BDUI_RUNTIME_DIR,
-    PORT: process.env.PORT
+    PORT: process.env.PORT,
+    BDUI_CONFIG_PATH: process.env.BDUI_CONFIG_PATH
   };
 
   tmp_runtime_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-it-'));
   process.env.BDUI_RUNTIME_DIR = tmp_runtime_dir;
   // Use port 0 so OS assigns an ephemeral port; URL printing still occurs
   process.env.PORT = '0';
+  // The spawned daemon refuses to start without an auth token. Point it at a
+  // config that provides one (the child inherits process.env).
+  const config_path = path.join(tmp_runtime_dir, 'config.toml');
+  fs.writeFileSync(config_path, '[auth]\ntoken = "integration-test-token"\n');
+  process.env.BDUI_CONFIG_PATH = config_path;
   vi.spyOn(console, 'log').mockImplementation(() => {});
 });
 
@@ -74,6 +80,12 @@ afterAll(() => {
     delete process.env.PORT;
   } else {
     process.env.PORT = prev_env.PORT;
+  }
+
+  if (prev_env.BDUI_CONFIG_PATH === undefined) {
+    delete process.env.BDUI_CONFIG_PATH;
+  } else {
+    process.env.BDUI_CONFIG_PATH = prev_env.BDUI_CONFIG_PATH;
   }
 
   try {

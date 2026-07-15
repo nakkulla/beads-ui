@@ -18,6 +18,7 @@ import { createIssueDialog } from './views/issue-dialog.js';
 import { createListView } from './views/list.js';
 import { createTopNav } from './views/nav.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
+import { createTokenDialog } from './views/token-dialog.js';
 import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
@@ -249,6 +250,22 @@ export function bootstrap(root_element) {
     }
 
     const client = createWsClient();
+
+    // Auth-token prompt: on a 4401 (auth rejected) close, prompt for a token,
+    // persist it (handled inside the dialog), and reconnect.
+    const token_dialog = createTokenDialog(root_element, {
+      onSubmit: () => {
+        if (typeof client.reconnect === 'function') {
+          client.reconnect();
+        }
+      }
+    });
+    if (typeof client.onAuthFailure === 'function') {
+      client.onAuthFailure(() => {
+        token_dialog.open();
+      });
+    }
+
     const tracked_send = activity.wrapSend((type, payload) =>
       client.send(type, payload)
     );

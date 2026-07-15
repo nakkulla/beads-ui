@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { createApp } from './app.js';
+import { requireAuthToken } from './auth.js';
 import { printServerUrl } from './cli/daemon.js';
 import { getConfig } from './config.js';
 import { resolveWorkspaceDatabase } from './db.js';
@@ -26,6 +27,15 @@ for (let i = 0; i < process.argv.length; i++) {
 }
 
 const config = getConfig();
+// Refuse to start without an auth token: the WS/REST surfaces expose workspace
+// mutations reachable over the network. Loud Korean error + non-zero exit.
+let auth_token;
+try {
+  auth_token = requireAuthToken(config);
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
 const app = createApp(config);
 const server = createServer(app);
 const log = debug('server');
@@ -75,7 +85,8 @@ const { scheduleListRefresh } = attachWsServer(server, {
   refresh_debounce_ms: 75,
   root_dir: config.root_dir,
   initial_workspace_root: startup_workspace_root,
-  watcher: db_watcher
+  watcher: db_watcher,
+  auth_token
 });
 
 watchRegistry(

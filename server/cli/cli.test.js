@@ -150,7 +150,8 @@ describe('main', () => {
         default_workspace: null,
         scan_roots: [],
         workspaces: []
-      }
+      },
+      auth: { token: null }
     });
 
     const code = await main(['resolve-startup-cwd']);

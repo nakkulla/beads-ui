@@ -157,6 +157,25 @@ function normalizeWorkspaceConfig(parsed) {
 }
 
 /**
+ * Normalize the `[auth]` config section. A whitespace-only or missing token is
+ * treated as absent (`null`); startup refusal is enforced downstream by
+ * `requireAuthToken`.
+ *
+ * @param {unknown} value
+ * @returns {{ token: string | null }}
+ */
+function normalizeAuthConfig(value) {
+  if (!isObjectTable(value)) {
+    return { token: null };
+  }
+  const token = value.token;
+  if (typeof token !== 'string' || token.trim().length === 0) {
+    return { token: null };
+  }
+  return { token };
+}
+
+/**
  * @param {string} config_path
  * @returns {{
  *   label_display_policy: {
@@ -171,7 +190,8 @@ function normalizeWorkspaceConfig(parsed) {
  *     default_workspace: string | null,
  *     scan_roots: string[],
  *     workspaces: string[]
- *   }
+ *   },
+ *   auth: { token: string | null }
  * }}
  */
 function readRuntimeConfig(config_path) {
@@ -188,7 +208,8 @@ function readRuntimeConfig(config_path) {
         visible_exact: normalizeVisibleExact(parsed?.labels?.visible_exact),
         colors: normalizeLabelColorPolicy(parsed?.labels?.colors)
       },
-      workspace_config: normalizeWorkspaceConfig(parsed)
+      workspace_config: normalizeWorkspaceConfig(parsed),
+      auth: normalizeAuthConfig(parsed?.auth)
     };
   } catch (error) {
     if (
@@ -211,7 +232,8 @@ function readRuntimeConfig(config_path) {
         default_workspace: DEFAULT_WORKSPACE_CONFIG.default_workspace,
         scan_roots: DEFAULT_WORKSPACE_CONFIG.scan_roots.slice(),
         workspaces: DEFAULT_WORKSPACE_CONFIG.workspaces.slice()
-      }
+      },
+      auth: { token: null }
     };
   }
 }
@@ -246,7 +268,8 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *     default_workspace: string | null,
  *     scan_roots: string[],
  *     workspaces: string[]
- *   }
+ *   },
+ *   auth: { token: string | null }
  * }}
  */
 export function getConfig() {
