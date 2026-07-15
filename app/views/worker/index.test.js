@@ -273,7 +273,7 @@ describe('views/worker', () => {
     });
   });
 
-  test('toggling auto-advance sends worker-queue-toggle and shows the exec-disabled banner', async () => {
+  test('toggling auto-advance sends worker-queue-toggle and shows the on banner', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi
       .fn()
@@ -297,6 +297,65 @@ describe('views/worker', () => {
       on: true,
       expected_revision: 0
     });
-    expect(mount.querySelector('.worker-banner--exec-disabled')).not.toBeNull();
+    expect(mount.querySelector('.worker-banner--on')).not.toBeNull();
+  });
+
+  test('running attempts render tiles + a failed attempt raises the breaker banner', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        auto_advance: true,
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        parallel: [{ bead_id: 'P1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now() - 5000
+          },
+          a2: {
+            attempt_id: 'a2',
+            bead_id: 'P1',
+            status: 'running',
+            runner: 'codex',
+            model: 'gpt-5.6',
+            started_at: Date.now() - 1000
+          },
+          a3: {
+            attempt_id: 'a3',
+            bead_id: 'X9',
+            status: 'failed',
+            repo: '/repo',
+            cause: 'verify_failed:base_not_ancestor'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    // Two running tiles rendered from attempts.
+    const tiles = mount.querySelectorAll('.worker-rungrid .rtile');
+    expect(tiles.length).toBe(2);
+    expect(mount.querySelector('.rtile[data-bead-id="S1"]')).not.toBeNull();
+    // Serial vs parallel badge derived from lane membership.
+    const s1badge = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__badge')
+    );
+    expect(s1badge.textContent?.trim()).toBe('serial');
+
+    // Failed attempt surfaces the breaker banner.
+    const breaker = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--breaker')
+    );
+    expect(breaker).not.toBeNull();
+    expect(breaker.textContent).toContain('/repo');
   });
 });

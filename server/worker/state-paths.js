@@ -68,3 +68,20 @@ export function workspaceStateDir(workspace_root) {
 export function queueFilePath(workspace_root) {
   return path.join(workspaceStateDir(workspace_root), 'queue.json');
 }
+
+/**
+ * Absolute path to a per-attempt session-log jsonl file (spec §5.2 / §5.6).
+ * The raw runner event stream is persisted here for the transcript viewer.
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @param {string} attempt_id - Stable attempt id.
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/sessions/<attempt_id>.jsonl`.
+ */
+export function sessionLogPath(workspace_root, attempt_id) {
+  const safe = String(attempt_id || 'attempt').replace(/[^A-Za-z0-9._-]/g, '_');
+  return path.join(
+    workspaceStateDir(workspace_root),
+    'sessions',
+    `${safe}.jsonl`
+  );
+}

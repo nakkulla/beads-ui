@@ -36,6 +36,13 @@
  * @property {string|null} effort - Effort snapshot.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
+ * @property {string|null} repo - Target repo root (for breaker scope + orphan reap).
+ * @property {string|null} status - Attempt lifecycle: running/done/failed/blocked/orphaned.
+ * @property {string|null} workflow_mode_prior - workflow_mode value snapshotted before launch (null=was unset).
+ * @property {string|null} target_base - Merge target base at dispatch.
+ * @property {string|null} merge_sha - Verified merge SHA (post-session).
+ * @property {number|null} finished_at - Epoch ms the attempt terminated.
+ * @property {string|null} cause - Failure cause (breaker banner reason).
  */
 /**
  * @typedef {Object} Queue
@@ -146,7 +153,14 @@ export function makeAttempt(fields) {
     model: fields.model ?? null,
     effort: fields.effort ?? null,
     exit: fields.exit ?? null,
-    verify_result: fields.verify_result ?? null
+    verify_result: fields.verify_result ?? null,
+    repo: fields.repo ?? null,
+    status: fields.status ?? null,
+    workflow_mode_prior: fields.workflow_mode_prior ?? null,
+    target_base: fields.target_base ?? null,
+    merge_sha: fields.merge_sha ?? null,
+    finished_at: fields.finished_at ?? null,
+    cause: fields.cause ?? null
   };
 }
 
@@ -296,6 +310,28 @@ export function createQueueStore(options = {}) {
     return { ok: true, conflict: false, queue: clone(next) };
   }
 
+  /**
+   * Apply a scheduler-owned mutation WITHOUT a revision CAS. Client drags use
+   * the CAS-guarded ops above; the scheduler is the single in-process writer for
+   * attempt lifecycle + lane transitions, so its mutations always apply against
+   * the current in-memory revision (which it still bumps so subscribers refresh).
+   *
+   * @param {string} workspace
+   * @param {(next: Queue) => boolean} mutate
+   * @returns {QueueOpResult}
+   */
+  function applyUnconditional(workspace, mutate) {
+    const cur = ensureLoaded(workspace);
+    const next = clone(cur);
+    if (!mutate(next)) {
+      return { ok: false, conflict: false, queue: clone(cur) };
+    }
+    next.revision = cur.revision + 1;
+    persist(workspace, next);
+    cache.set(keyFor(workspace), next);
+    return { ok: true, conflict: false, queue: clone(next) };
+  }
+
   return {
     /**
      * Cold-load (and cache) a workspace queue, forcing auto_advance=false.
@@ -418,6 +454,68 @@ export function createQueueStore(options = {}) {
           return false;
         }
         next.attempts[attempt.attempt_id] = makeAttempt(attempt);
+        return true;
+      });
+    },
+
+    /**
+     * Merge a patch into an existing attempt record (scheduler-owned, no CAS).
+     * Fills runtime fields at dispatch / termination (spec §5.2).
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, patch: Partial<Attempt> }} input
+     * @returns {QueueOpResult}
+     */
+    updateAttempt(workspace, input) {
+      const { attempt_id, patch } = input;
+      return applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur) {
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt(
+          /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ ({
+            ...cur,
+            ...patch,
+            attempt_id,
+            bead_id: patch.bead_id ?? cur.bead_id
+          })
+        );
+        return true;
+      });
+    },
+
+    /**
+     * Move a bead into the Done lane (removing it from serial/parallel).
+     * Scheduler-owned (no CAS).
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    moveToDone(workspace, input) {
+      const { bead_id } = input;
+      return applyUnconditional(workspace, (next) => {
+        if (typeof bead_id !== 'string' || bead_id.length === 0) {
+          return false;
+        }
+        removeFromLanes(next, bead_id);
+        next.done.push({ bead_id, added_at: now() });
+        return true;
+      });
+    },
+
+    /**
+     * Force the auto_advance flag (scheduler-owned, no CAS) — used to turn
+     * execution OFF when the circuit breaker trips (spec §5.3).
+     *
+     * @param {string} workspace
+     * @param {boolean} on
+     * @returns {QueueOpResult}
+     */
+    setAutoAdvance(workspace, on) {
+      return applyUnconditional(workspace, (next) => {
+        next.auto_advance = !!on;
         return true;
       });
     },

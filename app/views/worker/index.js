@@ -1,5 +1,5 @@
 /**
- * Worker console v1 — queue management (spec §5.1). NO EXECUTION (Phase 10).
+ * Worker console — queue management + running-session view (spec §5.1–§5.3).
  *
  * Candidate lanes are live Board Ready/Blocked data read from the SAME
  * per-subscription issue stores as the Board tab (no separate candidate
@@ -8,9 +8,10 @@
  * `worker-queue-place` mutation carrying the current queue revision; on a CAS
  * conflict the reply's current snapshot is adopted and the drag retried once.
  *
- * The ▶/⏸ controls flip `auto_advance`; because execution is disabled this
- * phase, turning it on only persists the flag and surfaces the exec-disabled
- * banner — nothing is dispatched.
+ * The ▶/⏸ controls flip `auto_advance`. Running tiles + the breaker/Failed
+ * banner are derived from the queue snapshot's `attempts` (status='running'
+ * → tiles; status='failed'/'orphaned' → breaker banner), which the server-side
+ * scheduler fills as sessions dispatch and terminate.
  */
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
@@ -189,7 +190,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], serial: any[], parallel: any[], done: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], breaker: any, serial: any[], parallel: any[], done: any[] }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -258,10 +259,44 @@ export function createWorkerView(mount_element, options = {}) {
         lane
       }));
 
+    // Lane lookup so running tiles show serial vs ∥ badge (a running bead stays
+    // in its lane until it moves to Done).
+    /** @type {Map<string, 'serial'|'parallel'>} */
+    const beadLane = new Map();
+    for (const e of q.serial || []) {
+      beadLane.set(e.bead_id, 'serial');
+    }
+    for (const e of q.parallel || []) {
+      beadLane.set(e.bead_id, 'parallel');
+    }
+
+    const attempts = q.attempts ? Object.values(q.attempts) : [];
+    /** @type {any[]} */
+    const running = [];
+    /** @type {any|null} */
+    let breaker = null;
+    for (const a of /** @type {any[]} */ (attempts)) {
+      if (a.status === 'running') {
+        running.push({
+          bead_id: a.bead_id,
+          title: idToTitle.get(a.bead_id) || a.bead_id,
+          lane: beadLane.get(a.bead_id) || 'parallel',
+          runner: a.runner || null,
+          model: a.model || null,
+          started_at: typeof a.started_at === 'number' ? a.started_at : null
+        });
+      } else if (a.status === 'failed' || a.status === 'orphaned') {
+        // The most recent failure/orphan surfaces the breaker banner.
+        breaker = { repo: a.repo || '', reason: a.cause || a.status };
+      }
+    }
+
     return {
       queue: q,
       idToTitle,
       candidates,
+      running,
+      breaker,
       serial: toRows(q.serial, 'serial'),
       parallel: toRows(q.parallel, 'parallel'),
       done: toRows(q.done, 'done')
@@ -281,15 +316,18 @@ export function createWorkerView(mount_element, options = {}) {
         </button>
         <button type="button" class="worker-pause">⏸ 정지</button>
         <span class="worker-stat"
-          >실행 <b>${m.queue.parallel.length + (m.serial.length ? 1 : 0)}</b> ·
-          serial 다음 <b>${serialHead}</b></span
+          >실행 <b>${m.running.length}</b> · serial 다음
+          <b>${serialHead}</b></span
         >
         <span class="worker-tgl"
           >parallel slot <b>${m.parallel.length}</b></span
         >
       </div>
-      ${bannersTemplate({ autoAdvance: !!m.queue.auto_advance, breaker: null })}
-      ${runningGridTemplate()}
+      ${bannersTemplate({
+        autoAdvance: !!m.queue.auto_advance,
+        breaker: m.breaker
+      })}
+      ${runningGridTemplate(m.running)}
       <div class="worker-lanes">
         ${paneTemplate({
           id: 'worker-pane-candidate',

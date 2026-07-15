@@ -1,5 +1,6 @@
 import { runBd } from './bd.js';
 import { resolveWorkspaceDatabase } from './db.js';
+import { getWorkerRuntime } from './worker/runtime.js';
 
 /**
  * @typedef {() => boolean | Promise<boolean>} HealthProbe
@@ -66,11 +67,30 @@ async function runProbe(fn) {
 }
 
 /**
- * Run readiness checks and compute overall health. `worker` is always `'absent'`
- * until the worker subsystem lands in a later phase.
+ * @typedef {{ auto_advance: boolean, running_count: number, breaker_tripped: boolean }} WorkerStatus
+ */
+
+/**
+ * Default worker-status probe: reads the shared Worker runtime (queue
+ * auto_advance + live running count + breaker) for the workspace (spec §5.3).
  *
- * @param {{ root_dir?: string, bd_probe?: HealthProbe, db_probe?: HealthProbe }} [options]
- * @returns {Promise<{ ok: boolean, checks: { bd: boolean, db: boolean, worker: 'absent' } }>}
+ * @param {string} root_dir
+ * @returns {WorkerStatus}
+ */
+export function defaultWorkerStatus(root_dir) {
+  try {
+    return getWorkerRuntime().status(root_dir);
+  } catch {
+    return { auto_advance: false, running_count: 0, breaker_tripped: false };
+  }
+}
+
+/**
+ * Run readiness checks and compute overall health. `worker` reflects the live
+ * Worker subsystem: auto_advance, running session count, and breaker state.
+ *
+ * @param {{ root_dir?: string, bd_probe?: HealthProbe, db_probe?: HealthProbe, worker_status?: () => WorkerStatus }} [options]
+ * @returns {Promise<{ ok: boolean, checks: { bd: boolean, db: boolean, worker: WorkerStatus } }>}
  */
 export async function checkHealth(options = {}) {
   const root_dir = options.root_dir || process.cwd();
@@ -79,10 +99,9 @@ export async function checkHealth(options = {}) {
 
   const [bd, db] = await Promise.all([runProbe(bd_probe), runProbe(db_probe)]);
 
-  const checks = {
-    bd,
-    db,
-    worker: /** @type {const} */ ('absent')
-  };
+  const worker = options.worker_status
+    ? options.worker_status()
+    : defaultWorkerStatus(root_dir);
+  const checks = { bd, db, worker };
   return { ok: bd && db, checks };
 }

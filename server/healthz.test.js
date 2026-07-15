@@ -46,7 +46,14 @@ describe('GET /healthz', () => {
     const { status, body } = await getHealthz({ bd: true, db: true });
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
-    expect(body.checks).toEqual({ bd: true, db: true, worker: 'absent' });
+    // worker is now a live status object (auto_advance / running / breaker).
+    expect(body.checks.bd).toBe(true);
+    expect(body.checks.db).toBe(true);
+    expect(body.checks.worker).toEqual({
+      auto_advance: false,
+      running_count: 0,
+      breaker_tripped: false
+    });
   });
 
   test('503 when the db probe fails', async () => {
@@ -54,7 +61,7 @@ describe('GET /healthz', () => {
     expect(status).toBe(503);
     expect(body.ok).toBe(false);
     expect(body.checks.db).toBe(false);
-    expect(body.checks.worker).toBe('absent');
+    expect(body.checks.worker.breaker_tripped).toBe(false);
   });
 
   test('503 when the bd probe fails', async () => {

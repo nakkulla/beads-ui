@@ -24,14 +24,20 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import { makeError, makeOk } from '../../app/protocol.js';
-import { createQueueStore } from '../worker/queue-store.js';
+import { getWorkerRuntime } from '../worker/runtime.js';
 import { emitWorkerQueueSnapshot, getConnWorkspace, log } from './context.js';
 
 /**
- * Server-wide single queue store so all connections share one in-memory
- * revision (making the CAS authoritative in-process across concurrent clients).
+ * Server-wide single queue store (from the shared Worker runtime) so all
+ * connections share one in-memory revision — making the CAS authoritative
+ * in-process across concurrent clients — AND so `/healthz` reports the same
+ * auto_advance the ws toggle mutates.
+ *
+ * @returns {ReturnType<typeof import('../worker/queue-store.js').createQueueStore>}
  */
-const QUEUE = createQueueStore();
+function queueStore() {
+  return getWorkerRuntime().queueStore;
+}
 
 /**
  * Per-workspace subscriber registry. Keyed by workspace root_dir; each value is
@@ -95,7 +101,7 @@ export function detachWorkerQueue(ws) {
  */
 export function __resetWorkerQueueForTest() {
   SUBSCRIBERS.clear();
-  QUEUE.__clearCacheForTest();
+  queueStore().__clearCacheForTest();
 }
 
 /**
@@ -118,7 +124,7 @@ export function handleSubscribeWorkerQueue(ws, req) {
   subscribersFor(key).add({ ws, client_id });
   log('subscribe-worker-queue %s ws=%s', client_id, key);
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
-  emitWorkerQueueSnapshot(ws, client_id, QUEUE.snapshot(key));
+  emitWorkerQueueSnapshot(ws, client_id, queueStore().snapshot(key));
 }
 
 /**
@@ -200,7 +206,7 @@ export function handleWorkerQueuePlace(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  const result = QUEUE.place(key, {
+  const result = queueStore().place(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
     lane: p.lane,
@@ -235,7 +241,7 @@ export function handleWorkerQueueReorder(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  const result = QUEUE.reorder(key, {
+  const result = queueStore().reorder(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
     lane: p.lane,
@@ -262,7 +268,7 @@ export function handleWorkerQueueToggle(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  const result = QUEUE.toggleAutoAdvance(key, {
+  const result = queueStore().toggleAutoAdvance(key, {
     expected_revision: revisionOf(p),
     on: p.on
   });
@@ -286,7 +292,7 @@ export function handleWorkerQueueRemove(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  const result = QUEUE.remove(key, {
+  const result = queueStore().remove(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id
   });

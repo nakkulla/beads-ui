@@ -1,0 +1,167 @@
+/**
+ * codex runner adapter (spec §5.4).
+ *
+ * CLI: `codex exec --json [-m <model>] -c model_reasoning_effort=<lv>
+ * --skip-git-repo-check "<prompt>"` with stdin closed (an open stdin makes
+ * codex wait for additional input and hang — runner-spike-findings.md).
+ *
+ * Success: rc===0 ∧ a `turn.completed` event present ∧ no `turn.failed`/`error`
+ * event (runner-spike-findings.md). Events map:
+ *   thread.started / turn.started        → dropped (lifecycle)
+ *   item.completed{item.type:agent_message} → text
+ *   item.completed{item.type:error}      → error
+ *   turn.completed                        → result
+ *   error / turn.failed                   → error
+ *
+ * Fail-closed: codex approval events did not appear in the spike, so the adapter
+ * fails closed by detecting any interactive request in the type / item.type
+ * whitelist gap (approval / elicitation / input request).
+ *
+ * @import { AdapterSpec, RunnerEvent, RunnerHandle, EngineDeps } from './session.js'
+ */
+import { applyPreamble } from './preamble.js';
+import { runSession } from './session.js';
+
+/**
+ * Interactive-request signature for codex fail-closed. Matches an approval /
+ * elicitation / user-input request on either the top-level event type or an
+ * item's type.
+ *
+ * @type {RegExp}
+ */
+const QUESTION_RE =
+  /approval|elicit|permission|user[_-]?input|input[_-]?request|question/i;
+
+/**
+ * @param {any} bead
+ * @returns {string}
+ */
+function promptFor(bead) {
+  if (bead && typeof bead.prompt === 'string') {
+    return bead.prompt;
+  }
+  const id = bead && typeof bead.id === 'string' ? bead.id : 'bead';
+  return `Bead ${id} 작업을 계약 네이티브 흐름으로 완료하라.`;
+}
+
+/**
+ * @param {any} raw
+ * @returns {RunnerEvent|RunnerEvent[]|null}
+ */
+function normalize(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  if (
+    raw.type === 'item.completed' &&
+    raw.item &&
+    typeof raw.item === 'object'
+  ) {
+    const item = raw.item;
+    if (item.type === 'agent_message' && typeof item.text === 'string') {
+      return { kind: 'text', text: item.text, raw };
+    }
+    if (item.type === 'error') {
+      return { kind: 'error', message: String(item.message || ''), raw };
+    }
+    return null;
+  }
+  if (raw.type === 'turn.completed') {
+    return { kind: 'result', raw };
+  }
+  if (raw.type === 'turn.failed') {
+    const message =
+      raw.error && typeof raw.error.message === 'string'
+        ? raw.error.message
+        : '';
+    return { kind: 'error', message, raw };
+  }
+  if (raw.type === 'error') {
+    return { kind: 'error', message: String(raw.message || ''), raw };
+  }
+  return null;
+}
+
+/**
+ * @param {any} raw
+ * @returns {string|null}
+ */
+function detectQuestion(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  // A codex error is a failure, not a question — never fail-closed on it.
+  if (raw.type === 'error' || raw.type === 'turn.failed') {
+    return null;
+  }
+  if (typeof raw.type === 'string' && QUESTION_RE.test(raw.type)) {
+    return `interactive request: ${raw.type}`;
+  }
+  const item_type =
+    raw.item && typeof raw.item.type === 'string' ? raw.item.type : '';
+  if (item_type && item_type !== 'error' && QUESTION_RE.test(item_type)) {
+    return `interactive request: ${item_type}`;
+  }
+  return null;
+}
+
+/**
+ * @param {{ raw: any[], exit: number|null, blocked: boolean }} ctx
+ * @returns {{ success: boolean, reason: string }}
+ */
+function verdict(ctx) {
+  const has_completed = ctx.raw.some((e) => e && e.type === 'turn.completed');
+  const has_failed = ctx.raw.some(
+    (e) => e && (e.type === 'turn.failed' || e.type === 'error')
+  );
+  if (ctx.exit !== 0) {
+    return { success: false, reason: 'exit' };
+  }
+  if (has_failed) {
+    return { success: false, reason: 'turn_failed' };
+  }
+  if (!has_completed) {
+    return { success: false, reason: 'no_turn_completed' };
+  }
+  return { success: true, reason: 'ok' };
+}
+
+/**
+ * Build the codex adapter spec.
+ *
+ * @returns {AdapterSpec}
+ */
+export function codexSpec() {
+  return {
+    name: 'codex',
+    buildArgv(bead, _workspace, settings) {
+      const s = settings || {};
+      const args = ['exec', '--json'];
+      if (s.model) {
+        args.push('-m', String(s.model));
+      }
+      if (s.effort) {
+        args.push('-c', `model_reasoning_effort=${s.effort}`);
+      }
+      args.push('--skip-git-repo-check');
+      args.push(applyPreamble(promptFor(bead), { fast_track: !!s.fast_track }));
+      return { command: 'codex', args };
+    },
+    normalize,
+    detectQuestion,
+    verdict
+  };
+}
+
+/**
+ * Spawn a codex headless session.
+ *
+ * @param {any} bead
+ * @param {string} workspace
+ * @param {any} settings
+ * @param {EngineDeps} deps
+ * @returns {RunnerHandle}
+ */
+export function spawnCodex(bead, workspace, settings, deps) {
+  return runSession(codexSpec(), bead, workspace, settings, deps);
+}

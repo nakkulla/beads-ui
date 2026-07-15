@@ -8,6 +8,8 @@ import { bearerAuthMiddleware } from './auth.js';
 import { checkHealth } from './health.js';
 import { registerWorkspace } from './registry-watcher.js';
 import { docHandler } from './routes/doc.js';
+import { createMergeLockRouter } from './worker/merge-lock-route.js';
+import { getWorkerRuntime } from './worker/runtime.js';
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
@@ -153,6 +155,19 @@ export function createApp(config) {
 
   // Enable JSON body parsing for API endpoints
   app.use(express.json());
+
+  // Merge-lock endpoint (spec §5.2). Auth is the per-session Worker token (NOT
+  // the config bearer): a session's finishing preamble acquires/releases the
+  // (repo, target_base) merge lock. Breaker-tripped repos are refused (423).
+  const worker_runtime = getWorkerRuntime();
+  app.use(
+    '/api/worker/merge-lock',
+    createMergeLockRouter({
+      locks: worker_runtime.locks,
+      tokens: worker_runtime.tokens,
+      breaker: worker_runtime.breaker
+    })
+  );
 
   // Serve a markdown document from a registered workspace's docs/ directory.
   app.get('/api/doc', requireBearer, docHandler);
