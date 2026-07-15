@@ -318,6 +318,37 @@ export function emitSubscriptionDelete(ws, client_id, key, issue_id) {
 }
 
 /**
+ * Emit a Worker queue snapshot to a specific client id on a socket.
+ *
+ * Reuses the exact server-push envelope shape as {@link emitSubscriptionSnapshot}
+ * (id/ok/type/payload) so Worker data flows through the SAME push protocol as
+ * issues. The top-level `type` is a distinct `'worker-queue-snapshot'` event so
+ * the client dispatches queue snapshots separately from issue `'snapshot'`
+ * events. The queue carries its own CAS `revision` inside the payload.
+ *
+ * @param {WebSocket} ws
+ * @param {string} client_id
+ * @param {Record<string, unknown>} queue
+ */
+export function emitWorkerQueueSnapshot(ws, client_id, queue) {
+  const msg = JSON.stringify({
+    id: `evt-${Date.now()}`,
+    ok: true,
+    type: /** @type {MessageType} */ ('worker-queue-snapshot'),
+    payload: {
+      type: 'worker-queue-snapshot',
+      id: client_id,
+      queue
+    }
+  });
+  try {
+    ws.send(msg);
+  } catch (err) {
+    log('emit worker-queue snapshot send failed id=%s: %o', client_id, err);
+  }
+}
+
+/**
  * Replace a registry entry's cached snapshot with a filtered immutable array,
  * operating on the workspace registry for `root_dir`.
  *

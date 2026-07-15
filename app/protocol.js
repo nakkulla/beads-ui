@@ -9,7 +9,7 @@
  * - Server can also send unsolicited events (e.g., subscription `snapshot`).
  */
 
-/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'dep-add'|'dep-remove'|'update-assignee'|'update-exec-settings'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'get-workspace'|'workspace-changed'|'sync-workspace'|'git-pull-workspace'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'dep-add'|'dep-remove'|'update-assignee'|'update-exec-settings'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'get-workspace'|'workspace-changed'|'sync-workspace'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-queue-remove'} MessageType */
 
 /**
  * @typedef {Object} RequestEnvelope
@@ -64,7 +64,15 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'get-workspace',
   'workspace-changed',
   'sync-workspace',
-  'git-pull-workspace'
+  'git-pull-workspace',
+  // Worker queue channel (subscription + CAS-guarded mutations + push snapshot)
+  'subscribe-worker-queue',
+  'unsubscribe-worker-queue',
+  'worker-queue-snapshot',
+  'worker-queue-place',
+  'worker-queue-reorder',
+  'worker-queue-toggle',
+  'worker-queue-remove'
 ]);
 
 /**

@@ -4,6 +4,7 @@
 import { html, render } from 'lit-html';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
+import { createWorkerQueueStore } from './data/worker-queue-store.js';
 import { createHashRouter } from './router.js';
 import { createStore } from './state.js';
 import { createActivityIndicator } from './utils/activity-indicator.js';
@@ -172,6 +173,22 @@ const BOARD_SUBS = [
 ];
 
 /**
+ * Worker candidate subscription keys (spec §5.1): the Worker console's candidate
+ * lane is live Board Ready/Blocked data. These reuse the same list adapters as
+ * the Board but under Worker-scoped client ids so the Worker tab keeps its
+ * candidate stores independent of Board tab (de)registration.
+ *
+ * @type {ReadonlyArray<[string, string]>}
+ */
+const WORKER_SUBS = [
+  ['tab:worker:ready', 'ready-issues'],
+  ['tab:worker:blocked', 'blocked-issues']
+];
+
+/** Client id for the singleton per-workspace worker-queue subscription. */
+const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
+
+/**
  * Bootstrap the two-tab control-tower shell (Board / Worker) with a shared
  * detail overlay.
  *
@@ -266,6 +283,20 @@ export function bootstrap(root_element) {
     );
     const subscriptions = createSubscriptionStore(tracked_send);
     const sub_issue_stores = createSubscriptionIssueStores();
+    const worker_queue_store = createWorkerQueueStore();
+
+    // Route worker-queue snapshots (unified push protocol; distinct top-level
+    // event type) into the client-side queue store.
+    client.on('worker-queue-snapshot', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (p && p.queue) {
+        try {
+          worker_queue_store.set(p.queue);
+        } catch {
+          // ignore
+        }
+      }
+    });
 
     // Route per-subscription push envelopes to the owning store.
     client.on('snapshot', (payload) => {
@@ -454,6 +485,79 @@ export function bootstrap(root_element) {
       }
     }
 
+    // --- Worker subscription lifecycle (candidate lanes + queue channel) ---
+    /** @type {Map<string, () => Promise<void>>} */
+    const worker_unsubs = new Map();
+    /** @type {(() => Promise<unknown>) | null} */
+    let worker_queue_unsub = null;
+
+    /**
+     * @param {boolean} active
+     */
+    function ensureWorkerSubscriptions(active) {
+      if (!active) {
+        clearWorkerSubscriptions();
+        return;
+      }
+      for (const [client_id, type] of WORKER_SUBS) {
+        if (
+          worker_unsubs.has(client_id) ||
+          pending_subscriptions.has(client_id)
+        ) {
+          continue;
+        }
+        try {
+          sub_issue_stores.register(client_id, { type });
+        } catch (err) {
+          log('register %s store failed: %o', client_id, err);
+        }
+        pending_subscriptions.add(client_id);
+        void subscriptions
+          .subscribeList(client_id, { type })
+          .then((unsub) => {
+            worker_unsubs.set(client_id, unsub);
+          })
+          .catch((err) => {
+            log('subscribe %s failed: %o', client_id, err);
+            showFatalFromError(err, 'worker');
+          })
+          .finally(() => {
+            pending_subscriptions.delete(client_id);
+          });
+      }
+      // Per-workspace worker-queue channel (reuses the authenticated ws).
+      if (!worker_queue_unsub) {
+        void tracked_send('subscribe-worker-queue', {
+          id: WORKER_QUEUE_CLIENT_ID
+        }).catch((err) => {
+          log('subscribe-worker-queue failed: %o', err);
+        });
+        worker_queue_unsub = () =>
+          tracked_send('unsubscribe-worker-queue', {
+            id: WORKER_QUEUE_CLIENT_ID
+          });
+      }
+    }
+
+    function clearWorkerSubscriptions() {
+      for (const [client_id] of WORKER_SUBS) {
+        const unsub = worker_unsubs.get(client_id);
+        if (unsub) {
+          void unsub().catch(() => {});
+          worker_unsubs.delete(client_id);
+        }
+        try {
+          sub_issue_stores.unregister(client_id);
+        } catch (err) {
+          log('unregister %s failed: %o', client_id, err);
+        }
+      }
+      if (worker_queue_unsub) {
+        void worker_queue_unsub().catch(() => {});
+        worker_queue_unsub = null;
+      }
+    }
+
     // --- Workspace management ---
     /**
      * Clear all subscriptions and stores, then re-establish for the active view.
@@ -461,6 +565,8 @@ export function bootstrap(root_element) {
     async function clearAndResubscribe() {
       log('clearing all subscriptions for workspace switch');
       clearBoardSubscriptions();
+      clearWorkerSubscriptions();
+      worker_queue_store.clear();
       resetDetailSubscription();
       const s = store.getState();
       if (s.selected_id) {
@@ -472,6 +578,7 @@ export function bootstrap(root_element) {
       }
       const current_state = store.getState();
       ensureBoardSubscriptions(current_state.view === 'board');
+      ensureWorkerSubscriptions(current_state.view === 'worker');
       if (current_state.selected_id) {
         scheduleDetailSubscription(current_state.selected_id);
       }
@@ -791,8 +898,13 @@ export function bootstrap(root_element) {
       onNewIssue: () => new_issue_dialog.open()
     });
 
-    // Worker placeholder (second tab).
-    const worker_view = createWorkerView(worker_root);
+    // Worker console (second tab): candidate lanes + Serial/Parallel queue.
+    const worker_view = createWorkerView(worker_root, {
+      transport,
+      issueStores: sub_issue_stores,
+      queueStore: worker_queue_store,
+      gotoIssue: (id) => router.gotoIssue(id)
+    });
 
     // Shared detail overlay.
     const detail_panel = createDetailPanel(detail_mount, {
@@ -844,6 +956,7 @@ export function bootstrap(root_element) {
       board_root.hidden = s.view !== 'board';
       worker_root.hidden = s.view !== 'worker';
       ensureBoardSubscriptions(s.view === 'board');
+      ensureWorkerSubscriptions(s.view === 'worker');
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
       }

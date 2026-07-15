@@ -10,3 +10,4 @@ export {
 } from './connection.js';
 export { scheduleListRefresh } from './refresh.js';
 export { __resetRegistriesForTest, registryFor } from './context.js';
+export { __resetWorkerQueueForTest } from './worker-handlers.js';

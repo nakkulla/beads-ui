@@ -38,6 +38,15 @@ import {
   handleUnsubscribeList
 } from './subscription-handlers.js';
 import {
+  detachWorkerQueue,
+  handleSubscribeWorkerQueue,
+  handleUnsubscribeWorkerQueue,
+  handleWorkerQueuePlace,
+  handleWorkerQueueRemove,
+  handleWorkerQueueReorder,
+  handleWorkerQueueToggle
+} from './worker-handlers.js';
+import {
   handleGetWorkspace,
   handleGitPullWorkspace,
   handleListWorkspaces,
@@ -237,6 +246,7 @@ export function attachWsServer(http_server, options = {}) {
       try {
         // Detach this connection from every workspace registry.
         detachConnectionFromAllRegistries(ws);
+        detachWorkerQueue(ws);
       } catch {
         // ignore cleanup errors
       }
@@ -421,6 +431,24 @@ export async function handleMessage(ws, data) {
       return;
     case 'git-pull-workspace':
       await handleGitPullWorkspace(ws, req);
+      return;
+    case 'subscribe-worker-queue':
+      handleSubscribeWorkerQueue(ws, req);
+      return;
+    case 'unsubscribe-worker-queue':
+      handleUnsubscribeWorkerQueue(ws, req);
+      return;
+    case 'worker-queue-place':
+      handleWorkerQueuePlace(ws, req);
+      return;
+    case 'worker-queue-reorder':
+      handleWorkerQueueReorder(ws, req);
+      return;
+    case 'worker-queue-toggle':
+      handleWorkerQueueToggle(ws, req);
+      return;
+    case 'worker-queue-remove':
+      handleWorkerQueueRemove(ws, req);
       return;
     default: {
       const err = makeError(
