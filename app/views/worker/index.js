@@ -17,6 +17,7 @@ import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
 import { paneTemplate } from './lanes.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
+import { createTranscriptDrawer } from './transcript-drawer.js';
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
@@ -46,17 +47,43 @@ function blockedReason(issue) {
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, gotoIssue?: (id: string) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, gotoIssue?: (id: string) => void }} [options]
  * @returns {{ load: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
-  const { transport, issueStores, queueStore, gotoIssue } = options;
+  const { transport, issueStores, queueStore, sessionLogStore, gotoIssue } =
+    options;
   const selectors = issueStores ? createListSelectors(issueStores) : null;
 
   /** @type {{ bead_id: string, from_lane: string }|null} */
   let dragging = null;
   /** @type {Array<() => void>} */
   const unsubscribers = [];
+
+  // Persistent console shell: the running grid (top) and lanes (bottom) render
+  // into their own targets so the transcript drawer can sit BETWEEN them (the
+  // mockup pushes the lanes down when a tile opens the drawer) without a
+  // full-template re-render clobbering the drawer's own lit-html root.
+  const console_el = document.createElement('div');
+  console_el.className = 'worker-console';
+  const top_el = document.createElement('div');
+  const drawer_el = document.createElement('div');
+  drawer_el.className = 'worker-drawer-host';
+  const lanes_el = document.createElement('div');
+  console_el.append(top_el, drawer_el, lanes_el);
+  mount_element.appendChild(console_el);
+
+  /** @type {string|null} Currently open attempt (for the tile ring). */
+  let selected_attempt = null;
+
+  const drawer = createTranscriptDrawer(drawer_el, {
+    transport,
+    sessionLogStore,
+    onClose: () => {
+      selected_attempt = null;
+      doRender();
+    }
+  });
 
   /**
    * @returns {any} Current queue snapshot (or an empty shape).
@@ -279,10 +306,12 @@ export function createWorkerView(mount_element, options = {}) {
       if (a.status === 'running') {
         running.push({
           bead_id: a.bead_id,
+          attempt_id: a.attempt_id,
           title: idToTitle.get(a.bead_id) || a.bead_id,
           lane: beadLane.get(a.bead_id) || 'parallel',
           runner: a.runner || null,
           model: a.model || null,
+          effort: a.effort || null,
           started_at: typeof a.started_at === 'number' ? a.started_at : null
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
@@ -303,11 +332,13 @@ export function createWorkerView(mount_element, options = {}) {
     };
   }
 
-  function template() {
-    const m = buildModel();
+  /**
+   * @param {ReturnType<typeof buildModel>} m
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function topTemplate(m) {
     const serialHead = m.serial.length > 0 ? m.serial[0].id : '—';
-    return html`<div class="worker-console">
-      <div class="worker-ctrl">
+    return html`<div class="worker-ctrl">
         <button
           type="button"
           class="worker-play${m.queue.auto_advance ? ' is-active' : ''}"
@@ -327,43 +358,51 @@ export function createWorkerView(mount_element, options = {}) {
         autoAdvance: !!m.queue.auto_advance,
         breaker: m.breaker
       })}
-      ${runningGridTemplate(m.running)}
-      <div class="worker-lanes">
-        ${paneTemplate({
-          id: 'worker-pane-candidate',
-          lane: 'candidate',
-          title: '후보 · Board 연동',
-          items: m.candidates,
-          src: true,
-          empty: '후보 없음'
-        })}
-        ${paneTemplate({
-          id: 'worker-pane-serial',
-          lane: 'serial',
-          title: 'Serial 큐',
-          items: m.serial,
-          empty: '드래그로 배치'
-        })}
-        ${paneTemplate({
-          id: 'worker-pane-parallel',
-          lane: 'parallel',
-          title: 'Parallel 풀',
-          items: m.parallel,
-          empty: '드래그로 배치'
-        })}
-        ${paneTemplate({
-          id: 'worker-pane-done',
-          lane: 'done',
-          title: `Done · 오늘 ${m.done.length}`,
-          items: m.done,
-          empty: '완료 없음'
-        })}
-      </div>
+      ${runningGridTemplate(m.running, Date.now(), selected_attempt)}`;
+  }
+
+  /**
+   * @param {ReturnType<typeof buildModel>} m
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function lanesTemplate(m) {
+    return html`<div class="worker-lanes">
+      ${paneTemplate({
+        id: 'worker-pane-candidate',
+        lane: 'candidate',
+        title: '후보 · Board 연동',
+        items: m.candidates,
+        src: true,
+        empty: '후보 없음'
+      })}
+      ${paneTemplate({
+        id: 'worker-pane-serial',
+        lane: 'serial',
+        title: 'Serial 큐',
+        items: m.serial,
+        empty: '드래그로 배치'
+      })}
+      ${paneTemplate({
+        id: 'worker-pane-parallel',
+        lane: 'parallel',
+        title: 'Parallel 풀',
+        items: m.parallel,
+        empty: '드래그로 배치'
+      })}
+      ${paneTemplate({
+        id: 'worker-pane-done',
+        lane: 'done',
+        title: `Done · 오늘 ${m.done.length}`,
+        items: m.done,
+        empty: '완료 없음'
+      })}
     </div>`;
   }
 
   function doRender() {
-    render(template(), mount_element);
+    const m = buildModel();
+    render(topTemplate(m), top_el);
+    render(lanesTemplate(m), lanes_el);
   }
 
   // --- Native drag/drop (no library), mirroring board.js conventions. ---
@@ -470,6 +509,29 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Open (or switch) the transcript drawer for a running attempt (spec §5.6).
+   *
+   * @param {string} attempt_id
+   */
+  function openDrawerForAttempt(attempt_id) {
+    const q = currentQueue();
+    const a = q.attempts ? q.attempts[attempt_id] : null;
+    /** @type {import('./transcript-drawer.js').DrawerMeta} */
+    const meta = a
+      ? {
+          runner: a.runner || undefined,
+          model: a.model || undefined,
+          effort: a.effort || undefined,
+          worktree: a.worktree || undefined,
+          status: a.status || undefined
+        }
+      : {};
+    selected_attempt = attempt_id;
+    drawer.open({ attempt_id, meta });
+    doRender();
+  }
+
+  /**
    * @param {MouseEvent} ev
    */
   function onClick(ev) {
@@ -480,6 +542,22 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (target?.closest?.('.worker-pause')) {
       void setAutoAdvance(false);
+      return;
+    }
+    // The stop ■ is a distinct affordance (future wiring); never open the drawer.
+    if (target?.closest?.('.rtile__stop')) {
+      return;
+    }
+    // Clicks inside the drawer are owned by the drawer's own handlers.
+    if (target?.closest?.('.worker-drawer-host')) {
+      return;
+    }
+    const rtile = /** @type {HTMLElement|null} */ (target?.closest?.('.rtile'));
+    if (rtile) {
+      const att = rtile.dataset.attemptId;
+      if (att) {
+        openDrawerForAttempt(att);
+      }
       return;
     }
     const mini = /** @type {HTMLElement|null} */ (
@@ -534,6 +612,11 @@ export function createWorkerView(mount_element, options = {}) {
       );
       mount_element.removeEventListener('drop', /** @type {any} */ (onDrop));
       mount_element.removeEventListener('click', /** @type {any} */ (onClick));
+      try {
+        drawer.destroy();
+      } catch {
+        /* ignore */
+      }
       render(html``, mount_element);
     }
   };

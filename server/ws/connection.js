@@ -39,7 +39,9 @@ import {
 } from './subscription-handlers.js';
 import {
   detachWorkerQueue,
+  handleSubscribeSessionLog,
   handleSubscribeWorkerQueue,
+  handleUnsubscribeSessionLog,
   handleUnsubscribeWorkerQueue,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
@@ -449,6 +451,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-remove':
       handleWorkerQueueRemove(ws, req);
+      return;
+    case 'subscribe-session-log':
+      handleSubscribeSessionLog(ws, req);
+      return;
+    case 'unsubscribe-session-log':
+      handleUnsubscribeSessionLog(ws, req);
       return;
     default: {
       const err = makeError(

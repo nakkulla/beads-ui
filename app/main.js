@@ -2,6 +2,7 @@
  * @import { MessageType } from './protocol.js'
  */
 import { html, render } from 'lit-html';
+import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
 import { createWorkerQueueStore } from './data/worker-queue-store.js';
@@ -284,6 +285,7 @@ export function bootstrap(root_element) {
     const subscriptions = createSubscriptionStore(tracked_send);
     const sub_issue_stores = createSubscriptionIssueStores();
     const worker_queue_store = createWorkerQueueStore();
+    const session_log_store = createSessionLogStore();
 
     // Route worker-queue snapshots (unified push protocol; distinct top-level
     // event type) into the client-side queue store.
@@ -292,6 +294,32 @@ export function bootstrap(root_element) {
       if (p && p.queue) {
         try {
           worker_queue_store.set(p.queue);
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    // Route session-log (transcript) pushes: a snapshot on subscribe, then live
+    // appends for a running attempt (spec §5.6).
+    client.on('session-log-snapshot', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (p && typeof p.attempt_id === 'string') {
+        try {
+          session_log_store.set(
+            p.attempt_id,
+            Array.isArray(p.lines) ? p.lines : []
+          );
+        } catch {
+          // ignore
+        }
+      }
+    });
+    client.on('session-log-append', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (p && typeof p.attempt_id === 'string') {
+        try {
+          session_log_store.append(p.attempt_id, p.event);
         } catch {
           // ignore
         }
@@ -903,6 +931,7 @@ export function bootstrap(root_element) {
       transport,
       issueStores: sub_issue_stores,
       queueStore: worker_queue_store,
+      sessionLogStore: session_log_store,
       gotoIssue: (id) => router.gotoIssue(id)
     });
 
@@ -910,6 +939,8 @@ export function bootstrap(root_element) {
     const detail_panel = createDetailPanel(detail_mount, {
       issueStores: sub_issue_stores,
       transport,
+      queueStore: worker_queue_store,
+      sessionLogStore: session_log_store,
       getWorkspacePath: () => store.getState().workspace.current?.path,
       onNavigate: (id) => router.gotoIssue(id),
       onClose: () => {

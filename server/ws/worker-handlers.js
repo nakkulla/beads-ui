@@ -25,7 +25,13 @@
  */
 import { makeError, makeOk } from '../../app/protocol.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
-import { emitWorkerQueueSnapshot, getConnWorkspace, log } from './context.js';
+import {
+  emitSessionLogAppend,
+  emitSessionLogSnapshot,
+  emitWorkerQueueSnapshot,
+  getConnWorkspace,
+  log
+} from './context.js';
 
 /**
  * Server-wide single queue store (from the shared Worker runtime) so all
@@ -94,6 +100,115 @@ export function detachWorkerQueue(ws) {
       }
     }
   }
+  detachSessionLog(ws);
+}
+
+/**
+ * Live session-log (transcript) subscriptions (spec §5.6). Each entry pushes
+ * snapshot-then-appends for one attempt to one client id. `off` unsubscribes
+ * the per-entry runtime session-log listener.
+ *
+ * @type {Set<{ ws: WebSocket, client_id: string, attempt_id: string, off: () => void }>}
+ */
+const SESSION_LOG_SUBS = new Set();
+
+/**
+ * Remove and unsubscribe every session-log subscription for a connection.
+ *
+ * @param {WebSocket} ws
+ */
+export function detachSessionLog(ws) {
+  for (const sub of SESSION_LOG_SUBS) {
+    if (sub.ws === ws) {
+      try {
+        sub.off();
+      } catch {
+        /* ignore */
+      }
+      SESSION_LOG_SUBS.delete(sub);
+    }
+  }
+}
+
+/**
+ * Handle `subscribe-session-log`. Payload: `{ id: client_id, attempt_id }`.
+ *
+ * Emits a SNAPSHOT of the persisted raw stream, then registers a live-append
+ * listener on the shared runtime session-log. A Done/Failed attempt simply
+ * never fires an append (the session is over), so the same path yields
+ * snapshot-only for historical logs and live-follow for a running attempt.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleSubscribeSessionLog(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  const client_id = typeof p.id === 'string' ? p.id : '';
+  const attempt_id = typeof p.attempt_id === 'string' ? p.attempt_id : '';
+  if (client_id.length === 0 || attempt_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { id: string, attempt_id: string }'
+        )
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const runtime = getWorkerRuntime();
+
+  // Drop any prior subscription for the same (ws, client_id) so re-open is idempotent.
+  for (const sub of SESSION_LOG_SUBS) {
+    if (sub.ws === ws && sub.client_id === client_id) {
+      try {
+        sub.off();
+      } catch {
+        /* ignore */
+      }
+      SESSION_LOG_SUBS.delete(sub);
+    }
+  }
+
+  ws.send(JSON.stringify(makeOk(req, { id: client_id, attempt_id })));
+
+  const lines = runtime.sessionLog.read(key, attempt_id);
+  emitSessionLogSnapshot(ws, client_id, attempt_id, lines);
+
+  const off = runtime.sessionLog.subscribe((a) => {
+    if (a.workspace === key && a.attempt_id === attempt_id) {
+      emitSessionLogAppend(ws, client_id, attempt_id, a.event);
+    }
+  });
+  SESSION_LOG_SUBS.add({ ws, client_id, attempt_id, off });
+  log('subscribe-session-log %s attempt=%s ws=%s', client_id, attempt_id, key);
+}
+
+/**
+ * Handle `unsubscribe-session-log`. Payload: `{ id: client_id }`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleUnsubscribeSessionLog(ws, req) {
+  const client_id = /** @type {any} */ (req.payload)?.id;
+  let removed = false;
+  for (const sub of SESSION_LOG_SUBS) {
+    if (sub.ws === ws && sub.client_id === client_id) {
+      try {
+        sub.off();
+      } catch {
+        /* ignore */
+      }
+      SESSION_LOG_SUBS.delete(sub);
+      removed = true;
+    }
+  }
+  ws.send(
+    JSON.stringify(makeOk(req, { id: client_id, unsubscribed: removed }))
+  );
 }
 
 /**
@@ -101,6 +216,14 @@ export function detachWorkerQueue(ws) {
  */
 export function __resetWorkerQueueForTest() {
   SUBSCRIBERS.clear();
+  for (const sub of SESSION_LOG_SUBS) {
+    try {
+      sub.off();
+    } catch {
+      /* ignore */
+    }
+  }
+  SESSION_LOG_SUBS.clear();
   queueStore().__clearCacheForTest();
 }
 

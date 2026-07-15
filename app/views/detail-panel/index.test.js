@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { createSessionLogStore } from '../../data/session-log-store.js';
 import { createSubscriptionIssueStores } from '../../data/subscription-issue-stores.js';
+import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { createDetailPanel } from './index.js';
 
 describe('views/detail-panel', () => {
@@ -66,6 +68,65 @@ describe('views/detail-panel', () => {
     );
     backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(onClose).toHaveBeenCalledTimes(2);
+
+    panel.destroy();
+  });
+
+  test('session-history lists a bead attempt and opens the transcript drawer', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        serial: [],
+        parallel: [],
+        done: [],
+        attempts: {
+          a7: {
+            attempt_id: 'a7',
+            bead_id: 'UI-1',
+            status: 'done',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now() - 60000
+          }
+        }
+      })
+    );
+    const sessionLogStore = createSessionLogStore();
+    sessionLogStore.set('a7', [
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'DONE'
+      }
+    ]);
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+
+    const panel = createDetailPanel(mount, {
+      queueStore,
+      sessionLogStore,
+      transport,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-session[data-attempt-id="a7"]')
+    );
+    expect(row).not.toBeNull();
+
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(transport).toHaveBeenCalledWith('subscribe-session-log', {
+      id: 'session-log:a7',
+      attempt_id: 'a7'
+    });
+    // The transcript drawer renders into its body-appended overlay mount.
+    const drawer = document.querySelector('.session-log-root .sv');
+    expect(drawer).not.toBeNull();
+    expect(drawer?.querySelector('.sv__result--ok')).not.toBeNull();
 
     panel.destroy();
   });

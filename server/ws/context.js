@@ -349,6 +349,62 @@ export function emitWorkerQueueSnapshot(ws, client_id, queue) {
 }
 
 /**
+ * Emit a session-log SNAPSHOT (all persisted raw lines) for an attempt to a
+ * client. Reuses the same id/ok/type/payload envelope as the queue/issue pushes
+ * so the transcript viewer flows through one push protocol (spec §5.6).
+ *
+ * @param {WebSocket} ws
+ * @param {string} client_id
+ * @param {string} attempt_id
+ * @param {unknown[]} lines - Raw parsed jsonl events (untransformed stream).
+ */
+export function emitSessionLogSnapshot(ws, client_id, attempt_id, lines) {
+  const msg = JSON.stringify({
+    id: `evt-${Date.now()}`,
+    ok: true,
+    type: /** @type {MessageType} */ ('session-log-snapshot'),
+    payload: {
+      type: 'session-log-snapshot',
+      id: client_id,
+      attempt_id,
+      lines
+    }
+  });
+  try {
+    ws.send(msg);
+  } catch (err) {
+    log('emit session-log snapshot send failed id=%s: %o', client_id, err);
+  }
+}
+
+/**
+ * Emit ONE live session-log APPEND (a single raw event) for a live attempt.
+ *
+ * @param {WebSocket} ws
+ * @param {string} client_id
+ * @param {string} attempt_id
+ * @param {unknown} event - One raw parsed jsonl event.
+ */
+export function emitSessionLogAppend(ws, client_id, attempt_id, event) {
+  const msg = JSON.stringify({
+    id: `evt-${Date.now()}`,
+    ok: true,
+    type: /** @type {MessageType} */ ('session-log-append'),
+    payload: {
+      type: 'session-log-append',
+      id: client_id,
+      attempt_id,
+      event
+    }
+  });
+  try {
+    ws.send(msg);
+  } catch (err) {
+    log('emit session-log append send failed id=%s: %o', client_id, err);
+  }
+}
+
+/**
  * Replace a registry entry's cached snapshot with a filtered immutable array,
  * operating on the workspace registry for `root_dir`.
  *

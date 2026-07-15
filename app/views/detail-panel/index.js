@@ -1,5 +1,6 @@
 import { html, render } from 'lit-html';
 import { showToast } from '../../utils/toast.js';
+import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { execSettingsTemplate } from './exec-settings.js';
 import { createMdViewer } from './md-viewer.js';
@@ -19,6 +20,8 @@ import { sessionHistoryTemplate } from './session-history.js';
  * @typedef {Object} DetailPanelOptions
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<unknown>} [transport]
+ * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
+ * @property {{ get: (id: string) => { lines: unknown[] } | null, subscribe: (fn: () => void) => () => void }} [sessionLogStore]
  * @property {() => string | null | undefined} [getWorkspacePath]
  * @property {(id: string) => void} [onNavigate] - Navigate to a dependency id.
  * @property {() => void} onClose - Invoked to request the overlay be closed.
@@ -34,6 +37,8 @@ export function createDetailPanel(mount_element, options) {
   const onClose = options.onClose;
   const transport = options.transport;
   const onNavigate = options.onNavigate;
+  const queueStore = options.queueStore;
+  const sessionLogStore = options.sessionLogStore;
 
   /** @type {string | null} */
   let current_id = null;
@@ -50,10 +55,79 @@ export function createDetailPanel(mount_element, options) {
     getWorkspacePath: options.getWorkspacePath || (() => '')
   });
 
+  // Transcript drawer for a session-history row (Done/Failed → persisted log,
+  // live attempt → live-follow). Opens as its own body-appended overlay so it
+  // sits above the detail overlay (spec §5.6).
+  const sl_mount = document.createElement('div');
+  sl_mount.className = 'session-log-root';
+  document.body.appendChild(sl_mount);
+  const transcript_drawer = createTranscriptDrawer(sl_mount, {
+    transport: transport
+      ? (type, payload) => Promise.resolve(transport(type, payload))
+      : undefined,
+    sessionLogStore
+  });
+
+  /**
+   * Attempts recorded for the current bead, newest first (from the client
+   * worker-queue store's `attempts` map).
+   *
+   * @returns {import('./session-history.js').SessionAttempt[]}
+   */
+  function attemptsForBead() {
+    if (!queueStore || !current_id) {
+      return [];
+    }
+    const q = queueStore.get();
+    const attempts = q && q.attempts ? Object.values(q.attempts) : [];
+    return /** @type {any[]} */ (attempts)
+      .filter((a) => a && a.bead_id === current_id)
+      .sort((a, b) => (b.started_at || 0) - (a.started_at || 0))
+      .map((a) => ({
+        attempt_id: a.attempt_id,
+        bead_id: a.bead_id,
+        status: a.status,
+        started_at: typeof a.started_at === 'number' ? a.started_at : null,
+        runner: a.runner || null,
+        model: a.model || null
+      }));
+  }
+
+  /**
+   * @param {string} attempt_id
+   */
+  function openTranscript(attempt_id) {
+    const q = queueStore ? queueStore.get() : null;
+    const a = q && q.attempts ? q.attempts[attempt_id] : null;
+    transcript_drawer.open({
+      attempt_id,
+      meta: a
+        ? {
+            runner: a.runner || undefined,
+            model: a.model || undefined,
+            effort: a.effort || undefined,
+            status: a.status || undefined
+          }
+        : {}
+    });
+  }
+
+  const session_handlers = { onOpen: openTranscript };
+
   /** @type {null | (() => void)} */
   let unsubscribe = null;
   if (issueStores && issueStores.subscribe) {
     unsubscribe = issueStores.subscribe(() => refreshFromStore());
+  }
+  /** @type {null | (() => void)} */
+  let unsubscribe_queue = null;
+  if (queueStore && typeof queueStore.subscribe === 'function') {
+    // A new/updated attempt should refresh the session-history list.
+    unsubscribe_queue = queueStore.subscribe(() => {
+      if (current_id) {
+        doRender();
+      }
+    });
   }
 
   /**
@@ -280,7 +354,7 @@ export function createDetailPanel(mount_element, options) {
           ${depsTemplate(data)} ${workflowTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
           ${execSettingsTemplate(effective, exec_handlers)}
-          ${sessionHistoryTemplate()}
+          ${sessionHistoryTemplate(attemptsForBead(), session_handlers)}
         </div>
       </div>
     `;
@@ -307,6 +381,7 @@ export function createDetailPanel(mount_element, options) {
       current = null;
       exec_local = {};
       md_viewer.close();
+      transcript_drawer.close();
       render(html``, mount_element);
     },
     destroy() {
@@ -314,10 +389,18 @@ export function createDetailPanel(mount_element, options) {
         unsubscribe();
         unsubscribe = null;
       }
+      if (unsubscribe_queue) {
+        unsubscribe_queue();
+        unsubscribe_queue = null;
+      }
       document.removeEventListener('keydown', onKeydown);
       md_viewer.destroy();
       if (mv_mount.parentNode) {
         mv_mount.parentNode.removeChild(mv_mount);
+      }
+      transcript_drawer.destroy();
+      if (sl_mount.parentNode) {
+        sl_mount.parentNode.removeChild(sl_mount);
       }
       current_id = null;
       current = null;

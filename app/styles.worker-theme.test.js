@@ -1,0 +1,46 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import process from 'node:process';
+import { describe, expect, test } from 'vitest';
+
+/**
+ * Guards the Task 3 closeout: the Worker console CSS must consume tokens (so it
+ * respects `[data-theme='light']`), the dead v3 worker CSS must be gone, and the
+ * ≤640px responsive rules must be present.
+ */
+const CSS = readFileSync(path.resolve(process.cwd(), 'app/styles.css'), 'utf8');
+
+describe('worker console styles', () => {
+  const markerIndex = CSS.indexOf('/* ---------- Worker console');
+  const workerBlock = markerIndex >= 0 ? CSS.slice(markerIndex) : '';
+
+  test('the worker console block exists', () => {
+    expect(markerIndex).toBeGreaterThan(0);
+  });
+
+  test('consumes design tokens (no raw 6-digit hex in the worker block)', () => {
+    const hex = workerBlock.match(/#[0-9a-fA-F]{6}\b/g) || [];
+    expect(hex).toEqual([]);
+    expect(workerBlock).toContain('var(--accent-success)');
+    expect(workerBlock).toContain('var(--bg-app)');
+  });
+
+  test('the dead v3 worker CSS was removed', () => {
+    expect(CSS).not.toContain('.worker-tree');
+    expect(CSS).not.toContain('.worker-parent-row');
+    expect(CSS).not.toContain('.worker-toolbar');
+  });
+
+  test('has the ≤640px responsive rules (single-column grid + stacked lanes)', () => {
+    const mq = CSS.slice(CSS.indexOf('@media (max-width: 640px)', markerIndex));
+    expect(mq).toContain('.worker-rungrid');
+    expect(mq).toContain('grid-template-columns: 1fr');
+    expect(mq).toContain('flex-direction: column');
+  });
+
+  test('styles the transcript drawer + tile selection ring', () => {
+    expect(workerBlock).toContain('.sv__body');
+    expect(workerBlock).toContain('.rtile--sel');
+    expect(workerBlock).toContain('.detail-session');
+  });
+});

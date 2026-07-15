@@ -15,6 +15,7 @@ import { html } from 'lit-html';
 /**
  * @typedef {Object} RunningTile
  * @property {string} bead_id
+ * @property {string} attempt_id
  * @property {string} title
  * @property {'serial'|'parallel'} lane
  * @property {string|null} runner
@@ -70,20 +71,27 @@ export function bannersTemplate(state) {
 }
 
 /**
- * One running-session tile.
+ * One running-session tile. A click opens the transcript drawer (spec §5.6);
+ * the selected tile gets a `.rtile--sel` ring.
  *
  * @param {RunningTile} tile
  * @param {number} now
+ * @param {string|null} [selected_attempt]
  * @returns {import('lit-html').TemplateResult}
  */
-function runningTile(tile, now) {
+function runningTile(tile, now, selected_attempt = null) {
   const badge = tile.lane === 'serial' ? 'serial' : '∥';
   const elapsed =
     typeof tile.started_at === 'number'
       ? formatElapsed(now - tile.started_at)
       : '—';
   const meta = [tile.runner, tile.model].filter(Boolean).join(' · ');
-  return html`<div class="rtile" data-bead-id=${tile.bead_id}>
+  const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
+  return html`<div
+    class="rtile${sel ? ' rtile--sel' : ''}"
+    data-bead-id=${tile.bead_id}
+    data-attempt-id=${tile.attempt_id || ''}
+  >
     <div class="rtile__hd">
       <span class="rtile__dot" aria-hidden="true"></span>
       <span class="rtile__id">${tile.bead_id}</span>
@@ -103,13 +111,18 @@ function runningTile(tile, now) {
  *
  * @param {RunningTile[]} tiles
  * @param {number} [now]
+ * @param {string|null} [selected_attempt]
  * @returns {import('lit-html').TemplateResult}
  */
-export function runningGridTemplate(tiles, now = Date.now()) {
+export function runningGridTemplate(
+  tiles,
+  now = Date.now(),
+  selected_attempt = null
+) {
   const list = Array.isArray(tiles) ? tiles : [];
   return html`<div class="worker-rungrid" id="worker-rungrid">
     ${list.length === 0
       ? html`<div class="worker-rungrid__empty">실행 세션 없음</div>`
-      : list.map((t) => runningTile(t, now))}
+      : list.map((t) => runningTile(t, now, selected_attempt))}
   </div>`;
 }

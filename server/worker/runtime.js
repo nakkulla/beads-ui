@@ -18,6 +18,7 @@
 import { createBreaker } from './breaker.js';
 import { createLockManager } from './locks.js';
 import { createQueueStore } from './queue-store.js';
+import { createSessionLog } from './session-log.js';
 import { createTokenRegistry } from './session-tokens.js';
 
 /**
@@ -26,6 +27,7 @@ import { createTokenRegistry } from './session-tokens.js';
  * @property {ReturnType<typeof createQueueStore>} queueStore
  * @property {ReturnType<typeof createLockManager>} locks
  * @property {ReturnType<typeof createTokenRegistry>} tokens
+ * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, breaker_tripped: boolean }} status
  */
@@ -43,6 +45,10 @@ export function createWorkerRuntime() {
     isMergeBlocked: (repo) => breaker.isTripped(repo)
   });
   const tokens = createTokenRegistry();
+  // Shared session-log broker: the scheduler's `attach` persists the raw stream
+  // AND the ws `subscribe-session-log` handler follows live appends off the
+  // same instance (spec §5.6).
+  const sessionLog = createSessionLog();
   /** @type {() => number} */
   let runningCount = () => 0;
 
@@ -51,6 +57,7 @@ export function createWorkerRuntime() {
     queueStore,
     locks,
     tokens,
+    sessionLog,
     /**
      * @param {() => number} fn
      */

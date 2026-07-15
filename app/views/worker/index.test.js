@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { createSessionLogStore } from '../../data/session-log-store.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { createWorkerView } from './index.js';
@@ -357,5 +358,63 @@ describe('views/worker', () => {
     );
     expect(breaker).not.toBeNull();
     expect(breaker.textContent).toContain('/repo');
+  });
+
+  test('clicking a running tile opens the transcript drawer for its attempt', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        auto_advance: true,
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+    const sessionLogStore = createSessionLogStore();
+    // A snapshot already arrived (as it would after subscribe).
+    sessionLogStore.set('a1', [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'go' }] }
+      }
+    ]);
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      sessionLogStore,
+      transport
+    });
+
+    // No drawer until a tile is clicked.
+    expect(mount.querySelector('.sv')).toBeNull();
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="a1"]')
+    );
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    // Drawer subscribes to the session log and renders.
+    expect(transport).toHaveBeenCalledWith('subscribe-session-log', {
+      id: 'session-log:a1',
+      attempt_id: 'a1'
+    });
+    expect(mount.querySelector('.sv')).not.toBeNull();
+    expect(mount.querySelector('.sv__id')?.textContent).toContain('a1');
+    // The selected tile gets its ring.
+    expect(
+      mount
+        .querySelector('.rtile[data-attempt-id="a1"]')
+        ?.classList.contains('rtile--sel')
+    ).toBe(true);
   });
 });
