@@ -29,12 +29,12 @@
 ### 2.2 마이그레이션 절차 (쓰기 fence 강제)
 
 1. **Fence**: Worker 자동진행 OFF + 활성 세션 0 확인 → NAS 서버에 `SHOW DATABASES`로 **이전 대상 DB 전수 열거·기록** → 13307을 가리키는 repo 전수 열거(`~/Documents/GitHub/*/.beads/metadata.json` 스캔) → 모든 beads-ui/bd writer 중지 → NAS dolt sql-server 종료 → NAS 컨테이너에서 dolt 프로세스·포트·데이터 디렉토리 오픈 핸들 0 확인 → **목적지 `com.local.dolt-server`도 launchctl bootout으로 정지**(KeepAlive 재기동 차단 확인; 같은 서버의 무관 DB `ProjectVault` writer 중지·재개도 fence 항목 — 다운타임 고지 포함).
-2. **복사**: 1에서 열거한 **전체 DB**의 dolt 데이터 디렉토리를 SSH로 통째 복사(전체 히스토리 보존). data_dir 밖의 `config.yaml`·privilege/branch-control 파일이 있으면 함께. 로컬의 정체된 구 사본(`~/.local/share/dolt-server/data/{beads,dotfiles}`)은 삭제하지 않고 아카이브 디렉토리로 이동(이름 충돌 방지 + 복구 여지). 복사·아카이브 완료 후 목적지 서버 재기동.
+2. **복사**: 1에서 열거한 **전체 DB**의 dolt 데이터 디렉토리를 SSH로 통째 복사(전체 히스토리 보존). data_dir 밖의 `config.yaml`·privilege/branch-control 파일이 있으면 함께. 로컬 3307의 `beads`·`ProjectVault`는 활성 운영 DB이므로 이동·아카이브 대상이 아니다(불가침 — 다운그레이드 앵커용 cold copy만 확보). 정체된 frozen 구 사본은 `dotfiles`뿐 — 이것만 삭제하지 않고 아카이브 디렉토리로 이동(이름 충돌 방지 + 복구 여지, 사용자 승인 편차 2026-07-15). 복사·아카이브 완료 후 목적지 서버 재기동.
 3. **cutover manifest**: 변경 전 **13307을 가리키는 모든 repo**의 `.beads/metadata.json` 원본 바이트·체크섬과 대상 파일 목록을 manifest로 기록하고, all-or-restore 원복 스크립트를 먼저 작성.
 4. **패리티 검증**: `bd list --json` 건수 비교가 아니라 — **DB 전수**에 대해 dolt HEAD 해시 일치 + 전체 이슈 덤프(상태·의존성·메타데이터 포함) diff + 브랜치/스키마 목록 비교.
-5. **전환**: 1에서 열거한 모든 repo의 `.beads/metadata.json`을 `127.0.0.1:3307`로 변경 → repo별 `bd show/list --json` readback.
+5. **전환**: 1에서 열거한 모든 repo의 `.beads/metadata.json`(및 이를 override하는 `.beads/dolt-server.port` portfile)을 `127.0.0.1:3307`로 동시 변경 → repo별 `bd show/list --json` readback. 원격 writer(wallace/fisher)는 Mac Studio 접근이 가능하므로 각 서버의 dolt 터널 대상을 NAS→Mac Studio로 전환해 writer 지위를 유지한다(원격 로컬 13307 포트 유지 시 repo 설정 무변경, 사용자 승인 편차 2026-07-15).
 6. **커밋 포인트**: 로컬에서 **첫 쓰기 발생 전** 실패 시 manifest 원복 + NAS 재기동으로 복귀 가능. **첫 쓰기 후**에는 단순 복귀 금지 — 역방향 fence+복사만 허용(문서화).
-7. **해체(패리티 통과 후에만)**: `com.local.dolt-tunnel` launchd 제거 → NAS dolt 컨테이너 중지 → NAS beads-ui 인스턴스 폐기 → NAS git 미러 9개 폐기.
+7. **해체(패리티 통과 후에만)**: `com.local.dolt-tunnel` launchd 제거 → NAS 컨테이너는 유지하되 entrypoint에서 dolt·beads-ui 감독 블록만 제거(동거 서비스 11개·백업 ssh 경로 보존, 사용자 승인 편차 2026-07-15) → NAS dolt `data/`는 `data-retired-<ts>`로 rename 보존 → NAS git 미러 9개 폐기.
 
 ### 2.3 백업 (dotfiles bead 소유)
 
