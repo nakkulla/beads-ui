@@ -119,6 +119,36 @@ function detectQuestion(raw) {
 }
 
 /**
+ * Extract the shell command from a claude Bash/Shell tool_use, else null. Used
+ * by the session engine's merge-lock fail-closed guard (spec §5.2).
+ *
+ * @param {any} raw
+ * @returns {string|null}
+ */
+function extractShellCommand(raw) {
+  if (!raw || typeof raw !== 'object' || raw.type !== 'assistant') {
+    return null;
+  }
+  const content =
+    raw.message && Array.isArray(raw.message.content)
+      ? raw.message.content
+      : [];
+  for (const c of content) {
+    if (
+      c &&
+      c.type === 'tool_use' &&
+      typeof c.name === 'string' &&
+      /^(bash|shell)$/i.test(c.name) &&
+      c.input &&
+      typeof c.input.command === 'string'
+    ) {
+      return c.input.command;
+    }
+  }
+  return null;
+}
+
+/**
  * Compute the claude 4-rule success verdict.
  *
  * @param {{ raw: any[], exit: number|null, blocked: boolean }} ctx
@@ -169,11 +199,17 @@ export function claudeSpec(options = {}) {
         args.push('--effort', String(s.effort));
       }
       args.push('--permission-mode', 'bypassPermissions');
-      args.push(applyPreamble(promptFor(bead), { fast_track: !!s.fast_track }));
+      args.push(
+        applyPreamble(promptFor(bead), {
+          fast_track: !!s.fast_track,
+          merge_lock: s.merge_lock
+        })
+      );
       return { command: 'claude', args, env: routing_env };
     },
     normalize,
     detectQuestion,
+    extractShellCommand,
     verdict
   };
 }

@@ -43,6 +43,7 @@ import {
   handleSubscribeWorkerQueue,
   handleUnsubscribeSessionLog,
   handleUnsubscribeWorkerQueue,
+  handleWorkerAttemptStop,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
@@ -80,14 +81,20 @@ let DB_WATCHER = null;
  * not by this check, so they are allowed here. The auth token is the real gate;
  * this Origin check is defense-in-depth against browser CSRF-style hijacks.
  *
- * Allowed origins come from `BDUI_ALLOWED_ORIGINS` (comma-separated exact
- * origins, e.g. `https://mong-nas.<tailnet>.ts.net`). When unset, only loopback
- * dev origins are permitted (fail-closed for remote origins).
+ * Acceptance is (in order): SAME-ORIGIN (the Origin's host:port equals the
+ * request `Host` — the page was served by THIS very server, so it is by
+ * definition not a cross-site hijack), then the `BDUI_ALLOWED_ORIGINS` allowlist
+ * (comma-separated exact origins, e.g. `http://100.122.98.8:3000`), then a
+ * loopback-only default when no allowlist is configured (fail-closed for remote
+ * origins). Same-origin acceptance is what lets the tailscale-IP deployment work
+ * without any allowlist entry: the browser loads `http://<ip>:<port>` and opens
+ * its WS to the same `<ip>:<port>`.
  *
  * @param {string | undefined} origin - The request `Origin` header value.
+ * @param {string | undefined} [host] - The request `Host` header (host:port).
  * @returns {boolean}
  */
-export function isOriginAllowed(origin) {
+export function isOriginAllowed(origin, host) {
   // Header absent → non-browser client; not the browser-hijack threat.
   if (origin === undefined) {
     return true;
@@ -95,6 +102,16 @@ export function isOriginAllowed(origin) {
   // Present but empty or the sandboxed "null" origin → reject.
   if (typeof origin !== 'string' || origin.length === 0 || origin === 'null') {
     return false;
+  }
+  // Same-origin: the Origin's authority (host:port) equals the request Host.
+  if (typeof host === 'string' && host.length > 0) {
+    try {
+      if (new URL(origin).host === host) {
+        return true;
+      }
+    } catch {
+      // Fall through — a malformed Origin is handled by the checks below.
+    }
   }
   const allowed = (process.env.BDUI_ALLOWED_ORIGINS || '')
     .split(',')
@@ -164,7 +181,11 @@ export function attachWsServer(http_server, options = {}) {
     server: http_server,
     path: ws_path,
     verifyClient: (info, cb) => {
-      if (isOriginAllowed(info.origin)) {
+      // Pass the request Host so a same-origin browser socket (page served by
+      // this very server, e.g. the tailscale-IP deployment) is accepted.
+      const host =
+        info.req && info.req.headers ? info.req.headers.host : undefined;
+      if (isOriginAllowed(info.origin, host)) {
         cb(true);
         return;
       }
@@ -451,6 +472,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-remove':
       handleWorkerQueueRemove(ws, req);
+      return;
+    case 'worker-attempt-stop':
+      await handleWorkerAttemptStop(ws, req);
       return;
     case 'subscribe-session-log':
       handleSubscribeSessionLog(ws, req);

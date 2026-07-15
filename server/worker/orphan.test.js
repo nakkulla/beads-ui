@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createBreaker } from './breaker.js';
 import { createOrphanDetector } from './orphan.js';
 import { createQueueStore } from './queue-store.js';
@@ -95,6 +95,42 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
     });
     expect(det.detect(WS)).toHaveLength(1);
     expect(store.snapshot(WS).attempts['att-1'].status).toBe('orphaned');
+  });
+
+  test('orphaning reverts workflow_mode: prior=null → unsetMetadata [F6]', () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: null });
+    const bd = {
+      setMetadata: vi.fn(async () => {}),
+      unsetMetadata: vi.fn(async () => {})
+    };
+    const det = createOrphanDetector({
+      store,
+      breaker: createBreaker(),
+      bd,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    det.detect(WS);
+    expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'workflow_mode');
+    expect(bd.setMetadata).not.toHaveBeenCalled();
+  });
+
+  test('orphaning reverts workflow_mode: prior set → setMetadata back [F6]', () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: 'x' });
+    const bd = {
+      setMetadata: vi.fn(async () => {}),
+      unsetMetadata: vi.fn(async () => {})
+    };
+    const det = createOrphanDetector({
+      store,
+      breaker: createBreaker(),
+      bd,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    det.detect(WS);
+    expect(bd.setMetadata).toHaveBeenCalledWith('UI-1', 'workflow_mode', 'x');
+    expect(bd.unsetMetadata).not.toHaveBeenCalled();
   });
 
   test('non-running attempts are ignored', () => {

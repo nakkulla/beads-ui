@@ -23,7 +23,10 @@
  *
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
+import { debug } from '../logging.js';
 import { assertRunnerAllowed } from './runner/index.js';
+
+const log = debug('worker:scheduler');
 
 /**
  * @typedef {Object} BeadSnapshot
@@ -52,10 +55,10 @@ import { assertRunnerAllowed } from './runner/index.js';
  * }} bd
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any> }} worktree
  * @property {{ issue: (attempt_id: string, meta: { repo: string, bead_id: string }) => string, revoke: (attempt_id: string) => void }} tokens
- * @property {{ verifyMerge: (i: { repo: string, target_base: string, merge_sha: string, bead_id: string }) => Promise<{ ok: boolean, reason: string }> }} verify
+ * @property {{ verifyMerge: (i: { repo: string, target_base: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, work_tip?: string|null }> }} verify
  * @property {ReturnType<typeof import('./breaker.js').createBreaker>} breaker
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void }} sessionLog
- * @property {(repo: string, target_base: string) => Promise<string>} resolveMergeSha
+ * @property {number | (() => number)} [port] - Server port for the merge-lock endpoint injected into the preamble.
  * @property {() => number} [now]
  * @property {number} [parallel_slots]
  * @property {(bead_id: string) => string} [makeAttemptId]
@@ -67,6 +70,7 @@ import { assertRunnerAllowed } from './runner/index.js';
  * @param {SchedulerDeps} deps
  * @returns {{
  *   tick: (workspace: string) => Promise<void>,
+ *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   runningCount: () => number,
  *   runningBeads: () => string[],
  *   isRunning: (bead_id: string) => boolean
@@ -76,6 +80,17 @@ export function createScheduler(deps) {
   const now = deps.now || (() => Date.now());
   const parallel_slots =
     typeof deps.parallel_slots === 'number' ? deps.parallel_slots : 2;
+  /**
+   * Resolve the live server port for the merge-lock endpoint injected into each
+   * session's preamble. Accepts a number or a late-bound getter (the port is
+   * only known after the server begins listening).
+   *
+   * @returns {number}
+   */
+  const resolvePort =
+    typeof deps.port === 'function'
+      ? deps.port
+      : () => (typeof deps.port === 'number' ? deps.port : 0);
   let attempt_seq = 0;
   const makeAttemptId =
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
@@ -83,11 +98,19 @@ export function createScheduler(deps) {
   /**
    * Live sessions keyed by attempt_id.
    *
-   * @type {Map<string, { bead_id: string, repo: string, lane: 'serial'|'parallel', handle: RunnerHandle }>}
+   * @type {Map<string, { bead_id: string, repo: string, lane: 'serial'|'parallel', handle: RunnerHandle, prior: string|null }>}
    */
   const running = new Map();
   /** Beads currently claimed (dispatching or running) — prevents double launch. @type {Set<string>} */
   const claimed = new Set();
+  /**
+   * Attempts terminated by an explicit stop (■). Their `done` promise still
+   * resolves later; `onSessionDone` must NOT re-run the failure path for them
+   * (no breaker trip, no double revert) — the stop already finalized them.
+   *
+   * @type {Set<string>}
+   */
+  const stopped = new Set();
 
   /**
    * @param {'serial'|'parallel'} lane
@@ -166,6 +189,14 @@ export function createScheduler(deps) {
     running.delete(attempt_id);
     claimed.delete(bead_id);
     deps.tokens.revoke(attempt_id);
+
+    // An explicit stop already finalized this attempt (failed + mode reverted);
+    // the late `done` resolution must not re-run the failure path.
+    if (stopped.has(attempt_id)) {
+      stopped.delete(attempt_id);
+      return;
+    }
+
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: { exit: verdict.exit }
@@ -186,22 +217,18 @@ export function createScheduler(deps) {
       return;
     }
 
-    // Independent verification — session exit 0 is NOT enough (spec §5.2).
-    let merge_sha = '';
-    try {
-      merge_sha = await deps.resolveMergeSha(snap.repo, snap.target_base);
-    } catch {
-      merge_sha = '';
-    }
+    // Independent verification — session exit 0 is NOT enough (spec §5.2). The
+    // verifier resolves the session's WORK tip (refs/heads/<bead_id>) itself and
+    // checks it actually landed in the base + bd reads `closed` (fail-closed on a
+    // missing branch). It returns the resolved work tip for the attempt record.
     const vr = await deps.verify.verifyMerge({
       repo: snap.repo,
       target_base: snap.target_base,
-      merge_sha,
       bead_id
     });
     deps.store.updateAttempt(workspace, {
       attempt_id,
-      patch: { verify_result: vr, merge_sha }
+      patch: { verify_result: vr, merge_sha: vr.work_tip ?? null }
     });
 
     if (vr.ok) {
@@ -279,8 +306,52 @@ export function createScheduler(deps) {
     }
 
     // Record + readback workflow_mode=fast_track (double-delivered with prompt).
-    await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
-    await deps.bd.readMetadata(bead_id, 'workflow_mode');
+    // The set AND its confirming readback are contained: a bd failure or a
+    // readback that does not echo `fast_track` fails THIS dispatch only (records
+    // a failed attempt, reverts the mode, releases the claim) — it never rejects
+    // out of tick's Promise.all, and never trips the breaker or pauses siblings
+    // (spec §5.2).
+    let fast_track_ok = false;
+    try {
+      await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
+      const readback = await deps.bd.readMetadata(bead_id, 'workflow_mode');
+      fast_track_ok = readback === 'fast_track';
+      if (!fast_track_ok) {
+        log(
+          'workflow_mode readback mismatch for %s: expected fast_track, got %o',
+          bead_id,
+          readback
+        );
+      }
+    } catch (err) {
+      log('workflow_mode set/readback failed for %s: %o', bead_id, err);
+      fast_track_ok = false;
+    }
+    if (!fast_track_ok) {
+      deps.store.appendAttempt(workspace, {
+        expected_revision: deps.store.snapshot(workspace).revision,
+        attempt: { attempt_id, bead_id }
+      });
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          repo: snap.repo,
+          target_base: snap.target_base,
+          base_oid: wt.base_oid,
+          workflow_mode_prior: prior,
+          status: 'failed',
+          cause: 'workflow_mode_record_failed',
+          finished_at: now()
+        }
+      });
+      try {
+        await revertWorkflowMode(bead_id, prior);
+      } catch {
+        // Best-effort: bd may be down; the failed record already reflects it.
+      }
+      claimed.delete(bead_id);
+      return;
+    }
 
     const token = deps.tokens.issue(attempt_id, { repo: snap.repo, bead_id });
     const runner = deps.makeRunner(runner_name);
@@ -300,7 +371,14 @@ export function createScheduler(deps) {
           model: snap.model,
           effort: snap.effort,
           fast_track: true,
-          env: { BDUI_WORKER_TOKEN: token }
+          env: { BDUI_WORKER_TOKEN: token },
+          // Inject the concrete merge-lock endpoint params so the session's
+          // preamble acquires the (repo, target_base) lock before merging (F3).
+          merge_lock: {
+            port: resolvePort(),
+            repo: snap.repo,
+            target_base: snap.target_base
+          }
         }
       );
     } catch {
@@ -332,7 +410,7 @@ export function createScheduler(deps) {
     });
 
     deps.sessionLog.attach(workspace, attempt_id, handle.events);
-    running.set(attempt_id, { bead_id, repo: snap.repo, lane, handle });
+    running.set(attempt_id, { bead_id, repo: snap.repo, lane, handle, prior });
 
     handle.done.then((verdict) =>
       onSessionDone(workspace, attempt_id, bead_id, snap, prior, verdict)
@@ -405,8 +483,46 @@ export function createScheduler(deps) {
     );
   }
 
+  /**
+   * Explicitly stop a running attempt (tile ■). Group-kills the session tree,
+   * marks the attempt failed, revokes its token (which releases any held merge
+   * lock via the token-revoke wiring, F4), and reverts workflow_mode to the
+   * pre-launch value. The breaker is NOT tripped and auto_advance is untouched —
+   * this is a user halt of ONE attempt, not a repo failure (spec §5.2).
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<boolean>} True when a live attempt was stopped.
+   */
+  async function stop(workspace, attempt_id) {
+    const entry = running.get(attempt_id);
+    if (!entry) {
+      return false;
+    }
+    stopped.add(attempt_id);
+    try {
+      entry.handle.kill('SIGTERM');
+    } catch {
+      // Best-effort; the process may already be gone.
+    }
+    running.delete(attempt_id);
+    claimed.delete(entry.bead_id);
+    deps.tokens.revoke(attempt_id);
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { status: 'failed', cause: 'stopped', finished_at: now() }
+    });
+    try {
+      await revertWorkflowMode(entry.bead_id, entry.prior);
+    } catch {
+      // Best-effort: bd may be down; the failed record already reflects it.
+    }
+    return true;
+  }
+
   return {
     tick,
+    stop,
     runningCount() {
       return running.size;
     },

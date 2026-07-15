@@ -74,7 +74,7 @@ function makeFakeRunner() {
     spawnOrder,
     /**
      * @param {string} bead_id
-     * @param {Partial<{ success: boolean, reason: string, exit: number, blocked: boolean }>} v
+     * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean }>} v
      */
     finish(bead_id, v) {
       const rec = byBead.get(bead_id);
@@ -92,6 +92,9 @@ function makeFakeRunner() {
     },
     settingsFor(/** @type {string} */ bead_id) {
       return byBead.get(bead_id)?.settings;
+    },
+    killFor(/** @type {string} */ bead_id) {
+      return byBead.get(bead_id)?.handle.kill;
     }
   };
 }
@@ -134,6 +137,11 @@ function makeFakeBd(config) {
       /** @type {string} */ key,
       /** @type {string} */ value
     ) {
+      // A bead may be configured to make its workflow_mode set throw (F9).
+      const cfg = /** @type {any} */ (config[bead_id]);
+      if (cfg && cfg.throwOnSet && key === 'workflow_mode') {
+        throw new Error(`bd set-metadata failed for ${bead_id}`);
+      }
       calls.push({ method: 'setMetadata', bead_id, key, value });
     },
     async unsetMetadata(
@@ -170,7 +178,8 @@ function setup(opts) {
   const verify = {
     verifyMerge: vi.fn(async () => ({
       ok: opts.verifyOk ?? true,
-      reason: (opts.verifyOk ?? true) ? 'ok' : 'base_not_ancestor'
+      reason: (opts.verifyOk ?? true) ? 'ok' : 'work_not_in_base',
+      work_tip: 'work-tip-sha'
     }))
   };
   const worktree = {
@@ -191,7 +200,6 @@ function setup(opts) {
     verify,
     breaker,
     sessionLog,
-    resolveMergeSha: vi.fn(async () => 'merge-sha'),
     parallel_slots: opts.slots ?? 2,
     now: () => 1000
   });
@@ -257,6 +265,65 @@ describe('scheduler slot policy', () => {
     await env.scheduler.tick(WS);
     expect(env.scheduler.isRunning('S1')).toBe(false);
     expect(env.scheduler.isRunning('S2')).toBe(true);
+  });
+});
+
+describe('scheduler stop (■ tile)', () => {
+  test('stop group-kills the attempt, fails it, reverts workflow_mode, no breaker', async () => {
+    const breaker = createBreaker();
+    const env = setup({ config: { S1: {} }, slots: 1, breaker });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+
+    const kill = env.runner.killFor('S1');
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    const stopped = await env.scheduler.stop(WS, attempt_id);
+    expect(stopped).toBe(true);
+
+    // The runner handle was group-killed.
+    expect(kill).toHaveBeenCalledWith('SIGTERM');
+
+    // Attempt marked failed (cause 'stopped'); no longer running.
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts[attempt_id].status).toBe('failed');
+    expect(snap.attempts[attempt_id].cause).toBe('stopped');
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    // workflow_mode reverted (prior unset → unsetMetadata).
+    expect(
+      env.bd.calls.some(
+        (c) =>
+          c.method === 'unsetMetadata' &&
+          c.bead_id === 'S1' &&
+          c.key === 'workflow_mode'
+      )
+    ).toBe(true);
+    // A user stop does NOT trip the breaker.
+    expect(breaker.isTripped('/repo')).toBe(false);
+    // The token was revoked.
+    expect(env.tokens.size()).toBe(0);
+  });
+
+  test('a late done() after stop does not re-fail or trip the breaker', async () => {
+    const breaker = createBreaker();
+    const env = setup({ config: { S1: {} }, slots: 1, breaker });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    await env.scheduler.stop(WS, attempt_id);
+    // The killed session's done resolves late (failure verdict) — must be inert.
+    env.runner.finish('S1', { success: false, reason: 'killed', exit: null });
+    await flush();
+    await flush();
+
+    expect(breaker.isTripped('/repo')).toBe(false);
+    expect(env.store.snapshot(WS).attempts[attempt_id].cause).toBe('stopped');
+  });
+
+  test('stop returns false for an unknown attempt', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    expect(await env.scheduler.stop(WS, 'nope')).toBe(false);
   });
 });
 
@@ -344,7 +411,7 @@ describe('scheduler happy path (dispatch → merge-gate → verify → Done)', (
     const snap = env.store.snapshot(WS);
     expect(snap.done.map((e) => e.bead_id)).toContain('S1');
     expect(snap.attempts[attempt_id].status).toBe('done');
-    expect(snap.attempts[attempt_id].merge_sha).toBe('merge-sha');
+    expect(snap.attempts[attempt_id].merge_sha).toBe('work-tip-sha');
     // Bead closed → workflow_mode NOT reverted.
     expect(env.bd.calls.some((c) => c.method === 'unsetMetadata')).toBe(false);
     // Session token revoked after completion.
@@ -403,6 +470,42 @@ describe('scheduler failure (breaker + workflow_mode revert + repo block)', () =
 
     // Manual resume: resetting the breaker unblocks the repo → P1 launches.
     breaker.reset('/repo');
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.isRunning('P1')).toBe(true);
+  });
+
+  test('bd set-metadata failure fails THAT dispatch only (no unhandled rejection, siblings unaffected) [F9]', async () => {
+    const breaker = createBreaker();
+    const env = setup({
+      config: { S1: { throwOnSet: true }, P1: {} },
+      slots: 1,
+      breaker
+    });
+    seedQueue(env.store, ['S1'], []);
+
+    // tick must resolve (the bd failure is contained, not thrown out of it).
+    await expect(env.scheduler.tick(WS)).resolves.toBeUndefined();
+
+    // S1 never launched a session and is recorded as a failed attempt.
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    const s1 = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts).find(
+        (/** @type {any} */ a) => a.bead_id === 'S1'
+      )
+    );
+    expect(s1.status).toBe('failed');
+    expect(s1.cause).toBe('workflow_mode_record_failed');
+
+    // The breaker is NOT tripped and auto_advance stays on → siblings unaffected.
+    expect(breaker.isTripped('/repo')).toBe(false);
+    expect(env.store.snapshot(WS).auto_advance).toBe(true);
+
+    // A subsequent normal dispatch still runs (the scheduler was not poisoned).
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'P1',
+      lane: 'parallel'
+    });
     await env.scheduler.tick(WS);
     expect(env.scheduler.isRunning('P1')).toBe(true);
   });

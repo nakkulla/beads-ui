@@ -34,10 +34,10 @@ function bearer(req) {
  *
  * @param {{
  *   locks: { acquireMerge: (repo: string, target_base: string) => Promise<() => void> },
- *   tokens: { verify: (token: unknown) => { attempt_id: string, repo: string, bead_id: string } | null },
+ *   tokens: { verify: (token: unknown) => { attempt_id: string, repo: string, bead_id: string } | null, onRevoke?: (fn: (token: string) => void) => (() => void) },
  *   breaker: { isTripped: (repo: string) => boolean }
  * }} deps
- * @returns {Router}
+ * @returns {Router & { releaseAllForToken: (token: string) => boolean, isHeldBy: (token: string) => boolean }}
  */
 export function createMergeLockRouter(deps) {
   const router = express.Router();
@@ -50,6 +50,34 @@ export function createMergeLockRouter(deps) {
    * @type {Map<string, { release: () => void, repo: string, target_base: string }>}
    */
   const held = new Map();
+
+  /**
+   * Release EVERY merge lock a session token still holds (F4). Invoked when the
+   * token is revoked (session terminated / stopped / orphaned) so a dead session
+   * can never keep the (repo, target_base) lock forever. Idempotent — a session
+   * that already released via the route leaves nothing to free.
+   *
+   * @param {string} token
+   * @returns {boolean} True when a held lock was released.
+   */
+  function releaseAllForToken(token) {
+    const h = held.get(token);
+    if (!h) {
+      return false;
+    }
+    try {
+      h.release();
+    } catch {
+      // Best-effort; the lock chain still advances on the next acquire.
+    }
+    held.delete(token);
+    return true;
+  }
+
+  // Wire token revocation → lock release so termination frees the merge lock.
+  if (typeof deps.tokens.onRevoke === 'function') {
+    deps.tokens.onRevoke((token) => releaseAllForToken(token));
+  }
 
   router.post('/', async (req, res) => {
     const token = bearer(req);
@@ -104,5 +132,14 @@ export function createMergeLockRouter(deps) {
     }
   });
 
-  return router;
+  // Expose the token-scoped release + a held-by-token query so the runtime's
+  // merge-lock ledger (read by the session-side merge guard, F3) and the
+  // scheduler/tests can inspect + free locks directly (release is also invoked
+  // via the onRevoke wiring above).
+  /** @type {any} */ (router).releaseAllForToken = releaseAllForToken;
+  /** @type {any} */ (router).isHeldBy = (/** @type {string} */ token) =>
+    held.has(token);
+  return /** @type {Router & { releaseAllForToken: (token: string) => boolean, isHeldBy: (token: string) => boolean }} */ (
+    router
+  );
 }

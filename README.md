@@ -60,8 +60,14 @@ token = "a-long-random-secret"
 
 When a token is configured, the UI prompts for it once and stores it locally,
 then sends it as the first WebSocket frame. `/healthz` and the static assets
-stay unauthenticated. A same-origin / allowlisted `Origin`
-(`BDUI_ALLOWED_ORIGINS`) is additionally required for browser sockets.
+stay unauthenticated. As defense-in-depth against browser cross-site WS hijacks,
+browser sockets must additionally present an acceptable `Origin`: a
+**same-origin** request (the `Origin`'s host:port equals the request `Host` —
+i.e. the page was served by this same server, which covers the tailscale-IP
+deployment) is accepted, as is any origin listed in `BDUI_ALLOWED_ORIGINS`
+(comma-separated). With no allowlist configured, only loopback dev origins are
+accepted. Non-browser clients (no `Origin` header) are governed by network
+isolation, not this check.
 
 ## Data topology
 

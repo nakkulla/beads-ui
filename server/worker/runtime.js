@@ -28,6 +28,8 @@ import { createTokenRegistry } from './session-tokens.js';
  * @property {ReturnType<typeof createLockManager>} locks
  * @property {ReturnType<typeof createTokenRegistry>} tokens
  * @property {ReturnType<typeof createSessionLog>} sessionLog
+ * @property {{ isHeldBy: (token: string) => boolean, releaseAllForToken: (token: string) => boolean } | null} mergeLock
+ * @property {(ledger: { isHeldBy: (token: string) => boolean, releaseAllForToken: (token: string) => boolean }) => void} setMergeLock
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, breaker_tripped: boolean }} status
  */
@@ -51,6 +53,14 @@ export function createWorkerRuntime() {
   const sessionLog = createSessionLog();
   /** @type {() => number} */
   let runningCount = () => 0;
+  /**
+   * The merge-lock ledger (the merge-lock route's held-by-token accessor). The
+   * session-side merge guard reads `isHeldBy(token)` through this; wired by the
+   * app when the merge-lock router is mounted (spec §5.2, F3).
+   *
+   * @type {{ isHeldBy: (token: string) => boolean, releaseAllForToken: (token: string) => boolean } | null}
+   */
+  let mergeLock = null;
 
   return {
     breaker,
@@ -58,6 +68,15 @@ export function createWorkerRuntime() {
     locks,
     tokens,
     sessionLog,
+    get mergeLock() {
+      return mergeLock;
+    },
+    /**
+     * @param {{ isHeldBy: (token: string) => boolean, releaseAllForToken: (token: string) => boolean }} ledger
+     */
+    setMergeLock(ledger) {
+      mergeLock = ledger || null;
+    },
     /**
      * @param {() => number} fn
      */

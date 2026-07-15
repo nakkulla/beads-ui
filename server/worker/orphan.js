@@ -8,9 +8,13 @@
  * AND a matching start time exists (attempt_id + PID + start-time). A recycled
  * PID (same number, different start time) is an orphan.
  *
- * On an orphan: mark the attempt Failed/orphaned and trip the repo's breaker
- * with a banner. The worktree is NOT deleted — cleanup ownership is unclear, so
- * we leave it and surface the banner (the stop-on-unclear-ownership principle).
+ * On an orphan: mark the attempt Failed/orphaned, trip the repo's breaker with a
+ * banner, AND revert the bead's `workflow_mode` to the value snapshotted before
+ * the dead session launched (unset when it was originally absent) — otherwise a
+ * stray `fast_track` left by the crashed session would silently switch a later
+ * manual session to unattended (spec §5.2). The worktree is NOT deleted —
+ * cleanup ownership is unclear, so we leave it and surface the banner (the
+ * stop-on-unclear-ownership principle).
  */
 
 /**
@@ -26,6 +30,7 @@
  *   store: any,
  *   breaker: { trip: (repo: string, info: { bead_id: string, cause: string }) => unknown },
  *   probePid: (pid: number|null) => PidProbe,
+ *   bd?: { setMetadata: (bead_id: string, key: string, value: string) => Promise<void>, unsetMetadata: (bead_id: string, key: string) => Promise<void> },
  *   now?: () => number,
  *   tolerance_ms?: number
  * }} deps
@@ -35,6 +40,26 @@ export function createOrphanDetector(deps) {
   const now = deps.now || (() => Date.now());
   const tolerance =
     typeof deps.tolerance_ms === 'number' ? deps.tolerance_ms : 2000;
+
+  /**
+   * Revert workflow_mode to the pre-launch value (unset when originally absent),
+   * fire-and-forget so a bd failure never blocks orphan reaping.
+   *
+   * @param {string} bead_id
+   * @param {string|null} prior
+   */
+  function revertWorkflowMode(bead_id, prior) {
+    if (!deps.bd) {
+      return;
+    }
+    const op =
+      prior == null
+        ? deps.bd.unsetMetadata(bead_id, 'workflow_mode')
+        : deps.bd.setMetadata(bead_id, 'workflow_mode', prior);
+    Promise.resolve(op).catch(() => {
+      // Best-effort: the orphan is already recorded + breaker tripped.
+    });
+  }
 
   /**
    * @param {any} attempt
@@ -83,6 +108,8 @@ export function createOrphanDetector(deps) {
         if (a.repo) {
           deps.breaker.trip(a.repo, { bead_id: a.bead_id, cause: 'orphan' });
         }
+        // Revert the mode the dead session recorded (spec §5.2).
+        revertWorkflowMode(a.bead_id, a.workflow_mode_prior ?? null);
         // Worktree is intentionally NOT removed (ownership unclear → banner).
         orphans.push({ attempt_id, bead_id: a.bead_id, repo: a.repo ?? null });
       }

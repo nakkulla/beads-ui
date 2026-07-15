@@ -106,6 +106,37 @@ function detectQuestion(raw) {
 }
 
 /**
+ * Extract the shell command from a codex command/exec item, else null
+ * (best-effort — codex command-item shapes vary). Feeds the session engine's
+ * merge-lock fail-closed guard (spec §5.2).
+ *
+ * @param {any} raw
+ * @returns {string|null}
+ */
+function extractShellCommand(raw) {
+  if (!raw || typeof raw !== 'object' || raw.type !== 'item.completed') {
+    return null;
+  }
+  const item = raw.item && typeof raw.item === 'object' ? raw.item : null;
+  if (!item || typeof item.type !== 'string') {
+    return null;
+  }
+  if (!/command|exec|shell/i.test(item.type)) {
+    return null;
+  }
+  if (typeof item.command === 'string') {
+    return item.command;
+  }
+  if (Array.isArray(item.command)) {
+    return item.command.join(' ');
+  }
+  if (typeof item.text === 'string') {
+    return item.text;
+  }
+  return null;
+}
+
+/**
  * @param {{ raw: any[], exit: number|null, blocked: boolean }} ctx
  * @returns {{ success: boolean, reason: string }}
  */
@@ -144,11 +175,17 @@ export function codexSpec() {
         args.push('-c', `model_reasoning_effort=${s.effort}`);
       }
       args.push('--skip-git-repo-check');
-      args.push(applyPreamble(promptFor(bead), { fast_track: !!s.fast_track }));
+      args.push(
+        applyPreamble(promptFor(bead), {
+          fast_track: !!s.fast_track,
+          merge_lock: s.merge_lock
+        })
+      );
       return { command: 'codex', args };
     },
     normalize,
     detectQuestion,
+    extractShellCommand,
     verdict
   };
 }

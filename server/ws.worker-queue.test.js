@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  __registerWorkerAttachmentForTest,
+  __resetWorkerAttachmentsForTest
+} from './worker/attach.js';
 import {
   __resetRegistriesForTest,
   __resetWorkerQueueForTest,
@@ -83,6 +87,7 @@ afterEach(() => {
   delete process.env.XDG_STATE_HOME;
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
+  __resetWorkerAttachmentsForTest();
   try {
     fs.rmSync(tmp_state, { recursive: true, force: true });
   } catch {
@@ -197,7 +202,7 @@ describe('ws worker-queue channel', () => {
     ]);
   });
 
-  test('toggle persists auto_advance and pushes (no execution dispatched)', async () => {
+  test('toggle persists auto_advance and pushes', async () => {
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     sock.sent = [];
@@ -208,5 +213,46 @@ describe('ws worker-queue channel', () => {
     });
     const snaps = queueSnapshots(sock);
     expect(snaps.at(-1).auto_advance).toBe(true);
+  });
+
+  test('toggle ON kicks the live tick; worker-attempt-stop halts an attempt [F1]', async () => {
+    const tick = vi.fn(async () => {});
+    const stop = vi.fn(async () => true);
+    // A registered (fake) attachment for the connection workspace (process.cwd()).
+    __registerWorkerAttachmentForTest(process.cwd(), {
+      // @ts-expect-error minimal fake attachment
+      scheduler: { tick, stop }
+    });
+
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-queue-toggle', {
+      on: true,
+      expected_revision: 0
+    });
+    // The toggle handler kicked the dispatch loop for this workspace.
+    expect(tick).toHaveBeenCalledWith(process.cwd());
+
+    await send(sock, 'm2', 'worker-attempt-stop', { attempt_id: 'att-1' });
+    expect(stop).toHaveBeenCalledWith(process.cwd(), 'att-1');
+    const reply = replyFor(sock, 'm2');
+    expect(reply.ok).toBe(true);
+    expect(reply.payload.stopped).toBe(true);
+  });
+
+  test('toggle OFF does not kick a tick', async () => {
+    const tick = vi.fn(async () => {});
+    __registerWorkerAttachmentForTest(process.cwd(), {
+      // @ts-expect-error minimal fake attachment
+      scheduler: { tick, stop: vi.fn() }
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'm1', 'worker-queue-toggle', {
+      on: false,
+      expected_revision: 0
+    });
+    expect(tick).not.toHaveBeenCalled();
   });
 });

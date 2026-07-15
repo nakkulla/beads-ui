@@ -141,10 +141,37 @@ function makeFakeBd(config) {
 }
 
 /**
+ * Simulate a session's real git work: create the per-session work branch
+ * `refs/heads/<bead_id>` off `main` with a commit, and (when `merge`) land it
+ * into `main` so the INDEPENDENT verifier's ancestry check operates on the true
+ * work tip. When `merge` is false the branch stays UNMERGED, exercising the
+ * fail-closed path (session claims success but never landed on base).
+ *
+ * @param {string} bead_id
+ * @param {boolean} merge
+ * @returns {Promise<string>} The resolved work-branch tip sha.
+ */
+async function landWorkBranch(bead_id, merge) {
+  const wt = path.join(repo_dir, '.wt', bead_id);
+  await gitRun(['worktree', 'add', '-b', bead_id, wt, 'main'], {
+    cwd: repo_dir
+  });
+  fs.writeFileSync(path.join(wt, `${bead_id}.txt`), 'work\n');
+  await gitRun(['add', '.'], { cwd: wt });
+  await gitRun(['commit', '-q', '-m', `work ${bead_id}`], { cwd: wt });
+  if (merge) {
+    await gitRun(['merge', '--no-ff', '--no-edit', bead_id], { cwd: repo_dir });
+  }
+  await gitRun(['worktree', 'remove', '--force', wt], { cwd: repo_dir });
+  const rev = await gitRun(['rev-parse', bead_id], { cwd: repo_dir });
+  return rev.stdout.trim();
+}
+
+/**
  * Build a scheduler wired to the shared runtime + real runner/verify. The fake
  * runner replays a real fixture through the REAL `runSession` engine.
  *
- * @param {{ fixture: string, exit?: number, config: Record<string, any>, bdStatus?: string }} opts
+ * @param {{ fixture: string, exit?: number, config: Record<string, any>, bdStatus?: string, landWork?: boolean }} opts
  */
 function buildSystem(opts) {
   const runtime = createWorkerRuntime();
@@ -153,12 +180,17 @@ function buildSystem(opts) {
     gitRun,
     bdShow: async () => ({ status: opts.bdStatus ?? 'closed' })
   });
+  const land = opts.landWork ?? true;
   const worktree = {
-    add: async (/** @type {{ bead_id: string }} */ { bead_id }) => ({
-      path: path.join(repo_dir, '.wt', bead_id),
-      branch: bead_id,
-      base_oid: `base-${bead_id}`
-    }),
+    add: async (/** @type {{ bead_id: string }} */ { bead_id }) => {
+      // Real branch + (optional) merge so verify's ancestry check is genuine.
+      const base_oid = await landWorkBranch(bead_id, land);
+      return {
+        path: path.join(repo_dir, '.wt', bead_id),
+        branch: bead_id,
+        base_oid
+      };
+    },
     remove: async () => ({ code: 0 })
   };
   const scheduler = createScheduler({
@@ -177,10 +209,6 @@ function buildSystem(opts) {
     verify,
     breaker: runtime.breaker,
     sessionLog: runtime.sessionLog,
-    resolveMergeSha: async (repo, base) => {
-      const r = await gitRun(['rev-parse', base], { cwd: repo });
-      return r.stdout.trim();
-    },
     parallel_slots: 2
   });
   // Wire the runtime attach seam Phase 10 deferred.
@@ -338,6 +366,44 @@ describe('worker e2e — failure injection trips the breaker', () => {
   });
 });
 
+describe('worker e2e — a session that never merged fails verification (fail-closed)', () => {
+  test('success verdict but UNMERGED work branch → verify fails → breaker trips', async () => {
+    // The session replays a SUCCESS fixture (verdict success), but the work
+    // branch is never merged into main, so the INDEPENDENT ancestry check fails.
+    const { runtime, bd, scheduler } = buildSystem({
+      fixture: 'claude-success.jsonl',
+      config: { S1: { runner: 'claude' } },
+      landWork: false
+    });
+    seedQueue(runtime.queueStore, ['S1'], []);
+
+    await scheduler.tick(WS);
+    expect(scheduler.isRunning('S1')).toBe(true);
+
+    // Session succeeds, but verify (work tip NOT ancestor of base) fails closed →
+    // breaker trips, auto_advance off, workflow_mode reverted, attempt failed.
+    await waitFor(() => runtime.breaker.isTripped(repo_dir));
+    expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(false);
+
+    const attempt = /** @type {any} */ (
+      Object.values(runtime.queueStore.snapshot(WS).attempts).find(
+        (/** @type {any} */ a) => a.bead_id === 'S1'
+      )
+    );
+    expect(attempt.status).toBe('failed');
+    expect(attempt.verify_result.ok).toBe(false);
+    expect(attempt.verify_result.reason).toBe('work_not_in_base');
+    // S1 was NOT moved to Done.
+    expect(
+      runtime.queueStore.snapshot(WS).done.map((e) => e.bead_id)
+    ).not.toContain('S1');
+    // workflow_mode reverted (prior unset → unsetMetadata).
+    expect(
+      bd.calls.some((c) => c.method === 'unsetMetadata' && c.bead_id === 'S1')
+    ).toBe(true);
+  });
+});
+
 describe('worker e2e — runtime seam reflects the live scheduler', () => {
   test('setRunningCountProvider drives runtime.status().running_count', async () => {
     // A pending fake runner so the session stays "running" for the assertion.
@@ -385,7 +451,6 @@ describe('worker e2e — runtime seam reflects the live scheduler', () => {
       verify: { verifyMerge: async () => ({ ok: true, reason: 'ok' }) },
       breaker: runtime.breaker,
       sessionLog: runtime.sessionLog,
-      resolveMergeSha: async () => 'sha',
       parallel_slots: 1
     });
     runtime.setRunningCountProvider(() => scheduler.runningCount());

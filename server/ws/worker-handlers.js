@@ -12,8 +12,11 @@
  * On conflict the handler replies with the current snapshot so the client
  * re-syncs and retries.
  *
- * NO EXECUTION here (Phase 10): `worker-queue-toggle` only persists the
- * `auto_advance` flag; nothing is dispatched.
+ * Execution: `worker-queue-toggle` persists the `auto_advance` flag (CAS) and,
+ * on turn-ON, kicks the live dispatch loop via a fire-and-forget `tick` against
+ * the registered worker attachment; `worker-attempt-stop` halts one running
+ * attempt. Both are inert no-ops when no attachment is registered for the
+ * workspace (spec §5.1–§5.2, F1).
  *
  * Auth: these handlers only run for already-authenticated sockets — the
  * connection layer's first-frame auth gate fronts `handleMessage`, and these
@@ -24,6 +27,7 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import { makeError, makeOk } from '../../app/protocol.js';
+import { stopWorkerAttempt, tickWorkerQueue } from '../worker/attach.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   emitSessionLogAppend,
@@ -375,7 +379,10 @@ export function handleWorkerQueueReorder(ws, req) {
 
 /**
  * Handle `worker-queue-toggle`. Payload: `{ on: boolean, expected_revision }`.
- * Phase 9 only persists the flag (no dispatch).
+ * Persists the `auto_advance` flag (CAS) and, on a successful turn-ON, kicks the
+ * live dispatch loop with a fire-and-forget `tick` (error-captured). The tick is
+ * a no-op unless a worker attachment is registered for this workspace, so ws
+ * tests without a live attachment stay hermetic (spec §5.1, F1).
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -396,6 +403,43 @@ export function handleWorkerQueueToggle(ws, req) {
     on: p.on
   });
   replyMutation(ws, req, key, result);
+  if (result.ok && p.on === true) {
+    Promise.resolve(tickWorkerQueue(key)).catch((err) => {
+      log('worker tick after toggle failed for %s: %o', key, err);
+    });
+  }
+}
+
+/**
+ * Handle `worker-attempt-stop`. Payload: `{ attempt_id: string }`. Stops (■) a
+ * running attempt: group-kill + attempt failed + workflow_mode revert (spec
+ * §5.2, F1). Inert (`stopped:false`) when no live attachment or no such attempt.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerAttemptStop(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  let stopped = false;
+  try {
+    stopped = await stopWorkerAttempt(key, p.attempt_id);
+  } catch (err) {
+    log('worker-attempt-stop failed for %s/%s: %o', key, p.attempt_id, err);
+  }
+  ws.send(JSON.stringify(makeOk(req, { attempt_id: p.attempt_id, stopped })));
+  if (stopped) {
+    // Push a fresh snapshot so the tile clears from the running grid.
+    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+  }
 }
 
 /**

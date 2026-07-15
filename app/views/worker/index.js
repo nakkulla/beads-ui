@@ -195,6 +195,20 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Stop (■) a running attempt: group-kill + attempt failed + workflow_mode
+   * revert on the server (spec §5.2). Fire-and-forget; the server pushes a fresh
+   * queue snapshot that clears the tile.
+   *
+   * @param {string} attempt_id
+   */
+  async function stopAttempt(attempt_id) {
+    if (!transport || !attempt_id) {
+      return;
+    }
+    await transport('worker-attempt-stop', { attempt_id });
+  }
+
+  /**
    * @param {boolean} on
    */
   async function setAutoAdvance(on) {
@@ -544,8 +558,15 @@ export function createWorkerView(mount_element, options = {}) {
       void setAutoAdvance(false);
       return;
     }
-    // The stop ■ is a distinct affordance (future wiring); never open the drawer.
+    // The stop ■ halts the attempt; it must never also open the drawer.
     if (target?.closest?.('.rtile__stop')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const att = tile?.dataset?.attemptId;
+      if (att) {
+        void stopAttempt(att);
+      }
       return;
     }
     // Clicks inside the drawer are owned by the drawer's own handlers.

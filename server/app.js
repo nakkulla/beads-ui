@@ -160,14 +160,18 @@ export function createApp(config) {
   // the config bearer): a session's finishing preamble acquires/releases the
   // (repo, target_base) merge lock. Breaker-tripped repos are refused (423).
   const worker_runtime = getWorkerRuntime();
-  app.use(
-    '/api/worker/merge-lock',
-    createMergeLockRouter({
-      locks: worker_runtime.locks,
-      tokens: worker_runtime.tokens,
-      breaker: worker_runtime.breaker
-    })
-  );
+  const merge_lock_router = createMergeLockRouter({
+    locks: worker_runtime.locks,
+    tokens: worker_runtime.tokens,
+    breaker: worker_runtime.breaker
+  });
+  // Publish the merge-lock ledger on the runtime so the session-side merge guard
+  // (session.js) can query whether a session holds the (repo, base) lock (F3).
+  worker_runtime.setMergeLock({
+    isHeldBy: (token) => merge_lock_router.isHeldBy(token),
+    releaseAllForToken: (token) => merge_lock_router.releaseAllForToken(token)
+  });
+  app.use('/api/worker/merge-lock', merge_lock_router);
 
   // Serve a markdown document from a registered workspace's docs/ directory.
   app.get('/api/doc', requireBearer, docHandler);

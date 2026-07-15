@@ -61,6 +61,7 @@ import { EventEmitter } from 'node:events';
  * @property {(bead: any, workspace: string, settings: any) => { command: string, args: string[], env?: Record<string, string|undefined> }} buildArgv
  * @property {(raw: any) => RunnerEvent|RunnerEvent[]|null} normalize - Map a raw line to normalized event(s) (or null to drop).
  * @property {(raw: any) => (string|null)} detectQuestion - Return a reason string when a raw line is an interactive request, else null.
+ * @property {(raw: any) => (string|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use, else null (feeds the merge-lock guard).
  * @property {(ctx: { raw: any[], exit: number|null, blocked: boolean }) => { success: boolean, reason: string }} verdict
  */
 
@@ -68,7 +69,20 @@ import { EventEmitter } from 'node:events';
  * @typedef {Object} EngineDeps
  * @property {(command: string, args: string[], options: any) => ChildProcessLike} [spawn_impl]
  * @property {(pid: number, signal?: NodeJS.Signals|number) => void} [kill_impl]
+ * @property {{ isHeldBy: (token: string|undefined) => boolean }} [lock_state] - Merge-lock ledger; when present, an unlocked merge attempt fails closed.
  */
+
+/**
+ * Best-effort signature of a merge INTO a base branch. A session must hold the
+ * (repo, target_base) merge lock before running any of these; an unlocked match
+ * fails closed (blocker + group-kill). Best-effort: a determined session could
+ * obfuscate the command, but the server-side merge-lock serialization remains
+ * the hard invariant — this is defense-in-depth (spec §5.2).
+ *
+ * @type {RegExp}
+ */
+const MERGE_RE =
+  /git\s+merge\b|gh\s+pr\s+merge\b|git\s+push\b[\s\S]*?:?\b(main|master)\b/i;
 
 /**
  * Split accumulated stdout into complete lines, returning `[lines, remainder]`.
@@ -104,6 +118,13 @@ export function runSession(spec, bead, workspace, settings, deps) {
   // Avoid MaxListeners warnings when many raw lines are consumed.
   events.setMaxListeners(0);
 
+  // Merge-lock fail-closed inputs: the per-session worker token identifies this
+  // session to the merge-lock ledger; `lock_state.isHeldBy(token)` reports
+  // whether it currently holds a (repo, base) merge lock (spec §5.2).
+  const lock_state = deps.lock_state;
+  const worker_token =
+    settings && settings.env ? settings.env.BDUI_WORKER_TOKEN : undefined;
+
   const { command, args, env } = spec.buildArgv(bead, workspace, settings);
   const child = spawn_impl(command, args, {
     cwd: workspace,
@@ -111,7 +132,11 @@ export function runSession(spec, bead, workspace, settings, deps) {
     // process.kill(-pid) then reaps the whole session tree (spec §5.4).
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...(settings?.env || {}), ...(env || {}) }
+    // Inherit the parent environment (PATH etc.) so the spawned CLI resolves its
+    // binary and toolchain; then layer the per-session settings env (the worker
+    // token) and finally the adapter routing env, which WINS on any key collision
+    // (e.g. ccx's ANTHROPIC_BASE_URL overriding an inherited value) (spec §5.4).
+    env: { ...process.env, ...(settings?.env || {}), ...(env || {}) }
   });
 
   const pid = typeof child.pid === 'number' ? child.pid : null;
@@ -176,6 +201,26 @@ export function runSession(spec, bead, workspace, settings, deps) {
       events.emit('event', blocker);
       kill('SIGTERM');
       return;
+    }
+
+    // Fail-closed: a merge INTO base attempted WITHOUT holding the merge lock →
+    // blocker + process-group kill (the same path as a question) (spec §5.2).
+    if (lock_state && typeof spec.extractShellCommand === 'function') {
+      const cmd = spec.extractShellCommand(obj);
+      if (cmd && MERGE_RE.test(cmd) && !lock_state.isHeldBy(worker_token)) {
+        blocked = true;
+        /** @type {RunnerEvent} */
+        const merge_blocker = {
+          kind: 'blocker',
+          reason: 'merge_without_lock',
+          message: `merge attempt without holding the merge lock: ${cmd}`,
+          raw: obj
+        };
+        norm_events.push(merge_blocker);
+        events.emit('event', merge_blocker);
+        kill('SIGTERM');
+        return;
+      }
     }
 
     const normalized = spec.normalize(obj);

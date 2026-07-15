@@ -93,6 +93,38 @@ describe('POST /api/worker/merge-lock', () => {
     expect(acq.status).toBe(403);
   });
 
+  test('revoking a holder token releases its merge lock so the next acquire resolves [F4]', async () => {
+    const second_token = tokens.issue('att-2', {
+      repo: '/repo',
+      bead_id: 'UI-2'
+    });
+    // First session acquires and then DIES without releasing.
+    const first = await post({ repo: '/repo', target_base: 'main' });
+    expect(first.body.acquired).toBe(true);
+
+    let secondDone = false;
+    const secondP = post(
+      { repo: '/repo', target_base: 'main' },
+      second_token
+    ).then((r) => {
+      secondDone = true;
+      return r;
+    });
+    // The second acquire blocks while the dead session still holds the lock.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(secondDone).toBe(false);
+
+    // Revoking the dead session's token releases the held lock (no route call).
+    tokens.revoke('att-1');
+
+    const second = await secondP;
+    expect(second.body.acquired).toBe(true);
+    await post(
+      { repo: '/repo', target_base: 'main', action: 'release' },
+      second_token
+    );
+  });
+
   test('a second acquirer waits until the first releases', async () => {
     const second_token = tokens.issue('att-2', {
       repo: '/repo',

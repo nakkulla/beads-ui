@@ -78,10 +78,14 @@ Per-workspace subscription + CAS-guarded mutations + a whole-queue push.
   `{ bead_id, lane:'serial'|'parallel', index?, expected_revision }`
 - `worker-queue-reorder` payload:
   `{ bead_id, lane, to_index, expected_revision }`
-- `worker-queue-toggle` payload: `{ on, expected_revision }`
+- `worker-queue-toggle` payload: `{ on, expected_revision }` — persists
+  `auto_advance` and, on turn-ON, kicks the live dispatch loop (`tick`).
 - `worker-queue-remove` payload: `{ bead_id, expected_revision }`
+- `worker-attempt-stop` payload: `{ attempt_id }` — stops (■) a running attempt
+  (group-kill + attempt failed + `workflow_mode` revert); replies
+  `{ attempt_id, stopped }`.
 
-Every mutation replies `{ applied, conflict, queue }`; a stale
+Every queue mutation replies `{ applied, conflict, queue }`; a stale
 `expected_revision` yields `conflict:true` + the current queue for re-sync.
 
 ## Session-log (transcript) channel (spec §5.6)
