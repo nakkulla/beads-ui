@@ -70,6 +70,138 @@ export async function handleUpdateAssignee(ws, req) {
 }
 
 /**
+ * Runner-specific orchestration model catalogs. `ccx` (claude-code-proxy) uses
+ * the same model set as `claude`.
+ */
+const RUNNER_MODELS = {
+  claude: ['opus', 'sonnet', 'haiku', 'fable'],
+  codex: ['gpt-5.6', 'gpt-5.4'],
+  ccx: ['opus', 'sonnet', 'haiku', 'fable']
+};
+
+/** Union of all orchestration models (server enum for orchestration_model). */
+const ALL_ORCHESTRATION_MODELS = Array.from(
+  new Set([...RUNNER_MODELS.claude, ...RUNNER_MODELS.codex])
+);
+
+/**
+ * Allowed values per exec-preference key. `orchestration_model` uses the union
+ * across runners; the client narrows by chosen runner for UX. An empty value
+ * means "unset" (revert to harness default). `workflow_mode`'s only stored
+ * value is `fast_track` — `standard`/empty is recorded as key removal.
+ */
+const EXEC_SETTING_ENUMS = {
+  worker_runner: ['claude', 'codex', 'ccx'],
+  orchestration_model: ALL_ORCHESTRATION_MODELS,
+  orchestration_effort: ['low', 'medium', 'high', 'xhigh'],
+  review_model: ['codex', 'opus', 'fable', 'self', 'skip'],
+  impl_model: ['opus', 'fable', 'sonnet', 'haiku'],
+  workflow_mode: ['fast_track']
+};
+
+/**
+ * Build the `bd update` argv for a single exec-setting change. A `standard`/
+ * empty `workflow_mode`, or any empty value, is translated to `--unset-metadata`
+ * (key removal) rather than storing the literal — matching the contract that
+ * absence = standard/default.
+ *
+ * @param {string} id
+ * @param {string} key
+ * @param {string} value
+ * @returns {string[]}
+ */
+export function buildExecSettingsArgs(id, key, value) {
+  const is_unset =
+    value === '' || (key === 'workflow_mode' && value === 'standard');
+  if (is_unset) {
+    return ['update', id, '--unset-metadata', key];
+  }
+  return ['update', id, '--set-metadata', `${key}=${value}`];
+}
+
+/**
+ * Validate an exec-setting mutation. Returns null when valid, else an error
+ * message. `standard`/empty values are always valid (they map to unset).
+ *
+ * @param {string} key
+ * @param {string} value
+ * @returns {string | null}
+ */
+function validateExecSetting(key, value) {
+  if (!Object.prototype.hasOwnProperty.call(EXEC_SETTING_ENUMS, key)) {
+    return `unknown exec-setting key: ${key}`;
+  }
+  if (value === '') {
+    return null; // unset — always allowed
+  }
+  if (key === 'workflow_mode' && value === 'standard') {
+    return null; // standard — mapped to unset
+  }
+  const allowed = /** @type {Record<string, string[]>} */ (EXEC_SETTING_ENUMS)[
+    key
+  ];
+  if (!allowed.includes(value)) {
+    return `invalid value for ${key}: ${value}`;
+  }
+  return null;
+}
+
+/**
+ * Set or unset one of the 5 exec-preference metadata keys (+ workflow_mode) via
+ * `bd update --set-metadata` / `--unset-metadata`. Selecting `standard` (or
+ * clearing a value) removes the key rather than storing a literal.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleUpdateExecSettings(ws, req) {
+  log('update-exec-settings');
+  const { id, key, value } = /** @type {any} */ (req.payload || {});
+  if (
+    typeof id !== 'string' ||
+    id.length === 0 ||
+    typeof key !== 'string' ||
+    typeof value !== 'string'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { id: string, key: string, value: string }'
+        )
+      )
+    );
+    return;
+  }
+  const invalid = validateExecSetting(key, value);
+  if (invalid) {
+    ws.send(JSON.stringify(makeError(req, 'bad_request', invalid)));
+    return;
+  }
+  const res = await runBdInWorkspace(ws, buildExecSettingsArgs(id, key, value));
+  if (res.code !== 0) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
+    );
+    return;
+  }
+  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
+  if (shown.code !== 0) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+    );
+    return;
+  }
+  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  try {
+    triggerMutationRefreshOnce();
+  } catch {
+    // ignore
+  }
+}
+
+/**
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */

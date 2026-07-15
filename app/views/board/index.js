@@ -64,6 +64,10 @@ export function createBoardView(mount_element, options) {
   let list_closed = [];
   /** @type {Map<string, string>} */
   let status_by_id = new Map();
+  /** @type {Map<string, { id: string, title?: string, status?: string }[]>} */
+  let children_by_parent = new Map();
+  /** @type {Set<string>} */
+  const expanded_ids = new Set();
 
   const filters = { search: '', priority: '', type: '' };
 
@@ -151,6 +155,14 @@ export function createBoardView(mount_element, options) {
         for (const it of in_progress) status_by_id.set(it.id, 'in_progress');
         for (const it of resolved) status_by_id.set(it.id, 'resolved');
         for (const it of closed) status_by_id.set(it.id, 'closed');
+
+        rebuildChildrenIndex([
+          ...blocked,
+          ...ready,
+          ...in_progress,
+          ...resolved,
+          ...closed
+        ]);
       }
       doRender();
     } catch {
@@ -159,8 +171,99 @@ export function createBoardView(mount_element, options) {
       list_in_progress = [];
       list_resolved = [];
       list_closed = [];
+      children_by_parent = new Map();
       doRender();
     }
+  }
+
+  /**
+   * Rebuild the parent→children index from the already-subscribed issue set so
+   * the card rollup is computed client-side (no server round-trip). Dedupes by
+   * id across columns; reads the `parent` edge (string id or `{ id }`).
+   *
+   * @param {IssueLite[]} all
+   */
+  function rebuildChildrenIndex(all) {
+    /** @type {Map<string, IssueLite>} */
+    const seen = new Map();
+    for (const it of all) {
+      if (it && it.id && !seen.has(it.id)) {
+        seen.set(it.id, it);
+      }
+    }
+    /** @type {Map<string, { id: string, title?: string, status?: string }[]>} */
+    const map = new Map();
+    for (const it of seen.values()) {
+      const raw = /** @type {any} */ (it).parent;
+      const parent =
+        typeof raw === 'string' ? raw : raw && raw.id ? String(raw.id) : '';
+      if (!parent) {
+        continue;
+      }
+      let arr = map.get(parent);
+      if (!arr) {
+        arr = [];
+        map.set(parent, arr);
+      }
+      arr.push({ id: it.id, title: it.title, status: it.status });
+    }
+    children_by_parent = map;
+  }
+
+  /**
+   * Compute the rollup for a card: N done (resolved|closed) of M total children,
+   * plus the in_progress child (if any) and the full child list.
+   *
+   * @param {string} id
+   * @returns {{ total: number, count: number, current: { id: string, title?: string, status?: string } | null, children: { id: string, title?: string, status?: string }[] }}
+   */
+  function rollupFor(id) {
+    const children = children_by_parent.get(id) || [];
+    let count = 0;
+    /** @type {{ id: string, title?: string, status?: string } | null} */
+    let current = null;
+    for (const c of children) {
+      if (c.status === 'resolved' || c.status === 'closed') {
+        count += 1;
+      }
+      if (!current && c.status === 'in_progress') {
+        current = c;
+      }
+    }
+    return { total: children.length, count, current, children };
+  }
+
+  /**
+   * @param {string} id
+   * @returns {boolean}
+   */
+  function isExpanded(id) {
+    return expanded_ids.has(id);
+  }
+
+  /**
+   * @param {Event} ev
+   * @param {string} id
+   */
+  function onRollupToggle(ev, id) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (expanded_ids.has(id)) {
+      expanded_ids.delete(id);
+    } else {
+      expanded_ids.add(id);
+    }
+    doRender();
+  }
+
+  /**
+   * @param {Event} ev
+   * @param {string} id
+   */
+  function onChildClick(ev, id) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    gotoIssue(id);
   }
 
   // --- card / column interaction context ---
@@ -233,7 +336,11 @@ export function createBoardView(mount_element, options) {
     onCopyId,
     onDragStart,
     onDragEnd,
-    onClosedToggle
+    onClosedToggle,
+    rollupFor,
+    isExpanded,
+    onRollupToggle,
+    onChildClick
   };
 
   // --- filter handlers (board-local state) ---
@@ -441,8 +548,12 @@ export function createBoardView(mount_element, options) {
       tag === 'input' ||
       tag === 'textarea' ||
       tag === 'select' ||
+      tag === 'button' ||
+      tag === 'a' ||
       target.isContentEditable === true
     ) {
+      // Interactive children (id copy, rollup toggle, child links) handle
+      // their own keyboard activation — don't hijack Enter/arrows here.
       return;
     }
     const card = /** @type {HTMLElement | null} */ (

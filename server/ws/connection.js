@@ -28,6 +28,7 @@ import {
   handleLabelAdd,
   handleLabelRemove,
   handleUpdateAssignee,
+  handleUpdateExecSettings,
   handleUpdatePriority,
   handleUpdateStatus
 } from './mutation-handlers.js';
@@ -369,6 +370,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'update-assignee':
       await handleUpdateAssignee(ws, req);
+      return;
+    case 'update-exec-settings':
+      await handleUpdateExecSettings(ws, req);
       return;
     case 'update-status':
       await handleUpdateStatus(ws, req);

@@ -797,6 +797,9 @@ export function bootstrap(root_element) {
     // Shared detail overlay.
     const detail_panel = createDetailPanel(detail_mount, {
       issueStores: sub_issue_stores,
+      transport,
+      getWorkspacePath: () => store.getState().workspace.current?.path,
+      onNavigate: (id) => router.gotoIssue(id),
       onClose: () => {
         const s = store.getState();
         store.setState({ selected_id: null });

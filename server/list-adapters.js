@@ -1,5 +1,6 @@
 import { runBdJson } from './bd.js';
 import { debug } from './logging.js';
+import { enrichIssuesWorkflow } from './workflow-enrich.js';
 
 const log = debug('list-adapters');
 const DEPENDENCY_BLOCKED_ARGS = [
@@ -132,11 +133,35 @@ export function normalizeIssueList(value) {
  * Execute the mapped `bd` command for a subscription spec and return normalized items.
  * Errors do not throw; they are surfaced as a structured object.
  *
+ * Enriches each returned issue with a compact `workflow` object (route,
+ * stepper stages incl. computed stale, chips) via `enrichIssuesWorkflow` using
+ * the workspace root as git cwd. Enrichment is fail-quiet and never blocks
+ * shaping.
+ *
  * @param {{ type: string, params?: Record<string, string | number | boolean> }} spec
  * @param {{ cwd?: string }} [options] - Optional working directory for bd command
  * @returns {Promise<FetchListResultSuccess | FetchListResultFailure>}
  */
 export async function fetchListForSubscription(spec, options = {}) {
+  const result = await fetchListForSubscriptionRaw(spec, options);
+  if (result.ok) {
+    result.items = enrichIssuesWorkflow(
+      /** @type {any} */ (result.items),
+      options.cwd
+    );
+  }
+  return result;
+}
+
+/**
+ * Fetch + normalize the mapped `bd` command for a subscription spec, without
+ * workflow enrichment.
+ *
+ * @param {{ type: string, params?: Record<string, string | number | boolean> }} spec
+ * @param {{ cwd?: string }} [options]
+ * @returns {Promise<FetchListResultSuccess | FetchListResultFailure>}
+ */
+async function fetchListForSubscriptionRaw(spec, options = {}) {
   if (String(spec.type) === 'blocked-issues') {
     return fetchBlockedIssues(options);
   }

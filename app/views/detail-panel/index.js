@@ -1,19 +1,26 @@
 import { html, render } from 'lit-html';
 import { showToast } from '../../utils/toast.js';
+import { artifactsTemplate } from './artifacts.js';
+import { execSettingsTemplate } from './exec-settings.js';
+import { createMdViewer } from './md-viewer.js';
+import { sessionHistoryTemplate } from './session-history.js';
 
 /**
- * Minimal detail overlay (Phase 7). Clicking a board card opens this right-side
- * panel showing id / title / description / status / priority with a close
- * affordance (✕ · backdrop · Esc). It reads the already-pushed snapshot from
- * the `detail:<id>` subscription store — no new server calls.
- *
- * TODO(Phase 8): expand into the full detail panel (Artifacts, exec settings,
- * workflow receipts, md viewer) per detail-panel.html.
+ * Shared detail panel (spec §3). Opens as a right-side overlay from a board
+ * card (and later a Worker tile). Composition: id/title/status/description,
+ * dependencies (bd edges), workflow summary WITH raw receipt strings,
+ * Artifacts (copy path / open md viewer), execution settings (5 keys +
+ * workflow_mode), and a session-history seam (Phase 11). Reads the pushed
+ * snapshot from the `detail:<id>` subscription store — no new list calls; the
+ * exec-settings edit is the only mutation (via `transport`).
  */
 
 /**
  * @typedef {Object} DetailPanelOptions
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
+ * @property {(type: string, payload: unknown) => Promise<unknown>} [transport]
+ * @property {() => string | null | undefined} [getWorkspacePath]
+ * @property {(id: string) => void} [onNavigate] - Navigate to a dependency id.
  * @property {() => void} onClose - Invoked to request the overlay be closed.
  */
 
@@ -25,11 +32,23 @@ import { showToast } from '../../utils/toast.js';
 export function createDetailPanel(mount_element, options) {
   const issueStores = options.issueStores;
   const onClose = options.onClose;
+  const transport = options.transport;
+  const onNavigate = options.onNavigate;
 
   /** @type {string | null} */
   let current_id = null;
   /** @type {any} */
   let current = null;
+  /** @type {Record<string, string>} */
+  let exec_local = {};
+
+  // md viewer lives in its own body-appended overlay mount.
+  const mv_mount = document.createElement('div');
+  mv_mount.className = 'md-viewer-root';
+  document.body.appendChild(mv_mount);
+  const md_viewer = createMdViewer(mv_mount, {
+    getWorkspacePath: options.getWorkspacePath || (() => '')
+  });
 
   /** @type {null | (() => void)} */
   let unsubscribe = null;
@@ -61,27 +80,155 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
-   * @param {Event} ev
+   * @param {string} text
    */
-  function onCopyId(ev) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    if (!current_id) {
-      return;
-    }
+  function copyText(text) {
     try {
       if (
         navigator.clipboard &&
         typeof navigator.clipboard.writeText === 'function'
       ) {
         void navigator.clipboard
-          .writeText(String(current_id))
+          .writeText(String(text))
           .then(() => showToast('복사됨', 'success', 1200))
           .catch(() => {});
       }
     } catch {
       // ignore copy errors
     }
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onCopyId(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (current_id) {
+      copyText(current_id);
+    }
+  }
+
+  /**
+   * @param {Event} ev
+   * @param {string} path
+   */
+  function onCopyPath(ev, path) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    copyText(path);
+  }
+
+  /**
+   * @param {Event} ev
+   * @param {string} path
+   */
+  function onOpenDoc(ev, path) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    void md_viewer.open(path);
+  }
+
+  /**
+   * @param {string} key
+   * @param {string} value
+   */
+  function onExecChange(key, value) {
+    exec_local[key] = value;
+    doRender();
+    if (!transport || !current_id) {
+      return;
+    }
+    void Promise.resolve(
+      transport('update-exec-settings', { id: current_id, key, value })
+    ).catch(() => {
+      showToast('실행 설정 변경 실패', 'error');
+    });
+  }
+
+  const artifact_handlers = { onCopyPath, onOpenDoc };
+  const exec_handlers = { onChange: onExecChange };
+
+  /**
+   * Normalize a bd dependency edge to a target id.
+   *
+   * @param {any} edge
+   * @returns {string}
+   */
+  function edgeId(edge) {
+    if (typeof edge === 'string') {
+      return edge;
+    }
+    if (edge && typeof edge === 'object') {
+      return String(
+        edge.id || edge.to || edge.issue_id || edge.depends_on || ''
+      );
+    }
+    return '';
+  }
+
+  /**
+   * @param {any} data
+   */
+  function depsTemplate(data) {
+    const raw = Array.isArray(data.dependencies) ? data.dependencies : [];
+    const ids = raw
+      .map(edgeId)
+      .filter((/** @type {string} */ s) => s.length > 0);
+    return html`
+      <div class="detail-section-label">의존성</div>
+      ${ids.length === 0
+        ? html`<div class="detail-empty">의존성 없음</div>`
+        : html`<div class="detail-deps">
+            ${ids.map((/** @type {string} */ id) =>
+              onNavigate
+                ? html`<button
+                    type="button"
+                    class="detail-dep detail-dep--link"
+                    @click=${() => onNavigate(id)}
+                  >
+                    ${id}
+                  </button>`
+                : html`<span class="detail-dep">${id}</span>`
+            )}
+          </div>`}
+    `;
+  }
+
+  /**
+   * @param {any} data
+   */
+  function workflowTemplate(data) {
+    const md = data.metadata || {};
+    const wf = data.workflow || {};
+    const stages = wf.stages || {};
+    const specStale = stages.spec && stages.spec.stale;
+    const implStale = stages.impl && stages.impl.stale;
+    return html`
+      <div class="detail-section-label">워크플로우</div>
+      <div class="detail-kv">
+        <span class="detail-kv__k">route</span>
+        <span class="detail-kv__v">${wf.route || md.route || '—'}</span>
+      </div>
+      <div class="detail-kv">
+        <span class="detail-kv__k">spec_review</span>
+        <span class="detail-kv__v"
+          >${md.spec_review || '없음'}${specStale ? ' · stale' : ''}</span
+        >
+      </div>
+      <div class="detail-kv">
+        <span class="detail-kv__k">impl_review</span>
+        <span class="detail-kv__v"
+          >${md.impl_review || '없음'}${implStale ? ' · stale' : ''}</span
+        >
+      </div>
+      ${md.pr_url
+        ? html`<div class="detail-kv">
+            <span class="detail-kv__k">pr_url</span>
+            <span class="detail-kv__v detail-kv__v--wrap">${md.pr_url}</span>
+          </div>`
+        : ''}
+    `;
   }
 
   function template() {
@@ -97,6 +244,10 @@ export function createDetailPanel(mount_element, options) {
         ? `P${Math.max(0, Math.min(4, data.priority))}`
         : '';
     const description = data.description || '';
+    const effective = {
+      ...data,
+      metadata: { ...(data.metadata || {}), ...exec_local }
+    };
     return html`
       <div class="detail-overlay" role="dialog" aria-modal="true">
         <div class="detail-overlay__backdrop" @click=${() => onClose()}></div>
@@ -126,6 +277,10 @@ export function createDetailPanel(mount_element, options) {
           <div class="detail-overlay__desc">
             ${description || '(설명 없음)'}
           </div>
+          ${depsTemplate(data)} ${workflowTemplate(data)}
+          ${artifactsTemplate(data, artifact_handlers)}
+          ${execSettingsTemplate(effective, exec_handlers)}
+          ${sessionHistoryTemplate()}
         </div>
       </div>
     `;
@@ -140,6 +295,9 @@ export function createDetailPanel(mount_element, options) {
      * @param {string} id
      */
     load(id) {
+      if (id !== current_id) {
+        exec_local = {};
+      }
       current_id = id;
       current = null;
       refreshFromStore();
@@ -147,6 +305,8 @@ export function createDetailPanel(mount_element, options) {
     clear() {
       current_id = null;
       current = null;
+      exec_local = {};
+      md_viewer.close();
       render(html``, mount_element);
     },
     destroy() {
@@ -155,6 +315,10 @@ export function createDetailPanel(mount_element, options) {
         unsubscribe = null;
       }
       document.removeEventListener('keydown', onKeydown);
+      md_viewer.destroy();
+      if (mv_mount.parentNode) {
+        mv_mount.parentNode.removeChild(mv_mount);
+      }
       current_id = null;
       current = null;
       render(html``, mount_element);
