@@ -1,0 +1,19 @@
+{
+  "id": "dotfiles-10zx",
+  "title": "워크플로우 계약: bdui worker 무인 fast-track 실행 모드 정합",
+  "description": "beads-ui Worker 보드 v2(UI-ufkg, beads-ui workspace)가 spawn하는 headless ccx 세션(/goal→PR, pr-finish→머지)이 질문 게이트 없이 끝까지 진행하도록 워크플로우 계약을 정합한다. 범위: (1) board-execution 마커(env BDUI_WORKER=1 + 프롬프트 preamble) 정의, (2) 무인 모드 규칙 — AskUserQuestion 금지, 물어볼 상황이면 문서화된 기본값(finish=PR 고정 등) 사용, 해결 불가 blocker는 loud-fail 종료(잡 실패→큐 정지), (3) PR Delivery에서 stage 1 종료·머지는 보드 pr-finish 단계 담당(큐잉=사전 동의, 보드 한정 opt-in; 보드 밖 stop boundary 정책 불변), (4) plan 없는 bead는 runtime-native plan으로 진행하는 fast-track 완화 명시, (5) canonical workflow.md/workflow.yaml + workflow 스킬 alias + checker + 테스트 동시 갱신(계약 변경 규약 준수). beads-ui 쪽 구현과 한 쌍이나 독립 spec/plan/review 라이프사이클 필요로 별도 parent.",
+  "status": "open",
+  "priority": 1,
+  "issue_type": "task",
+  "owner": "nakkulla@gmail.com",
+  "created_at": "2026-07-12T14:20:10Z",
+  "created_by": "ilsun yun",
+  "updated_at": "2026-07-12T14:20:22Z",
+  "metadata": {
+    "next_gate": "spec_review",
+    "route": "gated"
+  },
+  "dependent_count": 0,
+  "dependency_count": 0,
+  "comment_count": 0
+}

@@ -1,0 +1,15 @@
+{
+  "id": "dotfiles-7xcx",
+  "title": "beads-ui worker 인스턴스 배포: projectmgr 서비스 + fleet 등록",
+  "description": "Worker 보드 v2(UI-ufkg)의 Mac Studio 로컬 실행 인스턴스를 배포한다. 범위: (1) src/shell/projectmgr/services/beads-ui-worker.toml 신규 — 127.0.0.1:3002 bind, 중앙 dolt(3307) 직결 workspace, worker enabled=true config, (2) src/shell/config/fleet.toml의 Mac Studio 머신 services에 등록, (3) 활성화 전제조건 게이트: dotfiles-10zx(fast-track 계약) 설치 + capability sentinel 버전 충족 + UI-ufkg acceptance matrix(fault-injection e2e) 통과. NAS 인스턴스는 worker enabled=false 유지(조회 전용). 선행: UI-ufkg 구현, dotfiles-10zx 계약.",
+  "status": "open",
+  "priority": 2,
+  "issue_type": "task",
+  "owner": "nakkulla@gmail.com",
+  "created_at": "2026-07-12T14:56:15Z",
+  "created_by": "ilsun yun",
+  "updated_at": "2026-07-12T14:56:15Z",
+  "dependent_count": 0,
+  "dependency_count": 0,
+  "comment_count": 0
+}
