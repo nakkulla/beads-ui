@@ -1,0 +1,31 @@
+{
+  "id": "UI-ufkg",
+  "title": "Worker 보드 v2: ccx 기반 머지까지 자동 큐 재설계",
+  "description": "UI-l3c3/PR#16(미머지) 설계를 supersede하는 재설계. 승인된 설계 요약: (1) Mac Studio 로컬 bdui worker 인스턴스(projectmgr, :3002, 중앙 dolt 직결), NAS UI는 조회용·worker 기능 config flag 게이트. (2) inbox/waiting/progress + 파생 done lane, parent 카드만 표시(펼치기로 children N/M), 대형 카드(spec 배지·병렬 hint 배지·parallel 태그·model/effort 태그·PR 배지·세션ID·마지막 로그 1줄·blink 진행표시). (3) 실행: ccx(claude-code-proxy 경유 Claude Code headless, stream-json) 2단계 파이프라인 — /goal로 PR 생성까지 → 봇 리뷰 대기(기본 5분) → pr-finish로 머지까지 → 60초 카운트다운 후 다음 waiting head. strict FIFO, serial slot 1, worker_parallel=true는 자기 타임라인, 실패 시 큐 정지. (4) 기본 모델 sol(gpt-5.6-sol)/effort high, 이슈별 override 드롭다운. (5) 병렬 분석: toolbar 버튼 → 서버 소유 프롬프트로 ccx 1회 → pairwise 충돌 판정 → worker_parallel_hint/reason/conflicts_with metadata 기록(전용 스킬 없음), 실행 게이트는 수동 worker_parallel(기본 serial). (6) 큐 진입: spec 필수, plan 유무는 카드 배지 표시, plan 없으면 headless가 runtime-native plan으로 진행. (7) 무인 fast-track 모드는 dotfiles 워크플로우 계약 정합과 한 쌍(별도 dotfiles parent Bead 참조). 사전 dry-run 5건: ccx headless 동작·slash 호출·stream-json 스키마·effort env 전달·권한 모드.",
+  "notes": "Gate: spec | Slots: gpt-5.6-sol + pro | Mode: panel | SelectionSource: explicit_user | Cap: 1 | GroupAttempt: 1 | CumulativeAttempts: 1 | Escalation: none | Verdict: REVISE | Source: external | Artifact: docs/superpowers/specs/2026-07-12-worker-board-v2-ccx-queue-design.md | SHA: 8e878834ee26bcdd587022c4bb1aba1dd2febcc5\nLeg: slot_1=gpt-5.6-sol | ReviewerID: codex:019f56be-8442-7693-8d6f-e6b9c2800827 | RequestedModel: gpt-5.6-sol | ActualModel: gpt-5.6-sol | Fallback: no | Effort: xhigh | Outcome: REVISE(normalized; 리뷰어가 Pro leg 완료 책임을 오인해 verdict를 dispatch_failed로 기재 — controller가 Pro leg를 별도 성공 실행했으므로 해당 finding 무효화, 실질 blocking 3건+advisory 1건 유효) | Provenance: codex_runner_bridge\nLeg: slot_2=pro | ReviewerID: ui-ufkg-spec-review (chatgpt.com/c/6a53a510) | RequestedModel: pro | ActualModel: unverified | ActualModelSource: unavailable | Fallback: no | Outcome: REVISE(blocking 9, advisory 1) | PromptPosture: xhigh | RuntimeEffort: not_applicable\nGate: spec | Disposition ledger (REVISE 후 fix wave, SHA e76eaef) — sol/PR탐색 비결정성: fixed(--head 결정적 조회+오류/0건/다건 분기) | sol/PR 0건 완료간주: fixed(규칙 삭제, 실패+큐정지, 머지 postcondition 4조건 신설) | sol/배포 소유권: fixed(dotfiles-7xcx 생성·참조) | sol/enabled 범위(adv): fixed(읽기 허용, mutation·spawn 403) | pro/parallel 격리: fixed(잡별 전용 worktree) | pro/PR식별·완료판정: fixed(위 2건과 동일 해소) | pro/stream-json 성공판정: fixed(stdout-only, 단일 result, stop_reason allowlist, permission_denials, api_error_status) | pro/재시작·durable halt: fixed(process group+pid·start_time, durable halted+명시 resume) | pro/원자성·멱등성: fixed(attempt_id, phase write-ahead, CAS, idempotency key, reconciliation) | pro/동의 모델: fixed(versioned consent marker, 레거시 quarantine) | pro/전이 규칙 불일치: fixed(권위 전이 표 전면 재기술, 승계 폐기) | pro/V-1·V-3·V-4: fixed(D-1~D-6 실측으로 승인 전 확정, /goal 오해 교정, permission-mode 확정, capability sentinel 기계 게이트) | pro/hint freshness(adv): fixed(spec_sha·scope_sha·prompt_version, stale→serial 강등) | pro/acceptance 미비: fixed(A1~A14 fault-injection 매트릭스, 활성화 전제조건) | sol leg의 'Pro leg dispatch 실패' finding: invalid(리뷰어가 Pro leg 완료 책임을 오인; controller가 Pro leg를 별도 성공 실행, ReviewerID ui-ufkg-spec-review) | Verdict: APPROVE | Source: self (external cap 1 소진)",
+  "spec_id": "docs/superpowers/specs/2026-07-12-worker-board-v2-ccx-queue-design.md",
+  "status": "open",
+  "priority": 1,
+  "issue_type": "feature",
+  "owner": "nakkulla@gmail.com",
+  "created_at": "2026-07-12T14:19:39Z",
+  "created_by": "ilsun yun",
+  "updated_at": "2026-07-12T15:00:04Z",
+  "metadata": {
+    "next_gate": "plan_review",
+    "related_dotfiles_bead": "dotfiles-10zx",
+    "route": "gated",
+    "spec_review_external_verdict": "REVISE",
+    "spec_review_fallback_basis": "external_attempt_cap_consumed_after_group_1",
+    "spec_review_final_source": "self",
+    "spec_review_fix_sha": "e76eaef9dd700d16574fb036c373ad35921b4dcd",
+    "spec_reviewed_at_sha": "e76eaef9dd700d16574fb036c373ad35921b4dcd"
+  },
+  "labels": [
+    "has:spec",
+    "reviewed:spec"
+  ],
+  "dependent_count": 0,
+  "dependency_count": 0,
+  "comment_count": 0
+}

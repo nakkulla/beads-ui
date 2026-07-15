@@ -1,0 +1,27 @@
+{
+  "id": "UI-32ih",
+  "title": "beads-ui 신 workflow 계약 정합 + 전면 개선",
+  "description": "dotfiles 워크플로우 계약 슬림화(PR2, next_gate·reviewed 증거 중심)에 맞춘 beads-ui 전면 재설계 실행.\n\n범위: (1) 폐기 키 쓰기 차단(update-workflow-settings 삭제→update-review-runtime), (2) 제네릭 우선 등록부(shared/workflow-registry.js, 3계층 렌더링, 계약 동등성 테스트), (3) 상세 Workflow 카드(게이트별 evidence 블록), (4) 보드(게이트 트랙+S/P/I 요약 카드, 상태/게이트 컬럼 토글, child rollup, 필터 공유), (5) 워크스페이스(마지막 선택 기억, 모드 인지 Sync/Git Pull, 등록 UI, 30초 폴링), (6) /healthz 심화 + dotfiles 운영 3건, (7) NAS 재배포(사용자 확인 게이트).\n\n설계 스펙: docs/superpowers/specs/2026-07-05-beads-ui-workflow-contract-alignment-design.md (커밋 93c00fb, 설계는 브레인스토밍 세션에서 목업 기반 사용자 승인 완료)",
+  "status": "open",
+  "priority": 1,
+  "issue_type": "epic",
+  "owner": "nakkulla@gmail.com",
+  "created_at": "2026-07-06T03:57:00Z",
+  "created_by": "ilsun yun",
+  "updated_at": "2026-07-06T04:29:12Z",
+  "metadata": {
+    "next_gate": "plan_review",
+    "spec_id": "docs/superpowers/specs/2026-07-05-beads-ui-workflow-contract-alignment-design.md",
+    "spec_review_external_attempts": 2,
+    "spec_review_final_source": "self",
+    "spec_review_verdict": "APPROVE",
+    "spec_reviewed_at_sha": "63d094cba6359cd46e7e92f2068487df87d69351"
+  },
+  "labels": [
+    "has:spec",
+    "reviewed:spec"
+  ],
+  "dependent_count": 0,
+  "dependency_count": 0,
+  "comment_count": 1
+}

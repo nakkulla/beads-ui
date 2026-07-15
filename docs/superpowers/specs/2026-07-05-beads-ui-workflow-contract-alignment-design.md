@@ -1,3 +1,5 @@
+> **⚠️ SUPERSEDED (2026-07-15):** 이 문서는 v3-era 계약(`next_gate` 등) 기준으로 작성되어 폐기되었다. `docs/superpowers/specs/2026-07-15-beads-ui-redesign-mac-studio-canonical-design.md`(epic UI-lo1k)가 전면 대체한다. 배경 참고용으로만 보존. 연계 Bead UI-32ih는 JSON export(`assets/retired-issues-20260715/UI-32ih.json`) 후 삭제됨.
+
 # beads-ui 신 workflow 계약 정합 + 전면 개선 — 설계 스펙
 
 - **날짜:** 2026-07-05
