@@ -9,7 +9,7 @@
  * - Server can also send unsolicited events (e.g., subscription `snapshot`).
  */
 
-/** @typedef {'list-issues'|'update-status'|'edit-text'|'update-priority'|'create-issue'|'list-ready'|'dep-add'|'dep-remove'|'epic-status'|'update-assignee'|'update-workflow-settings'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'get-workspace'|'workspace-changed'|'sync-workspace'|'git-pull-workspace'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'dep-add'|'dep-remove'|'update-assignee'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'get-workspace'|'workspace-changed'|'sync-workspace'|'git-pull-workspace'} MessageType */
 
 /**
  * @typedef {Object} RequestEnvelope
@@ -36,17 +36,13 @@
 
 /** @type {MessageType[]} */
 export const MESSAGE_TYPES = /** @type {const} */ ([
-  'list-issues',
   'update-status',
   'edit-text',
   'update-priority',
   'create-issue',
-  'list-ready',
   'dep-add',
   'dep-remove',
-  'epic-status',
   'update-assignee',
-  'update-workflow-settings',
   'label-add',
   'label-remove',
   'subscribe-list',

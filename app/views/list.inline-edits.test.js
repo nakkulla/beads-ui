@@ -152,7 +152,7 @@ describe('views/list inline edits', () => {
     /** @type {(type: string, payload?: any) => Promise<any>} */
     const send = vi.fn(async (type, payload) => {
       spy.calls.push({ type, payload });
-      // no list-issues requests in push-only mode
+      // no list read requests in push-only mode
       if (type === 'update-priority') {
         const id = payload.id;
         const idx = current.findIndex((x) => x.id === id);

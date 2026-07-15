@@ -22,5 +22,5 @@
     "test/**/*.js",
     "vitest.config.mjs"
   ],
-  "exclude": ["app/main.bundle.js", "app/main.bundle.js.map"]
+  "exclude": ["app/main.bundle.js", "app/main.bundle.js.map", ".worktrees"]
 }

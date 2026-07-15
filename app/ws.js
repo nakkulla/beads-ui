@@ -7,7 +7,7 @@
  *
  * Usage:
  *   const ws = createWsClient();
- *   const data = await ws.send('list-issues', { filters: {} });
+ *   const data = await ws.send('update-status', { id, status: 'open' });
  *   const off = ws.on('snapshot', (payload) => { <push event> });
  */
 import { MESSAGE_TYPES, makeRequest, nextId } from './protocol.js';

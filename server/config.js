@@ -15,56 +15,6 @@ const DEFAULT_WORKSPACE_CONFIG = {
   scan_roots: [],
   workspaces: []
 };
-const WORKFLOW_SECTION_FIELDS = {
-  workflow_settings: [
-    'execution_lane',
-    'workspace_policy',
-    'branch_policy',
-    'finish_action',
-    'review_profile',
-    'review_runtime'
-  ],
-  artifacts: ['spec_id', 'plan', 'handoff'],
-  review_gates: [
-    'status',
-    'verdict',
-    'final_source',
-    'external_attempts',
-    'reviewed_at_sha',
-    'content_hash'
-  ],
-  freshness: [
-    'execution_base_sha',
-    'spec_freshness_checked_at_sha',
-    'plan_freshness_checked_at_sha',
-    'spec_handoff_at_sha',
-    'spec_handoff_content_hash'
-  ],
-  delivery: ['pr_url'],
-  followup: [
-    'followup_kind',
-    'source_repo',
-    'source_bead',
-    'source_artifact',
-    'source_pr',
-    'target_repo',
-    'target_paths',
-    'required_action'
-  ],
-  human: ['human_decision_required']
-};
-const WORKFLOW_SECTIONS = Object.keys(WORKFLOW_SECTION_FIELDS);
-const EDITABLE_WORKFLOW_FIELDS = {
-  workflow_settings: [
-    'execution_lane',
-    'workspace_policy',
-    'branch_policy',
-    'finish_action',
-    'review_profile',
-    'review_runtime'
-  ]
-};
-
 /**
  * @param {unknown} value
  * @returns {string[]}
@@ -155,107 +105,6 @@ function normalizeLabelColorPolicy(value) {
 
 /**
  * @param {unknown} value
- * @param {string[]} allowed
- * @param {string[]} fallback
- * @returns {string[]}
- */
-function normalizeStringAllowlist(value, allowed, fallback) {
-  if (!Array.isArray(value)) {
-    return fallback.slice();
-  }
-
-  const allowed_set = new Set(allowed);
-  /** @type {string[]} */
-  const normalized = [];
-  for (const entry of value) {
-    if (
-      typeof entry === 'string' &&
-      allowed_set.has(entry) &&
-      !normalized.includes(entry)
-    ) {
-      normalized.push(entry);
-    }
-  }
-
-  return normalized;
-}
-
-/**
- * @param {any} parsed
- * @returns {{
- *   sections: string[],
- *   workflow_settings: { fields: string[], editable_fields: string[] },
- *   artifacts: { fields: string[] },
- *   review_gates: { fields: string[] },
- *   freshness: { fields: string[] },
- *   delivery: { fields: string[] },
- *   followup: { fields: string[] },
- *   human: { fields: string[] }
- * }}
- */
-function normalizeWorkflowSummaryConfig(parsed) {
-  const raw = parsed?.detail?.workflow_summary;
-  const raw_sections = Array.isArray(raw?.sections) ? raw.sections : undefined;
-  const requested_sections = Array.isArray(raw_sections)
-    ? raw_sections.map((section) =>
-        section === 'route' ? 'workflow_settings' : section
-      )
-    : undefined;
-  const sections = normalizeStringAllowlist(
-    requested_sections,
-    WORKFLOW_SECTIONS,
-    WORKFLOW_SECTIONS
-  );
-
-  /** @type {Record<string, { fields: string[], editable_fields?: string[] }>} */
-  const section_config = {};
-  for (const section of WORKFLOW_SECTIONS) {
-    const allowed_fields =
-      WORKFLOW_SECTION_FIELDS[
-        /** @type {keyof typeof WORKFLOW_SECTION_FIELDS} */ (section)
-      ] || [];
-    const default_editable_fields =
-      EDITABLE_WORKFLOW_FIELDS[
-        /** @type {keyof typeof EDITABLE_WORKFLOW_FIELDS} */ (section)
-      ] || [];
-    const legacy_section_raw =
-      section === 'workflow_settings' ? raw?.route : null;
-    const section_raw = raw?.[section] || legacy_section_raw;
-    const legacy_section = Boolean(!raw?.[section] && legacy_section_raw);
-    let fields = normalizeStringAllowlist(
-      section_raw?.fields,
-      allowed_fields,
-      allowed_fields
-    );
-    let editable_fields = normalizeStringAllowlist(
-      section_raw?.editable_fields,
-      default_editable_fields,
-      default_editable_fields
-    );
-
-    if (legacy_section && fields.length < allowed_fields.length) {
-      fields = allowed_fields.slice();
-    }
-    if (
-      legacy_section &&
-      editable_fields.length < default_editable_fields.length
-    ) {
-      editable_fields = default_editable_fields.slice();
-    }
-
-    section_config[section] =
-      editable_fields.length > 0 ? { fields, editable_fields } : { fields };
-  }
-
-  return /** @type {any} */ ({ sections, ...section_config });
-}
-
-export const DEFAULT_WORKFLOW_SUMMARY_CONFIG = normalizeWorkflowSummaryConfig(
-  {}
-);
-
-/**
- * @param {unknown} value
  * @returns {string | null}
  */
 function normalizeWorkspacePath(value) {
@@ -318,7 +167,6 @@ function normalizeWorkspaceConfig(parsed) {
  *       exact: Record<string, { fg: string }>
  *     }
  *   },
- *   detail: { workflow_summary: typeof DEFAULT_WORKFLOW_SUMMARY_CONFIG },
  *   workspace_config: {
  *     default_workspace: string | null,
  *     scan_roots: string[],
@@ -340,9 +188,6 @@ function readRuntimeConfig(config_path) {
         visible_exact: normalizeVisibleExact(parsed?.labels?.visible_exact),
         colors: normalizeLabelColorPolicy(parsed?.labels?.colors)
       },
-      detail: {
-        workflow_summary: normalizeWorkflowSummaryConfig(parsed)
-      },
       workspace_config: normalizeWorkspaceConfig(parsed)
     };
   } catch (error) {
@@ -361,9 +206,6 @@ function readRuntimeConfig(config_path) {
         visible_prefixes: DEFAULT_VISIBLE_PREFIXES.slice(),
         visible_exact: DEFAULT_VISIBLE_EXACT.slice(),
         colors: { prefix: {}, exact: {} }
-      },
-      detail: {
-        workflow_summary: normalizeWorkflowSummaryConfig({})
       },
       workspace_config: {
         default_workspace: DEFAULT_WORKSPACE_CONFIG.default_workspace,
@@ -400,7 +242,6 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *       exact: Record<string, { fg: string }>
  *     }
  *   },
- *   detail: { workflow_summary: typeof DEFAULT_WORKFLOW_SUMMARY_CONFIG },
  *   workspace_config: {
  *     default_workspace: string | null,
  *     scan_roots: string[],

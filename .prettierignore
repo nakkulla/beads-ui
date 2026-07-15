@@ -2,6 +2,9 @@ node_modules
 coverage
 dist
 .beads
+.worktrees/
+.superpowers/
+docs/superpowers/
 CHANGES.md
 app/main.bundle.js
 app/main.bundle.js.map

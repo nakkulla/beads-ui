@@ -29,21 +29,6 @@ const UPDATE_STATUS_ALLOWED = new Set([
   'closed'
 ]);
 
-const WORKFLOW_LANES = new Set(['quick_edit', 'spec_backed', 'plan']);
-const WORKSPACE_POLICIES = new Set(['current', 'worktree']);
-const BRANCH_POLICIES = new Set(['same', 'feature']);
-const FINISH_ACTIONS = new Set(['direct', 'pr']);
-const REVIEW_PROFILES = new Set(['light', 'standard', 'deep']);
-const REVIEW_RUNTIMES = new Set(['codex', 'claude']);
-const VALID_ROUTE_TUPLES = new Set([
-  'current\0same\0direct',
-  'current\0feature\0direct',
-  'current\0feature\0pr',
-  'worktree\0feature\0direct',
-  'worktree\0feature\0pr'
-]);
-const LANE_LABELS = ['lane:quick_edit', 'lane:spec_backed', 'lane:plan'];
-
 /**
  * Debounced refresh scheduling for active list subscriptions.
  * A trailing window coalesces rapid change bursts into a single refresh run.
@@ -420,138 +405,6 @@ function getGitUserNameInWorkspace(ws) {
   }
 
   return getGitUserName({ cwd: root_dir });
-}
-
-/**
- * @param {string} workspace_policy
- * @param {string} branch_policy
- * @param {string} finish_action
- */
-function routeTupleKey(workspace_policy, branch_policy, finish_action) {
-  return `${workspace_policy}\0${branch_policy}\0${finish_action}`;
-}
-
-/**
- * @param {unknown} payload
- * @returns {{ ok: true, id: string, values: { execution_lane: string, workspace_policy: string, branch_policy: string, finish_action: string, review_profile: string | null, review_runtime: string | null } } | { ok: false, code: string, message: string }}
- */
-function validateWorkflowSettingsPayload(payload) {
-  const body = /** @type {any} */ (payload || {});
-  const id = typeof body.id === 'string' ? body.id.trim() : '';
-  const values =
-    body.values && typeof body.values === 'object' ? body.values : null;
-  if (!id || !values) {
-    return {
-      ok: false,
-      code: 'bad_request',
-      message: 'Invalid workflow settings payload'
-    };
-  }
-
-  const execution_lane = values.execution_lane;
-  const workspace_policy = values.workspace_policy;
-  const branch_policy = values.branch_policy;
-  const finish_action = values.finish_action;
-  const review_profile = values.review_profile;
-  const review_runtime = values.review_runtime;
-  if (
-    typeof execution_lane !== 'string' ||
-    !WORKFLOW_LANES.has(execution_lane)
-  ) {
-    return {
-      ok: false,
-      code: 'bad_request',
-      message: 'Invalid execution lane'
-    };
-  }
-  if (
-    typeof workspace_policy !== 'string' ||
-    !WORKSPACE_POLICIES.has(workspace_policy)
-  ) {
-    return {
-      ok: false,
-      code: 'bad_request',
-      message: 'Invalid workspace policy'
-    };
-  }
-  if (
-    typeof branch_policy !== 'string' ||
-    !BRANCH_POLICIES.has(branch_policy)
-  ) {
-    return {
-      ok: false,
-      code: 'bad_request',
-      message: 'Invalid branch policy'
-    };
-  }
-  if (typeof finish_action !== 'string' || !FINISH_ACTIONS.has(finish_action)) {
-    return {
-      ok: false,
-      code: 'bad_request',
-      message: 'Invalid finish action'
-    };
-  }
-  if (
-    !VALID_ROUTE_TUPLES.has(
-      routeTupleKey(workspace_policy, branch_policy, finish_action)
-    )
-  ) {
-    return {
-      ok: false,
-      code: 'bad_request',
-      message: 'Invalid route tuple'
-    };
-  }
-  if (
-    review_profile !== null &&
-    (typeof review_profile !== 'string' || !REVIEW_PROFILES.has(review_profile))
-  ) {
-    return {
-      ok: false,
-      code: 'bad_request',
-      message: 'Invalid review profile'
-    };
-  }
-  if (
-    review_runtime !== null &&
-    (typeof review_runtime !== 'string' || !REVIEW_RUNTIMES.has(review_runtime))
-  ) {
-    return {
-      ok: false,
-      code: 'bad_request',
-      message: 'Invalid review runtime'
-    };
-  }
-
-  return {
-    ok: true,
-    id,
-    values: {
-      execution_lane,
-      workspace_policy,
-      branch_policy,
-      finish_action,
-      review_profile,
-      review_runtime
-    }
-  };
-}
-
-/**
- * @param {unknown} value
- * @returns {Record<string, unknown> | null}
- */
-function normalizeShownIssue(value) {
-  if (Array.isArray(value)) {
-    const first = value[0];
-    return first && typeof first === 'object' && !Array.isArray(first)
-      ? /** @type {Record<string, unknown>} */ (first)
-      : null;
-  }
-
-  return value && typeof value === 'object'
-    ? /** @type {Record<string, unknown>} */ (value)
-    : null;
 }
 
 /**
@@ -1217,7 +1070,7 @@ export async function handleMessage(ws, data) {
 
   // Removed: subscribe-updates and subscribe-issues. No-ops in v2.
 
-  // list-issues and epic-status were removed in favor of push-only subscriptions
+  // Legacy read RPCs were removed in favor of push-only subscriptions
 
   // Removed: show-issue. Details flow is push-only via `subscribe-list { type: 'issue-detail' }`.
 
@@ -1263,88 +1116,6 @@ export async function handleMessage(ws, data) {
       return;
     }
     ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
-    try {
-      triggerMutationRefreshOnce();
-    } catch {
-      // ignore
-    }
-    return;
-  }
-
-  // update-workflow-settings
-  if (req.type === 'update-workflow-settings') {
-    const validation = validateWorkflowSettingsPayload(req.payload);
-    if (!validation.ok) {
-      ws.send(
-        JSON.stringify(makeError(req, validation.code, validation.message))
-      );
-      return;
-    }
-
-    const values = validation.values;
-    const args = [
-      'update',
-      validation.id,
-      '--set-metadata',
-      `execution_lane=${values.execution_lane}`,
-      '--set-metadata',
-      `workspace_policy=${values.workspace_policy}`,
-      '--set-metadata',
-      `branch_policy=${values.branch_policy}`,
-      '--set-metadata',
-      `finish_action=${values.finish_action}`
-    ];
-    if (values.review_profile === null) {
-      args.push('--unset-metadata', 'review_profile');
-    } else {
-      args.push('--set-metadata', `review_profile=${values.review_profile}`);
-    }
-    if (values.review_runtime === null) {
-      args.push('--unset-metadata', 'review_runtime');
-    } else {
-      args.push('--set-metadata', `review_runtime=${values.review_runtime}`);
-    }
-    for (const label of LANE_LABELS) {
-      args.push('--remove-label', label);
-    }
-    args.push('--add-label', `lane:${values.execution_lane}`);
-
-    const res = await runBdInWorkspace(ws, args);
-    if (res.code !== 0) {
-      ws.send(
-        JSON.stringify(
-          makeError(
-            req,
-            'bd_error',
-            'Failed to update workflow settings',
-            res.stderr
-          )
-        )
-      );
-      return;
-    }
-
-    const shown = await runBdJsonInWorkspace(ws, [
-      'show',
-      validation.id,
-      '--json'
-    ]);
-    const issue = normalizeShownIssue(shown.stdoutJson);
-    if (shown.code !== 0 || !issue) {
-      ws.send(
-        JSON.stringify(
-          makeError(
-            req,
-            'bd_error',
-            'Failed to read updated issue',
-            shown.stderr
-          )
-        )
-      );
-      return;
-    }
-
-    ws.send(JSON.stringify(makeOk(req, issue)));
     try {
       triggerMutationRefreshOnce();
     } catch {

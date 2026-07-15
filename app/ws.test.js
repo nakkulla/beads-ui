@@ -82,7 +82,7 @@ describe('app/ws client', () => {
     // open connection
     sockets[0].openNow();
 
-    const p1 = client.send('list-issues', { filters: {} });
+    const p1 = client.send('get-comments', { id: 'UI-1' });
     const p2 = client.send('edit-text', {
       id: 'UI-1',
       field: 'title',
@@ -106,40 +106,12 @@ describe('app/ws client', () => {
     sockets[0].emitMessage({
       id: id1,
       ok: true,
-      type: 'list-issues',
+      type: 'get-comments',
       payload: [{ id: 'UI-1' }]
     });
 
     await expect(p2).resolves.toEqual({ id: 'UI-1' });
     await expect(p1).resolves.toEqual([{ id: 'UI-1' }]);
-  });
-
-  test('allows update-workflow-settings requests', async () => {
-    const sockets = setupFakeWebSocket();
-    const client = createWsClient({ url: 'ws://example.test/ws' });
-    sockets[0].openNow();
-
-    const promise = client.send('update-workflow-settings', {
-      id: 'UI-1',
-      values: {
-        execution_lane: 'plan',
-        workspace_policy: 'worktree',
-        branch_policy: 'feature',
-        finish_action: 'pr',
-        review_profile: null,
-        review_runtime: null
-      }
-    });
-    const frame = JSON.parse(sockets[0].sent.at(-1));
-    sockets[0].emitMessage({
-      id: frame.id,
-      ok: true,
-      type: 'update-workflow-settings',
-      payload: { id: 'UI-1' }
-    });
-
-    await expect(promise).resolves.toEqual({ id: 'UI-1' });
-    client.close();
   });
 
   test('reconnects after close', async () => {

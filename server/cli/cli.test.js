@@ -146,11 +146,6 @@ describe('main', () => {
         visible_exact: [],
         colors: { prefix: {}, exact: {} }
       },
-      detail: /** @type {any} */ ({
-        workflow_summary: {
-          sections: []
-        }
-      }),
       workspace_config: {
         default_workspace: null,
         scan_roots: [],

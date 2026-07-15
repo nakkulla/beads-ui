@@ -82,7 +82,10 @@ describe('isOriginAllowed — no allowlist configured (loopback-only default)', 
 describe('attachWsServer wires verifyClient', () => {
   test('the WebSocketServer is constructed with an Origin verifyClient', () => {
     const server = createServer();
-    const { wss } = attachWsServer(server, { path: '/ws', root_dir: '/repo-a' });
+    const { wss } = attachWsServer(server, {
+      path: '/ws',
+      root_dir: '/repo-a'
+    });
     expect(typeof wss.options.verifyClient).toBe('function');
     wss.close();
     server.close();

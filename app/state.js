@@ -44,15 +44,7 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ sections: string[], [section: string]: unknown }} WorkflowSummaryConfig
- */
-
-/**
- * @typedef {{ workflow_summary: WorkflowSummaryConfig }} DetailConfig
- */
-
-/**
- * @typedef {{ label_display_policy?: Partial<LabelDisplayPolicy>, workspace_config?: WorkspaceConfig, detail?: any }} AppConfig
+ * @typedef {{ label_display_policy?: Partial<LabelDisplayPolicy>, workspace_config?: WorkspaceConfig }} AppConfig
  */
 
 /**
@@ -70,7 +62,7 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState, config: { label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig, detail: DetailConfig } }} AppState
+ * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, board: BoardState, worker: WorkerState, workspace: WorkspaceState, config: { label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig } }} AppState
  */
 
 const DEFAULT_CONFIG = Object.freeze({
@@ -84,82 +76,10 @@ const DEFAULT_CONFIG = Object.freeze({
   },
   workspace_config: {
     default_workspace: null
-  },
-  detail: {
-    workflow_summary: {
-      sections: [
-        'workflow_settings',
-        'artifacts',
-        'review_gates',
-        'freshness',
-        'delivery',
-        'followup',
-        'human'
-      ],
-      workflow_settings: {
-        fields: [
-          'execution_lane',
-          'workspace_policy',
-          'branch_policy',
-          'finish_action',
-          'review_profile'
-        ],
-        editable_fields: [
-          'execution_lane',
-          'workspace_policy',
-          'branch_policy',
-          'finish_action',
-          'review_profile'
-        ]
-      },
-      artifacts: { fields: ['spec_id', 'plan', 'handoff'] },
-      review_gates: {
-        fields: [
-          'status',
-          'verdict',
-          'final_source',
-          'external_attempts',
-          'reviewed_at_sha',
-          'content_hash'
-        ]
-      },
-      freshness: {
-        fields: [
-          'execution_base_sha',
-          'spec_freshness_checked_at_sha',
-          'plan_freshness_checked_at_sha',
-          'spec_handoff_at_sha',
-          'spec_handoff_content_hash'
-        ]
-      },
-      delivery: { fields: ['pr_url'] },
-      followup: {
-        fields: [
-          'followup_kind',
-          'source_repo',
-          'source_bead',
-          'source_artifact',
-          'source_pr',
-          'target_repo',
-          'target_paths',
-          'required_action'
-        ]
-      },
-      human: { fields: ['human_decision_required'] }
-    }
   }
 });
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-
-/**
- * @template T
- * @param {T} value
- * @returns {T}
- */
-function cloneJson(value) {
-  return JSON.parse(JSON.stringify(value));
-}
 
 /**
  * @param {unknown} value
@@ -212,7 +132,7 @@ function normalizeLabelColorPolicy(value) {
 
 /**
  * @param {AppConfig | undefined} input
- * @returns {{ label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig, detail: DetailConfig }}
+ * @returns {{ label_display_policy: LabelDisplayPolicy, workspace_config: WorkspaceConfig }}
  */
 function normalizeConfig(input) {
   const prefixes = input?.label_display_policy?.visible_prefixes;
@@ -223,10 +143,6 @@ function normalizeConfig(input) {
     input.workspace_config.default_workspace.length > 0
       ? input.workspace_config.default_workspace
       : null;
-  const detail =
-    input?.detail && typeof input.detail === 'object'
-      ? cloneJson(input.detail)
-      : cloneJson(DEFAULT_CONFIG.detail);
 
   if (!Array.isArray(prefixes)) {
     return {
@@ -240,8 +156,7 @@ function normalizeConfig(input) {
       },
       workspace_config: {
         default_workspace
-      },
-      detail: /** @type {DetailConfig} */ (detail)
+      }
     };
   }
 
@@ -255,8 +170,7 @@ function normalizeConfig(input) {
     },
     workspace_config: {
       default_workspace
-    },
-    detail: /** @type {DetailConfig} */ (detail)
+    }
   };
 }
 
@@ -364,9 +278,7 @@ export function createStore(initial = {}) {
         JSON.stringify(next.config.label_display_policy.colors) !==
           JSON.stringify(state.config.label_display_policy.colors) ||
         next.config.workspace_config.default_workspace !==
-          state.config.workspace_config.default_workspace ||
-        JSON.stringify(next.config.detail) !==
-          JSON.stringify(state.config.detail);
+          state.config.workspace_config.default_workspace;
       if (
         next.selected_id === state.selected_id &&
         next.view === state.view &&

@@ -65,12 +65,6 @@ describe('server/protocol', () => {
     expect(res).toBe(true);
   });
 
-  test('recognizes update-workflow-settings message type', () => {
-    const res = isMessageType('update-workflow-settings');
-
-    expect(res).toBe(true);
-  });
-
   test('isMessageType returns true for sync-workspace', () => {
     const res = isMessageType('sync-workspace');
 

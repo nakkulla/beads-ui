@@ -16,10 +16,6 @@ if (typeof HTMLDialogElement !== 'undefined') {
 
 // Capture calls and provide simple responses
 const calls = /** @type {Array<{ type: string, payload: any }>} */ ([]);
-const issues = [
-  { id: 'UI-10', title: 'Existing', status: 'open', priority: 2 },
-  { id: 'UI-200', title: 'Create me', status: 'open', priority: 1 }
-];
 vi.mock('./ws.js', () => ({
   createWsClient: () => ({
     /**
@@ -27,19 +23,9 @@ vi.mock('./ws.js', () => ({
      * @param {any} payload
      */
     async send(type, payload) {
-      // Record only mutation-related calls; list reads are push-only now
-      if (type === 'create-issue' || type === 'label-add') {
-        calls.push({ type, payload });
-      }
-      if (type === 'list-issues') {
-        // Provide data for legacy id-discovery path; do not record
-        return issues;
-      }
       if (type === 'create-issue') {
+        calls.push({ type, payload });
         return { created: true };
-      }
-      if (type === 'label-add') {
-        return issues[1];
       }
       return null;
     },
@@ -88,7 +74,7 @@ describe('UI-106 new issue flow', () => {
     expect(dlg.hasAttribute('open')).toBe(true);
   });
 
-  test('submit creates issue and navigates to details', async () => {
+  test('submit dispatches create-issue', async () => {
     calls.length = 0;
     document.body.innerHTML =
       '<header class="app-header"><div class="header-actions"><button id="new-issue-btn">New issue</button></div></header><main id="app"></main>';
@@ -128,20 +114,8 @@ describe('UI-106 new issue flow', () => {
     await Promise.resolve();
     await new Promise((r) => setTimeout(r, 0));
 
-    // Expect create call and label-add
+    // Expect the create-issue mutation to be dispatched
     const types = calls.map((c) => c.type);
     expect(types).toContain('create-issue');
-    expect(types).toContain('label-add');
-
-    // Details dialog opened for created id
-    const details = /** @type {HTMLDialogElement} */ (
-      document.getElementById('issue-dialog')
-    );
-    expect(details).not.toBeNull();
-    expect(details.hasAttribute('open')).toBe(true);
-    const titleEl = /** @type {HTMLElement} */ (
-      document.getElementById('issue-dialog-title')
-    );
-    expect(titleEl.textContent).toBe('UI-200');
   });
 });

@@ -53,15 +53,6 @@ describe('state store', () => {
         },
         workspace_config: {
           default_workspace: '/repo-a'
-        },
-        detail: {
-          workflow_summary: {
-            sections: ['workflow_settings'],
-            workflow_settings: {
-              fields: ['execution_lane'],
-              editable_fields: ['execution_lane']
-            }
-          }
         }
       }
     });
@@ -80,9 +71,6 @@ describe('state store', () => {
         pr: { fg: '#7c3aed' }
       }
     });
-    expect(store.getState().config.detail.workflow_summary.sections).toEqual([
-      'workflow_settings'
-    ]);
     expect(store.getState().config.workspace_config.default_workspace).toBe(
       '/repo-a'
     );

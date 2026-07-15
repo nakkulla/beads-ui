@@ -11,6 +11,7 @@ export default defineConfig([
       'coverage',
       'dist',
       '.beads',
+      '.worktrees/**',
       'app/main.bundle.js',
       'app/main.bundle.js.map'
     ]

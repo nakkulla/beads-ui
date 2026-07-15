@@ -2,7 +2,6 @@
  * @import { MessageType } from './protocol.js'
  */
 import { html, render } from 'lit-html';
-import { createListSelectors } from './data/list-selectors.js';
 import { createDataLayer } from './data/providers.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
@@ -36,69 +35,6 @@ const DEFAULT_CONFIG = {
   },
   workspace_config: {
     default_workspace: null
-  },
-  detail: {
-    workflow_summary: {
-      sections: [
-        'workflow_settings',
-        'artifacts',
-        'review_gates',
-        'freshness',
-        'delivery',
-        'followup',
-        'human'
-      ],
-      workflow_settings: {
-        fields: [
-          'execution_lane',
-          'workspace_policy',
-          'branch_policy',
-          'finish_action',
-          'review_profile'
-        ],
-        editable_fields: [
-          'execution_lane',
-          'workspace_policy',
-          'branch_policy',
-          'finish_action',
-          'review_profile'
-        ]
-      },
-      artifacts: { fields: ['spec_id', 'plan', 'handoff'] },
-      review_gates: {
-        fields: [
-          'status',
-          'verdict',
-          'final_source',
-          'external_attempts',
-          'reviewed_at_sha',
-          'content_hash'
-        ]
-      },
-      freshness: {
-        fields: [
-          'execution_base_sha',
-          'spec_freshness_checked_at_sha',
-          'plan_freshness_checked_at_sha',
-          'spec_handoff_at_sha',
-          'spec_handoff_content_hash'
-        ]
-      },
-      delivery: { fields: ['pr_url'] },
-      followup: {
-        fields: [
-          'followup_kind',
-          'source_repo',
-          'source_bead',
-          'source_artifact',
-          'source_pr',
-          'target_repo',
-          'target_paths',
-          'required_action'
-        ]
-      },
-      human: { fields: ['human_decision_required'] }
-    }
   }
 };
 
@@ -161,8 +97,7 @@ function normalizeLabelColorPolicy(value) {
  *       exact: Record<string, { fg: string }>
  *     }
  *   },
- *   workspace_config: { default_workspace: string | null },
- *   detail: any
+ *   workspace_config: { default_workspace: string | null }
  * }}
  */
 export function readBootstrapConfig() {
@@ -191,11 +126,7 @@ export function readBootstrapConfig() {
       },
       workspace_config: {
         default_workspace
-      },
-      detail:
-        bootstrap?.detail && typeof bootstrap.detail === 'object'
-          ? JSON.parse(JSON.stringify(bootstrap.detail))
-          : JSON.parse(JSON.stringify(DEFAULT_CONFIG.detail))
+      }
     };
   }
 
@@ -209,11 +140,7 @@ export function readBootstrapConfig() {
     },
     workspace_config: {
       default_workspace
-    },
-    detail:
-      bootstrap?.detail && typeof bootstrap.detail === 'object'
-        ? JSON.parse(JSON.stringify(bootstrap.detail))
-        : JSON.parse(JSON.stringify(DEFAULT_CONFIG.detail))
+    }
   };
 }
 
@@ -366,8 +293,6 @@ export function bootstrap(root_element) {
         }
       }
     });
-    // Derived list selectors: render from per-subscription snapshots
-    const listSelectors = createListSelectors(sub_issue_stores);
 
     /** @type {null | (() => Promise<void>)} */
     let unsub_detail = null;
@@ -505,10 +430,6 @@ export function bootstrap(root_element) {
         void unsub_issues_resolved().catch(() => {});
         unsub_issues_resolved = null;
       }
-      if (unsub_worker_all) {
-        void unsub_worker_all().catch(() => {});
-        unsub_worker_all = null;
-      }
       if (unsub_board_resolved) {
         void unsub_board_resolved().catch(() => {});
         unsub_board_resolved = null;
@@ -526,7 +447,6 @@ export function bootstrap(root_element) {
         'tab:issues',
         'tab:issues:resolved',
         'tab:issues:deferred',
-        'tab:worker:all',
         'tab:epics',
         'tab:board:ready',
         'tab:board:in-progress',
@@ -941,9 +861,7 @@ export function bootstrap(root_element) {
     // Global New Issue dialog (UI-106) mounted at root so it is always visible
     const new_issue_dialog = createNewIssueDialog(
       root_element,
-      (type, payload) => tracked_send(type, payload),
-      router,
-      store
+      (type, payload) => tracked_send(type, payload)
     );
     // Header button
     try {
@@ -957,27 +875,9 @@ export function bootstrap(root_element) {
       // ignore missing header
     }
 
-    // Local transport shim: for list-issues, serve from local listSelectors;
-    // otherwise forward to ws transport for mutations/show.
-    /**
-     * @param {MessageType} type
-     * @param {unknown} payload
-     */
-    const listTransport = async (type, payload) => {
-      if (type === 'list-issues') {
-        try {
-          return listSelectors.selectIssuesFor('tab:issues');
-        } catch (err) {
-          log('list selectors failed: %o', err);
-          return [];
-        }
-      }
-      return transport(type, payload);
-    };
-
     const issues_view = createListView(
       list_mount,
-      /** @type {any} */ (listTransport),
+      /** @type {any} */ (transport),
       (hash) => {
         const id = parseHash(hash);
         if (id) {
@@ -1101,105 +1001,9 @@ export function bootstrap(root_element) {
       sub_issue_stores,
       transport
     );
-    /** @type {Array<{ status?: string, issueId?: string, workspace?: string, command?: string, prNumber?: number }>} */
-    let worker_jobs = [];
-    /** @type {ReturnType<typeof setInterval> | null} */
-    let worker_jobs_timer = null;
-
-    async function refreshWorkerJobs() {
-      const workspace_path = store.getState().workspace.current?.path;
-      if (!workspace_path) {
-        worker_jobs = [];
-        return;
-      }
-      try {
-        const response = await fetch(
-          `/api/worker/jobs?workspace=${encodeURIComponent(workspace_path)}`
-        );
-        const payload = await response.json();
-        worker_jobs = Array.isArray(payload.items) ? payload.items : [];
-      } catch {
-        worker_jobs = [];
-      }
-    }
-
-    function stopWorkerJobsPolling() {
-      if (worker_jobs_timer) {
-        clearInterval(worker_jobs_timer);
-        worker_jobs_timer = null;
-      }
-    }
-
-    async function startWorkerJobsPolling() {
-      stopWorkerJobsPolling();
-      await refreshWorkerJobs();
-      worker_view.load();
-      worker_jobs_timer = setInterval(() => {
-        void refreshWorkerJobs().then(() => worker_view.load());
-      }, 3000);
-    }
-
-    /**
-     * @param {'bd-ralph'|'pr-review'} command
-     * @param {{ issueId?: string, prNumber?: number }} target
-     */
-    async function enqueueWorkerJob(command, target) {
-      const workspace_path = store.getState().workspace.current?.path;
-      if (!workspace_path) {
-        return;
-      }
-      await fetch('/api/worker/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          command,
-          workspace: workspace_path,
-          issueId: target.issueId,
-          prNumber: target.prNumber
-        })
-      });
-      await refreshWorkerJobs();
-      worker_view.load();
-    }
-
-    /**
-     * @param {string} job_id
-     */
-    async function cancelWorkerJob(job_id) {
-      const workspace_path = store.getState().workspace.current?.path;
-      if (!workspace_path) {
-        return;
-      }
-      await fetch(`/api/worker/jobs/${encodeURIComponent(job_id)}/cancel`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace: workspace_path })
-      });
-      await refreshWorkerJobs();
-      worker_view.load();
-    }
-
-    const worker_view = createWorkerView(worker_root, {
-      store,
-      issue_stores: sub_issue_stores,
-      fetch_impl: fetch,
-      getWorkerJobs: () => worker_jobs,
-      onRunRalph: (issue_id) =>
-        void enqueueWorkerJob('bd-ralph', { issueId: issue_id }),
-      onRunPrReview: (target) =>
-        void enqueueWorkerJob('pr-review', {
-          issueId:
-            typeof target === 'string'
-              ? target
-              : (target?.issueId ?? undefined),
-          prNumber:
-            typeof target === 'object' && typeof target?.prNumber === 'number'
-              ? target.prNumber
-              : undefined
-        }),
-      onCancelJob: (/** @type {string} */ job_id) =>
-        void cancelWorkerJob(job_id)
-    });
+    // Placeholder Worker view; the v3 worker board was excised pending a
+    // rebuilt queue console in a later phase.
+    const worker_view = createWorkerView(worker_root);
     // Preload epics when switching to view
     /**
      * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'worker', filters: any }} s
@@ -1213,8 +1017,6 @@ export function bootstrap(root_element) {
     let unsub_issues_resolved = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_issues_deferred = null;
-    /** @type {null | (() => Promise<void>)} */
-    let unsub_worker_all = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_board_ready = null;
     /** @type {null | (() => Promise<void>)} */
@@ -1424,38 +1226,6 @@ export function bootstrap(root_element) {
           } catch (err) {
             log('unregister issues:deferred failed: %o', err);
           }
-        }
-      }
-
-      // Worker tab
-      if (s.view === 'worker') {
-        try {
-          sub_issue_stores.register('tab:worker:all', { type: 'all-issues' });
-        } catch (err) {
-          log('register worker store failed: %o', err);
-        }
-        if (!unsub_worker_all && !pending_subscriptions.has('tab:worker:all')) {
-          pending_subscriptions.add('tab:worker:all');
-          void subscriptions
-            .subscribeList('tab:worker:all', { type: 'all-issues' })
-            .then((unsub) => {
-              unsub_worker_all = unsub;
-            })
-            .catch((err) => {
-              log('subscribe worker failed: %o', err);
-              showFatalFromError(err, 'worker');
-            })
-            .finally(() => {
-              pending_subscriptions.delete('tab:worker:all');
-            });
-        }
-      } else if (unsub_worker_all) {
-        void unsub_worker_all().catch(() => {});
-        unsub_worker_all = null;
-        try {
-          sub_issue_stores.unregister('tab:worker:all');
-        } catch (err) {
-          log('unregister worker store failed: %o', err);
         }
       }
 
@@ -1734,10 +1504,7 @@ export function bootstrap(root_element) {
         void board_view.load();
       }
       if (s.view === 'worker') {
-        void startWorkerJobsPolling();
         worker_view.load();
-      } else {
-        stopWorkerJobsPolling();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };

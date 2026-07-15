@@ -4,11 +4,7 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_WORKFLOW_SUMMARY_CONFIG } from './config.js';
 import { registerWorkspace } from './registry-watcher.js';
-import { createWorkerJobsRouter } from './routes/worker-jobs.js';
-import { createWorkerPrsRouter } from './routes/worker-prs.js';
-import { createWorkerSpecRouter } from './routes/worker-spec.js';
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
@@ -68,7 +64,6 @@ function normalizeLabelColorPolicy(value) {
  *     visible_exact?: string[],
  *     colors?: unknown
  *   },
- *   detail?: { workflow_summary?: unknown },
  *   workspace_config?: { default_workspace: string | null }
  * }} config
  * @returns {{
@@ -80,7 +75,6 @@ function normalizeLabelColorPolicy(value) {
  *       exact: Record<string, { fg: string }>
  *     }
  *   },
- *   detail: { workflow_summary: unknown },
  *   workspace_config: { default_workspace: string | null }
  * }}
  */
@@ -95,10 +89,6 @@ function toBootstrapPayload(config) {
   )
     ? config.label_display_policy.visible_exact.slice()
     : [];
-  const detail =
-    config.detail && typeof config.detail === 'object'
-      ? JSON.parse(JSON.stringify(config.detail))
-      : { workflow_summary: DEFAULT_WORKFLOW_SUMMARY_CONFIG };
 
   return {
     label_display_policy: {
@@ -106,7 +96,6 @@ function toBootstrapPayload(config) {
       visible_exact,
       colors: normalizeLabelColorPolicy(config.label_display_policy?.colors)
     },
-    detail,
     workspace_config: {
       default_workspace:
         typeof config.workspace_config?.default_workspace === 'string' &&
@@ -131,7 +120,7 @@ function escapeBootstrapJson(json) {
 /**
  * Create and configure the Express application.
  *
- * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[], visible_exact?: string[], colors?: unknown }, detail?: { workflow_summary?: unknown } }} config - Server configuration.
+ * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[], visible_exact?: string[], colors?: unknown } }} config - Server configuration.
  * @returns {Express} Configured Express app instance.
  */
 export function createApp(config) {
@@ -152,19 +141,6 @@ export function createApp(config) {
 
   // Enable JSON body parsing for API endpoints
   app.use(express.json());
-
-  app.use(
-    '/api/worker/spec',
-    createWorkerSpecRouter({ root_dir: config.root_dir })
-  );
-  app.use(
-    '/api/worker/prs',
-    createWorkerPrsRouter({ root_dir: config.root_dir })
-  );
-  app.use(
-    '/api/worker/jobs',
-    createWorkerJobsRouter({ root_dir: config.root_dir })
-  );
 
   // Register workspace endpoint - allows CLI to register workspaces dynamically
   // when the server is already running
