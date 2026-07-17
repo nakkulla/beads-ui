@@ -6,7 +6,15 @@
 /**
  * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'deferred'|'resolved'|'closed', priority?: number, issue_type?: string, created_at?: number | string, updated_at?: number, closed_at?: number }} IssueLite
  */
-import { cmpClosedDesc, cmpCreatedDescThenPriority } from './sort.js';
+import {
+  cmpClosedDesc,
+  cmpCreatedDescThenPriority,
+  cmpEffectiveRank
+} from './sort.js';
+
+/**
+ * @typedef {{ get: () => ({ revision: number, order: Record<string, number> } | null), subscribe?: (fn: () => void) => () => void }} UiOrderStore
+ */
 
 /**
  * Factory for list selectors.
@@ -14,10 +22,35 @@ import { cmpClosedDesc, cmpCreatedDescThenPriority } from './sort.js';
  * Source of truth is per-subscription stores providing snapshots for a given
  * client id. Central issues store fallback has been removed.
  *
+ * When a `ui_order_store` is supplied, non-closed columns sort by effective rank
+ * (spec §2 — the manual order replaces the priority secondary key); the Closed
+ * column always keeps `closed_at desc`. Omitting the store preserves the exact
+ * prior behaviour (created-desc-then-priority) so existing call sites compile and
+ * sort unchanged. `subscribe` fans out on BOTH issue and order changes so an
+ * order push re-renders every subscribed view without per-view wiring.
+ *
  * @param {{ snapshotFor?: (client_id: string) => IssueLite[], subscribe?: (fn: () => void) => () => void }} [issue_stores]
+ * @param {UiOrderStore} [ui_order_store]
  */
-export function createListSelectors(issue_stores = undefined) {
+export function createListSelectors(
+  issue_stores = undefined,
+  ui_order_store = undefined
+) {
   // Sorting comparators are centralized in app/data/sort.js
+
+  /**
+   * Current order map when a ui-order store is wired, else null (which selects
+   * the legacy created-desc-then-priority sort).
+   *
+   * @returns {Record<string, number> | null}
+   */
+  function currentOrder() {
+    if (!ui_order_store || typeof ui_order_store.get !== 'function') {
+      return null;
+    }
+    const snap = ui_order_store.get();
+    return snap && snap.order ? snap.order : {};
+  }
 
   /**
    * Get entities for a Board column with column-specific sort.
@@ -31,28 +64,45 @@ export function createListSelectors(issue_stores = undefined) {
       issue_stores && issue_stores.snapshotFor
         ? issue_stores.snapshotFor(client_id).slice()
         : [];
-    if (mode === 'in_progress' || mode === 'resolved') {
-      arr.sort(cmpCreatedDescThenPriority);
-    } else if (mode === 'closed') {
+    if (mode === 'closed') {
       arr.sort(cmpClosedDesc);
+      return arr;
+    }
+    const order = currentOrder();
+    if (order) {
+      arr.sort(cmpEffectiveRank(order));
     } else {
-      // All non-closed board modes share the latest-first sort contract.
+      // No manual-order store: keep the legacy latest-first sort contract.
       arr.sort(cmpCreatedDescThenPriority);
     }
     return arr;
   }
 
   /**
-   * Subscribe for re-render; triggers once per issues envelope.
+   * Subscribe for re-render; triggers once per issues envelope and once per
+   * order snapshot.
    *
    * @param {() => void} fn
    * @returns {() => void}
    */
   function subscribe(fn) {
+    /** @type {Array<() => void>} */
+    const offs = [];
     if (issue_stores && typeof issue_stores.subscribe === 'function') {
-      return issue_stores.subscribe(fn);
+      offs.push(issue_stores.subscribe(fn));
     }
-    return () => {};
+    if (ui_order_store && typeof ui_order_store.subscribe === 'function') {
+      offs.push(ui_order_store.subscribe(fn));
+    }
+    return () => {
+      for (const off of offs) {
+        try {
+          off();
+        } catch {
+          /* ignore unsubscribe errors */
+        }
+      }
+    };
   }
 
   return {

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
+import { createUiOrderStore } from '../../data/ui-order-store.js';
 import { createBoardView } from './index.js';
 
 function createTestIssueStores() {
@@ -264,5 +266,128 @@ describe('views/board', () => {
     );
     btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(onNewIssue).toHaveBeenCalled();
+  });
+});
+
+describe('views/board same-column reorder', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * Seed a Ready column with three unranked issues (newest-first initial order
+   * RD-1, RD-2, RD-3 by descending created_at).
+   */
+  function seedReady() {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:ready', [
+      { id: 'RD-1', title: 'r1', status: 'open', created_at: 30_000 },
+      { id: 'RD-2', title: 'r2', status: 'open', created_at: 20_000 },
+      { id: 'RD-3', title: 'r3', status: 'open', created_at: 10_000 }
+    ]);
+    return stores;
+  }
+
+  /**
+   * Dispatch a drop event whose target is a specific card so the handler can
+   * derive the drop index from the card under the cursor.
+   *
+   * @param {HTMLElement} cardEl
+   * @param {string} issueId
+   */
+  function dropOnCard(cardEl, issueId) {
+    const ev = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, 'dataTransfer', {
+      value: { getData: () => issueId }
+    });
+    cardEl.dispatchEvent(ev);
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function readyOrder(mount) {
+    return Array.from(mount.querySelectorAll('#ready-col .board-card')).map(
+      (c) => c.getAttribute('data-issue-id') || ''
+    );
+  }
+
+  test('same-column drop emits ui-order-set and applies the order optimistically', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      revision: 1,
+      order: {}
+    });
+    const uiOrderStore = createUiOrderStore();
+    uiOrderStore.set({ revision: 0, order: {} });
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedReady(),
+      transport,
+      uiOrderStore
+    });
+    await view.load();
+    expect(readyOrder(mount)).toEqual(['RD-1', 'RD-2', 'RD-3']);
+
+    // Drag RD-3 to the top (drop onto RD-1's card, the current first slot).
+    const target = /** @type {HTMLElement} */ (
+      mount.querySelector('#ready-col .board-card[data-issue-id="RD-1"]')
+    );
+    dropOnCard(target, 'RD-3');
+
+    // RD-3 lands just above RD-1: rank = effRank(RD-1) - STEP = -30000 - STEP.
+    const expected_rank = -30_000 - RANK_STEP;
+    expect(transport).toHaveBeenCalledWith('ui-order-set', {
+      expected_revision: 0,
+      entries: [{ bead_id: 'RD-3', rank: expected_rank }]
+    });
+    // Optimistic local apply landed in the store BEFORE the server reply...
+    expect(uiOrderStore.get()?.order['RD-3']).toBe(expected_rank);
+    // ...and the DOM already reflects the new order.
+    expect(readyOrder(mount)).toEqual(['RD-3', 'RD-1', 'RD-2']);
+  });
+
+  test('conflict reply adopts the server snapshot and retries once', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: true,
+        revision: 5,
+        order: { 'RD-3': 999 }
+      })
+      .mockResolvedValueOnce({
+        applied: true,
+        conflict: false,
+        revision: 6,
+        order: { 'RD-3': -1_078_576 }
+      });
+    const uiOrderStore = createUiOrderStore();
+    uiOrderStore.set({ revision: 0, order: {} });
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedReady(),
+      transport,
+      uiOrderStore
+    });
+    await view.load();
+
+    const target = /** @type {HTMLElement} */ (
+      mount.querySelector('#ready-col .board-card[data-issue-id="RD-1"]')
+    );
+    dropOnCard(target, 'RD-3');
+
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+    // Retry carries the adopted revision (5).
+    const second = transport.mock.calls[1];
+    expect(second[0]).toBe('ui-order-set');
+    expect(second[1].expected_revision).toBe(5);
+    // Store ends on the applied server revision.
+    expect(uiOrderStore.get()?.revision).toBe(6);
   });
 });

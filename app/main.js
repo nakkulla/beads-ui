@@ -5,6 +5,7 @@ import { html, render } from 'lit-html';
 import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
+import { createUiOrderStore } from './data/ui-order-store.js';
 import { createWorkerQueueStore } from './data/worker-queue-store.js';
 import { createHashRouter } from './router.js';
 import { createStore } from './state.js';
@@ -190,6 +191,14 @@ const WORKER_SUBS = [
 const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
 
 /**
+ * Client id for the singleton per-workspace UI-order subscription. This channel
+ * is TAB-INDEPENDENT: Board and Worker share one manual order map, so it is
+ * subscribed once at bootstrap and only torn down / re-established on a workspace
+ * switch — never on a Board↔Worker tab change.
+ */
+const UI_ORDER_CLIENT_ID = 'ui:order';
+
+/**
  * Bootstrap the two-tab control-tower shell (Board / Worker) with a shared
  * detail overlay.
  *
@@ -285,6 +294,7 @@ export function bootstrap(root_element) {
     const subscriptions = createSubscriptionStore(tracked_send);
     const sub_issue_stores = createSubscriptionIssueStores();
     const worker_queue_store = createWorkerQueueStore();
+    const ui_order_store = createUiOrderStore();
     const session_log_store = createSessionLogStore();
 
     // Route worker-queue snapshots (unified push protocol; distinct top-level
@@ -294,6 +304,22 @@ export function bootstrap(root_element) {
       if (p && p.queue) {
         try {
           worker_queue_store.set(p.queue);
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    // Route manual UI-order snapshots (same unified push protocol) into the
+    // client-side order store shared by Board and Worker (spec §2).
+    client.on('ui-order-snapshot', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (p && typeof p.revision === 'number') {
+        try {
+          ui_order_store.set({
+            revision: p.revision,
+            order: p.order && typeof p.order === 'object' ? p.order : {}
+          });
         } catch {
           // ignore
         }
@@ -586,6 +612,39 @@ export function bootstrap(root_element) {
       }
     }
 
+    // --- UI-order subscription lifecycle (bootstrap singleton) ---
+    /** @type {(() => Promise<unknown>) | null} */
+    let ui_order_unsub = null;
+
+    /**
+     * Subscribe to the per-workspace manual UI-order channel exactly once. Not
+     * tied to any tab — Board and Worker both read the shared order map.
+     */
+    function subscribeUiOrder() {
+      if (ui_order_unsub) {
+        return;
+      }
+      void tracked_send('subscribe-ui-order', { id: UI_ORDER_CLIENT_ID }).catch(
+        (err) => {
+          log('subscribe-ui-order failed: %o', err);
+        }
+      );
+      ui_order_unsub = () =>
+        tracked_send('unsubscribe-ui-order', { id: UI_ORDER_CLIENT_ID });
+    }
+
+    /**
+     * Tear down the UI-order subscription and drop the cached order (the order
+     * map is per-workspace, so a workspace switch must not carry it over).
+     */
+    function clearUiOrderSubscription() {
+      if (ui_order_unsub) {
+        void ui_order_unsub().catch(() => {});
+        ui_order_unsub = null;
+      }
+      ui_order_store.clear();
+    }
+
     // --- Workspace management ---
     /**
      * Clear all subscriptions and stores, then re-establish for the active view.
@@ -595,6 +654,10 @@ export function bootstrap(root_element) {
       clearBoardSubscriptions();
       clearWorkerSubscriptions();
       worker_queue_store.clear();
+      // UI-order is a bootstrap singleton (not tab-scoped), but the order map is
+      // per-workspace — clear + resubscribe so the new workspace's order loads.
+      clearUiOrderSubscription();
+      subscribeUiOrder();
       resetDetailSubscription();
       const s = store.getState();
       if (s.selected_id) {
@@ -923,6 +986,7 @@ export function bootstrap(root_element) {
       gotoIssue: (id) => router.gotoIssue(id),
       issueStores: sub_issue_stores,
       transport,
+      uiOrderStore: ui_order_store,
       onNewIssue: () => new_issue_dialog.open()
     });
 
@@ -998,6 +1062,10 @@ export function bootstrap(root_element) {
     };
     store.subscribe(onRouteChange);
     onRouteChange(store.getState());
+
+    // UI-order is a shared, tab-independent singleton: subscribe once at startup
+    // (not from ensureBoard/WorkerSubscriptions) so it survives tab switches.
+    subscribeUiOrder();
 
     // Load workspaces after startup subscriptions can safely resubscribe.
     void loadWorkspaces().finally(() => {

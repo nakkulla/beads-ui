@@ -1,19 +1,25 @@
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
+import { computeDropRank } from '../../data/sort.js';
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
 import { columnTemplate } from './column.js';
 import { filterBarTemplate } from './filter-bar.js';
 
 /**
- * @typedef {import('./card.js').BoardCardIssue & { issue_type?: string, status?: string, closed_at?: number | null }} IssueLite
+ * @typedef {import('./card.js').BoardCardIssue & { issue_type?: string, status?: string, closed_at?: number | null, created_at?: number | string }} IssueLite
+ */
+
+/**
+ * @typedef {{ get: () => ({ revision: number, order: Record<string, number> } | null), set: (s: { revision: number, order: Record<string, number> } | null) => void, subscribe?: (fn: () => void) => () => void }} UiOrderStore
  */
 
 /**
  * @typedef {Object} BoardViewOptions
  * @property {(id: string) => void} gotoIssue
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
- * @property {(type: string, payload: unknown) => Promise<unknown>} [transport]
+ * @property {(type: string, payload: unknown) => Promise<any>} [transport]
+ * @property {UiOrderStore} [uiOrderStore]
  * @property {() => void} [onNewIssue]
  */
 
@@ -35,6 +41,19 @@ const DROP_STATUS_BY_COL = {
 };
 
 /**
+ * Columns whose cards share the manual rank map and support same-column
+ * reordering (spec §2). Closed is excluded — it keeps `closed_at desc`.
+ *
+ * @type {Set<string>}
+ */
+const REORDER_COLS = new Set([
+  'blocked-col',
+  'ready-col',
+  'in-progress-col',
+  'resolved-col'
+]);
+
+/**
  * Board view (control-tower v1): 5 columns — Blocked / Ready / In progress /
  * Resolved / Closed(collapsed strip). Push-only: composes columns from the
  * per-subscription issue stores via list-selectors. Card body is the v1
@@ -49,8 +68,11 @@ export function createBoardView(mount_element, options) {
   const gotoIssue = options.gotoIssue;
   const issueStores = options.issueStores;
   const transport = options.transport;
+  const uiOrderStore = options.uiOrderStore;
   const onNewIssue = options.onNewIssue;
-  const selectors = issueStores ? createListSelectors(issueStores) : null;
+  const selectors = issueStores
+    ? createListSelectors(issueStores, uiOrderStore)
+    : null;
 
   /** @type {IssueLite[]} */
   let list_blocked = [];
@@ -64,6 +86,8 @@ export function createBoardView(mount_element, options) {
   let list_closed = [];
   /** @type {Map<string, string>} */
   let status_by_id = new Map();
+  /** @type {Map<string, string>} */
+  let col_by_id = new Map();
   /** @type {Map<string, { id: string, title?: string, status?: string }[]>} */
   let children_by_parent = new Map();
   /** @type {Set<string>} */
@@ -155,6 +179,16 @@ export function createBoardView(mount_element, options) {
         for (const it of in_progress) status_by_id.set(it.id, 'in_progress');
         for (const it of resolved) status_by_id.set(it.id, 'resolved');
         for (const it of closed) status_by_id.set(it.id, 'closed');
+
+        // Column membership (id → column DOM id) so a drop can tell a same-column
+        // reorder from a cross-column status change (Blocked/Ready both 'open',
+        // so status alone is insufficient).
+        col_by_id = new Map();
+        for (const it of blocked) col_by_id.set(it.id, 'blocked-col');
+        for (const it of ready) col_by_id.set(it.id, 'ready-col');
+        for (const it of in_progress) col_by_id.set(it.id, 'in-progress-col');
+        for (const it of resolved) col_by_id.set(it.id, 'resolved-col');
+        for (const it of closed) col_by_id.set(it.id, 'closed-col');
 
         rebuildChildrenIndex([
           ...blocked,
@@ -469,6 +503,140 @@ export function createBoardView(mount_element, options) {
     }
   }
 
+  /**
+   * The full (pre-filter) sorted list backing a reorderable column.
+   *
+   * @param {string} col_id
+   * @returns {IssueLite[]}
+   */
+  function listForCol(col_id) {
+    switch (col_id) {
+      case 'blocked-col':
+        return list_blocked;
+      case 'ready-col':
+        return list_ready;
+      case 'in-progress-col':
+        return list_in_progress;
+      case 'resolved-col':
+        return list_resolved;
+      default:
+        return [];
+    }
+  }
+
+  /**
+   * Same-column reorder (spec §2 / §3.1): compute the dropped bead's new rank
+   * against the column's rendered order, apply it to the shared ui-order store
+   * optimistically, then persist via `ui-order-set`. On a CAS conflict, adopt
+   * the server snapshot, recompute against the fresh order, and retry once.
+   *
+   * @param {string} col_id
+   * @param {string} issue_id
+   * @param {HTMLElement} drop_target - The element the drop landed on.
+   */
+  function reorderInColumn(col_id, issue_id, drop_target) {
+    if (!transport || !uiOrderStore) {
+      return;
+    }
+    const rendered = applyFilters(listForCol(col_id));
+    const dragged = rendered.find((it) => it.id === issue_id);
+    if (!dragged) {
+      return;
+    }
+    const without = rendered.filter((it) => it.id !== issue_id);
+    const over_card = drop_target.closest
+      ? /** @type {HTMLElement | null} */ (drop_target.closest('.board-card'))
+      : null;
+    let insert_index = without.length;
+    if (over_card) {
+      const over_id = over_card.getAttribute('data-issue-id');
+      if (over_id === issue_id) {
+        // Dropped onto itself — no move.
+        return;
+      }
+      const j = without.findIndex((it) => it.id === over_id);
+      if (j >= 0) {
+        insert_index = j;
+      }
+    }
+    const final_list = without.slice();
+    final_list.splice(insert_index, 0, dragged);
+    void applyReorder(issue_id, final_list, insert_index);
+  }
+
+  /**
+   * @param {import('../../data/sort.js').DropRankResult} result
+   * @param {string} issue_id
+   * @returns {Array<{ bead_id: string, rank: number }>}
+   */
+  function entriesFor(result, issue_id) {
+    return 'renormalize' in result
+      ? result.renormalize
+      : [{ bead_id: issue_id, rank: result.rank }];
+  }
+
+  /**
+   * @param {{ revision: number, order: Record<string, number> }} base
+   * @param {Array<{ bead_id: string, rank: number }>} entries
+   */
+  function optimisticApply(base, entries) {
+    const merged = { ...base.order };
+    for (const e of entries) {
+      merged[e.bead_id] = e.rank;
+    }
+    if (uiOrderStore) {
+      uiOrderStore.set({ revision: base.revision, order: merged });
+    }
+  }
+
+  /**
+   * @param {string} issue_id
+   * @param {IssueLite[]} final_list
+   * @param {number} insert_index
+   */
+  async function applyReorder(issue_id, final_list, insert_index) {
+    if (!transport || !uiOrderStore) {
+      return;
+    }
+    const base = uiOrderStore.get() || { revision: 0, order: {} };
+    const entries = entriesFor(
+      computeDropRank(final_list, insert_index, base.order),
+      issue_id
+    );
+    optimisticApply(base, entries);
+    const res = await transport('ui-order-set', {
+      expected_revision: base.revision,
+      entries
+    });
+    if (res && res.conflict) {
+      const adopted = {
+        revision: typeof res.revision === 'number' ? res.revision : 0,
+        order: res.order || {}
+      };
+      uiOrderStore.set(adopted);
+      const entries2 = entriesFor(
+        computeDropRank(final_list, insert_index, adopted.order),
+        issue_id
+      );
+      optimisticApply(adopted, entries2);
+      const res2 = await transport('ui-order-set', {
+        expected_revision: adopted.revision,
+        entries: entries2
+      });
+      if (res2 && res2.applied) {
+        uiOrderStore.set({
+          revision: typeof res2.revision === 'number' ? res2.revision : 0,
+          order: res2.order || {}
+        });
+      }
+    } else if (res && res.applied) {
+      uiOrderStore.set({
+        revision: typeof res.revision === 'number' ? res.revision : 0,
+        order: res.order || {}
+      });
+    }
+  }
+
   function clearDropTarget() {
     for (const c of Array.from(
       mount_element.querySelectorAll('.board-column--drag-over')
@@ -523,7 +691,18 @@ export function createBoardView(mount_element, options) {
     if (!issue_id) {
       return;
     }
-    const new_status = DROP_STATUS_BY_COL[col.id];
+    const target_col_id = col.id;
+    const source_col_id = col_by_id.get(issue_id);
+    if (source_col_id && source_col_id === target_col_id) {
+      // Same-column drop = manual reorder (spec §2). Closed keeps closed_at desc
+      // and is not reorderable; other columns share the rank map.
+      if (REORDER_COLS.has(target_col_id)) {
+        reorderInColumn(target_col_id, issue_id, target);
+      }
+      return;
+    }
+    // Cross-column drop = status change (unchanged path).
+    const new_status = DROP_STATUS_BY_COL[target_col_id];
     if (!new_status) {
       // Blocked (or unknown) column is not a droppable status target.
       showToast('여기로는 옮길 수 없습니다', 'warning', 1500);
@@ -657,6 +836,7 @@ export function createBoardView(mount_element, options) {
       list_resolved = [];
       list_closed = [];
       status_by_id = new Map();
+      col_by_id = new Map();
     }
   };
 }
