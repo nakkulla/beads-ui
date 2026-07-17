@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createSessionLogStore } from '../../data/session-log-store.js';
+import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
+import { createUiOrderStore } from '../../data/ui-order-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { createWorkerView } from './index.js';
 
@@ -146,6 +148,93 @@ async function flush() {
   for (let i = 0; i < 5; i++) {
     await Promise.resolve();
   }
+}
+
+/**
+ * Ready A/C + Blocked B, all spec-eligible, with explicit created_at so the
+ * merged candidate lane has a deterministic effective-rank order.
+ */
+function seedMerged() {
+  const stores = createTestIssueStores();
+  seed(stores, 'tab:worker:ready', [
+    {
+      id: 'A',
+      title: 'ready A',
+      status: 'open',
+      created_at: 100,
+      metadata: { spec_id: 'S' }
+    },
+    {
+      id: 'C',
+      title: 'ready C',
+      status: 'open',
+      created_at: 300,
+      metadata: { spec_id: 'S' }
+    }
+  ]);
+  seed(stores, 'tab:worker:blocked', [
+    {
+      id: 'B',
+      title: 'blocked B',
+      status: 'open',
+      created_at: 200,
+      metadata: { spec_id: 'S' },
+      dependencies: ['DEP-1']
+    }
+  ]);
+  return stores;
+}
+
+/**
+ * @param {HTMLElement} mount
+ * @returns {string[]} Candidate lane bead ids in rendered order.
+ */
+function candidateOrder(mount) {
+  const cand = /** @type {HTMLElement} */ (
+    mount.querySelector('#worker-pane-candidate')
+  );
+  return Array.from(cand.querySelectorAll('.worker-mini')).map(
+    (el) => /** @type {HTMLElement} */ (el).dataset.beadId || ''
+  );
+}
+
+/**
+ * Simulate dragging a candidate mini and dropping it ONTO another candidate
+ * mini (so the drop's over-target is that row, not the pane).
+ *
+ * @param {HTMLElement} mount
+ * @param {string} bead_id
+ * @param {string} onto_bead_id
+ */
+function dragOnto(mount, bead_id, onto_bead_id) {
+  let stored = '';
+  const dt = {
+    getData: () => stored,
+    /**
+     * @param {string} _t
+     * @param {string} v
+     */
+    setData: (_t, v) => {
+      stored = v;
+    },
+    effectAllowed: '',
+    dropEffect: ''
+  };
+  const src = /** @type {HTMLElement} */ (
+    mount.querySelector(`.worker-mini[data-bead-id="${bead_id}"]`)
+  );
+  const ds = new Event('dragstart', { bubbles: true });
+  Object.defineProperty(ds, 'dataTransfer', { value: dt });
+  src.dispatchEvent(ds);
+
+  const onto = /** @type {HTMLElement} */ (
+    mount.querySelector(
+      `#worker-pane-candidate .worker-mini[data-bead-id="${onto_bead_id}"]`
+    )
+  );
+  const drop = new Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(drop, 'dataTransfer', { value: dt });
+  onto.dispatchEvent(drop);
 }
 
 describe('views/worker', () => {
@@ -416,5 +505,177 @@ describe('views/worker', () => {
         .querySelector('.rtile[data-attempt-id="a1"]')
         ?.classList.contains('rtile--sel')
     ).toBe(true);
+  });
+
+  test('candidate lane merges Ready+Blocked in effective-rank order (unranked newest-first)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedMerged(),
+      queueStore: createWorkerQueueStore(),
+      uiOrderStore: createUiOrderStore(),
+      transport: vi.fn()
+    });
+
+    // No manual rank yet: merged Ready(A,C)+Blocked(B) sort by -created_at, so
+    // newest first — C(300), B(200), A(100). Blocked B interleaves with Ready.
+    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
+  });
+
+  test('an explicit rank lifts a candidate above unranked ones (ranked beats unranked)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const uiOrderStore = createUiOrderStore();
+    // A gets a very-negative rank → sorts to the very top; C,B stay newest-first.
+    uiOrderStore.set({ revision: 1, order: { A: -1e15 } });
+    createWorkerView(mount, {
+      issueStores: seedMerged(),
+      queueStore: createWorkerQueueStore(),
+      uiOrderStore,
+      transport: vi.fn()
+    });
+
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+  });
+
+  test('dragging a candidate onto another sends ui-order-set + applies optimistically', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const uiOrderStore = createUiOrderStore();
+    // Deterministic starting order A(0) < B(STEP) < C(2*STEP) → A, B, C.
+    uiOrderStore.set({
+      revision: 4,
+      order: { A: 0, B: RANK_STEP, C: 2 * RANK_STEP }
+    });
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      revision: 5,
+      order: { A: 0, B: RANK_STEP, C: -RANK_STEP }
+    });
+    createWorkerView(mount, {
+      issueStores: seedMerged(),
+      queueStore: createWorkerQueueStore(),
+      uiOrderStore,
+      transport
+    });
+
+    expect(candidateOrder(mount)).toEqual(['A', 'B', 'C']);
+
+    // Drop C onto A (move C to the top). New rank = below(A=0) - STEP.
+    // The optimistic store apply is synchronous (before the awaited transport),
+    // so the lane reorders before any server round-trip.
+    dragOnto(mount, 'C', 'A');
+    expect(uiOrderStore.get()?.order.C).toBe(-RANK_STEP);
+    expect(candidateOrder(mount)).toEqual(['C', 'A', 'B']);
+
+    await flush();
+    expect(transport).toHaveBeenCalledWith('ui-order-set', {
+      expected_revision: 4,
+      entries: [{ bead_id: 'C', rank: -RANK_STEP }]
+    });
+  });
+
+  test('an order-only push re-renders the candidate lane', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const uiOrderStore = createUiOrderStore();
+    createWorkerView(mount, {
+      issueStores: seedMerged(),
+      queueStore: createWorkerQueueStore(),
+      uiOrderStore,
+      transport: vi.fn()
+    });
+
+    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
+
+    // A server order snapshot arrives (no issue-store push): A pinned to top.
+    uiOrderStore.set({ revision: 2, order: { A: -1e15 } });
+
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+  });
+
+  test('clicking the ⓘ opens the detail (gotoIssue), not the transcript drawer', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+    const gotoIssue = vi.fn();
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport,
+      gotoIssue
+    });
+
+    const info = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__info')
+    );
+    info.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    // ⓘ routes to the shared detail panel and never opens the transcript.
+    expect(gotoIssue).toHaveBeenCalledWith('S1');
+    expect(transport).not.toHaveBeenCalledWith(
+      'subscribe-session-log',
+      expect.anything()
+    );
+    expect(mount.querySelector('.sv')).toBeNull();
+  });
+
+  test('clicking the tile body (not the ⓘ) still opens the transcript drawer', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+    const sessionLogStore = createSessionLogStore();
+    sessionLogStore.set('a1', [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'go' }] }
+      }
+    ]);
+    const gotoIssue = vi.fn();
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      sessionLogStore,
+      transport,
+      gotoIssue
+    });
+
+    const title = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__title')
+    );
+    title.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(transport).toHaveBeenCalledWith('subscribe-session-log', {
+      id: 'session-log:a1',
+      attempt_id: 'a1'
+    });
+    expect(mount.querySelector('.sv')).not.toBeNull();
+    expect(gotoIssue).not.toHaveBeenCalled();
   });
 });

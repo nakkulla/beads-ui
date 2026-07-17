@@ -151,7 +151,7 @@ describe('main', () => {
         scan_roots: [],
         workspaces: []
       },
-      auth: { token: null }
+      poll_interval_seconds: 30
     });
 
     const code = await main(['resolve-startup-cwd']);

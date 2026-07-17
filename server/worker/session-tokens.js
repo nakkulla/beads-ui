@@ -5,12 +5,11 @@
  * into the session's environment (`BDUI_WORKER_TOKEN`). The session's finishing
  * preamble calls the merge-lock REST endpoint with that token as its bearer.
  *
- * This is a DISTINCT credential from the config auth token (`[auth] token` /
- * `Authorization: Bearer` for WS + REST surfaces): the config token is the
- * operator's network access gate and is long-lived; a session token is a
- * short-lived, per-attempt capability scoped to one repo's merge lock and
- * revoked when the attempt ends. A leaked session token can only touch its own
- * merge lock, never the workspace-mutation surface.
+ * This is the only credential in the system (WS/REST carry no token auth —
+ * spec §8): a session token is a short-lived, per-attempt capability scoped to
+ * one repo's merge lock and revoked when the attempt ends. A leaked session
+ * token can only touch its own merge lock, never the workspace-mutation
+ * surface.
  */
 import { randomBytes } from 'node:crypto';
 

@@ -2,9 +2,15 @@
  * @import { MessageType } from './protocol.js'
  */
 import { html, render } from 'lit-html';
+import {
+  DEFAULT_CLOSED_RANGE,
+  closedRangeSince,
+  isClosedRange
+} from './data/closed-range.js';
 import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
+import { createUiOrderStore } from './data/ui-order-store.js';
 import { createWorkerQueueStore } from './data/worker-queue-store.js';
 import { createHashRouter } from './router.js';
 import { createStore } from './state.js';
@@ -16,7 +22,6 @@ import { createDetailPanel } from './views/detail-panel/index.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
 import { createTopNav } from './views/nav.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
-import { createTokenDialog } from './views/token-dialog.js';
 import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
@@ -190,6 +195,18 @@ const WORKER_SUBS = [
 const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
 
 /**
+ * Client id for the singleton per-workspace UI-order subscription. This channel
+ * is TAB-INDEPENDENT: Board and Worker share one manual order map, so it is
+ * subscribed once at bootstrap and only torn down / re-established on a workspace
+ * switch — never on a Board↔Worker tab change.
+ */
+const UI_ORDER_CLIENT_ID = 'ui:order';
+
+/** Client id / localStorage key for the Board Closed column period (spec §3.2). */
+const CLOSED_CLIENT_ID = 'tab:board:closed';
+const CLOSED_RANGE_KEY = 'beads-ui.board.closed-range';
+
+/**
  * Bootstrap the two-tab control-tower shell (Board / Worker) with a shared
  * detail overlay.
  *
@@ -264,27 +281,13 @@ export function bootstrap(root_element) {
 
     const client = createWsClient();
 
-    // Auth-token prompt (Phase 6): on a 4401 auth-rejected close, prompt for a
-    // token, persist it (inside the dialog), and reconnect.
-    const token_dialog = createTokenDialog(root_element, {
-      onSubmit: () => {
-        if (typeof client.reconnect === 'function') {
-          client.reconnect();
-        }
-      }
-    });
-    if (typeof client.onAuthFailure === 'function') {
-      client.onAuthFailure(() => {
-        token_dialog.open();
-      });
-    }
-
     const tracked_send = activity.wrapSend((type, payload) =>
       client.send(type, payload)
     );
     const subscriptions = createSubscriptionStore(tracked_send);
     const sub_issue_stores = createSubscriptionIssueStores();
     const worker_queue_store = createWorkerQueueStore();
+    const ui_order_store = createUiOrderStore();
     const session_log_store = createSessionLogStore();
 
     // Route worker-queue snapshots (unified push protocol; distinct top-level
@@ -294,6 +297,22 @@ export function bootstrap(root_element) {
       if (p && p.queue) {
         try {
           worker_queue_store.set(p.queue);
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    // Route manual UI-order snapshots (same unified push protocol) into the
+    // client-side order store shared by Board and Worker (spec §2).
+    client.on('ui-order-snapshot', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (p && typeof p.revision === 'number') {
+        try {
+          ui_order_store.set({
+            revision: p.revision,
+            order: p.order && typeof p.order === 'object' ? p.order : {}
+          });
         } catch {
           // ignore
         }
@@ -462,6 +481,33 @@ export function bootstrap(root_element) {
     /** @type {Set<string>} */
     const pending_subscriptions = new Set();
 
+    // Closed column period (spec §3.2): the closed-issues subscription carries a
+    // `params.since` bound derived from this range, applied on the FIRST
+    // subscription and every re-subscription (workspace switch included).
+    /** @type {import('./data/closed-range.js').ClosedRange} */
+    let closed_range = DEFAULT_CLOSED_RANGE;
+    try {
+      const raw = window.localStorage.getItem(CLOSED_RANGE_KEY);
+      if (isClosedRange(raw)) {
+        closed_range = raw;
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    /**
+     * The current Closed subscription spec: a `closed-issues` list filtered by
+     * `params.since` for the selected range ('all' drops the filter).
+     *
+     * @returns {{ type: string, params?: { since: number } }}
+     */
+    function closedSpec() {
+      const since = closedRangeSince(closed_range);
+      return since === undefined
+        ? { type: 'closed-issues' }
+        : { type: 'closed-issues', params: { since } };
+    }
+
     /**
      * @param {boolean} active
      */
@@ -474,14 +520,18 @@ export function bootstrap(root_element) {
           ) {
             continue;
           }
+          // The Closed column is special-cased: its INITIAL subscription (and
+          // every resubscribe) must carry the stored range's `since`; the static
+          // BOARD_SUBS tuple is paramless and would otherwise fetch ALL closed.
+          const spec = client_id === CLOSED_CLIENT_ID ? closedSpec() : { type };
           try {
-            sub_issue_stores.register(client_id, { type });
+            sub_issue_stores.register(client_id, spec);
           } catch (err) {
             log('register %s store failed: %o', client_id, err);
           }
           pending_subscriptions.add(client_id);
           void subscriptions
-            .subscribeList(client_id, { type })
+            .subscribeList(client_id, spec)
             .then((unsub) => {
               board_unsubs.set(client_id, unsub);
             })
@@ -495,6 +545,50 @@ export function bootstrap(root_element) {
         }
       } else {
         clearBoardSubscriptions();
+      }
+    }
+
+    /**
+     * Switch the Closed column period (spec §3.2): persist the choice, then —
+     * only while the board is actively subscribed — tear down the existing
+     * closed subscription (`unsubscribe-list` MUST precede the new subscribe so
+     * the server does not leak a stale attach) and re-subscribe with the new
+     * `since`. A no-op when the range is unchanged; when the board is inactive
+     * the persisted range applies on the next `ensureBoardSubscriptions`.
+     *
+     * @param {string} range
+     */
+    async function setClosedRange(range) {
+      if (!isClosedRange(range) || range === closed_range) {
+        return;
+      }
+      closed_range = range;
+      try {
+        window.localStorage.setItem(CLOSED_RANGE_KEY, range);
+      } catch {
+        // ignore storage errors
+      }
+      const unsub = board_unsubs.get(CLOSED_CLIENT_ID);
+      if (!unsub) {
+        return;
+      }
+      board_unsubs.delete(CLOSED_CLIENT_ID);
+      await unsub().catch(() => {});
+      const spec = closedSpec();
+      try {
+        sub_issue_stores.register(CLOSED_CLIENT_ID, spec);
+      } catch (err) {
+        log('register %s store failed: %o', CLOSED_CLIENT_ID, err);
+      }
+      try {
+        const new_unsub = await subscriptions.subscribeList(
+          CLOSED_CLIENT_ID,
+          spec
+        );
+        board_unsubs.set(CLOSED_CLIENT_ID, new_unsub);
+      } catch (err) {
+        log('re-subscribe %s failed: %o', CLOSED_CLIENT_ID, err);
+        showFatalFromError(err, 'board');
       }
     }
 
@@ -586,6 +680,39 @@ export function bootstrap(root_element) {
       }
     }
 
+    // --- UI-order subscription lifecycle (bootstrap singleton) ---
+    /** @type {(() => Promise<unknown>) | null} */
+    let ui_order_unsub = null;
+
+    /**
+     * Subscribe to the per-workspace manual UI-order channel exactly once. Not
+     * tied to any tab — Board and Worker both read the shared order map.
+     */
+    function subscribeUiOrder() {
+      if (ui_order_unsub) {
+        return;
+      }
+      void tracked_send('subscribe-ui-order', { id: UI_ORDER_CLIENT_ID }).catch(
+        (err) => {
+          log('subscribe-ui-order failed: %o', err);
+        }
+      );
+      ui_order_unsub = () =>
+        tracked_send('unsubscribe-ui-order', { id: UI_ORDER_CLIENT_ID });
+    }
+
+    /**
+     * Tear down the UI-order subscription and drop the cached order (the order
+     * map is per-workspace, so a workspace switch must not carry it over).
+     */
+    function clearUiOrderSubscription() {
+      if (ui_order_unsub) {
+        void ui_order_unsub().catch(() => {});
+        ui_order_unsub = null;
+      }
+      ui_order_store.clear();
+    }
+
     // --- Workspace management ---
     /**
      * Clear all subscriptions and stores, then re-establish for the active view.
@@ -595,6 +722,10 @@ export function bootstrap(root_element) {
       clearBoardSubscriptions();
       clearWorkerSubscriptions();
       worker_queue_store.clear();
+      // UI-order is a bootstrap singleton (not tab-scoped), but the order map is
+      // per-workspace — clear + resubscribe so the new workspace's order loads.
+      clearUiOrderSubscription();
+      subscribeUiOrder();
       resetDetailSubscription();
       const s = store.getState();
       if (s.selected_id) {
@@ -648,51 +779,6 @@ export function bootstrap(root_element) {
         throw err;
       } finally {
         is_switching_workspace = false;
-      }
-    }
-
-    /**
-     * @param {string} workspace_path
-     */
-    async function handleWorkspaceSync(workspace_path) {
-      log('requesting workspace sync for %s', workspace_path);
-      try {
-        const result = await client.send('sync-workspace', {});
-        log('workspace sync result: %o', result);
-
-        if (result?.workspace) {
-          store.setState({
-            workspace: {
-              current: {
-                path: result.workspace.root_dir,
-                database: result.workspace.db_path
-              }
-            }
-          });
-        }
-
-        if (result?.pulled === true && result?.pushed === false) {
-          const reason = result?.push_error ? `: ${result.push_error}` : '';
-          showToast(`Pulled, but push failed${reason}`, 'warning', 4000);
-          return;
-        }
-
-        showToast('Synced ' + getProjectName(workspace_path), 'success', 2000);
-      } catch (err) {
-        log('workspace sync failed: %o', err);
-        const code = /** @type {any} */ (err)?.code;
-        const detail = /** @type {any} */ (err)?.message;
-        if (code === 'busy') {
-          showToast(
-            'Sync skipped: another operation is running',
-            'warning',
-            3000
-          );
-          return;
-        }
-        const reason = detail ? `: ${detail}` : '';
-        showToast(`Sync failed${reason}`, 'error', 3000);
-        throw err;
       }
     }
 
@@ -758,6 +844,32 @@ export function bootstrap(root_element) {
     }
 
     /**
+     * Toggle whether a workspace shows in the picker (spec §6). The hidden set
+     * is server-global, so after the toggle we re-request the workspace list to
+     * pick up the authoritative `hidden` array for every client.
+     *
+     * @param {string} workspace_path
+     * @param {boolean} visible
+     */
+    async function handleWorkspaceVisibilityChange(workspace_path, visible) {
+      log(
+        'setting workspace visibility %s → %s',
+        workspace_path,
+        String(visible)
+      );
+      try {
+        await client.send('set-workspace-visibility', {
+          path: workspace_path,
+          visible
+        });
+        await loadWorkspaces();
+      } catch (err) {
+        log('workspace visibility update failed: %o', err);
+        showToast('Failed to update project visibility', 'error', 3000);
+      }
+    }
+
+    /**
      * @param {string} path
      * @returns {string}
      */
@@ -787,7 +899,12 @@ export function bootstrap(root_element) {
                 database: result.current.db_path
               }
             : null;
-          store.setState({ workspace: { current, available } });
+          const hidden = Array.isArray(result.hidden)
+            ? result.hidden.filter(
+                (/** @type {unknown} */ p) => typeof p === 'string'
+              )
+            : [];
+          store.setState({ workspace: { current, available, hidden } });
 
           const configuredDefault =
             store.getState().config.workspace_config.default_workspace;
@@ -897,8 +1014,8 @@ export function bootstrap(root_element) {
         workspace_mount,
         store,
         handleWorkspaceChange,
-        handleWorkspaceSync,
-        handleWorkspaceGitPull
+        handleWorkspaceGitPull,
+        handleWorkspaceVisibilityChange
       );
     }
 
@@ -923,16 +1040,25 @@ export function bootstrap(root_element) {
       gotoIssue: (id) => router.gotoIssue(id),
       issueStores: sub_issue_stores,
       transport,
+      uiOrderStore: ui_order_store,
+      closedRange: closed_range,
+      onClosedRangeChange: (range) => {
+        void setClosedRange(range);
+      },
       onNewIssue: () => new_issue_dialog.open()
     });
 
     // Worker console (second tab): candidate lanes + Serial/Parallel queue.
+    // NOTE: the Worker route zeroes `selected_id` (its `?issue=` deep link means
+    // "select a parent"), so opening the shared detail overlay from Worker (ⓘ /
+    // candidate click) must set the selection directly instead of routing.
     const worker_view = createWorkerView(worker_root, {
       transport,
       issueStores: sub_issue_stores,
       queueStore: worker_queue_store,
       sessionLogStore: session_log_store,
-      gotoIssue: (id) => router.gotoIssue(id)
+      uiOrderStore: ui_order_store,
+      gotoIssue: (id) => store.setState({ selected_id: id })
     });
 
     // Shared detail overlay.
@@ -942,7 +1068,15 @@ export function bootstrap(root_element) {
       queueStore: worker_queue_store,
       sessionLogStore: session_log_store,
       getWorkspacePath: () => store.getState().workspace.current?.path,
-      onNavigate: (id) => router.gotoIssue(id),
+      onNavigate: (id) => {
+        // On the Worker view the router zeroes `selected_id`; keep the overlay
+        // navigation working there by setting the selection directly.
+        if (store.getState().view === 'worker') {
+          store.setState({ selected_id: id });
+        } else {
+          router.gotoIssue(id);
+        }
+      },
       onClose: () => {
         const s = store.getState();
         store.setState({ selected_id: null });
@@ -998,6 +1132,10 @@ export function bootstrap(root_element) {
     };
     store.subscribe(onRouteChange);
     onRouteChange(store.getState());
+
+    // UI-order is a shared, tab-independent singleton: subscribe once at startup
+    // (not from ensureBoard/WorkerSubscriptions) so it survives tab switches.
+    subscribeUiOrder();
 
     // Load workspaces after startup subscriptions can safely resubscribe.
     void loadWorkspaces().finally(() => {

@@ -4,9 +4,10 @@
  */
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
-import { runBd, runShell, stderrTail } from '../bd.js';
+import { runShell, stderrTail } from '../bd.js';
 import { resolveWorkspaceDatabase } from '../db.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
+import { createVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import {
   ensureSubs,
   getConnWorkspace,
@@ -14,14 +15,39 @@ import {
   registryFor,
   setConnWorkspace
 } from './context.js';
-import { triggerMutationRefreshOnce } from './refresh.js';
+
+/**
+ * Server-wide single visible-workspaces store (spec §6). The hidden set is
+ * global, so one instance backs every connection's picker.
+ *
+ * @type {ReturnType<typeof createVisibleWorkspacesStore> | null}
+ */
+let VISIBLE_STORE = null;
+
+/**
+ * @returns {ReturnType<typeof createVisibleWorkspacesStore>}
+ */
+function visibleWorkspacesStore() {
+  if (!VISIBLE_STORE) {
+    VISIBLE_STORE = createVisibleWorkspacesStore();
+  }
+  return VISIBLE_STORE;
+}
+
+/**
+ * Test-only: drop the store's in-memory cache so the next access cold-loads from
+ * disk (mirrors the ui-order channel reset hook).
+ */
+export function __resetVisibleWorkspacesForTest() {
+  visibleWorkspacesStore().__clearCacheForTest();
+}
 
 /**
  * In-flight workspace operations keyed by workspace `root_dir`. Prevents the
- * same workspace from running `sync-workspace` and `git-pull-workspace`
- * concurrently across multiple clients or raw requests.
+ * same workspace from running `git-pull-workspace` concurrently across multiple
+ * clients or raw requests.
  *
- * @type {Map<string, { kind: 'sync' | 'git-pull' }>}
+ * @type {Map<string, { kind: 'git-pull' }>}
  */
 const ACTIVE_WORKSPACE_OPS = new Map();
 
@@ -55,8 +81,8 @@ function detectGitPullStatus(combined) {
  * Try to acquire a per-workspace operation lock.
  *
  * @param {string} root - Absolute workspace root directory.
- * @param {'sync' | 'git-pull'} kind
- * @returns {{ ok: true } | { ok: false, existing_kind: 'sync' | 'git-pull' }}
+ * @param {'git-pull'} kind
+ * @returns {{ ok: true } | { ok: false, existing_kind: 'git-pull' }}
  */
 function acquireWorkspaceLock(root, kind) {
   const existing = ACTIVE_WORKSPACE_OPS.get(root);
@@ -90,8 +116,67 @@ export function handleListWorkspaces(ws, req) {
     JSON.stringify(
       makeOk(req, {
         workspaces,
-        current: getConnWorkspace(ws)
+        current: getConnWorkspace(ws),
+        hidden: visibleWorkspacesStore().listHidden()
       })
+    )
+  );
+}
+
+/**
+ * Handle a `set-workspace-visibility` request. Payload: { path: string, visible:
+ * boolean } — toggles whether a workspace appears in the picker for EVERY client
+ * (the hidden set is server-global, spec §6). Mirrors `handleSetWorkspace`
+ * validation: the path must be absolute and present in the available-workspace
+ * allowlist. Replies `{ changed, hidden }`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleSetWorkspaceVisibility(ws, req) {
+  log('set-workspace-visibility');
+  const { path: workspace_path, visible } = /** @type {any} */ (
+    req.payload || {}
+  );
+  if (
+    typeof workspace_path !== 'string' ||
+    workspace_path.length === 0 ||
+    !path.isAbsolute(workspace_path) ||
+    typeof visible !== 'boolean'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { path: string (absolute), visible: boolean }'
+        )
+      )
+    );
+    return;
+  }
+
+  const resolved = path.resolve(workspace_path);
+  const allowed = new Set(
+    getAvailableWorkspaces().map((workspace) => path.resolve(workspace.path))
+  );
+  if (!allowed.has(resolved)) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'Workspace must be in the available workspace list'
+        )
+      )
+    );
+    return;
+  }
+
+  const result = visibleWorkspacesStore().setVisibility(resolved, visible);
+  ws.send(
+    JSON.stringify(
+      makeOk(req, { changed: result.changed, hidden: result.hidden })
     )
   );
 }
@@ -194,116 +279,6 @@ export function handleSetWorkspace(ws, req) {
       })
     )
   );
-}
-
-/**
- * Handle a `sync-workspace` request: `bd dolt pull` then `bd dolt push` under a
- * per-workspace lock, retrying pull+push once on push conflict.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export async function handleSyncWorkspace(ws, req) {
-  log('sync-workspace');
-
-  const conn_ws = getConnWorkspace(ws);
-  const root_snapshot = conn_ws?.root_dir;
-  if (!root_snapshot) {
-    ws.send(
-      JSON.stringify(makeError(req, 'server_error', 'No active workspace'))
-    );
-    return;
-  }
-
-  const lock = acquireWorkspaceLock(root_snapshot, 'sync');
-  if (!lock.ok) {
-    ws.send(
-      JSON.stringify(
-        makeError(
-          req,
-          'busy',
-          `${lock.existing_kind} in progress for workspace`
-        )
-      )
-    );
-    return;
-  }
-
-  const workspace_snapshot = { ...conn_ws };
-
-  try {
-    const pull_res = await runBd(['dolt', 'pull'], {
-      cwd: root_snapshot,
-      sandbox: false
-    });
-    if (pull_res.code !== 0) {
-      ws.send(
-        JSON.stringify(
-          makeError(req, 'bd_error', stderrTail(pull_res.stderr) || 'bd failed')
-        )
-      );
-      return;
-    }
-
-    triggerMutationRefreshOnce();
-
-    let push_res = await runBd(['dolt', 'push'], {
-      cwd: root_snapshot,
-      sandbox: false
-    });
-
-    if (push_res.code !== 0) {
-      const retry_pull = await runBd(['dolt', 'pull'], {
-        cwd: root_snapshot,
-        sandbox: false
-      });
-      if (retry_pull.code !== 0) {
-        triggerMutationRefreshOnce();
-        ws.send(
-          JSON.stringify(
-            makeOk(req, {
-              workspace: workspace_snapshot,
-              pulled: true,
-              pushed: false,
-              push_error: stderrTail(retry_pull.stderr)
-            })
-          )
-        );
-        return;
-      }
-      triggerMutationRefreshOnce();
-      push_res = await runBd(['dolt', 'push'], {
-        cwd: root_snapshot,
-        sandbox: false
-      });
-    }
-
-    if (push_res.code !== 0) {
-      ws.send(
-        JSON.stringify(
-          makeOk(req, {
-            workspace: workspace_snapshot,
-            pulled: true,
-            pushed: false,
-            push_error: stderrTail(push_res.stderr)
-          })
-        )
-      );
-      return;
-    }
-
-    ws.send(
-      JSON.stringify(
-        makeOk(req, {
-          workspace: workspace_snapshot,
-          pulled: true,
-          pushed: true
-        })
-      )
-    );
-  } finally {
-    releaseWorkspaceLock(root_snapshot);
-  }
 }
 
 /**

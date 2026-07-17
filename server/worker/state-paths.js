@@ -70,6 +70,30 @@ export function queueFilePath(workspace_root) {
 }
 
 /**
+ * Absolute path to a workspace's manual UI-order persistence file. Lives in the
+ * SAME state dir as the queue file so both survive `git clean`, branch switches,
+ * and worktree churn (spec §2 / §5.1).
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/ui-order.json`.
+ */
+export function uiOrderFilePath(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'ui-order.json');
+}
+
+/**
+ * Absolute path to the SERVER-GLOBAL visible-workspaces state file. Unlike the
+ * per-workspace queue/ui-order files this is a single file for the whole server
+ * (spec §6): the hidden-workspace set is global, not scoped to one workspace, so
+ * it lives directly under the `bdui` state root rather than in a `<slug>/` dir.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/visible-workspaces.json`.
+ */
+export function visibleWorkspacesFilePath() {
+  return path.join(stateHome(), 'bdui', 'visible-workspaces.json');
+}
+
+/**
  * Absolute path to a per-attempt session-log jsonl file (spec §5.2 / §5.6).
  * The raw runner event stream is persisted here for the transcript viewer.
  *

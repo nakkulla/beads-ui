@@ -11,3 +11,5 @@ export {
 export { scheduleListRefresh } from './refresh.js';
 export { __resetRegistriesForTest, registryFor } from './context.js';
 export { __resetWorkerQueueForTest } from './worker-handlers.js';
+export { __resetUiOrderForTest } from './ui-order-handlers.js';
+export { __resetVisibleWorkspacesForTest } from './workspace-handlers.js';

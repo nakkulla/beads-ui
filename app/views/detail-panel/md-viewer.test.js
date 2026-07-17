@@ -14,7 +14,7 @@ describe('views/detail-panel/md-viewer', () => {
     document.body.innerHTML = '<div id="mv"></div>';
   });
 
-  test('fetches /api/doc with Bearer auth and renders the markdown', async () => {
+  test('fetches /api/doc without auth headers and renders the markdown', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('mv'));
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,
@@ -26,20 +26,19 @@ describe('views/detail-panel/md-viewer', () => {
     });
     const viewer = createMdViewer(mount, {
       getWorkspacePath: () => '/ws/abs',
-      getToken: () => 'secret-token',
       fetchImpl: /** @type {any} */ (fetchImpl)
     });
 
     await viewer.open('docs/spec.md');
     await tick();
 
-    // Called the doc endpoint with workspace + path and Bearer header.
+    // Called the doc endpoint with workspace + path and no auth header (spec §8).
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0];
     expect(url).toContain('/api/doc?workspace=');
     expect(url).toContain(encodeURIComponent('/ws/abs'));
     expect(url).toContain('path=' + encodeURIComponent('docs/spec.md'));
-    expect(init.headers.Authorization).toBe('Bearer secret-token');
+    expect(init).toBeUndefined();
 
     // Rendered markdown (h1 + inline code).
     expect(mount.querySelector('.mv')).not.toBeNull();
@@ -62,7 +61,6 @@ describe('views/detail-panel/md-viewer', () => {
     });
     const viewer = createMdViewer(mount, {
       getWorkspacePath: () => '/ws/abs',
-      getToken: () => 't',
       fetchImpl: /** @type {any} */ (fetchImpl)
     });
     await viewer.open('docs/x.md');
@@ -74,7 +72,6 @@ describe('views/detail-panel/md-viewer', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('mv'));
     const viewer = createMdViewer(mount, {
       getWorkspacePath: () => '/ws/abs',
-      getToken: () => 't',
       fetchImpl: /** @type {any} */ (
         vi.fn().mockResolvedValue({
           ok: true,

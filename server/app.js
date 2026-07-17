@@ -4,7 +4,6 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { bearerAuthMiddleware } from './auth.js';
 import { checkHealth } from './health.js';
 import { registerWorkspace } from './registry-watcher.js';
 import { docHandler } from './routes/doc.js';
@@ -125,7 +124,7 @@ function escapeBootstrapJson(json) {
 /**
  * Create and configure the Express application.
  *
- * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[], visible_exact?: string[], colors?: unknown }, auth?: { token?: string | null }, health_probes?: { bd_probe?: () => boolean | Promise<boolean>, db_probe?: () => boolean | Promise<boolean> } }} config - Server configuration.
+ * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[], visible_exact?: string[], colors?: unknown }, health_probes?: { bd_probe?: () => boolean | Promise<boolean>, db_probe?: () => boolean | Promise<boolean> } }} config - Server configuration.
  * @returns {Express} Configured Express app instance.
  */
 export function createApp(config) {
@@ -134,9 +133,9 @@ export function createApp(config) {
   // Basic hardening and config
   app.disable('x-powered-by');
 
-  // Bearer-token gate for state-touching REST surfaces. The token is the real
-  // access gate; /healthz and static app assets stay unauthenticated.
-  const requireBearer = bearerAuthMiddleware(config.auth?.token || '');
+  // No token auth (spec §8). REST mutations still require an
+  // `application/json` body (express.json) to block cross-origin form CSRF, and
+  // no CORS headers are added, so cross-origin reads stay blocked.
 
   // Health endpoint (unauthenticated readiness probe). Overall ok=false → 503.
   /**
@@ -174,7 +173,7 @@ export function createApp(config) {
   app.use('/api/worker/merge-lock', merge_lock_router);
 
   // Serve a markdown document from a registered workspace's docs/ directory.
-  app.get('/api/doc', requireBearer, docHandler);
+  app.get('/api/doc', docHandler);
 
   // Register workspace endpoint - allows CLI to register workspaces dynamically
   // when the server is already running
@@ -182,7 +181,7 @@ export function createApp(config) {
    * @param {Request} req
    * @param {Response} res
    */
-  app.post('/api/register-workspace', requireBearer, (req, res) => {
+  app.post('/api/register-workspace', (req, res) => {
     const { path: workspace_path, database } = req.body || {};
     if (!workspace_path || typeof workspace_path !== 'string') {
       res.status(400).json({ ok: false, error: 'Missing or invalid path' });

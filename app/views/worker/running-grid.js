@@ -97,6 +97,14 @@ function runningTile(tile, now, selected_attempt = null) {
       <span class="rtile__id">${tile.bead_id}</span>
       <span class="rtile__badge rtile__badge--${tile.lane}">${badge}</span>
       <span class="rtile__elapsed">${elapsed}</span>
+      <button
+        type="button"
+        class="rtile__info"
+        title="상세 보기"
+        aria-label="상세 보기"
+      >
+        ⓘ
+      </button>
       <button type="button" class="rtile__stop" title="중지" aria-label="중지">
         ■
       </button>

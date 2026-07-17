@@ -59,6 +59,7 @@ import { debug } from './utils/logging.js';
  * @typedef {Object} WorkspaceState
  * @property {WorkspaceInfo | null} current - Currently active workspace
  * @property {WorkspaceInfo[]} available - All available workspaces
+ * @property {string[]} hidden - Absolute paths hidden from the picker (spec §6)
  */
 
 /**
@@ -209,7 +210,8 @@ export function createStore(initial = {}) {
     },
     workspace: {
       current: initial.workspace?.current ?? null,
-      available: initial.workspace?.available ?? []
+      available: initial.workspace?.available ?? [],
+      hidden: initial.workspace?.hidden ?? []
     },
     config: normalizeConfig(initial.config)
   };
@@ -252,7 +254,11 @@ export function createStore(initial = {}) {
           available:
             patch.workspace?.available !== undefined
               ? patch.workspace.available
-              : state.workspace.available
+              : state.workspace.available,
+          hidden:
+            patch.workspace?.hidden !== undefined
+              ? patch.workspace.hidden
+              : state.workspace.hidden
         },
         config:
           patch.config !== undefined
@@ -261,7 +267,11 @@ export function createStore(initial = {}) {
       };
       const workspace_changed =
         next.workspace.current?.path !== state.workspace.current?.path ||
-        next.workspace.available.length !== state.workspace.available.length;
+        next.workspace.available.length !== state.workspace.available.length ||
+        next.workspace.hidden.length !== state.workspace.hidden.length ||
+        next.workspace.hidden.some(
+          (path, index) => path !== state.workspace.hidden[index]
+        );
       const config_changed =
         next.config.label_display_policy.visible_prefixes.length !==
           state.config.label_display_policy.visible_prefixes.length ||

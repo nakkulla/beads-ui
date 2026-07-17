@@ -250,26 +250,14 @@ body {
   box-shadow: var(--ring-selected);
 }
 
-/* Closed collapsed strip */
-.board-column--closed.is-collapsed {
-  max-height: none;
-}
-
-.board-column--closed.is-collapsed .board-column__body {
-  display: none;
-}
-
-.board-column--closed.is-collapsed .board-column__header {
-  writing-mode: vertical-rl;
-  border-bottom: none;
-  border-left: 1px solid var(--border-panel);
-  padding: var(--sp-10) var(--sp-8);
-  height: 100%;
-  gap: var(--sp-8);
-  cursor: pointer;
-}
-
-.board-column--closed .board-column__header {
+/* Closed column period dropdown */
+.board-column__closed-range {
+  font-size: var(--fs-chip);
+  color: var(--text-dim);
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-8);
+  padding: var(--sp-2) var(--sp-5);
   cursor: pointer;
 }
 
@@ -474,6 +462,14 @@ body {
   font-family: var(--font-sans);
   text-align: left;
   cursor: pointer;
+}
+
+.board-card__roll-child-ord {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 1.25em;
+  text-align: right;
+  flex: 0 0 auto;
 }
 
 .board-card__roll-child-title {
@@ -712,6 +708,134 @@ select.detail-kv__v {
   cursor: pointer;
 }
 
+/* --- detail panel: inline editing (title / description / labels) --- */
+.detail-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-8);
+}
+
+.detail-edit-btn {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: var(--fs-body);
+  cursor: pointer;
+  padding: 0 var(--sp-2);
+}
+.detail-edit-btn:hover {
+  color: var(--chip-route);
+}
+
+.detail-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin: var(--sp-6) 0 var(--sp-10);
+}
+
+.detail-edit__input,
+.detail-edit__textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body-sm);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  padding: var(--sp-6) var(--sp-8);
+}
+
+.detail-edit__textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.detail-edit__actions {
+  display: flex;
+  gap: var(--sp-6);
+}
+
+.detail-edit__save,
+.detail-edit__cancel {
+  font-size: var(--fs-chip);
+  border-radius: var(--r-5);
+  padding: var(--sp-3) var(--sp-8);
+  background: none;
+  cursor: pointer;
+}
+
+.detail-edit__save {
+  color: var(--accent-success);
+  border: 1px solid var(--border-tile-run);
+}
+
+.detail-edit__cancel {
+  color: var(--text-dim);
+  border: 1px solid var(--border-chip);
+}
+
+.detail-labels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.detail-label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-secondary);
+  padding: 1.5px var(--sp-4) 1.5px var(--sp-7);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+}
+
+.detail-label-chip__x {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: var(--fs-body);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 var(--sp-2);
+}
+.detail-label-chip__x:hover {
+  color: var(--accent-danger);
+}
+
+.detail-label-add {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.detail-label-add__input {
+  width: 96px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  padding: 1.5px var(--sp-7);
+}
+
+.detail-label-add__btn {
+  font-size: var(--fs-chip);
+  color: var(--chip-route);
+  border: 1px solid var(--border-route);
+  border-radius: var(--r-5);
+  padding: 1.5px var(--sp-7);
+  background: none;
+  cursor: pointer;
+}
+
 /* --- md viewer (detail-panel.html `.mv`) --- */
 .md-viewer-root {
   position: relative;
@@ -853,12 +977,6 @@ select.detail-kv__v {
 
   .board-column {
     max-height: none;
-  }
-
-  .board-column--closed.is-collapsed .board-column__header {
-    writing-mode: horizontal-tb;
-    border-left: none;
-    border-bottom: 1px solid var(--border-panel);
   }
 
   /* detail panel + md viewer go fullscreen on mobile */
