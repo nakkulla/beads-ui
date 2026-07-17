@@ -907,28 +907,21 @@ export function bootstrap(root_element) {
             : [];
           store.setState({ workspace: { current, available, hidden } });
 
-          const configuredDefault =
-            store.getState().config.workspace_config.default_workspace;
+          // The saved manual pick wins over the configured default_workspace;
+          // the default only applies when no valid saved value exists (spec
+          // 2026-07-17-last-workspace-restore-design).
           const savedWorkspace =
             window.localStorage.getItem('beads-ui.workspace');
 
-          if (configuredDefault && current?.path === configuredDefault) {
-            window.localStorage.setItem(
-              'beads-ui.workspace',
-              configuredDefault
-            );
-            return;
-          }
-
-          if (savedWorkspace && current && savedWorkspace !== current.path) {
+          if (savedWorkspace) {
             const savedExists = available.some(
               (/** @type {{ path: string }} */ ws) => ws.path === savedWorkspace
             );
-            if (savedExists) {
+            if (!savedExists) {
+              window.localStorage.removeItem('beads-ui.workspace');
+            } else if (current && savedWorkspace !== current.path) {
               log('restoring saved workspace preference: %s', savedWorkspace);
               await handleWorkspaceChange(savedWorkspace);
-            } else {
-              window.localStorage.removeItem('beads-ui.workspace');
             }
           }
         }
