@@ -60,8 +60,7 @@ import {
   handleGitPullWorkspace,
   handleListWorkspaces,
   handleSetWorkspace,
-  handleSetWorkspaceVisibility,
-  handleSyncWorkspace
+  handleSetWorkspaceVisibility
 } from './workspace-handlers.js';
 
 /**
@@ -459,9 +458,6 @@ export async function handleMessage(ws, data) {
       return;
     case 'set-workspace-visibility':
       handleSetWorkspaceVisibility(ws, req);
-      return;
-    case 'sync-workspace':
-      await handleSyncWorkspace(ws, req);
       return;
     case 'git-pull-workspace':
       await handleGitPullWorkspace(ws, req);

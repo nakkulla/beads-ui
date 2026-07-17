@@ -65,8 +65,8 @@ describe('server/protocol', () => {
     expect(res).toBe(true);
   });
 
-  test('isMessageType returns true for sync-workspace', () => {
-    const res = isMessageType('sync-workspace');
+  test('isMessageType returns true for git-pull-workspace', () => {
+    const res = isMessageType('git-pull-workspace');
 
     expect(res).toBe(true);
   });

@@ -24,7 +24,6 @@ function getProjectName(workspace_path) {
  * @param {HTMLElement} mount_element
  * @param {{ getState: () => any, subscribe: (fn: (s: any) => void) => () => void }} store
  * @param {(workspace_path: string) => Promise<void>} onWorkspaceChange
- * @param {(workspace_path: string) => Promise<void>} [onWorkspaceSync]
  * @param {(workspace_path: string) => Promise<void>} [onWorkspaceGitPull]
  * @param {(workspace_path: string, visible: boolean) => Promise<void>} [onWorkspaceVisibilityChange]
  */
@@ -32,7 +31,6 @@ export function createWorkspacePicker(
   mount_element,
   store,
   onWorkspaceChange,
-  onWorkspaceSync = async () => {},
   onWorkspaceGitPull = async () => {},
   onWorkspaceVisibilityChange = async () => {}
 ) {
@@ -41,8 +39,6 @@ export function createWorkspacePicker(
   let unsubscribe = null;
   /** @type {boolean} */
   let is_switching = false;
-  /** @type {boolean} */
-  let is_syncing = false;
   /** @type {boolean} */
   let is_git_pulling = false;
   /** @type {boolean} */
@@ -74,32 +70,11 @@ export function createWorkspacePicker(
     }
   }
 
-  async function onSyncClick() {
-    const s = store.getState();
-    const current_path =
-      s.workspace?.current?.path || s.workspace?.available?.[0]?.path || '';
-    if (!current_path || is_syncing || is_git_pulling) {
-      return;
-    }
-
-    log('syncing workspace %s', current_path);
-    is_syncing = true;
-    doRender();
-    try {
-      await onWorkspaceSync(current_path);
-    } catch (err) {
-      log('workspace sync failed: %o', err);
-    } finally {
-      is_syncing = false;
-      doRender();
-    }
-  }
-
   async function onGitPullClick() {
     const s = store.getState();
     const current_path =
       s.workspace?.current?.path || s.workspace?.available?.[0]?.path || '';
-    if (!current_path || is_syncing || is_git_pulling) {
+    if (!current_path || is_git_pulling) {
       return;
     }
 
@@ -185,27 +160,10 @@ export function createWorkspacePicker(
   }
 
   /**
-   * @param {string} current_path
-   */
-  function renderSyncButton(current_path) {
-    if (!current_path) {
-      return html``;
-    }
-
-    return html`
-      <button
-        type="button"
-        class="workspace-picker__sync-button"
-        @click=${onSyncClick}
-        ?disabled=${is_switching || is_syncing || is_git_pulling}
-        aria-label="Sync current workspace"
-      >
-        ${is_syncing ? 'Syncing…' : 'Sync'}
-      </button>
-    `;
-  }
-
-  /**
+   * Git Pull is a compact icon button (spec §7). The label is carried by
+   * `aria-label`/`title`; the in-flight state is shown by the shared loading
+   * spinner plus the disabled attribute rather than a text swap.
+   *
    * @param {string} current_path
    */
   function renderGitPullButton(current_path) {
@@ -218,10 +176,11 @@ export function createWorkspacePicker(
         type="button"
         class="workspace-picker__git-pull-button"
         @click=${onGitPullClick}
-        ?disabled=${is_switching || is_syncing || is_git_pulling}
-        aria-label="Git pull current workspace"
+        ?disabled=${is_switching || is_git_pulling}
+        aria-label="Git Pull"
+        title="Git Pull"
       >
-        ${is_git_pulling ? 'Pulling…' : 'Git Pull'}
+        <span aria-hidden="true">⬇</span>
       </button>
     `;
   }
@@ -308,8 +267,8 @@ export function createWorkspacePicker(
             >${name}</span
           >
           ${renderManage(available, hidden_set)}
-          ${renderSyncButton(current_path)} ${renderGitPullButton(current_path)}
-          ${is_syncing || is_git_pulling
+          ${renderGitPullButton(current_path)}
+          ${is_git_pulling
             ? html`<span
                 class="workspace-picker__loading"
                 aria-hidden="true"
@@ -325,7 +284,7 @@ export function createWorkspacePicker(
         <select
           class="workspace-picker__select"
           @change=${onChange}
-          ?disabled=${is_switching || is_syncing || is_git_pulling}
+          ?disabled=${is_switching || is_git_pulling}
           aria-label="Select project workspace"
         >
           ${visible_list.map(
@@ -340,9 +299,9 @@ export function createWorkspacePicker(
             `
           )}
         </select>
-        ${renderManage(available, hidden_set)} ${renderSyncButton(current_path)}
+        ${renderManage(available, hidden_set)}
         ${renderGitPullButton(current_path)}
-        ${is_switching || is_syncing || is_git_pulling
+        ${is_switching || is_git_pulling
           ? html`<span
               class="workspace-picker__loading"
               aria-hidden="true"

@@ -339,56 +339,6 @@ describe('git-pull-workspace handler', () => {
     }
   });
 
-  test('git-pull is busy when sync-workspace is in progress for same workspace', async () => {
-    const server = createServer();
-    const { wss } = attachWsServer(server, {
-      path: '/ws',
-      root_dir: '/repo-a',
-      refresh_debounce_ms: 50
-    });
-
-    try {
-      let releasePull = () => {};
-      /** @type {import('vitest').Mock} */ (runBd).mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            releasePull = () => resolve({ code: 0, stdout: '', stderr: '' });
-          })
-      );
-
-      const ws1 = makeSocket();
-      wss.clients.add(/** @type {any} */ (ws1));
-      const first = handleMessage(
-        /** @type {any} */ (ws1),
-        Buffer.from(
-          JSON.stringify({
-            id: 'sync-busy',
-            type: 'sync-workspace',
-            payload: {}
-          })
-        )
-      );
-      await Promise.resolve();
-      await Promise.resolve();
-
-      const ws2 = await callGitPull(wss, 'gp-busy-3');
-      const reply2 = JSON.parse(ws2.sent[0]);
-      expect(reply2.ok).toBe(false);
-      expect(reply2.error.code).toBe('busy');
-
-      // unblock first sync's pull and let it finish (push will use undefined mock → resolve)
-      /** @type {import('vitest').Mock} */ (runBd).mockResolvedValueOnce({
-        code: 0,
-        stdout: '',
-        stderr: ''
-      });
-      releasePull();
-      await first;
-    } finally {
-      await closeSocketServer(wss, server);
-    }
-  });
-
   test('uses snapshotted root_dir even if this connection switches workspace mid-op', async () => {
     const server = createServer();
     const { wss } = attachWsServer(server, {

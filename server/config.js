@@ -10,6 +10,7 @@ const DEFAULT_VISIBLE_PREFIXES = ['has:', 'reviewed:'];
 /** @type {string[]} */
 const DEFAULT_VISIBLE_EXACT = [];
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+const DEFAULT_POLL_INTERVAL_SECONDS = 30;
 const DEFAULT_WORKSPACE_CONFIG = {
   default_workspace: null,
   scan_roots: [],
@@ -176,6 +177,22 @@ function normalizeAuthConfig(value) {
 }
 
 /**
+ * Normalize the top-level `poll_interval_seconds` setting (spec §7). Governs the
+ * server-side periodic list-refresh poller: default 30, an explicit `0` disables
+ * polling, and any missing / non-numeric / negative value falls back to the
+ * default.
+ *
+ * @param {unknown} value
+ * @returns {number}
+ */
+function normalizePollIntervalSeconds(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  return DEFAULT_POLL_INTERVAL_SECONDS;
+}
+
+/**
  * @param {string} config_path
  * @returns {{
  *   label_display_policy: {
@@ -191,6 +208,7 @@ function normalizeAuthConfig(value) {
  *     scan_roots: string[],
  *     workspaces: string[]
  *   },
+ *   poll_interval_seconds: number,
  *   auth: { token: string | null }
  * }}
  */
@@ -209,6 +227,9 @@ function readRuntimeConfig(config_path) {
         colors: normalizeLabelColorPolicy(parsed?.labels?.colors)
       },
       workspace_config: normalizeWorkspaceConfig(parsed),
+      poll_interval_seconds: normalizePollIntervalSeconds(
+        parsed?.poll_interval_seconds
+      ),
       auth: normalizeAuthConfig(parsed?.auth)
     };
   } catch (error) {
@@ -233,6 +254,7 @@ function readRuntimeConfig(config_path) {
         scan_roots: DEFAULT_WORKSPACE_CONFIG.scan_roots.slice(),
         workspaces: DEFAULT_WORKSPACE_CONFIG.workspaces.slice()
       },
+      poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
       auth: { token: null }
     };
   }
@@ -269,6 +291,7 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *     scan_roots: string[],
  *     workspaces: string[]
  *   },
+ *   poll_interval_seconds: number,
  *   auth: { token: string | null }
  * }}
  */

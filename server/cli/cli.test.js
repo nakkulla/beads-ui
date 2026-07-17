@@ -151,6 +151,7 @@ describe('main', () => {
         scan_roots: [],
         workspaces: []
       },
+      poll_interval_seconds: 30,
       auth: { token: null }
     });
 

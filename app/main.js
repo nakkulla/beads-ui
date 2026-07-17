@@ -801,51 +801,6 @@ export function bootstrap(root_element) {
     /**
      * @param {string} workspace_path
      */
-    async function handleWorkspaceSync(workspace_path) {
-      log('requesting workspace sync for %s', workspace_path);
-      try {
-        const result = await client.send('sync-workspace', {});
-        log('workspace sync result: %o', result);
-
-        if (result?.workspace) {
-          store.setState({
-            workspace: {
-              current: {
-                path: result.workspace.root_dir,
-                database: result.workspace.db_path
-              }
-            }
-          });
-        }
-
-        if (result?.pulled === true && result?.pushed === false) {
-          const reason = result?.push_error ? `: ${result.push_error}` : '';
-          showToast(`Pulled, but push failed${reason}`, 'warning', 4000);
-          return;
-        }
-
-        showToast('Synced ' + getProjectName(workspace_path), 'success', 2000);
-      } catch (err) {
-        log('workspace sync failed: %o', err);
-        const code = /** @type {any} */ (err)?.code;
-        const detail = /** @type {any} */ (err)?.message;
-        if (code === 'busy') {
-          showToast(
-            'Sync skipped: another operation is running',
-            'warning',
-            3000
-          );
-          return;
-        }
-        const reason = detail ? `: ${detail}` : '';
-        showToast(`Sync failed${reason}`, 'error', 3000);
-        throw err;
-      }
-    }
-
-    /**
-     * @param {string} workspace_path
-     */
     async function handleWorkspaceGitPull(workspace_path) {
       log('requesting workspace git pull for %s', workspace_path);
       try {
@@ -1075,7 +1030,6 @@ export function bootstrap(root_element) {
         workspace_mount,
         store,
         handleWorkspaceChange,
-        handleWorkspaceSync,
         handleWorkspaceGitPull,
         handleWorkspaceVisibilityChange
       );

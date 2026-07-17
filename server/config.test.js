@@ -239,4 +239,62 @@ visible_prefixes = []
       workspaces: ['/repo-a']
     });
   });
+
+  test('defaults poll_interval_seconds to 30 when config file is missing', () => {
+    process.env.BDUI_CONFIG_PATH = missingConfigPath();
+
+    const config = getConfig();
+
+    expect(config.poll_interval_seconds).toBe(30);
+  });
+
+  test('defaults poll_interval_seconds to 30 when absent from TOML', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+workspaces = ["/repo-a"]
+`);
+
+    const config = getConfig();
+
+    expect(config.poll_interval_seconds).toBe(30);
+  });
+
+  test('keeps an explicit poll_interval_seconds of 0 (polling off)', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+poll_interval_seconds = 0
+`);
+
+    const config = getConfig();
+
+    expect(config.poll_interval_seconds).toBe(0);
+  });
+
+  test('passes a valid poll_interval_seconds through', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+poll_interval_seconds = 15
+`);
+
+    const config = getConfig();
+
+    expect(config.poll_interval_seconds).toBe(15);
+  });
+
+  test('falls back to 30 for an invalid poll_interval_seconds', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+poll_interval_seconds = "soon"
+`);
+
+    const config = getConfig();
+
+    expect(config.poll_interval_seconds).toBe(30);
+  });
+
+  test('falls back to 30 for a negative poll_interval_seconds', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+poll_interval_seconds = -10
+`);
+
+    const config = getConfig();
+
+    expect(config.poll_interval_seconds).toBe(30);
+  });
 });

@@ -5,6 +5,7 @@ import { printServerUrl } from './cli/daemon.js';
 import { getConfig } from './config.js';
 import { resolveWorkspaceDatabase } from './db.js';
 import { debug, enableAllDebug } from './logging.js';
+import { createPoller } from './poller.js';
 import { registerWorkspace, watchRegistry } from './registry-watcher.js';
 import { watchDb } from './watcher.js';
 import { initWorkerRuntime } from './worker/attach.js';
@@ -80,7 +81,7 @@ const db_watcher = watchDb(watch_root, () => {
   scheduleListRefresh();
 });
 
-const { scheduleListRefresh } = attachWsServer(server, {
+const { wss, scheduleListRefresh } = attachWsServer(server, {
   path: '/ws',
   heartbeat_ms: 30000,
   refresh_debounce_ms: 75,
@@ -89,6 +90,16 @@ const { scheduleListRefresh } = attachWsServer(server, {
   watcher: db_watcher,
   auth_token
 });
+
+// Periodic list-refresh poller (spec §7): remote `bd` writes through central
+// dolt never reach the local fs watcher, so on a fixed cadence — while at least
+// one client is connected — re-run the same refresh the watcher would trigger.
+// `poll_interval_seconds = 0` disables it.
+createPoller({
+  intervalSeconds: config.poll_interval_seconds,
+  getClientCount: () => wss.clients.size,
+  onTick: scheduleListRefresh
+}).start();
 
 watchRegistry(
   (entries) => {
