@@ -2,6 +2,11 @@
  * @import { MessageType } from './protocol.js'
  */
 import { html, render } from 'lit-html';
+import {
+  DEFAULT_CLOSED_RANGE,
+  closedRangeSince,
+  isClosedRange
+} from './data/closed-range.js';
 import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
@@ -197,6 +202,10 @@ const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
  * switch — never on a Board↔Worker tab change.
  */
 const UI_ORDER_CLIENT_ID = 'ui:order';
+
+/** Client id / localStorage key for the Board Closed column period (spec §3.2). */
+const CLOSED_CLIENT_ID = 'tab:board:closed';
+const CLOSED_RANGE_KEY = 'beads-ui.board.closed-range';
 
 /**
  * Bootstrap the two-tab control-tower shell (Board / Worker) with a shared
@@ -488,6 +497,33 @@ export function bootstrap(root_element) {
     /** @type {Set<string>} */
     const pending_subscriptions = new Set();
 
+    // Closed column period (spec §3.2): the closed-issues subscription carries a
+    // `params.since` bound derived from this range, applied on the FIRST
+    // subscription and every re-subscription (workspace switch included).
+    /** @type {import('./data/closed-range.js').ClosedRange} */
+    let closed_range = DEFAULT_CLOSED_RANGE;
+    try {
+      const raw = window.localStorage.getItem(CLOSED_RANGE_KEY);
+      if (isClosedRange(raw)) {
+        closed_range = raw;
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    /**
+     * The current Closed subscription spec: a `closed-issues` list filtered by
+     * `params.since` for the selected range ('all' drops the filter).
+     *
+     * @returns {{ type: string, params?: { since: number } }}
+     */
+    function closedSpec() {
+      const since = closedRangeSince(closed_range);
+      return since === undefined
+        ? { type: 'closed-issues' }
+        : { type: 'closed-issues', params: { since } };
+    }
+
     /**
      * @param {boolean} active
      */
@@ -500,14 +536,18 @@ export function bootstrap(root_element) {
           ) {
             continue;
           }
+          // The Closed column is special-cased: its INITIAL subscription (and
+          // every resubscribe) must carry the stored range's `since`; the static
+          // BOARD_SUBS tuple is paramless and would otherwise fetch ALL closed.
+          const spec = client_id === CLOSED_CLIENT_ID ? closedSpec() : { type };
           try {
-            sub_issue_stores.register(client_id, { type });
+            sub_issue_stores.register(client_id, spec);
           } catch (err) {
             log('register %s store failed: %o', client_id, err);
           }
           pending_subscriptions.add(client_id);
           void subscriptions
-            .subscribeList(client_id, { type })
+            .subscribeList(client_id, spec)
             .then((unsub) => {
               board_unsubs.set(client_id, unsub);
             })
@@ -521,6 +561,50 @@ export function bootstrap(root_element) {
         }
       } else {
         clearBoardSubscriptions();
+      }
+    }
+
+    /**
+     * Switch the Closed column period (spec §3.2): persist the choice, then —
+     * only while the board is actively subscribed — tear down the existing
+     * closed subscription (`unsubscribe-list` MUST precede the new subscribe so
+     * the server does not leak a stale attach) and re-subscribe with the new
+     * `since`. A no-op when the range is unchanged; when the board is inactive
+     * the persisted range applies on the next `ensureBoardSubscriptions`.
+     *
+     * @param {string} range
+     */
+    async function setClosedRange(range) {
+      if (!isClosedRange(range) || range === closed_range) {
+        return;
+      }
+      closed_range = range;
+      try {
+        window.localStorage.setItem(CLOSED_RANGE_KEY, range);
+      } catch {
+        // ignore storage errors
+      }
+      const unsub = board_unsubs.get(CLOSED_CLIENT_ID);
+      if (!unsub) {
+        return;
+      }
+      board_unsubs.delete(CLOSED_CLIENT_ID);
+      await unsub().catch(() => {});
+      const spec = closedSpec();
+      try {
+        sub_issue_stores.register(CLOSED_CLIENT_ID, spec);
+      } catch (err) {
+        log('register %s store failed: %o', CLOSED_CLIENT_ID, err);
+      }
+      try {
+        const new_unsub = await subscriptions.subscribeList(
+          CLOSED_CLIENT_ID,
+          spec
+        );
+        board_unsubs.set(CLOSED_CLIENT_ID, new_unsub);
+      } catch (err) {
+        log('re-subscribe %s failed: %o', CLOSED_CLIENT_ID, err);
+        showFatalFromError(err, 'board');
       }
     }
 
@@ -987,6 +1071,10 @@ export function bootstrap(root_element) {
       issueStores: sub_issue_stores,
       transport,
       uiOrderStore: ui_order_store,
+      closedRange: closed_range,
+      onClosedRangeChange: (range) => {
+        void setClosedRange(range);
+      },
       onNewIssue: () => new_issue_dialog.open()
     });
 

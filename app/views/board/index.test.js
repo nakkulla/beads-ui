@@ -123,19 +123,66 @@ describe('views/board', () => {
     );
     expect(mount.querySelectorAll('#resolved-col .board-card').length).toBe(1);
 
-    // Closed is a collapsed strip by default — body hidden.
+    // Closed renders its items directly (no collapse) with a period select.
     const closed = /** @type {HTMLElement} */ (
       mount.querySelector('#closed-col')
     );
-    expect(closed.classList.contains('is-collapsed')).toBe(true);
-    expect(mount.querySelectorAll('#closed-col .board-card').length).toBe(0);
-
-    // Expanding reveals the recent closed items.
-    const header = /** @type {HTMLElement} */ (
-      closed.querySelector('.board-column__header')
-    );
-    header.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(closed.classList.contains('is-collapsed')).toBe(false);
     expect(mount.querySelectorAll('#closed-col .board-card').length).toBe(1);
+    const rangeSel = /** @type {HTMLSelectElement | null} */ (
+      closed.querySelector('select.board-column__closed-range')
+    );
+    expect(rangeSel).toBeTruthy();
+    expect(rangeSel?.value).toBe('today');
+  });
+
+  test('closed column renders at most 200 cards (render cap)', async () => {
+    const stores = createTestIssueStores();
+    const now = Date.now();
+    /** @type {any[]} */
+    const many = [];
+    for (let i = 0; i < 250; i++) {
+      many.push({
+        id: `CL-${i}`,
+        title: `closed ${i}`,
+        status: 'closed',
+        closed_at: now - i,
+        updated_at: now - i
+      });
+    }
+    seed(stores, 'tab:board:closed', many);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores
+    });
+    await view.load();
+    expect(mount.querySelectorAll('#closed-col .board-card').length).toBe(200);
+  });
+
+  test('closed period select reflects the current range and reports changes', async () => {
+    const onClosedRangeChange = vi.fn();
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedAll(),
+      closedRange: 'today',
+      onClosedRangeChange
+    });
+    await view.load();
+    const sel = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#closed-col select.board-column__closed-range')
+    );
+    expect(sel.value).toBe('today');
+    sel.value = '7d';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onClosedRangeChange).toHaveBeenCalledWith('7d');
+    // The select keeps reflecting the new range after re-render.
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('#closed-col select.board-column__closed-range')
+      ).value
+    ).toBe('7d');
   });
 
   test('clicking the id chip copies the id and shows a toast', async () => {

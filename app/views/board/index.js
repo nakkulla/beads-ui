@@ -1,4 +1,5 @@
 import { html, render } from 'lit-html';
+import { DEFAULT_CLOSED_RANGE } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
@@ -20,11 +21,17 @@ import { filterBarTemplate } from './filter-bar.js';
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<any>} [transport]
  * @property {UiOrderStore} [uiOrderStore]
+ * @property {string} [closedRange] - Current Closed period ('today'|'7d'|'30d'|'all').
+ * @property {(range: string) => void} [onClosedRangeChange]
  * @property {() => void} [onNewIssue]
  */
 
-const CLOSED_COLLAPSE_KEY = 'beads-ui.board.closed-collapsed';
-const CLOSED_LIMIT = 50;
+/**
+ * Client-side render cap for the Closed column (spec §3.2). The server already
+ * narrows the list by `params.since`; this bounds the DOM (and Phase 5's
+ * parent-existence input) to the most recent closures.
+ */
+const CLOSED_RENDER_CAP = 200;
 
 /**
  * Map a droppable column id to its target status. The Blocked column is
@@ -69,7 +76,9 @@ export function createBoardView(mount_element, options) {
   const issueStores = options.issueStores;
   const transport = options.transport;
   const uiOrderStore = options.uiOrderStore;
+  const onClosedRangeChangeCb = options.onClosedRangeChange;
   const onNewIssue = options.onNewIssue;
+  let closed_range = options.closedRange || DEFAULT_CLOSED_RANGE;
   const selectors = issueStores
     ? createListSelectors(issueStores, uiOrderStore)
     : null;
@@ -95,14 +104,6 @@ export function createBoardView(mount_element, options) {
   const expanded_ids = new Set();
 
   const filters = { search: '', priority: '', type: '' };
-
-  let closed_collapsed = true;
-  try {
-    closed_collapsed =
-      window.localStorage.getItem(CLOSED_COLLAPSE_KEY) !== 'false';
-  } catch {
-    // ignore storage errors
-  }
 
   /** @type {string | null} */
   let dragging_id = null;
@@ -166,7 +167,7 @@ export function createBoardView(mount_element, options) {
         );
         const closed = selectors
           .selectBoardColumn('tab:board:closed', 'closed')
-          .slice(0, CLOSED_LIMIT);
+          .slice(0, CLOSED_RENDER_CAP);
 
         list_blocked = blocked;
         list_ready = ready;
@@ -353,15 +354,22 @@ export function createBoardView(mount_element, options) {
     }, 0);
   }
 
-  function onClosedToggle() {
-    closed_collapsed = !closed_collapsed;
-    try {
-      window.localStorage.setItem(
-        CLOSED_COLLAPSE_KEY,
-        closed_collapsed ? 'true' : 'false'
-      );
-    } catch {
-      // ignore storage errors
+  /**
+   * Closed period dropdown change: reflect locally then report to the shell,
+   * which re-subscribes `closed-issues` with the new `since` (spec §3.2).
+   *
+   * @param {Event} ev
+   */
+  function handleClosedRangeChange(ev) {
+    const value = String(
+      /** @type {HTMLSelectElement} */ (ev.target).value || ''
+    );
+    if (!value || value === closed_range) {
+      return;
+    }
+    closed_range = value;
+    if (onClosedRangeChangeCb) {
+      onClosedRangeChangeCb(value);
     }
     doRender();
   }
@@ -371,7 +379,7 @@ export function createBoardView(mount_element, options) {
     onCopyId,
     onDragStart,
     onDragEnd,
-    onClosedToggle,
+    onClosedRangeChange: handleClosedRangeChange,
     rollupFor,
     isExpanded,
     onRollupToggle,
@@ -451,7 +459,7 @@ export function createBoardView(mount_element, options) {
               id: 'closed-col',
               items: applyFilters(list_closed),
               is_closed: true,
-              collapsed: closed_collapsed
+              closed_range
             },
             card_ctx
           )}
