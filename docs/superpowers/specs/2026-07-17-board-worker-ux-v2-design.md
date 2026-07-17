@@ -23,8 +23,9 @@ UI-lo1k 재설계 가동 후 실사용에서 나온 개선 요구를 반영한�
 
 - **저장소**: 워크스페이스별 서버 로컬 상태 `$XDG_STATE_HOME/bdui/<slug>/ui-order.json` — `{revision: number, order: {<bead_id>: number}}`. `server/worker/queue-store.js`의 CAS·원자적 쓰기(temp+rename) 패턴 재사용.
 - **유효 rank**: `effective_rank(issue) = order[id] ?? -created_at_ms`. 정렬은 `effective_rank asc → id asc`. rank 미기록 이슈(신규 포함)는 자동으로 최신 생성순 상단 배치 — 현행 `cmpCreatedDescThenPriority`의 최신순 동작을 보존하며 priority 2차 키는 제거(수동 순서와 충돌).
-- **드래그 기록**: 드롭 위치의 앞뒤 카드 유효 rank 중간값. 맨 위 = `first - STEP`, 맨 아래 = `last + STEP` (STEP=2^20). 인접 rank 간격이 1e-6 미만으로 좁아지면 해당 목록의 기록된 rank를 STEP 간격으로 재정규화(단일 `ui-order-set` 배치로 원자 반영).
-- **프로토콜**: worker-queue 패턴 미러 — `subscribe-ui-order`/`ui-order-snapshot {revision, order}` push, mutation `ui-order-set {expected_revision, entries: [{bead_id, rank}, ...]}` → `{ok, revision}` 또는 `{conflict, snapshot}`(클라이언트는 adopt 후 1회 재시도, `app/views/worker/index.js`의 기존 재시도 관례). 평상시 entries는 1건, 재정규화 시에만 해당 목록의 기록된 rank 전체를 배치로 전송(재정규화 판단·계산은 정렬된 목록을 아는 클라이언트 소유).
+- **드래그 기록**: 드롭 위치의 앞뒤 카드 유효 rank의 중간값 `m = (a+b)/2`. 맨 위 = `first - STEP`, 맨 아래 = `last + STEP` (STEP=2^20). **재정규화 트리거는 고정 epsilon이 아니라 표현 가능성**: 부동소수 정밀도로 `a < m < b`가 성립하지 않으면(epoch-ms 규모에서 1e-6 같은 임계값은 ULP보다 작아 발동 불가) 재정규화한다.
+- **재정규화**: 해당 정렬 목록의 **전체 이슈(rank 미기록 fallback 이슈 포함)**에 현재 유효 순서대로 `index * STEP` rank를 명시 부여하고 드롭 이슈를 목표 위치에 끼워 넣어, 단일 `ui-order-set` 배치로 원자 반영. 기록된 rank만 재정규화하면 `-created_at_ms` fallback 이슈와의 상대 순서가 깨지므로 금지.
+- **프로토콜**: worker-queue 패턴 미러 — `subscribe-ui-order`/`ui-order-snapshot {revision, order}` push, mutation `ui-order-set {expected_revision, entries: [{bead_id, rank}, ...]}` → `{ok, revision}` 또는 `{conflict, snapshot}`(클라이언트는 adopt 후 1회 재시도, `app/views/worker/index.js`의 기존 재시도 관례). 평상시 entries는 1건, 재정규화 시에만 해당 목록 전체 이슈의 rank를 배치로 전송(재정규화 판단·계산은 정렬된 목록을 아는 클라이언트 소유).
 - **적용 범위**: Board의 Blocked/Ready/In progress/Resolved 컬럼 + Worker 후보 레인이 **하나의 rank 맵을 공유**(어디서 드래그하든 동일 순서 갱신). Closed 컬럼은 `closed_at desc` 유지. Worker Serial/Parallel 레인 순서는 기존 queue.json CAS 그대로(별개 시스템).
 - **정리**: 이슈가 closed 전이될 때 해당 id의 order 엔트리를 서버가 제거(맵 무한 성장 방지).
 
@@ -46,9 +47,9 @@ UI-lo1k 재설계 가동 후 실사용에서 나온 개선 요구를 반영한�
 ### 3.3 Child 통합 표시 (사용자 확정 목업)
 
 - **분류**: `parent` 평탄화 필드(bd JSON, `rebuildChildrenIndex`가 이미 소비) 보유 이슈 = child.
-- **컬럼 제외**: parent 이슈 객체가 5개 보드 구독 중 어디든 존재하면, 그 child는 **모든 컬럼에서 풀 카드 제외**. parent 카드 안 compact 행(상태점 + 순번 + 제목)으로만 표시, 행 클릭 = 상세 패널. 스테퍼·칩·rollup 배지 없음. 기본 펼침 + 카드별 접기 토글(현행 rollup 토글 계승).
+- **컬럼 제외**: parent 카드가 **실제 렌더되는 컬럼 목록**(Closed 기간 필터·200 cap 등 모든 표시 필터 적용 후) 중 어디든 존재하면, 그 child는 **모든 컬럼에서 풀 카드 제외**. parent 카드 안 compact 행(상태점 + 순번 + 제목)으로만 표시, 행 클릭 = 상세 패널. 스테퍼·칩·rollup 배지 없음. 기본 펼침 + 카드별 접기 토글(현행 rollup 토글 계승). 구독에는 있지만 표시 필터에 잘려 렌더되지 않는 parent는 "존재"로 치지 않는다(이슈 증발 방지).
 - **child 정렬**: `metadata.task_order`(숫자 문자열) asc → 제목 `/^(?:Task|Phase)\s*(\d+)/i` 캡처 asc → `created_at` asc.
-- **폴백**: parent가 어떤 보드 구독에도 없는 child(예: parent만 closed)는 일반 카드로 자기 컬럼에 표시.
+- **폴백**: parent 카드가 렌더되지 않는 child(예: parent만 closed로 기간 필터 밖)는 일반 카드로 자기 컬럼에 표시.
 - in_progress child 한 줄 상시 표시 + `children N/M` 카운트는 유지(2026-07-15 §4 child rollup의 계승·확장).
 
 ## 4. Worker 탭
@@ -85,7 +86,7 @@ UI-lo1k 재설계 가동 후 실사용에서 나온 개선 요구를 반영한�
 
 ## 9. 테스트/검증
 
-- 유닛: 유효 rank comparator·중간값·재정규화, ui-order CAS 충돌/adopt-재시도, closed since 경계(자정), child 분류(parent 유무)·정렬(task_order/제목 파싱/폴백), visible-workspaces hidden 집합, 폴링 게이트(접속 0이면 미실행).
+- 유닛: 유효 rank comparator·중간값·표현 불가 경계(epoch-ms 규모 반복 삽입으로 충돌 유도)·ranked/unranked 혼합 전체 재정규화, ui-order CAS 충돌/adopt-재시도, closed since 경계(자정), child 분류(parent 렌더 유무 — Closed 기간 필터·cap 경계 포함)·정렬(task_order/제목 파싱/폴백), visible-workspaces hidden 집합, 폴링 게이트(접속 0이면 미실행).
 - 인증 테스트 재편: `ws.auth.test.js`·`auth.test.js` 토큰 케이스·token-dialog 테스트 삭제, 무인증 기동·Origin 검사 유지 테스트 존치.
 - 프론트 뷰 렌더 테스트: child 통합 카드, Closed 기간 드롭다운, 후보 레인 rank 정렬 — 기존 vitest 패턴.
 - 검증 번들: `npm run all` (lint + tsc + vitest + prettier).
