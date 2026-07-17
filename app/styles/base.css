@@ -305,6 +305,13 @@ body {
   box-shadow: var(--ring-selected);
 }
 
+/* Closed is a collapsed strip (spec §3.2): its auto track must not balloon to
+   its content width and dwarf the active columns. */
+.board-column--closed {
+  max-width: 360px;
+  min-width: 240px;
+}
+
 /* Closed column period dropdown */
 .board-column__closed-range {
   font-size: var(--fs-chip);
