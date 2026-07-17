@@ -37,7 +37,9 @@
 5. 루프 안전성: 복원 후 `workspace-changed` 이벤트로 `loadWorkspaces()`가 재진입해도
    `saved === current.path`가 되어 규칙 1이 발화하지 않는다 (현행 구조 그대로).
 
-서버·config·프로토콜 변경 없음. 클라이언트 단일 파일 수정.
+서버·config·프로토콜 변경 없음. 소스 수정은 `app/main.js` 단일 파일이며, git 추적
+빌드 산출물 `app/main.bundle.js`·`app/main.bundle.js.map`을 `npm run build`로
+재생성해 같은 커밋에 포함한다 (재빌드 없이는 서비스가 구 번들을 계속 제공).
 
 ## Test scope
 
@@ -51,8 +53,9 @@
 
 ## 검증
 
-`npm run all` (lint + tsc + vitest + prettier). 머지 후 공유 서비스 마감 단계:
-`bdui-shared restart` + 프로세스/HTTP 검증.
+`npm run build` 후 `npm run all` (lint + tsc + vitest + prettier). 머지 후 공유
+서비스 마감 단계: 머지된 체크아웃에서 `npm run build`로 번들 최신 여부를 재확인한
+뒤 `bdui-shared restart` + 프로세스/HTTP 검증.
 
 ## 비범위
 
