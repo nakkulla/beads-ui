@@ -10,6 +10,7 @@ import {
   runBdJsonInWorkspace
 } from './context.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
+import { pruneUiOrderForClose } from './ui-order-handlers.js';
 
 const UPDATE_STATUS_ALLOWED = new Set([
   'open',
@@ -240,6 +241,15 @@ export async function handleUpdateStatus(ws, req) {
     return;
   }
   ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  // A WS-originated close drops the bead's manual rank so it never lingers in
+  // the order map (spec §2; scope: WS closes only). No-op when it had no rank.
+  if (status === 'closed') {
+    try {
+      pruneUiOrderForClose(ws, [id]);
+    } catch {
+      // ignore
+    }
+  }
   // After mutation, refresh active subscriptions once (watcher or timeout)
   try {
     triggerMutationRefreshOnce();

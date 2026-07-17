@@ -38,6 +38,12 @@ import {
   handleUnsubscribeList
 } from './subscription-handlers.js';
 import {
+  detachUiOrder,
+  handleSubscribeUiOrder,
+  handleUiOrderSet,
+  handleUnsubscribeUiOrder
+} from './ui-order-handlers.js';
+import {
   detachWorkerQueue,
   handleSubscribeSessionLog,
   handleSubscribeWorkerQueue,
@@ -270,6 +276,7 @@ export function attachWsServer(http_server, options = {}) {
         // Detach this connection from every workspace registry.
         detachConnectionFromAllRegistries(ws);
         detachWorkerQueue(ws);
+        detachUiOrder(ws);
       } catch {
         // ignore cleanup errors
       }
@@ -475,6 +482,15 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-attempt-stop':
       await handleWorkerAttemptStop(ws, req);
+      return;
+    case 'subscribe-ui-order':
+      handleSubscribeUiOrder(ws, req);
+      return;
+    case 'unsubscribe-ui-order':
+      handleUnsubscribeUiOrder(ws, req);
+      return;
+    case 'ui-order-set':
+      handleUiOrderSet(ws, req);
       return;
     case 'subscribe-session-log':
       handleSubscribeSessionLog(ws, req);

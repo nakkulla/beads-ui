@@ -349,6 +349,37 @@ export function emitWorkerQueueSnapshot(ws, client_id, queue) {
 }
 
 /**
+ * Emit a manual UI-order snapshot to a specific client id on a socket.
+ *
+ * Reuses the same id/ok/type/payload push envelope as the queue/issue snapshots
+ * so manual-order data flows through the SAME push protocol. The top-level
+ * `type` is a distinct `'ui-order-snapshot'` event; the order carries its own
+ * CAS `revision` inside the payload (spec §2).
+ *
+ * @param {WebSocket} ws
+ * @param {string} client_id
+ * @param {{ revision: number, order: Record<string, number> }} snapshot
+ */
+export function emitUiOrderSnapshot(ws, client_id, snapshot) {
+  const msg = JSON.stringify({
+    id: `evt-${Date.now()}`,
+    ok: true,
+    type: /** @type {MessageType} */ ('ui-order-snapshot'),
+    payload: {
+      type: 'ui-order-snapshot',
+      id: client_id,
+      revision: snapshot.revision,
+      order: snapshot.order
+    }
+  });
+  try {
+    ws.send(msg);
+  } catch (err) {
+    log('emit ui-order snapshot send failed id=%s: %o', client_id, err);
+  }
+}
+
+/**
  * Emit a session-log SNAPSHOT (all persisted raw lines) for an attempt to a
  * client. Reuses the same id/ok/type/payload envelope as the queue/issue pushes
  * so the transcript viewer flows through one push protocol (spec §5.6).

@@ -97,6 +97,30 @@ export interface ErrorMessage {
   details?: Record<string, unknown>;
 }
 
+/** One manual-order rank assignment for a bead (spec §2). */
+export interface UiOrderEntry {
+  bead_id: string;
+  rank: number; // finite; sort key, lower ranks first
+}
+
+/**
+ * Client → Server: write the full set of manual ranks the client wants applied.
+ * CAS-guarded by `expected_revision`.
+ */
+export interface UiOrderSetMessage {
+  kind: 'ui-order-set';
+  expected_revision: number;
+  entries: UiOrderEntry[];
+}
+
+/** Server → Client: the whole manual-order map after any mutation (spec §2). */
+export interface UiOrderSnapshotMessage {
+  kind: 'ui-order-snapshot';
+  id: string; // client subscription id
+  revision: number; // CAS counter; bumped on every mutation
+  order: Record<string, number>; // bead id → rank
+}
+
 export type ServerMessage =
   | SnapshotMessage
   | UpsertMessage
