@@ -10,6 +10,7 @@ import {
   attachWsServer,
   handleMessage
 } from './ws.js';
+import { setConnWorkspace } from './ws/context.js';
 
 // update-status runs bd; mock it so the prune-on-close path resolves without a
 // real bd CLI. The ui-order channel itself never touches bd.
@@ -236,5 +237,38 @@ describe('ws ui-order channel', () => {
     await send(sock, 'c1', 'update-status', { id: 'UI-404', status: 'closed' });
     // Nothing removed → no ui-order snapshot fanout.
     expect(orderSnapshots(sock).length).toBe(0);
+  });
+
+  test('unsubscribe after a workspace switch removes the old-workspace subscription', async () => {
+    const a = fakeSocket();
+    const b = fakeSocket();
+    // Both sockets start on workspace A; a subscribes there.
+    setConnWorkspace(/** @type {any} */ (a), {
+      root_dir: '/tmp/uio-ws-A',
+      db_path: '/tmp/uio-ws-A/.beads/db'
+    });
+    setConnWorkspace(/** @type {any} */ (b), {
+      root_dir: '/tmp/uio-ws-A',
+      db_path: '/tmp/uio-ws-A/.beads/db'
+    });
+    await send(a, 's1', 'subscribe-ui-order', { id: 'ui:order' });
+
+    // The client unsubscribes AFTER set-workspace already switched the
+    // connection — the entry to remove lives under the PREVIOUS workspace key.
+    setConnWorkspace(/** @type {any} */ (a), {
+      root_dir: '/tmp/uio-ws-B',
+      db_path: '/tmp/uio-ws-B/.beads/db'
+    });
+    await send(a, 'u1', 'unsubscribe-ui-order', { id: 'ui:order' });
+    expect(replyFor(a, 'u1').payload.unsubscribed).toBe(true);
+
+    // A mutation in workspace A must not fan out to the switched socket.
+    a.sent = [];
+    await send(b, 'm1', 'ui-order-set', {
+      expected_revision: 0,
+      entries: [{ bead_id: 'UI-1', rank: 1 }]
+    });
+    expect(replyFor(b, 'm1').payload.applied).toBe(true);
+    expect(orderSnapshots(a).length).toBe(0);
   });
 });

@@ -1049,13 +1049,16 @@ export function bootstrap(root_element) {
     });
 
     // Worker console (second tab): candidate lanes + Serial/Parallel queue.
+    // NOTE: the Worker route zeroes `selected_id` (its `?issue=` deep link means
+    // "select a parent"), so opening the shared detail overlay from Worker (ⓘ /
+    // candidate click) must set the selection directly instead of routing.
     const worker_view = createWorkerView(worker_root, {
       transport,
       issueStores: sub_issue_stores,
       queueStore: worker_queue_store,
       sessionLogStore: session_log_store,
       uiOrderStore: ui_order_store,
-      gotoIssue: (id) => router.gotoIssue(id)
+      gotoIssue: (id) => store.setState({ selected_id: id })
     });
 
     // Shared detail overlay.
@@ -1065,7 +1068,15 @@ export function bootstrap(root_element) {
       queueStore: worker_queue_store,
       sessionLogStore: session_log_store,
       getWorkspacePath: () => store.getState().workspace.current?.path,
-      onNavigate: (id) => router.gotoIssue(id),
+      onNavigate: (id) => {
+        // On the Worker view the router zeroes `selected_id`; keep the overlay
+        // navigation working there by setting the selection directly.
+        if (store.getState().view === 'worker') {
+          store.setState({ selected_id: id });
+        } else {
+          router.gotoIssue(id);
+        }
+      },
       onClose: () => {
         const s = store.getState();
         store.setState({ selected_id: null });

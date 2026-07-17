@@ -269,13 +269,12 @@ export function createDetailPanel(mount_element, options) {
     }
     try {
       const res = await Promise.resolve(transport(type, payload));
-      if (
-        res &&
-        typeof res === 'object' &&
-        !Array.isArray(res) &&
-        /** @type {any} */ (res).id
-      ) {
-        current = res;
+      // `bd show --json` emits an object OR a single-item array depending on
+      // the CLI version; the server passes it through unnormalized. An empty
+      // array (the transport's swallowed-error value) stays a failure.
+      const issue = Array.isArray(res) ? res[0] : res;
+      if (issue && typeof issue === 'object' && /** @type {any} */ (issue).id) {
+        current = issue;
         return true;
       }
       showToast(fail_message, 'error');

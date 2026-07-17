@@ -18,24 +18,24 @@ payloads.
 Server-push events (unsolicited) use the ReplyEnvelope shape with `ok: true` and
 a generated `id` (e.g. `evt-…`).
 
-## Connection auth (first frame)
+## Connection (no auth)
 
-When the server is started with an `[auth] token` (see the README), every new
-socket MUST send an **auth frame** as its FIRST message within the auth deadline
-(default 5s): `{ type: 'auth', token: string }`. A wrong/missing token, a
-non-auth first frame, or a timeout closes the socket with code `4401` before any
-other message is processed. `auth` is a connection-layer frame, not a
-`MessageType`, so it never appears in a reply. A same-origin/allowlisted
-`Origin` is additionally required for browser sockets (defense-in-depth).
+There is no token auth: a socket may send application messages immediately after
+connect. The only handshake-time gate is the **Origin allowlist** for browser
+sockets (same-origin, or `BDUI_ALLOWED_ORIGINS`; absent `Origin` = non-browser
+client, governed by network isolation). See the README's "Access model" section.
 
-`ping` → `{ ok, payload: { ts } }` is available post-auth as a liveness check.
+`ping` → `{ ok, payload: { ts } }` is available as a liveness check.
 
 ## Issue subscriptions (push protocol)
 
 Read data flows through subscriptions, never one-shot list RPCs.
 
 - `subscribe-list` payload: `{ id: client_id, type, params? }` — starts a
-  per-subscription stream; the server replies `ok` then pushes a `snapshot`.
+  per-subscription stream; the server replies `ok` then pushes a `snapshot`. The
+  `closed-issues` type accepts `params.since` (epoch ms): only issues with
+  `closed_at >= since` are streamed. Changing `since` requires an
+  `unsubscribe-list` for the client id followed by a fresh `subscribe-list`.
 - `unsubscribe-list` payload: `{ id: client_id }`.
 - Push events (server → client), keyed by the subscription `id`:
   - `snapshot` payload: `{ type:'snapshot', id, revision, issues:[…] }`
@@ -63,9 +63,34 @@ The detail panel uses the same mechanism with a `detail:<id>` client id and an
 
 ## Workspace management
 
-- `list-workspaces`, `get-workspace`, `set-workspace` (`{ path }`),
-  `sync-workspace`, `git-pull-workspace`. `workspace-changed` is a server-push
-  event when the default workspace changes.
+- `list-workspaces` (reply includes `hidden: [abs path]`), `get-workspace`,
+  `set-workspace` (`{ path }`), `git-pull-workspace`. `workspace-changed` is a
+  server-push event when the default workspace changes.
+- `set-workspace-visibility` payload: `{ path, visible }` — toggles whether a
+  registered workspace shows in the picker for every client (server-global
+  persisted set); reply `{ changed, hidden }`. The path must be absolute and in
+  the available-workspace allowlist.
+
+## Manual UI-order channel (spec §2)
+
+Per-workspace persisted manual card ranking shared by the Board columns and the
+Worker candidate lane. CAS-guarded like the worker queue.
+
+- `subscribe-ui-order` / `unsubscribe-ui-order` payload: `{ id: client_id }` —
+  subscribe replies `ok` then pushes an initial snapshot.
+- `ui-order-snapshot` (push) payload: `{ id, revision, order }` where `order`
+  maps bead id → numeric rank; pushed to every subscriber after any mutation.
+- `ui-order-set` payload: `{ expected_revision, entries: [{ bead_id, rank }] }`
+  — reply `{ applied, conflict, revision, order }`; on `conflict` adopt the
+  returned snapshot and retry. A WS-originated `update-status` → `closed` prunes
+  that bead's rank server-side.
+
+## Periodic refresh
+
+Besides fs-watch-driven pushes, the server re-runs list refreshes every
+`poll_interval_seconds` (config, default 30, `0` = off) while at least one
+client is connected, so writes from other machines through the central DB
+surface without a local fs event.
 
 ## Worker queue channel (spec §5.1)
 

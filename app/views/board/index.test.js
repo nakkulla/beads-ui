@@ -437,6 +437,52 @@ describe('views/board same-column reorder', () => {
     // Store ends on the applied server revision.
     expect(uiOrderStore.get()?.revision).toBe(6);
   });
+
+  test('reorder under an active filter ranks against the full column list', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      revision: 1,
+      order: {}
+    });
+    const uiOrderStore = createUiOrderStore();
+    uiOrderStore.set({ revision: 0, order: {} });
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:ready', [
+      { id: 'RD-1', title: 'aaa one', status: 'open', created_at: 30_000 },
+      { id: 'RD-2', title: 'bbb two', status: 'open', created_at: 20_000 },
+      { id: 'RD-3', title: 'aaa three', status: 'open', created_at: 10_000 }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores,
+      transport,
+      uiOrderStore
+    });
+    await view.load();
+
+    // Filter hides RD-2; only RD-1 and RD-3 are visible.
+    const search = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.board-filter__search')
+    );
+    search.value = 'aaa';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(readyOrder(mount)).toEqual(['RD-1', 'RD-3']);
+
+    // Dropping RD-1 onto RD-3 must rank against the FULL list — the midpoint of
+    // the hidden neighbour RD-2 (-20000) and RD-3 (-10000), NOT a top-of-
+    // filtered-list rank that would scramble RD-1 relative to RD-2.
+    const target = /** @type {HTMLElement} */ (
+      mount.querySelector('#ready-col .board-card[data-issue-id="RD-3"]')
+    );
+    dropOnCard(target, 'RD-1');
+    expect(transport).toHaveBeenCalledWith('ui-order-set', {
+      expected_revision: 0,
+      entries: [{ bead_id: 'RD-1', rank: -15_000 }]
+    });
+    view.clear();
+  });
 });
 
 describe('views/board child integration (Phase 5)', () => {

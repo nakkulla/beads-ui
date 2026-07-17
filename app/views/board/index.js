@@ -622,12 +622,17 @@ export function createBoardView(mount_element, options) {
     if (!transport || !uiOrderStore) {
       return;
     }
-    const rendered = applyFilters(listForCol(col_id));
-    const dragged = rendered.find((it) => it.id === issue_id);
+    // The drop target identifies the anchor card in the RENDERED (filtered)
+    // column, but the rank math must run against the FULL column list: a
+    // midpoint or renormalization computed on a filtered subset would scramble
+    // the dropped card's order relative to the hidden cards (spec §2 — the
+    // renormalization batch covers the whole list).
+    const full = listForCol(col_id);
+    const dragged = full.find((it) => it.id === issue_id);
     if (!dragged) {
       return;
     }
-    const without = rendered.filter((it) => it.id !== issue_id);
+    const without = full.filter((it) => it.id !== issue_id);
     const over_card = drop_target.closest
       ? /** @type {HTMLElement | null} */ (drop_target.closest('.board-card'))
       : null;

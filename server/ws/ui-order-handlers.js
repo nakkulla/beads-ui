@@ -138,13 +138,18 @@ export function handleSubscribeUiOrder(ws, req) {
  */
 export function handleUnsubscribeUiOrder(ws, req) {
   const client_id = /** @type {any} */ (req.payload)?.id;
-  const key = workspaceKeyOf(ws);
-  const set = subscribersFor(key);
+  // Search EVERY workspace registry, not just the connection's current one: the
+  // client unsubscribes AFTER `set-workspace` has already switched the
+  // connection, so the entry to remove lives under the PREVIOUS workspace key.
+  // A leftover entry would keep fanning the old workspace's order into this
+  // socket and clobber the new workspace's order client-side.
   let removed = false;
-  for (const sub of set) {
-    if (sub.ws === ws && sub.client_id === client_id) {
-      set.delete(sub);
-      removed = true;
+  for (const set of SUBSCRIBERS.values()) {
+    for (const sub of set) {
+      if (sub.ws === ws && sub.client_id === client_id) {
+        set.delete(sub);
+        removed = true;
+      }
     }
   }
   ws.send(

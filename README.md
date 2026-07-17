@@ -31,7 +31,9 @@ A dark-first control tower with **two tabs** plus a shared detail panel:
   markdown viewer), the 5-key execution settings + `workflow_mode` editor, and
   the session history.
 - 📺 **Live updates** – A single WebSocket per-subscription push protocol
-  (`snapshot`/`upsert`/`delete`); no polling.
+  (`snapshot`/`upsert`/`delete`), plus a server-side periodic refresh
+  (`poll_interval_seconds`, default 30, `0` = off) so writes from other machines
+  through the central DB surface without a local fs event.
 - ⌨️ **Keyboard navigation** – Navigate and edit without touching the mouse.
 - 🔀 **Multi-workspace** – Switch between projects via the header dropdown.
 - 📱 **Phone-ready** – Columns/lanes stack and the panels/viewers go fullscreen
@@ -47,27 +49,28 @@ bdui start --open
 
 See `bdui --help` for options.
 
-### Token authentication
+### Access model (no auth)
 
-Tailscale binding is network isolation, not authentication. Mutating WebSocket
-messages and the worker/doc REST surfaces are gated by a **token**. Set it in
-`config.toml`:
+There is **no token authentication**: bdui is designed for a trusted, private
+network (loopback or a Tailscale tailnet with ACLs). Network isolation is the
+access boundary — anyone who can reach the port can read and mutate issues, so
+never bind it to an untrusted interface.
 
-```toml
-[auth]
-token = "a-long-random-secret"
-```
+Two in-app defenses remain for browser-borne (CSRF-style) attacks:
 
-When a token is configured, the UI prompts for it once and stores it locally,
-then sends it as the first WebSocket frame. `/healthz` and the static assets
-stay unauthenticated. As defense-in-depth against browser cross-site WS hijacks,
-browser sockets must additionally present an acceptable `Origin`: a
-**same-origin** request (the `Origin`'s host:port equals the request `Host` —
-i.e. the page was served by this same server, which covers the tailscale-IP
-deployment) is accepted, as is any origin listed in `BDUI_ALLOWED_ORIGINS`
-(comma-separated). With no allowlist configured, only loopback dev origins are
-accepted. Non-browser clients (no `Origin` header) are governed by network
-isolation, not this check.
+- **WebSocket Origin allowlist** — browser sockets must present an acceptable
+  `Origin`: a **same-origin** request (the `Origin`'s host:port equals the
+  request `Host` — i.e. the page was served by this same server, which covers
+  the tailscale-IP deployment) is accepted, as is any origin listed in
+  `BDUI_ALLOWED_ORIGINS` (comma-separated). With no allowlist configured, only
+  loopback dev origins are accepted. Non-browser clients (no `Origin` header)
+  are governed by network isolation, not this check.
+- **REST posture** — mutating REST endpoints require an `application/json` body
+  (cross-origin HTML forms cannot produce one) and no CORS headers are served,
+  so cross-origin browser reads stay blocked.
+
+A leftover `[auth]` section in `config.toml` is ignored with a one-line startup
+warning — remove it.
 
 ## Data topology
 

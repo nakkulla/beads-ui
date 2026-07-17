@@ -151,6 +151,40 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('a single-item array mutation reply (bd show list shape) is a success', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    // Some bd CLI versions emit `bd show --json` as a single-item ARRAY and the
+    // server passes it through unnormalized — this must count as success.
+    const transport = vi
+      .fn()
+      .mockResolvedValue([{ ...baseIssue, title: '배열 응답 제목' }]);
+    const { panel } = seedPanel(mount, baseIssue, transport);
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-edit-btn[data-edit="title"]')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-edit__input[data-edit="title"]')
+    );
+    input.value = '배열 응답 제목';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-edit="title-save"]')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    await Promise.resolve();
+    await Promise.resolve();
+    // Success path: editor closed and the fresh title rendered (a failure would
+    // keep the editor open).
+    expect(
+      mount.querySelector('.detail-edit__input[data-edit="title"]')
+    ).toBeNull();
+    expect(
+      mount.querySelector('.detail-overlay__title')?.textContent
+    ).toContain('배열 응답 제목');
+    panel.destroy();
+  });
+
   test('title cancel sends no message and closes the editor', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi.fn().mockResolvedValue(baseIssue);
