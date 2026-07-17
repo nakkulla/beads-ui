@@ -117,6 +117,10 @@ Never update `CHANGES.md`.
 
 ## Post‑Merge Runtime Validation
 
+- **필수 마감 단계 — 머지는 완료가 아니다**: 이 저장소의 코드 수정은 공유 서비스
+  배포까지 마쳐야 완료다. 머지 후 (1) `~/.config/bdui/config.toml` 런타임 설정
+  정합을 확인하고, (2) `bdui-shared restart`로 공유 서버를 재시작한 뒤, (3) 아래
+  검증(프로세스 경로·포트·HTTP 응답)을 통과한 다음에만 작업 완료를 선언한다.
 - After merging code changes into `main`, restart the actual server from the
   merged checkout before claiming the work is fully finished.
 - If the merged change affects runtime behavior, re-run the modified program and
