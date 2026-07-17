@@ -21,34 +21,22 @@ function setupShell() {
   return /** @type {HTMLElement} */ (document.getElementById('app'));
 }
 
-beforeEach(() => {
-  window.localStorage.clear();
-  delete (/** @type {any} */ (window).__BDUI_BOOTSTRAP__);
-});
-
-afterEach(() => {
-  delete (/** @type {any} */ (window).__BDUI_BOOTSTRAP__);
-});
-
-describe('main default workspace precedence', () => {
-  test('does not restore a saved workspace over configured default', async () => {
-    window.localStorage.setItem('beads-ui.workspace', '/repo-b');
-    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
-      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
-      workspace_config: { default_workspace: '/repo-a' }
-    };
-
-    CLIENT = {
-      send: vi.fn(async (type, payload) => {
+/**
+ * @param {{ workspaces: Array<{ path: string }>, current: string }} shape
+ */
+function makeClient(shape) {
+  return {
+    send: vi.fn(
+      async (/** @type {string} */ type, /** @type {any} */ payload) => {
         if (type === 'list-workspaces') {
           return {
-            workspaces: [
-              { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
-              { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
-            ],
+            workspaces: shape.workspaces.map((ws) => ({
+              path: ws.path,
+              database: `${ws.path}/.beads/ui.db`
+            })),
             current: {
-              root_dir: '/repo-a',
-              db_path: '/repo-a/.beads/ui.db'
+              root_dir: shape.current,
+              db_path: `${shape.current}/.beads/ui.db`
             }
           };
         }
@@ -62,26 +50,77 @@ describe('main default workspace precedence', () => {
           };
         }
         return null;
-      }),
-      on() {
-        return () => {};
-      },
-      close() {},
-      getState() {
-        return 'open';
       }
+    ),
+    on() {
+      return () => {};
+    },
+    close() {},
+    getState() {
+      return 'open';
+    }
+  };
+}
+
+async function settle() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+beforeEach(() => {
+  window.localStorage.clear();
+  delete (/** @type {any} */ (window).__BDUI_BOOTSTRAP__);
+});
+
+afterEach(() => {
+  delete (/** @type {any} */ (window).__BDUI_BOOTSTRAP__);
+});
+
+describe('main workspace restore precedence', () => {
+  test('restores the saved workspace over the configured default', async () => {
+    window.localStorage.setItem('beads-ui.workspace', '/repo-b');
+    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
+      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
+      workspace_config: { default_workspace: '/repo-a' }
     };
+
+    CLIENT = makeClient({
+      workspaces: [{ path: '/repo-a' }, { path: '/repo-b' }],
+      current: '/repo-a'
+    });
 
     const root = setupShell();
     bootstrap(root);
 
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(CLIENT.send).not.toHaveBeenCalledWith('set-workspace', {
-      path: '/repo-b'
+    await vi.waitFor(() => {
+      expect(CLIENT.send).toHaveBeenCalledWith('set-workspace', {
+        path: '/repo-b'
+      });
     });
-    expect(window.localStorage.getItem('beads-ui.workspace')).toBe('/repo-a');
+    expect(window.localStorage.getItem('beads-ui.workspace')).toBe('/repo-b');
+  });
+
+  test('stays on the configured default when no saved workspace exists', async () => {
+    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
+      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
+      workspace_config: { default_workspace: '/repo-a' }
+    };
+
+    CLIENT = makeClient({
+      workspaces: [{ path: '/repo-a' }, { path: '/repo-b' }],
+      current: '/repo-a'
+    });
+
+    const root = setupShell();
+    bootstrap(root);
+
+    await settle();
+
+    expect(CLIENT.send).not.toHaveBeenCalledWith(
+      'set-workspace',
+      expect.anything()
+    );
+    expect(window.localStorage.getItem('beads-ui.workspace')).toBeNull();
   });
 
   test('removes stale saved workspace hints that are no longer available', async () => {
@@ -91,34 +130,40 @@ describe('main default workspace precedence', () => {
       workspace_config: { default_workspace: null }
     };
 
-    CLIENT = {
-      send: vi.fn(async (type) => {
-        if (type === 'list-workspaces') {
-          return {
-            workspaces: [{ path: '/repo-a', database: '/repo-a/.beads/ui.db' }],
-            current: {
-              root_dir: '/repo-a',
-              db_path: '/repo-a/.beads/ui.db'
-            }
-          };
-        }
-        return null;
-      }),
-      on() {
-        return () => {};
-      },
-      close() {},
-      getState() {
-        return 'open';
-      }
-    };
+    CLIENT = makeClient({
+      workspaces: [{ path: '/repo-a' }],
+      current: '/repo-a'
+    });
 
     const root = setupShell();
     bootstrap(root);
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await settle();
 
+    expect(window.localStorage.getItem('beads-ui.workspace')).toBeNull();
+  });
+
+  test('removes stale saved workspace hints when a default is configured', async () => {
+    window.localStorage.setItem('beads-ui.workspace', '/repo-missing');
+    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
+      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
+      workspace_config: { default_workspace: '/repo-a' }
+    };
+
+    CLIENT = makeClient({
+      workspaces: [{ path: '/repo-a' }],
+      current: '/repo-a'
+    });
+
+    const root = setupShell();
+    bootstrap(root);
+
+    await settle();
+
+    expect(CLIENT.send).not.toHaveBeenCalledWith(
+      'set-workspace',
+      expect.anything()
+    );
     expect(window.localStorage.getItem('beads-ui.workspace')).toBeNull();
   });
 });
