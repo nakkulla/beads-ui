@@ -64,6 +64,95 @@ export function cmpClosedDesc(a, b) {
 }
 
 /**
+ * Capture the phase/task number from a child issue title (spec §3.3). Matches
+ * the plain prefixes "Task 3:" / "Phase 2:" and the parent-id-prefixed shapes
+ * "UI-l3c3 Task 10: ..." and "UI-gr7m T3: ...". The optional leading group
+ * requires a hyphen (an issue id always has one, the keywords never do) so a
+ * "t5"/"T3" sitting inside an id prefix cannot be mistaken for the keyword.
+ */
+const CHILD_TASK_NUM_RE =
+  /^(?:[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\s+)?(?:Task|Phase|T)\s*(\d+)/i;
+
+/**
+ * The minimal child shape read by {@link cmpChildOrder}.
+ *
+ * @typedef {{ id?: string, title?: string, metadata?: Record<string, unknown> | null, created_at?: number | string }} ChildOrderable
+ */
+
+/**
+ * Numeric `metadata.task_order` for a child, or +Infinity when absent/invalid so
+ * children carrying an explicit order sort ahead of those without.
+ *
+ * @param {ChildOrderable} child
+ * @returns {number}
+ */
+function childTaskOrder(child) {
+  const md = child && child.metadata;
+  const raw = md ? /** @type {any} */ (md).task_order : undefined;
+  if (raw === undefined || raw === null || raw === '') {
+    return Number.POSITIVE_INFINITY;
+  }
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * The task/phase number parsed from a child title, or +Infinity when the title
+ * carries no recognizable marker.
+ *
+ * @param {ChildOrderable} child
+ * @returns {number}
+ */
+function childTitleNumber(child) {
+  const title = child && child.title;
+  if (typeof title !== 'string') {
+    return Number.POSITIVE_INFINITY;
+  }
+  const m = CHILD_TASK_NUM_RE.exec(title);
+  if (!m) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Order a parent's children for the Board rollup (spec §3.3): by numeric
+ * `metadata.task_order` asc, then the title task-number asc, then `created_at`
+ * asc, with id asc as a final stable tiebreak. A missing task_order or
+ * title-number is treated as +Infinity so it falls through to the next key when
+ * both sides lack it, and sorts after a present value otherwise (a total,
+ * transitive order — required for a well-behaved Array.sort comparator).
+ *
+ * @param {ChildOrderable} a
+ * @param {ChildOrderable} b
+ * @returns {number}
+ */
+export function cmpChildOrder(a, b) {
+  const oa = childTaskOrder(a);
+  const ob = childTaskOrder(b);
+  if (oa !== ob) {
+    return oa < ob ? -1 : 1;
+  }
+  const na = childTitleNumber(a);
+  const nb = childTitleNumber(b);
+  if (na !== nb) {
+    return na < nb ? -1 : 1;
+  }
+  const ca = toSortableTimestamp(a && a.created_at);
+  const cb = toSortableTimestamp(b && b.created_at);
+  if (ca !== cb) {
+    return ca < cb ? -1 : 1;
+  }
+  const ida = a && a.id;
+  const idb = b && b.id;
+  if (ida === idb) {
+    return 0;
+  }
+  return String(ida) < String(idb) ? -1 : 1;
+}
+
+/**
  * Rank spacing for freshly written manual-order entries. A power of two keeps
  * repeated midpoint insertions exact for as long as float precision allows
  * before a renormalization is forced (spec §2).

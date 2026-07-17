@@ -438,3 +438,184 @@ describe('views/board same-column reorder', () => {
     expect(uiOrderStore.get()?.revision).toBe(6);
   });
 });
+
+describe('views/board child integration (Phase 5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} colId
+   * @returns {string[]}
+   */
+  function cardIds(mount, colId) {
+    return Array.from(mount.querySelectorAll(`#${colId} .board-card`)).map(
+      (c) => c.getAttribute('data-issue-id') || ''
+    );
+  }
+
+  test('a child whose parent is rendered is folded into the parent card, not a separate card', async () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:ready', [
+      { id: 'PA', title: 'parent alpha', status: 'open', created_at: 100 },
+      {
+        id: 'CH1',
+        title: 'Task 1: child one',
+        status: 'open',
+        parent: 'PA',
+        created_at: 90
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores
+    });
+    await view.load();
+
+    // The child is not a top-level card; only the parent renders as a card.
+    expect(cardIds(mount, 'ready-col')).toEqual(['PA']);
+    // The child appears as a compact row inside the parent card (default open).
+    const rows = mount.querySelectorAll(
+      '#ready-col .board-card[data-issue-id="PA"] .board-card__roll-child'
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].textContent).toContain('Task 1: child one');
+  });
+
+  test('a child whose parent is not rendered falls back to a normal card', async () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:ready', [
+      {
+        id: 'CH2',
+        title: 'Task 1: orphan child',
+        status: 'open',
+        parent: 'GHOST',
+        created_at: 90
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores
+    });
+    await view.load();
+
+    // GHOST is not rendered anywhere → the child stays as its own card.
+    expect(cardIds(mount, 'ready-col')).toEqual(['CH2']);
+  });
+
+  test('a parent beyond the closed render cap is not rendered so its child falls back', async () => {
+    const stores = createTestIssueStores();
+    const now = Date.now();
+    /** @type {any[]} */
+    const closed = [];
+    for (let i = 0; i < 200; i++) {
+      closed.push({
+        id: `F-${i}`,
+        title: `f${i}`,
+        status: 'closed',
+        closed_at: now - i
+      });
+    }
+    // Oldest closed → sorts last (closed_at desc) → cut by the 200 cap.
+    closed.push({
+      id: 'PBEYOND',
+      title: 'beyond parent',
+      status: 'closed',
+      closed_at: now - 10_000_000
+    });
+    seed(stores, 'tab:board:closed', closed);
+    seed(stores, 'tab:board:ready', [
+      {
+        id: 'CHB',
+        title: 'Task 1: child of beyond',
+        status: 'open',
+        parent: 'PBEYOND',
+        created_at: 90
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores
+    });
+    await view.load();
+
+    // Closed renders exactly the cap; PBEYOND is cut.
+    expect(mount.querySelectorAll('#closed-col .board-card').length).toBe(200);
+    expect(cardIds(mount, 'closed-col')).not.toContain('PBEYOND');
+    // Parent not rendered → child does not vanish; it is a normal card.
+    expect(cardIds(mount, 'ready-col')).toContain('CHB');
+  });
+
+  test('an active search filter suspends folding so a matching child renders as a card', async () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:ready', [
+      { id: 'PA', title: 'parent alpha', status: 'open', created_at: 100 },
+      {
+        id: 'CH1',
+        title: 'Task 1: child one',
+        status: 'open',
+        parent: 'PA',
+        created_at: 90
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores
+    });
+    await view.load();
+    // Folded by default: only the parent card.
+    expect(cardIds(mount, 'ready-col')).toEqual(['PA']);
+
+    // A search that hides the parent must not make the child vanish.
+    const search = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.board-filter__search')
+    );
+    search.value = 'child one';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(cardIds(mount, 'ready-col')).toEqual(['CH1']);
+  });
+
+  test('an active priority filter also suspends folding', async () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:ready', [
+      {
+        id: 'PA',
+        title: 'parent alpha',
+        status: 'open',
+        priority: 2,
+        created_at: 100
+      },
+      {
+        id: 'CH1',
+        title: 'Task 1: child one',
+        status: 'open',
+        priority: 0,
+        parent: 'PA',
+        created_at: 90
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores
+    });
+    await view.load();
+    expect(cardIds(mount, 'ready-col')).toEqual(['PA']);
+
+    const pri = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.board-filter select[aria-label="우선순위 필터"]')
+    );
+    pri.value = '0';
+    pri.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Parent (P2) filtered out; the child (P0) survives as a card.
+    expect(cardIds(mount, 'ready-col')).toEqual(['CH1']);
+  });
+});

@@ -167,4 +167,99 @@ describe('views/board/card', () => {
     toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(onRollupToggle).toHaveBeenCalled();
   });
+
+  test('compact child rows render in cmpChildOrder with ordinals; no stepper/chips', () => {
+    const rollup = {
+      total: 3,
+      count: 1,
+      current: null,
+      children: [
+        {
+          id: 'c3',
+          title: 'Task 3: three',
+          status: 'open',
+          metadata: { task_order: '3' }
+        },
+        {
+          id: 'c1',
+          title: 'Task 1: one',
+          status: 'closed',
+          metadata: { task_order: '1' }
+        },
+        {
+          id: 'c2',
+          title: 'Task 2: two',
+          status: 'in_progress',
+          metadata: { task_order: '2' }
+        }
+      ]
+    };
+    const m = mountCard(
+      { id: 'P', title: 'parent', status: 'in_progress' },
+      makeCtx({ rollupFor: () => rollup, isExpanded: () => true })
+    );
+    const rows = Array.from(m.querySelectorAll('.board-card__roll-child'));
+    expect(
+      rows.map((r) =>
+        r.querySelector('.board-card__roll-child-title')?.textContent?.trim()
+      )
+    ).toEqual(['Task 1: one', 'Task 2: two', 'Task 3: three']);
+    expect(
+      rows.map((r) =>
+        r.querySelector('.board-card__roll-child-ord')?.textContent?.trim()
+      )
+    ).toEqual(['1', '2', '3']);
+    // Compact rows carry no stepper and no workflow chips.
+    expect(m.querySelector('.board-card__roll-child .stp')).toBeNull();
+    expect(m.querySelector('.board-card__roll-child .ctl-chip')).toBeNull();
+  });
+
+  test('child row click calls onChildClick with the child id', () => {
+    const onChildClick = vi.fn();
+    const rollup = {
+      total: 1,
+      count: 0,
+      current: null,
+      children: [{ id: 'c1', title: 'Task 1: one', status: 'open' }]
+    };
+    const m = mountCard(
+      { id: 'P', title: 'p' },
+      makeCtx({ rollupFor: () => rollup, isExpanded: () => true, onChildClick })
+    );
+    const row = /** @type {HTMLElement} */ (
+      m.querySelector('.board-card__roll-child')
+    );
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onChildClick).toHaveBeenCalledWith(expect.anything(), 'c1');
+  });
+
+  test('child rows are expanded by default (no explicit isExpanded); toggle collapses', () => {
+    const rollup = {
+      total: 2,
+      count: 1,
+      current: null,
+      children: [
+        { id: 'c1', title: 'Task 1', status: 'closed' },
+        { id: 'c2', title: 'Task 2', status: 'open' }
+      ]
+    };
+    const onRollupToggle = vi.fn();
+    // ctx WITHOUT isExpanded → the card must default to expanded.
+    const ctx = {
+      onCardClick: vi.fn(),
+      onCopyId: vi.fn(),
+      onDragStart: vi.fn(),
+      onDragEnd: vi.fn(),
+      rollupFor: () => rollup,
+      onRollupToggle,
+      onChildClick: vi.fn()
+    };
+    const m = mountCard({ id: 'P', title: 'p', status: 'open' }, ctx);
+    expect(m.querySelectorAll('.board-card__roll-child').length).toBe(2);
+    const toggle = /** @type {HTMLElement} */ (
+      m.querySelector('.board-card__roll-toggle')
+    );
+    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onRollupToggle).toHaveBeenCalled();
+  });
 });

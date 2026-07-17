@@ -464,6 +464,14 @@ body {
   cursor: pointer;
 }
 
+.board-card__roll-child-ord {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 1.25em;
+  text-align: right;
+  flex: 0 0 auto;
+}
+
 .board-card__roll-child-title {
   overflow: hidden;
   text-overflow: ellipsis;

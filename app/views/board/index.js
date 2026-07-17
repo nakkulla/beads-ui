@@ -8,7 +8,15 @@ import { columnTemplate } from './column.js';
 import { filterBarTemplate } from './filter-bar.js';
 
 /**
- * @typedef {import('./card.js').BoardCardIssue & { issue_type?: string, status?: string, closed_at?: number | null, created_at?: number | string }} IssueLite
+ * @typedef {import('./card.js').BoardCardIssue & { issue_type?: string, status?: string, closed_at?: number | null, created_at?: number | string, parent?: string | { id?: string } }} IssueLite
+ */
+
+/**
+ * A child row preserved for a parent card's compact rollup (spec §3.3). Carries
+ * enough to render (title/status) and to order with `cmpChildOrder`
+ * (metadata.task_order / title / created_at).
+ *
+ * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, unknown> | null, created_at?: number | string }} ChildRow
  */
 
 /**
@@ -98,10 +106,15 @@ export function createBoardView(mount_element, options) {
   let status_by_id = new Map();
   /** @type {Map<string, string>} */
   let col_by_id = new Map();
-  /** @type {Map<string, { id: string, title?: string, status?: string }[]>} */
+  /** @type {Map<string, ChildRow[]>} */
   let children_by_parent = new Map();
-  /** @type {Set<string>} */
-  const expanded_ids = new Set();
+  /**
+   * Cards whose child rollup the user has explicitly collapsed. The rollup is
+   * expanded by default (spec §3.3), so this tracks the exceptions.
+   *
+   * @type {Set<string>}
+   */
+  const collapsed_ids = new Set();
 
   const filters = { search: '', priority: '', type: '' };
 
@@ -145,11 +158,32 @@ export function createBoardView(mount_element, options) {
   }
 
   /**
-   * Recompose all column lists from the subscription stores.
+   * True while any board-local filter (search / priority / type) is active.
+   * Child folding is suspended in this state (spec §3.3) so a filter that hides
+   * a parent cannot make its children vanish.
+   *
+   * @returns {boolean}
+   */
+  function filterActive() {
+    return (
+      filters.search.trim() !== '' ||
+      filters.priority !== '' ||
+      filters.type !== ''
+    );
+  }
+
+  /**
+   * Recompose all column lists from the subscription stores in two passes
+   * (spec §3.3): pass 1 builds the five render lists and the set of rendered
+   * top-level parents; pass 2 folds children of rendered parents into their
+   * parent card (unless a board-local filter is active).
    */
   function refreshFromStores() {
     try {
       if (selectors) {
+        // Pass 1: the five render lists exactly as displayed. Closed is already
+        // period-filtered server-side (Phase 4) and capped here; this cap is the
+        // parent-existence input the fold rule reads.
         const in_progress = selectors.selectBoardColumn(
           'tab:board:in-progress',
           'in_progress'
@@ -169,36 +203,66 @@ export function createBoardView(mount_element, options) {
           .selectBoardColumn('tab:board:closed', 'closed')
           .slice(0, CLOSED_RENDER_CAP);
 
-        list_blocked = blocked;
-        list_ready = ready;
-        list_in_progress = in_progress;
-        list_resolved = resolved;
-        list_closed = closed;
-
-        status_by_id = new Map();
-        for (const it of blocked) status_by_id.set(it.id, 'open');
-        for (const it of ready) status_by_id.set(it.id, 'open');
-        for (const it of in_progress) status_by_id.set(it.id, 'in_progress');
-        for (const it of resolved) status_by_id.set(it.id, 'resolved');
-        for (const it of closed) status_by_id.set(it.id, 'closed');
-
-        // Column membership (id → column DOM id) so a drop can tell a same-column
-        // reorder from a cross-column status change (Blocked/Ready both 'open',
-        // so status alone is insufficient).
-        col_by_id = new Map();
-        for (const it of blocked) col_by_id.set(it.id, 'blocked-col');
-        for (const it of ready) col_by_id.set(it.id, 'ready-col');
-        for (const it of in_progress) col_by_id.set(it.id, 'in-progress-col');
-        for (const it of resolved) col_by_id.set(it.id, 'resolved-col');
-        for (const it of closed) col_by_id.set(it.id, 'closed-col');
-
-        rebuildChildrenIndex([
+        const all = [
           ...blocked,
           ...ready,
           ...in_progress,
           ...resolved,
           ...closed
-        ]);
+        ];
+
+        // The rollup must index every child (incl. folded ones) so a parent card
+        // can list them — build it from the full render set, before exclusion.
+        rebuildChildrenIndex(all);
+
+        // rendered_parents: ids of TOP-LEVEL (parentless) cards across the five
+        // render lists. Only these count as a "rendered parent" for folding; a
+        // parent that is itself absent (cut by the closed period/cap filter) is
+        // not present, so its child stays a card (spec §3.3 — no issue vanishes).
+        /** @type {Set<string>} */
+        const rendered_parents = new Set();
+        for (const it of all) {
+          if (it && it.id && !parentIdOf(it)) {
+            rendered_parents.add(it.id);
+          }
+        }
+
+        // Pass 2: fold children of rendered parents out of every column. Folding
+        // is SUSPENDED whenever a board-local filter is active so a filter that
+        // hides the parent cannot make its children vanish, and search can reach
+        // children directly (spec §3.3).
+        const fold = !filterActive();
+        list_blocked = fold
+          ? excludeFolded(blocked, rendered_parents)
+          : blocked;
+        list_ready = fold ? excludeFolded(ready, rendered_parents) : ready;
+        list_in_progress = fold
+          ? excludeFolded(in_progress, rendered_parents)
+          : in_progress;
+        list_resolved = fold
+          ? excludeFolded(resolved, rendered_parents)
+          : resolved;
+        list_closed = fold ? excludeFolded(closed, rendered_parents) : closed;
+
+        status_by_id = new Map();
+        for (const it of list_blocked) status_by_id.set(it.id, 'open');
+        for (const it of list_ready) status_by_id.set(it.id, 'open');
+        for (const it of list_in_progress)
+          status_by_id.set(it.id, 'in_progress');
+        for (const it of list_resolved) status_by_id.set(it.id, 'resolved');
+        for (const it of list_closed) status_by_id.set(it.id, 'closed');
+
+        // Column membership (id → column DOM id) so a drop can tell a same-column
+        // reorder from a cross-column status change (Blocked/Ready both 'open',
+        // so status alone is insufficient). Built from the rendered (post-fold)
+        // lists — folded children are not draggable cards.
+        col_by_id = new Map();
+        for (const it of list_blocked) col_by_id.set(it.id, 'blocked-col');
+        for (const it of list_ready) col_by_id.set(it.id, 'ready-col');
+        for (const it of list_in_progress)
+          col_by_id.set(it.id, 'in-progress-col');
+        for (const it of list_resolved) col_by_id.set(it.id, 'resolved-col');
+        for (const it of list_closed) col_by_id.set(it.id, 'closed-col');
       }
       doRender();
     } catch {
@@ -227,12 +291,10 @@ export function createBoardView(mount_element, options) {
         seen.set(it.id, it);
       }
     }
-    /** @type {Map<string, { id: string, title?: string, status?: string }[]>} */
+    /** @type {Map<string, ChildRow[]>} */
     const map = new Map();
     for (const it of seen.values()) {
-      const raw = /** @type {any} */ (it).parent;
-      const parent =
-        typeof raw === 'string' ? raw : raw && raw.id ? String(raw.id) : '';
+      const parent = parentIdOf(it);
       if (!parent) {
         continue;
       }
@@ -241,7 +303,15 @@ export function createBoardView(mount_element, options) {
         arr = [];
         map.set(parent, arr);
       }
-      arr.push({ id: it.id, title: it.title, status: it.status });
+      // Preserve the ordering keys (metadata.task_order / created_at) so the
+      // card can sort the compact rows with cmpChildOrder (spec §3.3).
+      arr.push({
+        id: it.id,
+        title: it.title,
+        status: it.status,
+        metadata: /** @type {any} */ (it).metadata,
+        created_at: it.created_at
+      });
     }
     children_by_parent = map;
   }
@@ -251,12 +321,12 @@ export function createBoardView(mount_element, options) {
    * plus the in_progress child (if any) and the full child list.
    *
    * @param {string} id
-   * @returns {{ total: number, count: number, current: { id: string, title?: string, status?: string } | null, children: { id: string, title?: string, status?: string }[] }}
+   * @returns {{ total: number, count: number, current: ChildRow | null, children: ChildRow[] }}
    */
   function rollupFor(id) {
     const children = children_by_parent.get(id) || [];
     let count = 0;
-    /** @type {{ id: string, title?: string, status?: string } | null} */
+    /** @type {ChildRow | null} */
     let current = null;
     for (const c of children) {
       if (c.status === 'resolved' || c.status === 'closed') {
@@ -270,11 +340,14 @@ export function createBoardView(mount_element, options) {
   }
 
   /**
+   * Child rollups render expanded by default (spec §3.3); a card is expanded
+   * unless the user has explicitly collapsed it.
+   *
    * @param {string} id
    * @returns {boolean}
    */
   function isExpanded(id) {
-    return expanded_ids.has(id);
+    return !collapsed_ids.has(id);
   }
 
   /**
@@ -284,10 +357,10 @@ export function createBoardView(mount_element, options) {
   function onRollupToggle(ev, id) {
     ev.preventDefault();
     ev.stopPropagation();
-    if (expanded_ids.has(id)) {
-      expanded_ids.delete(id);
+    if (collapsed_ids.has(id)) {
+      collapsed_ids.delete(id);
     } else {
-      expanded_ids.add(id);
+      collapsed_ids.add(id);
     }
     doRender();
   }
@@ -387,27 +460,29 @@ export function createBoardView(mount_element, options) {
   };
 
   // --- filter handlers (board-local state) ---
+  // A filter change flips whether child folding is active (spec §3.3), so it
+  // must recompose the lists (refreshFromStores), not just re-render.
   const filter_handlers = {
     /** @param {Event} ev */
     onSearchInput(ev) {
       filters.search = String(
         /** @type {HTMLInputElement} */ (ev.target).value || ''
       );
-      doRender();
+      refreshFromStores();
     },
     /** @param {Event} ev */
     onPriorityChange(ev) {
       filters.priority = String(
         /** @type {HTMLSelectElement} */ (ev.target).value || ''
       );
-      doRender();
+      refreshFromStores();
     },
     /** @param {Event} ev */
     onTypeChange(ev) {
       filters.type = String(
         /** @type {HTMLSelectElement} */ (ev.target).value || ''
       );
-      doRender();
+      refreshFromStores();
     },
     onNewIssue() {
       if (onNewIssue) {
@@ -775,6 +850,39 @@ export function createBoardView(mount_element, options) {
       col_by_id = new Map();
     }
   };
+}
+
+/**
+ * Read the parent id off an issue's flattened `parent` edge (bd JSON). Returns
+ * '' for a top-level issue (no parent).
+ *
+ * @param {IssueLite} issue
+ * @returns {string}
+ */
+function parentIdOf(issue) {
+  const raw = issue && /** @type {any} */ (issue).parent;
+  if (typeof raw === 'string') {
+    return raw;
+  }
+  if (raw && raw.id) {
+    return String(raw.id);
+  }
+  return '';
+}
+
+/**
+ * Drop children whose parent is a rendered top-level card (spec §3.3); such
+ * children are folded into the parent card and must not also appear as columns.
+ *
+ * @param {IssueLite[]} list
+ * @param {Set<string>} rendered_parents
+ * @returns {IssueLite[]}
+ */
+function excludeFolded(list, rendered_parents) {
+  return list.filter((it) => {
+    const parent = parentIdOf(it);
+    return !(parent && rendered_parents.has(parent));
+  });
 }
 
 /**

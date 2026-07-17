@@ -1,4 +1,5 @@
 import { html } from 'lit-html';
+import { cmpChildOrder } from '../../data/sort.js';
 import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { stepperTemplate } from './stepper.js';
 
@@ -25,11 +26,15 @@ import { stepperTemplate } from './stepper.js';
  */
 
 /**
+ * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, unknown> | null, created_at?: number | string }} BoardCardChild
+ */
+
+/**
  * @typedef {Object} BoardCardRollup
  * @property {number} total
  * @property {number} count
- * @property {{ id: string, title?: string, status?: string } | null} current
- * @property {{ id: string, title?: string, status?: string }[]} children
+ * @property {BoardCardChild | null} current
+ * @property {BoardCardChild[]} children
  */
 
 /**
@@ -152,9 +157,11 @@ function statusDotClass(status) {
 }
 
 /**
- * Child rollup row (spec §4): always shows "children N/M" + the in_progress
- * child one-liner when children>0; clicking the toggle expands the full child
- * list (status dot + Phase anchor). Elapsed sits on the right of the meta row.
+ * Child rollup (spec §3.3): always shows "children N/M" + the in_progress child
+ * one-liner when children>0. Expanded by default (the toggle collapses it), the
+ * children render as compact rows — status dot + ordinal + title — ordered by
+ * `cmpChildOrder`; a row click opens the child in the detail panel. No per-child
+ * stepper or chips. Elapsed sits on the right of the meta row.
  *
  * @param {BoardCardIssue} issue
  * @param {BoardCardContext} ctx
@@ -166,7 +173,10 @@ function rollTemplate(issue, ctx, elapsed) {
     ? ctx.rollupFor(issue.id)
     : { total: 0, count: 0, current: null, children: [] };
   const total = rollup.total || 0;
-  const expanded = ctx.isExpanded ? ctx.isExpanded(issue.id) : false;
+  // Expanded unless the caller explicitly collapsed this card (default open).
+  const expanded = ctx.isExpanded ? ctx.isExpanded(issue.id) : true;
+  const ordered =
+    total > 0 ? rollup.children.slice().sort(cmpChildOrder) : rollup.children;
   return html`
     <div class="board-card__roll">
       <div class="board-card__roll-meta">
@@ -195,8 +205,8 @@ function rollTemplate(issue, ctx, elapsed) {
         : ''}
       ${expanded && total > 0
         ? html`<div class="board-card__roll-list">
-            ${rollup.children.map(
-              (c) =>
+            ${ordered.map(
+              (c, i) =>
                 html`<button
                   type="button"
                   class="board-card__roll-child"
@@ -204,6 +214,7 @@ function rollTemplate(issue, ctx, elapsed) {
                     ctx.onChildClick && ctx.onChildClick(ev, c.id)}
                 >
                   <span class=${statusDotClass(c.status)}>●</span>
+                  <span class="board-card__roll-child-ord">${i + 1}</span>
                   <span class="board-card__roll-child-title"
                     >${c.title || c.id}</span
                   >
