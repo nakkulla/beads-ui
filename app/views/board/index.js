@@ -1,8 +1,8 @@
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
-import { computeDropRank } from '../../data/sort.js';
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
+import { createReorderController } from '../reorder.js';
 import { columnTemplate } from './column.js';
 import { filterBarTemplate } from './filter-bar.js';
 
@@ -73,6 +73,7 @@ export function createBoardView(mount_element, options) {
   const selectors = issueStores
     ? createListSelectors(issueStores, uiOrderStore)
     : null;
+  const reorder = createReorderController({ transport, uiOrderStore });
 
   /** @type {IssueLite[]} */
   let list_blocked = [];
@@ -561,80 +562,7 @@ export function createBoardView(mount_element, options) {
     }
     const final_list = without.slice();
     final_list.splice(insert_index, 0, dragged);
-    void applyReorder(issue_id, final_list, insert_index);
-  }
-
-  /**
-   * @param {import('../../data/sort.js').DropRankResult} result
-   * @param {string} issue_id
-   * @returns {Array<{ bead_id: string, rank: number }>}
-   */
-  function entriesFor(result, issue_id) {
-    return 'renormalize' in result
-      ? result.renormalize
-      : [{ bead_id: issue_id, rank: result.rank }];
-  }
-
-  /**
-   * @param {{ revision: number, order: Record<string, number> }} base
-   * @param {Array<{ bead_id: string, rank: number }>} entries
-   */
-  function optimisticApply(base, entries) {
-    const merged = { ...base.order };
-    for (const e of entries) {
-      merged[e.bead_id] = e.rank;
-    }
-    if (uiOrderStore) {
-      uiOrderStore.set({ revision: base.revision, order: merged });
-    }
-  }
-
-  /**
-   * @param {string} issue_id
-   * @param {IssueLite[]} final_list
-   * @param {number} insert_index
-   */
-  async function applyReorder(issue_id, final_list, insert_index) {
-    if (!transport || !uiOrderStore) {
-      return;
-    }
-    const base = uiOrderStore.get() || { revision: 0, order: {} };
-    const entries = entriesFor(
-      computeDropRank(final_list, insert_index, base.order),
-      issue_id
-    );
-    optimisticApply(base, entries);
-    const res = await transport('ui-order-set', {
-      expected_revision: base.revision,
-      entries
-    });
-    if (res && res.conflict) {
-      const adopted = {
-        revision: typeof res.revision === 'number' ? res.revision : 0,
-        order: res.order || {}
-      };
-      uiOrderStore.set(adopted);
-      const entries2 = entriesFor(
-        computeDropRank(final_list, insert_index, adopted.order),
-        issue_id
-      );
-      optimisticApply(adopted, entries2);
-      const res2 = await transport('ui-order-set', {
-        expected_revision: adopted.revision,
-        entries: entries2
-      });
-      if (res2 && res2.applied) {
-        uiOrderStore.set({
-          revision: typeof res2.revision === 'number' ? res2.revision : 0,
-          order: res2.order || {}
-        });
-      }
-    } else if (res && res.applied) {
-      uiOrderStore.set({
-        revision: typeof res.revision === 'number' ? res.revision : 0,
-        order: res.order || {}
-      });
-    }
+    void reorder.applyReorder(issue_id, final_list, insert_index);
   }
 
   function clearDropTarget() {

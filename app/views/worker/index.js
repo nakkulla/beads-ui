@@ -15,6 +15,8 @@
  */
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
+import { cmpEffectiveRank } from '../../data/sort.js';
+import { createReorderController } from '../reorder.js';
 import { paneTemplate } from './lanes.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
@@ -47,16 +49,37 @@ function blockedReason(issue) {
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, gotoIssue?: (id: string) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void }} [options]
  * @returns {{ load: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
-  const { transport, issueStores, queueStore, sessionLogStore, gotoIssue } =
-    options;
-  const selectors = issueStores ? createListSelectors(issueStores) : null;
+  const {
+    transport,
+    issueStores,
+    queueStore,
+    sessionLogStore,
+    uiOrderStore,
+    gotoIssue
+  } = options;
+  // The shared ui-order store feeds list-selectors so an order-only push
+  // re-renders the candidate lane, and drives the same effective-rank sort the
+  // Board uses (spec §2/§4).
+  const selectors = issueStores
+    ? createListSelectors(issueStores, uiOrderStore)
+    : null;
+  const reorder = createReorderController({ transport, uiOrderStore });
 
   /** @type {{ bead_id: string, from_lane: string }|null} */
   let dragging = null;
+  /**
+   * Sorted raw candidate issues (Ready+Blocked merged, queued excluded), kept so
+   * a candidate→candidate drop computes its rank against exactly the rendered
+   * order (rows drop `created_at`, which the rank math needs). Refreshed on every
+   * `buildModel`.
+   *
+   * @type {any[]}
+   */
+  let candidate_issues = [];
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -254,37 +277,47 @@ export function createWorkerView(mount_element, options = {}) {
       ...q.done.map((/** @type {any} */ e) => e.bead_id)
     ]);
 
+    // Merge the raw Ready+Blocked issues (which carry created_at) FIRST, sort the
+    // combined list by the shared effective rank (spec §4 "합산 목록 유효 rank
+    // 정렬"), THEN exclude queued beads and project to candidate rows. Blocked ids
+    // are tracked so the row reason keeps the blocked/ready distinction after the
+    // merge collapses the two sources into one order.
+    /** @type {Set<string>} */
+    const blocked_ids = new Set(blocked.map((/** @type {any} */ it) => it.id));
+    const order = uiOrderStore ? uiOrderStore.get()?.order || {} : {};
+    /** @type {Set<string>} */
+    const seen = new Set();
     /** @type {any[]} */
-    const candidates = [];
-    for (const it of ready) {
-      if (queued.has(it.id)) {
+    const merged = [];
+    for (const it of [...ready, ...blocked]) {
+      if (queued.has(it.id) || seen.has(it.id)) {
         continue;
       }
-      const eligible = hasSpec(it);
-      candidates.push({
-        id: it.id,
-        title: it.title || it.id,
-        reason: eligible ? '' : 'spec 없음',
-        draggable: eligible,
-        lane: 'candidate'
-      });
+      seen.add(it.id);
+      merged.push(it);
     }
-    for (const it of blocked) {
-      if (queued.has(it.id)) {
-        continue;
-      }
+    merged.sort(cmpEffectiveRank(order));
+    candidate_issues = merged;
+
+    /** @type {any[]} */
+    const candidates = merged.map((/** @type {any} */ it) => {
       const eligible = hasSpec(it);
-      const reason = eligible
-        ? blockedReason(it)
-        : `${blockedReason(it)} · spec 없음`;
-      candidates.push({
+      let reason;
+      if (blocked_ids.has(it.id)) {
+        reason = eligible
+          ? blockedReason(it)
+          : `${blockedReason(it)} · spec 없음`;
+      } else {
+        reason = eligible ? '' : 'spec 없음';
+      }
+      return {
         id: it.id,
         title: it.title || it.id,
         reason,
         draggable: eligible,
         lane: 'candidate'
-      });
-    }
+      };
+    });
 
     /**
      * @param {any[]} entries
@@ -473,6 +506,40 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Candidate→candidate manual reorder (spec §4): build the lane's desired final
+   * order (dragged bead spliced at the target) from the merged candidate issues,
+   * then hand it to the shared reorder controller (optimistic rank apply +
+   * CAS-retry-once), mirroring the Board same-column path. The rank math needs
+   * the raw issues' `created_at`, so it reads {@link candidate_issues} rather than
+   * the projected rows.
+   *
+   * @param {string} bead_id
+   * @param {HTMLElement|null} over - The `.worker-mini` under the cursor, if any.
+   */
+  function reorderCandidates(bead_id, over) {
+    const dragged = candidate_issues.find((it) => it.id === bead_id);
+    if (!dragged) {
+      return;
+    }
+    const without = candidate_issues.filter((it) => it.id !== bead_id);
+    let insert_index = without.length;
+    if (over) {
+      const over_id = over.dataset.beadId;
+      if (over_id === bead_id) {
+        // Dropped onto itself — no move.
+        return;
+      }
+      const j = without.findIndex((it) => it.id === over_id);
+      if (j >= 0) {
+        insert_index = j;
+      }
+    }
+    const final_list = without.slice();
+    final_list.splice(insert_index, 0, dragged);
+    void reorder.applyReorder(bead_id, final_list, insert_index);
+  }
+
+  /**
    * @param {DragEvent} ev
    */
   function onDrop(ev) {
@@ -507,6 +574,11 @@ export function createWorkerView(mount_element, options = {}) {
     }
 
     if (to_lane === 'candidate') {
+      // Candidate→candidate = manual reorder in the shared rank map (spec §4).
+      if (from_lane === 'candidate') {
+        reorderCandidates(bead_id, over);
+        return;
+      }
       // Moving a queued bead back to candidates removes it from the queue.
       if (from_lane === 'serial' || from_lane === 'parallel') {
         void removeBead(bead_id);
@@ -566,6 +638,18 @@ export function createWorkerView(mount_element, options = {}) {
       const att = tile?.dataset?.attemptId;
       if (att) {
         void stopAttempt(att);
+      }
+      return;
+    }
+    // The ⓘ opens the shared detail panel; it must never also open the drawer,
+    // so it is handled BEFORE the .rtile transcript default (spec §4).
+    if (target?.closest?.('.rtile__info')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const id = tile?.dataset?.beadId;
+      if (id && gotoIssue) {
+        gotoIssue(id);
       }
       return;
     }

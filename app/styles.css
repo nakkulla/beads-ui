@@ -2677,6 +2677,21 @@ html[data-theme='dark'] {
   font-variant-numeric: tabular-nums;
 }
 
+.rtile__info {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-small);
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.rtile__info:hover {
+  color: var(--accent);
+}
+
 .rtile__stop {
   flex: 0 0 auto;
   border: none;

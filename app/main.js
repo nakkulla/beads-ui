@@ -996,6 +996,7 @@ export function bootstrap(root_element) {
       issueStores: sub_issue_stores,
       queueStore: worker_queue_store,
       sessionLogStore: session_log_store,
+      uiOrderStore: ui_order_store,
       gotoIssue: (id) => router.gotoIssue(id)
     });
 
