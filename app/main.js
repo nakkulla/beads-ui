@@ -913,15 +913,15 @@ export function bootstrap(root_element) {
           const savedWorkspace =
             window.localStorage.getItem('beads-ui.workspace');
 
-          if (savedWorkspace && current && savedWorkspace !== current.path) {
+          if (savedWorkspace) {
             const savedExists = available.some(
               (/** @type {{ path: string }} */ ws) => ws.path === savedWorkspace
             );
-            if (savedExists) {
+            if (!savedExists) {
+              window.localStorage.removeItem('beads-ui.workspace');
+            } else if (current && savedWorkspace !== current.path) {
               log('restoring saved workspace preference: %s', savedWorkspace);
               await handleWorkspaceChange(savedWorkspace);
-            } else {
-              window.localStorage.removeItem('beads-ui.workspace');
             }
           }
         }

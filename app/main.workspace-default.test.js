@@ -143,6 +143,30 @@ describe('main workspace restore precedence', () => {
     expect(window.localStorage.getItem('beads-ui.workspace')).toBeNull();
   });
 
+  test('removes a stale saved value even when it equals the current path', async () => {
+    window.localStorage.setItem('beads-ui.workspace', '/repo-gone');
+    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
+      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
+      workspace_config: { default_workspace: null }
+    };
+
+    CLIENT = makeClient({
+      workspaces: [{ path: '/repo-a' }],
+      current: '/repo-gone'
+    });
+
+    const root = setupShell();
+    bootstrap(root);
+
+    await settle();
+
+    expect(CLIENT.send).not.toHaveBeenCalledWith(
+      'set-workspace',
+      expect.anything()
+    );
+    expect(window.localStorage.getItem('beads-ui.workspace')).toBeNull();
+  });
+
   test('removes stale saved workspace hints when a default is configured', async () => {
     window.localStorage.setItem('beads-ui.workspace', '/repo-missing');
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
