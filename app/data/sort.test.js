@@ -197,3 +197,62 @@ describe('cmpChildOrder', () => {
     expect(sorted.map((x) => x.id)).toEqual(['first', 'later']);
   });
 });
+
+describe('UX v3 sort comparators', () => {
+  const items = () => [
+    { id: 'A', priority: 2, created_at: 30_000, updated_at: 10_000 },
+    { id: 'B', priority: 0, created_at: 20_000, updated_at: 40_000 },
+    { id: 'C', priority: 1, created_at: 10_000, updated_at: 20_000 }
+  ];
+
+  test('cmpCreatedAscThenPriority orders oldest-created first', async () => {
+    const { cmpCreatedAscThenPriority } = await import('./sort.js');
+    const sorted = items().sort(cmpCreatedAscThenPriority);
+    expect(sorted.map((x) => x.id)).toEqual(['C', 'B', 'A']);
+  });
+
+  test('cmpCreatedAscThenPriority ties on created_at fall to priority then id', async () => {
+    const { cmpCreatedAscThenPriority } = await import('./sort.js');
+    const sorted = [
+      { id: 'Y', priority: 2, created_at: 5 },
+      { id: 'X', priority: 2, created_at: 5 },
+      { id: 'Z', priority: 0, created_at: 5 }
+    ].sort(cmpCreatedAscThenPriority);
+    expect(sorted.map((x) => x.id)).toEqual(['Z', 'X', 'Y']);
+  });
+
+  test('cmpUpdatedDesc orders most recently updated first', async () => {
+    const { cmpUpdatedDesc } = await import('./sort.js');
+    const sorted = items().sort(cmpUpdatedDesc);
+    expect(sorted.map((x) => x.id)).toEqual(['B', 'C', 'A']);
+  });
+
+  test('cmpUpdatedDesc ties on updated_at fall to id asc', async () => {
+    const { cmpUpdatedDesc } = await import('./sort.js');
+    const sorted = [
+      { id: 'N', updated_at: 7 },
+      { id: 'M', updated_at: 7 }
+    ].sort(cmpUpdatedDesc);
+    expect(sorted.map((x) => x.id)).toEqual(['M', 'N']);
+  });
+
+  test('cmpPriorityThenCreatedDesc puts P0 first, newest first within a priority', async () => {
+    const { cmpPriorityThenCreatedDesc } = await import('./sort.js');
+    const sorted = [
+      { id: 'A', priority: 1, created_at: 10 },
+      { id: 'B', priority: 0, created_at: 5 },
+      { id: 'C', priority: 1, created_at: 20 }
+    ].sort(cmpPriorityThenCreatedDesc);
+    expect(sorted.map((x) => x.id)).toEqual(['B', 'C', 'A']);
+  });
+
+  test('cmpPriorityThenCreatedDesc treats a missing priority as P2', async () => {
+    const { cmpPriorityThenCreatedDesc } = await import('./sort.js');
+    const sorted = [
+      { id: 'none', created_at: 50 },
+      { id: 'p3', priority: 3, created_at: 90 },
+      { id: 'p1', priority: 1, created_at: 10 }
+    ].sort(cmpPriorityThenCreatedDesc);
+    expect(sorted.map((x) => x.id)).toEqual(['p1', 'none', 'p3']);
+  });
+});

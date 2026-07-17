@@ -32,6 +32,27 @@ export function formatTimestampTitle(timestamp_value) {
 }
 
 /**
+ * Format a timestamp as a LOCAL-timezone `YYYY-MM-DD HH:mm` string (card
+ * tooltips + detail panel rows). `formatTimestampTitle` stays UTC ISO; this is
+ * the user-facing local variant.
+ *
+ * @param {number | string | null | undefined} timestamp_value
+ * @returns {string}
+ */
+export function formatTimestampLocal(timestamp_value) {
+  const event_ms = coerceTimestampMs(timestamp_value);
+  if (event_ms === null) {
+    return '';
+  }
+  const d = new Date(event_ms);
+  const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    ` ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
+/**
  * Format a timestamp as a Korean relative time string.
  *
  * @param {number | string | null | undefined} timestamp_value

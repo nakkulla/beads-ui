@@ -102,18 +102,18 @@
   --sp-14: 14px;
   --sp-16: 16px;
 
-  /* --- font sizes (by role) --- */
-  --fs-label-tiny: 8px;
-  --fs-caption: 8.5px;
-  --fs-chip: 9px;
-  --fs-chip-lg: 9.5px;
-  --fs-small: 10px;
-  --fs-body-sm: 10.5px;
-  --fs-body: 11px;
-  --fs-body-lg: 12px;
-  --fs-title-sm: 13px;
-  --fs-title: 14px;
-  --fs-title-lg: 15px;
+  /* --- font sizes (by role; UX v3 — whole scale +2px for readability) --- */
+  --fs-label-tiny: 10px;
+  --fs-caption: 10.5px;
+  --fs-chip: 11px;
+  --fs-chip-lg: 11.5px;
+  --fs-small: 12px;
+  --fs-body-sm: 12.5px;
+  --fs-body: 13px;
+  --fs-body-lg: 14px;
+  --fs-title-sm: 15px;
+  --fs-title: 16px;
+  --fs-title-lg: 17px;
 
   /* --- glows / accent shadows (flat design; no elevation shadows) --- */
   --glow-current: 0 0 8px currentColor;

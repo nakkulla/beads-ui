@@ -172,6 +172,30 @@ body {
   flex: 1 1 auto;
 }
 
+/* Deferred column toggle (UX v3 spec §2): count-bearing pressed-state pill */
+.board-filter__deferred {
+  padding: var(--sp-5) var(--sp-10);
+  border-radius: var(--r-6);
+  border: 1px solid var(--border-chip);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.board-filter__deferred:hover {
+  color: var(--text-primary);
+  border-color: var(--border-route);
+}
+
+.board-filter__deferred.is-on {
+  color: var(--accent-warn);
+  border-color: var(--border-warn);
+  background: var(--bg-panel);
+}
+
 .board-filter__new {
   padding: var(--sp-6) var(--sp-12);
   border-radius: var(--r-6);
@@ -191,6 +215,12 @@ body {
   align-items: start;
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* 6-column layout contract (UX v3 spec §2): with the Deferred column shown,
+   5 status tracks narrow so Closed stays on the same row. */
+.board-root--deferred {
+  grid-template-columns: repeat(5, minmax(220px, 1fr)) auto;
 }
 
 .board-column {
@@ -225,6 +255,31 @@ body {
   color: var(--text-muted);
 }
 
+/* status dot before each column title: the header eyebrow encodes the same
+   status color language the cards use (frontend-design: structure carries
+   information, not decoration) */
+.board-column__title-text::before {
+  content: '●';
+  margin-right: var(--sp-5);
+  font-size: var(--fs-label-tiny);
+  color: var(--text-dim);
+}
+#blocked-col .board-column__title-text::before {
+  color: var(--accent-danger);
+}
+#ready-col .board-column__title-text::before {
+  color: var(--stage-plan-on);
+}
+#in-progress-col .board-column__title-text::before {
+  color: var(--accent-child);
+}
+#resolved-col .board-column__title-text::before {
+  color: var(--accent-success);
+}
+#deferred-col .board-column__title-text::before {
+  color: var(--accent-warn);
+}
+
 .board-column__count {
   min-width: 18px;
   padding: 0 var(--sp-5);
@@ -250,6 +305,13 @@ body {
   box-shadow: var(--ring-selected);
 }
 
+/* Closed is a collapsed strip (spec §3.2): its auto track must not balloon to
+   its content width and dwarf the active columns. */
+.board-column--closed {
+  max-width: 360px;
+  min-width: 240px;
+}
+
 /* Closed column period dropdown */
 .board-column__closed-range {
   font-size: var(--fs-chip);
@@ -268,6 +330,19 @@ body {
   border-radius: var(--r-8);
   padding: var(--sp-10);
   cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.board-card:hover {
+  border-color: var(--border-chip);
+  background: var(--bg-panel);
+}
+
+.board-card:focus-visible {
+  outline: 2px solid var(--stage-plan-on);
+  outline-offset: 1px;
 }
 
 .board-card--dragging {
@@ -325,11 +400,11 @@ body {
 }
 
 .stp .bar {
-  height: 12px;
+  height: 16px;
   border-radius: var(--r-3);
   background: var(--border-empty-fill);
   font-size: var(--fs-chip);
-  line-height: 12px;
+  line-height: 16px;
   color: var(--bg-app);
   font-weight: 700;
 }
@@ -495,9 +570,22 @@ body {
   color: var(--accent-danger);
 }
 
-.board-card__elapsed {
+/* created/updated meta (UX v3 spec §1): two relative times, local tooltip */
+.board-card__times {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-4);
   color: var(--text-dim);
   font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+
+.board-card__time {
+  cursor: default;
+}
+
+.board-card__time-sep {
+  color: var(--text-gripline);
 }
 
 .board-card__extras {
@@ -701,6 +789,14 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* read-only created/updated rows (UX v3 spec §1): plain value, no chip box */
+.detail-kv__v--time {
+  border-color: transparent;
+  background: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
 }
 
 select.detail-kv__v {
@@ -969,9 +1065,33 @@ select.detail-kv__v {
   font-size: var(--fs-body-lg);
 }
 
+/* --- shared focus visibility (frontend-design quality floor) --- */
+.board-filter__search:focus-visible,
+.board-filter__select:focus-visible,
+.board-filter__deferred:focus-visible,
+.board-filter__new:focus-visible,
+.board-card__id:focus-visible,
+.board-card__roll-toggle:focus-visible,
+.board-card__roll-child:focus-visible,
+.board-column__closed-range:focus-visible {
+  outline: 2px solid var(--stage-plan-on);
+  outline-offset: 1px;
+}
+
+/* --- reduced motion: drop micro-transitions (frontend-design quality floor) --- */
+@media (prefers-reduced-motion: reduce) {
+  .board-card {
+    transition: none;
+  }
+}
+
 /* --- mobile: columns stack vertically (no horizontal scroll) --- */
 @media (max-width: 640px) {
   .board-root {
+    grid-template-columns: 1fr;
+  }
+
+  .board-root--deferred {
     grid-template-columns: 1fr;
   }
 

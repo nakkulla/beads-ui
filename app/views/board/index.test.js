@@ -320,6 +320,8 @@ describe('views/board same-column reorder', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
+    // Same-column reorder is gated on the manual sort mode (UX v3 spec §3).
+    window.localStorage.setItem('beads-ui.board.sort', 'manual');
   });
 
   /**
@@ -663,5 +665,165 @@ describe('views/board child integration (Phase 5)', () => {
 
     // Parent (P2) filtered out; the child (P0) survives as a card.
     expect(cardIds(mount, 'ready-col')).toEqual(['CH1']);
+  });
+});
+
+describe('views/board UX v3: deferred column + sort dropdown', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  function seedWithDeferred() {
+    const stores = seedAll();
+    seed(stores, 'tab:board:deferred', [
+      {
+        id: 'DF-1',
+        title: 'deferred one',
+        status: 'deferred',
+        created_at: 5_000,
+        updated_at: 5_000
+      },
+      {
+        id: 'DF-2',
+        title: 'deferred two',
+        status: 'deferred',
+        created_at: 9_000,
+        updated_at: 9_000
+      }
+    ]);
+    return stores;
+  }
+
+  test('deferred column hidden by default; toggle shows it with live count', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedWithDeferred()
+    });
+    await view.load();
+
+    expect(mount.querySelector('#deferred-col')).toBeNull();
+    const toggle = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.board-filter__deferred')
+    );
+    expect(toggle.textContent).toContain('Deferred 2');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+
+    toggle.click();
+    expect(mount.querySelector('#deferred-col')).not.toBeNull();
+    expect(mount.querySelectorAll('#deferred-col .board-card').length).toBe(2);
+    // Default sort = created_desc → DF-2 (9000) above DF-1 (5000).
+    const ids = Array.from(
+      mount.querySelectorAll('#deferred-col .board-card')
+    ).map((el) => el.getAttribute('data-issue-id'));
+    expect(ids).toEqual(['DF-2', 'DF-1']);
+    const root = /** @type {HTMLElement} */ (
+      mount.querySelector('.board-root')
+    );
+    expect(root.classList.contains('board-root--deferred')).toBe(true);
+
+    // Toggle off again → column unmounts, modifier class drops.
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.board-filter__deferred')
+    ).click();
+    expect(mount.querySelector('#deferred-col')).toBeNull();
+  });
+
+  test('sort dropdown persists the mode and re-sorts columns', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:ready', [
+      {
+        id: 'RD-old',
+        title: 'old',
+        status: 'open',
+        priority: 0,
+        created_at: 1_000,
+        updated_at: 1_000
+      },
+      {
+        id: 'RD-new',
+        title: 'new',
+        status: 'open',
+        priority: 2,
+        created_at: 2_000,
+        updated_at: 2_000
+      }
+    ]);
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores
+    });
+    await view.load();
+
+    // Default created_desc: newest first.
+    let ids = Array.from(mount.querySelectorAll('#ready-col .board-card')).map(
+      (el) => el.getAttribute('data-issue-id')
+    );
+    expect(ids).toEqual(['RD-new', 'RD-old']);
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.board-filter__sort')
+    );
+    select.value = 'created_asc';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    ids = Array.from(mount.querySelectorAll('#ready-col .board-card')).map(
+      (el) => el.getAttribute('data-issue-id')
+    );
+    expect(ids).toEqual(['RD-old', 'RD-new']);
+    expect(window.localStorage.getItem('beads-ui.board.sort')).toBe(
+      'created_asc'
+    );
+  });
+
+  test('same-column drop outside manual mode is blocked (no transport call)', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const transport = vi.fn().mockResolvedValue({});
+    const uiOrderStore = createUiOrderStore();
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:ready', [
+      {
+        id: 'RD-1',
+        title: 'r1',
+        status: 'open',
+        created_at: 30_000,
+        updated_at: 30_000
+      },
+      {
+        id: 'RD-2',
+        title: 'r2',
+        status: 'open',
+        created_at: 20_000,
+        updated_at: 20_000
+      }
+    ]);
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores,
+      transport,
+      uiOrderStore
+    });
+    await view.load();
+
+    // Default mode is created_desc (non-manual) — same-column drop must not
+    // send ui-order-set or update-status.
+    const col = /** @type {HTMLElement} */ (mount.querySelector('#ready-col'));
+    const target = /** @type {HTMLElement} */ (
+      col.querySelector('.board-card[data-issue-id="RD-1"]')
+    );
+    const dt = {
+      getData: () => 'RD-2',
+      setData: () => {},
+      effectAllowed: 'move',
+      dropEffect: 'move'
+    };
+    const drop = new Event('drop', { bubbles: true, cancelable: true });
+    // @ts-expect-error test shim
+    drop.dataTransfer = dt;
+    target.dispatchEvent(drop);
+
+    expect(transport).not.toHaveBeenCalled();
   });
 });

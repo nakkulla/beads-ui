@@ -72,3 +72,27 @@ describe('utils/relative-time', () => {
     expect(rt(730 * 24 * 60 * 60_000)).toBe('2년 전');
   });
 });
+
+describe('utils/relative-time formatTimestampLocal', () => {
+  test('formats epoch ms as local YYYY-MM-DD HH:mm', async () => {
+    const { formatTimestampLocal } = await import('./relative-time.js');
+    const ms = Date.parse('2026-07-17T03:05:00.000Z');
+    const d = new Date(ms);
+    const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
+    const expected =
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+      ` ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    expect(formatTimestampLocal(ms)).toBe(expected);
+    expect(formatTimestampLocal(ms)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  });
+
+  test('accepts ISO strings and returns empty for invalid input', async () => {
+    const { formatTimestampLocal } = await import('./relative-time.js');
+    const iso = '2026-01-02T09:08:00.000Z';
+    expect(formatTimestampLocal(iso)).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/
+    );
+    expect(formatTimestampLocal(undefined)).toBe('');
+    expect(formatTimestampLocal('not-a-date')).toBe('');
+  });
+});

@@ -8,9 +8,21 @@
  */
 import {
   cmpClosedDesc,
+  cmpCreatedAscThenPriority,
   cmpCreatedDescThenPriority,
-  cmpEffectiveRank
+  cmpEffectiveRank,
+  cmpPriorityThenCreatedDesc,
+  cmpUpdatedDesc
 } from './sort.js';
+
+/**
+ * Board sort modes (UX v3 spec §3). `manual` selects the shared rank map;
+ * the rest are pure comparators. Omitting the mode keeps the legacy behaviour
+ * (manual rank when an order store is wired) so Worker call sites are
+ * unaffected.
+ *
+ * @typedef {'created_desc'|'created_asc'|'updated_desc'|'priority'|'manual'} BoardSortMode
+ */
 
 /**
  * @typedef {{ get: () => ({ revision: number, order: Record<string, number> } | null), subscribe?: (fn: () => void) => () => void }} UiOrderStore
@@ -55,11 +67,17 @@ export function createListSelectors(
   /**
    * Get entities for a Board column with column-specific sort.
    *
+   * `sort_mode` (UX v3 spec §3) is Board-only: when omitted the legacy
+   * behaviour applies (manual rank when an order store is wired, else
+   * created-desc) so Worker call sites keep their manual ordering unchanged.
+   * `closed` always sorts by `closed_at desc` regardless of mode.
+   *
    * @param {string} client_id
    * @param {'ready'|'blocked'|'in_progress'|'deferred'|'resolved'|'closed'} mode
+   * @param {BoardSortMode} [sort_mode]
    * @returns {IssueLite[]}
    */
-  function selectBoardColumn(client_id, mode) {
+  function selectBoardColumn(client_id, mode, sort_mode) {
     const arr =
       issue_stores && issue_stores.snapshotFor
         ? issue_stores.snapshotFor(client_id).slice()
@@ -68,14 +86,31 @@ export function createListSelectors(
       arr.sort(cmpClosedDesc);
       return arr;
     }
-    const order = currentOrder();
-    if (order) {
-      arr.sort(cmpEffectiveRank(order));
-    } else {
-      // No manual-order store: keep the legacy latest-first sort contract.
-      arr.sort(cmpCreatedDescThenPriority);
+    switch (sort_mode) {
+      case 'created_desc':
+        arr.sort(cmpCreatedDescThenPriority);
+        return arr;
+      case 'created_asc':
+        arr.sort(cmpCreatedAscThenPriority);
+        return arr;
+      case 'updated_desc':
+        arr.sort(cmpUpdatedDesc);
+        return arr;
+      case 'priority':
+        arr.sort(cmpPriorityThenCreatedDesc);
+        return arr;
+      case 'manual':
+      default: {
+        const order = currentOrder();
+        if (order) {
+          arr.sort(cmpEffectiveRank(order));
+        } else {
+          // No manual-order store: keep the legacy latest-first sort contract.
+          arr.sort(cmpCreatedDescThenPriority);
+        }
+        return arr;
+      }
     }
-    return arr;
   }
 
   /**

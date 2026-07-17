@@ -47,6 +47,67 @@ export function cmpCreatedDescThenPriority(a, b) {
 }
 
 /**
+ * Compare by created_at asc (oldest first), then priority asc, then id asc.
+ *
+ * @param {IssueLite} a
+ * @param {IssueLite} b
+ */
+export function cmpCreatedAscThenPriority(a, b) {
+  const ca = toSortableTimestamp(a.created_at);
+  const cb = toSortableTimestamp(b.created_at);
+  if (ca !== cb) {
+    return ca < cb ? -1 : 1;
+  }
+  const pa = a.priority ?? 2;
+  const pb = b.priority ?? 2;
+  if (pa !== pb) {
+    return pa - pb;
+  }
+  const ida = a.id;
+  const idb = b.id;
+  return ida < idb ? -1 : ida > idb ? 1 : 0;
+}
+
+/**
+ * Compare by updated_at desc (most recently touched first), then id asc.
+ *
+ * @param {IssueLite} a
+ * @param {IssueLite} b
+ */
+export function cmpUpdatedDesc(a, b) {
+  const ua = toSortableTimestamp(a.updated_at);
+  const ub = toSortableTimestamp(b.updated_at);
+  if (ua !== ub) {
+    return ua < ub ? 1 : -1;
+  }
+  const ida = a.id;
+  const idb = b.id;
+  return ida < idb ? -1 : ida > idb ? 1 : 0;
+}
+
+/**
+ * Compare by priority asc (P0 first), then created_at desc, then id asc.
+ *
+ * @param {IssueLite} a
+ * @param {IssueLite} b
+ */
+export function cmpPriorityThenCreatedDesc(a, b) {
+  const pa = a.priority ?? 2;
+  const pb = b.priority ?? 2;
+  if (pa !== pb) {
+    return pa - pb;
+  }
+  const ca = toSortableTimestamp(a.created_at);
+  const cb = toSortableTimestamp(b.created_at);
+  if (ca !== cb) {
+    return ca < cb ? 1 : -1;
+  }
+  const ida = a.id;
+  const idb = b.id;
+  return ida < idb ? -1 : ida > idb ? 1 : 0;
+}
+
+/**
  * Compare by closed_at desc, then id asc for stability.
  *
  * @param {IssueLite} a

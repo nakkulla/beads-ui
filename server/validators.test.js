@@ -15,6 +15,19 @@ describe('validateSubscribeListPayload', () => {
     });
   });
 
+  test('accepts deferred-issues without params', () => {
+    expect(
+      validateSubscribeListPayload({
+        id: 'tab:board:deferred',
+        type: 'deferred-issues'
+      })
+    ).toEqual({
+      ok: true,
+      id: 'tab:board:deferred',
+      spec: { type: 'deferred-issues', params: undefined }
+    });
+  });
+
   test('rejects params for resolved-issues', () => {
     expect(
       validateSubscribeListPayload({
