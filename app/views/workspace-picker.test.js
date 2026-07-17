@@ -229,3 +229,161 @@ describe('views/workspace-picker', () => {
     expect(onWorkspaceSync).toHaveBeenCalledWith('/repo-a');
   });
 });
+
+describe('views/workspace-picker project management (hidden workspaces)', () => {
+  test('dropdown excludes hidden workspaces but always shows the current one', () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore({
+      current: { path: '/repo-b', database: '/repo-b/.beads/ui.db' },
+      available: [
+        { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        { path: '/repo-b', database: '/repo-b/.beads/ui.db' },
+        { path: '/repo-c', database: '/repo-c/.beads/ui.db' }
+      ],
+      // /repo-b is hidden AND current → must still appear; /repo-a hidden → gone.
+      hidden: ['/repo-a', '/repo-b']
+    });
+
+    createWorkspacePicker(mount, /** @type {any} */ (store), vi.fn());
+
+    const options = Array.from(
+      mount.querySelectorAll('.workspace-picker__select option')
+    ).map((o) => o.getAttribute('value'));
+    expect(options).toEqual(['/repo-b', '/repo-c']);
+  });
+
+  test('프로젝트 관리 popover lists every available workspace with checkbox state', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore({
+      current: { path: '/repo-b', database: '/repo-b/.beads/ui.db' },
+      available: [
+        { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
+      ],
+      hidden: ['/repo-a']
+    });
+
+    createWorkspacePicker(mount, /** @type {any} */ (store), vi.fn());
+
+    // Popover is closed until the manage button is clicked.
+    expect(mount.querySelector('.workspace-picker__manage-popover')).toBeNull();
+
+    const manageButton = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.workspace-picker__manage-button')
+    );
+    expect(manageButton).not.toBeNull();
+    manageButton.click();
+    await Promise.resolve();
+
+    const checkboxes = Array.from(
+      mount.querySelectorAll(
+        '.workspace-picker__manage-popover input[type="checkbox"]'
+      )
+    ).map((el) => /** @type {HTMLInputElement} */ (el));
+    expect(checkboxes.length).toBe(2);
+    // Checked = visible. /repo-a hidden → unchecked; /repo-b visible → checked.
+    const byPath = new Map(checkboxes.map((c) => [c.value, c.checked]));
+    expect(byPath.get('/repo-a')).toBe(false);
+    expect(byPath.get('/repo-b')).toBe(true);
+  });
+
+  test('toggling a checkbox calls onWorkspaceVisibilityChange with the new visibility', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore({
+      current: { path: '/repo-b', database: '/repo-b/.beads/ui.db' },
+      available: [
+        { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
+      ],
+      hidden: []
+    });
+    const onVisibility = vi.fn(async () => {});
+
+    createWorkspacePicker(
+      mount,
+      /** @type {any} */ (store),
+      vi.fn(),
+      undefined,
+      undefined,
+      onVisibility
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.workspace-picker__manage-button')
+    ).click();
+    await Promise.resolve();
+
+    const repoBCheckbox = /** @type {HTMLInputElement} */ (
+      mount.querySelector(
+        '.workspace-picker__manage-popover input[value="/repo-b"]'
+      )
+    );
+    // Unchecking a currently-visible workspace hides it → visible=false.
+    repoBCheckbox.checked = false;
+    repoBCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(onVisibility).toHaveBeenCalledWith('/repo-b', false);
+  });
+
+  test('popover closes on Escape', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore({
+      current: { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+      available: [
+        { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
+      ],
+      hidden: []
+    });
+
+    createWorkspacePicker(mount, /** @type {any} */ (store), vi.fn());
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.workspace-picker__manage-button')
+    ).click();
+    await Promise.resolve();
+    expect(
+      mount.querySelector('.workspace-picker__manage-popover')
+    ).not.toBeNull();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await Promise.resolve();
+    expect(mount.querySelector('.workspace-picker__manage-popover')).toBeNull();
+  });
+
+  test('popover closes on outside click', async () => {
+    document.body.innerHTML =
+      '<div id="mount"></div><button id="outside">out</button>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore({
+      current: { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+      available: [
+        { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
+      ],
+      hidden: []
+    });
+
+    createWorkspacePicker(mount, /** @type {any} */ (store), vi.fn());
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.workspace-picker__manage-button')
+    ).click();
+    await Promise.resolve();
+    expect(
+      mount.querySelector('.workspace-picker__manage-popover')
+    ).not.toBeNull();
+
+    const outside = /** @type {HTMLElement} */ (
+      document.getElementById('outside')
+    );
+    outside.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    await Promise.resolve();
+    expect(mount.querySelector('.workspace-picker__manage-popover')).toBeNull();
+  });
+});

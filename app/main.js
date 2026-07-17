@@ -905,6 +905,32 @@ export function bootstrap(root_element) {
     }
 
     /**
+     * Toggle whether a workspace shows in the picker (spec §6). The hidden set
+     * is server-global, so after the toggle we re-request the workspace list to
+     * pick up the authoritative `hidden` array for every client.
+     *
+     * @param {string} workspace_path
+     * @param {boolean} visible
+     */
+    async function handleWorkspaceVisibilityChange(workspace_path, visible) {
+      log(
+        'setting workspace visibility %s → %s',
+        workspace_path,
+        String(visible)
+      );
+      try {
+        await client.send('set-workspace-visibility', {
+          path: workspace_path,
+          visible
+        });
+        await loadWorkspaces();
+      } catch (err) {
+        log('workspace visibility update failed: %o', err);
+        showToast('Failed to update project visibility', 'error', 3000);
+      }
+    }
+
+    /**
      * @param {string} path
      * @returns {string}
      */
@@ -934,7 +960,12 @@ export function bootstrap(root_element) {
                 database: result.current.db_path
               }
             : null;
-          store.setState({ workspace: { current, available } });
+          const hidden = Array.isArray(result.hidden)
+            ? result.hidden.filter(
+                (/** @type {unknown} */ p) => typeof p === 'string'
+              )
+            : [];
+          store.setState({ workspace: { current, available, hidden } });
 
           const configuredDefault =
             store.getState().config.workspace_config.default_workspace;
@@ -1045,7 +1076,8 @@ export function bootstrap(root_element) {
         store,
         handleWorkspaceChange,
         handleWorkspaceSync,
-        handleWorkspaceGitPull
+        handleWorkspaceGitPull,
+        handleWorkspaceVisibilityChange
       );
     }
 

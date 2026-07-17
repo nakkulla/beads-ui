@@ -7,6 +7,7 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import { runBd, runShell, stderrTail } from '../bd.js';
 import { resolveWorkspaceDatabase } from '../db.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
+import { createVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import {
   ensureSubs,
   getConnWorkspace,
@@ -15,6 +16,32 @@ import {
   setConnWorkspace
 } from './context.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
+
+/**
+ * Server-wide single visible-workspaces store (spec §6). The hidden set is
+ * global, so one instance backs every connection's picker.
+ *
+ * @type {ReturnType<typeof createVisibleWorkspacesStore> | null}
+ */
+let VISIBLE_STORE = null;
+
+/**
+ * @returns {ReturnType<typeof createVisibleWorkspacesStore>}
+ */
+function visibleWorkspacesStore() {
+  if (!VISIBLE_STORE) {
+    VISIBLE_STORE = createVisibleWorkspacesStore();
+  }
+  return VISIBLE_STORE;
+}
+
+/**
+ * Test-only: drop the store's in-memory cache so the next access cold-loads from
+ * disk (mirrors the ui-order channel reset hook).
+ */
+export function __resetVisibleWorkspacesForTest() {
+  visibleWorkspacesStore().__clearCacheForTest();
+}
 
 /**
  * In-flight workspace operations keyed by workspace `root_dir`. Prevents the
@@ -90,8 +117,67 @@ export function handleListWorkspaces(ws, req) {
     JSON.stringify(
       makeOk(req, {
         workspaces,
-        current: getConnWorkspace(ws)
+        current: getConnWorkspace(ws),
+        hidden: visibleWorkspacesStore().listHidden()
       })
+    )
+  );
+}
+
+/**
+ * Handle a `set-workspace-visibility` request. Payload: { path: string, visible:
+ * boolean } — toggles whether a workspace appears in the picker for EVERY client
+ * (the hidden set is server-global, spec §6). Mirrors `handleSetWorkspace`
+ * validation: the path must be absolute and present in the available-workspace
+ * allowlist. Replies `{ changed, hidden }`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleSetWorkspaceVisibility(ws, req) {
+  log('set-workspace-visibility');
+  const { path: workspace_path, visible } = /** @type {any} */ (
+    req.payload || {}
+  );
+  if (
+    typeof workspace_path !== 'string' ||
+    workspace_path.length === 0 ||
+    !path.isAbsolute(workspace_path) ||
+    typeof visible !== 'boolean'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { path: string (absolute), visible: boolean }'
+        )
+      )
+    );
+    return;
+  }
+
+  const resolved = path.resolve(workspace_path);
+  const allowed = new Set(
+    getAvailableWorkspaces().map((workspace) => path.resolve(workspace.path))
+  );
+  if (!allowed.has(resolved)) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'Workspace must be in the available workspace list'
+        )
+      )
+    );
+    return;
+  }
+
+  const result = visibleWorkspacesStore().setVisibility(resolved, visible);
+  ws.send(
+    JSON.stringify(
+      makeOk(req, { changed: result.changed, hidden: result.hidden })
     )
   );
 }

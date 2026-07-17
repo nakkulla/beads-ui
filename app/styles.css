@@ -260,6 +260,75 @@ a {
   animation: header-spin 700ms linear infinite;
 }
 
+/* Project-visibility management: button + checkbox popover (spec §6) */
+.workspace-picker__manage {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.workspace-picker__manage-button {
+  font-size: 12px;
+  font-weight: 600;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--fg);
+  cursor: pointer;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--link) 50%, var(--border));
+  }
+
+  &:focus {
+    outline: none;
+    border-color: var(--link);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--link) 20%, transparent);
+  }
+}
+
+.workspace-picker__manage-popover {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  z-index: 20;
+  min-width: 200px;
+  max-width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--space-2);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--fg) 18%, transparent);
+}
+
+.workspace-picker__manage-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--fg);
+
+  &:hover {
+    background: color-mix(in srgb, var(--control-bg) 70%, transparent);
+  }
+}
+
+.workspace-picker__manage-checkbox {
+  cursor: pointer;
+}
+
+.workspace-picker__manage-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Header navigation tabs (sit next to title) */
 .header-nav {
   display: flex;
