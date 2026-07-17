@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { getConfig } from './config.js';
 
 /** @type {string[]} */
@@ -296,5 +296,37 @@ poll_interval_seconds = -10
     const config = getConfig();
 
     expect(config.poll_interval_seconds).toBe(30);
+  });
+});
+
+describe('obsolete [auth] section', () => {
+  test('warns once and drops the section when [auth] is present', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[auth]
+token = "obsolete"
+`);
+    const warn_spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const config = getConfig();
+
+    expect(warn_spy).toHaveBeenCalledTimes(1);
+    expect(String(warn_spy.mock.calls[0][0])).toContain('[auth]');
+    expect('auth' in config).toBe(false);
+
+    warn_spy.mockRestore();
+  });
+
+  test('does not warn when no [auth] section is present', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+poll_interval_seconds = 15
+`);
+    const warn_spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const config = getConfig();
+
+    expect(warn_spy).not.toHaveBeenCalled();
+    expect('auth' in config).toBe(false);
+
+    warn_spy.mockRestore();
   });
 });

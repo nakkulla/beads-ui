@@ -3,30 +3,14 @@ import { renderMarkdown } from '../../utils/markdown.js';
 
 /**
  * Markdown document viewer (detail-panel.html `.mv`). Fetches a `docs/*.md`
- * file from `GET /api/doc` (Bearer auth) and renders it with marked+dompurify.
- * Appears as a centered overlay; fullscreen ≤640px. Closes on ✕, backdrop, Esc.
+ * file from `GET /api/doc` (no auth, spec §8) and renders it with
+ * marked+dompurify. Appears as a centered overlay; fullscreen ≤640px. Closes on
+ * ✕, backdrop, Esc.
  *
  * @typedef {Object} MdViewerOptions
  * @property {() => string | null | undefined} getWorkspacePath - Current workspace abs path.
  * @property {typeof fetch} [fetchImpl] - Injectable fetch (tests).
- * @property {() => string} [getToken] - Injectable Bearer token reader (tests).
  */
-
-const AUTH_TOKEN_KEY = 'bdui:auth-token';
-
-/**
- * @returns {string}
- */
-function defaultToken() {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      return window.localStorage.getItem(AUTH_TOKEN_KEY) || '';
-    }
-  } catch {
-    // ignore storage errors
-  }
-  return '';
-}
 
 /**
  * Trim the docs prefix for a compact viewer path label.
@@ -46,7 +30,6 @@ function shortPath(p) {
 export function createMdViewer(mount_element, options) {
   const getWorkspacePath = options.getWorkspacePath;
   const doFetch = options.fetchImpl || globalThis.fetch?.bind(globalThis);
-  const getToken = options.getToken || defaultToken;
 
   /** @type {string | null} */
   let current_path = null;
@@ -134,9 +117,7 @@ export function createMdViewer(mount_element, options) {
       '&path=' +
       encodeURIComponent(doc_path);
     try {
-      const resp = await doFetch(url, {
-        headers: { Authorization: 'Bearer ' + getToken() }
-      });
+      const resp = await doFetch(url);
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || !data || data.ok !== true) {
         state = 'error';

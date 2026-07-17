@@ -24,8 +24,7 @@ beforeEach(async () => {
       visible_prefixes: ['has:'],
       visible_exact: [],
       colors: { prefix: {}, exact: {} }
-    },
-    auth: { token: 'cfg-token' }
+    }
   });
   server = createServer(app);
   await new Promise((r) => server.listen(0, () => r(undefined)));

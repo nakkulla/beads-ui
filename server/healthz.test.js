@@ -19,7 +19,6 @@ async function getHealthz(probes) {
       visible_exact: [],
       colors: { prefix: {}, exact: {} }
     },
-    auth: { token: 'healthz-token' },
     health_probes: {
       bd_probe: () => probes.bd ?? true,
       db_probe: () => probes.db ?? true

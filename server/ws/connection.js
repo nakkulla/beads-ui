@@ -6,7 +6,6 @@
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { isRequest, makeError, makeOk } from '../../app/protocol.js';
-import { verifyToken } from '../auth.js';
 import { resolveWorkspaceDatabase } from '../db.js';
 import {
   detachConnectionFromAllRegistries,
@@ -84,8 +83,8 @@ let DB_WATCHER = null;
  * WS handshakes, so a present-but-disallowed Origin (including the sandboxed
  * `"null"` origin) is rejected. An ABSENT Origin denotes a non-browser client
  * (CLI/tests); those are governed by network isolation (tailnet-only + ACL),
- * not by this check, so they are allowed here. The auth token is the real gate;
- * this Origin check is defense-in-depth against browser CSRF-style hijacks.
+ * not by this check, so they are allowed here. With no token auth (spec §8),
+ * this Origin check is the sole browser-CSRF defense for the WS surface.
  *
  * Acceptance is (in order): SAME-ORIGIN (the Origin's host:port equals the
  * request `Host` — the page was served by THIS very server, so it is by
@@ -143,22 +142,17 @@ export function isOriginAllowed(origin, host) {
 /**
  * Attach a WebSocket server to an existing HTTP server.
  *
- * When `options.auth_token` is a non-empty string, every new connection must
- * send `{ type: 'auth', token }` as its FIRST frame within `auth_deadline_ms`
- * (default 5000ms). A wrong/missing token, a non-auth first frame, or a timeout
- * closes the socket with code 4401 before any message is processed. When no
- * token is supplied (test/embedding contexts that never open real sockets), the
- * first-frame gate is disabled; production always supplies the token.
+ * There is no token auth (spec §8): a connection may send application messages
+ * immediately. The only handshake-time gate is the Origin allowlist enforced by
+ * `verifyClient` below; network isolation (tailnet-only bind + ACL) covers
+ * non-browser clients.
  *
  * @param {Server} http_server
- * @param {{ path?: string, heartbeat_ms?: number, refresh_debounce_ms?: number, root_dir?: string, initial_workspace_root?: string | null, watcher?: { rebind: (opts?: { root_dir?: string }) => void, path: string }, auth_token?: string, auth_deadline_ms?: number }} [options]
+ * @param {{ path?: string, heartbeat_ms?: number, refresh_debounce_ms?: number, root_dir?: string, initial_workspace_root?: string | null, watcher?: { rebind: (opts?: { root_dir?: string }) => void, path: string } }} [options]
  * @returns {{ wss: WebSocketServer, broadcast: (type: MessageType, payload?: unknown) => void, scheduleListRefresh: () => void, setWorkspace: (root_dir: string) => { changed: boolean, workspace: { root_dir: string, db_path: string } } }}
  */
 export function attachWsServer(http_server, options = {}) {
   const ws_path = options.path || '/ws';
-  const auth_token = options.auth_token;
-  const auth_required = typeof auth_token === 'string' && auth_token.length > 0;
-  const auth_deadline_ms = options.auth_deadline_ms ?? 5000;
 
   // Initialize the default workspace applied to newly connected clients.
   const initial_root =
@@ -214,64 +208,16 @@ export function attachWsServer(http_server, options = {}) {
     const current_default = getDefaultWorkspace();
     setConnWorkspace(ws, current_default ? { ...current_default } : null);
 
-    // First-frame auth gate. When enabled, the socket may not run any
-    // handleMessage flow until it presents a valid auth frame.
-    let authed = !auth_required;
-    /** @type {ReturnType<typeof setTimeout> | null} */
-    let auth_timer = null;
-    if (auth_required) {
-      auth_timer = setTimeout(() => {
-        try {
-          ws.close(4401, 'auth timeout');
-        } catch {
-          // ignore close errors
-        }
-      }, auth_deadline_ms);
-      auth_timer.unref?.();
-    }
-
     ws.on('pong', () => {
       // @ts-expect-error marker
       ws.isAlive = true;
     });
 
     ws.on('message', (data) => {
-      if (!authed) {
-        /** @type {any} */
-        let msg = null;
-        try {
-          msg = JSON.parse(data.toString());
-        } catch {
-          msg = null;
-        }
-        if (
-          !msg ||
-          typeof msg !== 'object' ||
-          msg.type !== 'auth' ||
-          !verifyToken(msg.token, auth_token)
-        ) {
-          try {
-            ws.close(4401, 'auth failed');
-          } catch {
-            // ignore close errors
-          }
-          return;
-        }
-        authed = true;
-        if (auth_timer) {
-          clearTimeout(auth_timer);
-          auth_timer = null;
-        }
-        return;
-      }
       handleMessage(ws, data);
     });
 
     ws.on('close', () => {
-      if (auth_timer) {
-        clearTimeout(auth_timer);
-        auth_timer = null;
-      }
       try {
         // Detach this connection from every workspace registry.
         detachConnectionFromAllRegistries(ws);
@@ -361,9 +307,8 @@ export function attachWsServer(http_server, options = {}) {
 }
 
 /**
- * Handle an incoming message frame and respond to the same socket. Auth-agnostic:
- * the connection layer owns the first-frame auth gate, so this dispatcher runs
- * only for already-authenticated sockets (or test sockets driven directly).
+ * Handle an incoming message frame and respond to the same socket. There is no
+ * auth gate (spec §8), so every framed request is dispatched directly.
  *
  * @param {WebSocket} ws
  * @param {RawData} data

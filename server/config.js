@@ -158,25 +158,6 @@ function normalizeWorkspaceConfig(parsed) {
 }
 
 /**
- * Normalize the `[auth]` config section. A whitespace-only or missing token is
- * treated as absent (`null`); startup refusal is enforced downstream by
- * `requireAuthToken`.
- *
- * @param {unknown} value
- * @returns {{ token: string | null }}
- */
-function normalizeAuthConfig(value) {
-  if (!isObjectTable(value)) {
-    return { token: null };
-  }
-  const token = value.token;
-  if (typeof token !== 'string' || token.trim().length === 0) {
-    return { token: null };
-  }
-  return { token };
-}
-
-/**
  * Normalize the top-level `poll_interval_seconds` setting (spec §7). Governs the
  * server-side periodic list-refresh poller: default 30, an explicit `0` disables
  * polling, and any missing / non-numeric / negative value falls back to the
@@ -208,8 +189,7 @@ function normalizePollIntervalSeconds(value) {
  *     scan_roots: string[],
  *     workspaces: string[]
  *   },
- *   poll_interval_seconds: number,
- *   auth: { token: string | null }
+ *   poll_interval_seconds: number
  * }}
  */
 function readRuntimeConfig(config_path) {
@@ -217,6 +197,15 @@ function readRuntimeConfig(config_path) {
     const raw = fs.readFileSync(config_path, 'utf8');
     /** @type {any} */
     const parsed = parseToml(raw);
+
+    // The `[auth]` section is obsolete (spec §8: full no-auth over the trusted
+    // tailnet bind). If a legacy config still carries one, ignore it after a
+    // single loud startup warning so operators know to remove it.
+    if (parsed?.auth !== undefined) {
+      console.warn(
+        'config.toml 의 [auth] 섹션은 더 이상 사용되지 않습니다(무인증 전환). 무시하고 계속합니다.'
+      );
+    }
 
     return {
       label_display_policy: {
@@ -229,8 +218,7 @@ function readRuntimeConfig(config_path) {
       workspace_config: normalizeWorkspaceConfig(parsed),
       poll_interval_seconds: normalizePollIntervalSeconds(
         parsed?.poll_interval_seconds
-      ),
-      auth: normalizeAuthConfig(parsed?.auth)
+      )
     };
   } catch (error) {
     if (
@@ -254,8 +242,7 @@ function readRuntimeConfig(config_path) {
         scan_roots: DEFAULT_WORKSPACE_CONFIG.scan_roots.slice(),
         workspaces: DEFAULT_WORKSPACE_CONFIG.workspaces.slice()
       },
-      poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
-      auth: { token: null }
+      poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS
     };
   }
 }
@@ -291,8 +278,7 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *     scan_roots: string[],
  *     workspaces: string[]
  *   },
- *   poll_interval_seconds: number,
- *   auth: { token: string | null }
+ *   poll_interval_seconds: number
  * }}
  */
 export function getConfig() {

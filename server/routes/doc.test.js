@@ -6,8 +6,6 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createApp } from '../app.js';
 import { registerWorkspace } from '../registry-watcher.js';
 
-const TOKEN = 'doc-route-token';
-
 /** @type {string} */
 let workspace;
 
@@ -41,10 +39,9 @@ afterAll(() => {
 
 /**
  * @param {string} query
- * @param {{ bearer?: boolean }} [options]
  * @returns {Promise<{ status: number, body: any }>}
  */
-async function requestDoc(query, options = {}) {
+async function requestDoc(query) {
   const app = createApp({
     host: '127.0.0.1',
     port: 0,
@@ -55,8 +52,7 @@ async function requestDoc(query, options = {}) {
       visible_prefixes: ['has:'],
       visible_exact: [],
       colors: { prefix: {}, exact: {} }
-    },
-    auth: { token: TOKEN }
+    }
   });
   const server = createServer(app);
   await new Promise((resolve) => server.listen(0, () => resolve(undefined)));
@@ -65,14 +61,8 @@ async function requestDoc(query, options = {}) {
     throw new Error('no address');
   }
   try {
-    /** @type {Record<string, string>} */
-    const headers = {};
-    if (options.bearer !== false) {
-      headers.Authorization = `Bearer ${TOKEN}`;
-    }
     const response = await fetch(
-      `http://127.0.0.1:${address.port}/api/doc?${query}`,
-      { headers }
+      `http://127.0.0.1:${address.port}/api/doc?${query}`
     );
     let body = null;
     try {
@@ -87,14 +77,6 @@ async function requestDoc(query, options = {}) {
 }
 
 describe('GET /api/doc', () => {
-  test('401 without a bearer token', async () => {
-    const { status } = await requestDoc(
-      `workspace=${encodeURIComponent(workspace)}&path=docs/spec.md`,
-      { bearer: false }
-    );
-    expect(status).toBe(401);
-  });
-
   test('happy path returns markdown content', async () => {
     const { status, body } = await requestDoc(
       `workspace=${encodeURIComponent(workspace)}&path=docs/spec.md`
