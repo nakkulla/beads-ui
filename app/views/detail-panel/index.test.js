@@ -424,3 +424,54 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 });
+
+describe('views/detail-panel created/updated rows (UX v3 spec §1)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('renders read-only 생성/수정 rows with local YYYY-MM-DD HH:mm values', async () => {
+    const { formatTimestampLocal } =
+      await import('../../utils/relative-time.js');
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      onClose: vi.fn()
+    });
+
+    const created_at = Date.parse('2026-07-01T02:03:00.000Z');
+    const updated_at = Date.parse('2026-07-15T11:22:00.000Z');
+    issueStores.register('detail:UI-77', {
+      type: 'issue-detail',
+      params: { id: 'UI-77' }
+    });
+    issueStores.getStore('detail:UI-77')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-77',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        {
+          id: 'UI-77',
+          title: '시각 표시',
+          status: 'open',
+          created_at,
+          updated_at
+        }
+      ])
+    });
+
+    panel.load('UI-77');
+
+    const times = Array.from(mount.querySelectorAll('.detail-kv__v--time')).map(
+      (el) => el.textContent?.trim()
+    );
+    expect(times).toEqual([
+      formatTimestampLocal(created_at),
+      formatTimestampLocal(updated_at)
+    ]);
+    expect(times[0]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    expect(mount.textContent).toContain('생성');
+    expect(mount.textContent).toContain('수정');
+  });
+});

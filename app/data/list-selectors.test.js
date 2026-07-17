@@ -218,3 +218,121 @@ describe('list-selectors with a ui-order store', () => {
     expect(calls).toBe(1);
   });
 });
+
+describe('list-selectors sort_mode (UX v3 spec §3)', () => {
+  /**
+   * @param {any[]} issues
+   */
+  function setupWithOrderAndIssues(issues) {
+    const issueStores = createTestIssueStores();
+    const uiOrderStore = createUiOrderStore();
+    const selectors = createListSelectors(
+      /** @type {any} */ (issueStores),
+      /** @type {any} */ (uiOrderStore)
+    );
+    issueStores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues
+    });
+    return { uiOrderStore, selectors };
+  }
+
+  const ISSUES = [
+    {
+      id: 'A',
+      priority: 2,
+      created_at: 30_000,
+      updated_at: 10_000,
+      closed_at: null
+    },
+    {
+      id: 'B',
+      priority: 0,
+      created_at: 20_000,
+      updated_at: 40_000,
+      closed_at: null
+    },
+    {
+      id: 'C',
+      priority: 1,
+      created_at: 10_000,
+      updated_at: 20_000,
+      closed_at: null
+    }
+  ];
+
+  test('created_desc ignores the rank map (newest created first)', () => {
+    const { uiOrderStore, selectors } = setupWithOrderAndIssues(ISSUES);
+    uiOrderStore.set({ revision: 1, order: { C: -1e15 } });
+    const ids = selectors
+      .selectBoardColumn('tab:board:ready', 'ready', 'created_desc')
+      .map((x) => x.id);
+    expect(ids).toEqual(['A', 'B', 'C']);
+  });
+
+  test('created_asc orders oldest created first', () => {
+    const { selectors } = setupWithOrderAndIssues(ISSUES);
+    const ids = selectors
+      .selectBoardColumn('tab:board:ready', 'ready', 'created_asc')
+      .map((x) => x.id);
+    expect(ids).toEqual(['C', 'B', 'A']);
+  });
+
+  test('updated_desc orders most recently updated first', () => {
+    const { selectors } = setupWithOrderAndIssues(ISSUES);
+    const ids = selectors
+      .selectBoardColumn('tab:board:ready', 'ready', 'updated_desc')
+      .map((x) => x.id);
+    expect(ids).toEqual(['B', 'C', 'A']);
+  });
+
+  test('priority orders P0 first', () => {
+    const { selectors } = setupWithOrderAndIssues(ISSUES);
+    const ids = selectors
+      .selectBoardColumn('tab:board:ready', 'ready', 'priority')
+      .map((x) => x.id);
+    expect(ids).toEqual(['B', 'C', 'A']);
+  });
+
+  test('manual uses the shared rank map', () => {
+    const { uiOrderStore, selectors } = setupWithOrderAndIssues(ISSUES);
+    uiOrderStore.set({ revision: 1, order: { C: -1e15 } });
+    const ids = selectors
+      .selectBoardColumn('tab:board:ready', 'ready', 'manual')
+      .map((x) => x.id);
+    expect(ids).toEqual(['C', 'A', 'B']);
+  });
+
+  test('omitted sort_mode keeps the legacy manual-rank behaviour (Worker seam)', () => {
+    const { uiOrderStore, selectors } = setupWithOrderAndIssues(ISSUES);
+    uiOrderStore.set({ revision: 1, order: { C: -1e15 } });
+    const ids = selectors
+      .selectBoardColumn('tab:board:ready', 'ready')
+      .map((x) => x.id);
+    expect(ids).toEqual(['C', 'A', 'B']);
+  });
+
+  test('closed keeps closed_at desc even with a sort_mode', () => {
+    const issueStores = createTestIssueStores();
+    const uiOrderStore = createUiOrderStore();
+    const selectors = createListSelectors(
+      /** @type {any} */ (issueStores),
+      /** @type {any} */ (uiOrderStore)
+    );
+    issueStores.getStore('tab:board:closed').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:closed',
+      revision: 1,
+      issues: [
+        { id: 'C1', created_at: 1_000, closed_at: 5_000, updated_at: 1 },
+        { id: 'C2', created_at: 2_000, closed_at: 9_000, updated_at: 2 }
+      ]
+    });
+    const ids = selectors
+      .selectBoardColumn('tab:board:closed', 'closed', 'created_asc')
+      .map((x) => x.id);
+    expect(ids).toEqual(['C2', 'C1']);
+  });
+});

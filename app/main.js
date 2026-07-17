@@ -175,6 +175,7 @@ const BOARD_SUBS = [
   ['tab:board:blocked', 'blocked-issues'],
   ['tab:board:in-progress', 'in-progress-issues'],
   ['tab:board:resolved', 'resolved-issues'],
+  ['tab:board:deferred', 'deferred-issues'],
   ['tab:board:closed', 'closed-issues']
 ];
 

@@ -263,3 +263,53 @@ describe('views/board/card', () => {
     expect(onRollupToggle).toHaveBeenCalled();
   });
 });
+
+describe('views/board/card created/updated meta (UX v3 spec §1)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('renders both relative times with local absolute tooltips', async () => {
+    const { formatTimestampLocal } =
+      await import('../../utils/relative-time.js');
+    const now = Date.now();
+    const created = now - 3 * 86_400_000;
+    const updated = now - 2 * 3_600_000;
+    const m = mountCard(
+      { id: 'UI-1', title: 't', created_at: created, updated_at: updated },
+      makeCtx()
+    );
+    const times = /** @type {HTMLElement[]} */ (
+      Array.from(m.querySelectorAll('.board-card__time'))
+    );
+    expect(times).toHaveLength(2);
+    expect(times[0].textContent).toContain('생성');
+    expect(times[0].textContent).toContain('3일 전');
+    expect(times[0].getAttribute('title')).toBe(
+      `생성 ${formatTimestampLocal(created)}`
+    );
+    expect(times[1].textContent).toContain('수정');
+    expect(times[1].textContent).toContain('2시간 전');
+    expect(times[1].getAttribute('title')).toBe(
+      `수정 ${formatTimestampLocal(updated)}`
+    );
+    expect(times[1].getAttribute('title')).toMatch(
+      /^수정 \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/
+    );
+  });
+
+  test('omits the meta entirely when both timestamps are absent', () => {
+    const m = mountCard({ id: 'UI-2', title: 't' }, makeCtx());
+    expect(m.querySelector('.board-card__times')).toBeNull();
+    expect(m.querySelectorAll('.board-card__time')).toHaveLength(0);
+  });
+
+  test('renders a single time without a separator when only created_at exists', () => {
+    const m = mountCard(
+      { id: 'UI-3', title: 't', created_at: Date.now() - 60_000 },
+      makeCtx()
+    );
+    expect(m.querySelectorAll('.board-card__time')).toHaveLength(1);
+    expect(m.querySelector('.board-card__time-sep')).toBeNull();
+  });
+});

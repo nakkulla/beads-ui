@@ -1,6 +1,10 @@
 import { html } from 'lit-html';
 import { cmpChildOrder } from '../../data/sort.js';
-import { coerceTimestampMs } from '../../utils/relative-time.js';
+import {
+  coerceTimestampMs,
+  formatRelativeTime,
+  formatTimestampLocal
+} from '../../utils/relative-time.js';
 import { stepperTemplate } from './stepper.js';
 
 /**
@@ -157,18 +161,51 @@ function statusDotClass(status) {
 }
 
 /**
+ * Created/updated meta (UX v3 spec §1): two Korean relative times with a
+ * local-timezone absolute tooltip each. Replaces the old single elapsed.
+ *
+ * @param {BoardCardIssue} issue
+ * @returns {TemplateResult | string}
+ */
+function timesTemplate(issue) {
+  const created = formatRelativeTime(issue.created_at);
+  const updated = formatRelativeTime(issue.updated_at);
+  if (!created && !updated) {
+    return '';
+  }
+  return html`<span class="board-card__times">
+    ${created
+      ? html`<span
+          class="board-card__time"
+          title=${`생성 ${formatTimestampLocal(issue.created_at)}`}
+          >생성 ${created}</span
+        >`
+      : ''}
+    ${created && updated
+      ? html`<span class="board-card__time-sep">·</span>`
+      : ''}
+    ${updated
+      ? html`<span
+          class="board-card__time"
+          title=${`수정 ${formatTimestampLocal(issue.updated_at)}`}
+          >수정 ${updated}</span
+        >`
+      : ''}
+  </span>`;
+}
+
+/**
  * Child rollup (spec §3.3): always shows "children N/M" + the in_progress child
  * one-liner when children>0. Expanded by default (the toggle collapses it), the
  * children render as compact rows — status dot + ordinal + title — ordered by
  * `cmpChildOrder`; a row click opens the child in the detail panel. No per-child
- * stepper or chips. Elapsed sits on the right of the meta row.
+ * stepper or chips. The created/updated meta sits on the right of the meta row.
  *
  * @param {BoardCardIssue} issue
  * @param {BoardCardContext} ctx
- * @param {string} elapsed
  * @returns {TemplateResult}
  */
-function rollTemplate(issue, ctx, elapsed) {
+function rollTemplate(issue, ctx) {
   const rollup = ctx.rollupFor
     ? ctx.rollupFor(issue.id)
     : { total: 0, count: 0, current: null, children: [] };
@@ -191,9 +228,7 @@ function rollTemplate(issue, ctx, elapsed) {
               children ${rollup.count}/${total} ${expanded ? '▴' : '▾'}
             </button>`
           : html`<span class="board-card__roll-none">children 없음</span>`}
-        ${elapsed
-          ? html`<span class="board-card__elapsed">${elapsed}</span>`
-          : ''}
+        ${timesTemplate(issue)}
       </div>
       ${total > 0 && rollup.current
         ? html`<div class="board-card__roll-current">
@@ -237,7 +272,6 @@ function rollTemplate(issue, ctx, elapsed) {
  */
 export function cardTemplate(issue, ctx) {
   const pri = priorityLabel(issue.priority);
-  const elapsed = formatElapsedCompact(issue.updated_at ?? issue.created_at);
   return html`
     <article
       class="board-card"
@@ -265,7 +299,7 @@ export function cardTemplate(issue, ctx) {
       <div class="board-card__title">${issue.title || '(제목 없음)'}</div>
       ${chipsTemplate(issue.workflow)}
       ${issue.workflow ? stepperTemplate(issue.workflow, issue.status) : ''}
-      ${rollTemplate(issue, ctx, elapsed)}
+      ${rollTemplate(issue, ctx)}
     </article>
   `;
 }

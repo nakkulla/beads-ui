@@ -46,18 +46,21 @@ const CLOSED_RENDER_CAP = 200;
  * derived (open + blocked) and is intentionally absent — it is not a status,
  * so cards cannot be dropped there.
  *
- * @type {Record<string, 'open'|'in_progress'|'resolved'|'closed'>}
+ * @type {Record<string, 'open'|'in_progress'|'deferred'|'resolved'|'closed'>}
  */
 const DROP_STATUS_BY_COL = {
   'ready-col': 'open',
   'in-progress-col': 'in_progress',
   'resolved-col': 'resolved',
+  'deferred-col': 'deferred',
   'closed-col': 'closed'
 };
 
 /**
  * Columns whose cards share the manual rank map and support same-column
- * reordering (spec §2). Closed is excluded — it keeps `closed_at desc`.
+ * reordering (spec §2; UX v3 — only in the `manual` sort mode). Closed is
+ * excluded — it keeps `closed_at desc`. Deferred participates like every
+ * other status column (UX v3 spec §2).
  *
  * @type {Set<string>}
  */
@@ -65,8 +68,39 @@ const REORDER_COLS = new Set([
   'blocked-col',
   'ready-col',
   'in-progress-col',
-  'resolved-col'
+  'resolved-col',
+  'deferred-col'
 ]);
+
+/** localStorage key for the Board sort mode (UX v3 spec §3). */
+const SORT_KEY = 'beads-ui.board.sort';
+
+/** @type {Set<string>} */
+const SORT_MODES = new Set([
+  'created_desc',
+  'created_asc',
+  'updated_desc',
+  'priority',
+  'manual'
+]);
+
+/**
+ * Read the persisted Board sort mode; default is created-desc (newest first,
+ * UX v3 spec §3).
+ *
+ * @returns {import('../../data/list-selectors.js').BoardSortMode}
+ */
+function loadSortMode() {
+  try {
+    const raw = window.localStorage.getItem(SORT_KEY);
+    if (raw && SORT_MODES.has(raw)) {
+      return /** @type {any} */ (raw);
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return 'created_desc';
+}
 
 /**
  * Board view (control-tower v1): 5 columns — Blocked / Ready / In progress /
@@ -101,7 +135,15 @@ export function createBoardView(mount_element, options) {
   /** @type {IssueLite[]} */
   let list_resolved = [];
   /** @type {IssueLite[]} */
+  let list_deferred = [];
+  /** @type {IssueLite[]} */
   let list_closed = [];
+  /** Deferred column visibility (UX v3 spec §2) — session-local, no storage. */
+  let show_deferred = false;
+  /** Live deferred issue count for the toggle label (computed even when hidden). */
+  let deferred_count = 0;
+  /** @type {import('../../data/list-selectors.js').BoardSortMode} */
+  let sort_mode = loadSortMode();
   /** @type {Map<string, string>} */
   let status_by_id = new Map();
   /** @type {Map<string, string>} */
@@ -186,19 +228,29 @@ export function createBoardView(mount_element, options) {
         // parent-existence input the fold rule reads.
         const in_progress = selectors.selectBoardColumn(
           'tab:board:in-progress',
-          'in_progress'
+          'in_progress',
+          sort_mode
         );
         const blocked = selectors
-          .selectBoardColumn('tab:board:blocked', 'blocked')
+          .selectBoardColumn('tab:board:blocked', 'blocked', sort_mode)
           .filter(isOpenBoardIssue);
         const in_prog_ids = new Set(in_progress.map((i) => i.id));
         const ready = selectors
-          .selectBoardColumn('tab:board:ready', 'ready')
+          .selectBoardColumn('tab:board:ready', 'ready', sort_mode)
           .filter((i) => isOpenBoardIssue(i) && !in_prog_ids.has(i.id));
         const resolved = selectors.selectBoardColumn(
           'tab:board:resolved',
-          'resolved'
+          'resolved',
+          sort_mode
         );
+        // Deferred is always composed (the toggle shows its live count) but
+        // participates in the render sets only while shown (UX v3 spec §2).
+        const deferred = selectors.selectBoardColumn(
+          'tab:board:deferred',
+          'deferred',
+          sort_mode
+        );
+        const deferred_shown = show_deferred ? deferred : [];
         const closed = selectors
           .selectBoardColumn('tab:board:closed', 'closed')
           .slice(0, CLOSED_RENDER_CAP);
@@ -208,6 +260,7 @@ export function createBoardView(mount_element, options) {
           ...ready,
           ...in_progress,
           ...resolved,
+          ...deferred_shown,
           ...closed
         ];
 
@@ -242,6 +295,10 @@ export function createBoardView(mount_element, options) {
         list_resolved = fold
           ? excludeFolded(resolved, rendered_parents)
           : resolved;
+        list_deferred = fold
+          ? excludeFolded(deferred_shown, rendered_parents)
+          : deferred_shown;
+        deferred_count = deferred.length;
         list_closed = fold ? excludeFolded(closed, rendered_parents) : closed;
 
         status_by_id = new Map();
@@ -250,6 +307,7 @@ export function createBoardView(mount_element, options) {
         for (const it of list_in_progress)
           status_by_id.set(it.id, 'in_progress');
         for (const it of list_resolved) status_by_id.set(it.id, 'resolved');
+        for (const it of list_deferred) status_by_id.set(it.id, 'deferred');
         for (const it of list_closed) status_by_id.set(it.id, 'closed');
 
         // Column membership (id → column DOM id) so a drop can tell a same-column
@@ -262,6 +320,7 @@ export function createBoardView(mount_element, options) {
         for (const it of list_in_progress)
           col_by_id.set(it.id, 'in-progress-col');
         for (const it of list_resolved) col_by_id.set(it.id, 'resolved-col');
+        for (const it of list_deferred) col_by_id.set(it.id, 'deferred-col');
         for (const it of list_closed) col_by_id.set(it.id, 'closed-col');
       }
       doRender();
@@ -270,6 +329,7 @@ export function createBoardView(mount_element, options) {
       list_ready = [];
       list_in_progress = [];
       list_resolved = [];
+      list_deferred = [];
       list_closed = [];
       children_by_parent = new Map();
       doRender();
@@ -484,6 +544,26 @@ export function createBoardView(mount_element, options) {
       );
       refreshFromStores();
     },
+    /** @param {Event} ev */
+    onSortChange(ev) {
+      const value = String(
+        /** @type {HTMLSelectElement} */ (ev.target).value || ''
+      );
+      if (!SORT_MODES.has(value) || value === sort_mode) {
+        return;
+      }
+      sort_mode = /** @type {any} */ (value);
+      try {
+        window.localStorage.setItem(SORT_KEY, value);
+      } catch {
+        // ignore storage errors
+      }
+      refreshFromStores();
+    },
+    onDeferredToggle() {
+      show_deferred = !show_deferred;
+      refreshFromStores();
+    },
     onNewIssue() {
       if (onNewIssue) {
         onNewIssue();
@@ -492,10 +572,19 @@ export function createBoardView(mount_element, options) {
   };
 
   function template() {
+    // 5→6 column layout contract (UX v3 spec §2): the modifier class swaps the
+    // grid template so Closed stays on the same row when Deferred is shown.
+    const root_class = show_deferred
+      ? 'board-root board-root--deferred'
+      : 'board-root';
     return html`
       <div class="board-view">
-        ${filterBarTemplate(filters, filter_handlers)}
-        <div class="board-root">
+        ${filterBarTemplate(filters, filter_handlers, {
+          sort_mode,
+          show_deferred,
+          deferred_count
+        })}
+        <div class=${root_class}>
           ${columnTemplate(
             {
               title: 'Blocked',
@@ -528,6 +617,16 @@ export function createBoardView(mount_element, options) {
             },
             card_ctx
           )}
+          ${show_deferred
+            ? columnTemplate(
+                {
+                  title: 'Deferred',
+                  id: 'deferred-col',
+                  items: applyFilters(list_deferred)
+                },
+                card_ctx
+              )
+            : ''}
           ${columnTemplate(
             {
               title: 'Closed',
@@ -571,7 +670,7 @@ export function createBoardView(mount_element, options) {
    * Update issue status via transport, surfacing a toast on completion.
    *
    * @param {string} issue_id
-   * @param {'open'|'in_progress'|'resolved'|'closed'} new_status
+   * @param {'open'|'in_progress'|'deferred'|'resolved'|'closed'} new_status
    */
   async function updateIssueStatus(issue_id, new_status) {
     if (!transport) {
@@ -603,6 +702,8 @@ export function createBoardView(mount_element, options) {
         return list_in_progress;
       case 'resolved-col':
         return list_resolved;
+      case 'deferred-col':
+        return list_deferred;
       default:
         return [];
     }
@@ -710,9 +811,19 @@ export function createBoardView(mount_element, options) {
     const target_col_id = col.id;
     const source_col_id = col_by_id.get(issue_id);
     if (source_col_id && source_col_id === target_col_id) {
-      // Same-column drop = manual reorder (spec §2). Closed keeps closed_at desc
-      // and is not reorderable; other columns share the rank map.
+      // Same-column drop = manual reorder (spec §2), allowed only in the
+      // `manual` sort mode (UX v3 spec §3) — in comparator modes the rank
+      // write would be invisible and misleading. Closed keeps closed_at desc
+      // and is never reorderable.
       if (REORDER_COLS.has(target_col_id)) {
+        if (sort_mode !== 'manual') {
+          showToast(
+            '수동(드래그) 정렬 모드에서만 순서를 바꿀 수 있습니다',
+            'warning',
+            2000
+          );
+          return;
+        }
         reorderInColumn(target_col_id, issue_id, target);
       }
       return;
@@ -850,6 +961,7 @@ export function createBoardView(mount_element, options) {
       list_ready = [];
       list_in_progress = [];
       list_resolved = [];
+      list_deferred = [];
       list_closed = [];
       status_by_id = new Map();
       col_by_id = new Map();

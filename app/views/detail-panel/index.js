@@ -1,4 +1,5 @@
 import { html, render } from 'lit-html';
+import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
@@ -608,6 +609,34 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
+   * Read-only created/updated rows (UX v3 spec §1): local-timezone absolute
+   * times via the shared `formatTimestampLocal` helper.
+   *
+   * @param {{ created_at?: number | string, updated_at?: number | string }} data
+   */
+  function timesTemplate(data) {
+    const created = formatTimestampLocal(data.created_at);
+    const updated = formatTimestampLocal(data.updated_at);
+    if (!created && !updated) {
+      return html``;
+    }
+    return html`
+      ${created
+        ? html`<div class="detail-kv">
+            <span class="detail-kv__k">생성</span>
+            <span class="detail-kv__v detail-kv__v--time">${created}</span>
+          </div>`
+        : ''}
+      ${updated
+        ? html`<div class="detail-kv">
+            <span class="detail-kv__k">수정</span>
+            <span class="detail-kv__v detail-kv__v--time">${updated}</span>
+          </div>`
+        : ''}
+    `;
+  }
+
+  /**
    * @param {string} status
    * @param {number | ''} priority_val
    */
@@ -785,8 +814,9 @@ export function createDetailPanel(mount_element, options) {
             ${id}
           </button>
           ${titleTemplate(title)} ${propsTemplate(status, priority_val)}
-          ${descTemplate(description)} ${labelsTemplate(data)}
-          ${depsTemplate(data)} ${workflowTemplate(data)}
+          ${timesTemplate(data)} ${descTemplate(description)}
+          ${labelsTemplate(data)} ${depsTemplate(data)}
+          ${workflowTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
           ${execSettingsTemplate(effective, exec_handlers)}
           ${sessionHistoryTemplate(attemptsForBead(), session_handlers)}
