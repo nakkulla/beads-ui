@@ -24,11 +24,16 @@ import { filterBarTemplate } from './filter-bar.js';
  */
 
 /**
+ * @typedef {{ get: () => (import('../../utils/label-policy.js').DisplayPolicy | null), subscribe?: (fn: () => void) => () => void }} DisplayPolicyStore
+ */
+
+/**
  * @typedef {Object} BoardViewOptions
  * @property {(id: string) => void} gotoIssue
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<any>} [transport]
  * @property {UiOrderStore} [uiOrderStore]
+ * @property {DisplayPolicyStore} [displayPolicyStore]
  * @property {string} [closedRange] - Current Closed period ('today'|'7d'|'30d'|'all').
  * @property {(range: string) => void} [onClosedRangeChange]
  * @property {() => void} [onNewIssue]
@@ -118,6 +123,7 @@ export function createBoardView(mount_element, options) {
   const issueStores = options.issueStores;
   const transport = options.transport;
   const uiOrderStore = options.uiOrderStore;
+  const displayPolicyStore = options.displayPolicyStore;
   const onClosedRangeChangeCb = options.onClosedRangeChange;
   const onNewIssue = options.onNewIssue;
   let closed_range = options.closedRange || DEFAULT_CLOSED_RANGE;
@@ -158,7 +164,11 @@ export function createBoardView(mount_element, options) {
    */
   const collapsed_ids = new Set();
 
-  const filters = { search: '', priority: '', type: '' };
+  /** @type {{ search: string, priority: string, type: string, labels: string[] }} */
+  const filters = { search: '', priority: '', type: '', labels: [] };
+
+  /** Whether the label filter popover is open (board-local, not persisted). */
+  let label_menu_open = false;
 
   /** @type {string | null} */
   let dragging_id = null;
@@ -172,7 +182,25 @@ export function createBoardView(mount_element, options) {
   }
 
   /**
-   * Apply the board-local filters (search / priority / type) to a list.
+   * The Blocked column carries two kinds of issue and must keep both: an OPEN
+   * issue held up by dependencies, and an issue stored as `status=blocked`
+   * because something outside the tracker is being waited on. Filtering the
+   * column down to `open` would drop the second kind entirely — and with it the
+   * ⏸ external-blocked chip, which would never render.
+   *
+   * @param {IssueLite} issue
+   * @returns {boolean}
+   */
+  function isBlockedBoardIssue(issue) {
+    const status = String(issue.status || 'open');
+    return status === 'open' || status === 'blocked';
+  }
+
+  /**
+   * Apply the board-local filters (search / priority / type / labels) to a list.
+   * The label axis matches on OR — an issue passes when it carries ANY selected
+   * label — and it deliberately ignores the display policy, so a label hidden
+   * from the cards is still usable as a filter.
    *
    * @param {IssueLite[]} items
    * @returns {IssueLite[]}
@@ -181,6 +209,7 @@ export function createBoardView(mount_element, options) {
     const q = filters.search.trim().toLowerCase();
     const pri = filters.priority;
     const type = filters.type;
+    const labels = filters.labels;
     return items.filter((it) => {
       if (q) {
         const id = String(it.id || '').toLowerCase();
@@ -195,8 +224,43 @@ export function createBoardView(mount_element, options) {
       if (type !== '' && String(it.issue_type || '') !== type) {
         return false;
       }
+      if (labels.length > 0) {
+        const own = Array.isArray(it.labels) ? it.labels : [];
+        if (!labels.some((label) => own.includes(label))) {
+          return false;
+        }
+      }
       return true;
     });
+  }
+
+  /**
+   * Every label present in the loaded issues, sorted. The display policy is not
+   * applied — hidden labels must stay filterable.
+   *
+   * @returns {string[]}
+   */
+  function knownLabels() {
+    /** @type {Set<string>} */
+    const seen = new Set();
+    for (const list of [
+      list_blocked,
+      list_ready,
+      list_in_progress,
+      list_resolved,
+      list_deferred,
+      list_closed
+    ]) {
+      for (const issue of list) {
+        const labels = Array.isArray(issue.labels) ? issue.labels : [];
+        for (const label of labels) {
+          if (typeof label === 'string' && label.length > 0) {
+            seen.add(label);
+          }
+        }
+      }
+    }
+    return Array.from(seen).sort();
   }
 
   /**
@@ -210,7 +274,8 @@ export function createBoardView(mount_element, options) {
     return (
       filters.search.trim() !== '' ||
       filters.priority !== '' ||
-      filters.type !== ''
+      filters.type !== '' ||
+      filters.labels.length > 0
     );
   }
 
@@ -233,7 +298,7 @@ export function createBoardView(mount_element, options) {
         );
         const blocked = selectors
           .selectBoardColumn('tab:board:blocked', 'blocked', sort_mode)
-          .filter(isOpenBoardIssue);
+          .filter(isBlockedBoardIssue);
         const in_prog_ids = new Set(in_progress.map((i) => i.id));
         const ready = selectors
           .selectBoardColumn('tab:board:ready', 'ready', sort_mode)
@@ -435,6 +500,16 @@ export function createBoardView(mount_element, options) {
     gotoIssue(id);
   }
 
+  /**
+   * @param {Event} ev
+   * @param {string} id
+   */
+  function onFromChipClick(ev, id) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    gotoIssue(id);
+  }
+
   // --- card / column interaction context ---
 
   /**
@@ -516,8 +591,60 @@ export function createBoardView(mount_element, options) {
     rollupFor,
     isExpanded,
     onRollupToggle,
-    onChildClick
+    onChildClick,
+    onFromChipClick,
+    // Read on every access so a pushed policy snapshot takes effect on the next
+    // render without rebuilding this context object.
+    get policy() {
+      return displayPolicyStore ? displayPolicyStore.get() : null;
+    }
   };
+
+  /**
+   * Close the label popover on an outside mousedown. Only the label control
+   * itself (its toggle button, the popover, its checkboxes) keeps it open —
+   * scoping this to the whole board would leave the popover up while the user
+   * clicks a card, which is not what "click outside to dismiss" means.
+   *
+   * @param {MouseEvent} ev
+   */
+  function onLabelMenuDocMousedown(ev) {
+    const target = /** @type {Node | null} */ (ev.target);
+    const control = mount_element.querySelector('.board-filter__labels');
+    if (target && control && control.contains(target)) {
+      return;
+    }
+    closeLabelMenu();
+  }
+
+  /**
+   * @param {KeyboardEvent} ev
+   */
+  function onLabelMenuDocKeydown(ev) {
+    if (ev.key === 'Escape') {
+      closeLabelMenu();
+    }
+  }
+
+  function openLabelMenu() {
+    if (label_menu_open) {
+      return;
+    }
+    label_menu_open = true;
+    document.addEventListener('mousedown', onLabelMenuDocMousedown);
+    document.addEventListener('keydown', onLabelMenuDocKeydown);
+    doRender();
+  }
+
+  function closeLabelMenu() {
+    if (!label_menu_open) {
+      return;
+    }
+    label_menu_open = false;
+    document.removeEventListener('mousedown', onLabelMenuDocMousedown);
+    document.removeEventListener('keydown', onLabelMenuDocKeydown);
+    doRender();
+  }
 
   // --- filter handlers (board-local state) ---
   // A filter change flips whether child folding is active (spec §3.3), so it
@@ -564,6 +691,30 @@ export function createBoardView(mount_element, options) {
       show_deferred = !show_deferred;
       refreshFromStores();
     },
+    onLabelMenuToggle() {
+      if (label_menu_open) {
+        closeLabelMenu();
+      } else {
+        openLabelMenu();
+      }
+    },
+    /** @param {string} label */
+    onLabelToggle(label) {
+      const index = filters.labels.indexOf(label);
+      if (index === -1) {
+        filters.labels.push(label);
+      } else {
+        filters.labels.splice(index, 1);
+      }
+      refreshFromStores();
+    },
+    onLabelClear() {
+      if (filters.labels.length === 0) {
+        return;
+      }
+      filters.labels = [];
+      refreshFromStores();
+    },
     onNewIssue() {
       if (onNewIssue) {
         onNewIssue();
@@ -582,7 +733,9 @@ export function createBoardView(mount_element, options) {
         ${filterBarTemplate(filters, filter_handlers, {
           sort_mode,
           show_deferred,
-          deferred_count
+          deferred_count,
+          label_options: knownLabels(),
+          label_menu_open
         })}
         <div class=${root_class}>
           ${columnTemplate(
@@ -946,15 +1099,34 @@ export function createBoardView(mount_element, options) {
     });
   }
 
+  // A policy change alters which labels pass the filter, so it has to recompose
+  // the lists rather than only re-render.
+  /** @type {null | (() => void)} */
+  let unsubscribe_policy = null;
+  if (displayPolicyStore && displayPolicyStore.subscribe) {
+    unsubscribe_policy = displayPolicyStore.subscribe(() => {
+      try {
+        refreshFromStores();
+      } catch {
+        // ignore
+      }
+    });
+  }
+
   return {
     async load() {
       log('load');
       refreshFromStores();
     },
     clear() {
+      closeLabelMenu();
       if (unsubscribe_selectors) {
         unsubscribe_selectors();
         unsubscribe_selectors = null;
+      }
+      if (unsubscribe_policy) {
+        unsubscribe_policy();
+        unsubscribe_policy = null;
       }
       mount_element.replaceChildren();
       list_blocked = [];

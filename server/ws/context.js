@@ -380,6 +380,36 @@ export function emitUiOrderSnapshot(ws, client_id, snapshot) {
 }
 
 /**
+ * Emit a label/metadata display-policy snapshot to a specific client id on a
+ * socket.
+ *
+ * Reuses the same id/ok/type/payload push envelope as the queue/ui-order
+ * snapshots. The whole policy is pushed as one document (there is no partial
+ * update) and carries its own CAS `revision` inside the payload.
+ *
+ * @param {WebSocket} ws
+ * @param {string} client_id
+ * @param {import('../display-policy-store.js').DisplayPolicy} policy
+ */
+export function emitDisplayPolicySnapshot(ws, client_id, policy) {
+  const msg = JSON.stringify({
+    id: `evt-${Date.now()}`,
+    ok: true,
+    type: /** @type {MessageType} */ ('display-policy-snapshot'),
+    payload: {
+      type: 'display-policy-snapshot',
+      id: client_id,
+      policy
+    }
+  });
+  try {
+    ws.send(msg);
+  } catch (err) {
+    log('emit display-policy snapshot send failed id=%s: %o', client_id, err);
+  }
+}
+
+/**
  * Emit a session-log SNAPSHOT (all persisted raw lines) for an attempt to a
  * client. Reuses the same id/ok/type/payload envelope as the queue/issue pushes
  * so the transcript viewer flows through one push protocol (spec §5.6).

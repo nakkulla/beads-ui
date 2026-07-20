@@ -129,9 +129,13 @@ export function normalizeIssueList(value) {
 }
 
 /**
+ * @typedef {{ id: string, updated_at: number, closed_at: number | null } & Record<string, unknown>} NormalizedIssue
+ */
+
+/**
  * @typedef {Object} FetchListResultSuccess
  * @property {true} ok
- * @property {Array<{ id: string, updated_at: number, closed_at: number | null } & Record<string, unknown>>} items
+ * @property {NormalizedIssue[]} items
  */
 
 /**
@@ -160,8 +164,119 @@ export async function fetchListForSubscription(spec, options = {}) {
       /** @type {any} */ (result.items),
       options.cwd
     );
+    result.items = await enrichIssuesProvenance(
+      /** @type {any} */ (result.items),
+      options.cwd
+    );
   }
   return result;
+}
+
+/**
+ * Attach `from_id` — the bead this one was discovered from — to every issue in
+ * a list.
+ *
+ * Provenance is an EDGE (`discovered-from`), never a label, so it is derived
+ * here rather than read off the issue. One batch `bd dep list <ids...> --json`
+ * covers the whole list; in that batch shape each record is a bare edge
+ * `{ issue_id, depends_on_id, type }` where `issue_id` is the follow-up and
+ * `depends_on_id` is the origin. (The single-id shape is different — it returns
+ * full target issues with a `dependency_type` field — so the two must not share
+ * a parser.)
+ *
+ * A bead can carry more than one origin edge; the card shows one, so the first
+ * edge wins. Everything here is fail-quiet: a bd failure returns the issues
+ * untouched and the card simply renders no provenance chip.
+ *
+ * @param {NormalizedIssue[]} items
+ * @param {string | undefined} cwd
+ * @returns {Promise<NormalizedIssue[]>}
+ */
+async function enrichIssuesProvenance(items, cwd) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return items;
+  }
+  const ids = items
+    .map((it) => String(it.id ?? ''))
+    .filter((id) => id.length > 0);
+  if (ids.length === 0) {
+    return items;
+  }
+  /** @type {Map<string, string>} */
+  let from_by_id = new Map();
+  try {
+    const res = await runBdJson(['dep', 'list', ...ids, '--json'], { cwd });
+    if (!res || res.code !== 0 || !('stdoutJson' in res)) {
+      log('bd dep list failed for provenance code=%s', res?.code);
+      return items;
+    }
+    from_by_id = collectProvenanceEdges(res.stdoutJson, ids);
+  } catch (err) {
+    log('bd dep list invocation failed for provenance: %o', err);
+    return items;
+  }
+  if (from_by_id.size === 0) {
+    return items;
+  }
+  return items.map((it) => {
+    const from_id = from_by_id.get(String(it.id ?? ''));
+    return from_id ? { ...it, from_id } : it;
+  });
+}
+
+/**
+ * Reduce a `bd dep list --json` payload to `issue id → origin id` for
+ * `discovered-from` edges only. First edge per issue wins.
+ *
+ * `bd` answers in TWO different shapes depending on how many ids were asked
+ * for, and both must be read here because a board column can hold exactly one
+ * card:
+ *
+ * - several ids → bare edges `{ issue_id, depends_on_id, type }`,
+ * - a single id → the full TARGET issues, each with a `dependency_type` and no
+ *   back-reference, so the owning issue is the one id that was requested.
+ *
+ * @param {unknown} value
+ * @param {string[]} requested_ids - The ids passed to `bd dep list`, in order.
+ * @returns {Map<string, string>}
+ */
+function collectProvenanceEdges(value, requested_ids) {
+  /** @type {Map<string, string>} */
+  const by_id = new Map();
+  if (!Array.isArray(value)) {
+    return by_id;
+  }
+  const single_id = requested_ids.length === 1 ? requested_ids[0] : null;
+  for (const edge of value) {
+    if (!edge || typeof edge !== 'object') {
+      continue;
+    }
+    const e = /** @type {Record<string, unknown>} */ (edge);
+    /** @type {string} */
+    let issue_id;
+    /** @type {string} */
+    let origin_id;
+    if (e.issue_id !== undefined || e.depends_on_id !== undefined) {
+      if (e.type !== 'discovered-from') {
+        continue;
+      }
+      issue_id = String(e.issue_id ?? '');
+      origin_id = String(e.depends_on_id ?? '');
+    } else {
+      if (single_id === null || e.dependency_type !== 'discovered-from') {
+        continue;
+      }
+      issue_id = single_id;
+      origin_id = String(e.id ?? '');
+    }
+    if (issue_id.length === 0 || origin_id.length === 0) {
+      continue;
+    }
+    if (!by_id.has(issue_id)) {
+      by_id.set(issue_id, origin_id);
+    }
+  }
+  return by_id;
 }
 
 /**
@@ -272,9 +387,12 @@ async function fetchBlockedIssues(options = {}) {
     const dependency_raw = extractDependencyBlockedIssues(
       dependency_res.stdoutJson
     );
-    const items = mergeIssueLists(
-      normalizeIssueList(stored_raw),
-      normalizeIssueList(dependency_raw)
+    const stored_items = normalizeIssueList(stored_raw);
+    const dependency_items = normalizeIssueList(dependency_raw);
+    const items = attachBlockedInfo(
+      mergeIssueLists(stored_items, dependency_items),
+      stored_items,
+      dependency_items
     );
     return { ok: true, items };
   } catch (err) {
@@ -307,6 +425,90 @@ function extractDependencyBlockedIssues(value) {
   }
   const blocked = /** @type {{ blocked?: unknown }} */ (value).blocked;
   return Array.isArray(blocked) ? blocked : [];
+}
+
+/**
+ * Synthesize `blocked_info` for every Blocked-column issue.
+ *
+ * The column has two independent sources — a stored `status=blocked` (an
+ * EXTERNAL blocker: something outside the tracker is being waited on) and
+ * `bd ready --explain` (a DEPENDENCY blocker: other beads must land first) —
+ * and an issue can be in both at once. {@link mergeIssueLists} cannot carry
+ * that distinction: it shallow-spreads one record over the other, so whichever
+ * source loses the spread is erased. Membership is therefore read from the two
+ * source lists directly, after the merge.
+ *
+ * `reason` comes from `metadata.blocked_reason` and stays null when the key is
+ * absent, so the card falls back to a bare "blocked" chip.
+ *
+ * @param {NormalizedIssue[]} merged
+ * @param {NormalizedIssue[]} stored_items
+ * @param {NormalizedIssue[]} dependency_items
+ * @returns {NormalizedIssue[]}
+ */
+function attachBlockedInfo(merged, stored_items, dependency_items) {
+  const external_ids = new Set(stored_items.map((it) => String(it.id ?? '')));
+  /** @type {Map<string, string[]>} */
+  const blockers_by_id = new Map();
+  for (const item of dependency_items) {
+    blockers_by_id.set(String(item.id ?? ''), extractBlockerIds(item));
+  }
+  return merged.map((item) => {
+    const id = String(item.id ?? '');
+    const external = external_ids.has(id);
+    const blockers = blockers_by_id.get(id) || [];
+    return {
+      ...item,
+      blocked_info: {
+        external,
+        reason: external ? blockedReasonOf(item) : null,
+        blockers
+      }
+    };
+  });
+}
+
+/**
+ * Read the blocker ids off a `bd ready --explain` blocked entry.
+ *
+ * @param {Record<string, unknown>} item
+ * @returns {string[]}
+ */
+function extractBlockerIds(item) {
+  const blocked_by = item.blocked_by;
+  if (!Array.isArray(blocked_by)) {
+    return [];
+  }
+  /** @type {string[]} */
+  const ids = [];
+  for (const entry of blocked_by) {
+    const id =
+      entry && typeof entry === 'object'
+        ? String(/** @type {Record<string, unknown>} */ (entry).id ?? '')
+        : String(entry ?? '');
+    if (id.length > 0) {
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * @param {Record<string, unknown>} item
+ * @returns {string | null}
+ */
+function blockedReasonOf(item) {
+  const metadata = item.metadata;
+  if (!metadata || typeof metadata !== 'object') {
+    return null;
+  }
+  const reason = /** @type {Record<string, unknown>} */ (metadata)
+    .blocked_reason;
+  if (typeof reason !== 'string') {
+    return null;
+  }
+  const trimmed = reason.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**

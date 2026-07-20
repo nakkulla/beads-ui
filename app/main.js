@@ -7,6 +7,7 @@ import {
   closedRangeSince,
   isClosedRange
 } from './data/closed-range.js';
+import { createDisplayPolicyStore } from './data/display-policy-store.js';
 import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
@@ -19,6 +20,7 @@ import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
 import { createBoardView } from './views/board/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
+import { createDisplaySettingsDialog } from './views/display-settings-dialog.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
 import { createTopNav } from './views/nav.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
@@ -26,91 +28,15 @@ import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
 
-const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-
-const DEFAULT_CONFIG = {
-  label_display_policy: {
-    visible_prefixes: ['has:', 'reviewed:'],
-    visible_exact: [],
-    colors: {
-      prefix: {},
-      exact: {}
-    }
-  },
-  workspace_config: {
-    default_workspace: null
-  }
-};
-
 /**
- * @param {unknown} value
- * @returns {value is Record<string, unknown>}
- */
-function isObjectTable(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * @param {unknown} value
- * @returns {Record<string, { fg: string }>}
- */
-function normalizeLabelColorTable(value) {
-  if (!isObjectTable(value)) {
-    return {};
-  }
-
-  /** @type {Record<string, { fg: string }>} */
-  const normalized = {};
-  for (const [key, rule] of Object.entries(value)) {
-    if (
-      key.length === 0 ||
-      !isObjectTable(rule) ||
-      typeof rule.fg !== 'string' ||
-      !HEX_COLOR_RE.test(rule.fg)
-    ) {
-      continue;
-    }
-    normalized[key] = { fg: rule.fg };
-  }
-
-  return normalized;
-}
-
-/**
- * @param {unknown} value
- * @returns {{ prefix: Record<string, { fg: string }>, exact: Record<string, { fg: string }> }}
- */
-function normalizeLabelColorPolicy(value) {
-  if (!isObjectTable(value)) {
-    return { prefix: {}, exact: {} };
-  }
-
-  return {
-    prefix: normalizeLabelColorTable(value.prefix),
-    exact: normalizeLabelColorTable(value.exact)
-  };
-}
-
-/**
- * @returns {{
- *   label_display_policy: {
- *     visible_prefixes: string[],
- *     visible_exact: string[],
- *     colors: {
- *       prefix: Record<string, { fg: string }>,
- *       exact: Record<string, { fg: string }>
- *     }
- *   },
- *   workspace_config: { default_workspace: string | null }
- * }}
+ * Read the server-rendered bootstrap config. Label visibility is NOT part of
+ * it — that policy is per-workspace and arrives over the `display-policy`
+ * subscription instead.
+ *
+ * @returns {{ workspace_config: { default_workspace: string | null } }}
  */
 export function readBootstrapConfig() {
   const bootstrap = /** @type {any} */ (window).__BDUI_BOOTSTRAP__;
-  const prefixes = bootstrap?.label_display_policy?.visible_prefixes;
-  const exact = bootstrap?.label_display_policy?.visible_exact;
-  const colors = normalizeLabelColorPolicy(
-    bootstrap?.label_display_policy?.colors
-  );
 
   const default_workspace =
     typeof bootstrap?.workspace_config?.default_workspace === 'string' &&
@@ -118,30 +44,7 @@ export function readBootstrapConfig() {
       ? bootstrap.workspace_config.default_workspace
       : null;
 
-  if (!Array.isArray(prefixes)) {
-    return {
-      label_display_policy: {
-        visible_prefixes:
-          DEFAULT_CONFIG.label_display_policy.visible_prefixes.slice(),
-        visible_exact: Array.isArray(exact)
-          ? exact.filter((value) => typeof value === 'string')
-          : DEFAULT_CONFIG.label_display_policy.visible_exact.slice(),
-        colors
-      },
-      workspace_config: {
-        default_workspace
-      }
-    };
-  }
-
   return {
-    label_display_policy: {
-      visible_prefixes: prefixes.filter((value) => typeof value === 'string'),
-      visible_exact: Array.isArray(exact)
-        ? exact.filter((value) => typeof value === 'string')
-        : DEFAULT_CONFIG.label_display_policy.visible_exact.slice(),
-      colors
-    },
     workspace_config: {
       default_workspace
     }
@@ -202,6 +105,13 @@ const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
  * switch — never on a Board↔Worker tab change.
  */
 const UI_ORDER_CLIENT_ID = 'ui:order';
+
+/**
+ * Client id for the singleton per-workspace display-policy subscription. Same
+ * lifecycle as the UI-order channel: subscribed once at bootstrap, resubscribed
+ * only on a workspace switch or reconnect.
+ */
+const DISPLAY_POLICY_CLIENT_ID = 'ui:display-policy';
 
 /** Client id / localStorage key for the Board Closed column period (spec §3.2). */
 const CLOSED_CLIENT_ID = 'tab:board:closed';
@@ -289,6 +199,7 @@ export function bootstrap(root_element) {
     const sub_issue_stores = createSubscriptionIssueStores();
     const worker_queue_store = createWorkerQueueStore();
     const ui_order_store = createUiOrderStore();
+    const display_policy_store = createDisplayPolicyStore();
     const session_log_store = createSessionLogStore();
 
     // Route worker-queue snapshots (unified push protocol; distinct top-level
@@ -314,6 +225,19 @@ export function bootstrap(root_element) {
             revision: p.revision,
             order: p.order && typeof p.order === 'object' ? p.order : {}
           });
+        } catch {
+          // ignore
+        }
+      }
+    });
+
+    // Route label/metadata display-policy snapshots into the client-side policy
+    // store read by the board cards, the label filter, and the settings panel.
+    client.on('display-policy-snapshot', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (p && p.policy && typeof p.policy === 'object') {
+        try {
+          display_policy_store.set(p.policy);
         } catch {
           // ignore
         }
@@ -714,6 +638,70 @@ export function bootstrap(root_element) {
       ui_order_store.clear();
     }
 
+    // --- Display-policy subscription lifecycle (bootstrap singleton) ---
+    /** @type {(() => Promise<unknown>) | null} */
+    let display_policy_unsub = null;
+
+    /**
+     * Subscribe to the per-workspace display-policy channel exactly once. Not
+     * tied to any tab — the board cards, the label filter, and the settings
+     * panel all read the same policy.
+     */
+    function subscribeDisplayPolicy() {
+      if (display_policy_unsub) {
+        return;
+      }
+      void tracked_send('subscribe-display-policy', {
+        id: DISPLAY_POLICY_CLIENT_ID
+      }).catch((err) => {
+        log('subscribe-display-policy failed: %o', err);
+      });
+      display_policy_unsub = () =>
+        tracked_send('unsubscribe-display-policy', {
+          id: DISPLAY_POLICY_CLIENT_ID
+        });
+    }
+
+    /**
+     * Tear down the display-policy subscription and drop the cached policy (it
+     * is per-workspace, so a switch must not carry it over).
+     */
+    function clearDisplayPolicySubscription() {
+      if (display_policy_unsub) {
+        void display_policy_unsub().catch(() => {});
+        display_policy_unsub = null;
+      }
+      display_policy_store.clear();
+    }
+
+    /**
+     * Re-establish the display-policy subscription on a NEW socket after a
+     * reconnect.
+     *
+     * A reconnected socket starts on the server's default workspace, and the
+     * client has no automatic workspace restore. Subscribing before repointing
+     * it would deliver the DEFAULT workspace's policy and let that snapshot
+     * overwrite the policy for the workspace the user is actually looking at,
+     * so the workspace is restored first and the policy is dropped until the
+     * correct snapshot lands.
+     */
+    async function resubscribeDisplayPolicyAfterReconnect() {
+      // The old socket is gone, so there is nothing to unsubscribe from — only
+      // the singleton guard and the now-unowned cached policy to release.
+      display_policy_unsub = null;
+      display_policy_store.clear();
+      const selected = store.getState().workspace.current?.path;
+      if (selected) {
+        try {
+          await client.send('set-workspace', { path: selected });
+        } catch (err) {
+          log('workspace restore after reconnect failed: %o', err);
+          return;
+        }
+      }
+      subscribeDisplayPolicy();
+    }
+
     // --- Workspace management ---
     /**
      * Clear all subscriptions and stores, then re-establish for the active view.
@@ -727,6 +715,10 @@ export function bootstrap(root_element) {
       // per-workspace — clear + resubscribe so the new workspace's order loads.
       clearUiOrderSubscription();
       subscribeUiOrder();
+      // Same shape for the display policy: a bootstrap singleton whose contents
+      // are per-workspace.
+      clearDisplayPolicySubscription();
+      subscribeDisplayPolicy();
       resetDetailSubscription();
       const s = store.getState();
       if (s.selected_id) {
@@ -964,6 +956,7 @@ export function bootstrap(root_element) {
           void refreshConfigSnapshot(store, (message, err) => {
             log(`${message}: %o`, err);
           });
+          void resubscribeDisplayPolicyAfterReconnect();
         }
       };
       client.onConnection(onConn);
@@ -1031,12 +1024,52 @@ export function bootstrap(root_element) {
       // ignore missing header
     }
 
+    // Display-settings dialog: edits the per-workspace label/metadata policy.
+    // Its label pills are drawn from the labels actually present in the loaded
+    // board data, WITHOUT the policy applied — an already-hidden label has to
+    // stay clickable, otherwise hiding one would be irreversible from the UI.
+    const display_settings_dialog = createDisplaySettingsDialog(root_element, {
+      policyStore: display_policy_store,
+      transport: (type, payload) => tracked_send(type, payload),
+      labelOptions: () => {
+        /** @type {Set<string>} */
+        const seen = new Set();
+        for (const [client_id] of BOARD_SUBS) {
+          for (const issue of sub_issue_stores.snapshotFor(client_id) || []) {
+            const labels = /** @type {any} */ (issue).labels;
+            if (!Array.isArray(labels)) {
+              continue;
+            }
+            for (const label of labels) {
+              if (typeof label === 'string' && label.length > 0) {
+                seen.add(label);
+              }
+            }
+          }
+        }
+        return Array.from(seen).sort();
+      }
+    });
+    try {
+      const btn_settings = /** @type {HTMLButtonElement|null} */ (
+        document.getElementById('display-settings-btn')
+      );
+      if (btn_settings) {
+        btn_settings.addEventListener('click', () =>
+          display_settings_dialog.open()
+        );
+      }
+    } catch {
+      // ignore missing header
+    }
+
     // Board view (default tab).
     const board_view = createBoardView(board_root, {
       gotoIssue: (id) => router.gotoIssue(id),
       issueStores: sub_issue_stores,
       transport,
       uiOrderStore: ui_order_store,
+      displayPolicyStore: display_policy_store,
       closedRange: closed_range,
       onClosedRangeChange: (range) => {
         void setClosedRange(range);
@@ -1132,6 +1165,7 @@ export function bootstrap(root_element) {
     // UI-order is a shared, tab-independent singleton: subscribe once at startup
     // (not from ensureBoard/WorkerSubscriptions) so it survives tab switches.
     subscribeUiOrder();
+    subscribeDisplayPolicy();
 
     // Load workspaces after startup subscriptions can safely resubscribe.
     void loadWorkspaces().finally(() => {

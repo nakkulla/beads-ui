@@ -9,6 +9,7 @@ import { html } from 'lit-html';
  * @property {string} search
  * @property {string} priority - '' (all) or '0'..'4'.
  * @property {string} type - '' (all) or a bd issue type.
+ * @property {string[]} labels - Selected labels; empty means "any".
  */
 
 /**
@@ -18,6 +19,9 @@ import { html } from 'lit-html';
  * @property {(ev: Event) => void} onTypeChange
  * @property {(ev: Event) => void} onSortChange
  * @property {() => void} onDeferredToggle
+ * @property {() => void} onLabelMenuToggle
+ * @property {(label: string) => void} onLabelToggle
+ * @property {() => void} onLabelClear
  * @property {(ev: Event) => void} onNewIssue
  */
 
@@ -26,6 +30,8 @@ import { html } from 'lit-html';
  * @property {string} sort_mode - Current Board sort mode (UX v3 spec §3).
  * @property {boolean} show_deferred - Deferred column visibility (spec §2).
  * @property {number} deferred_count - Live deferred issue count.
+ * @property {string[]} label_options - Union of labels across the loaded issues.
+ * @property {boolean} label_menu_open
  */
 
 const PRIORITY_OPTIONS = [
@@ -53,6 +59,62 @@ const SORT_OPTIONS = [
   { value: 'priority', label: '우선순위순' },
   { value: 'manual', label: '수동(드래그)' }
 ];
+
+/**
+ * Label multi-select popover. Options come from the labels actually present in
+ * the loaded issues, WITHOUT the display policy applied — a label hidden from
+ * the cards must still be selectable here.
+ *
+ * @param {BoardFilterState} state
+ * @param {BoardFilterHandlers} handlers
+ * @param {BoardFilterExtras} extras
+ * @returns {TemplateResult}
+ */
+function labelFilterTemplate(state, handlers, extras) {
+  const selected_count = state.labels.length;
+  const label_text = selected_count > 0 ? `라벨 ${selected_count}` : '라벨';
+  return html`
+    <div class="board-filter__labels">
+      <button
+        type="button"
+        class=${selected_count > 0
+          ? 'board-filter__label-btn is-on'
+          : 'board-filter__label-btn'}
+        aria-haspopup="true"
+        aria-expanded=${extras.label_menu_open ? 'true' : 'false'}
+        @click=${handlers.onLabelMenuToggle}
+      >
+        ${label_text} ▾
+      </button>
+      ${extras.label_menu_open
+        ? html`<div class="board-filter__label-menu" role="group">
+            ${extras.label_options.length === 0
+              ? html`<div class="board-filter__label-empty">라벨 없음</div>`
+              : extras.label_options.map(
+                  (label) =>
+                    html`<label class="board-filter__label-row">
+                      <input
+                        type="checkbox"
+                        .checked=${state.labels.includes(label)}
+                        @change=${() => handlers.onLabelToggle(label)}
+                      />
+                      <span>${label}</span>
+                    </label>`
+                )}
+            ${selected_count > 0
+              ? html`<button
+                  type="button"
+                  class="board-filter__label-clear"
+                  @click=${handlers.onLabelClear}
+                >
+                  선택 해제
+                </button>`
+              : ''}
+          </div>`
+        : ''}
+    </div>
+  `;
+}
 
 /**
  * Board filter bar: search + priority + type on the left; Deferred toggle,
@@ -105,6 +167,7 @@ export function filterBarTemplate(state, handlers, extras) {
             </option>`
         )}
       </select>
+      ${labelFilterTemplate(state, handlers, extras)}
       <span class="board-filter__spacer"></span>
       <button
         type="button"

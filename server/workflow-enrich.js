@@ -273,7 +273,7 @@ function mergeStage(md, status) {
  * @typedef {Object} WorkflowSummary
  * @property {'spec_backed'|'full_plan'} route
  * @property {{ spec: WorkflowStage, plan?: WorkflowStage, impl: WorkflowStage, pr: WorkflowStage, merge: WorkflowStage }} stages
- * @property {{ route: 'spec_backed'|'full_plan', fast_track: boolean, pr: { number: number | null, ci: string | null } | null }} chips
+ * @property {{ route: 'spec_backed'|'full_plan', fast_track: boolean, pr: { number: number | null } | null }} chips
  */
 
 /**
@@ -318,7 +318,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     chips: {
       route,
       fast_track: md.workflow_mode === 'fast_track',
-      pr: md.pr_url ? { number: parsePrNumber(md.pr_url), ci: null } : null
+      pr: md.pr_url ? { number: parsePrNumber(md.pr_url) } : null
     }
   };
 }

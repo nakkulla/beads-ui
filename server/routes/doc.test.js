@@ -47,12 +47,7 @@ async function requestDoc(query) {
     port: 0,
     app_dir: path.resolve('app'),
     root_dir: workspace,
-    frontend_mode: 'static',
-    label_display_policy: {
-      visible_prefixes: ['has:'],
-      visible_exact: [],
-      colors: { prefix: {}, exact: {} }
-    }
+    frontend_mode: 'static'
   });
   const server = createServer(app);
   await new Promise((resolve) => server.listen(0, () => resolve(undefined)));

@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, test, vi } from 'vitest';
-import { getConfig } from './config.js';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { __resetConfigWarningsForTest, getConfig } from './config.js';
 
 /** @type {string[]} */
 const temp_dirs = [];
@@ -27,6 +27,10 @@ function missingConfigPath() {
   temp_dirs.push(dir);
   return path.join(dir, 'config.toml');
 }
+
+beforeEach(() => {
+  __resetConfigWarningsForTest();
+});
 
 afterEach(() => {
   delete process.env.BDUI_FRONTEND_MODE;
@@ -58,10 +62,6 @@ describe('getConfig', () => {
 
     const config = getConfig();
 
-    expect(config.label_display_policy.visible_prefixes).toEqual([
-      'has:',
-      'reviewed:'
-    ]);
     expect(config.workspace_config).toEqual({
       default_workspace: null,
       scan_roots: [],
@@ -69,24 +69,15 @@ describe('getConfig', () => {
     });
   });
 
-  test('reads label policy and workspace config from global TOML config file', () => {
+  test('reads workspace config from global TOML config file', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
 default_workspace = "/repo-a"
 scan_roots = ["/scan-a", "", "relative/path"]
 workspaces = ["/repo-b", "/repo-b"]
-
-[labels]
-visible_prefixes = ["has:", "reviewed:", "area:", "component:"]
 `);
 
     const config = getConfig();
 
-    expect(config.label_display_policy.visible_prefixes).toEqual([
-      'has:',
-      'reviewed:',
-      'area:',
-      'component:'
-    ]);
     expect(config.workspace_config).toEqual({
       default_workspace: '/repo-a',
       scan_roots: ['/scan-a'],
@@ -94,95 +85,61 @@ visible_prefixes = ["has:", "reviewed:", "area:", "component:"]
     });
   });
 
-  test('reads visible exact labels from TOML', () => {
+  test('ignores a legacy [labels] section without exposing label config', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+workspaces = ["/repo-a"]
+
 [labels]
 visible_prefixes = ["has:", "lane:"]
-visible_exact = ["pr", "human", "skill-related"]
+visible_exact = ["pr"]
 `);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const config = getConfig();
 
-    expect(config.label_display_policy.visible_prefixes).toEqual([
-      'has:',
-      'lane:'
-    ]);
-    expect(config.label_display_policy.visible_exact).toEqual([
-      'pr',
-      'human',
-      'skill-related'
-    ]);
+    expect('label_display_policy' in config).toBe(false);
+    expect(config.workspace_config.workspaces).toEqual(['/repo-a']);
+    warn.mockRestore();
   });
 
-  test('parses valid label color rules from TOML', () => {
-    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
-[labels.colors.prefix."has:"]
-fg = "#16a34a"
-
-[labels.colors.prefix."followup:"]
-fg = "#B45309"
-
-[labels.colors.exact."skill-related"]
-fg = "#7c3aed"
-`);
-
-    const config = getConfig();
-
-    expect(config.label_display_policy.colors).toEqual({
-      prefix: {
-        'has:': { fg: '#16a34a' },
-        'followup:': { fg: '#B45309' }
-      },
-      exact: {
-        'skill-related': { fg: '#7c3aed' }
-      }
-    });
-  });
-
-  test('drops invalid label color rules without dropping valid siblings', () => {
-    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
-[labels.colors.prefix."has:"]
-fg = "green"
-
-[labels.colors.prefix."needs:"]
-fg = "#dc2626"
-
-[labels.colors.prefix.empty]
-fg = ""
-
-[labels.colors.exact."pr"]
-fg = "#1234"
-
-[labels.colors.exact."reviewed:spec"]
-fg = "#2563eb"
-`);
-
-    const config = getConfig();
-
-    expect(config.label_display_policy.colors).toEqual({
-      prefix: {
-        'needs:': { fg: '#dc2626' }
-      },
-      exact: {
-        'reviewed:spec': { fg: '#2563eb' }
-      }
-    });
-  });
-
-  test('keeps backward compatibility for prefix-only configs', () => {
+  test('warns about a legacy [labels] section', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
 [labels]
 visible_prefixes = ["has:"]
 `);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const config = getConfig();
+    getConfig();
 
-    expect(config.label_display_policy.visible_prefixes).toEqual(['has:']);
-    expect(config.label_display_policy.visible_exact).toEqual([]);
-    expect(config.label_display_policy.colors).toEqual({
-      prefix: {},
-      exact: {}
-    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('[labels]');
+    warn.mockRestore();
+  });
+
+  test('warns only once per process even across repeated reads', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[labels]
+visible_prefixes = ["has:"]
+`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    getConfig();
+    getConfig();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  test('does not warn when no [labels] section is present', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+workspaces = ["/repo-a"]
+`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    getConfig();
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   test('falls back when config TOML is invalid', () => {
@@ -190,53 +147,10 @@ visible_prefixes = ["has:"]
 
     const config = getConfig();
 
-    expect(config.label_display_policy.visible_prefixes).toEqual([
-      'has:',
-      'reviewed:'
-    ]);
     expect(config.workspace_config).toEqual({
       default_workspace: null,
       scan_roots: [],
       workspaces: []
-    });
-  });
-
-  test('falls back when config has no valid prefixes', () => {
-    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
-scan_roots = ["/scan-a"]
-
-[labels]
-visible_prefixes = [1, true, ""]
-`);
-
-    const config = getConfig();
-
-    expect(config.label_display_policy.visible_prefixes).toEqual([
-      'has:',
-      'reviewed:'
-    ]);
-    expect(config.workspace_config).toEqual({
-      default_workspace: null,
-      scan_roots: ['/scan-a'],
-      workspaces: []
-    });
-  });
-
-  test('preserves explicit empty array to hide summary labels', () => {
-    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
-workspaces = ["/repo-a"]
-
-[labels]
-visible_prefixes = []
-`);
-
-    const config = getConfig();
-
-    expect(config.label_display_policy.visible_prefixes).toEqual([]);
-    expect(config.workspace_config).toEqual({
-      default_workspace: null,
-      scan_roots: [],
-      workspaces: ['/repo-a']
     });
   });
 

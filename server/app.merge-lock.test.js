@@ -19,12 +19,7 @@ beforeEach(async () => {
     port: 0,
     app_dir: path.resolve('app'),
     root_dir: process.cwd(),
-    frontend_mode: 'static',
-    label_display_policy: {
-      visible_prefixes: ['has:'],
-      visible_exact: [],
-      colors: { prefix: {}, exact: {} }
-    }
+    frontend_mode: 'static'
   });
   server = createServer(app);
   await new Promise((r) => server.listen(0, () => r(undefined)));

@@ -1,5 +1,6 @@
 import { html } from 'lit-html';
 import { cmpChildOrder } from '../../data/sort.js';
+import { isChipEnabled, visibleLabels } from '../../utils/label-policy.js';
 import {
   coerceTimestampMs,
   formatRelativeTime,
@@ -19,6 +20,9 @@ import { stepperTemplate } from './stepper.js';
  * @property {number} [priority]
  * @property {number | string} [updated_at]
  * @property {number | string} [created_at]
+ * @property {string[]} [labels]
+ * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
+ * @property {BoardCardBlockedInfo} [blocked_info]
  * @property {import('./stepper.js').WorkflowSummary & { chips?: BoardCardChips }} [workflow]
  */
 
@@ -26,7 +30,14 @@ import { stepperTemplate } from './stepper.js';
  * @typedef {Object} BoardCardChips
  * @property {'spec_backed'|'full_plan'} [route]
  * @property {boolean} [fast_track]
- * @property {{ number: number | null, ci: string | null } | null} [pr]
+ * @property {{ number: number | null } | null} [pr]
+ */
+
+/**
+ * @typedef {Object} BoardCardBlockedInfo
+ * @property {boolean} external - Stored `status=blocked`: waiting on something outside the tracker.
+ * @property {string | null} reason - Short `metadata.blocked_reason`, when set.
+ * @property {string[]} blockers - Bead ids that must land first.
  */
 
 /**
@@ -51,6 +62,8 @@ import { stepperTemplate } from './stepper.js';
  * @property {(id: string) => boolean} [isExpanded]
  * @property {(ev: Event, id: string) => void} [onRollupToggle]
  * @property {(ev: Event, id: string) => void} [onChildClick]
+ * @property {(ev: Event, id: string) => void} [onFromChipClick]
+ * @property {import('../../utils/label-policy.js').DisplayPolicy | null} [policy]
  */
 
 /**
@@ -106,34 +119,101 @@ function priorityLabel(priority) {
   return `P${Math.max(0, Math.min(4, priority))}`;
 }
 
+/** Blocker ids listed inline before the rest collapse into a `+n` suffix. */
+const BLOCKER_PREVIEW_COUNT = 2;
+
 /**
- * Workflow chips row: route · ⚡fast_track · PR #n · CI. The PR chip is present
- * only when a pr_url produced a PR chip server-side, keeping it in agreement
- * with the stepper PR cell.
+ * Render the blocked-reason chips. The two blockers are independent, so a bead
+ * that is both externally blocked and dependency-blocked shows both chips:
  *
- * @param {(import('./stepper.js').WorkflowSummary & { chips?: BoardCardChips }) | undefined} workflow
- * @returns {TemplateResult | string}
+ * - `⏸` external — a stored `status=blocked`, optionally with a short reason,
+ * - `⛓` dependency — the beads that must land first.
+ *
+ * @param {BoardCardBlockedInfo | undefined} blocked_info
+ * @returns {TemplateResult[]}
  */
-function chipsTemplate(workflow) {
-  const chips = workflow && workflow.chips;
-  if (!chips) {
-    return '';
+function blockedChips(blocked_info) {
+  if (!blocked_info) {
+    return [];
   }
   /** @type {TemplateResult[]} */
   const items = [];
-  if (chips.route) {
+  if (blocked_info.external) {
+    const label = blocked_info.reason
+      ? `⏸ blocked: ${blocked_info.reason}`
+      : '⏸ blocked';
+    items.push(html`<span class="ctl-chip ctl-chip--blocked">${label}</span>`);
+  }
+  const blockers = Array.isArray(blocked_info.blockers)
+    ? blocked_info.blockers
+    : [];
+  if (blockers.length > 0) {
+    const shown = blockers.slice(0, BLOCKER_PREVIEW_COUNT).join(', ');
+    const rest = blockers.length - BLOCKER_PREVIEW_COUNT;
+    const label = `⛓ blocked: ${shown}${rest > 0 ? ` +${rest}` : ''}`;
+    items.push(
+      html`<span class="ctl-chip ctl-chip--blocked-dep">${label}</span>`
+    );
+  }
+  return items;
+}
+
+/**
+ * Card chips row: route · ⚡fast_track · PR #n · labels · ↩ provenance ·
+ * blocked reason. The PR chip is present only when a pr_url produced one
+ * server-side, keeping it in agreement with the stepper PR cell. Labels render
+ * by default and the display policy only subtracts; each derived chip family
+ * can be switched off independently via `policy.chips`.
+ *
+ * @param {BoardCardIssue} issue
+ * @param {BoardCardContext} ctx
+ * @returns {TemplateResult | string}
+ */
+function chipsTemplate(issue, ctx) {
+  const policy = ctx.policy || null;
+  const chips = (issue.workflow && issue.workflow.chips) || {};
+  /** @type {TemplateResult[]} */
+  const items = [];
+  if (chips.route && isChipEnabled(policy, 'route')) {
     items.push(
       html`<span class="ctl-chip ctl-chip--route">${chips.route}</span>`
     );
   }
-  if (chips.fast_track) {
+  if (chips.fast_track && isChipEnabled(policy, 'fast_track')) {
     items.push(html`<span class="ctl-chip ctl-chip--ft">⚡ fast_track</span>`);
   }
-  if (chips.pr) {
+  if (chips.pr && isChipEnabled(policy, 'pr')) {
     const n = chips.pr.number;
-    const ci = chips.pr.ci;
-    const label = `PR${n != null ? ` #${n}` : ''}${ci ? ` · CI ${ci}` : ''}`;
-    items.push(html`<span class="ctl-chip ctl-chip--pr">${label}</span>`);
+    items.push(
+      html`<span class="ctl-chip ctl-chip--pr"
+        >${`PR${n != null ? ` #${n}` : ''}`}</span
+      >`
+    );
+  }
+  for (const label of visibleLabels(issue.labels, policy)) {
+    items.push(html`<span class="ctl-chip ctl-chip--label">${label}</span>`);
+  }
+  if (issue.from_id && isChipEnabled(policy, 'from')) {
+    items.push(
+      html`<button
+        type="button"
+        class="ctl-chip ctl-chip--from"
+        title=${`출처 ${issue.from_id} 열기`}
+        @click=${(/** @type {Event} */ ev) => {
+          // The chip sits inside the card's own click target, so the card must
+          // not also open behind the navigation.
+          ev.stopPropagation();
+          if (ctx.onFromChipClick) {
+            ctx.onFromChipClick(ev, String(issue.from_id));
+          }
+        }}
+      >
+        ↩ from ${issue.from_id}
+      </button>`
+    );
+  }
+  if (isChipEnabled(policy, 'blocked')) {
+    items.push(...blockedChips(issue.blocked_info));
   }
   if (items.length === 0) {
     return '';
@@ -297,8 +377,10 @@ export function cardTemplate(issue, ctx) {
         ${pri ? html`<span class="board-card__pri">${pri}</span>` : ''}
       </div>
       <div class="board-card__title">${issue.title || '(제목 없음)'}</div>
-      ${chipsTemplate(issue.workflow)}
-      ${issue.workflow ? stepperTemplate(issue.workflow, issue.status) : ''}
+      ${chipsTemplate(issue, ctx)}
+      ${issue.workflow && isChipEnabled(ctx.policy || null, 'stepper')
+        ? stepperTemplate(issue.workflow, issue.status)
+        : ''}
       ${rollTemplate(issue, ctx)}
     </article>
   `;

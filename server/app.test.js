@@ -68,48 +68,27 @@ describe('server app wiring (no listen)', () => {
     expect(isFunction(app.use)).toBe(true);
   });
 
-  test('createApp accepts label_display_policy config', () => {
+  test('omits label policy from the bootstrap config', async () => {
     process.env.BDUI_CONFIG_PATH = missingConfigPath();
     const config = getConfig();
     const app = createApp(config);
 
-    expect(isFunction(app.get)).toBe(true);
-    expect(config.label_display_policy.visible_prefixes).toEqual([
-      'has:',
-      'reviewed:'
-    ]);
+    const body = await fetchJsonFromApp(app, '/api/config');
+
+    expect('label_display_policy' in body).toBe(false);
   });
 
-  test('exposes exact labels and colors config', async () => {
+  test('exposes the default workspace in the bootstrap config', async () => {
     process.env.BDUI_CONFIG_PATH = missingConfigPath();
     const config = getConfig();
     const app = createApp({
       ...config,
-      label_display_policy: {
-        visible_prefixes: ['has:'],
-        visible_exact: ['pr'],
-        colors: {
-          prefix: {
-            'has:': { fg: '#16a34a' }
-          },
-          exact: {
-            pr: { fg: '#7c3aed' }
-          }
-        }
-      }
+      workspace_config: { ...config.workspace_config, default_workspace: '/w' }
     });
 
     const body = await fetchJsonFromApp(app, '/api/config');
 
-    expect(body.label_display_policy.visible_exact).toEqual(['pr']);
-    expect(body.label_display_policy.colors).toEqual({
-      prefix: {
-        'has:': { fg: '#16a34a' }
-      },
-      exact: {
-        pr: { fg: '#7c3aed' }
-      }
-    });
+    expect(body.workspace_config).toEqual({ default_workspace: '/w' });
   });
 
   test('index.html exists in configured app_dir', () => {
