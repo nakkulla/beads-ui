@@ -827,3 +827,164 @@ describe('views/board UX v3: deferred column + sort dropdown', () => {
     expect(transport).not.toHaveBeenCalled();
   });
 });
+
+describe('views/board label filter', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @returns {{ mount: HTMLElement, view: { load: () => Promise<void>, clear: () => void } }}
+   */
+  function mountBoardWithLabels() {
+    const stores = createTestIssueStores();
+    const now = Date.now();
+    seed(stores, 'tab:board:ready', [
+      {
+        id: 'RD-1',
+        title: 'one',
+        status: 'open',
+        labels: ['frontend', 'has:spec'],
+        updated_at: now
+      },
+      {
+        id: 'RD-2',
+        title: 'two',
+        status: 'open',
+        labels: ['backend'],
+        updated_at: now
+      },
+      { id: 'RD-3', title: 'three', status: 'open', updated_at: now }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores
+    });
+    return { mount, view };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function readyIds(mount) {
+    return Array.from(mount.querySelectorAll('#ready-col .board-card')).map(
+      (el) => String(el.getAttribute('data-issue-id'))
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} label
+   */
+  function toggleLabel(mount, label) {
+    if (!mount.querySelector('.board-filter__label-menu')) {
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.board-filter__label-btn')
+      ).click();
+    }
+    const row = Array.from(
+      mount.querySelectorAll('.board-filter__label-row')
+    ).find((el) => String(el.textContent || '').trim() === label);
+    const box = /** @type {HTMLInputElement} */ (
+      /** @type {HTMLElement} */ (row).querySelector('input')
+    );
+    box.checked = !box.checked;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  test('lists every label present in the loaded issues', async () => {
+    const { mount, view } = mountBoardWithLabels();
+    await view.load();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.board-filter__label-btn')
+    ).click();
+
+    const options = Array.from(
+      mount.querySelectorAll('.board-filter__label-row')
+    ).map((el) => String(el.textContent || '').trim());
+    expect(options).toEqual(['backend', 'frontend', 'has:spec']);
+  });
+
+  test('offers a label the display policy hides', async () => {
+    const { mount, view } = mountBoardWithLabels();
+    await view.load();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.board-filter__label-btn')
+    ).click();
+
+    const options = Array.from(
+      mount.querySelectorAll('.board-filter__label-row')
+    ).map((el) => String(el.textContent || '').trim());
+    expect(options).toContain('has:spec');
+  });
+
+  test('narrows the board to issues carrying the selected label', async () => {
+    const { mount, view } = mountBoardWithLabels();
+    await view.load();
+
+    toggleLabel(mount, 'frontend');
+
+    expect(readyIds(mount)).toEqual(['RD-1']);
+  });
+
+  test('matches any selected label (OR) when several are selected', async () => {
+    const { mount, view } = mountBoardWithLabels();
+    await view.load();
+
+    toggleLabel(mount, 'frontend');
+    toggleLabel(mount, 'backend');
+
+    expect(readyIds(mount).sort()).toEqual(['RD-1', 'RD-2']);
+  });
+
+  test('restores the full board when the last label is deselected', async () => {
+    const { mount, view } = mountBoardWithLabels();
+    await view.load();
+    toggleLabel(mount, 'frontend');
+
+    toggleLabel(mount, 'frontend');
+
+    expect(readyIds(mount).sort()).toEqual(['RD-1', 'RD-2', 'RD-3']);
+  });
+
+  test('clears every selection with the clear button', async () => {
+    const { mount, view } = mountBoardWithLabels();
+    await view.load();
+    toggleLabel(mount, 'frontend');
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.board-filter__label-clear')
+    ).click();
+
+    expect(readyIds(mount).sort()).toEqual(['RD-1', 'RD-2', 'RD-3']);
+  });
+
+  test('closes the popover on Escape', async () => {
+    const { mount, view } = mountBoardWithLabels();
+    await view.load();
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.board-filter__label-btn')
+    ).click();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(mount.querySelector('.board-filter__label-menu')).toBeNull();
+  });
+
+  test('closes the popover on an outside mousedown', async () => {
+    const { mount, view } = mountBoardWithLabels();
+    await view.load();
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.board-filter__label-btn')
+    ).click();
+
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    expect(mount.querySelector('.board-filter__label-menu')).toBeNull();
+  });
+});

@@ -20,6 +20,7 @@ import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
 import { createBoardView } from './views/board/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
+import { createDisplaySettingsDialog } from './views/display-settings-dialog.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
 import { createTopNav } from './views/nav.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
@@ -994,6 +995,45 @@ export function bootstrap(root_element) {
       );
       if (btn_new) {
         btn_new.addEventListener('click', () => new_issue_dialog.open());
+      }
+    } catch {
+      // ignore missing header
+    }
+
+    // Display-settings dialog: edits the per-workspace label/metadata policy.
+    // Its label pills are drawn from the labels actually present in the loaded
+    // board data, WITHOUT the policy applied — an already-hidden label has to
+    // stay clickable, otherwise hiding one would be irreversible from the UI.
+    const display_settings_dialog = createDisplaySettingsDialog(root_element, {
+      policyStore: display_policy_store,
+      transport: (type, payload) => tracked_send(type, payload),
+      labelOptions: () => {
+        /** @type {Set<string>} */
+        const seen = new Set();
+        for (const [client_id] of BOARD_SUBS) {
+          for (const issue of sub_issue_stores.snapshotFor(client_id) || []) {
+            const labels = /** @type {any} */ (issue).labels;
+            if (!Array.isArray(labels)) {
+              continue;
+            }
+            for (const label of labels) {
+              if (typeof label === 'string' && label.length > 0) {
+                seen.add(label);
+              }
+            }
+          }
+        }
+        return Array.from(seen).sort();
+      }
+    });
+    try {
+      const btn_settings = /** @type {HTMLButtonElement|null} */ (
+        document.getElementById('display-settings-btn')
+      );
+      if (btn_settings) {
+        btn_settings.addEventListener('click', () =>
+          display_settings_dialog.open()
+        );
       }
     } catch {
       // ignore missing header

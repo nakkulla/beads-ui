@@ -51,6 +51,20 @@ If no issue is specified, run `bd ready` and claim an unblocked issue.
 
 Never update `CHANGES.md`.
 
+### Workflow 계약의 canonical 소유권
+
+이 저장소가 읽고 표시하는 workflow 계약 표면 — 라벨 어휘(`has:spec`, `pr`,
+`reviewed:*`, `skipped:*` 등), durable metadata 키(`route`, `spec_id`,
+`plan_path`, `spec_review`/`impl_review`, `pr_url`, `blocked_reason` 등),
+Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles의
+`docs/contracts/workflow.{md,yaml}`에 있다. beads-ui는 그 계약의 **소비자**이며
+정의자가 아니다.
+
+따라서 계약 표면을 바꾸는 변경(키 추가·의미 변경·라벨 폐기 등)은 beads-ui 코드만
+고쳐서는 안 되고, dotfiles 계약 문서와 이를 쓰는 스킬을 함께 정합해야 한다.
+반대로 beads-ui에서 계약 키의 부재를 관측하면 표시를 생략(fail-quiet)하고 계약
+쪽 정정을 별도로 제기한다.
+
 ## Coding Standards
 
 - Use **ECMAScript modules**.

@@ -164,7 +164,11 @@ export function createBoardView(mount_element, options) {
    */
   const collapsed_ids = new Set();
 
-  const filters = { search: '', priority: '', type: '' };
+  /** @type {{ search: string, priority: string, type: string, labels: string[] }} */
+  const filters = { search: '', priority: '', type: '', labels: [] };
+
+  /** Whether the label filter popover is open (board-local, not persisted). */
+  let label_menu_open = false;
 
   /** @type {string | null} */
   let dragging_id = null;
@@ -178,7 +182,10 @@ export function createBoardView(mount_element, options) {
   }
 
   /**
-   * Apply the board-local filters (search / priority / type) to a list.
+   * Apply the board-local filters (search / priority / type / labels) to a list.
+   * The label axis matches on OR — an issue passes when it carries ANY selected
+   * label — and it deliberately ignores the display policy, so a label hidden
+   * from the cards is still usable as a filter.
    *
    * @param {IssueLite[]} items
    * @returns {IssueLite[]}
@@ -187,6 +194,7 @@ export function createBoardView(mount_element, options) {
     const q = filters.search.trim().toLowerCase();
     const pri = filters.priority;
     const type = filters.type;
+    const labels = filters.labels;
     return items.filter((it) => {
       if (q) {
         const id = String(it.id || '').toLowerCase();
@@ -201,8 +209,43 @@ export function createBoardView(mount_element, options) {
       if (type !== '' && String(it.issue_type || '') !== type) {
         return false;
       }
+      if (labels.length > 0) {
+        const own = Array.isArray(it.labels) ? it.labels : [];
+        if (!labels.some((label) => own.includes(label))) {
+          return false;
+        }
+      }
       return true;
     });
+  }
+
+  /**
+   * Every label present in the loaded issues, sorted. The display policy is not
+   * applied — hidden labels must stay filterable.
+   *
+   * @returns {string[]}
+   */
+  function knownLabels() {
+    /** @type {Set<string>} */
+    const seen = new Set();
+    for (const list of [
+      list_blocked,
+      list_ready,
+      list_in_progress,
+      list_resolved,
+      list_deferred,
+      list_closed
+    ]) {
+      for (const issue of list) {
+        const labels = Array.isArray(issue.labels) ? issue.labels : [];
+        for (const label of labels) {
+          if (typeof label === 'string' && label.length > 0) {
+            seen.add(label);
+          }
+        }
+      }
+    }
+    return Array.from(seen).sort();
   }
 
   /**
@@ -216,7 +259,8 @@ export function createBoardView(mount_element, options) {
     return (
       filters.search.trim() !== '' ||
       filters.priority !== '' ||
-      filters.type !== ''
+      filters.type !== '' ||
+      filters.labels.length > 0
     );
   }
 
@@ -541,6 +585,49 @@ export function createBoardView(mount_element, options) {
     }
   };
 
+  /**
+   * Close the label popover on an outside mousedown. A click anywhere inside
+   * the board (the toggle button, the popover, its checkboxes) keeps it open.
+   *
+   * @param {MouseEvent} ev
+   */
+  function onLabelMenuDocMousedown(ev) {
+    const target = /** @type {Node | null} */ (ev.target);
+    if (target && mount_element.contains(target)) {
+      return;
+    }
+    closeLabelMenu();
+  }
+
+  /**
+   * @param {KeyboardEvent} ev
+   */
+  function onLabelMenuDocKeydown(ev) {
+    if (ev.key === 'Escape') {
+      closeLabelMenu();
+    }
+  }
+
+  function openLabelMenu() {
+    if (label_menu_open) {
+      return;
+    }
+    label_menu_open = true;
+    document.addEventListener('mousedown', onLabelMenuDocMousedown);
+    document.addEventListener('keydown', onLabelMenuDocKeydown);
+    doRender();
+  }
+
+  function closeLabelMenu() {
+    if (!label_menu_open) {
+      return;
+    }
+    label_menu_open = false;
+    document.removeEventListener('mousedown', onLabelMenuDocMousedown);
+    document.removeEventListener('keydown', onLabelMenuDocKeydown);
+    doRender();
+  }
+
   // --- filter handlers (board-local state) ---
   // A filter change flips whether child folding is active (spec §3.3), so it
   // must recompose the lists (refreshFromStores), not just re-render.
@@ -586,6 +673,30 @@ export function createBoardView(mount_element, options) {
       show_deferred = !show_deferred;
       refreshFromStores();
     },
+    onLabelMenuToggle() {
+      if (label_menu_open) {
+        closeLabelMenu();
+      } else {
+        openLabelMenu();
+      }
+    },
+    /** @param {string} label */
+    onLabelToggle(label) {
+      const index = filters.labels.indexOf(label);
+      if (index === -1) {
+        filters.labels.push(label);
+      } else {
+        filters.labels.splice(index, 1);
+      }
+      refreshFromStores();
+    },
+    onLabelClear() {
+      if (filters.labels.length === 0) {
+        return;
+      }
+      filters.labels = [];
+      refreshFromStores();
+    },
     onNewIssue() {
       if (onNewIssue) {
         onNewIssue();
@@ -604,7 +715,9 @@ export function createBoardView(mount_element, options) {
         ${filterBarTemplate(filters, filter_handlers, {
           sort_mode,
           show_deferred,
-          deferred_count
+          deferred_count,
+          label_options: knownLabels(),
+          label_menu_open
         })}
         <div class=${root_class}>
           ${columnTemplate(
@@ -988,6 +1101,7 @@ export function createBoardView(mount_element, options) {
       refreshFromStores();
     },
     clear() {
+      closeLabelMenu();
       if (unsubscribe_selectors) {
         unsubscribe_selectors();
         unsubscribe_selectors = null;
