@@ -39,8 +39,8 @@ describe('createApp live frontend mode', () => {
   const app_dir = path.resolve('app');
 
   /**
-   * @param {Partial<{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy: { visible_prefixes: string[] } }>} [overrides]
-   * @returns {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy: { visible_prefixes: string[] } }}
+   * @param {Partial<{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', workspace_config: { default_workspace: string | null } }>} [overrides]
+   * @returns {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', workspace_config: { default_workspace: string | null } }}
    */
   function makeConfig(overrides = {}) {
     return {
@@ -49,9 +49,7 @@ describe('createApp live frontend mode', () => {
       app_dir,
       root_dir: process.cwd(),
       frontend_mode: 'static',
-      label_display_policy: {
-        visible_prefixes: ['has:', 'reviewed:']
-      },
+      workspace_config: { default_workspace: null },
       ...overrides
     };
   }
@@ -110,9 +108,7 @@ describe('createApp live frontend mode', () => {
   test('serves bootstrapped root html and config endpoint', async () => {
     const app = createApp(
       makeConfig({
-        label_display_policy: {
-          visible_prefixes: ['area:<tag>', '</script>']
-        }
+        workspace_config: { default_workspace: '/repo/</script>' }
       })
     );
     const server = createServer(app);
@@ -139,16 +135,8 @@ describe('createApp live frontend mode', () => {
     expect(root_text).toContain('\\u003c');
     expect(config_response.status).toBe(200);
     expect(config_response.headers.get('cache-control')).toBe('no-store');
-    expect(config_payload.label_display_policy).toEqual({
-      visible_prefixes: ['area:<tag>', '</script>'],
-      visible_exact: [],
-      colors: {
-        prefix: {},
-        exact: {}
-      }
-    });
     expect(config_payload.workspace_config).toEqual({
-      default_workspace: null
+      default_workspace: '/repo/</script>'
     });
   });
 });

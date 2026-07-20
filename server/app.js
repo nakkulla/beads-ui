@@ -10,96 +10,16 @@ import { docHandler } from './routes/doc.js';
 import { createMergeLockRouter } from './worker/merge-lock-route.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 
-const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-
 /**
- * @param {unknown} value
- * @returns {value is Record<string, unknown>}
- */
-function isObjectTable(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * @param {unknown} value
- * @returns {Record<string, { fg: string }>}
- */
-function normalizeLabelColorTable(value) {
-  if (!isObjectTable(value)) {
-    return {};
-  }
-
-  /** @type {Record<string, { fg: string }>} */
-  const normalized = {};
-  for (const [key, rule] of Object.entries(value)) {
-    if (
-      key.length === 0 ||
-      !isObjectTable(rule) ||
-      typeof rule.fg !== 'string' ||
-      !HEX_COLOR_RE.test(rule.fg)
-    ) {
-      continue;
-    }
-    normalized[key] = { fg: rule.fg };
-  }
-
-  return normalized;
-}
-
-/**
- * @param {unknown} value
- * @returns {{ prefix: Record<string, { fg: string }>, exact: Record<string, { fg: string }> }}
- */
-function normalizeLabelColorPolicy(value) {
-  if (!isObjectTable(value)) {
-    return { prefix: {}, exact: {} };
-  }
-
-  return {
-    prefix: normalizeLabelColorTable(value.prefix),
-    exact: normalizeLabelColorTable(value.exact)
-  };
-}
-
-/**
- * @param {{
- *   label_display_policy?: {
- *     visible_prefixes: string[],
- *     visible_exact?: string[],
- *     colors?: unknown
- *   },
- *   workspace_config?: { default_workspace: string | null }
- * }} config
- * @returns {{
- *   label_display_policy: {
- *     visible_prefixes: string[],
- *     visible_exact: string[],
- *     colors: {
- *       prefix: Record<string, { fg: string }>,
- *       exact: Record<string, { fg: string }>
- *     }
- *   },
- *   workspace_config: { default_workspace: string | null }
- * }}
+ * Bootstrap config handed to the client in the served HTML. Label visibility is
+ * NOT part of it: that policy is per-workspace, editable at runtime, and
+ * delivered over the `display-policy` subscription instead.
+ *
+ * @param {{ workspace_config?: { default_workspace: string | null } }} config
+ * @returns {{ workspace_config: { default_workspace: string | null } }}
  */
 function toBootstrapPayload(config) {
-  const visible_prefixes = Array.isArray(
-    config.label_display_policy?.visible_prefixes
-  )
-    ? config.label_display_policy.visible_prefixes.slice()
-    : ['has:', 'reviewed:'];
-  const visible_exact = Array.isArray(
-    config.label_display_policy?.visible_exact
-  )
-    ? config.label_display_policy.visible_exact.slice()
-    : [];
-
   return {
-    label_display_policy: {
-      visible_prefixes,
-      visible_exact,
-      colors: normalizeLabelColorPolicy(config.label_display_policy?.colors)
-    },
     workspace_config: {
       default_workspace:
         typeof config.workspace_config?.default_workspace === 'string' &&
@@ -124,7 +44,7 @@ function escapeBootstrapJson(json) {
 /**
  * Create and configure the Express application.
  *
- * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', label_display_policy?: { visible_prefixes: string[], visible_exact?: string[], colors?: unknown }, health_probes?: { bd_probe?: () => boolean | Promise<boolean>, db_probe?: () => boolean | Promise<boolean> } }} config - Server configuration.
+ * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', workspace_config?: { default_workspace: string | null }, health_probes?: { bd_probe?: () => boolean | Promise<boolean>, db_probe?: () => boolean | Promise<boolean> } }} config - Server configuration.
  * @returns {Express} Configured Express app instance.
  */
 export function createApp(config) {

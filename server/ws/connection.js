@@ -17,6 +17,12 @@ import {
   setDefaultWorkspace
 } from './context.js';
 import {
+  detachDisplayPolicy,
+  handleDisplayPolicySet,
+  handleSubscribeDisplayPolicy,
+  handleUnsubscribeDisplayPolicy
+} from './display-policy-handlers.js';
+import {
   handleAddComment,
   handleCreateIssue,
   handleDeleteIssue,
@@ -223,6 +229,7 @@ export function attachWsServer(http_server, options = {}) {
         detachConnectionFromAllRegistries(ws);
         detachWorkerQueue(ws);
         detachUiOrder(ws);
+        detachDisplayPolicy(ws);
       } catch {
         // ignore cleanup errors
       }
@@ -436,6 +443,15 @@ export async function handleMessage(ws, data) {
       return;
     case 'ui-order-set':
       handleUiOrderSet(ws, req);
+      return;
+    case 'subscribe-display-policy':
+      handleSubscribeDisplayPolicy(ws, req);
+      return;
+    case 'unsubscribe-display-policy':
+      handleUnsubscribeDisplayPolicy(ws, req);
+      return;
+    case 'display-policy-set':
+      handleDisplayPolicySet(ws, req);
       return;
     case 'subscribe-session-log':
       handleSubscribeSessionLog(ws, req);

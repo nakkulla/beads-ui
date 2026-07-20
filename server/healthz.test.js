@@ -14,11 +14,6 @@ async function getHealthz(probes) {
     app_dir: path.resolve('app'),
     root_dir: process.cwd(),
     frontend_mode: 'static',
-    label_display_policy: {
-      visible_prefixes: ['has:'],
-      visible_exact: [],
-      colors: { prefix: {}, exact: {} }
-    },
     health_probes: {
       bd_probe: () => probes.bd ?? true,
       db_probe: () => probes.db ?? true

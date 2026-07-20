@@ -6,103 +6,12 @@ import { parse as parseToml } from 'smol-toml';
 import { debug } from './logging.js';
 
 const log = debug('config');
-const DEFAULT_VISIBLE_PREFIXES = ['has:', 'reviewed:'];
-/** @type {string[]} */
-const DEFAULT_VISIBLE_EXACT = [];
-const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const DEFAULT_POLL_INTERVAL_SECONDS = 30;
 const DEFAULT_WORKSPACE_CONFIG = {
   default_workspace: null,
   scan_roots: [],
   workspaces: []
 };
-/**
- * @param {unknown} value
- * @returns {string[]}
- */
-function normalizeVisiblePrefixes(value) {
-  if (!Array.isArray(value)) {
-    return DEFAULT_VISIBLE_PREFIXES.slice();
-  }
-
-  if (value.length === 0) {
-    return [];
-  }
-
-  const normalized = value.filter(
-    (entry) => typeof entry === 'string' && entry.length > 0
-  );
-
-  if (normalized.length === 0) {
-    return DEFAULT_VISIBLE_PREFIXES.slice();
-  }
-
-  return normalized;
-}
-
-/**
- * @param {unknown} value
- * @returns {string[]}
- */
-function normalizeVisibleExact(value) {
-  if (!Array.isArray(value)) {
-    return DEFAULT_VISIBLE_EXACT.slice();
-  }
-
-  return value.filter((entry) => typeof entry === 'string' && entry.length > 0);
-}
-
-/**
- * @param {unknown} value
- * @returns {value is Record<string, unknown>}
- */
-function isObjectTable(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * @param {unknown} value
- * @returns {value is string}
- */
-function isHexColor(value) {
-  return typeof value === 'string' && HEX_COLOR_RE.test(value);
-}
-
-/**
- * @param {unknown} value
- * @returns {Record<string, { fg: string }>}
- */
-function normalizeLabelColorTable(value) {
-  if (!isObjectTable(value)) {
-    return {};
-  }
-
-  /** @type {Record<string, { fg: string }>} */
-  const normalized = {};
-  for (const [key, rule] of Object.entries(value)) {
-    if (key.length === 0 || !isObjectTable(rule) || !isHexColor(rule.fg)) {
-      continue;
-    }
-    normalized[key] = { fg: rule.fg };
-  }
-
-  return normalized;
-}
-
-/**
- * @param {unknown} value
- * @returns {{ prefix: Record<string, { fg: string }>, exact: Record<string, { fg: string }> }}
- */
-function normalizeLabelColorPolicy(value) {
-  if (!isObjectTable(value)) {
-    return { prefix: {}, exact: {} };
-  }
-
-  return {
-    prefix: normalizeLabelColorTable(value.prefix),
-    exact: normalizeLabelColorTable(value.exact)
-  };
-}
 
 /**
  * @param {unknown} value
@@ -176,14 +85,6 @@ function normalizePollIntervalSeconds(value) {
 /**
  * @param {string} config_path
  * @returns {{
- *   label_display_policy: {
- *     visible_prefixes: string[],
- *     visible_exact: string[],
- *     colors: {
- *       prefix: Record<string, { fg: string }>,
- *       exact: Record<string, { fg: string }>
- *     }
- *   },
  *   workspace_config: {
  *     default_workspace: string | null,
  *     scan_roots: string[],
@@ -207,14 +108,16 @@ function readRuntimeConfig(config_path) {
       );
     }
 
+    // The `[labels]` section is obsolete: label visibility now lives in the
+    // per-workspace display-policy store, editable from the UI settings panel
+    // and pushed over the `display-policy` channel. Warn once and ignore.
+    if (parsed?.labels !== undefined) {
+      console.warn(
+        'config.toml 의 [labels] 섹션은 더 이상 사용되지 않습니다(표시 정책은 UI 설정 패널에서 관리). 무시하고 계속합니다.'
+      );
+    }
+
     return {
-      label_display_policy: {
-        visible_prefixes: normalizeVisiblePrefixes(
-          parsed?.labels?.visible_prefixes
-        ),
-        visible_exact: normalizeVisibleExact(parsed?.labels?.visible_exact),
-        colors: normalizeLabelColorPolicy(parsed?.labels?.colors)
-      },
       workspace_config: normalizeWorkspaceConfig(parsed),
       poll_interval_seconds: normalizePollIntervalSeconds(
         parsed?.poll_interval_seconds
@@ -232,11 +135,6 @@ function readRuntimeConfig(config_path) {
       log('invalid bdui config %s: %o', config_path, error);
     }
     return {
-      label_display_policy: {
-        visible_prefixes: DEFAULT_VISIBLE_PREFIXES.slice(),
-        visible_exact: DEFAULT_VISIBLE_EXACT.slice(),
-        colors: { prefix: {}, exact: {} }
-      },
       workspace_config: {
         default_workspace: DEFAULT_WORKSPACE_CONFIG.default_workspace,
         scan_roots: DEFAULT_WORKSPACE_CONFIG.scan_roots.slice(),
@@ -265,14 +163,6 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *   frontend_mode: 'live' | 'static',
  *   url: string,
  *   config_path: string,
- *   label_display_policy: {
- *     visible_prefixes: string[],
- *     visible_exact: string[],
- *     colors: {
- *       prefix: Record<string, { fg: string }>,
- *       exact: Record<string, { fg: string }>
- *     }
- *   },
  *   workspace_config: {
  *     default_workspace: string | null,
  *     scan_roots: string[],
