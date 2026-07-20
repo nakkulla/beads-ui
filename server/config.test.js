@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, test, vi } from 'vitest';
-import { getConfig } from './config.js';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { __resetConfigWarningsForTest, getConfig } from './config.js';
 
 /** @type {string[]} */
 const temp_dirs = [];
@@ -27,6 +27,10 @@ function missingConfigPath() {
   temp_dirs.push(dir);
   return path.join(dir, 'config.toml');
 }
+
+beforeEach(() => {
+  __resetConfigWarningsForTest();
+});
 
 afterEach(() => {
   delete process.env.BDUI_FRONTEND_MODE;
@@ -98,7 +102,7 @@ visible_exact = ["pr"]
     warn.mockRestore();
   });
 
-  test('warns once about a legacy [labels] section', () => {
+  test('warns about a legacy [labels] section', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
 [labels]
 visible_prefixes = ["has:"]
@@ -109,6 +113,20 @@ visible_prefixes = ["has:"]
 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).toContain('[labels]');
+    warn.mockRestore();
+  });
+
+  test('warns only once per process even across repeated reads', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[labels]
+visible_prefixes = ["has:"]
+`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    getConfig();
+    getConfig();
+
+    expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
   });
 

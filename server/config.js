@@ -13,6 +13,16 @@ const DEFAULT_WORKSPACE_CONFIG = {
   workspaces: []
 };
 
+/** Latch so the `[labels]` deprecation stays one line per process. */
+let labels_deprecation_warned = false;
+
+/**
+ * Test-only: clear the deprecation latch so each case can observe the warning.
+ */
+export function __resetConfigWarningsForTest() {
+  labels_deprecation_warned = false;
+}
+
 /**
  * @param {unknown} value
  * @returns {string | null}
@@ -110,8 +120,11 @@ function readRuntimeConfig(config_path) {
 
     // The `[labels]` section is obsolete: label visibility now lives in the
     // per-workspace display-policy store, editable from the UI settings panel
-    // and pushed over the `display-policy` channel. Warn once and ignore.
-    if (parsed?.labels !== undefined) {
+    // and pushed over the `display-policy` channel. `getConfig()` runs more than
+    // once per process (CLI entry + server entry), so the warning is latched to
+    // stay a single startup line.
+    if (parsed?.labels !== undefined && !labels_deprecation_warned) {
+      labels_deprecation_warned = true;
       console.warn(
         'config.toml 의 [labels] 섹션은 더 이상 사용되지 않습니다(표시 정책은 UI 설정 패널에서 관리). 무시하고 계속합니다.'
       );
