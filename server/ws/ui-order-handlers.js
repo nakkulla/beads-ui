@@ -124,7 +124,17 @@ export function handleSubscribeUiOrder(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  subscribersFor(key).add({ ws, client_id });
+  // A Set de-duplicates by reference, and every subscribe builds a fresh entry
+  // object — so a re-subscribe on the same socket would accumulate entries and
+  // fan the same snapshot out once per duplicate. Drop any prior entry for this
+  // (socket, client_id) first so re-subscribing stays idempotent.
+  const subscribers = subscribersFor(key);
+  for (const sub of subscribers) {
+    if (sub.ws === ws && sub.client_id === client_id) {
+      subscribers.delete(sub);
+    }
+  }
+  subscribers.add({ ws, client_id });
   log('subscribe-ui-order %s ws=%s', client_id, key);
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
   emitUiOrderSnapshot(ws, client_id, uiOrderStore().snapshot(key));
@@ -185,10 +195,25 @@ export function handleUiOrderSet(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  const result = uiOrderStore().setRanks(key, {
-    expected_revision: p.expected_revision,
-    entries: p.entries
-  });
+  // The store persists synchronously and deliberately does not swallow write
+  // errors, so a full disk or a permission fault throws right here; catch it
+  // and answer with an error instead of letting it escape the message handler.
+  /** @type {import('../ui-order-store.js').UiOrderOpResult} */
+  let result;
+  try {
+    result = uiOrderStore().setRanks(key, {
+      expected_revision: p.expected_revision,
+      entries: p.entries
+    });
+  } catch (err) {
+    log('ui-order-set failed ws=%s: %o', key, err);
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'internal_error', 'failed to persist ui order')
+      )
+    );
+    return;
+  }
   ws.send(
     JSON.stringify(
       makeOk(req, {
@@ -214,8 +239,15 @@ export function handleUiOrderSet(ws, req) {
  */
 export function pruneUiOrderForClose(ws, ids) {
   const key = workspaceKeyOf(ws);
-  const result = uiOrderStore().pruneIds(key, ids);
-  if (result.ok) {
-    fanout(key, { revision: result.revision, order: result.order });
+  // Pruning rides on a successful `update-status`; a persistence failure here
+  // must not turn that completed mutation into a thrown request. The stale rank
+  // entry it leaves behind is harmless.
+  try {
+    const result = uiOrderStore().pruneIds(key, ids);
+    if (result.ok) {
+      fanout(key, { revision: result.revision, order: result.order });
+    }
+  } catch (err) {
+    log('ui-order prune failed ws=%s: %o', key, err);
   }
 }

@@ -229,6 +229,40 @@ describe('ws display-policy channel', () => {
     expect(policySnapshots(a).length).toBe(0);
   });
 
+  test('re-subscribing on the same socket does not duplicate fanout', async () => {
+    const a = fakeSocket();
+    const b = fakeSocket();
+    await send(a, 'sa', 'subscribe-display-policy', { id: 'dp:a' });
+    await send(a, 'sa2', 'subscribe-display-policy', { id: 'dp:a' });
+    await send(b, 'sb', 'subscribe-display-policy', { id: 'dp:b' });
+    a.sent = [];
+
+    await send(b, 'm1', 'display-policy-set', {
+      expected_revision: 0,
+      policy: { hidden_labels: ['wip'] }
+    });
+
+    expect(policySnapshots(a).length).toBe(1);
+  });
+
+  test('a persistence failure answers with an error instead of throwing', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-display-policy', { id: 'dp' });
+    // Make the state dir unwritable by turning it into a file.
+    const dir = path.join(tmp_state, 'bdui');
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.writeFileSync(dir, 'not a directory');
+
+    await send(sock, 'm1', 'display-policy-set', {
+      expected_revision: 0,
+      policy: { hidden_labels: ['wip'] }
+    });
+
+    const reply = replyFor(sock, 'm1');
+    expect(reply.ok).toBe(false);
+    expect(reply.error.code).toBe('internal_error');
+  });
+
   test('policies are isolated per workspace', async () => {
     const a = fakeSocket();
     const b = fakeSocket();

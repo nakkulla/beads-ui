@@ -120,7 +120,17 @@ export function handleSubscribeDisplayPolicy(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  subscribersFor(key).add({ ws, client_id });
+  // A Set de-duplicates by reference, and every subscribe builds a fresh entry
+  // object — so a re-subscribe on the same socket would accumulate entries and
+  // fan the same snapshot out once per duplicate. Drop any prior entry for this
+  // (socket, client_id) first so re-subscribing stays idempotent.
+  const subscribers = subscribersFor(key);
+  for (const sub of subscribers) {
+    if (sub.ws === ws && sub.client_id === client_id) {
+      subscribers.delete(sub);
+    }
+  }
+  subscribers.add({ ws, client_id });
   log('subscribe-display-policy %s ws=%s', client_id, key);
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
   emitDisplayPolicySnapshot(ws, client_id, displayPolicyStore().snapshot(key));
@@ -185,10 +195,26 @@ export function handleDisplayPolicySet(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  const result = displayPolicyStore().setPolicy(key, {
-    expected_revision: p.expected_revision,
-    policy: p.policy
-  });
+  // The store persists synchronously and deliberately does not swallow write
+  // errors (a failed write must leave memory and disk at the prior revision).
+  // That means a full disk or a permission fault throws right here, so it is
+  // caught and answered as an error instead of escaping the message handler.
+  /** @type {import('../display-policy-store.js').DisplayPolicyOpResult} */
+  let result;
+  try {
+    result = displayPolicyStore().setPolicy(key, {
+      expected_revision: p.expected_revision,
+      policy: p.policy
+    });
+  } catch (err) {
+    log('display-policy-set failed ws=%s: %o', key, err);
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'internal_error', 'failed to persist display policy')
+      )
+    );
+    return;
+  }
   ws.send(
     JSON.stringify(
       makeOk(req, {
