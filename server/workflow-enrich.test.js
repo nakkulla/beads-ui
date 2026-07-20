@@ -236,6 +236,6 @@ describe('enrichIssueWorkflow', () => {
     expect(wf.stages.pr.state).toBe('on');
     expect(wf.stages.merge.state).toBe('dim');
     expect(wf.chips.fast_track).toBe(true);
-    expect(wf.chips.pr).toEqual({ number: 42, ci: null });
+    expect(wf.chips.pr).toEqual({ number: 42 });
   });
 });

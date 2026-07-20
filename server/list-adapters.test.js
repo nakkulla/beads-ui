@@ -166,7 +166,8 @@ describe('list adapters for subscription types', () => {
 
     const res = await fetchListForSubscription({ type: 'blocked-issues' });
 
-    expect(runBdJson).toHaveBeenCalledTimes(2);
+    // stored list + dependency explain + the provenance batch dep list.
+    expect(runBdJson).toHaveBeenCalledTimes(3);
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.items.map((it) => it.id)).toEqual(['S-1', 'D-1']);
@@ -216,5 +217,252 @@ describe('list adapters for subscription types', () => {
       expect(res.error.code).toBe('bad_request');
       expect(res.error.message).toMatch(/Unknown subscription type/);
     }
+  });
+});
+
+describe('blocked-issues blocked_info derivation', () => {
+  beforeEach(() => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+  });
+
+  /**
+   * @param {unknown[]} stored
+   * @param {unknown[]} dependency_blocked
+   */
+  function mockBlockedSources(stored, dependency_blocked) {
+    /** @type {import('vitest').Mock} */ (runBdJson)
+      .mockResolvedValueOnce({ code: 0, stdoutJson: stored })
+      .mockResolvedValueOnce({
+        code: 0,
+        stdoutJson: { ready: [], blocked: dependency_blocked }
+      })
+      .mockResolvedValueOnce({ code: 0, stdoutJson: [] });
+  }
+
+  /**
+   * @param {Awaited<ReturnType<typeof fetchListForSubscription>>} res
+   * @param {string} id
+   * @returns {any}
+   */
+  function blockedInfoOf(res, id) {
+    if (!res.ok) {
+      throw new Error('expected a successful fetch');
+    }
+    const item = res.items.find((it) => it.id === id);
+    return item && /** @type {any} */ (item).blocked_info;
+  }
+
+  test('marks a stored-only blocked issue as external with no blockers', async () => {
+    mockBlockedSources([{ id: 'S-1', status: 'blocked' }], []);
+
+    const res = await fetchListForSubscription({ type: 'blocked-issues' });
+
+    expect(blockedInfoOf(res, 'S-1')).toEqual({
+      external: true,
+      reason: null,
+      blockers: []
+    });
+  });
+
+  test('carries metadata.blocked_reason on a stored blocked issue', async () => {
+    mockBlockedSources(
+      [
+        {
+          id: 'S-1',
+          status: 'blocked',
+          metadata: { blocked_reason: 'upstream 릴리스 대기' }
+        }
+      ],
+      []
+    );
+
+    const res = await fetchListForSubscription({ type: 'blocked-issues' });
+
+    expect(blockedInfoOf(res, 'S-1').reason).toBe('upstream 릴리스 대기');
+  });
+
+  test('marks a dependency-only blocked issue as non-external with blockers', async () => {
+    mockBlockedSources(
+      [],
+      [
+        {
+          id: 'D-1',
+          status: 'open',
+          blocked_by: [{ id: 'D-0' }, { id: 'D-9' }]
+        }
+      ]
+    );
+
+    const res = await fetchListForSubscription({ type: 'blocked-issues' });
+
+    expect(blockedInfoOf(res, 'D-1')).toEqual({
+      external: false,
+      reason: null,
+      blockers: ['D-0', 'D-9']
+    });
+  });
+
+  test('preserves both sources when an issue is blocked in both ways', async () => {
+    mockBlockedSources(
+      [
+        {
+          id: 'B-1',
+          status: 'blocked',
+          metadata: { blocked_reason: '보안 검토 대기' }
+        }
+      ],
+      [{ id: 'B-1', status: 'blocked', blocked_by: [{ id: 'B-0' }] }]
+    );
+
+    const res = await fetchListForSubscription({ type: 'blocked-issues' });
+
+    expect(blockedInfoOf(res, 'B-1')).toEqual({
+      external: true,
+      reason: '보안 검토 대기',
+      blockers: ['B-0']
+    });
+  });
+
+  test('ignores blocked_reason on a dependency-only blocked issue', async () => {
+    mockBlockedSources(
+      [],
+      [
+        {
+          id: 'D-1',
+          status: 'open',
+          metadata: { blocked_reason: '남은 값' },
+          blocked_by: [{ id: 'D-0' }]
+        }
+      ]
+    );
+
+    const res = await fetchListForSubscription({ type: 'blocked-issues' });
+
+    expect(blockedInfoOf(res, 'D-1').reason).toBeNull();
+  });
+
+  test('treats a blank blocked_reason as absent', async () => {
+    mockBlockedSources(
+      [{ id: 'S-1', status: 'blocked', metadata: { blocked_reason: '   ' } }],
+      []
+    );
+
+    const res = await fetchListForSubscription({ type: 'blocked-issues' });
+
+    expect(blockedInfoOf(res, 'S-1').reason).toBeNull();
+  });
+});
+
+describe('from_id provenance derivation', () => {
+  beforeEach(() => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+  });
+
+  /**
+   * @param {unknown[]} issues
+   * @param {unknown} dep_result
+   */
+  function mockListThenDeps(issues, dep_result) {
+    /** @type {import('vitest').Mock} */ (runBdJson)
+      .mockResolvedValueOnce({ code: 0, stdoutJson: issues })
+      .mockResolvedValueOnce(dep_result);
+  }
+
+  test('attaches the discovered-from origin as from_id', async () => {
+    mockListThenDeps([{ id: 'A-1' }], {
+      code: 0,
+      stdoutJson: [
+        { issue_id: 'A-1', depends_on_id: 'A-0', type: 'discovered-from' }
+      ]
+    });
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok && res.items[0].from_id).toBe('A-0');
+  });
+
+  test('queries every listed id in one batch dep list call', async () => {
+    mockListThenDeps([{ id: 'A-1' }, { id: 'A-2' }], {
+      code: 0,
+      stdoutJson: []
+    });
+
+    await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(
+      /** @type {import('vitest').Mock} */ (runBdJson).mock.calls[1][0]
+    ).toEqual(['dep', 'list', 'A-1', 'A-2', '--json']);
+  });
+
+  test('reads the origin from depends_on_id, not issue_id', async () => {
+    mockListThenDeps([{ id: 'A-1' }], {
+      code: 0,
+      stdoutJson: [
+        { issue_id: 'A-1', depends_on_id: 'A-0', type: 'discovered-from' }
+      ]
+    });
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok && res.items[0].from_id).not.toBe('A-1');
+  });
+
+  test('ignores non-discovered-from edges', async () => {
+    mockListThenDeps([{ id: 'A-1' }], {
+      code: 0,
+      stdoutJson: [
+        { issue_id: 'A-1', depends_on_id: 'A-0', type: 'blocks' },
+        { issue_id: 'A-1', depends_on_id: 'A-9', type: 'parent-child' }
+      ]
+    });
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok && 'from_id' in res.items[0]).toBe(false);
+  });
+
+  test('keeps the first origin when an issue has several', async () => {
+    mockListThenDeps([{ id: 'A-1' }], {
+      code: 0,
+      stdoutJson: [
+        { issue_id: 'A-1', depends_on_id: 'A-0', type: 'discovered-from' },
+        { issue_id: 'A-1', depends_on_id: 'A-7', type: 'discovered-from' }
+      ]
+    });
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok && res.items[0].from_id).toBe('A-0');
+  });
+
+  test('leaves issues untouched when the dep list call fails', async () => {
+    mockListThenDeps([{ id: 'A-1' }], { code: 2, stderr: 'boom' });
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok).toBe(true);
+    expect(res.ok && 'from_id' in res.items[0]).toBe(false);
+  });
+
+  test('leaves issues untouched when the dep list call throws', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson)
+      .mockResolvedValueOnce({ code: 0, stdoutJson: [{ id: 'A-1' }] })
+      .mockRejectedValueOnce(new Error('spawn failed'));
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok).toBe(true);
+    expect(res.ok && 'from_id' in res.items[0]).toBe(false);
+  });
+
+  test('skips the dep list call for an empty list', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockResolvedValueOnce({
+      code: 0,
+      stdoutJson: []
+    });
+
+    await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(runBdJson).toHaveBeenCalledTimes(1);
   });
 });
