@@ -368,17 +368,46 @@ describe('from_id provenance derivation', () => {
       .mockResolvedValueOnce(dep_result);
   }
 
-  test('attaches the discovered-from origin as from_id', async () => {
+  test('attaches the discovered-from origin from a batch payload', async () => {
+    mockListThenDeps([{ id: 'A-1' }, { id: 'A-2' }], {
+      code: 0,
+      stdoutJson: [
+        { issue_id: 'A-2', depends_on_id: 'A-0', type: 'discovered-from' }
+      ]
+    });
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok && res.items[1].from_id).toBe('A-0');
+  });
+
+  test('attaches the origin from the single-id payload shape', async () => {
+    // bd answers a one-id request with the full TARGET issue plus a
+    // `dependency_type`, not a bare edge — a one-card column hits this shape.
     mockListThenDeps([{ id: 'A-1' }], {
       code: 0,
       stdoutJson: [
-        { issue_id: 'A-1', depends_on_id: 'A-0', type: 'discovered-from' }
+        { id: 'A-0', title: 'origin', dependency_type: 'discovered-from' }
       ]
     });
 
     const res = await fetchListForSubscription({ type: 'all-issues' });
 
     expect(res.ok && res.items[0].from_id).toBe('A-0');
+  });
+
+  test('ignores non-provenance edges in the single-id payload shape', async () => {
+    mockListThenDeps([{ id: 'A-1' }], {
+      code: 0,
+      stdoutJson: [
+        { id: 'A-9', title: 'parent', dependency_type: 'parent-child' },
+        { id: 'A-8', title: 'blocker', dependency_type: 'blocks' }
+      ]
+    });
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok && 'from_id' in res.items[0]).toBe(false);
   });
 
   test('queries every listed id in one batch dep list call', async () => {
@@ -395,7 +424,7 @@ describe('from_id provenance derivation', () => {
   });
 
   test('reads the origin from depends_on_id, not issue_id', async () => {
-    mockListThenDeps([{ id: 'A-1' }], {
+    mockListThenDeps([{ id: 'A-1' }, { id: 'A-2' }], {
       code: 0,
       stdoutJson: [
         { issue_id: 'A-1', depends_on_id: 'A-0', type: 'discovered-from' }
@@ -404,11 +433,11 @@ describe('from_id provenance derivation', () => {
 
     const res = await fetchListForSubscription({ type: 'all-issues' });
 
-    expect(res.ok && res.items[0].from_id).not.toBe('A-1');
+    expect(res.ok && res.items[0].from_id).toBe('A-0');
   });
 
-  test('ignores non-discovered-from edges', async () => {
-    mockListThenDeps([{ id: 'A-1' }], {
+  test('ignores non-discovered-from edges in a batch payload', async () => {
+    mockListThenDeps([{ id: 'A-1' }, { id: 'A-2' }], {
       code: 0,
       stdoutJson: [
         { issue_id: 'A-1', depends_on_id: 'A-0', type: 'blocks' },
@@ -422,7 +451,7 @@ describe('from_id provenance derivation', () => {
   });
 
   test('keeps the first origin when an issue has several', async () => {
-    mockListThenDeps([{ id: 'A-1' }], {
+    mockListThenDeps([{ id: 'A-1' }, { id: 'A-2' }], {
       code: 0,
       stdoutJson: [
         { issue_id: 'A-1', depends_on_id: 'A-0', type: 'discovered-from' },

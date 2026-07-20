@@ -210,7 +210,7 @@ async function enrichIssuesProvenance(items, cwd) {
       log('bd dep list failed for provenance code=%s', res?.code);
       return items;
     }
-    from_by_id = collectProvenanceEdges(res.stdoutJson);
+    from_by_id = collectProvenanceEdges(res.stdoutJson, ids);
   } catch (err) {
     log('bd dep list invocation failed for provenance: %o', err);
     return items;
@@ -225,28 +225,50 @@ async function enrichIssuesProvenance(items, cwd) {
 }
 
 /**
- * Reduce a batch `bd dep list --json` payload to `issue id → origin id` for
+ * Reduce a `bd dep list --json` payload to `issue id → origin id` for
  * `discovered-from` edges only. First edge per issue wins.
  *
+ * `bd` answers in TWO different shapes depending on how many ids were asked
+ * for, and both must be read here because a board column can hold exactly one
+ * card:
+ *
+ * - several ids → bare edges `{ issue_id, depends_on_id, type }`,
+ * - a single id → the full TARGET issues, each with a `dependency_type` and no
+ *   back-reference, so the owning issue is the one id that was requested.
+ *
  * @param {unknown} value
+ * @param {string[]} requested_ids - The ids passed to `bd dep list`, in order.
  * @returns {Map<string, string>}
  */
-function collectProvenanceEdges(value) {
+function collectProvenanceEdges(value, requested_ids) {
   /** @type {Map<string, string>} */
   const by_id = new Map();
   if (!Array.isArray(value)) {
     return by_id;
   }
+  const single_id = requested_ids.length === 1 ? requested_ids[0] : null;
   for (const edge of value) {
     if (!edge || typeof edge !== 'object') {
       continue;
     }
     const e = /** @type {Record<string, unknown>} */ (edge);
-    if (e.type !== 'discovered-from') {
-      continue;
+    /** @type {string} */
+    let issue_id;
+    /** @type {string} */
+    let origin_id;
+    if (e.issue_id !== undefined || e.depends_on_id !== undefined) {
+      if (e.type !== 'discovered-from') {
+        continue;
+      }
+      issue_id = String(e.issue_id ?? '');
+      origin_id = String(e.depends_on_id ?? '');
+    } else {
+      if (single_id === null || e.dependency_type !== 'discovered-from') {
+        continue;
+      }
+      issue_id = single_id;
+      origin_id = String(e.id ?? '');
     }
-    const issue_id = String(e.issue_id ?? '');
-    const origin_id = String(e.depends_on_id ?? '');
     if (issue_id.length === 0 || origin_id.length === 0) {
       continue;
     }
