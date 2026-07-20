@@ -24,10 +24,12 @@
 ### 2. 표시 정책 스토어 (서버)
 
 - `server/visible-workspaces-store.js` 패턴의 서버 상태 파일 스토어 신설. **정규화된 workspace 절대경로를 키**로 한 맵:
-  - `hidden_labels: string[]` (exact), `hidden_prefixes: string[]`
+  - `hidden_labels: string[]` (exact), `hidden_prefixes: string[]`, `visible_labels: string[]` (exact 예외 — prefix 숨김을 뒤집는 override)
+  - 가시성 우선순위: `visible_labels`(exact) > `hidden_labels`(exact) > `hidden_prefixes` > 기본 표시. mutation은 같은 라벨이 `visible_labels`/`hidden_labels`에 동시에 들어가지 않도록 유지한다.
   - `chips: { route, fast_track, pr, from, blocked, stepper }` (각 boolean, 기본 true)
-- 워크스페이스에 항목이 없으면 기본값 적용. **기본 seed**: `hidden_prefixes = ['has:', 'reviewed:', 'skipped:']`, `hidden_labels = ['pr']` — legacy 미러를 설정 없이 가린다.
+- 워크스페이스에 항목이 없으면 기본값 적용. **기본 seed**: `hidden_labels = ['has:spec', 'pr']`, `hidden_prefixes = ['reviewed:', 'skipped:']` — 폐기되는 legacy 미러만 정확히 가린다(다른 `has:*` 등 일반 라벨은 기본 표시 유지).
 - 쓰기는 ws mutation 핸들러 + CAS(버전 카운터, worker queue-store 전례) + readback. 충돌 시 클라이언트는 재로드 후 재시도 안내.
+- **전파**: 신규 `display-policy` 구독 — 구독 시 현재 workspace 정책 snapshot을 내려주고, mutation 성공 시 해당 workspace 구독자 전원에 broadcast, workspace 전환·재연결 시 재구독. bootstrap 1회 전달 배관(현행 label config 방식)을 대체한다.
 - `config.toml [labels]` 파서(`server/config.js`)·bootstrap 전달(`server/app.js`)·client state 배관(`app/state.js`)은 **제거**. 시작 시 config에 `[labels]`가 남아 있으면 deprecated 경고 로그 1회 남기고 무시.
 
 ### 3. 서버 enrich 파생 (from·blocked 사유·PR 칩)
@@ -53,10 +55,10 @@
 ### 6. 설정 패널 (통합형)
 
 - 헤더 ⚙ 버튼 → 현재 워크스페이스의 표시 정책 편집 패널:
-  - 라벨 pill 목록(구독 데이터에서 수집) — 클릭으로 표시/숨김 전환(= `hidden_labels` 편집)
+  - 라벨 pill 목록(구독 데이터에서 수집) — 클릭으로 표시/숨김 전환. 표시 중 라벨 클릭 → `hidden_labels` 추가(`visible_labels`에서 제거); 숨김 라벨 클릭 → exact 숨김이면 `hidden_labels`에서 제거, prefix로 숨겨진 경우 `visible_labels`에 추가(§2 우선순위로 재표시).
   - 숨김 prefix 추가/제거 입력
   - 파생 칩 토글 6개(route·⚡·PR·from·blocked·stepper)
-- 저장은 §2 mutation(CAS)·전 클라이언트에 반영(기존 상태 전파 경로 사용).
+- 저장은 §2 mutation(CAS), 반영은 §2 `display-policy` 구독 broadcast 경로.
 
 ### 7. 문서 정합
 
@@ -64,12 +66,12 @@
 
 ## 인수 기준
 
-1. 카드에 라벨 칩이 기본 표시되고, `hidden_labels`/`hidden_prefixes`(기본 seed 포함)에 걸린 라벨은 숨겨진다.
+1. 카드에 라벨 칩이 기본 표시되고, `hidden_labels`/`hidden_prefixes`(기본 seed 포함)에 걸린 라벨은 숨겨지며, `visible_labels`에 있는 라벨은 prefix 숨김보다 우선해 표시된다.
 2. discovered-from 엣지를 가진 bead 카드에 `↩ from <id>` 칩이 라벨 없이 표시되고, 클릭 시 원 Bead 상세로 이동한다.
 3. `status=blocked`(+`blocked_reason`)와 의존 파생 blocked가 ⏸/⛓로 구분 렌더되고, 동시면 둘 다 표시된다.
 4. PR 칩은 번호만 표시한다(CI 문자열 제거). 상세 stepper PR 셀은 유지.
 5. 필터바 라벨 드롭다운(multi-select, OR)이 동작하고, 숨긴 라벨로도 필터할 수 있다.
-6. 설정 패널에서 라벨 숨김·prefix·칩/stepper 토글을 편집하면 CAS 저장·readback 후 모든 클라이언트 뷰에 반영된다.
+6. 설정 패널에서 라벨 숨김/재표시(prefix로 숨겨진 라벨의 재표시 포함)·prefix·칩/stepper 토글을 편집하면 CAS 저장·readback 후 `display-policy` 구독 broadcast로 접속 중인 모든 클라이언트에 반영되고, workspace 전환·재연결 시 재구독으로 정합이 유지된다.
 7. `config.toml [labels]`는 더 이상 파싱되지 않고, 잔존 시 deprecated 경고 로그 1회만 남는다.
 8. 상세 deps 목록에 엣지 타입 아이콘이 표시된다.
 9. `AGENTS.md`에 dotfiles 계약 정합 단락이 추가된다.
