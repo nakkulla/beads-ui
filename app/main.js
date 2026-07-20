@@ -909,7 +909,9 @@ export function bootstrap(root_element) {
 
           // The saved manual pick wins over the configured default_workspace;
           // the default only applies when no valid saved value exists (spec
-          // 2026-07-17-last-workspace-restore-design).
+          // 2026-07-17-last-workspace-restore-design). A workspace hidden from
+          // the picker is not a valid saved value (spec
+          // 2026-07-20-hidden-workspace-restore-guard).
           const savedWorkspace =
             window.localStorage.getItem('beads-ui.workspace');
 
@@ -917,7 +919,7 @@ export function bootstrap(root_element) {
             const savedExists = available.some(
               (/** @type {{ path: string }} */ ws) => ws.path === savedWorkspace
             );
-            if (!savedExists) {
+            if (!savedExists || hidden.includes(savedWorkspace)) {
               window.localStorage.removeItem('beads-ui.workspace');
             } else if (current && savedWorkspace !== current.path) {
               log('restoring saved workspace preference: %s', savedWorkspace);
