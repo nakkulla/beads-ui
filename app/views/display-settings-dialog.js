@@ -17,9 +17,12 @@ import { showToast } from '../utils/toast.js';
  *   to exempt one label without dropping the prefix rule for its siblings.
  *
  * Writes are CAS-guarded on the policy `revision`. A conflict means another
- * client saved first, so the reply's policy is adopted and the same edit is
- * replayed once against the fresh revision — silently, because the user's
- * intent (toggle THIS label) is still well-defined on the newer state.
+ * client saved first, so the reply's policy is adopted and the edit is replayed
+ * once against the fresh revision. The replay re-derives the patch from the
+ * DESIRED END STATE captured at click time, never from a toggle recomputed on
+ * the newer policy — recomputing would invert the user's intent whenever the
+ * other client happened to make the same change (two clients hiding the same
+ * label would leave it shown).
  *
  * @typedef {import('../utils/label-policy.js').DisplayPolicy} DisplayPolicy
  */
@@ -63,27 +66,41 @@ export function labelPillState(label, policy) {
 }
 
 /**
- * The policy patch a pill click produces. Kept pure so the three branches are
- * testable without a DOM.
+ * The policy patch that puts `label` into a DESIRED visibility on top of the
+ * given policy. Idempotent: applying it to a policy that already satisfies the
+ * intent is a no-op, which is what makes a CAS replay safe.
+ *
+ * Showing a label needs both moves, because the policy may hide it at either
+ * level: drop any exact rule, and add the `visible_labels` exemption only when
+ * a prefix rule would still hide it.
  *
  * @param {string} label
  * @param {DisplayPolicy} policy
+ * @param {boolean} desired_visible - The end state the user asked for.
  * @returns {{ hidden_labels?: string[], visible_labels?: string[] }}
  */
-export function labelPillPatch(label, policy) {
-  switch (labelPillState(label, policy)) {
-    case 'shown':
-      return {
-        hidden_labels: [...policy.hidden_labels, label],
-        visible_labels: policy.visible_labels.filter((it) => it !== label)
-      };
-    case 'hidden_exact':
-      return {
-        hidden_labels: policy.hidden_labels.filter((it) => it !== label)
-      };
-    default:
-      return { visible_labels: [...policy.visible_labels, label] };
+export function labelPatchFor(label, policy, desired_visible) {
+  if (!desired_visible) {
+    return {
+      hidden_labels: policy.hidden_labels.includes(label)
+        ? policy.hidden_labels
+        : [...policy.hidden_labels, label],
+      visible_labels: policy.visible_labels.filter((it) => it !== label)
+    };
   }
+  const hidden_labels = policy.hidden_labels.filter((it) => it !== label);
+  const still_hidden = policy.hidden_prefixes.some(
+    (prefix) => prefix.length > 0 && label.startsWith(prefix)
+  );
+  if (!still_hidden) {
+    return { hidden_labels };
+  }
+  return {
+    hidden_labels,
+    visible_labels: policy.visible_labels.includes(label)
+      ? policy.visible_labels
+      : [...policy.visible_labels, label]
+  };
 }
 
 /**
@@ -153,7 +170,13 @@ export function createDisplaySettingsDialog(mount_element, options) {
    * @param {string} label
    */
   function onLabelPillClick(label) {
-    void save((policy) => labelPillPatch(label, policy));
+    const current = policyStore.get();
+    if (!current) {
+      return;
+    }
+    // Capture the end state the click asked for; the CAS replay reuses it.
+    const desired_visible = labelPillState(label, current) !== 'shown';
+    void save((policy) => labelPatchFor(label, policy, desired_visible));
   }
 
   function onPrefixAdd() {
@@ -183,7 +206,13 @@ export function createDisplaySettingsDialog(mount_element, options) {
    * @param {keyof DisplayPolicy['chips']} chip
    */
   function onChipToggle(chip) {
-    void save((policy) => ({ chips: { [chip]: !policy.chips[chip] } }));
+    const current = policyStore.get();
+    if (!current) {
+      return;
+    }
+    // Capture the end state, not a toggle — a replayed toggle would flip back.
+    const desired = current.chips[chip] === false;
+    void save(() => ({ chips: { [chip]: desired } }));
   }
 
   /**
@@ -322,6 +351,14 @@ export function createDisplaySettingsDialog(mount_element, options) {
   // where `showModal` is unavailable (jsdom) and the native flag never flips.
   let is_open = false;
 
+  // Escape dismisses a native <dialog> without going through close(), so the
+  // flag has to follow the element or the dialog could never be reopened.
+  const onDialogClose = () => {
+    is_open = false;
+  };
+  dialog.addEventListener('close', onDialogClose);
+  dialog.addEventListener('cancel', onDialogClose);
+
   /** @type {null | (() => void)} */
   let unsubscribe_policy = null;
   if (policyStore.subscribe) {
@@ -363,6 +400,8 @@ export function createDisplaySettingsDialog(mount_element, options) {
     close,
     destroy() {
       is_open = false;
+      dialog.removeEventListener('close', onDialogClose);
+      dialog.removeEventListener('cancel', onDialogClose);
       if (unsubscribe_policy) {
         unsubscribe_policy();
         unsubscribe_policy = null;

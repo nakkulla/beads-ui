@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createDisplayPolicyStore } from '../data/display-policy-store.js';
 import {
   createDisplaySettingsDialog,
-  labelPillPatch,
+  labelPatchFor,
   labelPillState
 } from './display-settings-dialog.js';
 
@@ -57,9 +57,9 @@ describe('labelPillState', () => {
   });
 });
 
-describe('labelPillPatch', () => {
+describe('labelPatchFor', () => {
   test('hides a shown label by exact rule', () => {
-    const patch = labelPillPatch('frontend', makePolicy());
+    const patch = labelPatchFor('frontend', makePolicy(), false);
 
     expect(patch.hidden_labels).toEqual(['frontend']);
   });
@@ -67,7 +67,7 @@ describe('labelPillPatch', () => {
   test('drops a stale visible entry when hiding a label', () => {
     const policy = makePolicy({ visible_labels: ['frontend'] });
 
-    const patch = labelPillPatch('frontend', policy);
+    const patch = labelPatchFor('frontend', policy, false);
 
     expect(patch.visible_labels).toEqual([]);
   });
@@ -75,7 +75,7 @@ describe('labelPillPatch', () => {
   test('unhides an exact-hidden label by dropping the rule', () => {
     const policy = makePolicy({ hidden_labels: ['pr', 'wip'] });
 
-    const patch = labelPillPatch('pr', policy);
+    const patch = labelPatchFor('pr', policy, true);
 
     expect(patch.hidden_labels).toEqual(['wip']);
   });
@@ -83,10 +83,36 @@ describe('labelPillPatch', () => {
   test('exempts a prefix-hidden label instead of dropping the prefix rule', () => {
     const policy = makePolicy({ hidden_prefixes: ['reviewed:'] });
 
-    const patch = labelPillPatch('reviewed:spec', policy);
+    const patch = labelPatchFor('reviewed:spec', policy, true);
 
     expect(patch.visible_labels).toEqual(['reviewed:spec']);
-    expect(patch.hidden_labels).toBeUndefined();
+  });
+
+  test('does not exempt a label no prefix rule would hide', () => {
+    const policy = makePolicy({ hidden_labels: ['pr'] });
+
+    const patch = labelPatchFor('pr', policy, true);
+
+    expect(patch.visible_labels).toBeUndefined();
+  });
+
+  test('is a no-op when the label is already hidden as asked', () => {
+    const policy = makePolicy({ hidden_labels: ['pr'] });
+
+    const patch = labelPatchFor('pr', policy, false);
+
+    expect(patch.hidden_labels).toEqual(['pr']);
+  });
+
+  test('is a no-op when the label is already exempted as asked', () => {
+    const policy = makePolicy({
+      hidden_prefixes: ['reviewed:'],
+      visible_labels: ['reviewed:spec']
+    });
+
+    const patch = labelPatchFor('reviewed:spec', policy, true);
+
+    expect(patch.visible_labels).toEqual(['reviewed:spec']);
   });
 });
 
@@ -224,6 +250,70 @@ describe('views/display-settings-dialog', () => {
 
     expect(transport).toHaveBeenCalledTimes(2);
     expect(transport.mock.calls[1][1].expected_revision).toBe(5);
+  });
+
+  test('replays a label hide as the same intent, not a recomputed toggle', async () => {
+    // Both clients hide the same label: the retry must still HIDE it, never
+    // flip it back to shown because the fresh policy already hides it.
+    store.set(makePolicy({ revision: 0 }));
+    const raced = makePolicy({ revision: 5, hidden_labels: ['frontend'] });
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ applied: false, conflict: true, policy: raced })
+      .mockResolvedValueOnce({
+        applied: true,
+        conflict: false,
+        policy: raced
+      });
+    openDialog({ transport });
+
+    pill('frontend').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport.mock.calls[1][1].policy.hidden_labels).toEqual([
+      'frontend'
+    ]);
+  });
+
+  test('replays a chip toggle as the same intent, not a recomputed toggle', async () => {
+    store.set(makePolicy({ revision: 0 }));
+    const raced = makePolicy({ revision: 5, chips: { from: false } });
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ applied: false, conflict: true, policy: raced })
+      .mockResolvedValueOnce({ applied: true, conflict: false, policy: raced });
+    openDialog({ transport });
+
+    const box = /** @type {HTMLInputElement} */ (
+      document.querySelector(
+        '.display-settings__toggle input[data-chip="from"]'
+      )
+    );
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport.mock.calls[1][1].policy.chips).toEqual({ from: false });
+  });
+
+  test('reopens after the dialog was dismissed natively', () => {
+    // Escape dismisses a native <dialog> by firing `close` on the element,
+    // bypassing the returned close() entirely. jsdom implements neither
+    // showModal nor close, so the event is dispatched directly.
+    store.set(makePolicy());
+    const { dialog } = openDialog();
+    const element = /** @type {HTMLElement} */ (
+      document.getElementById('display-settings-dialog')
+    );
+    element.dispatchEvent(new Event('close'));
+    element.removeAttribute('open');
+
+    dialog.open();
+
+    expect(element.hasAttribute('open')).toBe(true);
   });
 
   test('does not retry a second time when the retry also conflicts', async () => {

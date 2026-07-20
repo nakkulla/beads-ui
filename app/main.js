@@ -674,6 +674,34 @@ export function bootstrap(root_element) {
       display_policy_store.clear();
     }
 
+    /**
+     * Re-establish the display-policy subscription on a NEW socket after a
+     * reconnect.
+     *
+     * A reconnected socket starts on the server's default workspace, and the
+     * client has no automatic workspace restore. Subscribing before repointing
+     * it would deliver the DEFAULT workspace's policy and let that snapshot
+     * overwrite the policy for the workspace the user is actually looking at,
+     * so the workspace is restored first and the policy is dropped until the
+     * correct snapshot lands.
+     */
+    async function resubscribeDisplayPolicyAfterReconnect() {
+      // The old socket is gone, so there is nothing to unsubscribe from — only
+      // the singleton guard and the now-unowned cached policy to release.
+      display_policy_unsub = null;
+      display_policy_store.clear();
+      const selected = store.getState().workspace.current?.path;
+      if (selected) {
+        try {
+          await client.send('set-workspace', { path: selected });
+        } catch (err) {
+          log('workspace restore after reconnect failed: %o', err);
+          return;
+        }
+      }
+      subscribeDisplayPolicy();
+    }
+
     // --- Workspace management ---
     /**
      * Clear all subscriptions and stores, then re-establish for the active view.
@@ -928,11 +956,7 @@ export function bootstrap(root_element) {
           void refreshConfigSnapshot(store, (message, err) => {
             log(`${message}: %o`, err);
           });
-          // The server dropped this connection's subscriber registration with
-          // the socket, so the singleton guard has to be released before the
-          // policy can be re-established on the new connection.
-          display_policy_unsub = null;
-          subscribeDisplayPolicy();
+          void resubscribeDisplayPolicyAfterReconnect();
         }
       };
       client.onConnection(onConn);

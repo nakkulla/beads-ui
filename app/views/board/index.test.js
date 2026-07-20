@@ -987,4 +987,95 @@ describe('views/board label filter', () => {
 
     expect(mount.querySelector('.board-filter__label-menu')).toBeNull();
   });
+
+  test('closes the popover when a card elsewhere on the board is clicked', async () => {
+    const { mount, view } = mountBoardWithLabels();
+    await view.load();
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.board-filter__label-btn')
+    ).click();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.board-card')
+    ).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    expect(mount.querySelector('.board-filter__label-menu')).toBeNull();
+  });
+
+  test('keeps the popover open while its own checkboxes are clicked', async () => {
+    const { mount, view } = mountBoardWithLabels();
+    await view.load();
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.board-filter__label-btn')
+    ).click();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.board-filter__label-row')
+    ).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    expect(mount.querySelector('.board-filter__label-menu')).not.toBeNull();
+  });
+});
+
+describe('views/board blocked column composition', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @returns {HTMLElement}
+   */
+  function mountBlockedBoard() {
+    const stores = createTestIssueStores();
+    const now = Date.now();
+    // The Blocked subscription merges two sources: an OPEN issue held up by
+    // dependencies, and an issue stored as `status=blocked` (external wait).
+    seed(stores, 'tab:board:blocked', [
+      {
+        id: 'DEP-1',
+        title: 'dependency blocked',
+        status: 'open',
+        blocked_info: { external: false, reason: null, blockers: ['X-1'] },
+        updated_at: now
+      },
+      {
+        id: 'EXT-1',
+        title: 'external blocked',
+        status: 'blocked',
+        blocked_info: { external: true, reason: '릴리스 대기', blockers: [] },
+        updated_at: now
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createBoardView(mount, { gotoIssue: vi.fn(), issueStores: stores }).load();
+    return mount;
+  }
+
+  test('keeps a stored status=blocked issue in the column', () => {
+    const mount = mountBlockedBoard();
+
+    const ids = Array.from(
+      mount.querySelectorAll('#blocked-col .board-card')
+    ).map((el) => String(el.getAttribute('data-issue-id')));
+    expect(ids.sort()).toEqual(['DEP-1', 'EXT-1']);
+  });
+
+  test('renders the external blocked chip for a stored blocked issue', () => {
+    const mount = mountBlockedBoard();
+
+    const chips = Array.from(
+      mount.querySelectorAll('#blocked-col .ctl-chip--blocked')
+    ).map((el) => String(el.textContent || '').trim());
+    expect(chips).toEqual(['⏸ blocked: 릴리스 대기']);
+  });
+
+  test('renders the dependency blocked chip for an open blocked issue', () => {
+    const mount = mountBlockedBoard();
+
+    const chips = Array.from(
+      mount.querySelectorAll('#blocked-col .ctl-chip--blocked-dep')
+    ).map((el) => String(el.textContent || '').trim());
+    expect(chips).toEqual(['⛓ blocked: X-1']);
+  });
 });

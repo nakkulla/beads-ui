@@ -182,6 +182,21 @@ export function createBoardView(mount_element, options) {
   }
 
   /**
+   * The Blocked column carries two kinds of issue and must keep both: an OPEN
+   * issue held up by dependencies, and an issue stored as `status=blocked`
+   * because something outside the tracker is being waited on. Filtering the
+   * column down to `open` would drop the second kind entirely — and with it the
+   * ⏸ external-blocked chip, which would never render.
+   *
+   * @param {IssueLite} issue
+   * @returns {boolean}
+   */
+  function isBlockedBoardIssue(issue) {
+    const status = String(issue.status || 'open');
+    return status === 'open' || status === 'blocked';
+  }
+
+  /**
    * Apply the board-local filters (search / priority / type / labels) to a list.
    * The label axis matches on OR — an issue passes when it carries ANY selected
    * label — and it deliberately ignores the display policy, so a label hidden
@@ -283,7 +298,7 @@ export function createBoardView(mount_element, options) {
         );
         const blocked = selectors
           .selectBoardColumn('tab:board:blocked', 'blocked', sort_mode)
-          .filter(isOpenBoardIssue);
+          .filter(isBlockedBoardIssue);
         const in_prog_ids = new Set(in_progress.map((i) => i.id));
         const ready = selectors
           .selectBoardColumn('tab:board:ready', 'ready', sort_mode)
@@ -586,14 +601,17 @@ export function createBoardView(mount_element, options) {
   };
 
   /**
-   * Close the label popover on an outside mousedown. A click anywhere inside
-   * the board (the toggle button, the popover, its checkboxes) keeps it open.
+   * Close the label popover on an outside mousedown. Only the label control
+   * itself (its toggle button, the popover, its checkboxes) keeps it open —
+   * scoping this to the whole board would leave the popover up while the user
+   * clicks a card, which is not what "click outside to dismiss" means.
    *
    * @param {MouseEvent} ev
    */
   function onLabelMenuDocMousedown(ev) {
     const target = /** @type {Node | null} */ (ev.target);
-    if (target && mount_element.contains(target)) {
+    const control = mount_element.querySelector('.board-filter__labels');
+    if (target && control && control.contains(target)) {
       return;
     }
     closeLabelMenu();
