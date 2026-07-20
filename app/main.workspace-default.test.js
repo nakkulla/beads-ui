@@ -81,7 +81,6 @@ describe('main workspace restore precedence', () => {
   test('restores the saved workspace over the configured default', async () => {
     window.localStorage.setItem('beads-ui.workspace', '/repo-b');
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
-      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
       workspace_config: { default_workspace: '/repo-a' }
     };
 
@@ -103,7 +102,6 @@ describe('main workspace restore precedence', () => {
 
   test('stays on the configured default when no saved workspace exists', async () => {
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
-      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
       workspace_config: { default_workspace: '/repo-a' }
     };
 
@@ -127,7 +125,6 @@ describe('main workspace restore precedence', () => {
   test('removes stale saved workspace hints that are no longer available', async () => {
     window.localStorage.setItem('beads-ui.workspace', '/repo-missing');
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
-      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
       workspace_config: { default_workspace: null }
     };
 
@@ -147,7 +144,6 @@ describe('main workspace restore precedence', () => {
   test('removes a stale saved value even when it equals the current path', async () => {
     window.localStorage.setItem('beads-ui.workspace', '/repo-gone');
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
-      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
       workspace_config: { default_workspace: null }
     };
 
@@ -171,7 +167,6 @@ describe('main workspace restore precedence', () => {
   test('does not restore a saved workspace that is hidden from the picker', async () => {
     window.localStorage.setItem('beads-ui.workspace', '/repo-b');
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
-      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
       workspace_config: { default_workspace: '/repo-a' }
     };
 
@@ -196,7 +191,6 @@ describe('main workspace restore precedence', () => {
   test('removes stale saved workspace hints when a default is configured', async () => {
     window.localStorage.setItem('beads-ui.workspace', '/repo-missing');
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
-      label_display_policy: { visible_prefixes: ['has:', 'reviewed:'] },
       workspace_config: { default_workspace: '/repo-a' }
     };
 

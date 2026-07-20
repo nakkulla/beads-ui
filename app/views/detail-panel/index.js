@@ -492,28 +492,57 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
+   * Icon for a bd edge type. An unknown type renders the bare id rather than a
+   * misleading glyph.
+   *
+   * @param {any} edge
+   * @returns {string}
+   */
+  function edgeIcon(edge) {
+    const type =
+      edge && typeof edge === 'object'
+        ? String(edge.dependency_type || edge.type || '')
+        : '';
+    switch (type) {
+      case 'blocks':
+        return '⛓';
+      case 'discovered-from':
+        return '↩';
+      case 'parent-child':
+        return '⌸';
+      default:
+        return '';
+    }
+  }
+
+  /**
    * @param {any} data
    */
   function depsTemplate(data) {
     const raw = Array.isArray(data.dependencies) ? data.dependencies : [];
-    const ids = raw
-      .map(edgeId)
-      .filter((/** @type {string} */ s) => s.length > 0);
+    const edges = raw
+      .map((/** @type {any} */ edge) => ({
+        id: edgeId(edge),
+        icon: edgeIcon(edge)
+      }))
+      .filter((/** @type {{ id: string }} */ e) => e.id.length > 0);
     return html`
       <div class="detail-section-label">의존성</div>
-      ${ids.length === 0
+      ${edges.length === 0
         ? html`<div class="detail-empty">의존성 없음</div>`
         : html`<div class="detail-deps">
-            ${ids.map((/** @type {string} */ id) =>
+            ${edges.map((/** @type {{ id: string, icon: string }} */ edge) =>
               onNavigate
                 ? html`<button
                     type="button"
                     class="detail-dep detail-dep--link"
-                    @click=${() => onNavigate(id)}
+                    @click=${() => onNavigate(edge.id)}
                   >
-                    ${id}
+                    ${edge.icon ? `${edge.icon} ` : ''}${edge.id}
                   </button>`
-                : html`<span class="detail-dep">${id}</span>`
+                : html`<span class="detail-dep"
+                    >${edge.icon ? `${edge.icon} ` : ''}${edge.id}</span
+                  >`
             )}
           </div>`}
     `;

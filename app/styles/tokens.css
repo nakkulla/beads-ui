@@ -35,6 +35,10 @@
   --border-pr: #5a2b45;
   --border-ft: #43315a;
   --border-route: #2b3f5a;
+  --border-label: #2a3342;
+  --border-from: #1e4a44;
+  --border-blocked: #4a3f2b;
+  --border-blocked-dep: #4a2b2b;
 
   /* --- text tiers --- */
   --text-title: #dbe2ee;
@@ -64,6 +68,10 @@
   --chip-route: #8ab4f8;
   --chip-ft: #c792ea;
   --chip-pr: #f472b6;
+  --chip-label: #8b96a8;
+  --chip-from: #7ee2d8;
+  --chip-blocked: #e8b45a;
+  --chip-blocked-dep: #e8756a;
 
   /* --- recurring semantic accents --- */
   --accent-success: #5ad198;

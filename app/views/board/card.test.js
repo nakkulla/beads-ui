@@ -313,3 +313,249 @@ describe('views/board/card created/updated meta (UX v3 spec §1)', () => {
     expect(m.querySelector('.board-card__time-sep')).toBeNull();
   });
 });
+
+describe('views/board/card display policy', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Partial<Omit<import('../../utils/label-policy.js').DisplayPolicy, 'chips'>> & { chips?: Partial<import('../../utils/label-policy.js').DisplayPolicyChips> }} [overrides]
+   * @returns {any}
+   */
+  function makePolicy(overrides = {}) {
+    const { chips: chip_overrides, ...rest } = overrides;
+    return {
+      revision: 1,
+      hidden_labels: [],
+      hidden_prefixes: [],
+      visible_labels: [],
+      ...rest,
+      chips: {
+        route: true,
+        fast_track: true,
+        pr: true,
+        from: true,
+        blocked: true,
+        stepper: true,
+        ...chip_overrides
+      }
+    };
+  }
+
+  /**
+   * @param {HTMLElement} m
+   * @param {string} selector
+   * @returns {string[]}
+   */
+  function chipTexts(m, selector) {
+    return Array.from(m.querySelectorAll(selector)).map((el) =>
+      String(el.textContent || '').trim()
+    );
+  }
+
+  test('renders every bead label when the policy hides nothing', () => {
+    const m = mountCard(
+      { id: 'UI-1', labels: ['frontend', 'backend'] },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--label')).toEqual(['frontend', 'backend']);
+  });
+
+  test('omits labels the policy hides by exact match', () => {
+    const m = mountCard(
+      { id: 'UI-1', labels: ['frontend', 'pr'] },
+      makeCtx({ policy: makePolicy({ hidden_labels: ['pr'] }) })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--label')).toEqual(['frontend']);
+  });
+
+  test('omits labels the policy hides by prefix', () => {
+    const m = mountCard(
+      { id: 'UI-1', labels: ['reviewed:spec', 'frontend'] },
+      makeCtx({ policy: makePolicy({ hidden_prefixes: ['reviewed:'] }) })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--label')).toEqual(['frontend']);
+  });
+
+  test('restores a prefix-hidden label listed in visible_labels', () => {
+    const m = mountCard(
+      { id: 'UI-1', labels: ['reviewed:spec', 'reviewed:impl'] },
+      makeCtx({
+        policy: makePolicy({
+          hidden_prefixes: ['reviewed:'],
+          visible_labels: ['reviewed:impl']
+        })
+      })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--label')).toEqual(['reviewed:impl']);
+  });
+
+  test('renders every label when no policy has arrived yet', () => {
+    const m = mountCard(
+      { id: 'UI-1', labels: ['has:spec'] },
+      makeCtx({ policy: null })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--label')).toEqual(['has:spec']);
+  });
+
+  test('renders a provenance chip for a discovered-from origin', () => {
+    const m = mountCard(
+      { id: 'UI-1', from_id: 'UI-0' },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--from')).toEqual(['↩ from UI-0']);
+  });
+
+  test('navigates to the origin bead when the provenance chip is clicked', () => {
+    const onFromChipClick = vi.fn();
+    const m = mountCard(
+      { id: 'UI-1', from_id: 'UI-0' },
+      makeCtx({ policy: makePolicy(), onFromChipClick })
+    );
+
+    /** @type {HTMLElement} */ (
+      m.querySelector('.ctl-chip--from')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(onFromChipClick).toHaveBeenCalledWith(expect.anything(), 'UI-0');
+  });
+
+  test('does not open the card itself when the provenance chip is clicked', () => {
+    const onCardClick = vi.fn();
+    const m = mountCard(
+      { id: 'UI-1', from_id: 'UI-0' },
+      makeCtx({ policy: makePolicy(), onCardClick, onFromChipClick: vi.fn() })
+    );
+
+    /** @type {HTMLElement} */ (
+      m.querySelector('.ctl-chip--from')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(onCardClick).not.toHaveBeenCalled();
+  });
+
+  test('renders an external blocked chip with its reason', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        blocked_info: { external: true, reason: '릴리스 대기', blockers: [] }
+      },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--blocked')).toEqual([
+      '⏸ blocked: 릴리스 대기'
+    ]);
+  });
+
+  test('renders a bare external blocked chip when no reason is set', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        blocked_info: { external: true, reason: null, blockers: [] }
+      },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--blocked')).toEqual(['⏸ blocked']);
+  });
+
+  test('renders a dependency blocked chip listing the blockers', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        blocked_info: { external: false, reason: null, blockers: ['A', 'B'] }
+      },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--blocked-dep')).toEqual(['⛓ blocked: A, B']);
+  });
+
+  test('collapses blockers past the first two into a +n suffix', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        blocked_info: {
+          external: false,
+          reason: null,
+          blockers: ['A', 'B', 'C', 'D']
+        }
+      },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--blocked-dep')).toEqual([
+      '⛓ blocked: A, B +2'
+    ]);
+  });
+
+  test('renders both blocked chips when an issue is blocked in both ways', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        blocked_info: { external: true, reason: '검토 대기', blockers: ['A'] }
+      },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--blocked').length).toBe(1);
+    expect(chipTexts(m, '.ctl-chip--blocked-dep').length).toBe(1);
+  });
+
+  test('renders the PR chip with the number only', () => {
+    const m = mountCard(
+      { id: 'UI-1', workflow: { chips: { pr: { number: 42 } } } },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--pr')).toEqual(['PR #42']);
+  });
+
+  test('omits the provenance chip when its toggle is off', () => {
+    const m = mountCard(
+      { id: 'UI-1', from_id: 'UI-0' },
+      makeCtx({ policy: makePolicy({ chips: { from: false } }) })
+    );
+
+    expect(m.querySelector('.ctl-chip--from')).toBeNull();
+  });
+
+  test('omits the blocked chips when their toggle is off', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        blocked_info: { external: true, reason: null, blockers: ['A'] }
+      },
+      makeCtx({ policy: makePolicy({ chips: { blocked: false } }) })
+    );
+
+    expect(m.querySelector('.ctl-chip--blocked')).toBeNull();
+    expect(m.querySelector('.ctl-chip--blocked-dep')).toBeNull();
+  });
+
+  test('omits the route chip when its toggle is off', () => {
+    const m = mountCard(
+      { id: 'UI-1', workflow: { chips: { route: 'full_plan' } } },
+      makeCtx({ policy: makePolicy({ chips: { route: false } }) })
+    );
+
+    expect(m.querySelector('.ctl-chip--route')).toBeNull();
+  });
+
+  test('omits the stepper when its toggle is off', () => {
+    const m = mountCard(
+      { id: 'UI-1', workflow: { route: 'spec_backed', stages: {}, chips: {} } },
+      makeCtx({ policy: makePolicy({ chips: { stepper: false } }) })
+    );
+
+    expect(m.querySelector('.stepper')).toBeNull();
+  });
+});

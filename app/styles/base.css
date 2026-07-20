@@ -72,6 +72,26 @@ body {
   color: var(--chip-pr);
   border-color: var(--border-pr);
 }
+.ctl-chip--label {
+  color: var(--chip-label);
+  border-color: var(--border-label);
+}
+.ctl-chip--from {
+  color: var(--chip-from);
+  border-color: var(--border-from);
+  background: none;
+  font: inherit;
+  font-size: var(--fs-chip-lg);
+  cursor: pointer;
+}
+.ctl-chip--blocked {
+  color: var(--chip-blocked);
+  border-color: var(--border-blocked);
+}
+.ctl-chip--blocked-dep {
+  color: var(--chip-blocked-dep);
+  border-color: var(--border-blocked-dep);
+}
 
 /* panel surface */
 .ctl-panel {

@@ -33,47 +33,31 @@ afterEach(() => {
 });
 
 describe('main config refresh', () => {
-  test('reads color policy from bootstrap config', () => {
+  test('reads the default workspace from bootstrap config', () => {
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
-      label_display_policy: {
-        visible_prefixes: ['has:'],
-        visible_exact: [],
-        colors: {
-          prefix: {
-            'has:': { fg: '#16a34a' }
-          },
-          exact: {
-            pr: { fg: '#7c3aed' }
-          }
-        }
-      }
+      workspace_config: { default_workspace: '/repo-a' }
     };
 
     const config = readBootstrapConfig();
 
-    expect(config.label_display_policy.colors).toEqual({
-      prefix: {
-        'has:': { fg: '#16a34a' }
-      },
-      exact: {
-        pr: { fg: '#7c3aed' }
-      }
-    });
+    expect(config.workspace_config.default_workspace).toBe('/repo-a');
   });
 
-  test('refresh propagates color policy to state', async () => {
+  test('ignores a legacy label policy in the bootstrap config', () => {
+    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
+      label_display_policy: { visible_prefixes: ['has:'] }
+    };
+
+    const config = readBootstrapConfig();
+
+    expect('label_display_policy' in config).toBe(false);
+  });
+
+  test('refresh propagates the default workspace to state', async () => {
     const fetch_mock = vi.fn(async () => {
       return new Response(
         JSON.stringify({
-          label_display_policy: {
-            visible_prefixes: ['followup:'],
-            colors: {
-              prefix: {
-                'followup:': { fg: '#b45309' }
-              },
-              exact: {}
-            }
-          }
+          workspace_config: { default_workspace: '/repo-b' }
         }),
         {
           status: 200,
@@ -86,21 +70,16 @@ describe('main config refresh', () => {
 
     await refreshConfigSnapshot(store, vi.fn());
 
-    expect(store.getState().config.label_display_policy.colors).toEqual({
-      prefix: {
-        'followup:': { fg: '#b45309' }
-      },
-      exact: {}
-    });
+    expect(store.getState().config.workspace_config.default_workspace).toBe(
+      '/repo-b'
+    );
   });
 
   test('fetches latest config after websocket reconnects', async () => {
     const fetch_mock = vi.fn(async () => {
       return new Response(
         JSON.stringify({
-          label_display_policy: {
-            visible_prefixes: ['agent:']
-          }
+          workspace_config: { default_workspace: '/repo-b' }
         }),
         {
           status: 200,
@@ -110,9 +89,7 @@ describe('main config refresh', () => {
     });
     vi.stubGlobal('fetch', fetch_mock);
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
-      label_display_policy: {
-        visible_prefixes: ['area:']
-      }
+      workspace_config: { default_workspace: '/repo-a' }
     };
     CLIENT = {
       send: vi.fn(async (type) => {

@@ -475,3 +475,90 @@ describe('views/detail-panel created/updated rows (UX v3 spec §1)', () => {
     expect(mount.textContent).toContain('수정');
   });
 });
+
+describe('views/detail-panel dependency edge types', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {unknown[]} dependencies
+   * @returns {HTMLElement}
+   */
+  function mountWithDeps(dependencies) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      onClose: vi.fn(),
+      onNavigate: vi.fn()
+    });
+
+    issueStores.register('detail:UI-1', {
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    issueStores.getStore('detail:UI-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: /** @type {any} */ ([{ id: 'UI-1', title: 't', dependencies }])
+    });
+
+    panel.load('UI-1');
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function depTexts(mount) {
+    return Array.from(mount.querySelectorAll('.detail-dep')).map((el) =>
+      String(el.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    );
+  }
+
+  test('renders a chain icon for a blocks edge', () => {
+    const mount = mountWithDeps([{ id: 'UI-0', dependency_type: 'blocks' }]);
+
+    expect(depTexts(mount)).toEqual(['⛓ UI-0']);
+  });
+
+  test('renders a return icon for a discovered-from edge', () => {
+    const mount = mountWithDeps([
+      { id: 'UI-0', dependency_type: 'discovered-from' }
+    ]);
+
+    expect(depTexts(mount)).toEqual(['↩ UI-0']);
+  });
+
+  test('renders the bare id for an unknown edge type', () => {
+    const mount = mountWithDeps([{ id: 'UI-0', dependency_type: 'mystery' }]);
+
+    expect(depTexts(mount)).toEqual(['UI-0']);
+  });
+
+  test('renders the bare id for a plain string edge', () => {
+    const mount = mountWithDeps(['UI-0']);
+
+    expect(depTexts(mount)).toEqual(['UI-0']);
+  });
+
+  test('renders one row per edge, keeping their order', () => {
+    const mount = mountWithDeps([
+      { id: 'UI-9', dependency_type: 'parent-child' },
+      { id: 'UI-0', dependency_type: 'blocks' }
+    ]);
+
+    expect(depTexts(mount)).toEqual(['⌸ UI-9', '⛓ UI-0']);
+  });
+
+  test('reports no dependencies when the edge list is empty', () => {
+    const mount = mountWithDeps([]);
+
+    expect(mount.textContent).toContain('의존성 없음');
+  });
+});

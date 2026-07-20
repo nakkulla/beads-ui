@@ -24,11 +24,16 @@ import { filterBarTemplate } from './filter-bar.js';
  */
 
 /**
+ * @typedef {{ get: () => (import('../../utils/label-policy.js').DisplayPolicy | null), subscribe?: (fn: () => void) => () => void }} DisplayPolicyStore
+ */
+
+/**
  * @typedef {Object} BoardViewOptions
  * @property {(id: string) => void} gotoIssue
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<any>} [transport]
  * @property {UiOrderStore} [uiOrderStore]
+ * @property {DisplayPolicyStore} [displayPolicyStore]
  * @property {string} [closedRange] - Current Closed period ('today'|'7d'|'30d'|'all').
  * @property {(range: string) => void} [onClosedRangeChange]
  * @property {() => void} [onNewIssue]
@@ -118,6 +123,7 @@ export function createBoardView(mount_element, options) {
   const issueStores = options.issueStores;
   const transport = options.transport;
   const uiOrderStore = options.uiOrderStore;
+  const displayPolicyStore = options.displayPolicyStore;
   const onClosedRangeChangeCb = options.onClosedRangeChange;
   const onNewIssue = options.onNewIssue;
   let closed_range = options.closedRange || DEFAULT_CLOSED_RANGE;
@@ -435,6 +441,16 @@ export function createBoardView(mount_element, options) {
     gotoIssue(id);
   }
 
+  /**
+   * @param {Event} ev
+   * @param {string} id
+   */
+  function onFromChipClick(ev, id) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    gotoIssue(id);
+  }
+
   // --- card / column interaction context ---
 
   /**
@@ -516,7 +532,13 @@ export function createBoardView(mount_element, options) {
     rollupFor,
     isExpanded,
     onRollupToggle,
-    onChildClick
+    onChildClick,
+    onFromChipClick,
+    // Read on every access so a pushed policy snapshot takes effect on the next
+    // render without rebuilding this context object.
+    get policy() {
+      return displayPolicyStore ? displayPolicyStore.get() : null;
+    }
   };
 
   // --- filter handlers (board-local state) ---
@@ -946,6 +968,20 @@ export function createBoardView(mount_element, options) {
     });
   }
 
+  // A policy change alters which labels pass the filter, so it has to recompose
+  // the lists rather than only re-render.
+  /** @type {null | (() => void)} */
+  let unsubscribe_policy = null;
+  if (displayPolicyStore && displayPolicyStore.subscribe) {
+    unsubscribe_policy = displayPolicyStore.subscribe(() => {
+      try {
+        refreshFromStores();
+      } catch {
+        // ignore
+      }
+    });
+  }
+
   return {
     async load() {
       log('load');
@@ -955,6 +991,10 @@ export function createBoardView(mount_element, options) {
       if (unsubscribe_selectors) {
         unsubscribe_selectors();
         unsubscribe_selectors = null;
+      }
+      if (unsubscribe_policy) {
+        unsubscribe_policy();
+        unsubscribe_policy = null;
       }
       mount_element.replaceChildren();
       list_blocked = [];
