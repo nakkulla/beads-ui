@@ -400,7 +400,9 @@ describe('scheduler happy path (dispatch → merge-gate → verify → Done)', (
       slots: 1,
       tokens,
       breaker,
-      verifyOk: true
+      verifyOk: true,
+      // A configured verify_cmd keeps the resolved auto_merge (no demotion).
+      verifyCmd: () => ({ cmd: ['true'], timeout_ms: 1000 })
     });
     seedQueue(env.store, ['S1'], []);
     await env.scheduler.tick(WS);
@@ -416,15 +418,121 @@ describe('scheduler happy path (dispatch → merge-gate → verify → Done)', (
     await flush();
     await flush();
 
-    expect(env.verify.verifyMerge).toHaveBeenCalled();
+    expect(env.verify.verifyMerge).toHaveBeenCalledWith(
+      expect.objectContaining({ merge_policy: 'auto_merge' })
+    );
     const snap = env.store.snapshot(WS);
     expect(snap.done.map((e) => e.bead_id)).toContain('S1');
     expect(snap.attempts[attempt_id].status).toBe('done');
-    expect(snap.attempts[attempt_id].merge_sha).toBe('work-tip-sha');
+    expect(snap.attempts[attempt_id].done_kind).toBe('auto_merge');
     // Bead closed → workflow_mode NOT reverted.
     expect(env.bd.calls.some((c) => c.method === 'unsetMetadata')).toBe(false);
     // Session token revoked after completion.
     expect(tokens.size()).toBe(0);
+  });
+
+  test('pr_stop success reverts workflow_mode and records done_kind', async () => {
+    // No verify_cmd → the resolved auto_merge demotes to pr_stop at dispatch.
+    const env = setup({ config: { S1: {} }, slots: 1, verifyOk: true });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(env.verify.verifyMerge).toHaveBeenCalledWith(
+      expect.objectContaining({ merge_policy: 'pr_stop', merge_sha: null })
+    );
+    const snap = env.store.snapshot(WS);
+    expect(snap.done.map((e) => e.bead_id)).toContain('S1');
+    expect(snap.attempts[attempt_id].done_kind).toBe('pr_stop');
+    // pr_stop leaves the bead open → workflow_mode reverted (prior unset).
+    expect(
+      env.bd.calls.some(
+        (c) =>
+          c.method === 'unsetMetadata' &&
+          c.bead_id === 'S1' &&
+          c.key === 'workflow_mode'
+      )
+    ).toBe(true);
+  });
+
+  test('a handed-over merge lock is released after verify on success, and after the trip on failure', async () => {
+    const breaker2 = createBreaker();
+    /** @type {Record<string, { released: boolean, breaker_at_release: boolean|null }>} */
+    const handovers = {};
+    /**
+     * @param {string} attempt_id
+     */
+    const registerHandover = (attempt_id) => {
+      handovers[attempt_id] = { released: false, breaker_at_release: null };
+    };
+    const mergeLock = {
+      takeHandover: (/** @type {string} */ attempt_id) => {
+        if (!handovers[attempt_id]) {
+          return null;
+        }
+        return () => {
+          handovers[attempt_id].released = true;
+          handovers[attempt_id].breaker_at_release =
+            breaker2.isTripped('/repo');
+        };
+      }
+    };
+    const env = setup({
+      config: { S1: {}, S2: {} },
+      slots: 1,
+      breaker: breaker2,
+      verifyOk: true,
+      verifyCmd: () => ({ cmd: ['true'], timeout_ms: 1000 })
+    });
+    // Inject the mergeLock dep by rebuilding the scheduler is heavier than
+    // needed — setup() does not expose it, so wire through a fresh scheduler.
+    const scheduler = createScheduler({
+      store: env.store,
+      makeRunner: env.runner.factory,
+      bd: env.bd,
+      worktree: env.worktree,
+      tokens: env.tokens,
+      verify: env.verify,
+      breaker: breaker2,
+      sessionLog: { attach: () => {} },
+      verifyCmd: () => ({ cmd: ['true'], timeout_ms: 1000 }),
+      mergeLock,
+      parallel_slots: 1,
+      now: () => 1000
+    });
+    seedQueue(env.store, ['S1'], []);
+    await scheduler.tick(WS);
+    const first_attempt = Object.keys(env.store.snapshot(WS).attempts)[0];
+    registerHandover(first_attempt);
+
+    // Success: the handover is released (breaker untripped at release time).
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    expect(handovers[first_attempt].released).toBe(true);
+    expect(handovers[first_attempt].breaker_at_release).toBe(false);
+
+    // Failure: trip FIRST, release AFTER (release observes a tripped breaker).
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'S2',
+      lane: 'serial'
+    });
+    env.store.setAutoAdvance(WS, true);
+    await scheduler.tick(WS);
+    const second_attempt = Object.keys(env.store.snapshot(WS).attempts).find(
+      (id) => env.store.snapshot(WS).attempts[id].bead_id === 'S2'
+    );
+    registerHandover(String(second_attempt));
+    env.runner.finish('S2', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+    expect(handovers[String(second_attempt)].released).toBe(true);
+    expect(handovers[String(second_attempt)].breaker_at_release).toBe(true);
   });
 });
 

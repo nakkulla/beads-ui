@@ -4,6 +4,7 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { runShell } from './bd.js';
 import { checkHealth } from './health.js';
 import { registerWorkspace } from './registry-watcher.js';
 import { docHandler } from './routes/doc.js';
@@ -82,13 +83,34 @@ export function createApp(config) {
   const merge_lock_router = createMergeLockRouter({
     locks: worker_runtime.locks,
     tokens: worker_runtime.tokens,
-    breaker: worker_runtime.breaker
+    breaker: worker_runtime.breaker,
+    // Observing mode (worker-autorun-policy §5): the server reads the base tip
+    // itself at acquire/release and records the observed merge_sha (or the
+    // rejected-release reason) on the attempt. workspace == repo in the
+    // single-canonical-workspace deployment, so the attempt is keyed by repo.
+    gitRun: (args, opts) => runShell('git', args, opts),
+    observer: {
+      onMergeObserved: ({ attempt_id, repo, merge_sha }) => {
+        worker_runtime.queueStore.updateAttempt(repo, {
+          attempt_id,
+          patch: { merge_sha }
+        });
+      },
+      onReleaseRejected: ({ attempt_id, repo, reason }) => {
+        worker_runtime.queueStore.updateAttempt(repo, {
+          attempt_id,
+          patch: { release_rejected: reason }
+        });
+      }
+    }
   });
   // Publish the merge-lock ledger on the runtime so the session-side merge guard
-  // (session.js) can query whether a session holds the (repo, base) lock (F3).
+  // (session.js) can query whether a session holds the (repo, base) lock (F3)
+  // and the scheduler can take a verified-release handover (§5).
   worker_runtime.setMergeLock({
     isHeldBy: (token) => merge_lock_router.isHeldBy(token),
-    releaseAllForToken: (token) => merge_lock_router.releaseAllForToken(token)
+    releaseAllForToken: (token) => merge_lock_router.releaseAllForToken(token),
+    takeHandover: (attempt_id) => merge_lock_router.takeHandover(attempt_id)
   });
   app.use('/api/worker/merge-lock', merge_lock_router);
 

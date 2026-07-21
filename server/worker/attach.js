@@ -349,7 +349,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   const verify =
     options.verify ||
     createVerifier({
-      gitRun: (args, opts) => runShell('git', args, opts),
+      // bdShow returns the FULL issue object — verify reads status AND
+      // metadata (pr_url for the pr_stop lane).
       bdShow: async (bead_id) => {
         const r = await runBdJson(['show', bead_id, '--json'], {
           cwd: workspace_root
@@ -402,6 +403,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     sessionLog: runtime.sessionLog,
     admission,
     verifyCmd,
+    // Late-bound: the merge-lock router (and its handover ledger) is mounted
+    // by the app AFTER attachments are built.
+    mergeLock: {
+      takeHandover: (attempt_id) =>
+        runtime.mergeLock && runtime.mergeLock.takeHandover
+          ? runtime.mergeLock.takeHandover(attempt_id)
+          : null
+    },
     port: options.port !== undefined ? options.port : () => WORKER_PORT,
     parallel_slots: options.parallel_slots
   });

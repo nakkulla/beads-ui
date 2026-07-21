@@ -174,14 +174,16 @@ async function landWorkBranch(bead_id, merge) {
  * Build a scheduler wired to the shared runtime + real runner/verify. The fake
  * runner replays a real fixture through the REAL `runSession` engine.
  *
- * @param {{ fixture: string, exit?: number, config: Record<string, any>, bdStatus?: string, landWork?: boolean }} opts
+ * @param {{ fixture: string, exit?: number, config: Record<string, any>, bdStatus?: string, bdMetadata?: Record<string, unknown>, landWork?: boolean }} opts
  */
 function buildSystem(opts) {
   const runtime = createWorkerRuntime();
   const bd = makeFakeBd(opts.config);
   const verify = createVerifier({
-    gitRun,
-    bdShow: async () => ({ status: opts.bdStatus ?? 'closed' })
+    bdShow: async () => ({
+      status: opts.bdStatus ?? 'closed',
+      metadata: opts.bdMetadata ?? {}
+    })
   });
   const land = opts.landWork ?? true;
   const worktree = {
@@ -271,8 +273,13 @@ afterEach(() => {
 
 describe('worker e2e — full success flow', () => {
   test('enqueue → dispatch → merge-lock → verify → Done → next dispatch', async () => {
+    // No verify_cmd is configured for this workspace, so the resolved
+    // auto_merge demotes to pr_stop (worker-autorun-policy §4): success is
+    // bd `resolved` + pr_url metadata, with no merge.
     const { runtime, bd, scheduler } = buildSystem({
       fixture: 'claude-success.jsonl',
+      bdStatus: 'resolved',
+      bdMetadata: { pr_url: 'https://github.com/o/r/pull/1' },
       config: { S1: { runner: 'claude' }, S2: { runner: 'claude' } }
     });
     seedQueue(runtime.queueStore, ['S1', 'S2'], []);
@@ -299,13 +306,20 @@ describe('worker e2e — full success flow', () => {
     const snap = runtime.queueStore.snapshot(WS);
     const attempts = /** @type {any[]} */ (Object.values(snap.attempts));
     expect(attempts.every((a) => a.status === 'done')).toBe(true);
-    // Independent verify recorded a real merge sha + ok result.
+    // Independent verify judged the pr_stop lane (resolved + pr_url); no
+    // merge happened, so no observed merge_sha and the demotion is recorded.
     const a1 = /** @type {any} */ (attempts.find((a) => a.bead_id === 'S1'));
     expect(a1.verify_result.ok).toBe(true);
-    expect(a1.merge_sha).toMatch(/^[0-9a-f]{7,40}$/);
+    expect(a1.done_kind).toBe('pr_stop');
+    expect(a1.demoted_reason).toBe('verify_cmd_unset');
+    expect(a1.merge_sha).toBe(null);
 
-    // A closed bead does NOT revert workflow_mode.
-    expect(bd.calls.some((c) => c.method === 'unsetMetadata')).toBe(false);
+    // pr_stop leaves the bead open → workflow_mode IS reverted (prior unset).
+    expect(
+      bd.calls.some(
+        (c) => c.method === 'unsetMetadata' && c.key === 'workflow_mode'
+      )
+    ).toBe(true);
     // All tokens revoked + no live sessions → the runtime seam reads 0.
     expect(runtime.tokens.size()).toBe(0);
     expect(scheduler.runningCount()).toBe(0);
@@ -369,12 +383,14 @@ describe('worker e2e — failure injection trips the breaker', () => {
   });
 });
 
-describe('worker e2e — a session that never merged fails verification (fail-closed)', () => {
-  test('success verdict but UNMERGED work branch → verify fails → breaker trips', async () => {
-    // The session replays a SUCCESS fixture (verdict success), but the work
-    // branch is never merged into main, so the INDEPENDENT ancestry check fails.
+describe('worker e2e — a session that never delivered fails verification (fail-closed)', () => {
+  test('success verdict but bd never reached the lane status → verify fails → breaker trips', async () => {
+    // The session replays a SUCCESS fixture (verdict success), but bd still
+    // reads `in_progress` — neither lane's completion criteria hold, so the
+    // policy-aware verify fails closed.
     const { runtime, bd, scheduler } = buildSystem({
       fixture: 'claude-success.jsonl',
+      bdStatus: 'in_progress',
       config: { S1: { runner: 'claude' } },
       landWork: false
     });
@@ -395,7 +411,8 @@ describe('worker e2e — a session that never merged fails verification (fail-cl
     );
     expect(attempt.status).toBe('failed');
     expect(attempt.verify_result.ok).toBe(false);
-    expect(attempt.verify_result.reason).toBe('work_not_in_base');
+    // pr_stop lane (demoted, no verify_cmd): resolved was never recorded.
+    expect(attempt.verify_result.reason).toBe('bd_not_resolved');
     // S1 was NOT moved to Done.
     expect(
       runtime.queueStore.snapshot(WS).done.map((e) => e.bead_id)

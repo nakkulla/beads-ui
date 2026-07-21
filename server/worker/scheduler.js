@@ -67,8 +67,12 @@ const log = debug('worker:scheduler');
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>
  * }} bd
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any> }} worktree
- * @property {{ issue: (attempt_id: string, meta: { repo: string, bead_id: string }) => string, revoke: (attempt_id: string) => void }} tokens
- * @property {{ verifyMerge: (i: { repo: string, target_base: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, work_tip?: string|null }> }} verify
+ * @property {{ issue: (attempt_id: string, meta: { repo: string, bead_id: string, target_base?: string }) => string, revoke: (attempt_id: string) => void }} tokens
+ * @property {{ verifyMerge: (i: { repo: string, target_base: string, bead_id: string, merge_policy: 'auto_merge'|'pr_stop', merge_sha: string|null }) => Promise<{ ok: boolean, reason: string }> }} verify
+ * @property {{ takeHandover: (attempt_id: string) => (() => void) | null }} [mergeLock]
+ * Merge-lock handover accessor (worker-autorun-policy §5): a verified release
+ * transfers lock ownership to the worker; the scheduler takes it here and
+ * frees it only after post-merge verification (failure order: trip → release).
  * @property {ReturnType<typeof import('./breaker.js').createBreaker>} breaker
  * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string }> }} [admission]
  * Auto-run admission validator (worker-autorun-policy §1). When present, the
@@ -218,7 +222,37 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Handle a finished session: independent verify → Done, else breaker.
+   * Take the handed-over merge lock for an attempt, if any (worker-autorun-
+   * policy §5). Returns a release thunk that is safe to call exactly once.
+   *
+   * @param {string} attempt_id
+   * @returns {() => void}
+   */
+  function takeHandover(attempt_id) {
+    /** @type {(() => void) | null} */
+    let release = null;
+    try {
+      release = deps.mergeLock ? deps.mergeLock.takeHandover(attempt_id) : null;
+    } catch {
+      release = null;
+    }
+    return () => {
+      if (release) {
+        try {
+          release();
+        } catch {
+          // Best-effort; the lock chain still advances on the next acquire.
+        }
+        release = null;
+      }
+    };
+  }
+
+  /**
+   * Handle a finished session: policy-aware independent verify → Done, else
+   * breaker. The handed-over merge lock (verified release) is freed here in
+   * EVERY branch — on failure only AFTER the breaker trips, so a waiter can
+   * never merge into the failed base.
    *
    * @param {string} workspace
    * @param {string} attempt_id
@@ -238,11 +272,13 @@ export function createScheduler(deps) {
     running.delete(attempt_id);
     claimed.delete(bead_id);
     deps.tokens.revoke(attempt_id);
+    const releaseHandover = takeHandover(attempt_id);
 
     // An explicit stop already finalized this attempt (failed + mode reverted);
     // the late `done` resolution must not re-run the failure path.
     if (stopped.has(attempt_id)) {
       stopped.delete(attempt_id);
+      releaseHandover();
       return;
     }
 
@@ -262,31 +298,52 @@ export function createScheduler(deps) {
           ? 'loud_fail_blocker'
           : `session_failed:${verdict.reason}`
       );
+      releaseHandover();
       await tick(workspace);
       return;
     }
 
-    // Independent verification — session exit 0 is NOT enough (spec §5.2). The
-    // verifier resolves the session's WORK tip (refs/heads/<bead_id>) itself and
-    // checks it actually landed in the base + bd reads `closed` (fail-closed on a
-    // missing branch). It returns the resolved work tip for the attempt record.
+    // Independent verification — session exit 0 is NOT enough (spec §5.2).
+    // Policy-aware (worker-autorun-policy §3/§5): auto_merge requires the
+    // SERVER-observed merge_sha (recorded by the merge-lock route at release)
+    // + bd `closed`; pr_stop requires bd `resolved` + pr_url metadata.
+    const attempt =
+      deps.store.snapshot(workspace).attempts[attempt_id] ||
+      /** @type {any} */ ({});
+    const merge_policy =
+      attempt.merge_policy === 'pr_stop' ? 'pr_stop' : 'auto_merge';
     const vr = await deps.verify.verifyMerge({
       repo: snap.repo,
       target_base: snap.target_base,
-      bead_id
+      bead_id,
+      merge_policy,
+      merge_sha:
+        typeof attempt.merge_sha === 'string' ? attempt.merge_sha : null
     });
     deps.store.updateAttempt(workspace, {
       attempt_id,
-      patch: { verify_result: vr, merge_sha: vr.work_tip ?? null }
+      patch: { verify_result: vr }
     });
 
     if (vr.ok) {
+      // (verify_cmd post-merge verification runs here while the handed-over
+      // lock is still held — worker-autorun-policy §4, Phase 4.)
+      releaseHandover();
+      if (merge_policy === 'pr_stop') {
+        // pr_stop leaves the bead OPEN for a later human merge session — a
+        // stray fast_track must not switch that session to unattended.
+        try {
+          await revertWorkflowMode(bead_id, prior);
+        } catch {
+          // Best-effort: bd may be down; the done record still lands.
+        }
+      }
+      // auto_merge: bead closed → workflow_mode intentionally NOT reverted.
       deps.store.moveToDone(workspace, { bead_id });
       deps.store.updateAttempt(workspace, {
         attempt_id,
-        patch: { status: 'done', finished_at: now() }
+        patch: { status: 'done', finished_at: now(), done_kind: merge_policy }
       });
-      // Bead closed → workflow_mode intentionally NOT reverted (spec §5.2).
     } else {
       await failAttempt(
         workspace,
@@ -296,6 +353,7 @@ export function createScheduler(deps) {
         prior,
         `verify_failed:${vr.reason}`
       );
+      releaseHandover();
     }
     await tick(workspace);
   }
@@ -457,7 +515,11 @@ export function createScheduler(deps) {
       return;
     }
 
-    const token = deps.tokens.issue(attempt_id, { repo: snap.repo, bead_id });
+    const token = deps.tokens.issue(attempt_id, {
+      repo: snap.repo,
+      bead_id,
+      target_base: snap.target_base
+    });
     const runner = deps.makeRunner(runner_name);
     const started_at = now();
 
@@ -652,6 +714,9 @@ export function createScheduler(deps) {
     running.delete(attempt_id);
     claimed.delete(entry.bead_id);
     deps.tokens.revoke(attempt_id);
+    // A lock already handed over to the worker survives token revocation by
+    // design — free it here so a stopped attempt cannot leak the merge lock.
+    takeHandover(attempt_id)();
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: { status: 'failed', cause: 'stopped', finished_at: now() }

@@ -40,7 +40,8 @@
  * @property {string|null} status - Attempt lifecycle: running/done/failed/blocked/orphaned.
  * @property {string|null} workflow_mode_prior - workflow_mode value snapshotted before launch (null=was unset).
  * @property {string|null} target_base - Merge target base at dispatch.
- * @property {string|null} merge_sha - Verified merge SHA (post-session).
+ * @property {string|null} merge_sha - SERVER-observed merge SHA (recorded by
+ * the merge-lock route at a verified release).
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
  * @property {string|null} cause - Failure cause (breaker banner reason).
  * @property {string|null} merge_policy - Resolved merge policy snapshot
@@ -49,6 +50,10 @@
  * (auto_rereview/halt) at dispatch.
  * @property {string|null} demoted_reason - Why the resolved merge policy was
  * demoted (e.g. verify_cmd_unset), null when not demoted.
+ * @property {string|null} release_rejected - Last rejected merge-lock release
+ * reason (base_not_advanced/merge_sha_mismatch/git_error), null when none.
+ * @property {string|null} done_kind - How the attempt completed
+ * ('auto_merge'|'pr_stop'), null until done.
  */
 /**
  * @typedef {Object} Queue
@@ -199,7 +204,9 @@ export function makeAttempt(fields) {
     cause: fields.cause ?? null,
     merge_policy: fields.merge_policy ?? null,
     drift_policy: fields.drift_policy ?? null,
-    demoted_reason: fields.demoted_reason ?? null
+    demoted_reason: fields.demoted_reason ?? null,
+    release_rejected: fields.release_rejected ?? null,
+    done_kind: fields.done_kind ?? null
   };
 }
 

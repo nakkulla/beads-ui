@@ -1,82 +1,153 @@
 import { describe, expect, test, vi } from 'vitest';
 import { createVerifier } from './verify.js';
 
+const SHA = 'b'.repeat(40);
+
 /**
- * @param {{ workTip?: string|null, baseTip?: string|null, ancestor?: boolean, status?: string|null }} opts
+ * @param {{ status?: string|null, metadata?: Record<string, unknown> }} [bead]
  */
-function makeDeps(opts) {
-  const workTip = opts.workTip === undefined ? 'work0000' : opts.workTip;
-  const baseTip = opts.baseTip === undefined ? 'base0000' : opts.baseTip;
-  const gitRun = vi.fn(async (args) => {
-    if (args[0] === 'rev-parse') {
-      const ref = args[args.length - 1];
-      if (ref.startsWith('refs/heads/')) {
-        return workTip
-          ? { code: 0, stdout: `${workTip}\n`, stderr: '' }
-          : { code: 1, stdout: '', stderr: '' };
-      }
-      return baseTip
-        ? { code: 0, stdout: `${baseTip}\n`, stderr: '' }
-        : { code: 1, stdout: '', stderr: '' };
-    }
-    if (args[0] === 'merge-base' && args[1] === '--is-ancestor') {
-      return { code: opts.ancestor ? 0 : 1, stdout: '', stderr: '' };
-    }
-    return { code: 0, stdout: '', stderr: '' };
-  });
-  const bdShow = vi.fn(async () => ({ status: opts.status ?? 'closed' }));
-  return { gitRun, bdShow };
+function makeDeps(bead = {}) {
+  const bdShow = vi.fn(async () => ({
+    status: bead.status ?? 'closed',
+    metadata: bead.metadata ?? {}
+  }));
+  return { bdShow };
 }
 
-const INPUT = { repo: '/repo', target_base: 'main', bead_id: 'UI-1' };
+const BASE_INPUT = { repo: '/repo', target_base: 'main', bead_id: 'UI-1' };
 
-describe('worker/verify independent completion check (F5)', () => {
-  test('passes when the work branch merged into base AND bd reads closed', async () => {
-    const deps = makeDeps({
-      workTip: 'aaaa111',
-      baseTip: 'bbbb222',
-      ancestor: true,
-      status: 'closed'
+describe('worker/verify — auto_merge lane (server-observed merge_sha + closed)', () => {
+  test('passes when a 40-hex observed merge_sha exists AND bd reads closed', async () => {
+    const v = await createVerifier(makeDeps({ status: 'closed' })).verifyMerge({
+      ...BASE_INPUT,
+      merge_policy: 'auto_merge',
+      merge_sha: SHA
     });
-    const v = await createVerifier(deps).verifyMerge(INPUT);
     expect(v.ok).toBe(true);
-    expect(v.ancestry).toBe(true);
-    expect(v.work_tip).toBe('aaaa111');
     expect(v.reason).toBe('ok');
-    // Ancestry is checked WORK-tip vs BASE-tip (not the vacuous base-vs-base).
-    expect(deps.gitRun).toHaveBeenCalledWith(
-      ['merge-base', '--is-ancestor', 'aaaa111', 'bbbb222'],
-      { cwd: '/repo' }
-    );
+    expect(v.bd_status).toBe('closed');
   });
 
-  test('fails (closed) when the work branch is NOT an ancestor of base (unmerged)', async () => {
-    const v = await createVerifier(
-      makeDeps({ ancestor: false, status: 'closed' })
-    ).verifyMerge(INPUT);
+  test('fails closed when the observed merge_sha is missing (no lock-observed merge)', async () => {
+    const v = await createVerifier(makeDeps({ status: 'closed' })).verifyMerge({
+      ...BASE_INPUT,
+      merge_policy: 'auto_merge',
+      merge_sha: null
+    });
     expect(v.ok).toBe(false);
-    expect(v.reason).toBe('work_not_in_base');
+    expect(v.reason).toBe('merge_sha_missing');
   });
 
-  test('fails (closed) when the work-branch ref is missing/unresolvable', async () => {
-    const deps = makeDeps({ workTip: null, ancestor: true, status: 'closed' });
-    const r = await createVerifier(deps).verifyMerge(INPUT);
-    expect(r.ok).toBe(false);
-    expect(r.work_tip).toBe(null);
-    expect(r.reason).toBe('work_tip_unresolved');
-    // Ancestry is never even attempted once the work tip is missing.
-    expect(deps.gitRun).not.toHaveBeenCalledWith(
-      expect.arrayContaining(['merge-base']),
-      expect.anything()
-    );
+  test('rejects a short/non-40-hex merge_sha (hex coercion precedent)', async () => {
+    for (const merge_sha of ['abc123', 'z'.repeat(40)]) {
+      const v = await createVerifier(
+        makeDeps({ status: 'closed' })
+      ).verifyMerge({
+        ...BASE_INPUT,
+        merge_policy: 'auto_merge',
+        merge_sha
+      });
+      expect(v.ok).toBe(false);
+      expect(v.reason).toBe('merge_sha_missing');
+    }
   });
 
-  test('fails when bd reads back resolved (resolved is NOT merge proof)', async () => {
+  test('a session that never acquired the lock keeps the bd_not_closed reason', async () => {
+    // No merge → bd never reached closed. Status check comes FIRST so the
+    // legacy reason survives for the no-lock exit.
     const v = await createVerifier(
-      makeDeps({ ancestor: true, status: 'resolved' })
-    ).verifyMerge(INPUT);
+      makeDeps({ status: 'in_progress' })
+    ).verifyMerge({
+      ...BASE_INPUT,
+      merge_policy: 'auto_merge',
+      merge_sha: null
+    });
     expect(v.ok).toBe(false);
     expect(v.reason).toBe('bd_not_closed');
-    expect(v.bd_status).toBe('resolved');
+    expect(v.bd_status).toBe('in_progress');
+  });
+
+  test('resolved is NOT merge proof for auto_merge', async () => {
+    const v = await createVerifier(
+      makeDeps({ status: 'resolved' })
+    ).verifyMerge({
+      ...BASE_INPUT,
+      merge_policy: 'auto_merge',
+      merge_sha: SHA
+    });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('bd_not_closed');
+  });
+});
+
+describe('worker/verify — pr_stop lane (resolved + pr_url)', () => {
+  test('passes on bd resolved with a pr_url metadata (no merge_sha needed)', async () => {
+    const v = await createVerifier(
+      makeDeps({
+        status: 'resolved',
+        metadata: { pr_url: 'https://github.com/o/r/pull/7' }
+      })
+    ).verifyMerge({
+      ...BASE_INPUT,
+      merge_policy: 'pr_stop',
+      merge_sha: null
+    });
+    expect(v.ok).toBe(true);
+    expect(v.reason).toBe('ok');
+  });
+
+  test('fails when bd is not resolved', async () => {
+    for (const status of ['open', 'in_progress', 'closed']) {
+      const v = await createVerifier(
+        makeDeps({
+          status,
+          metadata: { pr_url: 'https://github.com/o/r/pull/7' }
+        })
+      ).verifyMerge({
+        ...BASE_INPUT,
+        merge_policy: 'pr_stop',
+        merge_sha: null
+      });
+      expect(v.ok).toBe(false);
+      expect(v.reason).toBe('bd_not_resolved');
+    }
+  });
+
+  test('fails when pr_url metadata is missing/empty', async () => {
+    for (const metadata of [{}, { pr_url: '' }, { pr_url: 42 }]) {
+      const v = await createVerifier(
+        makeDeps({ status: 'resolved', metadata })
+      ).verifyMerge({
+        ...BASE_INPUT,
+        merge_policy: 'pr_stop',
+        merge_sha: null
+      });
+      expect(v.ok).toBe(false);
+      expect(v.reason).toBe('pr_url_missing');
+    }
+  });
+});
+
+describe('worker/verify — fail-closed plumbing', () => {
+  test('a null bdShow result fails closed', async () => {
+    const v = await createVerifier({ bdShow: async () => null }).verifyMerge({
+      ...BASE_INPUT,
+      merge_policy: 'auto_merge',
+      merge_sha: SHA
+    });
+    expect(v.ok).toBe(false);
+    expect(v.bd_status).toBe(null);
+  });
+
+  test('an unknown merge_policy fails closed instead of picking a lane', async () => {
+    const v = await createVerifier(makeDeps({ status: 'closed' })).verifyMerge(
+      /** @type {any} */ ({
+        ...BASE_INPUT,
+        merge_policy: 'yolo',
+        merge_sha: SHA
+      })
+    );
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('invalid_merge_policy');
   });
 });
