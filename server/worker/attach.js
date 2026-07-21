@@ -36,6 +36,7 @@ import {
   parsePlanReceipt,
   planFreshness
 } from '../workflow-enrich.js';
+import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createOrphanDetector } from './orphan.js';
 import { createRunner } from './runner/index.js';
@@ -167,6 +168,12 @@ export function createLiveBd(config) {
       const plan_review = Object.hasOwn(md, 'plan_review')
         ? md.plan_review
         : undefined;
+      // Same presence rule for the admission inputs: a malformed spec_review
+      // must reach the validator as present-and-invalid, never as absent.
+      const spec_id = typeof md.spec_id === 'string' ? md.spec_id : null;
+      const spec_review = Object.hasOwn(md, 'spec_review')
+        ? md.spec_review
+        : undefined;
 
       // Precompute plan freshness against the CANONICAL workspace root (where the
       // plan doc lives + is committed) — only for a full_plan bead with a valid
@@ -216,6 +223,8 @@ export function createLiveBd(config) {
         status,
         plan_review,
         plan_fresh,
+        spec_id,
+        spec_review,
         deps: []
       };
     }
@@ -277,7 +286,9 @@ export function defaultProbePid(pid) {
  *   ccx_env?: Record<string, string|undefined>,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
  *   port?: number | (() => number),
- *   parallel_slots?: number
+ *   parallel_slots?: number,
+ *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
+ *   admission?: any
  * }} [options]
  */
 export function createWorkerAttachment(workspace_root, options = {}) {
@@ -287,6 +298,46 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   const bd =
     options.bd || createLiveBd({ cwd: workspace_root, repo, target_base });
+
+  // Workspace-scoped admission accessor (worker-autorun-policy §1): the
+  // scheduler validates candidates/dispatches through `validate` (base
+  // defaults to the CURRENT base ref tip; dispatch pins the worktree
+  // base_oid), and the ws place handler pre-checks through `check`.
+  const gitRun =
+    options.gitRun ||
+    ((/** @type {string[]} */ args, /** @type {any} */ opts) =>
+      runShell('git', args, opts));
+  const admission = options.admission || {
+    /**
+     * @param {import('./scheduler.js').BeadSnapshot} snap
+     * @param {string} [base]
+     */
+    validate(snap, base) {
+      return validateAdmission({
+        gitRun,
+        repo: snap.repo,
+        base: base || snap.target_base,
+        bead: {
+          route: snap.route,
+          spec_id: snap.spec_id,
+          spec_review: snap.spec_review
+        }
+      });
+    },
+    /**
+     * @param {string} bead_id
+     * @returns {Promise<import('./admission.js').AdmissionResult>}
+     */
+    async check(bead_id) {
+      let snap;
+      try {
+        snap = await bd.snapshotBead(bead_id);
+      } catch {
+        return { ok: false, reason: 'git_error' };
+      }
+      return this.validate(snap);
+    }
+  };
   const worktree =
     options.worktree || createWorktreeManager({ locks: runtime.locks });
   const verify =
@@ -331,6 +382,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     verify,
     breaker: runtime.breaker,
     sessionLog: runtime.sessionLog,
+    admission,
     port: options.port !== undefined ? options.port : () => WORKER_PORT,
     parallel_slots: options.parallel_slots
   });
@@ -345,7 +397,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // Keep runtime.status()'s running_count in sync with THIS scheduler.
   runtime.setRunningCountProvider(() => scheduler.runningCount());
 
-  return { runtime, scheduler, orphan, bd, workspace: workspace_root };
+  return {
+    runtime,
+    scheduler,
+    orphan,
+    bd,
+    admission,
+    workspace: workspace_root
+  };
 }
 
 /**
@@ -413,6 +472,24 @@ export async function tickWorkerQueue(workspace_root) {
     return;
   }
   await att.scheduler.tick(keyFor(workspace_root));
+}
+
+/**
+ * Pre-check auto-run admission for a queue placement, IF an attachment is
+ * registered. Returns `null` when none is (ws-handler tests and inactive
+ * workspaces stay hermetic — no bd/git reachable, and nothing can dispatch
+ * there anyway; the dispatch-time re-check stays the authoritative gate).
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<import('./admission.js').AdmissionResult | null>}
+ */
+export async function checkWorkerQueueAdmission(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.admission) {
+    return null;
+  }
+  return att.admission.check(bead_id);
 }
 
 /**

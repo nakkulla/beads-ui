@@ -27,7 +27,11 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import { makeError, makeOk } from '../../app/protocol.js';
-import { stopWorkerAttempt, tickWorkerQueue } from '../worker/attach.js';
+import {
+  checkWorkerQueueAdmission,
+  stopWorkerAttempt,
+  tickWorkerQueue
+} from '../worker/attach.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   emitSessionLogAppend,
@@ -312,10 +316,16 @@ function revisionOf(payload) {
  * Handle `worker-queue-place`. Payload:
  * `{ bead_id, lane: 'serial'|'parallel', index?, expected_revision }`.
  *
+ * Queue entry is admission-gated (worker-autorun-policy §1): with a live
+ * attachment the bead must pass the fail-closed validator (route pin + spec
+ * existence + fresh spec_review receipt) before placement; a refusal replies
+ * `{ applied:false, admission_reason }` without mutating the queue. Without an
+ * attachment the check is skipped (nothing can dispatch there anyway).
+ *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleWorkerQueuePlace(ws, req) {
+export async function handleWorkerQueuePlace(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   if (
     typeof p.bead_id !== 'string' ||
@@ -333,6 +343,27 @@ export function handleWorkerQueuePlace(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
+  /** @type {import('../worker/admission.js').AdmissionResult | null} */
+  let admission = null;
+  try {
+    admission = await checkWorkerQueueAdmission(key, p.bead_id);
+  } catch (err) {
+    log('admission check failed for %s/%s: %o', key, p.bead_id, err);
+    admission = { ok: false, reason: 'git_error' };
+  }
+  if (admission && !admission.ok) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: false,
+          conflict: false,
+          admission_reason: admission.reason,
+          queue: queueStore().snapshot(key)
+        })
+      )
+    );
+    return;
+  }
   const result = queueStore().place(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,

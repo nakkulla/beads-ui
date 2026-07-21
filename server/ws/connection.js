@@ -421,7 +421,7 @@ export async function handleMessage(ws, data) {
       handleUnsubscribeWorkerQueue(ws, req);
       return;
     case 'worker-queue-place':
-      handleWorkerQueuePlace(ws, req);
+      await handleWorkerQueuePlace(ws, req);
       return;
     case 'worker-queue-reorder':
       handleWorkerQueueReorder(ws, req);

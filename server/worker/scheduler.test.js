@@ -172,7 +172,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, breaker?: any, tokens?: any, locks?: any, makeRunner?: (name: string) => any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, breaker?: any, tokens?: any, locks?: any, makeRunner?: (name: string) => any, admission?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -205,6 +205,7 @@ function setup(opts) {
     verify,
     breaker,
     sessionLog,
+    admission: opts.admission,
     parallel_slots: opts.slots ?? 2,
     now: () => 1000
   });
@@ -535,6 +536,98 @@ describe('scheduler failure (breaker + workflow_mode revert + repo block)', () =
         env.bd.calls.indexOf(c) === env.bd.calls.length - 1
     );
     expect(revert).toBeTruthy();
+  });
+});
+
+describe('scheduler admission gate (worker-autorun-policy §1)', () => {
+  test('admission-invalid serial head is skipped to the next candidate in the SAME tick (no starvation)', async () => {
+    // The fake routes by a config marker (model:'invalid') since the snapshot
+    // itself carries no bead id.
+    const admission = {
+      validate: vi.fn(async (/** @type {any} */ snap) =>
+        snap.model === 'invalid'
+          ? { ok: false, reason: 'spec_missing' }
+          : { ok: true }
+      )
+    };
+    const env = setup({
+      config: {
+        S1: { model: 'invalid' },
+        S2: {},
+        P1: { model: 'invalid' },
+        P2: {}
+      },
+      slots: 2,
+      admission
+    });
+    seedQueue(env.store, ['S1', 'S2'], ['P1', 'P2']);
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+    expect(env.scheduler.isRunning('P1')).toBe(false);
+    expect(env.scheduler.isRunning('P2')).toBe(true);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.admission.S1).toEqual({
+      reason: 'spec_missing',
+      at: expect.any(Number)
+    });
+    expect(snap.admission.P1).toEqual({
+      reason: 'spec_missing',
+      at: expect.any(Number)
+    });
+    expect(snap.admission.S2).toBeUndefined();
+  });
+
+  test('dispatch re-checks admission against the pinned worktree base_oid (TOCTOU)', async () => {
+    const admission = {
+      // Valid at the tick scan (no base pinned yet), stale once dispatch pins
+      // the worktree base_oid — models a base advancing between scan and add.
+      validate: vi.fn(
+        async (/** @type {any} */ _snap, /** @type {any} */ base) =>
+          base === 'base-S1'
+            ? { ok: false, reason: 'spec_review_stale' }
+            : { ok: true }
+      )
+    };
+    const env = setup({ config: { S1: {} }, slots: 1, admission });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    // The already-created worktree is cleaned up on the admission refusal.
+    expect(env.worktree.remove).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'S1'
+    });
+    expect(env.store.snapshot(WS).admission.S1).toEqual({
+      reason: 'spec_review_stale',
+      at: expect.any(Number)
+    });
+    // No session spawned, no attempt persisted for the refused dispatch.
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toHaveLength(0);
+  });
+
+  test('a successful dispatch clears the bead admission record', async () => {
+    let invalid = true;
+    const admission = {
+      validate: vi.fn(async () =>
+        invalid ? { ok: false, reason: 'receipt_unreachable' } : { ok: true }
+      )
+    };
+    const env = setup({ config: { S1: {} }, slots: 1, admission });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    expect(env.store.snapshot(WS).admission.S1).toEqual({
+      reason: 'receipt_unreachable',
+      at: expect.any(Number)
+    });
+
+    invalid = false;
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
   });
 });
 

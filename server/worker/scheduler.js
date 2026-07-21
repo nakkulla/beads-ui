@@ -42,10 +42,14 @@ const log = debug('worker:scheduler');
  * @property {string|null} [plan_path] - Plan path when present.
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
  * @property {unknown} [plan_review] - Raw plan_review metadata value. Key
- *   absence ⇒ `undefined`; any present value (non-string/null included) must
- *   reach the guard so an invalid receipt blocks instead of reading as absent.
+ * absence ⇒ `undefined`; any present value (non-string/null included) must
+ * reach the guard so an invalid receipt blocks instead of reading as absent.
  * @property {boolean|null} [plan_fresh] - Precomputed plan freshness (true/false
- *   when a full_plan bead has a valid receipt; null otherwise/undetermined).
+ * when a full_plan bead has a valid receipt; null otherwise/undetermined).
+ * @property {string|null} [spec_id] - Spec doc path metadata (admission input).
+ * @property {unknown} [spec_review] - Raw spec_review metadata value. Key
+ * absence ⇒ `undefined`; any present value must reach the admission
+ * validator so a malformed receipt rejects instead of reading as absent.
  * @property {string[]} [deps] - Dependency ids.
  */
 
@@ -63,6 +67,10 @@ const log = debug('worker:scheduler');
  * @property {{ issue: (attempt_id: string, meta: { repo: string, bead_id: string }) => string, revoke: (attempt_id: string) => void }} tokens
  * @property {{ verifyMerge: (i: { repo: string, target_base: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, work_tip?: string|null }> }} verify
  * @property {ReturnType<typeof import('./breaker.js').createBreaker>} breaker
+ * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string }> }} [admission]
+ * Auto-run admission validator (worker-autorun-policy §1). When present, the
+ * tick candidate scan AND the dispatch re-check (against the pinned worktree
+ * base_oid) both gate on it; refusals are recorded in `Queue.admission`.
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void }} sessionLog
  * @property {number | (() => number)} [port] - Server port for the merge-lock endpoint injected into the preamble.
  * @property {() => number} [now]
@@ -117,6 +125,34 @@ export function createScheduler(deps) {
    * @type {Set<string>}
    */
   const stopped = new Set();
+  /**
+   * Beads refused by the dispatch-time admission RE-check within the current
+   * tick cascade. The refill pass skips them so a scan-pass/dispatch-fail
+   * disagreement (moving base) can never livelock dispatch↔tick; the set is
+   * cleared at every externally-initiated tick, so the next real tick retries.
+   *
+   * @type {Set<string>}
+   */
+  const dispatch_refused = new Set();
+
+  /**
+   * Run the admission validator fail-closed: absent dep passes (legacy wiring),
+   * a validator throw is a git_error refusal, never an escape out of tick.
+   *
+   * @param {BeadSnapshot} snap
+   * @param {string} [base]
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function checkAdmission(snap, base) {
+    if (!deps.admission) {
+      return { ok: true };
+    }
+    try {
+      return await deps.admission.validate(snap, base);
+    } catch {
+      return { ok: false, reason: 'git_error' };
+    }
+  }
 
   /**
    * @param {'serial'|'parallel'} lane
@@ -320,6 +356,26 @@ export function createScheduler(deps) {
       return;
     }
 
+    // Admission re-check against the PINNED base_oid — the tick scan validated
+    // against a moving base tip, so a base advance between scan and worktree
+    // creation (TOCTOU) is caught here, fail-closed.
+    const adm = await checkAdmission(snap, wt.base_oid);
+    if (!adm.ok) {
+      deps.store.recordAdmission(workspace, {
+        bead_id,
+        reason: adm.reason || 'git_error'
+      });
+      try {
+        await deps.worktree.remove({ repo: snap.repo, bead_id });
+      } catch {
+        // Best-effort cleanup; the refusal is already recorded.
+      }
+      claimed.delete(bead_id);
+      dispatch_refused.add(bead_id);
+      await tickPass(workspace);
+      return;
+    }
+
     // Record + readback workflow_mode=fast_track (double-delivered with prompt).
     // The set AND its confirming readback are contained: a bd failure or a
     // readback that does not echo `fast_track` fails THIS dispatch only (records
@@ -427,6 +483,7 @@ export function createScheduler(deps) {
       }
     });
 
+    deps.store.clearAdmission(workspace, bead_id);
     deps.sessionLog.attach(workspace, attempt_id, handle.events);
     running.set(attempt_id, { bead_id, repo: snap.repo, lane, handle, prior });
 
@@ -436,13 +493,25 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Externally-initiated tick: reopens dispatch-refused beads for a fresh
+   * attempt, then runs one dispatch pass.
+   *
+   * @param {string} workspace
+   * @returns {Promise<void>}
+   */
+  async function tick(workspace) {
+    dispatch_refused.clear();
+    await tickPass(workspace);
+  }
+
+  /**
    * One dispatch pass. Selects the serial head (skipping blocked) + fills
    * parallel slots, honoring auto_advance and the 1+N cap.
    *
    * @param {string} workspace
    * @returns {Promise<void>}
    */
-  async function tick(workspace) {
+  async function tickPass(workspace) {
     const q = deps.store.snapshot(workspace);
     if (!q.auto_advance) {
       return;
@@ -454,7 +523,7 @@ export function createScheduler(deps) {
     // Serial head: at most one serial session; skip blocked to next runnable.
     if (runningInLane('serial') === 0) {
       for (const entry of q.serial) {
-        if (claimed.has(entry.bead_id)) {
+        if (claimed.has(entry.bead_id) || dispatch_refused.has(entry.bead_id)) {
           continue;
         }
         let snap;
@@ -464,6 +533,16 @@ export function createScheduler(deps) {
           continue;
         }
         if (snap.ready && !snap.blocked) {
+          const adm = await checkAdmission(snap);
+          if (!adm.ok) {
+            // Same skip semantics as a blocked head: record the refusal and
+            // keep scanning so an inadmissible head never starves the lane.
+            deps.store.recordAdmission(workspace, {
+              bead_id: entry.bead_id,
+              reason: adm.reason || 'git_error'
+            });
+            continue;
+          }
           to_dispatch.push({ bead_id: entry.bead_id, lane: 'serial', snap });
           break;
         }
@@ -477,7 +556,7 @@ export function createScheduler(deps) {
       if (free <= 0) {
         break;
       }
-      if (claimed.has(entry.bead_id)) {
+      if (claimed.has(entry.bead_id) || dispatch_refused.has(entry.bead_id)) {
         continue;
       }
       let snap;
@@ -487,6 +566,14 @@ export function createScheduler(deps) {
         continue;
       }
       if (snap.ready && !snap.blocked) {
+        const adm = await checkAdmission(snap);
+        if (!adm.ok) {
+          deps.store.recordAdmission(workspace, {
+            bead_id: entry.bead_id,
+            reason: adm.reason || 'git_error'
+          });
+          continue;
+        }
         to_dispatch.push({ bead_id: entry.bead_id, lane: 'parallel', snap });
         free -= 1;
       }

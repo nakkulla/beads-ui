@@ -52,6 +52,9 @@
  * @property {QueueEntry[]} parallel - Parallel pool (slot-priority order).
  * @property {QueueEntry[]} done - Completed today.
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
+ * @property {Record<string, { reason: string, at: number }>} admission -
+ * Auto-run admission refusals by bead_id (badge display). Cleared only on a
+ * successful dispatch or queue removal — never auto-expired.
  */
 /**
  * @typedef {Object} QueueOpResult
@@ -84,7 +87,8 @@ function emptyQueue() {
     serial: [],
     parallel: [],
     done: [],
-    attempts: {}
+    attempts: {},
+    admission: {}
   };
 }
 
@@ -190,6 +194,16 @@ function normalizeQueue(raw) {
             bead_id: value.bead_id
           })
         );
+      }
+    }
+  }
+  if (isRecord(raw.admission)) {
+    for (const [bead_id, value] of Object.entries(raw.admission)) {
+      if (isRecord(value) && typeof value.reason === 'string') {
+        q.admission[bead_id] = {
+          reason: value.reason,
+          at: typeof value.at === 'number' ? value.at : 0
+        };
       }
     }
   }
@@ -432,6 +446,7 @@ export function createQueueStore(options = {}) {
       const { expected_revision, bead_id } = input;
       return applyMutation(workspace, expected_revision, (next) => {
         removeFromLanes(next, bead_id);
+        delete next.admission[bead_id];
         return true;
       });
     },
@@ -501,6 +516,48 @@ export function createQueueStore(options = {}) {
         }
         removeFromLanes(next, bead_id);
         next.done.push({ bead_id, added_at: now() });
+        return true;
+      });
+    },
+
+    /**
+     * Record an auto-run admission refusal for a bead (scheduler-owned, no
+     * CAS). Overwrites any prior record for the same bead.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, reason: string }} input
+     * @returns {QueueOpResult}
+     */
+    recordAdmission(workspace, input) {
+      const { bead_id, reason } = input;
+      return applyUnconditional(workspace, (next) => {
+        if (
+          typeof bead_id !== 'string' ||
+          bead_id.length === 0 ||
+          typeof reason !== 'string' ||
+          reason.length === 0
+        ) {
+          return false;
+        }
+        next.admission[bead_id] = { reason, at: now() };
+        return true;
+      });
+    },
+
+    /**
+     * Clear a bead's admission record (scheduler-owned, no CAS). No-op (no
+     * revision bump) when absent.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {QueueOpResult}
+     */
+    clearAdmission(workspace, bead_id) {
+      return applyUnconditional(workspace, (next) => {
+        if (!Object.hasOwn(next.admission, bead_id)) {
+          return false;
+        }
+        delete next.admission[bead_id];
         return true;
       });
     },
