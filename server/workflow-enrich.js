@@ -23,6 +23,9 @@ const log = debug('workflow-enrich');
 /** `<reviewer>@<sha>` — reviewer is a token, sha is 7-40 hex chars. */
 const RECEIPT_RE = /^([A-Za-z0-9_.:-]+)@([0-9a-fA-F]{7,40})$/;
 
+/** Strict plan-receipt: reviewer EXACTLY `user`, sha EXACTLY 40 hex. */
+const PLAN_RECEIPT_RE = /^user@([0-9a-fA-F]{40})$/;
+
 /**
  * Cache of `git log` staleness probes keyed by `<head>\0<sha>\0<path>`.
  * Keyed on HEAD so an advancing HEAD naturally invalidates prior results and
@@ -56,6 +59,24 @@ export function parseReceipt(value) {
   }
   const reviewer = m[1];
   return { reviewer, sha: m[2], is_skip: reviewer === 'skipped' };
+}
+
+/**
+ * Strict plan-receipt validation (spec §변경 1). The general {@link parseReceipt}
+ * accepts any reviewer token and a 7-40 hex sha, so it would let `codex@<short>`
+ * earn authorization. A plan approval is valid ONLY when the reviewer is exactly
+ * `user` AND the sha is exactly 40 hex — plan has no skip path, so `skipped@...`,
+ * any other reviewer, a short sha, and a parse failure are all invalid.
+ *
+ * @param {unknown} value
+ * @returns {{ sha: string } | null}
+ */
+export function parsePlanReceipt(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const m = PLAN_RECEIPT_RE.exec(value.trim());
+  return m ? { sha: m[1] } : null;
 }
 
 /**
@@ -93,6 +114,41 @@ export function gitHead(workspace_root) {
 }
 
 /**
+ * Core staleness probe: did `path` change between `sha` and `head`?
+ *   - `true`  → changed (git log non-empty)
+ *   - `false` → unchanged (git log empty)
+ *   - `null`  → git error / missing input (undetermined)
+ * Cache-backed on `<head>\0<sha>\0<path>` (HEAD-keyed, so an advancing HEAD
+ * invalidates prior results). Only definitive results are cached.
+ *
+ * @param {string | undefined | null} workspace_root
+ * @param {string | null} head
+ * @param {string} sha
+ * @param {string} path
+ * @returns {boolean | null}
+ */
+function pathChangedSinceOrNull(workspace_root, head, sha, path) {
+  if (!workspace_root || !head || !sha || !path) {
+    return null;
+  }
+  const key = `${head}\x00${sha}\x00${path}`;
+  const cached = stale_cache.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const out = runGit(workspace_root, ['log', `${sha}..HEAD`, '--', path]);
+  if (out === null) {
+    return null;
+  }
+  const changed = out.trim().length > 0;
+  if (stale_cache.size >= STALE_CACHE_CAP) {
+    stale_cache.clear();
+  }
+  stale_cache.set(key, changed);
+  return changed;
+}
+
+/**
  * True when `path` changed between `sha` and `head` (non-empty git log).
  * Fail-quiet: any missing input or git error yields false.
  *
@@ -103,21 +159,60 @@ export function gitHead(workspace_root) {
  * @returns {boolean}
  */
 function pathChangedSince(workspace_root, head, sha, path) {
-  if (!workspace_root || !head || !sha || !path) {
-    return false;
+  return pathChangedSinceOrNull(workspace_root, head, sha, path) === true;
+}
+
+/**
+ * Worktree-dirty probe for `path`: `git status --porcelain -- <path>` non-empty.
+ * Deliberately BYPASSES stale_cache — an uncommitted overwrite is invisible to
+ * `git log`, so this must re-check every call. Returns null on git error.
+ *
+ * @param {string | undefined | null} workspace_root
+ * @param {string} path
+ * @returns {boolean | null}
+ */
+function pathDirty(workspace_root, path) {
+  if (!workspace_root || !path) {
+    return null;
   }
-  const key = `${head}\x00${sha}\x00${path}`;
-  const cached = stale_cache.get(key);
-  if (cached !== undefined) {
-    return cached;
+  const out = runGit(workspace_root, ['status', '--porcelain', '--', path]);
+  if (out === null) {
+    return null;
   }
-  const out = runGit(workspace_root, ['log', `${sha}..HEAD`, '--', path]);
-  const stale = typeof out === 'string' && out.trim().length > 0;
-  if (stale_cache.size >= STALE_CACHE_CAP) {
-    stale_cache.clear();
+  return out.trim().length > 0;
+}
+
+/**
+ * Plan-review freshness (spec §변경 1) — 3-state. `fresh` requires BOTH:
+ *   1. `git log <sha>..HEAD -- <plan_path>` empty (no post-receipt commit), AND
+ *   2. `git status --porcelain -- <plan_path>` empty (worktree clean — catches
+ *      an uncommitted overwrite that condition 1 cannot see).
+ * Any git error or missing input yields `unknown`. Consumers differ: the runner
+ * guard is fail-closed (only `fresh` authorizes), planStage is fail-quiet (only
+ * `stale` downgrades; `unknown` stays reviewed).
+ *
+ * @param {string | undefined | null} workspace_root
+ * @param {string | null} head
+ * @param {string} sha
+ * @param {string} plan_path
+ * @returns {'fresh' | 'stale' | 'unknown'}
+ */
+export function planFreshness(workspace_root, head, sha, plan_path) {
+  if (!workspace_root || !head || !sha || !plan_path) {
+    return 'unknown';
   }
-  stale_cache.set(key, stale);
-  return stale;
+  const dirty = pathDirty(workspace_root, plan_path);
+  if (dirty === null) {
+    return 'unknown';
+  }
+  if (dirty) {
+    return 'stale';
+  }
+  const changed = pathChangedSinceOrNull(workspace_root, head, sha, plan_path);
+  if (changed === null) {
+    return 'unknown';
+  }
+  return changed ? 'stale' : 'fresh';
 }
 
 /**
@@ -228,6 +323,45 @@ function specStage(md, receipt, stale) {
 }
 
 /**
+ * Compute the PLAN stage state (full_plan route only, spec §변경 4). Symmetric
+ * to {@link specStage}, but plan approval has NO skip path: only a strict
+ * `user@<40hex>` receipt is an approval, its freshness is 3-state, and — fail-
+ * quiet like the rest of this module — only `stale` downgrades (`unknown` stays
+ * reviewed). A present-but-invalid receipt is NOT an approval (shown pending,
+ * raw receipt exposed); an absent receipt on a resolved/closed bead is a legacy
+ * approval.
+ *
+ * @param {Record<string, any>} md
+ * @param {string} status
+ * @param {string | undefined | null} workspace_root
+ * @param {string | null} head
+ * @returns {WorkflowStage}
+ */
+function planStage(md, status, workspace_root, head) {
+  const raw = typeof md.plan_review === 'string' ? md.plan_review : null;
+  if (!md.plan_path) {
+    return { state: 'empty', receipt: raw, stale: false };
+  }
+  if (Object.hasOwn(md, 'plan_review')) {
+    // Presence via hasOwn: a present non-string/null value is an INVALID
+    // receipt (pending), never key-absence — key-absence is what legitimizes
+    // the legacy branch below.
+    const receipt = parsePlanReceipt(md.plan_review);
+    if (!receipt) {
+      return { state: 'dim', receipt: raw, stale: false };
+    }
+    const stale =
+      planFreshness(workspace_root, head, receipt.sha, md.plan_path) ===
+      'stale';
+    return { state: stale ? 'stale' : 'reviewed', receipt: raw, stale };
+  }
+  if (status === 'resolved' || status === 'closed') {
+    return { state: 'on', receipt: null, stale: false };
+  }
+  return { state: 'dim', receipt: null, stale: false };
+}
+
+/**
  * Compute the IMPL stage state.
  *
  * @param {Record<string, any>} md
@@ -305,11 +439,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     merge: mergeStage(md, status)
   };
   if (route === 'full_plan') {
-    stages.plan = {
-      state: md.plan_path ? 'on' : 'empty',
-      receipt: null,
-      stale: false
-    };
+    stages.plan = planStage(md, status, workspace_root, resolved_head);
   }
 
   return {

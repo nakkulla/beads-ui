@@ -239,3 +239,173 @@ describe('enrichIssueWorkflow', () => {
     expect(wf.chips.pr).toEqual({ number: 42 });
   });
 });
+
+describe('planStage (full_plan)', () => {
+  test('no plan_path → empty', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+    const wf = enrichIssueWorkflow(
+      { status: 'in_progress', metadata: { route: 'full_plan' } },
+      dir
+    );
+    expect(wf.stages.plan?.state).toBe('empty');
+  });
+
+  test('valid user receipt, fresh → reviewed', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const sha = commitAll(dir, 'add plan');
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'user@' + sha
+        }
+      },
+      dir
+    );
+    expect(wf.stages.plan?.state).toBe('reviewed');
+    expect(wf.stages.plan?.stale).toBe(false);
+  });
+
+  test('valid user receipt, later commit touches plan → stale', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const sha = commitAll(dir, 'add plan');
+    writeFile(dir, 'docs/plan.md', '# plan\nrevised\n');
+    commitAll(dir, 'revise plan');
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'user@' + sha
+        }
+      },
+      dir
+    );
+    expect(wf.stages.plan?.state).toBe('stale');
+    expect(wf.stages.plan?.stale).toBe(true);
+  });
+
+  test('invalid receipt (skipped@) → dim, raw receipt exposed', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const sha = commitAll(dir, 'add plan');
+    const raw = 'skipped@' + sha;
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: raw
+        }
+      },
+      dir
+    );
+    expect(wf.stages.plan?.state).toBe('dim');
+    expect(wf.stages.plan?.receipt).toBe(raw);
+  });
+
+  test('present null/non-string plan_review + closed → dim, never legacy on', () => {
+    // hasOwn presence: a present-but-invalid value must not collapse into
+    // "key absent" and reach the legacy-approval branch.
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    commitAll(dir, 'add plan');
+    for (const bad of [null, 123]) {
+      const wf = enrichIssueWorkflow(
+        {
+          status: 'closed',
+          metadata: {
+            route: 'full_plan',
+            plan_path: 'docs/plan.md',
+            plan_review: bad
+          }
+        },
+        dir
+      );
+      expect(wf.stages.plan?.state).toBe('dim');
+    }
+  });
+
+  test('no plan_review key + closed → on (legacy approval)', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    commitAll(dir, 'add plan');
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'closed',
+        metadata: { route: 'full_plan', plan_path: 'docs/plan.md' }
+      },
+      dir
+    );
+    expect(wf.stages.plan?.state).toBe('on');
+  });
+
+  test('no plan_review key + in_progress → dim (draft pending)', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    commitAll(dir, 'add plan');
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: { route: 'full_plan', plan_path: 'docs/plan.md' }
+      },
+      dir
+    );
+    expect(wf.stages.plan?.state).toBe('dim');
+    expect(wf.stages.plan?.receipt).toBeNull();
+  });
+
+  test('worktree-dirty plan (uncommitted overwrite) → stale', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const sha = commitAll(dir, 'add plan');
+    // HEAD still == sha (no follow-up commit), but the working copy is dirty.
+    writeFile(dir, 'docs/plan.md', '# plan\nuncommitted\n');
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'user@' + sha
+        }
+      },
+      dir
+    );
+    expect(wf.stages.plan?.state).toBe('stale');
+  });
+
+  test('worktree-dirty check bypasses the stale_cache', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const sha = commitAll(dir, 'add plan');
+    const md = {
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      plan_review: 'user@' + sha
+    };
+    // First pass: clean worktree → reviewed, which caches the git-log probe
+    // under the (unchanged) HEAD key.
+    const first = enrichIssueWorkflow(
+      { status: 'in_progress', metadata: md },
+      dir
+    );
+    expect(first.stages.plan?.state).toBe('reviewed');
+    // Dirty the plan WITHOUT advancing HEAD — the git-log cache still says
+    // "unchanged", so only a cache-bypassing dirty probe can flip it to stale.
+    writeFile(dir, 'docs/plan.md', '# plan\ndirtied\n');
+    const second = enrichIssueWorkflow(
+      { status: 'in_progress', metadata: md },
+      dir
+    );
+    expect(second.stages.plan?.state).toBe('stale');
+  });
+});

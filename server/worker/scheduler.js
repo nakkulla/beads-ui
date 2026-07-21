@@ -40,6 +40,12 @@ const log = debug('worker:scheduler');
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string|null} [plan_path] - Plan path when present.
+ * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
+ * @property {unknown} [plan_review] - Raw plan_review metadata value. Key
+ *   absence ⇒ `undefined`; any present value (non-string/null included) must
+ *   reach the guard so an invalid receipt blocks instead of reading as absent.
+ * @property {boolean|null} [plan_fresh] - Precomputed plan freshness (true/false
+ *   when a full_plan bead has a valid receipt; null otherwise/undetermined).
  * @property {string[]} [deps] - Dependency ids.
  */
 
@@ -274,11 +280,20 @@ export function createScheduler(deps) {
     }
     const runner_name = snap.runner || 'claude';
 
-    // full_plan entry guard (plan-save hook is claude-only).
+    // full_plan entry guard (plan-save hook is claude-only). Freshness is
+    // precomputed in snapshotBead against the canonical workspace root, so pass
+    // it through — a worktree here would lack the plan-doc ancestry.
     try {
       assertRunnerAllowed(
-        { id: bead_id, route: snap.route, plan_path: snap.plan_path },
-        /** @type {any} */ (runner_name)
+        {
+          id: bead_id,
+          route: snap.route,
+          plan_path: snap.plan_path,
+          plan_review: snap.plan_review,
+          status: snap.status
+        },
+        /** @type {any} */ (runner_name),
+        { plan_fresh: snap.plan_fresh ?? undefined }
       );
     } catch {
       claimed.delete(bead_id);
@@ -364,7 +379,10 @@ export function createScheduler(deps) {
         {
           id: bead_id,
           route: snap.route,
-          plan_path: snap.plan_path
+          plan_path: snap.plan_path,
+          plan_review: snap.plan_review,
+          status: snap.status,
+          plan_fresh: snap.plan_fresh
         },
         wt.path,
         {

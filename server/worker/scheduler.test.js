@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createBreaker } from './breaker.js';
 import { createLockManager } from './locks.js';
 import { createQueueStore } from './queue-store.js';
+import { makeFixtureSpawn } from './runner/fixture-spawn.js';
+import { createRunner } from './runner/index.js';
 import { createScheduler } from './scheduler.js';
 import { createTokenRegistry } from './session-tokens.js';
 
@@ -129,6 +131,9 @@ function makeFakeBd(config) {
         workflow_mode: c.workflow_mode ?? null,
         route: c.route ?? null,
         plan_path: c.plan_path ?? null,
+        status: c.status ?? '',
+        plan_review: c.plan_review,
+        plan_fresh: c.plan_fresh ?? null,
         deps: c.deps ?? []
       };
     },
@@ -167,7 +172,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, breaker?: any, tokens?: any, locks?: any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, breaker?: any, tokens?: any, locks?: any, makeRunner?: (name: string) => any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -193,7 +198,7 @@ function setup(opts) {
   const sessionLog = { attach: vi.fn() };
   const scheduler = createScheduler({
     store,
-    makeRunner: runner.factory,
+    makeRunner: opts.makeRunner || runner.factory,
     bd,
     worktree,
     tokens,
@@ -530,5 +535,62 @@ describe('scheduler failure (breaker + workflow_mode revert + repo block)', () =
         env.bd.calls.indexOf(c) === env.bd.calls.length - 1
     );
     expect(revert).toBeTruthy();
+  });
+});
+
+describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring)', () => {
+  test('a fresh-receipt codex bead passes the in-spawn second guard', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [JSON.stringify({ type: 'turn.completed', usage: {} })],
+      exit: 0
+    });
+    const sha = 'a'.repeat(40);
+    const env = setup({
+      config: {
+        S1: {
+          runner: 'codex',
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: `user@${sha}`,
+          status: 'in_progress',
+          plan_fresh: true
+        }
+      },
+      slots: 1,
+      makeRunner: (/** @type {string} */ name) =>
+        createRunner(name, { spawn_impl })
+    });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    // The spawn-literal carries plan_fresh:true, so createRunner.spawn()'s
+    // in-spawn SECOND guard authorizes codex and a real codex process spawns.
+    expect(spawn_impl.captured.calls.length).toBe(1);
+    expect(spawn_impl.captured.calls[0].command).toBe('codex');
+    await flush();
+  });
+
+  test('a codex bead WITHOUT a fresh receipt is blocked at dispatch (no spawn)', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [JSON.stringify({ type: 'turn.completed', usage: {} })],
+      exit: 0
+    });
+    const env = setup({
+      config: {
+        S1: {
+          runner: 'codex',
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          status: 'in_progress'
+          // no plan_review, no plan_fresh → not authorized, fail-closed.
+        }
+      },
+      slots: 1,
+      makeRunner: (/** @type {string} */ name) =>
+        createRunner(name, { spawn_impl })
+    });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    expect(spawn_impl.captured.calls.length).toBe(0);
+    expect(env.scheduler.isRunning('S1')).toBe(false);
   });
 });

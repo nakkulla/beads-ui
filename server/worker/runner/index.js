@@ -5,13 +5,21 @@
  * implementation and differs only by environment routing. `createRunner`
  * returns a uniform `{ name, spawn(bead, workspace, settings) → RunnerHandle }`.
  *
- * full_plan guard: the plan-save hook is claude-only, so a `full_plan` bead
- * WITHOUT a `plan_path` may run only on claude — codex/ccx are refused at the
- * spawn entry (and, upstream, at queue entry). If a plan already exists
- * (`plan_path` set), every runner is allowed.
+ * full_plan guard (spec §변경 2): the plan-save hook is claude-only, so a
+ * `full_plan` bead runs on codex/ccx ONLY with a FRESH `user@<40hex>`
+ * plan_review receipt — or a legacy approved plan (no plan_review key AND
+ * `plan_path` set AND status resolved/closed). Every other case (no receipt,
+ * invalid/skip/other-reviewer/short-sha receipt, stale, undeterminable
+ * freshness) is fail-closed; claude is always allowed. See
+ * {@link assertRunnerAllowed}.
  *
  * @import { RunnerHandle, EngineDeps } from './session.js'
  */
+import {
+  gitHead,
+  parsePlanReceipt,
+  planFreshness
+} from '../../workflow-enrich.js';
 import { spawnClaude } from './claude.js';
 import { spawnCodex } from './codex.js';
 
@@ -32,12 +40,80 @@ function isFullPlan(bead) {
 
 /**
  * @param {any} bead
+ * @returns {string}
+ */
+function planPathOf(bead) {
+  const p =
+    bead && (bead.plan_path ?? (bead.metadata && bead.metadata.plan_path));
+  return typeof p === 'string' ? p : '';
+}
+
+/**
+ * @param {any} bead
  * @returns {boolean}
  */
 function hasPlanPath(bead) {
-  const p =
-    bead && (bead.plan_path ?? (bead.metadata && bead.metadata.plan_path));
-  return typeof p === 'string' && p.length > 0;
+  return planPathOf(bead).length > 0;
+}
+
+/**
+ * Resolve the plan_review entry with KEY PRESENCE preserved. A present value —
+ * string or not, `null` included — must survive as "present" so an unparseable
+ * receipt blocks instead of falling through to the legacy path (fail-closed).
+ * Snapshot/bead literals encode absence as an `undefined` field; metadata
+ * presence is exact via `Object.hasOwn`.
+ *
+ * @param {any} bead
+ * @returns {{ present: boolean, value: unknown }}
+ */
+function planReviewEntry(bead) {
+  if (bead && bead.plan_review !== undefined) {
+    return { present: true, value: bead.plan_review };
+  }
+  const md = bead && bead.metadata;
+  if (md && typeof md === 'object' && Object.hasOwn(md, 'plan_review')) {
+    return { present: true, value: md.plan_review };
+  }
+  return { present: false, value: undefined };
+}
+
+/**
+ * @param {any} bead
+ * @returns {string}
+ */
+function statusOf(bead) {
+  const s = bead && (bead.status ?? (bead.metadata && bead.metadata.status));
+  return typeof s === 'string' ? s : '';
+}
+
+/**
+ * Resolve plan-review freshness for the guard in priority order (spec §변경 2):
+ * precomputed boolean (`ctx.plan_fresh`, else `bead.plan_fresh`) → direct
+ * compute from `ctx.workspace` → `unknown` (undeterminable → fail-closed at the
+ * call site). A precomputed boolean carries only fresh/not-fresh, so `false` is
+ * reported as `stale`.
+ *
+ * @param {any} bead
+ * @param {{ workspace?: string, plan_fresh?: boolean }} ctx
+ * @param {string} sha
+ * @returns {'fresh' | 'stale' | 'unknown'}
+ */
+function resolvePlanFresh(bead, ctx, sha) {
+  if (typeof ctx.plan_fresh === 'boolean') {
+    return ctx.plan_fresh ? 'fresh' : 'stale';
+  }
+  if (bead && typeof bead.plan_fresh === 'boolean') {
+    return bead.plan_fresh ? 'fresh' : 'stale';
+  }
+  if (ctx.workspace) {
+    return planFreshness(
+      ctx.workspace,
+      gitHead(ctx.workspace),
+      sha,
+      planPathOf(bead)
+    );
+  }
+  return 'unknown';
 }
 
 /**
@@ -56,25 +132,64 @@ export class RunnerBlockedError extends Error {
 }
 
 /**
- * Assert a runner may spawn a bead. Throws {@link RunnerBlockedError} when the
- * full_plan + no-plan_path + codex/ccx combination is refused.
+ * Assert a runner may spawn a bead (spec §변경 2). For a `full_plan` bead on
+ * codex/ccx, authorization requires EITHER a fresh `user@<40hex>` plan_review
+ * receipt OR — only when no plan_review key exists — a legacy approved plan
+ * (`plan_path` set + status resolved/closed). Every other case fails closed: no
+ * receipt, an invalid/skip/other-reviewer/short-sha receipt (which also blocks
+ * the legacy fallback), a stale plan, or an undeterminable freshness. claude is
+ * always allowed. Throws {@link RunnerBlockedError} when refused.
  *
  * @param {any} bead
  * @param {'claude'|'codex'|'ccx'} runner_name
+ * @param {{ workspace?: string, plan_fresh?: boolean }} [ctx]
  * @returns {void}
  */
-export function assertRunnerAllowed(bead, runner_name) {
-  if (
-    isFullPlan(bead) &&
-    !hasPlanPath(bead) &&
-    (runner_name === 'codex' || runner_name === 'ccx')
-  ) {
-    const id = bead && typeof bead.id === 'string' ? bead.id : 'bead';
+export function assertRunnerAllowed(bead, runner_name, ctx = {}) {
+  if (!isFullPlan(bead) || (runner_name !== 'codex' && runner_name !== 'ccx')) {
+    return;
+  }
+  const id = bead && typeof bead.id === 'string' ? bead.id : 'bead';
+  const entry = planReviewEntry(bead);
+
+  if (entry.present) {
+    const receipt =
+      typeof entry.value === 'string' ? parsePlanReceipt(entry.value) : null;
+    if (!receipt) {
+      // Present-but-invalid receipt (non-string and null included): NOT an
+      // approval, and it blocks the legacy fallback too (fail-closed — plan
+      // has no skip path).
+      throw new RunnerBlockedError(
+        `full_plan bead ${id} plan_review ${JSON.stringify(entry.value)} is ` +
+          `not a valid user approval (requires user@<40hex>, no skip path); ` +
+          `${runner_name} refused.`
+      );
+    }
+    const freshness = resolvePlanFresh(bead, ctx, receipt.sha);
+    if (freshness === 'fresh') {
+      return;
+    }
     throw new RunnerBlockedError(
-      `full_plan bead ${id} without plan_path requires the claude runner ` +
-        `(plan-save hook is claude-only); ${runner_name} refused.`
+      freshness === 'stale'
+        ? `full_plan bead ${id} plan_review is stale (plan changed since ` +
+            `approval); ${runner_name} refused.`
+        : `full_plan bead ${id} plan_review freshness is undetermined; ` +
+            `${runner_name} refused (fail-closed).`
     );
   }
+
+  // Legacy fallback: no plan_review key + plan_path + resolved/closed.
+  if (hasPlanPath(bead)) {
+    const status = statusOf(bead);
+    if (status === 'resolved' || status === 'closed') {
+      return;
+    }
+  }
+  throw new RunnerBlockedError(
+    `full_plan bead ${id} has no fresh plan_review receipt and is not an ` +
+      `approved legacy plan; requires the claude runner (plan-save hook is ` +
+      `claude-only); ${runner_name} refused.`
+  );
 }
 
 /**
@@ -109,7 +224,7 @@ export function createRunner(runner_name, deps = {}) {
      * @returns {RunnerHandle}
      */
     spawn(bead, workspace, settings) {
-      assertRunnerAllowed(bead, name);
+      assertRunnerAllowed(bead, name, { workspace });
       if (name === 'codex') {
         return spawnCodex(bead, workspace, settings, deps);
       }
