@@ -342,7 +342,10 @@ function planStage(md, status, workspace_root, head) {
   if (!md.plan_path) {
     return { state: 'empty', receipt: raw, stale: false };
   }
-  if (md.plan_review != null) {
+  if (Object.hasOwn(md, 'plan_review')) {
+    // Presence via hasOwn: a present non-string/null value is an INVALID
+    // receipt (pending), never key-absence — key-absence is what legitimizes
+    // the legacy branch below.
     const receipt = parsePlanReceipt(md.plan_review);
     if (!receipt) {
       return { state: 'dim', receipt: raw, stale: false };

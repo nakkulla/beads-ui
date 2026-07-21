@@ -41,7 +41,9 @@ const log = debug('worker:scheduler');
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string|null} [plan_path] - Plan path when present.
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
- * @property {string|null} [plan_review] - Raw plan_review receipt metadata.
+ * @property {unknown} [plan_review] - Raw plan_review metadata value. Key
+ *   absence ⇒ `undefined`; any present value (non-string/null included) must
+ *   reach the guard so an invalid receipt blocks instead of reading as absent.
  * @property {boolean|null} [plan_fresh] - Precomputed plan freshness (true/false
  *   when a full_plan bead has a valid receipt; null otherwise/undetermined).
  * @property {string[]} [deps] - Dependency ids.

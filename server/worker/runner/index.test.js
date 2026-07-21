@@ -108,6 +108,29 @@ describe('runner/index full_plan authorization guard', () => {
     );
   });
 
+  test('a present null/non-string plan_review blocks — never reads as key-absent', () => {
+    // Normalizing a present-but-invalid value to "absent" would open the
+    // legacy fallback on a closed bead; presence must survive as-is.
+    const base = {
+      id: 'UI-3',
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      status: 'closed'
+    };
+    expect(() =>
+      assertRunnerAllowed({ ...base, plan_review: null }, 'codex')
+    ).toThrow(/not a valid user approval/);
+    expect(() =>
+      assertRunnerAllowed({ ...base, plan_review: 123 }, 'codex')
+    ).toThrow(/not a valid user approval/);
+    expect(() =>
+      assertRunnerAllowed(
+        { ...base, plan_review: undefined, metadata: { plan_review: null } },
+        'ccx'
+      )
+    ).toThrow(RunnerBlockedError);
+  });
+
   test('unknown freshness fails closed (no precomputed, no workspace)', () => {
     const bead = {
       id: 'UI-3',

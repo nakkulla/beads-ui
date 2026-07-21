@@ -161,8 +161,12 @@ export function createLiveBd(config) {
 
       const route = typeof md.route === 'string' ? md.route : null;
       const plan_path = typeof md.plan_path === 'string' ? md.plan_path : null;
-      const plan_review =
-        typeof md.plan_review === 'string' ? md.plan_review : null;
+      // KEY PRESENCE must survive: a present non-string/null plan_review is an
+      // invalid receipt that has to BLOCK downstream, not read as key-absent
+      // (which would open the legacy fallback). Absence ⇒ undefined field.
+      const plan_review = Object.hasOwn(md, 'plan_review')
+        ? md.plan_review
+        : undefined;
 
       // Precompute plan freshness against the CANONICAL workspace root (where the
       // plan doc lives + is committed) — only for a full_plan bead with a valid
@@ -170,7 +174,11 @@ export function createLiveBd(config) {
       // recompute at spawn, so worktree-ancestry gaps never misfire the guard.
       // fresh → true, stale → false, unknown → null (guard falls through).
       let plan_fresh = null;
-      if (route === 'full_plan' && plan_review !== null && plan_path) {
+      if (
+        route === 'full_plan' &&
+        typeof plan_review === 'string' &&
+        plan_path
+      ) {
         const receipt = parsePlanReceipt(plan_review);
         if (receipt) {
           const freshness = planFreshness(

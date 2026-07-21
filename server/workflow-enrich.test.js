@@ -312,6 +312,28 @@ describe('planStage (full_plan)', () => {
     expect(wf.stages.plan?.receipt).toBe(raw);
   });
 
+  test('present null/non-string plan_review + closed → dim, never legacy on', () => {
+    // hasOwn presence: a present-but-invalid value must not collapse into
+    // "key absent" and reach the legacy-approval branch.
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    commitAll(dir, 'add plan');
+    for (const bad of [null, 123]) {
+      const wf = enrichIssueWorkflow(
+        {
+          status: 'closed',
+          metadata: {
+            route: 'full_plan',
+            plan_path: 'docs/plan.md',
+            plan_review: bad
+          }
+        },
+        dir
+      );
+      expect(wf.stages.plan?.state).toBe('dim');
+    }
+  });
+
   test('no plan_review key + closed → on (legacy approval)', () => {
     const dir = makeRepo();
     writeFile(dir, 'docs/plan.md', '# plan\n');

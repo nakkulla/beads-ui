@@ -57,13 +57,24 @@ function hasPlanPath(bead) {
 }
 
 /**
+ * Resolve the plan_review entry with KEY PRESENCE preserved. A present value —
+ * string or not, `null` included — must survive as "present" so an unparseable
+ * receipt blocks instead of falling through to the legacy path (fail-closed).
+ * Snapshot/bead literals encode absence as an `undefined` field; metadata
+ * presence is exact via `Object.hasOwn`.
+ *
  * @param {any} bead
- * @returns {string | null}
+ * @returns {{ present: boolean, value: unknown }}
  */
-function planReviewOf(bead) {
-  const v =
-    bead && (bead.plan_review ?? (bead.metadata && bead.metadata.plan_review));
-  return typeof v === 'string' ? v : null;
+function planReviewEntry(bead) {
+  if (bead && bead.plan_review !== undefined) {
+    return { present: true, value: bead.plan_review };
+  }
+  const md = bead && bead.metadata;
+  if (md && typeof md === 'object' && Object.hasOwn(md, 'plan_review')) {
+    return { present: true, value: md.plan_review };
+  }
+  return { present: false, value: undefined };
 }
 
 /**
@@ -139,16 +150,18 @@ export function assertRunnerAllowed(bead, runner_name, ctx = {}) {
     return;
   }
   const id = bead && typeof bead.id === 'string' ? bead.id : 'bead';
-  const raw_receipt = planReviewOf(bead);
+  const entry = planReviewEntry(bead);
 
-  if (raw_receipt !== null) {
-    const receipt = parsePlanReceipt(raw_receipt);
+  if (entry.present) {
+    const receipt =
+      typeof entry.value === 'string' ? parsePlanReceipt(entry.value) : null;
     if (!receipt) {
-      // Present-but-invalid receipt: NOT an approval, and it blocks the legacy
-      // fallback too (fail-closed — plan has no skip path).
+      // Present-but-invalid receipt (non-string and null included): NOT an
+      // approval, and it blocks the legacy fallback too (fail-closed — plan
+      // has no skip path).
       throw new RunnerBlockedError(
-        `full_plan bead ${id} plan_review "${raw_receipt}" is not a valid ` +
-          `user approval (requires user@<40hex>, no skip path); ` +
+        `full_plan bead ${id} plan_review ${JSON.stringify(entry.value)} is ` +
+          `not a valid user approval (requires user@<40hex>, no skip path); ` +
           `${runner_name} refused.`
       );
     }
