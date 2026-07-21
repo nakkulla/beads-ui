@@ -442,6 +442,38 @@ export function handleWorkerQueueToggle(ws, req) {
 }
 
 /**
+ * Handle `worker-queue-set-policy`. Payload:
+ * `{ key: 'merge_policy'|'drift_policy', value: string|null, expected_revision }`.
+ * Persists the workspace-global policy (CAS); null/'' unsets. Enum validation
+ * lives in the queue store (worker-autorun-policy §2).
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerQueueSetPolicy(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.key !== 'string') {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { key: merge_policy|drift_policy }'
+        )
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const result = queueStore().setPolicy(key, {
+    expected_revision: revisionOf(p),
+    key: p.key,
+    value: p.value ?? null
+  });
+  replyMutation(ws, req, key, result);
+}
+
+/**
  * Handle `worker-attempt-stop`. Payload: `{ attempt_id: string }`. Stops (■) a
  * running attempt: group-kill + attempt failed + workflow_mode revert (spec
  * §5.2, F1). Inert (`stopped:false`) when no live attachment or no such attempt.

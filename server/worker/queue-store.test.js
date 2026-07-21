@@ -206,3 +206,91 @@ describe('worker/queue-store', () => {
     expect(failing.snapshot(WS).serial.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 });
+
+describe('worker/queue-store policy settings (worker-autorun-policy §2)', () => {
+  test('setPolicy persists merge_policy / drift_policy under the revision CAS', () => {
+    const store = createQueueStore();
+    expect(store.snapshot(WS).merge_policy).toBe(null);
+    expect(store.snapshot(WS).drift_policy).toBe(null);
+
+    let r = store.setPolicy(WS, {
+      expected_revision: 0,
+      key: 'merge_policy',
+      value: 'pr_stop'
+    });
+    expect(r.ok).toBe(true);
+    expect(r.queue.merge_policy).toBe('pr_stop');
+
+    r = store.setPolicy(WS, {
+      expected_revision: r.queue.revision,
+      key: 'drift_policy',
+      value: 'halt'
+    });
+    expect(r.ok).toBe(true);
+    expect(r.queue.drift_policy).toBe('halt');
+
+    // Stale revision → CAS conflict, no write.
+    const stale = store.setPolicy(WS, {
+      expected_revision: 0,
+      key: 'merge_policy',
+      value: 'auto_merge'
+    });
+    expect(stale.ok).toBe(false);
+    expect(stale.conflict).toBe(true);
+    expect(store.snapshot(WS).merge_policy).toBe('pr_stop');
+
+    // null unsets (falls back to the default at resolution time).
+    const unset = store.setPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      key: 'merge_policy',
+      value: null
+    });
+    expect(unset.ok).toBe(true);
+    expect(unset.queue.merge_policy).toBe(null);
+  });
+
+  test('setPolicy rejects unknown keys and non-enum values', () => {
+    const store = createQueueStore();
+    const badKey = store.setPolicy(WS, {
+      expected_revision: 0,
+      key: 'auto_advance',
+      value: 'pr_stop'
+    });
+    expect(badKey.ok).toBe(false);
+    expect(badKey.conflict).toBe(false);
+    const badValue = store.setPolicy(WS, {
+      expected_revision: 0,
+      key: 'merge_policy',
+      value: 'yolo'
+    });
+    expect(badValue.ok).toBe(false);
+    expect(store.snapshot(WS).merge_policy).toBe(null);
+  });
+
+  test('persisted policy values survive a reload; invalid persisted values do not', () => {
+    const store = createQueueStore();
+    let r = store.setPolicy(WS, {
+      expected_revision: 0,
+      key: 'merge_policy',
+      value: 'pr_stop'
+    });
+    store.setPolicy(WS, {
+      expected_revision: r.queue.revision,
+      key: 'drift_policy',
+      value: 'halt'
+    });
+
+    const restarted = createQueueStore();
+    expect(restarted.load(WS).merge_policy).toBe('pr_stop');
+    expect(restarted.load(WS).drift_policy).toBe('halt');
+
+    // Corrupt the persisted values → normalize back to null.
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.merge_policy = 'yolo';
+    raw.drift_policy = 7;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    const again = createQueueStore();
+    expect(again.load(WS).merge_policy).toBe(null);
+    expect(again.load(WS).drift_policy).toBe(null);
+  });
+});

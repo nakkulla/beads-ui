@@ -30,6 +30,27 @@ export const FAST_TRACK_DIRECTIVE =
   'fast_track — 게이트 자동 디스패치(영수증만), 질문 없이 기본값으로 진행';
 
 /**
+ * The pr_stop terminal directive (worker-autorun-policy §2/§3): the session
+ * delivers a PR and records `resolved`, but never merges — the merge is a
+ * human decision (`pr-finish`). The merge-lock protocol block is NOT injected
+ * alongside this directive (no merge → no lock).
+ *
+ * @type {string}
+ */
+export const PR_STOP_DIRECTIVE =
+  'merge_policy=pr_stop — PR 생성·CI 확인·bead `resolved`(pr_url metadata 포함) 기록까지 수행하고, 머지하지 말고 종료하라';
+
+/**
+ * The drift halt directive (worker-autorun-policy §2): on a material spec
+ * drift verdict the session stops instead of self-rereviewing. auto_rereview
+ * is the contract default and needs no directive.
+ *
+ * @type {string}
+ */
+export const DRIFT_HALT_DIRECTIVE =
+  'drift_policy=halt — material spec drift 판정 시 작업을 중단하고 실패로 종료하라';
+
+/**
  * @typedef {Object} MergeLockParams
  * @property {number} port - The beads-ui server port serving the merge-lock endpoint.
  * @property {string} repo - The target repo root (must match the session token's repo).
@@ -63,11 +84,13 @@ export function mergeLockProtocol(params) {
 
 /**
  * Compose the full prompt sent to a runner: the unattended preamble, an optional
- * fast_track directive, an optional merge-lock protocol block (with the injected
- * server port/repo/target_base), then the caller's base prompt.
+ * fast_track directive, the policy directives (pr_stop / drift halt), an
+ * optional merge-lock protocol block (with the injected server
+ * port/repo/target_base — OMITTED under pr_stop, no merge means no lock), then
+ * the caller's base prompt.
  *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ fast_track?: boolean, merge_lock?: MergeLockParams }} [options]
+ * @param {{ fast_track?: boolean, merge_lock?: MergeLockParams, merge_policy?: string, drift_policy?: string }} [options]
  * @returns {string} The preamble-wrapped prompt.
  */
 export function applyPreamble(base_prompt, options = {}) {
@@ -75,7 +98,15 @@ export function applyPreamble(base_prompt, options = {}) {
   if (options.fast_track) {
     parts.push(FAST_TRACK_DIRECTIVE);
   }
+  const pr_stop = options.merge_policy === 'pr_stop';
+  if (pr_stop) {
+    parts.push(PR_STOP_DIRECTIVE);
+  }
+  if (options.drift_policy === 'halt') {
+    parts.push(DRIFT_HALT_DIRECTIVE);
+  }
   if (
+    !pr_stop &&
     options.merge_lock &&
     typeof options.merge_lock.repo === 'string' &&
     typeof options.merge_lock.target_base === 'string'

@@ -43,11 +43,21 @@
  * @property {string|null} merge_sha - Verified merge SHA (post-session).
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
  * @property {string|null} cause - Failure cause (breaker banner reason).
+ * @property {string|null} merge_policy - Resolved merge policy snapshot
+ * (auto_merge/pr_stop, post-demotion) at dispatch.
+ * @property {string|null} drift_policy - Resolved drift policy snapshot
+ * (auto_rereview/halt) at dispatch.
+ * @property {string|null} demoted_reason - Why the resolved merge policy was
+ * demoted (e.g. verify_cmd_unset), null when not demoted.
  */
 /**
  * @typedef {Object} Queue
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
+ * @property {string|null} merge_policy - Workspace-global merge policy
+ * (auto_merge/pr_stop); null = unset (default applies at resolution).
+ * @property {string|null} drift_policy - Workspace-global drift policy
+ * (auto_rereview/halt); null = unset.
  * @property {QueueEntry[]} serial - Serial queue (one runnable head at a time).
  * @property {QueueEntry[]} parallel - Parallel pool (slot-priority order).
  * @property {QueueEntry[]} done - Completed today.
@@ -64,10 +74,30 @@
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { DRIFT_POLICIES, MERGE_POLICIES } from './policy.js';
 import { queueFilePath } from './state-paths.js';
 
 /** @type {ReadonlyArray<'serial'|'parallel'>} */
 const PLACEABLE_LANES = ['serial', 'parallel'];
+
+/**
+ * Workspace-global policy keys settable through `setPolicy`, with their enums.
+ *
+ * @type {Record<string, ReadonlyArray<string>>}
+ */
+const POLICY_KEYS = {
+  merge_policy: MERGE_POLICIES,
+  drift_policy: DRIFT_POLICIES
+};
+
+/**
+ * @param {ReadonlyArray<string>} allowed
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function normalizePolicyValue(allowed, value) {
+  return typeof value === 'string' && allowed.includes(value) ? value : null;
+}
 
 /**
  * @param {unknown} value
@@ -84,6 +114,8 @@ function emptyQueue() {
   return {
     revision: 0,
     auto_advance: false,
+    merge_policy: null,
+    drift_policy: null,
     serial: [],
     parallel: [],
     done: [],
@@ -164,7 +196,10 @@ export function makeAttempt(fields) {
     target_base: fields.target_base ?? null,
     merge_sha: fields.merge_sha ?? null,
     finished_at: fields.finished_at ?? null,
-    cause: fields.cause ?? null
+    cause: fields.cause ?? null,
+    merge_policy: fields.merge_policy ?? null,
+    drift_policy: fields.drift_policy ?? null,
+    demoted_reason: fields.demoted_reason ?? null
   };
 }
 
@@ -197,6 +232,8 @@ function normalizeQueue(raw) {
       }
     }
   }
+  q.merge_policy = normalizePolicyValue(MERGE_POLICIES, raw.merge_policy);
+  q.drift_policy = normalizePolicyValue(DRIFT_POLICIES, raw.drift_policy);
   if (isRecord(raw.admission)) {
     for (const [bead_id, value] of Object.entries(raw.admission)) {
       if (isRecord(value) && typeof value.reason === 'string') {
@@ -516,6 +553,34 @@ export function createQueueStore(options = {}) {
         }
         removeFromLanes(next, bead_id);
         next.done.push({ bead_id, added_at: now() });
+        return true;
+      });
+    },
+
+    /**
+     * Set (or unset with null) a workspace-global policy. CAS-guarded.
+     * Rejects unknown keys and non-enum values without a write.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, key: string, value: unknown }} input
+     * @returns {QueueOpResult}
+     */
+    setPolicy(workspace, input) {
+      const { expected_revision, key, value } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        const allowed = POLICY_KEYS[key];
+        if (!allowed) {
+          return false;
+        }
+        if (value === null || value === '') {
+          next[/** @type {'merge_policy'|'drift_policy'} */ (key)] = null;
+          return true;
+        }
+        const normalized = normalizePolicyValue(allowed, value);
+        if (!normalized) {
+          return false;
+        }
+        next[/** @type {'merge_policy'|'drift_policy'} */ (key)] = normalized;
         return true;
       });
     },

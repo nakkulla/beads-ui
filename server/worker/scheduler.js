@@ -24,6 +24,7 @@
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
 import { debug } from '../logging.js';
+import { resolvePolicies } from './policy.js';
 import { assertRunnerAllowed } from './runner/index.js';
 
 const log = debug('worker:scheduler');
@@ -50,6 +51,8 @@ const log = debug('worker:scheduler');
  * @property {unknown} [spec_review] - Raw spec_review metadata value. Key
  * absence ⇒ `undefined`; any present value must reach the admission
  * validator so a malformed receipt rejects instead of reading as absent.
+ * @property {string|null} [merge_policy] - Bead-pinned merge policy metadata.
+ * @property {string|null} [drift_policy] - Bead-pinned drift policy metadata.
  * @property {string[]} [deps] - Dependency ids.
  */
 
@@ -71,6 +74,10 @@ const log = debug('worker:scheduler');
  * Auto-run admission validator (worker-autorun-policy §1). When present, the
  * tick candidate scan AND the dispatch re-check (against the pinned worktree
  * base_oid) both gate on it; refusals are recorded in `Queue.admission`.
+ * @property {(repo: string) => { cmd: string[], timeout_ms: number } | null} [verifyCmd]
+ * Workspace verify_cmd config lookup (worker-autorun-policy §4). A null (or
+ * absent dep) means no independent post-merge verification is available, so a
+ * resolved auto_merge demotes to pr_stop at dispatch (`verify_cmd_unset`).
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void }} sessionLog
  * @property {number | (() => number)} [port] - Server port for the merge-lock endpoint injected into the preamble.
  * @property {() => number} [now]
@@ -376,6 +383,32 @@ export function createScheduler(deps) {
       return;
     }
 
+    // Resolve the policy settings (bead > workspace global > default) and
+    // apply the verify_cmd-unset demotion (§2/§4): an unattended merge without
+    // independent post-merge verification is structurally forbidden, so a
+    // resolved auto_merge demotes to pr_stop when no verify_cmd is configured.
+    const resolved = resolvePolicies({
+      bead: snap,
+      queue: deps.store.snapshot(workspace)
+    });
+    let merge_policy = resolved.merge_policy;
+    const drift_policy = resolved.drift_policy;
+    /** @type {string|null} */
+    let demoted_reason = null;
+    if (merge_policy === 'auto_merge') {
+      /** @type {{ cmd: string[], timeout_ms: number } | null} */
+      let vcmd = null;
+      try {
+        vcmd = deps.verifyCmd ? deps.verifyCmd(snap.repo) : null;
+      } catch {
+        vcmd = null;
+      }
+      if (!vcmd || !Array.isArray(vcmd.cmd) || vcmd.cmd.length === 0) {
+        merge_policy = 'pr_stop';
+        demoted_reason = 'verify_cmd_unset';
+      }
+    }
+
     // Record + readback workflow_mode=fast_track (double-delivered with prompt).
     // The set AND its confirming readback are contained: a bd failure or a
     // readback that does not echo `fast_track` fails THIS dispatch only (records
@@ -445,9 +478,12 @@ export function createScheduler(deps) {
           model: snap.model,
           effort: snap.effort,
           fast_track: true,
+          merge_policy,
+          drift_policy,
           env: { BDUI_WORKER_TOKEN: token },
           // Inject the concrete merge-lock endpoint params so the session's
           // preamble acquires the (repo, target_base) lock before merging (F3).
+          // The preamble omits the block under pr_stop (no merge → no lock).
           merge_lock: {
             port: resolvePort(),
             repo: snap.repo,
@@ -479,7 +515,10 @@ export function createScheduler(deps) {
         repo: snap.repo,
         status: 'running',
         workflow_mode_prior: prior,
-        target_base: snap.target_base
+        target_base: snap.target_base,
+        merge_policy,
+        drift_policy,
+        demoted_reason
       }
     });
 

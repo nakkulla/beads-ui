@@ -30,6 +30,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import { runBdJson, runShell } from '../bd.js';
+import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import {
   gitHead,
@@ -225,6 +226,10 @@ export function createLiveBd(config) {
         plan_fresh,
         spec_id,
         spec_review,
+        merge_policy:
+          typeof md.merge_policy === 'string' ? md.merge_policy : null,
+        drift_policy:
+          typeof md.drift_policy === 'string' ? md.drift_policy : null,
         deps: []
       };
     }
@@ -288,7 +293,8 @@ export function defaultProbePid(pid) {
  *   port?: number | (() => number),
  *   parallel_slots?: number,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   admission?: any
+ *   admission?: any,
+ *   verifyCmd?: (repo: string) => { cmd: string[], timeout_ms: number } | null
  * }} [options]
  */
 export function createWorkerAttachment(workspace_root, options = {}) {
@@ -373,6 +379,18 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         lock_state
       }));
 
+  // Workspace verify_cmd lookup (server config file only — no UI edit
+  // surface). Read per call so a config change lands on the next dispatch.
+  const verifyCmd =
+    options.verifyCmd ||
+    ((/** @type {string} */ r) => {
+      try {
+        return getConfig().worker_verify[path.resolve(r)] ?? null;
+      } catch {
+        return null;
+      }
+    });
+
   const scheduler = createScheduler({
     store: runtime.queueStore,
     makeRunner,
@@ -383,6 +401,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     breaker: runtime.breaker,
     sessionLog: runtime.sessionLog,
     admission,
+    verifyCmd,
     port: options.port !== undefined ? options.port : () => WORKER_PORT,
     parallel_slots: options.parallel_slots
   });
@@ -403,6 +422,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     orphan,
     bd,
     admission,
+    verifyCmd,
     workspace: workspace_root
   };
 }

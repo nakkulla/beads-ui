@@ -134,6 +134,8 @@ function makeFakeBd(config) {
         status: c.status ?? '',
         plan_review: c.plan_review,
         plan_fresh: c.plan_fresh ?? null,
+        merge_policy: c.merge_policy ?? null,
+        drift_policy: c.drift_policy ?? null,
         deps: c.deps ?? []
       };
     },
@@ -172,7 +174,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, breaker?: any, tokens?: any, locks?: any, makeRunner?: (name: string) => any, admission?: any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, breaker?: any, tokens?: any, locks?: any, makeRunner?: (name: string) => any, admission?: any, verifyCmd?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -206,6 +208,7 @@ function setup(opts) {
     breaker,
     sessionLog,
     admission: opts.admission,
+    verifyCmd: opts.verifyCmd,
     parallel_slots: opts.slots ?? 2,
     now: () => 1000
   });
@@ -685,5 +688,53 @@ describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring
     await env.scheduler.tick(WS);
     expect(spawn_impl.captured.calls.length).toBe(0);
     expect(env.scheduler.isRunning('S1')).toBe(false);
+  });
+});
+
+describe('scheduler policy snapshot + demotion (worker-autorun-policy §2)', () => {
+  test('auto_merge WITHOUT a verify_cmd demotes to pr_stop and records the reason', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.merge_policy).toBe('pr_stop');
+    expect(a.drift_policy).toBe('auto_rereview');
+    expect(a.demoted_reason).toBe('verify_cmd_unset');
+    // The demoted policy also reaches the session settings (preamble input).
+    expect(env.runner.settingsFor('S1').merge_policy).toBe('pr_stop');
+  });
+
+  test('bead metadata beats the workspace global; verify_cmd keeps auto_merge', async () => {
+    const env = setup({
+      config: { S1: { merge_policy: 'auto_merge' } },
+      slots: 1,
+      verifyCmd: () => ({ cmd: ['npm', 'run', 'all'], timeout_ms: 600000 })
+    });
+    // Workspace globals: pr_stop + halt — the bead pin overrides merge only.
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.setPolicy(WS, {
+      expected_revision: rev,
+      key: 'merge_policy',
+      value: 'pr_stop'
+    }).queue.revision;
+    env.store.setPolicy(WS, {
+      expected_revision: rev,
+      key: 'drift_policy',
+      value: 'halt'
+    });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.merge_policy).toBe('auto_merge');
+    expect(a.drift_policy).toBe('halt');
+    expect(a.demoted_reason).toBe(null);
+    expect(env.runner.settingsFor('S1').merge_policy).toBe('auto_merge');
+    expect(env.runner.settingsFor('S1').drift_policy).toBe('halt');
   });
 });
