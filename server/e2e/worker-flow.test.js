@@ -109,6 +109,9 @@ function makeFakeBd(config) {
         workflow_mode: c.workflow_mode ?? null,
         route: c.route ?? null,
         plan_path: c.plan_path ?? null,
+        status: c.status ?? '',
+        plan_review: c.plan_review ?? null,
+        plan_fresh: c.plan_fresh ?? null,
         deps: c.deps ?? []
       };
     },

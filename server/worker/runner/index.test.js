@@ -19,9 +19,25 @@ function resultLine() {
 }
 
 const WS = '/tmp/ws';
+const SHA40 = 'a'.repeat(40);
 
-describe('runner/index full_plan guard', () => {
-  test('full_plan + no plan_path + codex is refused', () => {
+describe('runner/index full_plan authorization guard', () => {
+  test('fresh plan_review receipt (precomputed) allows codex/ccx', () => {
+    const bead = {
+      id: 'UI-3',
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      plan_review: `user@${SHA40}`
+    };
+    expect(() =>
+      assertRunnerAllowed(bead, 'codex', { plan_fresh: true })
+    ).not.toThrow();
+    expect(() =>
+      assertRunnerAllowed(bead, 'ccx', { plan_fresh: true })
+    ).not.toThrow();
+  });
+
+  test('no plan_review and no plan_path is refused', () => {
     const bead = { id: 'UI-3', route: 'full_plan' };
     expect(() => assertRunnerAllowed(bead, 'codex')).toThrow(
       RunnerBlockedError
@@ -29,15 +45,112 @@ describe('runner/index full_plan guard', () => {
     expect(() => assertRunnerAllowed(bead, 'ccx')).toThrow(/plan-save hook/);
   });
 
-  test('full_plan + no plan_path + claude is allowed', () => {
+  test('stale plan_review (precomputed false) is refused', () => {
+    const bead = {
+      id: 'UI-3',
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      plan_review: `user@${SHA40}`
+    };
+    expect(() =>
+      assertRunnerAllowed(bead, 'codex', { plan_fresh: false })
+    ).toThrow(/stale/);
+  });
+
+  test('skipped@ receipt is refused even when fresh (no skip path)', () => {
+    const bead = {
+      id: 'UI-3',
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      plan_review: `skipped@${SHA40}`
+    };
+    expect(() =>
+      assertRunnerAllowed(bead, 'codex', { plan_fresh: true })
+    ).toThrow(/not a valid user approval/);
+  });
+
+  test('other-reviewer receipt (codex@<40hex>) is refused', () => {
+    const bead = {
+      id: 'UI-3',
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      plan_review: `codex@${SHA40}`
+    };
+    expect(() =>
+      assertRunnerAllowed(bead, 'codex', { plan_fresh: true })
+    ).toThrow(RunnerBlockedError);
+  });
+
+  test('short-SHA receipt (user@<7hex>) is refused', () => {
+    const bead = {
+      id: 'UI-3',
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      plan_review: 'user@abc1234'
+    };
+    expect(() =>
+      assertRunnerAllowed(bead, 'codex', { plan_fresh: true })
+    ).toThrow(RunnerBlockedError);
+  });
+
+  test('an invalid receipt present blocks the legacy fallback', () => {
+    // plan_path + closed WOULD satisfy legacy, but a present (invalid) receipt
+    // is fail-closed — the fallback only applies when the key is entirely absent.
+    const bead = {
+      id: 'UI-3',
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      status: 'closed',
+      plan_review: `skipped@${SHA40}`
+    };
+    expect(() => assertRunnerAllowed(bead, 'codex')).toThrow(
+      RunnerBlockedError
+    );
+  });
+
+  test('unknown freshness fails closed (no precomputed, no workspace)', () => {
+    const bead = {
+      id: 'UI-3',
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      plan_review: `user@${SHA40}`
+    };
+    expect(() => assertRunnerAllowed(bead, 'codex')).toThrow(/undetermined/);
+  });
+
+  test('legacy plan (no plan_review key) on a closed bead allows codex', () => {
+    const bead = {
+      id: 'UI-3',
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      status: 'closed'
+    };
+    expect(() => assertRunnerAllowed(bead, 'codex')).not.toThrow();
+    expect(() =>
+      assertRunnerAllowed({ ...bead, status: 'resolved' }, 'ccx')
+    ).not.toThrow();
+  });
+
+  test('claude is always allowed (even full_plan without a plan)', () => {
     const bead = { id: 'UI-3', route: 'full_plan' };
     expect(() => assertRunnerAllowed(bead, 'claude')).not.toThrow();
   });
 
-  test('full_plan WITH plan_path allows codex/ccx', () => {
-    const bead = { id: 'UI-3', route: 'full_plan', plan_path: 'docs/plan.md' };
-    expect(() => assertRunnerAllowed(bead, 'codex')).not.toThrow();
-    expect(() => assertRunnerAllowed(bead, 'ccx')).not.toThrow();
+  test('precomputed plan_fresh takes precedence over bead.plan_fresh + compute', () => {
+    const bead = {
+      id: 'UI-3',
+      route: 'full_plan',
+      plan_path: 'docs/plan.md',
+      plan_review: `user@${SHA40}`,
+      plan_fresh: false
+    };
+    // ctx.plan_fresh:true wins over bead.plan_fresh:false and any workspace probe.
+    expect(() =>
+      assertRunnerAllowed(bead, 'codex', {
+        plan_fresh: true,
+        workspace: '/nonexistent'
+      })
+    ).not.toThrow();
   });
 
   test('spawn() enforces the guard for codex', () => {

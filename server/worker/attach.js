@@ -31,6 +31,11 @@ import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import { runBdJson, runShell } from '../bd.js';
 import { debug } from '../logging.js';
+import {
+  gitHead,
+  parsePlanReceipt,
+  planFreshness
+} from '../workflow-enrich.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createOrphanDetector } from './orphan.js';
 import { createRunner } from './runner/index.js';
@@ -153,6 +158,31 @@ export function createLiveBd(config) {
 
       const ready = !closed && ready_ids.has(bead_id);
       const blocked = !closed && !ready_ids.has(bead_id);
+
+      const route = typeof md.route === 'string' ? md.route : null;
+      const plan_path = typeof md.plan_path === 'string' ? md.plan_path : null;
+      const plan_review =
+        typeof md.plan_review === 'string' ? md.plan_review : null;
+
+      // Precompute plan freshness against the CANONICAL workspace root (where the
+      // plan doc lives + is committed) — only for a full_plan bead with a valid
+      // receipt. This precomputed boolean takes precedence over any worktree
+      // recompute at spawn, so worktree-ancestry gaps never misfire the guard.
+      // fresh → true, stale → false, unknown → null (guard falls through).
+      let plan_fresh = null;
+      if (route === 'full_plan' && plan_review !== null && plan_path) {
+        const receipt = parsePlanReceipt(plan_review);
+        if (receipt) {
+          const freshness = planFreshness(
+            cwd,
+            gitHead(cwd),
+            receipt.sha,
+            plan_path
+          );
+          plan_fresh = freshness === 'unknown' ? null : freshness === 'fresh';
+        }
+      }
+
       return {
         ready,
         blocked,
@@ -173,8 +203,11 @@ export function createLiveBd(config) {
             : undefined,
         workflow_mode:
           typeof md.workflow_mode === 'string' ? md.workflow_mode : null,
-        route: typeof md.route === 'string' ? md.route : null,
-        plan_path: typeof md.plan_path === 'string' ? md.plan_path : null,
+        route,
+        plan_path,
+        status,
+        plan_review,
+        plan_fresh,
         deps: []
       };
     }
