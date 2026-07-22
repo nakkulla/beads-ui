@@ -232,8 +232,9 @@ describe('display-policy resubscribe after reconnect', () => {
 
     const order = client.sent
       .map((/** @type {any} */ m) => m.type)
-      .filter((/** @type {string} */ t) =>
-        t === 'set-workspace' || t === 'subscribe-display-policy'
+      .filter(
+        (/** @type {string} */ t) =>
+          t === 'set-workspace' || t === 'subscribe-display-policy'
       );
     expect(order[0]).toBe('set-workspace');
     expect(order).toContain('subscribe-display-policy');
