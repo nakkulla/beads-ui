@@ -29,6 +29,7 @@
 import { makeError, makeOk } from '../../app/protocol.js';
 import {
   checkWorkerQueueAdmission,
+  resetWorkerBreakerForWorkspace,
   stopWorkerAttempt,
   tickWorkerQueue
 } from '../worker/attach.js';
@@ -435,6 +436,14 @@ export function handleWorkerQueueToggle(ws, req) {
   });
   replyMutation(ws, req, key, result);
   if (result.ok && p.on === true) {
+    // Manual ▶ resumes a tripped repo (breaker.js's intended reset path,
+    // worker-autorun-policy Phase 4) — reset BEFORE the tick so the first
+    // dispatch after the resume is not refused by the stale trip.
+    try {
+      resetWorkerBreakerForWorkspace(key);
+    } catch (err) {
+      log('breaker reset on toggle failed for %s: %o', key, err);
+    }
     Promise.resolve(tickWorkerQueue(key)).catch((err) => {
       log('worker tick after toggle failed for %s: %o', key, err);
     });

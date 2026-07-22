@@ -23,7 +23,9 @@ import { runShell } from '../bd.js';
  * @returns {{
  *   pathFor: (repo: string, bead_id: string) => string,
  *   add: (input: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>,
- *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>
+ *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
+ *   addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
+ *   removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>
  * }}
  */
 export function createWorktreeManager(deps) {
@@ -85,6 +87,53 @@ export function createWorktreeManager(deps) {
       const release = await locks.topologyLock(input.repo);
       try {
         const wt = pathFor(input.repo, input.bead_id);
+        const removed = await run(['worktree', 'remove', '--force', wt], {
+          cwd: input.repo
+        });
+        return { code: removed.code, stderr: removed.stderr };
+      } finally {
+        release();
+      }
+    },
+
+    /**
+     * Add a DETACHED worktree pinned to an exact commit (worker-autorun-policy
+     * §4) — the post-merge verify_cmd runs against the immutable merge SHA,
+     * never a moving base tip. `add`'s `-B` branch form cannot express this.
+     * Topology-lock guarded; clean up with {@link removeDetached}.
+     *
+     * @param {{ repo: string, name: string, sha: string }} input
+     * @returns {Promise<{ path: string }>}
+     */
+    async addDetached(input) {
+      const release = await locks.topologyLock(input.repo);
+      try {
+        const wt = pathFor(input.repo, input.name);
+        const added = await run(
+          ['worktree', 'add', '--detach', wt, input.sha],
+          { cwd: input.repo }
+        );
+        if (added.code !== 0) {
+          throw new Error(
+            `git worktree add --detach failed (${added.code}): ${added.stderr.trim()}`
+          );
+        }
+        return { path: wt };
+      } finally {
+        release();
+      }
+    },
+
+    /**
+     * Force-remove a detached verify worktree. Topology-lock guarded.
+     *
+     * @param {{ repo: string, name: string }} input
+     * @returns {Promise<{ code: number, stderr: string }>}
+     */
+    async removeDetached(input) {
+      const release = await locks.topologyLock(input.repo);
+      try {
+        const wt = pathFor(input.repo, input.name);
         const removed = await run(['worktree', 'remove', '--force', wt], {
           cwd: input.repo
         });

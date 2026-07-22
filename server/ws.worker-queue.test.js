@@ -241,6 +241,37 @@ describe('ws worker-queue channel', () => {
     expect(reply.payload.stopped).toBe(true);
   });
 
+  test('toggle ON resets the workspace repo breaker before ticking (worker-autorun-policy Phase 4)', async () => {
+    const tick = vi.fn(async () => {});
+    const reset = vi.fn();
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick, stop: vi.fn() },
+        runtime: { breaker: { reset } },
+        repo: '/repo'
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-queue-toggle', {
+      on: true,
+      expected_revision: 0
+    });
+    // The manual ▶ resumed the tripped repo (attachment-known repo key).
+    expect(reset).toHaveBeenCalledWith('/repo');
+    expect(tick).toHaveBeenCalledWith(process.cwd());
+
+    // Turning OFF never resets.
+    reset.mockClear();
+    await send(sock, 'm2', 'worker-queue-toggle', {
+      on: false,
+      expected_revision: 1
+    });
+    expect(reset).not.toHaveBeenCalled();
+  });
+
   test('toggle OFF does not kick a tick', async () => {
     const tick = vi.fn(async () => {});
     __registerWorkerAttachmentForTest(process.cwd(), {

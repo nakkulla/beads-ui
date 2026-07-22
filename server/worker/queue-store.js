@@ -54,6 +54,8 @@
  * reason (base_not_advanced/merge_sha_mismatch/git_error), null when none.
  * @property {string|null} done_kind - How the attempt completed
  * ('auto_merge'|'pr_stop'), null until done.
+ * @property {unknown} verify_cmd_result - Post-merge verify_cmd result
+ * ({ ok, reason, exit }), null when the lane never ran it.
  */
 /**
  * @typedef {Object} Queue
@@ -206,7 +208,8 @@ export function makeAttempt(fields) {
     drift_policy: fields.drift_policy ?? null,
     demoted_reason: fields.demoted_reason ?? null,
     release_rejected: fields.release_rejected ?? null,
-    done_kind: fields.done_kind ?? null
+    done_kind: fields.done_kind ?? null,
+    verify_cmd_result: fields.verify_cmd_result ?? null
   };
 }
 

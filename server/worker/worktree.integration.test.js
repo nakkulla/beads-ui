@@ -64,6 +64,42 @@ describe('worker/worktree (real git)', () => {
     expect(fs.existsSync(created.path)).toBe(false);
   });
 
+  test('addDetached pins the exact sha with a detached HEAD; removeDetached tears it down', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+
+    const first = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repo,
+      encoding: 'utf8'
+    }).trim();
+    // Advance the base so the pinned sha is NOT the moving tip.
+    fs.writeFileSync(path.join(repo, 'next.txt'), 'next\n');
+    git(['add', '.'], repo);
+    git(['commit', '-q', '-m', 'next'], repo);
+
+    const created = await wt.addDetached({
+      repo,
+      name: 'verify-UI-1',
+      sha: first
+    });
+    expect(created.path).toBe(path.join(repo, '.worktrees', 'verify-UI-1'));
+    // Pinned to the exact sha, detached (no branch ref created).
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: created.path,
+      encoding: 'utf8'
+    }).trim();
+    expect(head).toBe(first);
+    const sym = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: created.path,
+      encoding: 'utf8'
+    }).trim();
+    expect(sym).toBe('HEAD');
+
+    const removed = await wt.removeDetached({ repo, name: 'verify-UI-1' });
+    expect(removed.code).toBe(0);
+    expect(fs.existsSync(created.path)).toBe(false);
+  });
+
   test('add is serialized by the topology lock (no ref-db race)', async () => {
     const locks = createLockManager();
     const wt = createWorktreeManager({ locks });

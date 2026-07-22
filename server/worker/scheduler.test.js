@@ -846,3 +846,178 @@ describe('scheduler policy snapshot + demotion (worker-autorun-policy §2)', () 
     expect(env.runner.settingsFor('S1').drift_policy).toBe('halt');
   });
 });
+
+describe('scheduler post-merge verify_cmd (worker-autorun-policy §4)', () => {
+  const MERGE_SHA = 'f'.repeat(40);
+
+  /**
+   * @param {{ vres: any, breaker?: any }} opts
+   */
+  function buildVerifyCmdEnv(opts) {
+    const breaker = opts.breaker || createBreaker();
+    const env = setup({
+      config: { S1: {}, P9: {} },
+      slots: 1,
+      breaker,
+      verifyOk: true,
+      verifyCmd: () => ({ cmd: ['npm', 'run', 'all'], timeout_ms: 1234 })
+    });
+    /** @type {any[]} */
+    const detached_adds = [];
+    /** @type {any[]} */
+    const detached_removes = [];
+    /** @type {any} */ (env.worktree).addDetached = vi.fn(
+      async (/** @type {any} */ input) => {
+        detached_adds.push(input);
+        return { path: `/wt-verify/${input.name}` };
+      }
+    );
+    /** @type {any} */ (env.worktree).removeDetached = vi.fn(
+      async (/** @type {any} */ input) => {
+        detached_removes.push(input);
+        return { code: 0 };
+      }
+    );
+    /** @type {any[]} */
+    const runs = [];
+    const runVerifyCmd = vi.fn(async (/** @type {any} */ input) => {
+      runs.push({ input, breaker_tripped: breaker.isTripped('/repo') });
+      return opts.vres;
+    });
+    const scheduler = createScheduler({
+      store: env.store,
+      makeRunner: env.runner.factory,
+      bd: env.bd,
+      worktree: env.worktree,
+      tokens: env.tokens,
+      verify: env.verify,
+      breaker,
+      sessionLog: { attach: () => {} },
+      verifyCmd: () => ({ cmd: ['npm', 'run', 'all'], timeout_ms: 1234 }),
+      runVerifyCmd,
+      parallel_slots: 1,
+      now: () => 1000
+    });
+    return {
+      env,
+      breaker,
+      scheduler,
+      detached_adds,
+      detached_removes,
+      runs,
+      runVerifyCmd
+    };
+  }
+
+  /**
+   * Dispatch S1 and simulate the merge-lock route's observation by patching
+   * the attempt with a server-observed merge_sha.
+   */
+  async function dispatchWithObservedMerge(
+    /** @type {ReturnType<typeof buildVerifyCmdEnv>} */ sys
+  ) {
+    seedQueue(sys.env.store, ['S1'], []);
+    await sys.scheduler.tick(WS);
+    const attempt_id = Object.keys(sys.env.store.snapshot(WS).attempts)[0];
+    sys.env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { merge_sha: MERGE_SHA }
+    });
+    return attempt_id;
+  }
+
+  test('pass → detached worktree pinned to merge_sha, cleaned up, bead Done', async () => {
+    const sys = buildVerifyCmdEnv({
+      vres: { ok: true, reason: 'ok', exit: 0 }
+    });
+    const attempt_id = await dispatchWithObservedMerge(sys);
+    sys.env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(sys.detached_adds).toEqual([
+      { repo: '/repo', sha: MERGE_SHA, name: 'verify-S1' }
+    ]);
+    expect(sys.runs[0].input).toEqual({
+      cwd: '/wt-verify/verify-S1',
+      cmd: ['npm', 'run', 'all'],
+      timeout_ms: 1234
+    });
+    expect(sys.detached_removes).toEqual([
+      { repo: '/repo', name: 'verify-S1' }
+    ]);
+    const snap = sys.env.store.snapshot(WS);
+    expect(snap.done.map((e) => e.bead_id)).toContain('S1');
+    expect(snap.attempts[attempt_id].status).toBe('done');
+    expect(sys.breaker.isTripped('/repo')).toBe(false);
+  });
+
+  test('failure → distinct cause, breaker trips FIRST, repo dispatch blocked (수용 기준 5)', async () => {
+    const sys = buildVerifyCmdEnv({
+      vres: { ok: false, reason: 'verify_cmd_failed', exit: 2 }
+    });
+    const attempt_id = await dispatchWithObservedMerge(sys);
+    sys.env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const snap = sys.env.store.snapshot(WS);
+    expect(snap.attempts[attempt_id].status).toBe('failed');
+    expect(snap.attempts[attempt_id].cause).toBe('verify_cmd_failed');
+    expect(snap.done.map((e) => e.bead_id)).not.toContain('S1');
+    expect(sys.breaker.isTripped('/repo')).toBe(true);
+    expect(snap.auto_advance).toBe(false);
+    // The detached verify worktree is cleaned up even on failure.
+    expect(sys.detached_removes).toHaveLength(1);
+
+    // 수용 기준 5: subsequent dispatch into the SAME repo is blocked.
+    sys.env.store.place(WS, {
+      expected_revision: sys.env.store.snapshot(WS).revision,
+      bead_id: 'P9',
+      lane: 'serial'
+    });
+    sys.env.store.setAutoAdvance(WS, true);
+    await sys.scheduler.tick(WS);
+    expect(sys.scheduler.isRunning('P9')).toBe(false);
+  });
+
+  test('timeout reason propagates verbatim to the attempt cause', async () => {
+    const sys = buildVerifyCmdEnv({
+      vres: { ok: false, reason: 'verify_cmd_timeout', exit: null }
+    });
+    const attempt_id = await dispatchWithObservedMerge(sys);
+    sys.env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    expect(sys.env.store.snapshot(WS).attempts[attempt_id].cause).toBe(
+      'verify_cmd_timeout'
+    );
+  });
+
+  test('pr_stop lane never runs the verify_cmd', async () => {
+    const breaker = createBreaker();
+    const runVerifyCmd = vi.fn();
+    const env = setup({ config: { S1: {} }, slots: 1, verifyOk: true });
+    const scheduler = createScheduler({
+      store: env.store,
+      makeRunner: env.runner.factory,
+      bd: env.bd,
+      worktree: env.worktree,
+      tokens: env.tokens,
+      verify: env.verify,
+      breaker,
+      sessionLog: { attach: () => {} },
+      // No verifyCmd → dispatch demotes to pr_stop.
+      runVerifyCmd,
+      parallel_slots: 1,
+      now: () => 1000
+    });
+    seedQueue(env.store, ['S1'], []);
+    await scheduler.tick(WS);
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    expect(runVerifyCmd).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toContain('S1');
+  });
+});

@@ -43,6 +43,7 @@ import { createOrphanDetector } from './orphan.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
+import { runVerifyCmd } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
@@ -294,7 +295,8 @@ export function defaultProbePid(pid) {
  *   parallel_slots?: number,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
- *   verifyCmd?: (repo: string) => { cmd: string[], timeout_ms: number } | null
+ *   verifyCmd?: (repo: string) => { cmd: string[], timeout_ms: number } | null,
+ *   runVerifyCmd?: (input: { cwd: string, cmd: string[], timeout_ms: number }) => Promise<{ ok: boolean, reason: string, exit: number|null }>
  * }} [options]
  */
 export function createWorkerAttachment(workspace_root, options = {}) {
@@ -403,6 +405,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     sessionLog: runtime.sessionLog,
     admission,
     verifyCmd,
+    runVerifyCmd: options.runVerifyCmd || runVerifyCmd,
     // Late-bound: the merge-lock router (and its handover ledger) is mounted
     // by the app AFTER attachments are built.
     mergeLock: {
@@ -432,6 +435,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     bd,
     admission,
     verifyCmd,
+    repo,
     workspace: workspace_root
   };
 }
@@ -519,6 +523,28 @@ export async function checkWorkerQueueAdmission(workspace_root, bead_id) {
     return null;
   }
   return att.admission.check(bead_id);
+}
+
+/**
+ * Reset the circuit breaker for a workspace's repo, IF an attachment is
+ * registered (worker-autorun-policy Phase 4 — the manual ▶ resume that
+ * breaker.js always intended). No-op (false) without an attachment.
+ *
+ * @param {string} workspace_root
+ * @returns {boolean} True when a registered attachment's breaker was reset.
+ */
+export function resetWorkerBreakerForWorkspace(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return false;
+  }
+  const repo =
+    typeof (/** @type {any} */ (att).repo) === 'string' &&
+    /** @type {any} */ (att).repo.length > 0
+      ? /** @type {any} */ (att).repo
+      : keyFor(workspace_root);
+  att.runtime.breaker.reset(repo);
+  return true;
 }
 
 /**

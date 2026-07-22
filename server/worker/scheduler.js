@@ -82,6 +82,10 @@ const log = debug('worker:scheduler');
  * Workspace verify_cmd config lookup (worker-autorun-policy §4). A null (or
  * absent dep) means no independent post-merge verification is available, so a
  * resolved auto_merge demotes to pr_stop at dispatch (`verify_cmd_unset`).
+ * @property {(input: { cwd: string, cmd: string[], timeout_ms: number }) => Promise<{ ok: boolean, reason: string, exit: number|null }>} [runVerifyCmd]
+ * Post-merge verify_cmd executor (verify-cmd.js). Runs on the auto_merge
+ * success path inside a detached worktree pinned to the observed merge_sha,
+ * while the handed-over merge lock is still held.
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void }} sessionLog
  * @property {number | (() => number)} [port] - Server port for the merge-lock endpoint injected into the preamble.
  * @property {() => number} [now]
@@ -249,6 +253,78 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Run the post-merge verify_cmd in a detached worktree pinned to the
+   * observed merge_sha; the worktree is cleaned up in every branch. Any
+   * infrastructure failure (unset cmd, missing sha, worktree error) is a
+   * spawn-error refusal — never a silent pass. The result lands on the
+   * attempt record (`verify_cmd_result`).
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {BeadSnapshot} snap
+   * @param {string} merge_sha
+   * @returns {Promise<{ ok: boolean, reason: string, exit: number|null }>}
+   */
+  async function runPostMergeVerify(
+    workspace,
+    attempt_id,
+    bead_id,
+    snap,
+    merge_sha
+  ) {
+    /** @type {{ cmd: string[], timeout_ms: number } | null} */
+    let vc = null;
+    try {
+      vc = deps.verifyCmd ? deps.verifyCmd(snap.repo) : null;
+    } catch {
+      vc = null;
+    }
+    /** @type {{ ok: boolean, reason: string, exit: number|null }} */
+    let vres;
+    if (!vc || !merge_sha) {
+      vres = { ok: false, reason: 'verify_cmd_spawn_error', exit: null };
+    } else {
+      const name = `verify-${bead_id}`;
+      /** @type {{ path: string } | null} */
+      let wt = null;
+      try {
+        wt = await /** @type {any} */ (deps.worktree).addDetached({
+          repo: snap.repo,
+          sha: merge_sha,
+          name
+        });
+        vres = await /** @type {NonNullable<typeof deps.runVerifyCmd>} */ (
+          deps.runVerifyCmd
+        )({
+          cwd: /** @type {{ path: string }} */ (wt).path,
+          cmd: vc.cmd,
+          timeout_ms: vc.timeout_ms
+        });
+      } catch (err) {
+        log('post-merge verify infra failed for %s: %o', bead_id, err);
+        vres = { ok: false, reason: 'verify_cmd_spawn_error', exit: null };
+      } finally {
+        if (wt) {
+          try {
+            await /** @type {any} */ (deps.worktree).removeDetached({
+              repo: snap.repo,
+              name
+            });
+          } catch {
+            // Best-effort cleanup; the verdict already stands.
+          }
+        }
+      }
+    }
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { verify_cmd_result: vres }
+    });
+    return vres;
+  }
+
+  /**
    * Handle a finished session: policy-aware independent verify → Done, else
    * breaker. The handed-over merge lock (verified release) is freed here in
    * EVERY branch — on failure only AFTER the breaker trips, so a waiter can
@@ -326,8 +402,37 @@ export function createScheduler(deps) {
     });
 
     if (vr.ok) {
-      // (verify_cmd post-merge verification runs here while the handed-over
-      // lock is still held — worker-autorun-policy §4, Phase 4.)
+      // Post-merge verify_cmd (worker-autorun-policy §4): auto_merge only,
+      // run by the WORKER in a detached worktree pinned to the observed
+      // merge_sha, while the handed-over merge lock is STILL held — no other
+      // attempt can merge into a base that is being verified. On failure the
+      // breaker trips FIRST, then the lock is released.
+      if (
+        merge_policy === 'auto_merge' &&
+        typeof deps.runVerifyCmd === 'function' &&
+        typeof (/** @type {any} */ (deps.worktree).addDetached) === 'function'
+      ) {
+        const vres = await runPostMergeVerify(
+          workspace,
+          attempt_id,
+          bead_id,
+          snap,
+          typeof attempt.merge_sha === 'string' ? attempt.merge_sha : ''
+        );
+        if (!vres.ok) {
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            snap,
+            prior,
+            vres.reason
+          );
+          releaseHandover();
+          await tick(workspace);
+          return;
+        }
+      }
       releaseHandover();
       if (merge_policy === 'pr_stop') {
         // pr_stop leaves the bead OPEN for a later human merge session — a
