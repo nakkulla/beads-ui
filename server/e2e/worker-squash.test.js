@@ -223,7 +223,11 @@ describe('worker e2e — squash merge passes the merge_sha verify (수용 기준
           branch: 'S1',
           base_oid: 'oid'
         }),
-        remove: async () => ({ code: 0 })
+        remove: async () => ({ code: 0 }),
+        addDetached: async (/** @type {any} */ { name }) => ({
+          path: path.join(repo_dir, '.worktrees', name)
+        }),
+        removeDetached: async () => ({ code: 0 })
       },
       tokens,
       verify: createVerifier({
@@ -231,8 +235,10 @@ describe('worker e2e — squash merge passes the merge_sha verify (수용 기준
       }),
       breaker,
       sessionLog: createSessionLog(),
-      // auto_merge stays (a verify_cmd exists for this workspace).
+      // auto_merge stays (a verify_cmd exists for this workspace); the
+      // post-merge run itself passes.
       verifyCmd: () => ({ cmd: ['true'], timeout_ms: 5000 }),
+      runVerifyCmd: async () => ({ ok: true, reason: 'ok', exit: 0 }),
       mergeLock: {
         takeHandover: (attempt_id) => router.takeHandover(attempt_id)
       },

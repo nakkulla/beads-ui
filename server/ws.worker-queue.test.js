@@ -241,6 +241,48 @@ describe('ws worker-queue channel', () => {
     expect(reply.payload.stopped).toBe(true);
   });
 
+  test('an admission-refused place records the reason so every client sees the badge (review finding 4)', async () => {
+    let refuse = true;
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        admission: {
+          check: async () =>
+            refuse ? { ok: false, reason: 'spec_missing' } : { ok: true }
+        }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-7',
+      lane: 'serial',
+      expected_revision: 0
+    });
+    const refused = replyFor(sock, 'm1');
+    expect(refused.payload.applied).toBe(false);
+    expect(refused.payload.admission_reason).toBe('spec_missing');
+    // The refusal is PERSISTED on the queue (badge source), not reply-only.
+    expect(refused.payload.queue.admission['UI-7'].reason).toBe('spec_missing');
+    expect(refused.payload.queue.serial).toEqual([]);
+
+    // A later admission-passing place clears the stale record.
+    refuse = false;
+    await send(sock, 'm2', 'worker-queue-place', {
+      bead_id: 'UI-7',
+      lane: 'serial',
+      expected_revision: refused.payload.queue.revision
+    });
+    const placed = replyFor(sock, 'm2');
+    expect(placed.payload.applied).toBe(true);
+    expect(placed.payload.queue.admission['UI-7']).toBeUndefined();
+    expect(
+      placed.payload.queue.serial.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-7']);
+  });
+
   test('toggle ON resets the workspace repo breaker before ticking (worker-autorun-policy Phase 4)', async () => {
     const tick = vi.fn(async () => {});
     const reset = vi.fn();

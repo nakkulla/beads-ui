@@ -392,24 +392,42 @@ export async function handleWorkerQueuePlace(ws, req) {
     admission = { ok: false, reason: 'git_error' };
   }
   if (admission && !admission.ok) {
+    const reason = admission.reason || 'git_error';
+    // Persist the refusal so the candidate badge renders it for EVERY client
+    // (the reply-only admission_reason was droppable — implementation review
+    // 2026-07-22 finding 4).
+    try {
+      queueStore().recordAdmission(key, { bead_id: p.bead_id, reason });
+    } catch (err) {
+      log('admission record failed for %s/%s: %o', key, p.bead_id, err);
+    }
+    const snap = queueStore().snapshot(key);
     ws.send(
       JSON.stringify(
         makeOk(req, {
           applied: false,
           conflict: false,
-          admission_reason: admission.reason,
-          queue: decorateQueue(key, queueStore().snapshot(key))
+          admission_reason: reason,
+          queue: decorateQueue(key, snap)
         })
       )
     );
+    fanout(key, snap);
     return;
   }
-  const result = queueStore().place(key, {
+  let result = queueStore().place(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
     lane: p.lane,
     index: typeof p.index === 'number' ? p.index : undefined
   });
+  if (result.ok) {
+    // A successful (admission-passed) placement clears any stale refusal.
+    const cleared = queueStore().clearAdmission(key, p.bead_id);
+    if (cleared.ok) {
+      result = { ...result, queue: cleared.queue };
+    }
+  }
   replyMutation(ws, req, key, result);
 }
 

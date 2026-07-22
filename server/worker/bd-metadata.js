@@ -32,12 +32,24 @@ export function createBdMetadata(deps = {}) {
 
   return {
     /**
+     * A non-zero bd exit MUST surface as a throw — callers (workflow_mode
+     * stamp/revert) are fail-closed and a swallowed failure would let a stray
+     * fast_track survive as if reverted (implementation review 2026-07-22).
+     *
      * @param {string} bead_id
      * @param {string} key
      * @param {string} value
      */
     async setMetadata(bead_id, key, value) {
-      await run(['update', bead_id, '--set-metadata', `${key}=${value}`], opts);
+      const r = await run(
+        ['update', bead_id, '--set-metadata', `${key}=${value}`],
+        opts
+      );
+      if (r.code !== 0) {
+        throw new Error(
+          `bd set-metadata ${key} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
     },
 
     /**
@@ -45,7 +57,12 @@ export function createBdMetadata(deps = {}) {
      * @param {string} key
      */
     async unsetMetadata(bead_id, key) {
-      await run(['update', bead_id, '--unset-metadata', key], opts);
+      const r = await run(['update', bead_id, '--unset-metadata', key], opts);
+      if (r.code !== 0) {
+        throw new Error(
+          `bd unset-metadata ${key} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
     },
 
     /**

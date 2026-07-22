@@ -66,7 +66,7 @@ const log = debug('worker:scheduler');
  *   unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>
  * }} bd
- * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any> }} worktree
+ * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any> }} worktree
  * @property {{ issue: (attempt_id: string, meta: { repo: string, bead_id: string, target_base?: string }) => string, revoke: (attempt_id: string) => void }} tokens
  * @property {{ verifyMerge: (i: { repo: string, target_base: string, bead_id: string, merge_policy: 'auto_merge'|'pr_stop', merge_sha: string|null }) => Promise<{ ok: boolean, reason: string }> }} verify
  * @property {{ takeHandover: (attempt_id: string) => (() => void) | null }} [mergeLock]
@@ -239,7 +239,13 @@ export function createScheduler(deps) {
       attempt_id,
       patch: { status: 'failed', cause, finished_at: now() }
     });
-    await revertWorkflowMode(bead_id, prior);
+    try {
+      await revertWorkflowMode(bead_id, prior);
+    } catch (err) {
+      // Best-effort on the failure path: the trip below already blocks the
+      // repo, so a bd-down revert failure must not escape onSessionDone.
+      log('workflow_mode revert failed for %s: %o', bead_id, err);
+    }
     deps.breaker.trip(snap.repo, { bead_id, cause });
     deps.store.setAutoAdvance(workspace, false);
   }
@@ -301,7 +307,15 @@ export function createScheduler(deps) {
     }
     /** @type {{ ok: boolean, reason: string, exit: number|null }} */
     let vres;
-    if (!vc || !merge_sha) {
+    const capable =
+      typeof deps.runVerifyCmd === 'function' &&
+      typeof (/** @type {any} */ (deps.worktree).addDetached) === 'function' &&
+      typeof (/** @type {any} */ (deps.worktree).removeDetached) === 'function';
+    if (!vc || !merge_sha || !capable) {
+      // Fail-closed: an auto_merge without a runnable independent
+      // verification (unset cmd, no observed sha, missing runner/worktree
+      // capability) must never pass silently (implementation review
+      // 2026-07-22 — unattended merge without verification is forbidden).
       vres = { ok: false, reason: 'verify_cmd_spawn_error', exit: null };
     } else {
       const name = `verify-${bead_id}`;
@@ -427,11 +441,7 @@ export function createScheduler(deps) {
       // merge_sha, while the handed-over merge lock is STILL held — no other
       // attempt can merge into a base that is being verified. On failure the
       // breaker trips FIRST, then the lock is released.
-      if (
-        merge_policy === 'auto_merge' &&
-        typeof deps.runVerifyCmd === 'function' &&
-        typeof (/** @type {any} */ (deps.worktree).addDetached) === 'function'
-      ) {
+      if (merge_policy === 'auto_merge') {
         const vres = await runPostMergeVerify(
           workspace,
           attempt_id,
@@ -457,11 +467,24 @@ export function createScheduler(deps) {
       releaseHandover();
       if (merge_policy === 'pr_stop') {
         // pr_stop leaves the bead OPEN for a later human merge session — a
-        // stray fast_track must not switch that session to unattended.
+        // stray fast_track must not switch that session to unattended, so a
+        // failed revert BLOCKS the Done move (fail-closed, implementation
+        // review 2026-07-22).
         try {
           await revertWorkflowMode(bead_id, prior);
-        } catch {
-          // Best-effort: bd may be down; the done record still lands.
+        } catch (err) {
+          log('pr_stop workflow_mode revert failed for %s: %o', bead_id, err);
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            snap,
+            prior,
+            'workflow_mode_revert_failed'
+          );
+          notifyChanged(workspace);
+          await tick(workspace);
+          return;
         }
       }
       // auto_merge: bead closed → workflow_mode intentionally NOT reverted.
