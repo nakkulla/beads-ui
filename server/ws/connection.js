@@ -35,7 +35,8 @@ import {
   handleUpdateAssignee,
   handleUpdateExecSettings,
   handleUpdatePriority,
-  handleUpdateStatus
+  handleUpdateStatus,
+  handleUpdateWorkflowMeta
 } from './mutation-handlers.js';
 import { scheduleListRefresh, setRefreshDebounceMs } from './refresh.js';
 import {
@@ -58,6 +59,7 @@ import {
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
+  handleWorkerQueueSetPolicy,
   handleWorkerQueueToggle
 } from './worker-handlers.js';
 import {
@@ -366,6 +368,9 @@ export async function handleMessage(ws, data) {
     case 'update-exec-settings':
       await handleUpdateExecSettings(ws, req);
       return;
+    case 'update-workflow-meta':
+      await handleUpdateWorkflowMeta(ws, req);
+      return;
     case 'update-status':
       await handleUpdateStatus(ws, req);
       return;
@@ -421,13 +426,16 @@ export async function handleMessage(ws, data) {
       handleUnsubscribeWorkerQueue(ws, req);
       return;
     case 'worker-queue-place':
-      handleWorkerQueuePlace(ws, req);
+      await handleWorkerQueuePlace(ws, req);
       return;
     case 'worker-queue-reorder':
       handleWorkerQueueReorder(ws, req);
       return;
     case 'worker-queue-toggle':
       handleWorkerQueueToggle(ws, req);
+      return;
+    case 'worker-queue-set-policy':
+      handleWorkerQueueSetPolicy(ws, req);
       return;
     case 'worker-queue-remove':
       handleWorkerQueueRemove(ws, req);

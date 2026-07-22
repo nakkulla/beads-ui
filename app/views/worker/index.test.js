@@ -390,6 +390,133 @@ describe('views/worker', () => {
     expect(mount.querySelector('.worker-banner--on')).not.toBeNull();
   });
 
+  test('admission refusals badge candidate + queued rows; verify_cmd + policy selects render (§2/§6)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        serial: [{ bead_id: 'SQ-1', added_at: 0 }],
+        merge_policy: 'pr_stop',
+        admission: {
+          'RD-1': { reason: 'spec_review_stale', at: 1 },
+          'SQ-1': { reason: 'receipt_missing_or_malformed', at: 2 }
+        },
+        workspace_info: { verify_cmd: null }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    // Candidate badge (queue-entry refusal).
+    const rd1 = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-candidate .worker-mini[data-bead-id="RD-1"]'
+      )
+    );
+    expect(rd1.querySelector('.worker-mini__reason')?.textContent).toContain(
+      '⛔ spec_review_stale'
+    );
+    // Queued (serial) badge (tick/dispatch refusal).
+    const sq1 = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-serial .worker-mini[data-bead-id="SQ-1"]'
+      )
+    );
+    expect(sq1.querySelector('.worker-mini__reason')?.textContent).toContain(
+      '⛔ receipt_missing_or_malformed'
+    );
+
+    // Global policy selects reflect the queue values.
+    const mergeSel = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-policy-key="merge_policy"]')
+    );
+    expect(mergeSel.value).toBe('pr_stop');
+    const driftSel = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-policy-key="drift_policy"]')
+    );
+    expect(driftSel.value).toBe('');
+
+    // verify_cmd read-only display — unset shows the demotion warning.
+    const vc = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-verifycmd')
+    );
+    expect(vc.classList.contains('worker-verifycmd--unset')).toBe(true);
+    expect(vc.textContent).toContain('미설정');
+  });
+
+  test('changing a policy select sends worker-queue-set-policy with the current revision', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ revision: 3 }));
+    const transport = vi
+      .fn()
+      .mockResolvedValue(
+        reply(queueOf({ revision: 4, merge_policy: 'pr_stop' }))
+      );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    const sel = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-policy-key="merge_policy"]')
+    );
+    sel.value = 'pr_stop';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-policy', {
+      key: 'merge_policy',
+      value: 'pr_stop',
+      expected_revision: 3
+    });
+  });
+
+  test('a configured verify_cmd renders read-only argv; a demoted running tile shows the reason', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        workspace_info: {
+          verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 }
+        },
+        attempts: {
+          'att-1': {
+            attempt_id: 'att-1',
+            bead_id: 'RD-1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now(),
+            merge_policy: 'pr_stop',
+            demoted_reason: 'verify_cmd_unset'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const vc = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-verifycmd')
+    );
+    expect(vc.classList.contains('worker-verifycmd--unset')).toBe(false);
+    expect(vc.textContent).toContain('npm run all');
+
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+    expect(tile.textContent).toContain('pr_stop');
+    expect(tile.querySelector('.rtile__demoted')?.textContent).toContain(
+      'verify_cmd_unset'
+    );
+  });
+
   test('running attempts render tiles + a failed attempt raises the breaker banner', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

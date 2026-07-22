@@ -202,7 +202,9 @@ export function claudeSpec(options = {}) {
       args.push(
         applyPreamble(promptFor(bead), {
           fast_track: !!s.fast_track,
-          merge_lock: s.merge_lock
+          merge_lock: s.merge_lock,
+          merge_policy: s.merge_policy,
+          drift_policy: s.drift_policy
         })
       );
       return { command: 'claude', args, env: routing_env };

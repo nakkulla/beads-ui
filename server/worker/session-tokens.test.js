@@ -10,7 +10,8 @@ describe('worker/session-tokens', () => {
     expect(reg.verify(token)).toEqual({
       attempt_id: 'att-1',
       repo: '/repo',
-      bead_id: 'UI-1'
+      bead_id: 'UI-1',
+      target_base: null
     });
     expect(reg.verify('nope')).toBe(null);
     expect(reg.verify('')).toBe(null);

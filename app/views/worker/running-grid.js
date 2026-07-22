@@ -21,6 +21,8 @@ import { html } from 'lit-html';
  * @property {string|null} runner
  * @property {string|null} model
  * @property {number|null} started_at
+ * @property {string|null} [merge_policy] - Resolved policy snapshot (§2).
+ * @property {string|null} [demoted_reason] - Demotion reason badge (§2/§4).
  */
 
 /**
@@ -111,6 +113,17 @@ function runningTile(tile, now, selected_attempt = null) {
     </div>
     <div class="rtile__title">${tile.title}</div>
     ${meta ? html`<div class="rtile__meta">${meta}</div>` : ''}
+    ${tile.merge_policy
+      ? html`<div class="rtile__meta rtile__meta--policy">
+          ${tile.merge_policy}${tile.demoted_reason
+            ? html` <span
+                class="rtile__demoted"
+                title=${`강등: ${tile.demoted_reason}`}
+                >⤵ ${tile.demoted_reason}</span
+              >`
+            : ''}
+        </div>`
+      : ''}
   </div>`;
 }
 

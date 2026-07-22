@@ -40,18 +40,38 @@
  * @property {string|null} status - Attempt lifecycle: running/done/failed/blocked/orphaned.
  * @property {string|null} workflow_mode_prior - workflow_mode value snapshotted before launch (null=was unset).
  * @property {string|null} target_base - Merge target base at dispatch.
- * @property {string|null} merge_sha - Verified merge SHA (post-session).
+ * @property {string|null} merge_sha - SERVER-observed merge SHA (recorded by
+ * the merge-lock route at a verified release).
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
  * @property {string|null} cause - Failure cause (breaker banner reason).
+ * @property {string|null} merge_policy - Resolved merge policy snapshot
+ * (auto_merge/pr_stop, post-demotion) at dispatch.
+ * @property {string|null} drift_policy - Resolved drift policy snapshot
+ * (auto_rereview/halt) at dispatch.
+ * @property {string|null} demoted_reason - Why the resolved merge policy was
+ * demoted (e.g. verify_cmd_unset), null when not demoted.
+ * @property {string|null} release_rejected - Last rejected merge-lock release
+ * reason (base_not_advanced/merge_sha_mismatch/git_error), null when none.
+ * @property {string|null} done_kind - How the attempt completed
+ * ('auto_merge'|'pr_stop'), null until done.
+ * @property {unknown} verify_cmd_result - Post-merge verify_cmd result
+ * ({ ok, reason, exit }), null when the lane never ran it.
  */
 /**
  * @typedef {Object} Queue
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
+ * @property {string|null} merge_policy - Workspace-global merge policy
+ * (auto_merge/pr_stop); null = unset (default applies at resolution).
+ * @property {string|null} drift_policy - Workspace-global drift policy
+ * (auto_rereview/halt); null = unset.
  * @property {QueueEntry[]} serial - Serial queue (one runnable head at a time).
  * @property {QueueEntry[]} parallel - Parallel pool (slot-priority order).
  * @property {QueueEntry[]} done - Completed today.
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
+ * @property {Record<string, { reason: string, at: number }>} admission -
+ * Auto-run admission refusals by bead_id (badge display). Cleared only on a
+ * successful dispatch or queue removal — never auto-expired.
  */
 /**
  * @typedef {Object} QueueOpResult
@@ -61,10 +81,30 @@
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { DRIFT_POLICIES, MERGE_POLICIES } from './policy.js';
 import { queueFilePath } from './state-paths.js';
 
 /** @type {ReadonlyArray<'serial'|'parallel'>} */
 const PLACEABLE_LANES = ['serial', 'parallel'];
+
+/**
+ * Workspace-global policy keys settable through `setPolicy`, with their enums.
+ *
+ * @type {Record<string, ReadonlyArray<string>>}
+ */
+const POLICY_KEYS = {
+  merge_policy: MERGE_POLICIES,
+  drift_policy: DRIFT_POLICIES
+};
+
+/**
+ * @param {ReadonlyArray<string>} allowed
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function normalizePolicyValue(allowed, value) {
+  return typeof value === 'string' && allowed.includes(value) ? value : null;
+}
 
 /**
  * @param {unknown} value
@@ -81,10 +121,13 @@ function emptyQueue() {
   return {
     revision: 0,
     auto_advance: false,
+    merge_policy: null,
+    drift_policy: null,
     serial: [],
     parallel: [],
     done: [],
-    attempts: {}
+    attempts: {},
+    admission: {}
   };
 }
 
@@ -160,7 +203,13 @@ export function makeAttempt(fields) {
     target_base: fields.target_base ?? null,
     merge_sha: fields.merge_sha ?? null,
     finished_at: fields.finished_at ?? null,
-    cause: fields.cause ?? null
+    cause: fields.cause ?? null,
+    merge_policy: fields.merge_policy ?? null,
+    drift_policy: fields.drift_policy ?? null,
+    demoted_reason: fields.demoted_reason ?? null,
+    release_rejected: fields.release_rejected ?? null,
+    done_kind: fields.done_kind ?? null,
+    verify_cmd_result: fields.verify_cmd_result ?? null
   };
 }
 
@@ -190,6 +239,18 @@ function normalizeQueue(raw) {
             bead_id: value.bead_id
           })
         );
+      }
+    }
+  }
+  q.merge_policy = normalizePolicyValue(MERGE_POLICIES, raw.merge_policy);
+  q.drift_policy = normalizePolicyValue(DRIFT_POLICIES, raw.drift_policy);
+  if (isRecord(raw.admission)) {
+    for (const [bead_id, value] of Object.entries(raw.admission)) {
+      if (isRecord(value) && typeof value.reason === 'string') {
+        q.admission[bead_id] = {
+          reason: value.reason,
+          at: typeof value.at === 'number' ? value.at : 0
+        };
       }
     }
   }
@@ -432,6 +493,7 @@ export function createQueueStore(options = {}) {
       const { expected_revision, bead_id } = input;
       return applyMutation(workspace, expected_revision, (next) => {
         removeFromLanes(next, bead_id);
+        delete next.admission[bead_id];
         return true;
       });
     },
@@ -501,6 +563,76 @@ export function createQueueStore(options = {}) {
         }
         removeFromLanes(next, bead_id);
         next.done.push({ bead_id, added_at: now() });
+        return true;
+      });
+    },
+
+    /**
+     * Set (or unset with null) a workspace-global policy. CAS-guarded.
+     * Rejects unknown keys and non-enum values without a write.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, key: string, value: unknown }} input
+     * @returns {QueueOpResult}
+     */
+    setPolicy(workspace, input) {
+      const { expected_revision, key, value } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        const allowed = POLICY_KEYS[key];
+        if (!allowed) {
+          return false;
+        }
+        if (value === null || value === '') {
+          next[/** @type {'merge_policy'|'drift_policy'} */ (key)] = null;
+          return true;
+        }
+        const normalized = normalizePolicyValue(allowed, value);
+        if (!normalized) {
+          return false;
+        }
+        next[/** @type {'merge_policy'|'drift_policy'} */ (key)] = normalized;
+        return true;
+      });
+    },
+
+    /**
+     * Record an auto-run admission refusal for a bead (scheduler-owned, no
+     * CAS). Overwrites any prior record for the same bead.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, reason: string }} input
+     * @returns {QueueOpResult}
+     */
+    recordAdmission(workspace, input) {
+      const { bead_id, reason } = input;
+      return applyUnconditional(workspace, (next) => {
+        if (
+          typeof bead_id !== 'string' ||
+          bead_id.length === 0 ||
+          typeof reason !== 'string' ||
+          reason.length === 0
+        ) {
+          return false;
+        }
+        next.admission[bead_id] = { reason, at: now() };
+        return true;
+      });
+    },
+
+    /**
+     * Clear a bead's admission record (scheduler-owned, no CAS). No-op (no
+     * revision bump) when absent.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {QueueOpResult}
+     */
+    clearAdmission(workspace, bead_id) {
+      return applyUnconditional(workspace, (next) => {
+        if (!Object.hasOwn(next.admission, bead_id)) {
+          return false;
+        }
+        delete next.admission[bead_id];
         return true;
       });
     },

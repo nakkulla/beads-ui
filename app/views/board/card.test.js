@@ -80,6 +80,67 @@ describe('views/board/card', () => {
     expect(m.querySelectorAll('.stp .seg').length).toBe(5);
   });
 
+  test('derived route chip renders dimmed with a ? suffix; explicit stays plain (§6)', () => {
+    const derived = mountCard(
+      {
+        id: 'UI-9',
+        title: 'd',
+        status: 'open',
+        workflow: {
+          route: 'spec_backed',
+          stages: {
+            spec: { state: 'dim' },
+            impl: { state: 'empty' },
+            pr: { state: 'empty' },
+            merge: { state: 'empty' }
+          },
+          chips: {
+            route: 'spec_backed',
+            route_source: 'derived',
+            fast_track: false,
+            pr: null
+          }
+        }
+      },
+      makeCtx()
+    );
+    const chip = /** @type {HTMLElement} */ (
+      derived.querySelector('.ctl-chip--route')
+    );
+    expect(chip.classList.contains('is-derived')).toBe(true);
+    expect(chip.textContent?.trim()).toBe('spec_backed ?');
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const explicit = mountCard(
+      {
+        id: 'UI-10',
+        title: 'e',
+        status: 'open',
+        workflow: {
+          route: 'spec_backed',
+          stages: {
+            spec: { state: 'dim' },
+            impl: { state: 'empty' },
+            pr: { state: 'empty' },
+            merge: { state: 'empty' }
+          },
+          chips: {
+            route: 'spec_backed',
+            route_source: 'explicit',
+            fast_track: false,
+            pr: null
+          }
+        }
+      },
+      makeCtx()
+    );
+    const chip2 = /** @type {HTMLElement} */ (
+      explicit.querySelector('.ctl-chip--route')
+    );
+    expect(chip2.classList.contains('is-derived')).toBe(false);
+    expect(chip2.textContent?.trim()).toBe('spec_backed');
+  });
+
   test('PR chip absent when no pr in chips', () => {
     const m = mountCard(
       {

@@ -76,6 +76,66 @@ function normalizeWorkspaceConfig(parsed) {
   };
 }
 
+/** Default verify_cmd timeout (worker-autorun-policy §4). */
+const DEFAULT_VERIFY_TIMEOUT_MS = 600000;
+
+/**
+ * Normalize the `[worker.verify."<absolute workspace path>"]` sections
+ * (worker-autorun-policy §4) into `{ <resolved path>: { cmd, timeout_ms } }`.
+ *
+ * `cmd` MUST be an argv string array — the worker spawns it WITHOUT a shell,
+ * so a shell one-liner string is rejected (section ignored → the workspace
+ * counts as verify_cmd-unset and auto_merge demotes to pr_stop).
+ *
+ * Toolchain constraint: the command runs in a CLEAN detached worktree pinned
+ * to the merge SHA, which has no untracked toolchain (`.venv` etc.). Configure
+ * either a self-contained command or absolute interpreter paths into the
+ * canonical checkout, e.g.:
+ *
+ *   [worker.verify."/Users/me/GitHub/beads-ui"]
+ *   cmd = ["npm", "run", "all"]        # self-contained (npm resolves per-tree)
+ *   timeout_ms = 600000                # optional, default 600000
+ *
+ * Sections with a non-absolute key or an invalid `cmd` are ignored.
+ *
+ * @param {any} parsed
+ * @returns {Record<string, { cmd: string[], timeout_ms: number }>}
+ */
+function normalizeWorkerVerify(parsed) {
+  /** @type {Record<string, { cmd: string[], timeout_ms: number }>} */
+  const out = {};
+  const section = parsed?.worker?.verify;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return out;
+  }
+  for (const [key, value] of Object.entries(section)) {
+    const workspace = normalizeWorkspacePath(key);
+    if (!workspace || !value || typeof value !== 'object') {
+      continue;
+    }
+    const raw_cmd = /** @type {any} */ (value).cmd;
+    const cmd =
+      Array.isArray(raw_cmd) &&
+      raw_cmd.length > 0 &&
+      raw_cmd.every((a) => typeof a === 'string' && a.length > 0)
+        ? raw_cmd.slice()
+        : null;
+    if (!cmd) {
+      log('worker.verify %s ignored: cmd must be a non-empty argv array', key);
+      continue;
+    }
+    const raw_timeout = /** @type {any} */ (value).timeout_ms;
+    const timeout_ms =
+      typeof raw_timeout === 'number' &&
+      Number.isFinite(raw_timeout) &&
+      raw_timeout > 0
+        ? Math.floor(raw_timeout)
+        : DEFAULT_VERIFY_TIMEOUT_MS;
+    out[workspace] = { cmd, timeout_ms };
+  }
+  return out;
+}
+
 /**
  * Normalize the top-level `poll_interval_seconds` setting (spec §7). Governs the
  * server-side periodic list-refresh poller: default 30, an explicit `0` disables
@@ -100,7 +160,8 @@ function normalizePollIntervalSeconds(value) {
  *     scan_roots: string[],
  *     workspaces: string[]
  *   },
- *   poll_interval_seconds: number
+ *   poll_interval_seconds: number,
+ *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>
  * }}
  */
 function readRuntimeConfig(config_path) {
@@ -134,7 +195,8 @@ function readRuntimeConfig(config_path) {
       workspace_config: normalizeWorkspaceConfig(parsed),
       poll_interval_seconds: normalizePollIntervalSeconds(
         parsed?.poll_interval_seconds
-      )
+      ),
+      worker_verify: normalizeWorkerVerify(parsed)
     };
   } catch (error) {
     if (
@@ -153,7 +215,8 @@ function readRuntimeConfig(config_path) {
         scan_roots: DEFAULT_WORKSPACE_CONFIG.scan_roots.slice(),
         workspaces: DEFAULT_WORKSPACE_CONFIG.workspaces.slice()
       },
-      poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS
+      poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
+      worker_verify: {}
     };
   }
 }
@@ -181,7 +244,8 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *     scan_roots: string[],
  *     workspaces: string[]
  *   },
- *   poll_interval_seconds: number
+ *   poll_interval_seconds: number,
+ *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>
  * }}
  */
 export function getConfig() {

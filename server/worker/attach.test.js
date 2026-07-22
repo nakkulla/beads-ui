@@ -150,6 +150,10 @@ describe('worker/attach construction + live loop (F1)', () => {
       bd: fakeBd({ S1: { runner: 'claude' } }),
       worktree: fakeWorktree,
       verify: okVerify,
+      // This test probes the spawn/preamble wiring, not the admission gate —
+      // and a configured verify_cmd keeps auto_merge (merge-lock block present).
+      admission: { validate: async () => ({ ok: true }) },
+      verifyCmd: () => ({ cmd: ['true'], timeout_ms: 1000 }),
       spawn_impl,
       port: 4321,
       parallel_slots: 1

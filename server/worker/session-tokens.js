@@ -18,6 +18,8 @@ import { randomBytes } from 'node:crypto';
  * @property {string} attempt_id
  * @property {string} repo
  * @property {string} bead_id
+ * @property {string|null} target_base - Merge base the token is bound to
+ * (worker-autorun-policy §5); null on legacy issuance without one.
  */
 
 /**
@@ -25,7 +27,7 @@ import { randomBytes } from 'node:crypto';
  *
  * @param {{ generate?: () => string }} [options]
  * @returns {{
- *   issue: (attempt_id: string, meta: { repo: string, bead_id: string }) => string,
+ *   issue: (attempt_id: string, meta: { repo: string, bead_id: string, target_base?: string }) => string,
  *   verify: (token: unknown) => SessionTokenInfo | null,
  *   revoke: (attempt_id: string) => void,
  *   onRevoke: (fn: (token: string, info: SessionTokenInfo) => void) => (() => void),
@@ -49,7 +51,7 @@ export function createTokenRegistry(options = {}) {
   return {
     /**
      * @param {string} attempt_id
-     * @param {{ repo: string, bead_id: string }} meta
+     * @param {{ repo: string, bead_id: string, target_base?: string }} meta
      * @returns {string}
      */
     issue(attempt_id, meta) {
@@ -57,7 +59,11 @@ export function createTokenRegistry(options = {}) {
       by_token.set(token, {
         attempt_id,
         repo: meta.repo,
-        bead_id: meta.bead_id
+        bead_id: meta.bead_id,
+        target_base:
+          typeof meta.target_base === 'string' && meta.target_base.length > 0
+            ? meta.target_base
+            : null
       });
       by_attempt.set(attempt_id, token);
       return token;

@@ -34,3 +34,16 @@ describe('worker/bd-metadata argv contract', () => {
     expect(await md.readMetadata('UI-1', 'missing')).toBe(null);
   });
 });
+
+describe('worker/bd-metadata fail-closed writes (implementation review 2026-07-22)', () => {
+  test('a non-zero bd exit on set/unset THROWS instead of passing silently', async () => {
+    const run = vi.fn(async () => ({ code: 1, stdout: '', stderr: 'boom' }));
+    const meta = createBdMetadata({ run, cwd: '/repo' });
+    await expect(
+      meta.setMetadata('UI-1', 'workflow_mode', 'fast_track')
+    ).rejects.toThrow(/set-metadata workflow_mode failed \(1\)/);
+    await expect(meta.unsetMetadata('UI-1', 'workflow_mode')).rejects.toThrow(
+      /unset-metadata workflow_mode failed \(1\)/
+    );
+  });
+});

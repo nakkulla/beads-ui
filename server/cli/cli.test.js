@@ -146,7 +146,8 @@ describe('main', () => {
         scan_roots: [],
         workspaces: []
       },
-      poll_interval_seconds: 30
+      poll_interval_seconds: 30,
+      worker_verify: {}
     });
 
     const code = await main(['resolve-startup-cwd']);

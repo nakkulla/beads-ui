@@ -134,6 +134,8 @@ function makeFakeBd(config) {
         status: c.status ?? '',
         plan_review: c.plan_review,
         plan_fresh: c.plan_fresh ?? null,
+        merge_policy: c.merge_policy ?? null,
+        drift_policy: c.drift_policy ?? null,
         deps: c.deps ?? []
       };
     },
@@ -153,6 +155,10 @@ function makeFakeBd(config) {
       /** @type {string} */ bead_id,
       /** @type {string} */ key
     ) {
+      const cfg = /** @type {any} */ (config[bead_id]);
+      if (cfg && cfg.throwOnUnset && key === 'workflow_mode') {
+        throw new Error(`bd unset-metadata failed for ${bead_id}`);
+      }
       calls.push({ method: 'unsetMetadata', bead_id, key });
     },
     async readMetadata(
@@ -172,7 +178,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, breaker?: any, tokens?: any, locks?: any, makeRunner?: (name: string) => any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, breaker?: any, tokens?: any, locks?: any, makeRunner?: (name: string) => any, admission?: any, verifyCmd?: any, runVerifyCmd?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -193,7 +199,11 @@ function setup(opts) {
       branch: bead_id,
       base_oid: `base-${bead_id}`
     })),
-    remove: vi.fn(async () => ({ code: 0 }))
+    remove: vi.fn(async () => ({ code: 0 })),
+    addDetached: vi.fn(async (/** @type {any} */ { name }) => ({
+      path: `/wt-verify/${name}`
+    })),
+    removeDetached: vi.fn(async () => ({ code: 0 }))
   };
   const sessionLog = { attach: vi.fn() };
   const scheduler = createScheduler({
@@ -205,6 +215,9 @@ function setup(opts) {
     verify,
     breaker,
     sessionLog,
+    admission: opts.admission,
+    verifyCmd: opts.verifyCmd,
+    runVerifyCmd: opts.runVerifyCmd,
     parallel_slots: opts.slots ?? 2,
     now: () => 1000
   });
@@ -396,7 +409,11 @@ describe('scheduler happy path (dispatch → merge-gate → verify → Done)', (
       slots: 1,
       tokens,
       breaker,
-      verifyOk: true
+      verifyOk: true,
+      // A configured verify_cmd keeps the resolved auto_merge (no demotion);
+      // the post-merge verify_cmd itself passes.
+      verifyCmd: () => ({ cmd: ['true'], timeout_ms: 1000 }),
+      runVerifyCmd: vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }))
     });
     seedQueue(env.store, ['S1'], []);
     await env.scheduler.tick(WS);
@@ -408,19 +425,136 @@ describe('scheduler happy path (dispatch → merge-gate → verify → Done)', (
     const release = await locks.acquireMerge('/repo', 'main');
     release();
 
+    // Simulate the merge-lock route's server-observed merge_sha record.
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { merge_sha: 'f'.repeat(40) }
+    });
+
     env.runner.finish('S1', { success: true });
     await flush();
     await flush();
 
-    expect(env.verify.verifyMerge).toHaveBeenCalled();
+    expect(env.verify.verifyMerge).toHaveBeenCalledWith(
+      expect.objectContaining({ merge_policy: 'auto_merge' })
+    );
     const snap = env.store.snapshot(WS);
     expect(snap.done.map((e) => e.bead_id)).toContain('S1');
     expect(snap.attempts[attempt_id].status).toBe('done');
-    expect(snap.attempts[attempt_id].merge_sha).toBe('work-tip-sha');
+    expect(snap.attempts[attempt_id].done_kind).toBe('auto_merge');
     // Bead closed → workflow_mode NOT reverted.
     expect(env.bd.calls.some((c) => c.method === 'unsetMetadata')).toBe(false);
     // Session token revoked after completion.
     expect(tokens.size()).toBe(0);
+  });
+
+  test('pr_stop success reverts workflow_mode and records done_kind', async () => {
+    // No verify_cmd → the resolved auto_merge demotes to pr_stop at dispatch.
+    const env = setup({ config: { S1: {} }, slots: 1, verifyOk: true });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(env.verify.verifyMerge).toHaveBeenCalledWith(
+      expect.objectContaining({ merge_policy: 'pr_stop', merge_sha: null })
+    );
+    const snap = env.store.snapshot(WS);
+    expect(snap.done.map((e) => e.bead_id)).toContain('S1');
+    expect(snap.attempts[attempt_id].done_kind).toBe('pr_stop');
+    // pr_stop leaves the bead open → workflow_mode reverted (prior unset).
+    expect(
+      env.bd.calls.some(
+        (c) =>
+          c.method === 'unsetMetadata' &&
+          c.bead_id === 'S1' &&
+          c.key === 'workflow_mode'
+      )
+    ).toBe(true);
+  });
+
+  test('a handed-over merge lock is released after verify on success, and after the trip on failure', async () => {
+    const breaker2 = createBreaker();
+    /** @type {Record<string, { released: boolean, breaker_at_release: boolean|null }>} */
+    const handovers = {};
+    /**
+     * @param {string} attempt_id
+     */
+    const registerHandover = (attempt_id) => {
+      handovers[attempt_id] = { released: false, breaker_at_release: null };
+    };
+    const mergeLock = {
+      takeHandover: (/** @type {string} */ attempt_id) => {
+        if (!handovers[attempt_id]) {
+          return null;
+        }
+        return () => {
+          handovers[attempt_id].released = true;
+          handovers[attempt_id].breaker_at_release =
+            breaker2.isTripped('/repo');
+        };
+      }
+    };
+    const env = setup({
+      config: { S1: {}, S2: {} },
+      slots: 1,
+      breaker: breaker2,
+      verifyOk: true,
+      verifyCmd: () => ({ cmd: ['true'], timeout_ms: 1000 })
+    });
+    // Inject the mergeLock dep by rebuilding the scheduler is heavier than
+    // needed — setup() does not expose it, so wire through a fresh scheduler.
+    const scheduler = createScheduler({
+      store: env.store,
+      makeRunner: env.runner.factory,
+      bd: env.bd,
+      worktree: env.worktree,
+      tokens: env.tokens,
+      verify: env.verify,
+      breaker: breaker2,
+      sessionLog: { attach: () => {} },
+      verifyCmd: () => ({ cmd: ['true'], timeout_ms: 1000 }),
+      runVerifyCmd: vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 })),
+      mergeLock,
+      parallel_slots: 1,
+      now: () => 1000
+    });
+    seedQueue(env.store, ['S1'], []);
+    await scheduler.tick(WS);
+    const first_attempt = Object.keys(env.store.snapshot(WS).attempts)[0];
+    registerHandover(first_attempt);
+    env.store.updateAttempt(WS, {
+      attempt_id: first_attempt,
+      patch: { merge_sha: 'f'.repeat(40) }
+    });
+
+    // Success: the handover is released (breaker untripped at release time).
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    expect(handovers[first_attempt].released).toBe(true);
+    expect(handovers[first_attempt].breaker_at_release).toBe(false);
+
+    // Failure: trip FIRST, release AFTER (release observes a tripped breaker).
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'S2',
+      lane: 'serial'
+    });
+    env.store.setAutoAdvance(WS, true);
+    await scheduler.tick(WS);
+    const second_attempt = Object.keys(env.store.snapshot(WS).attempts).find(
+      (id) => env.store.snapshot(WS).attempts[id].bead_id === 'S2'
+    );
+    registerHandover(String(second_attempt));
+    env.runner.finish('S2', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+    expect(handovers[String(second_attempt)].released).toBe(true);
+    expect(handovers[String(second_attempt)].breaker_at_release).toBe(true);
   });
 });
 
@@ -538,6 +672,98 @@ describe('scheduler failure (breaker + workflow_mode revert + repo block)', () =
   });
 });
 
+describe('scheduler admission gate (worker-autorun-policy §1)', () => {
+  test('admission-invalid serial head is skipped to the next candidate in the SAME tick (no starvation)', async () => {
+    // The fake routes by a config marker (model:'invalid') since the snapshot
+    // itself carries no bead id.
+    const admission = {
+      validate: vi.fn(async (/** @type {any} */ snap) =>
+        snap.model === 'invalid'
+          ? { ok: false, reason: 'spec_missing' }
+          : { ok: true }
+      )
+    };
+    const env = setup({
+      config: {
+        S1: { model: 'invalid' },
+        S2: {},
+        P1: { model: 'invalid' },
+        P2: {}
+      },
+      slots: 2,
+      admission
+    });
+    seedQueue(env.store, ['S1', 'S2'], ['P1', 'P2']);
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+    expect(env.scheduler.isRunning('P1')).toBe(false);
+    expect(env.scheduler.isRunning('P2')).toBe(true);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.admission.S1).toEqual({
+      reason: 'spec_missing',
+      at: expect.any(Number)
+    });
+    expect(snap.admission.P1).toEqual({
+      reason: 'spec_missing',
+      at: expect.any(Number)
+    });
+    expect(snap.admission.S2).toBeUndefined();
+  });
+
+  test('dispatch re-checks admission against the pinned worktree base_oid (TOCTOU)', async () => {
+    const admission = {
+      // Valid at the tick scan (no base pinned yet), stale once dispatch pins
+      // the worktree base_oid — models a base advancing between scan and add.
+      validate: vi.fn(
+        async (/** @type {any} */ _snap, /** @type {any} */ base) =>
+          base === 'base-S1'
+            ? { ok: false, reason: 'spec_review_stale' }
+            : { ok: true }
+      )
+    };
+    const env = setup({ config: { S1: {} }, slots: 1, admission });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    // The already-created worktree is cleaned up on the admission refusal.
+    expect(env.worktree.remove).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'S1'
+    });
+    expect(env.store.snapshot(WS).admission.S1).toEqual({
+      reason: 'spec_review_stale',
+      at: expect.any(Number)
+    });
+    // No session spawned, no attempt persisted for the refused dispatch.
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toHaveLength(0);
+  });
+
+  test('a successful dispatch clears the bead admission record', async () => {
+    let invalid = true;
+    const admission = {
+      validate: vi.fn(async () =>
+        invalid ? { ok: false, reason: 'receipt_unreachable' } : { ok: true }
+      )
+    };
+    const env = setup({ config: { S1: {} }, slots: 1, admission });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    expect(env.store.snapshot(WS).admission.S1).toEqual({
+      reason: 'receipt_unreachable',
+      at: expect.any(Number)
+    });
+
+    invalid = false;
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+});
+
 describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring)', () => {
   test('a fresh-receipt codex bead passes the in-spawn second guard', async () => {
     const spawn_impl = makeFixtureSpawn({
@@ -592,5 +818,283 @@ describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring
     await env.scheduler.tick(WS);
     expect(spawn_impl.captured.calls.length).toBe(0);
     expect(env.scheduler.isRunning('S1')).toBe(false);
+  });
+});
+
+describe('scheduler policy snapshot + demotion (worker-autorun-policy §2)', () => {
+  test('auto_merge WITHOUT a verify_cmd demotes to pr_stop and records the reason', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.merge_policy).toBe('pr_stop');
+    expect(a.drift_policy).toBe('auto_rereview');
+    expect(a.demoted_reason).toBe('verify_cmd_unset');
+    // The demoted policy also reaches the session settings (preamble input).
+    expect(env.runner.settingsFor('S1').merge_policy).toBe('pr_stop');
+  });
+
+  test('bead metadata beats the workspace global; verify_cmd keeps auto_merge', async () => {
+    const env = setup({
+      config: { S1: { merge_policy: 'auto_merge' } },
+      slots: 1,
+      verifyCmd: () => ({ cmd: ['npm', 'run', 'all'], timeout_ms: 600000 })
+    });
+    // Workspace globals: pr_stop + halt — the bead pin overrides merge only.
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.setPolicy(WS, {
+      expected_revision: rev,
+      key: 'merge_policy',
+      value: 'pr_stop'
+    }).queue.revision;
+    env.store.setPolicy(WS, {
+      expected_revision: rev,
+      key: 'drift_policy',
+      value: 'halt'
+    });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.merge_policy).toBe('auto_merge');
+    expect(a.drift_policy).toBe('halt');
+    expect(a.demoted_reason).toBe(null);
+    expect(env.runner.settingsFor('S1').merge_policy).toBe('auto_merge');
+    expect(env.runner.settingsFor('S1').drift_policy).toBe('halt');
+  });
+});
+
+describe('scheduler post-merge verify_cmd (worker-autorun-policy §4)', () => {
+  const MERGE_SHA = 'f'.repeat(40);
+
+  /**
+   * @param {{ vres: any, breaker?: any }} opts
+   */
+  function buildVerifyCmdEnv(opts) {
+    const breaker = opts.breaker || createBreaker();
+    const env = setup({
+      config: { S1: {}, P9: {} },
+      slots: 1,
+      breaker,
+      verifyOk: true,
+      verifyCmd: () => ({ cmd: ['npm', 'run', 'all'], timeout_ms: 1234 })
+    });
+    /** @type {any[]} */
+    const detached_adds = [];
+    /** @type {any[]} */
+    const detached_removes = [];
+    /** @type {any} */ (env.worktree).addDetached = vi.fn(
+      async (/** @type {any} */ input) => {
+        detached_adds.push(input);
+        return { path: `/wt-verify/${input.name}` };
+      }
+    );
+    /** @type {any} */ (env.worktree).removeDetached = vi.fn(
+      async (/** @type {any} */ input) => {
+        detached_removes.push(input);
+        return { code: 0 };
+      }
+    );
+    /** @type {any[]} */
+    const runs = [];
+    const runVerifyCmd = vi.fn(async (/** @type {any} */ input) => {
+      runs.push({ input, breaker_tripped: breaker.isTripped('/repo') });
+      return opts.vres;
+    });
+    const scheduler = createScheduler({
+      store: env.store,
+      makeRunner: env.runner.factory,
+      bd: env.bd,
+      worktree: env.worktree,
+      tokens: env.tokens,
+      verify: env.verify,
+      breaker,
+      sessionLog: { attach: () => {} },
+      verifyCmd: () => ({ cmd: ['npm', 'run', 'all'], timeout_ms: 1234 }),
+      runVerifyCmd,
+      parallel_slots: 1,
+      now: () => 1000
+    });
+    return {
+      env,
+      breaker,
+      scheduler,
+      detached_adds,
+      detached_removes,
+      runs,
+      runVerifyCmd
+    };
+  }
+
+  /**
+   * Dispatch S1 and simulate the merge-lock route's observation by patching
+   * the attempt with a server-observed merge_sha.
+   */
+  async function dispatchWithObservedMerge(
+    /** @type {ReturnType<typeof buildVerifyCmdEnv>} */ sys
+  ) {
+    seedQueue(sys.env.store, ['S1'], []);
+    await sys.scheduler.tick(WS);
+    const attempt_id = Object.keys(sys.env.store.snapshot(WS).attempts)[0];
+    sys.env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { merge_sha: MERGE_SHA }
+    });
+    return attempt_id;
+  }
+
+  test('pass → detached worktree pinned to merge_sha, cleaned up, bead Done', async () => {
+    const sys = buildVerifyCmdEnv({
+      vres: { ok: true, reason: 'ok', exit: 0 }
+    });
+    const attempt_id = await dispatchWithObservedMerge(sys);
+    sys.env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(sys.detached_adds).toEqual([
+      { repo: '/repo', sha: MERGE_SHA, name: 'verify-S1' }
+    ]);
+    expect(sys.runs[0].input).toEqual({
+      cwd: '/wt-verify/verify-S1',
+      cmd: ['npm', 'run', 'all'],
+      timeout_ms: 1234
+    });
+    expect(sys.detached_removes).toEqual([
+      { repo: '/repo', name: 'verify-S1' }
+    ]);
+    const snap = sys.env.store.snapshot(WS);
+    expect(snap.done.map((e) => e.bead_id)).toContain('S1');
+    expect(snap.attempts[attempt_id].status).toBe('done');
+    expect(sys.breaker.isTripped('/repo')).toBe(false);
+  });
+
+  test('failure → distinct cause, breaker trips FIRST, repo dispatch blocked (수용 기준 5)', async () => {
+    const sys = buildVerifyCmdEnv({
+      vres: { ok: false, reason: 'verify_cmd_failed', exit: 2 }
+    });
+    const attempt_id = await dispatchWithObservedMerge(sys);
+    sys.env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const snap = sys.env.store.snapshot(WS);
+    expect(snap.attempts[attempt_id].status).toBe('failed');
+    expect(snap.attempts[attempt_id].cause).toBe('verify_cmd_failed');
+    expect(snap.done.map((e) => e.bead_id)).not.toContain('S1');
+    expect(sys.breaker.isTripped('/repo')).toBe(true);
+    expect(snap.auto_advance).toBe(false);
+    // The detached verify worktree is cleaned up even on failure.
+    expect(sys.detached_removes).toHaveLength(1);
+
+    // 수용 기준 5: subsequent dispatch into the SAME repo is blocked.
+    sys.env.store.place(WS, {
+      expected_revision: sys.env.store.snapshot(WS).revision,
+      bead_id: 'P9',
+      lane: 'serial'
+    });
+    sys.env.store.setAutoAdvance(WS, true);
+    await sys.scheduler.tick(WS);
+    expect(sys.scheduler.isRunning('P9')).toBe(false);
+  });
+
+  test('timeout reason propagates verbatim to the attempt cause', async () => {
+    const sys = buildVerifyCmdEnv({
+      vres: { ok: false, reason: 'verify_cmd_timeout', exit: null }
+    });
+    const attempt_id = await dispatchWithObservedMerge(sys);
+    sys.env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    expect(sys.env.store.snapshot(WS).attempts[attempt_id].cause).toBe(
+      'verify_cmd_timeout'
+    );
+  });
+
+  test('pr_stop lane never runs the verify_cmd', async () => {
+    const breaker = createBreaker();
+    const runVerifyCmd = vi.fn();
+    const env = setup({ config: { S1: {} }, slots: 1, verifyOk: true });
+    const scheduler = createScheduler({
+      store: env.store,
+      makeRunner: env.runner.factory,
+      bd: env.bd,
+      worktree: env.worktree,
+      tokens: env.tokens,
+      verify: env.verify,
+      breaker,
+      sessionLog: { attach: () => {} },
+      // No verifyCmd → dispatch demotes to pr_stop.
+      runVerifyCmd,
+      parallel_slots: 1,
+      now: () => 1000
+    });
+    seedQueue(env.store, ['S1'], []);
+    await scheduler.tick(WS);
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    expect(runVerifyCmd).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toContain('S1');
+  });
+});
+
+describe('scheduler fail-closed regressions (implementation review 2026-07-22)', () => {
+  test('pr_stop success with a FAILED workflow_mode revert blocks the Done move', async () => {
+    const breaker = createBreaker();
+    // No verify_cmd → demoted pr_stop; the revert (unset) throws (bd down).
+    const env = setup({
+      config: { S1: { throwOnUnset: true } },
+      slots: 1,
+      breaker,
+      verifyOk: true
+    });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.done.map((e) => e.bead_id)).not.toContain('S1');
+    expect(snap.attempts[attempt_id].status).toBe('failed');
+    expect(snap.attempts[attempt_id].cause).toBe('workflow_mode_revert_failed');
+    expect(breaker.isTripped('/repo')).toBe(true);
+  });
+
+  test('auto_merge WITHOUT a post-merge runner capability fails closed (never a silent pass)', async () => {
+    const breaker = createBreaker();
+    // verifyCmd configured (auto_merge stays) but NO runVerifyCmd dep → the
+    // independent verification cannot run → refuse, trip.
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      breaker,
+      verifyOk: true,
+      verifyCmd: () => ({ cmd: ['true'], timeout_ms: 1000 })
+    });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { merge_sha: 'f'.repeat(40) }
+    });
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.done.map((e) => e.bead_id)).not.toContain('S1');
+    expect(snap.attempts[attempt_id].cause).toBe('verify_cmd_spawn_error');
+    expect(breaker.isTripped('/repo')).toBe(true);
   });
 });

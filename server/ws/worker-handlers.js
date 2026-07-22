@@ -26,8 +26,16 @@
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
+import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
-import { stopWorkerAttempt, tickWorkerQueue } from '../worker/attach.js';
+import { getConfig } from '../config.js';
+import {
+  checkWorkerQueueAdmission,
+  resetWorkerBreakerForWorkspace,
+  stopWorkerAttempt,
+  tickWorkerQueue
+} from '../worker/attach.js';
+import { onQueueChanged } from '../worker/queue-events.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   emitSessionLogAppend,
@@ -80,16 +88,48 @@ function subscribersFor(key) {
 }
 
 /**
+ * Decorate a queue snapshot with computed, non-persisted workspace info: the
+ * server-config verify_cmd (read-only display — no UI edit surface,
+ * worker-autorun-policy §4/§6).
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, unknown>}
+ */
+function decorateQueue(workspace_key, queue) {
+  /** @type {{ cmd: string[], timeout_ms: number } | null} */
+  let verify_cmd = null;
+  try {
+    verify_cmd = getConfig().worker_verify[path.resolve(workspace_key)] ?? null;
+  } catch {
+    verify_cmd = null;
+  }
+  return { ...queue, workspace_info: { verify_cmd } };
+}
+
+/**
  * Push the current queue snapshot to every subscriber of a workspace.
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
  */
 function fanout(workspace_key, queue) {
+  const decorated = decorateQueue(workspace_key, queue);
   for (const sub of subscribersFor(workspace_key)) {
-    emitWorkerQueueSnapshot(sub.ws, sub.client_id, queue);
+    emitWorkerQueueSnapshot(sub.ws, sub.client_id, decorated);
   }
 }
+
+// Autonomous scheduler transitions (dispatch, admission refusal, done/fail)
+// emit queue-events; fan the fresh snapshot out so clients see them without
+// waiting for their next own mutation (worker-autorun-policy §6).
+onQueueChanged((workspace) => {
+  try {
+    fanout(workspace, queueStore().snapshot(workspace));
+  } catch (err) {
+    log('queue-changed fanout failed for %s: %o', workspace, err);
+  }
+});
 
 /**
  * Detach a connection from the worker-queue subscriber registry (close hook).
@@ -251,7 +291,11 @@ export function handleSubscribeWorkerQueue(ws, req) {
   subscribersFor(key).add({ ws, client_id });
   log('subscribe-worker-queue %s ws=%s', client_id, key);
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
-  emitWorkerQueueSnapshot(ws, client_id, queueStore().snapshot(key));
+  emitWorkerQueueSnapshot(
+    ws,
+    client_id,
+    decorateQueue(key, queueStore().snapshot(key))
+  );
 }
 
 /**
@@ -290,7 +334,7 @@ function replyMutation(ws, req, workspace_key, result) {
       makeOk(req, {
         applied: result.ok,
         conflict: result.conflict,
-        queue: result.queue
+        queue: decorateQueue(workspace_key, /** @type {any} */ (result.queue))
       })
     )
   );
@@ -312,10 +356,16 @@ function revisionOf(payload) {
  * Handle `worker-queue-place`. Payload:
  * `{ bead_id, lane: 'serial'|'parallel', index?, expected_revision }`.
  *
+ * Queue entry is admission-gated (worker-autorun-policy §1): with a live
+ * attachment the bead must pass the fail-closed validator (route pin + spec
+ * existence + fresh spec_review receipt) before placement; a refusal replies
+ * `{ applied:false, admission_reason }` without mutating the queue. Without an
+ * attachment the check is skipped (nothing can dispatch there anyway).
+ *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleWorkerQueuePlace(ws, req) {
+export async function handleWorkerQueuePlace(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   if (
     typeof p.bead_id !== 'string' ||
@@ -333,12 +383,51 @@ export function handleWorkerQueuePlace(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  const result = queueStore().place(key, {
+  /** @type {import('../worker/admission.js').AdmissionResult | null} */
+  let admission = null;
+  try {
+    admission = await checkWorkerQueueAdmission(key, p.bead_id);
+  } catch (err) {
+    log('admission check failed for %s/%s: %o', key, p.bead_id, err);
+    admission = { ok: false, reason: 'git_error' };
+  }
+  if (admission && !admission.ok) {
+    const reason = admission.reason || 'git_error';
+    // Persist the refusal so the candidate badge renders it for EVERY client
+    // (the reply-only admission_reason was droppable — implementation review
+    // 2026-07-22 finding 4).
+    try {
+      queueStore().recordAdmission(key, { bead_id: p.bead_id, reason });
+    } catch (err) {
+      log('admission record failed for %s/%s: %o', key, p.bead_id, err);
+    }
+    const snap = queueStore().snapshot(key);
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: false,
+          conflict: false,
+          admission_reason: reason,
+          queue: decorateQueue(key, snap)
+        })
+      )
+    );
+    fanout(key, snap);
+    return;
+  }
+  let result = queueStore().place(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
     lane: p.lane,
     index: typeof p.index === 'number' ? p.index : undefined
   });
+  if (result.ok) {
+    // A successful (admission-passed) placement clears any stale refusal.
+    const cleared = queueStore().clearAdmission(key, p.bead_id);
+    if (cleared.ok) {
+      result = { ...result, queue: cleared.queue };
+    }
+  }
   replyMutation(ws, req, key, result);
 }
 
@@ -404,10 +493,50 @@ export function handleWorkerQueueToggle(ws, req) {
   });
   replyMutation(ws, req, key, result);
   if (result.ok && p.on === true) {
+    // Manual ▶ resumes a tripped repo (breaker.js's intended reset path,
+    // worker-autorun-policy Phase 4) — reset BEFORE the tick so the first
+    // dispatch after the resume is not refused by the stale trip.
+    try {
+      resetWorkerBreakerForWorkspace(key);
+    } catch (err) {
+      log('breaker reset on toggle failed for %s: %o', key, err);
+    }
     Promise.resolve(tickWorkerQueue(key)).catch((err) => {
       log('worker tick after toggle failed for %s: %o', key, err);
     });
   }
+}
+
+/**
+ * Handle `worker-queue-set-policy`. Payload:
+ * `{ key: 'merge_policy'|'drift_policy', value: string|null, expected_revision }`.
+ * Persists the workspace-global policy (CAS); null/'' unsets. Enum validation
+ * lives in the queue store (worker-autorun-policy §2).
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerQueueSetPolicy(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.key !== 'string') {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { key: merge_policy|drift_policy }'
+        )
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const result = queueStore().setPolicy(key, {
+    expected_revision: revisionOf(p),
+    key: p.key,
+    value: p.value ?? null
+  });
+  replyMutation(ws, req, key, result);
 }
 
 /**

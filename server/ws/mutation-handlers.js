@@ -203,6 +203,90 @@ export async function handleUpdateExecSettings(ws, req) {
 }
 
 /**
+ * Workflow metadata enum keys editable from the detail panel
+ * (worker-autorun-policy §6). Same unset convention as exec settings: an
+ * empty value removes the key (absence = derived/default at read time).
+ */
+const WORKFLOW_META_ENUMS = {
+  route: ['spec_backed', 'full_plan'],
+  merge_policy: ['auto_merge', 'pr_stop'],
+  drift_policy: ['auto_rereview', 'halt']
+};
+
+/**
+ * Set or unset one of the workflow metadata enum keys (route / merge_policy /
+ * drift_policy) via `bd update --set-metadata` / `--unset-metadata`, replying
+ * with the fresh `bd show` readback (worker-autorun-policy §6).
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleUpdateWorkflowMeta(ws, req) {
+  log('update-workflow-meta');
+  const { id, key, value } = /** @type {any} */ (req.payload || {});
+  if (
+    typeof id !== 'string' ||
+    id.length === 0 ||
+    typeof key !== 'string' ||
+    typeof value !== 'string'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { id: string, key: string, value: string }'
+        )
+      )
+    );
+    return;
+  }
+  const allowed = /** @type {Record<string, string[]>} */ (WORKFLOW_META_ENUMS)[
+    key
+  ];
+  if (!allowed) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', `unknown workflow-meta key: ${key}`)
+      )
+    );
+    return;
+  }
+  if (value !== '' && !allowed.includes(value)) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', `invalid value for ${key}: ${value}`)
+      )
+    );
+    return;
+  }
+  const args =
+    value === ''
+      ? ['update', id, '--unset-metadata', key]
+      : ['update', id, '--set-metadata', `${key}=${value}`];
+  const res = await runBdInWorkspace(ws, args);
+  if (res.code !== 0) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
+    );
+    return;
+  }
+  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
+  if (shown.code !== 0) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+    );
+    return;
+  }
+  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  try {
+    triggerMutationRefreshOnce();
+  } catch {
+    // ignore
+  }
+}
+
+/**
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
