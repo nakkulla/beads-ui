@@ -26,13 +26,16 @@
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
+import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
+import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
   resetWorkerBreakerForWorkspace,
   stopWorkerAttempt,
   tickWorkerQueue
 } from '../worker/attach.js';
+import { onQueueChanged } from '../worker/queue-events.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   emitSessionLogAppend,
@@ -85,16 +88,48 @@ function subscribersFor(key) {
 }
 
 /**
+ * Decorate a queue snapshot with computed, non-persisted workspace info: the
+ * server-config verify_cmd (read-only display — no UI edit surface,
+ * worker-autorun-policy §4/§6).
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, unknown>}
+ */
+function decorateQueue(workspace_key, queue) {
+  /** @type {{ cmd: string[], timeout_ms: number } | null} */
+  let verify_cmd = null;
+  try {
+    verify_cmd = getConfig().worker_verify[path.resolve(workspace_key)] ?? null;
+  } catch {
+    verify_cmd = null;
+  }
+  return { ...queue, workspace_info: { verify_cmd } };
+}
+
+/**
  * Push the current queue snapshot to every subscriber of a workspace.
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
  */
 function fanout(workspace_key, queue) {
+  const decorated = decorateQueue(workspace_key, queue);
   for (const sub of subscribersFor(workspace_key)) {
-    emitWorkerQueueSnapshot(sub.ws, sub.client_id, queue);
+    emitWorkerQueueSnapshot(sub.ws, sub.client_id, decorated);
   }
 }
+
+// Autonomous scheduler transitions (dispatch, admission refusal, done/fail)
+// emit queue-events; fan the fresh snapshot out so clients see them without
+// waiting for their next own mutation (worker-autorun-policy §6).
+onQueueChanged((workspace) => {
+  try {
+    fanout(workspace, queueStore().snapshot(workspace));
+  } catch (err) {
+    log('queue-changed fanout failed for %s: %o', workspace, err);
+  }
+});
 
 /**
  * Detach a connection from the worker-queue subscriber registry (close hook).
@@ -256,7 +291,11 @@ export function handleSubscribeWorkerQueue(ws, req) {
   subscribersFor(key).add({ ws, client_id });
   log('subscribe-worker-queue %s ws=%s', client_id, key);
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
-  emitWorkerQueueSnapshot(ws, client_id, queueStore().snapshot(key));
+  emitWorkerQueueSnapshot(
+    ws,
+    client_id,
+    decorateQueue(key, queueStore().snapshot(key))
+  );
 }
 
 /**
@@ -295,7 +334,7 @@ function replyMutation(ws, req, workspace_key, result) {
       makeOk(req, {
         applied: result.ok,
         conflict: result.conflict,
-        queue: result.queue
+        queue: decorateQueue(workspace_key, /** @type {any} */ (result.queue))
       })
     )
   );
@@ -359,7 +398,7 @@ export async function handleWorkerQueuePlace(ws, req) {
           applied: false,
           conflict: false,
           admission_reason: admission.reason,
-          queue: queueStore().snapshot(key)
+          queue: decorateQueue(key, queueStore().snapshot(key))
         })
       )
     );

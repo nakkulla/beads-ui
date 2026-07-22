@@ -2481,6 +2481,39 @@ html[data-theme='dark'] {
   font-weight: 700;
 }
 
+/* 워크스페이스 전역 정책 select (worker-autorun-policy §2/§6) */
+.worker-policy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  font-size: var(--fs-chip);
+  color: var(--text-muted);
+}
+
+.worker-policy__sel {
+  font-size: var(--fs-chip);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  padding: 1px var(--sp-4);
+}
+
+/* verify_cmd 읽기 전용 표시 — 편집 표면 없음(서버 설정 파일 전용, §4) */
+.worker-verifycmd {
+  font-size: var(--fs-chip);
+  color: var(--text-muted);
+}
+
+.worker-verifycmd code {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-primary);
+}
+
+.worker-verifycmd--unset {
+  color: var(--accent-danger);
+}
+
 .worker-banners {
   display: flex;
   flex-direction: column;
@@ -2625,6 +2658,11 @@ html[data-theme='dark'] {
 .rtile__meta {
   font-size: var(--fs-chip-lg);
   color: var(--text-dim);
+}
+
+/* 실행 타일 정책·강등 뱃지 (worker-autorun-policy §2/§4) */
+.rtile__demoted {
+  color: var(--accent-danger);
 }
 
 /* ---------- Transcript drawer (session viewer, spec §5.6) ---------- */

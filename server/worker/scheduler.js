@@ -87,6 +87,10 @@ const log = debug('worker:scheduler');
  * success path inside a detached worktree pinned to the observed merge_sha,
  * while the handed-over merge lock is still held.
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void }} sessionLog
+ * @property {(workspace: string) => void} [notifyQueueChanged]
+ * Fired after autonomous queue transitions (dispatch records, admission
+ * refusals, session done/fail) so ws subscribers get a fresh snapshot without
+ * waiting for their next own mutation (worker-autorun-policy §6).
  * @property {number | (() => number)} [port] - Server port for the merge-lock endpoint injected into the preamble.
  * @property {() => number} [now]
  * @property {number} [parallel_slots]
@@ -149,6 +153,21 @@ export function createScheduler(deps) {
    * @type {Set<string>}
    */
   const dispatch_refused = new Set();
+
+  /**
+   * Notify ws subscribers of an autonomous queue transition (best-effort).
+   *
+   * @param {string} workspace
+   */
+  function notifyChanged(workspace) {
+    if (typeof deps.notifyQueueChanged === 'function') {
+      try {
+        deps.notifyQueueChanged(workspace);
+      } catch {
+        // A broken fanout must never break the scheduler.
+      }
+    }
+  }
 
   /**
    * Run the admission validator fail-closed: absent dep passes (legacy wiring),
@@ -375,6 +394,7 @@ export function createScheduler(deps) {
           : `session_failed:${verdict.reason}`
       );
       releaseHandover();
+      notifyChanged(workspace);
       await tick(workspace);
       return;
     }
@@ -429,6 +449,7 @@ export function createScheduler(deps) {
             vres.reason
           );
           releaseHandover();
+          notifyChanged(workspace);
           await tick(workspace);
           return;
         }
@@ -460,6 +481,7 @@ export function createScheduler(deps) {
       );
       releaseHandover();
     }
+    notifyChanged(workspace);
     await tick(workspace);
   }
 
@@ -542,6 +564,7 @@ export function createScheduler(deps) {
       }
       claimed.delete(bead_id);
       dispatch_refused.add(bead_id);
+      notifyChanged(workspace);
       await tickPass(workspace);
       return;
     }
@@ -617,6 +640,7 @@ export function createScheduler(deps) {
         // Best-effort: bd may be down; the failed record already reflects it.
       }
       claimed.delete(bead_id);
+      notifyChanged(workspace);
       return;
     }
 
@@ -692,6 +716,7 @@ export function createScheduler(deps) {
     deps.store.clearAdmission(workspace, bead_id);
     deps.sessionLog.attach(workspace, attempt_id, handle.events);
     running.set(attempt_id, { bead_id, repo: snap.repo, lane, handle, prior });
+    notifyChanged(workspace);
 
     handle.done.then((verdict) =>
       onSessionDone(workspace, attempt_id, bead_id, snap, prior, verdict)
@@ -747,6 +772,7 @@ export function createScheduler(deps) {
               bead_id: entry.bead_id,
               reason: adm.reason || 'git_error'
             });
+            notifyChanged(workspace);
             continue;
           }
           to_dispatch.push({ bead_id: entry.bead_id, lane: 'serial', snap });
@@ -778,6 +804,7 @@ export function createScheduler(deps) {
             bead_id: entry.bead_id,
             reason: adm.reason || 'git_error'
           });
+          notifyChanged(workspace);
           continue;
         }
         to_dispatch.push({ bead_id: entry.bead_id, lane: 'parallel', snap });

@@ -252,6 +252,31 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Set (or unset with '') a workspace-global policy, retrying ONCE on a CAS
+   * conflict — the same discipline as {@link setAutoAdvance} (§2).
+   *
+   * @param {'merge_policy'|'drift_policy'} key
+   * @param {string} value
+   */
+  async function setPolicy(key, value) {
+    if (!transport) {
+      return;
+    }
+    const payload = { key, value: value || null };
+    const res = await transport('worker-queue-set-policy', {
+      ...payload,
+      expected_revision: currentRevision()
+    });
+    adopt(res);
+    if (res && res.conflict) {
+      await transport('worker-queue-set-policy', {
+        ...payload,
+        expected_revision: currentRevision()
+      }).then(adopt);
+    }
+  }
+
+  /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
    * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], breaker: any, serial: any[], parallel: any[], done: any[] }}
@@ -299,21 +324,36 @@ export function createWorkerView(mount_element, options = {}) {
     merged.sort(cmpEffectiveRank(order));
     candidate_issues = merged;
 
+    // Admission refusals recorded by the scheduler/place gate (§1) surface as
+    // reason badges on candidate AND queued rows.
+    /** @type {Record<string, { reason: string, at: number }>} */
+    const admission = q.admission || {};
+    /**
+     * @param {string} bead_id
+     * @returns {string}
+     */
+    const admissionBadge = (bead_id) =>
+      admission[bead_id] ? `⛔ ${admission[bead_id].reason}` : '';
+
     /** @type {any[]} */
     const candidates = merged.map((/** @type {any} */ it) => {
       const eligible = hasSpec(it);
-      let reason;
+      /** @type {string[]} */
+      const parts = [];
       if (blocked_ids.has(it.id)) {
-        reason = eligible
-          ? blockedReason(it)
-          : `${blockedReason(it)} · spec 없음`;
-      } else {
-        reason = eligible ? '' : 'spec 없음';
+        parts.push(blockedReason(it));
+      }
+      if (!eligible) {
+        parts.push('spec 없음');
+      }
+      const adm = admissionBadge(it.id);
+      if (adm) {
+        parts.push(adm);
       }
       return {
         id: it.id,
         title: it.title || it.id,
-        reason,
+        reason: parts.join(' · '),
         draggable: eligible,
         lane: 'candidate'
       };
@@ -328,6 +368,7 @@ export function createWorkerView(mount_element, options = {}) {
       entries.map((/** @type {any} */ e) => ({
         id: e.bead_id,
         title: idToTitle.get(e.bead_id) || e.bead_id,
+        reason: lane === 'done' ? '' : admissionBadge(e.bead_id),
         draggable: lane !== 'done',
         done: lane === 'done',
         lane
@@ -359,7 +400,9 @@ export function createWorkerView(mount_element, options = {}) {
           runner: a.runner || null,
           model: a.model || null,
           effort: a.effort || null,
-          started_at: typeof a.started_at === 'number' ? a.started_at : null
+          started_at: typeof a.started_at === 'number' ? a.started_at : null,
+          merge_policy: a.merge_policy || null,
+          demoted_reason: a.demoted_reason || null
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
         // The most recent failure/orphan surfaces the breaker banner.
@@ -385,6 +428,40 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function topTemplate(m) {
     const serialHead = m.serial.length > 0 ? m.serial[0].id : '—';
+    const info = m.queue.workspace_info || {};
+    const verify_cmd =
+      info.verify_cmd && Array.isArray(info.verify_cmd.cmd)
+        ? info.verify_cmd.cmd.join(' ')
+        : null;
+    /**
+     * @param {'merge_policy'|'drift_policy'} key
+     * @param {string[]} opts
+     * @param {string} default_label
+     */
+    const policySelect = (key, opts, default_label) => {
+      const value = typeof m.queue[key] === 'string' ? m.queue[key] : '';
+      return html`<label class="worker-policy">
+        <span class="worker-policy__k">${key}</span>
+        <select
+          class="worker-policy__sel"
+          aria-label=${`전역 ${key}`}
+          data-policy-key=${key}
+          @change=${(/** @type {Event} */ ev) =>
+            void setPolicy(
+              key,
+              /** @type {HTMLSelectElement} */ (ev.target).value
+            )}
+        >
+          <option value="" ?selected=${!opts.includes(value)}>
+            ${default_label}
+          </option>
+          ${opts.map(
+            (o) =>
+              html`<option value=${o} ?selected=${value === o}>${o}</option>`
+          )}
+        </select>
+      </label>`;
+    };
     return html`<div class="worker-ctrl">
         <button
           type="button"
@@ -399,6 +476,26 @@ export function createWorkerView(mount_element, options = {}) {
         >
         <span class="worker-tgl"
           >parallel slot <b>${m.parallel.length}</b></span
+        >
+        ${policySelect(
+          'merge_policy',
+          ['auto_merge', 'pr_stop'],
+          '(기본 auto_merge)'
+        )}
+        ${policySelect(
+          'drift_policy',
+          ['auto_rereview', 'halt'],
+          '(기본 auto_rereview)'
+        )}
+        <span
+          class="worker-verifycmd${verify_cmd
+            ? ''
+            : ' worker-verifycmd--unset'}"
+          title="verify_cmd — 서버 설정 파일 전용(읽기), 미설정 시 auto_merge가 pr_stop으로 강등"
+          >verify_cmd:
+          ${verify_cmd
+            ? html`<code>${verify_cmd}</code>`
+            : '미설정 (auto_merge→pr_stop 강등)'}</span
         >
       </div>
       ${bannersTemplate({

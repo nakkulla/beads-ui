@@ -29,6 +29,7 @@ import { stepperTemplate } from './stepper.js';
 /**
  * @typedef {Object} BoardCardChips
  * @property {'spec_backed'|'full_plan'} [route]
+ * @property {'explicit'|'derived'} [route_source]
  * @property {boolean} [fast_track]
  * @property {{ number: number | null } | null} [pr]
  */
@@ -175,8 +176,15 @@ function chipsTemplate(issue, ctx) {
   /** @type {TemplateResult[]} */
   const items = [];
   if (chips.route && isChipEnabled(policy, 'route')) {
+    // A derived (unpinned) route renders dimmed with a `?` suffix so an
+    // inferred value never reads as a settled pin (worker-autorun-policy §6).
+    const derived = chips.route_source === 'derived';
     items.push(
-      html`<span class="ctl-chip ctl-chip--route">${chips.route}</span>`
+      html`<span
+        class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
+        title=${derived ? 'route 추론값 (metadata 미핀)' : 'route'}
+        >${derived ? `${chips.route} ?` : chips.route}</span
+      >`
     );
   }
   if (chips.fast_track && isChipEnabled(policy, 'fast_track')) {

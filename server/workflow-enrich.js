@@ -406,8 +406,11 @@ function mergeStage(md, status) {
 /**
  * @typedef {Object} WorkflowSummary
  * @property {'spec_backed'|'full_plan'} route
+ * @property {'explicit'|'derived'} route_source - Whether the route came from
+ * pinned metadata or the deriveRoute fallback (display distinguishes the
+ * two — a derived value must not read as a settled pin).
  * @property {{ spec: WorkflowStage, plan?: WorkflowStage, impl: WorkflowStage, pr: WorkflowStage, merge: WorkflowStage }} stages
- * @property {{ route: 'spec_backed'|'full_plan', fast_track: boolean, pr: { number: number | null } | null }} chips
+ * @property {{ route: 'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null }} chips
  */
 
 /**
@@ -426,6 +429,12 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     computeStaleWithHead(md, workspace_root, resolved_head);
 
   const route = deriveRoute(md);
+  // Explicit only when the metadata pin itself is a valid enum value — any
+  // fallback (absence, invalid value, plan_path inference) is 'derived'.
+  const route_source =
+    md.route === 'spec_backed' || md.route === 'full_plan'
+      ? 'explicit'
+      : 'derived';
 
   /** @type {WorkflowSummary['stages']} */
   const stages = {
@@ -444,9 +453,11 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
 
   return {
     route,
+    route_source,
     stages,
     chips: {
       route,
+      route_source,
       fast_track: md.workflow_mode === 'fast_track',
       pr: md.pr_url ? { number: parsePrNumber(md.pr_url) } : null
     }

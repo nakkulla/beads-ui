@@ -557,11 +557,21 @@ export function createDetailPanel(mount_element, options) {
     const stages = wf.stages || {};
     const specStale = stages.spec && stages.spec.stale;
     const implStale = stages.impl && stages.impl.stale;
+    // Same explicit/derived distinction as the board chip (§6): an inferred
+    // route renders dimmed with a `?` suffix instead of posing as a pin.
+    const route_derived = wf.route_source === 'derived';
+    const route_label = wf.route || md.route || '—';
     return html`
       <div class="detail-section-label">워크플로우</div>
       <div class="detail-kv">
         <span class="detail-kv__k">route</span>
-        <span class="detail-kv__v">${wf.route || md.route || '—'}</span>
+        <span
+          class="detail-kv__v${route_derived ? ' detail-kv__v--derived' : ''}"
+          title=${route_derived ? 'route 추론값 (metadata 미핀)' : 'route'}
+          >${route_derived && wf.route
+            ? `${route_label} ? (추론)`
+            : route_label}</span
+        >
       </div>
       <div class="detail-kv">
         <span class="detail-kv__k">spec_review</span>
@@ -581,6 +591,87 @@ export function createDetailPanel(mount_element, options) {
             <span class="detail-kv__v detail-kv__v--wrap">${md.pr_url}</span>
           </div>`
         : ''}
+    `;
+  }
+
+  /**
+   * Workflow metadata enum keys editable from the panel (§6). Empty = unset
+   * (the key is removed; route falls back to derivation, policies to their
+   * defaults at resolution time).
+   */
+  /** @type {Record<'route'|'merge_policy'|'drift_policy', string[]>} */
+  const WORKFLOW_META_OPTIONS = {
+    route: ['spec_backed', 'full_plan'],
+    merge_policy: ['auto_merge', 'pr_stop'],
+    drift_policy: ['auto_rereview', 'halt']
+  };
+
+  /**
+   * @param {'route'|'merge_policy'|'drift_policy'} key
+   * @param {Event} ev
+   */
+  async function onWorkflowMetaChange(key, ev) {
+    const value = /** @type {HTMLSelectElement} */ (ev.target).value;
+    if (
+      key === 'route' &&
+      current &&
+      current.metadata &&
+      current.metadata.route === 'full_plan' &&
+      value !== 'full_plan'
+    ) {
+      // 저장된 plan 포기·마커 정리는 세션 계약 소유 — UI는 metadata만 바꾼다.
+      const proceed = window.confirm(
+        `full_plan → ${value || '(미설정)'} 전환: 저장된 plan 승인은 포기되며, plan 파일·마커 정리는 세션 계약이 수행합니다. 계속할까요?`
+      );
+      if (!proceed) {
+        doRender();
+        return;
+      }
+    }
+    await sendMutation(
+      'update-workflow-meta',
+      { id: current_id, key, value },
+      '워크플로우 메타 변경 실패'
+    );
+    doRender();
+  }
+
+  /**
+   * Editable workflow metadata selects (route / merge_policy / drift_policy).
+   *
+   * @param {any} data
+   */
+  function workflowMetaTemplate(data) {
+    const md = data.metadata || {};
+    /**
+     * @param {'route'|'merge_policy'|'drift_policy'} key
+     * @param {string} unset_label
+     */
+    const row = (key, unset_label) => {
+      const opts = WORKFLOW_META_OPTIONS[key];
+      const value = typeof md[key] === 'string' ? md[key] : '';
+      return html`<div class="detail-kv">
+        <span class="detail-kv__k">${key}</span>
+        <select
+          class="detail-kv__v detail-kv__v--sel"
+          aria-label=${key}
+          data-edit=${`wfmeta-${key}`}
+          @change=${(/** @type {Event} */ ev) => onWorkflowMetaChange(key, ev)}
+        >
+          <option value="" ?selected=${!opts.includes(value)}>
+            ${unset_label}
+          </option>
+          ${opts.map(
+            (o) =>
+              html`<option value=${o} ?selected=${value === o}>${o}</option>`
+          )}
+        </select>
+      </div>`;
+    };
+    return html`
+      ${row('route', '(미설정 · 추론)')}
+      ${row('merge_policy', '(기본 auto_merge)')}
+      ${row('drift_policy', '(기본 auto_rereview)')}
     `;
   }
 
@@ -845,7 +936,7 @@ export function createDetailPanel(mount_element, options) {
           ${titleTemplate(title)} ${propsTemplate(status, priority_val)}
           ${timesTemplate(data)} ${descTemplate(description)}
           ${labelsTemplate(data)} ${depsTemplate(data)}
-          ${workflowTemplate(data)}
+          ${workflowTemplate(data)} ${workflowMetaTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
           ${execSettingsTemplate(effective, exec_handlers)}
           ${sessionHistoryTemplate(attemptsForBead(), session_handlers)}

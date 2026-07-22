@@ -64,6 +64,11 @@ body {
   color: var(--chip-route);
   border-color: var(--border-route);
 }
+/* Derived (unpinned) route: inferred value, dimmed + `?` suffix (§6). */
+.ctl-chip--route.is-derived {
+  opacity: 0.55;
+  border-style: dashed;
+}
 .ctl-chip--ft {
   color: var(--chip-ft);
   border-color: var(--border-ft);
@@ -1020,6 +1025,12 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* derived (unpinned) route value — inferred, not a settled pin (§6) */
+.detail-kv__v--derived {
+  opacity: 0.55;
+  border-style: dashed;
 }
 
 /* read-only created/updated rows (UX v3 spec §1): plain value, no chip box */

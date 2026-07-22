@@ -40,6 +40,7 @@ import {
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createOrphanDetector } from './orphan.js';
+import { emitQueueChanged } from './queue-events.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
@@ -406,6 +407,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     admission,
     verifyCmd,
     runVerifyCmd: options.runVerifyCmd || runVerifyCmd,
+    notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key),
     // Late-bound: the merge-lock router (and its handover ledger) is mounted
     // by the app AFTER attachments are built.
     mergeLock: {

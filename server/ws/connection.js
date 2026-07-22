@@ -35,7 +35,8 @@ import {
   handleUpdateAssignee,
   handleUpdateExecSettings,
   handleUpdatePriority,
-  handleUpdateStatus
+  handleUpdateStatus,
+  handleUpdateWorkflowMeta
 } from './mutation-handlers.js';
 import { scheduleListRefresh, setRefreshDebounceMs } from './refresh.js';
 import {
@@ -366,6 +367,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'update-exec-settings':
       await handleUpdateExecSettings(ws, req);
+      return;
+    case 'update-workflow-meta':
+      await handleUpdateWorkflowMeta(ws, req);
       return;
     case 'update-status':
       await handleUpdateStatus(ws, req);

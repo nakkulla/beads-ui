@@ -238,6 +238,34 @@ describe('enrichIssueWorkflow', () => {
     expect(wf.chips.fast_track).toBe(true);
     expect(wf.chips.pr).toEqual({ number: 42 });
   });
+
+  test('route_source distinguishes an explicit pin from a derived fallback (§6)', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+
+    const pinned = enrichIssueWorkflow(
+      { status: 'open', metadata: { route: 'spec_backed' } },
+      dir
+    );
+    expect(pinned.route_source).toBe('explicit');
+    expect(pinned.chips.route_source).toBe('explicit');
+
+    // Absent pin → derived; a plan_path still infers full_plan but stays derived.
+    const inferred = enrichIssueWorkflow(
+      { status: 'open', metadata: { plan_path: 'docs/plan.md' } },
+      dir
+    );
+    expect(inferred.route).toBe('full_plan');
+    expect(inferred.route_source).toBe('derived');
+
+    // An invalid pin value is NOT explicit.
+    const invalid = enrichIssueWorkflow(
+      { status: 'open', metadata: { route: 'quick_fix' } },
+      dir
+    );
+    expect(invalid.route_source).toBe('derived');
+  });
 });
 
 describe('planStage (full_plan)', () => {
