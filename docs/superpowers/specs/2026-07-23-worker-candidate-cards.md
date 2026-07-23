@@ -19,16 +19,16 @@ Worker 후보 레인은 Board Ready/Blocked 구독을 병합해 `worker-mini` �
 
 Serial/Parallel/Done 레인, admission, 큐 조작은 변경 없음. 이미 큐에 있는 child는 그대로 표시.
 
-### 2. 후보 카드 UI (변형 A — 컴팩트 상태 배지)
+### 2. 후보 카드 UI (변형 B — board stepper 재사용, 사용자 선택)
 
-목업: http://100.122.98.8:9000/2026-07-23-worker-candidate-cards.html (변형 A 권장 / 변형 B stepper 재사용 비교)
+목업: http://100.122.98.8:9000/2026-07-23-worker-candidate-cards.html (변형 A/B 비교 — 게이트에서 B 선택됨)
 
 `miniRow` 대신 후보 전용 카드 템플릿(`lanes.js`):
 
 - 헤더: 드래그 grip(⠿, draggable일 때만) + id(mono) + route 칩(우측, board `ctl-chip--route` 규칙 재사용 — derived는 점선+`?` 접미).
 - 제목: 2줄 클램프.
-- 배지 행: `workflow.stages.spec.state` → `spec ✓`(reviewed) / `spec ✎`(dim) / `spec ⊘`(skip) / `spec ✓ stale`(stale) / `spec 없음`(empty). `route === 'full_plan'`일 때만 `plan` 배지 동일 매핑. 색은 `--stage-{spec,plan}-{dim,on}` 토큰.
-- 기존 🔒(의존 차단)·⛔(admission 거부) 표시는 배지 행 우측에 유지.
+- 스테퍼: board의 `stepperTemplate`(`app/views/board/stepper.js`)를 그대로 재사용 — `workflow.stages`를 소비해 route 순서(spec_backed: spec/impl/pr/merge 4셀, full_plan: +plan 5셀)로 렌더. 상태 표현은 stepper 기존 규칙(dim=문서 있음·미리뷰, ✓=reviewed, ⊘=skip, stale=✓ 흐림)을 그대로 따른다.
+- 기존 🔒(의존 차단)·⛔(admission 거부) 표시는 카드 하단 행에 유지.
 - 표시 전용: draggable 조건(`hasSpec`)과 admission 로직은 그대로. 리뷰 여부는 차단 요건이 아니다.
 
 Serial/Parallel/Done 레인은 기존 `miniRow` 유지(큐 스냅샷에는 workflow 데이터가 없음 — 범위 외).
@@ -36,7 +36,7 @@ Serial/Parallel/Done 레인은 기존 `miniRow` 유지(큐 스냅샷에는 workf
 ## 수용 기준
 
 - 후보 레인에 `parent` 보유 또는 점 표기 id 이슈가 나타나지 않는다 (jsdom 테스트).
-- 후보 카드가 route 칩(derived `?` 포함)과 spec/plan 배지 5상태를 `workflow.stages` 값 그대로 렌더한다 (템플릿 단위 테스트).
+- 후보 카드가 route 칩(derived `?` 포함)과 `stepperTemplate` 재사용 스테퍼(spec_backed 4셀/full_plan 5셀, 상태는 `workflow.stages` 값 그대로)를 렌더한다 (템플릿 단위 테스트).
 - `workflow` 필드가 없는 이슈(비활성 워크스페이스 등)는 배지 없이 기존 정보만으로 렌더되고 예외가 없다.
 - 드래그/큐 배치/admission 동작 불변 (기존 worker 테스트 green).
 - `npm run all` green + 번들 재빌드.
