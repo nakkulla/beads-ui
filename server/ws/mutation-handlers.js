@@ -3,6 +3,7 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import { makeError, makeOk } from '../../app/protocol.js';
+import { EXEC_SETTING_ENUMS as EXEC_SETTING_ENUMS_BASE } from '../worker/exec-enums.js';
 import {
   getGitUserNameInWorkspace,
   log,
@@ -71,32 +72,16 @@ export async function handleUpdateAssignee(ws, req) {
 }
 
 /**
- * Runner-specific orchestration model catalogs. `ccx` (claude-code-proxy) uses
- * the same model set as `claude`.
- */
-const RUNNER_MODELS = {
-  claude: ['opus', 'sonnet', 'haiku', 'fable'],
-  codex: ['gpt-5.6', 'gpt-5.4'],
-  ccx: ['opus', 'sonnet', 'haiku', 'fable']
-};
-
-/** Union of all orchestration models (server enum for orchestration_model). */
-const ALL_ORCHESTRATION_MODELS = Array.from(
-  new Set([...RUNNER_MODELS.claude, ...RUNNER_MODELS.codex])
-);
-
-/**
- * Allowed values per exec-preference key. `orchestration_model` uses the union
- * across runners; the client narrows by chosen runner for UX. An empty value
- * means "unset" (revert to harness default). `workflow_mode`'s only stored
- * value is `fast_track` — `standard`/empty is recorded as key removal.
+ * Allowed values per exec-preference key for the per-bead detail-panel edit
+ * surface: the 5 workspace-global keys from the shared exec-enums single source
+ * PLUS `workflow_mode` (per-bead only — its only stored value is `fast_track`;
+ * `standard`/empty is recorded as key removal). The 5-key table stays canonical
+ * in exec-enums.js; only the extra per-bead `workflow_mode` is synthesized here
+ * so this edit surface's behavior is unchanged. `orchestration_model` uses the
+ * union across runners; the client narrows by chosen runner for UX.
  */
 const EXEC_SETTING_ENUMS = {
-  worker_runner: ['claude', 'codex', 'ccx'],
-  orchestration_model: ALL_ORCHESTRATION_MODELS,
-  orchestration_effort: ['low', 'medium', 'high', 'xhigh'],
-  review_model: ['codex', 'opus', 'fable', 'self', 'skip'],
-  impl_model: ['opus', 'fable', 'sonnet', 'haiku'],
+  ...EXEC_SETTING_ENUMS_BASE,
   workflow_mode: ['fast_track']
 };
 
