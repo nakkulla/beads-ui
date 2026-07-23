@@ -19,17 +19,31 @@ auto_merge가 pr_stop으로 강등된다(`demoted_reason=verify_cmd_unset`).
 2. **ws mutation `worker-attempt-resume { attempt_id }`** (기존 CAS revision 규약 동일).
    거부 사유는 admission 배지 관례로 반환: `not_failed`(failed/orphaned 아님) ·
    `no_session_id` · `worktree_missing`(bead 워크트리 부재 — 재생성하지 않고 거부로 단순화) ·
-   `bead_running`(같은 bead의 running attempt 존재). **breaker 검사는 생략**(수동 명시
-   행위 = 사람 개입) — breaker 리셋 자체는 여전히 ▶ 전용으로 불변.
+   `bead_running`(같은 bead의 running attempt 존재) · `already_resumed`(이 attempt를
+   `resumed_from`으로 갖는 child attempt가 이미 존재 — 재-resume로 인한 장부/PR 중복 실행
+   방지; child의 성패와 무관하게 ancestor는 영구 소진, 판정은 attempts 스캔으로 파생하므로
+   cold reload에도 유지) · `runner_unavailable`(prior runner 스냅샷 부재/미지원 enum).
+   **breaker 처리: resume 디스패치는 해당 repo의 breaker를 리셋한다** — ↻ 클릭은 ▶와
+   동급의 명시적 사람 개입이며, merge-lock의 `isMergeBlocked`가 같은 breaker를 읽으므로
+   (runtime.js:47) 리셋 없이는 auto_merge resume이 락 단계에서 다시 막힌다. 락/토큰
+   예외 규칙은 만들지 않는다.
 3. **디스패치** (scheduler `resume(workspace, attempt_id)`):
    - 새 attempt_id 발급 + `resumed_from: <prior attempt_id>` 기록 — Attempt typedef와
      `makeAttempt()` whitelist에 필드 추가(UI-azj6 §2에서 확인된 드랍 함정).
-   - **워크트리 재사용**: `worktree.add`·admission 재검사 생략, prior attempt의
-     repo/target_base/base_oid 승계. base 전진 대응은 세션의 drift 계약(auto_rereview 등)에
-     위임한다 — resume의 목적이 "남은 계약 단계 마무리"이므로 서버가 미리 막지 않는다.
-   - workflow_mode/exec 스탬핑·readback, 토큰 발급, sessionLog attach, session_id 재캡처,
-     onSessionDone(독립 검증 포함)은 기존 dispatch 경로를 재사용한다.
-4. **runner resume argv** — AdapterSpec에 resume 분기(설정 `settings.resume_session_id`):
+   - **워크트리 재사용**: `worktree.add`·admission 재검사 생략. base 전진 대응은 세션의
+     drift 계약(auto_rereview 등)에 위임한다 — resume의 목적이 "남은 계약 단계 마무리"이므로
+     서버가 미리 막지 않는다.
+   - **prior 스냅샷 전면 승계(재해석 금지)**: repo/target_base/base_oid에 더해
+     runner/model/effort, resolved `merge_policy`/`drift_policy`/`demoted_reason`,
+     그리고 관측된 `merge_sha`를 prior attempt에서 그대로 복사한다. 전역 exec_defaults·
+     정책의 현재값으로 재해석하지 않는다 — 강등된 `pr_stop`이 auto_merge로 되살아나거나,
+     머지 후 orphan된 attempt가 `merge_sha` 없이 독립 검증에 들어가는 일을 막는다.
+     workflow_mode/exec 재스탬핑도 prior 스냅샷 값으로 수행한다.
+   - 토큰 발급, sessionLog attach, session_id 재캡처, onSessionDone(독립 검증 포함)은
+     기존 dispatch 경로를 재사용한다.
+4. **runner resume argv** — 어댑터는 **prior `runner` 스냅샷으로 고정**(claude session_id를
+   codex에 넘기거나 ccx 라우팅 없이 실행하는 일 방지; 부재/미지원은 §1.2 `runner_unavailable`
+   거부). AdapterSpec에 resume 분기(설정 `settings.resume_session_id`):
    - claude/ccx: `claude -p --output-format stream-json --verbose --resume <session_id>
      [--model…] [--effort…] --permission-mode bypassPermissions "<이어하기 프롬프트>"`
    - codex: `codex exec resume <thread_id> --json --skip-git-repo-check "<이어하기 프롬프트>"`
@@ -39,9 +53,12 @@ auto_merge가 pr_stop으로 강등된다(`demoted_reason=verify_cmd_unset`).
    - fixture 어댑터는 resume 미지원(spawn_error 아닌 명시 거부 없이 일반 spawn으로 폴백해도
      테스트 목적상 무방 — 테스트에서 argv 분기만 검증).
 5. **UI 표시**: resume attempt 타일·세션 이력에 `↻` 배지(title=`resumed_from` attempt id).
+   이어하기 버튼은 **resume 계보의 최신 eligible attempt에만 활성** — `already_resumed`로
+   소진된 ancestor는 비활성 + title 사유.
 
-비목표: 자동 재큐/자동 resume, breaker 자동 리셋, resume 시 서버 강제 재리뷰(게이트
-신선도는 세션의 workflow 계약 소관), 삭제된 워크트리 재구성.
+비목표: 자동 재큐/자동 resume, resume 시 서버 강제 재리뷰(게이트 신선도는 세션의 workflow
+계약 소관), 삭제된 워크트리 재구성. (breaker 리셋은 §1.2대로 resume의 일부 — ▶ 외 자동
+리셋 경로를 새로 만들지 않는다는 의미의 비목표는 유지.)
 
 ## §2 verify_cmd 자동 감지
 
@@ -61,9 +78,11 @@ auto_merge가 pr_stop으로 강등된다(`demoted_reason=verify_cmd_unset`).
 
 ## Test scope
 
-- §1: mutation 거부 4사유 각각, resume 디스패치(워크트리 재사용·`resumed_from` 영속·스탬핑
-  재사용·breaker 비검사), claude/codex resume argv 분기, cold reload에서 `resumed_from`
-  보존, UI 버튼 활성/비활성·`↻` 배지 렌더 — 기존 *.test.js에 추가.
+- §1: mutation 거부 6사유 각각(`already_resumed`는 child 성공/실패 양쪽 + cold reload
+  파생 판정 포함), resume 디스패치(워크트리 재사용·`resumed_from` 영속·prior 스냅샷 전면
+  승계 — 전역 설정 변경 후에도 prior runner/policy/merge_sha 유지·강등 pr_stop 불부활),
+  breaker 리셋(리셋 후 해당 repo merge-lock acquire 가능 — ▶와 동일 의미론), claude/codex resume argv
+  분기, UI 버튼 최신 leaf만 활성·`↻` 배지 렌더 — 기존 *.test.js에 추가.
 - §2: 감지 규칙 3종 + 비감지 케이스, config 우선, 강등 상호작용(감지 존재 시 비강등),
   workspace_info source 전파·ctrl 바 표기.
 
