@@ -109,6 +109,9 @@ export function createWorkerView(mount_element, options = {}) {
   const drawer_el = document.createElement('div');
   drawer_el.className = 'worker-drawer-host';
   const lanes_el = document.createElement('div');
+  // Flex host so .worker-lanes' flex sizing is live — a plain block div here
+  // breaks the min-height:0 chain and the pane bodies can never scroll.
+  lanes_el.className = 'worker-lanes-host';
   console_el.append(top_el, drawer_el, lanes_el);
   mount_element.appendChild(console_el);
 
