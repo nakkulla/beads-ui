@@ -540,6 +540,39 @@ export function handleWorkerQueueSetPolicy(ws, req) {
 }
 
 /**
+ * Handle `worker-queue-set-exec-default`. Payload:
+ * `{ key: <one of the 5 exec keys>, value: string|null, expected_revision }`.
+ * Persists the workspace-global exec-setting default (CAS); null/'' unsets. Enum
+ * validation (and the runner↔model union check) lives in the queue store's
+ * `setExecDefault`, mirroring `worker-queue-set-policy` (spec §2).
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerQueueSetExecDefault(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.key !== 'string') {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { key: worker_runner|orchestration_model|orchestration_effort|review_model|impl_model }'
+        )
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const result = queueStore().setExecDefault(key, {
+    expected_revision: revisionOf(p),
+    key: p.key,
+    value: p.value ?? null
+  });
+  replyMutation(ws, req, key, result);
+}
+
+/**
  * Handle `worker-attempt-stop`. Payload: `{ attempt_id: string }`. Stops (■) a
  * running attempt: group-kill + attempt failed + workflow_mode revert (spec
  * §5.2, F1). Inert (`stopped:false`) when no live attachment or no such attempt.
