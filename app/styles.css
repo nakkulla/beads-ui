@@ -2945,11 +2945,12 @@ html[data-theme='dark'] {
 
 .sv__tool-detail {
   color: var(--text-tool-mono);
-  word-break: break-all;
+  flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sv__diff-add {
@@ -3328,6 +3329,7 @@ html[data-theme='dark'] {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .sv__wt {
