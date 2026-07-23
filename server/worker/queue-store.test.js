@@ -467,4 +467,37 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     ]);
     expect(restarted.load(WS).attempts['att-0'].exec_stamped_keys).toBe(null);
   });
+
+  test('session_id survives updateAttempt and a cold reload (spec §2)', () => {
+    const store = createQueueStore();
+    let rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'UI-1',
+      lane: 'serial'
+    }).queue.revision;
+
+    // Default (runtime field, unfilled) is null.
+    const appended = store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    expect(appended.ok).toBe(true);
+    expect(appended.queue.attempts['att-1'].session_id).toBe(null);
+    rev = appended.queue.revision;
+
+    // The scheduler patches it via updateAttempt (makeAttempt shape) — the field
+    // must pass the whitelist, not be dropped.
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { session_id: 'a39855e0-c3ac' }
+    });
+    expect(updated.ok).toBe(true);
+    expect(updated.queue.attempts['att-1'].session_id).toBe('a39855e0-c3ac');
+
+    // Survives a cold reload (durable for --resume/transcript after restart).
+    const restarted = createQueueStore();
+    expect(restarted.load(WS).attempts['att-1'].session_id).toBe(
+      'a39855e0-c3ac'
+    );
+  });
 });

@@ -32,6 +32,9 @@
  * @property {number|null} started_at - Epoch ms the session started.
  * @property {number|null} pid - OS process id of the runner.
  * @property {string|null} runner - Runner adapter (claude/codex/ccx).
+ * @property {string|null} session_id - Runner session identifier (claude
+ * `session_id` / codex `thread_id`) captured from the stream's first event for
+ * `--resume`/transcript tracking; null until the runner emits it (spec §2).
  * @property {string|null} model - Model snapshot.
  * @property {string|null} effort - Effort snapshot.
  * @property {number|null} exit - Process exit code.
@@ -202,6 +205,7 @@ export function makeAttempt(fields) {
     started_at: fields.started_at ?? null,
     pid: fields.pid ?? null,
     runner: fields.runner ?? null,
+    session_id: fields.session_id ?? null,
     model: fields.model ?? null,
     effort: fields.effort ?? null,
     exit: fields.exit ?? null,

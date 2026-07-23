@@ -97,6 +97,16 @@ function makeFakeRunner() {
     },
     killFor(/** @type {string} */ bead_id) {
       return byBead.get(bead_id)?.handle.kill;
+    },
+    /**
+     * The live handle's event emitter for a bead — lets a test drive the
+     * runner's `session_id` event (spec §2).
+     *
+     * @param {string} bead_id
+     * @returns {EventEmitter}
+     */
+    eventsFor(bead_id) {
+      return byBead.get(bead_id)?.handle.events;
     }
   };
 }
@@ -195,7 +205,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, breaker?: any, tokens?: any, locks?: any, makeRunner?: (name: string) => any, admission?: any, verifyCmd?: any, runVerifyCmd?: any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, breaker?: any, tokens?: any, locks?: any, makeRunner?: (name: string) => any, admission?: any, verifyCmd?: any, runVerifyCmd?: any, notifyQueueChanged?: (workspace: string) => void }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -235,6 +245,7 @@ function setup(opts) {
     admission: opts.admission,
     verifyCmd: opts.verifyCmd,
     runVerifyCmd: opts.runVerifyCmd,
+    notifyQueueChanged: opts.notifyQueueChanged,
     parallel_slots: opts.slots ?? 2,
     now: () => 1000
   });
@@ -376,6 +387,37 @@ describe('scheduler stop (■ tile)', () => {
   test('stop returns false for an unknown attempt', async () => {
     const env = setup({ config: {}, slots: 1 });
     expect(await env.scheduler.stop(WS, 'nope')).toBe(false);
+  });
+});
+
+describe('scheduler session id capture (spec §2)', () => {
+  test('a runner session_id event patches the attempt AND fans out', async () => {
+    const notify = vi.fn();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      notifyQueueChanged: notify
+    });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    // Baseline: no session id yet.
+    expect(env.store.snapshot(WS).attempts[attempt_id].session_id).toBe(null);
+
+    // The runner emits its session id on the stream's first event.
+    notify.mockClear();
+    env.runner.eventsFor('S1').emit('session_id', 'sid-777');
+    await flush();
+
+    // Persisted on the attempt record.
+    expect(env.store.snapshot(WS).attempts[attempt_id].session_id).toBe(
+      'sid-777'
+    );
+    // updateAttempt alone does NOT fan out, so notifyChanged must fire so a live
+    // ws subscriber (open drawer) gets the fresh snapshot.
+    expect(notify).toHaveBeenCalledWith(WS);
   });
 });
 

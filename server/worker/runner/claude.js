@@ -149,6 +149,29 @@ function extractShellCommand(raw) {
 }
 
 /**
+ * Extract the claude session id from the `system`/`init` line's `session_id`
+ * (the id `claude --resume` accepts). Only the `init` subtype is authoritative —
+ * `hook_started` lines also carry a `session_id` but predate the real session
+ * (spec §2).
+ *
+ * @param {any} raw
+ * @returns {string|null}
+ */
+function extractSessionId(raw) {
+  if (
+    raw &&
+    typeof raw === 'object' &&
+    raw.type === 'system' &&
+    raw.subtype === 'init' &&
+    typeof raw.session_id === 'string' &&
+    raw.session_id.length > 0
+  ) {
+    return raw.session_id;
+  }
+  return null;
+}
+
+/**
  * Compute the claude 4-rule success verdict.
  *
  * @param {{ raw: any[], exit: number|null, blocked: boolean }} ctx
@@ -212,6 +235,7 @@ export function claudeSpec(options = {}) {
     normalize,
     detectQuestion,
     extractShellCommand,
+    extractSessionId,
     verdict
   };
 }

@@ -137,6 +137,27 @@ function extractShellCommand(raw) {
 }
 
 /**
+ * Extract the codex session id from the `thread.started` line's `thread_id`
+ * (codex's resumable thread handle). That event is dropped by `normalize` as a
+ * lifecycle line, so it is read here for the attempt record (spec §2).
+ *
+ * @param {any} raw
+ * @returns {string|null}
+ */
+function extractSessionId(raw) {
+  if (
+    raw &&
+    typeof raw === 'object' &&
+    raw.type === 'thread.started' &&
+    typeof raw.thread_id === 'string' &&
+    raw.thread_id.length > 0
+  ) {
+    return raw.thread_id;
+  }
+  return null;
+}
+
+/**
  * @param {{ raw: any[], exit: number|null, blocked: boolean }} ctx
  * @returns {{ success: boolean, reason: string }}
  */
@@ -188,6 +209,7 @@ export function codexSpec() {
     normalize,
     detectQuestion,
     extractShellCommand,
+    extractSessionId,
     verdict
   };
 }

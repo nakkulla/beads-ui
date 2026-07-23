@@ -874,6 +874,18 @@ export function createScheduler(deps) {
 
     deps.store.clearAdmission(workspace, bead_id);
     deps.sessionLog.attach(workspace, attempt_id, handle.events);
+    // Persist the runner session id when it arrives (stream first event). The
+    // updateAttempt store-only write does NOT fan out on its own, so notify ws
+    // subscribers explicitly to propagate it to a live drawer (spec §2).
+    handle.events.on('session_id', (session_id) => {
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          session_id: typeof session_id === 'string' ? session_id : null
+        }
+      });
+      notifyChanged(workspace);
+    });
     running.set(attempt_id, { bead_id, repo: snap.repo, lane, handle, prior });
     notifyChanged(workspace);
 

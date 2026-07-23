@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createSessionLogStore } from '../../data/session-log-store.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
 
@@ -129,6 +129,53 @@ describe('transcript drawer', () => {
     expect(
       mount.querySelector('.sv__follow')?.classList.contains('sv__follow--on')
     ).toBe(false);
+  });
+
+  test('shows the session id short (first 8) and copies the full value on click (§2)', async () => {
+    store.set('att-9', [TEXT_EVENT]);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+    drawer.open({
+      attempt_id: 'att-9',
+      meta: { session_id: 'sid-abcdef123456' }
+    });
+
+    const sid = /** @type {HTMLElement} */ (
+      mount.querySelector('.sv__session')
+    );
+    expect(sid).not.toBeNull();
+    // Short display = first 8 chars; the full value rides the title attribute.
+    expect(sid.textContent).toContain('sid-abcd');
+    expect(sid.getAttribute('title')).toBe('sid-abcdef123456');
+
+    sid.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith('sid-abcdef123456');
+  });
+
+  test('updateMeta refreshes an already-open bar with a late-arriving session id (§2)', () => {
+    store.set('att-10', [TEXT_EVENT]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+    // Opened before the session id arrives (stream first event lands later).
+    drawer.open({ attempt_id: 'att-10', meta: { runner: 'claude' } });
+    expect(mount.querySelector('.sv__session')).toBeNull();
+
+    drawer.updateMeta({ runner: 'claude', session_id: 'sid-late01xy' });
+    const sid = /** @type {HTMLElement} */ (
+      mount.querySelector('.sv__session')
+    );
+    expect(sid).not.toBeNull();
+    expect(sid.getAttribute('title')).toBe('sid-late01xy');
   });
 
   test('close() unsubscribes and clears the mount', () => {

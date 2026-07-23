@@ -12,6 +12,7 @@ import { html } from 'lit-html';
  * @property {number|null} [started_at]
  * @property {string|null} [runner]
  * @property {string|null} [model]
+ * @property {string|null} [session_id] - Runner session id (short display).
  */
 
 /** @type {Record<string, string>} */
@@ -72,6 +73,11 @@ export function sessionHistoryTemplate(attempts, handlers = {}) {
             <span class="detail-session__meta"
               >${[a.runner, a.model].filter(Boolean).join(' · ')}</span
             >
+            ${a.session_id
+              ? html`<span class="detail-session__sid" title=${a.session_id}
+                  >${String(a.session_id).slice(0, 8)}</span
+                >`
+              : ''}
             <span class="detail-session__time">${shortTime(a.started_at)}</span>
           </button>`
       )}

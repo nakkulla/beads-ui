@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
-import { spawnCodex } from './codex.js';
+import { codexSpec, spawnCodex } from './codex.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
 
 const OK_FIXTURE = fileURLToPath(
@@ -90,5 +90,33 @@ describe('runner/codex fail-closed (approval → blocker + group kill)', () => {
     const spawn_impl = makeFixtureSpawn({ file: FAIL_FIXTURE, exit: 1 });
     const v = await spawnCodex(BEAD, WS, {}, { spawn_impl }).done;
     expect(v.blocked).toBe(false);
+  });
+});
+
+describe('runner/codex session id (spec §2)', () => {
+  test('extractSessionId reads thread_id from a thread.started line only', () => {
+    const spec = codexSpec();
+    expect(
+      spec.extractSessionId?.({ type: 'thread.started', thread_id: 'th-019f' })
+    ).toBe('th-019f');
+    expect(spec.extractSessionId?.({ type: 'turn.started' })).toBeNull();
+    expect(spec.extractSessionId?.({ type: 'thread.started' })).toBeNull();
+  });
+
+  test('the engine emits session_id exactly once (first thread.started wins)', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({ type: 'thread.started', thread_id: 'th-1' }),
+        JSON.stringify({ type: 'thread.started', thread_id: 'th-2' }),
+        JSON.stringify({ type: 'turn.completed', usage: {} })
+      ],
+      exit: 0
+    });
+    /** @type {string[]} */
+    const ids = [];
+    const handle = spawnCodex(BEAD, WS, {}, { spawn_impl });
+    handle.events.on('session_id', (id) => ids.push(id));
+    await handle.done;
+    expect(ids).toEqual(['th-1']);
   });
 });

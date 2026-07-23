@@ -466,6 +466,12 @@ export function createWorkerView(mount_element, options = {}) {
       info.verify_cmd && Array.isArray(info.verify_cmd.cmd)
         ? info.verify_cmd.cmd.join(' ')
         : null;
+    // The bar can truncate a long argv (CSS ellipsis), so the FULL command also
+    // rides the title attribute — the only place it can be read on a narrow
+    // screen where the body is hidden for a status badge (spec §1.2).
+    const verify_title = verify_cmd
+      ? `verify_cmd — 서버 설정 파일 전용(읽기), 미설정 시 auto_merge가 pr_stop으로 강등. 전체 명령: ${verify_cmd}`
+      : 'verify_cmd — 서버 설정 파일 전용(읽기), 미설정 시 auto_merge가 pr_stop으로 강등';
     /**
      * @param {'merge_policy'|'drift_policy'} key
      * @param {string[]} opts
@@ -533,11 +539,17 @@ export function createWorkerView(mount_element, options = {}) {
           class="worker-verifycmd${verify_cmd
             ? ''
             : ' worker-verifycmd--unset'}"
-          title="verify_cmd — 서버 설정 파일 전용(읽기), 미설정 시 auto_merge가 pr_stop으로 강등"
-          >verify_cmd:
+          title=${verify_title}
+        >
           ${verify_cmd
-            ? html`<code>${verify_cmd}</code>`
-            : '미설정 (auto_merge→pr_stop 강등)'}</span
+            ? html`<span class="worker-verifycmd__full"
+                  >verify_cmd: <code>${verify_cmd}</code></span
+                ><span class="worker-verifycmd__badge">verify_cmd ✓</span>`
+            : html`<span class="worker-verifycmd__full"
+                  >verify_cmd: 미설정 (auto_merge→pr_stop 강등)</span
+                ><span class="worker-verifycmd__badge"
+                  >verify_cmd 미설정 ⤵pr_stop</span
+                >`}</span
         >
       </div>
       ${bannersTemplate({
@@ -739,6 +751,25 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Project an attempt record into the drawer meta shape (spec §2/§5.6).
+   *
+   * @param {any} a
+   * @returns {import('./transcript-drawer.js').DrawerMeta}
+   */
+  function metaForAttempt(a) {
+    return a
+      ? {
+          runner: a.runner || undefined,
+          model: a.model || undefined,
+          effort: a.effort || undefined,
+          worktree: a.worktree || undefined,
+          status: a.status || undefined,
+          session_id: a.session_id || undefined
+        }
+      : {};
+  }
+
+  /**
    * Open (or switch) the transcript drawer for a running attempt (spec §5.6).
    *
    * @param {string} attempt_id
@@ -746,19 +777,26 @@ export function createWorkerView(mount_element, options = {}) {
   function openDrawerForAttempt(attempt_id) {
     const q = currentQueue();
     const a = q.attempts ? q.attempts[attempt_id] : null;
-    /** @type {import('./transcript-drawer.js').DrawerMeta} */
-    const meta = a
-      ? {
-          runner: a.runner || undefined,
-          model: a.model || undefined,
-          effort: a.effort || undefined,
-          worktree: a.worktree || undefined,
-          status: a.status || undefined
-        }
-      : {};
     selected_attempt = attempt_id;
-    drawer.open({ attempt_id, meta });
+    drawer.open({ attempt_id, meta: metaForAttempt(a) });
     doRender();
+  }
+
+  /**
+   * Late-arrival meta refresh (spec §2): the session id lands on the stream's
+   * first event AFTER the drawer may already be open, and drawer meta is copied
+   * once at open() — so on every queue snapshot push, re-feed the open attempt's
+   * latest record into the drawer.
+   */
+  function refreshOpenDrawerMeta() {
+    if (!selected_attempt) {
+      return;
+    }
+    const q = currentQueue();
+    const a = q.attempts ? q.attempts[selected_attempt] : null;
+    if (a) {
+      drawer.updateMeta(metaForAttempt(a));
+    }
   }
 
   /**
@@ -852,7 +890,12 @@ export function createWorkerView(mount_element, options = {}) {
     unsubscribers.push(selectors.subscribe(doRender));
   }
   if (queueStore) {
-    unsubscribers.push(queueStore.subscribe(doRender));
+    unsubscribers.push(
+      queueStore.subscribe(() => {
+        doRender();
+        refreshOpenDrawerMeta();
+      })
+    );
   }
 
   doRender();
