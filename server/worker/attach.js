@@ -44,7 +44,7 @@ import { emitQueueChanged } from './queue-events.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
-import { runVerifyCmd } from './verify-cmd.js';
+import { resolveVerifyCmd, runVerifyCmd } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
@@ -384,13 +384,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         lock_state
       }));
 
-  // Workspace verify_cmd lookup (server config file only — no UI edit
-  // surface). Read per call so a config change lands on the next dispatch.
+  // Workspace verify_cmd resolution: explicit config section > conservative
+  // auto-detection > none (worker-attempt-resume-verify-autodetect §2). Read per
+  // call so a config change (or a new marker file) lands on the next dispatch.
   const verifyCmd =
     options.verifyCmd ||
     ((/** @type {string} */ r) => {
       try {
-        return getConfig().worker_verify[path.resolve(r)] ?? null;
+        return resolveVerifyCmd(r, getConfig().worker_verify);
       } catch {
         return null;
       }
@@ -563,6 +564,23 @@ export async function stopWorkerAttempt(workspace_root, attempt_id) {
     return false;
   }
   return att.scheduler.stop(keyFor(workspace_root), attempt_id);
+}
+
+/**
+ * Manually resume a failed/orphaned attempt (spec §1), IF an attachment is
+ * registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one —
+ * ws-handler tests and inactive workspaces stay hermetic.
+ *
+ * @param {string} workspace_root
+ * @param {string} attempt_id
+ * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+ */
+export async function resumeWorkerAttempt(workspace_root, attempt_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.resume(keyFor(workspace_root), attempt_id);
 }
 
 /**

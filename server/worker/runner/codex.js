@@ -188,7 +188,11 @@ export function codexSpec() {
     name: 'codex',
     buildArgv(bead, _workspace, settings) {
       const s = settings || {};
-      const args = ['exec', '--json'];
+      // Resume branch (spec §1.4): `codex exec resume <thread_id>` continues the
+      // prior codex thread; a first launch uses plain `codex exec`.
+      const args = s.resume_session_id
+        ? ['exec', 'resume', String(s.resume_session_id), '--json']
+        : ['exec', '--json'];
       if (s.model) {
         args.push('-m', String(s.model));
       }

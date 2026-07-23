@@ -124,7 +124,8 @@ export function createDetailPanel(mount_element, options) {
         started_at: typeof a.started_at === 'number' ? a.started_at : null,
         runner: a.runner || null,
         model: a.model || null,
-        session_id: a.session_id || null
+        session_id: a.session_id || null,
+        resumed_from: a.resumed_from || null
       }));
   }
 
@@ -148,7 +149,28 @@ export function createDetailPanel(mount_element, options) {
     });
   }
 
-  const session_handlers = { onOpen: openTranscript };
+  /**
+   * Manually resume a failed/orphaned attempt (spec §1). Fire-and-forget; the
+   * server validates (six §1.2 refusals), dispatches, and pushes a fresh queue
+   * snapshot that surfaces the new running attempt in the history list.
+   *
+   * @param {string} attempt_id
+   */
+  function resumeAttempt(attempt_id) {
+    if (!transport || !attempt_id) {
+      return;
+    }
+    void Promise.resolve(
+      transport('worker-attempt-resume', { attempt_id })
+    ).then((res) => {
+      const r = /** @type {any} */ (res);
+      if (r && r.resumed === false && r.reason) {
+        showToast(`이어하기 거부: ${r.reason}`, 'error', 2400);
+      }
+    });
+  }
+
+  const session_handlers = { onOpen: openTranscript, onResume: resumeAttempt };
 
   /**
    * Workspace-global exec defaults from the queue snapshot (spec §3.2): a

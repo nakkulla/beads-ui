@@ -13,6 +13,7 @@ import { html } from 'lit-html';
  * @property {string|null} [runner]
  * @property {string|null} [model]
  * @property {string|null} [session_id] - Runner session id (short display).
+ * @property {string|null} [resumed_from] - Prior attempt this one resumes (§1).
  */
 
 /** @type {Record<string, string>} */
@@ -41,10 +42,17 @@ function shortTime(ms) {
 
 /**
  * Session-history section (spec §5.6): lists a bead's past/live Worker attempts;
- * clicking one opens the transcript drawer against the persisted (or live) log.
+ * clicking a row opens the transcript drawer against the persisted (or live)
+ * log. A failed/orphaned attempt with a captured session id carries a separate
+ * "↻ 이어하기" button (spec §1) — the row-click=open convention stays intact
+ * because the button is a sibling, not a nested control. The button is ACTIVE
+ * only on the newest eligible leaf of a resume lineage; an ancestor already
+ * resumed (a child carries its `resumed_from`) or a pre-session-id attempt is
+ * disabled with the reason in its title. A resume attempt shows a `↻` badge
+ * titled with its `resumed_from`.
  *
  * @param {SessionAttempt[]} [attempts]
- * @param {{ onOpen?: (attempt_id: string) => void }} [handlers]
+ * @param {{ onOpen?: (attempt_id: string) => void, onResume?: (attempt_id: string) => void }} [handlers]
  * @returns {TemplateResult}
  */
 export function sessionHistoryTemplate(attempts, handlers = {}) {
@@ -55,31 +63,86 @@ export function sessionHistoryTemplate(attempts, handlers = {}) {
       <div class="detail-empty" data-seam="session-history">세션 이력 없음</div>
     `;
   }
+  // A resumed_from that another attempt carries marks its ancestor as spent.
+  /** @type {Set<string>} */
+  const resumed_from_ids = new Set();
+  for (const a of list) {
+    if (a && typeof a.resumed_from === 'string' && a.resumed_from.length > 0) {
+      resumed_from_ids.add(a.resumed_from);
+    }
+  }
+
+  /**
+   * @param {SessionAttempt} a
+   * @returns {TemplateResult|''}
+   */
+  const resumeButton = (a) => {
+    const is_terminal_fail = a.status === 'failed' || a.status === 'orphaned';
+    if (!is_terminal_fail) {
+      return '';
+    }
+    const has_sid = typeof a.session_id === 'string' && a.session_id.length > 0;
+    const already = resumed_from_ids.has(a.attempt_id);
+    const eligible = has_sid && !already;
+    const title = !has_sid
+      ? 'session_id 없는 구 attempt — 이어하기 불가'
+      : already
+        ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+        : '이 세션을 같은 워크트리에서 이어서 진행';
+    return html`<button
+      type="button"
+      class="detail-session__resume"
+      data-attempt-id=${a.attempt_id}
+      ?disabled=${!eligible}
+      title=${title}
+      @click=${(/** @type {Event} */ ev) => {
+        ev.stopPropagation();
+        if (eligible && handlers.onResume) {
+          handlers.onResume(a.attempt_id);
+        }
+      }}
+    >
+      ↻ 이어하기
+    </button>`;
+  };
+
   return html`
     <div class="detail-section-label">세션 이력</div>
     <div class="detail-sessions" data-seam="session-history">
       ${list.map(
         (a) =>
-          html`<button
-            type="button"
-            class="detail-session detail-session--${a.status || 'unknown'}"
-            data-attempt-id=${a.attempt_id}
-            @click=${() => handlers.onOpen && handlers.onOpen(a.attempt_id)}
-          >
-            <span class="detail-session__glyph"
-              >${STATUS_GLYPH[a.status || ''] || '·'}</span
+          html`<div class="detail-session-row">
+            <button
+              type="button"
+              class="detail-session detail-session--${a.status || 'unknown'}"
+              data-attempt-id=${a.attempt_id}
+              @click=${() => handlers.onOpen && handlers.onOpen(a.attempt_id)}
             >
-            <span class="detail-session__id">${a.attempt_id}</span>
-            <span class="detail-session__meta"
-              >${[a.runner, a.model].filter(Boolean).join(' · ')}</span
-            >
-            ${a.session_id
-              ? html`<span class="detail-session__sid" title=${a.session_id}
-                  >${String(a.session_id).slice(0, 8)}</span
-                >`
-              : ''}
-            <span class="detail-session__time">${shortTime(a.started_at)}</span>
-          </button>`
+              <span class="detail-session__glyph"
+                >${STATUS_GLYPH[a.status || ''] || '·'}</span
+              >
+              <span class="detail-session__id">${a.attempt_id}</span>
+              ${a.resumed_from
+                ? html`<span
+                    class="detail-session__resumed"
+                    title=${`이어받은 세션 (from ${a.resumed_from})`}
+                    >↻</span
+                  >`
+                : ''}
+              <span class="detail-session__meta"
+                >${[a.runner, a.model].filter(Boolean).join(' · ')}</span
+              >
+              ${a.session_id
+                ? html`<span class="detail-session__sid" title=${a.session_id}
+                    >${String(a.session_id).slice(0, 8)}</span
+                  >`
+                : ''}
+              <span class="detail-session__time"
+                >${shortTime(a.started_at)}</span
+              >
+            </button>
+            ${resumeButton(a)}
+          </div>`
       )}
     </div>
   `;

@@ -483,6 +483,82 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('session-history: only the newest eligible leaf gets an active ↻ 이어하기; ancestor/pre-session-id disabled; ↻ badge on resume attempts (§1)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        serial: [],
+        parallel: [],
+        done: [],
+        attempts: {
+          old: {
+            attempt_id: 'old',
+            bead_id: 'UI-1',
+            status: 'failed',
+            started_at: 1000
+          },
+          anc: {
+            attempt_id: 'anc',
+            bead_id: 'UI-1',
+            status: 'failed',
+            session_id: 'sid-anc',
+            started_at: 2000
+          },
+          kid: {
+            attempt_id: 'kid',
+            bead_id: 'UI-1',
+            status: 'failed',
+            session_id: 'sid-kid',
+            resumed_from: 'anc',
+            started_at: 3000
+          }
+        }
+      })
+    );
+    const transport = vi.fn().mockResolvedValue({ resumed: true });
+    const panel = createDetailPanel(mount, {
+      queueStore,
+      transport,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+
+    /**
+     * @param {string} id
+     * @returns {HTMLButtonElement}
+     */
+    const resumeBtn = (id) =>
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector(`.detail-session__resume[data-attempt-id="${id}"]`)
+      );
+
+    // Pre-session-id attempt → button present but disabled.
+    expect(resumeBtn('old').disabled).toBe(true);
+    // Ancestor spent (kid.resumed_from=anc) → disabled.
+    expect(resumeBtn('anc').disabled).toBe(true);
+    // Newest eligible leaf → active.
+    expect(resumeBtn('kid').disabled).toBe(false);
+
+    // The resume attempt (kid) shows a ↻ badge inside its row.
+    expect(
+      mount.querySelector(
+        '.detail-session[data-attempt-id="kid"] .detail-session__resumed'
+      )
+    ).not.toBeNull();
+
+    // Clicking the active button fires the resume mutation (and does NOT open
+    // the transcript drawer — it is a sibling, not the row button).
+    resumeBtn('kid').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
+      attempt_id: 'kid'
+    });
+
+    panel.destroy();
+  });
+
   test('exec settings default-option + model catalog follow the queue exec_defaults (§3.2)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const issueStores = createSubscriptionIssueStores();

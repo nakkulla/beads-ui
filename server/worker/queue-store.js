@@ -63,6 +63,15 @@
  * stamped onto the bead at dispatch (bead-absent keys filled from the
  * workspace-global default). Recorded durably BEFORE the first metadata write
  * so a restart/orphan reap can revert them; null when nothing was stamped.
+ * @property {Record<string, string>|null} exec_values - Resolved values of the
+ * exec keys stamped at dispatch, kept so a manual session resume re-stamps with
+ * the PRIOR snapshot values instead of re-resolving the current global defaults
+ * (spec §1); null when nothing was stamped.
+ * @property {string|null} resumed_from - Prior attempt_id this attempt resumes
+ * (manual session resume, spec §1); null for a first-launch attempt. The
+ * `already_resumed` guard scans attempts for a child carrying this so a failed
+ * attempt is resumed at most once — a scan-derived judgment that survives cold
+ * reload.
  */
 /**
  * @typedef {Object} Queue
@@ -225,7 +234,14 @@ export function makeAttempt(fields) {
     verify_cmd_result: fields.verify_cmd_result ?? null,
     exec_stamped_keys: Array.isArray(fields.exec_stamped_keys)
       ? fields.exec_stamped_keys
-      : null
+      : null,
+    exec_values:
+      fields.exec_values &&
+      typeof fields.exec_values === 'object' &&
+      !Array.isArray(fields.exec_values)
+        ? fields.exec_values
+        : null,
+    resumed_from: fields.resumed_from ?? null
   };
 }
 

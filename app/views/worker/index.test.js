@@ -1426,4 +1426,132 @@ describe('views/worker', () => {
       expected_revision: 3
     });
   });
+
+  test('breaker banner ↻ resumes the newest eligible failed attempt (§1)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          f1: {
+            attempt_id: 'f1',
+            bead_id: 'B1',
+            status: 'failed',
+            repo: '/repo',
+            cause: 'verify_failed:x',
+            session_id: 'sid-1'
+          }
+        }
+      })
+    );
+    const transport = vi.fn().mockResolvedValue({ resumed: true });
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    const btn = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--breaker .worker-banner__resume')
+    );
+    expect(btn).not.toBeNull();
+    expect(btn.dataset.attemptId).toBe('f1');
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
+      attempt_id: 'f1'
+    });
+  });
+
+  test('breaker ↻ targets the newest eligible LEAF, never a spent ancestor (§1)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          anc: {
+            attempt_id: 'anc',
+            bead_id: 'B1',
+            status: 'failed',
+            repo: '/repo',
+            cause: 'verify_failed:x',
+            session_id: 'sid-anc'
+          },
+          kid: {
+            attempt_id: 'kid',
+            bead_id: 'B1',
+            status: 'failed',
+            repo: '/repo',
+            cause: 'verify_failed:y',
+            session_id: 'sid-kid',
+            resumed_from: 'anc'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    const btn = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--breaker .worker-banner__resume')
+    );
+    // The ancestor is spent (kid carries resumed_from=anc) → the leaf is kid.
+    expect(btn.dataset.attemptId).toBe('kid');
+  });
+
+  test('a resumed running tile shows the ↻ badge (§1)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        serial: [{ bead_id: 'B1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'B1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now() - 2000,
+            resumed_from: 'anc'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    const badge = mount.querySelector(
+      '.rtile[data-bead-id="B1"] .rtile__resumed'
+    );
+    expect(badge).not.toBeNull();
+  });
+
+  test('an auto-detected verify_cmd is flagged (자동 감지) in the ctrl bar (§2)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        workspace_info: {
+          verify_cmd: {
+            cmd: ['npm', 'test'],
+            timeout_ms: 600000,
+            source: 'detected'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    const vc = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-verifycmd')
+    );
+    expect(vc.textContent).toContain('npm test');
+    expect(vc.textContent).toContain('자동 감지');
+  });
 });

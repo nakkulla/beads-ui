@@ -9,6 +9,7 @@
  * This NEVER installs to live runtime dirs (`~/.claude`, shared service dirs) —
  * it only manipulates worktrees inside the target repo.
  */
+import nodeFs from 'node:fs';
 import path from 'node:path';
 import { runShell } from '../bd.js';
 
@@ -19,9 +20,10 @@ import { runShell } from '../bd.js';
 /**
  * Create a worktree manager bound to a lock manager.
  *
- * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner }} deps
+ * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs') }} deps
  * @returns {{
  *   pathFor: (repo: string, bead_id: string) => string,
+ *   exists: (repo: string, bead_id: string) => boolean,
  *   add: (input: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>,
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
  *   addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
@@ -32,6 +34,7 @@ export function createWorktreeManager(deps) {
   const locks = deps.locks;
   /** @type {GitRunner} */
   const run = deps.run || ((args, options) => runShell('git', args, options));
+  const fs = deps.fs || nodeFs;
 
   /**
    * @param {string} repo
@@ -44,6 +47,23 @@ export function createWorktreeManager(deps) {
 
   return {
     pathFor,
+
+    /**
+     * Whether the bead's worktree directory is present. A manual session resume
+     * reuses the existing worktree and does NOT recreate a deleted one, so a
+     * missing directory is a `worktree_missing` refusal (spec §1.2).
+     *
+     * @param {string} repo
+     * @param {string} bead_id
+     * @returns {boolean}
+     */
+    exists(repo, bead_id) {
+      try {
+        return fs.existsSync(pathFor(repo, bead_id));
+      } catch {
+        return false;
+      }
+    },
 
     /**
      * Add `.worktrees/<bead_id>` from `base`, on a branch named `<bead_id>`.

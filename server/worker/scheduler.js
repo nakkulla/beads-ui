@@ -25,7 +25,7 @@
  */
 import { debug } from '../logging.js';
 import { resolveExecSettings, resolvePolicies } from './policy.js';
-import { assertRunnerAllowed } from './runner/index.js';
+import { RUNNERS, assertRunnerAllowed } from './runner/index.js';
 
 const log = debug('worker:scheduler');
 
@@ -68,7 +68,7 @@ const log = debug('worker:scheduler');
  *   unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>
  * }} bd
- * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any> }} worktree
+ * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
  * @property {{ issue: (attempt_id: string, meta: { repo: string, bead_id: string, target_base?: string }) => string, revoke: (attempt_id: string) => void }} tokens
  * @property {{ verifyMerge: (i: { repo: string, target_base: string, bead_id: string, merge_policy: 'auto_merge'|'pr_stop', merge_sha: string|null }) => Promise<{ ok: boolean, reason: string }> }} verify
  * @property {{ takeHandover: (attempt_id: string) => (() => void) | null }} [mergeLock]
@@ -106,6 +106,7 @@ const log = debug('worker:scheduler');
  * @returns {{
  *   tick: (workspace: string) => Promise<void>,
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
+ *   resume: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   runningCount: () => number,
  *   runningBeads: () => string[],
  *   isRunning: (bead_id: string) => boolean
@@ -727,6 +728,19 @@ export function createScheduler(deps) {
     // restart's orphan reap can revert the stamps from this record — an
     // in-memory-only registry could not (worker-global-exec-defaults §3).
     const stamped_keys = exec.stamped_keys;
+    // Persist the resolved values of the stamped keys too (spec §1): a later
+    // manual resume re-stamps from the PRIOR snapshot rather than re-resolving
+    // the current global defaults, so the values must travel on the attempt.
+    /** @type {Record<string, string>} */
+    const exec_values = {};
+    for (const key of stamped_keys) {
+      const value = /** @type {Record<string, string>} */ (
+        /** @type {any} */ (exec)
+      )[key];
+      if (typeof value === 'string') {
+        exec_values[key] = value;
+      }
+    }
     deps.store.appendAttempt(workspace, {
       expected_revision: deps.store.snapshot(workspace).revision,
       attempt: { attempt_id, bead_id }
@@ -739,6 +753,7 @@ export function createScheduler(deps) {
         base_oid: wt.base_oid,
         workflow_mode_prior: prior,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+        exec_values: stamped_keys.length > 0 ? exec_values : null,
         merge_policy,
         drift_policy,
         demoted_reason,
@@ -799,48 +814,110 @@ export function createScheduler(deps) {
       return;
     }
 
-    const token = deps.tokens.issue(attempt_id, {
-      repo: snap.repo,
+    await launchSession({
+      workspace,
+      attempt_id,
       bead_id,
-      target_base: snap.target_base
+      lane,
+      repo: snap.repo,
+      target_base: snap.target_base,
+      base_oid: wt.base_oid,
+      runner_name,
+      model: exec.orchestration_model ?? null,
+      effort: exec.orchestration_effort ?? null,
+      merge_policy,
+      drift_policy,
+      prior_wf: prior,
+      stamped_keys,
+      wt_path: wt.path,
+      spawnBead: {
+        id: bead_id,
+        route: snap.route,
+        plan_path: snap.plan_path,
+        plan_review: snap.plan_review,
+        status: snap.status,
+        plan_fresh: snap.plan_fresh
+      }
     });
+  }
+
+  /**
+   * Shared launch tail for a first dispatch AND a manual resume: issue the
+   * session token, spawn the runner, fill the spawn-time snapshot, attach the
+   * session log, wire session_id capture + the done handler. On a spawn throw it
+   * cleans up exactly like the exec-stamp partial failure (revoke token, revert
+   * stamps + workflow_mode, record `spawn_failed`, release the claim) so no
+   * stamped metadata or leaked `running` record outlives the aborted launch.
+   *
+   * @param {{
+   *   workspace: string,
+   *   attempt_id: string,
+   *   bead_id: string,
+   *   lane: 'serial'|'parallel',
+   *   repo: string,
+   *   target_base: string,
+   *   base_oid: string|null,
+   *   runner_name: string,
+   *   model: string|null,
+   *   effort: string|null,
+   *   merge_policy: 'auto_merge'|'pr_stop',
+   *   drift_policy: string|null,
+   *   prior_wf: string|null,
+   *   stamped_keys: string[],
+   *   wt_path: string,
+   *   spawnBead: any,
+   *   resume_session_id?: string|null
+   * }} input
+   */
+  async function launchSession(input) {
+    const {
+      workspace,
+      attempt_id,
+      bead_id,
+      lane,
+      repo,
+      target_base,
+      base_oid,
+      runner_name,
+      model,
+      effort,
+      merge_policy,
+      drift_policy,
+      prior_wf,
+      stamped_keys,
+      wt_path,
+      spawnBead,
+      resume_session_id
+    } = input;
+
+    const token = deps.tokens.issue(attempt_id, { repo, bead_id, target_base });
     const runner = deps.makeRunner(runner_name);
     const started_at = now();
+
+    /** @type {any} */
+    const settings = {
+      model: model ?? undefined,
+      effort: effort ?? undefined,
+      fast_track: true,
+      merge_policy,
+      drift_policy,
+      env: { BDUI_WORKER_TOKEN: token },
+      // Inject the concrete merge-lock endpoint params so the session's
+      // preamble acquires the (repo, target_base) lock before merging (F3).
+      // The preamble omits the block under pr_stop (no merge → no lock).
+      merge_lock: { port: resolvePort(), repo, target_base }
+    };
+    // Resume argv branch (spec §1.4): the adapter reads this to continue the
+    // prior claude session id / codex thread id.
+    if (resume_session_id) {
+      settings.resume_session_id = resume_session_id;
+    }
 
     /** @type {RunnerHandle} */
     let handle;
     try {
-      handle = runner.spawn(
-        {
-          id: bead_id,
-          route: snap.route,
-          plan_path: snap.plan_path,
-          plan_review: snap.plan_review,
-          status: snap.status,
-          plan_fresh: snap.plan_fresh
-        },
-        wt.path,
-        {
-          model: exec.orchestration_model,
-          effort: exec.orchestration_effort,
-          fast_track: true,
-          merge_policy,
-          drift_policy,
-          env: { BDUI_WORKER_TOKEN: token },
-          // Inject the concrete merge-lock endpoint params so the session's
-          // preamble acquires the (repo, target_base) lock before merging (F3).
-          // The preamble omits the block under pr_stop (no merge → no lock).
-          merge_lock: {
-            port: resolvePort(),
-            repo: snap.repo,
-            target_base: snap.target_base
-          }
-        }
-      );
+      handle = runner.spawn(spawnBead, wt_path, settings);
     } catch {
-      // Spawn failed AFTER stamping — clean up exactly like the exec-stamp
-      // partial failure so no stamped metadata (or a leaked 'running' record)
-      // outlives the aborted dispatch.
       deps.tokens.revoke(attempt_id);
       await revertExecStamps(bead_id, stamped_keys);
       deps.store.updateAttempt(workspace, {
@@ -848,7 +925,7 @@ export function createScheduler(deps) {
         patch: { status: 'failed', cause: 'spawn_failed', finished_at: now() }
       });
       try {
-        await revertWorkflowMode(bead_id, prior);
+        await revertWorkflowMode(bead_id, prior_wf);
       } catch {
         // Best-effort: bd may be down; the failed record already reflects it.
       }
@@ -863,12 +940,12 @@ export function createScheduler(deps) {
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
-        head_oid: wt.base_oid,
+        head_oid: base_oid,
         started_at,
         pid: handle.pid,
         runner: runner_name,
-        model: exec.orchestration_model ?? null,
-        effort: exec.orchestration_effort ?? null
+        model: model ?? null,
+        effort: effort ?? null
       }
     });
 
@@ -886,12 +963,251 @@ export function createScheduler(deps) {
       });
       notifyChanged(workspace);
     });
-    running.set(attempt_id, { bead_id, repo: snap.repo, lane, handle, prior });
+    running.set(attempt_id, { bead_id, repo, lane, handle, prior: prior_wf });
     notifyChanged(workspace);
 
-    handle.done.then((verdict) =>
-      onSessionDone(workspace, attempt_id, bead_id, snap, prior, verdict)
+    // onSessionDone reads only repo + target_base off the snap, so a synthetic
+    // snapshot carries everything the termination path needs (breaker scope +
+    // independent verify target) for both first dispatch and resume.
+    const doneSnap = /** @type {BeadSnapshot} */ (
+      /** @type {any} */ ({ repo, target_base })
     );
+    handle.done.then((verdict) =>
+      onSessionDone(workspace, attempt_id, bead_id, doneSnap, prior_wf, verdict)
+    );
+  }
+
+  /**
+   * The manual-resume task prompt (spec §1.4): announce the prior interruption,
+   * instruct a self-check of worktree/bead/PR state, and require finishing ONLY
+   * the remaining contract steps. The unattended/policy preamble is layered on
+   * by the adapter's `applyPreamble`, exactly as for a first launch.
+   *
+   * @param {string} bead_id
+   * @returns {string}
+   */
+  function resumePrompt(bead_id) {
+    return [
+      `이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead ${bead_id}).`,
+      '같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라.',
+      '이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.'
+    ].join(' ');
+  }
+
+  /**
+   * Manually resume a failed/orphaned attempt in its EXISTING worktree (spec
+   * §1). Fail-closed with six refusal reasons (admission-badge convention):
+   * `not_failed` · `no_session_id` · `worktree_missing` · `bead_running` ·
+   * `already_resumed` · `runner_unavailable`. On admission the breaker for the
+   * repo is reset (↻ is a human ▶-grade intervention, so a resumed auto_merge is
+   * not re-blocked at the merge-lock gate), a NEW attempt is minted carrying
+   * `resumed_from`, the PRIOR snapshot is inherited verbatim (no re-resolution of
+   * globals/policies), workflow_mode + exec are re-stamped from the prior values,
+   * and the shared launch tail spawns the adapter's resume argv.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id - The prior (failed/orphaned) attempt to resume.
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+   */
+  async function resume(workspace, attempt_id) {
+    const q = deps.store.snapshot(workspace);
+    const prior = q.attempts ? q.attempts[attempt_id] : null;
+
+    // not_failed: no such attempt, or not in a resumable terminal state.
+    if (!prior || (prior.status !== 'failed' && prior.status !== 'orphaned')) {
+      return { ok: false, reason: 'not_failed' };
+    }
+    // no_session_id: a pre-UI-azj6 attempt without a captured session id.
+    if (typeof prior.session_id !== 'string' || prior.session_id.length === 0) {
+      return { ok: false, reason: 'no_session_id' };
+    }
+    const bead_id = prior.bead_id;
+    const repo = typeof prior.repo === 'string' ? prior.repo : '';
+    // worktree_missing: the bead worktree is gone (resume never recreates it).
+    const wt_present =
+      typeof deps.worktree.exists === 'function'
+        ? deps.worktree.exists(repo, bead_id)
+        : true;
+    if (!wt_present) {
+      return { ok: false, reason: 'worktree_missing' };
+    }
+    // bead_running: a live (or store-recorded running) attempt for the same bead.
+    if (claimed.has(bead_id)) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    for (const a of Object.values(q.attempts || {})) {
+      if (a && a.bead_id === bead_id && a.status === 'running') {
+        return { ok: false, reason: 'bead_running' };
+      }
+    }
+    // already_resumed: a child attempt already carries this as `resumed_from`
+    // (scan-derived so it survives cold reload — the ancestor is permanently
+    // spent regardless of the child's success/failure).
+    for (const a of Object.values(q.attempts || {})) {
+      if (a && a.resumed_from === attempt_id) {
+        return { ok: false, reason: 'already_resumed' };
+      }
+    }
+    // runner_unavailable: the prior runner snapshot is absent or unsupported.
+    const runner_name = prior.runner;
+    if (
+      typeof runner_name !== 'string' ||
+      !RUNNERS.includes(/** @type {any} */ (runner_name))
+    ) {
+      return { ok: false, reason: 'runner_unavailable' };
+    }
+
+    // Admitted — reset the breaker (isMergeBlocked reads the same breaker, so a
+    // resumed auto_merge would otherwise deadlock at the lock gate) and claim.
+    deps.breaker.reset(repo);
+    claimed.add(bead_id);
+
+    const new_attempt_id = makeAttemptId(bead_id);
+    const target_base =
+      typeof prior.target_base === 'string' ? prior.target_base : 'main';
+    const merge_policy =
+      prior.merge_policy === 'pr_stop' ? 'pr_stop' : 'auto_merge';
+    const prior_wf =
+      typeof prior.workflow_mode_prior === 'string'
+        ? prior.workflow_mode_prior
+        : null;
+    const stamped_keys = Array.isArray(prior.exec_stamped_keys)
+      ? prior.exec_stamped_keys
+      : [];
+    const exec_values =
+      prior.exec_values && typeof prior.exec_values === 'object'
+        ? /** @type {Record<string, string>} */ (prior.exec_values)
+        : {};
+    const lane = (q.serial || []).some(
+      (/** @type {any} */ e) => e.bead_id === bead_id
+    )
+      ? 'serial'
+      : 'parallel';
+
+    // Mint the new attempt inheriting the PRIOR snapshot verbatim (§1.3): repo/
+    // target_base/base_oid/runner/model/effort/policies/demoted_reason AND the
+    // observed merge_sha — never re-resolved from current globals.
+    deps.store.appendAttempt(workspace, {
+      expected_revision: deps.store.snapshot(workspace).revision,
+      attempt: { attempt_id: new_attempt_id, bead_id }
+    });
+    deps.store.updateAttempt(workspace, {
+      attempt_id: new_attempt_id,
+      patch: {
+        repo,
+        target_base,
+        base_oid: prior.base_oid ?? null,
+        runner: runner_name,
+        model: prior.model ?? null,
+        effort: prior.effort ?? null,
+        merge_policy,
+        drift_policy: prior.drift_policy ?? null,
+        demoted_reason: prior.demoted_reason ?? null,
+        merge_sha: typeof prior.merge_sha === 'string' ? prior.merge_sha : null,
+        workflow_mode_prior: prior_wf,
+        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+        exec_values: stamped_keys.length > 0 ? exec_values : null,
+        resumed_from: attempt_id,
+        status: 'running',
+        pid: null
+      }
+    });
+
+    // Re-stamp workflow_mode=fast_track from the PRIOR snapshot (set + readback).
+    let mode_ok = false;
+    try {
+      await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
+      const rb = await deps.bd.readMetadata(bead_id, 'workflow_mode');
+      mode_ok = rb === 'fast_track';
+    } catch (err) {
+      log('resume workflow_mode set/readback failed for %s: %o', bead_id, err);
+      mode_ok = false;
+    }
+    if (!mode_ok) {
+      deps.store.updateAttempt(workspace, {
+        attempt_id: new_attempt_id,
+        patch: {
+          status: 'failed',
+          cause: 'workflow_mode_record_failed',
+          finished_at: now()
+        }
+      });
+      try {
+        await revertWorkflowMode(bead_id, prior_wf);
+      } catch {
+        // Best-effort: bd may be down; the failed record already reflects it.
+      }
+      claimed.delete(bead_id);
+      notifyChanged(workspace);
+      return { ok: false, reason: 'workflow_mode_record_failed' };
+    }
+
+    // Re-stamp the exec keys with the PRIOR values (set + confirming readback).
+    let exec_ok = true;
+    for (const key of stamped_keys) {
+      const value = exec_values[key];
+      if (typeof value !== 'string') {
+        continue;
+      }
+      try {
+        await deps.bd.setMetadata(bead_id, key, value);
+        const rb = await deps.bd.readMetadata(bead_id, key);
+        if (rb !== value) {
+          exec_ok = false;
+          break;
+        }
+      } catch (err) {
+        log('resume exec stamp failed for %s %s: %o', bead_id, key, err);
+        exec_ok = false;
+        break;
+      }
+    }
+    if (!exec_ok) {
+      await revertExecStamps(bead_id, stamped_keys);
+      deps.store.updateAttempt(workspace, {
+        attempt_id: new_attempt_id,
+        patch: {
+          status: 'failed',
+          cause: 'exec_stamp_failed',
+          finished_at: now()
+        }
+      });
+      try {
+        await revertWorkflowMode(bead_id, prior_wf);
+      } catch {
+        // Best-effort: bd may be down; the failed record already reflects it.
+      }
+      claimed.delete(bead_id);
+      notifyChanged(workspace);
+      return { ok: false, reason: 'exec_stamp_failed' };
+    }
+
+    // Reuse the existing worktree — no worktree.add / admission re-check (§1.3).
+    const wt_path =
+      typeof deps.worktree.pathFor === 'function'
+        ? deps.worktree.pathFor(repo, bead_id)
+        : '';
+    await launchSession({
+      workspace,
+      attempt_id: new_attempt_id,
+      bead_id,
+      lane,
+      repo,
+      target_base,
+      base_oid: prior.base_oid ?? null,
+      runner_name,
+      model: prior.model ?? null,
+      effort: prior.effort ?? null,
+      merge_policy,
+      drift_policy: prior.drift_policy ?? null,
+      prior_wf,
+      stamped_keys,
+      wt_path,
+      spawnBead: { id: bead_id, prompt: resumePrompt(bead_id) },
+      resume_session_id: prior.session_id
+    });
+
+    return { ok: true, attempt_id: new_attempt_id };
   }
 
   /**
@@ -1040,6 +1356,7 @@ export function createScheduler(deps) {
   return {
     tick,
     stop,
+    resume,
     runningCount() {
       return running.size;
     },

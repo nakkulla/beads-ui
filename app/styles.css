@@ -2658,6 +2658,22 @@ html[data-theme='dark'] {
   color: var(--accent-danger);
 }
 
+/* Breaker banner의 수동 이어하기(↻) 버튼 (attempt-resume §1). */
+.worker-banner__resume {
+  margin-left: var(--sp-8);
+  padding: 1px var(--sp-6);
+  border: 1px solid var(--border-danger);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--accent-danger);
+  font-size: var(--fs-chip);
+  cursor: pointer;
+}
+
+.worker-banner__resume:hover {
+  background: color-mix(in srgb, var(--accent-danger) 22%, var(--bg-panel));
+}
+
 .worker-rungrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
@@ -3253,6 +3269,45 @@ html[data-theme='dark'] {
   font-family: var(--font-mono);
   font-size: var(--fs-caption);
   color: var(--text-dim);
+}
+
+/* 이력 행 wrapper: 행 버튼(드로어 열기) + 별도 이어하기 버튼 (attempt-resume §1). */
+.detail-session-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-4);
+}
+
+.detail-session-row .detail-session {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.detail-session__resume {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-6);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.detail-session__resume:hover:not(:disabled) {
+  border-color: var(--border-tile-run);
+}
+
+.detail-session__resume:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 이어받은 세션 ↻ 배지 (이력 행·running 타일 공용 톤). */
+.detail-session__resumed,
+.rtile__resumed {
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
 }
 
 .detail-session__time {
