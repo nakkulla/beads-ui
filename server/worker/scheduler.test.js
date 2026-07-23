@@ -1201,7 +1201,12 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     // Bead pins review_model=opus; impl_model is unset (global fills it).
     const env = setup({
       config: {
-        S1: { runner: 'claude', model: 'opus', effort: 'high', review_model: 'opus' }
+        S1: {
+          runner: 'claude',
+          model: 'opus',
+          effort: 'high',
+          review_model: 'opus'
+        }
       },
       slots: 1,
       verifyOk: true

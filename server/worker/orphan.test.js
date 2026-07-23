@@ -152,7 +152,10 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
     det.detect(WS);
     // Each stamped exec key is unset, plus workflow_mode (prior null → unset).
     expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'worker_runner');
-    expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'orchestration_model');
+    expect(bd.unsetMetadata).toHaveBeenCalledWith(
+      'UI-1',
+      'orchestration_model'
+    );
     expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'workflow_mode');
     expect(bd.setMetadata).not.toHaveBeenCalled();
   });

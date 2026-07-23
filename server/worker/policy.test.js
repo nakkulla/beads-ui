@@ -63,9 +63,9 @@ describe('worker/policy resolveExecSettings (bead > global > default, runner-fir
     expect(r.impl_model).toBe(undefined);
     expect(r.stamped_keys).toEqual([]);
     // Tolerates null/undefined levels.
-    expect(resolveExecSettings({ bead: null, defaults: undefined }).worker_runner).toBe(
-      'claude'
-    );
+    expect(
+      resolveExecSettings({ bead: null, defaults: undefined }).worker_runner
+    ).toBe('claude');
   });
 
   test('workspace global fills every key and stamps all 5 when the bead is bare', () => {
@@ -145,7 +145,10 @@ describe('worker/policy resolveExecSettings (bead > global > default, runner-fir
   test('runner-independent keys still resolve when the cross-layer model is skipped', () => {
     const r = resolveExecSettings({
       bead: { runner: 'claude' },
-      defaults: { orchestration_model: 'gpt-5.6', orchestration_effort: 'medium' }
+      defaults: {
+        orchestration_model: 'gpt-5.6',
+        orchestration_effort: 'medium'
+      }
     });
     // runner from bead (not stamped), model skipped as incompatible (unset, not
     // stamped), effort adopted from global (stamped).

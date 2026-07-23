@@ -15,7 +15,6 @@
  * resolution — the scheduler applies it at dispatch where the workspace
  * verify_cmd config is known.
  */
-
 import {
   EFFORTS,
   IMPL_MODELS,
