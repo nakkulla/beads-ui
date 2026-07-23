@@ -133,6 +133,49 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
     expect(bd.unsetMetadata).not.toHaveBeenCalled();
   });
 
+  test('orphaning reverts exec_stamped_keys via unsetMetadata', () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, {
+      workflow_mode_prior: null,
+      exec_stamped_keys: ['worker_runner', 'orchestration_model']
+    });
+    const bd = {
+      setMetadata: vi.fn(async () => {}),
+      unsetMetadata: vi.fn(async () => {})
+    };
+    const det = createOrphanDetector({
+      store,
+      breaker: createBreaker(),
+      bd,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    det.detect(WS);
+    // Each stamped exec key is unset, plus workflow_mode (prior null → unset).
+    expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'worker_runner');
+    expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'orchestration_model');
+    expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'workflow_mode');
+    expect(bd.setMetadata).not.toHaveBeenCalled();
+  });
+
+  test('no exec_stamped_keys → no exec unset calls', () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: null });
+    const bd = {
+      setMetadata: vi.fn(async () => {}),
+      unsetMetadata: vi.fn(async () => {})
+    };
+    const det = createOrphanDetector({
+      store,
+      breaker: createBreaker(),
+      bd,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    det.detect(WS);
+    // Only workflow_mode is unset; no exec keys were stamped.
+    expect(bd.unsetMetadata).toHaveBeenCalledTimes(1);
+    expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'workflow_mode');
+  });
+
   test('non-running attempts are ignored', () => {
     const store = createQueueStore();
     seedRunningAttempt(store, { status: 'done' });

@@ -24,7 +24,7 @@
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
 import { debug } from '../logging.js';
-import { resolvePolicies } from './policy.js';
+import { resolveExecSettings, resolvePolicies } from './policy.js';
 import { assertRunnerAllowed } from './runner/index.js';
 
 const log = debug('worker:scheduler');
@@ -38,6 +38,8 @@ const log = debug('worker:scheduler');
  * @property {string} [runner] - worker_runner (claude/codex/ccx).
  * @property {string} [model] - orchestration_model.
  * @property {string} [effort] - orchestration_effort.
+ * @property {string} [review_model] - review_model (per-bead exec setting).
+ * @property {string} [impl_model] - impl_model (per-bead exec setting).
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string|null} [plan_path] - Plan path when present.
@@ -217,6 +219,40 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Unset the exec-setting metadata keys stamped onto a bead at dispatch
+   * (worker-global-exec-defaults §3). Best-effort per key — a bd failure is
+   * logged, never thrown — so it mirrors the workflow_mode revert's fail-open
+   * posture on the termination paths and never blocks a done/fail/stop move.
+   *
+   * @param {string} bead_id
+   * @param {string[]|null|undefined} keys
+   */
+  async function revertExecStamps(bead_id, keys) {
+    if (!Array.isArray(keys)) {
+      return;
+    }
+    for (const key of keys) {
+      try {
+        await deps.bd.unsetMetadata(bead_id, key);
+      } catch (err) {
+        log('exec stamp revert failed for %s %s: %o', bead_id, key, err);
+      }
+    }
+  }
+
+  /**
+   * Read the durable exec_stamped_keys recorded on an attempt at dispatch.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {string[]|null}
+   */
+  function execStampedKeysOf(workspace, attempt_id) {
+    const a = deps.store.snapshot(workspace).attempts[attempt_id];
+    return a && Array.isArray(a.exec_stamped_keys) ? a.exec_stamped_keys : null;
+  }
+
+  /**
    * Trip the breaker for a failed attempt: mark Failed, revert workflow_mode,
    * turn auto_advance OFF, block the repo's new launch + merge entry (spec §5.3).
    *
@@ -246,6 +282,8 @@ export function createScheduler(deps) {
       // repo, so a bd-down revert failure must not escape onSessionDone.
       log('workflow_mode revert failed for %s: %o', bead_id, err);
     }
+    // Revert any exec-setting stamps this attempt wrote (best-effort).
+    await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
     deps.breaker.trip(snap.repo, { bead_id, cause });
     deps.store.setAutoAdvance(workspace, false);
   }
@@ -486,6 +524,13 @@ export function createScheduler(deps) {
           await tick(workspace);
           return;
         }
+        // pr_stop leaves the bead OPEN → also revert the exec-setting stamps
+        // this attempt wrote so a later manual session sees the bead's own
+        // metadata, not the auto-run's global fill (best-effort).
+        await revertExecStamps(
+          bead_id,
+          execStampedKeysOf(workspace, attempt_id)
+        );
       }
       // auto_merge: bead closed → workflow_mode intentionally NOT reverted.
       deps.store.moveToDone(workspace, { bead_id });
@@ -529,7 +574,17 @@ export function createScheduler(deps) {
       claimed.delete(bead_id);
       return;
     }
-    const runner_name = snap.runner || 'claude';
+
+    // Resolve the 5 exec settings (bead metadata > workspace-global default >
+    // hardcoded 'claude') BEFORE the runner guard, so a global-default runner is
+    // gated the same as a bead-pinned one. `stamped_keys` names the bead-absent
+    // keys filled from the global default that this dispatch must stamp (and
+    // later revert) — worker-global-exec-defaults §3.
+    const exec = resolveExecSettings({
+      bead: snap,
+      defaults: deps.store.snapshot(workspace).exec_defaults
+    });
+    const runner_name = exec.worker_runner;
 
     // full_plan entry guard (plan-save hook is claude-only). Freshness is
     // precomputed in snapshotBead against the canonical workspace root, so pass
@@ -667,6 +722,86 @@ export function createScheduler(deps) {
       return;
     }
 
+    // DURABLE pre-record: persist the attempt (status 'running', pid null)
+    // BEFORE the first exec-setting metadata write, recording the exact keys
+    // this dispatch will stamp. If a crash lands between here and spawn, a
+    // restart's orphan reap can revert the stamps from this record — an
+    // in-memory-only registry could not (worker-global-exec-defaults §3).
+    const stamped_keys = exec.stamped_keys;
+    deps.store.appendAttempt(workspace, {
+      expected_revision: deps.store.snapshot(workspace).revision,
+      attempt: { attempt_id, bead_id }
+    });
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        repo: snap.repo,
+        target_base: snap.target_base,
+        base_oid: wt.base_oid,
+        workflow_mode_prior: prior,
+        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+        merge_policy,
+        drift_policy,
+        demoted_reason,
+        status: 'running',
+        pid: null
+      }
+    });
+
+    // Stamp each bead-absent, global-filled exec key onto the bead metadata
+    // (set + confirming readback, mirroring the workflow_mode stamp). A bd
+    // failure or a readback mismatch on ANY key fails THIS dispatch only: the
+    // already-stamped keys are unset, the attempt is recorded failed, the mode
+    // is reverted, the claim released — no breaker trip, no sibling pause.
+    /** @type {string[]} */
+    const stamped_done = [];
+    let exec_stamp_ok = true;
+    for (const key of stamped_keys) {
+      const value = /** @type {Record<string, string>} */ (
+        /** @type {any} */ (exec)
+      )[key];
+      try {
+        await deps.bd.setMetadata(bead_id, key, value);
+        const rb = await deps.bd.readMetadata(bead_id, key);
+        if (rb === value) {
+          stamped_done.push(key);
+        } else {
+          log(
+            'exec stamp readback mismatch for %s %s: expected %o, got %o',
+            bead_id,
+            key,
+            value,
+            rb
+          );
+          exec_stamp_ok = false;
+          break;
+        }
+      } catch (err) {
+        log('exec stamp set/readback failed for %s %s: %o', bead_id, key, err);
+        exec_stamp_ok = false;
+        break;
+      }
+    }
+    if (!exec_stamp_ok) {
+      await revertExecStamps(bead_id, stamped_done);
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          status: 'failed',
+          cause: 'exec_stamp_failed',
+          finished_at: now()
+        }
+      });
+      try {
+        await revertWorkflowMode(bead_id, prior);
+      } catch {
+        // Best-effort: bd may be down; the failed record already reflects it.
+      }
+      claimed.delete(bead_id);
+      notifyChanged(workspace);
+      return;
+    }
+
     const token = deps.tokens.issue(attempt_id, {
       repo: snap.repo,
       bead_id,
@@ -689,8 +824,8 @@ export function createScheduler(deps) {
         },
         wt.path,
         {
-          model: snap.model,
-          effort: snap.effort,
+          model: exec.orchestration_model,
+          effort: exec.orchestration_effort,
           fast_track: true,
           merge_policy,
           drift_policy,
@@ -706,33 +841,37 @@ export function createScheduler(deps) {
         }
       );
     } catch {
+      // Spawn failed AFTER stamping — clean up exactly like the exec-stamp
+      // partial failure so no stamped metadata (or a leaked 'running' record)
+      // outlives the aborted dispatch.
       deps.tokens.revoke(attempt_id);
+      await revertExecStamps(bead_id, stamped_done);
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: { status: 'failed', cause: 'spawn_failed', finished_at: now() }
+      });
+      try {
+        await revertWorkflowMode(bead_id, prior);
+      } catch {
+        // Best-effort: bd may be down; the failed record already reflects it.
+      }
       claimed.delete(bead_id);
+      notifyChanged(workspace);
       return;
     }
 
-    // Persist the attempt record + runtime snapshot (spec §5.2).
-    deps.store.appendAttempt(workspace, {
-      expected_revision: deps.store.snapshot(workspace).revision,
-      attempt: { attempt_id, bead_id }
-    });
+    // Fill the runtime snapshot now that the process exists (spec §5.2). The
+    // durable fields (repo/base_oid/exec_stamped_keys/policies) were pre-
+    // recorded above; here we add the spawn-time facts + resolved exec values.
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
-        base_oid: wt.base_oid,
         head_oid: wt.base_oid,
         started_at,
         pid: handle.pid,
         runner: runner_name,
-        model: snap.model ?? null,
-        effort: snap.effort ?? null,
-        repo: snap.repo,
-        status: 'running',
-        workflow_mode_prior: prior,
-        target_base: snap.target_base,
-        merge_policy,
-        drift_policy,
-        demoted_reason
+        model: exec.orchestration_model ?? null,
+        effort: exec.orchestration_effort ?? null
       }
     });
 
@@ -881,6 +1020,11 @@ export function createScheduler(deps) {
     } catch {
       // Best-effort: bd may be down; the failed record already reflects it.
     }
+    // Revert any exec-setting stamps this attempt wrote (best-effort).
+    await revertExecStamps(
+      entry.bead_id,
+      execStampedKeysOf(workspace, attempt_id)
+    );
     return true;
   }
 

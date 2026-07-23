@@ -218,6 +218,10 @@ export function createLiveBd(config) {
           typeof md.orchestration_effort === 'string'
             ? md.orchestration_effort
             : undefined,
+        review_model:
+          typeof md.review_model === 'string' ? md.review_model : undefined,
+        impl_model:
+          typeof md.impl_model === 'string' ? md.impl_model : undefined,
         workflow_mode:
           typeof md.workflow_mode === 'string' ? md.workflow_mode : null,
         route,
