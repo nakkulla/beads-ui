@@ -18,9 +18,10 @@ rungrid 1열·lanes 세로 전환은 동작하나, 아래 지점이 좁은 화�
    `.header-actions` 축소 배치(타이틀·피커·탭 줄바꿈 허용, 버튼/아이콘 크기 유지).
    햄버거 등 구조 변경은 하지 않는다 — wrap + 여백 축소만.
 2. **worker ctrl 바 verify_cmd 라인** (styles.css:2503 — overflow 처리 없음): 긴 argv가
-   바를 밀어낸다. → 전 해상도 공통 `max-width` + `text-overflow:ellipsis`(전체 텍스트는
-   기존 title 속성 유지). ≤640px에서는 argv 본문을 숨기고 상태 배지만 표시:
-   설정됨 `verify_cmd ✓` / 미설정 `verify_cmd 미설정 ⤵pr_stop`.
+   바를 밀어낸다. → 전 해상도 공통 `max-width` + `text-overflow:ellipsis`. 현재 title은
+   고정 설명문뿐이라 잘린 argv를 확인할 길이 없으므로, verify_cmd 설정 시 title에
+   전체 argv를 포함한다(설명문 + 전체 명령). ≤640px에서는 argv 본문을 숨기고 상태
+   배지만 표시: 설정됨 `verify_cmd ✓` / 미설정 `verify_cmd 미설정 ⤵pr_stop`.
 3. **정보 축약(“필요한 것만”)** — ≤640px에서:
    - `.worker-stat`·`.worker-tgl`(실행 n · serial 다음 · parallel slot)은 유지하되
      한 줄 축약 표기.
@@ -64,15 +65,24 @@ rungrid 1열·lanes 세로 전환은 동작하나, 아래 지점이 좁은 화�
 2. session.js 엔진: raw 수신 시 훅이 처음으로 non-null을 반환하면
    `events.emit('session_id', id)` 1회(이후 무시).
 3. scheduler.js: `deps.sessionLog.attach` 시점에 `handle.events.on('session_id')`를
-   구독해 `store.updateAttempt(workspace, {attempt_id, patch:{session_id}})`.
-   Attempt typedef(queue-store.js)에 `session_id: string|null` 추가 — queue.json에
-   영속, 스냅샷 fanout으로 클라이언트 자동 전파.
+   구독해 `store.updateAttempt(workspace, {attempt_id, patch:{session_id}})` 후
+   **`notifyChanged(workspace)`를 호출**한다(updateAttempt는 저장만 하고 fanout하지
+   않으므로 명시 호출 없이는 실행 중 클라이언트에 전파되지 않는다).
+   Attempt typedef(queue-store.js)에 `session_id: string|null`을 추가하고 **`makeAttempt()`
+   whitelist에도 `session_id` 필드를 추가**한다 — makeAttempt는 명시 필드만 통과시키므로
+   typedef만으로는 patch·재로딩 시 값이 드랍된다. queue.json 영속은 cold reload
+   (재기동 후 normalizeQueue 경유 재로딩)에서 session_id가 보존되는 것까지가 기준.
 4. UI 표시:
    - transcript drawer `.sv__bar`: attempt id 옆에 세션 ID를 짧게 표시(앞 8자,
      title=전체), 클릭 시 전체 값 클립보드 복사(Board `복사됨/복사 실패` 토스트 관례).
      open() 시점 meta에 `session_id` 전달(worker/index.js `openDrawerForAttempt`).
-   - detail-panel 세션 이력 행(session-history.js): meta에 세션 ID 앞 8자 추가
-     (title=전체).
+   - **늦은 도착 갱신**: 세션 ID는 스트림 첫 이벤트에서 오므로 드로어가 먼저 열려
+     있을 수 있고, drawer meta는 open() 시 1회 복사라 스냅샷이 와도 갱신되지 않는다.
+     → drawer에 `updateMeta(meta)` API를 추가하고, worker 뷰의 queueStore 구독
+     갱신 경로에서 열린 `selected_attempt`의 최신 attempt 레코드로 meta를 갱신한다.
+   - detail-panel: `attemptsForBead()`·`openTranscript()`의 projection이 명시 필드만
+     투영하므로(**index.js:125·140 — runner/model만**) 두 projection에 `session_id`를
+     추가한다. 세션 이력 행(session-history.js)에 세션 ID 앞 8자 표시(title=전체).
    - rtile에는 표시하지 않는다(공간).
 
 비목표: bead metadata로의 세션 ID 스탬핑(attempt 기록이 소유), resume 실행 버튼.
@@ -83,17 +93,26 @@ rungrid 1열·lanes 세로 전환은 동작하나, 아래 지점이 좁은 화�
 (exec-settings.js `toOptions`)의 미설정 옵션이 `(기본)`으로만 표기되어 실제 무엇이
 쓰이는지 보이지 않는다. ctrl 바의 merge/drift는 이미 `(기본 auto_merge)` 식으로 표기.
 
-수정: 실제 해석 결과(server/worker/policy.js + 각 runner argv 빌더 + workflow harness
-기본)를 라벨에 표기한다. 공유 맵 `DEFAULT_LABELS`를 exec-settings.js에 두고 두 표면이
-같이 쓴다(미러 커밍아웃 주석: policy.js·workflow harness 기본과 동기 유지).
+수정: 해석 계층(bead metadata > workspace 전역 exec_defaults > 하드코딩/CLI/workflow
+기본, policy.js resolveExecSettings)에 맞춰 **표면별로 다른 라벨**을 쓴다.
 
-| key | 미설정 시 실제 동작 | 라벨 |
-|---|---|---|
-| worker_runner | 하드코딩 `claude` (policy.js:153) | `(기본: claude)` |
-| orchestration_model | `--model` 미전달 → runner CLI 자체 기본 | `(기본: CLI 기본 모델)` |
-| orchestration_effort | `--effort` 미전달 → CLI 기본 | `(기본: CLI 기본)` |
-| review_model | 세션 워크플로 게이트 기본 `codex` | `(기본: codex)` |
-| impl_model | 워크플로 위임 티어 자동(복잡=opus·경계=sonnet) | `(기본: 티어 자동)` |
+1. **⚙ 전역 실행 설정 다이얼로그** (전역 계층 자체를 편집): '(기본)' = 전역 미설정 =
+   최종 fallback이므로 정적 라벨 맵 `DEFAULT_LABELS`를 쓴다 (exec-settings.js에 두고
+   미러 주석: policy.js·workflow harness 기본과 동기 유지).
+
+   | key | 미설정 시 실제 동작 | 라벨 |
+   |---|---|---|
+   | worker_runner | 하드코딩 `claude` (policy.js:153) | `(기본: claude)` |
+   | orchestration_model | `--model` 미전달 → runner CLI 자체 기본 | `(기본: CLI 기본 모델)` |
+   | orchestration_effort | `--effort` 미전달 → CLI 기본 | `(기본: CLI 기본)` |
+   | review_model | 세션 워크플로 게이트 기본 `codex` | `(기본: codex)` |
+   | impl_model | 워크플로 위임 티어 자동(복잡=opus·경계=sonnet) | `(기본: 티어 자동)` |
+
+2. **detail-panel 실행 설정** (bead 계층 편집): bead 미설정 시 실제로는 **workspace
+   전역 exec_defaults가 먼저 적용**되므로 정적 라벨은 오답이 될 수 있다. detail-panel에
+   queue 스냅샷의 `exec_defaults`를 전달해, 전역값이 있으면 `(기본: <전역값> — 전역)`,
+   없으면 위 정적 라벨로 fallback한다. **model catalog도 유효 runner(bead > 전역 >
+   claude)를 따라 필터**한다(현재는 bead의 worker_runner만 참조).
 
 workflow_mode는 이미 `standard`가 명시 옵션이므로 변경 없음. ⚙ 다이얼로그 hint 문구의
 "'(기본)'은 미설정(하드코딩 기본)입니다"도 라벨 변화에 맞게 갱신.
@@ -101,9 +120,12 @@ workflow_mode는 이미 `standard`가 명시 옵션이므로 변경 없음. ⚙ 
 ## Test scope
 
 - §2: runner claude/codex 어댑터 `extractSessionId` 단위 테스트, session.js `session_id`
-  1회 emit, scheduler attempt patch(세션 id 영속) — 기존 *.test.js 파일에 추가.
-- §2/§3 UI: worker index.test.js(드로어 meta 전달), transcript-drawer.test.js(세션 ID
-  표시·복사), session-history 렌더, exec-defaults-dialog/detail-panel 라벨 스냅샷 갱신.
+  1회 emit, scheduler attempt patch + patch 직후 fanout(queue 구독자 스냅샷 수신),
+  queue-store cold reload에서 `session_id` 보존 — 기존 *.test.js 파일에 추가.
+- §2/§3 UI: worker index.test.js(드로어 meta 전달 + 늦은 도착 updateMeta 갱신),
+  transcript-drawer.test.js(세션 ID 표시·복사), detail-panel projection(session_id
+  투영)·session-history 렌더, exec-defaults-dialog 정적 라벨/detail-panel 전역 우선
+  라벨·유효 runner catalog 테스트 갱신.
 - §1 CSS는 시각 변경으로 자동 테스트 비대상 — 기존 뷰 테스트 그린 유지가 기준.
 
 ## 검증
