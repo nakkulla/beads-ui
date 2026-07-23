@@ -2514,6 +2514,93 @@ html[data-theme='dark'] {
   color: var(--accent-danger);
 }
 
+/* 전역 실행 설정 ⚙ 버튼 + 다이얼로그 (worker-global-exec-defaults §4) */
+.worker-exec-defaults-btn {
+  padding: 1px var(--sp-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.worker-exec-defaults-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-route);
+}
+
+.exec-defaults {
+  min-width: 320px;
+  max-width: 480px;
+  padding: 0;
+  border-radius: var(--r-6);
+  border: 1px solid var(--border-panel);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+.exec-defaults__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-10) var(--sp-12);
+  border-bottom: 1px solid var(--border-panel);
+}
+
+.exec-defaults__title {
+  color: var(--text-title);
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.exec-defaults__close {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-body);
+  cursor: pointer;
+}
+
+.exec-defaults__body {
+  padding: var(--sp-12);
+}
+
+.exec-defaults__hint {
+  margin: 0 0 var(--sp-10);
+  color: var(--text-dim);
+  font-size: var(--fs-chip-lg);
+}
+
+.exec-defaults__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+}
+
+.exec-defaults__row + .exec-defaults__row {
+  margin-top: var(--sp-8);
+}
+
+.exec-defaults__k {
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-chip-lg);
+}
+
+.exec-defaults__sel {
+  flex: 0 0 auto;
+  min-width: 160px;
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--r-6);
+  border: 1px solid var(--border-chip);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: var(--fs-body);
+}
+
 .worker-banners {
   display: flex;
   flex-direction: column;
