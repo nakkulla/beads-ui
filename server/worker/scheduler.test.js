@@ -175,6 +175,13 @@ function makeFakeBd(config) {
       /** @type {string} */ bead_id,
       /** @type {string} */ key
     ) {
+      // A bead may be configured to make ONE exec-setting key's readback throw
+      // (set succeeds, confirming read fails) — the exec-stamp readback-failure
+      // cleanup case.
+      const cfg = /** @type {any} */ (config[bead_id]);
+      if (cfg && cfg.throwOnReadKey === key) {
+        throw new Error(`bd read-metadata failed for ${bead_id} ${key}`);
+      }
       // Readback of the fast_track we just set.
       const last = [...calls]
         .reverse()
@@ -1314,5 +1321,110 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     // The dispatch failed in isolation: no breaker trip, auto_advance intact.
     expect(breaker.isTripped('/repo')).toBe(false);
     expect(env.store.snapshot(WS).auto_advance).toBe(true);
+  });
+
+  test('a set-succeeds-but-readback-throws stamp unsets the durable stamped_keys (not just the confirmed ones)', async () => {
+    const breaker = createBreaker();
+    // worker_runner set+readback OK; orchestration_model's SET succeeds but its
+    // confirming READBACK throws → the key is NOT in the confirmed list, yet the
+    // durable exec_stamped_keys must still drive the cleanup so the metadata
+    // that WAS written is unset (idempotent for the never-written effort key).
+    const env = setup({
+      config: {
+        S1: {
+          runner: null,
+          model: null,
+          effort: null,
+          throwOnReadKey: 'orchestration_model'
+        }
+      },
+      slots: 1,
+      breaker
+    });
+    seedExecDefaults(env.store, {
+      worker_runner: 'codex',
+      orchestration_model: 'gpt-5.6',
+      orchestration_effort: 'high'
+    });
+    seedQueue(env.store, ['S1'], []);
+
+    await expect(env.scheduler.tick(WS)).resolves.toBeUndefined();
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts).find(
+        (/** @type {any} */ x) => x.bead_id === 'S1'
+      )
+    );
+    expect(a.status).toBe('failed');
+    expect(a.cause).toBe('exec_stamp_failed');
+
+    // The set-but-unreadable key WAS written to bd metadata …
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
+      true
+    );
+    // … and it is unset in cleanup (the durable-stamped_keys fix; the old
+    // confirmed-only cleanup would have leaked it), along with worker_runner.
+    expect(
+      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
+    ).toBe(true);
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'worker_runner')).toBe(
+      true
+    );
+    // workflow_mode is reverted too; the dispatch failed in isolation.
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'workflow_mode')).toBe(
+      true
+    );
+    expect(breaker.isTripped('/repo')).toBe(false);
+    expect(env.store.snapshot(WS).auto_advance).toBe(true);
+  });
+
+  test('an auto_merge Done reverts the exec stamps (merge_policy-agnostic) but NOT workflow_mode', async () => {
+    // verify_cmd configured → the resolved auto_merge stays auto_merge (no
+    // pr_stop demotion), so the bead is CLOSED on success. Exec stamps must
+    // still revert even though workflow_mode is intentionally left in place.
+    const env = setup({
+      config: { S1: { runner: null, model: null, effort: null } },
+      slots: 1,
+      verifyOk: true,
+      verifyCmd: () => ({ cmd: ['true'], timeout_ms: 1000 }),
+      runVerifyCmd: vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }))
+    });
+    seedExecDefaults(env.store, {
+      worker_runner: 'codex',
+      orchestration_model: 'gpt-5.6',
+      orchestration_effort: 'high'
+    });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    // Simulate the merge-lock route's server-observed merge_sha record.
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { merge_sha: 'f'.repeat(40) }
+    });
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts[attempt_id].done_kind).toBe('auto_merge');
+    expect(snap.done.map((e) => e.bead_id)).toContain('S1');
+    // Exec stamps reverted even on the auto_merge (bead-closed) path.
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'worker_runner')).toBe(
+      true
+    );
+    expect(
+      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
+    ).toBe(true);
+    expect(
+      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_effort')
+    ).toBe(true);
+    // workflow_mode is NOT reverted on auto_merge (bead closed by design).
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'workflow_mode')).toBe(
+      false
+    );
   });
 });

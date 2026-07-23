@@ -22,7 +22,8 @@ import {
  * server validates each key's own enum but never the runner×model cross-key
  * compatibility (the runner can still change later); the option filter here is the
  * UI half of that: orchestration_model options follow the effective global runner
- * (claude's catalog when unset), and an incompatible stored model shows as `(기본)`.
+ * (claude's catalog when unset), and an incompatible stored model shows as its own
+ * selected `(비호환)` option (still resettable to `(기본)` to unset).
  *
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
  * @typedef {Object} ExecDefaultsOptions
@@ -146,6 +147,12 @@ export function createExecDefaultsDialog(mount_element, options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function selectRow(key, values, selected) {
+    // A stored value that is not in the current catalog (an incompatible
+    // cross-key model, e.g. a codex model left over after the runner flipped to
+    // claude) renders as its OWN selected `(비호환)` option — never hidden
+    // behind `(기본)`. That both surfaces the real saved state and keeps the
+    // `(기본)` option a live target: selecting it fires a change that unsets.
+    const incompatible = Boolean(selected) && !values.includes(selected);
     return html`<div class="exec-defaults__row">
       <span class="exec-defaults__k">${key}</span>
       <select
@@ -155,7 +162,12 @@ export function createExecDefaultsDialog(mount_element, options) {
         @change=${(/** @type {Event} */ ev) =>
           void save(key, /** @type {HTMLSelectElement} */ (ev.target).value)}
       >
-        <option value="" ?selected=${!values.includes(selected)}>(기본)</option>
+        <option value="" ?selected=${!selected}>(기본)</option>
+        ${incompatible
+          ? html`<option value=${selected} ?selected=${true}>
+              ${selected} (비호환)
+            </option>`
+          : ''}
         ${values.map(
           (v) =>
             html`<option value=${v} ?selected=${selected === v}>${v}</option>`

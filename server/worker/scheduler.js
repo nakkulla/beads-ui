@@ -524,15 +524,14 @@ export function createScheduler(deps) {
           await tick(workspace);
           return;
         }
-        // pr_stop leaves the bead OPEN → also revert the exec-setting stamps
-        // this attempt wrote so a later manual session sees the bead's own
-        // metadata, not the auto-run's global fill (best-effort).
-        await revertExecStamps(
-          bead_id,
-          execStampedKeysOf(workspace, attempt_id)
-        );
       }
       // auto_merge: bead closed → workflow_mode intentionally NOT reverted.
+      // Exec-setting stamps ARE reverted regardless of merge_policy (auto_merge
+      // done included): whether the bead was closed (auto_merge) or left open
+      // (pr_stop), the auto-run's global-default fill must not persist as the
+      // bead's own metadata (worker-global-exec-defaults §3; best-effort, never
+      // blocks the Done move).
+      await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
       deps.store.moveToDone(workspace, { bead_id });
       deps.store.updateAttempt(workspace, {
         attempt_id,
@@ -751,10 +750,10 @@ export function createScheduler(deps) {
     // Stamp each bead-absent, global-filled exec key onto the bead metadata
     // (set + confirming readback, mirroring the workflow_mode stamp). A bd
     // failure or a readback mismatch on ANY key fails THIS dispatch only: the
-    // already-stamped keys are unset, the attempt is recorded failed, the mode
-    // is reverted, the claim released — no breaker trip, no sibling pause.
-    /** @type {string[]} */
-    const stamped_done = [];
+    // durably-recorded stamped_keys are unset (idempotent for keys not yet
+    // written — a set that succeeded but whose readback threw/mismatched is
+    // still cleaned up), the attempt is recorded failed, the mode is reverted,
+    // the claim released — no breaker trip, no sibling pause.
     let exec_stamp_ok = true;
     for (const key of stamped_keys) {
       const value = /** @type {Record<string, string>} */ (
@@ -763,9 +762,7 @@ export function createScheduler(deps) {
       try {
         await deps.bd.setMetadata(bead_id, key, value);
         const rb = await deps.bd.readMetadata(bead_id, key);
-        if (rb === value) {
-          stamped_done.push(key);
-        } else {
+        if (rb !== value) {
           log(
             'exec stamp readback mismatch for %s %s: expected %o, got %o',
             bead_id,
@@ -783,7 +780,7 @@ export function createScheduler(deps) {
       }
     }
     if (!exec_stamp_ok) {
-      await revertExecStamps(bead_id, stamped_done);
+      await revertExecStamps(bead_id, stamped_keys);
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {
@@ -845,7 +842,7 @@ export function createScheduler(deps) {
       // partial failure so no stamped metadata (or a leaked 'running' record)
       // outlives the aborted dispatch.
       deps.tokens.revoke(attempt_id);
-      await revertExecStamps(bead_id, stamped_done);
+      await revertExecStamps(bead_id, stamped_keys);
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: { status: 'failed', cause: 'spawn_failed', finished_at: now() }

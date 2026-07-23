@@ -1222,4 +1222,44 @@ describe('views/worker', () => {
     expect(opts).toContain('opus');
     expect(opts).not.toContain('gpt-5.6');
   });
+
+  test('an incompatible stored model shows as a selected (비호환) option, and (기본) still unsets it', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    // worker_runner unset → the effective runner is claude, whose catalog does
+    // NOT contain the codex-only gpt-5.6, so the stored model is incompatible.
+    queueStore.set(
+      queueOf({
+        revision: 7,
+        exec_defaults: { orchestration_model: 'gpt-5.6' }
+      })
+    );
+    const transport = vi
+      .fn()
+      .mockResolvedValue(reply(queueOf({ revision: 8 })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    const dialog = openExecDefaults(mount);
+    const model = execSelect(dialog, 'orchestration_model');
+    // The incompatible stored value is surfaced (not hidden behind '(기본)') and
+    // is the selected option, labelled '(비호환)'.
+    expect(model.value).toBe('gpt-5.6');
+    const selectedOption = model.options[model.selectedIndex];
+    expect(selectedOption.value).toBe('gpt-5.6');
+    expect(selectedOption.textContent).toContain('비호환');
+
+    // '(기본)' is a live target: selecting it fires a change that unsets (null).
+    model.value = '';
+    model.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
+      key: 'orchestration_model',
+      value: null,
+      expected_revision: 7
+    });
+  });
 });
