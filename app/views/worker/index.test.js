@@ -999,4 +999,267 @@ describe('views/worker', () => {
     expect(card.querySelector('.ctl-chip--route')).toBeNull();
     expect(card.querySelector('.stp')).toBeNull();
   });
+
+  /**
+   * Click the ctrl-bar ⚙ and return the opened exec-defaults dialog element.
+   *
+   * @param {HTMLElement} mount
+   * @returns {HTMLElement}
+   */
+  function openExecDefaults(mount) {
+    const btn = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-exec-defaults-btn')
+    );
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-exec-defaults-dialog')
+    );
+  }
+
+  /**
+   * @param {HTMLElement} dialog
+   * @param {string} key
+   * @returns {HTMLSelectElement}
+   */
+  function execSelect(dialog, key) {
+    return /** @type {HTMLSelectElement} */ (
+      dialog.querySelector(`select[data-key="${key}"]`)
+    );
+  }
+
+  test('the ⚙ button carries aria-haspopup and opens the global exec-defaults dialog', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const btn = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-exec-defaults-btn')
+    );
+    expect(btn).not.toBeNull();
+    expect(btn.getAttribute('aria-haspopup')).toBe('dialog');
+
+    // Closed until the ⚙ is clicked.
+    const before = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-exec-defaults-dialog')
+    );
+    expect(before?.hasAttribute('open')).toBe(false);
+
+    const dialog = openExecDefaults(mount);
+    expect(dialog.hasAttribute('open')).toBe(true);
+    // The 5 exec keys render (workflow_mode is NOT a global default).
+    for (const key of [
+      'worker_runner',
+      'orchestration_model',
+      'orchestration_effort',
+      'review_model',
+      'impl_model'
+    ]) {
+      expect(execSelect(dialog, key)).not.toBeNull();
+    }
+    expect(execSelect(dialog, 'workflow_mode')).toBeNull();
+  });
+
+  test('changing an exec-default select sends worker-queue-set-exec-default with the current revision', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ revision: 3 }));
+    const transport = vi
+      .fn()
+      .mockResolvedValue(
+        reply(
+          queueOf({ revision: 4, exec_defaults: { worker_runner: 'codex' } })
+        )
+      );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    const dialog = openExecDefaults(mount);
+    const sel = execSelect(dialog, 'worker_runner');
+    sel.value = 'codex';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
+      key: 'worker_runner',
+      value: 'codex',
+      expected_revision: 3
+    });
+  });
+
+  test('selecting (기본) sends an unset (null value) exec-default', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({ revision: 3, exec_defaults: { worker_runner: 'codex' } })
+    );
+    const transport = vi
+      .fn()
+      .mockResolvedValue(reply(queueOf({ revision: 4 })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    const dialog = openExecDefaults(mount);
+    const sel = execSelect(dialog, 'worker_runner');
+    expect(sel.value).toBe('codex');
+    sel.value = '';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
+      key: 'worker_runner',
+      value: null,
+      expected_revision: 3
+    });
+  });
+
+  test('a CAS conflict re-reads the returned snapshot and retries the exec-default set once', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ revision: 0 }));
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: true,
+        queue: queueOf({ revision: 5 })
+      })
+      .mockResolvedValueOnce(
+        reply(
+          queueOf({ revision: 6, exec_defaults: { worker_runner: 'codex' } })
+        )
+      );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    const dialog = openExecDefaults(mount);
+    const sel = execSelect(dialog, 'worker_runner');
+    sel.value = 'codex';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(transport.mock.calls[0][1].expected_revision).toBe(0);
+    expect(transport.mock.calls[1][1].expected_revision).toBe(5);
+  });
+
+  test('the exec-defaults dialog reflects exec_defaults from the queue snapshot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        exec_defaults: {
+          worker_runner: 'codex',
+          orchestration_effort: 'high',
+          review_model: 'opus',
+          impl_model: 'sonnet'
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const dialog = openExecDefaults(mount);
+    expect(execSelect(dialog, 'worker_runner').value).toBe('codex');
+    expect(execSelect(dialog, 'orchestration_effort').value).toBe('high');
+    expect(execSelect(dialog, 'review_model').value).toBe('opus');
+    expect(execSelect(dialog, 'impl_model').value).toBe('sonnet');
+  });
+
+  test('orchestration_model options follow the global runner (codex catalog)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        exec_defaults: {
+          worker_runner: 'codex',
+          orchestration_model: 'gpt-5.6'
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const dialog = openExecDefaults(mount);
+    const model = execSelect(dialog, 'orchestration_model');
+    const opts = Array.from(model.options).map((o) => o.value);
+    expect(opts).toContain('gpt-5.6');
+    expect(opts).not.toContain('opus');
+    expect(model.value).toBe('gpt-5.6');
+  });
+
+  test('with no global runner the orchestration_model options fall back to the claude catalog', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ exec_defaults: {} }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const dialog = openExecDefaults(mount);
+    const opts = Array.from(
+      execSelect(dialog, 'orchestration_model').options
+    ).map((o) => o.value);
+    expect(opts).toContain('opus');
+    expect(opts).not.toContain('gpt-5.6');
+  });
+
+  test('an incompatible stored model shows as a selected (비호환) option, and (기본) still unsets it', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    // worker_runner unset → the effective runner is claude, whose catalog does
+    // NOT contain the codex-only gpt-5.6, so the stored model is incompatible.
+    queueStore.set(
+      queueOf({
+        revision: 7,
+        exec_defaults: { orchestration_model: 'gpt-5.6' }
+      })
+    );
+    const transport = vi
+      .fn()
+      .mockResolvedValue(reply(queueOf({ revision: 8 })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    const dialog = openExecDefaults(mount);
+    const model = execSelect(dialog, 'orchestration_model');
+    // The incompatible stored value is surfaced (not hidden behind '(기본)') and
+    // is the selected option, labelled '(비호환)'.
+    expect(model.value).toBe('gpt-5.6');
+    const selectedOption = model.options[model.selectedIndex];
+    expect(selectedOption.value).toBe('gpt-5.6');
+    expect(selectedOption.textContent).toContain('비호환');
+
+    // '(기본)' is a live target: selecting it fires a change that unsets (null).
+    model.value = '';
+    model.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
+      key: 'orchestration_model',
+      value: null,
+      expected_revision: 7
+    });
+  });
 });

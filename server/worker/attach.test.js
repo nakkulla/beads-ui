@@ -275,6 +275,54 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.ready).toBe(true);
   });
 
+  test('snapshotBead extracts review_model and impl_model metadata', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'UI-1',
+              status: 'open',
+              metadata: { review_model: 'opus', impl_model: 'haiku' }
+            }
+          ]
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      target_base: 'main',
+      runJson
+    });
+    const snap = await bd.snapshotBead('UI-1');
+    expect(snap.review_model).toBe('opus');
+    expect(snap.impl_model).toBe('haiku');
+  });
+
+  test('snapshotBead leaves review_model/impl_model undefined when absent', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [{ id: 'UI-3', status: 'open', metadata: {} }]
+        };
+      }
+      return { code: 0, stdoutJson: [] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      target_base: 'main',
+      runJson
+    });
+    const snap = await bd.snapshotBead('UI-3');
+    expect(snap.review_model).toBeUndefined();
+    expect(snap.impl_model).toBeUndefined();
+  });
+
   test('snapshotBead keeps reading the bare-object show shape', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {

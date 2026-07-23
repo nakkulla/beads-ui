@@ -62,6 +62,25 @@ export function createOrphanDetector(deps) {
   }
 
   /**
+   * Unset the exec-setting metadata keys the dead session stamped onto the bead
+   * (worker-global-exec-defaults §3), fire-and-forget like the workflow_mode
+   * revert so a bd failure never blocks orphan reaping.
+   *
+   * @param {string} bead_id
+   * @param {string[]|null|undefined} keys
+   */
+  function revertExecStamps(bead_id, keys) {
+    if (!deps.bd || !Array.isArray(keys)) {
+      return;
+    }
+    for (const key of keys) {
+      Promise.resolve(deps.bd.unsetMetadata(bead_id, key)).catch(() => {
+        // Best-effort: the orphan is already recorded + breaker tripped.
+      });
+    }
+  }
+
+  /**
    * @param {any} attempt
    * @returns {boolean}
    */
@@ -110,6 +129,8 @@ export function createOrphanDetector(deps) {
         }
         // Revert the mode the dead session recorded (spec §5.2).
         revertWorkflowMode(a.bead_id, a.workflow_mode_prior ?? null);
+        // Revert the exec-setting stamps the dead session wrote (§3).
+        revertExecStamps(a.bead_id, a.exec_stamped_keys ?? null);
         // Worktree is intentionally NOT removed (ownership unclear → banner).
         orphans.push({ attempt_id, bead_id: a.bead_id, repo: a.repo ?? null });
       }

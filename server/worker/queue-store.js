@@ -56,6 +56,10 @@
  * ('auto_merge'|'pr_stop'), null until done.
  * @property {unknown} verify_cmd_result - Post-merge verify_cmd result
  * ({ ok, reason, exit }), null when the lane never ran it.
+ * @property {string[]|null} exec_stamped_keys - Exec-setting metadata keys
+ * stamped onto the bead at dispatch (bead-absent keys filled from the
+ * workspace-global default). Recorded durably BEFORE the first metadata write
+ * so a restart/orphan reap can revert them; null when nothing was stamped.
  */
 /**
  * @typedef {Object} Queue
@@ -65,6 +69,9 @@
  * (auto_merge/pr_stop); null = unset (default applies at resolution).
  * @property {string|null} drift_policy - Workspace-global drift policy
  * (auto_rereview/halt); null = unset.
+ * @property {Record<string, string>} exec_defaults - Workspace-global exec
+ * setting defaults (subset of the 5 exec keys; an unset key is absent). Only
+ * valid enum values survive normalize.
  * @property {QueueEntry[]} serial - Serial queue (one runnable head at a time).
  * @property {QueueEntry[]} parallel - Parallel pool (slot-priority order).
  * @property {QueueEntry[]} done - Completed today.
@@ -81,6 +88,7 @@
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { EXEC_SETTING_ENUMS } from './exec-enums.js';
 import { DRIFT_POLICIES, MERGE_POLICIES } from './policy.js';
 import { queueFilePath } from './state-paths.js';
 
@@ -123,6 +131,7 @@ function emptyQueue() {
     auto_advance: false,
     merge_policy: null,
     drift_policy: null,
+    exec_defaults: {},
     serial: [],
     parallel: [],
     done: [],
@@ -209,7 +218,10 @@ export function makeAttempt(fields) {
     demoted_reason: fields.demoted_reason ?? null,
     release_rejected: fields.release_rejected ?? null,
     done_kind: fields.done_kind ?? null,
-    verify_cmd_result: fields.verify_cmd_result ?? null
+    verify_cmd_result: fields.verify_cmd_result ?? null,
+    exec_stamped_keys: Array.isArray(fields.exec_stamped_keys)
+      ? fields.exec_stamped_keys
+      : null
   };
 }
 
@@ -244,6 +256,14 @@ function normalizeQueue(raw) {
   }
   q.merge_policy = normalizePolicyValue(MERGE_POLICIES, raw.merge_policy);
   q.drift_policy = normalizePolicyValue(DRIFT_POLICIES, raw.drift_policy);
+  if (isRecord(raw.exec_defaults)) {
+    for (const [key, value] of Object.entries(raw.exec_defaults)) {
+      const allowed = EXEC_SETTING_ENUMS[key];
+      if (allowed && typeof value === 'string' && allowed.includes(value)) {
+        q.exec_defaults[key] = value;
+      }
+    }
+  }
   if (isRecord(raw.admission)) {
     for (const [bead_id, value] of Object.entries(raw.admission)) {
       if (isRecord(value) && typeof value.reason === 'string') {
@@ -591,6 +611,36 @@ export function createQueueStore(options = {}) {
           return false;
         }
         next[/** @type {'merge_policy'|'drift_policy'} */ (key)] = normalized;
+        return true;
+      });
+    },
+
+    /**
+     * Set (or unset with null/'') a workspace-global exec-setting default. CAS-
+     * guarded, mirroring {@link setPolicy}: unknown keys and non-enum values are
+     * rejected without a write. `orchestration_model` is validated against the
+     * runner UNION here (runner↔model cross-compatibility is a dispatch-resolve
+     * / UI-filter concern, not a set-time one — spec §2).
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, key: string, value: unknown }} input
+     * @returns {QueueOpResult}
+     */
+    setExecDefault(workspace, input) {
+      const { expected_revision, key, value } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        const allowed = EXEC_SETTING_ENUMS[key];
+        if (!allowed) {
+          return false;
+        }
+        if (value === null || value === '') {
+          delete next.exec_defaults[key];
+          return true;
+        }
+        if (typeof value !== 'string' || !allowed.includes(value)) {
+          return false;
+        }
+        next.exec_defaults[key] = value;
         return true;
       });
     },

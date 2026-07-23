@@ -294,3 +294,177 @@ describe('worker/queue-store policy settings (worker-autorun-policy §2)', () =>
     expect(again.load(WS).drift_policy).toBe(null);
   });
 });
+
+describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', () => {
+  test('setExecDefault persists exec_defaults under the revision CAS + unsets', () => {
+    const store = createQueueStore();
+    // Fresh queue starts with no exec defaults.
+    expect(store.snapshot(WS).exec_defaults).toEqual({});
+
+    let r = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'worker_runner',
+      value: 'codex'
+    });
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(1);
+    expect(r.queue.exec_defaults).toEqual({ worker_runner: 'codex' });
+
+    r = store.setExecDefault(WS, {
+      expected_revision: r.queue.revision,
+      key: 'orchestration_model',
+      value: 'gpt-5.6'
+    });
+    expect(r.ok).toBe(true);
+    expect(r.queue.exec_defaults).toEqual({
+      worker_runner: 'codex',
+      orchestration_model: 'gpt-5.6'
+    });
+
+    // Stale revision → CAS conflict, no write.
+    const stale = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'worker_runner',
+      value: 'claude'
+    });
+    expect(stale.ok).toBe(false);
+    expect(stale.conflict).toBe(true);
+    expect(store.snapshot(WS).exec_defaults.worker_runner).toBe('codex');
+
+    // null unsets the key entirely.
+    const unsetNull = store.setExecDefault(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      key: 'worker_runner',
+      value: null
+    });
+    expect(unsetNull.ok).toBe(true);
+    expect(unsetNull.queue.exec_defaults).toEqual({
+      orchestration_model: 'gpt-5.6'
+    });
+
+    // '' also unsets the key.
+    const unsetEmpty = store.setExecDefault(WS, {
+      expected_revision: unsetNull.queue.revision,
+      key: 'orchestration_model',
+      value: ''
+    });
+    expect(unsetEmpty.ok).toBe(true);
+    expect(unsetEmpty.queue.exec_defaults).toEqual({});
+  });
+
+  test('setExecDefault rejects unknown keys (incl. workflow_mode) and non-enum values', () => {
+    const store = createQueueStore();
+    // workflow_mode is NOT a workspace-global key (spec 비-목표).
+    const wfMode = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'workflow_mode',
+      value: 'fast_track'
+    });
+    expect(wfMode.ok).toBe(false);
+    expect(wfMode.conflict).toBe(false);
+
+    const nonExecKey = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'merge_policy',
+      value: 'pr_stop'
+    });
+    expect(nonExecKey.ok).toBe(false);
+
+    const badValue = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'orchestration_model',
+      value: 'yolo'
+    });
+    expect(badValue.ok).toBe(false);
+
+    // review_model enum does not include 'sonnet'.
+    const wrongEnum = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'review_model',
+      value: 'sonnet'
+    });
+    expect(wrongEnum.ok).toBe(false);
+
+    expect(store.snapshot(WS).exec_defaults).toEqual({});
+  });
+
+  test('exec_defaults survive a reload; invalid persisted keys/values drop in normalize', () => {
+    const store = createQueueStore();
+    let r = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'worker_runner',
+      value: 'ccx'
+    });
+    store.setExecDefault(WS, {
+      expected_revision: r.queue.revision,
+      key: 'orchestration_effort',
+      value: 'high'
+    });
+
+    const restarted = createQueueStore();
+    expect(restarted.load(WS).exec_defaults).toEqual({
+      worker_runner: 'ccx',
+      orchestration_effort: 'high'
+    });
+
+    // Corrupt the persisted map: unknown key, invalid value, valid survivor.
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.exec_defaults = {
+      bogus_key: 'x',
+      orchestration_effort: 'ultra',
+      worker_runner: 'ccx'
+    };
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    const again = createQueueStore();
+    expect(again.load(WS).exec_defaults).toEqual({ worker_runner: 'ccx' });
+  });
+
+  test('exec_stamped_keys survive appendAttempt/updateAttempt and a reload', () => {
+    const store = createQueueStore();
+    let rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'UI-1',
+      lane: 'serial'
+    }).queue.revision;
+
+    // Default (unset) is null.
+    const bare = store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-0', bead_id: 'UI-1' }
+    });
+    expect(bare.ok).toBe(true);
+    expect(bare.queue.attempts['att-0'].exec_stamped_keys).toBe(null);
+    rev = bare.queue.revision;
+
+    const appended = store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'att-1',
+        bead_id: 'UI-1',
+        exec_stamped_keys: ['worker_runner', 'review_model']
+      }
+    });
+    expect(appended.ok).toBe(true);
+    expect(appended.queue.attempts['att-1'].exec_stamped_keys).toEqual([
+      'worker_runner',
+      'review_model'
+    ]);
+
+    // updateAttempt patch (makeAttempt shape) must carry the field, not drop it.
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { exec_stamped_keys: ['impl_model'] }
+    });
+    expect(updated.ok).toBe(true);
+    expect(updated.queue.attempts['att-1'].exec_stamped_keys).toEqual([
+      'impl_model'
+    ]);
+
+    // Survives a cold reload (durable across restart for orphan revert).
+    const restarted = createQueueStore();
+    expect(restarted.load(WS).attempts['att-1'].exec_stamped_keys).toEqual([
+      'impl_model'
+    ]);
+    expect(restarted.load(WS).attempts['att-0'].exec_stamped_keys).toBe(null);
+  });
+});

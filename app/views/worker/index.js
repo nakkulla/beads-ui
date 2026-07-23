@@ -19,6 +19,7 @@ import { cmpEffectiveRank } from '../../data/sort.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { showToast } from '../../utils/toast.js';
 import { createReorderController } from '../reorder.js';
+import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
 import { paneTemplate } from './lanes.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
@@ -127,6 +128,13 @@ export function createWorkerView(mount_element, options = {}) {
       selected_attempt = null;
       doRender();
     }
+  });
+
+  // Workspace-global exec-defaults dialog (⚙ in the ctrl bar). It owns its own
+  // queueStore subscription so an open dialog re-renders as snapshots arrive.
+  const exec_defaults_dialog = createExecDefaultsDialog(console_el, {
+    queueStore,
+    transport
   });
 
   /**
@@ -512,6 +520,15 @@ export function createWorkerView(mount_element, options = {}) {
           ['auto_rereview', 'halt'],
           '(기본 auto_rereview)'
         )}
+        <button
+          type="button"
+          class="worker-exec-defaults-btn"
+          aria-haspopup="dialog"
+          aria-label="전역 실행 설정"
+          title="전역 실행 설정"
+        >
+          ⚙
+        </button>
         <span
           class="worker-verifycmd${verify_cmd
             ? ''
@@ -749,6 +766,14 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onClick(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
+    // Clicks inside the exec-defaults dialog are owned by its own handlers.
+    if (target?.closest?.('#worker-exec-defaults-dialog')) {
+      return;
+    }
+    if (target?.closest?.('.worker-exec-defaults-btn')) {
+      exec_defaults_dialog.open();
+      return;
+    }
     if (target?.closest?.('.worker-play')) {
       void setAutoAdvance(true);
       return;
@@ -860,6 +885,11 @@ export function createWorkerView(mount_element, options = {}) {
       mount_element.removeEventListener('click', /** @type {any} */ (onClick));
       try {
         drawer.destroy();
+      } catch {
+        /* ignore */
+      }
+      try {
+        exec_defaults_dialog.destroy();
       } catch {
         /* ignore */
       }
