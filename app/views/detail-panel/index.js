@@ -1,4 +1,5 @@
 import { html, render } from 'lit-html';
+import { copyToClipboard } from '../../utils/clipboard.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
@@ -190,19 +191,13 @@ export function createDetailPanel(mount_element, options) {
    * @param {string} text
    */
   function copyText(text) {
-    try {
-      if (
-        navigator.clipboard &&
-        typeof navigator.clipboard.writeText === 'function'
-      ) {
-        void navigator.clipboard
-          .writeText(String(text))
-          .then(() => showToast('복사됨', 'success', 1200))
-          .catch(() => {});
+    void copyToClipboard(text).then((ok) => {
+      if (ok) {
+        showToast('복사됨', 'success', 1200);
+      } else {
+        showToast('복사 실패', 'error', 1600);
       }
-    } catch {
-      // ignore copy errors
-    }
+    });
   }
 
   /**
