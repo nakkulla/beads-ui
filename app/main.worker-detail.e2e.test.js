@@ -78,7 +78,7 @@ describe('worker → shared detail overlay', () => {
     await flush();
 
     const mini = /** @type {HTMLElement} */ (
-      document.querySelector('#worker-root .worker-mini[data-bead-id="W1"]')
+      document.querySelector('#worker-root .worker-card[data-bead-id="W1"]')
     );
     expect(mini).not.toBeNull();
 

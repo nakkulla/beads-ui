@@ -34,6 +34,22 @@ function hasSpec(issue) {
 }
 
 /**
+ * A full_plan phase child (`UI-xxxx.N`) is a sub-unit of its parent plan's
+ * execution, never a standalone worker candidate (spec §1). Judged by the
+ * flattened `parent` edge (same field Board's `parentIdOf` reads) OR a dotted id
+ * suffix, since `bd ready --json` may omit `parent`.
+ *
+ * @param {any} issue
+ * @returns {boolean}
+ */
+function isPhaseChild(issue) {
+  const raw = issue && issue.parent;
+  const has_parent =
+    typeof raw === 'string' ? raw.length > 0 : !!(raw && raw.id);
+  return has_parent || /\.\d+$/.test((issue && issue.id) || '');
+}
+
+/**
  * @param {any} issue
  * @returns {string} 🔒 + dependency target for a blocked candidate.
  */
@@ -315,7 +331,7 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {any[]} */
     const merged = [];
     for (const it of [...ready, ...blocked]) {
-      if (queued.has(it.id) || seen.has(it.id)) {
+      if (queued.has(it.id) || seen.has(it.id) || isPhaseChild(it)) {
         continue;
       }
       seen.add(it.id);
@@ -355,7 +371,11 @@ export function createWorkerView(mount_element, options = {}) {
         title: it.title || it.id,
         reason: parts.join(' · '),
         draggable: eligible,
-        lane: 'candidate'
+        lane: 'candidate',
+        // Candidate cards consume the server-enriched workflow/status (spec §2);
+        // queue lanes carry no workflow snapshot, so they stay on miniRow.
+        workflow: it.workflow,
+        status: it.status
       };
     });
 
@@ -556,7 +576,7 @@ export function createWorkerView(mount_element, options = {}) {
   function onDragStart(ev) {
     const el = /** @type {HTMLElement|null} */ (
       /** @type {HTMLElement} */ (ev.target)?.closest?.(
-        '.worker-mini[draggable="true"]'
+        '.worker-mini[draggable="true"], .worker-card[draggable="true"]'
       )
     );
     if (!el) {
@@ -611,7 +631,7 @@ export function createWorkerView(mount_element, options = {}) {
    * the projected rows.
    *
    * @param {string} bead_id
-   * @param {HTMLElement|null} over - The `.worker-mini` under the cursor, if any.
+   * @param {HTMLElement|null} over - The `.worker-card` under the cursor, if any.
    */
   function reorderCandidates(bead_id, over) {
     const dragged = candidate_issues.find((it) => it.id === bead_id);
@@ -657,11 +677,16 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
 
-    // Drop index = position of the mini under the cursor, else append.
+    // Drop index = position of the row under the cursor, else append. Candidate
+    // rows are `.worker-card`, queue rows are `.worker-mini` — match both.
     const over = /** @type {HTMLElement|null} */ (
-      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-mini')
+      /** @type {HTMLElement} */ (ev.target)?.closest?.(
+        '.worker-mini, .worker-card'
+      )
     );
-    const minis = Array.from(pane.querySelectorAll('.worker-mini'));
+    const minis = Array.from(
+      pane.querySelectorAll('.worker-mini, .worker-card')
+    );
     let index = minis.length;
     if (over) {
       const i = minis.indexOf(over);
@@ -763,7 +788,7 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     const mini = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-mini')
+      target?.closest?.('.worker-mini, .worker-card')
     );
     if (mini && gotoIssue) {
       const id = mini.dataset.beadId;
