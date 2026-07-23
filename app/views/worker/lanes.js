@@ -6,6 +6,7 @@
  * (`.pane`/`.mini`/`⠿` grip) via the `worker-*` class namespace.
  */
 import { html } from 'lit-html';
+import { stepperTemplate } from '../board/stepper.js';
 
 /**
  * @typedef {Object} MiniItem
@@ -15,6 +16,8 @@ import { html } from 'lit-html';
  * @property {boolean} draggable - Whether this row can be dragged.
  * @property {'candidate'|'serial'|'parallel'|'done'} lane - Owning lane.
  * @property {boolean} [done] - Rendered dimmed with no grip.
+ * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
+ * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
  */
 
 /**
@@ -45,6 +48,60 @@ export function miniRow(item) {
 }
 
 /**
+ * One candidate `.worker-card` (spec §2, mockup 변형 B). Richer than
+ * {@link miniRow}: a route chip + the Board's route-driven stepper. It keeps
+ * miniRow's drag contract (`draggable` / `data-bead-id` / `data-lane`) so the
+ * drag controller treats it identically. An issue without `workflow` (inactive
+ * workspace) renders without the chip/stepper and never throws.
+ *
+ * @param {MiniItem} item
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function candidateCard(item) {
+  const draggable = item.draggable && !item.done;
+  const workflow = item.workflow;
+  const chips = (workflow && workflow.chips) || {};
+  const route = chips.route || (workflow && workflow.route);
+  const derived =
+    chips.route_source === 'derived' ||
+    !!(workflow && workflow.route_source === 'derived');
+  const danger =
+    typeof item.reason === 'string' && item.reason.startsWith('⛔');
+  return html`<div
+    class="worker-card${draggable ? '' : ' worker-card--static'}"
+    draggable=${draggable ? 'true' : 'false'}
+    data-bead-id=${item.id}
+    data-lane=${item.lane}
+  >
+    <div class="worker-card__head">
+      ${draggable
+        ? html`<span class="worker-card__grip" aria-hidden="true">⠿</span>`
+        : ''}
+      <span class="worker-card__id">${item.id}</span>
+      ${workflow && route
+        ? html`<span
+            class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
+            title=${derived ? 'route 추론값 (metadata 미핀)' : 'route'}
+            >${derived ? `${route} ?` : route}</span
+          >`
+        : ''}
+    </div>
+    <div class="worker-card__title">${item.title}</div>
+    ${workflow ? stepperTemplate(workflow, item.status) : ''}
+    ${item.reason
+      ? html`<div class="worker-card__foot">
+          <span
+            class="worker-card__reason${danger
+              ? ' worker-card__reason--danger'
+              : ''}"
+            >${item.reason}</span
+          >
+        </div>`
+      : ''}
+  </div>`;
+}
+
+/**
  * One lane pane.
  *
  * @param {{ id: string, lane: 'candidate'|'serial'|'parallel'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string }} pane
@@ -63,7 +120,9 @@ export function paneTemplate(pane) {
     <div class="worker-pane__body">
       ${pane.items.length === 0
         ? html`<div class="worker-pane__empty">${pane.empty || ''}</div>`
-        : pane.items.map((it) => miniRow(it))}
+        : pane.items.map((it) =>
+            pane.lane === 'candidate' ? candidateCard(it) : miniRow(it)
+          )}
     </div>
   </section>`;
 }

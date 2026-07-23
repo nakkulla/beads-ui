@@ -2959,6 +2959,70 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
+/* Candidate card (spec §2, 변형 B): route chip + Board stepper. Reuses the
+   global `.ctl-chip--route` and `.stp` rules from styles/base.css. */
+.worker-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-7) var(--sp-9);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-7);
+  background: var(--bg-card);
+  cursor: pointer;
+}
+
+.worker-card--static {
+  cursor: default;
+}
+
+.worker-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.worker-card__grip {
+  color: var(--text-gripline);
+  cursor: grab;
+}
+
+.worker-card__id {
+  color: var(--text-id-mono);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+}
+
+.worker-card__head .ctl-chip--route {
+  margin-left: auto;
+}
+
+.worker-card__title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.worker-card__foot {
+  display: flex;
+}
+
+.worker-card__reason {
+  margin-left: auto;
+  color: var(--accent-warn);
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+
+.worker-card__reason--danger {
+  color: var(--accent-danger);
+}
+
 /* ---------- Detail-panel session history (spec §5.6) ---------- */
 .detail-sessions {
   display: flex;

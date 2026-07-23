@@ -132,7 +132,9 @@ function drag(mount, bead_id, pane_id) {
     dropEffect: ''
   };
   const mini = /** @type {HTMLElement} */ (
-    mount.querySelector(`.worker-mini[data-bead-id="${bead_id}"]`)
+    mount.querySelector(
+      `.worker-mini[data-bead-id="${bead_id}"], .worker-card[data-bead-id="${bead_id}"]`
+    )
   );
   const ds = new Event('dragstart', { bubbles: true });
   Object.defineProperty(ds, 'dataTransfer', { value: dt });
@@ -193,7 +195,7 @@ function candidateOrder(mount) {
   const cand = /** @type {HTMLElement} */ (
     mount.querySelector('#worker-pane-candidate')
   );
-  return Array.from(cand.querySelectorAll('.worker-mini')).map(
+  return Array.from(cand.querySelectorAll('.worker-card')).map(
     (el) => /** @type {HTMLElement} */ (el).dataset.beadId || ''
   );
 }
@@ -221,7 +223,7 @@ function dragOnto(mount, bead_id, onto_bead_id) {
     dropEffect: ''
   };
   const src = /** @type {HTMLElement} */ (
-    mount.querySelector(`.worker-mini[data-bead-id="${bead_id}"]`)
+    mount.querySelector(`.worker-card[data-bead-id="${bead_id}"]`)
   );
   const ds = new Event('dragstart', { bubbles: true });
   Object.defineProperty(ds, 'dataTransfer', { value: dt });
@@ -229,7 +231,7 @@ function dragOnto(mount, bead_id, onto_bead_id) {
 
   const onto = /** @type {HTMLElement} */ (
     mount.querySelector(
-      `#worker-pane-candidate .worker-mini[data-bead-id="${onto_bead_id}"]`
+      `#worker-pane-candidate .worker-card[data-bead-id="${onto_bead_id}"]`
     )
   );
   const drop = new Event('drop', { bubbles: true, cancelable: true });
@@ -254,25 +256,25 @@ describe('views/worker', () => {
     const cand = /** @type {HTMLElement} */ (
       mount.querySelector('#worker-pane-candidate')
     );
-    expect(cand.querySelectorAll('.worker-mini').length).toBe(3);
+    expect(cand.querySelectorAll('.worker-card').length).toBe(3);
 
     const rd2 = /** @type {HTMLElement} */ (
-      cand.querySelector('.worker-mini[data-bead-id="RD-2"]')
+      cand.querySelector('.worker-card[data-bead-id="RD-2"]')
     );
-    expect(rd2.querySelector('.worker-mini__reason')?.textContent).toContain(
+    expect(rd2.querySelector('.worker-card__reason')?.textContent).toContain(
       'spec 없음'
     );
     expect(rd2.getAttribute('draggable')).toBe('false');
 
     const bl1 = /** @type {HTMLElement} */ (
-      cand.querySelector('.worker-mini[data-bead-id="BL-1"]')
+      cand.querySelector('.worker-card[data-bead-id="BL-1"]')
     );
-    expect(bl1.querySelector('.worker-mini__reason')?.textContent).toContain(
+    expect(bl1.querySelector('.worker-card__reason')?.textContent).toContain(
       '🔒 DEP-9'
     );
 
     const rd1 = /** @type {HTMLElement} */ (
-      cand.querySelector('.worker-mini[data-bead-id="RD-1"]')
+      cand.querySelector('.worker-card[data-bead-id="RD-1"]')
     );
     expect(rd1.getAttribute('draggable')).toBe('true');
   });
@@ -413,10 +415,10 @@ describe('views/worker', () => {
     // Candidate badge (queue-entry refusal).
     const rd1 = /** @type {HTMLElement} */ (
       mount.querySelector(
-        '#worker-pane-candidate .worker-mini[data-bead-id="RD-1"]'
+        '#worker-pane-candidate .worker-card[data-bead-id="RD-1"]'
       )
     );
-    expect(rd1.querySelector('.worker-mini__reason')?.textContent).toContain(
+    expect(rd1.querySelector('.worker-card__reason')?.textContent).toContain(
       '⛔ spec_review_stale'
     );
     // Queued (serial) badge (tick/dispatch refusal).
@@ -804,5 +806,163 @@ describe('views/worker', () => {
     });
     expect(mount.querySelector('.sv')).not.toBeNull();
     expect(gotoIssue).not.toHaveBeenCalled();
+  });
+
+  test('excludes phase-child candidates (parent edge or dotted id); a normal issue stays', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'N-1',
+        title: 'normal',
+        status: 'open',
+        metadata: { spec_id: 'S' }
+      },
+      {
+        id: 'P-1',
+        title: 'has parent edge',
+        status: 'open',
+        parent: 'PAR-1',
+        metadata: { spec_id: 'S' }
+      }
+    ]);
+    seed(stores, 'tab:worker:blocked', [
+      {
+        id: 'X-1.2',
+        title: 'dotted child id',
+        status: 'open',
+        metadata: { spec_id: 'S' }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const cand = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate')
+    );
+    expect(candidateOrder(mount)).toEqual(['N-1']);
+    expect(cand.querySelector('.worker-card[data-bead-id="P-1"]')).toBeNull();
+    expect(cand.querySelector('.worker-card[data-bead-id="X-1.2"]')).toBeNull();
+  });
+
+  test('candidate card renders the route chip (derived → ? suffix) and a 4-cell spec_backed stepper', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'WF-1',
+        title: 'workflow candidate',
+        status: 'open',
+        metadata: { spec_id: 'S' },
+        workflow: {
+          route: 'spec_backed',
+          route_source: 'derived',
+          stages: {
+            spec: { state: 'reviewed' },
+            impl: { state: 'dim' },
+            pr: { state: 'empty' },
+            merge: { state: 'empty' }
+          }
+        }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-candidate .worker-card[data-bead-id="WF-1"]'
+      )
+    );
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.ctl-chip--route')
+    );
+    expect(chip.classList.contains('is-derived')).toBe(true);
+    expect(chip.textContent?.trim()).toBe('spec_backed ?');
+
+    // spec_backed → 4 stepper cells (spec/impl/pr/merge).
+    expect(card.querySelectorAll('.stp .seg').length).toBe(4);
+    const spec = /** @type {HTMLElement} */ (card.querySelector('.b-spec.on'));
+    expect(spec.textContent?.trim()).toBe('✓');
+  });
+
+  test('candidate card renders a 5-cell full_plan stepper and passes reviewed/skip/stale states through', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'FP-1',
+        title: 'full plan candidate',
+        status: 'open',
+        metadata: { spec_id: 'S' },
+        workflow: {
+          route: 'full_plan',
+          route_source: 'explicit',
+          stages: {
+            spec: { state: 'reviewed' },
+            plan: { state: 'skip' },
+            impl: { state: 'stale' },
+            pr: { state: 'empty' },
+            merge: { state: 'empty' }
+          }
+        }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-candidate .worker-card[data-bead-id="FP-1"]'
+      )
+    );
+    // full_plan → 5 stepper cells (spec/plan/impl/pr/merge).
+    expect(card.querySelectorAll('.stp .seg').length).toBe(5);
+    // Explicit route → chip with no `?` suffix.
+    expect(
+      card.querySelector('.ctl-chip--route')?.classList.contains('is-derived')
+    ).toBe(false);
+    // reviewed → ✓, skip → ⊘, stale → greyed ✓ via `.stale`.
+    expect(card.querySelector('.b-spec.on')?.textContent?.trim()).toBe('✓');
+    expect(card.querySelector('.b-plan.on')?.textContent?.trim()).toBe('⊘');
+    expect(card.querySelector('.b-impl.stale')).not.toBeNull();
+  });
+
+  test('a candidate without workflow renders no chip/stepper and does not throw', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'NW-1',
+        title: 'no workflow',
+        status: 'open',
+        metadata: { spec_id: 'S' }
+      }
+    ]);
+    expect(() =>
+      createWorkerView(mount, {
+        issueStores: stores,
+        queueStore: createWorkerQueueStore(),
+        transport: vi.fn()
+      })
+    ).not.toThrow();
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-candidate .worker-card[data-bead-id="NW-1"]'
+      )
+    );
+    expect(card).not.toBeNull();
+    expect(card.querySelector('.ctl-chip--route')).toBeNull();
+    expect(card.querySelector('.stp')).toBeNull();
   });
 });
