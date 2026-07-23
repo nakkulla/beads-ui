@@ -33,6 +33,15 @@ describe('worker/bd-metadata argv contract', () => {
     expect(await md.readMetadata('UI-1', 'workflow_mode')).toBe('fast_track');
     expect(await md.readMetadata('UI-1', 'missing')).toBe(null);
   });
+
+  test('readMetadata unwraps the single-item-array show shape (live bd)', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [{ id: 'UI-1', metadata: { workflow_mode: 'fast_track' } }]
+    }));
+    const md = createBdMetadata({ runJson });
+    expect(await md.readMetadata('UI-1', 'workflow_mode')).toBe('fast_track');
+  });
 });
 
 describe('worker/bd-metadata fail-closed writes (implementation review 2026-07-22)', () => {

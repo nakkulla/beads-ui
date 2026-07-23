@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest,
+  createLiveBd,
   createWorkerAttachment,
   initWorkerRuntime,
   setWorkerPort,
@@ -237,5 +238,65 @@ describe('worker/attach construction + live loop (F1)', () => {
       // no port override → uses the module WORKER_PORT getter
     });
     expect(att.scheduler).toBeTruthy();
+  });
+});
+
+describe('worker/attach createLiveBd bd show parsing', () => {
+  test('snapshotBead unwraps the single-item-array show shape (live bd) — metadata must not be lost', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'UI-1',
+              status: 'open',
+              metadata: {
+                route: 'spec_backed',
+                spec_id: 'docs/spec.md',
+                spec_review: 'codex@' + 'a'.repeat(40)
+              }
+            }
+          ]
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      target_base: 'main',
+      runJson
+    });
+    const snap = await bd.snapshotBead('UI-1');
+    expect(snap.route).toBe('spec_backed');
+    expect(snap.spec_id).toBe('docs/spec.md');
+    expect(snap.spec_review).toBe('codex@' + 'a'.repeat(40));
+    expect(snap.ready).toBe(true);
+  });
+
+  test('snapshotBead keeps reading the bare-object show shape', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: {
+            id: 'UI-2',
+            status: 'open',
+            metadata: { route: 'full_plan' }
+          }
+        };
+      }
+      return { code: 0, stdoutJson: [] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      target_base: 'main',
+      runJson
+    });
+    const snap = await bd.snapshotBead('UI-2');
+    expect(snap.route).toBe('full_plan');
+    expect(snap.blocked).toBe(true);
   });
 });

@@ -336,3 +336,19 @@ export async function runBdJson(args, options = {}) {
   }
   return { code: 0, stdoutJson: parsed };
 }
+
+/**
+ * Unwrap a `bd show <id> --json` payload to the single issue object. bd emits
+ * a single-item array (observed live) or a bare object depending on version;
+ * both shapes must normalize before any field access — reading `.metadata` off
+ * the array shape silently yields undefined.
+ *
+ * @param {unknown} value
+ * @returns {Record<string, unknown>|null}
+ */
+export function unwrapShowJson(value) {
+  const first = Array.isArray(value) ? value[0] : value;
+  return first && typeof first === 'object' && !Array.isArray(first)
+    ? /** @type {Record<string, unknown>} */ (first)
+    : null;
+}

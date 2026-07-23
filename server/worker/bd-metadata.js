@@ -10,7 +10,7 @@
  * so this module is proven via an injected runner that captures argv (never a
  * real bd process).
  */
-import { runBd, runBdJson } from '../bd.js';
+import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
 
 /**
  * @param {{
@@ -72,8 +72,11 @@ export function createBdMetadata(deps = {}) {
      */
     async readMetadata(bead_id, key) {
       const r = await runJson(['show', bead_id, '--json'], opts);
-      const md = r && r.stdoutJson && r.stdoutJson.metadata;
-      const v = md && typeof md === 'object' ? md[key] : undefined;
+      const issue = unwrapShowJson(r && r.stdoutJson);
+      const md = issue && issue.metadata;
+      const v = md && typeof md === 'object'
+        ? /** @type {Record<string, unknown>} */ (md)[key]
+        : undefined;
       return v == null ? null : String(v);
     }
   };

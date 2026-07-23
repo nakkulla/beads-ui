@@ -29,7 +29,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
-import { runBdJson, runShell } from '../bd.js';
+import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import {
@@ -135,10 +135,9 @@ export function createLiveBd(config) {
      */
     async snapshotBead(bead_id) {
       const shown = await runJson(['show', bead_id, '--json'], { cwd });
-      const issue =
-        shown && shown.stdoutJson && typeof shown.stdoutJson === 'object'
-          ? /** @type {any} */ (shown.stdoutJson)
-          : {};
+      const issue = /** @type {any} */ (
+        unwrapShowJson(shown && shown.stdoutJson) || {}
+      );
       const md =
         issue.metadata && typeof issue.metadata === 'object'
           ? issue.metadata
@@ -358,9 +357,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         const r = await runBdJson(['show', bead_id, '--json'], {
           cwd: workspace_root
         });
-        return r && r.stdoutJson && typeof r.stdoutJson === 'object'
-          ? /** @type {any} */ (r.stdoutJson)
-          : null;
+        return /** @type {any} */ (unwrapShowJson(r && r.stdoutJson));
       }
     });
 
