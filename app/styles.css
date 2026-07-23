@@ -3004,6 +3004,17 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip);
 }
 
+/* ID = click-to-copy (Board convention) */
+.worker-card__id,
+.worker-mini__id {
+  cursor: copy;
+}
+
+.worker-card__id:hover,
+.worker-mini__id:hover {
+  text-decoration: underline;
+}
+
 .worker-card__head .ctl-chip--route {
   margin-left: auto;
 }

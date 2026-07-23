@@ -279,6 +279,40 @@ describe('views/worker', () => {
     expect(rd1.getAttribute('draggable')).toBe('true');
   });
 
+  test('clicking a card ID copies the bead id and never opens the detail', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const gotoIssue = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn(),
+      gotoIssue
+    });
+
+    const id_el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="RD-1"] .worker-card__id')
+    );
+    id_el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(writeText).toHaveBeenCalledWith('RD-1');
+    expect(gotoIssue).not.toHaveBeenCalled();
+
+    // The rest of the card keeps the open-detail behavior.
+    const title_el = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="RD-1"] .worker-card__title'
+      )
+    );
+    title_el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(gotoIssue).toHaveBeenCalledWith('RD-1');
+  });
+
   test('dragging a candidate into Serial sends worker-queue-place with the current revision', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi

@@ -39,7 +39,7 @@ export function miniRow(item) {
     ${draggable
       ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
       : ''}
-    <span class="worker-mini__id">${item.id}</span>
+    <span class="worker-mini__id" title="클릭하면 ID 복사">${item.id}</span>
     <span class="worker-mini__title">${item.title}</span>
     ${item.reason
       ? html`<span class="worker-mini__reason">${item.reason}</span>`
@@ -77,7 +77,7 @@ export function candidateCard(item) {
       ${draggable
         ? html`<span class="worker-card__grip" aria-hidden="true">⠿</span>`
         : ''}
-      <span class="worker-card__id">${item.id}</span>
+      <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span>
       ${workflow && route
         ? html`<span
             class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"

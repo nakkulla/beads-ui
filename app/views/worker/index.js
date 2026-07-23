@@ -16,6 +16,8 @@
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
 import { cmpEffectiveRank } from '../../data/sort.js';
+import { copyToClipboard } from '../../utils/clipboard.js';
+import { showToast } from '../../utils/toast.js';
 import { createReorderController } from '../reorder.js';
 import { paneTemplate } from './lanes.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
@@ -793,9 +795,23 @@ export function createWorkerView(mount_element, options = {}) {
     const mini = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-mini, .worker-card')
     );
-    if (mini && gotoIssue) {
+    if (mini) {
       const id = mini.dataset.beadId;
-      if (id) {
+      // The ID element copies the bead id (Board onCopyId convention) and must
+      // never also open the detail panel.
+      if (target?.closest?.('.worker-mini__id, .worker-card__id')) {
+        if (id) {
+          void copyToClipboard(id).then((ok) => {
+            if (ok) {
+              showToast('복사됨', 'success', 1200);
+            } else {
+              showToast('복사 실패', 'error', 1600);
+            }
+          });
+        }
+        return;
+      }
+      if (id && gotoIssue) {
         gotoIssue(id);
       }
     }
