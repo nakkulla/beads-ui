@@ -423,6 +423,113 @@ describe('views/detail-panel', () => {
 
     panel.destroy();
   });
+
+  test('session-history projects the session id (short) and carries it into the drawer (§2)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        serial: [],
+        parallel: [],
+        done: [],
+        attempts: {
+          a8: {
+            attempt_id: 'a8',
+            bead_id: 'UI-1',
+            status: 'done',
+            runner: 'claude',
+            model: 'opus',
+            session_id: 'sid-999abc12',
+            started_at: Date.now() - 60000
+          }
+        }
+      })
+    );
+    const sessionLogStore = createSessionLogStore();
+    sessionLogStore.set('a8', [
+      { type: 'result', subtype: 'success', is_error: false, result: 'DONE' }
+    ]);
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+
+    const panel = createDetailPanel(mount, {
+      queueStore,
+      sessionLogStore,
+      transport,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+
+    const sid = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.detail-session[data-attempt-id="a8"] .detail-session__sid'
+      )
+    );
+    expect(sid).not.toBeNull();
+    expect(sid.textContent?.trim()).toBe('sid-999a');
+    expect(sid.getAttribute('title')).toBe('sid-999abc12');
+
+    // Opening the row carries the projected session id into the drawer bar.
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-session[data-attempt-id="a8"]')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const barSid = /** @type {HTMLElement} */ (
+      document.querySelector('.session-log-root .sv__session')
+    );
+    expect(barSid).not.toBeNull();
+    expect(barSid.getAttribute('title')).toBe('sid-999abc12');
+
+    panel.destroy();
+  });
+
+  test('exec settings default-option + model catalog follow the queue exec_defaults (§3.2)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        serial: [],
+        parallel: [],
+        done: [],
+        attempts: {},
+        exec_defaults: { review_model: 'opus', worker_runner: 'codex' }
+      })
+    );
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      queueStore,
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:UI-1', {
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    issueStores.getStore('detail:UI-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: /** @type {any} */ ([{ id: 'UI-1', title: 't' }])
+    });
+    panel.load('UI-1');
+
+    // Global review_model default surfaces as the `(기본: opus — 전역)` label.
+    const review = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-key="review_model"]')
+    );
+    expect(review.options[0].textContent).toContain('기본: opus');
+    // Global runner (codex) drives the effective model catalog.
+    const model = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-key="orchestration_model"]')
+    );
+    const opts = Array.from(model.options).map((o) => o.value);
+    expect(opts).toContain('gpt-5.6');
+    expect(opts).not.toContain('opus');
+
+    panel.destroy();
+  });
 });
 
 describe('views/detail-panel created/updated rows (UX v3 spec §1)', () => {

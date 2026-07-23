@@ -123,7 +123,8 @@ export function createDetailPanel(mount_element, options) {
         status: a.status,
         started_at: typeof a.started_at === 'number' ? a.started_at : null,
         runner: a.runner || null,
-        model: a.model || null
+        model: a.model || null,
+        session_id: a.session_id || null
       }));
   }
 
@@ -140,13 +141,27 @@ export function createDetailPanel(mount_element, options) {
             runner: a.runner || undefined,
             model: a.model || undefined,
             effort: a.effort || undefined,
-            status: a.status || undefined
+            status: a.status || undefined,
+            session_id: a.session_id || undefined
           }
         : {}
     });
   }
 
   const session_handlers = { onOpen: openTranscript };
+
+  /**
+   * Workspace-global exec defaults from the queue snapshot (spec §3.2): a
+   * bead-unset exec key resolves through these before the static fallback, so
+   * the panel shows `(기본: <값> — 전역)` when a global override exists.
+   *
+   * @returns {Record<string, any>}
+   */
+  function execDefaults() {
+    const q = queueStore ? queueStore.get() : null;
+    const d = q && q.exec_defaults;
+    return d && typeof d === 'object' ? d : {};
+  }
 
   /** @type {null | (() => void)} */
   let unsubscribe = null;
@@ -933,7 +948,7 @@ export function createDetailPanel(mount_element, options) {
           ${labelsTemplate(data)} ${depsTemplate(data)}
           ${workflowTemplate(data)} ${workflowMetaTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
-          ${execSettingsTemplate(effective, exec_handlers)}
+          ${execSettingsTemplate(effective, exec_handlers, execDefaults())}
           ${sessionHistoryTemplate(attemptsForBead(), session_handlers)}
         </div>
       </div>

@@ -670,6 +670,108 @@ describe('views/worker', () => {
     ).toBe(true);
   });
 
+  test('opening a running tile passes the session id into the drawer bar (§2)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        auto_advance: true,
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            session_id: 'sid-abcdef12',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+    const sessionLogStore = createSessionLogStore();
+    sessionLogStore.set('a1', [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'go' }] }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      sessionLogStore,
+      transport: vi.fn().mockResolvedValue({ ok: true })
+    });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="a1"]')
+    );
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const sid = /** @type {HTMLElement} */ (
+      mount.querySelector('.sv__session')
+    );
+    expect(sid).not.toBeNull();
+    expect(sid.textContent).toContain('sid-abcd');
+    expect(sid.getAttribute('title')).toBe('sid-abcdef12');
+  });
+
+  test('a late session_id snapshot updates the OPEN drawer bar (updateMeta path, §2)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const attempt = {
+      attempt_id: 'a1',
+      bead_id: 'S1',
+      status: 'running',
+      runner: 'claude',
+      model: 'opus',
+      started_at: Date.now() - 3000
+    };
+    queueStore.set(
+      queueOf({
+        auto_advance: true,
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: { a1: { ...attempt } }
+      })
+    );
+    const sessionLogStore = createSessionLogStore();
+    sessionLogStore.set('a1', [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'go' }] }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      sessionLogStore,
+      transport: vi.fn().mockResolvedValue({ ok: true })
+    });
+
+    // Drawer opened BEFORE the session id lands.
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="a1"]')
+    );
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(mount.querySelector('.sv__session')).toBeNull();
+
+    // A fresh queue snapshot arrives with session_id filled → drawer meta updated.
+    queueStore.set(
+      queueOf({
+        auto_advance: true,
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: { a1: { ...attempt, session_id: 'sid-late99zz' } }
+      })
+    );
+
+    const sid = /** @type {HTMLElement} */ (
+      mount.querySelector('.sv__session')
+    );
+    expect(sid).not.toBeNull();
+    expect(sid.getAttribute('title')).toBe('sid-late99zz');
+  });
+
   test('candidate lane merges Ready+Blocked in effective-rank order (unranked newest-first)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     createWorkerView(mount, {
@@ -1260,6 +1362,68 @@ describe('views/worker', () => {
       key: 'orchestration_model',
       value: null,
       expected_revision: 7
+    });
+  });
+
+  test('the ⚙ dialog labels the (기본) option with the static fallback (§3.1)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const dialog = openExecDefaults(mount);
+    // The global dialog edits the global layer itself, so its unset option is
+    // always the static final-fallback label — not a `(… — 전역)` echo.
+    const runnerUnset = execSelect(dialog, 'worker_runner').options[0];
+    expect(runnerUnset.value).toBe('');
+    expect(runnerUnset.textContent).toContain('기본: claude');
+    expect(execSelect(dialog, 'review_model').options[0].textContent).toContain(
+      '기본: codex'
+    );
+    expect(execSelect(dialog, 'impl_model').options[0].textContent).toContain(
+      '티어 자동'
+    );
+  });
+
+  test('the ⚙ dialog renders global policy rows and sends worker-queue-set-policy (§1.3)', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ revision: 3, merge_policy: 'pr_stop' }));
+    const transport = vi.fn().mockResolvedValue(
+      reply(
+        queueOf({
+          revision: 4,
+          merge_policy: 'pr_stop',
+          drift_policy: 'halt'
+        })
+      )
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    const dialog = openExecDefaults(mount);
+    const mergeSel = /** @type {HTMLSelectElement} */ (
+      dialog.querySelector('select[data-policy-key="merge_policy"]')
+    );
+    expect(mergeSel).not.toBeNull();
+    expect(mergeSel.value).toBe('pr_stop');
+
+    const driftSel = /** @type {HTMLSelectElement} */ (
+      dialog.querySelector('select[data-policy-key="drift_policy"]')
+    );
+    driftSel.value = 'halt';
+    driftSel.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-policy', {
+      key: 'drift_policy',
+      value: 'halt',
+      expected_revision: 3
     });
   });
 });

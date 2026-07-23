@@ -1,6 +1,7 @@
 import { html, render } from 'lit-html';
 import { showToast } from '../../utils/toast.js';
 import {
+  DEFAULT_LABELS,
   EFFORTS,
   IMPL_MODELS,
   REVIEW_MODELS,
@@ -43,6 +44,26 @@ const EXEC_ROWS = [
   { key: 'orchestration_effort', values: () => EFFORTS },
   { key: 'review_model', values: () => REVIEW_MODELS },
   { key: 'impl_model', values: () => IMPL_MODELS }
+];
+
+/**
+ * Workspace-global policy rows also editable here (spec §1.3): on ≤640px the
+ * ctrl-bar merge/drift selects are hidden, so this dialog is their edit surface.
+ * They ride the SAME `worker-queue-set-policy` CAS path as the ctrl bar.
+ *
+ * @type {{ key: 'merge_policy'|'drift_policy', values: string[], default_label: string }[]}
+ */
+const POLICY_ROWS = [
+  {
+    key: 'merge_policy',
+    values: ['auto_merge', 'pr_stop'],
+    default_label: '(기본 auto_merge)'
+  },
+  {
+    key: 'drift_policy',
+    values: ['auto_rereview', 'halt'],
+    default_label: '(기본 auto_rereview)'
+  }
 ];
 
 /**
@@ -141,6 +162,40 @@ export function createExecDefaultsDialog(mount_element, options) {
   }
 
   /**
+   * Set (or unset with '') a workspace-global policy via `worker-queue-set-policy`,
+   * retrying ONCE on a CAS conflict — the same discipline as {@link save} and the
+   * Worker view's ctrl-bar policy select (spec §1.3).
+   *
+   * @param {'merge_policy'|'drift_policy'} key
+   * @param {string} value
+   */
+  async function savePolicy(key, value) {
+    if (!transport) {
+      return;
+    }
+    const payload = { key, value: value || null };
+    try {
+      let res = await transport('worker-queue-set-policy', {
+        ...payload,
+        expected_revision: currentRevision()
+      });
+      adopt(res);
+      if (res && res.conflict) {
+        res = await transport('worker-queue-set-policy', {
+          ...payload,
+          expected_revision: currentRevision()
+        });
+        adopt(res);
+      }
+      if (res && res.conflict) {
+        showToast('전역 정책 저장 실패: 다른 클라이언트와 충돌', 'error', 4000);
+      }
+    } catch {
+      showToast('전역 정책 저장 실패', 'error', 4000);
+    }
+  }
+
+  /**
    * @param {string} key
    * @param {string[]} values
    * @param {string} selected
@@ -162,7 +217,9 @@ export function createExecDefaultsDialog(mount_element, options) {
         @change=${(/** @type {Event} */ ev) =>
           void save(key, /** @type {HTMLSelectElement} */ (ev.target).value)}
       >
-        <option value="" ?selected=${!selected}>(기본)</option>
+        <option value="" ?selected=${!selected}>
+          ${DEFAULT_LABELS[key] || '(기본)'}
+        </option>
         ${incompatible
           ? html`<option value=${selected} ?selected=${true}>
               ${selected} (비호환)
@@ -176,7 +233,41 @@ export function createExecDefaultsDialog(mount_element, options) {
     </div>`;
   }
 
+  /**
+   * A workspace-global policy row (merge_policy / drift_policy). The `(기본 …)`
+   * option is selected when the queue value is unset, mirroring the ctrl-bar
+   * select (spec §1.3).
+   *
+   * @param {{ key: 'merge_policy'|'drift_policy', values: string[], default_label: string }} row
+   * @param {any} queue
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function policyRow(row, queue) {
+    const value = typeof queue[row.key] === 'string' ? queue[row.key] : '';
+    return html`<div class="exec-defaults__row">
+      <span class="exec-defaults__k">${row.key}</span>
+      <select
+        class="exec-defaults__sel"
+        aria-label=${`전역 ${row.key}`}
+        data-policy-key=${row.key}
+        @change=${(/** @type {Event} */ ev) =>
+          void savePolicy(
+            row.key,
+            /** @type {HTMLSelectElement} */ (ev.target).value
+          )}
+      >
+        <option value="" ?selected=${!row.values.includes(value)}>
+          ${row.default_label}
+        </option>
+        ${row.values.map(
+          (v) => html`<option value=${v} ?selected=${value === v}>${v}</option>`
+        )}
+      </select>
+    </div>`;
+  }
+
   function doRender() {
+    const queue = currentQueue();
     const defaults = currentDefaults();
     const runner = defaults.worker_runner || '';
     render(
@@ -195,12 +286,17 @@ export function createExecDefaultsDialog(mount_element, options) {
           </header>
           <div class="exec-defaults__body">
             <p class="exec-defaults__hint">
-              워크스페이스 전역 기본값입니다. bead metadata가 우선하며,
-              '(기본)'은 미설정(하드코딩 기본)입니다.
+              워크스페이스 전역 기본값입니다. bead metadata가 우선하며, '(기본:
+              …)'은 이 전역값도 미설정일 때 실제 적용되는 하드코딩·CLI·워크플로
+              기본입니다.
             </p>
             ${EXEC_ROWS.map((row) =>
               selectRow(row.key, row.values(runner), defaults[row.key] || '')
             )}
+            <p class="exec-defaults__hint exec-defaults__hint--policy">
+              전역 정책 (좁은 화면에서 상단 바 대신 여기서 편집)
+            </p>
+            ${POLICY_ROWS.map((row) => policyRow(row, queue))}
           </div>
         </div>
       `,

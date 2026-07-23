@@ -51,7 +51,7 @@ import { EventEmitter } from 'node:events';
  * @typedef {Object} RunnerHandle
  * @property {number|null} pid - OS pid of the spawned process (null on failure).
  * @property {(signal?: NodeJS.Signals|number) => void} kill - Group-kill helper.
- * @property {EventEmitter} events - Emits 'event'(RunnerEvent), 'raw'(object).
+ * @property {EventEmitter} events - Emits 'event'(RunnerEvent), 'raw'(object), 'session_id'(string, once).
  * @property {Promise<RunnerVerdict>} done - Resolves with the terminal verdict.
  */
 
@@ -62,6 +62,7 @@ import { EventEmitter } from 'node:events';
  * @property {(raw: any) => RunnerEvent|RunnerEvent[]|null} normalize - Map a raw line to normalized event(s) (or null to drop).
  * @property {(raw: any) => (string|null)} detectQuestion - Return a reason string when a raw line is an interactive request, else null.
  * @property {(raw: any) => (string|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use, else null (feeds the merge-lock guard).
+ * @property {(raw: any) => (string|null)} [extractSessionId] - Return the runner's session identifier from a raw line, else null. The engine emits the FIRST non-null result once on the `session_id` event so the attempt record can persist it for `--resume`/transcript tracking (spec §2).
  * @property {(ctx: { raw: any[], exit: number|null, blocked: boolean }) => { success: boolean, reason: string }} verdict
  */
 
@@ -142,6 +143,9 @@ export function runSession(spec, bead, workspace, settings, deps) {
   const pid = typeof child.pid === 'number' ? child.pid : null;
   let blocked = false;
   let killed = false;
+  // The session identifier arrives on the first stream event and is emitted
+  // exactly once; later lines that also carry it are ignored (spec §2).
+  let session_id_emitted = false;
 
   /**
    * Group-kill the session. Uses a NEGATIVE pid so the whole process group is
@@ -185,6 +189,16 @@ export function runSession(spec, bead, workspace, settings, deps) {
     }
     raw_events.push(obj);
     events.emit('raw', obj);
+
+    // Session id: emit the adapter's first non-null extraction once so the
+    // scheduler can persist it onto the attempt record (spec §2).
+    if (!session_id_emitted && typeof spec.extractSessionId === 'function') {
+      const session_id = spec.extractSessionId(obj);
+      if (session_id != null) {
+        session_id_emitted = true;
+        events.emit('session_id', session_id);
+      }
+    }
 
     // Fail-closed: any interactive request → blocker + process-group kill.
     const question_reason = spec.detectQuestion(obj);

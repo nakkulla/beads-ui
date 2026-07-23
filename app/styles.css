@@ -2501,17 +2501,33 @@ html[data-theme='dark'] {
 
 /* verify_cmd 읽기 전용 표시 — 편집 표면 없음(서버 설정 파일 전용, §4) */
 .worker-verifycmd {
+  min-width: 0;
+  max-width: 100%;
   font-size: var(--fs-chip);
   color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .worker-verifycmd code {
+  display: inline-block;
+  max-width: 40ch;
   font-family: var(--font-mono, monospace);
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .worker-verifycmd--unset {
   color: var(--accent-danger);
+}
+
+/* The compact status badge replaces the argv body only ≤640px (§1.2). */
+.worker-verifycmd__badge {
+  display: none;
 }
 
 /* 전역 실행 설정 ⚙ 버튼 + 다이얼로그 (worker-global-exec-defaults §4) */
@@ -2532,8 +2548,9 @@ html[data-theme='dark'] {
 }
 
 .exec-defaults {
-  min-width: 320px;
-  max-width: 480px;
+  /* Fit narrow (<360px) devices without side clipping: cap at 480px but never
+     exceed the viewport minus a 16px gutter each side (§1.5). */
+  width: min(480px, calc(100vw - 32px));
   padding: 0;
   border-radius: var(--r-6);
   border: 1px solid var(--border-panel);
@@ -2591,14 +2608,23 @@ html[data-theme='dark'] {
 }
 
 .exec-defaults__sel {
-  flex: 0 0 auto;
-  min-width: 160px;
+  flex: 0 1 auto;
+  min-width: 120px;
+  max-width: 100%;
   padding: var(--sp-2) var(--sp-6);
   border-radius: var(--r-6);
   border: 1px solid var(--border-chip);
   background: var(--bg-card);
   color: var(--text-primary);
   font-size: var(--fs-body);
+}
+
+/* Divider hint above the global policy rows in the ⚙ dialog (§1.3). */
+.exec-defaults__hint--policy {
+  margin-top: var(--sp-12);
+  margin-bottom: var(--sp-8);
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--border-panel);
 }
 
 .worker-banners {
@@ -2804,6 +2830,44 @@ html[data-theme='dark'] {
   color: var(--accent-success);
 }
 
+/* Session id (claude session_id / codex thread_id): short, click-to-copy (§2). */
+.sv__session {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-id-mono);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+  cursor: pointer;
+  min-width: 0;
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sv__session:hover {
+  color: var(--text-primary);
+  border-color: var(--border-route);
+}
+
+/* Worktree path — hidden ≤640px (title keeps the full path), §1.4. */
+.sv__wt {
+  min-width: 0;
+  font-size: var(--fs-chip);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The follow pill shows its full label by default; ≤640px swaps to the short
+   ⇣ ON/OFF form (aria-label keeps the full phrase either way), §1.4. */
+.sv__follow-short {
+  display: none;
+}
+
 .sv__close {
   border: none;
   background: transparent;
@@ -2881,7 +2945,12 @@ html[data-theme='dark'] {
 
 .sv__tool-detail {
   color: var(--text-tool-mono);
-  word-break: break-all;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sv__diff-add {
@@ -3180,6 +3249,12 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip);
 }
 
+.detail-session__sid {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  color: var(--text-dim);
+}
+
 .detail-session__time {
   margin-left: auto;
   color: var(--text-dim);
@@ -3189,6 +3264,30 @@ html[data-theme='dark'] {
 
 /* ---------- Worker responsive (<=640px): single-column lanes + grid ---------- */
 @media (max-width: 640px) {
+  /* App shell header: wrap instead of forcing title+picker+tabs+actions onto one
+     line; buttons/icons keep their size, only spacing shrinks (§1.1). */
+  .app-header {
+    flex-wrap: wrap;
+    gap: var(--space-4, 8px);
+    padding: var(--space-4, 8px) var(--space-5, 12px) 0;
+  }
+
+  .header-left {
+    flex-wrap: wrap;
+    gap: var(--space-4, 8px);
+  }
+
+  .header-actions {
+    flex-wrap: wrap;
+    gap: var(--space-4, 8px);
+  }
+
+  /* New-issue dialog form: label above, input below (§1.6). */
+  .new-issue__form {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
   .worker-rungrid {
     grid-template-columns: 1fr;
     max-height: 40vh;
@@ -3200,6 +3299,53 @@ html[data-theme='dark'] {
 
   .worker-ctrl {
     flex-wrap: wrap;
+  }
+
+  /* The global merge/drift selects move to the ⚙ dialog on narrow screens (§1.3). */
+  .worker-policy {
+    display: none;
+  }
+
+  /* Cap the vertically-stacked lane bodies so the page can't grow unbounded. */
+  .worker-pane__body {
+    max-height: 40vh;
+  }
+
+  /* verify_cmd: hide the argv body, show the compact status badge (§1.2). */
+  .worker-verifycmd__full {
+    display: none;
+  }
+
+  .worker-verifycmd__badge {
+    display: inline;
+  }
+
+  /* Worker-tab in-tab transcript drawer (§1.4). */
+  .sv__bar {
+    flex-wrap: wrap;
+  }
+
+  .sv__id {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sv__wt {
+    display: none;
+  }
+
+  .sv__follow-full {
+    display: none;
+  }
+
+  .sv__follow-short {
+    display: inline;
+  }
+
+  .sv__body {
+    max-height: 60vh;
   }
 
   .session-log-root .sv {

@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
-import { spawnClaude } from './claude.js';
+import { claudeSpec, spawnClaude } from './claude.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
 
 const SUCCESS_FIXTURE = fileURLToPath(
@@ -140,6 +140,56 @@ describe('runner/claude fail-closed (question → blocker + group kill)', () => 
     expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
     const blocker = v.events.find((e) => e.kind === 'blocker');
     expect(blocker).toBeTruthy();
+  });
+});
+
+describe('runner/claude session id (spec §2)', () => {
+  test('extractSessionId reads session_id from a system/init line only', () => {
+    const spec = claudeSpec();
+    expect(
+      spec.extractSessionId?.({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'a39855e0'
+      })
+    ).toBe('a39855e0');
+    // hook_started ALSO carries session_id but predates the real session.
+    expect(
+      spec.extractSessionId?.({
+        type: 'system',
+        subtype: 'hook_started',
+        session_id: 'a39855e0'
+      })
+    ).toBeNull();
+    expect(spec.extractSessionId?.({ type: 'assistant' })).toBeNull();
+    expect(
+      spec.extractSessionId?.({ type: 'system', subtype: 'init' })
+    ).toBeNull();
+  });
+
+  test('the engine emits session_id exactly once (first init line wins)', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({
+          type: 'system',
+          subtype: 'init',
+          session_id: 'sid-A'
+        }),
+        JSON.stringify({
+          type: 'system',
+          subtype: 'init',
+          session_id: 'sid-B'
+        }),
+        resultLine()
+      ],
+      exit: 0
+    });
+    /** @type {string[]} */
+    const ids = [];
+    const handle = spawnClaude(BEAD, WS, {}, { spawn_impl });
+    handle.events.on('session_id', (id) => ids.push(id));
+    await handle.done;
+    expect(ids).toEqual(['sid-A']);
   });
 });
 
