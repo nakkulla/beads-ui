@@ -553,7 +553,8 @@ describe('views/detail-panel', () => {
     // the transcript drawer — it is a sibling, not the row button).
     resumeBtn('kid').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
-      attempt_id: 'kid'
+      attempt_id: 'kid',
+      expected_revision: 1
     });
 
     panel.destroy();

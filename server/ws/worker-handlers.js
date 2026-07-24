@@ -608,12 +608,15 @@ export async function handleWorkerAttemptStop(ws, req) {
 }
 
 /**
- * Handle `worker-attempt-resume`. Payload: `{ attempt_id: string }`. Manually
- * resumes (↻) a failed/orphaned attempt in its existing worktree (spec §1): CAS
- * revision is not required (the scheduler is the single writer). On refusal the
- * reply carries the admission-badge `reason` (one of the six §1.2 causes) with
- * `resumed:false`; on success it carries the new attempt id and fans a fresh
- * snapshot. Inert (`resumed:false`) when no live attachment is registered.
+ * Handle `worker-attempt-resume`. Payload: `{ attempt_id, expected_revision }`.
+ * Manually resumes (↻) a failed/orphaned attempt in its existing worktree
+ * (spec §1) under the SAME CAS revision contract as the queue mutations: a
+ * stale `expected_revision` replies `conflict:true` with the authoritative
+ * queue and does NOT resume — the client retries once against the fresh
+ * revision. On refusal the reply carries the admission-badge `reason` (one of
+ * the six §1.2 causes) with `resumed:false`; on success it carries the new
+ * attempt id and fans a fresh snapshot. Inert (`resumed:false`) when no live
+ * attachment is registered.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -629,6 +632,22 @@ export async function handleWorkerAttemptResume(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          attempt_id: p.attempt_id,
+          resumed: false,
+          conflict: true,
+          new_attempt_id: null,
+          reason: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
   /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
   let result = { ok: false, reason: 'no_attachment' };
   try {
@@ -642,6 +661,7 @@ export async function handleWorkerAttemptResume(ws, req) {
       makeOk(req, {
         attempt_id: p.attempt_id,
         resumed: !!result.ok,
+        conflict: false,
         new_attempt_id: result.attempt_id || null,
         reason: result.ok ? null : result.reason || null
       })

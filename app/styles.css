@@ -2670,8 +2670,13 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.worker-banner__resume:hover {
+.worker-banner__resume:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent-danger) 22%, var(--bg-panel));
+}
+
+.worker-banner__resume:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .worker-rungrid {

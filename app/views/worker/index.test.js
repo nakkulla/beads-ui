@@ -1457,32 +1457,31 @@ describe('views/worker', () => {
     expect(btn.dataset.attemptId).toBe('f1');
     btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
-      attempt_id: 'f1'
+      attempt_id: 'f1',
+      expected_revision: 1
     });
   });
 
-  test('breaker ↻ targets the newest eligible LEAF, never a spent ancestor (§1)', () => {
+  test('breaker ↻ targets exactly the latest failure — ineligible renders disabled with the reason, never an older substitute (§1)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
         attempts: {
-          anc: {
-            attempt_id: 'anc',
+          old_eligible: {
+            attempt_id: 'old_eligible',
             bead_id: 'B1',
             status: 'failed',
             repo: '/repo',
             cause: 'verify_failed:x',
-            session_id: 'sid-anc'
+            session_id: 'sid-old'
           },
-          kid: {
-            attempt_id: 'kid',
+          latest_no_sid: {
+            attempt_id: 'latest_no_sid',
             bead_id: 'B1',
             status: 'failed',
             repo: '/repo',
-            cause: 'verify_failed:y',
-            session_id: 'sid-kid',
-            resumed_from: 'anc'
+            cause: 'verify_failed:y'
           }
         }
       })
@@ -1492,11 +1491,14 @@ describe('views/worker', () => {
       queueStore,
       transport: vi.fn()
     });
-    const btn = /** @type {HTMLElement} */ (
+    const btn = /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-banner--breaker .worker-banner__resume')
     );
-    // The ancestor is spent (kid carries resumed_from=anc) → the leaf is kid.
-    expect(btn.dataset.attemptId).toBe('kid');
+    // The banner describes latest_no_sid, so its ↻ must point there — a
+    // different (older) session is never silently substituted.
+    expect(btn.dataset.attemptId).toBe('latest_no_sid');
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toContain('session_id 없는');
   });
 
   test('a resumed running tile shows the ↻ badge (§1)', () => {

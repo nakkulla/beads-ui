@@ -150,24 +150,46 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
-   * Manually resume a failed/orphaned attempt (spec §1). Fire-and-forget; the
-   * server validates (six §1.2 refusals), dispatches, and pushes a fresh queue
-   * snapshot that surfaces the new running attempt in the history list.
+   * Manually resume a failed/orphaned attempt (spec §1) under the queue
+   * mutations' CAS discipline: send the current queue revision and retry ONCE
+   * against the revision a conflict reply reports. The server validates (six
+   * §1.2 refusals), dispatches, and pushes a fresh queue snapshot that surfaces
+   * the new running attempt in the history list.
    *
    * @param {string} attempt_id
    */
-  function resumeAttempt(attempt_id) {
+  async function resumeAttempt(attempt_id) {
     if (!transport || !attempt_id) {
       return;
     }
-    void Promise.resolve(
-      transport('worker-attempt-resume', { attempt_id })
-    ).then((res) => {
-      const r = /** @type {any} */ (res);
-      if (r && r.resumed === false && r.reason) {
-        showToast(`이어하기 거부: ${r.reason}`, 'error', 2400);
-      }
-    });
+    /** @returns {number} */
+    const revision = () => {
+      const q = queueStore ? queueStore.get() : null;
+      return q && typeof q.revision === 'number' ? q.revision : 0;
+    };
+    let res = /** @type {any} */ (
+      await transport('worker-attempt-resume', {
+        attempt_id,
+        expected_revision: revision()
+      })
+    );
+    if (res && res.conflict) {
+      // The conflict reply carries the authoritative queue; retry once against
+      // its revision (the push may not have landed in the store yet).
+      const fresh =
+        res.queue && typeof res.queue.revision === 'number'
+          ? res.queue.revision
+          : revision();
+      res = /** @type {any} */ (
+        await transport('worker-attempt-resume', {
+          attempt_id,
+          expected_revision: fresh
+        })
+      );
+    }
+    if (res && res.resumed === false && !res.conflict && res.reason) {
+      showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
+    }
   }
 
   const session_handlers = { onOpen: openTranscript, onResume: resumeAttempt };

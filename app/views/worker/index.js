@@ -261,9 +261,10 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Resume (↻) a failed attempt from the breaker banner (spec §1). Fire-and-
-   * forget; the server validates + dispatches and pushes a fresh snapshot. A
-   * refusal surfaces its admission-badge reason as a toast.
+   * Resume (↻) a failed attempt from the breaker banner (spec §1), under the
+   * queue mutations' CAS discipline: send the current revision, adopt the
+   * authoritative queue a conflict reply carries, and retry ONCE against the
+   * fresh revision. A refusal surfaces its admission-badge reason as a toast.
    *
    * @param {string} attempt_id
    */
@@ -271,10 +272,23 @@ export function createWorkerView(mount_element, options = {}) {
     if (!transport || !attempt_id) {
       return;
     }
-    const res = /** @type {any} */ (
-      await transport('worker-attempt-resume', { attempt_id })
+    let res = /** @type {any} */ (
+      await transport('worker-attempt-resume', {
+        attempt_id,
+        expected_revision: currentRevision()
+      })
     );
-    if (res && res.resumed === false && res.reason) {
+    adopt(res);
+    if (res && res.conflict) {
+      res = /** @type {any} */ (
+        await transport('worker-attempt-resume', {
+          attempt_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+    }
+    if (res && res.resumed === false && !res.conflict && res.reason) {
       showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
     }
   }
@@ -455,8 +469,6 @@ export function createWorkerView(mount_element, options = {}) {
     const running = [];
     /** @type {any|null} */
     let latest_failed = null;
-    /** @type {any|null} */
-    let resume_target = null;
     for (const a of /** @type {any[]} */ (attempts)) {
       if (a.status === 'running') {
         running.push({
@@ -473,24 +485,33 @@ export function createWorkerView(mount_element, options = {}) {
           resumed_from: a.resumed_from || null
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
-        // The most recent failure/orphan surfaces the breaker banner; the newest
-        // eligible leaf (session_id present, not already resumed) is its ↻ target.
+        // The most recent failure/orphan surfaces the breaker banner.
         latest_failed = a;
-        const has_sid =
-          typeof a.session_id === 'string' && a.session_id.length > 0;
-        if (has_sid && !resumed_from_ids.has(a.attempt_id)) {
-          resume_target = a;
-        }
       }
     }
+    // The banner's ↻ targets EXACTLY the attempt the banner describes — the
+    // latest failure. An older eligible attempt is never substituted (that
+    // would resume a different session than the one reported); ineligibility
+    // renders the button disabled with the reason in its title (spec §1.5).
     /** @type {any|null} */
-    const breaker = latest_failed
-      ? {
-          repo: latest_failed.repo || '',
-          reason: latest_failed.cause || latest_failed.status,
-          resume_attempt_id: resume_target ? resume_target.attempt_id : null
-        }
-      : null;
+    let breaker = null;
+    if (latest_failed) {
+      const has_sid =
+        typeof latest_failed.session_id === 'string' &&
+        latest_failed.session_id.length > 0;
+      const already = resumed_from_ids.has(latest_failed.attempt_id);
+      breaker = {
+        repo: latest_failed.repo || '',
+        reason: latest_failed.cause || latest_failed.status,
+        resume_attempt_id: latest_failed.attempt_id,
+        resume_eligible: has_sid && !already,
+        resume_reason: !has_sid
+          ? 'session_id 없는 구 attempt — 이어하기 불가'
+          : already
+            ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+            : null
+      };
+    }
 
     return {
       queue: q,

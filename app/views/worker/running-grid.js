@@ -30,8 +30,12 @@ import { html } from 'lit-html';
  * @typedef {Object} BreakerBanner
  * @property {string} repo
  * @property {string} reason
- * @property {string|null} [resume_attempt_id] - Newest eligible failed attempt
- * to resume (§1); when set the banner shows an active "↻ 이어하기" button.
+ * @property {string|null} [resume_attempt_id] - The banner's own (latest
+ * failed) attempt — the ONLY ↻ target, never an older substitute (§1).
+ * @property {boolean} [resume_eligible] - Whether that attempt can be resumed
+ * (session_id present, not already resumed); ineligible renders disabled.
+ * @property {string|null} [resume_reason] - Ineligibility reason for the
+ * disabled button's title.
  */
 
 /**
@@ -75,7 +79,10 @@ export function bannersTemplate(state) {
                 type="button"
                 class="worker-banner__resume"
                 data-attempt-id=${state.breaker.resume_attempt_id}
-                title="최근 실패 세션을 같은 워크트리에서 이어서 진행"
+                ?disabled=${!state.breaker.resume_eligible}
+                title=${state.breaker.resume_eligible
+                  ? '최근 실패 세션을 같은 워크트리에서 이어서 진행'
+                  : state.breaker.resume_reason || '이어하기 불가'}
               >
                 ↻ 이어하기
               </button>`
