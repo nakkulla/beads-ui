@@ -55,6 +55,7 @@ import {
   handleSubscribeWorkerQueue,
   handleUnsubscribeSessionLog,
   handleUnsubscribeWorkerQueue,
+  handleWorkerAttemptResume,
   handleWorkerAttemptStop,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
@@ -446,6 +447,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-attempt-stop':
       await handleWorkerAttemptStop(ws, req);
+      return;
+    case 'worker-attempt-resume':
+      await handleWorkerAttemptResume(ws, req);
       return;
     case 'subscribe-ui-order':
       handleSubscribeUiOrder(ws, req);

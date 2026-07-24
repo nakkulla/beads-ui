@@ -26,17 +26,18 @@
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
-import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
   resetWorkerBreakerForWorkspace,
+  resumeWorkerAttempt,
   stopWorkerAttempt,
   tickWorkerQueue
 } from '../worker/attach.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
+import { resolveVerifyCmd } from '../worker/verify-cmd.js';
 import {
   emitSessionLogAppend,
   emitSessionLogSnapshot,
@@ -89,18 +90,20 @@ function subscribersFor(key) {
 
 /**
  * Decorate a queue snapshot with computed, non-persisted workspace info: the
- * server-config verify_cmd (read-only display — no UI edit surface,
- * worker-autorun-policy §4/§6).
+ * resolved verify_cmd (explicit config > auto-detection > none) with its
+ * `source`, so the ctrl bar can flag a detected command (read-only display —
+ * no UI edit surface; worker-autorun-policy §4/§6, worker-attempt-resume-
+ * verify-autodetect §2).
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
  * @returns {Record<string, unknown>}
  */
 function decorateQueue(workspace_key, queue) {
-  /** @type {{ cmd: string[], timeout_ms: number } | null} */
+  /** @type {{ cmd: string[], timeout_ms: number, source: 'config'|'detected' } | null} */
   let verify_cmd = null;
   try {
-    verify_cmd = getConfig().worker_verify[path.resolve(workspace_key)] ?? null;
+    verify_cmd = resolveVerifyCmd(workspace_key, getConfig().worker_verify);
   } catch {
     verify_cmd = null;
   }
@@ -600,6 +603,72 @@ export async function handleWorkerAttemptStop(ws, req) {
   ws.send(JSON.stringify(makeOk(req, { attempt_id: p.attempt_id, stopped })));
   if (stopped) {
     // Push a fresh snapshot so the tile clears from the running grid.
+    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+  }
+}
+
+/**
+ * Handle `worker-attempt-resume`. Payload: `{ attempt_id, expected_revision }`.
+ * Manually resumes (↻) a failed/orphaned attempt in its existing worktree
+ * (spec §1) under the SAME CAS revision contract as the queue mutations: a
+ * stale `expected_revision` replies `conflict:true` with the authoritative
+ * queue and does NOT resume — the client retries once against the fresh
+ * revision. On refusal the reply carries the admission-badge `reason` (one of
+ * the six §1.2 causes) with `resumed:false`; on success it carries the new
+ * attempt id and fans a fresh snapshot. Inert (`resumed:false`) when no live
+ * attachment is registered.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerAttemptResume(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          attempt_id: p.attempt_id,
+          resumed: false,
+          conflict: true,
+          new_attempt_id: null,
+          reason: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
+  let result = { ok: false, reason: 'no_attachment' };
+  try {
+    result = await resumeWorkerAttempt(key, p.attempt_id);
+  } catch (err) {
+    log('worker-attempt-resume failed for %s/%s: %o', key, p.attempt_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        attempt_id: p.attempt_id,
+        resumed: !!result.ok,
+        conflict: false,
+        new_attempt_id: result.attempt_id || null,
+        reason: result.ok ? null : result.reason || null
+      })
+    )
+  );
+  if (result.ok) {
+    // Push a fresh snapshot so the new running tile appears immediately.
     fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
   }
 }

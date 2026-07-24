@@ -261,6 +261,39 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Resume (↻) a failed attempt from the breaker banner (spec §1), under the
+   * queue mutations' CAS discipline: send the current revision, adopt the
+   * authoritative queue a conflict reply carries, and retry ONCE against the
+   * fresh revision. A refusal surfaces its admission-badge reason as a toast.
+   *
+   * @param {string} attempt_id
+   */
+  async function resumeAttempt(attempt_id) {
+    if (!transport || !attempt_id) {
+      return;
+    }
+    let res = /** @type {any} */ (
+      await transport('worker-attempt-resume', {
+        attempt_id,
+        expected_revision: currentRevision()
+      })
+    );
+    adopt(res);
+    if (res && res.conflict) {
+      res = /** @type {any} */ (
+        await transport('worker-attempt-resume', {
+          attempt_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+    }
+    if (res && res.resumed === false && !res.conflict && res.reason) {
+      showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
+    }
+  }
+
+  /**
    * @param {boolean} on
    */
   async function setAutoAdvance(on) {
@@ -419,10 +452,23 @@ export function createWorkerView(mount_element, options = {}) {
     }
 
     const attempts = q.attempts ? Object.values(q.attempts) : [];
+    // A resumed_from carried by any attempt marks its ancestor as spent, so an
+    // ancestor is never offered as a resume target (spec §1).
+    /** @type {Set<string>} */
+    const resumed_from_ids = new Set();
+    for (const a of /** @type {any[]} */ (attempts)) {
+      if (
+        a &&
+        typeof a.resumed_from === 'string' &&
+        a.resumed_from.length > 0
+      ) {
+        resumed_from_ids.add(a.resumed_from);
+      }
+    }
     /** @type {any[]} */
     const running = [];
     /** @type {any|null} */
-    let breaker = null;
+    let latest_failed = null;
     for (const a of /** @type {any[]} */ (attempts)) {
       if (a.status === 'running') {
         running.push({
@@ -435,12 +481,36 @@ export function createWorkerView(mount_element, options = {}) {
           effort: a.effort || null,
           started_at: typeof a.started_at === 'number' ? a.started_at : null,
           merge_policy: a.merge_policy || null,
-          demoted_reason: a.demoted_reason || null
+          demoted_reason: a.demoted_reason || null,
+          resumed_from: a.resumed_from || null
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
         // The most recent failure/orphan surfaces the breaker banner.
-        breaker = { repo: a.repo || '', reason: a.cause || a.status };
+        latest_failed = a;
       }
+    }
+    // The banner's ↻ targets EXACTLY the attempt the banner describes — the
+    // latest failure. An older eligible attempt is never substituted (that
+    // would resume a different session than the one reported); ineligibility
+    // renders the button disabled with the reason in its title (spec §1.5).
+    /** @type {any|null} */
+    let breaker = null;
+    if (latest_failed) {
+      const has_sid =
+        typeof latest_failed.session_id === 'string' &&
+        latest_failed.session_id.length > 0;
+      const already = resumed_from_ids.has(latest_failed.attempt_id);
+      breaker = {
+        repo: latest_failed.repo || '',
+        reason: latest_failed.cause || latest_failed.status,
+        resume_attempt_id: latest_failed.attempt_id,
+        resume_eligible: has_sid && !already,
+        resume_reason: !has_sid
+          ? 'session_id 없는 구 attempt — 이어하기 불가'
+          : already
+            ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+            : null
+      };
     }
 
     return {
@@ -466,12 +536,17 @@ export function createWorkerView(mount_element, options = {}) {
       info.verify_cmd && Array.isArray(info.verify_cmd.cmd)
         ? info.verify_cmd.cmd.join(' ')
         : null;
+    // An auto-detected command is flagged `(자동 감지)` so it reads apart from an
+    // explicit config section (worker-attempt-resume-verify-autodetect §2.3).
+    const verify_detected =
+      !!info.verify_cmd && info.verify_cmd.source === 'detected';
+    const detected_suffix = verify_detected ? ' (자동 감지)' : '';
     // The bar can truncate a long argv (CSS ellipsis), so the FULL command also
     // rides the title attribute — the only place it can be read on a narrow
     // screen where the body is hidden for a status badge (spec §1.2).
     const verify_title = verify_cmd
-      ? `verify_cmd — 서버 설정 파일 전용(읽기), 미설정 시 auto_merge가 pr_stop으로 강등. 전체 명령: ${verify_cmd}`
-      : 'verify_cmd — 서버 설정 파일 전용(읽기), 미설정 시 auto_merge가 pr_stop으로 강등';
+      ? `verify_cmd — 설정 파일 명시 > 자동 감지 > 없음, 미설정 시 auto_merge가 pr_stop으로 강등. 전체 명령: ${verify_cmd}${detected_suffix}`
+      : 'verify_cmd — 설정 파일 명시 > 자동 감지 > 없음, 미설정 시 auto_merge가 pr_stop으로 강등';
     /**
      * @param {'merge_policy'|'drift_policy'} key
      * @param {string[]} opts
@@ -543,8 +618,11 @@ export function createWorkerView(mount_element, options = {}) {
         >
           ${verify_cmd
             ? html`<span class="worker-verifycmd__full"
-                  >verify_cmd: <code>${verify_cmd}</code></span
-                ><span class="worker-verifycmd__badge">verify_cmd ✓</span>`
+                  >verify_cmd:
+                  <code>${verify_cmd}</code>${detected_suffix}</span
+                ><span class="worker-verifycmd__badge"
+                  >verify_cmd ✓${detected_suffix}</span
+                >`
             : html`<span class="worker-verifycmd__full"
                   >verify_cmd: 미설정 (auto_merge→pr_stop 강등)</span
                 ><span class="worker-verifycmd__badge"
@@ -810,6 +888,17 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (target?.closest?.('.worker-exec-defaults-btn')) {
       exec_defaults_dialog.open();
+      return;
+    }
+    // The breaker banner's ↻ resumes the newest eligible failed attempt (§1).
+    const resumeBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-banner__resume')
+    );
+    if (resumeBtn) {
+      const att = resumeBtn.dataset.attemptId;
+      if (att) {
+        void resumeAttempt(att);
+      }
       return;
     }
     if (target?.closest?.('.worker-play')) {

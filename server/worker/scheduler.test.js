@@ -230,7 +230,10 @@ function setup(opts) {
     addDetached: vi.fn(async (/** @type {any} */ { name }) => ({
       path: `/wt-verify/${name}`
     })),
-    removeDetached: vi.fn(async () => ({ code: 0 }))
+    removeDetached: vi.fn(async () => ({ code: 0 })),
+    pathFor: (/** @type {string} */ _repo, /** @type {string} */ bead_id) =>
+      `/wt/${bead_id}`,
+    exists: vi.fn(() => true)
   };
   const sessionLog = { attach: vi.fn() };
   const scheduler = createScheduler({
@@ -943,6 +946,27 @@ describe('scheduler policy snapshot + demotion (worker-autorun-policy §2)', () 
     expect(env.runner.settingsFor('S1').merge_policy).toBe('auto_merge');
     expect(env.runner.settingsFor('S1').drift_policy).toBe('halt');
   });
+
+  test('an AUTO-DETECTED verify_cmd (source=detected) keeps auto_merge (no demotion) (§2)', async () => {
+    const env = setup({
+      config: { S1: { merge_policy: 'auto_merge' } },
+      slots: 1,
+      // The resolver returns a detected command — the scheduler only cares that
+      // a runnable cmd exists, so no demotion fires.
+      verifyCmd: () => ({
+        cmd: ['npm', 'test'],
+        timeout_ms: 600000,
+        source: 'detected'
+      })
+    });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.merge_policy).toBe('auto_merge');
+    expect(a.demoted_reason).toBe(null);
+  });
 });
 
 describe('scheduler post-merge verify_cmd (worker-autorun-policy §4)', () => {
@@ -1468,5 +1492,233 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'workflow_mode')).toBe(
       false
     );
+  });
+});
+
+describe('scheduler resume (spec §1)', () => {
+  /**
+   * Seed a terminal attempt directly into the store (no dispatch), so a resume
+   * test controls the prior snapshot precisely.
+   *
+   * @param {any} store
+   * @param {string} attempt_id
+   * @param {Partial<import('./queue-store.js').Attempt>} patch
+   */
+  function seedAttempt(store, attempt_id, patch) {
+    const rev = store.snapshot(WS).revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id, bead_id: /** @type {any} */ (patch).bead_id }
+    });
+    store.updateAttempt(WS, { attempt_id, patch });
+  }
+
+  /** @returns {Partial<import('./queue-store.js').Attempt>} */
+  function resumablePrior(over = {}) {
+    return {
+      bead_id: 'B1',
+      status: 'failed',
+      repo: '/repo',
+      target_base: 'main',
+      base_oid: 'base-B1',
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      session_id: 'sid-abc',
+      merge_policy: 'auto_merge',
+      drift_policy: 'auto_rereview',
+      merge_sha: 'f'.repeat(40),
+      workflow_mode_prior: null,
+      cause: 'verify_failed:base_not_ancestor',
+      ...over
+    };
+  }
+
+  test('refuses not_failed (running/done/unknown attempt)', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(env.store, 'r1', resumablePrior({ status: 'running' }));
+    expect((await env.scheduler.resume(WS, 'r1')).reason).toBe('not_failed');
+    seedAttempt(env.store, 'r2', resumablePrior({ status: 'done' }));
+    expect((await env.scheduler.resume(WS, 'r2')).reason).toBe('not_failed');
+    expect((await env.scheduler.resume(WS, 'nope')).reason).toBe('not_failed');
+  });
+
+  test('refuses no_session_id for a pre-session-id attempt', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(env.store, 'r1', resumablePrior({ session_id: null }));
+    expect((await env.scheduler.resume(WS, 'r1')).reason).toBe('no_session_id');
+  });
+
+  test('refuses worktree_missing when the bead worktree is gone', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.worktree.exists.mockReturnValue(false);
+    seedAttempt(env.store, 'r1', resumablePrior());
+    expect((await env.scheduler.resume(WS, 'r1')).reason).toBe(
+      'worktree_missing'
+    );
+  });
+
+  test('refuses bead_running when a running attempt exists for the same bead', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(env.store, 'r1', resumablePrior());
+    seedAttempt(env.store, 'live', { bead_id: 'B1', status: 'running' });
+    expect((await env.scheduler.resume(WS, 'r1')).reason).toBe('bead_running');
+  });
+
+  test('refuses already_resumed when a child carries resumed_from (success OR failure, cold reload)', async () => {
+    // child succeeded
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(env.store, 'anc', resumablePrior());
+    seedAttempt(env.store, 'kid', {
+      bead_id: 'B1',
+      status: 'done',
+      resumed_from: 'anc'
+    });
+    expect((await env.scheduler.resume(WS, 'anc')).reason).toBe(
+      'already_resumed'
+    );
+
+    // child failed → ancestor still spent
+    const env2 = setup({ config: {}, slots: 1 });
+    seedAttempt(env2.store, 'anc', resumablePrior());
+    seedAttempt(env2.store, 'kid', {
+      bead_id: 'B1',
+      status: 'failed',
+      resumed_from: 'anc'
+    });
+    expect((await env2.scheduler.resume(WS, 'anc')).reason).toBe(
+      'already_resumed'
+    );
+
+    // cold reload: the judgment is derived from the persisted attempts scan.
+    env2.store.__clearCacheForTest();
+    expect((await env2.scheduler.resume(WS, 'anc')).reason).toBe(
+      'already_resumed'
+    );
+  });
+
+  test('refuses runner_unavailable when the prior runner is absent/unsupported', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(env.store, 'r1', resumablePrior({ runner: null }));
+    expect((await env.scheduler.resume(WS, 'r1')).reason).toBe(
+      'runner_unavailable'
+    );
+    seedAttempt(env.store, 'r2', resumablePrior({ runner: 'bogus' }));
+    expect((await env.scheduler.resume(WS, 'r2')).reason).toBe(
+      'runner_unavailable'
+    );
+  });
+
+  test('inherits the PRIOR snapshot verbatim even after globals change; no worktree.add; resumed_from set', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    // prior was DEMOTED to pr_stop; the runner/model are codex/gpt-5.6.
+    seedAttempt(
+      env.store,
+      'anc',
+      resumablePrior({
+        runner: 'codex',
+        model: 'gpt-5.6',
+        effort: 'high',
+        merge_policy: 'pr_stop',
+        demoted_reason: 'verify_cmd_unset'
+      })
+    );
+    // Flip the workspace-global exec defaults + policy AFTER the failure.
+    seedExecDefaults(env.store, {
+      worker_runner: 'claude',
+      orchestration_model: 'opus'
+    });
+    env.store.setPolicy(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      key: 'merge_policy',
+      value: 'auto_merge'
+    });
+
+    const res = await env.scheduler.resume(WS, 'anc');
+    expect(res.ok).toBe(true);
+    const child =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    // Prior runner/model/effort inherited — NOT re-resolved from the new globals.
+    expect(child.runner).toBe('codex');
+    expect(child.model).toBe('gpt-5.6');
+    expect(child.effort).toBe('high');
+    // Demoted pr_stop does NOT revive as auto_merge; merge_sha preserved.
+    expect(child.merge_policy).toBe('pr_stop');
+    expect(child.demoted_reason).toBe('verify_cmd_unset');
+    expect(child.merge_sha).toBe('f'.repeat(40));
+    expect(child.base_oid).toBe('base-B1');
+    expect(child.resumed_from).toBe('anc');
+    // Worktree reused — never re-created.
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    // The resume argv carries the prior session id + prior runner.
+    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+  });
+
+  test('resumed_from survives cold reload', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(env.store, 'anc', resumablePrior());
+    const res = await env.scheduler.resume(WS, 'anc');
+    expect(res.ok).toBe(true);
+    env.store.__clearCacheForTest();
+    expect(
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
+        .resumed_from
+    ).toBe('anc');
+  });
+
+  test('resume resets the breaker so the repo merge-lock can be acquired again (▶-grade)', async () => {
+    const breaker = createBreaker();
+    const env = setup({ config: {}, slots: 1, breaker });
+    breaker.trip('/repo', { bead_id: 'B1', cause: 'verify_failed:x' });
+    seedAttempt(env.store, 'anc', resumablePrior());
+    expect(breaker.isTripped('/repo')).toBe(true);
+
+    const locks = createLockManager({
+      isMergeBlocked: (repo) => breaker.isTripped(repo)
+    });
+    await expect(locks.acquireMerge('/repo', 'main')).rejects.toThrow();
+
+    const res = await env.scheduler.resume(WS, 'anc');
+    expect(res.ok).toBe(true);
+    expect(breaker.isTripped('/repo')).toBe(false);
+    const release = await locks.acquireMerge('/repo', 'main');
+    release();
+  });
+
+  test('re-stamps workflow_mode + exec from the PRIOR values', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(
+      env.store,
+      'anc',
+      resumablePrior({
+        workflow_mode_prior: null,
+        exec_stamped_keys: ['orchestration_model'],
+        exec_values: { orchestration_model: 'opus' }
+      })
+    );
+    const res = await env.scheduler.resume(WS, 'anc');
+    expect(res.ok).toBe(true);
+    // fast_track re-stamped, and the exec key re-stamped with the PRIOR value.
+    expect(
+      env.bd.calls.some(
+        (c) =>
+          c.method === 'setMetadata' &&
+          c.bead_id === 'B1' &&
+          c.key === 'workflow_mode' &&
+          c.value === 'fast_track'
+      )
+    ).toBe(true);
+    expect(
+      env.bd.calls.some(
+        (c) =>
+          c.method === 'setMetadata' &&
+          c.bead_id === 'B1' &&
+          c.key === 'orchestration_model' &&
+          c.value === 'opus'
+      )
+    ).toBe(true);
+    const child =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(child.exec_stamped_keys).toEqual(['orchestration_model']);
   });
 });

@@ -215,6 +215,12 @@ export function claudeSpec(options = {}) {
     buildArgv(bead, _workspace, settings) {
       const s = settings || {};
       const args = ['-p', '--output-format', 'stream-json', '--verbose'];
+      // Resume branch (spec §1.4): continue the PRIOR claude session id so the
+      // resumed run inherits the interrupted session's context. ccx shares this
+      // adapter, so `--resume <session_id>` covers claude AND ccx.
+      if (s.resume_session_id) {
+        args.push('--resume', String(s.resume_session_id));
+      }
       if (s.model) {
         args.push('--model', String(s.model));
       }

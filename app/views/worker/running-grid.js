@@ -23,12 +23,19 @@ import { html } from 'lit-html';
  * @property {number|null} started_at
  * @property {string|null} [merge_policy] - Resolved policy snapshot (§2).
  * @property {string|null} [demoted_reason] - Demotion reason badge (§2/§4).
+ * @property {string|null} [resumed_from] - Prior attempt this one resumes (§1).
  */
 
 /**
  * @typedef {Object} BreakerBanner
  * @property {string} repo
  * @property {string} reason
+ * @property {string|null} [resume_attempt_id] - The banner's own (latest
+ * failed) attempt — the ONLY ↻ target, never an older substitute (§1).
+ * @property {boolean} [resume_eligible] - Whether that attempt can be resumed
+ * (session_id present, not already resumed); ineligible renders disabled.
+ * @property {string|null} [resume_reason] - Ineligibility reason for the
+ * disabled button's title.
  */
 
 /**
@@ -67,6 +74,19 @@ export function bannersTemplate(state) {
           ⛔ ${state.breaker.repo || 'repo'} 세션 실패로 차단 —
           ${state.breaker.reason || ''}. 신규 launch·머지 진입 차단, 수동 ▶
           필요.
+          ${state.breaker.resume_attempt_id
+            ? html`<button
+                type="button"
+                class="worker-banner__resume"
+                data-attempt-id=${state.breaker.resume_attempt_id}
+                ?disabled=${!state.breaker.resume_eligible}
+                title=${state.breaker.resume_eligible
+                  ? '최근 실패 세션을 같은 워크트리에서 이어서 진행'
+                  : state.breaker.resume_reason || '이어하기 불가'}
+              >
+                ↻ 이어하기
+              </button>`
+            : ''}
         </div>`
       : ''}
   </div>`;
@@ -98,6 +118,13 @@ function runningTile(tile, now, selected_attempt = null) {
       <span class="rtile__dot" aria-hidden="true"></span>
       <span class="rtile__id">${tile.bead_id}</span>
       <span class="rtile__badge rtile__badge--${tile.lane}">${badge}</span>
+      ${tile.resumed_from
+        ? html`<span
+            class="rtile__resumed"
+            title=${`이어받은 세션 (from ${tile.resumed_from})`}
+            >↻</span
+          >`
+        : ''}
       <span class="rtile__elapsed">${elapsed}</span>
       <button
         type="button"

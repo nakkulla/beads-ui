@@ -211,3 +211,28 @@ describe('runner/ccx = claude impl + env routing', () => {
     expect(call.options.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:8787');
   });
 });
+
+describe('runner/claude resume argv (spec §1.4)', () => {
+  test('resume_session_id adds --resume <id> ahead of the permission mode', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+    await spawnClaude(
+      BEAD,
+      WS,
+      { model: 'opus', resume_session_id: 'sid-xyz' },
+      { spawn_impl }
+    ).done;
+    const call = spawn_impl.captured.calls[0];
+    expect(call.command).toBe('claude');
+    const i = call.args.indexOf('--resume');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(call.args[i + 1]).toBe('sid-xyz');
+    // Still an unattended bypass-permissions run.
+    expect(call.args).toContain('bypassPermissions');
+  });
+
+  test('no --resume without a resume_session_id (first launch)', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+    await spawnClaude(BEAD, WS, { model: 'opus' }, { spawn_impl }).done;
+    expect(spawn_impl.captured.calls[0].args).not.toContain('--resume');
+  });
+});

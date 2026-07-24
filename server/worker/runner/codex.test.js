@@ -120,3 +120,29 @@ describe('runner/codex session id (spec §2)', () => {
     expect(ids).toEqual(['th-1']);
   });
 });
+
+describe('runner/codex resume argv (spec §1.4)', () => {
+  test('resume_session_id switches to `exec resume <thread_id> --json`', async () => {
+    const spawn_impl = makeFixtureSpawn({ file: OK_FIXTURE, exit: 0 });
+    await spawnCodex(BEAD, WS, { resume_session_id: 'th-019f' }, { spawn_impl })
+      .done;
+    const call = spawn_impl.captured.calls[0];
+    expect(call.command).toBe('codex');
+    expect(call.args.slice(0, 4)).toEqual([
+      'exec',
+      'resume',
+      'th-019f',
+      '--json'
+    ]);
+    expect(call.args).toContain('--skip-git-repo-check');
+  });
+
+  test('no resume subcommand without a resume_session_id (first launch)', async () => {
+    const spawn_impl = makeFixtureSpawn({ file: OK_FIXTURE, exit: 0 });
+    await spawnCodex(BEAD, WS, {}, { spawn_impl }).done;
+    expect(spawn_impl.captured.calls[0].args.slice(0, 2)).toEqual([
+      'exec',
+      '--json'
+    ]);
+  });
+});
