@@ -68,9 +68,9 @@ orphan 스캐너는 `running`만 검사하므로 `paused`는 서버 재시작을
 
 ## §5 수용 기준
 
-1. 타일 ⏸ → attempt가 `paused`로 기록되고, 실패 배너가 뜨지 않으며, 빈 슬롯에 다음 runnable bead가 자동 시작된다. paused bead는 재디스패치되지 않는다.
+1. 타일 ⏸ → attempt가 `paused`로 기록되고, 실패 배너가 뜨지 않으며, `auto_advance` ON이면 빈 슬롯에 다음 runnable bead가 자동 시작된다. paused bead는 재디스패치되지 않는다.
 2. paused 타일 ▶ → 같은 워크트리에서 `claude --resume <session_id>`로 새 attempt(`resumed_from` 연결)가 시작된다.
-3. 타일 ■ → attempt가 `stopped`로 기록되고, bead가 레인에서 제거되며, 다음 bead가 자동 시작되고, 같은 bead가 재디스패치되지 않는다.
+3. 타일 ■ → attempt가 `stopped`로 기록되고, bead가 레인에서 제거되며, `auto_advance` ON이면 다음 bead가 자동 시작되고, 같은 bead는 재디스패치되지 않는다.
 4. 서버 재시작 후 paused attempt는 orphan 처리되지 않고 재개 가능하다.
 5. `RUNNERS`가 `['claude']`이고 codex/ccx 코드 경로·`assertRunnerAllowed`가 존재하지 않는다. 레거시 `worker_runner`/codex 모델 값이 있는 queue.json·bead가 정상 normalize된다.
 6. session_id 미캡처 attempt에 대한 pause는 UI에서 비활성이고 서버에서 거부된다.
