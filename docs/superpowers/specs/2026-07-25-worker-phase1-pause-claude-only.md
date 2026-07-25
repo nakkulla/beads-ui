@@ -20,7 +20,12 @@
 
 ## §1 attempt 상태 머신
 
-`running → done | failed | orphaned | paused | stopped` (paused·stopped 신규)
+```
+running → done | failed | orphaned | paused | stopped
+paused  → stopped            (leaf paused 타일의 ■)
+paused | failed | orphaned → (resume) 새 attempt: running   ※ 원본은 history-only
+```
+paused·stopped가 신규 상태다.
 
 | 상태 | 진입 | 터미널 | 재개(▶) | 실패 배너 |
 |---|---|---|---|---|
