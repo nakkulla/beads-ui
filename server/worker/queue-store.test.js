@@ -452,6 +452,57 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     });
   });
 
+  test('discardAttempt writes the state AND clears the lane in ONE revision (§2.2)', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'UI-1',
+      lane: 'serial'
+    }).queue.revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    store.recordAdmission(WS, { bead_id: 'UI-1', reason: 'git_error' });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.discardAttempt(WS, {
+      attempt_id: 'att-1',
+      bead_id: 'UI-1',
+      patch: { status: 'stopped', cause: null, finished_at: 5 }
+    });
+
+    expect(r.ok).toBe(true);
+    // Exactly ONE revision bump: a split write would leave a window where the
+    // attempt is stopped but the bead is still queued (re-dispatchable).
+    expect(r.queue.revision).toBe(before + 1);
+    expect(r.queue.attempts['att-1'].status).toBe('stopped');
+    expect(r.queue.serial).toEqual([]);
+    expect(r.queue.admission['UI-1']).toBeUndefined();
+
+    // The single write is what landed on disk, too.
+    const persisted = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(persisted.revision).toBe(before + 1);
+    expect(persisted.attempts['att-1'].status).toBe('stopped');
+    expect(persisted.serial).toEqual([]);
+  });
+
+  test('discardAttempt rejects an unknown attempt without touching the lane', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1', lane: 'serial' });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.discardAttempt(WS, {
+      attempt_id: 'nope',
+      bead_id: 'UI-1',
+      patch: { status: 'stopped' }
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+    expect(store.snapshot(WS).serial.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
   test('a legacy stopped attempt migrates to `stopped` and keeps its lane (§3)', () => {
     const store = createQueueStore();
     store.place(WS, { expected_revision: 0, bead_id: 'UI-1', lane: 'serial' });

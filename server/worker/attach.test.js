@@ -77,10 +77,7 @@ function fakeBd(config = {}) {
         effort: c.effort ?? 'high',
         workflow_mode: null,
         route: c.route ?? null,
-        plan_path: c.plan_path ?? null,
         status: c.status ?? '',
-        plan_review: c.plan_review,
-        plan_fresh: c.plan_fresh ?? null,
         deps: []
       };
     },

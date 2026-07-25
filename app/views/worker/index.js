@@ -540,11 +540,18 @@ export function createWorkerView(mount_element, options = {}) {
       };
     }
 
-    // A manual ▶ may push live sessions past the 1+N dispatch cap on purpose
-    // (§2.3) — surface it rather than blocking the resume.
-    const live_count = running.filter((r) => !r.paused).length;
+    // A manual ▶ may push live sessions past the dispatch cap on purpose (§2.3)
+    // — surface it rather than blocking the resume. The cap is PER LANE
+    // (serial 1 / parallel N), so comparing the 1+N total would miss the very
+    // case that produces it: resuming into a lane the auto-advance already
+    // refilled.
+    const live = running.filter((r) => !r.paused);
+    const live_count = live.length;
+    const serial_live = live.filter((r) => r.lane === 'serial').length;
+    const parallel_live = live_count - serial_live;
     const slots = (q.workspace_info || {}).parallel_slots;
-    const over_cap = typeof slots === 'number' && live_count > slots + 1;
+    const over_cap =
+      serial_live > 1 || (typeof slots === 'number' && parallel_live > slots);
 
     return {
       queue: q,

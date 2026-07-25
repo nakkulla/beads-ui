@@ -32,11 +32,6 @@ import path from 'node:path';
 import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
-import {
-  gitHead,
-  parsePlanReceipt,
-  planFreshness
-} from '../workflow-enrich.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createOrphanDetector } from './orphan.js';
@@ -163,42 +158,12 @@ export function createLiveBd(config) {
       const blocked = !closed && !ready_ids.has(bead_id);
 
       const route = typeof md.route === 'string' ? md.route : null;
-      const plan_path = typeof md.plan_path === 'string' ? md.plan_path : null;
-      // KEY PRESENCE must survive: a present non-string/null plan_review is an
-      // invalid receipt that has to BLOCK downstream, not read as key-absent
-      // (which would open the legacy fallback). Absence ⇒ undefined field.
-      const plan_review = Object.hasOwn(md, 'plan_review')
-        ? md.plan_review
-        : undefined;
-      // Same presence rule for the admission inputs: a malformed spec_review
-      // must reach the validator as present-and-invalid, never as absent.
+      // Presence rule for the admission inputs: a malformed spec_review must
+      // reach the validator as present-and-invalid, never as absent.
       const spec_id = typeof md.spec_id === 'string' ? md.spec_id : null;
       const spec_review = Object.hasOwn(md, 'spec_review')
         ? md.spec_review
         : undefined;
-
-      // Precompute plan freshness against the CANONICAL workspace root (where the
-      // plan doc lives + is committed) — only for a full_plan bead with a valid
-      // receipt. This precomputed boolean takes precedence over any worktree
-      // recompute at spawn, so worktree-ancestry gaps never misfire the guard.
-      // fresh → true, stale → false, unknown → null (guard falls through).
-      let plan_fresh = null;
-      if (
-        route === 'full_plan' &&
-        typeof plan_review === 'string' &&
-        plan_path
-      ) {
-        const receipt = parsePlanReceipt(plan_review);
-        if (receipt) {
-          const freshness = planFreshness(
-            cwd,
-            gitHead(cwd),
-            receipt.sha,
-            plan_path
-          );
-          plan_fresh = freshness === 'unknown' ? null : freshness === 'fresh';
-        }
-      }
 
       return {
         ready,
@@ -223,10 +188,7 @@ export function createLiveBd(config) {
         workflow_mode:
           typeof md.workflow_mode === 'string' ? md.workflow_mode : null,
         route,
-        plan_path,
         status,
-        plan_review,
-        plan_fresh,
         spec_id,
         spec_review,
         merge_policy:

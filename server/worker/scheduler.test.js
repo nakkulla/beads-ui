@@ -152,10 +152,7 @@ function makeFakeBd(config) {
         impl_model: c.impl_model ?? undefined,
         workflow_mode: c.workflow_mode ?? null,
         route: c.route ?? null,
-        plan_path: c.plan_path ?? null,
         status: c.status ?? '',
-        plan_review: c.plan_review,
-        plan_fresh: c.plan_fresh ?? null,
         merge_policy: c.merge_policy ?? null,
         drift_policy: c.drift_policy ?? null,
         deps: c.deps ?? []
@@ -500,6 +497,25 @@ describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
     expect(
       env.store.snapshot(WS).attempts[String(res.attempt_id)].resumed_from
     ).toBe(first);
+  });
+
+  test('■ on a RESUMED ancestor is refused, so the running child keeps its lane (§1.1)', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const ancestor = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, ancestor);
+    const res = await env.scheduler.resume(WS, ancestor);
+    expect(res.ok).toBe(true);
+
+    // A stale client tile could still target the ancestor; discarding it would
+    // pull the RUNNING child's bead out of the lane.
+    expect(await env.scheduler.stop(WS, ancestor)).toBe(false);
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts[ancestor].status).toBe('paused');
+    expect(snap.serial.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
   });
 
   test('a paused attempt can be discarded from its tile (§2.2)', async () => {

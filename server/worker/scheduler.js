@@ -40,13 +40,7 @@ const log = debug('worker:scheduler');
  * @property {string} [impl_model] - impl_model (per-bead exec setting).
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
- * @property {string|null} [plan_path] - Plan path when present.
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
- * @property {unknown} [plan_review] - Raw plan_review metadata value. Key
- * absence ⇒ `undefined`; any present value (non-string/null included) must
- * reach the guard so an invalid receipt blocks instead of reading as absent.
- * @property {boolean|null} [plan_fresh] - Precomputed plan freshness (true/false
- * when a full_plan bead has a valid receipt; null otherwise/undetermined).
  * @property {string|null} [spec_id] - Spec doc path metadata (admission input).
  * @property {unknown} [spec_review] - Raw spec_review metadata value. Key
  * absence ⇒ `undefined`; any present value must reach the admission
@@ -833,14 +827,9 @@ export function createScheduler(deps) {
       prior_wf: prior,
       stamped_keys,
       wt_path: wt.path,
-      spawnBead: {
-        id: bead_id,
-        route: snap.route,
-        plan_path: snap.plan_path,
-        plan_review: snap.plan_review,
-        status: snap.status,
-        plan_fresh: snap.plan_fresh
-      }
+      // The adapter reads only `id`/`prompt`; the plan-receipt fields the
+      // retired runner guard needed are no longer carried (worker-phase1 §4).
+      spawnBead: { id: bead_id }
     });
   }
 
@@ -1453,9 +1442,19 @@ export function createScheduler(deps) {
     }
     // No live process: a paused attempt discarded from its tile. Stamps were
     // already reverted at pause time.
-    const rec = deps.store.snapshot(workspace).attempts[attempt_id];
+    const snap = deps.store.snapshot(workspace);
+    const rec = snap.attempts[attempt_id];
     if (!rec || rec.status !== 'paused') {
       return false;
+    }
+    // Leaf guard (§1.1): a resumed ancestor stays `paused` forever, and a
+    // client rendering a stale tile could otherwise ■ it — pulling the bead of
+    // the RUNNING child out of the lane. Server-side because resume fans out
+    // only after its bd writes and spawn complete, leaving a real window.
+    for (const a of Object.values(snap.attempts || {})) {
+      if (a && a.resumed_from === attempt_id) {
+        return false;
+      }
     }
     deps.store.discardAttempt(workspace, {
       attempt_id,

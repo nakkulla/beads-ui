@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { MESSAGE_TYPES } from '../app/protocol.js';
 import {
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest
@@ -239,6 +240,50 @@ describe('ws worker-queue channel', () => {
     const reply = replyFor(sock, 'm2');
     expect(reply.ok).toBe(true);
     expect(reply.payload.stopped).toBe(true);
+  });
+
+  test('worker-attempt-pause reaches the scheduler and its refusal carries a reason (worker-phase1 §5)', async () => {
+    const pause = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, reason: 'no_session_id' });
+    __registerWorkerAttachmentForTest(process.cwd(), {
+      // @ts-expect-error minimal fake attachment
+      scheduler: { tick: vi.fn(), stop: vi.fn(), pause }
+    });
+
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'p1', 'worker-attempt-pause', { attempt_id: 'att-1' });
+    expect(pause).toHaveBeenCalledWith(process.cwd(), 'att-1');
+    const ok_reply = replyFor(sock, 'p1');
+    expect(ok_reply.ok).toBe(true);
+    expect(ok_reply.payload.paused).toBe(true);
+    expect(ok_reply.payload.reason).toBe(null);
+
+    await send(sock, 'p2', 'worker-attempt-pause', { attempt_id: 'att-2' });
+    const refused = replyFor(sock, 'p2');
+    expect(refused.payload.paused).toBe(false);
+    expect(refused.payload.reason).toBe('no_session_id');
+  });
+
+  test('every worker ws route the server switches on is a client-sendable MESSAGE_TYPE', () => {
+    // The client transport drops any type missing from MESSAGE_TYPES before it
+    // reaches the socket, so a server-only route is silently dead in the browser.
+    for (const type of [
+      'worker-attempt-pause',
+      'worker-attempt-stop',
+      'worker-attempt-resume',
+      'worker-queue-toggle',
+      'worker-queue-place',
+      'worker-queue-reorder',
+      'worker-queue-remove',
+      'worker-queue-set-policy',
+      'worker-queue-set-exec-default'
+    ]) {
+      expect(MESSAGE_TYPES).toContain(type);
+    }
   });
 
   test('an admission-refused place records the reason so every client sees the badge (review finding 4)', async () => {

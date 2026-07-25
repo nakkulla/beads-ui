@@ -673,6 +673,123 @@ describe('views/worker', () => {
     expect(tile.querySelector('.rtile__pause')).toBeNull();
   });
 
+  test('a manual resume past the lane cap raises the cap badge (§2.3)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    // Two serial sessions live: the ⏸-then-resume path the cap badge exists
+    // for. The 1+N total (2) is still under slots+1, so only a PER-LANE check
+    // catches it.
+    queueStore.set(
+      queueOf({
+        serial: [
+          { bead_id: 'S1', added_at: 0 },
+          { bead_id: 'S2', added_at: 1 }
+        ],
+        workspace_info: { verify_cmd: null, parallel_slots: 2 },
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            session_id: 'sid-1',
+            started_at: Date.now()
+          },
+          a2: {
+            attempt_id: 'a2',
+            bead_id: 'S2',
+            status: 'running',
+            session_id: 'sid-2',
+            started_at: Date.now()
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    expect(mount.querySelector('.worker-overcap')).not.toBeNull();
+  });
+
+  test('within the lane caps no badge is shown (§2.3)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    // 1 serial + 2 parallel with slots=2 — exactly at the cap, not over it.
+    queueStore.set(
+      queueOf({
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        parallel: [
+          { bead_id: 'P1', added_at: 0 },
+          { bead_id: 'P2', added_at: 1 }
+        ],
+        workspace_info: { verify_cmd: null, parallel_slots: 2 },
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            started_at: Date.now()
+          },
+          a2: {
+            attempt_id: 'a2',
+            bead_id: 'P1',
+            status: 'running',
+            started_at: Date.now()
+          },
+          a3: {
+            attempt_id: 'a3',
+            bead_id: 'P2',
+            status: 'running',
+            started_at: Date.now()
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    expect(mount.querySelector('.worker-overcap')).toBeNull();
+  });
+
+  test('a paused attempt does not count toward the lane cap (§2.3)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    // One serial running + one serial PAUSED: paused holds no slot, so the
+    // badge must stay off.
+    queueStore.set(
+      queueOf({
+        serial: [
+          { bead_id: 'S1', added_at: 0 },
+          { bead_id: 'S2', added_at: 1 }
+        ],
+        workspace_info: { verify_cmd: null, parallel_slots: 2 },
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            started_at: Date.now()
+          },
+          a2: {
+            attempt_id: 'a2',
+            bead_id: 'S2',
+            status: 'paused',
+            session_id: 'sid-2'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    expect(mount.querySelector('.worker-overcap')).toBeNull();
+  });
+
   test('the ⏸ button is disabled until the session id lands (§2.1)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
