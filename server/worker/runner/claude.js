@@ -1,9 +1,5 @@
 /**
- * claude runner adapter (spec §5.4), shared by the `claude` and `ccx` runners.
- *
- * ccx (claude-code-proxy) presents the SAME CLI interface as claude and differs
- * only by environment routing (runner-spike-findings.md), so both are one
- * implementation parameterized by `{ name, env }`.
+ * claude runner adapter (spec §5.4) — the worker's only runner.
  *
  * CLI: `claude -p --output-format stream-json --verbose --model <alias>
  * [--effort <lv>] --permission-mode bypassPermissions "<prompt>"` with stdin
@@ -202,22 +198,20 @@ function verdict(ctx) {
 }
 
 /**
- * Build the claude adapter spec (used by both claude and ccx).
+ * Build the claude adapter spec.
  *
- * @param {{ name?: 'claude'|'ccx', env?: Record<string, string|undefined> }} [options]
+ * @param {{ env?: Record<string, string|undefined> }} [options]
  * @returns {AdapterSpec}
  */
 export function claudeSpec(options = {}) {
-  const name = options.name === 'ccx' ? 'ccx' : 'claude';
   const routing_env = options.env || {};
   return {
-    name,
+    name: 'claude',
     buildArgv(bead, _workspace, settings) {
       const s = settings || {};
       const args = ['-p', '--output-format', 'stream-json', '--verbose'];
       // Resume branch (spec §1.4): continue the PRIOR claude session id so the
-      // resumed run inherits the interrupted session's context. ccx shares this
-      // adapter, so `--resume <session_id>` covers claude AND ccx.
+      // resumed run inherits the interrupted session's context.
       if (s.resume_session_id) {
         args.push('--resume', String(s.resume_session_id));
       }
@@ -247,15 +241,15 @@ export function claudeSpec(options = {}) {
 }
 
 /**
- * Spawn a claude (or ccx) headless session.
+ * Spawn a claude headless session.
  *
  * @param {any} bead
  * @param {string} workspace
  * @param {any} settings
- * @param {EngineDeps & { name?: 'claude'|'ccx', routing_env?: Record<string, string|undefined> }} deps
+ * @param {EngineDeps & { name?: 'claude', routing_env?: Record<string, string|undefined> }} deps
  * @returns {RunnerHandle}
  */
 export function spawnClaude(bead, workspace, settings, deps) {
-  const spec = claudeSpec({ name: deps.name, env: deps.routing_env });
+  const spec = claudeSpec({ env: deps.routing_env });
   return runSession(spec, bead, workspace, settings, deps);
 }

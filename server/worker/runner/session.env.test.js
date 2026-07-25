@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { spawnClaude } from './claude.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
 import { createRunner } from './index.js';
 
@@ -36,14 +37,15 @@ afterEach(() => {
 describe('runner/session spawn env inheritance (F2)', () => {
   test('child env = { ...process.env, ...settings.env, ...routing_env }', async () => {
     const spawn_impl = makeFixtureSpawn({ lines: [resultLine()] });
-    // ccx supplies routing env; settings carries the per-session worker token.
-    const runner = createRunner('ccx', {
-      spawn_impl,
-      ccx_env: { [COLLIDE]: 'from-routing' }
-    });
-    await runner.spawn({ id: 'UI-1' }, WS, {
-      env: { BDUI_WORKER_TOKEN: 'tok-123' }
-    }).done;
+    // The adapter layers a routing env over the inherited process env; the
+    // registry passes an empty one, so drive spawnClaude directly to cover the
+    // precedence rule the engine implements.
+    await spawnClaude(
+      { id: 'UI-1' },
+      WS,
+      { env: { BDUI_WORKER_TOKEN: 'tok-123' } },
+      { spawn_impl, routing_env: { [COLLIDE]: 'from-routing' } }
+    ).done;
 
     const env = spawn_impl.captured.calls[0].options.env;
     // process.env is inherited so PATH reaches the spawned CLI.

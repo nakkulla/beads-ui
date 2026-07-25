@@ -560,7 +560,7 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
-  test('exec settings default-option + model catalog follow the queue exec_defaults (§3.2)', () => {
+  test('exec settings default-option follows the queue exec_defaults (§3.2)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const issueStores = createSubscriptionIssueStores();
     const queueStore = createWorkerQueueStore();
@@ -572,7 +572,7 @@ describe('views/detail-panel', () => {
         parallel: [],
         done: [],
         attempts: {},
-        exec_defaults: { review_model: 'opus', worker_runner: 'codex' }
+        exec_defaults: { review_model: 'opus' }
       })
     );
     const panel = createDetailPanel(mount, {
@@ -597,13 +597,13 @@ describe('views/detail-panel', () => {
       mount.querySelector('select[data-key="review_model"]')
     );
     expect(review.options[0].textContent).toContain('기본: opus');
-    // Global runner (codex) drives the effective model catalog.
+    // The model catalog is the claude one; the retired runner row is gone.
     const model = /** @type {HTMLSelectElement} */ (
       mount.querySelector('select[data-key="orchestration_model"]')
     );
     const opts = Array.from(model.options).map((o) => o.value);
-    expect(opts).toContain('gpt-5.6');
-    expect(opts).not.toContain('opus');
+    expect(opts).toEqual(['', 'opus', 'sonnet', 'haiku', 'fable']);
+    expect(mount.querySelector('select[data-key="worker_runner"]')).toBe(null);
 
     panel.destroy();
   });

@@ -30,10 +30,12 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
+  pauseWorkerAttempt,
   resetWorkerBreakerForWorkspace,
   resumeWorkerAttempt,
   stopWorkerAttempt,
-  tickWorkerQueue
+  tickWorkerQueue,
+  workerParallelSlots
 } from '../worker/attach.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -89,11 +91,13 @@ function subscribersFor(key) {
 }
 
 /**
- * Decorate a queue snapshot with computed, non-persisted workspace info: the
- * resolved verify_cmd (explicit config > auto-detection > none) with its
- * `source`, so the ctrl bar can flag a detected command (read-only display —
- * no UI edit surface; worker-autorun-policy §4/§6, worker-attempt-resume-
- * verify-autodetect §2).
+ * Decorate a queue snapshot with computed, non-persisted workspace info:
+ *   - the resolved verify_cmd (explicit config > auto-detection > none) with its
+ *     `source`, so the ctrl bar can flag a detected command (read-only display —
+ *     no UI edit surface; worker-autorun-policy §4/§6, worker-attempt-resume-
+ *     verify-autodetect §2),
+ *   - `parallel_slots`, so the tab can flag live sessions exceeding the 1+N cap
+ *     after a manual resume (worker-phase1 §2.3).
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
@@ -107,7 +111,14 @@ function decorateQueue(workspace_key, queue) {
   } catch {
     verify_cmd = null;
   }
-  return { ...queue, workspace_info: { verify_cmd } };
+  /** @type {number|null} */
+  let parallel_slots = null;
+  try {
+    parallel_slots = workerParallelSlots(workspace_key);
+  } catch {
+    parallel_slots = null;
+  }
+  return { ...queue, workspace_info: { verify_cmd, parallel_slots } };
 }
 
 /**
@@ -560,7 +571,7 @@ export function handleWorkerQueueSetExecDefault(ws, req) {
         makeError(
           req,
           'bad_request',
-          'payload requires { key: worker_runner|orchestration_model|orchestration_effort|review_model|impl_model }'
+          'payload requires { key: orchestration_model|orchestration_effort|review_model|impl_model }'
         )
       )
     );
@@ -576,9 +587,54 @@ export function handleWorkerQueueSetExecDefault(ws, req) {
 }
 
 /**
- * Handle `worker-attempt-stop`. Payload: `{ attempt_id: string }`. Stops (■) a
- * running attempt: group-kill + attempt failed + workflow_mode revert (spec
- * §5.2, F1). Inert (`stopped:false`) when no live attachment or no such attempt.
+ * Handle `worker-attempt-pause`. Payload: `{ attempt_id: string }`. Pauses (⏸)
+ * a running attempt: group-kill + attempt `paused` + workflow_mode/exec revert,
+ * bead stays queued, and the freed slot advances the queue
+ * (worker-phase1 §2.1). Refusals carry a `reason` (`not_running` /
+ * `no_session_id` / `no_attachment`).
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerAttemptPause(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  /** @type {{ ok: boolean, reason?: string }} */
+  let result = { ok: false, reason: 'no_attachment' };
+  try {
+    result = await pauseWorkerAttempt(key, p.attempt_id);
+  } catch (err) {
+    log('worker-attempt-pause failed for %s/%s: %o', key, p.attempt_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        attempt_id: p.attempt_id,
+        paused: !!result.ok,
+        reason: result.ok ? null : result.reason || null
+      })
+    )
+  );
+  if (result.ok) {
+    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+  }
+}
+
+/**
+ * Handle `worker-attempt-stop`. Payload: `{ attempt_id: string }`. Discards (■)
+ * an attempt: group-kill + attempt `stopped` + workflow_mode revert, and the
+ * bead leaves every lane in the same store mutation so the following tick
+ * cannot re-dispatch it (worker-phase1 §2.2). Also accepts a leaf `paused`
+ * attempt. Inert (`stopped:false`) when no live attachment or no such attempt.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -609,12 +665,12 @@ export async function handleWorkerAttemptStop(ws, req) {
 
 /**
  * Handle `worker-attempt-resume`. Payload: `{ attempt_id, expected_revision }`.
- * Manually resumes (↻) a failed/orphaned attempt in its existing worktree
- * (spec §1) under the SAME CAS revision contract as the queue mutations: a
- * stale `expected_revision` replies `conflict:true` with the authoritative
- * queue and does NOT resume — the client retries once against the fresh
- * revision. On refusal the reply carries the admission-badge `reason` (one of
- * the six §1.2 causes) with `resumed:false`; on success it carries the new
+ * Manually resumes (↻ / paused tile ▶) a paused, failed, or orphaned attempt in
+ * its existing worktree (spec §1) under the SAME CAS revision contract as the
+ * queue mutations: a stale `expected_revision` replies `conflict:true` with the
+ * authoritative queue and does NOT resume — the client retries once against the
+ * fresh revision. On refusal the reply carries the admission-badge `reason` (one
+ * of the five §1.2 causes) with `resumed:false`; on success it carries the new
  * attempt id and fans a fresh snapshot. Inert (`resumed:false`) when no live
  * attachment is registered.
  *

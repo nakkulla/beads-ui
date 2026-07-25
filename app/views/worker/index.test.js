@@ -124,7 +124,10 @@ function drag(mount, bead_id, pane_id) {
   let stored = '';
   const dt = {
     getData: () => stored,
-    /** @param {string} _t @param {string} v */
+    /**
+     * @param {string} _t - Data type (unused by the stub).
+     * @param {string} v - Payload.
+     */
     setData: (_t, v) => {
       stored = v;
     },
@@ -574,8 +577,8 @@ describe('views/worker', () => {
             attempt_id: 'a2',
             bead_id: 'P1',
             status: 'running',
-            runner: 'codex',
-            model: 'gpt-5.6',
+            runner: 'claude',
+            model: 'sonnet',
             started_at: Date.now() - 1000
           },
           a3: {
@@ -610,6 +613,166 @@ describe('views/worker', () => {
     );
     expect(breaker).not.toBeNull();
     expect(breaker.textContent).toContain('/repo');
+  });
+
+  test('paused/stopped attempts raise no banner; only a leaf paused renders a tile (worker-phase1 §1)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        auto_advance: true,
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          paused_leaf: {
+            attempt_id: 'paused_leaf',
+            bead_id: 'S1',
+            status: 'paused',
+            repo: '/repo',
+            session_id: 'sid-1'
+          },
+          paused_ancestor: {
+            attempt_id: 'paused_ancestor',
+            bead_id: 'S2',
+            status: 'paused',
+            repo: '/repo',
+            session_id: 'sid-2'
+          },
+          child: {
+            attempt_id: 'child',
+            bead_id: 'S2',
+            status: 'done',
+            resumed_from: 'paused_ancestor'
+          },
+          discarded: {
+            attempt_id: 'discarded',
+            bead_id: 'S3',
+            status: 'stopped',
+            repo: '/repo'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    // A user pause/discard is not a failure.
+    expect(mount.querySelector('.worker-banner--breaker')).toBeNull();
+    // Only the LEAF paused attempt renders — the resumed ancestor is history.
+    const tiles = mount.querySelectorAll('.worker-rungrid .rtile');
+    expect(tiles.length).toBe(1);
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="paused_leaf"]')
+    );
+    expect(tile.classList.contains('rtile--paused')).toBe(true);
+    // A paused tile offers ▶ (resume) + ■ (discard), never ⏸.
+    expect(tile.querySelector('.rtile__resume')).not.toBeNull();
+    expect(tile.querySelector('.rtile__stop')).not.toBeNull();
+    expect(tile.querySelector('.rtile__pause')).toBeNull();
+  });
+
+  test('the ⏸ button is disabled until the session id lands (§2.1)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        auto_advance: true,
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        parallel: [{ bead_id: 'P1', added_at: 0 }],
+        attempts: {
+          no_sid: {
+            attempt_id: 'no_sid',
+            bead_id: 'S1',
+            status: 'running',
+            started_at: Date.now()
+          },
+          with_sid: {
+            attempt_id: 'with_sid',
+            bead_id: 'P1',
+            status: 'running',
+            session_id: 'sid-1',
+            started_at: Date.now()
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const before = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="no_sid"] .rtile__pause')
+    );
+    expect(before.disabled).toBe(true);
+    const after = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="with_sid"] .rtile__pause')
+    );
+    expect(after.disabled).toBe(false);
+  });
+
+  test('tile ⏸ sends worker-attempt-pause and ▶ resumes under the CAS contract', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        revision: 4,
+        auto_advance: true,
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          live: {
+            attempt_id: 'live',
+            bead_id: 'S1',
+            status: 'running',
+            session_id: 'sid-1',
+            started_at: Date.now()
+          }
+        }
+      })
+    );
+    const transport = vi.fn().mockResolvedValue(reply(queueOf({})));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="live"] .rtile__pause')
+    ).click();
+    await flush();
+    expect(transport).toHaveBeenCalledWith('worker-attempt-pause', {
+      attempt_id: 'live'
+    });
+
+    // Re-render as paused, then resume from the tile's ▶.
+    transport.mockClear();
+    queueStore.set(
+      queueOf({
+        revision: 5,
+        serial: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          live: {
+            attempt_id: 'live',
+            bead_id: 'S1',
+            status: 'paused',
+            session_id: 'sid-1'
+          }
+        }
+      })
+    );
+    await flush();
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="live"] .rtile__resume')
+    ).click();
+    await flush();
+    expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
+      attempt_id: 'live',
+      expected_revision: 5
+    });
   });
 
   test('clicking a running tile opens the transcript drawer for its attempt', () => {
@@ -1153,7 +1316,6 @@ describe('views/worker', () => {
     expect(dialog.hasAttribute('open')).toBe(true);
     // The 5 exec keys render (workflow_mode is NOT a global default).
     for (const key of [
-      'worker_runner',
       'orchestration_model',
       'orchestration_effort',
       'review_model',
@@ -1172,7 +1334,7 @@ describe('views/worker', () => {
       .fn()
       .mockResolvedValue(
         reply(
-          queueOf({ revision: 4, exec_defaults: { worker_runner: 'codex' } })
+          queueOf({ revision: 4, exec_defaults: { review_model: 'codex' } })
         )
       );
     createWorkerView(mount, {
@@ -1182,13 +1344,13 @@ describe('views/worker', () => {
     });
 
     const dialog = openExecDefaults(mount);
-    const sel = execSelect(dialog, 'worker_runner');
+    const sel = execSelect(dialog, 'review_model');
     sel.value = 'codex';
     sel.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
-      key: 'worker_runner',
+      key: 'review_model',
       value: 'codex',
       expected_revision: 3
     });
@@ -1198,7 +1360,7 @@ describe('views/worker', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
-      queueOf({ revision: 3, exec_defaults: { worker_runner: 'codex' } })
+      queueOf({ revision: 3, exec_defaults: { review_model: 'codex' } })
     );
     const transport = vi
       .fn()
@@ -1210,14 +1372,14 @@ describe('views/worker', () => {
     });
 
     const dialog = openExecDefaults(mount);
-    const sel = execSelect(dialog, 'worker_runner');
+    const sel = execSelect(dialog, 'review_model');
     expect(sel.value).toBe('codex');
     sel.value = '';
     sel.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
-      key: 'worker_runner',
+      key: 'review_model',
       value: null,
       expected_revision: 3
     });
@@ -1236,7 +1398,7 @@ describe('views/worker', () => {
       })
       .mockResolvedValueOnce(
         reply(
-          queueOf({ revision: 6, exec_defaults: { worker_runner: 'codex' } })
+          queueOf({ revision: 6, exec_defaults: { review_model: 'codex' } })
         )
       );
     createWorkerView(mount, {
@@ -1246,7 +1408,7 @@ describe('views/worker', () => {
     });
 
     const dialog = openExecDefaults(mount);
-    const sel = execSelect(dialog, 'worker_runner');
+    const sel = execSelect(dialog, 'review_model');
     sel.value = 'codex';
     sel.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
@@ -1262,7 +1424,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         exec_defaults: {
-          worker_runner: 'codex',
+          orchestration_model: 'sonnet',
           orchestration_effort: 'high',
           review_model: 'opus',
           impl_model: 'sonnet'
@@ -1276,38 +1438,14 @@ describe('views/worker', () => {
     });
 
     const dialog = openExecDefaults(mount);
-    expect(execSelect(dialog, 'worker_runner').value).toBe('codex');
+    expect(execSelect(dialog, 'orchestration_model').value).toBe('sonnet');
+    expect(execSelect(dialog, 'worker_runner')).toBeNull();
     expect(execSelect(dialog, 'orchestration_effort').value).toBe('high');
     expect(execSelect(dialog, 'review_model').value).toBe('opus');
     expect(execSelect(dialog, 'impl_model').value).toBe('sonnet');
   });
 
-  test('orchestration_model options follow the global runner (codex catalog)', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
-        exec_defaults: {
-          worker_runner: 'codex',
-          orchestration_model: 'gpt-5.6'
-        }
-      })
-    );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport: vi.fn()
-    });
-
-    const dialog = openExecDefaults(mount);
-    const model = execSelect(dialog, 'orchestration_model');
-    const opts = Array.from(model.options).map((o) => o.value);
-    expect(opts).toContain('gpt-5.6');
-    expect(opts).not.toContain('opus');
-    expect(model.value).toBe('gpt-5.6');
-  });
-
-  test('with no global runner the orchestration_model options fall back to the claude catalog', () => {
+  test('the orchestration_model options are the claude catalog', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(queueOf({ exec_defaults: {} }));
@@ -1328,8 +1466,8 @@ describe('views/worker', () => {
   test('an incompatible stored model shows as a selected (비호환) option, and (기본) still unsets it', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    // worker_runner unset → the effective runner is claude, whose catalog does
-    // NOT contain the codex-only gpt-5.6, so the stored model is incompatible.
+    // A codex-era model left in the store is outside the claude catalog, so it
+    // renders as its own (비호환) option (worker-phase1 §3).
     queueStore.set(
       queueOf({
         revision: 7,
@@ -1376,9 +1514,9 @@ describe('views/worker', () => {
     const dialog = openExecDefaults(mount);
     // The global dialog edits the global layer itself, so its unset option is
     // always the static final-fallback label — not a `(… — 전역)` echo.
-    const runnerUnset = execSelect(dialog, 'worker_runner').options[0];
-    expect(runnerUnset.value).toBe('');
-    expect(runnerUnset.textContent).toContain('기본: claude');
+    const modelUnset = execSelect(dialog, 'orchestration_model').options[0];
+    expect(modelUnset.value).toBe('');
+    expect(modelUnset.textContent).toContain('기본: CLI 기본 모델');
     expect(execSelect(dialog, 'review_model').options[0].textContent).toContain(
       '기본: codex'
     );

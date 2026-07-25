@@ -53,10 +53,9 @@ describe('worker/policy resolution (bead > workspace global > default)', () => {
   });
 });
 
-describe('worker/policy resolveExecSettings (bead > global > default, runner-first compat)', () => {
-  test('hardcoded default (runner=claude, rest unset) when nothing is set', () => {
+describe('worker/policy resolveExecSettings (bead > global > unset)', () => {
+  test('everything unset when nothing is set', () => {
     const r = resolveExecSettings({ bead: {}, defaults: {} });
-    expect(r.worker_runner).toBe('claude');
     expect(r.orchestration_model).toBe(undefined);
     expect(r.orchestration_effort).toBe(undefined);
     expect(r.review_model).toBe(undefined);
@@ -64,30 +63,38 @@ describe('worker/policy resolveExecSettings (bead > global > default, runner-fir
     expect(r.stamped_keys).toEqual([]);
     // Tolerates null/undefined levels.
     expect(
-      resolveExecSettings({ bead: null, defaults: undefined }).worker_runner
-    ).toBe('claude');
+      resolveExecSettings({ bead: null, defaults: undefined }).stamped_keys
+    ).toEqual([]);
   });
 
-  test('workspace global fills every key and stamps all 5 when the bead is bare', () => {
+  test('the runner axis is gone: worker_runner is neither resolved nor stamped', () => {
+    const r = resolveExecSettings(
+      /** @type {any} */ ({
+        bead: { runner: 'codex' },
+        defaults: { worker_runner: 'ccx' }
+      })
+    );
+    expect(/** @type {any} */ (r).worker_runner).toBe(undefined);
+    expect(r.stamped_keys).toEqual([]);
+  });
+
+  test('workspace global fills every key and stamps all 4 when the bead is bare', () => {
     const r = resolveExecSettings({
       bead: {},
       defaults: {
-        worker_runner: 'codex',
-        orchestration_model: 'gpt-5.6',
+        orchestration_model: 'sonnet',
         orchestration_effort: 'high',
         review_model: 'opus',
         impl_model: 'sonnet'
       }
     });
     expect(r).toMatchObject({
-      worker_runner: 'codex',
-      orchestration_model: 'gpt-5.6',
+      orchestration_model: 'sonnet',
       orchestration_effort: 'high',
       review_model: 'opus',
       impl_model: 'sonnet'
     });
     expect(r.stamped_keys).toEqual([
-      'worker_runner',
       'orchestration_model',
       'orchestration_effort',
       'review_model',
@@ -98,14 +105,12 @@ describe('worker/policy resolveExecSettings (bead > global > default, runner-fir
   test('bead metadata beats the workspace global and stamps nothing', () => {
     const r = resolveExecSettings({
       bead: {
-        runner: 'codex',
-        model: 'gpt-5.4',
+        model: 'fable',
         effort: 'low',
         review_model: 'skip',
         impl_model: 'haiku'
       },
       defaults: {
-        worker_runner: 'claude',
         orchestration_model: 'opus',
         orchestration_effort: 'high',
         review_model: 'opus',
@@ -113,8 +118,7 @@ describe('worker/policy resolveExecSettings (bead > global > default, runner-fir
       }
     });
     expect(r).toMatchObject({
-      worker_runner: 'codex',
-      orchestration_model: 'gpt-5.4',
+      orchestration_model: 'fable',
       orchestration_effort: 'low',
       review_model: 'skip',
       impl_model: 'haiku'
@@ -122,40 +126,26 @@ describe('worker/policy resolveExecSettings (bead > global > default, runner-fir
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('incompatible cross-layer (bead runner=claude, global model=gpt-5.6) resolves model unset, no stamp', () => {
-    const r = resolveExecSettings({
-      bead: { runner: 'claude' },
-      defaults: { orchestration_model: 'gpt-5.6' }
+  test('a retired codex model value resolves unset at both layers', () => {
+    const bead_pinned = resolveExecSettings({
+      bead: { model: 'gpt-5.6' },
+      defaults: {}
     });
-    expect(r.worker_runner).toBe('claude');
-    expect(r.orchestration_model).toBe(undefined);
-    expect(r.stamped_keys).toEqual([]);
-  });
+    expect(bead_pinned.orchestration_model).toBe(undefined);
+    expect(bead_pinned.stamped_keys).toEqual([]);
 
-  test('runner-first: a global runner makes its global model compatible → both stamp', () => {
-    const r = resolveExecSettings({
+    const global_only = resolveExecSettings({
       bead: {},
-      defaults: { worker_runner: 'codex', orchestration_model: 'gpt-5.6' }
-    });
-    expect(r.worker_runner).toBe('codex');
-    expect(r.orchestration_model).toBe('gpt-5.6');
-    expect(r.stamped_keys).toEqual(['worker_runner', 'orchestration_model']);
-  });
-
-  test('runner-independent keys still resolve when the cross-layer model is skipped', () => {
-    const r = resolveExecSettings({
-      bead: { runner: 'claude' },
       defaults: {
         orchestration_model: 'gpt-5.6',
         orchestration_effort: 'medium'
       }
     });
-    // runner from bead (not stamped), model skipped as incompatible (unset, not
-    // stamped), effort adopted from global (stamped).
-    expect(r.worker_runner).toBe('claude');
-    expect(r.orchestration_model).toBe(undefined);
-    expect(r.orchestration_effort).toBe('medium');
-    expect(r.stamped_keys).toEqual(['orchestration_effort']);
+    // The stale model is dropped (unset, not stamped); the valid effort still
+    // resolves from the global layer.
+    expect(global_only.orchestration_model).toBe(undefined);
+    expect(global_only.orchestration_effort).toBe('medium');
+    expect(global_only.stamped_keys).toEqual(['orchestration_effort']);
   });
 
   test('an invalid bead value falls through to the global, but a bead-SET key is never stamped', () => {

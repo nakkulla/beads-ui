@@ -247,9 +247,9 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Stop (■) a running attempt: group-kill + attempt failed + workflow_mode
-   * revert on the server (spec §5.2). Fire-and-forget; the server pushes a fresh
-   * queue snapshot that clears the tile.
+   * Discard (■) an attempt: group-kill + attempt `stopped` + the bead leaves
+   * the queue, atomically on the server (worker-phase1 §2.2). Fire-and-forget;
+   * the server pushes a fresh snapshot that clears the tile.
    *
    * @param {string} attempt_id
    */
@@ -261,7 +261,27 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Resume (↻) a failed attempt from the breaker banner (spec §1), under the
+   * Pause (⏸) a running attempt: the session is killed but the attempt stays
+   * resumable and the bead stays queued (worker-phase1 §2.1). A refusal
+   * surfaces its reason as a toast — most often `no_session_id`, which the tile
+   * also guards by disabling the button.
+   *
+   * @param {string} attempt_id
+   */
+  async function pauseAttempt(attempt_id) {
+    if (!transport || !attempt_id) {
+      return;
+    }
+    const res = /** @type {any} */ (
+      await transport('worker-attempt-pause', { attempt_id })
+    );
+    if (res && res.paused === false && res.reason) {
+      showToast(`일시정지 거부: ${res.reason}`, 'error', 2400);
+    }
+  }
+
+  /**
+   * Resume (↻ / paused tile ▶) an attempt (spec §1), under the
    * queue mutations' CAS discipline: send the current revision, adopt the
    * authoritative queue a conflict reply carries, and retry ONCE against the
    * fresh revision. A refusal surfaces its admission-badge reason as a toast.
@@ -341,7 +361,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], breaker: any, serial: any[], parallel: any[], done: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, over_cap: boolean, breaker: any, serial: any[], parallel: any[], done: any[] }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -470,7 +490,11 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {any|null} */
     let latest_failed = null;
     for (const a of /** @type {any[]} */ (attempts)) {
-      if (a.status === 'running') {
+      // A paused attempt that was already resumed is history: its child is the
+      // live one, so only a LEAF paused attempt renders a tile (§1.1).
+      const leaf_paused =
+        a.status === 'paused' && !resumed_from_ids.has(a.attempt_id);
+      if (a.status === 'running' || leaf_paused) {
         running.push({
           bead_id: a.bead_id,
           attempt_id: a.attempt_id,
@@ -482,10 +506,13 @@ export function createWorkerView(mount_element, options = {}) {
           started_at: typeof a.started_at === 'number' ? a.started_at : null,
           merge_policy: a.merge_policy || null,
           demoted_reason: a.demoted_reason || null,
-          resumed_from: a.resumed_from || null
+          resumed_from: a.resumed_from || null,
+          paused: leaf_paused,
+          can_pause: typeof a.session_id === 'string' && a.session_id.length > 0
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
-        // The most recent failure/orphan surfaces the breaker banner.
+        // Only a real failure surfaces the banner — a user pause/discard is not
+        // a failure and never renders one (worker-phase1 §1).
         latest_failed = a;
       }
     }
@@ -513,11 +540,19 @@ export function createWorkerView(mount_element, options = {}) {
       };
     }
 
+    // A manual ▶ may push live sessions past the 1+N dispatch cap on purpose
+    // (§2.3) — surface it rather than blocking the resume.
+    const live_count = running.filter((r) => !r.paused).length;
+    const slots = (q.workspace_info || {}).parallel_slots;
+    const over_cap = typeof slots === 'number' && live_count > slots + 1;
+
     return {
       queue: q,
       idToTitle,
       candidates,
       running,
+      live_count,
+      over_cap,
       breaker,
       serial: toRows(q.serial, 'serial'),
       parallel: toRows(q.parallel, 'parallel'),
@@ -585,9 +620,15 @@ export function createWorkerView(mount_element, options = {}) {
         </button>
         <button type="button" class="worker-pause">⏸ 정지</button>
         <span class="worker-stat"
-          >실행 <b>${m.running.length}</b> · serial 다음
-          <b>${serialHead}</b></span
+          >실행 <b>${m.live_count}</b> · serial 다음 <b>${serialHead}</b></span
         >
+        ${m.over_cap
+          ? html`<span
+              class="worker-overcap"
+              title="수동 재개(▶)는 슬롯 cap을 초과할 수 있습니다 — 자동 진행은 cap을 지킵니다"
+              >cap 초과</span
+            >`
+          : ''}
         <span class="worker-tgl"
           >parallel slot <b>${m.parallel.length}</b></span
         >
@@ -909,7 +950,7 @@ export function createWorkerView(mount_element, options = {}) {
       void setAutoAdvance(false);
       return;
     }
-    // The stop ■ halts the attempt; it must never also open the drawer.
+    // Tile controls act on the attempt and must never also open the drawer.
     if (target?.closest?.('.rtile__stop')) {
       const tile = /** @type {HTMLElement|null} */ (
         target?.closest?.('.rtile')
@@ -917,6 +958,26 @@ export function createWorkerView(mount_element, options = {}) {
       const att = tile?.dataset?.attemptId;
       if (att) {
         void stopAttempt(att);
+      }
+      return;
+    }
+    if (target?.closest?.('.rtile__pause')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const att = tile?.dataset?.attemptId;
+      if (att) {
+        void pauseAttempt(att);
+      }
+      return;
+    }
+    if (target?.closest?.('.rtile__resume')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const att = tile?.dataset?.attemptId;
+      if (att) {
+        void resumeAttempt(att);
       }
       return;
     }

@@ -55,6 +55,7 @@ import {
   handleSubscribeWorkerQueue,
   handleUnsubscribeSessionLog,
   handleUnsubscribeWorkerQueue,
+  handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
   handleWorkerQueuePlace,
@@ -444,6 +445,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-remove':
       handleWorkerQueueRemove(ws, req);
+      return;
+    case 'worker-attempt-pause':
+      await handleWorkerAttemptPause(ws, req);
       return;
     case 'worker-attempt-stop':
       await handleWorkerAttemptStop(ws, req);

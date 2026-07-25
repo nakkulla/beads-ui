@@ -208,8 +208,6 @@ export function createLiveBd(config) {
           typeof md.target_base === 'string' && md.target_base.length > 0
             ? md.target_base
             : config.target_base,
-        runner:
-          typeof md.worker_runner === 'string' ? md.worker_runner : undefined,
         model:
           typeof md.orchestration_model === 'string'
             ? md.orchestration_model
@@ -293,7 +291,6 @@ export function defaultProbePid(pid) {
  *   makeRunner?: (name: string) => any,
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
- *   ccx_env?: Record<string, string|undefined>,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
  *   port?: number | (() => number),
  *   parallel_slots?: number,
@@ -380,7 +377,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       createRunner(name, {
         spawn_impl: options.spawn_impl || ((c, a, o) => spawn(c, a, o)),
         kill_impl: options.kill_impl,
-        ccx_env: options.ccx_env,
         lock_state
       }));
 
@@ -439,6 +435,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     bd,
     admission,
     verifyCmd,
+    parallel_slots:
+      typeof options.parallel_slots === 'number' ? options.parallel_slots : 2,
     repo,
     workspace: workspace_root
   };
@@ -552,7 +550,21 @@ export function resetWorkerBreakerForWorkspace(workspace_root) {
 }
 
 /**
- * Stop a running attempt (tile ■), IF an attachment is registered.
+ * The workspace's parallel slot count (the N in the 1+N dispatch cap), or null
+ * when no attachment is registered. Read-only display input: the Worker tab
+ * flags a manual resume that pushed live sessions past the cap
+ * (worker-phase1 §2.3).
+ *
+ * @param {string} workspace_root
+ * @returns {number|null}
+ */
+export function workerParallelSlots(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  return att ? att.parallel_slots : null;
+}
+
+/**
+ * Discard an attempt (tile ■), IF an attachment is registered.
  *
  * @param {string} workspace_root
  * @param {string} attempt_id
@@ -567,8 +579,24 @@ export async function stopWorkerAttempt(workspace_root, attempt_id) {
 }
 
 /**
- * Manually resume a failed/orphaned attempt (spec §1), IF an attachment is
- * registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one —
+ * Pause a running attempt (tile ⏸, worker-phase1 §2.1), IF an attachment is
+ * registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one.
+ *
+ * @param {string} workspace_root
+ * @param {string} attempt_id
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+export async function pauseWorkerAttempt(workspace_root, attempt_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.pause(keyFor(workspace_root), attempt_id);
+}
+
+/**
+ * Manually resume a paused/failed/orphaned attempt (spec §1), IF an attachment
+ * is registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one —
  * ws-handler tests and inactive workspaces stay hermetic.
  *
  * @param {string} workspace_root

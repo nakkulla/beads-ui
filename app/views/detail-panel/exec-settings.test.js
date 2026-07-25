@@ -1,6 +1,6 @@
 import { render } from 'lit-html';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { execSettingsTemplate, modelsForRunner } from './exec-settings.js';
+import { MODELS, execSettingsTemplate } from './exec-settings.js';
 
 /**
  * @param {HTMLElement} mount
@@ -26,43 +26,16 @@ describe('views/detail-panel/exec-settings', () => {
     document.body.innerHTML = '<div id="m"></div>';
   });
 
-  test('modelsForRunner is runner-specific (ccx reuses claude)', () => {
-    expect(modelsForRunner('claude')).toContain('opus');
-    expect(modelsForRunner('codex')).toContain('gpt-5.6');
-    expect(modelsForRunner('codex')).not.toContain('opus');
-    expect(modelsForRunner('ccx')).toEqual(modelsForRunner('claude'));
-  });
-
-  test('choosing codex changes the available orchestration_model options', () => {
+  test('the model catalog is the claude one, with no runner row (worker-phase1 §4)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    // Local effective-metadata mirror + re-rendering handler, mimicking how the
-    // detail panel applies an in-flight edit before the server round-trip.
-    const md = /** @type {Record<string, string>} */ ({
-      worker_runner: 'claude'
-    });
-    const onChange = vi.fn((key, value) => {
-      md[key] = value;
-      doRender();
-    });
-    function doRender() {
-      render(execSettingsTemplate({ metadata: md }, { onChange }), mount);
-    }
-    doRender();
-
-    // Initially claude models are offered.
-    let modelSel = selectFor(mount, 'orchestration_model');
-    expect(optionValues(modelSel)).toContain('opus');
-    expect(optionValues(modelSel)).not.toContain('gpt-5.6');
-
-    // Switch the runner to codex.
-    const runnerSel = selectFor(mount, 'worker_runner');
-    runnerSel.value = 'codex';
-    runnerSel.dispatchEvent(new Event('change', { bubbles: true }));
-
-    expect(onChange).toHaveBeenCalledWith('worker_runner', 'codex');
-    modelSel = selectFor(mount, 'orchestration_model');
-    expect(optionValues(modelSel)).toContain('gpt-5.6');
-    expect(optionValues(modelSel)).not.toContain('opus');
+    render(
+      execSettingsTemplate({ metadata: {} }, { onChange: vi.fn() }),
+      mount
+    );
+    expect(selectFor(mount, 'worker_runner')).toBe(null);
+    const model = selectFor(mount, 'orchestration_model');
+    expect(optionValues(model)).toEqual(['', ...MODELS]);
+    expect(optionValues(model)).not.toContain('gpt-5.6');
   });
 
   test('workflow_mode defaults to standard and emits standard/fast_track', () => {
@@ -87,8 +60,8 @@ describe('views/detail-panel/exec-settings', () => {
     const review = selectFor(mount, 'review_model');
     expect(review.options[0].value).toBe('');
     expect(review.options[0].textContent).toContain('기본: codex');
-    const runner = selectFor(mount, 'worker_runner');
-    expect(runner.options[0].textContent).toContain('기본: claude');
+    const impl = selectFor(mount, 'impl_model');
+    expect(impl.options[0].textContent).toContain('기본: 티어 자동');
   });
 
   test('a workspace-global exec default surfaces as the (기본: <값> — 전역) label (§3.2)', () => {
@@ -106,36 +79,27 @@ describe('views/detail-panel/exec-settings', () => {
     expect(review.options[0].textContent).toContain('전역');
   });
 
-  test('the orchestration_model catalog follows the effective runner (global when bead unset) (§3.2)', () => {
+  test('a set metadata value pre-selects and highlights (workflow_mode)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    // Bead worker_runner unset; the global default runner (codex) drives the
-    // model catalog just as a bead pin would.
     render(
       execSettingsTemplate(
-        { metadata: {} },
-        { onChange: vi.fn() },
-        { worker_runner: 'codex' }
+        { metadata: { workflow_mode: 'fast_track' } },
+        { onChange: vi.fn() }
       ),
       mount
     );
-    const model = selectFor(mount, 'orchestration_model');
-    expect(optionValues(model)).toContain('gpt-5.6');
-    expect(optionValues(model)).not.toContain('opus');
+    const wfSel = selectFor(mount, 'workflow_mode');
+    expect(wfSel.value).toBe('fast_track');
+    expect(wfSel.classList.contains('detail-kv__v--sel')).toBe(true);
   });
 
-  test('a set metadata value pre-selects and highlights (worker_runner)', () => {
+  test('an edit emits the key/value pair for the server mutation', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    render(
-      execSettingsTemplate(
-        { metadata: { worker_runner: 'codex' } },
-        {
-          onChange: vi.fn()
-        }
-      ),
-      mount
-    );
-    const runnerSel = selectFor(mount, 'worker_runner');
-    expect(runnerSel.value).toBe('codex');
-    expect(runnerSel.classList.contains('detail-kv__v--sel')).toBe(true);
+    const onChange = vi.fn();
+    render(execSettingsTemplate({ metadata: {} }, { onChange }), mount);
+    const model = selectFor(mount, 'orchestration_model');
+    model.value = 'sonnet';
+    model.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onChange).toHaveBeenCalledWith('orchestration_model', 'sonnet');
   });
 });

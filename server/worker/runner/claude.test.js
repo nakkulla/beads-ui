@@ -193,8 +193,8 @@ describe('runner/claude session id (spec §2)', () => {
   });
 });
 
-describe('runner/ccx = claude impl + env routing', () => {
-  test('ccx runs the claude command with forwarded routing env', async () => {
+describe('runner/claude routing env', () => {
+  test('a routing env is forwarded to the claude command', async () => {
     const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
     await spawnClaude(
       BEAD,
@@ -202,7 +202,6 @@ describe('runner/ccx = claude impl + env routing', () => {
       {},
       {
         spawn_impl,
-        name: 'ccx',
         routing_env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8787' }
       }
     ).done;

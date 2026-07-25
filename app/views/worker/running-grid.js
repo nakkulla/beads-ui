@@ -24,6 +24,11 @@ import { html } from 'lit-html';
  * @property {string|null} [merge_policy] - Resolved policy snapshot (§2).
  * @property {string|null} [demoted_reason] - Demotion reason badge (§2/§4).
  * @property {string|null} [resumed_from] - Prior attempt this one resumes (§1).
+ * @property {boolean} [paused] - Leaf paused attempt: shows ▶ instead of ⏸ and
+ * has no live elapsed clock (worker-phase1 §1.1/§2.1).
+ * @property {boolean} [can_pause] - Running attempt whose session id is already
+ * captured. Pausing before that would strand an unresumable attempt, so the ⏸
+ * button renders disabled until it lands (§2.1).
  */
 
 /**
@@ -103,14 +108,16 @@ export function bannersTemplate(state) {
  */
 function runningTile(tile, now, selected_attempt = null) {
   const badge = tile.lane === 'serial' ? 'serial' : '∥';
-  const elapsed =
-    typeof tile.started_at === 'number'
+  const paused = !!tile.paused;
+  const elapsed = paused
+    ? '일시정지'
+    : typeof tile.started_at === 'number'
       ? formatElapsed(now - tile.started_at)
       : '—';
   const meta = [tile.runner, tile.model].filter(Boolean).join(' · ');
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   return html`<div
-    class="rtile${sel ? ' rtile--sel' : ''}"
+    class="rtile${sel ? ' rtile--sel' : ''}${paused ? ' rtile--paused' : ''}"
     data-bead-id=${tile.bead_id}
     data-attempt-id=${tile.attempt_id || ''}
   >
@@ -134,7 +141,27 @@ function runningTile(tile, now, selected_attempt = null) {
       >
         ⓘ
       </button>
-      <button type="button" class="rtile__stop" title="중지" aria-label="중지">
+      ${paused
+        ? html`<button
+            type="button"
+            class="rtile__resume"
+            title="같은 세션으로 이어서 재개"
+            aria-label="재개"
+          >
+            ▶
+          </button>`
+        : html`<button
+            type="button"
+            class="rtile__pause"
+            ?disabled=${tile.can_pause === false}
+            title=${tile.can_pause === false
+              ? '세션 ID 기록 전 — 일시정지 불가'
+              : '일시정지 (같은 세션으로 재개 가능)'}
+            aria-label="일시정지"
+          >
+            ⏸
+          </button>`}
+      <button type="button" class="rtile__stop" title="폐기" aria-label="폐기">
         ■
       </button>
     </div>
