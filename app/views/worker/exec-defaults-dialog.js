@@ -4,27 +4,24 @@ import {
   DEFAULT_LABELS,
   EFFORTS,
   IMPL_MODELS,
-  REVIEW_MODELS,
-  RUNNERS,
-  modelsForRunner
+  MODELS,
+  REVIEW_MODELS
 } from '../detail-panel/exec-settings.js';
 
 /**
  * Worker-tab "전역 실행 설정" dialog: the single editing surface for the
- * workspace-global exec defaults (the 5 exec keys, NOT workflow_mode). It mirrors
+ * workspace-global exec defaults (the 4 exec keys, NOT workflow_mode). It mirrors
  * the display-settings dialog's native `<dialog>` shell (showModal/jsdom fallback,
  * close/cancel handling, destroy) and the Worker view's `setPolicy` CAS contract:
  * a change sends `worker-queue-set-exec-default` with the current queue revision,
  * adopts the authoritative queue the reply carries, and replays the SAME edit once
  * against the fresh revision on a CAS conflict.
  *
- * Values resolve bead metadata > this global default > hardcoded (runner=claude),
- * so selecting `(기본)` records an unset (null) — the store drops the key. The
- * server validates each key's own enum but never the runner×model cross-key
- * compatibility (the runner can still change later); the option filter here is the
- * UI half of that: orchestration_model options follow the effective global runner
- * (claude's catalog when unset), and an incompatible stored model shows as its own
- * selected `(비호환)` option (still resettable to `(기본)` to unset).
+ * Values resolve bead metadata > this global default > unset, so selecting
+ * `(기본)` records an unset (null) — the store drops the key. A stored value
+ * outside the current catalog (e.g. a codex model left over from before the
+ * claude-only change) shows as its own selected `(비호환)` option, still
+ * resettable to `(기본)`.
  *
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
  * @typedef {Object} ExecDefaultsOptions
@@ -32,15 +29,9 @@ import {
  * @property {(type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<any>} [transport]
  */
 
-/** The 5 workspace-global exec keys, in display order (workflow_mode excluded). */
+/** The 4 workspace-global exec keys, in display order (workflow_mode excluded). */
 const EXEC_ROWS = [
-  { key: 'worker_runner', values: () => RUNNERS },
-  // orchestration_model is runner-filtered, so its option list is resolved from
-  // the effective global runner at render time rather than a static catalog.
-  {
-    key: 'orchestration_model',
-    values: (/** @type {string} */ runner) => modelsForRunner(runner)
-  },
+  { key: 'orchestration_model', values: () => MODELS },
   { key: 'orchestration_effort', values: () => EFFORTS },
   { key: 'review_model', values: () => REVIEW_MODELS },
   { key: 'impl_model', values: () => IMPL_MODELS }
@@ -269,7 +260,6 @@ export function createExecDefaultsDialog(mount_element, options) {
   function doRender() {
     const queue = currentQueue();
     const defaults = currentDefaults();
-    const runner = defaults.worker_runner || '';
     render(
       html`
         <div class="exec-defaults__container">
@@ -291,7 +281,7 @@ export function createExecDefaultsDialog(mount_element, options) {
               기본입니다.
             </p>
             ${EXEC_ROWS.map((row) =>
-              selectRow(row.key, row.values(runner), defaults[row.key] || '')
+              selectRow(row.key, row.values(), defaults[row.key] || '')
             )}
             <p class="exec-defaults__hint exec-defaults__hint--policy">
               전역 정책 (좁은 화면에서 상단 바 대신 여기서 편집)

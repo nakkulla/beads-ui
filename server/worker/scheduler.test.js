@@ -66,7 +66,10 @@ function makeFakeRunner() {
         events,
         done
       };
-      byBead.set(bead.id, { handle, resolve: resolveDone, settings });
+      byBead.set(
+        bead.id,
+        /** @type {any} */ ({ handle, resolve: resolveDone, settings, bead })
+      );
       spawnOrder.push(bead.id);
       return handle;
     }
@@ -94,6 +97,10 @@ function makeFakeRunner() {
     },
     settingsFor(/** @type {string} */ bead_id) {
       return byBead.get(bead_id)?.settings;
+    },
+    /** The spawn literal a dispatch/resume passed to the adapter. */
+    spawnedBead(/** @type {string} */ bead_id) {
+      return /** @type {any} */ (byBead.get(bead_id))?.bead;
     },
     killFor(/** @type {string} */ bead_id) {
       return byBead.get(bead_id)?.handle.kill;
@@ -132,24 +139,20 @@ function makeFakeBd(config) {
       const c = config[bead_id] || {};
       // `null` in config means the bead metadata key is ABSENT (undefined),
       // vs. omitted keys which fall back to a present default — this lets a
-      // test model a bead that leaves runner/model/effort unset so a global
-      // default can fill (and stamp) it.
+      // test model a bead that leaves model/effort unset so a global default
+      // can fill (and stamp) it.
       return {
         ready: c.ready ?? true,
         blocked: c.blocked ?? false,
         repo: c.repo ?? '/repo',
         target_base: c.target_base ?? 'main',
-        runner: c.runner === null ? undefined : (c.runner ?? 'claude'),
         model: c.model === null ? undefined : (c.model ?? 'opus'),
         effort: c.effort === null ? undefined : (c.effort ?? 'high'),
         review_model: c.review_model ?? undefined,
         impl_model: c.impl_model ?? undefined,
         workflow_mode: c.workflow_mode ?? null,
         route: c.route ?? null,
-        plan_path: c.plan_path ?? null,
         status: c.status ?? '',
-        plan_review: c.plan_review,
-        plan_fresh: c.plan_fresh ?? null,
         merge_policy: c.merge_policy ?? null,
         drift_policy: c.drift_policy ?? null,
         deps: c.deps ?? []
@@ -335,7 +338,7 @@ describe('scheduler slot policy', () => {
 });
 
 describe('scheduler stop (■ tile)', () => {
-  test('stop group-kills the attempt, fails it, reverts workflow_mode, no breaker', async () => {
+  test('stop group-kills the attempt, discards it, reverts workflow_mode, no breaker', async () => {
     const breaker = createBreaker();
     const env = setup({ config: { S1: {} }, slots: 1, breaker });
     seedQueue(env.store, ['S1'], []);
@@ -350,10 +353,12 @@ describe('scheduler stop (■ tile)', () => {
     // The runner handle was group-killed.
     expect(kill).toHaveBeenCalledWith('SIGTERM');
 
-    // Attempt marked failed (cause 'stopped'); no longer running.
+    // Attempt is terminal `stopped` with no cause — a user halt is not a
+    // failure (worker-phase1 §1) — and the bead left the lane (§2.2).
     const snap = env.store.snapshot(WS);
-    expect(snap.attempts[attempt_id].status).toBe('failed');
-    expect(snap.attempts[attempt_id].cause).toBe('stopped');
+    expect(snap.attempts[attempt_id].status).toBe('stopped');
+    expect(snap.attempts[attempt_id].cause).toBe(null);
+    expect(snap.serial.map((e) => e.bead_id)).toEqual([]);
     expect(env.scheduler.isRunning('S1')).toBe(false);
     // workflow_mode reverted (prior unset → unsetMetadata).
     expect(
@@ -384,12 +389,147 @@ describe('scheduler stop (■ tile)', () => {
     await flush();
 
     expect(breaker.isTripped('/repo')).toBe(false);
-    expect(env.store.snapshot(WS).attempts[attempt_id].cause).toBe('stopped');
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('stopped');
   });
 
   test('stop returns false for an unknown attempt', async () => {
     const env = setup({ config: {}, slots: 1 });
     expect(await env.scheduler.stop(WS, 'nope')).toBe(false);
+  });
+
+  test('discard frees the slot and advances the queue (§2.2)', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
+    seedQueue(env.store, ['S1', 'S2'], []);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    await env.scheduler.stop(WS, attempt_id);
+
+    // The discarded bead is gone from the lane and never re-dispatched; the
+    // next queued bead takes the freed slot in the same operation.
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+    expect(env.store.snapshot(WS).serial.map((e) => e.bead_id)).toEqual(['S2']);
+  });
+});
+
+describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
+  test('pause records `paused`, keeps the bead queued, and advances the queue', async () => {
+    const breaker = createBreaker();
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 1, breaker });
+    seedQueue(env.store, ['S1', 'S2'], []);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    const kill = env.runner.killFor('S1');
+    const paused_token = env.runner.settingsFor('S1').env.BDUI_WORKER_TOKEN;
+
+    expect(await env.scheduler.pause(WS, attempt_id)).toEqual({ ok: true });
+
+    expect(kill).toHaveBeenCalledWith('SIGTERM');
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts[attempt_id].status).toBe('paused');
+    expect(snap.attempts[attempt_id].cause).toBe(null);
+    // The bead stays queued (resume runs in the same worktree)...
+    expect(snap.serial.map((e) => e.bead_id)).toEqual(['S1', 'S2']);
+    // ...but is skipped by dispatch, so the freed slot goes to the next bead.
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+    // A user pause is not a repo failure.
+    expect(breaker.isTripped('/repo')).toBe(false);
+    // The paused attempt's token was revoked; the one left belongs to S2, the
+    // session the freed slot just started.
+    expect(env.tokens.verify(paused_token)).toBe(null);
+    expect(env.tokens.size()).toBe(1);
+    // workflow_mode reverted, exactly like a discard.
+    expect(
+      env.bd.calls.some(
+        (/** @type {any} */ c) =>
+          c.method === 'unsetMetadata' &&
+          c.bead_id === 'S1' &&
+          c.key === 'workflow_mode'
+      )
+    ).toBe(true);
+  });
+
+  test('pause is refused before the session id lands (§2.1 fail-closed)', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    // No session_id captured yet → pausing would strand an unresumable attempt.
+    expect(await env.scheduler.pause(WS, attempt_id)).toEqual({
+      ok: false,
+      reason: 'no_session_id'
+    });
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('running');
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+  });
+
+  test('pause returns not_running for an unknown attempt', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    expect(await env.scheduler.pause(WS, 'nope')).toEqual({
+      ok: false,
+      reason: 'not_running'
+    });
+  });
+
+  test('a paused bead stays skipped until resumed, and a resumed ancestor stops blocking it (§1.1)', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, first);
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+
+    // A plain tick must not restart a paused bead — ▶ is the only way back.
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+
+    // Resuming mints a child; the ancestor stays `paused` but is now history,
+    // so it no longer blocks dispatch for that bead.
+    const res = await env.scheduler.resume(WS, first);
+    expect(res.ok).toBe(true);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.store.snapshot(WS).attempts[first].status).toBe('paused');
+    expect(
+      env.store.snapshot(WS).attempts[String(res.attempt_id)].resumed_from
+    ).toBe(first);
+  });
+
+  test('■ on a RESUMED ancestor is refused, so the running child keeps its lane (§1.1)', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const ancestor = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, ancestor);
+    const res = await env.scheduler.resume(WS, ancestor);
+    expect(res.ok).toBe(true);
+
+    // A stale client tile could still target the ancestor; discarding it would
+    // pull the RUNNING child's bead out of the lane.
+    expect(await env.scheduler.stop(WS, ancestor)).toBe(false);
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts[ancestor].status).toBe('paused');
+    expect(snap.serial.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+  });
+
+  test('a paused attempt can be discarded from its tile (§2.2)', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1'], []);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, attempt_id);
+
+    expect(await env.scheduler.stop(WS, attempt_id)).toBe(true);
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts[attempt_id].status).toBe('stopped');
+    expect(snap.serial.map((e) => e.bead_id)).toEqual([]);
   });
 });
 
@@ -844,49 +984,50 @@ describe('scheduler admission gate (worker-autorun-policy §1)', () => {
 });
 
 describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring)', () => {
-  test('a fresh-receipt codex bead passes the in-spawn second guard', async () => {
+  test('dispatch always spawns claude', async () => {
     const spawn_impl = makeFixtureSpawn({
-      lines: [JSON.stringify({ type: 'turn.completed', usage: {} })],
+      lines: [
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          permission_denials: []
+        })
+      ],
       exit: 0
     });
-    const sha = 'a'.repeat(40);
     const env = setup({
-      config: {
-        S1: {
-          runner: 'codex',
-          route: 'full_plan',
-          plan_path: 'docs/plan.md',
-          plan_review: `user@${sha}`,
-          status: 'in_progress',
-          plan_fresh: true
-        }
-      },
+      config: { S1: {} },
       slots: 1,
       makeRunner: (/** @type {string} */ name) =>
         createRunner(name, { spawn_impl })
     });
     seedQueue(env.store, ['S1'], []);
     await env.scheduler.tick(WS);
-    // The spawn-literal carries plan_fresh:true, so createRunner.spawn()'s
-    // in-spawn SECOND guard authorizes codex and a real codex process spawns.
     expect(spawn_impl.captured.calls.length).toBe(1);
-    expect(spawn_impl.captured.calls[0].command).toBe('codex');
+    expect(spawn_impl.captured.calls[0].command).toBe('claude');
     await flush();
   });
 
-  test('a codex bead WITHOUT a fresh receipt is blocked at dispatch (no spawn)', async () => {
+  test('a full_plan bead spawns without a runner authorization guard', async () => {
     const spawn_impl = makeFixtureSpawn({
-      lines: [JSON.stringify({ type: 'turn.completed', usage: {} })],
+      lines: [
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          permission_denials: []
+        })
+      ],
       exit: 0
     });
     const env = setup({
       config: {
         S1: {
-          runner: 'codex',
           route: 'full_plan',
           plan_path: 'docs/plan.md',
           status: 'in_progress'
-          // no plan_review, no plan_fresh → not authorized, fail-closed.
+          // No plan_review: the guard it used to gate is retired with codex/ccx.
         }
       },
       slots: 1,
@@ -895,8 +1036,9 @@ describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring
     });
     seedQueue(env.store, ['S1'], []);
     await env.scheduler.tick(WS);
-    expect(spawn_impl.captured.calls.length).toBe(0);
-    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(spawn_impl.captured.calls.length).toBe(1);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    await flush();
   });
 });
 
@@ -1223,30 +1365,30 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       // termination path reverts workflow_mode AND the exec stamps.
     });
     seedExecDefaults(env.store, {
-      worker_runner: 'codex',
-      orchestration_model: 'gpt-5.6',
+      review_model: 'opus',
+      orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
     seedQueue(env.store, ['S1'], []);
     await env.scheduler.tick(WS);
 
     // Resolved values reached the runner spawn (model/effort) + attempt record.
-    expect(env.runner.settingsFor('S1').model).toBe('gpt-5.6');
+    expect(env.runner.settingsFor('S1').model).toBe('sonnet');
     expect(env.runner.settingsFor('S1').effort).toBe('high');
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     const a = /** @type {any} */ (env.store.snapshot(WS).attempts[attempt_id]);
-    expect(a.runner).toBe('codex');
-    expect(a.model).toBe('gpt-5.6');
+    expect(a.runner).toBe('claude');
+    expect(a.model).toBe('sonnet');
     expect(a.effort).toBe('high');
     // Durable stamp list recorded on the attempt (survives restart/orphan).
     expect(a.exec_stamped_keys).toEqual([
-      'worker_runner',
       'orchestration_model',
-      'orchestration_effort'
+      'orchestration_effort',
+      'review_model'
     ]);
 
     // Bead metadata was stamped with the three global-filled keys.
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'worker_runner')).toBe(true);
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'review_model')).toBe(true);
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
       true
     );
@@ -1259,7 +1401,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     await flush();
     await flush();
     expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toContain('S1');
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'worker_runner')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
       true
     );
     expect(
@@ -1308,11 +1450,11 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     );
   });
 
-  test('an incompatible cross-layer model resolves to UNSET (no spawn model, no stamp)', async () => {
-    // Bead pins runner=claude with no model; the global orchestration_model is
-    // a codex-only model → incompatible → model unset (claude default path).
+  test('a retired codex model in the globals resolves to UNSET (no spawn model, no stamp)', async () => {
+    // The global orchestration_model predates the claude-only change, so it is
+    // outside the catalog → unset (the CLI default applies).
     const env = setup({
-      config: { S1: { runner: 'claude', model: null } },
+      config: { S1: { model: null } },
       slots: 1,
       verifyOk: true
     });
@@ -1332,22 +1474,21 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
 
   test('a partial exec-stamp failure unsets the already-stamped keys, fails the attempt, releases the claim', async () => {
     const breaker = createBreaker();
-    // worker_runner stamps OK; orchestration_model's stamp throws → break.
+    // orchestration_model stamps OK; orchestration_effort's stamp throws → break.
     const env = setup({
       config: {
         S1: {
-          runner: null,
           model: null,
           effort: null,
-          throwOnSetKey: 'orchestration_model'
+          throwOnSetKey: 'orchestration_effort'
         }
       },
       slots: 1,
       breaker
     });
     seedExecDefaults(env.store, {
-      worker_runner: 'codex',
-      orchestration_model: 'gpt-5.6',
+      review_model: 'opus',
+      orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
     seedQueue(env.store, ['S1'], []);
@@ -1365,16 +1506,18 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(a.cause).toBe('exec_stamp_failed');
     // The durable stamp list was recorded BEFORE the first metadata write.
     expect(a.exec_stamped_keys).toEqual([
-      'worker_runner',
       'orchestration_model',
-      'orchestration_effort'
+      'orchestration_effort',
+      'review_model'
     ]);
 
     // The one key that WAS stamped is cleaned up; workflow_mode reverted too.
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'worker_runner')).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'worker_runner')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
       true
     );
+    expect(
+      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
+    ).toBe(true);
     expect(
       env.bd.calls.some(
         (/** @type {any} */ c) =>
@@ -1408,8 +1551,8 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       breaker
     });
     seedExecDefaults(env.store, {
-      worker_runner: 'codex',
-      orchestration_model: 'gpt-5.6',
+      review_model: 'opus',
+      orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
     seedQueue(env.store, ['S1'], []);
@@ -1434,7 +1577,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(
       calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
     ).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'worker_runner')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
       true
     );
     // workflow_mode is reverted too; the dispatch failed in isolation.
@@ -1457,8 +1600,8 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       runVerifyCmd: vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }))
     });
     seedExecDefaults(env.store, {
-      worker_runner: 'codex',
-      orchestration_model: 'gpt-5.6',
+      review_model: 'opus',
+      orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
     seedQueue(env.store, ['S1'], []);
@@ -1479,7 +1622,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(snap.attempts[attempt_id].done_kind).toBe('auto_merge');
     expect(snap.done.map((e) => e.bead_id)).toContain('S1');
     // Exec stamps reverted even on the auto_merge (bead-closed) path.
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'worker_runner')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
       true
     );
     expect(
@@ -1549,6 +1692,38 @@ describe('scheduler resume (spec §1)', () => {
     expect((await env.scheduler.resume(WS, 'r1')).reason).toBe('no_session_id');
   });
 
+  test('a paused attempt is resumable and does NOT reset the breaker (§1.2/§1.3)', async () => {
+    const breaker = createBreaker();
+    // A sibling's genuine failure tripped the repo.
+    breaker.trip('/repo', { bead_id: 'OTHER', cause: 'session_failed' });
+    const env = setup({ config: {}, slots: 1, breaker });
+    seedAttempt(
+      env.store,
+      'p1',
+      resumablePrior({ status: 'paused', cause: null })
+    );
+
+    const res = await env.scheduler.resume(WS, 'p1');
+    expect(res.ok).toBe(true);
+    // Pausing is not a failure, so resuming it must not clear that block.
+    expect(breaker.isTripped('/repo')).toBe(true);
+    // The resume prompt says paused, never "failed" (§1.4).
+    const prompt = env.runner.spawnedBead('B1').prompt;
+    expect(prompt).toContain('일시정지');
+    expect(prompt).not.toContain('실패로 남았다');
+  });
+
+  test('a failed resume still resets the breaker (§1.3)', async () => {
+    const breaker = createBreaker();
+    breaker.trip('/repo', { bead_id: 'B1', cause: 'session_failed' });
+    const env = setup({ config: {}, slots: 1, breaker });
+    seedAttempt(env.store, 'f1', resumablePrior());
+
+    expect((await env.scheduler.resume(WS, 'f1')).ok).toBe(true);
+    expect(breaker.isTripped('/repo')).toBe(false);
+    expect(env.runner.spawnedBead('B1').prompt).toContain('실패로 남았다');
+  });
+
   test('refuses worktree_missing when the bead worktree is gone', async () => {
     const env = setup({ config: {}, slots: 1 });
     env.worktree.exists.mockReturnValue(false);
@@ -1597,37 +1772,38 @@ describe('scheduler resume (spec §1)', () => {
     );
   });
 
-  test('refuses runner_unavailable when the prior runner is absent/unsupported', async () => {
+  test('an absent prior runner no longer refuses the resume (claude-only)', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedAttempt(env.store, 'r1', resumablePrior({ runner: null }));
-    expect((await env.scheduler.resume(WS, 'r1')).reason).toBe(
-      'runner_unavailable'
-    );
-    seedAttempt(env.store, 'r2', resumablePrior({ runner: 'bogus' }));
-    expect((await env.scheduler.resume(WS, 'r2')).reason).toBe(
-      'runner_unavailable'
+    expect((await env.scheduler.resume(WS, 'r1')).ok).toBe(true);
+  });
+
+  test('a legacy codex ancestor resumes onto claude', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(env.store, 'r2', resumablePrior({ runner: 'codex' }));
+    const res = await env.scheduler.resume(WS, 'r2');
+    expect(res.ok).toBe(true);
+    // The child always runs claude, whatever the ancestor recorded.
+    expect(env.store.snapshot(WS).attempts[String(res.attempt_id)].runner).toBe(
+      'claude'
     );
   });
 
   test('inherits the PRIOR snapshot verbatim even after globals change; no worktree.add; resumed_from set', async () => {
     const env = setup({ config: {}, slots: 1 });
-    // prior was DEMOTED to pr_stop; the runner/model are codex/gpt-5.6.
+    // prior was DEMOTED to pr_stop and pinned its own model/effort.
     seedAttempt(
       env.store,
       'anc',
       resumablePrior({
-        runner: 'codex',
-        model: 'gpt-5.6',
+        model: 'sonnet',
         effort: 'high',
         merge_policy: 'pr_stop',
         demoted_reason: 'verify_cmd_unset'
       })
     );
     // Flip the workspace-global exec defaults + policy AFTER the failure.
-    seedExecDefaults(env.store, {
-      worker_runner: 'claude',
-      orchestration_model: 'opus'
-    });
+    seedExecDefaults(env.store, { orchestration_model: 'opus' });
     env.store.setPolicy(WS, {
       expected_revision: env.store.snapshot(WS).revision,
       key: 'merge_policy',
@@ -1638,9 +1814,8 @@ describe('scheduler resume (spec §1)', () => {
     expect(res.ok).toBe(true);
     const child =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    // Prior runner/model/effort inherited — NOT re-resolved from the new globals.
-    expect(child.runner).toBe('codex');
-    expect(child.model).toBe('gpt-5.6');
+    // Prior model/effort inherited — NOT re-resolved from the new globals.
+    expect(child.model).toBe('sonnet');
     expect(child.effort).toBe('high');
     // Demoted pr_stop does NOT revive as auto_merge; merge_sha preserved.
     expect(child.merge_policy).toBe('pr_stop');
@@ -1650,7 +1825,7 @@ describe('scheduler resume (spec §1)', () => {
     expect(child.resumed_from).toBe('anc');
     // Worktree reused — never re-created.
     expect(env.worktree.add).not.toHaveBeenCalled();
-    // The resume argv carries the prior session id + prior runner.
+    // The resume argv carries the prior session id.
     expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
   });
 

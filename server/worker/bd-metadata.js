@@ -74,9 +74,10 @@ export function createBdMetadata(deps = {}) {
       const r = await runJson(['show', bead_id, '--json'], opts);
       const issue = unwrapShowJson(r && r.stdoutJson);
       const md = issue && issue.metadata;
-      const v = md && typeof md === 'object'
-        ? /** @type {Record<string, unknown>} */ (md)[key]
-        : undefined;
+      const v =
+        md && typeof md === 'object'
+          ? /** @type {Record<string, unknown>} */ (md)[key]
+          : undefined;
       return v == null ? null : String(v);
     }
   };

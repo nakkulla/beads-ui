@@ -15,13 +15,7 @@
  * resolution — the scheduler applies it at dispatch where the workspace
  * verify_cmd config is known.
  */
-import {
-  EFFORTS,
-  IMPL_MODELS,
-  REVIEW_MODELS,
-  RUNNERS,
-  RUNNER_MODELS
-} from './exec-enums.js';
+import { EFFORTS, IMPL_MODELS, MODELS, REVIEW_MODELS } from './exec-enums.js';
 
 /** @type {ReadonlyArray<'auto_merge'|'pr_stop'>} */
 export const MERGE_POLICIES = ['auto_merge', 'pr_stop'];
@@ -110,32 +104,28 @@ function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
 }
 
 /**
- * Resolve the 5 exec settings for one dispatch (worker-global-exec-defaults).
+ * Resolve the 4 exec settings for one dispatch (worker-global-exec-defaults;
+ * runner axis retired by worker-phase1 §4).
  *
- * Order is bead metadata > workspace-global default > hardcoded
- * (runner='claude', the rest unset). The runner is resolved FIRST; then
- * `orchestration_model` takes the first hierarchy value COMPATIBLE with the
- * resolved runner's catalog (incompatible layers are skipped; none ⇒ unset).
- * `orchestration_effort`/`review_model`/`impl_model` are runner-independent
- * enum-hierarchy picks.
+ * Order is bead metadata > workspace-global default > unset. All four keys are
+ * plain enum-hierarchy picks — with claude as the only runner there is no
+ * runner-dependent model catalog to reconcile.
  *
  * `stamped_keys` is the list of METADATA key names whose bead value was absent
  * and whose resolved value came from the workspace-global default — i.e. the
  * exact keys dispatch should stamp onto the bead metadata (and revert on
- * terminate). Order is stable: worker_runner, orchestration_model,
- * orchestration_effort, review_model, impl_model.
+ * terminate). Order is stable: orchestration_model, orchestration_effort,
+ * review_model, impl_model.
  *
- * The `bead` argument uses the BeadSnapshot field names (runner/model/effort/
+ * The `bead` argument uses the BeadSnapshot field names (model/effort/
  * review_model/impl_model); `defaults` uses the exec_defaults metadata key
- * names (worker_runner/orchestration_model/orchestration_effort/review_model/
- * impl_model).
+ * names (orchestration_model/orchestration_effort/review_model/impl_model).
  *
  * @param {{
- *   bead?: { runner?: unknown, model?: unknown, effort?: unknown, review_model?: unknown, impl_model?: unknown } | null,
- *   defaults?: { worker_runner?: unknown, orchestration_model?: unknown, orchestration_effort?: unknown, review_model?: unknown, impl_model?: unknown } | null
+ *   bead?: { model?: unknown, effort?: unknown, review_model?: unknown, impl_model?: unknown } | null,
+ *   defaults?: { orchestration_model?: unknown, orchestration_effort?: unknown, review_model?: unknown, impl_model?: unknown } | null
  * }} input
  * @returns {{
- *   worker_runner: string,
  *   orchestration_model: string|undefined,
  *   orchestration_effort: string|undefined,
  *   review_model: string|undefined,
@@ -149,30 +139,13 @@ export function resolveExecSettings(input) {
   /** @type {string[]} */
   const stamped_keys = [];
 
-  // runner: bead > global > 'claude' (hardcoded default is never stamped).
-  let worker_runner = 'claude';
-  if (isEnum(RUNNERS, bead.runner)) {
-    worker_runner = /** @type {string} */ (bead.runner);
-  } else if (isEnum(RUNNERS, defaults.worker_runner)) {
-    worker_runner = /** @type {string} */ (defaults.worker_runner);
-    if (typeof bead.runner !== 'string') {
-      stamped_keys.push('worker_runner');
-    }
-  }
-
-  // model: first value COMPATIBLE with the resolved runner across [bead, global].
-  const catalog = RUNNER_MODELS[worker_runner] || [];
-  /** @type {string|undefined} */
-  let orchestration_model;
-  if (isEnum(catalog, bead.model)) {
-    orchestration_model = /** @type {string} */ (bead.model);
-  } else if (isEnum(catalog, defaults.orchestration_model)) {
-    orchestration_model = /** @type {string} */ (defaults.orchestration_model);
-    if (typeof bead.model !== 'string') {
-      stamped_keys.push('orchestration_model');
-    }
-  }
-
+  const orchestration_model = pickLayered(
+    MODELS,
+    bead.model,
+    defaults.orchestration_model,
+    'orchestration_model',
+    stamped_keys
+  );
   const orchestration_effort = pickLayered(
     EFFORTS,
     bead.effort,
@@ -196,7 +169,6 @@ export function resolveExecSettings(input) {
   );
 
   return {
-    worker_runner,
     orchestration_model,
     orchestration_effort,
     review_model,

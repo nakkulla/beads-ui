@@ -1,10 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { makeFixtureSpawn } from './fixture-spawn.js';
-import {
-  RunnerBlockedError,
-  assertRunnerAllowed,
-  createRunner
-} from './index.js';
+import { RUNNERS, createRunner } from './index.js';
 
 /**
  * @returns {string}
@@ -19,198 +15,31 @@ function resultLine() {
 }
 
 const WS = '/tmp/ws';
-const SHA40 = 'a'.repeat(40);
 
-describe('runner/index full_plan authorization guard', () => {
-  test('fresh plan_review receipt (precomputed) allows codex/ccx', () => {
-    const bead = {
-      id: 'UI-3',
-      route: 'full_plan',
-      plan_path: 'docs/plan.md',
-      plan_review: `user@${SHA40}`
-    };
-    expect(() =>
-      assertRunnerAllowed(bead, 'codex', { plan_fresh: true })
-    ).not.toThrow();
-    expect(() =>
-      assertRunnerAllowed(bead, 'ccx', { plan_fresh: true })
-    ).not.toThrow();
+describe('runner/index registry (worker-phase1 §4)', () => {
+  test('claude is the only runner', () => {
+    expect([...RUNNERS]).toEqual(['claude']);
   });
 
-  test('no plan_review and no plan_path is refused', () => {
-    const bead = { id: 'UI-3', route: 'full_plan' };
-    expect(() => assertRunnerAllowed(bead, 'codex')).toThrow(
-      RunnerBlockedError
-    );
-    expect(() => assertRunnerAllowed(bead, 'ccx')).toThrow(/plan-save hook/);
+  test('any runner name resolves to the claude adapter', async () => {
+    for (const name of ['claude', 'codex', 'ccx', 'nope', undefined]) {
+      const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+      const runner = createRunner(/** @type {any} */ (name), { spawn_impl });
+      expect(runner.name).toBe('claude');
+      const v = await runner.spawn({ id: 'UI-1' }, WS, {}).done;
+      expect(spawn_impl.captured.calls[0].command).toBe('claude');
+      expect(v.success).toBe(true);
+    }
   });
 
-  test('stale plan_review (precomputed false) is refused', () => {
-    const bead = {
-      id: 'UI-3',
-      route: 'full_plan',
-      plan_path: 'docs/plan.md',
-      plan_review: `user@${SHA40}`
-    };
-    expect(() =>
-      assertRunnerAllowed(bead, 'codex', { plan_fresh: false })
-    ).toThrow(/stale/);
-  });
-
-  test('skipped@ receipt is refused even when fresh (no skip path)', () => {
-    const bead = {
-      id: 'UI-3',
-      route: 'full_plan',
-      plan_path: 'docs/plan.md',
-      plan_review: `skipped@${SHA40}`
-    };
-    expect(() =>
-      assertRunnerAllowed(bead, 'codex', { plan_fresh: true })
-    ).toThrow(/not a valid user approval/);
-  });
-
-  test('other-reviewer receipt (codex@<40hex>) is refused', () => {
-    const bead = {
-      id: 'UI-3',
-      route: 'full_plan',
-      plan_path: 'docs/plan.md',
-      plan_review: `codex@${SHA40}`
-    };
-    expect(() =>
-      assertRunnerAllowed(bead, 'codex', { plan_fresh: true })
-    ).toThrow(RunnerBlockedError);
-  });
-
-  test('short-SHA receipt (user@<7hex>) is refused', () => {
-    const bead = {
-      id: 'UI-3',
-      route: 'full_plan',
-      plan_path: 'docs/plan.md',
-      plan_review: 'user@abc1234'
-    };
-    expect(() =>
-      assertRunnerAllowed(bead, 'codex', { plan_fresh: true })
-    ).toThrow(RunnerBlockedError);
-  });
-
-  test('an invalid receipt present blocks the legacy fallback', () => {
-    // plan_path + closed WOULD satisfy legacy, but a present (invalid) receipt
-    // is fail-closed — the fallback only applies when the key is entirely absent.
-    const bead = {
-      id: 'UI-3',
-      route: 'full_plan',
-      plan_path: 'docs/plan.md',
-      status: 'closed',
-      plan_review: `skipped@${SHA40}`
-    };
-    expect(() => assertRunnerAllowed(bead, 'codex')).toThrow(
-      RunnerBlockedError
-    );
-  });
-
-  test('a present null/non-string plan_review blocks — never reads as key-absent', () => {
-    // Normalizing a present-but-invalid value to "absent" would open the
-    // legacy fallback on a closed bead; presence must survive as-is.
-    const base = {
-      id: 'UI-3',
-      route: 'full_plan',
-      plan_path: 'docs/plan.md',
-      status: 'closed'
-    };
-    expect(() =>
-      assertRunnerAllowed({ ...base, plan_review: null }, 'codex')
-    ).toThrow(/not a valid user approval/);
-    expect(() =>
-      assertRunnerAllowed({ ...base, plan_review: 123 }, 'codex')
-    ).toThrow(/not a valid user approval/);
-    expect(() =>
-      assertRunnerAllowed(
-        { ...base, plan_review: undefined, metadata: { plan_review: null } },
-        'ccx'
-      )
-    ).toThrow(RunnerBlockedError);
-  });
-
-  test('unknown freshness fails closed (no precomputed, no workspace)', () => {
-    const bead = {
-      id: 'UI-3',
-      route: 'full_plan',
-      plan_path: 'docs/plan.md',
-      plan_review: `user@${SHA40}`
-    };
-    expect(() => assertRunnerAllowed(bead, 'codex')).toThrow(/undetermined/);
-  });
-
-  test('legacy plan (no plan_review key) on a closed bead allows codex', () => {
-    const bead = {
-      id: 'UI-3',
-      route: 'full_plan',
-      plan_path: 'docs/plan.md',
-      status: 'closed'
-    };
-    expect(() => assertRunnerAllowed(bead, 'codex')).not.toThrow();
-    expect(() =>
-      assertRunnerAllowed({ ...bead, status: 'resolved' }, 'ccx')
-    ).not.toThrow();
-  });
-
-  test('claude is always allowed (even full_plan without a plan)', () => {
-    const bead = { id: 'UI-3', route: 'full_plan' };
-    expect(() => assertRunnerAllowed(bead, 'claude')).not.toThrow();
-  });
-
-  test('precomputed plan_fresh takes precedence over bead.plan_fresh + compute', () => {
-    const bead = {
-      id: 'UI-3',
-      route: 'full_plan',
-      plan_path: 'docs/plan.md',
-      plan_review: `user@${SHA40}`,
-      plan_fresh: false
-    };
-    // ctx.plan_fresh:true wins over bead.plan_fresh:false and any workspace probe.
-    expect(() =>
-      assertRunnerAllowed(bead, 'codex', {
-        plan_fresh: true,
-        workspace: '/nonexistent'
-      })
-    ).not.toThrow();
-  });
-
-  test('spawn() enforces the guard for codex', () => {
-    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()] });
-    const runner = createRunner('codex', { spawn_impl });
-    expect(() =>
-      runner.spawn({ id: 'UI-3', route: 'full_plan' }, WS, {})
-    ).toThrow(RunnerBlockedError);
-  });
-});
-
-describe('runner/index selection', () => {
-  test('unknown runner name defaults to claude', () => {
-    expect(createRunner('nope', {}).name).toBe('claude');
-  });
-
-  test('ccx spawns the claude command with routing env', async () => {
+  test('a full_plan bead spawns without a runner guard', async () => {
     const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
-    const runner = createRunner('ccx', {
-      spawn_impl,
-      ccx_env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9099' }
-    });
-    expect(runner.name).toBe('ccx');
-    await runner.spawn({ id: 'UI-4' }, WS, {}).done;
-    const call = spawn_impl.captured.calls[0];
-    expect(call.command).toBe('claude');
-    expect(call.options.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:9099');
-  });
-
-  test('codex runner spawns the codex command', async () => {
-    const spawn_impl = makeFixtureSpawn({
-      lines: [JSON.stringify({ type: 'turn.completed', usage: {} })],
-      exit: 0
-    });
-    const runner = createRunner('codex', { spawn_impl });
-    const v = await runner.spawn({ id: 'UI-5' }, WS, {}).done;
-    expect(spawn_impl.captured.calls[0].command).toBe('codex');
+    const runner = createRunner('claude', { spawn_impl });
+    const v = await runner.spawn(
+      { id: 'UI-3', route: 'full_plan', plan_path: 'docs/plan.md' },
+      WS,
+      {}
+    ).done;
     expect(v.success).toBe(true);
   });
 });

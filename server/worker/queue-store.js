@@ -40,7 +40,9 @@
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
  * @property {string|null} repo - Target repo root (for breaker scope + orphan reap).
- * @property {string|null} status - Attempt lifecycle: running/done/failed/blocked/orphaned.
+ * @property {string|null} status - Attempt lifecycle: running/done/failed/
+ * orphaned/paused/stopped. `paused` (tile ⏸, resumable) and `stopped` (tile ■,
+ * terminal) are user actions and carry no `cause` — the state is the meaning.
  * @property {string|null} workflow_mode_prior - workflow_mode value snapshotted before launch (null=was unset).
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {string|null} merge_sha - SERVER-observed merge SHA (recorded by
@@ -246,6 +248,25 @@ export function makeAttempt(fields) {
 }
 
 /**
+ * Migrate a pre-worker-phase1 attempt record on load (spec §3). A user ■ used
+ * to be recorded as `failed` + `cause:'stopped'`, which the UI renders as a
+ * failure banner; the honest state is now `stopped` with no cause.
+ *
+ * Lane placement is deliberately NOT touched: retroactively pulling a bead out
+ * of a lane would rewrite a queue the user built. §2.2's lane removal applies
+ * only to ■ operations performed under this spec.
+ *
+ * @param {Record<string, unknown>} value
+ * @returns {Record<string, unknown>}
+ */
+function migrateLegacyStopped(value) {
+  if (value.status === 'failed' && value.cause === 'stopped') {
+    return { ...value, status: 'stopped', cause: null };
+  }
+  return value;
+}
+
+/**
  * @param {unknown} raw
  * @returns {Queue}
  */
@@ -266,7 +287,7 @@ function normalizeQueue(raw) {
       if (isRecord(value) && typeof value.bead_id === 'string') {
         q.attempts[key] = makeAttempt(
           /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ ({
-            ...value,
+            ...migrateLegacyStopped(value),
             attempt_id: key,
             bead_id: value.bead_id
           })
@@ -276,6 +297,9 @@ function normalizeQueue(raw) {
   }
   q.merge_policy = normalizePolicyValue(MERGE_POLICIES, raw.merge_policy);
   q.drift_policy = normalizePolicyValue(DRIFT_POLICIES, raw.drift_policy);
+  // Retired keys (`worker_runner`) and values outside the current catalog (the
+  // old codex `gpt-5.*` orchestration models) have no entry here, so they are
+  // dropped on load and the setting falls back to unset (spec §3).
   if (isRecord(raw.exec_defaults)) {
     for (const [key, value] of Object.entries(raw.exec_defaults)) {
       const allowed = EXEC_SETTING_ENUMS[key];
@@ -583,6 +607,41 @@ export function createQueueStore(options = {}) {
             bead_id: patch.bead_id ?? cur.bead_id
           })
         );
+        return true;
+      });
+    },
+
+    /**
+     * Discard an attempt: write its terminal patch AND drop the bead from every
+     * lane + its admission badge in ONE persist (worker-phase1 §2.2).
+     *
+     * Splitting this into `updateAttempt` + `remove` would leave a window where
+     * a CAS conflict or a restart between the two writes yields "attempt
+     * stopped but bead still queued", which breaks the discard guarantee (the
+     * next tick would re-dispatch the bead the user just discarded).
+     * Scheduler-owned (no CAS), like the other lifecycle transitions.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, bead_id: string, patch: Partial<Attempt> }} input
+     * @returns {QueueOpResult}
+     */
+    discardAttempt(workspace, input) {
+      const { attempt_id, bead_id, patch } = input;
+      return applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur || typeof bead_id !== 'string' || bead_id.length === 0) {
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt(
+          /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ ({
+            ...cur,
+            ...patch,
+            attempt_id,
+            bead_id: cur.bead_id
+          })
+        );
+        removeFromLanes(next, bead_id);
+        delete next.admission[bead_id];
         return true;
       });
     },

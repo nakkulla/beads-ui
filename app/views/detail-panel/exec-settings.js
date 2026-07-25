@@ -4,18 +4,11 @@ import { html } from 'lit-html';
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  */
 
-/** Runners (worker_runner). ccx = claude-code-proxy. */
-export const RUNNERS = ['claude', 'codex', 'ccx'];
-
 /**
- * Runner-specific orchestration model catalogs. ccx reuses claude's models.
- * Mirrors the server enum in server/ws/mutation-handlers.js.
+ * Orchestration models. Mirrors the server enum in server/worker/exec-enums.js
+ * (claude is the worker's only runner — worker-phase1 §4).
  */
-export const RUNNER_MODELS = {
-  claude: ['opus', 'sonnet', 'haiku', 'fable'],
-  codex: ['gpt-5.6', 'gpt-5.4'],
-  ccx: ['opus', 'sonnet', 'haiku', 'fable']
-};
+export const MODELS = ['opus', 'sonnet', 'haiku', 'fable'];
 
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 export const REVIEW_MODELS = ['codex', 'opus', 'fable', 'self', 'skip'];
@@ -31,16 +24,14 @@ export const WORKFLOW_MODES = ['standard', 'fast_track'];
  * detail-panel fallback when no global override exists (spec §3).
  *
  * MIRROR: keep in sync with the resolution fallbacks —
- *   - worker_runner: policy.js `resolveExecSettings` hardcoded 'claude'.
- *   - orchestration_model/effort: no `--model`/`--effort` passed ⇒ the runner
- *     CLI's own default (claude.js/codex.js buildArgv omit the flag when unset).
+ *   - orchestration_model/effort: no `--model`/`--effort` passed ⇒ the claude
+ *     CLI's own default (claude.js buildArgv omits the flag when unset).
  *   - review_model: session workflow gate default `codex`.
  *   - impl_model: workflow delegation tier auto (complex=opus / boundary=sonnet).
  *
  * @type {Record<string, string>}
  */
 export const DEFAULT_LABELS = {
-  worker_runner: '(기본: claude)',
   orchestration_model: '(기본: CLI 기본 모델)',
   orchestration_effort: '(기본: CLI 기본)',
   review_model: '(기본: codex)',
@@ -63,20 +54,6 @@ export function defaultLabelFor(key, globals) {
     return `(기본: ${g} — 전역)`;
   }
   return DEFAULT_LABELS[key] || '(기본)';
-}
-
-/**
- * Orchestration models available for a runner (defaults to claude's set).
- *
- * @param {string | undefined} runner
- * @returns {string[]}
- */
-export function modelsForRunner(runner) {
-  return (
-    /** @type {Record<string, string[]>} */ (RUNNER_MODELS)[
-      String(runner || 'claude')
-    ] || RUNNER_MODELS.claude
-  );
 }
 
 /**
@@ -135,45 +112,28 @@ function toOptions(values, default_label) {
 }
 
 /**
- * Execution-settings editor (detail-panel.html "실행 설정"): the 5 exec keys +
- * workflow_mode. Model options are filtered by the chosen runner. Selecting
- * `standard` for workflow_mode (or `(기본)` for a key) records an unset — the
- * server mutation removes the metadata key.
+ * Execution-settings editor (detail-panel.html "실행 설정"): the 4 exec keys +
+ * workflow_mode. Selecting `standard` for workflow_mode (or `(기본)` for a key)
+ * records an unset — the server mutation removes the metadata key.
  *
  * @param {{ metadata?: Record<string, any> }} effective_issue - Issue whose `metadata` carries the effective (metadata + in-flight edits) values.
  * @param {ExecSettingsHandlers} handlers
  * @param {Record<string, any>} [exec_defaults] - Workspace-global exec defaults
  * (queue snapshot). A bead-unset key resolves through these first, so they drive
- * both the `(기본)` label and the effective runner for the model catalog (§3.2).
+ * the `(기본)` label (§3.2).
  * @returns {TemplateResult}
  */
 export function execSettingsTemplate(effective_issue, handlers, exec_defaults) {
   const md = (effective_issue && effective_issue.metadata) || {};
   const globals =
     exec_defaults && typeof exec_defaults === 'object' ? exec_defaults : {};
-  const runner = md.worker_runner || '';
-  // The model catalog follows the EFFECTIVE runner (bead > global > claude), so
-  // a global-runner default filters the model options the same way a bead pin
-  // would (§3.2).
-  const effective_runner = runner || globals.worker_runner || 'claude';
   const wf_mode = md.workflow_mode === 'fast_track' ? 'fast_track' : 'standard';
   return html`
     <div class="detail-section-label">실행 설정 (수정 가능)</div>
     ${selectRow(
-      'worker_runner',
-      'worker_runner',
-      toOptions(RUNNERS, defaultLabelFor('worker_runner', globals)),
-      runner,
-      !!runner,
-      handlers
-    )}
-    ${selectRow(
       'orchestration_model',
       'orchestration_model',
-      toOptions(
-        modelsForRunner(effective_runner),
-        defaultLabelFor('orchestration_model', globals)
-      ),
+      toOptions(MODELS, defaultLabelFor('orchestration_model', globals)),
       md.orchestration_model || '',
       false,
       handlers

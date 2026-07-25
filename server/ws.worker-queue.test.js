@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { MESSAGE_TYPES } from '../app/protocol.js';
 import {
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest
@@ -241,6 +242,50 @@ describe('ws worker-queue channel', () => {
     expect(reply.payload.stopped).toBe(true);
   });
 
+  test('worker-attempt-pause reaches the scheduler and its refusal carries a reason (worker-phase1 §5)', async () => {
+    const pause = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, reason: 'no_session_id' });
+    __registerWorkerAttachmentForTest(process.cwd(), {
+      // @ts-expect-error minimal fake attachment
+      scheduler: { tick: vi.fn(), stop: vi.fn(), pause }
+    });
+
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'p1', 'worker-attempt-pause', { attempt_id: 'att-1' });
+    expect(pause).toHaveBeenCalledWith(process.cwd(), 'att-1');
+    const ok_reply = replyFor(sock, 'p1');
+    expect(ok_reply.ok).toBe(true);
+    expect(ok_reply.payload.paused).toBe(true);
+    expect(ok_reply.payload.reason).toBe(null);
+
+    await send(sock, 'p2', 'worker-attempt-pause', { attempt_id: 'att-2' });
+    const refused = replyFor(sock, 'p2');
+    expect(refused.payload.paused).toBe(false);
+    expect(refused.payload.reason).toBe('no_session_id');
+  });
+
+  test('every worker ws route the server switches on is a client-sendable MESSAGE_TYPE', () => {
+    // The client transport drops any type missing from MESSAGE_TYPES before it
+    // reaches the socket, so a server-only route is silently dead in the browser.
+    for (const type of [
+      'worker-attempt-pause',
+      'worker-attempt-stop',
+      'worker-attempt-resume',
+      'worker-queue-toggle',
+      'worker-queue-place',
+      'worker-queue-reorder',
+      'worker-queue-remove',
+      'worker-queue-set-policy',
+      'worker-queue-set-exec-default'
+    ]) {
+      expect(MESSAGE_TYPES).toContain(type);
+    }
+  });
+
   test('an admission-refused place records the reason so every client sees the badge (review finding 4)', async () => {
     let refuse = true;
     __registerWorkerAttachmentForTest(
@@ -337,7 +382,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     sock.sent = [];
 
     await send(sock, 'm1', 'worker-queue-set-exec-default', {
-      key: 'worker_runner',
+      key: 'review_model',
       value: 'codex',
       expected_revision: 0
     });
@@ -346,11 +391,11 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     expect(reply.payload.applied).toBe(true);
     expect(reply.payload.conflict).toBe(false);
     expect(reply.payload.queue.revision).toBe(1);
-    expect(reply.payload.queue.exec_defaults.worker_runner).toBe('codex');
+    expect(reply.payload.queue.exec_defaults.review_model).toBe('codex');
 
     const snaps = queueSnapshots(sock);
     expect(snaps.length).toBe(1);
-    expect(snaps.at(-1).exec_defaults.worker_runner).toBe('codex');
+    expect(snaps.at(-1).exec_defaults.review_model).toBe('codex');
   });
 
   test('unset (null) deletes the key', async () => {
@@ -402,7 +447,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     sock.sent = [];
 
     await send(sock, 'm1', 'worker-queue-set-exec-default', {
-      key: 'worker_runner',
+      key: 'review_model',
       value: 'not-a-runner',
       expected_revision: 0
     });
@@ -412,7 +457,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     expect(reply.payload.conflict).toBe(false);
     // Store unchanged: revision still 0, key absent.
     expect(reply.payload.queue.revision).toBe(0);
-    expect(reply.payload.queue.exec_defaults.worker_runner).toBeUndefined();
+    expect(reply.payload.queue.exec_defaults.review_model).toBeUndefined();
     // No fanout on a rejected mutation.
     expect(queueSnapshots(sock).length).toBe(0);
   });
@@ -454,7 +499,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     await send(sock, 'm1', 'worker-queue-set-exec-default', {
-      key: 'worker_runner',
+      key: 'review_model',
       value: 'codex',
       expected_revision: 0
     });
@@ -462,7 +507,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
 
     // A second client still thinks revision is 0.
     await send(sock, 'm2', 'worker-queue-set-exec-default', {
-      key: 'worker_runner',
+      key: 'review_model',
       value: 'claude',
       expected_revision: 0
     });
@@ -472,7 +517,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     expect(reply.payload.conflict).toBe(true);
     // Current snapshot returned so the client can re-sync + retry.
     expect(reply.payload.queue.revision).toBe(1);
-    expect(reply.payload.queue.exec_defaults.worker_runner).toBe('codex');
+    expect(reply.payload.queue.exec_defaults.review_model).toBe('codex');
     // No fanout snapshot on conflict.
     expect(queueSnapshots(sock).length).toBe(0);
   });

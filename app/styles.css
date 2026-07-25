@@ -2781,6 +2781,46 @@ html[data-theme='dark'] {
   padding: 0 2px;
 }
 
+/* 일시정지·재개 (worker-phase1 §2.1): 폐기(■)와 달리 되돌릴 수 있으므로
+   danger 색을 쓰지 않는다. */
+.rtile__pause,
+.rtile__resume {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-small);
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.rtile__pause:hover:not(:disabled),
+.rtile__resume:hover {
+  color: var(--accent);
+}
+
+.rtile__pause:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.rtile--paused {
+  opacity: 0.75;
+}
+
+.rtile--paused .rtile__dot {
+  background: var(--text-muted);
+  animation: none;
+}
+
+.worker-overcap {
+  flex: 0 0 auto;
+  font-size: var(--fs-chip-lg);
+  color: var(--accent-warn);
+  white-space: nowrap;
+}
+
 .rtile__title {
   font-size: var(--fs-body-sm);
   color: var(--text-primary);

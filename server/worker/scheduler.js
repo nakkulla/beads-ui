@@ -25,7 +25,6 @@
  */
 import { debug } from '../logging.js';
 import { resolveExecSettings, resolvePolicies } from './policy.js';
-import { RUNNERS, assertRunnerAllowed } from './runner/index.js';
 
 const log = debug('worker:scheduler');
 
@@ -35,20 +34,13 @@ const log = debug('worker:scheduler');
  * @property {boolean} blocked - Blocked by unmet dependencies.
  * @property {string} repo - Target repo root.
  * @property {string} target_base - Merge target base (branch/ref).
- * @property {string} [runner] - worker_runner (claude/codex/ccx).
  * @property {string} [model] - orchestration_model.
  * @property {string} [effort] - orchestration_effort.
  * @property {string} [review_model] - review_model (per-bead exec setting).
  * @property {string} [impl_model] - impl_model (per-bead exec setting).
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
- * @property {string|null} [plan_path] - Plan path when present.
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
- * @property {unknown} [plan_review] - Raw plan_review metadata value. Key
- * absence ⇒ `undefined`; any present value (non-string/null included) must
- * reach the guard so an invalid receipt blocks instead of reading as absent.
- * @property {boolean|null} [plan_fresh] - Precomputed plan freshness (true/false
- * when a full_plan bead has a valid receipt; null otherwise/undetermined).
  * @property {string|null} [spec_id] - Spec doc path metadata (admission input).
  * @property {unknown} [spec_review] - Raw spec_review metadata value. Key
  * absence ⇒ `undefined`; any present value must reach the admission
@@ -106,6 +98,7 @@ const log = debug('worker:scheduler');
  * @returns {{
  *   tick: (workspace: string) => Promise<void>,
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
+ *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   resume: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   runningCount: () => number,
  *   runningBeads: () => string[],
@@ -251,6 +244,30 @@ export function createScheduler(deps) {
   function execStampedKeysOf(workspace, attempt_id) {
     const a = deps.store.snapshot(workspace).attempts[attempt_id];
     return a && Array.isArray(a.exec_stamped_keys) ? a.exec_stamped_keys : null;
+  }
+
+  /**
+   * Beads holding a LEAF paused attempt (worker-phase1 §1.1). Resume mints a
+   * child attempt and leaves the ancestor `paused` forever, so "is this bead
+   * paused?" must ask about the leaf — an attempt nothing was resumed from.
+   * Treating a resumed ancestor as active would block dispatch for a bead that
+   * is running again.
+   *
+   * @param {{ attempts?: Record<string, any> }} q - Queue snapshot.
+   * @returns {Set<string>}
+   */
+  function leafPausedBeads(q) {
+    const attempts = Object.values(q.attempts || {});
+    const resumed_from = new Set(
+      attempts.map((a) => a && a.resumed_from).filter(Boolean)
+    );
+    const out = new Set();
+    for (const a of attempts) {
+      if (a && a.status === 'paused' && !resumed_from.has(a.attempt_id)) {
+        out.add(a.bead_id);
+      }
+    }
+    return out;
   }
 
   /**
@@ -575,36 +592,16 @@ export function createScheduler(deps) {
       return;
     }
 
-    // Resolve the 5 exec settings (bead metadata > workspace-global default >
-    // hardcoded 'claude') BEFORE the runner guard, so a global-default runner is
-    // gated the same as a bead-pinned one. `stamped_keys` names the bead-absent
-    // keys filled from the global default that this dispatch must stamp (and
-    // later revert) — worker-global-exec-defaults §3.
+    // Resolve the 4 exec settings (bead metadata > workspace-global default >
+    // unset). `stamped_keys` names the bead-absent keys filled from the global
+    // default that this dispatch must stamp (and later revert) —
+    // worker-global-exec-defaults §3.
     const exec = resolveExecSettings({
       bead: snap,
       defaults: deps.store.snapshot(workspace).exec_defaults
     });
-    const runner_name = exec.worker_runner;
+    const runner_name = 'claude';
 
-    // full_plan entry guard (plan-save hook is claude-only). Freshness is
-    // precomputed in snapshotBead against the canonical workspace root, so pass
-    // it through — a worktree here would lack the plan-doc ancestry.
-    try {
-      assertRunnerAllowed(
-        {
-          id: bead_id,
-          route: snap.route,
-          plan_path: snap.plan_path,
-          plan_review: snap.plan_review,
-          status: snap.status
-        },
-        /** @type {any} */ (runner_name),
-        { plan_fresh: snap.plan_fresh ?? undefined }
-      );
-    } catch {
-      claimed.delete(bead_id);
-      return;
-    }
     // Breaker: refuse a new launch into a blocked repo.
     if (deps.breaker.isTripped(snap.repo)) {
       claimed.delete(bead_id);
@@ -830,14 +827,9 @@ export function createScheduler(deps) {
       prior_wf: prior,
       stamped_keys,
       wt_path: wt.path,
-      spawnBead: {
-        id: bead_id,
-        route: snap.route,
-        plan_path: snap.plan_path,
-        plan_review: snap.plan_review,
-        status: snap.status,
-        plan_fresh: snap.plan_fresh
-      }
+      // The adapter reads only `id`/`prompt`; the plan-receipt fields the
+      // retired runner guard needed are no longer carried (worker-phase1 §4).
+      spawnBead: { id: bead_id }
     });
   }
 
@@ -978,43 +970,64 @@ export function createScheduler(deps) {
   }
 
   /**
-   * The manual-resume task prompt (spec §1.4): announce the prior interruption,
-   * instruct a self-check of worktree/bead/PR state, and require finishing ONLY
-   * the remaining contract steps. The unattended/policy preamble is layered on
-   * by the adapter's `applyPreamble`, exactly as for a first launch.
+   * The manual-resume task prompt (spec §1.4, branched by worker-phase1 §1.4):
+   * announce how the prior attempt ended, instruct a self-check of worktree/
+   * bead/PR state, and require finishing ONLY the remaining contract steps. The
+   * unattended/policy preamble is layered on by the adapter's `applyPreamble`,
+   * exactly as for a first launch.
+   *
+   * A `paused` ancestor was halted by the user on purpose, so it must NOT be
+   * announced as a failure — telling the session it failed is exactly the
+   * dishonesty this phase removes from the UI.
    *
    * @param {string} bead_id
+   * @param {string|null} prior_status
    * @returns {string}
    */
-  function resumePrompt(bead_id) {
+  function resumePrompt(bead_id, prior_status) {
+    const opening =
+      prior_status === 'paused'
+        ? `이전 무인 세션이 사용자 요청으로 일시정지되었다(bead ${bead_id}).`
+        : `이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead ${bead_id}).`;
     return [
-      `이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead ${bead_id}).`,
+      opening,
       '같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라.',
       '이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.'
     ].join(' ');
   }
 
   /**
-   * Manually resume a failed/orphaned attempt in its EXISTING worktree (spec
-   * §1). Fail-closed with six refusal reasons (admission-badge convention):
-   * `not_failed` · `no_session_id` · `worktree_missing` · `bead_running` ·
-   * `already_resumed` · `runner_unavailable`. On admission the breaker for the
-   * repo is reset (↻ is a human ▶-grade intervention, so a resumed auto_merge is
-   * not re-blocked at the merge-lock gate), a NEW attempt is minted carrying
-   * `resumed_from`, the PRIOR snapshot is inherited verbatim (no re-resolution of
-   * globals/policies), workflow_mode + exec are re-stamped from the prior values,
-   * and the shared launch tail spawns the adapter's resume argv.
+   * Manually resume a paused/failed/orphaned attempt in its EXISTING worktree
+   * (spec §1, extended by worker-phase1 §1.2). Fail-closed with five refusal
+   * reasons (admission-badge convention): `not_failed` · `no_session_id` ·
+   * `worktree_missing` · `bead_running` · `already_resumed`
+   * (`runner_unavailable` is retired with the runner axis — claude is the only
+   * runner). A NEW attempt is minted carrying `resumed_from`, the PRIOR snapshot
+   * is inherited verbatim (no re-resolution of globals/policies), workflow_mode
+   * + exec are re-stamped from the prior values, and the shared launch tail
+   * spawns the adapter's resume argv.
+   *
+   * Breaker (worker-phase1 §1.3): only a `failed|orphaned` resume resets it — ↻
+   * on a real failure is a human ▶-grade intervention, and without the reset a
+   * resumed auto_merge would deadlock at the merge-lock gate. A `paused` resume
+   * does NOT reset: pausing is not a failure, so it must not clear a block a
+   * sibling's genuine failure raised.
    *
    * @param {string} workspace
-   * @param {string} attempt_id - The prior (failed/orphaned) attempt to resume.
+   * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function resume(workspace, attempt_id) {
     const q = deps.store.snapshot(workspace);
     const prior = q.attempts ? q.attempts[attempt_id] : null;
 
-    // not_failed: no such attempt, or not in a resumable terminal state.
-    if (!prior || (prior.status !== 'failed' && prior.status !== 'orphaned')) {
+    // not_failed: no such attempt, or not in a resumable state.
+    if (
+      !prior ||
+      (prior.status !== 'failed' &&
+        prior.status !== 'orphaned' &&
+        prior.status !== 'paused')
+    ) {
       return { ok: false, reason: 'not_failed' };
     }
     // no_session_id: a pre-UI-azj6 attempt without a captured session id.
@@ -1048,18 +1061,13 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'already_resumed' };
       }
     }
-    // runner_unavailable: the prior runner snapshot is absent or unsupported.
-    const runner_name = prior.runner;
-    if (
-      typeof runner_name !== 'string' ||
-      !RUNNERS.includes(/** @type {any} */ (runner_name))
-    ) {
-      return { ok: false, reason: 'runner_unavailable' };
-    }
+    const runner_name = 'claude';
 
-    // Admitted — reset the breaker (isMergeBlocked reads the same breaker, so a
-    // resumed auto_merge would otherwise deadlock at the lock gate) and claim.
-    deps.breaker.reset(repo);
+    // Admitted. Breaker reset is scoped to real failures (§1.3): a paused
+    // resume leaves any tripped breaker exactly as it found it.
+    if (prior.status !== 'paused') {
+      deps.breaker.reset(repo);
+    }
     claimed.add(bead_id);
 
     const new_attempt_id = makeAttemptId(bead_id);
@@ -1203,7 +1211,10 @@ export function createScheduler(deps) {
       prior_wf,
       stamped_keys,
       wt_path,
-      spawnBead: { id: bead_id, prompt: resumePrompt(bead_id) },
+      spawnBead: {
+        id: bead_id,
+        prompt: resumePrompt(bead_id, prior.status ?? null)
+      },
       resume_session_id: prior.session_id
     });
 
@@ -1234,6 +1245,7 @@ export function createScheduler(deps) {
     if (!q.auto_advance) {
       return;
     }
+    const paused_beads = leafPausedBeads(q);
 
     /** @type {Array<{ bead_id: string, lane: 'serial'|'parallel', snap: BeadSnapshot }>} */
     const to_dispatch = [];
@@ -1241,7 +1253,11 @@ export function createScheduler(deps) {
     // Serial head: at most one serial session; skip blocked to next runnable.
     if (runningInLane('serial') === 0) {
       for (const entry of q.serial) {
-        if (claimed.has(entry.bead_id) || dispatch_refused.has(entry.bead_id)) {
+        if (
+          claimed.has(entry.bead_id) ||
+          dispatch_refused.has(entry.bead_id) ||
+          paused_beads.has(entry.bead_id)
+        ) {
           continue;
         }
         let snap;
@@ -1275,7 +1291,11 @@ export function createScheduler(deps) {
       if (free <= 0) {
         break;
       }
-      if (claimed.has(entry.bead_id) || dispatch_refused.has(entry.bead_id)) {
+      if (
+        claimed.has(entry.bead_id) ||
+        dispatch_refused.has(entry.bead_id) ||
+        paused_beads.has(entry.bead_id)
+      ) {
         continue;
       }
       let snap;
@@ -1309,21 +1329,16 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Explicitly stop a running attempt (tile ■). Group-kills the session tree,
-   * marks the attempt failed, revokes its token (which releases any held merge
-   * lock via the token-revoke wiring, F4), and reverts workflow_mode to the
-   * pre-launch value. The breaker is NOT tripped and auto_advance is untouched —
-   * this is a user halt of ONE attempt, not a repo failure (spec §5.2).
+   * Tear down a live session for a user-initiated halt (⏸ and ■ share this).
+   * Group-kills the tree, drops the claim, revokes the token, and frees a merge
+   * lock already handed over to the worker (token revocation alone would not).
+   * The breaker is NOT tripped and auto_advance is untouched — a user halt of
+   * ONE attempt is not a repo failure (spec §5.2).
    *
-   * @param {string} workspace
    * @param {string} attempt_id
-   * @returns {Promise<boolean>} True when a live attempt was stopped.
+   * @param {{ bead_id: string, handle: RunnerHandle }} entry
    */
-  async function stop(workspace, attempt_id) {
-    const entry = running.get(attempt_id);
-    if (!entry) {
-      return false;
-    }
+  function teardownLiveSession(attempt_id, entry) {
     stopped.add(attempt_id);
     try {
       entry.handle.kill('SIGTERM');
@@ -1333,29 +1348,128 @@ export function createScheduler(deps) {
     running.delete(attempt_id);
     claimed.delete(entry.bead_id);
     deps.tokens.revoke(attempt_id);
-    // A lock already handed over to the worker survives token revocation by
-    // design — free it here so a stopped attempt cannot leak the merge lock.
     takeHandover(attempt_id)();
-    deps.store.updateAttempt(workspace, {
-      attempt_id,
-      patch: { status: 'failed', cause: 'stopped', finished_at: now() }
-    });
+  }
+
+  /**
+   * Revert the bead metadata a halted attempt stamped: workflow_mode back to
+   * its pre-launch value, plus any exec-setting stamps. Both are best-effort —
+   * the terminal attempt record already reflects the halt.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {{ bead_id: string, prior: string|null }} entry
+   */
+  async function revertStamps(workspace, attempt_id, entry) {
     try {
       await revertWorkflowMode(entry.bead_id, entry.prior);
     } catch {
-      // Best-effort: bd may be down; the failed record already reflects it.
+      // Best-effort: bd may be down; the terminal record already reflects it.
     }
-    // Revert any exec-setting stamps this attempt wrote (best-effort).
     await revertExecStamps(
       entry.bead_id,
       execStampedKeysOf(workspace, attempt_id)
     );
+  }
+
+  /**
+   * Pause a running attempt (tile ⏸, worker-phase1 §2.1). Same teardown as ■,
+   * but the attempt lands in `paused` — resumable, never a failure — and the
+   * bead STAYS in its lane. The worktree and session log are preserved so
+   * `claude --resume <session_id>` can continue in place.
+   *
+   * Fail-closed on a missing session id: without it the attempt could never be
+   * resumed, so pausing would silently become a discard.
+   *
+   * Ends with a `tick()` so the freed slot advances the queue (§2.1/§2.3) —
+   * pausing one session must not stall the whole lane.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function pause(workspace, attempt_id) {
+    const entry = running.get(attempt_id);
+    if (!entry) {
+      return { ok: false, reason: 'not_running' };
+    }
+    const rec = deps.store.snapshot(workspace).attempts[attempt_id];
+    const sid = rec && rec.session_id;
+    if (typeof sid !== 'string' || sid.length === 0) {
+      return { ok: false, reason: 'no_session_id' };
+    }
+    teardownLiveSession(attempt_id, entry);
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { status: 'paused', cause: null, finished_at: now() }
+    });
+    await revertStamps(workspace, attempt_id, entry);
+    notifyChanged(workspace);
+    await tick(workspace);
+    return { ok: true };
+  }
+
+  /**
+   * Discard an attempt (tile ■, worker-phase1 §2.2). Terminal: the attempt
+   * lands in `stopped` and the bead leaves every lane, so the tick that follows
+   * cannot re-dispatch the work the user just abandoned. Re-running means
+   * re-queueing the bead from the candidate list.
+   *
+   * The state write and the lane removal go through ONE store mutation — split
+   * across two writes, a crash in between would leave a stopped attempt whose
+   * bead is still queued.
+   *
+   * Also accepts a leaf `paused` attempt (its process is already gone): that
+   * path only transitions the record and clears the lane.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<boolean>} True when an attempt was discarded.
+   */
+  async function stop(workspace, attempt_id) {
+    const entry = running.get(attempt_id);
+    if (entry) {
+      teardownLiveSession(attempt_id, entry);
+      deps.store.discardAttempt(workspace, {
+        attempt_id,
+        bead_id: entry.bead_id,
+        patch: { status: 'stopped', cause: null, finished_at: now() }
+      });
+      await revertStamps(workspace, attempt_id, entry);
+      notifyChanged(workspace);
+      await tick(workspace);
+      return true;
+    }
+    // No live process: a paused attempt discarded from its tile. Stamps were
+    // already reverted at pause time.
+    const snap = deps.store.snapshot(workspace);
+    const rec = snap.attempts[attempt_id];
+    if (!rec || rec.status !== 'paused') {
+      return false;
+    }
+    // Leaf guard (§1.1): a resumed ancestor stays `paused` forever, and a
+    // client rendering a stale tile could otherwise ■ it — pulling the bead of
+    // the RUNNING child out of the lane. Server-side because resume fans out
+    // only after its bd writes and spawn complete, leaving a real window.
+    for (const a of Object.values(snap.attempts || {})) {
+      if (a && a.resumed_from === attempt_id) {
+        return false;
+      }
+    }
+    deps.store.discardAttempt(workspace, {
+      attempt_id,
+      bead_id: rec.bead_id,
+      patch: { status: 'stopped', cause: null, finished_at: now() }
+    });
+    notifyChanged(workspace);
+    await tick(workspace);
     return true;
   }
 
   return {
     tick,
     stop,
+    pause,
     resume,
     runningCount() {
       return running.size;

@@ -32,11 +32,6 @@ import path from 'node:path';
 import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
-import {
-  gitHead,
-  parsePlanReceipt,
-  planFreshness
-} from '../workflow-enrich.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createOrphanDetector } from './orphan.js';
@@ -163,42 +158,12 @@ export function createLiveBd(config) {
       const blocked = !closed && !ready_ids.has(bead_id);
 
       const route = typeof md.route === 'string' ? md.route : null;
-      const plan_path = typeof md.plan_path === 'string' ? md.plan_path : null;
-      // KEY PRESENCE must survive: a present non-string/null plan_review is an
-      // invalid receipt that has to BLOCK downstream, not read as key-absent
-      // (which would open the legacy fallback). Absence ⇒ undefined field.
-      const plan_review = Object.hasOwn(md, 'plan_review')
-        ? md.plan_review
-        : undefined;
-      // Same presence rule for the admission inputs: a malformed spec_review
-      // must reach the validator as present-and-invalid, never as absent.
+      // Presence rule for the admission inputs: a malformed spec_review must
+      // reach the validator as present-and-invalid, never as absent.
       const spec_id = typeof md.spec_id === 'string' ? md.spec_id : null;
       const spec_review = Object.hasOwn(md, 'spec_review')
         ? md.spec_review
         : undefined;
-
-      // Precompute plan freshness against the CANONICAL workspace root (where the
-      // plan doc lives + is committed) — only for a full_plan bead with a valid
-      // receipt. This precomputed boolean takes precedence over any worktree
-      // recompute at spawn, so worktree-ancestry gaps never misfire the guard.
-      // fresh → true, stale → false, unknown → null (guard falls through).
-      let plan_fresh = null;
-      if (
-        route === 'full_plan' &&
-        typeof plan_review === 'string' &&
-        plan_path
-      ) {
-        const receipt = parsePlanReceipt(plan_review);
-        if (receipt) {
-          const freshness = planFreshness(
-            cwd,
-            gitHead(cwd),
-            receipt.sha,
-            plan_path
-          );
-          plan_fresh = freshness === 'unknown' ? null : freshness === 'fresh';
-        }
-      }
 
       return {
         ready,
@@ -208,8 +173,6 @@ export function createLiveBd(config) {
           typeof md.target_base === 'string' && md.target_base.length > 0
             ? md.target_base
             : config.target_base,
-        runner:
-          typeof md.worker_runner === 'string' ? md.worker_runner : undefined,
         model:
           typeof md.orchestration_model === 'string'
             ? md.orchestration_model
@@ -225,10 +188,7 @@ export function createLiveBd(config) {
         workflow_mode:
           typeof md.workflow_mode === 'string' ? md.workflow_mode : null,
         route,
-        plan_path,
         status,
-        plan_review,
-        plan_fresh,
         spec_id,
         spec_review,
         merge_policy:
@@ -293,7 +253,6 @@ export function defaultProbePid(pid) {
  *   makeRunner?: (name: string) => any,
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
- *   ccx_env?: Record<string, string|undefined>,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
  *   port?: number | (() => number),
  *   parallel_slots?: number,
@@ -380,7 +339,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       createRunner(name, {
         spawn_impl: options.spawn_impl || ((c, a, o) => spawn(c, a, o)),
         kill_impl: options.kill_impl,
-        ccx_env: options.ccx_env,
         lock_state
       }));
 
@@ -439,6 +397,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     bd,
     admission,
     verifyCmd,
+    parallel_slots:
+      typeof options.parallel_slots === 'number' ? options.parallel_slots : 2,
     repo,
     workspace: workspace_root
   };
@@ -552,7 +512,21 @@ export function resetWorkerBreakerForWorkspace(workspace_root) {
 }
 
 /**
- * Stop a running attempt (tile ■), IF an attachment is registered.
+ * The workspace's parallel slot count (the N in the 1+N dispatch cap), or null
+ * when no attachment is registered. Read-only display input: the Worker tab
+ * flags a manual resume that pushed live sessions past the cap
+ * (worker-phase1 §2.3).
+ *
+ * @param {string} workspace_root
+ * @returns {number|null}
+ */
+export function workerParallelSlots(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  return att ? att.parallel_slots : null;
+}
+
+/**
+ * Discard an attempt (tile ■), IF an attachment is registered.
  *
  * @param {string} workspace_root
  * @param {string} attempt_id
@@ -567,8 +541,24 @@ export async function stopWorkerAttempt(workspace_root, attempt_id) {
 }
 
 /**
- * Manually resume a failed/orphaned attempt (spec §1), IF an attachment is
- * registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one —
+ * Pause a running attempt (tile ⏸, worker-phase1 §2.1), IF an attachment is
+ * registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one.
+ *
+ * @param {string} workspace_root
+ * @param {string} attempt_id
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+export async function pauseWorkerAttempt(workspace_root, attempt_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.pause(keyFor(workspace_root), attempt_id);
+}
+
+/**
+ * Manually resume a paused/failed/orphaned attempt (spec §1), IF an attachment
+ * is registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one —
  * ws-handler tests and inactive workspaces stay hermetic.
  *
  * @param {string} workspace_root
