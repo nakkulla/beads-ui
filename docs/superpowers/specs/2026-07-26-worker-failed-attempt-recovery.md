@@ -29,9 +29,17 @@
 
 ## 결정
 
-### 단위 ①: 실패 종결 시 claim 해제
+### 단위 ①: close 없는 종결 시 claim 해제
 
-`failAttempt` 에서 bead status 가 `in_progress` 일 때만 `open` 으로 되돌린다. `auto_advance` OFF 는 그대로 둔다.
+bead status 가 `in_progress` 일 때만 `open` 으로 되돌린다. `auto_advance` OFF 는 그대로 둔다.
+
+적용 지점은 workflow_mode revert 가 이미 도는 "close 없는 종결" 대칭 집합(`scheduler.js:16-18` 주석의 fail/stop/orphan)과 같다:
+
+- `failAttempt`(`scheduler.js:268`) — `session_failed:*`·`loud_fail_blocker`·`verify_failed:*`·`workflow_mode_revert_failed` 전부 통과.
+- `stop` 의 두 분기(실행 중 ■, paused leaf ■) — `discardAttempt` 가 bead 를 레인에서 제거하므로 뒤따르는 `tick()` 이 즉시 재dispatch 하지는 않지만, claim 을 남기면 나중에 재큐잉할 때 같은 조용한 스킵이 재발한다.
+- `orphan.js` reap — 서버 재시작으로 죽은 attempt 도 같은 종결이다. 여기만 빼면 재시작 한 번으로 이번 실사고가 그대로 재발한다.
+
+`pause` 는 제외한다 — 종결이 아니라 중단이며, 세션이 같은 워크트리에서 resume 되므로 claim 을 유지한다(`leafPausedBeads` 가 dispatch 스킵을 이미 보장).
 
 `in_progress` 조건이 안전장치다. 세션이 작업을 마쳐 `resolved` 로 만든 뒤 verify 가 실패한 경우(`verify_failed:*`)까지 `open` 으로 되돌리면, PR 이 열려 있는 실제 상태와 기록이 어긋난다. 되돌릴 대상은 "claim 한 채로 끝난 것"뿐이다.
 
@@ -48,20 +56,23 @@
 | 경로 | 위치 | 기록할 reason |
 | --- | --- | --- |
 | `snapshotBead` throw | `scheduler.js:1146-1150` | `bd_snapshot_failed` |
-| `ready` 아님 / `blocked` | `scheduler.js:1151` | `not_ready` / `blocked` |
+| `ready` 아님 / `blocked` | `scheduler.js:1151` | `not_ready:<status>` |
 
-`snap.ready` 가 false 면 `not_ready`, `snap.blocked` 가 true 면 `blocked` 로 구분한다(둘 다면 `blocked` 가 더 구체적이므로 우선). 기록 후 `notifyChanged(workspace)` 로 fanout 하는 것까지 admission 거부 경로와 동일하게 맞춘다.
+`snap.blocked` 를 사유로 쓰지 않는다 — `snapshotBead`(`attach.js:137`)의 `blocked` 는 "닫히지 않았고 `bd ready` 목록에 없음"일 뿐이라 의존성 블록과 claim 잔존을 구분하지 못하고, 이번 실사고 케이스가 정확히 `blocked` 로 표시되어 의존성 쪽 오진을 유도한다. 대신 `snap.status` 를 실은 `not_ready:<status>` 를 기록한다(status 가 비면 `not_ready:unknown`). `not_ready:in_progress` = claim 잔존, `not_ready:open` = 의존성 등 그 외 사유로 ready 목록에 없음 — 배지가 곧 진단이 된다. `prefix:detail` 단일 문자열은 이 저장소의 기존 사유 선례(`verify_failed:<reason>`, `spec_missing_at_base:<base>`)와 같아 스키마·normalize 변경이 없다.
+
+기록 후 `notifyChanged(workspace)` 로 fanout 하는 것까지 admission 거부 경로와 동일하게 맞추되, **같은 bead 의 기존 기록과 reason 이 같으면 다시 쓰지 않는다**(`q.admission[bead_id]?.reason` 비교). not-ready bead 는 admission 거부와 달리 큐에 상시 존재하는 것이 보통이므로, 가드 없이는 모든 tick 이 정지 상태의 bead 수만큼 revision 증가와 fanout 을 반복한다.
 
 `claimed`/`dispatch_refused`/`paused_beads` 스킵은 대상이 아니다 — 각각 실행 중·직전 거부 기록됨·사용자가 명시적으로 일시정지한 상태라 이미 UI 에 드러난다.
 
 UI 는 사유 문자열을 그대로 렌더하므로 배지 코드 변경이 필요 없다.
 
-## 변경 (예상 4개 파일)
+## 변경 (예상 5개 파일)
 
-1. `server/worker/scheduler.js` — `failAttempt` 에 조건부 claim 해제 추가; `tickPass` 스캔 루프의 두 조용한 `continue` 에 `recordAdmission` + `notifyChanged` 추가.
-2. `server/worker/scheduler.test.js` — ① 실패 종결 후 bead 가 `open` 으로 복구되고 `resolved`/`closed` 는 건드리지 않음, ② 각 스킵 사유가 기록되고 dispatch 성공 시 걷힘, ③ skip-don't-stop 유지(한 bead 의 스킵이 뒤 entry dispatch 를 막지 않음).
-3. `server/worker/bd-metadata.js` — `readStatus` 가 없으면 추가(`pr-actions.js` 가 쓰는 것과 같은 것을 재사용; 있으면 변경 없음).
-4. `app/main.bundle.js`(+`.map`) — 프런트 소스를 건드리게 되면 `npm run build` 산출물 동반(현 설계상 배지 코드 변경은 불필요하므로 변경 없을 전망).
+1. `server/worker/scheduler.js` — `failAttempt`·`stop` 두 분기에 조건부 claim 해제 추가; `tickPass` 스캔 루프의 두 조용한 `continue` 에 사유 기록(동일 reason 무재기록 가드 포함) + `notifyChanged` 추가; `deps.bd` typedef 에 `setStatus`/`readStatus` 반영(라이브 배선 `createLiveBd` 는 `...meta` 로 이미 노출 — 배선 변경 없음).
+2. `server/worker/scheduler.test.js` — ① close 없는 종결(fail/stop) 후 bead 가 `open` 으로 복구되고 `resolved`/`closed` 는 건드리지 않음, ② 각 스킵 사유가 기록되고 dispatch 성공 시 걷힘, ③ 동일 reason 반복 tick 이 재기록·fanout 을 일으키지 않음, ④ skip-don't-stop 유지(한 bead 의 스킵이 뒤 entry dispatch 를 막지 않음).
+3. `server/worker/orphan.js`(+`orphan.test.js`) — reap 시 같은 조건부 claim 해제(기존 revert 와 같은 best-effort).
+4. `server/worker/bd-metadata.js` — `readStatus` 가 없으면 추가(`pr-actions.js` 가 쓰는 것과 같은 것을 재사용; 있으면 변경 없음).
+5. `app/main.bundle.js`(+`.map`) — 프런트 소스를 건드리게 되면 `npm run build` 산출물 동반(현 설계상 배지 코드 변경은 불필요하므로 변경 없을 전망).
 
 ## 비목표
 
@@ -78,10 +89,11 @@ UI 는 사유 문자열을 그대로 렌더하므로 배지 코드 변경이 필
 
 ## 수용 기준
 
-1. 실패로 종결된 attempt 의 bead 가 `in_progress` 였다면 `open` 으로 복구된다. `resolved`/`closed` 였다면 건드리지 않는다.
+1. close 없는 종결(fail/■ stop/orphan reap) 시 bead 가 `in_progress` 였다면 `open` 으로 복구된다. `resolved`/`closed` 였다면 건드리지 않는다.
 2. 실패 시 `auto_advance` 는 여전히 OFF 로 남는다(의도된 halt 보존).
 3. 사람이 `auto_advance` 를 켰을 때, 실패 복구된 bead 가 추가 조작 없이 dispatch 대상이 된다.
-4. `ready` 아님 / `blocked` / `bd_snapshot_failed` 로 스킵된 bead 는 그 사유가 큐 상태에 기록되고 UI 배지로 관측된다.
+4. `ready` 아님(`not_ready:<status>`) / `bd_snapshot_failed` 로 스킵된 bead 는 그 사유가 큐 상태에 기록되고 UI 배지로 관측된다.
 5. 그 사유는 해당 bead 가 dispatch 되면 걷힌다.
-6. skip-don't-stop 안티 기아 보장이 유지된다 — 한 bead 의 스킵이 뒤 entry 의 dispatch 를 막지 않는다.
-7. `npm run all` green.
+6. 같은 reason 의 반복 tick 은 재기록·revision 증가·fanout 을 일으키지 않는다.
+7. skip-don't-stop 안티 기아 보장이 유지된다 — 한 bead 의 스킵이 뒤 entry 의 dispatch 를 막지 않는다.
+8. `npm run all` green.
