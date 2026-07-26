@@ -3407,11 +3407,6 @@ html[data-theme='dark'] {
     flex-wrap: wrap;
   }
 
-  /* Cap the vertically-stacked lane bodies so the page can't grow unbounded. */
-  .worker-pane__body {
-    max-height: 40vh;
-  }
-
   /* Worker-tab in-tab transcript drawer (§1.4). */
   .sv__bar {
     flex-wrap: wrap;
