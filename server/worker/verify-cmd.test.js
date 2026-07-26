@@ -1,7 +1,8 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import {
   detectVerifyCmd,
   resolveVerifyCmd,
+  runVerifyAtSha,
   runVerifyCmd
 } from './verify-cmd.js';
 
@@ -129,8 +130,213 @@ describe('worker/verify-cmd auto-detection + resolution (§2)', () => {
     });
   });
 
-  test('resolve: neither config nor detection → null (keeps the demotion)', () => {
+  test('resolve: neither config nor detection → null (no local verify signal)', () => {
     const fs = fakeFs({ '/repo/requirements.txt': 'pytest' });
     expect(resolveVerifyCmd('/repo', {}, { fs })).toBeNull();
+  });
+});
+
+describe('worker/verify-cmd — pre-merge run pinned to a PR head sha (§5)', () => {
+  const SHA = 'a'.repeat(40);
+
+  /**
+   * @param {{ present?: boolean, present_after_fetch?: boolean }} [input]
+   */
+  function fakeGit(input = {}) {
+    let present = input.present ?? false;
+    const calls = /** @type {string[][]} */ ([]);
+    const git = vi.fn(async (/** @type {string[]} */ args) => {
+      calls.push(args);
+      if (args[0] === 'cat-file') {
+        return { code: present ? 0 : 1, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'fetch') {
+        present = input.present_after_fetch ?? true;
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    return { git, calls };
+  }
+
+  function fakeWorktree() {
+    /** @type {string[]} */
+    const lock_log = [];
+    return {
+      // The command really is spawned, so the pinned worktree path must be a
+      // directory that exists — the repo root stands in for it here.
+      addDetached: vi.fn(async () => {
+        lock_log.push('addDetached');
+        return { path: process.cwd() };
+      }),
+      removeDetached: vi.fn(async () => ({ code: 0, stderr: '' })),
+      lock_log,
+      withTopologyLock: vi.fn(
+        async (/** @type {string} */ _repo, /** @type {any} */ fn) => {
+          lock_log.push('lock:acquire');
+          try {
+            return await fn();
+          } finally {
+            lock_log.push('lock:release');
+          }
+        }
+      )
+    };
+  }
+
+  test('runs the command in a detached worktree pinned to the head sha', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(worktree.addDetached).toHaveBeenCalledWith({
+      repo: '/repo',
+      name: `verify-UI-1-${SHA.slice(0, 7)}`,
+      sha: SHA
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test('skips the fetch when the repo already has the commit', async () => {
+    const { git, calls } = fakeGit({ present: true });
+
+    await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_ms: 10000,
+      worktree: fakeWorktree(),
+      git
+    });
+
+    expect(calls.some((a) => a[0] === 'fetch')).toBe(false);
+  });
+
+  test('fetches the PR head ref when the commit is not local', async () => {
+    const { git, calls } = fakeGit({ present: false });
+
+    await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_ms: 10000,
+      worktree: fakeWorktree(),
+      git
+    });
+
+    expect(calls).toContainEqual([
+      'fetch',
+      '--no-tags',
+      'origin',
+      'refs/pull/304/head'
+    ]);
+  });
+
+  test('reports verify_sha_unavailable when the commit cannot be fetched', async () => {
+    const { git } = fakeGit({ present: false, present_after_fetch: false });
+    const worktree = fakeWorktree();
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(r).toEqual({
+      ok: false,
+      reason: 'verify_sha_unavailable',
+      exit: null
+    });
+    expect(worktree.addDetached).not.toHaveBeenCalled();
+  });
+
+  test('tears the detached worktree down after a failing run', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(4)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(r.reason).toBe('verify_cmd_failed');
+    expect(worktree.removeDetached).toHaveBeenCalledWith({
+      repo: '/repo',
+      name: `verify-UI-1-${SHA.slice(0, 7)}`
+    });
+  });
+
+  test('fetches the PR head under the repo topology lock, releasing it before the worktree add', async () => {
+    const { git } = fakeGit({ present: false });
+    const worktree = fakeWorktree();
+
+    await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    // The lock is HELD across the fetch and RELEASED before `addDetached`,
+    // which takes the same non-reentrant lock itself.
+    expect(worktree.withTopologyLock).toHaveBeenCalledWith(
+      '/repo',
+      expect.any(Function)
+    );
+    expect(worktree.lock_log).toEqual([
+      'lock:acquire',
+      'lock:release',
+      'addDetached'
+    ]);
+  });
+
+  test('reports verify_worktree_failed when the worktree cannot be created', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+    worktree.addDetached = vi.fn(async () => {
+      throw new Error('worktree add failed');
+    });
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(r.reason).toBe('verify_worktree_failed');
   });
 });

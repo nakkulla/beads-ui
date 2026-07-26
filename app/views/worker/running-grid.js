@@ -3,8 +3,8 @@
  *
  * Phase 10: the running grid renders REAL attempt tiles derived from the queue
  * snapshot's `attempts` (status='running'), pushed via `worker-queue-snapshot`.
- * The banners area carries the auto-advance state and the breaker Failed banner
- * (derived from failed/orphaned attempts). The transcript viewer (tile click →
+ * The banners area carries the auto-advance state and the Failed banner (derived
+ * from the latest failed/orphaned attempt). The transcript viewer (tile click →
  * drawer) is Phase 11 — here the tile just surfaces attempt data.
  *
  * Grid: `repeat(auto-fill, minmax(215px,1fr))` with its own internal scroll
@@ -17,12 +17,9 @@ import { html } from 'lit-html';
  * @property {string} bead_id
  * @property {string} attempt_id
  * @property {string} title
- * @property {'serial'|'parallel'} lane
  * @property {string|null} runner
  * @property {string|null} model
  * @property {number|null} started_at
- * @property {string|null} [merge_policy] - Resolved policy snapshot (§2).
- * @property {string|null} [demoted_reason] - Demotion reason badge (§2/§4).
  * @property {string|null} [resumed_from] - Prior attempt this one resumes (§1).
  * @property {boolean} [paused] - Leaf paused attempt: shows ▶ instead of ⏸ and
  * has no live elapsed clock (worker-phase1 §1.1/§2.1).
@@ -32,7 +29,7 @@ import { html } from 'lit-html';
  */
 
 /**
- * @typedef {Object} BreakerBanner
+ * @typedef {Object} FailureBanner
  * @property {string} repo
  * @property {string} reason
  * @property {string|null} [resume_attempt_id] - The banner's own (latest
@@ -41,6 +38,13 @@ import { html } from 'lit-html';
  * (session_id present, not already resumed); ineligible renders disabled.
  * @property {string|null} [resume_reason] - Ineligibility reason for the
  * disabled button's title.
+ */
+
+/**
+ * @typedef {Object} CleanupFailure
+ * @property {string} bead_id - The merged bead whose cleanup stopped.
+ * @property {string} step - Which pr-finish step stopped (worker-phase2 §6).
+ * @property {string} reason - Machine-readable cause.
  */
 
 /**
@@ -62,38 +66,52 @@ function formatElapsed(ms) {
 /**
  * Banners area above the running grid.
  *
- * @param {{ autoAdvance: boolean, breaker?: BreakerBanner|null }} state
+ * @param {{ autoAdvance: boolean, failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[] }} state
  * @returns {import('lit-html').TemplateResult}
  */
 export function bannersTemplate(state) {
+  const cleanup = Array.isArray(state.cleanupFailures)
+    ? state.cleanupFailures
+    : [];
   return html`<div class="worker-banners">
     ${state.autoAdvance
       ? html`<div class="worker-banner worker-banner--on" role="status">
-          ▶ 자동 진행 켜짐 — Serial head 1 + Parallel 슬롯까지 실행합니다.
+          ▶ 자동 진행 켜짐 — 대기 큐를 순서대로 슬롯 수만큼 실행합니다.
         </div>`
       : html`<div class="worker-banner worker-banner--off" role="status">
           ⏸ 자동 진행 꺼짐 — 새 세션을 시작하지 않습니다. ▶로 재개.
         </div>`}
-    ${state.breaker
-      ? html`<div class="worker-banner worker-banner--breaker" role="alert">
-          ⛔ ${state.breaker.repo || 'repo'} 세션 실패로 차단 —
-          ${state.breaker.reason || ''}. 신규 launch·머지 진입 차단, 수동 ▶
-          필요.
-          ${state.breaker.resume_attempt_id
+    ${state.failure
+      ? html`<div class="worker-banner worker-banner--failure" role="alert">
+          ⛔ ${state.failure.repo || 'repo'} 세션 실패 —
+          ${state.failure.reason || ''}. 자동 진행을 껐습니다, 수동 ▶ 필요.
+          ${state.failure.resume_attempt_id
             ? html`<button
                 type="button"
                 class="worker-banner__resume"
-                data-attempt-id=${state.breaker.resume_attempt_id}
-                ?disabled=${!state.breaker.resume_eligible}
-                title=${state.breaker.resume_eligible
+                data-attempt-id=${state.failure.resume_attempt_id}
+                ?disabled=${!state.failure.resume_eligible}
+                title=${state.failure.resume_eligible
                   ? '최근 실패 세션을 같은 워크트리에서 이어서 진행'
-                  : state.breaker.resume_reason || '이어하기 불가'}
+                  : state.failure.resume_reason || '이어하기 불가'}
               >
                 ↻ 이어하기
               </button>`
             : ''}
         </div>`
       : ''}
+    ${cleanup.map(
+      (c) =>
+        html`<div
+          class="worker-banner worker-banner--cleanup"
+          role="alert"
+          data-bead-id=${c.bead_id}
+        >
+          ⚠ ${c.bead_id} 머지 완료 — 머지 후 정리가 <b>${c.step}</b> 단계에서
+          멈췄습니다 (${c.reason}). bead는 resolved로 남아 있고 자동 재시도는
+          하지 않습니다 — 정리를 사람이 마무리하세요.
+        </div>`
+    )}
   </div>`;
 }
 
@@ -107,7 +125,6 @@ export function bannersTemplate(state) {
  * @returns {import('lit-html').TemplateResult}
  */
 function runningTile(tile, now, selected_attempt = null) {
-  const badge = tile.lane === 'serial' ? 'serial' : '∥';
   const paused = !!tile.paused;
   const elapsed = paused
     ? '일시정지'
@@ -124,7 +141,6 @@ function runningTile(tile, now, selected_attempt = null) {
     <div class="rtile__hd">
       <span class="rtile__dot" aria-hidden="true"></span>
       <span class="rtile__id">${tile.bead_id}</span>
-      <span class="rtile__badge rtile__badge--${tile.lane}">${badge}</span>
       ${tile.resumed_from
         ? html`<span
             class="rtile__resumed"
@@ -167,17 +183,6 @@ function runningTile(tile, now, selected_attempt = null) {
     </div>
     <div class="rtile__title">${tile.title}</div>
     ${meta ? html`<div class="rtile__meta">${meta}</div>` : ''}
-    ${tile.merge_policy
-      ? html`<div class="rtile__meta rtile__meta--policy">
-          ${tile.merge_policy}${tile.demoted_reason
-            ? html` <span
-                class="rtile__demoted"
-                title=${`강등: ${tile.demoted_reason}`}
-                >⤵ ${tile.demoted_reason}</span
-              >`
-            : ''}
-        </div>`
-      : ''}
   </div>`;
 }
 

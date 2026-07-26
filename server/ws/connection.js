@@ -58,11 +58,13 @@ import {
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
+  handleWorkerPrMerge,
+  handleWorkerPrRerun,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
   handleWorkerQueueSetExecDefault,
-  handleWorkerQueueSetPolicy,
+  handleWorkerQueueSetSlots,
   handleWorkerQueueToggle
 } from './worker-handlers.js';
 import {
@@ -437,8 +439,8 @@ export async function handleMessage(ws, data) {
     case 'worker-queue-toggle':
       handleWorkerQueueToggle(ws, req);
       return;
-    case 'worker-queue-set-policy':
-      handleWorkerQueueSetPolicy(ws, req);
+    case 'worker-queue-set-slots':
+      handleWorkerQueueSetSlots(ws, req);
       return;
     case 'worker-queue-set-exec-default':
       handleWorkerQueueSetExecDefault(ws, req);
@@ -454,6 +456,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-attempt-resume':
       await handleWorkerAttemptResume(ws, req);
+      return;
+    case 'worker-pr-merge':
+      await handleWorkerPrMerge(ws, req);
+      return;
+    case 'worker-pr-rerun':
+      await handleWorkerPrRerun(ws, req);
       return;
     case 'subscribe-ui-order':
       handleSubscribeUiOrder(ws, req);

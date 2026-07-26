@@ -1,85 +1,177 @@
 /**
- * Independent completion verification (worker-autorun-policy spec §3/§5).
+ * Independent completion verification — SERVER OBSERVATION (worker-phase2 §1).
  *
- * A session exit 0 is NOT sufficient to mark a bead Done. Success is judged
- * per the attempt's resolved `merge_policy` — never from session stdout:
+ * A session exit 0 is NOT sufficient to call a bead done, and neither is the
+ * session's own bd bookkeeping. The dual-lane verdict this module used to run
+ * (auto_merge = observed merge_sha + bd `closed` / pr_stop = bd `resolved` +
+ * `pr_url`) is GONE: unattended merging is gone with it, and judging pr_stop
+ * from the session's self-report failed real work that merely forgot to write
+ * bd. The single verdict is now what the SERVER can see on GitHub:
  *
- *   auto_merge — (1) a SERVER-OBSERVED `merge_sha` exists (recorded by the
- *   merge-lock route at release: the base tip the server itself read after
- *   confirming the base advanced under the session's lock; 40-hex enforced,
- *   bd-metadata hex-coercion precedent), and (2) bd reads exactly `closed`.
- *   The old work-branch ancestry check is GONE: the contract-mandated squash
- *   merge severs work-tip ancestry, so `merge-base --is-ancestor` refused
- *   every contract-compliant merge (latent verify_failed:work_not_in_base).
- *   The observed merge_sha IS the release-time base tip, so containment is
- *   true by construction. A session that never took the lock exits with bd
- *   unclosed → the legacy `bd_not_closed` reason survives (status is checked
- *   first); a closed bead WITHOUT an observed merge is `merge_sha_missing`.
+ *   is there an OPEN pull request for this attempt's branch (= the bead id)?
  *
- *   pr_stop — bd reads exactly `resolved` AND `pr_url` metadata exists. No
- *   merge happened by design, so merge_sha/closed are not consulted.
+ * Three-state, fail-closed (the gh adapter's contract):
+ *   - observed a PR              → success.
+ *   - observed successfully, none → `pr_missing` (the attempt failed).
+ *   - could not observe          → short retry, then `gh_observation_failed`.
+ *     An observation error is NEVER downgraded to `pr_missing`; a `gh` outage
+ *     must not read as "the session never opened a PR".
+ *
+ * On success the WORKER back-fills bd itself — `metadata.pr_url` = the observed
+ * URL, status = `resolved`, each with a readback. The session's own write stays
+ * a contract obligation; this is the fallback that makes "work done, record
+ * missing" stop being a failure. The writes are idempotent, so a session that
+ * already recorded both passes straight through. A bd write or readback that
+ * fails is NOT swallowed: it yields `bd_record_failed` (see the reason table
+ * below), because the contract keys are what every later consumer (the PR
+ * queue, pr-finish cleanup, the human reading the board) reads — silently
+ * passing would recreate the same record/reality divergence in the opposite
+ * direction, with the worker believing a bead is resolved that bd shows open.
+ *
+ * @import { GhResult, PrObservation } from './gh.js'
  */
+import { branchForBead } from './worktree.js';
 
 /**
  * @typedef {Object} VerifyResult
- * @property {boolean} ok - The policy lane's success criteria all hold.
- * @property {string|null} bd_status - Status read back from bd.
- * @property {string} reason - 'ok' | 'bd_not_closed' | 'merge_sha_missing' |
- * 'bd_not_resolved' | 'pr_url_missing' | 'invalid_merge_policy'.
+ * @property {boolean} ok - An open PR was observed AND bd carries the record.
+ * @property {'ok'|'pr_missing'|'gh_observation_failed'|'bd_record_failed'} reason
+ * `pr_missing` = successful observation, no open PR. `gh_observation_failed` =
+ * the observation itself could not be completed (retried). `bd_record_failed` =
+ * PR observed, but the worker's `pr_url`/`resolved` back-fill did not stick.
+ * @property {string|null} pr_url - Observed PR URL (null unless observed).
+ * @property {number|null} pr_number - Observed PR number (null unless observed).
+ * @property {string|null} gh_reason - The gh adapter's own failure reason,
+ * kept for the banner; null unless the observation errored.
  */
 
-/** Strict 40-hex commit sha (bd metadata hex-coercion precedent). */
-const SHA40_RE = /^[0-9a-f]{40}$/i;
+/** Extra observation attempts after the first (worker-phase2 §1 "짧은 재시도"). */
+const DEFAULT_RETRIES = 2;
+
+/** Delay between observation retries (ms). */
+const DEFAULT_RETRY_DELAY_MS = 1000;
 
 /**
- * Create an independent verifier. `bdShow` must return the issue with its
- * `metadata` (pr_url lives there).
+ * Create the observation verifier.
  *
  * @param {{
- *   bdShow: (bead_id: string) => Promise<{ status?: string | null, metadata?: Record<string, unknown> | null } | null>
+ *   gh: { openPrForBranch: (repo_dir: string, branch: string) => Promise<GhResult<PrObservation>> },
+ *   bd: {
+ *     setMetadata: (bead_id: string, key: string, value: string) => Promise<void>,
+ *     readMetadata: (bead_id: string, key: string) => Promise<string|null>,
+ *     setStatus: (bead_id: string, status: string) => Promise<void>,
+ *     readStatus: (bead_id: string) => Promise<string|null>
+ *   },
+ *   retries?: number,
+ *   sleep?: (ms: number) => Promise<void>,
+ *   retry_delay_ms?: number
  * }} deps
- * @returns {{ verifyMerge: (input: { repo: string, target_base: string, bead_id: string, merge_policy: 'auto_merge'|'pr_stop', merge_sha: string|null }) => Promise<VerifyResult> }}
+ * @returns {{ verifyPrSubmitted: (input: { repo: string, bead_id: string }) => Promise<VerifyResult> }}
  */
 export function createVerifier(deps) {
+  const retries =
+    typeof deps.retries === 'number' && deps.retries >= 0
+      ? deps.retries
+      : DEFAULT_RETRIES;
+  const retry_delay_ms =
+    typeof deps.retry_delay_ms === 'number'
+      ? deps.retry_delay_ms
+      : DEFAULT_RETRY_DELAY_MS;
+  const sleep =
+    deps.sleep ||
+    ((/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms)));
+
+  /**
+   * Observe the branch's open PR, retrying ONLY the error state (an empty
+   * result is an answer, not a failure — retrying it would just delay the
+   * `pr_missing` verdict).
+   *
+   * @param {string} repo
+   * @param {string} branch
+   * @returns {Promise<GhResult<PrObservation>>}
+   */
+  async function observe(repo, branch) {
+    /** @type {GhResult<PrObservation>} */
+    let last = { state: 'error', reason: 'gh_not_called' };
+    for (let i = 0; i <= retries; i += 1) {
+      try {
+        last = await deps.gh.openPrForBranch(repo, branch);
+      } catch {
+        last = { state: 'error', reason: 'gh_spawn_failed' };
+      }
+      if (last.state !== 'error') {
+        return last;
+      }
+      if (i < retries) {
+        await sleep(retry_delay_ms);
+      }
+    }
+    return last;
+  }
+
+  /**
+   * Back-fill the contract keys the session was supposed to write, each with a
+   * confirming readback. Returns false on any throw or mismatch.
+   *
+   * @param {string} bead_id
+   * @param {string} pr_url
+   * @returns {Promise<boolean>}
+   */
+  async function recordToBd(bead_id, pr_url) {
+    try {
+      await deps.bd.setMetadata(bead_id, 'pr_url', pr_url);
+      if ((await deps.bd.readMetadata(bead_id, 'pr_url')) !== pr_url) {
+        return false;
+      }
+      await deps.bd.setStatus(bead_id, 'resolved');
+      if ((await deps.bd.readStatus(bead_id)) !== 'resolved') {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
   return {
     /**
-     * @param {{ repo: string, target_base: string, bead_id: string, merge_policy: 'auto_merge'|'pr_stop', merge_sha: string|null }} input
+     * @param {{ repo: string, bead_id: string }} input
      * @returns {Promise<VerifyResult>}
      */
-    async verifyMerge(input) {
-      const bead = await deps.bdShow(input.bead_id);
-      const bd_status =
-        bead && typeof bead.status === 'string' ? bead.status : null;
-      const metadata =
-        bead && bead.metadata && typeof bead.metadata === 'object'
-          ? bead.metadata
-          : {};
+    async verifyPrSubmitted(input) {
+      const observation = await observe(
+        input.repo,
+        branchForBead(input.bead_id)
+      );
 
-      if (input.merge_policy === 'pr_stop') {
-        if (bd_status !== 'resolved') {
-          return { ok: false, bd_status, reason: 'bd_not_resolved' };
-        }
-        const pr_url = /** @type {any} */ (metadata).pr_url;
-        if (typeof pr_url !== 'string' || pr_url.length === 0) {
-          return { ok: false, bd_status, reason: 'pr_url_missing' };
-        }
-        return { ok: true, bd_status, reason: 'ok' };
+      if (observation.state === 'error') {
+        return {
+          ok: false,
+          reason: 'gh_observation_failed',
+          pr_url: null,
+          pr_number: null,
+          gh_reason: observation.reason
+        };
+      }
+      if (observation.state === 'empty') {
+        return {
+          ok: false,
+          reason: 'pr_missing',
+          pr_url: null,
+          pr_number: null,
+          gh_reason: null
+        };
       }
 
-      if (input.merge_policy !== 'auto_merge') {
-        return { ok: false, bd_status, reason: 'invalid_merge_policy' };
-      }
-
-      if (bd_status !== 'closed') {
-        return { ok: false, bd_status, reason: 'bd_not_closed' };
-      }
-      if (
-        typeof input.merge_sha !== 'string' ||
-        !SHA40_RE.test(input.merge_sha)
-      ) {
-        return { ok: false, bd_status, reason: 'merge_sha_missing' };
-      }
-      return { ok: true, bd_status, reason: 'ok' };
+      const pr = observation.data;
+      const recorded = await recordToBd(input.bead_id, pr.url);
+      return {
+        ok: recorded,
+        reason: recorded ? 'ok' : 'bd_record_failed',
+        pr_url: pr.url,
+        pr_number: pr.number,
+        gh_reason: null
+      };
     }
   };
 }

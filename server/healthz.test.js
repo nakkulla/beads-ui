@@ -40,14 +40,19 @@ describe('GET /healthz', () => {
     const { status, body } = await getHealthz({ bd: true, db: true });
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
-    // worker is now a live status object (auto_advance / running / breaker).
+    // worker is a live status object (auto_advance / running count).
     expect(body.checks.bd).toBe(true);
     expect(body.checks.db).toBe(true);
     expect(body.checks.worker).toEqual({
       auto_advance: false,
-      running_count: 0,
-      breaker_tripped: false
+      running_count: 0
     });
+  });
+
+  test('the worker status omits the retired breaker_tripped field', async () => {
+    const { body } = await getHealthz({ bd: true, db: true });
+
+    expect('breaker_tripped' in body.checks.worker).toBe(false);
   });
 
   test('503 when the db probe fails', async () => {
@@ -55,7 +60,7 @@ describe('GET /healthz', () => {
     expect(status).toBe(503);
     expect(body.ok).toBe(false);
     expect(body.checks.db).toBe(false);
-    expect(body.checks.worker.breaker_tripped).toBe(false);
+    expect(body.checks.worker.auto_advance).toBe(false);
   });
 
   test('503 when the bd probe fails', async () => {

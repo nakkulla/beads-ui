@@ -3,15 +3,32 @@
  *
  * Candidate lanes are live Board Ready/Blocked data read from the SAME
  * per-subscription issue stores as the Board tab (no separate candidate
- * storage). Serial/Parallel/Done lanes are driven by the `worker-queue`
- * subscription. Dragging a candidate into Serial/Parallel issues a
+ * storage). The single waiting queue + Done lanes are driven by the
+ * `worker-queue` subscription (worker-phase2 §3 collapsed the serial/parallel
+ * duality into ONE lane). Dragging a candidate into the queue issues a
  * `worker-queue-place` mutation carrying the current queue revision; on a CAS
  * conflict the reply's current snapshot is adopted and the drag retried once.
  *
- * The ▶/⏸ controls flip `auto_advance`. Running tiles + the breaker/Failed
- * banner are derived from the queue snapshot's `attempts` (status='running'
- * → tiles; status='failed'/'orphaned' → breaker banner), which the server-side
- * scheduler fills as sessions dispatch and terminate.
+ * The ▶/⏸ controls flip `auto_advance`, and the slot editor sets the
+ * concurrency cap (`worker-queue-set-slots`, same CAS discipline; lower bound
+ * 1 — which is exactly the retired serial lane). Running tiles + the failure
+ * banner are derived from the queue snapshot's `attempts` (status='running' → tiles;
+ * status='failed'/'orphaned' → failure banner), which the server-side scheduler
+ * fills as sessions dispatch and terminate. The banner reads the LATEST failed
+ * attempt directly — there is no breaker object behind it (worker-phase2 §2).
+ *
+ * LAYOUT (worker-phase2 §7). The lane row is the spec's four columns —
+ * 대기 · 실행 중 · PR 대기 · 완료 — so a bead's whole life reads left to right in
+ * one row: it waits, it runs, its PR waits for the human click, it merges.
+ * 실행 중 is a COLUMN, not the banner-level grid it used to be, because the
+ * sketch draws it as one; the tile grid template is unchanged and simply renders
+ * as that column's body.
+ *
+ * The candidate pane is kept as a fifth, visually distinct SOURCE pane in front
+ * of those four. It is not a fifth bead state — it is the Board feed a bead is
+ * dragged OUT of, and dropping it would delete the only way to enqueue anything
+ * (`worker-queue-place` has no other entry point). It stays dashed
+ * (`worker-pane--src`) precisely so it does not read as one of the four.
  */
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
@@ -26,6 +43,15 @@ import { createTranscriptDrawer } from './transcript-drawer.js';
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
+
+/**
+ * Lower bound on the concurrency cap, mirroring the server's `MIN_SLOTS`
+ * (worker-phase2 §3). The server rejects anything below it; the editor clamps
+ * so a stray keystroke never sends a value that would just bounce.
+ *
+ * @type {number}
+ */
+const MIN_SLOTS = 1;
 
 /**
  * @param {any} issue
@@ -62,6 +88,88 @@ function blockedReason(issue) {
     .map((/** @type {any} */ d) => (typeof d === 'string' ? d : d && d.id))
     .filter(Boolean);
   return ids.length > 0 ? `🔒 ${ids.join(', ')}` : '🔒 blocked';
+}
+
+/**
+ * Gate tiers whose badge reports something a HUMAN has to act on rather than
+ * something to wait out: the PR was closed without a merge (worker-phase2 §4 —
+ * not a completion, the bead stays put), or the observation itself could not be
+ * decided (§5 fail-closed).
+ *
+ * @type {string[]}
+ */
+const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
+
+/**
+ * Project one `pr_wait` bead into a lane row, carrying whatever the server's PR
+ * poller has observed (worker-phase2 §4/§5): the PR link, the gate/base badges,
+ * and the two actions (§6).
+ *
+ * The PR stays a LINK (`#N ↗`), never a button — putting a view affordance and
+ * an execute affordance side by side at the same weight is how a misclick
+ * merges something. [머지] is disabled whenever the gate refuses, and the
+ * disabled tooltip carries the refusal reason so the badge is not the only
+ * explanation. [재실행] is visually subordinate: a misclick there discards a PR.
+ *
+ * The gate shown here is ADVISORY. The click re-queries `gh` server-side and
+ * decides again, so a badge that went stale between render and click cannot
+ * merge anything the fresh gate would refuse.
+ *
+ * @param {string} bead_id
+ * @param {string} title
+ * @param {Record<string, any>} observations - Snapshot `pr_observations` map.
+ * @param {{ step: string, reason: string }|null} cleanup_failed - Durable
+ * post-merge cleanup failure for this bead, if any (§6).
+ * @returns {any}
+ */
+function prWaitRow(bead_id, title, observations, cleanup_failed) {
+  const obs = observations[bead_id] || null;
+  const gate = obs && obs.gate ? obs.gate : null;
+  const pr = obs && obs.pr ? obs.pr : null;
+  /** @type {string[]} */
+  const badges = [];
+  if (gate && gate.gate_badge) {
+    badges.push(gate.gate_badge);
+  }
+  if (gate && gate.base_badge && gate.base_badge !== gate.gate_badge) {
+    badges.push(gate.base_badge);
+  }
+  if (cleanup_failed) {
+    badges.push('정리 실패');
+  }
+  const conflicting = !!gate && gate.base_badge === '충돌';
+  const enabled = !!gate && gate.enabled === true;
+  // An already-merged PR whose cleanup stopped: the click re-runs the cleanup
+  // from the top. Nothing retries automatically (§6), so this button is the
+  // human's way back in once they have fixed whatever stopped it.
+  const cleanup_retry = !!cleanup_failed && !!gate && gate.tier === 'merged';
+  return {
+    id: bead_id,
+    title,
+    reason: cleanup_failed ? '머지됨 · 정리 미완' : 'PR 대기',
+    draggable: false,
+    done: true,
+    lane: 'pr_wait',
+    pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
+    pr_url: pr && typeof pr.url === 'string' ? pr.url : '',
+    badges,
+    alert: (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) || !!cleanup_failed,
+    merge_action: true,
+    // A conflicting PR keeps [머지] clickable on purpose: that click is what
+    // dispatches the resolution session (§6), and it merges nothing.
+    merge_enabled: enabled || conflicting || cleanup_retry,
+    merge_title: cleanup_retry
+      ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+      : conflicting
+        ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
+        : enabled
+          ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
+          : gate && gate.tier === 'merged'
+            ? // Already merged with no cleanup failure recorded: the cleanup is
+              // running, so "머지 불가: 관측 대기" would be a lie about why.
+              '머지됨 — 머지 후 정리 진행 중'
+            : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+  };
 }
 
 /**
@@ -102,10 +210,11 @@ export function createWorkerView(mount_element, options = {}) {
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
-  // Persistent console shell: the running grid (top) and lanes (bottom) render
-  // into their own targets so the transcript drawer can sit BETWEEN them (the
-  // mockup pushes the lanes down when a tile opens the drawer) without a
-  // full-template re-render clobbering the drawer's own lit-html root.
+  // Persistent console shell: the control bar + banners (top) and the lane row
+  // (bottom) render into their own targets so the transcript drawer can sit
+  // BETWEEN them (the mockup pushes the lanes down when a tile opens the
+  // drawer) without a full-template re-render clobbering the drawer's own
+  // lit-html root.
   const console_el = document.createElement('div');
   console_el.className = 'worker-console';
   const top_el = document.createElement('div');
@@ -145,8 +254,9 @@ export function createWorkerView(mount_element, options = {}) {
       (queueStore && queueStore.get()) || {
         revision: 0,
         auto_advance: false,
-        serial: [],
-        parallel: [],
+        slots: MIN_SLOTS,
+        queue: [],
+        pr_wait: [],
         done: []
       }
     );
@@ -173,19 +283,18 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Place a bead into a lane at an index, retrying ONCE on a CAS conflict.
+   * Place a bead into the waiting queue at an index, retrying ONCE on a CAS
+   * conflict.
    *
    * @param {string} bead_id
-   * @param {'serial'|'parallel'} lane
    * @param {number} index
    */
-  async function placeBead(bead_id, lane, index) {
+  async function placeBead(bead_id, index) {
     if (!transport) {
       return;
     }
     const res = await transport('worker-queue-place', {
       bead_id,
-      lane,
       index,
       expected_revision: currentRevision()
     });
@@ -193,7 +302,6 @@ export function createWorkerView(mount_element, options = {}) {
     if (res && res.conflict) {
       await transport('worker-queue-place', {
         bead_id,
-        lane,
         index,
         expected_revision: currentRevision()
       }).then(adopt);
@@ -202,16 +310,14 @@ export function createWorkerView(mount_element, options = {}) {
 
   /**
    * @param {string} bead_id
-   * @param {'serial'|'parallel'} lane
    * @param {number} to_index
    */
-  async function reorderBead(bead_id, lane, to_index) {
+  async function reorderBead(bead_id, to_index) {
     if (!transport) {
       return;
     }
     const res = await transport('worker-queue-reorder', {
       bead_id,
-      lane,
       to_index,
       expected_revision: currentRevision()
     });
@@ -219,7 +325,6 @@ export function createWorkerView(mount_element, options = {}) {
     if (res && res.conflict) {
       await transport('worker-queue-reorder', {
         bead_id,
-        lane,
         to_index,
         expected_revision: currentRevision()
       }).then(adopt);
@@ -314,6 +419,103 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The human merge click (worker-phase2 §6). Sends the current revision under
+   * the same CAS discipline as every other mutation and retries ONCE against
+   * the fresh revision on a conflict. What comes back is not just success/fail
+   * but WHAT HAPPENED, because the server may legitimately have merged nothing:
+   * a conflicting PR dispatches a resolution session instead, and a gate that
+   * refuses at click time (the badge was advisory) merges nothing at all.
+   *
+   * @param {string} bead_id
+   */
+  async function mergePr(bead_id) {
+    if (!transport || !bead_id) {
+      return;
+    }
+    let res = /** @type {any} */ (
+      await transport('worker-pr-merge', {
+        bead_id,
+        expected_revision: currentRevision()
+      })
+    );
+    adopt(res);
+    if (res && res.conflict) {
+      res = /** @type {any} */ (
+        await transport('worker-pr-merge', {
+          bead_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+    }
+    if (!res || res.conflict) {
+      return;
+    }
+    if (res.action === 'conflict_resolution') {
+      showToast(
+        res.ok
+          ? '충돌 — 해소 세션을 띄웠습니다 (머지하지 않음)'
+          : `충돌 해소 디스패치 실패: ${res.reason || ''}`,
+        res.ok ? 'success' : 'error',
+        2800
+      );
+      return;
+    }
+    if (res.ok) {
+      showToast('머지 + 정리 완료', 'success', 2000);
+      return;
+    }
+    showToast(
+      res.cleanup_step
+        ? `머지됨 · 정리 실패(${res.cleanup_step}): ${res.reason || ''}`
+        : `머지 거부: ${res.reason || ''}`,
+      'error',
+      3200
+    );
+  }
+
+  /**
+   * Run the [재실행] action (worker-phase2 §6) — destructive: the PR is closed
+   * and the worktree/branch discarded. A confirmation stands in front of it
+   * because it sits next to [머지]; the CAS + the server's own guards do the
+   * rest.
+   *
+   * @param {string} bead_id
+   */
+  async function rerunPr(bead_id) {
+    if (!transport || !bead_id) {
+      return;
+    }
+    const confirmed =
+      typeof globalThis.confirm !== 'function' ||
+      globalThis.confirm(
+        `${bead_id}: PR을 닫고 워크트리/브랜치를 폐기한 뒤 새 base에서 다시 실행합니다. 되돌릴 수 없습니다. 계속할까요?`
+      );
+    if (!confirmed) {
+      return;
+    }
+    let res = /** @type {any} */ (
+      await transport('worker-pr-rerun', {
+        bead_id,
+        expected_revision: currentRevision()
+      })
+    );
+    adopt(res);
+    if (res && res.conflict) {
+      res = /** @type {any} */ (
+        await transport('worker-pr-rerun', {
+          bead_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+    }
+    if (res && res.rerun === false && !res.conflict) {
+      showToast(`재실행 거부: ${res.reason || ''}`, 'error', 2800);
+    }
+  }
+
+  /**
    * @param {boolean} on
    */
   async function setAutoAdvance(on) {
@@ -334,25 +536,25 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Set (or unset with '') a workspace-global policy, retrying ONCE on a CAS
-   * conflict — the same discipline as {@link setAutoAdvance} (§2).
+   * Set the concurrency cap (worker-phase2 §3), under the same CAS discipline
+   * as the other mutations. The value is clamped to the lower bound before it
+   * is sent — the server rejects (never clamps) an out-of-bound value.
    *
-   * @param {'merge_policy'|'drift_policy'} key
-   * @param {string} value
+   * @param {number} slots
    */
-  async function setPolicy(key, value) {
-    if (!transport) {
+  async function setSlots(slots) {
+    if (!transport || !Number.isFinite(slots)) {
       return;
     }
-    const payload = { key, value: value || null };
-    const res = await transport('worker-queue-set-policy', {
-      ...payload,
+    const value = Math.max(MIN_SLOTS, Math.floor(slots));
+    const res = await transport('worker-queue-set-slots', {
+      slots: value,
       expected_revision: currentRevision()
     });
     adopt(res);
     if (res && res.conflict) {
-      await transport('worker-queue-set-policy', {
-        ...payload,
+      await transport('worker-queue-set-slots', {
+        slots: value,
         expected_revision: currentRevision()
       }).then(adopt);
     }
@@ -361,7 +563,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, over_cap: boolean, breaker: any, serial: any[], parallel: any[], done: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], cleanup_failures: Array<{ bead_id: string, step: string, reason: string }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -378,9 +580,25 @@ export function createWorkerView(mount_element, options = {}) {
       idToTitle.set(it.id, it.title || it.id);
     }
 
+    const pr_wait_entries = /** @type {any[]} */ (q.pr_wait || []);
+    /** @type {Record<string, any>} */
+    const pr_obs = q.pr_observations || {};
+    // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
+    // but the pr-finish sequence stopped part-way, so a human has to finish it.
+    // Nothing retries automatically, which is exactly why this has a banner.
+    /** @type {Record<string, { step: string, reason: string }>} */
+    const cleanup_failed = q.cleanup_failed || {};
+    const cleanup_failures = Object.entries(cleanup_failed).map(
+      ([bead_id, rec]) => ({
+        bead_id,
+        step: rec && rec.step ? rec.step : '',
+        reason: rec && rec.reason ? rec.reason : ''
+      })
+    );
+    const queue_entries = /** @type {any[]} */ (q.queue || []);
     const queued = new Set([
-      ...q.serial.map((/** @type {any} */ e) => e.bead_id),
-      ...q.parallel.map((/** @type {any} */ e) => e.bead_id),
+      ...queue_entries.map((/** @type {any} */ e) => e.bead_id),
+      ...pr_wait_entries.map((/** @type {any} */ e) => e.bead_id),
       ...q.done.map((/** @type {any} */ e) => e.bead_id)
     ]);
 
@@ -447,7 +665,7 @@ export function createWorkerView(mount_element, options = {}) {
 
     /**
      * @param {any[]} entries
-     * @param {'serial'|'parallel'|'done'} lane
+     * @param {'queue'|'done'} lane
      * @returns {any[]}
      */
     const toRows = (entries, lane) =>
@@ -459,17 +677,6 @@ export function createWorkerView(mount_element, options = {}) {
         done: lane === 'done',
         lane
       }));
-
-    // Lane lookup so running tiles show serial vs ∥ badge (a running bead stays
-    // in its lane until it moves to Done).
-    /** @type {Map<string, 'serial'|'parallel'>} */
-    const beadLane = new Map();
-    for (const e of q.serial || []) {
-      beadLane.set(e.bead_id, 'serial');
-    }
-    for (const e of q.parallel || []) {
-      beadLane.set(e.bead_id, 'parallel');
-    }
 
     const attempts = q.attempts ? Object.values(q.attempts) : [];
     // A resumed_from carried by any attempt marks its ancestor as spent, so an
@@ -499,13 +706,10 @@ export function createWorkerView(mount_element, options = {}) {
           bead_id: a.bead_id,
           attempt_id: a.attempt_id,
           title: idToTitle.get(a.bead_id) || a.bead_id,
-          lane: beadLane.get(a.bead_id) || 'parallel',
           runner: a.runner || null,
           model: a.model || null,
           effort: a.effort || null,
           started_at: typeof a.started_at === 'number' ? a.started_at : null,
-          merge_policy: a.merge_policy || null,
-          demoted_reason: a.demoted_reason || null,
           resumed_from: a.resumed_from || null,
           paused: leaf_paused,
           can_pause: typeof a.session_id === 'string' && a.session_id.length > 0
@@ -521,13 +725,13 @@ export function createWorkerView(mount_element, options = {}) {
     // would resume a different session than the one reported); ineligibility
     // renders the button disabled with the reason in its title (spec §1.5).
     /** @type {any|null} */
-    let breaker = null;
+    let failure = null;
     if (latest_failed) {
       const has_sid =
         typeof latest_failed.session_id === 'string' &&
         latest_failed.session_id.length > 0;
       const already = resumed_from_ids.has(latest_failed.attempt_id);
-      breaker = {
+      failure = {
         repo: latest_failed.repo || '',
         reason: latest_failed.cause || latest_failed.status,
         resume_attempt_id: latest_failed.attempt_id,
@@ -541,17 +745,18 @@ export function createWorkerView(mount_element, options = {}) {
     }
 
     // A manual ▶ may push live sessions past the dispatch cap on purpose (§2.3)
-    // — surface it rather than blocking the resume. The cap is PER LANE
-    // (serial 1 / parallel N), so comparing the 1+N total would miss the very
-    // case that produces it: resuming into a lane the auto-advance already
-    // refilled.
+    // — surface it rather than blocking the resume. There is ONE cap now
+    // (worker-phase2 §3), so the live total is compared against it directly.
     const live = running.filter((r) => !r.paused);
     const live_count = live.length;
-    const serial_live = live.filter((r) => r.lane === 'serial').length;
-    const parallel_live = live_count - serial_live;
-    const slots = (q.workspace_info || {}).parallel_slots;
-    const over_cap =
-      serial_live > 1 || (typeof slots === 'number' && parallel_live > slots);
+    const info_slots = (q.workspace_info || {}).slots;
+    const slots =
+      typeof info_slots === 'number'
+        ? info_slots
+        : typeof q.slots === 'number'
+          ? q.slots
+          : MIN_SLOTS;
+    const over_cap = live_count > slots;
 
     return {
       queue: q,
@@ -559,11 +764,23 @@ export function createWorkerView(mount_element, options = {}) {
       candidates,
       running,
       live_count,
+      slots,
       over_cap,
-      breaker,
-      serial: toRows(q.serial, 'serial'),
-      parallel: toRows(q.parallel, 'parallel'),
-      done: toRows(q.done, 'done')
+      failure,
+      waiting: toRows(queue_entries, 'queue'),
+      // PR 대기 is its own column (worker-phase2 §7): a bead there is NOT done —
+      // the PR is open and waiting for the human merge click. 완료 carries only
+      // what actually merged and finished cleanup.
+      pr_wait: pr_wait_entries.map((/** @type {any} */ e) =>
+        prWaitRow(
+          e.bead_id,
+          idToTitle.get(e.bead_id) || e.bead_id,
+          pr_obs,
+          cleanup_failed[e.bead_id] || null
+        )
+      ),
+      done: toRows(q.done, 'done'),
+      cleanup_failures
     };
   }
 
@@ -572,52 +789,7 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {import('lit-html').TemplateResult}
    */
   function topTemplate(m) {
-    const serialHead = m.serial.length > 0 ? m.serial[0].id : '—';
-    const info = m.queue.workspace_info || {};
-    const verify_cmd =
-      info.verify_cmd && Array.isArray(info.verify_cmd.cmd)
-        ? info.verify_cmd.cmd.join(' ')
-        : null;
-    // An auto-detected command is flagged `(자동 감지)` so it reads apart from an
-    // explicit config section (worker-attempt-resume-verify-autodetect §2.3).
-    const verify_detected =
-      !!info.verify_cmd && info.verify_cmd.source === 'detected';
-    const detected_suffix = verify_detected ? ' (자동 감지)' : '';
-    // The bar can truncate a long argv (CSS ellipsis), so the FULL command also
-    // rides the title attribute — the only place it can be read on a narrow
-    // screen where the body is hidden for a status badge (spec §1.2).
-    const verify_title = verify_cmd
-      ? `verify_cmd — 설정 파일 명시 > 자동 감지 > 없음, 미설정 시 auto_merge가 pr_stop으로 강등. 전체 명령: ${verify_cmd}${detected_suffix}`
-      : 'verify_cmd — 설정 파일 명시 > 자동 감지 > 없음, 미설정 시 auto_merge가 pr_stop으로 강등';
-    /**
-     * @param {'merge_policy'|'drift_policy'} key
-     * @param {string[]} opts
-     * @param {string} default_label
-     */
-    const policySelect = (key, opts, default_label) => {
-      const value = typeof m.queue[key] === 'string' ? m.queue[key] : '';
-      return html`<label class="worker-policy">
-        <span class="worker-policy__k">${key}</span>
-        <select
-          class="worker-policy__sel"
-          aria-label=${`전역 ${key}`}
-          data-policy-key=${key}
-          @change=${(/** @type {Event} */ ev) =>
-            void setPolicy(
-              key,
-              /** @type {HTMLSelectElement} */ (ev.target).value
-            )}
-        >
-          <option value="" ?selected=${!opts.includes(value)}>
-            ${default_label}
-          </option>
-          ${opts.map(
-            (o) =>
-              html`<option value=${o} ?selected=${value === o}>${o}</option>`
-          )}
-        </select>
-      </label>`;
-    };
+    const next_head = m.waiting.length > 0 ? m.waiting[0].id : '—';
     return html`<div class="worker-ctrl">
         <button
           type="button"
@@ -627,7 +799,7 @@ export function createWorkerView(mount_element, options = {}) {
         </button>
         <button type="button" class="worker-pause">⏸ 정지</button>
         <span class="worker-stat"
-          >실행 <b>${m.live_count}</b> · serial 다음 <b>${serialHead}</b></span
+          >실행 <b>${m.live_count}</b> · 다음 <b>${next_head}</b></span
         >
         ${m.over_cap
           ? html`<span
@@ -636,19 +808,16 @@ export function createWorkerView(mount_element, options = {}) {
               >cap 초과</span
             >`
           : ''}
-        <span class="worker-tgl"
-          >parallel slot <b>${m.parallel.length}</b></span
-        >
-        ${policySelect(
-          'merge_policy',
-          ['auto_merge', 'pr_stop'],
-          '(기본 auto_merge)'
-        )}
-        ${policySelect(
-          'drift_policy',
-          ['auto_rereview', 'halt'],
-          '(기본 auto_rereview)'
-        )}
+        <label class="worker-tgl worker-slots"
+          >동시 실행
+          <input
+            type="number"
+            class="worker-slots__input"
+            min=${MIN_SLOTS}
+            step="1"
+            .value=${String(m.slots)}
+            title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
+        /></label>
         <button
           type="button"
           class="worker-exec-defaults-btn"
@@ -658,31 +827,12 @@ export function createWorkerView(mount_element, options = {}) {
         >
           ⚙
         </button>
-        <span
-          class="worker-verifycmd${verify_cmd
-            ? ''
-            : ' worker-verifycmd--unset'}"
-          title=${verify_title}
-        >
-          ${verify_cmd
-            ? html`<span class="worker-verifycmd__full"
-                  >verify_cmd:
-                  <code>${verify_cmd}</code>${detected_suffix}</span
-                ><span class="worker-verifycmd__badge"
-                  >verify_cmd ✓${detected_suffix}</span
-                >`
-            : html`<span class="worker-verifycmd__full"
-                  >verify_cmd: 미설정 (auto_merge→pr_stop 강등)</span
-                ><span class="worker-verifycmd__badge"
-                  >verify_cmd 미설정 ⤵pr_stop</span
-                >`}</span
-        >
       </div>
       ${bannersTemplate({
         autoAdvance: !!m.queue.auto_advance,
-        breaker: m.breaker
-      })}
-      ${runningGridTemplate(m.running, Date.now(), selected_attempt)}`;
+        failure: m.failure,
+        cleanupFailures: m.cleanup_failures
+      })}`;
   }
 
   /**
@@ -700,23 +850,30 @@ export function createWorkerView(mount_element, options = {}) {
         empty: '후보 없음'
       })}
       ${paneTemplate({
-        id: 'worker-pane-serial',
-        lane: 'serial',
-        title: 'Serial 큐',
-        items: m.serial,
+        id: 'worker-pane-queue',
+        lane: 'queue',
+        title: '대기',
+        items: m.waiting,
         empty: '드래그로 배치'
       })}
       ${paneTemplate({
-        id: 'worker-pane-parallel',
-        lane: 'parallel',
-        title: 'Parallel 풀',
-        items: m.parallel,
-        empty: '드래그로 배치'
+        id: 'worker-pane-running',
+        lane: 'running',
+        title: `실행 중 · 슬롯 ${m.slots}`,
+        items: m.running,
+        body: runningGridTemplate(m.running, Date.now(), selected_attempt)
+      })}
+      ${paneTemplate({
+        id: 'worker-pane-pr-wait',
+        lane: 'pr_wait',
+        title: 'PR 대기',
+        items: m.pr_wait,
+        empty: 'PR 대기 없음'
       })}
       ${paneTemplate({
         id: 'worker-pane-done',
         lane: 'done',
-        title: `Done · 오늘 ${m.done.length}`,
+        title: `완료 · 오늘 ${m.done.length}`,
         items: m.done,
         empty: '완료 없음'
       })}
@@ -763,6 +920,13 @@ export function createWorkerView(mount_element, options = {}) {
       /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-pane')
     );
     if (!pane) {
+      return;
+    }
+    // Only the two panes a drop actually mutates accept one. 실행 중/PR 대기/완료
+    // are observation columns — the server puts beads there — so they must not
+    // light up as drop targets and then silently swallow the drag.
+    const lane = pane.dataset.lane || '';
+    if (lane !== 'candidate' && lane !== 'queue') {
       return;
     }
     ev.preventDefault();
@@ -862,18 +1026,41 @@ export function createWorkerView(mount_element, options = {}) {
         return;
       }
       // Moving a queued bead back to candidates removes it from the queue.
-      if (from_lane === 'serial' || from_lane === 'parallel') {
+      if (from_lane === 'queue') {
         void removeBead(bead_id);
       }
       return;
     }
-    if (to_lane === 'serial' || to_lane === 'parallel') {
-      if (from_lane === to_lane) {
-        void reorderBead(bead_id, to_lane, index);
+    if (to_lane === 'queue') {
+      if (from_lane === 'queue') {
+        void reorderBead(bead_id, index);
       } else {
-        void placeBead(bead_id, to_lane, index);
+        void placeBead(bead_id, index);
       }
     }
+  }
+
+  /**
+   * Commit a slot-count edit (worker-phase2 §3). Fired on `change` so a partial
+   * keystroke does not spam mutations; the value is clamped to the lower bound
+   * before it is sent and the input is re-rendered from the authoritative
+   * snapshot.
+   *
+   * @param {Event} ev
+   */
+  function onChange(ev) {
+    const input = /** @type {HTMLInputElement|null} */ (
+      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-slots__input')
+    );
+    if (!input) {
+      return;
+    }
+    const parsed = Number.parseInt(input.value, 10);
+    if (!Number.isFinite(parsed)) {
+      doRender();
+      return;
+    }
+    void setSlots(parsed).then(doRender);
   }
 
   /**
@@ -938,7 +1125,7 @@ export function createWorkerView(mount_element, options = {}) {
       exec_defaults_dialog.open();
       return;
     }
-    // The breaker banner's ↻ resumes the newest eligible failed attempt (§1).
+    // The failure banner's ↻ resumes the newest eligible failed attempt (§1).
     const resumeBtn = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-banner__resume')
     );
@@ -955,6 +1142,27 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (target?.closest?.('.worker-pause')) {
       void setAutoAdvance(false);
+      return;
+    }
+    // PR-wait actions act on the bead and must never also open the detail panel
+    // (the `.worker-mini` default below would otherwise swallow them).
+    const mergeBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__merge')
+    );
+    if (mergeBtn) {
+      void mergePr(mergeBtn.dataset.beadId || '');
+      return;
+    }
+    const rerunBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__rerun')
+    );
+    if (rerunBtn) {
+      void rerunPr(rerunBtn.dataset.beadId || '');
+      return;
+    }
+    // The PR link is a link — let the browser open it, never treat it as a row
+    // click.
+    if (target?.closest?.('.worker-mini__pr')) {
       return;
     }
     // Tile controls act on the attempt and must never also open the drawer.
@@ -1042,6 +1250,7 @@ export function createWorkerView(mount_element, options = {}) {
   mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
   mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
   mount_element.addEventListener('click', /** @type {any} */ (onClick));
+  mount_element.addEventListener('change', /** @type {any} */ (onChange));
 
   if (selectors) {
     unsubscribers.push(selectors.subscribe(doRender));
@@ -1083,6 +1292,10 @@ export function createWorkerView(mount_element, options = {}) {
       );
       mount_element.removeEventListener('drop', /** @type {any} */ (onDrop));
       mount_element.removeEventListener('click', /** @type {any} */ (onClick));
+      mount_element.removeEventListener(
+        'change',
+        /** @type {any} */ (onChange)
+      );
       try {
         drawer.destroy();
       } catch {

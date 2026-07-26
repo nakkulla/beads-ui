@@ -105,8 +105,8 @@ function queueOf(over = {}) {
   return {
     revision: 1,
     auto_advance: false,
-    serial: [],
-    parallel: [],
+    slots: 2,
+    queue: [],
     done: [],
     attempts: {},
     ...over
@@ -316,12 +316,12 @@ describe('views/worker', () => {
     expect(gotoIssue).toHaveBeenCalledWith('RD-1');
   });
 
-  test('dragging a candidate into Serial sends worker-queue-place with the current revision', async () => {
+  test('dragging a candidate into the queue sends worker-queue-place with the current revision', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi
       .fn()
       .mockResolvedValue(
-        reply(queueOf({ serial: [{ bead_id: 'RD-1', added_at: 0 }] }))
+        reply(queueOf({ queue: [{ bead_id: 'RD-1', added_at: 0 }] }))
       );
     createWorkerView(mount, {
       issueStores: seedCandidates(),
@@ -329,12 +329,11 @@ describe('views/worker', () => {
       transport
     });
 
-    drag(mount, 'RD-1', 'worker-pane-serial');
+    drag(mount, 'RD-1', 'worker-pane-queue');
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-place', {
       bead_id: 'RD-1',
-      lane: 'serial',
       index: 0,
       expected_revision: 0
     });
@@ -351,7 +350,7 @@ describe('views/worker', () => {
       })
       .mockResolvedValueOnce(
         reply(
-          queueOf({ revision: 6, serial: [{ bead_id: 'RD-1', added_at: 0 }] })
+          queueOf({ revision: 6, queue: [{ bead_id: 'RD-1', added_at: 0 }] })
         )
       );
     createWorkerView(mount, {
@@ -360,7 +359,7 @@ describe('views/worker', () => {
       transport
     });
 
-    drag(mount, 'RD-1', 'worker-pane-serial');
+    drag(mount, 'RD-1', 'worker-pane-queue');
     await flush();
 
     expect(transport).toHaveBeenCalledTimes(2);
@@ -375,7 +374,7 @@ describe('views/worker', () => {
     store.set(
       queueOf({
         revision: 3,
-        serial: [
+        queue: [
           { bead_id: 'A', added_at: 0 },
           { bead_id: 'B', added_at: 0 }
         ]
@@ -390,13 +389,12 @@ describe('views/worker', () => {
       transport
     });
 
-    // Drop B onto the serial pane (append) — same lane → reorder.
-    drag(mount, 'B', 'worker-pane-serial');
+    // Drop B onto the queue pane (append) — same lane → reorder.
+    drag(mount, 'B', 'worker-pane-queue');
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-reorder', {
       bead_id: 'B',
-      lane: 'serial',
       to_index: 2,
       expected_revision: 3
     });
@@ -429,13 +427,12 @@ describe('views/worker', () => {
     expect(mount.querySelector('.worker-banner--on')).not.toBeNull();
   });
 
-  test('admission refusals badge candidate + queued rows; verify_cmd + policy selects render (§2/§6)', () => {
+  test('admission refusals badge candidate + queued rows (§6)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        serial: [{ bead_id: 'SQ-1', added_at: 0 }],
-        merge_policy: 'pr_stop',
+        queue: [{ bead_id: 'SQ-1', added_at: 0 }],
         admission: {
           'RD-1': { reason: 'spec_review_stale', at: 1 },
           'SQ-1': { reason: 'receipt_missing_or_malformed', at: 2 }
@@ -458,81 +455,222 @@ describe('views/worker', () => {
     expect(rd1.querySelector('.worker-card__reason')?.textContent).toContain(
       '⛔ spec_review_stale'
     );
-    // Queued (serial) badge (tick/dispatch refusal).
+    // Queued row badge (tick/dispatch refusal).
     const sq1 = /** @type {HTMLElement} */ (
       mount.querySelector(
-        '#worker-pane-serial .worker-mini[data-bead-id="SQ-1"]'
+        '#worker-pane-queue .worker-mini[data-bead-id="SQ-1"]'
       )
     );
     expect(sq1.querySelector('.worker-mini__reason')?.textContent).toContain(
       '⛔ receipt_missing_or_malformed'
     );
-
-    // Global policy selects reflect the queue values.
-    const mergeSel = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('select[data-policy-key="merge_policy"]')
-    );
-    expect(mergeSel.value).toBe('pr_stop');
-    const driftSel = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('select[data-policy-key="drift_policy"]')
-    );
-    expect(driftSel.value).toBe('');
-
-    // verify_cmd read-only display — unset shows the demotion warning.
-    const vc = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-verifycmd')
-    );
-    expect(vc.classList.contains('worker-verifycmd--unset')).toBe(true);
-    expect(vc.textContent).toContain('미설정');
   });
 
-  test('changing a policy select sends worker-queue-set-policy with the current revision', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ revision: 3 }));
-    const transport = vi
-      .fn()
-      .mockResolvedValue(
-        reply(queueOf({ revision: 4, merge_policy: 'pr_stop' }))
-      );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-
-    const sel = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('select[data-policy-key="merge_policy"]')
-    );
-    sel.value = 'pr_stop';
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-set-policy', {
-      key: 'merge_policy',
-      value: 'pr_stop',
-      expected_revision: 3
-    });
-  });
-
-  test('a configured verify_cmd renders read-only argv; a demoted running tile shows the reason', () => {
+  test('the control bar carries no policy selects or verify_cmd strip (worker-phase2 §2)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
         workspace_info: {
           verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 }
-        },
+        }
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      mount.querySelector('select[data-policy-key="merge_policy"]')
+    ).toBeNull();
+    expect(
+      mount.querySelector('select[data-policy-key="drift_policy"]')
+    ).toBeNull();
+    expect(mount.querySelector('.worker-verifycmd')).toBeNull();
+    // The ⚙ exec-defaults button survives.
+    expect(mount.querySelector('.worker-exec-defaults-btn')).not.toBeNull();
+  });
+
+  test('renders one waiting lane, with no serial or parallel pane (worker-phase2 §3)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    expect(mount.querySelector('#worker-pane-queue')).not.toBeNull();
+    expect(mount.querySelector('#worker-pane-serial')).toBeNull();
+    expect(mount.querySelector('#worker-pane-parallel')).toBeNull();
+  });
+
+  test('the slot editor renders the workspace cap with a lower bound of 1', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ workspace_info: { verify_cmd: null, slots: 4 } }));
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-slots__input')
+    );
+    expect(input.value).toBe('4');
+    expect(input.min).toBe('1');
+  });
+
+  test('editing the slot count sends worker-queue-set-slots with the current revision', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const store = createWorkerQueueStore();
+    store.set(queueOf({ revision: 3 }));
+    const transport = vi
+      .fn()
+      .mockResolvedValue(reply(queueOf({ revision: 4, slots: 5 })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: store,
+      transport
+    });
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-slots__input')
+    );
+    input.value = '5';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-slots', {
+      slots: 5,
+      expected_revision: 3
+    });
+  });
+
+  test('clamps a below-bound slot edit to 1 before sending', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const store = createWorkerQueueStore();
+    store.set(queueOf({ revision: 2 }));
+    const transport = vi
+      .fn()
+      .mockResolvedValue(reply(queueOf({ revision: 3, slots: 1 })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: store,
+      transport
+    });
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-slots__input')
+    );
+    input.value = '0';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-slots', {
+      slots: 1,
+      expected_revision: 2
+    });
+  });
+
+  test('a CAS conflict retries the slot edit once against the fresh revision', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const store = createWorkerQueueStore();
+    store.set(queueOf({ revision: 1 }));
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: true,
+        queue: queueOf({ revision: 8 })
+      })
+      .mockResolvedValueOnce(reply(queueOf({ revision: 9, slots: 3 })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: store,
+      transport
+    });
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-slots__input')
+    );
+    input.value = '3';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(transport.mock.calls[0][1].expected_revision).toBe(1);
+    expect(transport.mock.calls[1][1].expected_revision).toBe(8);
+  });
+
+  test('renders the four lifecycle columns in spec order (worker-phase2 §7)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf());
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const titles = Array.from(
+      mount.querySelectorAll('.worker-lanes .worker-pane__title')
+    ).map((el) => (el.textContent || '').trim());
+
+    expect(titles).toEqual([
+      '후보 · Board 연동',
+      '대기',
+      '실행 중 · 슬롯 2',
+      'PR 대기',
+      '완료 · 오늘 0'
+    ]);
+  });
+
+  test('keeps the candidate feed as a distinct source pane, not a fifth state', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const cand = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate')
+    );
+
+    expect(cand.classList.contains('worker-pane--src')).toBe(true);
+    // Enqueueing has no other entry point, so the source pane must still hand
+    // out draggable rows.
+    expect(
+      cand
+        .querySelector('.worker-card[data-bead-id="RD-1"]')
+        ?.getAttribute('draggable')
+    ).toBe('true');
+  });
+
+  test('each column renders only its own members', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'RD-2', added_at: 0 }],
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        done: [{ bead_id: 'BL-1', added_at: 2 }],
         attempts: {
           'att-1': {
             attempt_id: 'att-1',
-            bead_id: 'RD-1',
+            bead_id: 'RD-2',
             status: 'running',
             runner: 'claude',
-            model: 'opus',
             started_at: Date.now(),
-            merge_policy: 'pr_stop',
-            demoted_reason: 'verify_cmd_unset'
+            session_id: 'sid-1'
           }
         }
       })
@@ -543,27 +681,176 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
 
-    const vc = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-verifycmd')
-    );
-    expect(vc.classList.contains('worker-verifycmd--unset')).toBe(false);
-    expect(vc.textContent).toContain('npm run all');
+    /** @param {string} id */
+    const idsIn = (id) =>
+      Array.from(
+        /** @type {HTMLElement} */ (mount.querySelector(id)).querySelectorAll(
+          '.worker-mini, .rtile'
+        )
+      ).map((el) => /** @type {HTMLElement} */ (el).dataset.beadId);
 
-    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
-    expect(tile.textContent).toContain('pr_stop');
-    expect(tile.querySelector('.rtile__demoted')?.textContent).toContain(
-      'verify_cmd_unset'
-    );
+    expect(idsIn('#worker-pane-queue')).toEqual(['RD-2']);
+    expect(idsIn('#worker-pane-running')).toEqual(['RD-2']);
+    expect(idsIn('#worker-pane-pr-wait')).toEqual(['RD-1']);
+    expect(idsIn('#worker-pane-done')).toEqual(['BL-1']);
   });
 
-  test('running attempts render tiles + a failed attempt raises the breaker banner', () => {
+  test('a pr_wait bead is no longer mixed into the 완료 column', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        done: [{ bead_id: 'RD-2', added_at: 2 }]
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const done_pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-done')
+    );
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-pr-wait .worker-mini[data-bead-id="RD-1"]'
+      )
+    );
+
+    expect(row.getAttribute('data-lane')).toBe('pr_wait');
+    expect(row.getAttribute('draggable')).toBe('false');
+    expect(done_pane.querySelectorAll('.worker-mini').length).toBe(1);
+    expect(
+      done_pane.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    ).toBeNull();
+  });
+
+  test('the observation columns refuse a drop instead of swallowing the drag', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const transport = vi.fn();
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport
+    });
+
+    for (const pane_id of [
+      'worker-pane-running',
+      'worker-pane-pr-wait',
+      'worker-pane-done'
+    ]) {
+      const pane = /** @type {HTMLElement} */ (
+        mount.querySelector(`#${pane_id}`)
+      );
+      const over = new Event('dragover', { bubbles: true, cancelable: true });
+      Object.defineProperty(over, 'dataTransfer', {
+        value: { dropEffect: '' }
+      });
+      pane.dispatchEvent(over);
+
+      expect(over.defaultPrevented).toBe(false);
+      expect(pane.classList.contains('worker-pane--drag-over')).toBe(false);
+    }
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('running tiles render inside the 실행 중 column, not above the lanes', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          'att-1': {
+            attempt_id: 'att-1',
+            bead_id: 'RD-1',
+            status: 'running',
+            runner: 'claude',
+            started_at: Date.now(),
+            session_id: 'sid-1'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      mount.querySelector('#worker-pane-running .worker-rungrid .rtile')
+    ).not.toBeNull();
+    expect(mount.querySelector('.worker-ctrl ~ .worker-rungrid')).toBeNull();
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('#worker-pane-running .worker-pane__count')
+      ).textContent
+    ).toBe('1');
+  });
+
+  test('a pr_wait bead is not offered again as a candidate', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ pr_wait: [{ bead_id: 'RD-1', added_at: 1 }] }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const cand = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate')
+    );
+
+    expect(cand.querySelector('.worker-card[data-bead-id="RD-1"]')).toBe(null);
+  });
+
+  test('a running tile shows no merge_policy or demotion chip (worker-phase2 §2)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          'att-1': {
+            attempt_id: 'att-1',
+            bead_id: 'RD-1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now(),
+            // A legacy attempt record still carries the retired fields.
+            merge_policy: 'pr_stop',
+            demoted_reason: 'verify_cmd_unset'
+          }
+        }
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+    expect(tile).not.toBeNull();
+    expect(tile.textContent).not.toContain('pr_stop');
+    expect(tile.querySelector('.rtile__demoted')).toBeNull();
+    expect(tile.querySelector('.rtile__meta--policy')).toBeNull();
+  });
+
+  test('running attempts render tiles + a failed attempt raises the failure banner', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
-        parallel: [{ bead_id: 'P1', added_at: 0 }],
+        queue: [
+          { bead_id: 'S1', added_at: 0 },
+          { bead_id: 'P1', added_at: 0 }
+        ],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -601,18 +888,18 @@ describe('views/worker', () => {
     const tiles = mount.querySelectorAll('.worker-rungrid .rtile');
     expect(tiles.length).toBe(2);
     expect(mount.querySelector('.rtile[data-bead-id="S1"]')).not.toBeNull();
-    // Serial vs parallel badge derived from lane membership.
-    const s1badge = /** @type {HTMLElement} */ (
+    // The lane badge is gone with the serial/parallel split (worker-phase2 §3).
+    expect(
       mount.querySelector('.rtile[data-bead-id="S1"] .rtile__badge')
-    );
-    expect(s1badge.textContent?.trim()).toBe('serial');
+    ).toBeNull();
 
-    // Failed attempt surfaces the breaker banner.
-    const breaker = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--breaker')
+    // The failed attempt itself is the banner source — no breaker object.
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--failure')
     );
-    expect(breaker).not.toBeNull();
-    expect(breaker.textContent).toContain('/repo');
+    expect(banner).not.toBeNull();
+    expect(banner.textContent).toContain('/repo');
+    expect(mount.querySelector('.worker-banner--breaker')).toBeNull();
   });
 
   test('paused/stopped attempts raise no banner; only a leaf paused renders a tile (worker-phase1 §1)', () => {
@@ -621,7 +908,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           paused_leaf: {
             attempt_id: 'paused_leaf',
@@ -659,7 +946,7 @@ describe('views/worker', () => {
     });
 
     // A user pause/discard is not a failure.
-    expect(mount.querySelector('.worker-banner--breaker')).toBeNull();
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
     // Only the LEAF paused attempt renders — the resumed ancestor is history.
     const tiles = mount.querySelectorAll('.worker-rungrid .rtile');
     expect(tiles.length).toBe(1);
@@ -673,19 +960,18 @@ describe('views/worker', () => {
     expect(tile.querySelector('.rtile__pause')).toBeNull();
   });
 
-  test('a manual resume past the lane cap raises the cap badge (§2.3)', () => {
+  test('a manual resume past the cap raises the cap badge (§2.3)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    // Two serial sessions live: the ⏸-then-resume path the cap badge exists
-    // for. The 1+N total (2) is still under slots+1, so only a PER-LANE check
-    // catches it.
+    // Two live sessions against a cap of 1: the ⏸-then-resume path the badge
+    // exists for (auto-advance itself never exceeds the cap).
     queueStore.set(
       queueOf({
-        serial: [
+        queue: [
           { bead_id: 'S1', added_at: 0 },
           { bead_id: 'S2', added_at: 1 }
         ],
-        workspace_info: { verify_cmd: null, parallel_slots: 2 },
+        workspace_info: { verify_cmd: null, slots: 1 },
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -712,18 +998,18 @@ describe('views/worker', () => {
     expect(mount.querySelector('.worker-overcap')).not.toBeNull();
   });
 
-  test('within the lane caps no badge is shown (§2.3)', () => {
+  test('exactly at the cap no badge is shown (§2.3)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    // 1 serial + 2 parallel with slots=2 — exactly at the cap, not over it.
+    // 3 live sessions with slots=3 — exactly at the cap, not over it.
     queueStore.set(
       queueOf({
-        serial: [{ bead_id: 'S1', added_at: 0 }],
-        parallel: [
-          { bead_id: 'P1', added_at: 0 },
-          { bead_id: 'P2', added_at: 1 }
+        queue: [
+          { bead_id: 'S1', added_at: 0 },
+          { bead_id: 'P1', added_at: 1 },
+          { bead_id: 'P2', added_at: 2 }
         ],
-        workspace_info: { verify_cmd: null, parallel_slots: 2 },
+        workspace_info: { verify_cmd: null, slots: 3 },
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -754,18 +1040,18 @@ describe('views/worker', () => {
     expect(mount.querySelector('.worker-overcap')).toBeNull();
   });
 
-  test('a paused attempt does not count toward the lane cap (§2.3)', () => {
+  test('a paused attempt does not count toward the cap (§2.3)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    // One serial running + one serial PAUSED: paused holds no slot, so the
-    // badge must stay off.
+    // One running + one PAUSED against a cap of 1: paused holds no slot, so
+    // the badge must stay off.
     queueStore.set(
       queueOf({
-        serial: [
+        queue: [
           { bead_id: 'S1', added_at: 0 },
           { bead_id: 'S2', added_at: 1 }
         ],
-        workspace_info: { verify_cmd: null, parallel_slots: 2 },
+        workspace_info: { verify_cmd: null, slots: 1 },
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -796,8 +1082,10 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
-        parallel: [{ bead_id: 'P1', added_at: 0 }],
+        queue: [
+          { bead_id: 'S1', added_at: 0 },
+          { bead_id: 'P1', added_at: 0 }
+        ],
         attempts: {
           no_sid: {
             attempt_id: 'no_sid',
@@ -838,7 +1126,7 @@ describe('views/worker', () => {
       queueOf({
         revision: 4,
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           live: {
             attempt_id: 'live',
@@ -870,7 +1158,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         revision: 5,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           live: {
             attempt_id: 'live',
@@ -898,7 +1186,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -956,7 +1244,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -1011,7 +1299,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: { a1: { ...attempt } }
       })
     );
@@ -1040,7 +1328,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: { a1: { ...attempt, session_id: 'sid-late99zz' } }
       })
     );
@@ -1140,7 +1428,7 @@ describe('views/worker', () => {
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -1181,7 +1469,7 @@ describe('views/worker', () => {
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -1642,47 +1930,31 @@ describe('views/worker', () => {
     );
   });
 
-  test('the ⚙ dialog renders global policy rows and sends worker-queue-set-policy (§1.3)', async () => {
+  test('the ⚙ dialog no longer renders global policy rows (worker-phase2 §2)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ revision: 3, merge_policy: 'pr_stop' }));
-    const transport = vi.fn().mockResolvedValue(
-      reply(
-        queueOf({
-          revision: 4,
-          merge_policy: 'pr_stop',
-          drift_policy: 'halt'
-        })
-      )
+    queueStore.set(
+      queueOf(/** @type {any} */ ({ revision: 3, merge_policy: 'pr_stop' }))
     );
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
-      transport
+      transport: vi.fn()
     });
 
     const dialog = openExecDefaults(mount);
-    const mergeSel = /** @type {HTMLSelectElement} */ (
+
+    expect(
       dialog.querySelector('select[data-policy-key="merge_policy"]')
-    );
-    expect(mergeSel).not.toBeNull();
-    expect(mergeSel.value).toBe('pr_stop');
-
-    const driftSel = /** @type {HTMLSelectElement} */ (
+    ).toBeNull();
+    expect(
       dialog.querySelector('select[data-policy-key="drift_policy"]')
-    );
-    driftSel.value = 'halt';
-    driftSel.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-set-policy', {
-      key: 'drift_policy',
-      value: 'halt',
-      expected_revision: 3
-    });
+    ).toBeNull();
+    // The 4 exec rows survive.
+    expect(dialog.querySelectorAll('.exec-defaults__row').length).toBe(4);
   });
 
-  test('breaker banner ↻ resumes the newest eligible failed attempt (§1)', () => {
+  test('failure banner ↻ resumes the newest eligible failed attempt (§1)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -1706,7 +1978,7 @@ describe('views/worker', () => {
       transport
     });
     const btn = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--breaker .worker-banner__resume')
+      mount.querySelector('.worker-banner--failure .worker-banner__resume')
     );
     expect(btn).not.toBeNull();
     expect(btn.dataset.attemptId).toBe('f1');
@@ -1717,7 +1989,7 @@ describe('views/worker', () => {
     });
   });
 
-  test('breaker ↻ targets exactly the latest failure — ineligible renders disabled with the reason, never an older substitute (§1)', () => {
+  test('the ↻ targets exactly the latest failure — ineligible renders disabled with the reason, never an older substitute (§1)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -1747,7 +2019,7 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
     const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-banner--breaker .worker-banner__resume')
+      mount.querySelector('.worker-banner--failure .worker-banner__resume')
     );
     // The banner describes latest_no_sid, so its ↻ must point there — a
     // different (older) session is never silently substituted.
@@ -1761,7 +2033,7 @@ describe('views/worker', () => {
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        serial: [{ bead_id: 'B1', added_at: 0 }],
+        queue: [{ bead_id: 'B1', added_at: 0 }],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -1786,29 +2058,492 @@ describe('views/worker', () => {
     expect(badge).not.toBeNull();
   });
 
-  test('an auto-detected verify_cmd is flagged (자동 감지) in the ctrl bar (§2)', () => {
+  test('the failure banner is sourced from the latest failed attempt, not a breaker', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        workspace_info: {
-          verify_cmd: {
-            cmd: ['npm', 'test'],
-            timeout_ms: 600000,
-            source: 'detected'
+        attempts: {
+          older: {
+            attempt_id: 'older',
+            bead_id: 'B1',
+            status: 'failed',
+            repo: '/repo',
+            cause: 'session_failed:old',
+            session_id: 'sid-old'
+          },
+          newest: {
+            attempt_id: 'newest',
+            bead_id: 'B2',
+            status: 'orphaned',
+            repo: '/repo',
+            cause: 'orphan',
+            session_id: 'sid-new'
           }
         }
       })
     );
+
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
       transport: vi.fn()
     });
-    const vc = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-verifycmd')
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--failure')
     );
-    expect(vc.textContent).toContain('npm test');
-    expect(vc.textContent).toContain('자동 감지');
+    // The banner reports the LATEST terminal failure record verbatim.
+    expect(banner.textContent).toContain('orphan');
+    expect(
+      /** @type {HTMLElement} */ (
+        banner.querySelector('.worker-banner__resume')
+      ).dataset.attemptId
+    ).toBe('newest');
+  });
+
+  test('no failed attempt renders no failure banner', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({}));
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+  });
+});
+
+describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} gate
+   * @param {any} [pr]
+   */
+  function withObservation(gate, pr) {
+    return queueOf({
+      pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_observations: {
+        'RD-1': {
+          pr: pr ?? {
+            number: 304,
+            url: 'https://github.com/o/r/pull/304',
+            state: 'OPEN',
+            head_sha: 'a'.repeat(40)
+          },
+          ci: null,
+          verify: null,
+          error: null,
+          observed_at: 1,
+          gate
+        }
+      }
+    });
+  }
+
+  /**
+   * @param {any} queue
+   * @returns {HTMLElement}
+   */
+  function renderWith(queue) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+  }
+
+  test('renders the PR as a link, not a button', () => {
+    const row = renderWith(
+      withObservation({
+        enabled: true,
+        tier: 'ci',
+        gate_badge: 'CI ✓',
+        base_badge: '최신',
+        reason: null
+      })
+    );
+
+    const link = /** @type {HTMLAnchorElement} */ (
+      row.querySelector('.worker-mini__pr')
+    );
+    expect(link.textContent?.replace(/\s+/g, ' ').trim()).toBe('#304 ↗');
+    expect(link.getAttribute('href')).toBe('https://github.com/o/r/pull/304');
+    // The PR itself is never an action control — a view affordance and an
+    // execute affordance at the same weight is how a misclick merges something
+    // (worker-phase2 §6).
+    expect(link.tagName).toBe('A');
+    for (const btn of Array.from(row.querySelectorAll('button'))) {
+      expect(btn.getAttribute('href')).toBe(null);
+      expect(btn.textContent || '').not.toContain('#304');
+    }
+  });
+
+  test('renders the gate badge and the base badge', () => {
+    const row = renderWith(
+      withObservation({
+        enabled: true,
+        tier: 'ci',
+        gate_badge: 'CI ✓',
+        base_badge: '최신',
+        reason: null
+      })
+    );
+
+    const badges = Array.from(row.querySelectorAll('.worker-mini__badge')).map(
+      (b) => b.textContent
+    );
+    expect(badges).toEqual(['CI ✓', '최신']);
+  });
+
+  test('renders the local-verification badge for a no-CI repo', () => {
+    const row = renderWith(
+      withObservation({
+        enabled: false,
+        tier: 'local_verify',
+        gate_badge: '로컬검증 대기',
+        base_badge: '최신',
+        reason: 'verify_missing'
+      })
+    );
+
+    expect(row.querySelector('.worker-mini__badge')?.textContent).toBe(
+      '로컬검증 대기'
+    );
+  });
+
+  test('flags a closed-unmerged PR as needing a human decision', () => {
+    const row = renderWith(
+      withObservation(
+        {
+          enabled: false,
+          tier: 'closed_unmerged',
+          gate_badge: 'PR closed',
+          base_badge: 'PR closed',
+          reason: 'pr_closed_unmerged'
+        },
+        {
+          number: 304,
+          url: 'https://github.com/o/r/pull/304',
+          state: 'CLOSED',
+          head_sha: 'a'.repeat(40)
+        }
+      )
+    );
+
+    const badge = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__badge')
+    );
+    expect(badge.textContent).toBe('PR closed');
+    expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
+  });
+
+  test('flags an observation error as an alert badge, not as a pass', () => {
+    const row = renderWith(
+      withObservation({
+        enabled: false,
+        tier: 'undecidable',
+        gate_badge: '관측 오류',
+        base_badge: '',
+        reason: 'gh_failed'
+      })
+    );
+
+    const badge = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__badge')
+    );
+    expect(badge.textContent).toBe('관측 오류');
+    expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
+  });
+
+  test('renders no PR link or badge for a bead with no observation yet', () => {
+    const row = renderWith(
+      queueOf({ pr_wait: [{ bead_id: 'RD-1', added_at: 1 }] })
+    );
+
+    expect(row.querySelector('.worker-mini__pr')).toBe(null);
+    expect(row.querySelector('.worker-mini__badge')).toBe(null);
+    expect(row.querySelector('.worker-mini__reason')?.textContent).toBe(
+      'PR 대기'
+    );
+  });
+});
+
+describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} gate
+   * @param {Record<string, any>} [extra]
+   */
+  function queueWithGate(gate, extra = {}) {
+    return queueOf({
+      pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_observations: {
+        'RD-1': {
+          pr: {
+            number: 304,
+            url: 'https://github.com/o/r/pull/304',
+            state: 'OPEN',
+            head_sha: 'a'.repeat(40)
+          },
+          ci: null,
+          verify: null,
+          error: null,
+          observed_at: 1,
+          gate
+        }
+      },
+      ...extra
+    });
+  }
+
+  /**
+   * @param {any} queue
+   */
+  function mountWith(queue) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    const transport = vi.fn(async () => ({ ok: true, action: 'merged' }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    return { mount, transport };
+  }
+
+  const GREEN = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '최신',
+    reason: null
+  };
+  const RED = {
+    enabled: false,
+    tier: 'ci',
+    gate_badge: 'CI ✗',
+    base_badge: '최신',
+    reason: 'ci_failed'
+  };
+
+  /**
+   * The §5 gate tiers, exactly as `evaluateMergeGate` emits them.
+   *
+   * @type {Array<{ tier: string, gate_badge: string, enabled: boolean, reason: string|null }>}
+   */
+  const PASSING_TIERS = [
+    { tier: 'ci', gate_badge: 'CI ✓', enabled: true, reason: null },
+    {
+      tier: 'local_verify',
+      gate_badge: '로컬검증 ✓',
+      enabled: true,
+      reason: null
+    },
+    { tier: 'none', gate_badge: '검증 신호 없음', enabled: true, reason: null }
+  ];
+
+  /** @type {Array<{ tier: string, gate_badge: string, enabled: boolean, reason: string|null }>} */
+  const REFUSING_TIERS = [
+    { tier: 'ci', gate_badge: 'CI ✗', enabled: false, reason: 'ci_failed' },
+    { tier: 'ci', gate_badge: 'CI 대기', enabled: false, reason: 'ci_pending' },
+    {
+      tier: 'local_verify',
+      gate_badge: '로컬검증 ✗',
+      enabled: false,
+      reason: 'verify_cmd_failed'
+    },
+    {
+      tier: 'undecidable',
+      gate_badge: '관측 오류',
+      enabled: false,
+      reason: 'gh_failed'
+    },
+    {
+      tier: 'unobserved',
+      gate_badge: '관측 대기',
+      enabled: false,
+      reason: 'not_observed'
+    },
+    {
+      tier: 'closed_unmerged',
+      gate_badge: 'PR closed',
+      enabled: false,
+      reason: 'pr_closed_unmerged'
+    },
+    { tier: 'merged', gate_badge: '머지됨', enabled: false, reason: null }
+  ];
+
+  test('enables 머지 in every passing tier and shows what it is based on', () => {
+    for (const t of PASSING_TIERS) {
+      document.body.innerHTML = '<div id="m"></div>';
+      const { mount } = mountWith(queueWithGate({ ...t, base_badge: '최신' }));
+
+      const btn = /** @type {HTMLButtonElement} */ (
+        mount.querySelector('.worker-mini__merge')
+      );
+      expect(btn.disabled).toBe(false);
+      expect(btn.getAttribute('title')).toContain(t.gate_badge);
+      expect(
+        /** @type {HTMLElement} */ (mount.querySelector('.worker-mini__badge'))
+          .textContent
+      ).toBe(t.gate_badge);
+    }
+  });
+
+  test('disables 머지 in every refusing tier and renders that tier badge', () => {
+    for (const t of REFUSING_TIERS) {
+      document.body.innerHTML = '<div id="m"></div>';
+      const { mount } = mountWith(queueWithGate({ ...t, base_badge: '최신' }));
+
+      const btn = /** @type {HTMLButtonElement} */ (
+        mount.querySelector('.worker-mini__merge')
+      );
+      expect(btn.disabled).toBe(true);
+      expect(btn.getAttribute('title')).toContain(t.reason || '정리 진행 중');
+      expect(
+        /** @type {HTMLElement} */ (mount.querySelector('.worker-mini__badge'))
+          .textContent
+      ).toBe(t.gate_badge);
+    }
+  });
+
+  test('offers 머지 and 재실행 on a pr_wait row', () => {
+    const { mount } = mountWith(queueWithGate(GREEN));
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.querySelector('.worker-mini__merge')).not.toBe(null);
+    expect(row.querySelector('.worker-mini__rerun')).not.toBe(null);
+  });
+
+  test('disables 머지 when the gate refuses, and says why', () => {
+    const { mount } = mountWith(queueWithGate(RED));
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute('title')).toContain('ci_failed');
+  });
+
+  test('keeps 머지 clickable on a conflict so the click can dispatch a resolution', () => {
+    const { mount } = mountWith(
+      queueWithGate({
+        enabled: false,
+        tier: 'ci',
+        gate_badge: 'CI ✓',
+        base_badge: '충돌',
+        reason: 'ci_pending'
+      })
+    );
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(false);
+    expect(btn.getAttribute('title')).toContain('머지하지 않음');
+  });
+
+  test('sends worker-pr-merge with the current revision on click', () => {
+    const { mount, transport } = mountWith(queueWithGate(GREEN));
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    ).click();
+
+    expect(transport).toHaveBeenCalledWith('worker-pr-merge', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+  });
+
+  test('confirms before sending the destructive rerun', () => {
+    const { mount, transport } = mountWith(queueWithGate(GREEN));
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__rerun')
+    ).click();
+
+    expect(confirm).toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  test('sends worker-pr-rerun once the user confirms', () => {
+    const { mount, transport } = mountWith(queueWithGate(GREEN));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__rerun')
+    ).click();
+
+    expect(transport).toHaveBeenCalledWith('worker-pr-rerun', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+    vi.unstubAllGlobals();
+  });
+
+  test('renders a merged_cleanup_failed banner that asks a human to finish it', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'child_sweep',
+              reason: 'child_close_failed:RD-1.1',
+              at: 1
+            }
+          }
+        }
+      )
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--cleanup')
+    );
+    const text = (banner.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain('child_sweep');
+    expect(text).toContain('자동 재시도는 하지 않습니다');
+    expect(banner.getAttribute('data-bead-id')).toBe('RD-1');
+    // The bead stays in the PR-wait row (not Done), and the only retry is the
+    // human's own click.
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(false);
+    expect(btn.getAttribute('title')).toContain('남은 정리를');
   });
 });

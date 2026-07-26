@@ -49,12 +49,11 @@ describe('worker/queue-store', () => {
     const a = createQueueStore();
     const r = a.place(WS, {
       expected_revision: 0,
-      bead_id: 'UI-1',
-      lane: 'serial'
+      bead_id: 'UI-1'
     });
     expect(r.ok).toBe(true);
     expect(r.queue.revision).toBe(1);
-    expect(r.queue.serial.map((e) => e.bead_id)).toEqual(['UI-1']);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
 
     // On-disk file exists and is valid JSON (never partial).
     const file = queueFilePath(WS);
@@ -66,25 +65,24 @@ describe('worker/queue-store', () => {
     const b = createQueueStore();
     const snap = b.snapshot(WS);
     expect(snap.revision).toBe(1);
-    expect(snap.serial.map((e) => e.bead_id)).toEqual(['UI-1']);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
   test('revision mismatch is rejected as a conflict with no write', () => {
     const store = createQueueStore();
-    store.place(WS, { expected_revision: 0, bead_id: 'UI-1', lane: 'serial' });
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
     const before = fs.readFileSync(queueFilePath(WS), 'utf8');
 
     // Stale client uses expected_revision 0, but current is 1.
     const r = store.place(WS, {
       expected_revision: 0,
-      bead_id: 'UI-2',
-      lane: 'serial'
+      bead_id: 'UI-2'
     });
     expect(r.ok).toBe(false);
     expect(r.conflict).toBe(true);
     // Returned snapshot is the current (unchanged) state so the client re-syncs.
     expect(r.queue.revision).toBe(1);
-    expect(r.queue.serial.map((e) => e.bead_id)).toEqual(['UI-1']);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
     // No write occurred.
     expect(fs.readFileSync(queueFilePath(WS), 'utf8')).toBe(before);
   });
@@ -104,50 +102,59 @@ describe('worker/queue-store', () => {
     expect(restarted.snapshot(WS).auto_advance).toBe(false);
   });
 
-  test('two-way move dedupes across lanes', () => {
+  test('re-placing a queued bead moves it without duplicating it', () => {
     const store = createQueueStore();
     let rev = 0;
-    rev = store.place(WS, {
-      expected_revision: rev,
-      bead_id: 'UI-1',
-      lane: 'serial'
-    }).queue.revision;
-    // Move the same bead into the parallel pool.
+    for (const id of ['A', 'B']) {
+      rev = store.place(WS, {
+        expected_revision: rev,
+        bead_id: id
+      }).queue.revision;
+    }
+
     const r = store.place(WS, {
       expected_revision: rev,
-      bead_id: 'UI-1',
-      lane: 'parallel'
+      bead_id: 'A',
+      index: 2
     });
-    expect(r.queue.serial.map((e) => e.bead_id)).toEqual([]);
-    expect(r.queue.parallel.map((e) => e.bead_id)).toEqual(['UI-1']);
+
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['B', 'A']);
   });
 
-  test('reorder moves a bead within a lane', () => {
+  test('place drops a bead out of pr_wait and done (single-lane dedupe)', () => {
+    const store = createQueueStore();
+    store.moveToDone(WS, { bead_id: 'UI-1' });
+    const rev = store.snapshot(WS).revision;
+
+    const r = store.place(WS, { expected_revision: rev, bead_id: 'UI-1' });
+
+    expect(r.queue.done).toEqual([]);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('reorder moves a bead within the queue', () => {
     const store = createQueueStore();
     let rev = 0;
     for (const id of ['A', 'B', 'C']) {
       rev = store.place(WS, {
         expected_revision: rev,
-        bead_id: id,
-        lane: 'serial'
+        bead_id: id
       }).queue.revision;
     }
     const r = store.reorder(WS, {
       expected_revision: rev,
       bead_id: 'C',
-      lane: 'serial',
       to_index: 0
     });
     expect(r.ok).toBe(true);
-    expect(r.queue.serial.map((e) => e.bead_id)).toEqual(['C', 'A', 'B']);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['C', 'A', 'B']);
   });
 
   test('remove drops a bead and appendAttempt persists the container', () => {
     const store = createQueueStore();
     let rev = store.place(WS, {
       expected_revision: 0,
-      bead_id: 'UI-1',
-      lane: 'serial'
+      bead_id: 'UI-1'
     }).queue.revision;
 
     const appended = store.appendAttempt(WS, {
@@ -171,13 +178,13 @@ describe('worker/queue-store', () => {
       expected_revision: rev,
       bead_id: 'UI-1'
     });
-    expect(removed.queue.serial).toEqual([]);
+    expect(removed.queue.queue).toEqual([]);
   });
 
   test('a failed write leaves memory and disk at the prior revision (atomic)', () => {
     // First a good write via the real fs.
     const good = createQueueStore();
-    good.place(WS, { expected_revision: 0, bead_id: 'UI-1', lane: 'serial' });
+    good.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
     const before = fs.readFileSync(queueFilePath(WS), 'utf8');
 
     // A store whose writeFileSync always throws simulates a mid-write failure.
@@ -194,8 +201,7 @@ describe('worker/queue-store', () => {
     expect(() =>
       failing.place(WS, {
         expected_revision: 1,
-        bead_id: 'UI-2',
-        lane: 'serial'
+        bead_id: 'UI-2'
       })
     ).toThrow(/disk full/);
 
@@ -203,95 +209,71 @@ describe('worker/queue-store', () => {
     expect(fs.readFileSync(queueFilePath(WS), 'utf8')).toBe(before);
     // In-memory cache uncommitted: still revision 1.
     expect(failing.snapshot(WS).revision).toBe(1);
-    expect(failing.snapshot(WS).serial.map((e) => e.bead_id)).toEqual(['UI-1']);
+    expect(failing.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 });
 
-describe('worker/queue-store policy settings (worker-autorun-policy §2)', () => {
-  test('setPolicy persists merge_policy / drift_policy under the revision CAS', () => {
+describe('worker/queue-store retired policy axis (worker-phase2 §2/§9)', () => {
+  test('a fresh queue carries no policy fields', () => {
     const store = createQueueStore();
-    expect(store.snapshot(WS).merge_policy).toBe(null);
-    expect(store.snapshot(WS).drift_policy).toBe(null);
 
-    let r = store.setPolicy(WS, {
-      expected_revision: 0,
-      key: 'merge_policy',
-      value: 'pr_stop'
-    });
-    expect(r.ok).toBe(true);
-    expect(r.queue.merge_policy).toBe('pr_stop');
+    const q = store.snapshot(WS);
 
-    r = store.setPolicy(WS, {
-      expected_revision: r.queue.revision,
-      key: 'drift_policy',
-      value: 'halt'
-    });
-    expect(r.ok).toBe(true);
-    expect(r.queue.drift_policy).toBe('halt');
-
-    // Stale revision → CAS conflict, no write.
-    const stale = store.setPolicy(WS, {
-      expected_revision: 0,
-      key: 'merge_policy',
-      value: 'auto_merge'
-    });
-    expect(stale.ok).toBe(false);
-    expect(stale.conflict).toBe(true);
-    expect(store.snapshot(WS).merge_policy).toBe('pr_stop');
-
-    // null unsets (falls back to the default at resolution time).
-    const unset = store.setPolicy(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      key: 'merge_policy',
-      value: null
-    });
-    expect(unset.ok).toBe(true);
-    expect(unset.queue.merge_policy).toBe(null);
+    expect('merge_policy' in q).toBe(false);
+    expect('drift_policy' in q).toBe(false);
   });
 
-  test('setPolicy rejects unknown keys and non-enum values', () => {
+  test('exposes no setPolicy mutator', () => {
     const store = createQueueStore();
-    const badKey = store.setPolicy(WS, {
-      expected_revision: 0,
-      key: 'auto_advance',
-      value: 'pr_stop'
-    });
-    expect(badKey.ok).toBe(false);
-    expect(badKey.conflict).toBe(false);
-    const badValue = store.setPolicy(WS, {
-      expected_revision: 0,
-      key: 'merge_policy',
-      value: 'yolo'
-    });
-    expect(badValue.ok).toBe(false);
-    expect(store.snapshot(WS).merge_policy).toBe(null);
+
+    expect(/** @type {any} */ (store).setPolicy).toBeUndefined();
   });
 
-  test('persisted policy values survive a reload; invalid persisted values do not', () => {
+  test('a legacy queue.json with policy keys loads clean with the keys dropped', () => {
     const store = createQueueStore();
-    let r = store.setPolicy(WS, {
-      expected_revision: 0,
-      key: 'merge_policy',
-      value: 'pr_stop'
-    });
-    store.setPolicy(WS, {
-      expected_revision: r.queue.revision,
-      key: 'drift_policy',
-      value: 'halt'
-    });
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.merge_policy = 'auto_merge';
+    raw.drift_policy = 'halt';
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
 
     const restarted = createQueueStore();
-    expect(restarted.load(WS).merge_policy).toBe('pr_stop');
-    expect(restarted.load(WS).drift_policy).toBe('halt');
+    const q = restarted.load(WS);
 
-    // Corrupt the persisted values → normalize back to null.
+    expect('merge_policy' in q).toBe(false);
+    expect('drift_policy' in q).toBe(false);
+    // The rest of the legacy queue survives intact.
+    expect(q.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('a legacy attempt keeps its retired merge-axis fields (history is immutable)', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-old', bead_id: 'UI-1' }
+    });
     const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
-    raw.merge_policy = 'yolo';
-    raw.drift_policy = 7;
+    Object.assign(raw.attempts['att-old'], {
+      merge_policy: 'auto_merge',
+      drift_policy: 'halt',
+      demoted_reason: 'verify_cmd_unset',
+      merge_sha: 'a'.repeat(40),
+      done_kind: 'auto_merge',
+      release_rejected: 'base_not_advanced',
+      verify_cmd_result: { ok: false, reason: 'x', exit: 1 }
+    });
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
-    const again = createQueueStore();
-    expect(again.load(WS).merge_policy).toBe(null);
-    expect(again.load(WS).drift_policy).toBe(null);
+
+    const restarted = createQueueStore();
+    const att = restarted.load(WS).attempts['att-old'];
+
+    expect(att.merge_policy).toBe('auto_merge');
+    expect(att.drift_policy).toBe('halt');
+    expect(att.demoted_reason).toBe('verify_cmd_unset');
+    expect(att.merge_sha).toBe('a'.repeat(40));
+    expect(att.done_kind).toBe('auto_merge');
+    expect(att.release_rejected).toBe('base_not_advanced');
+    expect(att.verify_cmd_result).toEqual({ ok: false, reason: 'x', exit: 1 });
   });
 });
 
@@ -456,8 +438,7 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     const store = createQueueStore();
     const rev = store.place(WS, {
       expected_revision: 0,
-      bead_id: 'UI-1',
-      lane: 'serial'
+      bead_id: 'UI-1'
     }).queue.revision;
     store.appendAttempt(WS, {
       expected_revision: rev,
@@ -477,19 +458,19 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     // attempt is stopped but the bead is still queued (re-dispatchable).
     expect(r.queue.revision).toBe(before + 1);
     expect(r.queue.attempts['att-1'].status).toBe('stopped');
-    expect(r.queue.serial).toEqual([]);
+    expect(r.queue.queue).toEqual([]);
     expect(r.queue.admission['UI-1']).toBeUndefined();
 
     // The single write is what landed on disk, too.
     const persisted = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
     expect(persisted.revision).toBe(before + 1);
     expect(persisted.attempts['att-1'].status).toBe('stopped');
-    expect(persisted.serial).toEqual([]);
+    expect(persisted.queue).toEqual([]);
   });
 
   test('discardAttempt rejects an unknown attempt without touching the lane', () => {
     const store = createQueueStore();
-    store.place(WS, { expected_revision: 0, bead_id: 'UI-1', lane: 'serial' });
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
     const before = store.snapshot(WS).revision;
 
     const r = store.discardAttempt(WS, {
@@ -500,12 +481,77 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
 
     expect(r.ok).toBe(false);
     expect(store.snapshot(WS).revision).toBe(before);
-    expect(store.snapshot(WS).serial.map((e) => e.bead_id)).toEqual(['UI-1']);
+    expect(store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('moveToPrWait writes the attempt patch AND the lane move in ONE revision', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'UI-1'
+    }).queue.revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      patch: { status: 'done', finished_at: 7, done_kind: 'pr_stop' }
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(before + 1);
+    expect(r.queue.attempts['att-1'].status).toBe('done');
+    expect(r.queue.queue).toEqual([]);
+    expect(r.queue.pr_wait.map((e) => e.bead_id)).toEqual(['UI-1']);
+
+    const persisted = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(persisted.revision).toBe(before + 1);
+    expect(persisted.attempts['att-1'].status).toBe('done');
+    expect(persisted.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+      'UI-1'
+    ]);
+  });
+
+  test('moveToPrWait rejects an unknown attempt without moving the bead', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'nope',
+      patch: { status: 'done' }
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+    expect(store.snapshot(WS).pr_wait).toEqual([]);
+    expect(store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('a legacy queue.json without pr_wait loads with an empty lane', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.pr_wait;
+    raw.done = [{ bead_id: 'UI-OLD', added_at: 1 }];
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.pr_wait).toEqual([]);
+    // A past pr_stop completion is NOT retroactively re-filed as PR-waiting.
+    expect(loaded.done.map((e) => e.bead_id)).toEqual(['UI-OLD']);
+    expect(loaded.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
   test('a legacy stopped attempt migrates to `stopped` and keeps its lane (§3)', () => {
     const store = createQueueStore();
-    store.place(WS, { expected_revision: 0, bead_id: 'UI-1', lane: 'serial' });
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
     const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
     raw.attempts = {
       'att-old': {
@@ -533,15 +579,14 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
       'verify_failed:bd_not_resolved'
     );
     // Lane placement is never rewritten retroactively.
-    expect(loaded.serial.map((e) => e.bead_id)).toEqual(['UI-1']);
+    expect(loaded.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
   test('exec_stamped_keys survive appendAttempt/updateAttempt and a reload', () => {
     const store = createQueueStore();
     let rev = store.place(WS, {
       expected_revision: 0,
-      bead_id: 'UI-1',
-      lane: 'serial'
+      bead_id: 'UI-1'
     }).queue.revision;
 
     // Default (unset) is null.
@@ -589,8 +634,7 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     const store = createQueueStore();
     let rev = store.place(WS, {
       expected_revision: 0,
-      bead_id: 'UI-1',
-      lane: 'serial'
+      bead_id: 'UI-1'
     }).queue.revision;
 
     // Default (runtime field, unfilled) is null.
@@ -616,5 +660,253 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(restarted.load(WS).attempts['att-1'].session_id).toBe(
       'a39855e0-c3ac'
     );
+  });
+});
+
+describe('worker/queue-store single lane + slots (worker-phase2 §3/§9)', () => {
+  test('a fresh queue carries one placeable lane and no serial/parallel lane', () => {
+    const store = createQueueStore();
+
+    const q = store.snapshot(WS);
+
+    expect(q.queue).toEqual([]);
+    expect('serial' in q).toBe(false);
+    expect('parallel' in q).toBe(false);
+  });
+
+  test('defaults slots to 2 when the queue.json carries none', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.slots;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.slots).toBe(2);
+  });
+
+  test('merges a legacy serial+parallel queue.json into one lane, serial first', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'SEED' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.queue;
+    raw.serial = [
+      { bead_id: 'S1', added_at: 1 },
+      { bead_id: 'S2', added_at: 2 }
+    ];
+    raw.parallel = [
+      { bead_id: 'P1', added_at: 3 },
+      { bead_id: 'P2', added_at: 4 }
+    ];
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.queue.map((e) => e.bead_id)).toEqual([
+      'S1',
+      'S2',
+      'P1',
+      'P2'
+    ]);
+  });
+
+  test('dedupes a bead recorded in BOTH legacy lanes, keeping its serial position', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'SEED' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.queue;
+    raw.serial = [
+      { bead_id: 'DUP', added_at: 1 },
+      { bead_id: 'S2', added_at: 2 }
+    ];
+    raw.parallel = [
+      { bead_id: 'P1', added_at: 3 },
+      { bead_id: 'DUP', added_at: 4 }
+    ];
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.queue.map((e) => e.bead_id)).toEqual(['DUP', 'S2', 'P1']);
+  });
+
+  test('leaves done and pr_wait untouched while merging the legacy lanes', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'SEED' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.queue;
+    raw.serial = [{ bead_id: 'S1', added_at: 1 }];
+    raw.parallel = [{ bead_id: 'P1', added_at: 2 }];
+    raw.pr_wait = [{ bead_id: 'W1', added_at: 3 }];
+    raw.done = [{ bead_id: 'D1', added_at: 4 }];
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.pr_wait.map((e) => e.bead_id)).toEqual(['W1']);
+    expect(loaded.done.map((e) => e.bead_id)).toEqual(['D1']);
+    expect(loaded.queue.map((e) => e.bead_id)).toEqual(['S1', 'P1']);
+  });
+
+  test('setSlots persists a new cap under the revision CAS', () => {
+    const store = createQueueStore();
+
+    const r = store.setSlots(WS, { expected_revision: 0, slots: 5 });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.slots).toBe(5);
+    expect(createQueueStore().load(WS).slots).toBe(5);
+  });
+
+  test('setSlots accepts the lower bound of 1 (the retired serial semantics)', () => {
+    const store = createQueueStore();
+
+    const r = store.setSlots(WS, { expected_revision: 0, slots: 1 });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.slots).toBe(1);
+  });
+
+  test('setSlots rejects a stale expected_revision without writing', () => {
+    const store = createQueueStore();
+    store.setSlots(WS, { expected_revision: 0, slots: 4 });
+    const before = fs.readFileSync(queueFilePath(WS), 'utf8');
+
+    const r = store.setSlots(WS, { expected_revision: 0, slots: 7 });
+
+    expect(r.ok).toBe(false);
+    expect(r.conflict).toBe(true);
+    expect(r.queue.slots).toBe(4);
+    expect(fs.readFileSync(queueFilePath(WS), 'utf8')).toBe(before);
+  });
+
+  test('setSlots rejects a value below the lower bound without writing', () => {
+    const store = createQueueStore();
+    store.setSlots(WS, { expected_revision: 0, slots: 3 });
+
+    const r = store.setSlots(WS, { expected_revision: 1, slots: 0 });
+
+    expect(r.ok).toBe(false);
+    expect(r.conflict).toBe(false);
+    expect(store.snapshot(WS).slots).toBe(3);
+  });
+
+  test('setSlots rejects a non-integer and a non-number without writing', () => {
+    const store = createQueueStore();
+    store.setSlots(WS, { expected_revision: 0, slots: 3 });
+
+    const fractional = store.setSlots(WS, {
+      expected_revision: 1,
+      slots: 2.5
+    });
+    const textual = store.setSlots(WS, { expected_revision: 1, slots: '4' });
+
+    expect(fractional.ok).toBe(false);
+    expect(textual.ok).toBe(false);
+    expect(store.snapshot(WS).slots).toBe(3);
+  });
+
+  test('falls back to the default when a stored slots value is unusable', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.slots = 0;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.slots).toBe(2);
+  });
+});
+
+describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', () => {
+  /**
+   * @param {any} store
+   */
+  function seedPrWait(store) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'a1',
+      patch: { status: 'done' }
+    });
+  }
+
+  test('records a cleanup failure durably', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'child_sweep',
+      reason: 'child_close_failed:UI-1.1'
+    });
+
+    expect(createQueueStore().load(WS).cleanup_failed['UI-1']).toMatchObject({
+      step: 'child_sweep',
+      reason: 'child_close_failed:UI-1.1'
+    });
+  });
+
+  test('drops the cleanup failure when the bead reaches done', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'base_sync',
+      reason: 'base_fetch_failed'
+    });
+
+    store.moveToDone(WS, { bead_id: 'UI-1' });
+
+    const q = store.snapshot(WS);
+    expect(q.cleanup_failed['UI-1']).toBeUndefined();
+    expect(q.done.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('requeues a pr_wait bead into the waiting queue in one revision', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    const before = store.snapshot(WS).revision;
+
+    const r = store.requeueFromPrWait(WS, { bead_id: 'UI-1' });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(before + 1);
+    expect(r.queue.pr_wait).toEqual([]);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('refuses to requeue a bead that is not in pr_wait', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+
+    const r = store.requeueFromPrWait(WS, { bead_id: 'UI-1' });
+
+    expect(r.ok).toBe(false);
+  });
+
+  test('a legacy queue.json without the key loads with an empty map', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.cleanup_failed;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    expect(createQueueStore().load(WS).cleanup_failed).toEqual({});
+  });
+
+  test('a new attempt is not a conflict-resolution attempt by default', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+
+    expect(store.snapshot(WS).attempts.a1.conflict_resolution).toBe(false);
   });
 });

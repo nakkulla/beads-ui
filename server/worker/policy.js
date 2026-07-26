@@ -1,72 +1,17 @@
 /**
- * Worker policy settings — resolution order (worker-autorun-policy spec §2).
+ * Worker exec settings — resolution order (worker-global-exec-defaults §3).
  *
- * Two per-dispatch policies decide a session's terminal behavior:
- *   - `merge_policy`: `auto_merge` (merge to base and close) | `pr_stop`
- *     (open a PR, record `resolved`, stop before merging).
- *   - `drift_policy`: `auto_rereview` (contract default — refresh spec and
- *     continue) | `halt` (abort the attempt on material spec drift).
+ * The 4 exec keys (orchestration_model / orchestration_effort / review_model /
+ * impl_model) resolve bead metadata > workspace global (queue store) > unset.
+ * A non-enum value at any level falls through to the next level instead of
+ * blocking.
  *
- * Resolution mirrors the contract's mode_resolution_order pattern:
- * bead metadata > workspace global (queue store) > default. A non-enum value
- * at any level falls through to the next level instead of blocking.
- *
- * The `verify_cmd`-unset demotion (auto_merge → pr_stop) is NOT part of pure
- * resolution — the scheduler applies it at dispatch where the workspace
- * verify_cmd config is known.
+ * The `merge_policy`/`drift_policy` axis is retired with the merge axis
+ * (worker-phase2 §2): every session is PR-stop by construction and drift
+ * behaviour is fixed at the contract default (auto_rereview), so neither is a
+ * per-dispatch choice any more.
  */
 import { EFFORTS, IMPL_MODELS, MODELS, REVIEW_MODELS } from './exec-enums.js';
-
-/** @type {ReadonlyArray<'auto_merge'|'pr_stop'>} */
-export const MERGE_POLICIES = ['auto_merge', 'pr_stop'];
-
-/** @type {ReadonlyArray<'auto_rereview'|'halt'>} */
-export const DRIFT_POLICIES = ['auto_rereview', 'halt'];
-
-/**
- * @param {ReadonlyArray<string>} allowed
- * @param {ReadonlyArray<unknown>} candidates - Highest priority first.
- * @param {string} fallback
- * @returns {string}
- */
-function firstValid(allowed, candidates, fallback) {
-  for (const c of candidates) {
-    if (typeof c === 'string' && allowed.includes(c)) {
-      return c;
-    }
-  }
-  return fallback;
-}
-
-/**
- * Resolve the effective policies for one dispatch.
- *
- * @param {{
- *   bead?: { merge_policy?: unknown, drift_policy?: unknown } | null,
- *   queue?: { merge_policy?: unknown, drift_policy?: unknown } | null
- * }} input
- * @returns {{ merge_policy: 'auto_merge'|'pr_stop', drift_policy: 'auto_rereview'|'halt' }}
- */
-export function resolvePolicies(input) {
-  const bead = input.bead || {};
-  const queue = input.queue || {};
-  return {
-    merge_policy: /** @type {'auto_merge'|'pr_stop'} */ (
-      firstValid(
-        MERGE_POLICIES,
-        [bead.merge_policy, queue.merge_policy],
-        'auto_merge'
-      )
-    ),
-    drift_policy: /** @type {'auto_rereview'|'halt'} */ (
-      firstValid(
-        DRIFT_POLICIES,
-        [bead.drift_policy, queue.drift_policy],
-        'auto_rereview'
-      )
-    )
-  };
-}
 
 /**
  * @param {ReadonlyArray<string>} allowed

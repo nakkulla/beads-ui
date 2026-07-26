@@ -152,3 +152,73 @@ describe('worker/admission fail-closed validator', () => {
     });
   });
 });
+
+describe('worker/admission gh availability (worker-phase2 §10)', () => {
+  test('refuses with gh_unavailable when gh cannot be used', async () => {
+    const gitRun = makeGitRun();
+
+    const r = await validateAdmission({
+      gitRun,
+      ghAvailable: async () => false,
+      repo: '/repo',
+      base: BASE,
+      bead: makeBead()
+    });
+
+    expect(r).toEqual({ ok: false, reason: 'gh_unavailable' });
+  });
+
+  test('refuses before spending any git probe on the bead', async () => {
+    const gitRun = makeGitRun();
+
+    await validateAdmission({
+      gitRun,
+      ghAvailable: async () => false,
+      repo: '/repo',
+      base: BASE,
+      bead: makeBead()
+    });
+
+    expect(gitRun).not.toHaveBeenCalled();
+  });
+
+  test('treats a throwing availability probe as a refusal', async () => {
+    const r = await validateAdmission({
+      gitRun: makeGitRun(),
+      ghAvailable: async () => {
+        throw new Error('spawn EPERM');
+      },
+      repo: '/repo',
+      base: BASE,
+      bead: makeBead()
+    });
+
+    expect(r).toEqual({ ok: false, reason: 'gh_unavailable' });
+  });
+
+  test('lets the existing conditions decide when gh is available', async () => {
+    const available = { gitRun: makeGitRun(), ghAvailable: async () => true };
+
+    const pass = await validateAdmission({
+      ...available,
+      repo: '/repo',
+      base: BASE,
+      bead: makeBead()
+    });
+    const fail = await validateAdmission({
+      ...available,
+      repo: '/repo',
+      base: BASE,
+      bead: makeBead({ route: 'quick_fix' })
+    });
+
+    expect(pass).toEqual({ ok: true });
+    expect(fail).toEqual({ ok: false, reason: 'invalid_route' });
+  });
+
+  test('passes the gh condition when no availability dep is wired', async () => {
+    const r = await run(makeGitRun(), makeBead());
+
+    expect(r).toEqual({ ok: true });
+  });
+});

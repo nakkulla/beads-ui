@@ -12,7 +12,7 @@ import {
  * Worker-tab "전역 실행 설정" dialog: the single editing surface for the
  * workspace-global exec defaults (the 4 exec keys, NOT workflow_mode). It mirrors
  * the display-settings dialog's native `<dialog>` shell (showModal/jsdom fallback,
- * close/cancel handling, destroy) and the Worker view's `setPolicy` CAS contract:
+ * close/cancel handling, destroy) and the Worker view's CAS contract:
  * a change sends `worker-queue-set-exec-default` with the current queue revision,
  * adopts the authoritative queue the reply carries, and replays the SAME edit once
  * against the fresh revision on a CAS conflict.
@@ -35,26 +35,6 @@ const EXEC_ROWS = [
   { key: 'orchestration_effort', values: () => EFFORTS },
   { key: 'review_model', values: () => REVIEW_MODELS },
   { key: 'impl_model', values: () => IMPL_MODELS }
-];
-
-/**
- * Workspace-global policy rows also editable here (spec §1.3): on ≤640px the
- * ctrl-bar merge/drift selects are hidden, so this dialog is their edit surface.
- * They ride the SAME `worker-queue-set-policy` CAS path as the ctrl bar.
- *
- * @type {{ key: 'merge_policy'|'drift_policy', values: string[], default_label: string }[]}
- */
-const POLICY_ROWS = [
-  {
-    key: 'merge_policy',
-    values: ['auto_merge', 'pr_stop'],
-    default_label: '(기본 auto_merge)'
-  },
-  {
-    key: 'drift_policy',
-    values: ['auto_rereview', 'halt'],
-    default_label: '(기본 auto_rereview)'
-  }
 ];
 
 /**
@@ -116,8 +96,8 @@ export function createExecDefaultsDialog(mount_element, options) {
 
   /**
    * Set (or unset with '') a global exec default, retrying ONCE on a CAS conflict
-   * against the revision the server just reported — the Worker view `setPolicy`
-   * discipline. `''` (the `(기본)` option) is sent as `null` = unset.
+   * against the revision the server just reported — the Worker view's adopt-and-
+   * replay discipline. `''` (the `(기본)` option) is sent as `null` = unset.
    *
    * @param {string} key
    * @param {string} value
@@ -149,40 +129,6 @@ export function createExecDefaultsDialog(mount_element, options) {
       }
     } catch {
       showToast('전역 실행 설정 저장 실패', 'error', 4000);
-    }
-  }
-
-  /**
-   * Set (or unset with '') a workspace-global policy via `worker-queue-set-policy`,
-   * retrying ONCE on a CAS conflict — the same discipline as {@link save} and the
-   * Worker view's ctrl-bar policy select (spec §1.3).
-   *
-   * @param {'merge_policy'|'drift_policy'} key
-   * @param {string} value
-   */
-  async function savePolicy(key, value) {
-    if (!transport) {
-      return;
-    }
-    const payload = { key, value: value || null };
-    try {
-      let res = await transport('worker-queue-set-policy', {
-        ...payload,
-        expected_revision: currentRevision()
-      });
-      adopt(res);
-      if (res && res.conflict) {
-        res = await transport('worker-queue-set-policy', {
-          ...payload,
-          expected_revision: currentRevision()
-        });
-        adopt(res);
-      }
-      if (res && res.conflict) {
-        showToast('전역 정책 저장 실패: 다른 클라이언트와 충돌', 'error', 4000);
-      }
-    } catch {
-      showToast('전역 정책 저장 실패', 'error', 4000);
     }
   }
 
@@ -224,41 +170,7 @@ export function createExecDefaultsDialog(mount_element, options) {
     </div>`;
   }
 
-  /**
-   * A workspace-global policy row (merge_policy / drift_policy). The `(기본 …)`
-   * option is selected when the queue value is unset, mirroring the ctrl-bar
-   * select (spec §1.3).
-   *
-   * @param {{ key: 'merge_policy'|'drift_policy', values: string[], default_label: string }} row
-   * @param {any} queue
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function policyRow(row, queue) {
-    const value = typeof queue[row.key] === 'string' ? queue[row.key] : '';
-    return html`<div class="exec-defaults__row">
-      <span class="exec-defaults__k">${row.key}</span>
-      <select
-        class="exec-defaults__sel"
-        aria-label=${`전역 ${row.key}`}
-        data-policy-key=${row.key}
-        @change=${(/** @type {Event} */ ev) =>
-          void savePolicy(
-            row.key,
-            /** @type {HTMLSelectElement} */ (ev.target).value
-          )}
-      >
-        <option value="" ?selected=${!row.values.includes(value)}>
-          ${row.default_label}
-        </option>
-        ${row.values.map(
-          (v) => html`<option value=${v} ?selected=${value === v}>${v}</option>`
-        )}
-      </select>
-    </div>`;
-  }
-
   function doRender() {
-    const queue = currentQueue();
     const defaults = currentDefaults();
     render(
       html`
@@ -283,10 +195,6 @@ export function createExecDefaultsDialog(mount_element, options) {
             ${EXEC_ROWS.map((row) =>
               selectRow(row.key, row.values(), defaults[row.key] || '')
             )}
-            <p class="exec-defaults__hint exec-defaults__hint--policy">
-              전역 정책 (좁은 화면에서 상단 바 대신 여기서 편집)
-            </p>
-            ${POLICY_ROWS.map((row) => policyRow(row, queue))}
           </div>
         </div>
       `,

@@ -1,16 +1,16 @@
 import { describe, expect, test } from 'vitest';
+import * as preamble from './preamble.js';
 import {
-  DRIFT_HALT_DIRECTIVE,
   FAST_TRACK_DIRECTIVE,
-  PR_STOP_DIRECTIVE,
+  PR_SUBMIT_DIRECTIVE,
   UNATTENDED_PREAMBLE,
-  applyPreamble,
-  mergeLockProtocol
+  applyPreamble
 } from './preamble.js';
 
 describe('runner/preamble', () => {
   test('prepends the unattended preamble to the base prompt', () => {
     const out = applyPreamble('작업하라');
+
     expect(out.startsWith(UNATTENDED_PREAMBLE)).toBe(true);
     expect(out.endsWith('작업하라')).toBe(true);
     expect(out).not.toContain(FAST_TRACK_DIRECTIVE);
@@ -18,8 +18,7 @@ describe('runner/preamble', () => {
 
   test('injects the fast_track directive between preamble and prompt', () => {
     const out = applyPreamble('작업하라', { fast_track: true });
-    expect(out).toContain(UNATTENDED_PREAMBLE);
-    expect(out).toContain(FAST_TRACK_DIRECTIVE);
+
     expect(out.indexOf(UNATTENDED_PREAMBLE)).toBeLessThan(
       out.indexOf(FAST_TRACK_DIRECTIVE)
     );
@@ -27,83 +26,68 @@ describe('runner/preamble', () => {
       out.indexOf('작업하라')
     );
   });
+});
 
-  test('mergeLockProtocol injects the concrete port, repo and target_base [F3]', () => {
-    const block = mergeLockProtocol({
-      port: 3007,
-      repo: '/repo/x',
-      target_base: 'main'
-    });
-    expect(block).toContain('http://127.0.0.1:3007/api/worker/merge-lock');
-    expect(block).toContain('Authorization: Bearer $BDUI_WORKER_TOKEN');
-    expect(block).toContain('"repo":"/repo/x"');
-    expect(block).toContain('"target_base":"main"');
-    expect(block).toContain('"action":"release"');
+describe('runner/preamble PR-submit directive (worker-phase2 §1)', () => {
+  test('injects the PR-submit directive with no options at all', () => {
+    const out = applyPreamble('작업하라');
+
+    expect(out).toContain(PR_SUBMIT_DIRECTIVE);
   });
 
-  test('applyPreamble embeds the merge-lock protocol when merge_lock is given [F3]', () => {
-    const out = applyPreamble('작업하라', {
-      fast_track: true,
-      merge_lock: { port: 4100, repo: '/r', target_base: 'trunk' }
-    });
-    expect(out).toContain(UNATTENDED_PREAMBLE);
-    expect(out).toContain(FAST_TRACK_DIRECTIVE);
-    expect(out).toContain('http://127.0.0.1:4100/api/worker/merge-lock');
-    expect(out).toContain('"target_base":"trunk"');
-    // Protocol precedes the base prompt.
-    expect(out.indexOf('merge-lock')).toBeLessThan(out.indexOf('작업하라'));
-  });
-
-  test('applyPreamble omits the merge-lock block when merge_lock is absent', () => {
+  test('injects the PR-submit directive under fast_track too', () => {
     const out = applyPreamble('작업하라', { fast_track: true });
-    expect(out).not.toContain('merge-lock');
+
+    expect(out).toContain(PR_SUBMIT_DIRECTIVE);
+  });
+
+  test('states PR submission and forbids merging', () => {
+    expect(PR_SUBMIT_DIRECTIVE).toContain('PR 제출');
+    expect(PR_SUBMIT_DIRECTIVE).toContain('머지하지 말 것');
+  });
+
+  test('no longer names the retired merge_policy key', () => {
+    expect(PR_SUBMIT_DIRECTIVE).not.toContain('merge_policy');
+  });
+
+  test('orders preamble → fast_track → PR-submit → prompt', () => {
+    const out = applyPreamble('작업하라', { fast_track: true });
+
+    const idx = (/** @type {string} */ part) => out.indexOf(part);
+
+    expect(idx(UNATTENDED_PREAMBLE)).toBeLessThan(idx(FAST_TRACK_DIRECTIVE));
+    expect(idx(FAST_TRACK_DIRECTIVE)).toBeLessThan(idx(PR_SUBMIT_DIRECTIVE));
+    expect(idx(PR_SUBMIT_DIRECTIVE)).toBeLessThan(idx('작업하라'));
   });
 });
 
-describe('runner/preamble policy directives (worker-autorun-policy §2)', () => {
-  const LOCK = { port: 4321, repo: '/repo', target_base: 'main' };
+describe('runner/preamble merge axis removal (worker-phase2 §2)', () => {
+  test('exports no merge-lock protocol or drift directive', () => {
+    expect(/** @type {any} */ (preamble).mergeLockProtocol).toBeUndefined();
+    expect(/** @type {any} */ (preamble).DRIFT_HALT_DIRECTIVE).toBeUndefined();
+    expect(/** @type {any} */ (preamble).PR_STOP_DIRECTIVE).toBeUndefined();
+  });
 
-  test('pr_stop injects the PR-stop directive and OMITS the merge-lock block', () => {
-    const out = applyPreamble('작업하라', {
-      merge_policy: 'pr_stop',
-      merge_lock: LOCK
-    });
-    expect(out).toContain(PR_STOP_DIRECTIVE);
+  test('emits no merge-lock protocol block for any input', () => {
+    const out = applyPreamble('작업하라', { fast_track: true });
+
     expect(out).not.toContain('merge-lock');
     expect(out).not.toContain('머지 락 프로토콜');
+    expect(out).not.toContain('BDUI_WORKER_TOKEN');
   });
 
-  test('auto_merge keeps the merge-lock block and adds no policy directive', () => {
-    const out = applyPreamble('작업하라', {
-      merge_policy: 'auto_merge',
-      merge_lock: LOCK
-    });
-    expect(out).toContain('머지 락 프로토콜');
-    expect(out).not.toContain(PR_STOP_DIRECTIVE);
-    expect(out).not.toContain(DRIFT_HALT_DIRECTIVE);
-  });
+  test('ignores retired policy options instead of branching on them', () => {
+    const plain = applyPreamble('작업하라');
 
-  test('drift halt injects the halt directive; auto_rereview does not', () => {
-    const halt = applyPreamble('작업하라', { drift_policy: 'halt' });
-    expect(halt).toContain(DRIFT_HALT_DIRECTIVE);
-    const rereview = applyPreamble('작업하라', {
-      drift_policy: 'auto_rereview'
-    });
-    expect(rereview).not.toContain(DRIFT_HALT_DIRECTIVE);
-  });
+    const with_retired = applyPreamble(
+      '작업하라',
+      /** @type {any} */ ({
+        merge_policy: 'auto_merge',
+        drift_policy: 'halt',
+        merge_lock: { port: 4100, repo: '/r', target_base: 'trunk' }
+      })
+    );
 
-  test('fast_track + pr_stop + halt compose in preamble order before the prompt', () => {
-    const out = applyPreamble('작업하라', {
-      fast_track: true,
-      merge_policy: 'pr_stop',
-      drift_policy: 'halt',
-      merge_lock: LOCK
-    });
-    const idx = (/** @type {string} */ part) => out.indexOf(part);
-    expect(idx(UNATTENDED_PREAMBLE)).toBeLessThan(idx(FAST_TRACK_DIRECTIVE));
-    expect(idx(FAST_TRACK_DIRECTIVE)).toBeLessThan(idx(PR_STOP_DIRECTIVE));
-    expect(idx(PR_STOP_DIRECTIVE)).toBeLessThan(idx(DRIFT_HALT_DIRECTIVE));
-    expect(idx(DRIFT_HALT_DIRECTIVE)).toBeLessThan(idx('작업하라'));
-    expect(out).not.toContain('머지 락 프로토콜');
+    expect(with_retired).toBe(plain);
   });
 });

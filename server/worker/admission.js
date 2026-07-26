@@ -6,6 +6,13 @@
  * `base_oid`, closing the check-then-advance TOCTOU). Admission requires a
  * human intent anchor before a bead may auto-run:
  *
+ *   0. `gh` usable (installed + authenticated). Checked FIRST because it is the
+ *      only ENVIRONMENT condition here: without `gh` the server cannot observe
+ *      the PR that is now the sole completion verdict (worker-phase2 §1/§10), so
+ *      no bead in the workspace can succeed and every per-bead check below is
+ *      moot. Reporting the environment cause instead of an incidental
+ *      `invalid_route` is what makes the badge actionable; the adapter memoizes
+ *      the probe, so leading with it costs no extra process per candidate.
  *   1. `route` pinned to the enum (`spec_backed` | `full_plan`),
  *   2. `spec_id` tracked at the base commit (`git cat-file -e <base>:<spec_id>`),
  *   3. a `<reviewer>@<40hex>` spec_review receipt — `skipped@<40hex>` counts
@@ -30,14 +37,22 @@ const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
 /**
  * @typedef {Object} AdmissionResult
  * @property {boolean} ok - True when the bead may auto-run.
- * @property {'invalid_route'|'spec_missing'|'receipt_missing_or_malformed'|'receipt_unreachable'|'spec_review_stale'|'git_error'} [reason]
+ * @property {'gh_unavailable'|'invalid_route'|'spec_missing'|'receipt_missing_or_malformed'|'receipt_unreachable'|'spec_review_stale'|'git_error'} [reason]
  */
 
 /**
  * Validate one bead for auto-run admission against a pinned base.
  *
+ * `ghAvailable` is optional so the validator stays a pure unit under test (and
+ * so existing callers that predate the check keep their behaviour): when the dep
+ * is ABSENT the gh condition passes, mirroring the scheduler's own
+ * absent-admission-dep convention. The live wiring (attach.js) always injects
+ * it, so production stays fail-closed. A throw from the dep is a refusal, never
+ * an escape.
+ *
  * @param {{
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
+ *   ghAvailable?: () => Promise<boolean>,
  *   repo: string,
  *   base: string,
  *   bead: { route?: string|null, spec_id?: string|null, spec_review?: unknown }
@@ -45,7 +60,19 @@ const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
  * @returns {Promise<AdmissionResult>}
  */
 export async function validateAdmission(input) {
-  const { gitRun, repo, base, bead } = input;
+  const { gitRun, ghAvailable, repo, base, bead } = input;
+
+  if (typeof ghAvailable === 'function') {
+    let gh_ok = false;
+    try {
+      gh_ok = (await ghAvailable()) === true;
+    } catch {
+      gh_ok = false;
+    }
+    if (!gh_ok) {
+      return { ok: false, reason: 'gh_unavailable' };
+    }
+  }
 
   if (!ADMISSIBLE_ROUTES.includes(/** @type {any} */ (bead && bead.route))) {
     return { ok: false, reason: 'invalid_route' };

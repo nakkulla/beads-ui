@@ -42,6 +42,126 @@ describe('worker/bd-metadata argv contract', () => {
     const md = createBdMetadata({ runJson });
     expect(await md.readMetadata('UI-1', 'workflow_mode')).toBe('fast_track');
   });
+
+  test('readMetadata throws on a non-zero bd exit instead of reading as absent', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 1,
+      stdoutJson: null,
+      stderr: 'bd down'
+    }));
+
+    await expect(
+      createBdMetadata({ runJson }).readMetadata('UI-1', 'pr_url')
+    ).rejects.toThrow(/bd show UI-1 failed \(1\)/);
+  });
+
+  test('readMetadata throws on an unreadable payload', async () => {
+    const runJson = vi.fn(async () => ({ code: 0, stdoutJson: 'nonsense' }));
+
+    await expect(
+      createBdMetadata({ runJson }).readMetadata('UI-1', 'pr_url')
+    ).rejects.toThrow(/unreadable payload/);
+  });
+
+  test('readMetadata returns null only for a key that is genuinely absent', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: { id: 'UI-1', metadata: {} }
+    }));
+
+    expect(
+      await createBdMetadata({ runJson }).readMetadata('UI-1', 'pr_url')
+    ).toBe(null);
+  });
+});
+
+describe('worker/bd-metadata child listing (post-merge sweep)', () => {
+  /**
+   * @param {Record<string, any[]>} by_selector - Keyed by the selector flag.
+   */
+  function listRunner(by_selector) {
+    return vi.fn(async (/** @type {string[]} */ args) => {
+      const key = args.includes('--parent') ? 'parent' : 'metadata';
+      return { code: 0, stdoutJson: by_selector[key] || [] };
+    });
+  }
+
+  test('queries both the parent-child dependency and the parent metadata key', async () => {
+    const runJson = listRunner({ parent: [], metadata: [] });
+
+    await createBdMetadata({ runJson, cwd: '/repo' }).listChildren('UI-1');
+
+    expect(runJson).toHaveBeenCalledWith(
+      ['list', '--json', '--all', '--limit', '0', '--parent', 'UI-1'],
+      { cwd: '/repo' }
+    );
+    expect(runJson).toHaveBeenCalledWith(
+      [
+        'list',
+        '--json',
+        '--all',
+        '--limit',
+        '0',
+        '--metadata-field',
+        'parent=UI-1'
+      ],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('unions both relations and dedupes a child carrying both', async () => {
+    const runJson = listRunner({
+      parent: [
+        { id: 'UI-1.1', status: 'resolved' },
+        { id: 'UI-1.2', status: 'closed' }
+      ],
+      metadata: [
+        { id: 'UI-1.2', status: 'closed' },
+        { id: 'UI-1.3', status: 'open' }
+      ]
+    });
+
+    const children = await createBdMetadata({ runJson }).listChildren('UI-1');
+
+    expect(children.map((c) => c.id)).toEqual(['UI-1.1', 'UI-1.2', 'UI-1.3']);
+  });
+
+  test('finds a child linked ONLY by the dependency, with no parent metadata', async () => {
+    const runJson = listRunner({
+      parent: [{ id: 'UI-1.1', status: 'open' }],
+      metadata: []
+    });
+
+    const children = await createBdMetadata({ runJson }).listChildren('UI-1');
+
+    expect(children).toEqual([{ id: 'UI-1.1', status: 'open' }]);
+  });
+
+  test('throws on a malformed payload rather than sweeping nothing', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) =>
+      args.includes('--parent')
+        ? { code: 0, stdoutJson: { rows: [] } }
+        : { code: 0, stdoutJson: [] }
+    );
+
+    // "bd answered with something we cannot read" must not become "this bead
+    // has no children" — that closes the parent over its open leaves.
+    await expect(
+      createBdMetadata({ runJson }).listChildren('UI-1')
+    ).rejects.toThrow(/non-array payload/);
+  });
+
+  test('throws when either selector query exits non-zero', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) =>
+      args.includes('--parent')
+        ? { code: 0, stdoutJson: [] }
+        : { code: 1, stdoutJson: null, stderr: 'boom' }
+    );
+
+    await expect(
+      createBdMetadata({ runJson }).listChildren('UI-1')
+    ).rejects.toThrow(/--metadata-field parent=UI-1 failed \(1\)/);
+  });
 });
 
 describe('worker/bd-metadata fail-closed writes (implementation review 2026-07-22)', () => {

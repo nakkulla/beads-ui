@@ -1,9 +1,15 @@
 /**
  * Lane + mini-row templates for the Worker console (spec §5.1).
  *
- * Four lanes: candidates (Board Ready/Blocked, dashed `.pane.src`), Serial
- * queue, Parallel pool, and Done. Styling mirrors `worker-final.html`
- * (`.pane`/`.mini`/`⠿` grip) via the `worker-*` class namespace.
+ * The lane row is the spec's four-column IA (worker-phase2 §7) — 대기 · 실행 중 ·
+ * PR 대기 · 완료 — preceded by the candidate SOURCE pane (Board Ready/Blocked,
+ * dashed `.worker-pane--src`), which is not a bead state but the feed a bead is
+ * dragged out of. Styling mirrors `worker-final.html` (`.pane`/`.mini`/`⠿` grip)
+ * via the `worker-*` class namespace.
+ *
+ * A pane normally renders `items` as rows; 실행 중 hands in its own `body`
+ * instead (the running-tile grid), so all five columns share one pane shell
+ * rather than growing a second one.
  */
 import { html } from 'lit-html';
 import { stepperTemplate } from '../board/stepper.js';
@@ -14,8 +20,18 @@ import { stepperTemplate } from '../board/stepper.js';
  * @property {string} title - Bead title (falls back to id).
  * @property {string} [reason] - Candidate reason chip (spec 없음 / 🔒 target).
  * @property {boolean} draggable - Whether this row can be dragged.
- * @property {'candidate'|'serial'|'parallel'|'done'} lane - Owning lane.
+ * @property {'candidate'|'queue'|'pr_wait'|'done'} lane - Owning lane.
  * @property {boolean} [done] - Rendered dimmed with no grip.
+ * @property {number|null} [pr_number] - Observed PR number (`pr_wait` rows).
+ * @property {string} [pr_url] - Observed PR URL; renders the `#N ↗` link.
+ * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
+ * @property {boolean} [alert] - Whether the badges report a state needing a
+ * human decision (PR closed, observation error) — rendered in the warn colour.
+ * @property {boolean} [merge_action] - Render the [머지]/[재실행] actions
+ * (`pr_wait` rows only, worker-phase2 §6).
+ * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
+ * @property {string} [merge_title] - Tooltip: what the click is based on, or
+ * why it is refused.
  * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
  */
@@ -28,6 +44,7 @@ import { stepperTemplate } from '../board/stepper.js';
  */
 export function miniRow(item) {
   const draggable = item.draggable && !item.done;
+  const badges = Array.isArray(item.badges) ? item.badges : [];
   return html`<div
     class="worker-mini${draggable ? '' : ' worker-mini--static'}${item.done
       ? ' worker-mini--done'
@@ -41,8 +58,46 @@ export function miniRow(item) {
       : ''}
     <span class="worker-mini__id" title="클릭하면 ID 복사">${item.id}</span>
     <span class="worker-mini__title">${item.title}</span>
+    ${item.pr_url && item.pr_number
+      ? html`<a
+          class="worker-mini__pr"
+          href=${item.pr_url}
+          target="_blank"
+          rel="noreferrer noopener"
+          title="PR 열기"
+          >#${item.pr_number} ↗</a
+        >`
+      : ''}
+    ${badges.map(
+      (b) =>
+        html`<span
+          class="worker-mini__badge${item.alert
+            ? ' worker-mini__badge--alert'
+            : ''}"
+          >${b}</span
+        >`
+    )}
     ${item.reason
       ? html`<span class="worker-mini__reason">${item.reason}</span>`
+      : ''}
+    ${item.merge_action
+      ? html`<button
+            type="button"
+            class="worker-mini__merge"
+            data-bead-id=${item.id}
+            ?disabled=${item.merge_enabled === false}
+            title=${item.merge_title || ''}
+          >
+            머지
+          </button>
+          <button
+            type="button"
+            class="worker-mini__rerun"
+            data-bead-id=${item.id}
+            title="PR을 버리고 새 base에서 다시 실행합니다 (되돌릴 수 없음)"
+          >
+            재실행
+          </button>`
       : ''}
   </div>`;
 }
@@ -102,9 +157,11 @@ export function candidateCard(item) {
 }
 
 /**
- * One lane pane.
+ * One lane pane. `body` overrides the row rendering for a column whose contents
+ * are not mini rows (실행 중); `items` still supplies the header count so every
+ * column counts its members the same way.
  *
- * @param {{ id: string, lane: 'candidate'|'serial'|'parallel'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -118,11 +175,13 @@ export function paneTemplate(pane) {
       <span class="worker-pane__count">${pane.items.length}</span>
     </header>
     <div class="worker-pane__body">
-      ${pane.items.length === 0
-        ? html`<div class="worker-pane__empty">${pane.empty || ''}</div>`
-        : pane.items.map((it) =>
-            pane.lane === 'candidate' ? candidateCard(it) : miniRow(it)
-          )}
+      ${pane.body
+        ? pane.body
+        : pane.items.length === 0
+          ? html`<div class="worker-pane__empty">${pane.empty || ''}</div>`
+          : pane.items.map((it) =>
+              pane.lane === 'candidate' ? candidateCard(it) : miniRow(it)
+            )}
     </div>
   </section>`;
 }

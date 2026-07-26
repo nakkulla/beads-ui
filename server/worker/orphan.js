@@ -8,13 +8,18 @@
  * AND a matching start time exists (attempt_id + PID + start-time). A recycled
  * PID (same number, different start time) is an orphan.
  *
- * On an orphan: mark the attempt Failed/orphaned, trip the repo's breaker with a
- * banner, AND revert the bead's `workflow_mode` to the value snapshotted before
- * the dead session launched (unset when it was originally absent) — otherwise a
- * stray `fast_track` left by the crashed session would silently switch a later
- * manual session to unattended (spec §5.2). The worktree is NOT deleted —
- * cleanup ownership is unclear, so we leave it and surface the banner (the
+ * On an orphan: mark the attempt `orphaned`, turn `auto_advance` OFF, AND revert
+ * the bead's `workflow_mode` to the value snapshotted before the dead session
+ * launched (unset when it was originally absent) — otherwise a stray
+ * `fast_track` left by the crashed session would silently switch a later manual
+ * session to unattended (spec §5.2). The worktree is NOT deleted — cleanup
+ * ownership is unclear, so we leave it and surface the banner (the
  * stop-on-unclear-ownership principle).
+ *
+ * The `auto_advance` OFF is what stops the queue now that the circuit breaker is
+ * gone (worker-phase2 §2): it mirrors the scheduler's `failAttempt` exactly, so
+ * an orphan and a session failure halt the queue by the same one mechanism, and
+ * the banner renders off the terminal attempt record.
  */
 
 /**
@@ -28,7 +33,6 @@
  *
  * @param {{
  *   store: any,
- *   breaker: { trip: (repo: string, info: { bead_id: string, cause: string }) => unknown },
  *   probePid: (pid: number|null) => PidProbe,
  *   bd?: { setMetadata: (bead_id: string, key: string, value: string) => Promise<void>, unsetMetadata: (bead_id: string, key: string) => Promise<void> },
  *   now?: () => number,
@@ -57,7 +61,7 @@ export function createOrphanDetector(deps) {
         ? deps.bd.unsetMetadata(bead_id, 'workflow_mode')
         : deps.bd.setMetadata(bead_id, 'workflow_mode', prior);
     Promise.resolve(op).catch(() => {
-      // Best-effort: the orphan is already recorded + breaker tripped.
+      // Best-effort: the orphan is already recorded + the queue already halted.
     });
   }
 
@@ -75,7 +79,7 @@ export function createOrphanDetector(deps) {
     }
     for (const key of keys) {
       Promise.resolve(deps.bd.unsetMetadata(bead_id, key)).catch(() => {
-        // Best-effort: the orphan is already recorded + breaker tripped.
+        // Best-effort: the orphan is already recorded + the queue already halted.
       });
     }
   }
@@ -124,9 +128,9 @@ export function createOrphanDetector(deps) {
           attempt_id,
           patch: { status: 'orphaned', finished_at: now(), cause: 'orphan' }
         });
-        if (a.repo) {
-          deps.breaker.trip(a.repo, { bead_id: a.bead_id, cause: 'orphan' });
-        }
+        // Halt the queue: an orphan means the prior run died mid-flight, so the
+        // next tick must not launch on top of an unexplained failure.
+        deps.store.setAutoAdvance(workspace, false);
         // Revert the mode the dead session recorded (spec §5.2).
         revertWorkflowMode(a.bead_id, a.workflow_mode_prior ?? null);
         // Revert the exec-setting stamps the dead session wrote (§3).

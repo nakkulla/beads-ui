@@ -30,13 +30,15 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
+  mergeWorkerPr,
   pauseWorkerAttempt,
-  resetWorkerBreakerForWorkspace,
+  rerunWorkerPr,
   resumeWorkerAttempt,
   stopWorkerAttempt,
   tickWorkerQueue,
-  workerParallelSlots
+  workerSlots
 } from '../worker/attach.js';
+import { evaluateMergeGate } from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { resolveVerifyCmd } from '../worker/verify-cmd.js';
@@ -91,13 +93,78 @@ function subscribersFor(key) {
 }
 
 /**
+ * How many clients are currently subscribed to a workspace's worker queue. The
+ * PR poller gates every `gh` query on this (worker-phase2 §4): nobody watching
+ * ⇒ nothing to refresh ⇒ no queries.
+ *
+ * @param {string} workspace_key
+ * @returns {number}
+ */
+export function workerQueueSubscriberCount(workspace_key) {
+  const set = SUBSCRIBERS.get(workspace_key);
+  return set ? set.size : 0;
+}
+
+/**
+ * Project the PR observation cache onto the beads currently in `pr_wait`, each
+ * with its evaluated merge gate (worker-phase2 §4/§5).
+ *
+ * A PURE READ — it queries nothing and mutates nothing. The poller is the only
+ * writer; this is what puts its findings on the wire, riding the existing
+ * `worker-queue-snapshot` push rather than a new message type. A bead the
+ * poller has not reached yet simply has no entry, and the gate reports that as
+ * "관측 대기" (disabled), never as a passing signal.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @param {boolean} verify_cmd_present
+ * @returns {Record<string, unknown>}
+ */
+function prObservationsFor(workspace_key, queue, verify_cmd_present) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  const lane = Array.isArray(queue.pr_wait)
+    ? /** @type {any[]} */ (queue.pr_wait)
+    : [];
+  if (lane.length === 0) {
+    return out;
+  }
+  /** @type {Record<string, any>} */
+  let observed = {};
+  try {
+    observed = getWorkerRuntime().prObservations.snapshot(workspace_key);
+  } catch {
+    observed = {};
+  }
+  for (const entry of lane) {
+    const bead_id = entry && entry.bead_id;
+    if (typeof bead_id !== 'string' || bead_id.length === 0) {
+      continue;
+    }
+    const record = observed[bead_id] || null;
+    out[bead_id] = {
+      pr: record ? record.pr : null,
+      ci: record ? record.ci : null,
+      verify: record ? record.verify : null,
+      error: record ? record.error : null,
+      observed_at: record ? record.observed_at : null,
+      gate: evaluateMergeGate(record, { verify_cmd_present })
+    };
+  }
+  return out;
+}
+
+/**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the resolved verify_cmd (explicit config > auto-detection > none) with its
  *     `source`, so the ctrl bar can flag a detected command (read-only display —
  *     no UI edit surface; worker-autorun-policy §4/§6, worker-attempt-resume-
  *     verify-autodetect §2),
- *   - `parallel_slots`, so the tab can flag live sessions exceeding the 1+N cap
- *     after a manual resume (worker-phase1 §2.3).
+ *   - `slots` (the live concurrency cap from the attachment), so the tab can
+ *     flag live sessions exceeding the cap after a manual resume
+ *     (worker-phase1 §2.3, worker-phase2 §3),
+ *   - `pr_observations`: what the PR poller has SEEN for each `pr_wait` bead
+ *     plus its merge-gate verdict (worker-phase2 §4/§5) — a pure cache read.
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
@@ -112,13 +179,24 @@ function decorateQueue(workspace_key, queue) {
     verify_cmd = null;
   }
   /** @type {number|null} */
-  let parallel_slots = null;
+  let slots = null;
   try {
-    parallel_slots = workerParallelSlots(workspace_key);
+    slots = workerSlots(workspace_key);
   } catch {
-    parallel_slots = null;
+    slots = null;
   }
-  return { ...queue, workspace_info: { verify_cmd, parallel_slots } };
+  // Without a registered attachment the decoration falls back to the queue's
+  // own persisted cap so the editor still renders the value it will mutate.
+  if (slots === null && typeof queue.slots === 'number') {
+    slots = queue.slots;
+  }
+  return {
+    ...queue,
+    workspace_info: { verify_cmd, slots },
+    // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
+    // (worker-phase2 §4) — it exists only on the wire and in server memory.
+    pr_observations: prObservationsFor(workspace_key, queue, !!verify_cmd)
+  };
 }
 
 /**
@@ -283,6 +361,9 @@ export function __resetWorkerQueueForTest() {
   }
   SESSION_LOG_SUBS.clear();
   queueStore().__clearCacheForTest();
+  // The PR observation cache is server memory too — a leftover observation
+  // would decorate the next test's snapshot (worker-phase2 §4).
+  getWorkerRuntime().prObservations.clear();
 }
 
 /**
@@ -367,8 +448,10 @@ function revisionOf(payload) {
 }
 
 /**
- * Handle `worker-queue-place`. Payload:
- * `{ bead_id, lane: 'serial'|'parallel', index?, expected_revision }`.
+ * Handle `worker-queue-place`. Payload: `{ bead_id, index?, expected_revision }`.
+ *
+ * There is ONE waiting lane now (worker-phase2 §3), so the payload carries no
+ * `lane`; a stale client that still sends one is simply placed in `queue`.
  *
  * Queue entry is admission-gated (worker-autorun-policy §1): with a live
  * attachment the bead must pass the fail-closed validator (route pin + spec
@@ -381,17 +464,10 @@ function revisionOf(payload) {
  */
 export async function handleWorkerQueuePlace(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  if (
-    typeof p.bead_id !== 'string' ||
-    (p.lane !== 'serial' && p.lane !== 'parallel')
-  ) {
+  if (typeof p.bead_id !== 'string') {
     ws.send(
       JSON.stringify(
-        makeError(
-          req,
-          'bad_request',
-          'payload requires { bead_id: string, lane: serial|parallel }'
-        )
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
       )
     );
     return;
@@ -432,7 +508,6 @@ export async function handleWorkerQueuePlace(ws, req) {
   let result = queueStore().place(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
-    lane: p.lane,
     index: typeof p.index === 'number' ? p.index : undefined
   });
   if (result.ok) {
@@ -447,25 +522,17 @@ export async function handleWorkerQueuePlace(ws, req) {
 
 /**
  * Handle `worker-queue-reorder`. Payload:
- * `{ bead_id, lane, to_index, expected_revision }`.
+ * `{ bead_id, to_index, expected_revision }`.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export function handleWorkerQueueReorder(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  if (
-    typeof p.bead_id !== 'string' ||
-    (p.lane !== 'serial' && p.lane !== 'parallel') ||
-    typeof p.to_index !== 'number'
-  ) {
+  if (typeof p.bead_id !== 'string' || typeof p.to_index !== 'number') {
     ws.send(
       JSON.stringify(
-        makeError(
-          req,
-          'bad_request',
-          'payload requires { bead_id, lane, to_index }'
-        )
+        makeError(req, 'bad_request', 'payload requires { bead_id, to_index }')
       )
     );
     return;
@@ -474,7 +541,6 @@ export function handleWorkerQueueReorder(ws, req) {
   const result = queueStore().reorder(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
-    lane: p.lane,
     to_index: p.to_index
   });
   replyMutation(ws, req, key, result);
@@ -507,14 +573,6 @@ export function handleWorkerQueueToggle(ws, req) {
   });
   replyMutation(ws, req, key, result);
   if (result.ok && p.on === true) {
-    // Manual ▶ resumes a tripped repo (breaker.js's intended reset path,
-    // worker-autorun-policy Phase 4) — reset BEFORE the tick so the first
-    // dispatch after the resume is not refused by the stale trip.
-    try {
-      resetWorkerBreakerForWorkspace(key);
-    } catch (err) {
-      log('breaker reset on toggle failed for %s: %o', key, err);
-    }
     Promise.resolve(tickWorkerQueue(key)).catch((err) => {
       log('worker tick after toggle failed for %s: %o', key, err);
     });
@@ -522,33 +580,29 @@ export function handleWorkerQueueToggle(ws, req) {
 }
 
 /**
- * Handle `worker-queue-set-policy`. Payload:
- * `{ key: 'merge_policy'|'drift_policy', value: string|null, expected_revision }`.
- * Persists the workspace-global policy (CAS); null/'' unsets. Enum validation
- * lives in the queue store (worker-autorun-policy §2).
+ * Handle `worker-queue-set-slots`. Payload: `{ slots: number, expected_revision }`.
+ * Persists the workspace concurrency cap (CAS, worker-phase2 §3) — the value the
+ * scheduler's single scan fills up to. Bound + integer validation lives in the
+ * queue store's `setSlots`, which REJECTS an unusable value (`applied:false`)
+ * rather than clamping it, so the stored cap is never silently rewritten.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleWorkerQueueSetPolicy(ws, req) {
+export function handleWorkerQueueSetSlots(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.key !== 'string') {
+  if (typeof p.slots !== 'number') {
     ws.send(
       JSON.stringify(
-        makeError(
-          req,
-          'bad_request',
-          'payload requires { key: merge_policy|drift_policy }'
-        )
+        makeError(req, 'bad_request', 'payload requires { slots: number }')
       )
     );
     return;
   }
   const key = workspaceKeyOf(ws);
-  const result = queueStore().setPolicy(key, {
+  const result = queueStore().setSlots(key, {
     expected_revision: revisionOf(p),
-    key: p.key,
-    value: p.value ?? null
+    slots: p.slots
   });
   replyMutation(ws, req, key, result);
 }
@@ -558,7 +612,7 @@ export function handleWorkerQueueSetPolicy(ws, req) {
  * `{ key: <one of the 5 exec keys>, value: string|null, expected_revision }`.
  * Persists the workspace-global exec-setting default (CAS); null/'' unsets. Enum
  * validation (and the runner↔model union check) lives in the queue store's
- * `setExecDefault`, mirroring `worker-queue-set-policy` (spec §2).
+ * `setExecDefault` (spec §2).
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -725,6 +779,137 @@ export async function handleWorkerAttemptResume(ws, req) {
   );
   if (result.ok) {
     // Push a fresh snapshot so the new running tile appears immediately.
+    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+  }
+}
+
+/**
+ * Handle `worker-pr-merge`. Payload: `{ bead_id, expected_revision }`.
+ *
+ * The human merge click (worker-phase2 §6). Under the same CAS discipline as
+ * `worker-attempt-resume`: a stale revision replies `conflict:true` WITHOUT
+ * acting, because the snapshot the user clicked from may predate the transition
+ * that moved this very bead. Everything else about the decision is re-derived
+ * server-side at click time — the badges in that snapshot are advisory only.
+ *
+ * The reply distinguishes what actually happened (`action`), since a click can
+ * legitimately merge nothing: a DIRTY PR dispatches a conflict-resolution
+ * session instead, and a refused gate merges nothing at all.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerPrMerge(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          ok: false,
+          conflict: true,
+          action: null,
+          reason: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {any} */
+  let result = { ok: false, action: 'refused', reason: 'no_attachment' };
+  try {
+    result = await mergeWorkerPr(key, p.bead_id);
+  } catch (err) {
+    log('worker-pr-merge failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, action: 'refused', reason: 'error' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        ok: !!result.ok,
+        conflict: false,
+        action: result.action || null,
+        reason: result.reason || null,
+        cleanup_step: result.cleanup_step || null,
+        attempt_id: result.attempt_id || null
+      })
+    )
+  );
+  // Even a refusal re-observed the PR, so the badges moved — always fan out.
+  fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+}
+
+/**
+ * Handle `worker-pr-rerun`. Payload: `{ bead_id, expected_revision }`.
+ *
+ * [재실행] (worker-phase2 §6): close the PR, put bd back to `open` without a
+ * `pr_url`, discard the worktree/branch, and move the bead back into the
+ * waiting queue for a fresh-base run. DESTRUCTIVE — the CAS guard matters more
+ * here than anywhere else, so a stale revision refuses without touching a thing.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerPrRerun(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          rerun: false,
+          conflict: true,
+          reason: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string|null, redispatched?: boolean }} */
+  let result = { ok: false, reason: 'no_attachment', redispatched: false };
+  try {
+    result = await rerunWorkerPr(key, p.bead_id);
+  } catch (err) {
+    log('worker-pr-rerun failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, reason: 'error', redispatched: false };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        rerun: !!result.ok,
+        conflict: false,
+        // A paused queue requeues the bead without starting anything — ⏸ starts
+        // no new sessions, so the reply says which of the two happened.
+        redispatched: !!result.redispatched,
+        reason: result.ok ? null : result.reason || null
+      })
+    )
+  );
+  if (result.ok) {
     fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
   }
 }

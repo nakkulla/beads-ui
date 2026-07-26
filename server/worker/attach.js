@@ -10,11 +10,8 @@
  *     REAL deps — child_process spawn via `createRunner`, bd metadata + a bead
  *     snapshot reader over `server/bd.js`, the per-repo git worktree manager, the
  *     independent verifier, the shared session-log broker, and the process-wide
- *     breaker/locks/tokens singletons — plus an orphan detector. EVERYTHING is
- *     injectable so tests pass fakes (never a real spawn).
- *   - The lock_state fed to each session is the runtime's merge-lock ledger, so
- *     the session-side fail-closed guard (session.js) can tell whether THIS
- *     session holds the (repo, target_base) merge lock.
+ *     locks singleton — plus an orphan detector. EVERYTHING is injectable so
+ *     tests pass fakes (never a real spawn).
  *
  * Registration model (chosen for consistency + test hermeticity): attachments
  * are created EAGERLY at server startup, one per active workspace, by
@@ -35,11 +32,13 @@ import { debug } from '../logging.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createOrphanDetector } from './orphan.js';
+import { createPrActions } from './pr-actions.js';
+import { createPrPoller } from './pr-poller.js';
 import { emitQueueChanged } from './queue-events.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
-import { resolveVerifyCmd, runVerifyCmd } from './verify-cmd.js';
+import { resolveVerifyCmd, runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
@@ -52,26 +51,6 @@ const log = debug('worker:attach');
  * @type {string}
  */
 const DEFAULT_TARGET_BASE = 'main';
-
-/**
- * Live-bound server port for the merge-lock endpoint injected into each session
- * preamble. Set by {@link setWorkerPort} once the server begins listening; read
- * late (per dispatch) so an attachment built before `listen` still gets it.
- *
- * @type {number}
- */
-let WORKER_PORT = 0;
-
-/**
- * Set the live server port. Called from server startup after `listen`.
- *
- * @param {number} port
- */
-export function setWorkerPort(port) {
-  if (typeof port === 'number' && Number.isFinite(port)) {
-    WORKER_PORT = port;
-  }
-}
 
 /**
  * Extract the ready-issue id set from a `bd ready --json` payload, tolerating
@@ -191,10 +170,6 @@ export function createLiveBd(config) {
         status,
         spec_id,
         spec_review,
-        merge_policy:
-          typeof md.merge_policy === 'string' ? md.merge_policy : null,
-        drift_policy:
-          typeof md.drift_policy === 'string' ? md.drift_policy : null,
         deps: []
       };
     }
@@ -250,16 +225,14 @@ export function defaultProbePid(pid) {
  *   bd?: any,
  *   worktree?: any,
  *   verify?: any,
+ *   gh?: any,
  *   makeRunner?: (name: string) => any,
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
- *   port?: number | (() => number),
- *   parallel_slots?: number,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
- *   verifyCmd?: (repo: string) => { cmd: string[], timeout_ms: number } | null,
- *   runVerifyCmd?: (input: { cwd: string, cmd: string[], timeout_ms: number }) => Promise<{ ok: boolean, reason: string, exit: number|null }>
+ *   getSubscriberCount?: () => number
  * }} [options]
  */
 export function createWorkerAttachment(workspace_root, options = {}) {
@@ -278,6 +251,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     options.gitRun ||
     ((/** @type {string[]} */ args, /** @type {any} */ opts) =>
       runShell('git', args, opts));
+  // The PR observation adapter (worker-phase2 §1). Shared with admission's
+  // fail-closed `gh_unavailable` check: a workspace whose `gh` cannot observe a
+  // PR can never produce a success verdict, so it must not dispatch at all.
+  const gh = options.gh || runtime.gh;
+  const ghAvailable = async () => (await gh.checkAvailability()).state === 'ok';
   const admission = options.admission || {
     /**
      * @param {import('./scheduler.js').BeadSnapshot} snap
@@ -286,6 +264,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     validate(snap, base) {
       return validateAdmission({
         gitRun,
+        ghAvailable,
         repo: snap.repo,
         base: base || snap.target_base,
         bead: {
@@ -311,78 +290,34 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   };
   const worktree =
     options.worktree || createWorktreeManager({ locks: runtime.locks });
+  // The observation verdict + the worker's `pr_url`/`resolved` back-fill: the
+  // bd writer is the same metadata adapter the scheduler uses (extended with
+  // the status pair), so both write through one confirmed argv encoding.
   const verify =
     options.verify ||
-    createVerifier({
-      // bdShow returns the FULL issue object — verify reads status AND
-      // metadata (pr_url for the pr_stop lane).
-      bdShow: async (bead_id) => {
-        const r = await runBdJson(['show', bead_id, '--json'], {
-          cwd: workspace_root
-        });
-        return /** @type {any} */ (unwrapShowJson(r && r.stdoutJson));
-      }
-    });
-
-  // The lock_state each session sees: the runtime's merge-lock ledger. Fail
-  // closed — when no ledger is wired yet, isHeldBy is false, so ANY merge attempt
-  // is treated as unlocked (killed).
-  const lock_state = {
-    /** @param {string|undefined} token */
-    isHeldBy: (token) =>
-      !!(runtime.mergeLock && token && runtime.mergeLock.isHeldBy(token))
-  };
+    createVerifier({ gh, bd: createBdMetadata({ cwd: workspace_root }) });
 
   const makeRunner =
     options.makeRunner ||
     ((name) =>
       createRunner(name, {
         spawn_impl: options.spawn_impl || ((c, a, o) => spawn(c, a, o)),
-        kill_impl: options.kill_impl,
-        lock_state
+        kill_impl: options.kill_impl
       }));
-
-  // Workspace verify_cmd resolution: explicit config section > conservative
-  // auto-detection > none (worker-attempt-resume-verify-autodetect §2). Read per
-  // call so a config change (or a new marker file) lands on the next dispatch.
-  const verifyCmd =
-    options.verifyCmd ||
-    ((/** @type {string} */ r) => {
-      try {
-        return resolveVerifyCmd(r, getConfig().worker_verify);
-      } catch {
-        return null;
-      }
-    });
 
   const scheduler = createScheduler({
     store: runtime.queueStore,
     makeRunner,
     bd,
     worktree,
-    tokens: runtime.tokens,
     verify,
-    breaker: runtime.breaker,
     sessionLog: runtime.sessionLog,
     admission,
-    verifyCmd,
-    runVerifyCmd: options.runVerifyCmd || runVerifyCmd,
-    notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key),
-    // Late-bound: the merge-lock router (and its handover ledger) is mounted
-    // by the app AFTER attachments are built.
-    mergeLock: {
-      takeHandover: (attempt_id) =>
-        runtime.mergeLock && runtime.mergeLock.takeHandover
-          ? runtime.mergeLock.takeHandover(attempt_id)
-          : null
-    },
-    port: options.port !== undefined ? options.port : () => WORKER_PORT,
-    parallel_slots: options.parallel_slots
+    notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
 
   const orphan = createOrphanDetector({
     store: runtime.queueStore,
-    breaker: runtime.breaker,
     bd,
     probePid: options.probePid || defaultProbePid
   });
@@ -390,15 +325,71 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // Keep runtime.status()'s running_count in sync with THIS scheduler.
   runtime.setRunningCountProvider(() => scheduler.runningCount());
 
+  /**
+   * The workspace's resolved verify command, read LIVE (config can change
+   * between a poll and a click) — shared by the poller's pre-merge tier and the
+   * actions' click-time re-verification + post-merge verification.
+   *
+   * @returns {import('./verify-cmd.js').ResolvedVerifyCmd|null}
+   */
+  const resolveVerify = () => {
+    try {
+      return resolveVerifyCmd(repo, getConfig().worker_verify);
+    } catch {
+      return null;
+    }
+  };
+
+  // The PR-wait actions (worker-phase2 §6): the authoritative [머지] click, the
+  // single post-merge cleanup, and [재실행]. Built with the SAME gh adapter,
+  // observation cache, worktree manager and scheduler the poller and dispatch
+  // use, so a click can never act on a different view of the world than the
+  // badges it followed.
+  const prActions = createPrActions({
+    workspace: keyFor(workspace_root),
+    repo,
+    store: runtime.queueStore,
+    gh,
+    observations: runtime.prObservations,
+    bd,
+    worktree,
+    gitRun,
+    scheduler,
+    resolveVerify,
+    runVerify: (/** @type {any} */ input) =>
+      runVerifyAtSha({ ...input, worktree, git: gitRun }),
+    notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+  });
+
+  // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
+  // BUILT here but never started here — `initWorkerRuntime` starts it only when
+  // a real subscriber-count provider is wired, so a test that constructs an
+  // attachment can never reach `gh`. Its default subscriber count is 0, which
+  // by itself already makes every pass a no-op.
+  const prPoller = createPrPoller({
+    workspace: keyFor(workspace_root),
+    repo,
+    store: runtime.queueStore,
+    gh,
+    observations: runtime.prObservations,
+    getSubscriberCount: options.getSubscriberCount || (() => 0),
+    resolveVerify,
+    worktree,
+    gitRun,
+    // The externally-observed MERGED trigger routes into the SAME cleanup the
+    // button runs — one implementation, two triggers (worker-phase2 §6).
+    onMerged: (bead_id) => prActions.cleanupObservedMerge(bead_id),
+    notifyChanged: (ws_key) => emitQueueChanged(ws_key)
+  });
+
   return {
     runtime,
     scheduler,
     orphan,
+    prPoller,
+    prActions,
     bd,
     admission,
-    verifyCmd,
-    parallel_slots:
-      typeof options.parallel_slots === 'number' ? options.parallel_slots : 2,
     repo,
     workspace: workspace_root
   };
@@ -424,15 +415,18 @@ function keyFor(workspace_root) {
  * Create + register attachments for each active workspace and reap any orphaned
  * attempts persisted from a prior run (spec §5.3). Idempotent per workspace.
  *
- * @param {{ workspaces: string[], port?: number }} input
+ * `getSubscriberCount` is what turns the PR poller on (worker-phase2 §4): the
+ * caller supplies the live worker-queue subscriber count for a workspace, and
+ * the poller queries `gh` only while that is positive. Omitting it leaves every
+ * poller armed-but-silent, which is what keeps tests off the network.
+ *
+ * @param {{ workspaces: string[], getSubscriberCount?: (workspace: string) => number }} input
  * @returns {ReturnType<typeof createWorkerAttachment>[]}
  */
 export function initWorkerRuntime(input) {
-  if (typeof input.port === 'number') {
-    setWorkerPort(input.port);
-  }
   /** @type {ReturnType<typeof createWorkerAttachment>[]} */
   const built = [];
+  const countFor = input.getSubscriberCount;
   for (const ws of input.workspaces || []) {
     if (!ws) {
       continue;
@@ -440,8 +434,18 @@ export function initWorkerRuntime(input) {
     const key = keyFor(ws);
     let att = ATTACHMENTS.get(key);
     if (!att) {
-      att = createWorkerAttachment(key);
+      att = createWorkerAttachment(key, {
+        getSubscriberCount:
+          typeof countFor === 'function' ? () => countFor(key) : undefined
+      });
       ATTACHMENTS.set(key, att);
+      if (typeof countFor === 'function') {
+        try {
+          att.prPoller.start();
+        } catch (err) {
+          log('pr poller start failed for %s: %o', key, err);
+        }
+      }
     }
     try {
       const orphans = att.orphan.detect(key);
@@ -490,39 +494,26 @@ export async function checkWorkerQueueAdmission(workspace_root, bead_id) {
 }
 
 /**
- * Reset the circuit breaker for a workspace's repo, IF an attachment is
- * registered (worker-autorun-policy Phase 4 — the manual ▶ resume that
- * breaker.js always intended). No-op (false) without an attachment.
+ * The workspace's concurrency cap, or null when no attachment is registered.
  *
- * @param {string} workspace_root
- * @returns {boolean} True when a registered attachment's breaker was reset.
- */
-export function resetWorkerBreakerForWorkspace(workspace_root) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att) {
-    return false;
-  }
-  const repo =
-    typeof (/** @type {any} */ (att).repo) === 'string' &&
-    /** @type {any} */ (att).repo.length > 0
-      ? /** @type {any} */ (att).repo
-      : keyFor(workspace_root);
-  att.runtime.breaker.reset(repo);
-  return true;
-}
-
-/**
- * The workspace's parallel slot count (the N in the 1+N dispatch cap), or null
- * when no attachment is registered. Read-only display input: the Worker tab
- * flags a manual resume that pushed live sessions past the cap
+ * The value is the STORE's (`queue.slots`, user-editable via
+ * `worker-queue-set-slots` — worker-phase2 §3), not a construction-time option:
+ * the attachment is built once at startup, so reading it live is what lets a
+ * cap edit reach the display without a restart. Read-only display input: the
+ * Worker tab flags a manual resume that pushed live sessions past the cap
  * (worker-phase1 §2.3).
  *
  * @param {string} workspace_root
  * @returns {number|null}
  */
-export function workerParallelSlots(workspace_root) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  return att ? att.parallel_slots : null;
+export function workerSlots(workspace_root) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att) {
+    return null;
+  }
+  const slots = att.runtime.queueStore.snapshot(key).slots;
+  return typeof slots === 'number' ? slots : null;
 }
 
 /**
@@ -574,6 +565,40 @@ export async function resumeWorkerAttempt(workspace_root, attempt_id) {
 }
 
 /**
+ * Run the authoritative [머지] click for a `pr_wait` bead (worker-phase2 §6),
+ * IF an attachment is registered. Inert without one — a ws-handler test never
+ * reaches `gh`, and an unattached workspace could not have dispatched the bead
+ * in the first place.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<import('./pr-actions.js').MergeClickResult>}
+ */
+export async function mergeWorkerPr(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.prActions) {
+    return { ok: false, action: 'refused', reason: 'no_attachment' };
+  }
+  return att.prActions.merge(bead_id);
+}
+
+/**
+ * Discard a PR and re-run its bead from a fresh base ([재실행], §6), IF an
+ * attachment is registered. Inert without one.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<import('./pr-actions.js').RerunResult>}
+ */
+export async function rerunWorkerPr(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.prActions) {
+    return { ok: false, reason: 'no_attachment', redispatched: false };
+  }
+  return att.prActions.rerun(bead_id);
+}
+
+/**
  * Test hook: register a (fake) attachment so the ws-handler wiring can be
  * exercised without a real spawn.
  *
@@ -585,8 +610,16 @@ export function __registerWorkerAttachmentForTest(workspace_root, attachment) {
 }
 
 /**
- * Test hook: drop all registered attachments.
+ * Test hook: drop all registered attachments, stopping their PR pollers so no
+ * armed timer or queue-changed hook outlives the test that built it.
  */
 export function __resetWorkerAttachmentsForTest() {
+  for (const att of ATTACHMENTS.values()) {
+    try {
+      att.prPoller?.stop();
+    } catch {
+      /* ignore */
+    }
+  }
   ATTACHMENTS.clear();
 }
