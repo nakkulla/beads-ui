@@ -125,13 +125,28 @@ export function createBdMetadata(deps = {}) {
     },
 
     /**
+     * Read the issue status, FAIL-CLOSED on the same rule as
+     * {@link readMetadata}: `null` means the query succeeded and the issue
+     * carries no status, while a failed `bd show` or an unreadable payload
+     * THROWS. Every caller uses this as a confirming readback or as a claim
+     * probe, and a bd outage collapsed to `null` is indistinguishable from
+     * "the status really is not what we are looking for".
+     *
      * @param {string} bead_id
      * @returns {Promise<string|null>}
      */
     async readStatus(bead_id) {
       const r = await runJson(['show', bead_id, '--json'], opts);
+      if (r && typeof r.code === 'number' && r.code !== 0) {
+        throw new Error(
+          `bd show ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
       const issue = unwrapShowJson(r && r.stdoutJson);
-      const status = issue && issue.status;
+      if (!issue || typeof issue !== 'object') {
+        throw new Error(`bd show ${bead_id} returned an unreadable payload`);
+      }
+      const status = issue.status;
       return typeof status === 'string' ? status : null;
     },
 

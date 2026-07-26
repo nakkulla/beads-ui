@@ -400,7 +400,7 @@ describe('views/worker', () => {
     });
   });
 
-  test('toggling auto-advance sends worker-queue-toggle and shows the on banner', async () => {
+  test('toggling auto-advance sends worker-queue-toggle and flips the button to pause', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi
       .fn()
@@ -411,12 +411,11 @@ describe('views/worker', () => {
       transport
     });
 
-    // OFF banner shows initially.
-    expect(mount.querySelector('.worker-banner--off')).not.toBeNull();
-
     const play = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-play')
     );
+    expect(play.textContent).toContain('▶ 자동 진행');
+
     play.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await flush();
 
@@ -424,7 +423,36 @@ describe('views/worker', () => {
       on: true,
       expected_revision: 0
     });
-    expect(mount.querySelector('.worker-banner--on')).not.toBeNull();
+    const toggled = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-play')
+    );
+    expect(toggled.classList.contains('is-active')).toBe(true);
+    expect(toggled.textContent).toContain('⏸ 일시정지');
+  });
+
+  test('clicking the active toggle sends worker-queue-toggle off', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ auto_advance: true, revision: 5 }));
+    const transport = vi
+      .fn()
+      .mockResolvedValue(reply(queueOf({ auto_advance: false, revision: 6 })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    const pause = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-play')
+    );
+    pause.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-toggle', {
+      on: false,
+      expected_revision: 5
+    });
   });
 
   test('admission refusals badge candidate + queued rows (§6)', () => {

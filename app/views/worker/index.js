@@ -810,9 +810,8 @@ export function createWorkerView(mount_element, options = {}) {
           type="button"
           class="worker-play${m.queue.auto_advance ? ' is-active' : ''}"
         >
-          ▶ 자동 진행
+          ${m.queue.auto_advance ? '⏸ 일시정지' : '▶ 자동 진행'}
         </button>
-        <button type="button" class="worker-pause">⏸ 정지</button>
         <span class="worker-stat"
           >실행 <b>${m.live_count}</b> · 다음 <b>${next_head}</b></span
         >
@@ -844,7 +843,6 @@ export function createWorkerView(mount_element, options = {}) {
         </button>
       </div>
       ${bannersTemplate({
-        autoAdvance: !!m.queue.auto_advance,
         failure: m.failure,
         cleanupFailures: m.cleanup_failures
       })}`;
@@ -1152,11 +1150,7 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     if (target?.closest?.('.worker-play')) {
-      void setAutoAdvance(true);
-      return;
-    }
-    if (target?.closest?.('.worker-pause')) {
-      void setAutoAdvance(false);
+      void setAutoAdvance(!currentQueue().auto_advance);
       return;
     }
     // PR-wait actions act on the bead and must never also open the detail panel

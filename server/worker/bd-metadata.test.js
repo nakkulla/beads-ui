@@ -75,6 +75,48 @@ describe('worker/bd-metadata argv contract', () => {
   });
 });
 
+describe('worker/bd-metadata readStatus fail-closed', () => {
+  test('throws on a non-zero bd exit instead of reading as "no status"', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 1,
+      stdoutJson: null,
+      stderr: 'bd down'
+    }));
+
+    await expect(
+      createBdMetadata({ runJson }).readStatus('UI-1')
+    ).rejects.toThrow(/bd show UI-1 failed \(1\)/);
+  });
+
+  test('throws on an unreadable payload', async () => {
+    const runJson = vi.fn(async () => ({ code: 0, stdoutJson: 'nonsense' }));
+
+    await expect(
+      createBdMetadata({ runJson }).readStatus('UI-1')
+    ).rejects.toThrow(/unreadable payload/);
+  });
+
+  test('returns the status from a readable payload', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [{ id: 'UI-1', status: 'in_progress' }]
+    }));
+
+    expect(await createBdMetadata({ runJson }).readStatus('UI-1')).toBe(
+      'in_progress'
+    );
+  });
+
+  test('returns null only for an issue that carries no status', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: { id: 'UI-1' }
+    }));
+
+    expect(await createBdMetadata({ runJson }).readStatus('UI-1')).toBe(null);
+  });
+});
+
 describe('worker/bd-metadata child listing (post-merge sweep)', () => {
   /**
    * @param {Record<string, any[]>} by_selector - Keyed by the selector flag.

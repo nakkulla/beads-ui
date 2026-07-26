@@ -912,8 +912,14 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Record an auto-run admission refusal for a bead (scheduler-owned, no
-     * CAS). Overwrites any prior record for the same bead.
+     * Record why a bead was refused or skipped (scheduler-owned, no CAS). A
+     * DIFFERENT reason overwrites the prior record; the SAME reason is an
+     * atomic no-op (`ok:false`, no revision bump). The guard lives here rather
+     * than in the caller because `tick()` is not serialized — concurrent passes
+     * reading the same stale "nothing recorded" snapshot would each write and
+     * fan out, and a permanently not-ready bead would bump the revision on
+     * every tick. `ok` therefore reports whether the record was APPLIED, which
+     * is what the scheduler gates its fanout on.
      *
      * @param {string} workspace
      * @param {{ bead_id: string, reason: string }} input
@@ -928,6 +934,10 @@ export function createQueueStore(options = {}) {
           typeof reason !== 'string' ||
           reason.length === 0
         ) {
+          return false;
+        }
+        const prior = next.admission[bead_id];
+        if (prior && prior.reason === reason) {
           return false;
         }
         next.admission[bead_id] = { reason, at: now() };

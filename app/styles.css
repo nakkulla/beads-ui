@@ -2447,16 +2447,6 @@ html[data-theme='dark'] {
   box-shadow: var(--ring-selected);
 }
 
-.worker-pause {
-  padding: 3px 12px;
-  border: 1px solid var(--border-danger);
-  border-radius: var(--r-6);
-  background: transparent;
-  color: var(--accent-danger);
-  font-size: var(--fs-body);
-  cursor: pointer;
-}
-
 .worker-stat {
   font-size: var(--fs-small);
   color: var(--text-muted);
@@ -2594,18 +2584,6 @@ html[data-theme='dark'] {
   padding: var(--sp-6) var(--sp-10);
   border-radius: var(--r-6);
   font-size: var(--fs-body-sm);
-}
-
-.worker-banner--off {
-  border: 1px solid var(--border-warn);
-  background: color-mix(in srgb, var(--accent-warn) 14%, var(--bg-panel));
-  color: var(--accent-warn);
-}
-
-.worker-banner--on {
-  border: 1px solid var(--border-tile-run);
-  background: var(--bg-tile-run);
-  color: var(--accent-success);
 }
 
 .worker-banner--failure {

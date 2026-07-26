@@ -75,25 +75,40 @@ function configTargetBase(workspace_root) {
 }
 
 /**
- * Extract the ready-issue id set from a `bd ready --json` payload, tolerating
- * either an array of issues or a `{ ready: [...] }` / `{ issues: [...] }` object.
+ * The issue rows of a `bd ready --json` payload, tolerating either an array of
+ * issues or a `{ ready: [...] }` / `{ issues: [...] }` object. `null` means the
+ * payload carries NO recognizable row list, which is unreadable rather than
+ * empty — bd emits a bare array (`[]` when nothing is ready, observed live), so
+ * treating an unknown shape as "nothing is ready" would report a bd fault as a
+ * queue full of not-ready beads.
  *
  * @param {unknown} json
+ * @returns {any[]|null}
+ */
+function readyRows(json) {
+  if (Array.isArray(json)) {
+    return json;
+  }
+  if (json && typeof json === 'object') {
+    const o = /** @type {any} */ (json);
+    if (Array.isArray(o.ready)) {
+      return o.ready;
+    }
+    if (Array.isArray(o.issues)) {
+      return o.issues;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract the ready-issue id set from the rows of a `bd ready --json` payload.
+ *
+ * @param {any[]} arr
  * @returns {Set<string>}
  */
-function readyIdSet(json) {
-  /** @type {any[]} */
-  let arr = [];
-  if (Array.isArray(json)) {
-    arr = json;
-  } else if (json && typeof json === 'object') {
-    const o = /** @type {any} */ (json);
-    arr = Array.isArray(o.ready)
-      ? o.ready
-      : Array.isArray(o.issues)
-        ? o.issues
-        : [];
-  }
+function readyIdSet(arr) {
+  /** @type {Set<string>} */
   const ids = new Set();
   for (const it of arr) {
     const id = it && typeof it === 'object' ? it.id : it;
@@ -108,8 +123,12 @@ function readyIdSet(json) {
  * Build the live `bd` dependency the scheduler + orphan detector consume:
  * metadata set/unset/read (from bd-metadata.js) PLUS `snapshotBead` which reads
  * `bd show --json` (status + exec-settings metadata) and `bd ready --json`
- * (authoritative runnable set) for the workspace. Best-effort + fail-safe: any
- * bd failure yields not-ready (nothing dispatches) rather than a throw.
+ * (authoritative runnable set) for the workspace.
+ *
+ * FAIL-VISIBLE: a non-zero exit or an unreadable payload from EITHER query
+ * throws. Nothing dispatches either way — both scheduler call sites already
+ * catch — but a swallowed failure used to reach the queue as a plain
+ * not-ready bead, so a bd outage was indistinguishable from a dependency block.
  *
  * @param {{ cwd: string, repo: string, target_base: string, runJson?: (args: string[], options?: any) => Promise<{ code: number, stdoutJson?: any, stderr?: string }>, run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }> }} config
  */
@@ -131,9 +150,18 @@ export function createLiveBd(config) {
      */
     async snapshotBead(bead_id) {
       const shown = await runJson(['show', bead_id, '--json'], { cwd });
-      const issue = /** @type {any} */ (
-        unwrapShowJson(shown && shown.stdoutJson) || {}
-      );
+      if (shown && typeof shown.code === 'number' && shown.code !== 0) {
+        throw new Error(
+          `bd show ${bead_id} failed (${shown.code}): ${(
+            shown.stderr || ''
+          ).trim()}`
+        );
+      }
+      const unwrapped = unwrapShowJson(shown && shown.stdoutJson);
+      if (!unwrapped) {
+        throw new Error(`bd show ${bead_id} returned an unreadable payload`);
+      }
+      const issue = /** @type {any} */ (unwrapped);
       const md =
         issue.metadata && typeof issue.metadata === 'object'
           ? issue.metadata
@@ -141,19 +169,25 @@ export function createLiveBd(config) {
       const status = typeof issue.status === 'string' ? issue.status : '';
       const closed = status === 'closed' || status === 'resolved';
 
-      /** @type {Set<string>} */
-      let ready_ids = new Set();
-      try {
-        const readyList = await runJson(
-          ['ready', '--limit', '1000', '--json'],
-          {
-            cwd
-          }
+      const readyList = await runJson(['ready', '--limit', '1000', '--json'], {
+        cwd
+      });
+      if (
+        readyList &&
+        typeof readyList.code === 'number' &&
+        readyList.code !== 0
+      ) {
+        throw new Error(
+          `bd ready failed (${readyList.code}): ${(
+            readyList.stderr || ''
+          ).trim()}`
         );
-        ready_ids = readyIdSet(readyList && readyList.stdoutJson);
-      } catch {
-        ready_ids = new Set();
       }
+      const ready_rows = readyRows(readyList && readyList.stdoutJson);
+      if (!ready_rows) {
+        throw new Error('bd ready returned an unreadable payload');
+      }
+      const ready_ids = readyIdSet(ready_rows);
 
       const ready = !closed && ready_ids.has(bead_id);
       const blocked = !closed && !ready_ids.has(bead_id);
@@ -350,7 +384,18 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   const orphan = createOrphanDetector({
     store: runtime.queueStore,
     bd,
-    probePid: options.probePid || defaultProbePid
+    probePid: options.probePid || defaultProbePid,
+    // The reap's claim release completes AFTER `detect` returned, so a user who
+    // turns auto_advance back on in that window sees a bead that is still
+    // `in_progress` and gets nothing. This tick is the correction; it is a
+    // no-op while auto_advance is off, which is the normal post-reap state.
+    onBeadRecovered: (ws_key) => {
+      Promise.resolve(scheduler.tick(ws_key))
+        .catch((err) => {
+          log('orphan recovery tick failed for %s: %o', ws_key, err);
+        })
+        .then(() => emitQueueChanged(ws_key));
+    }
   });
 
   // Keep runtime.status()'s running_count in sync with THIS scheduler.
