@@ -53,25 +53,40 @@ const log = debug('worker:attach');
 const DEFAULT_TARGET_BASE = 'main';
 
 /**
- * Extract the ready-issue id set from a `bd ready --json` payload, tolerating
- * either an array of issues or a `{ ready: [...] }` / `{ issues: [...] }` object.
+ * The issue rows of a `bd ready --json` payload, tolerating either an array of
+ * issues or a `{ ready: [...] }` / `{ issues: [...] }` object. `null` means the
+ * payload carries NO recognizable row list, which is unreadable rather than
+ * empty — bd emits a bare array (`[]` when nothing is ready, observed live), so
+ * treating an unknown shape as "nothing is ready" would report a bd fault as a
+ * queue full of not-ready beads.
  *
  * @param {unknown} json
+ * @returns {any[]|null}
+ */
+function readyRows(json) {
+  if (Array.isArray(json)) {
+    return json;
+  }
+  if (json && typeof json === 'object') {
+    const o = /** @type {any} */ (json);
+    if (Array.isArray(o.ready)) {
+      return o.ready;
+    }
+    if (Array.isArray(o.issues)) {
+      return o.issues;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract the ready-issue id set from the rows of a `bd ready --json` payload.
+ *
+ * @param {any[]} arr
  * @returns {Set<string>}
  */
-function readyIdSet(json) {
-  /** @type {any[]} */
-  let arr = [];
-  if (Array.isArray(json)) {
-    arr = json;
-  } else if (json && typeof json === 'object') {
-    const o = /** @type {any} */ (json);
-    arr = Array.isArray(o.ready)
-      ? o.ready
-      : Array.isArray(o.issues)
-        ? o.issues
-        : [];
-  }
+function readyIdSet(arr) {
+  /** @type {Set<string>} */
   const ids = new Set();
   for (const it of arr) {
     const id = it && typeof it === 'object' ? it.id : it;
@@ -146,11 +161,11 @@ export function createLiveBd(config) {
           ).trim()}`
         );
       }
-      const ready_payload = readyList && readyList.stdoutJson;
-      if (!ready_payload || typeof ready_payload !== 'object') {
+      const ready_rows = readyRows(readyList && readyList.stdoutJson);
+      if (!ready_rows) {
         throw new Error('bd ready returned an unreadable payload');
       }
-      const ready_ids = readyIdSet(ready_payload);
+      const ready_ids = readyIdSet(ready_rows);
 
       const ready = !closed && ready_ids.has(bead_id);
       const blocked = !closed && !ready_ids.has(bead_id);

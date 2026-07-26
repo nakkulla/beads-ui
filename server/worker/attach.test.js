@@ -429,4 +429,28 @@ describe('worker/attach createLiveBd fail-visible snapshots', () => {
       /bd ready returned an unreadable payload/
     );
   });
+
+  test('throws when bd ready returns an object with no row list', async () => {
+    const runJson = runnerFor({
+      show: { code: 0, stdoutJson: [{ id: 'UI-1', status: 'open' }] },
+      ready: { code: 0, stdoutJson: { ready: 'not-an-array' } }
+    });
+
+    // An unknown shape read as an empty ready set would report a bd fault as a
+    // queue full of not-ready beads.
+    await expect(bdWith(runJson).snapshotBead('UI-1')).rejects.toThrow(
+      /bd ready returned an unreadable payload/
+    );
+  });
+
+  test('reads an empty ready array as nothing runnable', async () => {
+    const runJson = runnerFor({
+      show: { code: 0, stdoutJson: [{ id: 'UI-1', status: 'open' }] },
+      ready: { code: 0, stdoutJson: [] }
+    });
+
+    const snap = await bdWith(runJson).snapshotBead('UI-1');
+
+    expect(snap.ready).toBe(false);
+  });
 });

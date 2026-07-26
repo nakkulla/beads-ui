@@ -47,42 +47,47 @@ export function createOrphanDetector(deps) {
     typeof deps.tolerance_ms === 'number' ? deps.tolerance_ms : 2000;
 
   /**
-   * Revert workflow_mode to the pre-launch value (unset when originally absent),
-   * fire-and-forget so a bd failure never blocks orphan reaping.
+   * Revert workflow_mode to the pre-launch value (unset when originally absent).
+   * Best-effort: a bd failure resolves rather than rejects so it never blocks
+   * the rest of the reap.
    *
    * @param {string} bead_id
    * @param {string|null} prior
+   * @returns {Promise<void>}
    */
   function revertWorkflowMode(bead_id, prior) {
     if (!deps.bd) {
-      return;
+      return Promise.resolve();
     }
     const op =
       prior == null
         ? deps.bd.unsetMetadata(bead_id, 'workflow_mode')
         : deps.bd.setMetadata(bead_id, 'workflow_mode', prior);
-    Promise.resolve(op).catch(() => {
+    return Promise.resolve(op).catch(() => {
       // Best-effort: the orphan is already recorded + the queue already halted.
     });
   }
 
   /**
    * Unset the exec-setting metadata keys the dead session stamped onto the bead
-   * (worker-global-exec-defaults §3), fire-and-forget like the workflow_mode
-   * revert so a bd failure never blocks orphan reaping.
+   * (worker-global-exec-defaults §3), best-effort like the workflow_mode revert.
    *
    * @param {string} bead_id
    * @param {string[]|null|undefined} keys
+   * @returns {Promise<void>}
    */
   function revertExecStamps(bead_id, keys) {
-    if (!deps.bd || !Array.isArray(keys)) {
-      return;
+    const bd = deps.bd;
+    if (!bd || !Array.isArray(keys)) {
+      return Promise.resolve();
     }
-    for (const key of keys) {
-      Promise.resolve(deps.bd.unsetMetadata(bead_id, key)).catch(() => {
-        // Best-effort: the orphan is already recorded + the queue already halted.
-      });
-    }
+    return Promise.all(
+      keys.map((key) =>
+        Promise.resolve(bd.unsetMetadata(bead_id, key)).catch(() => {
+          // Best-effort: the orphan is already recorded + the queue halted.
+        })
+      )
+    ).then(() => undefined);
   }
 
   /**
@@ -91,32 +96,49 @@ export function createOrphanDetector(deps) {
    * bead from `bd ready` so every later tick skips it silently. `resolved` /
    * `closed` are real progress the reap must not rewrite.
    *
-   * Fire-and-forget like the other reverts, but `onBeadRecovered` fires on a
-   * CONFIRMED reopen only — the recovery lands after `detect` returned, so a
-   * user who re-armed the queue in that window needs the hook's tick.
-   *
-   * @param {string} workspace
    * @param {string} bead_id
+   * @returns {Promise<boolean>} True when the reopen was confirmed by readback.
    */
-  function releaseBeadClaim(workspace, bead_id) {
+  async function releaseBeadClaim(bead_id) {
     const bd = deps.bd;
     if (
       !bd ||
       typeof bd.readStatus !== 'function' ||
       typeof bd.setStatus !== 'function'
     ) {
-      return;
+      return false;
     }
-    const readStatus = bd.readStatus;
-    const setStatus = bd.setStatus;
+    if ((await bd.readStatus(bead_id)) !== 'in_progress') {
+      return false;
+    }
+    await bd.setStatus(bead_id, 'open');
+    return (await bd.readStatus(bead_id)) === 'open';
+  }
+
+  /**
+   * The reap's bd tail, run as ONE ordered pipeline so `detect` stays
+   * synchronous while the writes still happen in a defined order.
+   *
+   * Ordering is load-bearing: the reopen is what makes the bead dispatchable
+   * again, and `onBeadRecovered` ticks the queue. Racing that against the
+   * metadata reverts could dispatch a fresh attempt while the dead session's
+   * `fast_track` / exec stamps are still on the bead — the next attempt would
+   * then snapshot them as the bead's OWN values and never revert them, which is
+   * exactly what the revert exists to prevent (spec §5.2).
+   *
+   * `onBeadRecovered` fires on a CONFIRMED reopen only.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   */
+  function finalizeReapedBead(workspace, attempt) {
+    const bead_id = attempt.bead_id;
     Promise.resolve()
-      .then(async () => {
-        if ((await readStatus(bead_id)) !== 'in_progress') {
-          return false;
-        }
-        await setStatus(bead_id, 'open');
-        return (await readStatus(bead_id)) === 'open';
-      })
+      .then(() =>
+        revertWorkflowMode(bead_id, attempt.workflow_mode_prior ?? null)
+      )
+      .then(() => revertExecStamps(bead_id, attempt.exec_stamped_keys ?? null))
+      .then(() => releaseBeadClaim(bead_id))
       .then((recovered) => {
         if (recovered && typeof deps.onBeadRecovered === 'function') {
           deps.onBeadRecovered(workspace, bead_id);
@@ -174,13 +196,10 @@ export function createOrphanDetector(deps) {
         // Halt the queue: an orphan means the prior run died mid-flight, so the
         // next tick must not launch on top of an unexplained failure.
         deps.store.setAutoAdvance(workspace, false);
-        // Revert the mode the dead session recorded (spec §5.2).
-        revertWorkflowMode(a.bead_id, a.workflow_mode_prior ?? null);
-        // Revert the exec-setting stamps the dead session wrote (§3).
-        revertExecStamps(a.bead_id, a.exec_stamped_keys ?? null);
-        // Give back the claim the dead session held, or the bead stays out of
-        // `bd ready` and every later tick skips it without a trace.
-        releaseBeadClaim(workspace, a.bead_id);
+        // Revert the mode + exec stamps the dead session recorded (spec §5.2 /
+        // §3), THEN give back the claim it held — without the reopen the bead
+        // stays out of `bd ready` and every later tick skips it without a trace.
+        finalizeReapedBead(workspace, a);
         // Worktree is intentionally NOT removed (ownership unclear → banner).
         orphans.push({ attempt_id, bead_id: a.bead_id, repo: a.repo ?? null });
       }
