@@ -31,6 +31,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.XDG_STATE_HOME;
+  delete process.env.BDUI_CONFIG_PATH;
   __resetWorkerAttachmentsForTest();
   try {
     fs.rmSync(tmp_state, { recursive: true, force: true });
@@ -361,5 +362,112 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const snap = await bd.snapshotBead('UI-2');
     expect(snap.route).toBe('full_plan');
     expect(snap.blocked).toBe(true);
+  });
+
+  test('snapshotBead keeps a bead target_base ahead of the attachment base', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'UI-3',
+              status: 'open',
+              metadata: { target_base: 'bead/base' }
+            }
+          ]
+        };
+      }
+      return { code: 0, stdoutJson: [] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      target_base: 'ilsun/dev',
+      runJson
+    });
+
+    const snap = await bd.snapshotBead('UI-3');
+
+    expect(snap.target_base).toBe('bead/base');
+  });
+
+  test('snapshotBead falls back to the attachment base when the bead pins none', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [{ id: 'UI-4', status: 'open', metadata: {} }]
+        };
+      }
+      return { code: 0, stdoutJson: [] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      target_base: 'ilsun/dev',
+      runJson
+    });
+
+    const snap = await bd.snapshotBead('UI-4');
+
+    expect(snap.target_base).toBe('ilsun/dev');
+  });
+});
+
+describe('worker/attach target_base resolution (worker-target-base §1)', () => {
+  /**
+   * @param {string} content
+   */
+  function writeConfig(content) {
+    const file_path = path.join(tmp_state, 'config.toml');
+    fs.writeFileSync(file_path, content);
+    process.env.BDUI_CONFIG_PATH = file_path;
+  }
+
+  /**
+   * @param {Record<string, any>} [options]
+   */
+  function attach(options = {}) {
+    return createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      ...options
+    });
+  }
+
+  test('resolves the repo config base when no option pins one', () => {
+    writeConfig(`[worker.target_base]\n"${WS}" = "ilsun/dev"\n`);
+
+    expect(attach().target_base).toBe('ilsun/dev');
+  });
+
+  test('falls back to main when no config entry matches the workspace', () => {
+    writeConfig(`[worker.target_base]\n"/other/repo" = "ilsun/dev"\n`);
+
+    expect(attach().target_base).toBe('main');
+  });
+
+  test('falls back to main when the config entry is invalid', () => {
+    writeConfig(`[worker.target_base]\n"relative/repo" = "ilsun/dev"\n`);
+
+    expect(attach().target_base).toBe('main');
+  });
+
+  test('falls back to main when the config file is missing', () => {
+    process.env.BDUI_CONFIG_PATH = path.join(tmp_state, 'absent.toml');
+
+    expect(attach().target_base).toBe('main');
+  });
+
+  test('keeps an injected target_base ahead of the repo config', () => {
+    writeConfig(`[worker.target_base]\n"${WS}" = "ilsun/dev"\n`);
+
+    expect(attach({ target_base: 'injected/base' }).target_base).toBe(
+      'injected/base'
+    );
   });
 });

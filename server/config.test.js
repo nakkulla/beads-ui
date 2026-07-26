@@ -213,6 +213,64 @@ poll_interval_seconds = -10
   });
 });
 
+describe('[worker.target_base] section', () => {
+  test('reads a per-repo target base keyed by absolute path', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.target_base]
+"/repo-a" = "ilsun/dev"
+"/repo-b" = "main"
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_target_base).toEqual({
+      '/repo-a': 'ilsun/dev',
+      '/repo-b': 'main'
+    });
+  });
+
+  test('ignores a non-absolute key', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.target_base]
+"relative/repo" = "ilsun/dev"
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_target_base).toEqual({});
+  });
+
+  test('ignores an empty or non-string base value', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.target_base]
+"/repo-a" = "   "
+"/repo-b" = 7
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_target_base).toEqual({});
+  });
+
+  test('returns an empty map when the section is absent', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+workspaces = ["/repo-a"]
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_target_base).toEqual({});
+  });
+
+  test('returns an empty map when the config file is missing', () => {
+    process.env.BDUI_CONFIG_PATH = missingConfigPath();
+
+    const config = getConfig();
+
+    expect(config.worker_target_base).toEqual({});
+  });
+});
+
 describe('obsolete [auth] section', () => {
   test('warns once and drops the section when [auth] is present', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`

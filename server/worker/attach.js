@@ -45,12 +45,34 @@ import { createWorktreeManager } from './worktree.js';
 const log = debug('worker:attach');
 
 /**
- * The default merge target base when a bead does not pin one. Worker dispatch
- * lands work on this branch of the repo.
+ * The last-resort merge target base: used when neither the bead's `target_base`
+ * metadata nor the repo's `[worker.target_base]` config pins one. Worker
+ * dispatch lands work on this branch of the repo.
  *
  * @type {string}
  */
 const DEFAULT_TARGET_BASE = 'main';
+
+/**
+ * The workspace's configured merge target base from `[worker.target_base]`
+ * (worker-target-base §1), or null when the repo pins none.
+ *
+ * Read at construction time, like the rest of the attachment's wiring. Any
+ * config read failure yields null so a broken config degrades to the default
+ * instead of blocking attachment construction.
+ *
+ * @param {string} workspace_root
+ * @returns {string|null}
+ */
+function configTargetBase(workspace_root) {
+  try {
+    const map = getConfig().worker_target_base;
+    const base = map ? map[path.resolve(String(workspace_root || ''))] : null;
+    return typeof base === 'string' && base.length > 0 ? base : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Extract the ready-issue id set from a `bd ready --json` payload, tolerating
@@ -238,7 +260,13 @@ export function defaultProbePid(pid) {
 export function createWorkerAttachment(workspace_root, options = {}) {
   const runtime = options.runtime || getWorkerRuntime();
   const repo = options.repo || workspace_root;
-  const target_base = options.target_base || DEFAULT_TARGET_BASE;
+  // Resolution order (worker-target-base §1): bead metadata (applied per-bead in
+  // createLiveBd.snapshotBead) > repo config > 'main'. `options.target_base`
+  // stays the test-injection seam ahead of both.
+  const target_base =
+    options.target_base ||
+    configTargetBase(workspace_root) ||
+    DEFAULT_TARGET_BASE;
 
   const bd =
     options.bd || createLiveBd({ cwd: workspace_root, repo, target_base });
@@ -267,6 +295,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         ghAvailable,
         repo: snap.repo,
         base: base || snap.target_base,
+        // Refusals name the attempt's BRANCH even when the check runs against a
+        // pinned base_oid — a SHA cannot tell the operator the base is wrong.
+        base_label: snap.target_base,
         bead: {
           route: snap.route,
           spec_id: snap.spec_id,
@@ -391,6 +422,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     bd,
     admission,
     repo,
+    target_base,
     workspace: workspace_root
   };
 }

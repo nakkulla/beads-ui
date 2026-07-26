@@ -91,9 +91,35 @@ describe('worker/admission fail-closed validator', () => {
     expect(gitRun).not.toHaveBeenCalled();
   });
 
-  test('rejects a spec path absent from base as spec_missing (cat-file 128)', async () => {
+  test('names the base when the spec path is absent from it (cat-file 128)', async () => {
     const r = await run(makeGitRun({ catfile_code: 128 }), makeBead());
-    expect(r).toEqual({ ok: false, reason: 'spec_missing' });
+    expect(r).toEqual({
+      ok: false,
+      reason: `spec_missing_at_base:${BASE}`
+    });
+  });
+
+  test('reports base_label instead of the pinned base it checked', async () => {
+    const r = await validateAdmission({
+      gitRun: makeGitRun({ catfile_code: 128 }),
+      repo: '/repo',
+      base: BASE,
+      base_label: 'ilsun/dev',
+      bead: makeBead()
+    });
+
+    expect(r).toEqual({ ok: false, reason: 'spec_missing_at_base:ilsun/dev' });
+  });
+
+  test('keeps the bare spec_missing distinct from the at-base refusal', async () => {
+    const absent_spec = await run(makeGitRun(), makeBead({ spec_id: null }));
+    const absent_at_base = await run(
+      makeGitRun({ catfile_code: 128 }),
+      makeBead()
+    );
+
+    expect(absent_spec.reason).toBe('spec_missing');
+    expect(absent_at_base.reason).not.toBe('spec_missing');
   });
 
   test('rejects malformed receipts as receipt_missing_or_malformed', async () => {

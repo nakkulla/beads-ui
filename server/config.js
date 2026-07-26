@@ -143,6 +143,50 @@ function normalizeWorkerVerify(parsed) {
 }
 
 /**
+ * Normalize the `[worker.target_base]` section (worker-target-base §1) into
+ * `{ <resolved path>: <branch> }`.
+ *
+ * The merge target base is a property of the REPO's workflow, not of a bead —
+ * every bead in a repo lands on the same branch. Repos whose integration branch
+ * is not `main` pin it once here instead of repeating it in each bead's
+ * `target_base` metadata (a bead that does pin one still wins):
+ *
+ *   [worker.target_base]
+ *   "/Users/me/GitHub/TRACE-ICI" = "ilsun/dev"
+ *
+ * A flat path→branch map, keyed like `[worker.verify]`. Entries with a
+ * non-absolute key or a non-string / empty value are ignored (one log line).
+ *
+ * @param {any} parsed
+ * @returns {Record<string, string>}
+ */
+function normalizeWorkerTargetBase(parsed) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  const section = parsed?.worker?.target_base;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return out;
+  }
+  for (const [key, value] of Object.entries(section)) {
+    const workspace = normalizeWorkspacePath(key);
+    if (!workspace) {
+      log('worker.target_base %s ignored: key must be an absolute path', key);
+      continue;
+    }
+    const base = typeof value === 'string' ? value.trim() : '';
+    if (base.length === 0) {
+      log(
+        'worker.target_base %s ignored: value must be a non-empty branch name',
+        key
+      );
+      continue;
+    }
+    out[workspace] = base;
+  }
+  return out;
+}
+
+/**
  * Normalize the top-level `poll_interval_seconds` setting (spec §7). Governs the
  * server-side periodic list-refresh poller: default 30, an explicit `0` disables
  * polling, and any missing / non-numeric / negative value falls back to the
@@ -167,7 +211,8 @@ function normalizePollIntervalSeconds(value) {
  *     workspaces: string[]
  *   },
  *   poll_interval_seconds: number,
- *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>
+ *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
+ *   worker_target_base: Record<string, string>
  * }}
  */
 function readRuntimeConfig(config_path) {
@@ -202,7 +247,8 @@ function readRuntimeConfig(config_path) {
       poll_interval_seconds: normalizePollIntervalSeconds(
         parsed?.poll_interval_seconds
       ),
-      worker_verify: normalizeWorkerVerify(parsed)
+      worker_verify: normalizeWorkerVerify(parsed),
+      worker_target_base: normalizeWorkerTargetBase(parsed)
     };
   } catch (error) {
     if (
@@ -222,7 +268,8 @@ function readRuntimeConfig(config_path) {
         workspaces: DEFAULT_WORKSPACE_CONFIG.workspaces.slice()
       },
       poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
-      worker_verify: {}
+      worker_verify: {},
+      worker_target_base: {}
     };
   }
 }
@@ -251,7 +298,8 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *     workspaces: string[]
  *   },
  *   poll_interval_seconds: number,
- *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>
+ *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
+ *   worker_target_base: Record<string, string>
  * }}
  */
 export function getConfig() {

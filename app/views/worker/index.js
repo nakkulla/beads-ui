@@ -629,11 +629,26 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {Record<string, { reason: string, at: number }>} */
     const admission = q.admission || {};
     /**
+     * A `prefix:detail` reason (`spec_missing_at_base:<base>`) renders its detail
+     * apart so the base reads at a glance; a bare reason renders unchanged, which
+     * is what keeps already-persisted `spec_missing` records renderable without
+     * any normalization.
+     *
      * @param {string} bead_id
      * @returns {string}
      */
-    const admissionBadge = (bead_id) =>
-      admission[bead_id] ? `⛔ ${admission[bead_id].reason}` : '';
+    const admissionBadge = (bead_id) => {
+      const record = admission[bead_id];
+      if (!record) {
+        return '';
+      }
+      const reason = typeof record.reason === 'string' ? record.reason : '';
+      const sep = reason.indexOf(':');
+      if (sep > 0 && sep < reason.length - 1) {
+        return `⛔ ${reason.slice(0, sep)} (${reason.slice(sep + 1)})`;
+      }
+      return `⛔ ${reason}`;
+    };
 
     /** @type {any[]} */
     const candidates = merged.map((/** @type {any} */ it) => {
