@@ -264,8 +264,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // createLiveBd.snapshotBead) > repo config > 'main'. `options.target_base`
   // stays the test-injection seam ahead of both.
   const target_base =
-    options.target_base ||
-    configTargetBase(workspace_root) ||
+    options.target_base ??
+    configTargetBase(workspace_root) ??
     DEFAULT_TARGET_BASE;
 
   const bd =

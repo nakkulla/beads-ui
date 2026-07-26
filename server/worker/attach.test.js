@@ -470,4 +470,10 @@ describe('worker/attach target_base resolution (worker-target-base §1)', () => 
       'injected/base'
     );
   });
+
+  test('preserves an injected empty target_base instead of substituting a base', () => {
+    writeConfig(`[worker.target_base]\n"${WS}" = "ilsun/dev"\n`);
+
+    expect(attach({ target_base: '' }).target_base).toBe('');
+  });
 });
