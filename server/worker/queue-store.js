@@ -99,11 +99,16 @@
  * @property {Record<string, { reason: string, at: number }>} admission -
  * Auto-run admission refusals by bead_id (badge display). Cleared only on a
  * successful dispatch or queue removal — never auto-expired.
- * @property {Record<string, { step: string, reason: string, at: number }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and nothing retries by itself — so the record that a human must
- * finish the cleanup has to outlive a server restart. It lives HERE rather than
+ * finish the cleanup has to outlive a server restart. `bd_restore` is null when
+ * the stop happened BEFORE the parent close (bd was never touched, so `resolved`
+ * still holds by itself), `restored` when the close was undone back to
+ * `resolved`, and `restore_failed` when even that did not stick — the one case
+ * where the bead's real bd status disagrees with the contract, which must be
+ * recorded rather than left silent. It lives HERE rather than
  * in bd metadata because the bd contract surface is owned by dotfiles
  * (`docs/contracts/workflow.md`) and beads-ui only consumes it; this is
  * server-owned queue state about a lane member, exactly like {@link admission}.
@@ -365,6 +370,8 @@ function normalizeQueue(raw) {
         q.cleanup_failed[bead_id] = {
           step: typeof value.step === 'string' ? value.step : '',
           reason: value.reason,
+          bd_restore:
+            typeof value.bd_restore === 'string' ? value.bd_restore : null,
           at: typeof value.at === 'number' ? value.at : 0
         };
       }
@@ -827,12 +834,16 @@ export function createQueueStore(options = {}) {
      * the bead stays where it is, bd stays `resolved`, and the banner returns
      * the situation to a human. Scheduler-owned (no CAS).
      *
+     * `bd_restore` carries what happened to the bead's status when the stop came
+     * at or after the parent close; omit it for the earlier steps, which never
+     * touched bd.
+     *
      * @param {string} workspace
-     * @param {{ bead_id: string, step: string, reason: string }} input
+     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null }} input
      * @returns {QueueOpResult}
      */
     recordCleanupFailure(workspace, input) {
-      const { bead_id, step, reason } = input;
+      const { bead_id, step, reason, bd_restore } = input;
       return applyUnconditional(workspace, (next) => {
         if (
           typeof bead_id !== 'string' ||
@@ -845,6 +856,7 @@ export function createQueueStore(options = {}) {
         next.cleanup_failed[bead_id] = {
           step: typeof step === 'string' ? step : '',
           reason,
+          bd_restore: typeof bd_restore === 'string' ? bd_restore : null,
           at: now()
         };
         return true;

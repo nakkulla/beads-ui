@@ -75,14 +75,31 @@ export function createBdMetadata(deps = {}) {
     },
 
     /**
+     * Read one metadata key, FAIL-CLOSED (implementation review 2026-07-26).
+     *
+     * `null` means exactly one thing: the query succeeded and the key is absent.
+     * A failed `bd show` (non-zero exit) or a payload that is not a readable
+     * issue object THROWS. The distinction is load-bearing for every caller that
+     * uses this as a confirming readback — [재실행]'s `pr_url` removal readback
+     * passed while bd was DOWN when a failure could return `null`, which is the
+     * same shape as "the key really is gone".
+     *
      * @param {string} bead_id
      * @param {string} key
      * @returns {Promise<string|null>}
      */
     async readMetadata(bead_id, key) {
       const r = await runJson(['show', bead_id, '--json'], opts);
+      if (r && typeof r.code === 'number' && r.code !== 0) {
+        throw new Error(
+          `bd show ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
       const issue = unwrapShowJson(r && r.stdoutJson);
-      const md = issue && issue.metadata;
+      if (!issue || typeof issue !== 'object') {
+        throw new Error(`bd show ${bead_id} returned an unreadable payload`);
+      }
+      const md = issue.metadata;
       const v =
         md && typeof md === 'object'
           ? /** @type {Record<string, unknown>} */ (md)[key]
@@ -137,6 +154,12 @@ export function createBdMetadata(deps = {}) {
      * unreadable child list must stop the cleanup rather than read as "this
      * bead has no children, go ahead and close the parent".
      *
+     * A MALFORMED payload on a zero exit throws for the same reason
+     * (implementation review 2026-07-26): skipping a selector whose rows are not
+     * an array silently reduced the sweep to nothing and closed the parent over
+     * its open leaves. The exit code and the payload shape are BOTH checked; an
+     * empty array is the only thing that may mean "no children".
+     *
      * @param {string} bead_id
      * @returns {Promise<{ id: string, status: string }[]>}
      */
@@ -162,7 +185,9 @@ export function createBdMetadata(deps = {}) {
         }
         const rows = r && r.stdoutJson;
         if (!Array.isArray(rows)) {
-          continue;
+          throw new Error(
+            `bd list ${selector.join(' ')} returned a non-array payload`
+          );
         }
         for (const raw of rows) {
           if (!raw || typeof raw !== 'object') {

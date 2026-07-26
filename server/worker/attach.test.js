@@ -102,7 +102,13 @@ const fakeWorktree = {
     branch: bead_id,
     base_oid: 'oid'
   }),
-  remove: async () => ({ code: 0 })
+  remove: async () => ({ code: 0 }),
+  // The manager owns the repo topology lock and hands it to the modules that
+  // run their own ref-mutating git commands, so the fake must offer it too.
+  withTopologyLock: async (
+    /** @type {string} */ _repo,
+    /** @type {any} */ fn
+  ) => fn()
 };
 
 const okVerify = {

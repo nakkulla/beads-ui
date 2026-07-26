@@ -276,6 +276,34 @@ function buildSystem(opts) {
 }
 
 /**
+ * The worktree dependency the PR actions take: a no-op removal (the e2e's
+ * worktrees are never really created) over the REAL repo topology lock, so the
+ * cleanup's ref-mutating git commands serialize exactly as they do in
+ * production (worker-phase2 §8).
+ *
+ * @param {ReturnType<typeof createWorkerRuntime>} runtime
+ */
+function prActionsWorktree(runtime) {
+  return {
+    remove: async () => ({ code: 0 }),
+    /**
+     * @template T
+     * @param {string} repo
+     * @param {() => Promise<T>} fn
+     * @returns {Promise<T>}
+     */
+    async withTopologyLock(repo, fn) {
+      const release = await runtime.locks.topologyLock(repo);
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    }
+  };
+}
+
+/**
  * @param {any} store
  * @param {string[]} ids
  */
@@ -398,6 +426,10 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     /** @type {Array<[string, number, string|null]>} */
     const gh_calls = [];
     const observations = createPrObservationStore();
+    // GitHub's own view of the PR, which only becomes MERGED once the merge
+    // command has actually landed it — the cleanup keys off THAT, not off the
+    // command's exit status (§6).
+    let pr_state = 'OPEN';
     const pr_actions = createPrActions({
       workspace: WS,
       repo: repo_dir,
@@ -412,7 +444,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
           data: {
             number,
             url: 'https://github.com/o/r/pull/1',
-            state: 'OPEN',
+            state: pr_state,
             mergeable: 'MERGEABLE',
             merge_state_status: 'CLEAN',
             head_ref: 'M1',
@@ -431,6 +463,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
           // The squash lands on the base for real, so the cleanup's base sync
           // reads a base that actually moved.
           await gitRun(['push', '-q', 'origin', 'main'], { cwd: repo_dir });
+          pr_state = 'MERGED';
           return { state: 'ok', data: { merged: true } };
         },
         updateBranch: async () => ({ state: 'error', reason: 'unexpected' }),
@@ -456,7 +489,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
         ) => bd_record.metadata[key] ?? null,
         listChildren: async () => []
       },
-      worktree: { remove: async () => ({ code: 0 }) },
+      worktree: prActionsWorktree(runtime),
       gitRun,
       scheduler: {
         resolveConflict: async () => ({ ok: false, reason: 'unexpected' }),
@@ -514,6 +547,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
       runtime.queueStore.snapshot(WS).pr_wait.some((e) => e.bead_id === 'M2')
     );
 
+    let pr_state = 'OPEN';
     const pr_actions = createPrActions({
       workspace: WS,
       repo: repo_dir,
@@ -528,7 +562,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
           data: {
             number,
             url: 'https://github.com/o/r/pull/1',
-            state: 'OPEN',
+            state: pr_state,
             mergeable: 'MERGEABLE',
             merge_state_status: 'CLEAN',
             head_ref: 'M2',
@@ -536,7 +570,10 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
           }
         }),
         prChecks: async () => ({ state: 'empty' }),
-        mergeSquash: async () => ({ state: 'ok', data: { merged: true } }),
+        mergeSquash: async () => {
+          pr_state = 'MERGED';
+          return { state: 'ok', data: { merged: true } };
+        },
         updateBranch: async () => ({ state: 'error', reason: 'unexpected' }),
         closePr: async () => ({ state: 'error', reason: 'unexpected' })
       },
@@ -556,7 +593,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
           throw new Error('bd down');
         }
       },
-      worktree: { remove: async () => ({ code: 0 }) },
+      worktree: prActionsWorktree(runtime),
       gitRun,
       scheduler: {
         resolveConflict: async () => ({ ok: false, reason: 'unexpected' }),

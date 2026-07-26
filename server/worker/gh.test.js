@@ -127,14 +127,31 @@ describe('worker/gh — checkAvailability', () => {
     expect(r).toEqual({ state: 'error', reason: 'gh_failed' });
   });
 
-  test('probes only once after a successful probe', async () => {
+  test('reuses a fresh successful probe instead of spawning again', async () => {
     const run = makeRun();
-    const gh = createGh({ run });
+    let clock = 1000;
+    const gh = createGh({ run, now: () => clock });
 
     await gh.checkAvailability();
+    clock += 59_000;
     await gh.checkAvailability();
 
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  test('re-probes after the success TTL so a revoked token is noticed', async () => {
+    let code = 0;
+    const run = vi.fn(async () => ({ code, stdout: '', stderr: '' }));
+    let clock = 1000;
+    const gh = createGh({ run, now: () => clock });
+
+    await gh.checkAvailability();
+    clock += 60_000;
+    code = 1;
+    const r = await gh.checkAvailability();
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(r).toEqual({ state: 'error', reason: 'gh_failed' });
   });
 
   test('does not re-probe within 30s of a failure', async () => {
@@ -247,6 +264,28 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
 
   test('returns error on a payload without a state', async () => {
     const run = makeRun({ stdout: JSON.stringify({ url: DETAIL.url }) });
+
+    const r = await createGh({ run }).prDetail('/repo', 304);
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
+  test('returns error (never ok with an empty sha) when headRefOid is missing', async () => {
+    const without_oid = { ...DETAIL };
+    delete (/** @type {any} */ (without_oid).headRefOid);
+    const run = makeRun({ stdout: JSON.stringify(without_oid) });
+
+    const r = await createGh({ run }).prDetail('/repo', 304);
+
+    // Every gate verdict binds to this sha and the merge pins itself to it, so
+    // an observation without one is not a successful observation.
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
+  test('returns error on an empty headRefOid', async () => {
+    const run = makeRun({
+      stdout: JSON.stringify({ ...DETAIL, headRefOid: '' })
+    });
 
     const r = await createGh({ run }).prDetail('/repo', 304);
 
@@ -374,12 +413,9 @@ describe('worker/gh — write operations (worker-phase2 §6)', () => {
   test('squash-merges without deleting the branch', async () => {
     const run = makeRun();
 
-    const r = await createGh({ run }).mergeSquash('/repo', 304);
+    const r = await createGh({ run }).mergeSquash('/repo', 304, 'a'.repeat(40));
 
     expect(r).toEqual({ state: 'ok', data: true });
-    expect(run).toHaveBeenCalledWith(['pr', 'merge', '304', '--squash'], {
-      cwd: '/repo'
-    });
     // Branch removal is a LATER cleanup step, so the merge must not fold it in.
     expect(/** @type {any} */ (run).mock.calls[0][0]).not.toContain(
       '--delete-branch'
@@ -397,10 +433,33 @@ describe('worker/gh — write operations (worker-phase2 §6)', () => {
     );
   });
 
+  test('refuses to merge unpinned when no head sha is given', async () => {
+    const run = makeRun();
+
+    const r = await createGh({ run }).mergeSquash(
+      '/repo',
+      304,
+      /** @type {any} */ (undefined)
+    );
+
+    expect(r).toEqual({ state: 'error', reason: 'head_sha_required' });
+    // Nothing was spawned: an unpinned merge is refused, not attempted.
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('refuses to merge unpinned on an empty head sha', async () => {
+    const run = makeRun();
+
+    const r = await createGh({ run }).mergeSquash('/repo', 304, '');
+
+    expect(r).toEqual({ state: 'error', reason: 'head_sha_required' });
+    expect(run).not.toHaveBeenCalled();
+  });
+
   test('reports a refused merge as an error, never as a merge', async () => {
     const run = makeRun({ code: 1, stderr: 'not mergeable' });
 
-    const r = await createGh({ run }).mergeSquash('/repo', 304);
+    const r = await createGh({ run }).mergeSquash('/repo', 304, 'a'.repeat(40));
 
     expect(r).toEqual({ state: 'error', reason: 'gh_failed' });
   });
@@ -430,7 +489,7 @@ describe('worker/gh — write operations (worker-phase2 §6)', () => {
       throw new Error('ENOENT');
     });
 
-    const r = await createGh({ run }).mergeSquash('/repo', 304);
+    const r = await createGh({ run }).mergeSquash('/repo', 304, 'a'.repeat(40));
 
     expect(r).toEqual({ state: 'error', reason: 'gh_spawn_failed' });
   });

@@ -593,7 +593,7 @@ export async function mergeWorkerPr(workspace_root, bead_id) {
 export async function rerunWorkerPr(workspace_root, bead_id) {
   const att = ATTACHMENTS.get(keyFor(workspace_root));
   if (!att || !att.prActions) {
-    return { ok: false, reason: 'no_attachment' };
+    return { ok: false, reason: 'no_attachment', redispatched: false };
   }
   return att.prActions.rerun(bead_id);
 }

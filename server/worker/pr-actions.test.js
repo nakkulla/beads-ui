@@ -14,6 +14,7 @@
  *   - the [재실행] transition, step by step and in order, and that the poller
  *     cannot publish a rerun's own close as an abandonment.
  */
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,6 +23,7 @@ import { createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller } from './pr-poller.js';
 import { createQueueStore } from './queue-store.js';
+import { createScheduler } from './scheduler.js';
 
 const WS = '/tmp/example-workspace/project-p5';
 const REPO = '/tmp/example-workspace/project-p5';
@@ -120,6 +122,7 @@ function seedStore(options = {}) {
  *   children?: Record<string, { id: string, status: string }[]>,
  *   bdFail?: (method: string, id: string) => boolean,
  *   mergeFails?: boolean,
+ *   afterMerge?: any,
  *   worktreeExists?: boolean,
  *   resolveConflictResult?: any
  * }} [options]
@@ -132,11 +135,21 @@ function makeActions(options = {}) {
 
   const details = options.details || [prOf()];
   let detail_i = 0;
+  // What GitHub reports about the PR once OUR merge command has returned zero.
+  // The default is the ordinary case (it really merged); a test overrides it to
+  // model a merge queue that only ENQUEUED the PR, or an unreadable re-check.
+  let merge_issued = false;
+  const after_merge = Object.hasOwn(options, 'afterMerge')
+    ? options.afterMerge
+    : { state: 'ok', data: prOf({ state: 'MERGED' }) };
   const gh = {
     prDetail: vi.fn(async () => {
+      calls.push(`gh:prDetail`);
+      if (merge_issued) {
+        return after_merge;
+      }
       const d = details[Math.min(detail_i, details.length - 1)];
       detail_i += 1;
-      calls.push(`gh:prDetail`);
       return d.state === 'error' ? d : { state: 'ok', data: d };
     }),
     prChecks: vi.fn(async () => {
@@ -145,9 +158,11 @@ function makeActions(options = {}) {
     }),
     mergeSquash: vi.fn(async () => {
       calls.push('gh:mergeSquash');
-      return options.mergeFails
-        ? { state: 'error', reason: 'gh_failed' }
-        : { state: 'ok', data: true };
+      if (options.mergeFails) {
+        return { state: 'error', reason: 'gh_failed' };
+      }
+      merge_issued = true;
+      return { state: 'ok', data: true };
     }),
     updateBranch: vi.fn(async () => {
       calls.push('gh:updateBranch');
@@ -191,7 +206,19 @@ function makeActions(options = {}) {
       calls.push('wt:remove');
       return { code: 0, stderr: '' };
     }),
-    exists: vi.fn(() => options.worktreeExists === true)
+    exists: vi.fn(() => options.worktreeExists === true),
+    // The repo topology lock, recorded on the SAME ordered log as the git and
+    // worktree calls so a test can assert which commands run inside it.
+    withTopologyLock: vi.fn(
+      async (/** @type {string} */ _repo, /** @type {any} */ fn) => {
+        calls.push('lock:acquire');
+        try {
+          return await fn();
+        } finally {
+          calls.push('lock:release');
+        }
+      }
+    )
   };
 
   const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
@@ -292,7 +319,9 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
       'gh:updateBranch',
       'gh:prDetail',
       'gh:prChecks',
-      'gh:mergeSquash'
+      'gh:mergeSquash',
+      // The merge is CONFIRMED by re-reading the PR before any cleanup runs.
+      'gh:prDetail'
     ]);
   });
 
@@ -338,6 +367,61 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('merge_failed:gh_failed');
     expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+  });
+});
+
+describe('merge click — a zero exit is not a merge (§6)', () => {
+  test('leaves the bead in pr_wait when a merge queue only enqueued the PR', async () => {
+    // `gh pr merge` returned 0, but GitHub still reports the PR OPEN: a merge
+    // queue accepted it and will land it later. Cleaning up here would close the
+    // bead and delete both branches out from under a live PR.
+    const h = makeActions({ afterMerge: { state: 'ok', data: prOf() } });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: true,
+      action: 'merge_unconfirmed',
+      reason: 'merge_pending'
+    });
+    expect(h.gh.mergeSquash).toHaveBeenCalled();
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+    expect(h.worktree.remove).not.toHaveBeenCalled();
+    const q = h.store.snapshot(WS);
+    expect(q.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toEqual([BEAD]);
+    expect(q.done).toEqual([]);
+    // Nothing is recorded as a cleanup FAILURE either — the poller finishes it
+    // when it observes the real MERGED.
+    expect(q.cleanup_failed[BEAD]).toBeUndefined();
+  });
+
+  test('refuses to clean up when the post-merge re-read cannot be completed', async () => {
+    const h = makeActions({
+      afterMerge: { state: 'error', reason: 'gh_failed' }
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      action: 'merge_unconfirmed',
+      reason: 'merge_state_unconfirmed:gh_failed'
+    });
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+    expect(
+      h.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+
+  test('cleans up once the re-read observes MERGED', async () => {
+    const h = makeActions();
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, action: 'merged' });
+    expect(
+      h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
   });
 });
 
@@ -580,7 +664,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     });
   });
 
-  test('leaves a dirty base checkout alone instead of fast-forwarding it', async () => {
+  test('leaves a dirty base checkout alone instead of fast-forwarding it, and says so', async () => {
     const h = makeActions();
     h.gitRun.mockImplementation(async (/** @type {string[]} */ args) => {
       h.calls.push(`git:${args.slice(0, 2).join(' ')}`);
@@ -600,6 +684,147 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
 
     expect(r.ok).toBe(true);
     expect(h.calls).not.toContain('git:merge --ff-only');
+    // Reported apart from a real fast-forward: the user's checkout was NOT
+    // moved, which is a different fact about their repo than "it was".
+    expect(r.base_sync).toBe('fetch_only:dirty');
+  });
+
+  test('reports a fast-forward distinctly when the base checkout is clean', async () => {
+    const h = makeActions();
+    h.gitRun.mockImplementation(async (/** @type {string[]} */ args) => {
+      h.calls.push(`git:${args.slice(0, 2).join(' ')}`);
+      if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
+        return { code: 0, stdout: 'base-sha-1\n', stderr: '' };
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+        return { code: 0, stdout: 'main\n', stderr: '' };
+      }
+      if (args[0] === 'ls-remote') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, base_sync: 'fast_forwarded' });
+    expect(h.calls).toContain('git:merge --ff-only');
+  });
+
+  test('reports fetch_only when the checkout sits on another branch', async () => {
+    // The default git fake answers `--abbrev-ref HEAD` with `feature`.
+    const h = makeActions();
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, base_sync: 'fetch_only:not_on_base' });
+  });
+});
+
+describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
+  test('restores the bead to resolved when the branch cleanup fails after the close', async () => {
+    const h = makeActions({
+      // The local branch delete fails and the confirming `rev-parse --verify`
+      // still finds the branch → the cleanup stops at `branch_cleanup`, one
+      // step PAST the parent close.
+      gitFail: (args) => args[0] === 'branch'
+    });
+    h.bd.readStatus.mockImplementation(async (/** @type {string} */ id) => {
+      h.calls.push(`bd:readStatus:${id}`);
+      return h.bd_status.get(id) ?? 'closed';
+    });
+    h.bd.setStatus.mockImplementation(
+      async (/** @type {string} */ id, /** @type {string} */ s) => {
+        h.calls.push(`bd:setStatus:${id}:${s}`);
+        h.bd_status.set(id, s);
+      }
+    );
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'branch_cleanup',
+      reason: 'local_branch_delete_failed'
+    });
+    // The close really happened, and was really undone: the contract says a
+    // cleanup failure hands back a `resolved` bead, not a `closed` one.
+    expect(h.calls).toContain('bd:setStatus:UI-1:closed');
+    expect(h.calls).toContain('bd:setStatus:UI-1:resolved');
+    expect(h.bd_status.get(BEAD)).toBe('resolved');
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'branch_cleanup',
+      bd_restore: 'restored'
+    });
+  });
+
+  test('restores the bead when the close WROTE but its readback did not confirm', async () => {
+    const h = makeActions();
+    // bd took the write and then stopped answering reads: `closed` may well
+    // have landed, so the restore must run rather than assume nothing happened.
+    h.bd.readStatus.mockImplementation(async (/** @type {string} */ id) => {
+      h.calls.push(`bd:readStatus:${id}`);
+      throw new Error('bd down');
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'parent_close',
+      reason: 'bd_close_failed'
+    });
+    expect(h.calls).toContain('bd:setStatus:UI-1:resolved');
+    // The restore's own readback failed too — recorded, never left silent.
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'parent_close',
+      bd_restore: 'restore_failed'
+    });
+    expect(h.worktree.remove).not.toHaveBeenCalled();
+  });
+
+  test('does not touch bd when the cleanup stops BEFORE the parent close', async () => {
+    const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: false, cleanup_step: 'base_sync' });
+    expect(h.bd.setStatus).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD].bd_restore).toBeNull();
+  });
+});
+
+describe('post-merge cleanup — ref operations hold the topology lock (§8)', () => {
+  test('runs the base sync under the lock, and the branch deletes under a lock taken after the worktree removal', async () => {
+    const h = makeActions();
+
+    await h.actions.merge(BEAD);
+
+    const ordered = h.calls.filter(
+      (c) =>
+        c.startsWith('lock:') ||
+        c === 'git:fetch --no-tags' ||
+        c === 'wt:remove' ||
+        c === 'git:branch -D' ||
+        c === 'git:push origin'
+    );
+    expect(ordered).toEqual([
+      // Base sync: fetch inside the lock.
+      'lock:acquire',
+      'git:fetch --no-tags',
+      'lock:release',
+      // Branch cleanup: the worktree removal takes the same lock INSIDE the
+      // worktree manager, so it runs before this hold — nesting would deadlock.
+      'wt:remove',
+      'lock:acquire',
+      'git:branch -D',
+      'git:push origin',
+      'lock:release'
+    ]);
+    expect(h.worktree.withTopologyLock).toHaveBeenCalledWith(
+      REPO,
+      expect.any(Function)
+    );
   });
 });
 
@@ -693,6 +918,15 @@ describe('[재실행] — the order-sensitive discard transition (§6)', () => {
     ).toEqual([BEAD]);
   });
 
+  test('reports redispatched:false when the transition itself failed', async () => {
+    const h = makeActions();
+    h.bd_status.set(BEAD, 'resolved');
+
+    const r = await h.actions.rerun(BEAD);
+
+    expect(r).toMatchObject({ ok: false, redispatched: false });
+  });
+
   test('the poller cannot publish a rerun own close as an abandonment', async () => {
     const h = makeActions({ details: [prOf({ state: 'CLOSED' })] });
     h.bd_status.set(BEAD, 'open');
@@ -724,6 +958,120 @@ describe('[재실행] — the order-sensitive discard transition (§6)', () => {
     expect(h.observations.isRerunning(WS, BEAD)).toBe(false);
     expect(
       h.store.snapshot(WS).queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+});
+
+describe('[재실행] — the re-dispatch is real, and respects ⏸ (§6 · phase1 §1)', () => {
+  /**
+   * Wire the actions to a REAL scheduler over the SAME store, so the follow-up
+   * tick either genuinely dispatches or genuinely does not — a fake scheduler
+   * could only prove that `tick()` was called.
+   *
+   * @param {{ auto_advance: boolean }} options
+   */
+  function makeRerunSystem(options) {
+    const h = makeActions();
+    /** @type {string[]} */
+    const spawned = [];
+    const bd = {
+      ...h.bd,
+      async snapshotBead() {
+        return {
+          ready: true,
+          blocked: false,
+          repo: REPO,
+          target_base: 'main',
+          workflow_mode: null,
+          route: null,
+          status: 'open',
+          deps: []
+        };
+      },
+      setMetadata: vi.fn(async () => {}),
+      // The dispatch stamps read back what they wrote; `pr_url` is genuinely
+      // gone by the time the tick runs, which is what the rerun asserted.
+      readMetadata: vi.fn(async (/** @type {string} */ _id, key) =>
+        key === 'pr_url' ? null : 'fast_track'
+      )
+    };
+    const scheduler = createScheduler({
+      store: h.store,
+      makeRunner: () => ({
+        name: 'claude',
+        spawn(/** @type {any} */ bead) {
+          spawned.push(bead.id);
+          return {
+            pid: 4242,
+            kill: vi.fn(),
+            events: new EventEmitter(),
+            done: new Promise(() => {})
+          };
+        }
+      }),
+      bd,
+      worktree: {
+        ...h.worktree,
+        add: vi.fn(async (/** @type {any} */ { bead_id }) => ({
+          path: `/wt/${bead_id}`,
+          branch: bead_id,
+          base_oid: 'base-1'
+        }))
+      },
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => ({ ok: true, reason: 'ok' }))
+      },
+      sessionLog: { attach: vi.fn() }
+    });
+    const actions = createPrActions({
+      workspace: WS,
+      repo: REPO,
+      store: h.store,
+      gh: /** @type {any} */ (h.gh),
+      observations: h.observations,
+      bd: /** @type {any} */ (bd),
+      worktree: /** @type {any} */ (h.worktree),
+      gitRun: h.gitRun,
+      scheduler,
+      requeryDelayMs: 0,
+      sleep: async () => {},
+      now: () => 1000
+    });
+    h.store.setAutoAdvance(WS, options.auto_advance);
+    h.bd_status.set(BEAD, 'open');
+    return { h, actions, scheduler, spawned };
+  }
+
+  test('starts a NEW attempt for the bead when auto_advance is on', async () => {
+    const s = makeRerunSystem({ auto_advance: true });
+
+    const r = await s.actions.rerun(BEAD);
+
+    // Not merely a lane move: a session really spawned for this bead, and the
+    // store carries a second, RUNNING attempt for it.
+    expect(r).toMatchObject({ ok: true, redispatched: true });
+    expect(s.spawned).toEqual([BEAD]);
+    expect(s.scheduler.runningBeads()).toEqual([BEAD]);
+    const attempts = Object.values(s.h.store.snapshot(WS).attempts);
+    expect(
+      attempts.filter(
+        (/** @type {any} */ a) => a.bead_id === BEAD && a.status === 'running'
+      )
+    ).toHaveLength(1);
+  });
+
+  test('leaves the bead waiting in queue with no session when auto_advance is off', async () => {
+    const s = makeRerunSystem({ auto_advance: false });
+
+    const r = await s.actions.rerun(BEAD);
+
+    // ⏸ starts no new sessions — a human-clicked rerun defers rather than
+    // overriding the pause (worker-phase1, spec §8 protected core).
+    expect(r).toMatchObject({ ok: true, redispatched: false });
+    expect(s.spawned).toEqual([]);
+    expect(s.scheduler.runningCount()).toBe(0);
+    expect(
+      s.h.store.snapshot(WS).queue.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
   });
 });

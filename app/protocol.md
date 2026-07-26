@@ -92,23 +92,52 @@ Besides fs-watch-driven pushes, the server re-runs list refreshes every
 client is connected, so writes from other machines through the central DB
 surface without a local fs event.
 
-## Worker queue channel (spec §5.1)
+## Worker queue channel (worker-phase2 §3/§4/§6)
 
 Per-workspace subscription + CAS-guarded mutations + a whole-queue push.
 
+There is ONE waiting lane. The retired serial/parallel split is replaced by a
+single `queue` plus a `slots` concurrency cap (`slots: 1` is the old serial
+meaning), and completion is decided by the SERVER OBSERVING an open PR, not by
+the session's self-report — so a bead moves `queue` → `pr_wait` → `done`.
+Nothing merges without a human `[머지]` click.
+
 - `subscribe-worker-queue` / `unsubscribe-worker-queue` payload: `{ id }`.
 - `worker-queue-snapshot` (push) payload: `{ id, queue }` — the full queue
-  (`revision`, `auto_advance`, `serial[]`, `parallel[]`, `done[]`, `attempts`).
-- `worker-queue-place` payload:
-  `{ bead_id, lane:'serial'|'parallel', index?, expected_revision }`
-- `worker-queue-reorder` payload:
-  `{ bead_id, lane, to_index, expected_revision }`
+  (`revision`, `auto_advance`, `slots`, `queue[]`, `pr_wait[]`, `done[]`,
+  `attempts`, `admission`, `cleanup_failed`, `exec_defaults`) plus two
+  server-decorated, NON-persisted keys: `workspace_info: { verify_cmd, slots }`
+  and `pr_observations` (per-`pr_wait` PR state + merge-gate verdict, memory
+  cache only).
+- `worker-queue-place` payload: `{ bead_id, index?, expected_revision }`
+- `worker-queue-reorder` payload: `{ bead_id, to_index, expected_revision }`
 - `worker-queue-toggle` payload: `{ on, expected_revision }` — persists
   `auto_advance` and, on turn-ON, kicks the live dispatch loop (`tick`).
+- `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
+  concurrency cap (lower bound 1).
+- `worker-queue-set-exec-default` payload:
+  `{ key: <one of the 5 exec keys>, value: string|null, expected_revision }` —
+  workspace-global exec default; null/`''` unsets.
 - `worker-queue-remove` payload: `{ bead_id, expected_revision }`
-- `worker-attempt-stop` payload: `{ attempt_id }` — stops (■) a running attempt
-  (group-kill + attempt failed + `workflow_mode` revert); replies
-  `{ attempt_id, stopped }`.
+- `worker-attempt-pause` / `worker-attempt-stop` payload: `{ attempt_id }` —
+  pauses (⏸) or discards (■) a running attempt (group-kill + `workflow_mode`
+  revert); stop replies `{ attempt_id, stopped }`.
+- `worker-attempt-resume` payload: `{ attempt_id, expected_revision }` — ▶ on a
+  paused/failed/orphaned attempt; cap-exempt (human-originated).
+- `worker-pr-merge` payload: `{ bead_id, expected_revision }` — the
+  authoritative `[머지]` click. The badges in the snapshot are ADVISORY; the
+  click re-reads `gh` server-side and re-evaluates the merge gate against the
+  head SHA it just observed (a stale green never passes). Reply:
+  `{ bead_id, ok, conflict, action, reason, cleanup_step, attempt_id }`, where
+  `action` is `merged` / `updated_and_merged` / `already_merged` /
+  `merge_unconfirmed` (the merge command succeeded but the PR is not observed
+  MERGED — e.g. a merge queue took it) / `conflict_resolution` (a DIRTY PR
+  dispatched a resolution session and merged nothing) / `refused`.
+- `worker-pr-rerun` payload: `{ bead_id, expected_revision }` — `[재실행]`:
+  close the PR, put bd back to `open` without `pr_url`, discard the
+  worktree/branch, requeue. Reply
+  `{ bead_id, rerun, conflict, redispatched, reason }`; `redispatched` is false
+  when the queue is paused, which requeues without starting a session.
 
 Every queue mutation replies `{ applied, conflict, queue }`; a stale
 `expected_revision` yields `conflict:true` + the current queue for re-sync.

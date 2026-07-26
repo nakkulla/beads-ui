@@ -21,9 +21,15 @@ A dark-first control tower with **two tabs** plus a shared detail panel:
 - 🏂 **Board tab** – Blocked / Ready / In progress / Resolved / Closed columns
   with a route-driven workflow stepper, drag-to-restatus, and keyboard
   navigation. Click a card to open the shared detail panel.
-- 🤖 **Worker tab** – A session queue console: drag Board candidates into the
-  Serial / Parallel lanes, ▶/⏸ auto-advance, live running-session tiles, and a
-  circuit-breaker banner on failure.
+- 🤖 **Worker tab** – A four-column session queue console (대기 / 실행 중 / PR
+  대기 / 완료): drag Board candidates into the single waiting queue, ▶/⏸
+  auto-advance with an editable concurrency cap (slots), live running-session
+  tiles, and a failure banner. Completion is judged by the SERVER observing an
+  open PR for the session's branch — never by the session's self-report — so a
+  finished bead lands in **PR 대기** with CI / local-verification / base badges.
+  Merging is always a human `[머지]` click, gated on a verification result bound
+  to the PR's current head SHA (a stale green never passes); `[재실행]` throws
+  the PR away and re-runs the bead from a fresh base.
 - 🎞️ **Transcript viewer** – Click a running tile (or a session-history row) to
   open the session drawer: parsed assistant / tool / gate / phase lines with
   live-follow for a running attempt and the same viewer for a Done/Failed log.

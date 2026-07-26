@@ -888,13 +888,13 @@ export async function handleWorkerPrRerun(ws, req) {
     );
     return;
   }
-  /** @type {{ ok: boolean, reason?: string|null }} */
-  let result = { ok: false, reason: 'no_attachment' };
+  /** @type {{ ok: boolean, reason?: string|null, redispatched?: boolean }} */
+  let result = { ok: false, reason: 'no_attachment', redispatched: false };
   try {
     result = await rerunWorkerPr(key, p.bead_id);
   } catch (err) {
     log('worker-pr-rerun failed for %s/%s: %o', key, p.bead_id, err);
-    result = { ok: false, reason: 'error' };
+    result = { ok: false, reason: 'error', redispatched: false };
   }
   ws.send(
     JSON.stringify(
@@ -902,6 +902,9 @@ export async function handleWorkerPrRerun(ws, req) {
         bead_id: p.bead_id,
         rerun: !!result.ok,
         conflict: false,
+        // A paused queue requeues the bead without starting anything — ⏸ starts
+        // no new sessions, so the reply says which of the two happened.
+        redispatched: !!result.redispatched,
         reason: result.ok ? null : result.reason || null
       })
     )

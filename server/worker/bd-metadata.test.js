@@ -42,6 +42,37 @@ describe('worker/bd-metadata argv contract', () => {
     const md = createBdMetadata({ runJson });
     expect(await md.readMetadata('UI-1', 'workflow_mode')).toBe('fast_track');
   });
+
+  test('readMetadata throws on a non-zero bd exit instead of reading as absent', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 1,
+      stdoutJson: null,
+      stderr: 'bd down'
+    }));
+
+    await expect(
+      createBdMetadata({ runJson }).readMetadata('UI-1', 'pr_url')
+    ).rejects.toThrow(/bd show UI-1 failed \(1\)/);
+  });
+
+  test('readMetadata throws on an unreadable payload', async () => {
+    const runJson = vi.fn(async () => ({ code: 0, stdoutJson: 'nonsense' }));
+
+    await expect(
+      createBdMetadata({ runJson }).readMetadata('UI-1', 'pr_url')
+    ).rejects.toThrow(/unreadable payload/);
+  });
+
+  test('readMetadata returns null only for a key that is genuinely absent', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: { id: 'UI-1', metadata: {} }
+    }));
+
+    expect(
+      await createBdMetadata({ runJson }).readMetadata('UI-1', 'pr_url')
+    ).toBe(null);
+  });
 });
 
 describe('worker/bd-metadata child listing (post-merge sweep)', () => {
@@ -104,6 +135,20 @@ describe('worker/bd-metadata child listing (post-merge sweep)', () => {
     const children = await createBdMetadata({ runJson }).listChildren('UI-1');
 
     expect(children).toEqual([{ id: 'UI-1.1', status: 'open' }]);
+  });
+
+  test('throws on a malformed payload rather than sweeping nothing', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) =>
+      args.includes('--parent')
+        ? { code: 0, stdoutJson: { rows: [] } }
+        : { code: 0, stdoutJson: [] }
+    );
+
+    // "bd answered with something we cannot read" must not become "this bead
+    // has no children" — that closes the parent over its open leaves.
+    await expect(
+      createBdMetadata({ runJson }).listChildren('UI-1')
+    ).rejects.toThrow(/non-array payload/);
   });
 
   test('throws when either selector query exits non-zero', async () => {

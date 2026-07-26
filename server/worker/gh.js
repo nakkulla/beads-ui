@@ -102,6 +102,24 @@ import { runShell } from '../bd.js';
 const AVAILABILITY_RETRY_MS = 30_000;
 
 /**
+ * How long a SUCCESSFUL availability probe stays good (ms).
+ *
+ * A success used to be memoized for the process lifetime, which made a later
+ * `gh auth` logout, token expiry or revocation structurally unobservable: the
+ * admission check kept passing for days on a probe taken at boot, and every
+ * dispatch it admitted was one whose §1 completion verdict could never succeed.
+ *
+ * 60 s is chosen against the two costs it sits between. Above it: a whole tick
+ * pass (a handful of admission checks seconds apart) shares ONE `gh auth status`
+ * spawn, so the per-dispatch-probe cost the memo existed to avoid does not come
+ * back. Below it: a revoked token is noticed within a minute, which is far
+ * shorter than any session it would otherwise let start.
+ *
+ * @type {number}
+ */
+const AVAILABILITY_OK_TTL_MS = 60_000;
+
+/**
  * `gh pr list --json` field set. Phase 1 needs number+url; head_ref/head_sha are
  * observed now so Phase 4's SHA-bound gate reads the same shape.
  *
@@ -186,11 +204,11 @@ export function createGh(deps = {}) {
   const now = deps.now || (() => Date.now());
 
   /**
-   * Memoized availability. Once `gh` is usable it stays usable for the process
-   * lifetime (an authenticated CLI does not spontaneously de-authenticate under
-   * us, and re-probing per dispatch would spawn a process per admission check);
-   * while it is NOT usable the probe repeats at most once per 30 s so a repo
-   * that installs/authenticates `gh` recovers without a server restart.
+   * Memoized availability, with a TTL on BOTH verdicts: a success is trusted for
+   * {@link AVAILABILITY_OK_TTL_MS} and a failure re-probes after
+   * {@link AVAILABILITY_RETRY_MS}. Neither verdict is permanent — an
+   * authenticated CLI can be logged out or have its token revoked under us just
+   * as an unusable one can be repaired.
    *
    * @type {{ ok: boolean, reason: string, at: number } | null}
    */
@@ -340,7 +358,13 @@ export function createGh(deps = {}) {
       const rec = /** @type {Record<string, unknown>} */ (o);
       const url = typeof rec.url === 'string' ? rec.url : '';
       const state = typeof rec.state === 'string' ? rec.state : '';
-      if (url.length === 0 || state.length === 0) {
+      // A MISSING head sha is an ERROR, never an `ok` carrying an empty string.
+      // Every gate verdict binds to this value and the merge pins itself to it,
+      // so an observation without one cannot be reported as a successful
+      // observation: in the "검증 신호 없음" tier the gate is ENABLED, and an
+      // empty sha reaching that path would merge a head nothing pinned.
+      const head_sha = typeof rec.headRefOid === 'string' ? rec.headRefOid : '';
+      if (url.length === 0 || state.length === 0 || head_sha.length === 0) {
         return { state: 'error', reason: 'gh_bad_json' };
       }
       return {
@@ -355,7 +379,7 @@ export function createGh(deps = {}) {
               ? rec.mergeStateStatus
               : '',
           head_ref: typeof rec.headRefName === 'string' ? rec.headRefName : '',
-          head_sha: typeof rec.headRefOid === 'string' ? rec.headRefOid : ''
+          head_sha
         }
       };
     },
@@ -432,25 +456,40 @@ export function createGh(deps = {}) {
      * mergeable, branch protection, a race with another merge) is a non-zero
      * exit, i.e. an ERROR: the click path must not treat it as a merge.
      *
-     * `head_sha` is passed to GitHub as `--match-head-commit`, which closes the
-     * LAST TOCTOU window in the click path: the gate was evaluated against a
-     * specific head, and a push landing between that evaluation and this call
-     * would otherwise merge a commit nothing ever verified. With the pin,
-     * GitHub itself refuses the merge (→ an ERROR, not a merge) and the next
-     * click re-gates the new head. Omitting it merges whatever is current,
-     * which is exactly the stale-approval failure §5/§6 exist to prevent.
+     * `head_sha` is REQUIRED and is passed to GitHub as `--match-head-commit`,
+     * which closes the LAST TOCTOU window in the click path: the gate was
+     * evaluated against a specific head, and a push landing between that
+     * evaluation and this call would otherwise merge a commit nothing ever
+     * verified. With the pin, GitHub itself refuses the merge (→ an ERROR, not a
+     * merge) and the next click re-gates the new head.
+     *
+     * An absent or empty sha REFUSES (3-state error) rather than merging
+     * unpinned. Merging whatever is current is exactly the stale-approval
+     * failure §5/§6 exist to prevent, and it must not be reachable by a
+     * malformed observation — least of all in the "검증 신호 없음" tier, where
+     * the gate is enabled and the pin is the only thing binding the click to a
+     * commit.
      *
      * @param {string} repo_dir - Repo root the command runs in (`cwd`).
      * @param {number} number - The PR to merge.
-     * @param {string} [head_sha] - The exact head the gate approved.
+     * @param {string} head_sha - The exact head the gate approved (required).
      * @returns {Promise<GhResult<true>>}
      */
     async mergeSquash(repo_dir, number, head_sha) {
-      const args = ['pr', 'merge', String(number), '--squash'];
-      if (typeof head_sha === 'string' && head_sha.length > 0) {
-        args.push('--match-head-commit', head_sha);
+      if (typeof head_sha !== 'string' || head_sha.length === 0) {
+        return { state: 'error', reason: 'head_sha_required' };
       }
-      return runVoid(args, repo_dir);
+      return runVoid(
+        [
+          'pr',
+          'merge',
+          String(number),
+          '--squash',
+          '--match-head-commit',
+          head_sha
+        ],
+        repo_dir
+      );
     },
 
     /**
@@ -487,11 +526,12 @@ export function createGh(deps = {}) {
      * @returns {Promise<GhResult<true>>}
      */
     async checkAvailability() {
-      if (availability && availability.ok) {
-        return { state: 'ok', data: true };
-      }
       const at = now();
-      if (availability && at - availability.at < AVAILABILITY_RETRY_MS) {
+      if (availability && availability.ok) {
+        if (at - availability.at < AVAILABILITY_OK_TTL_MS) {
+          return { state: 'ok', data: true };
+        }
+      } else if (availability && at - availability.at < AVAILABILITY_RETRY_MS) {
         return { state: 'error', reason: availability.reason };
       }
       /** @type {{ code: number, stdout: string, stderr: string }} */

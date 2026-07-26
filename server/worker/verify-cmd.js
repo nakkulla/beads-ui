@@ -95,7 +95,10 @@ export function detectVerifyCmd(repo, deps = {}) {
  * (worker-attempt-resume-verify-autodetect §2.1): an explicit config section
  * ALWAYS wins, then auto-detection, then none. The return carries `source` so
  * the queue `workspace_info` + the ctrl bar can flag a detected command
- * (`(자동 감지)`); a null return keeps the existing auto_merge→pr_stop demotion.
+ * (`(자동 감지)`). A null return means the workspace has no local verification
+ * signal, which drops the merge gate to its third tier ("검증 신호 없음") when
+ * the repo also reports no CI (worker-phase2 §5) — the retired auto_merge
+ * demotion is gone with the merge axis.
  *
  * @param {string} repo - Absolute (or resolvable) target repo root.
  * @param {Record<string, { cmd: string[], timeout_ms: number }>|null|undefined} config_map
@@ -299,7 +302,8 @@ async function ensureCommitPresent(git, repo, sha, pr_number) {
  *   timeout_ms: number,
  *   worktree: {
  *     addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
- *     removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>
+ *     removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>,
+ *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   git: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   spawn_impl?: typeof spawn
@@ -310,11 +314,17 @@ export async function runVerifyAtSha(input) {
   if (typeof input.sha !== 'string' || input.sha.length === 0) {
     return { ok: false, reason: 'verify_sha_unavailable', exit: null };
   }
-  const available = await ensureCommitPresent(
-    input.git,
-    input.repo,
-    input.sha,
-    input.pr_number ?? null
+  // The fetch writes this repo's object/ref database, so it runs under the same
+  // topology lock the worktree operations take (worker-phase2 §8). The lock is
+  // released BEFORE `addDetached`, which takes it itself — holding it across
+  // that call would deadlock on a non-reentrant mutex.
+  const available = await input.worktree.withTopologyLock(input.repo, () =>
+    ensureCommitPresent(
+      input.git,
+      input.repo,
+      input.sha,
+      input.pr_number ?? null
+    )
   );
   if (!available) {
     return { ok: false, reason: 'verify_sha_unavailable', exit: null };

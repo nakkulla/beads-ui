@@ -75,14 +75,27 @@ export const CLEANUP_STEPS = [
 ];
 
 /**
+ * What step 1 of the cleanup actually did to the LOCAL checkout. `fast_forwarded`
+ * = fetched AND moved the local base branch; the `fetch_only:*` pair = fetched,
+ * local checkout deliberately untouched (see {@link syncBase} for why that is
+ * sufficient rather than degraded).
+ *
+ * @typedef {'fast_forwarded'|'fetch_only:not_on_base'|'fetch_only:dirty'} BaseSyncOutcome
+ */
+
+/**
  * @typedef {Object} MergeClickResult
  * @property {boolean} ok - Whether the click accomplished what it set out to.
- * @property {'merged'|'updated_and_merged'|'already_merged'|'conflict_resolution'|'refused'} action
+ * @property {'merged'|'updated_and_merged'|'already_merged'|'merge_unconfirmed'|'conflict_resolution'|'refused'} action
  * What the click actually DID — never just "succeeded": a dispatched conflict
- * resolution is a legitimate outcome that merged nothing.
+ * resolution is a legitimate outcome that merged nothing, and
+ * `merge_unconfirmed` is a merge COMMAND that succeeded without the PR being
+ * observed merged (a merge queue accepted it, or the re-read failed).
  * @property {string|null} reason - Machine-readable cause for a refusal (or a
  * cleanup failure) — null on a clean success.
  * @property {string|null} [cleanup_step] - Which cleanup step stopped, if one did.
+ * @property {BaseSyncOutcome|null} [base_sync] - What the cleanup's base sync
+ * did to the local checkout, when a cleanup ran.
  * @property {string|null} [attempt_id] - The resolution attempt, when dispatched.
  * @property {string|null} [head_sha] - The sha the decision was taken on.
  */
@@ -91,6 +104,10 @@ export const CLEANUP_STEPS = [
  * @typedef {Object} RerunResult
  * @property {boolean} ok
  * @property {string|null} reason
+ * @property {boolean} redispatched - Whether a NEW attempt actually started for
+ * the bead. A paused queue (`auto_advance` off) legitimately leaves this false:
+ * ⏸ starts no new sessions, so the bead simply waits in `queue` — reporting
+ * `ok: true, redispatched: false` is what makes that visible instead of implied.
  */
 
 /**
@@ -121,7 +138,11 @@ function isConflicting(pr) {
  *     readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *     listChildren?: (bead_id: string) => Promise<{ id: string, status: string }[]>
  *   },
- *   worktree: any,
+ *   worktree: {
+ *     remove: (input: { repo: string, bead_id: string }) => Promise<unknown>,
+ *     exists?: (repo: string, bead_id: string) => boolean,
+ *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
+ *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
  *   resolveVerify?: () => ResolvedVerifyCmd|null,
@@ -352,53 +373,92 @@ export function createPrActions(deps) {
   // -------------------------------------------------------------------------
 
   /**
-   * Step 1 — base 동기화. Fetches the base from `origin` (which is what every
-   * later step reads) and fast-forwards the LOCAL base branch only when doing
-   * so cannot touch user work: the checkout must already be on that branch and
-   * clean. A dirty or differently-checked-out repo is left completely alone —
-   * preserving unrelated work outranks a convenience fast-forward, and nothing
-   * downstream needs the checkout (the post-merge verification runs in its own
-   * detached worktree pinned to the fetched sha).
+   * Step 1 — base 동기화, with an EXPLICIT outcome (§6).
+   *
+   * Fetches the base from `origin` — which is what every later step reads — and
+   * fast-forwards the LOCAL base branch only when doing so cannot touch user
+   * work: the checkout must already be on that branch and be clean. A dirty or
+   * differently-checked-out repo is left completely alone.
+   *
+   * WHY FETCH-ONLY IS SUFFICIENT, not a degraded outcome: nothing downstream
+   * reads the local checkout. The post-merge verification (step 2) runs in its
+   * own DETACHED worktree pinned to the sha this function returns — the fetched
+   * `origin/<base>` — so its verdict is identical whether or not the local
+   * branch was moved. The fast-forward is a convenience for the human who will
+   * next sit in that checkout, and preserving their unrelated work outranks it.
+   * That is also why a dirty/other-branch checkout is NOT a cleanup failure:
+   * making it one would block cleanup during the repo's normal working state
+   * while buying no verification strength.
+   *
+   * The two outcomes are still reported apart rather than both as a bare
+   * success — "I moved your base branch" and "I left your checkout untouched"
+   * are different facts about the user's repo, and the cleanup record/log names
+   * which one happened.
    *
    * A checkout that IS on a clean base branch but cannot fast-forward is
-   * divergence, which is a hard stop, not something to force.
+   * divergence: a genuine failure (`base_ff_diverged`), never something to force.
    *
    * @param {string} target_base
-   * @returns {Promise<{ ok: true, sha: string }|{ ok: false, reason: string }>}
+   * @returns {Promise<{ ok: true, sha: string, outcome: BaseSyncOutcome }|{ ok: false, reason: string }>}
    */
   async function syncBase(target_base) {
-    const fetched = await deps.gitRun(
-      ['fetch', '--no-tags', 'origin', target_base],
-      { cwd: repo }
-    );
-    if (fetched.code !== 0) {
-      return { ok: false, reason: 'base_fetch_failed' };
-    }
-    const rev = await deps.gitRun(['rev-parse', `origin/${target_base}`], {
-      cwd: repo
+    // Every command below writes or reads this repo's ref database, so the whole
+    // sequence is serialized under the topology lock (§8). No worktree-manager
+    // call happens inside — those take the same lock (see `withTopologyLock`).
+    return deps.worktree.withTopologyLock(repo, async () => {
+      const fetched = await deps.gitRun(
+        ['fetch', '--no-tags', 'origin', target_base],
+        { cwd: repo }
+      );
+      if (fetched.code !== 0) {
+        return {
+          ok: /** @type {const} */ (false),
+          reason: 'base_fetch_failed'
+        };
+      }
+      const rev = await deps.gitRun(['rev-parse', `origin/${target_base}`], {
+        cwd: repo
+      });
+      if (rev.code !== 0 || rev.stdout.trim().length === 0) {
+        return {
+          ok: /** @type {const} */ (false),
+          reason: 'base_rev_unavailable'
+        };
+      }
+      const sha = rev.stdout.trim();
+      const head = await deps.gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], {
+        cwd: repo
+      });
+      if (head.code !== 0 || head.stdout.trim() !== target_base) {
+        return {
+          ok: /** @type {const} */ (true),
+          sha,
+          outcome: /** @type {BaseSyncOutcome} */ ('fetch_only:not_on_base')
+        };
+      }
+      const status = await deps.gitRun(['status', '--porcelain'], {
+        cwd: repo
+      });
+      if (status.code !== 0 || status.stdout.trim().length > 0) {
+        return {
+          ok: /** @type {const} */ (true),
+          sha,
+          outcome: /** @type {BaseSyncOutcome} */ ('fetch_only:dirty')
+        };
+      }
+      const ff = await deps.gitRun(
+        ['merge', '--ff-only', `origin/${target_base}`],
+        { cwd: repo }
+      );
+      if (ff.code !== 0) {
+        return { ok: /** @type {const} */ (false), reason: 'base_ff_diverged' };
+      }
+      return {
+        ok: /** @type {const} */ (true),
+        sha,
+        outcome: /** @type {BaseSyncOutcome} */ ('fast_forwarded')
+      };
     });
-    if (rev.code !== 0 || rev.stdout.trim().length === 0) {
-      return { ok: false, reason: 'base_rev_unavailable' };
-    }
-    const sha = rev.stdout.trim();
-    const head = await deps.gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: repo
-    });
-    if (head.code !== 0 || head.stdout.trim() !== target_base) {
-      return { ok: true, sha };
-    }
-    const status = await deps.gitRun(['status', '--porcelain'], { cwd: repo });
-    if (status.code !== 0 || status.stdout.trim().length > 0) {
-      return { ok: true, sha };
-    }
-    const ff = await deps.gitRun(
-      ['merge', '--ff-only', `origin/${target_base}`],
-      { cwd: repo }
-    );
-    if (ff.code !== 0) {
-      return { ok: false, reason: 'base_ff_diverged' };
-    }
-    return { ok: true, sha };
   }
 
   /**
@@ -499,16 +559,47 @@ export function createPrActions(deps) {
    * Close one bead with a confirming readback (the contract's "readback" —
    * PR Finish closes, and a close nobody confirmed is not a close).
    *
+   * `wrote` reports whether the `closed` WRITE was issued without throwing,
+   * separately from whether the readback confirmed it. The two differ in exactly
+   * the case that matters: a write that landed and a readback that could not be
+   * completed leaves bd `closed` while this returns `ok: false`, so the caller
+   * must still restore the status rather than assume nothing happened.
+   *
    * @param {string} id
-   * @returns {Promise<{ ok: boolean }>}
+   * @returns {Promise<{ ok: boolean, wrote: boolean }>}
    */
   async function closeBead(id) {
+    let wrote = false;
     try {
       await deps.bd.setStatus(id, 'closed');
-      return { ok: (await deps.bd.readStatus(id)) === 'closed' };
+      wrote = true;
+      return { ok: (await deps.bd.readStatus(id)) === 'closed', wrote };
     } catch (err) {
       log('bd close failed for %s: %o', id, err);
-      return { ok: false };
+      return { ok: false, wrote };
+    }
+  }
+
+  /**
+   * Put a bead back to `resolved` with a confirming readback — the repair for a
+   * cleanup that stopped AT OR AFTER the parent close (§6).
+   *
+   * The spec's failure contract is "bead stays `resolved`, handed back to a
+   * human". Once the parent close has run that is no longer true by doing
+   * nothing: the bead is `closed` (or unconfirmably so), which reads on the
+   * board as finished work while its worktree and branches are still lying
+   * around. Restoring first is what makes the durable failure record accurate.
+   *
+   * @param {string} id
+   * @returns {Promise<boolean>}
+   */
+  async function restoreResolved(id) {
+    try {
+      await deps.bd.setStatus(id, 'resolved');
+      return (await deps.bd.readStatus(id)) === 'resolved';
+    } catch (err) {
+      log('bd resolved restore failed for %s: %o', id, err);
+      return false;
     }
   }
 
@@ -519,6 +610,12 @@ export function createPrActions(deps) {
    * exists stops the cleanup. Nothing here force-pushes or rewrites history —
    * deleting the merged PR's own topic branch is the whole of it, and its
    * ownership is exactly as clear as the merge that just landed it.
+   *
+   * LOCK BOUNDARY (§8): the worktree removal takes the repo topology lock
+   * INSIDE the worktree manager, so it runs first and unlocked here; the branch
+   * deletions — which mutate the same ref database — then run under an
+   * explicitly acquired hold of that lock. Wrapping both would deadlock on the
+   * non-reentrant mutex.
    *
    * @param {string} bead_id
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
@@ -537,32 +634,40 @@ export function createPrActions(deps) {
       return { ok: false, reason: 'worktree_remove_failed' };
     }
 
-    const local = await deps.gitRun(['branch', '-D', branch], { cwd: repo });
-    if (local.code !== 0) {
-      const still = await deps.gitRun(
-        ['rev-parse', '--verify', `refs/heads/${branch}`],
-        { cwd: repo }
-      );
-      if (still.code === 0) {
-        return { ok: false, reason: 'local_branch_delete_failed' };
-      }
-    }
-
-    const remote = await deps.gitRun(['push', 'origin', '--delete', branch], {
-      cwd: repo
-    });
-    if (remote.code !== 0) {
-      const still = await deps.gitRun(
-        ['ls-remote', '--heads', 'origin', branch],
-        {
-          cwd: repo
+    return deps.worktree.withTopologyLock(repo, async () => {
+      const local = await deps.gitRun(['branch', '-D', branch], { cwd: repo });
+      if (local.code !== 0) {
+        const still = await deps.gitRun(
+          ['rev-parse', '--verify', `refs/heads/${branch}`],
+          { cwd: repo }
+        );
+        if (still.code === 0) {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'local_branch_delete_failed'
+          };
         }
-      );
-      if (still.code !== 0 || still.stdout.trim().length > 0) {
-        return { ok: false, reason: 'remote_branch_delete_failed' };
       }
-    }
-    return { ok: true };
+
+      const remote = await deps.gitRun(['push', 'origin', '--delete', branch], {
+        cwd: repo
+      });
+      if (remote.code !== 0) {
+        const still = await deps.gitRun(
+          ['ls-remote', '--heads', 'origin', branch],
+          {
+            cwd: repo
+          }
+        );
+        if (still.code !== 0 || still.stdout.trim().length > 0) {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'remote_branch_delete_failed'
+          };
+        }
+      }
+      return { ok: /** @type {const} */ (true) };
+    });
   }
 
   /**
@@ -571,7 +676,7 @@ export function createPrActions(deps) {
    * second copy for the external case is exactly the divergence §6 forbids.
    *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null }>}
+   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
   async function runCleanup(bead_id) {
     const q = deps.store.snapshot(workspace);
@@ -579,45 +684,101 @@ export function createPrActions(deps) {
 
     const synced = await syncBase(target_base);
     if (!synced.ok) {
-      return failCleanup(bead_id, 'base_sync', synced.reason);
+      return failCleanup(bead_id, 'base_sync', synced.reason, null);
     }
+    const base_sync = synced.outcome;
+    log(
+      'cleanup base sync for %s: %s (base %s)',
+      bead_id,
+      base_sync,
+      synced.sha
+    );
     const verified = await postMergeVerify(bead_id, synced.sha);
     if (!verified.ok) {
-      return failCleanup(bead_id, 'post_merge_verify', verified.reason);
+      return failCleanup(
+        bead_id,
+        'post_merge_verify',
+        verified.reason,
+        base_sync
+      );
     }
     const swept = await sweepChildren(bead_id);
     if (!swept.ok) {
-      return failCleanup(bead_id, 'child_sweep', swept.reason);
+      return failCleanup(bead_id, 'child_sweep', swept.reason, base_sync);
     }
+    // From HERE ON the parent bead's status has been touched, so every later
+    // failure must put it back to `resolved` before recording the stop (§6).
     const closed = await closeBead(bead_id);
     if (!closed.ok) {
-      return failCleanup(bead_id, 'parent_close', 'bd_close_failed');
+      return failCleanup(
+        bead_id,
+        'parent_close',
+        'bd_close_failed',
+        base_sync,
+        // A write that landed but could not be confirmed may have left bd
+        // `closed`; a write that never landed did not.
+        closed.wrote
+      );
     }
     const branches = await cleanupBranches(bead_id);
     if (!branches.ok) {
-      return failCleanup(bead_id, 'branch_cleanup', branches.reason);
+      return failCleanup(
+        bead_id,
+        'branch_cleanup',
+        branches.reason,
+        base_sync,
+        true
+      );
     }
 
     deps.store.moveToDone(workspace, { bead_id });
     notifyChanged(workspace);
-    return { ok: true, step: null, reason: null };
+    return { ok: true, step: null, reason: null, base_sync };
   }
 
   /**
    * Record a cleanup stop durably and hand the bead back to a human: it stays
-   * in `pr_wait`, bd stays `resolved`, the banner renders off the record, and
+   * in `pr_wait`, bd is left `resolved`, the banner renders off the record, and
    * NOTHING retries on its own.
+   *
+   * When the stop happened at or after the parent close, the bead is FIRST put
+   * back to `resolved` (with a readback) — otherwise "bd stays `resolved`" would
+   * be a claim the record makes and the database contradicts. A restore that
+   * itself fails is written into the record as `restore_failed` rather than
+   * left silent: a human needs to know the status is wrong, not merely that a
+   * cleanup stopped.
    *
    * @param {string} bead_id
    * @param {string} step
    * @param {string} reason
-   * @returns {{ ok: false, step: string, reason: string }}
+   * @param {BaseSyncOutcome|null} base_sync
+   * @param {boolean} [restore_bd] - Whether the parent close may have landed.
+   * @returns {Promise<{ ok: false, step: string, reason: string, base_sync: BaseSyncOutcome|null }>}
    */
-  function failCleanup(bead_id, step, reason) {
-    log('cleanup stopped for %s at %s: %s', bead_id, step, reason);
-    deps.store.recordCleanupFailure(workspace, { bead_id, step, reason });
+  async function failCleanup(bead_id, step, reason, base_sync, restore_bd) {
+    /** @type {string|null} */
+    let bd_restore = null;
+    if (restore_bd === true) {
+      bd_restore = (await restoreResolved(bead_id))
+        ? 'restored'
+        : 'restore_failed';
+    }
+    log(
+      'cleanup stopped for %s at %s: %s (base_sync %o, bd_restore %o)',
+      bead_id,
+      step,
+      reason,
+      base_sync,
+      bd_restore
+    );
+    deps.store.recordCleanupFailure(workspace, {
+      bead_id,
+      step,
+      reason,
+      bd_restore
+    });
     notifyChanged(workspace);
-    return { ok: false, step, reason };
+    return { ok: false, step, reason, base_sync };
   }
 
   // -------------------------------------------------------------------------
@@ -658,6 +819,7 @@ export function createPrActions(deps) {
           action: 'already_merged',
           reason: c.reason,
           cleanup_step: c.step,
+          base_sync: c.base_sync,
           head_sha: first.pr.head_sha
         };
       }
@@ -722,7 +884,21 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Perform the squash merge and, only on success, the cleanup.
+   * Perform the squash merge and, only once the PR is OBSERVED merged, the
+   * cleanup.
+   *
+   * A zero exit from `gh pr merge` is NOT proof the PR is merged. On a repo with
+   * a merge queue (or under `--auto`) the command succeeds by ENQUEUEING the PR,
+   * which stays OPEN until the queue lands it — possibly minutes later,
+   * possibly never. Treating that exit as a merge is what would let the cleanup
+   * close the bead and delete both branches out from under a live PR, which is
+   * unrecoverable. So the same principle the whole redesign runs on applies to
+   * our own write too: the server's OBSERVATION decides, not the actor's
+   * self-report.
+   *
+   * A PR still OPEN after a successful merge command is left in `pr_wait` with
+   * an honest `merge_unconfirmed` result; the poller performs the cleanup when
+   * it observes the real MERGED, through the SAME single implementation (§4/§6).
    *
    * @param {string} bead_id
    * @param {number} number
@@ -748,12 +924,40 @@ export function createPrActions(deps) {
         head_sha
       };
     }
+
+    /** @type {any} */
+    let after;
+    try {
+      after = await deps.gh.prDetail(repo, number);
+    } catch {
+      after = { state: 'error', reason: 'gh_spawn_failed' };
+    }
+    if (after.state !== 'ok') {
+      // The merge command succeeded but we cannot see the result: refuse to
+      // clean up on an unread state. The poller re-reads on its own cadence.
+      return {
+        ok: false,
+        action: 'merge_unconfirmed',
+        reason: `merge_state_unconfirmed:${after.reason || 'gh_failed'}`,
+        head_sha
+      };
+    }
+    if (after.data.state !== 'MERGED') {
+      return {
+        ok: true,
+        action: 'merge_unconfirmed',
+        reason: 'merge_pending',
+        head_sha
+      };
+    }
+
     const c = await runCleanup(bead_id);
     return {
       ok: c.ok,
       action,
       reason: c.reason,
       cleanup_step: c.step,
+      base_sync: c.base_sync,
       head_sha
     };
   }
@@ -785,7 +989,7 @@ export function createPrActions(deps) {
    * must stay off it until a human acts.
    *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null }>}
+   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
    */
   async function cleanupObservedMerge(bead_id) {
     if (in_flight.has(bead_id)) {
@@ -824,63 +1028,33 @@ export function createPrActions(deps) {
    *      history,
    *   4. move `pr_wait` → `queue` in ONE mutation, then tick.
    *
+   * The tick is a REQUEST for a dispatch, not a guarantee of one: with the queue
+   * paused (`auto_advance` off) it correctly starts nothing, because ⏸ means "no
+   * new sessions" and a human-clicked rerun does not override that — it defers.
+   * The result reports which of the two happened (`redispatched`) rather than
+   * letting `ok: true` imply a session that may not exist.
+   *
    * @param {string} bead_id
    * @returns {Promise<RerunResult>}
    */
   async function rerun(bead_id) {
     if (in_flight.has(bead_id)) {
-      return { ok: false, reason: 'action_in_flight' };
+      return { ok: false, reason: 'action_in_flight', redispatched: false };
     }
     const q = deps.store.snapshot(workspace);
     if (!inPrWait(q, bead_id)) {
-      return { ok: false, reason: 'not_in_pr_wait' };
+      return { ok: false, reason: 'not_in_pr_wait', redispatched: false };
     }
     const ref = resolvePrRef(q, bead_id);
     if (!ref) {
-      return { ok: false, reason: 'pr_ref_unknown' };
+      return { ok: false, reason: 'pr_ref_unknown', redispatched: false };
     }
     in_flight.add(bead_id);
     deps.observations.markRerunning(workspace, bead_id);
+    /** @type {{ ok: boolean, reason: string|null }} */
+    let outcome = { ok: false, reason: 'rerun_incomplete' };
     try {
-      /** @type {any} */
-      let closed;
-      try {
-        closed = await deps.gh.closePr(repo, ref.number);
-      } catch {
-        closed = { state: 'error', reason: 'gh_spawn_failed' };
-      }
-      if (closed.state !== 'ok') {
-        return { ok: false, reason: `pr_close_failed:${closed.reason}` };
-      }
-
-      try {
-        await deps.bd.setStatus(bead_id, 'open');
-        if ((await deps.bd.readStatus(bead_id)) !== 'open') {
-          return { ok: false, reason: 'bd_status_readback_failed' };
-        }
-        await deps.bd.unsetMetadata(bead_id, 'pr_url');
-        if ((await deps.bd.readMetadata(bead_id, 'pr_url')) !== null) {
-          return { ok: false, reason: 'bd_pr_url_readback_failed' };
-        }
-      } catch (err) {
-        log('rerun bd transition failed for %s: %o', bead_id, err);
-        return { ok: false, reason: 'bd_record_failed' };
-      }
-
-      const discarded = await cleanupBranches(bead_id);
-      if (!discarded.ok) {
-        return {
-          ok: false,
-          reason: `worktree_discard_failed:${discarded.reason}`
-        };
-      }
-
-      const moved = deps.store.requeueFromPrWait(workspace, { bead_id });
-      if (!moved.ok) {
-        return { ok: false, reason: 'requeue_failed' };
-      }
-      notifyChanged(workspace);
-      return { ok: true, reason: null };
+      outcome = await rerunTransition(bead_id, ref.number);
     } finally {
       // Released only here: by this point the bead has either left `pr_wait`
       // (nothing observes it any more) or the rerun failed and the human needs
@@ -893,6 +1067,77 @@ export function createPrActions(deps) {
         log('rerun tick failed for %s: %o', bead_id, err);
       }
     }
+    return {
+      ok: outcome.ok,
+      reason: outcome.reason,
+      redispatched: outcome.ok && hasRunningAttempt(bead_id)
+    };
+  }
+
+  /**
+   * The ordered body of [재실행], separated from the in-flight/observation
+   * bookkeeping so the caller can report on what the follow-up tick did.
+   *
+   * @param {string} bead_id
+   * @param {number} number
+   * @returns {Promise<{ ok: boolean, reason: string|null }>}
+   */
+  async function rerunTransition(bead_id, number) {
+    /** @type {any} */
+    let closed;
+    try {
+      closed = await deps.gh.closePr(repo, number);
+    } catch {
+      closed = { state: 'error', reason: 'gh_spawn_failed' };
+    }
+    if (closed.state !== 'ok') {
+      return { ok: false, reason: `pr_close_failed:${closed.reason}` };
+    }
+
+    try {
+      await deps.bd.setStatus(bead_id, 'open');
+      if ((await deps.bd.readStatus(bead_id)) !== 'open') {
+        return { ok: false, reason: 'bd_status_readback_failed' };
+      }
+      await deps.bd.unsetMetadata(bead_id, 'pr_url');
+      if ((await deps.bd.readMetadata(bead_id, 'pr_url')) !== null) {
+        return { ok: false, reason: 'bd_pr_url_readback_failed' };
+      }
+    } catch (err) {
+      log('rerun bd transition failed for %s: %o', bead_id, err);
+      return { ok: false, reason: 'bd_record_failed' };
+    }
+
+    const discarded = await cleanupBranches(bead_id);
+    if (!discarded.ok) {
+      return {
+        ok: false,
+        reason: `worktree_discard_failed:${discarded.reason}`
+      };
+    }
+
+    const moved = deps.store.requeueFromPrWait(workspace, { bead_id });
+    if (!moved.ok) {
+      return { ok: false, reason: 'requeue_failed' };
+    }
+    notifyChanged(workspace);
+    return { ok: true, reason: null };
+  }
+
+  /**
+   * Whether the bead currently has a RUNNING attempt — read from the store, so
+   * it reports a dispatch that actually happened rather than one that was asked
+   * for.
+   *
+   * @param {string} bead_id
+   * @returns {boolean}
+   */
+  function hasRunningAttempt(bead_id) {
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    return Object.values(attempts).some(
+      (/** @type {any} */ a) =>
+        a && a.bead_id === bead_id && a.status === 'running'
+    );
   }
 
   return { merge, rerun, cleanupObservedMerge };

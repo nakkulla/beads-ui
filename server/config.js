@@ -76,19 +76,25 @@ function normalizeWorkspaceConfig(parsed) {
   };
 }
 
-/** Default verify_cmd timeout (worker-autorun-policy §4). */
+/** Default verify_cmd timeout (worker-phase2 §5). */
 const DEFAULT_VERIFY_TIMEOUT_MS = 600000;
 
 /**
  * Normalize the `[worker.verify."<absolute workspace path>"]` sections
- * (worker-autorun-policy §4) into `{ <resolved path>: { cmd, timeout_ms } }`.
+ * (worker-phase2 §5) into `{ <resolved path>: { cmd, timeout_ms } }`.
+ *
+ * The command is the worker's PRE-MERGE verification: on a repo with no GitHub
+ * CI it stands in for CI as the middle tier of the merge gate, so `[머지]` stays
+ * disabled until it passes. A workspace with neither CI nor a `verify_cmd` falls
+ * through to the "검증 신호 없음" tier — the button is enabled and the human
+ * click is the decision.
  *
  * `cmd` MUST be an argv string array — the worker spawns it WITHOUT a shell,
  * so a shell one-liner string is rejected (section ignored → the workspace
- * counts as verify_cmd-unset and auto_merge demotes to pr_stop).
+ * counts as verify_cmd-unset).
  *
- * Toolchain constraint: the command runs in a CLEAN detached worktree pinned
- * to the merge SHA, which has no untracked toolchain (`.venv` etc.). Configure
+ * Toolchain constraint: the command runs in a CLEAN detached worktree pinned to
+ * the PR's head SHA, which has no untracked toolchain (`.venv` etc.). Configure
  * either a self-contained command or absolute interpreter paths into the
  * canonical checkout, e.g.:
  *

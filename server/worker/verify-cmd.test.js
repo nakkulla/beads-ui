@@ -130,7 +130,7 @@ describe('worker/verify-cmd auto-detection + resolution (§2)', () => {
     });
   });
 
-  test('resolve: neither config nor detection → null (keeps the demotion)', () => {
+  test('resolve: neither config nor detection → null (no local verify signal)', () => {
     const fs = fakeFs({ '/repo/requirements.txt': 'pytest' });
     expect(resolveVerifyCmd('/repo', {}, { fs })).toBeNull();
   });
@@ -160,11 +160,27 @@ describe('worker/verify-cmd — pre-merge run pinned to a PR head sha (§5)', ()
   }
 
   function fakeWorktree() {
+    /** @type {string[]} */
+    const lock_log = [];
     return {
       // The command really is spawned, so the pinned worktree path must be a
       // directory that exists — the repo root stands in for it here.
-      addDetached: vi.fn(async () => ({ path: process.cwd() })),
-      removeDetached: vi.fn(async () => ({ code: 0, stderr: '' }))
+      addDetached: vi.fn(async () => {
+        lock_log.push('addDetached');
+        return { path: process.cwd() };
+      }),
+      removeDetached: vi.fn(async () => ({ code: 0, stderr: '' })),
+      lock_log,
+      withTopologyLock: vi.fn(
+        async (/** @type {string} */ _repo, /** @type {any} */ fn) => {
+          lock_log.push('lock:acquire');
+          try {
+            return await fn();
+          } finally {
+            lock_log.push('lock:release');
+          }
+        }
+      )
     };
   }
 
@@ -273,6 +289,34 @@ describe('worker/verify-cmd — pre-merge run pinned to a PR head sha (§5)', ()
       repo: '/repo',
       name: `verify-UI-1-${SHA.slice(0, 7)}`
     });
+  });
+
+  test('fetches the PR head under the repo topology lock, releasing it before the worktree add', async () => {
+    const { git } = fakeGit({ present: false });
+    const worktree = fakeWorktree();
+
+    await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    // The lock is HELD across the fetch and RELEASED before `addDetached`,
+    // which takes the same non-reentrant lock itself.
+    expect(worktree.withTopologyLock).toHaveBeenCalledWith(
+      '/repo',
+      expect.any(Function)
+    );
+    expect(worktree.lock_log).toEqual([
+      'lock:acquire',
+      'lock:release',
+      'addDetached'
+    ]);
   });
 
   test('reports verify_worktree_failed when the worktree cannot be created', async () => {
