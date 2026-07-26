@@ -26,7 +26,7 @@ function resultLine(over = {}) {
 const BEAD = { id: 'UI-1' };
 const WS = '/tmp/ws';
 
-describe('runner/claude 4-rule success', () => {
+describe('runner/claude 3-rule success (judged over the last result)', () => {
   test('passes on the real success fixture (one result, subtype success)', async () => {
     const spawn_impl = makeFixtureSpawn({ file: SUCCESS_FIXTURE, exit: 0 });
     const handle = spawnClaude(BEAD, WS, { model: 'opus' }, { spawn_impl });
@@ -59,14 +59,50 @@ describe('runner/claude 4-rule success', () => {
     expect(call.options.detached).toBe(true);
   });
 
-  test('fails rule 1: two result events', async () => {
+  test('succeeds when multiple results end on a clean last result', async () => {
     const spawn_impl = makeFixtureSpawn({
       lines: [resultLine(), resultLine()],
       exit: 0
     });
     const v = await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
+    expect(v.success).toBe(true);
+    expect(v.reason).toBe('ok');
+  });
+
+  test('succeeds when only the last result is judged, ignoring an earlier violation', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [resultLine({ subtype: 'error_max_turns' }), resultLine()],
+      exit: 0
+    });
+
+    const v = await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
+
+    expect(v.success).toBe(true);
+    expect(v.reason).toBe('ok');
+  });
+
+  test('fails on the last result subtype violation despite an earlier clean result', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [resultLine(), resultLine({ subtype: 'error_max_turns' })],
+      exit: 0
+    });
+
+    const v = await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
+
     expect(v.success).toBe(false);
-    expect(v.reason).toBe('result_count');
+    expect(v.reason).toBe('subtype');
+  });
+
+  test('fails with no_result when zero result events occur', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [],
+      exit: 0
+    });
+
+    const v = await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
+
+    expect(v.success).toBe(false);
+    expect(v.reason).toBe('no_result');
   });
 
   test('fails rule 2: subtype !== success', async () => {

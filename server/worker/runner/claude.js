@@ -3,9 +3,9 @@
  *
  * CLI: `claude -p --output-format stream-json --verbose --model <alias>
  * [--effort <lv>] --permission-mode bypassPermissions "<prompt>"` with stdin
- * closed. Success is the confirmed 4-rule test over the single `result` event:
- * exactly one result ∧ subtype==='success' ∧ is_error===false ∧
- * permission_denials===[] (runner-spike-findings.md).
+ * closed. Success is the confirmed 3-rule test over the LAST `result` event:
+ * subtype==='success' ∧ is_error===false ∧ permission_denials===[]
+ * (runner-spike-findings.md).
  *
  * @import { AdapterSpec, RunnerEvent, RunnerHandle, EngineDeps } from './session.js'
  */
@@ -168,7 +168,9 @@ function extractSessionId(raw) {
 }
 
 /**
- * Compute the claude 4-rule success verdict.
+ * Compute the claude 3-rule success verdict over the LAST `result` event. A
+ * headless session may accumulate multiple `result` events (e.g. background
+ * task-notification re-entry mid-session); only the final one is judged.
  *
  * @param {{ raw: any[], exit: number|null, blocked: boolean }} ctx
  * @returns {{ success: boolean, reason: string }}
@@ -178,10 +180,7 @@ function verdict(ctx) {
   if (results.length === 0) {
     return { success: false, reason: 'no_result' };
   }
-  if (results.length !== 1) {
-    return { success: false, reason: 'result_count' };
-  }
-  const r = results[0];
+  const r = results[results.length - 1];
   if (r.subtype !== 'success') {
     return { success: false, reason: 'subtype' };
   }
