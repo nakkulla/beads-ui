@@ -650,18 +650,17 @@ export function createDetailPanel(mount_element, options) {
 
   /**
    * Workflow metadata enum keys editable from the panel (§6). Empty = unset
-   * (the key is removed; route falls back to derivation, policies to their
-   * defaults at resolution time).
+   * (the key is removed; route falls back to derivation at resolution time).
+   * merge_policy/drift_policy는 축 폐기(worker-phase2 §2) — 모든 세션이
+   * PR-stop이므로 더 이상 편집 대상이 아니다.
    */
-  /** @type {Record<'route'|'merge_policy'|'drift_policy', string[]>} */
+  /** @type {Record<'route', string[]>} */
   const WORKFLOW_META_OPTIONS = {
-    route: ['spec_backed', 'full_plan'],
-    merge_policy: ['auto_merge', 'pr_stop'],
-    drift_policy: ['auto_rereview', 'halt']
+    route: ['spec_backed', 'full_plan']
   };
 
   /**
-   * @param {'route'|'merge_policy'|'drift_policy'} key
+   * @param {'route'} key
    * @param {Event} ev
    */
   async function onWorkflowMetaChange(key, ev) {
@@ -691,14 +690,14 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
-   * Editable workflow metadata selects (route / merge_policy / drift_policy).
+   * Editable workflow metadata selects (route).
    *
    * @param {any} data
    */
   function workflowMetaTemplate(data) {
     const md = data.metadata || {};
     /**
-     * @param {'route'|'merge_policy'|'drift_policy'} key
+     * @param {'route'} key
      * @param {string} unset_label
      */
     const row = (key, unset_label) => {
@@ -722,11 +721,7 @@ export function createDetailPanel(mount_element, options) {
         </select>
       </div>`;
     };
-    return html`
-      ${row('route', '(미설정 · 추론)')}
-      ${row('merge_policy', '(기본 auto_merge)')}
-      ${row('drift_policy', '(기본 auto_rereview)')}
-    `;
+    return html` ${row('route', '(미설정 · 추론)')} `;
   }
 
   /**

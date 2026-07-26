@@ -508,7 +508,7 @@ Please report this to https://github.com/markedjs/marked.`,t){let n="<p>An error
             <span class="detail-kv__k">pr_url</span>
             <span class="detail-kv__v detail-kv__v--wrap">${E.pr_url}</span>
           </div>`:""}
-    `}let tt={route:["spec_backed","full_plan"],merge_policy:["auto_merge","pr_stop"],drift_policy:["auto_rereview","halt"]};async function be(m,E){let A=E.target.value;if(m==="route"&&c&&c.metadata&&c.metadata.route==="full_plan"&&A!=="full_plan"&&!window.confirm(`full_plan \u2192 ${A||"(\uBBF8\uC124\uC815)"} \uC804\uD658: \uC800\uC7A5\uB41C plan \uC2B9\uC778\uC740 \uD3EC\uAE30\uB418\uBA70, plan \uD30C\uC77C\xB7\uB9C8\uCEE4 \uC815\uB9AC\uB294 \uC138\uC158 \uACC4\uC57D\uC774 \uC218\uD589\uD569\uB2C8\uB2E4. \uACC4\uC18D\uD560\uAE4C\uC694?`)){P();return}await Ae("update-workflow-meta",{id:a,key:m,value:A},"\uC6CC\uD06C\uD50C\uB85C\uC6B0 \uBA54\uD0C0 \uBCC0\uACBD \uC2E4\uD328"),P()}function Te(m){let E=m.metadata||{},A=(R,X)=>{let ce=tt[R],U=typeof E[R]=="string"?E[R]:"";return p`<div class="detail-kv">
+    `}let tt={route:["spec_backed","full_plan"]};async function be(m,E){let A=E.target.value;if(m==="route"&&c&&c.metadata&&c.metadata.route==="full_plan"&&A!=="full_plan"&&!window.confirm(`full_plan \u2192 ${A||"(\uBBF8\uC124\uC815)"} \uC804\uD658: \uC800\uC7A5\uB41C plan \uC2B9\uC778\uC740 \uD3EC\uAE30\uB418\uBA70, plan \uD30C\uC77C\xB7\uB9C8\uCEE4 \uC815\uB9AC\uB294 \uC138\uC158 \uACC4\uC57D\uC774 \uC218\uD589\uD569\uB2C8\uB2E4. \uACC4\uC18D\uD560\uAE4C\uC694?`)){P();return}await Ae("update-workflow-meta",{id:a,key:m,value:A},"\uC6CC\uD06C\uD50C\uB85C\uC6B0 \uBA54\uD0C0 \uBCC0\uACBD \uC2E4\uD328"),P()}function Te(m){let E=m.metadata||{};return p` ${((R,X)=>{let ce=tt[R],U=typeof E[R]=="string"?E[R]:"";return p`<div class="detail-kv">
         <span class="detail-kv__k">${R}</span>
         <select
           class="detail-kv__v detail-kv__v--sel"
@@ -521,11 +521,7 @@ Please report this to https://github.com/markedjs/marked.`,t){let n="<p>An error
           </option>
           ${ce.map(Ee=>p`<option value=${Ee} ?selected=${U===Ee}>${Ee}</option>`)}
         </select>
-      </div>`};return p`
-      ${A("route","(\uBBF8\uC124\uC815 \xB7 \uCD94\uB860)")}
-      ${A("merge_policy","(\uAE30\uBCF8 auto_merge)")}
-      ${A("drift_policy","(\uAE30\uBCF8 auto_rereview)")}
-    `}function Me(m){return h?p`
+      </div>`})("route","(\uBBF8\uC124\uC815 \xB7 \uCD94\uB860)")} `}function Me(m){return h?p`
         <div class="detail-edit">
           <input
             class="detail-edit__input"
