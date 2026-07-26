@@ -226,7 +226,6 @@ export function defaultProbePid(pid) {
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
- *   parallel_slots?: number,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any
  * }} [options]
@@ -309,8 +308,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     verify,
     sessionLog: runtime.sessionLog,
     admission,
-    notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key),
-    parallel_slots: options.parallel_slots
+    notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
 
   const orphan = createOrphanDetector({
@@ -328,8 +326,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     orphan,
     bd,
     admission,
-    parallel_slots:
-      typeof options.parallel_slots === 'number' ? options.parallel_slots : 2,
     repo,
     workspace: workspace_root
   };
@@ -418,17 +414,26 @@ export async function checkWorkerQueueAdmission(workspace_root, bead_id) {
 }
 
 /**
- * The workspace's parallel slot count (the N in the 1+N dispatch cap), or null
- * when no attachment is registered. Read-only display input: the Worker tab
- * flags a manual resume that pushed live sessions past the cap
+ * The workspace's concurrency cap, or null when no attachment is registered.
+ *
+ * The value is the STORE's (`queue.slots`, user-editable via
+ * `worker-queue-set-slots` — worker-phase2 §3), not a construction-time option:
+ * the attachment is built once at startup, so reading it live is what lets a
+ * cap edit reach the display without a restart. Read-only display input: the
+ * Worker tab flags a manual resume that pushed live sessions past the cap
  * (worker-phase1 §2.3).
  *
  * @param {string} workspace_root
  * @returns {number|null}
  */
-export function workerParallelSlots(workspace_root) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  return att ? att.parallel_slots : null;
+export function workerSlots(workspace_root) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att) {
+    return null;
+  }
+  const slots = att.runtime.queueStore.snapshot(key).slots;
+  return typeof slots === 'number' ? slots : null;
 }
 
 /**

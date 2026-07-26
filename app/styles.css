@@ -2481,6 +2481,19 @@ html[data-theme='dark'] {
   font-weight: 700;
 }
 
+/* 동시 실행 슬롯 편집 (worker-phase2 §3) */
+.worker-slots__input {
+  width: 3.5em;
+  margin-left: var(--sp-4);
+  padding: 1px var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: var(--fs-chip);
+  font-variant-numeric: tabular-nums;
+}
+
 /* 전역 실행 설정 ⚙ 버튼 + 다이얼로그 (worker-global-exec-defaults §4) */
 .worker-exec-defaults-btn {
   padding: 1px var(--sp-6);
@@ -2676,19 +2689,6 @@ html[data-theme='dark'] {
   font-family: var(--font-mono);
   font-size: var(--fs-chip-lg);
   color: var(--text-id-mono);
-}
-
-.rtile__badge {
-  font-size: var(--fs-chip);
-  padding: 1px 5px;
-  border-radius: 999px;
-  border: 1px solid var(--border-chip);
-  color: var(--text-muted);
-}
-
-.rtile__badge--serial {
-  color: var(--chip-route);
-  border-color: var(--border-route);
 }
 
 .rtile__elapsed {

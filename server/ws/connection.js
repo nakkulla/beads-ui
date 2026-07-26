@@ -62,6 +62,7 @@ import {
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
   handleWorkerQueueSetExecDefault,
+  handleWorkerQueueSetSlots,
   handleWorkerQueueToggle
 } from './worker-handlers.js';
 import {
@@ -435,6 +436,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-toggle':
       handleWorkerQueueToggle(ws, req);
+      return;
+    case 'worker-queue-set-slots':
+      handleWorkerQueueSetSlots(ws, req);
       return;
     case 'worker-queue-set-exec-default':
       handleWorkerQueueSetExecDefault(ws, req);

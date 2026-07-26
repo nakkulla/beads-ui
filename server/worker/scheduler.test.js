@@ -241,31 +241,29 @@ function setup(opts) {
     sessionLog,
     admission: opts.admission,
     notifyQueueChanged: opts.notifyQueueChanged,
-    parallel_slots: opts.slots ?? 2,
     now: () => 1000
+  });
+  // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a
+  // constructor dep, so a test sets it exactly the way the UI does.
+  store.setSlots(WS, {
+    expected_revision: store.snapshot(WS).revision,
+    slots: opts.slots ?? 2
   });
   return { store, runner, bd, verify, worktree, scheduler };
 }
 
 /**
+ * Seed the single waiting lane in order and arm auto_advance.
+ *
  * @param {any} store
- * @param {string[]} serial
- * @param {string[]} parallel
+ * @param {string[]} ids
  */
-function seedQueue(store, serial, parallel) {
+function seedQueue(store, ids) {
   let rev = store.snapshot(WS).revision;
-  for (const id of serial) {
+  for (const id of ids) {
     rev = store.place(WS, {
       expected_revision: rev,
-      bead_id: id,
-      lane: 'serial'
-    }).queue.revision;
-  }
-  for (const id of parallel) {
-    rev = store.place(WS, {
-      expected_revision: rev,
-      bead_id: id,
-      lane: 'parallel'
+      bead_id: id
     }).queue.revision;
   }
   store.setAutoAdvance(WS, true);
@@ -288,8 +286,8 @@ function seedExecDefaults(store, defaults) {
   }
 }
 
-describe('scheduler slot policy', () => {
-  test('runs Serial head 1 + N parallel slots (total ≤ 1+N)', async () => {
+describe('scheduler slot policy (single scan, worker-phase2 §3)', () => {
+  test('fills exactly N slots from the queue in order', async () => {
     const env = setup({
       config: {
         S1: {},
@@ -298,29 +296,70 @@ describe('scheduler slot policy', () => {
         P2: {},
         P3: {}
       },
-      slots: 2
+      slots: 3
     });
-    seedQueue(env.store, ['S1', 'S2'], ['P1', 'P2', 'P3']);
+    seedQueue(env.store, ['S1', 'S2', 'P1', 'P2', 'P3']);
+
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.runningCount()).toBe(3);
-    const beads = env.scheduler.runningBeads().sort();
-    expect(beads).toEqual(['P1', 'P2', 'S1']);
-    // S2 (serial cap 1) and P3 (slots full) NOT started.
-    expect(env.scheduler.isRunning('S2')).toBe(false);
+    expect(env.scheduler.runningBeads().sort()).toEqual(['P1', 'S1', 'S2']);
+    expect(env.scheduler.isRunning('P2')).toBe(false);
     expect(env.scheduler.isRunning('P3')).toBe(false);
   });
 
-  test('blocked serial head is skipped to the next runnable serial bead', async () => {
+  test('runs exactly one session at a time at slots=1 (the retired serial lane)', async () => {
+    const env = setup({ config: { S1: {}, S2: {}, S3: {} }, slots: 1 });
+    seedQueue(env.store, ['S1', 'S2', 'S3']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(1);
+    expect(env.scheduler.runningBeads()).toEqual(['S1']);
+    // A second tick against the full cap starts nothing new.
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.runningCount()).toBe(1);
+  });
+
+  test('advances to the next queued bead when the slots=1 session finishes', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
+    seedQueue(env.store, ['S1', 'S2']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(env.scheduler.runningCount()).toBe(1);
+    expect(env.scheduler.runningBeads()).toEqual(['S2']);
+  });
+
+  test('reads the cap from the store, so a slots edit applies on the next tick', async () => {
+    const env = setup({ config: { S1: {}, S2: {}, S3: {} }, slots: 1 });
+    seedQueue(env.store, ['S1', 'S2', 'S3']);
+    await env.scheduler.tick(WS);
+
+    env.store.setSlots(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      slots: 3
+    });
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(3);
+  });
+
+  test('skips a blocked bead to the next runnable one', async () => {
     const env = setup({
       config: {
         S1: { blocked: true },
         S2: { blocked: false }
       },
-      slots: 2
+      slots: 1
     });
-    seedQueue(env.store, ['S1', 'S2'], []);
+    seedQueue(env.store, ['S1', 'S2']);
+
     await env.scheduler.tick(WS);
+
     expect(env.scheduler.isRunning('S1')).toBe(false);
     expect(env.scheduler.isRunning('S2')).toBe(true);
   });
@@ -329,7 +368,7 @@ describe('scheduler slot policy', () => {
 describe('scheduler stop (■ tile)', () => {
   test('stop group-kills the attempt, discards it, reverts workflow_mode, keeps auto_advance', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     expect(env.scheduler.isRunning('S1')).toBe(true);
 
@@ -346,7 +385,7 @@ describe('scheduler stop (■ tile)', () => {
     const snap = env.store.snapshot(WS);
     expect(snap.attempts[attempt_id].status).toBe('stopped');
     expect(snap.attempts[attempt_id].cause).toBe(null);
-    expect(snap.serial.map((e) => e.bead_id)).toEqual([]);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual([]);
     expect(env.scheduler.isRunning('S1')).toBe(false);
     // workflow_mode reverted (prior unset → unsetMetadata).
     expect(
@@ -363,7 +402,7 @@ describe('scheduler stop (■ tile)', () => {
 
   test('a late done() after stop does not re-fail or halt the queue', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
 
@@ -384,7 +423,7 @@ describe('scheduler stop (■ tile)', () => {
 
   test('discard frees the slot and advances the queue (§2.2)', async () => {
     const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
-    seedQueue(env.store, ['S1', 'S2'], []);
+    seedQueue(env.store, ['S1', 'S2']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
 
@@ -394,14 +433,14 @@ describe('scheduler stop (■ tile)', () => {
     // next queued bead takes the freed slot in the same operation.
     expect(env.scheduler.isRunning('S1')).toBe(false);
     expect(env.scheduler.isRunning('S2')).toBe(true);
-    expect(env.store.snapshot(WS).serial.map((e) => e.bead_id)).toEqual(['S2']);
+    expect(env.store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['S2']);
   });
 });
 
 describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
   test('pause records `paused`, keeps the bead queued, and advances the queue', async () => {
     const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
-    seedQueue(env.store, ['S1', 'S2'], []);
+    seedQueue(env.store, ['S1', 'S2']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     env.runner.eventsFor('S1').emit('session_id', 'sid-1');
@@ -414,7 +453,7 @@ describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
     expect(snap.attempts[attempt_id].status).toBe('paused');
     expect(snap.attempts[attempt_id].cause).toBe(null);
     // The bead stays queued (resume runs in the same worktree)...
-    expect(snap.serial.map((e) => e.bead_id)).toEqual(['S1', 'S2']);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual(['S1', 'S2']);
     // ...but is skipped by dispatch, so the freed slot goes to the next bead.
     expect(env.scheduler.isRunning('S1')).toBe(false);
     expect(env.scheduler.isRunning('S2')).toBe(true);
@@ -433,7 +472,7 @@ describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
 
   test('pause is refused before the session id lands (§2.1 fail-closed)', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
 
@@ -456,7 +495,7 @@ describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
 
   test('a paused bead stays skipped until resumed, and a resumed ancestor stops blocking it (§1.1)', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const first = Object.keys(env.store.snapshot(WS).attempts)[0];
     env.runner.eventsFor('S1').emit('session_id', 'sid-1');
@@ -480,7 +519,7 @@ describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
 
   test('■ on a RESUMED ancestor is refused, so the running child keeps its lane (§1.1)', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const ancestor = Object.keys(env.store.snapshot(WS).attempts)[0];
     env.runner.eventsFor('S1').emit('session_id', 'sid-1');
@@ -493,13 +532,13 @@ describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
     expect(await env.scheduler.stop(WS, ancestor)).toBe(false);
     const snap = env.store.snapshot(WS);
     expect(snap.attempts[ancestor].status).toBe('paused');
-    expect(snap.serial.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual(['S1']);
     expect(env.scheduler.isRunning('S1')).toBe(true);
   });
 
   test('a paused attempt can be discarded from its tile (§2.2)', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     env.runner.eventsFor('S1').emit('session_id', 'sid-1');
@@ -508,7 +547,7 @@ describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
     expect(await env.scheduler.stop(WS, attempt_id)).toBe(true);
     const snap = env.store.snapshot(WS);
     expect(snap.attempts[attempt_id].status).toBe('stopped');
-    expect(snap.serial.map((e) => e.bead_id)).toEqual([]);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual([]);
   });
 });
 
@@ -520,7 +559,7 @@ describe('scheduler session id capture (spec §2)', () => {
       slots: 1,
       notifyQueueChanged: notify
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     expect(env.scheduler.isRunning('S1')).toBe(true);
 
@@ -546,7 +585,7 @@ describe('scheduler session id capture (spec §2)', () => {
 describe('scheduler pause (⏸)', () => {
   test('auto_advance off starts none but lets running finish', async () => {
     const env = setup({ config: { P1: {}, P2: {}, P3: {} }, slots: 2 });
-    seedQueue(env.store, [], ['P1', 'P2', 'P3']);
+    seedQueue(env.store, ['P1', 'P2', 'P3']);
     await env.scheduler.tick(WS);
     expect(env.scheduler.runningCount()).toBe(2);
 
@@ -574,7 +613,7 @@ describe('scheduler dispatch snapshot', () => {
       config: { S1: { runner: 'claude', model: 'opus', effort: 'high' } },
       slots: 1
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
     // snapshotBead called during dispatch (authoritative re-read).
@@ -600,7 +639,7 @@ describe('scheduler dispatch snapshot', () => {
 describe('scheduler happy path (dispatch → PR observation → pr_wait)', () => {
   test('successful session verifies and moves the bead to pr_wait', async () => {
     const env = setup({ config: { S1: {} }, slots: 1, verifyOk: true });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
 
@@ -617,7 +656,7 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
   test('judges completion from the observation alone, never the merge axis', async () => {
     // A legacy merge_sha on the record must not reach the completion verdict.
     const env = setup({ config: { S1: {} }, slots: 1, verifyOk: true });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     env.store.updateAttempt(WS, {
@@ -641,7 +680,7 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
 
   test('reverts workflow_mode on every success (bead stays open for the merge click)', async () => {
     const env = setup({ config: { S1: {} }, slots: 1, verifyOk: true });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
     env.runner.finish('S1', { success: true });
@@ -665,7 +704,7 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
         ok: false,
         reason
       }));
-      seedQueue(env.store, ['S1'], []);
+      seedQueue(env.store, ['S1']);
       await env.scheduler.tick(WS);
       const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
 
@@ -684,7 +723,7 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
 describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker)', () => {
   test('failed session turns auto_advance OFF and leaves a banner-ready record', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts).find(
       (id) => env.store.snapshot(WS).attempts[id].bead_id === 'S1'
@@ -722,17 +761,19 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     // With the breaker gone there is no per-repo block, so turning ▶ back on is
     // the whole recovery path — no reset call in between.
     const env = setup({ config: { S1: {}, P1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
     env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
     await flush();
     await flush();
-    env.store.place(WS, {
+    // The user drops the failed bead and queues the next one (the failed bead
+    // stays queued on its own — a failure never removes it).
+    let rev = env.store.remove(WS, {
       expected_revision: env.store.snapshot(WS).revision,
-      bead_id: 'P1',
-      lane: 'parallel'
-    });
+      bead_id: 'S1'
+    }).queue.revision;
+    env.store.place(WS, { expected_revision: rev, bead_id: 'P1' });
     env.store.setAutoAdvance(WS, true);
     await env.scheduler.tick(WS);
 
@@ -741,7 +782,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
 
   test('a verify failure also turns auto_advance OFF', async () => {
     const env = setup({ config: { S1: {} }, slots: 1, verifyOk: false });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
     env.runner.finish('S1', { success: true });
@@ -756,7 +797,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
       config: { S1: { throwOnSet: true }, P1: {} },
       slots: 1
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
 
     // tick must resolve (the bd failure is contained, not thrown out of it).
     await expect(env.scheduler.tick(WS)).resolves.toBeUndefined();
@@ -775,11 +816,11 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     expect(env.store.snapshot(WS).auto_advance).toBe(true);
 
     // A subsequent normal dispatch still runs (the scheduler was not poisoned).
-    env.store.place(WS, {
+    const rev = env.store.remove(WS, {
       expected_revision: env.store.snapshot(WS).revision,
-      bead_id: 'P1',
-      lane: 'parallel'
-    });
+      bead_id: 'S1'
+    }).queue.revision;
+    env.store.place(WS, { expected_revision: rev, bead_id: 'P1' });
     await env.scheduler.tick(WS);
     expect(env.scheduler.isRunning('P1')).toBe(true);
   });
@@ -789,7 +830,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
       config: { S1: { workflow_mode: 'fast_track' } },
       slots: 1
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
     await flush();
@@ -808,7 +849,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
 });
 
 describe('scheduler admission gate (worker-autorun-policy §1)', () => {
-  test('admission-invalid serial head is skipped to the next candidate in the SAME tick (no starvation)', async () => {
+  test('admission-invalid head is skipped to the next candidate in the SAME tick (no starvation)', async () => {
     // The fake routes by a config marker (model:'invalid') since the snapshot
     // itself carries no bead id.
     const admission = {
@@ -828,7 +869,7 @@ describe('scheduler admission gate (worker-autorun-policy §1)', () => {
       slots: 2,
       admission
     });
-    seedQueue(env.store, ['S1', 'S2'], ['P1', 'P2']);
+    seedQueue(env.store, ['S1', 'S2', 'P1', 'P2']);
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.isRunning('S1')).toBe(false);
@@ -860,7 +901,7 @@ describe('scheduler admission gate (worker-autorun-policy §1)', () => {
       )
     };
     const env = setup({ config: { S1: {} }, slots: 1, admission });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.isRunning('S1')).toBe(false);
@@ -885,7 +926,7 @@ describe('scheduler admission gate (worker-autorun-policy §1)', () => {
       )
     };
     const env = setup({ config: { S1: {} }, slots: 1, admission });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     expect(env.store.snapshot(WS).admission.S1).toEqual({
       reason: 'receipt_unreachable',
@@ -918,7 +959,7 @@ describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring
       makeRunner: (/** @type {string} */ name) =>
         createRunner(name, { spawn_impl })
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     expect(spawn_impl.captured.calls.length).toBe(1);
     expect(spawn_impl.captured.calls[0].command).toBe('claude');
@@ -950,7 +991,7 @@ describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring
       makeRunner: (/** @type {string} */ name) =>
         createRunner(name, { spawn_impl })
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     expect(spawn_impl.captured.calls.length).toBe(1);
     expect(env.scheduler.isRunning('S1')).toBe(true);
@@ -961,7 +1002,7 @@ describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring
 describe('scheduler policy axis removal (worker-phase2 §2)', () => {
   test('a new attempt writes none of the retired merge-axis fields', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
 
     await env.scheduler.tick(WS);
 
@@ -978,7 +1019,7 @@ describe('scheduler policy axis removal (worker-phase2 §2)', () => {
       config: { S1: /** @type {any} */ ({ merge_policy: 'auto_merge' }) },
       slots: 1
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
 
     await env.scheduler.tick(WS);
 
@@ -990,7 +1031,7 @@ describe('scheduler policy axis removal (worker-phase2 §2)', () => {
 
   test('the session spawn carries no worker token', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
 
     await env.scheduler.tick(WS);
 
@@ -999,7 +1040,7 @@ describe('scheduler policy axis removal (worker-phase2 §2)', () => {
 
   test('conflict_resolution defaults to false on a normal dispatch (§6 seam)', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
 
     await env.scheduler.tick(WS);
 
@@ -1012,7 +1053,7 @@ describe('scheduler merge axis detached from completion (worker-phase2 §1)', ()
     // The post-merge verify path is deleted outright: even with a merge_sha on
     // the record, nothing may reach for a detached verification worktree.
     const env = setup({ config: { S1: {} }, slots: 1, verifyOk: true });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     env.store.updateAttempt(WS, {
@@ -1045,7 +1086,7 @@ describe('scheduler fail-closed regressions (implementation review 2026-07-22)',
       slots: 1,
       verifyOk: true
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
 
@@ -1089,7 +1130,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
     // Resolved values reached the runner spawn (model/effort) + attempt record.
@@ -1152,7 +1193,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       review_model: 'codex',
       impl_model: 'haiku'
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
@@ -1181,7 +1222,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       verifyOk: true
     });
     seedExecDefaults(env.store, { orchestration_model: 'gpt-5.6' });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
     expect(env.runner.settingsFor('S1').model).toBeUndefined();
@@ -1211,7 +1252,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
 
     await expect(env.scheduler.tick(WS)).resolves.toBeUndefined();
 
@@ -1272,7 +1313,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
 
     await expect(env.scheduler.tick(WS)).resolves.toBeUndefined();
 
@@ -1317,7 +1358,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
-    seedQueue(env.store, ['S1'], []);
+    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
     env.runner.finish('S1', { success: true });

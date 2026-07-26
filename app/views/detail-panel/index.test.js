@@ -372,8 +372,7 @@ describe('views/detail-panel', () => {
       /** @type {any} */ ({
         revision: 1,
         auto_advance: false,
-        serial: [],
-        parallel: [],
+        queue: [],
         done: [],
         attempts: {
           a7: {
@@ -431,8 +430,7 @@ describe('views/detail-panel', () => {
       /** @type {any} */ ({
         revision: 1,
         auto_advance: false,
-        serial: [],
-        parallel: [],
+        queue: [],
         done: [],
         attempts: {
           a8: {
@@ -490,8 +488,7 @@ describe('views/detail-panel', () => {
       /** @type {any} */ ({
         revision: 1,
         auto_advance: false,
-        serial: [],
-        parallel: [],
+        queue: [],
         done: [],
         attempts: {
           old: {
@@ -568,8 +565,7 @@ describe('views/detail-panel', () => {
       /** @type {any} */ ({
         revision: 1,
         auto_advance: false,
-        serial: [],
-        parallel: [],
+        queue: [],
         done: [],
         attempts: {},
         exec_defaults: { review_model: 'opus' }

@@ -2,10 +2,11 @@
  * Worker queue store — persistence + revision-CAS concurrency guard.
  *
  * NO EXECUTION lives here (that is Phase 10). This module only owns durable
- * queue placement: which beads sit in the Serial queue / Parallel pool / PR-wait
- * lane / Done lane, the `auto_advance` flag, and the per-attempt record container
- * (spec §5.2). Ordering mutations are guarded by an integer `revision` CAS so a
- * stale client's drag can never clobber a newer ordering (spec §5.1).
+ * queue placement: which beads sit in the waiting `queue` / PR-wait lane / Done
+ * lane, the `auto_advance` flag, the concurrency cap `slots`, and the
+ * per-attempt record container (spec §5.2). Ordering mutations are guarded by an
+ * integer `revision` CAS so a stale client's drag can never clobber a newer
+ * ordering (spec §5.1).
  *
  * Persistence: one `queue.json` per workspace under
  * `$XDG_STATE_HOME/bdui/<slug>/` (see state-paths.js). Writes are atomic
@@ -80,11 +81,14 @@
  * @property {Record<string, string>} exec_defaults - Workspace-global exec
  * setting defaults (subset of the 5 exec keys; an unset key is absent). Only
  * valid enum values survive normalize.
- * @property {QueueEntry[]} serial - Serial queue (one runnable head at a time).
- * @property {QueueEntry[]} parallel - Parallel pool (slot-priority order).
+ * @property {number} slots - Concurrency cap: how many sessions the scheduler
+ * may run at once (worker-phase2 §3). Integer ≥ 1, default 2. `slots = 1` IS
+ * the retired serial lane's semantics.
+ * @property {QueueEntry[]} queue - The ONE waiting lane, in dispatch order
+ * (worker-phase2 §3). Ordering/dependency safety is carried by the admission
+ * validator + bd deps, not by a lane split.
  * @property {QueueEntry[]} pr_wait - Beads whose PR the server OBSERVED open,
- * waiting for a human merge click (worker-phase2 §4). Persistent lane: it
- * survives Phase 3's serial/parallel collapse alongside `done`.
+ * waiting for a human merge click (worker-phase2 §4).
  * @property {QueueEntry[]} done - Completed today.
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
  * @property {Record<string, { reason: string, at: number }>} admission -
@@ -102,8 +106,21 @@ import path from 'node:path';
 import { EXEC_SETTING_ENUMS } from './exec-enums.js';
 import { queueFilePath } from './state-paths.js';
 
-/** @type {ReadonlyArray<'serial'|'parallel'>} */
-const PLACEABLE_LANES = ['serial', 'parallel'];
+/**
+ * Default concurrency cap when a queue carries no (or an unusable) `slots`
+ * value — worker-phase2 §3/§9.
+ *
+ * @type {number}
+ */
+export const DEFAULT_SLOTS = 2;
+
+/**
+ * Lower bound on the concurrency cap. 1 is the retired serial lane: exactly one
+ * session at a time.
+ *
+ * @type {number}
+ */
+export const MIN_SLOTS = 1;
 
 /**
  * @param {unknown} value
@@ -114,6 +131,23 @@ function isRecord(value) {
 }
 
 /**
+ * Coerce a candidate `slots` value to a usable cap, or null when it is not one.
+ * A non-number, a non-integer, and anything below {@link MIN_SLOTS} are all
+ * unusable — `setSlots` REJECTS those without a write (the stored value is never
+ * corrupted, and the client learns its input was refused), while `normalize`
+ * falls back to {@link DEFAULT_SLOTS} (a queue.json must always load).
+ *
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function normalizeSlots(value) {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    return null;
+  }
+  return value >= MIN_SLOTS ? value : null;
+}
+
+/**
  * @returns {Queue}
  */
 function emptyQueue() {
@@ -121,8 +155,8 @@ function emptyQueue() {
     revision: 0,
     auto_advance: false,
     exec_defaults: {},
-    serial: [],
-    parallel: [],
+    slots: DEFAULT_SLOTS,
+    queue: [],
     pr_wait: [],
     done: [],
     attempts: {},
@@ -255,8 +289,16 @@ function normalizeQueue(raw) {
     typeof raw.revision === 'number' && Number.isFinite(raw.revision)
       ? Math.max(0, Math.floor(raw.revision))
       : 0;
-  q.serial = normalizeLane(raw.serial);
-  q.parallel = normalizeLane(raw.parallel);
+  q.slots = normalizeSlots(raw.slots) ?? DEFAULT_SLOTS;
+  // LEGACY MERGE (worker-phase2 §9): a queue.json from the serial/parallel
+  // regime has no `queue` key, so its two lanes fold into the single lane —
+  // ALL of `serial` first (it was the priority lane), then `parallel`, each
+  // lane's internal order untouched. `normalizeLane`'s first-wins dedupe now
+  // also spans the concatenation, so a bead recorded in both lanes keeps its
+  // (earlier) serial position instead of appearing twice.
+  q.queue = normalizeLane(
+    [raw.queue, raw.serial, raw.parallel].filter(Array.isArray).flat()
+  );
   // A queue.json written before the pr_wait lane existed simply has no key →
   // empty lane. Past `done` entries STAY in `done`: a pr_stop completion from
   // the old regime is not retroactively re-filed as "awaiting a merge click"
@@ -323,8 +365,7 @@ function clampIndex(index, length) {
  * @param {string} bead_id
  */
 function removeFromLanes(q, bead_id) {
-  q.serial = q.serial.filter((e) => e.bead_id !== bead_id);
-  q.parallel = q.parallel.filter((e) => e.bead_id !== bead_id);
+  q.queue = q.queue.filter((e) => e.bead_id !== bead_id);
   q.pr_wait = q.pr_wait.filter((e) => e.bead_id !== bead_id);
   q.done = q.done.filter((e) => e.bead_id !== bead_id);
 }
@@ -462,25 +503,27 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Place a bead into a lane at an index, removing it from any other lane
-     * (two-way move + dedupe). CAS-guarded.
+     * Place a bead into the waiting `queue` at an index, removing it from every
+     * other lane (dedupe). CAS-guarded.
+     *
+     * There is no `lane` input any more: with the serial/parallel split gone
+     * (worker-phase2 §3) the only placeable lane is `queue`, so an argument
+     * with one legal value would be pure ceremony — and a stale client that
+     * still sends `lane:'serial'` now simply lands in the one queue instead of
+     * being rejected.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, bead_id: string, lane: 'serial'|'parallel', index?: number }} input
+     * @param {{ expected_revision: number, bead_id: string, index?: number }} input
      * @returns {QueueOpResult}
      */
     place(workspace, input) {
-      const { expected_revision, bead_id, lane, index } = input;
+      const { expected_revision, bead_id, index } = input;
       return applyMutation(workspace, expected_revision, (next) => {
-        if (
-          typeof bead_id !== 'string' ||
-          bead_id.length === 0 ||
-          !PLACEABLE_LANES.includes(lane)
-        ) {
+        if (typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
         }
         removeFromLanes(next, bead_id);
-        const arr = next[lane];
+        const arr = next.queue;
         arr.splice(clampIndex(index ?? arr.length, arr.length), 0, {
           bead_id,
           added_at: now()
@@ -490,25 +533,44 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Reorder a bead within its lane. CAS-guarded.
+     * Reorder a bead within the waiting `queue`. CAS-guarded.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, bead_id: string, lane: 'serial'|'parallel', to_index: number }} input
+     * @param {{ expected_revision: number, bead_id: string, to_index: number }} input
      * @returns {QueueOpResult}
      */
     reorder(workspace, input) {
-      const { expected_revision, bead_id, lane, to_index } = input;
+      const { expected_revision, bead_id, to_index } = input;
       return applyMutation(workspace, expected_revision, (next) => {
-        if (!PLACEABLE_LANES.includes(lane)) {
-          return false;
-        }
-        const arr = next[lane];
+        const arr = next.queue;
         const from = arr.findIndex((e) => e.bead_id === bead_id);
         if (from < 0) {
           return false;
         }
         const [entry] = arr.splice(from, 1);
         arr.splice(clampIndex(to_index, arr.length), 0, entry);
+        return true;
+      });
+    },
+
+    /**
+     * Set the concurrency cap (worker-phase2 §3). CAS-guarded, mirroring
+     * {@link toggleAutoAdvance}. A value that is not an integer ≥ 1 is REJECTED
+     * (`ok:false, conflict:false`) without a write, so a malformed client input
+     * can never corrupt the stored cap.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, slots: unknown }} input
+     * @returns {QueueOpResult}
+     */
+    setSlots(workspace, input) {
+      const { expected_revision, slots } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        const value = normalizeSlots(slots);
+        if (value === null) {
+          return false;
+        }
+        next.slots = value;
         return true;
       });
     },
@@ -665,7 +727,7 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Move a bead into the Done lane (removing it from serial/parallel).
+     * Move a bead into the Done lane (removing it from every other lane).
      * Scheduler-owned (no CAS).
      *
      * Currently unwired: the merge axis that used to call this is gone, and

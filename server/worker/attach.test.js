@@ -117,9 +117,9 @@ const okVerify = {
  * @param {any} store
  * @param {string} id
  */
-function seedSerial(store, id) {
+function seedQueue(store, id) {
   const rev = store.snapshot(WS).revision;
-  store.place(WS, { expected_revision: rev, bead_id: id, lane: 'serial' });
+  store.place(WS, { expected_revision: rev, bead_id: id });
   store.setAutoAdvance(WS, true);
 }
 
@@ -152,12 +152,11 @@ describe('worker/attach construction + live loop (F1)', () => {
       verify: okVerify,
       // This test probes the spawn/preamble wiring, not the admission gate.
       admission: { validate: async () => ({ ok: true }) },
-      spawn_impl,
-      parallel_slots: 1
+      spawn_impl
     });
     __registerWorkerAttachmentForTest(WS, att);
 
-    seedSerial(runtime.queueStore, 'S1');
+    seedQueue(runtime.queueStore, 'S1');
     // tickWorkerQueue is exactly what the worker-queue-toggle handler calls.
     await tickWorkerQueue(WS);
 
@@ -175,7 +174,7 @@ describe('worker/attach construction + live loop (F1)', () => {
 
   test('tickWorkerQueue is an inert no-op when no attachment is registered', async () => {
     const store = createQueueStore();
-    seedSerial(store, 'S1');
+    seedQueue(store, 'S1');
     // No registration → no dispatch, no throw (keeps ws-only tests hermetic).
     await expect(tickWorkerQueue(WS)).resolves.toBeUndefined();
   });

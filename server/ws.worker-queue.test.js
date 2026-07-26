@@ -103,7 +103,7 @@ describe('ws worker-queue channel', () => {
     expect(replyFor(sock, 's1').ok).toBe(true);
     const snaps = queueSnapshots(sock);
     expect(snaps.length).toBe(1);
-    expect(snaps[0]).toMatchObject({ revision: 0, serial: [], parallel: [] });
+    expect(snaps[0]).toMatchObject({ revision: 0, queue: [], slots: 2 });
   });
 
   test('place bumps revision and pushes a fresh snapshot to subscribers', async () => {
@@ -113,7 +113,6 @@ describe('ws worker-queue channel', () => {
 
     await send(sock, 'm1', 'worker-queue-place', {
       bead_id: 'UI-1',
-      lane: 'serial',
       expected_revision: 0
     });
     const reply = replyFor(sock, 'm1');
@@ -124,7 +123,7 @@ describe('ws worker-queue channel', () => {
     const snaps = queueSnapshots(sock);
     expect(snaps.length).toBe(1);
     expect(snaps[0].revision).toBe(1);
-    expect(snaps[0].serial.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+    expect(snaps[0].queue.map((/** @type {any} */ e) => e.bead_id)).toEqual([
       'UI-1'
     ]);
   });
@@ -134,7 +133,6 @@ describe('ws worker-queue channel', () => {
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     await send(sock, 'm1', 'worker-queue-place', {
       bead_id: 'UI-1',
-      lane: 'serial',
       expected_revision: 0
     });
     sock.sent = [];
@@ -142,7 +140,6 @@ describe('ws worker-queue channel', () => {
     // A second client still thinks revision is 0.
     await send(sock, 'm2', 'worker-queue-place', {
       bead_id: 'UI-2',
-      lane: 'serial',
       expected_revision: 0
     });
     const reply = replyFor(sock, 'm2');
@@ -152,7 +149,7 @@ describe('ws worker-queue channel', () => {
     // Current snapshot returned so the client can re-sync + retry.
     expect(reply.payload.queue.revision).toBe(1);
     expect(
-      reply.payload.queue.serial.map((/** @type {any} */ e) => e.bead_id)
+      reply.payload.queue.queue.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual(['UI-1']);
     // No fanout snapshot on conflict.
     expect(queueSnapshots(sock).length).toBe(0);
@@ -163,7 +160,6 @@ describe('ws worker-queue channel', () => {
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     await send(sock, 'm1', 'worker-queue-place', {
       bead_id: 'UI-1',
-      lane: 'serial',
       expected_revision: 0
     });
     sock.sent = [];
@@ -173,7 +169,7 @@ describe('ws worker-queue channel', () => {
       expected_revision: 1
     });
     const snaps = queueSnapshots(sock);
-    expect(snaps.at(-1).serial).toEqual([]);
+    expect(snaps.at(-1).queue).toEqual([]);
     expect(snaps.at(-1).revision).toBe(2);
   });
 
@@ -187,7 +183,6 @@ describe('ws worker-queue channel', () => {
 
     await send(a, 'm1', 'worker-queue-place', {
       bead_id: 'UI-9',
-      lane: 'parallel',
       expected_revision: 0
     });
 
@@ -195,10 +190,10 @@ describe('ws worker-queue channel', () => {
     const snapB = queueSnapshots(b);
     expect(snapA.length).toBe(1);
     expect(snapB.length).toBe(1);
-    expect(snapA[0].parallel.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+    expect(snapA[0].queue.map((/** @type {any} */ e) => e.bead_id)).toEqual([
       'UI-9'
     ]);
-    expect(snapB[0].parallel.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+    expect(snapB[0].queue.map((/** @type {any} */ e) => e.bead_id)).toEqual([
       'UI-9'
     ]);
   });
@@ -302,7 +297,6 @@ describe('ws worker-queue channel', () => {
 
     await send(sock, 'm1', 'worker-queue-place', {
       bead_id: 'UI-7',
-      lane: 'serial',
       expected_revision: 0
     });
     const refused = replyFor(sock, 'm1');
@@ -310,20 +304,19 @@ describe('ws worker-queue channel', () => {
     expect(refused.payload.admission_reason).toBe('spec_missing');
     // The refusal is PERSISTED on the queue (badge source), not reply-only.
     expect(refused.payload.queue.admission['UI-7'].reason).toBe('spec_missing');
-    expect(refused.payload.queue.serial).toEqual([]);
+    expect(refused.payload.queue.queue).toEqual([]);
 
     // A later admission-passing place clears the stale record.
     refuse = false;
     await send(sock, 'm2', 'worker-queue-place', {
       bead_id: 'UI-7',
-      lane: 'serial',
       expected_revision: refused.payload.queue.revision
     });
     const placed = replyFor(sock, 'm2');
     expect(placed.payload.applied).toBe(true);
     expect(placed.payload.queue.admission['UI-7']).toBeUndefined();
     expect(
-      placed.payload.queue.serial.map((/** @type {any} */ e) => e.bead_id)
+      placed.payload.queue.queue.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual(['UI-7']);
   });
 
@@ -546,5 +539,91 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     expect(snapB.length).toBe(1);
     expect(snapA.at(-1).exec_defaults.orchestration_effort).toBe('high');
     expect(snapB.at(-1).exec_defaults.orchestration_effort).toBe('high');
+  });
+});
+
+describe('ws worker-queue-set-slots (worker-phase2 §3)', () => {
+  test('is a routed message type', () => {
+    expect(MESSAGE_TYPES).toContain('worker-queue-set-slots');
+  });
+
+  test('set persists the cap, bumps revision, and pushes a fresh snapshot', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'm1', 'worker-queue-set-slots', {
+      slots: 4,
+      expected_revision: 0
+    });
+
+    const reply = replyFor(sock, 'm1');
+    expect(reply.payload.applied).toBe(true);
+    expect(reply.payload.queue.slots).toBe(4);
+    expect(queueSnapshots(sock).at(-1).slots).toBe(4);
+  });
+
+  test('reports the cap in workspace_info so the editor renders it', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-queue-set-slots', {
+      slots: 3,
+      expected_revision: 0
+    });
+
+    expect(queueSnapshots(sock).at(-1).workspace_info.slots).toBe(3);
+  });
+
+  test('a stale expected_revision conflicts without writing or fanning out', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'm1', 'worker-queue-set-slots', {
+      slots: 4,
+      expected_revision: 0
+    });
+    sock.sent = [];
+
+    await send(sock, 'm2', 'worker-queue-set-slots', {
+      slots: 9,
+      expected_revision: 0
+    });
+
+    const reply = replyFor(sock, 'm2');
+    expect(reply.payload.applied).toBe(false);
+    expect(reply.payload.conflict).toBe(true);
+    expect(reply.payload.queue.slots).toBe(4);
+    expect(queueSnapshots(sock).length).toBe(0);
+  });
+
+  test('a below-bound value is rejected without a write and without a fanout', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'm1', 'worker-queue-set-slots', {
+      slots: 0,
+      expected_revision: 0
+    });
+
+    const reply = replyFor(sock, 'm1');
+    expect(reply.payload.applied).toBe(false);
+    expect(reply.payload.conflict).toBe(false);
+    expect(reply.payload.queue.slots).toBe(2);
+    expect(queueSnapshots(sock).length).toBe(0);
+  });
+
+  test('a non-numeric payload is a bad_request', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-queue-set-slots', {
+      slots: '3',
+      expected_revision: 0
+    });
+
+    const reply = replyFor(sock, 'm1');
+    expect(reply.ok).toBe(false);
+    expect(reply.error.code).toBe('bad_request');
   });
 });

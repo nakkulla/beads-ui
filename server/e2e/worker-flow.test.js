@@ -177,7 +177,7 @@ async function landWorkBranch(bead_id, merge) {
  * REAL verify module runs against a faked `gh` adapter (worker-phase2 §12: the
  * observation seam is mocked, never the network).
  *
- * @param {{ fixture: string, exit?: number, config: Record<string, any>, prOpen?: boolean, landWork?: boolean }} opts
+ * @param {{ fixture: string, exit?: number, config: Record<string, any>, prOpen?: boolean, landWork?: boolean, slots?: number }} opts
  */
 function buildSystem(opts) {
   const runtime = createWorkerRuntime();
@@ -252,8 +252,12 @@ function buildSystem(opts) {
     bd,
     worktree,
     verify,
-    sessionLog: runtime.sessionLog,
-    parallel_slots: 2
+    sessionLog: runtime.sessionLog
+  });
+  // The concurrency cap is store state now (worker-phase2 §3).
+  runtime.queueStore.setSlots(WS, {
+    expected_revision: runtime.queueStore.snapshot(WS).revision,
+    slots: opts.slots ?? 2
   });
   // Wire the runtime attach seam Phase 10 deferred.
   runtime.setRunningCountProvider(() => scheduler.runningCount());
@@ -262,23 +266,14 @@ function buildSystem(opts) {
 
 /**
  * @param {any} store
- * @param {string[]} serial
- * @param {string[]} parallel
+ * @param {string[]} ids
  */
-function seedQueue(store, serial, parallel) {
+function seedQueue(store, ids) {
   let rev = store.snapshot(WS).revision;
-  for (const id of serial) {
+  for (const id of ids) {
     rev = store.place(WS, {
       expected_revision: rev,
-      bead_id: id,
-      lane: 'serial'
-    }).queue.revision;
-  }
-  for (const id of parallel) {
-    rev = store.place(WS, {
-      expected_revision: rev,
-      bead_id: id,
-      lane: 'parallel'
+      bead_id: id
     }).queue.revision;
   }
   store.setAutoAdvance(WS, true);
@@ -317,11 +312,12 @@ describe('worker e2e — full success flow', () => {
     // worker back-fills `pr_url`/`resolved` itself.
     const { runtime, bd, scheduler, bd_record } = buildSystem({
       fixture: 'claude-success.jsonl',
-      config: { S1: { runner: 'claude' }, S2: { runner: 'claude' } }
+      config: { S1: { runner: 'claude' }, S2: { runner: 'claude' } },
+      slots: 1
     });
-    seedQueue(runtime.queueStore, ['S1', 'S2'], []);
+    seedQueue(runtime.queueStore, ['S1', 'S2']);
 
-    // First tick dispatches the serial head (cap 1) — S1 only.
+    // First tick fills the single slot in queue order — S1 only.
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
     expect(scheduler.isRunning('S2')).toBe(false);
@@ -372,7 +368,7 @@ describe('worker e2e — failure injection halts the queue (no breaker)', () => 
       exit: 1,
       config: { S1: { runner: 'codex' }, P1: { runner: 'codex' } }
     });
-    seedQueue(runtime.queueStore, ['S1'], []);
+    seedQueue(runtime.queueStore, ['S1']);
 
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
@@ -403,8 +399,7 @@ describe('worker e2e — failure injection halts the queue (no breaker)', () => 
     // whole recovery path now that the breaker is gone.
     runtime.queueStore.place(WS, {
       expected_revision: runtime.queueStore.snapshot(WS).revision,
-      bead_id: 'P1',
-      lane: 'parallel'
+      bead_id: 'P1'
     });
     runtime.queueStore.setAutoAdvance(WS, true);
     await scheduler.tick(WS);
@@ -423,7 +418,7 @@ describe('worker e2e — a session that never delivered fails verification (fail
       config: { S1: { runner: 'claude' } },
       landWork: false
     });
-    seedQueue(runtime.queueStore, ['S1'], []);
+    seedQueue(runtime.queueStore, ['S1']);
 
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
@@ -498,12 +493,15 @@ describe('worker e2e — runtime seam reflects the live scheduler', () => {
         remove: async () => ({ code: 0 })
       },
       verify: { verifyPrSubmitted: async () => ({ ok: true, reason: 'ok' }) },
-      sessionLog: runtime.sessionLog,
-      parallel_slots: 1
+      sessionLog: runtime.sessionLog
+    });
+    runtime.queueStore.setSlots(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      slots: 1
     });
     runtime.setRunningCountProvider(() => scheduler.runningCount());
 
-    seedQueue(runtime.queueStore, ['S1'], []);
+    seedQueue(runtime.queueStore, ['S1']);
     await scheduler.tick(WS);
 
     expect(scheduler.runningCount()).toBe(1);

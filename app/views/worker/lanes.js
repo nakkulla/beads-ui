@@ -1,9 +1,10 @@
 /**
  * Lane + mini-row templates for the Worker console (spec §5.1).
  *
- * Four lanes: candidates (Board Ready/Blocked, dashed `.pane.src`), Serial
- * queue, Parallel pool, and Done. Styling mirrors `worker-final.html`
- * (`.pane`/`.mini`/`⠿` grip) via the `worker-*` class namespace.
+ * Three lanes: candidates (Board Ready/Blocked, dashed `.pane.src`), the single
+ * waiting queue (worker-phase2 §3 — the serial/parallel split is gone), and
+ * Done. Styling mirrors `worker-final.html` (`.pane`/`.mini`/`⠿` grip) via the
+ * `worker-*` class namespace.
  */
 import { html } from 'lit-html';
 import { stepperTemplate } from '../board/stepper.js';
@@ -14,8 +15,8 @@ import { stepperTemplate } from '../board/stepper.js';
  * @property {string} title - Bead title (falls back to id).
  * @property {string} [reason] - Candidate reason chip (spec 없음 / 🔒 target).
  * @property {boolean} draggable - Whether this row can be dragged.
- * @property {'candidate'|'serial'|'parallel'|'pr_wait'|'done'} lane - Owning
- * lane. `pr_wait` rows render inside the Done pane until Phase 6's 4-column IA.
+ * @property {'candidate'|'queue'|'pr_wait'|'done'} lane - Owning lane.
+ * `pr_wait` rows render inside the Done pane until Phase 6's 4-column IA.
  * @property {boolean} [done] - Rendered dimmed with no grip.
  * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
@@ -105,7 +106,7 @@ export function candidateCard(item) {
 /**
  * One lane pane.
  *
- * @param {{ id: string, lane: 'candidate'|'serial'|'parallel'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {

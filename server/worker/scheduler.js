@@ -1,10 +1,12 @@
 /**
  * Worker scheduler — the auto-advance state machine (spec §5.1–§5.3).
  *
- * Drives the Phase 9 queue: when `auto_advance` is on, it runs the Serial head
- * (at most 1) plus up to N Parallel slots concurrently (total ≤ 1+N). A blocked
- * Serial head is skipped to the next runnable serial bead. ⏸ (auto_advance off)
- * lets running sessions finish but starts no new ones.
+ * Drives the queue: when `auto_advance` is on, ONE scan walks the single
+ * waiting lane in order and fills the free slots (`queue.slots`, the store-owned
+ * concurrency cap — worker-phase2 §3). A blocked / inadmissible entry is skipped
+ * to the next runnable one, never starving the rest. `slots = 1` IS the retired
+ * serial lane. ⏸ (auto_advance off) lets running sessions finish but starts no
+ * new ones.
  *
  * Dispatch is fail-closed and contract-native:
  *   - RE-READ ready/blocked/deps/exec-settings from bd just before dispatch and
@@ -28,6 +30,7 @@
  */
 import { debug } from '../logging.js';
 import { resolveExecSettings } from './policy.js';
+import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
 
 const log = debug('worker:scheduler');
 
@@ -75,7 +78,6 @@ const log = debug('worker:scheduler');
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
  * waiting for their next own mutation (worker-autorun-policy §6).
  * @property {() => number} [now]
- * @property {number} [parallel_slots]
  * @property {(bead_id: string) => string} [makeAttemptId]
  */
 
@@ -95,8 +97,6 @@ const log = debug('worker:scheduler');
  */
 export function createScheduler(deps) {
   const now = deps.now || (() => Date.now());
-  const parallel_slots =
-    typeof deps.parallel_slots === 'number' ? deps.parallel_slots : 2;
   let attempt_seq = 0;
   const makeAttemptId =
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
@@ -104,7 +104,7 @@ export function createScheduler(deps) {
   /**
    * Live sessions keyed by attempt_id.
    *
-   * @type {Map<string, { bead_id: string, repo: string, lane: 'serial'|'parallel', handle: RunnerHandle, prior: string|null }>}
+   * @type {Map<string, { bead_id: string, repo: string, handle: RunnerHandle, prior: string|null }>}
    */
   const running = new Map();
   /** Beads currently claimed (dispatching or running) — prevents double launch. @type {Set<string>} */
@@ -162,17 +162,19 @@ export function createScheduler(deps) {
   }
 
   /**
-   * @param {'serial'|'parallel'} lane
+   * The workspace's concurrency cap, read from the STORE (`queue.slots`) on
+   * every pass so a UI edit takes effect on the next tick. A snapshot without a
+   * usable value (a hand-built fake store) falls back to the same default
+   * `normalizeQueue` applies, so the cap is never 0/NaN.
+   *
+   * @param {{ slots?: unknown }} q - Queue snapshot.
    * @returns {number}
    */
-  function runningInLane(lane) {
-    let n = 0;
-    for (const r of running.values()) {
-      if (r.lane === lane) {
-        n += 1;
-      }
-    }
-    return n;
+  function slotsOf(q) {
+    const raw = q.slots;
+    return typeof raw === 'number' && Number.isInteger(raw) && raw >= MIN_SLOTS
+      ? raw
+      : DEFAULT_SLOTS;
   }
 
   /**
@@ -390,9 +392,8 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @param {'serial'|'parallel'} lane
    */
-  async function dispatch(workspace, bead_id, lane) {
+  async function dispatch(workspace, bead_id) {
     // RE-READ authoritative ready/blocked/deps/exec-settings at dispatch.
     let snap;
     try {
@@ -594,7 +595,6 @@ export function createScheduler(deps) {
       workspace,
       attempt_id,
       bead_id,
-      lane,
       repo: snap.repo,
       target_base: snap.target_base,
       base_oid: wt.base_oid,
@@ -626,7 +626,6 @@ export function createScheduler(deps) {
    *   workspace: string,
    *   attempt_id: string,
    *   bead_id: string,
-   *   lane: 'serial'|'parallel',
    *   repo: string,
    *   target_base: string,
    *   base_oid: string|null,
@@ -646,7 +645,6 @@ export function createScheduler(deps) {
       workspace,
       attempt_id,
       bead_id,
-      lane,
       repo,
       target_base,
       base_oid,
@@ -725,7 +723,7 @@ export function createScheduler(deps) {
       });
       notifyChanged(workspace);
     });
-    running.set(attempt_id, { bead_id, repo, lane, handle, prior: prior_wf });
+    running.set(attempt_id, { bead_id, repo, handle, prior: prior_wf });
     notifyChanged(workspace);
 
     // onSessionDone reads only repo + target_base off the snap, so a synthetic
@@ -847,11 +845,6 @@ export function createScheduler(deps) {
       prior.exec_values && typeof prior.exec_values === 'object'
         ? /** @type {Record<string, string>} */ (prior.exec_values)
         : {};
-    const lane = (q.serial || []).some(
-      (/** @type {any} */ e) => e.bead_id === bead_id
-    )
-      ? 'serial'
-      : 'parallel';
 
     // Mint the new attempt inheriting the PRIOR snapshot verbatim (§1.3): repo/
     // target_base/base_oid/runner/model/effort — never re-resolved from current
@@ -957,7 +950,6 @@ export function createScheduler(deps) {
       workspace,
       attempt_id: new_attempt_id,
       bead_id,
-      lane,
       repo,
       target_base,
       base_oid: prior.base_oid ?? null,
@@ -990,8 +982,15 @@ export function createScheduler(deps) {
   }
 
   /**
-   * One dispatch pass. Selects the serial head (skipping blocked) + fills
-   * parallel slots, honoring auto_advance and the 1+N cap.
+   * One dispatch pass (worker-phase2 §3): ONE ordered scan of the single
+   * waiting lane, filling the free slots of the store-owned cap.
+   *
+   * Every skip rule of the retired two-lane scan is preserved verbatim — a
+   * claimed bead, a dispatch-refused bead, a leaf-paused bead, a bd snapshot
+   * failure, a not-ready/blocked bead, and an admission refusal (recorded +
+   * fanned out) all SKIP to the next entry rather than stopping the scan. That
+   * skip-don't-stop rule is the anti-starvation guarantee: one inadmissible
+   * head can never hold the queue.
    *
    * @param {string} workspace
    * @returns {Promise<void>}
@@ -1003,47 +1002,11 @@ export function createScheduler(deps) {
     }
     const paused_beads = leafPausedBeads(q);
 
-    /** @type {Array<{ bead_id: string, lane: 'serial'|'parallel', snap: BeadSnapshot }>} */
+    /** @type {Array<{ bead_id: string, snap: BeadSnapshot }>} */
     const to_dispatch = [];
 
-    // Serial head: at most one serial session; skip blocked to next runnable.
-    if (runningInLane('serial') === 0) {
-      for (const entry of q.serial) {
-        if (
-          claimed.has(entry.bead_id) ||
-          dispatch_refused.has(entry.bead_id) ||
-          paused_beads.has(entry.bead_id)
-        ) {
-          continue;
-        }
-        let snap;
-        try {
-          snap = await deps.bd.snapshotBead(entry.bead_id);
-        } catch {
-          continue;
-        }
-        if (snap.ready && !snap.blocked) {
-          const adm = await checkAdmission(snap);
-          if (!adm.ok) {
-            // Same skip semantics as a blocked head: record the refusal and
-            // keep scanning so an inadmissible head never starves the lane.
-            deps.store.recordAdmission(workspace, {
-              bead_id: entry.bead_id,
-              reason: adm.reason || 'git_error'
-            });
-            notifyChanged(workspace);
-            continue;
-          }
-          to_dispatch.push({ bead_id: entry.bead_id, lane: 'serial', snap });
-          break;
-        }
-        // blocked/not-ready serial head → skip to next runnable.
-      }
-    }
-
-    // Parallel pool: fill remaining slots in slot-priority order.
-    let free = parallel_slots - runningInLane('parallel');
-    for (const entry of q.parallel) {
+    let free = slotsOf(q) - running.size;
+    for (const entry of q.queue) {
       if (free <= 0) {
         break;
       }
@@ -1070,7 +1033,7 @@ export function createScheduler(deps) {
           notifyChanged(workspace);
           continue;
         }
-        to_dispatch.push({ bead_id: entry.bead_id, lane: 'parallel', snap });
+        to_dispatch.push({ bead_id: entry.bead_id, snap });
         free -= 1;
       }
     }
@@ -1079,9 +1042,7 @@ export function createScheduler(deps) {
     for (const d of to_dispatch) {
       claimed.add(d.bead_id);
     }
-    await Promise.all(
-      to_dispatch.map((d) => dispatch(workspace, d.bead_id, d.lane))
-    );
+    await Promise.all(to_dispatch.map((d) => dispatch(workspace, d.bead_id)));
   }
 
   /**

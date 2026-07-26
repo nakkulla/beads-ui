@@ -105,8 +105,8 @@ function queueOf(over = {}) {
   return {
     revision: 1,
     auto_advance: false,
-    serial: [],
-    parallel: [],
+    slots: 2,
+    queue: [],
     done: [],
     attempts: {},
     ...over
@@ -316,12 +316,12 @@ describe('views/worker', () => {
     expect(gotoIssue).toHaveBeenCalledWith('RD-1');
   });
 
-  test('dragging a candidate into Serial sends worker-queue-place with the current revision', async () => {
+  test('dragging a candidate into the queue sends worker-queue-place with the current revision', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi
       .fn()
       .mockResolvedValue(
-        reply(queueOf({ serial: [{ bead_id: 'RD-1', added_at: 0 }] }))
+        reply(queueOf({ queue: [{ bead_id: 'RD-1', added_at: 0 }] }))
       );
     createWorkerView(mount, {
       issueStores: seedCandidates(),
@@ -329,12 +329,11 @@ describe('views/worker', () => {
       transport
     });
 
-    drag(mount, 'RD-1', 'worker-pane-serial');
+    drag(mount, 'RD-1', 'worker-pane-queue');
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-place', {
       bead_id: 'RD-1',
-      lane: 'serial',
       index: 0,
       expected_revision: 0
     });
@@ -351,7 +350,7 @@ describe('views/worker', () => {
       })
       .mockResolvedValueOnce(
         reply(
-          queueOf({ revision: 6, serial: [{ bead_id: 'RD-1', added_at: 0 }] })
+          queueOf({ revision: 6, queue: [{ bead_id: 'RD-1', added_at: 0 }] })
         )
       );
     createWorkerView(mount, {
@@ -360,7 +359,7 @@ describe('views/worker', () => {
       transport
     });
 
-    drag(mount, 'RD-1', 'worker-pane-serial');
+    drag(mount, 'RD-1', 'worker-pane-queue');
     await flush();
 
     expect(transport).toHaveBeenCalledTimes(2);
@@ -375,7 +374,7 @@ describe('views/worker', () => {
     store.set(
       queueOf({
         revision: 3,
-        serial: [
+        queue: [
           { bead_id: 'A', added_at: 0 },
           { bead_id: 'B', added_at: 0 }
         ]
@@ -390,13 +389,12 @@ describe('views/worker', () => {
       transport
     });
 
-    // Drop B onto the serial pane (append) — same lane → reorder.
-    drag(mount, 'B', 'worker-pane-serial');
+    // Drop B onto the queue pane (append) — same lane → reorder.
+    drag(mount, 'B', 'worker-pane-queue');
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-reorder', {
       bead_id: 'B',
-      lane: 'serial',
       to_index: 2,
       expected_revision: 3
     });
@@ -434,7 +432,7 @@ describe('views/worker', () => {
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        serial: [{ bead_id: 'SQ-1', added_at: 0 }],
+        queue: [{ bead_id: 'SQ-1', added_at: 0 }],
         admission: {
           'RD-1': { reason: 'spec_review_stale', at: 1 },
           'SQ-1': { reason: 'receipt_missing_or_malformed', at: 2 }
@@ -457,10 +455,10 @@ describe('views/worker', () => {
     expect(rd1.querySelector('.worker-card__reason')?.textContent).toContain(
       '⛔ spec_review_stale'
     );
-    // Queued (serial) badge (tick/dispatch refusal).
+    // Queued row badge (tick/dispatch refusal).
     const sq1 = /** @type {HTMLElement} */ (
       mount.querySelector(
-        '#worker-pane-serial .worker-mini[data-bead-id="SQ-1"]'
+        '#worker-pane-queue .worker-mini[data-bead-id="SQ-1"]'
       )
     );
     expect(sq1.querySelector('.worker-mini__reason')?.textContent).toContain(
@@ -494,6 +492,120 @@ describe('views/worker', () => {
     expect(mount.querySelector('.worker-verifycmd')).toBeNull();
     // The ⚙ exec-defaults button survives.
     expect(mount.querySelector('.worker-exec-defaults-btn')).not.toBeNull();
+  });
+
+  test('renders one waiting lane, with no serial or parallel pane (worker-phase2 §3)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    expect(mount.querySelector('#worker-pane-queue')).not.toBeNull();
+    expect(mount.querySelector('#worker-pane-serial')).toBeNull();
+    expect(mount.querySelector('#worker-pane-parallel')).toBeNull();
+  });
+
+  test('the slot editor renders the workspace cap with a lower bound of 1', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ workspace_info: { verify_cmd: null, slots: 4 } }));
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-slots__input')
+    );
+    expect(input.value).toBe('4');
+    expect(input.min).toBe('1');
+  });
+
+  test('editing the slot count sends worker-queue-set-slots with the current revision', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const store = createWorkerQueueStore();
+    store.set(queueOf({ revision: 3 }));
+    const transport = vi
+      .fn()
+      .mockResolvedValue(reply(queueOf({ revision: 4, slots: 5 })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: store,
+      transport
+    });
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-slots__input')
+    );
+    input.value = '5';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-slots', {
+      slots: 5,
+      expected_revision: 3
+    });
+  });
+
+  test('clamps a below-bound slot edit to 1 before sending', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const store = createWorkerQueueStore();
+    store.set(queueOf({ revision: 2 }));
+    const transport = vi
+      .fn()
+      .mockResolvedValue(reply(queueOf({ revision: 3, slots: 1 })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: store,
+      transport
+    });
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-slots__input')
+    );
+    input.value = '0';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-slots', {
+      slots: 1,
+      expected_revision: 2
+    });
+  });
+
+  test('a CAS conflict retries the slot edit once against the fresh revision', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const store = createWorkerQueueStore();
+    store.set(queueOf({ revision: 1 }));
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: true,
+        queue: queueOf({ revision: 8 })
+      })
+      .mockResolvedValueOnce(reply(queueOf({ revision: 9, slots: 3 })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: store,
+      transport
+    });
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-slots__input')
+    );
+    input.value = '3';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(transport.mock.calls[0][1].expected_revision).toBe(1);
+    expect(transport.mock.calls[1][1].expected_revision).toBe(8);
   });
 
   test('renders pr_wait beads in the Done pane with a PR 대기 label', () => {
@@ -582,8 +694,10 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
-        parallel: [{ bead_id: 'P1', added_at: 0 }],
+        queue: [
+          { bead_id: 'S1', added_at: 0 },
+          { bead_id: 'P1', added_at: 0 }
+        ],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -621,11 +735,10 @@ describe('views/worker', () => {
     const tiles = mount.querySelectorAll('.worker-rungrid .rtile');
     expect(tiles.length).toBe(2);
     expect(mount.querySelector('.rtile[data-bead-id="S1"]')).not.toBeNull();
-    // Serial vs parallel badge derived from lane membership.
-    const s1badge = /** @type {HTMLElement} */ (
+    // The lane badge is gone with the serial/parallel split (worker-phase2 §3).
+    expect(
       mount.querySelector('.rtile[data-bead-id="S1"] .rtile__badge')
-    );
-    expect(s1badge.textContent?.trim()).toBe('serial');
+    ).toBeNull();
 
     // The failed attempt itself is the banner source — no breaker object.
     const banner = /** @type {HTMLElement} */ (
@@ -642,7 +755,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           paused_leaf: {
             attempt_id: 'paused_leaf',
@@ -694,19 +807,18 @@ describe('views/worker', () => {
     expect(tile.querySelector('.rtile__pause')).toBeNull();
   });
 
-  test('a manual resume past the lane cap raises the cap badge (§2.3)', () => {
+  test('a manual resume past the cap raises the cap badge (§2.3)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    // Two serial sessions live: the ⏸-then-resume path the cap badge exists
-    // for. The 1+N total (2) is still under slots+1, so only a PER-LANE check
-    // catches it.
+    // Two live sessions against a cap of 1: the ⏸-then-resume path the badge
+    // exists for (auto-advance itself never exceeds the cap).
     queueStore.set(
       queueOf({
-        serial: [
+        queue: [
           { bead_id: 'S1', added_at: 0 },
           { bead_id: 'S2', added_at: 1 }
         ],
-        workspace_info: { verify_cmd: null, parallel_slots: 2 },
+        workspace_info: { verify_cmd: null, slots: 1 },
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -733,18 +845,18 @@ describe('views/worker', () => {
     expect(mount.querySelector('.worker-overcap')).not.toBeNull();
   });
 
-  test('within the lane caps no badge is shown (§2.3)', () => {
+  test('exactly at the cap no badge is shown (§2.3)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    // 1 serial + 2 parallel with slots=2 — exactly at the cap, not over it.
+    // 3 live sessions with slots=3 — exactly at the cap, not over it.
     queueStore.set(
       queueOf({
-        serial: [{ bead_id: 'S1', added_at: 0 }],
-        parallel: [
-          { bead_id: 'P1', added_at: 0 },
-          { bead_id: 'P2', added_at: 1 }
+        queue: [
+          { bead_id: 'S1', added_at: 0 },
+          { bead_id: 'P1', added_at: 1 },
+          { bead_id: 'P2', added_at: 2 }
         ],
-        workspace_info: { verify_cmd: null, parallel_slots: 2 },
+        workspace_info: { verify_cmd: null, slots: 3 },
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -775,18 +887,18 @@ describe('views/worker', () => {
     expect(mount.querySelector('.worker-overcap')).toBeNull();
   });
 
-  test('a paused attempt does not count toward the lane cap (§2.3)', () => {
+  test('a paused attempt does not count toward the cap (§2.3)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    // One serial running + one serial PAUSED: paused holds no slot, so the
-    // badge must stay off.
+    // One running + one PAUSED against a cap of 1: paused holds no slot, so
+    // the badge must stay off.
     queueStore.set(
       queueOf({
-        serial: [
+        queue: [
           { bead_id: 'S1', added_at: 0 },
           { bead_id: 'S2', added_at: 1 }
         ],
-        workspace_info: { verify_cmd: null, parallel_slots: 2 },
+        workspace_info: { verify_cmd: null, slots: 1 },
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -817,8 +929,10 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
-        parallel: [{ bead_id: 'P1', added_at: 0 }],
+        queue: [
+          { bead_id: 'S1', added_at: 0 },
+          { bead_id: 'P1', added_at: 0 }
+        ],
         attempts: {
           no_sid: {
             attempt_id: 'no_sid',
@@ -859,7 +973,7 @@ describe('views/worker', () => {
       queueOf({
         revision: 4,
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           live: {
             attempt_id: 'live',
@@ -891,7 +1005,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         revision: 5,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           live: {
             attempt_id: 'live',
@@ -919,7 +1033,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -977,7 +1091,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -1032,7 +1146,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: { a1: { ...attempt } }
       })
     );
@@ -1061,7 +1175,7 @@ describe('views/worker', () => {
     queueStore.set(
       queueOf({
         auto_advance: true,
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: { a1: { ...attempt, session_id: 'sid-late99zz' } }
       })
     );
@@ -1161,7 +1275,7 @@ describe('views/worker', () => {
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -1202,7 +1316,7 @@ describe('views/worker', () => {
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        serial: [{ bead_id: 'S1', added_at: 0 }],
+        queue: [{ bead_id: 'S1', added_at: 0 }],
         attempts: {
           a1: {
             attempt_id: 'a1',
@@ -1766,7 +1880,7 @@ describe('views/worker', () => {
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        serial: [{ bead_id: 'B1', added_at: 0 }],
+        queue: [{ bead_id: 'B1', added_at: 0 }],
         attempts: {
           a1: {
             attempt_id: 'a1',

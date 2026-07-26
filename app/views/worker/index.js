@@ -3,13 +3,16 @@
  *
  * Candidate lanes are live Board Ready/Blocked data read from the SAME
  * per-subscription issue stores as the Board tab (no separate candidate
- * storage). Serial/Parallel/Done lanes are driven by the `worker-queue`
- * subscription. Dragging a candidate into Serial/Parallel issues a
+ * storage). The single waiting queue + Done lanes are driven by the
+ * `worker-queue` subscription (worker-phase2 §3 collapsed the serial/parallel
+ * duality into ONE lane). Dragging a candidate into the queue issues a
  * `worker-queue-place` mutation carrying the current queue revision; on a CAS
  * conflict the reply's current snapshot is adopted and the drag retried once.
  *
- * The ▶/⏸ controls flip `auto_advance`. Running tiles + the failure banner are
- * derived from the queue snapshot's `attempts` (status='running' → tiles;
+ * The ▶/⏸ controls flip `auto_advance`, and the slot editor sets the
+ * concurrency cap (`worker-queue-set-slots`, same CAS discipline; lower bound
+ * 1 — which is exactly the retired serial lane). Running tiles + the failure
+ * banner are derived from the queue snapshot's `attempts` (status='running' → tiles;
  * status='failed'/'orphaned' → failure banner), which the server-side scheduler
  * fills as sessions dispatch and terminate. The banner reads the LATEST failed
  * attempt directly — there is no breaker object behind it (worker-phase2 §2).
@@ -27,6 +30,15 @@ import { createTranscriptDrawer } from './transcript-drawer.js';
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
+
+/**
+ * Lower bound on the concurrency cap, mirroring the server's `MIN_SLOTS`
+ * (worker-phase2 §3). The server rejects anything below it; the editor clamps
+ * so a stray keystroke never sends a value that would just bounce.
+ *
+ * @type {number}
+ */
+const MIN_SLOTS = 1;
 
 /**
  * @param {any} issue
@@ -146,8 +158,8 @@ export function createWorkerView(mount_element, options = {}) {
       (queueStore && queueStore.get()) || {
         revision: 0,
         auto_advance: false,
-        serial: [],
-        parallel: [],
+        slots: MIN_SLOTS,
+        queue: [],
         pr_wait: [],
         done: []
       }
@@ -175,19 +187,18 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Place a bead into a lane at an index, retrying ONCE on a CAS conflict.
+   * Place a bead into the waiting queue at an index, retrying ONCE on a CAS
+   * conflict.
    *
    * @param {string} bead_id
-   * @param {'serial'|'parallel'} lane
    * @param {number} index
    */
-  async function placeBead(bead_id, lane, index) {
+  async function placeBead(bead_id, index) {
     if (!transport) {
       return;
     }
     const res = await transport('worker-queue-place', {
       bead_id,
-      lane,
       index,
       expected_revision: currentRevision()
     });
@@ -195,7 +206,6 @@ export function createWorkerView(mount_element, options = {}) {
     if (res && res.conflict) {
       await transport('worker-queue-place', {
         bead_id,
-        lane,
         index,
         expected_revision: currentRevision()
       }).then(adopt);
@@ -204,16 +214,14 @@ export function createWorkerView(mount_element, options = {}) {
 
   /**
    * @param {string} bead_id
-   * @param {'serial'|'parallel'} lane
    * @param {number} to_index
    */
-  async function reorderBead(bead_id, lane, to_index) {
+  async function reorderBead(bead_id, to_index) {
     if (!transport) {
       return;
     }
     const res = await transport('worker-queue-reorder', {
       bead_id,
-      lane,
       to_index,
       expected_revision: currentRevision()
     });
@@ -221,7 +229,6 @@ export function createWorkerView(mount_element, options = {}) {
     if (res && res.conflict) {
       await transport('worker-queue-reorder', {
         bead_id,
-        lane,
         to_index,
         expected_revision: currentRevision()
       }).then(adopt);
@@ -336,9 +343,34 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Set the concurrency cap (worker-phase2 §3), under the same CAS discipline
+   * as the other mutations. The value is clamped to the lower bound before it
+   * is sent — the server rejects (never clamps) an out-of-bound value.
+   *
+   * @param {number} slots
+   */
+  async function setSlots(slots) {
+    if (!transport || !Number.isFinite(slots)) {
+      return;
+    }
+    const value = Math.max(MIN_SLOTS, Math.floor(slots));
+    const res = await transport('worker-queue-set-slots', {
+      slots: value,
+      expected_revision: currentRevision()
+    });
+    adopt(res);
+    if (res && res.conflict) {
+      await transport('worker-queue-set-slots', {
+        slots: value,
+        expected_revision: currentRevision()
+      }).then(adopt);
+    }
+  }
+
+  /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, over_cap: boolean, failure: any, serial: any[], parallel: any[], done: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], done: any[] }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -356,9 +388,9 @@ export function createWorkerView(mount_element, options = {}) {
     }
 
     const pr_wait_entries = /** @type {any[]} */ (q.pr_wait || []);
+    const queue_entries = /** @type {any[]} */ (q.queue || []);
     const queued = new Set([
-      ...q.serial.map((/** @type {any} */ e) => e.bead_id),
-      ...q.parallel.map((/** @type {any} */ e) => e.bead_id),
+      ...queue_entries.map((/** @type {any} */ e) => e.bead_id),
       ...pr_wait_entries.map((/** @type {any} */ e) => e.bead_id),
       ...q.done.map((/** @type {any} */ e) => e.bead_id)
     ]);
@@ -426,7 +458,7 @@ export function createWorkerView(mount_element, options = {}) {
 
     /**
      * @param {any[]} entries
-     * @param {'serial'|'parallel'|'done'} lane
+     * @param {'queue'|'done'} lane
      * @returns {any[]}
      */
     const toRows = (entries, lane) =>
@@ -438,17 +470,6 @@ export function createWorkerView(mount_element, options = {}) {
         done: lane === 'done',
         lane
       }));
-
-    // Lane lookup so running tiles show serial vs ∥ badge (a running bead stays
-    // in its lane until it moves to Done).
-    /** @type {Map<string, 'serial'|'parallel'>} */
-    const beadLane = new Map();
-    for (const e of q.serial || []) {
-      beadLane.set(e.bead_id, 'serial');
-    }
-    for (const e of q.parallel || []) {
-      beadLane.set(e.bead_id, 'parallel');
-    }
 
     const attempts = q.attempts ? Object.values(q.attempts) : [];
     // A resumed_from carried by any attempt marks its ancestor as spent, so an
@@ -478,7 +499,6 @@ export function createWorkerView(mount_element, options = {}) {
           bead_id: a.bead_id,
           attempt_id: a.attempt_id,
           title: idToTitle.get(a.bead_id) || a.bead_id,
-          lane: beadLane.get(a.bead_id) || 'parallel',
           runner: a.runner || null,
           model: a.model || null,
           effort: a.effort || null,
@@ -518,17 +538,18 @@ export function createWorkerView(mount_element, options = {}) {
     }
 
     // A manual ▶ may push live sessions past the dispatch cap on purpose (§2.3)
-    // — surface it rather than blocking the resume. The cap is PER LANE
-    // (serial 1 / parallel N), so comparing the 1+N total would miss the very
-    // case that produces it: resuming into a lane the auto-advance already
-    // refilled.
+    // — surface it rather than blocking the resume. There is ONE cap now
+    // (worker-phase2 §3), so the live total is compared against it directly.
     const live = running.filter((r) => !r.paused);
     const live_count = live.length;
-    const serial_live = live.filter((r) => r.lane === 'serial').length;
-    const parallel_live = live_count - serial_live;
-    const slots = (q.workspace_info || {}).parallel_slots;
-    const over_cap =
-      serial_live > 1 || (typeof slots === 'number' && parallel_live > slots);
+    const info_slots = (q.workspace_info || {}).slots;
+    const slots =
+      typeof info_slots === 'number'
+        ? info_slots
+        : typeof q.slots === 'number'
+          ? q.slots
+          : MIN_SLOTS;
+    const over_cap = live_count > slots;
 
     return {
       queue: q,
@@ -536,10 +557,10 @@ export function createWorkerView(mount_element, options = {}) {
       candidates,
       running,
       live_count,
+      slots,
       over_cap,
       failure,
-      serial: toRows(q.serial, 'serial'),
-      parallel: toRows(q.parallel, 'parallel'),
+      waiting: toRows(queue_entries, 'queue'),
       // TEMPORARY (worker-phase2 Phase 1): `pr_wait` beads ride in the Done
       // column with a "PR 대기" label. Phase 6 gives them their own column with
       // the PR link, gate badges, and the [머지]/[재실행] buttons.
@@ -562,7 +583,7 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {import('lit-html').TemplateResult}
    */
   function topTemplate(m) {
-    const serialHead = m.serial.length > 0 ? m.serial[0].id : '—';
+    const next_head = m.waiting.length > 0 ? m.waiting[0].id : '—';
     return html`<div class="worker-ctrl">
         <button
           type="button"
@@ -572,7 +593,7 @@ export function createWorkerView(mount_element, options = {}) {
         </button>
         <button type="button" class="worker-pause">⏸ 정지</button>
         <span class="worker-stat"
-          >실행 <b>${m.live_count}</b> · serial 다음 <b>${serialHead}</b></span
+          >실행 <b>${m.live_count}</b> · 다음 <b>${next_head}</b></span
         >
         ${m.over_cap
           ? html`<span
@@ -581,9 +602,16 @@ export function createWorkerView(mount_element, options = {}) {
               >cap 초과</span
             >`
           : ''}
-        <span class="worker-tgl"
-          >parallel slot <b>${m.parallel.length}</b></span
-        >
+        <label class="worker-tgl worker-slots"
+          >동시 실행
+          <input
+            type="number"
+            class="worker-slots__input"
+            min=${MIN_SLOTS}
+            step="1"
+            .value=${String(m.slots)}
+            title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
+        /></label>
         <button
           type="button"
           class="worker-exec-defaults-btn"
@@ -616,17 +644,10 @@ export function createWorkerView(mount_element, options = {}) {
         empty: '후보 없음'
       })}
       ${paneTemplate({
-        id: 'worker-pane-serial',
-        lane: 'serial',
-        title: 'Serial 큐',
-        items: m.serial,
-        empty: '드래그로 배치'
-      })}
-      ${paneTemplate({
-        id: 'worker-pane-parallel',
-        lane: 'parallel',
-        title: 'Parallel 풀',
-        items: m.parallel,
+        id: 'worker-pane-queue',
+        lane: 'queue',
+        title: `대기 큐 · 슬롯 ${m.slots}`,
+        items: m.waiting,
         empty: '드래그로 배치'
       })}
       ${paneTemplate({
@@ -778,18 +799,41 @@ export function createWorkerView(mount_element, options = {}) {
         return;
       }
       // Moving a queued bead back to candidates removes it from the queue.
-      if (from_lane === 'serial' || from_lane === 'parallel') {
+      if (from_lane === 'queue') {
         void removeBead(bead_id);
       }
       return;
     }
-    if (to_lane === 'serial' || to_lane === 'parallel') {
-      if (from_lane === to_lane) {
-        void reorderBead(bead_id, to_lane, index);
+    if (to_lane === 'queue') {
+      if (from_lane === 'queue') {
+        void reorderBead(bead_id, index);
       } else {
-        void placeBead(bead_id, to_lane, index);
+        void placeBead(bead_id, index);
       }
     }
+  }
+
+  /**
+   * Commit a slot-count edit (worker-phase2 §3). Fired on `change` so a partial
+   * keystroke does not spam mutations; the value is clamped to the lower bound
+   * before it is sent and the input is re-rendered from the authoritative
+   * snapshot.
+   *
+   * @param {Event} ev
+   */
+  function onChange(ev) {
+    const input = /** @type {HTMLInputElement|null} */ (
+      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-slots__input')
+    );
+    if (!input) {
+      return;
+    }
+    const parsed = Number.parseInt(input.value, 10);
+    if (!Number.isFinite(parsed)) {
+      doRender();
+      return;
+    }
+    void setSlots(parsed).then(doRender);
   }
 
   /**
@@ -958,6 +1002,7 @@ export function createWorkerView(mount_element, options = {}) {
   mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
   mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
   mount_element.addEventListener('click', /** @type {any} */ (onClick));
+  mount_element.addEventListener('change', /** @type {any} */ (onChange));
 
   if (selectors) {
     unsubscribers.push(selectors.subscribe(doRender));
@@ -999,6 +1044,10 @@ export function createWorkerView(mount_element, options = {}) {
       );
       mount_element.removeEventListener('drop', /** @type {any} */ (onDrop));
       mount_element.removeEventListener('click', /** @type {any} */ (onClick));
+      mount_element.removeEventListener(
+        'change',
+        /** @type {any} */ (onChange)
+      );
       try {
         drawer.destroy();
       } catch {

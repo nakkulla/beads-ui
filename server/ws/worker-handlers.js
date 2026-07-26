@@ -34,7 +34,7 @@ import {
   resumeWorkerAttempt,
   stopWorkerAttempt,
   tickWorkerQueue,
-  workerParallelSlots
+  workerSlots
 } from '../worker/attach.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -95,8 +95,9 @@ function subscribersFor(key) {
  *     `source`, so the ctrl bar can flag a detected command (read-only display —
  *     no UI edit surface; worker-autorun-policy §4/§6, worker-attempt-resume-
  *     verify-autodetect §2),
- *   - `parallel_slots`, so the tab can flag live sessions exceeding the 1+N cap
- *     after a manual resume (worker-phase1 §2.3).
+ *   - `slots` (the live concurrency cap from the attachment), so the tab can
+ *     flag live sessions exceeding the cap after a manual resume
+ *     (worker-phase1 §2.3, worker-phase2 §3).
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
@@ -111,13 +112,18 @@ function decorateQueue(workspace_key, queue) {
     verify_cmd = null;
   }
   /** @type {number|null} */
-  let parallel_slots = null;
+  let slots = null;
   try {
-    parallel_slots = workerParallelSlots(workspace_key);
+    slots = workerSlots(workspace_key);
   } catch {
-    parallel_slots = null;
+    slots = null;
   }
-  return { ...queue, workspace_info: { verify_cmd, parallel_slots } };
+  // Without a registered attachment the decoration falls back to the queue's
+  // own persisted cap so the editor still renders the value it will mutate.
+  if (slots === null && typeof queue.slots === 'number') {
+    slots = queue.slots;
+  }
+  return { ...queue, workspace_info: { verify_cmd, slots } };
 }
 
 /**
@@ -366,8 +372,10 @@ function revisionOf(payload) {
 }
 
 /**
- * Handle `worker-queue-place`. Payload:
- * `{ bead_id, lane: 'serial'|'parallel', index?, expected_revision }`.
+ * Handle `worker-queue-place`. Payload: `{ bead_id, index?, expected_revision }`.
+ *
+ * There is ONE waiting lane now (worker-phase2 §3), so the payload carries no
+ * `lane`; a stale client that still sends one is simply placed in `queue`.
  *
  * Queue entry is admission-gated (worker-autorun-policy §1): with a live
  * attachment the bead must pass the fail-closed validator (route pin + spec
@@ -380,17 +388,10 @@ function revisionOf(payload) {
  */
 export async function handleWorkerQueuePlace(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  if (
-    typeof p.bead_id !== 'string' ||
-    (p.lane !== 'serial' && p.lane !== 'parallel')
-  ) {
+  if (typeof p.bead_id !== 'string') {
     ws.send(
       JSON.stringify(
-        makeError(
-          req,
-          'bad_request',
-          'payload requires { bead_id: string, lane: serial|parallel }'
-        )
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
       )
     );
     return;
@@ -431,7 +432,6 @@ export async function handleWorkerQueuePlace(ws, req) {
   let result = queueStore().place(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
-    lane: p.lane,
     index: typeof p.index === 'number' ? p.index : undefined
   });
   if (result.ok) {
@@ -446,25 +446,17 @@ export async function handleWorkerQueuePlace(ws, req) {
 
 /**
  * Handle `worker-queue-reorder`. Payload:
- * `{ bead_id, lane, to_index, expected_revision }`.
+ * `{ bead_id, to_index, expected_revision }`.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export function handleWorkerQueueReorder(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  if (
-    typeof p.bead_id !== 'string' ||
-    (p.lane !== 'serial' && p.lane !== 'parallel') ||
-    typeof p.to_index !== 'number'
-  ) {
+  if (typeof p.bead_id !== 'string' || typeof p.to_index !== 'number') {
     ws.send(
       JSON.stringify(
-        makeError(
-          req,
-          'bad_request',
-          'payload requires { bead_id, lane, to_index }'
-        )
+        makeError(req, 'bad_request', 'payload requires { bead_id, to_index }')
       )
     );
     return;
@@ -473,7 +465,6 @@ export function handleWorkerQueueReorder(ws, req) {
   const result = queueStore().reorder(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
-    lane: p.lane,
     to_index: p.to_index
   });
   replyMutation(ws, req, key, result);
@@ -510,6 +501,34 @@ export function handleWorkerQueueToggle(ws, req) {
       log('worker tick after toggle failed for %s: %o', key, err);
     });
   }
+}
+
+/**
+ * Handle `worker-queue-set-slots`. Payload: `{ slots: number, expected_revision }`.
+ * Persists the workspace concurrency cap (CAS, worker-phase2 §3) — the value the
+ * scheduler's single scan fills up to. Bound + integer validation lives in the
+ * queue store's `setSlots`, which REJECTS an unusable value (`applied:false`)
+ * rather than clamping it, so the stored cap is never silently rewritten.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerQueueSetSlots(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.slots !== 'number') {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { slots: number }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const result = queueStore().setSlots(key, {
+    expected_revision: revisionOf(p),
+    slots: p.slots
+  });
+  replyMutation(ws, req, key, result);
 }
 
 /**

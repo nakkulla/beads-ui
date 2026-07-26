@@ -17,7 +17,6 @@ import { html } from 'lit-html';
  * @property {string} bead_id
  * @property {string} attempt_id
  * @property {string} title
- * @property {'serial'|'parallel'} lane
  * @property {string|null} runner
  * @property {string|null} model
  * @property {number|null} started_at
@@ -67,7 +66,7 @@ export function bannersTemplate(state) {
   return html`<div class="worker-banners">
     ${state.autoAdvance
       ? html`<div class="worker-banner worker-banner--on" role="status">
-          ▶ 자동 진행 켜짐 — Serial head 1 + Parallel 슬롯까지 실행합니다.
+          ▶ 자동 진행 켜짐 — 대기 큐를 순서대로 슬롯 수만큼 실행합니다.
         </div>`
       : html`<div class="worker-banner worker-banner--off" role="status">
           ⏸ 자동 진행 꺼짐 — 새 세션을 시작하지 않습니다. ▶로 재개.
@@ -104,7 +103,6 @@ export function bannersTemplate(state) {
  * @returns {import('lit-html').TemplateResult}
  */
 function runningTile(tile, now, selected_attempt = null) {
-  const badge = tile.lane === 'serial' ? 'serial' : '∥';
   const paused = !!tile.paused;
   const elapsed = paused
     ? '일시정지'
@@ -121,7 +119,6 @@ function runningTile(tile, now, selected_attempt = null) {
     <div class="rtile__hd">
       <span class="rtile__dot" aria-hidden="true"></span>
       <span class="rtile__id">${tile.bead_id}</span>
-      <span class="rtile__badge rtile__badge--${tile.lane}">${badge}</span>
       ${tile.resumed_from
         ? html`<span
             class="rtile__resumed"
