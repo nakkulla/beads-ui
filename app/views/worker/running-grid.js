@@ -3,8 +3,9 @@
  *
  * Phase 10: the running grid renders REAL attempt tiles derived from the queue
  * snapshot's `attempts` (status='running'), pushed via `worker-queue-snapshot`.
- * The banners area carries the auto-advance state and the Failed banner (derived
- * from the latest failed/orphaned attempt). The transcript viewer (tile click →
+ * The banners area carries the Failed banner (derived from the latest
+ * failed/orphaned attempt); the auto-advance state shows only in the ▶/⏸
+ * toggle button. The transcript viewer (tile click →
  * drawer) is Phase 11 — here the tile just surfaces attempt data.
  *
  * Grid: `repeat(auto-fill, minmax(215px,1fr))` with its own internal scroll
@@ -66,7 +67,7 @@ function formatElapsed(ms) {
 /**
  * Banners area above the running grid.
  *
- * @param {{ autoAdvance: boolean, failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[] }} state
+ * @param {{ failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[] }} state
  * @returns {import('lit-html').TemplateResult}
  */
 export function bannersTemplate(state) {
@@ -74,13 +75,6 @@ export function bannersTemplate(state) {
     ? state.cleanupFailures
     : [];
   return html`<div class="worker-banners">
-    ${state.autoAdvance
-      ? html`<div class="worker-banner worker-banner--on" role="status">
-          ▶ 자동 진행 켜짐 — 대기 큐를 순서대로 슬롯 수만큼 실행합니다.
-        </div>`
-      : html`<div class="worker-banner worker-banner--off" role="status">
-          ⏸ 자동 진행 꺼짐 — 새 세션을 시작하지 않습니다. ▶로 재개.
-        </div>`}
     ${state.failure
       ? html`<div class="worker-banner worker-banner--failure" role="alert">
           ⛔ ${state.failure.repo || 'repo'} 세션 실패 —
