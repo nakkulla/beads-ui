@@ -47,6 +47,10 @@
 ## 수용 기준
 
 1. result가 복수이고 마지막 result가 규칙을 만족하는 세션이 성공으로 판정된다.
+   판정 대상이 마지막 result뿐임을 증명하기 위해, **첫 result는 규칙 위반
+   (`subtype` 또는 `is_error` 위반 — `permission_denials`는 스트림 중 blocker
+   경로가 선점하므로 제외)이고 마지막 result만 정상인 시퀀스가 성공**하는
+   테스트를 반드시 포함한다.
 2. 마지막 result가 `subtype`/`is_error`/`permission_denials` 위반이면 여전히
    실패로 판정된다.
 3. result 0개는 여전히 `no_result` 실패다.
