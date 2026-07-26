@@ -3045,9 +3045,23 @@ html[data-theme='dark'] {
   background: var(--bg-panel);
 }
 
+/* The candidate SOURCE pane (worker-phase2 §7): kept in front of the four
+   lifecycle columns because it is the only way to enqueue a bead, but drawn
+   dashed and slightly narrower so it never reads as one of them. */
 .worker-pane--src {
+  flex: 0.9;
   border: 1px dashed var(--border-chip);
   background: var(--bg-candidate);
+}
+
+/* 실행 중 column: the tile grid now lives INSIDE a lane pane whose body already
+   owns the scroll, so the grid drops its own cap/scroll and stacks one tile per
+   row instead of auto-filling a full-width band. */
+.worker-pane__body > .worker-rungrid {
+  grid-template-columns: 1fr;
+  max-height: none;
+  margin-bottom: 0;
+  overflow: visible;
 }
 
 .worker-pane--drag-over {

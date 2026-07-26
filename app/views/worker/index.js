@@ -16,6 +16,19 @@
  * status='failed'/'orphaned' → failure banner), which the server-side scheduler
  * fills as sessions dispatch and terminate. The banner reads the LATEST failed
  * attempt directly — there is no breaker object behind it (worker-phase2 §2).
+ *
+ * LAYOUT (worker-phase2 §7). The lane row is the spec's four columns —
+ * 대기 · 실행 중 · PR 대기 · 완료 — so a bead's whole life reads left to right in
+ * one row: it waits, it runs, its PR waits for the human click, it merges.
+ * 실행 중 is a COLUMN, not the banner-level grid it used to be, because the
+ * sketch draws it as one; the tile grid template is unchanged and simply renders
+ * as that column's body.
+ *
+ * The candidate pane is kept as a fifth, visually distinct SOURCE pane in front
+ * of those four. It is not a fifth bead state — it is the Board feed a bead is
+ * dragged OUT of, and dropping it would delete the only way to enqueue anything
+ * (`worker-queue-place` has no other entry point). It stays dashed
+ * (`worker-pane--src`) precisely so it does not read as one of the four.
  */
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
@@ -151,7 +164,11 @@ function prWaitRow(bead_id, title, observations, cleanup_failed) {
         ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
         : enabled
           ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
-          : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+          : gate && gate.tier === 'merged'
+            ? // Already merged with no cleanup failure recorded: the cleanup is
+              // running, so "머지 불가: 관측 대기" would be a lie about why.
+              '머지됨 — 머지 후 정리 진행 중'
+            : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -193,10 +210,11 @@ export function createWorkerView(mount_element, options = {}) {
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
-  // Persistent console shell: the running grid (top) and lanes (bottom) render
-  // into their own targets so the transcript drawer can sit BETWEEN them (the
-  // mockup pushes the lanes down when a tile opens the drawer) without a
-  // full-template re-render clobbering the drawer's own lit-html root.
+  // Persistent console shell: the control bar + banners (top) and the lane row
+  // (bottom) render into their own targets so the transcript drawer can sit
+  // BETWEEN them (the mockup pushes the lanes down when a tile opens the
+  // drawer) without a full-template re-render clobbering the drawer's own
+  // lit-html root.
   const console_el = document.createElement('div');
   console_el.className = 'worker-console';
   const top_el = document.createElement('div');
@@ -545,7 +563,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], done: any[], cleanup_failures: Array<{ bead_id: string, step: string, reason: string }> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], cleanup_failures: Array<{ bead_id: string, step: string, reason: string }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -750,21 +768,18 @@ export function createWorkerView(mount_element, options = {}) {
       over_cap,
       failure,
       waiting: toRows(queue_entries, 'queue'),
-      // TEMPORARY (worker-phase2 Phase 1): `pr_wait` beads ride in the Done
-      // column with a "PR 대기" label. Phase 4 adds the PR link + the observed
-      // CI/gate/base badges to those rows; Phase 6 moves them into their own
-      // column and hangs the [머지]/[재실행] buttons off them.
-      done: [
-        ...pr_wait_entries.map((/** @type {any} */ e) =>
-          prWaitRow(
-            e.bead_id,
-            idToTitle.get(e.bead_id) || e.bead_id,
-            pr_obs,
-            cleanup_failed[e.bead_id] || null
-          )
-        ),
-        ...toRows(q.done, 'done')
-      ],
+      // PR 대기 is its own column (worker-phase2 §7): a bead there is NOT done —
+      // the PR is open and waiting for the human merge click. 완료 carries only
+      // what actually merged and finished cleanup.
+      pr_wait: pr_wait_entries.map((/** @type {any} */ e) =>
+        prWaitRow(
+          e.bead_id,
+          idToTitle.get(e.bead_id) || e.bead_id,
+          pr_obs,
+          cleanup_failed[e.bead_id] || null
+        )
+      ),
+      done: toRows(q.done, 'done'),
       cleanup_failures
     };
   }
@@ -817,8 +832,7 @@ export function createWorkerView(mount_element, options = {}) {
         autoAdvance: !!m.queue.auto_advance,
         failure: m.failure,
         cleanupFailures: m.cleanup_failures
-      })}
-      ${runningGridTemplate(m.running, Date.now(), selected_attempt)}`;
+      })}`;
   }
 
   /**
@@ -838,14 +852,28 @@ export function createWorkerView(mount_element, options = {}) {
       ${paneTemplate({
         id: 'worker-pane-queue',
         lane: 'queue',
-        title: `대기 큐 · 슬롯 ${m.slots}`,
+        title: '대기',
         items: m.waiting,
         empty: '드래그로 배치'
       })}
       ${paneTemplate({
+        id: 'worker-pane-running',
+        lane: 'running',
+        title: `실행 중 · 슬롯 ${m.slots}`,
+        items: m.running,
+        body: runningGridTemplate(m.running, Date.now(), selected_attempt)
+      })}
+      ${paneTemplate({
+        id: 'worker-pane-pr-wait',
+        lane: 'pr_wait',
+        title: 'PR 대기',
+        items: m.pr_wait,
+        empty: 'PR 대기 없음'
+      })}
+      ${paneTemplate({
         id: 'worker-pane-done',
         lane: 'done',
-        title: `Done · 오늘 ${m.done.length}`,
+        title: `완료 · 오늘 ${m.done.length}`,
         items: m.done,
         empty: '완료 없음'
       })}
@@ -892,6 +920,13 @@ export function createWorkerView(mount_element, options = {}) {
       /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-pane')
     );
     if (!pane) {
+      return;
+    }
+    // Only the two panes a drop actually mutates accept one. 실행 중/PR 대기/완료
+    // are observation columns — the server puts beads there — so they must not
+    // light up as drop targets and then silently swallow the drag.
+    const lane = pane.dataset.lane || '';
+    if (lane !== 'candidate' && lane !== 'queue') {
       return;
     }
     ev.preventDefault();

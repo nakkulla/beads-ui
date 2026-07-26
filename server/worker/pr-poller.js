@@ -351,7 +351,7 @@ export function createPrPoller(deps) {
    * @returns {Promise<void>}
    */
   async function startVerify(bead_id, pr_number, head_sha, resolved) {
-    const key = `${bead_id} ${head_sha}`;
+    const key = `${bead_id}\u0000${head_sha}`;
     if (verifying.has(key)) {
       return;
     }

@@ -24,6 +24,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { evaluateMergeGate } from '../worker/merge-gate.js';
+import { createPrActions } from '../worker/pr-actions.js';
+import { createPrObservationStore } from '../worker/pr-observations.js';
 import { makeFixtureSpawn } from '../worker/runner/fixture-spawn.js';
 import { createRunner } from '../worker/runner/index.js';
 import { createWorkerRuntime } from '../worker/runtime.js';
@@ -37,6 +40,14 @@ const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
 let tmp_state;
 /** @type {string} */
 let repo_dir;
+/**
+ * A bare repo standing in for `origin`. The post-merge cleanup does REAL git
+ * against it (fetch the base, delete the topic branch) — only the GitHub API
+ * calls are faked, so the cleanup's git semantics are genuinely exercised.
+ *
+ * @type {string}
+ */
+let origin_dir;
 /**
  * Per-test workspace root — its slug keys the on-disk queue file. Unique per
  * test so a dangling async session from a prior test (which writes the WHOLE
@@ -292,11 +303,15 @@ beforeEach(async () => {
   fs.writeFileSync(path.join(repo_dir, 'f.txt'), 'base\n');
   await gitRun(['add', '.'], { cwd: repo_dir });
   await gitRun(['commit', '-q', '-m', 'base'], { cwd: repo_dir });
+  origin_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-e2e-origin-'));
+  await gitRun(['init', '-q', '--bare'], { cwd: origin_dir });
+  await gitRun(['remote', 'add', 'origin', origin_dir], { cwd: repo_dir });
+  await gitRun(['push', '-q', 'origin', 'main'], { cwd: repo_dir });
 });
 
 afterEach(() => {
   delete process.env.XDG_STATE_HOME;
-  for (const dir of [tmp_state, repo_dir]) {
+  for (const dir of [tmp_state, repo_dir, origin_dir]) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
     } catch {
@@ -357,6 +372,212 @@ describe('worker e2e — full success flow', () => {
     // No live sessions → the runtime seam reads 0.
     expect(scheduler.runningCount()).toBe(0);
     expect(runtime.status(WS).running_count).toBe(0);
+  });
+});
+
+describe('worker e2e — the human [머지] click carries the bead to done', () => {
+  test('dispatch → PR observed → pr_wait → [머지] → pr-finish cleanup → done', async () => {
+    const HEAD_SHA = 'a'.repeat(40);
+    const { runtime, scheduler, bd_record } = buildSystem({
+      fixture: 'claude-success.jsonl',
+      config: { M1: { runner: 'claude' } },
+      slots: 1
+    });
+
+    seedQueue(runtime.queueStore, ['M1']);
+    await scheduler.tick(WS);
+
+    // The observation verdict moves the bead into `pr_wait` — NOT done. An open
+    // PR is not a completion; the merge click is (worker-phase2 §1/§4).
+    await waitFor(() =>
+      runtime.queueStore.snapshot(WS).pr_wait.some((e) => e.bead_id === 'M1')
+    );
+    expect(bd_record.status).toBe('resolved');
+    expect(runtime.queueStore.snapshot(WS).done).toEqual([]);
+
+    /** @type {Array<[string, number, string|null]>} */
+    const gh_calls = [];
+    const observations = createPrObservationStore();
+    const pr_actions = createPrActions({
+      workspace: WS,
+      repo: repo_dir,
+      store: runtime.queueStore,
+      observations,
+      gh: {
+        prDetail: async (
+          /** @type {string} */ _repo,
+          /** @type {number} */ number
+        ) => ({
+          state: 'ok',
+          data: {
+            number,
+            url: 'https://github.com/o/r/pull/1',
+            state: 'OPEN',
+            mergeable: 'MERGEABLE',
+            merge_state_status: 'CLEAN',
+            head_ref: 'M1',
+            head_sha: HEAD_SHA
+          }
+        }),
+        // A repo with no CI and no verify_cmd — §5's third tier, where the
+        // click itself is the decision.
+        prChecks: async () => ({ state: 'empty' }),
+        mergeSquash: async (
+          /** @type {string} */ _repo,
+          /** @type {number} */ number,
+          /** @type {string} */ head_sha
+        ) => {
+          gh_calls.push(['mergeSquash', number, head_sha]);
+          // The squash lands on the base for real, so the cleanup's base sync
+          // reads a base that actually moved.
+          await gitRun(['push', '-q', 'origin', 'main'], { cwd: repo_dir });
+          return { state: 'ok', data: { merged: true } };
+        },
+        updateBranch: async () => ({ state: 'error', reason: 'unexpected' }),
+        closePr: async () => ({ state: 'error', reason: 'unexpected' })
+      },
+      bd: {
+        setStatus: async (
+          /** @type {string} */ _id,
+          /** @type {string} */ status
+        ) => {
+          bd_record.status = status;
+        },
+        readStatus: async () => bd_record.status,
+        unsetMetadata: async (
+          /** @type {string} */ _id,
+          /** @type {string} */ key
+        ) => {
+          delete bd_record.metadata[key];
+        },
+        readMetadata: async (
+          /** @type {string} */ _id,
+          /** @type {string} */ key
+        ) => bd_record.metadata[key] ?? null,
+        listChildren: async () => []
+      },
+      worktree: { remove: async () => ({ code: 0 }) },
+      gitRun,
+      scheduler: {
+        resolveConflict: async () => ({ ok: false, reason: 'unexpected' }),
+        tick: async () => {}
+      },
+      resolveVerify: () => null,
+      requeryDelayMs: 0,
+      sleep: async () => {}
+    });
+
+    const result = await pr_actions.merge('M1');
+
+    expect(result).toMatchObject({ ok: true, action: 'merged', reason: null });
+    // The merge was pinned to the sha the click-time gate approved.
+    expect(gh_calls).toEqual([['mergeSquash', 1, HEAD_SHA]]);
+    // The click's own observation is what the next badge render reads, and it
+    // resolves to the tier that enabled the button.
+    expect(
+      evaluateMergeGate(observations.get(WS, 'M1'), {
+        verify_cmd_present: false
+      })
+    ).toMatchObject({
+      enabled: true,
+      tier: 'none',
+      gate_badge: '검증 신호 없음'
+    });
+
+    // pr_wait → done in the cleanup's final mutation, with the contract's close
+    // (PR Finish closes) actually applied and no cleanup failure recorded.
+    const snap = runtime.queueStore.snapshot(WS);
+    expect(snap.pr_wait.map((e) => e.bead_id)).not.toContain('M1');
+    expect(snap.done.map((e) => e.bead_id)).toContain('M1');
+    expect(snap.cleanup_failed?.M1).toBeUndefined();
+    expect(bd_record.status).toBe('closed');
+    // Branch cleanup really happened in the git repo.
+    expect(
+      (
+        await gitRun(['rev-parse', '--verify', 'refs/heads/M1'], {
+          cwd: repo_dir
+        })
+      ).code
+    ).not.toBe(0);
+  });
+
+  test('a cleanup that stops leaves the bead in pr_wait with a durable failure', async () => {
+    const { runtime, scheduler, bd_record } = buildSystem({
+      fixture: 'claude-success.jsonl',
+      config: { M2: { runner: 'claude' } },
+      slots: 1
+    });
+
+    seedQueue(runtime.queueStore, ['M2']);
+    await scheduler.tick(WS);
+    await waitFor(() =>
+      runtime.queueStore.snapshot(WS).pr_wait.some((e) => e.bead_id === 'M2')
+    );
+
+    const pr_actions = createPrActions({
+      workspace: WS,
+      repo: repo_dir,
+      store: runtime.queueStore,
+      observations: createPrObservationStore(),
+      gh: {
+        prDetail: async (
+          /** @type {string} */ _repo,
+          /** @type {number} */ number
+        ) => ({
+          state: 'ok',
+          data: {
+            number,
+            url: 'https://github.com/o/r/pull/1',
+            state: 'OPEN',
+            mergeable: 'MERGEABLE',
+            merge_state_status: 'CLEAN',
+            head_ref: 'M2',
+            head_sha: 'b'.repeat(40)
+          }
+        }),
+        prChecks: async () => ({ state: 'empty' }),
+        mergeSquash: async () => ({ state: 'ok', data: { merged: true } }),
+        updateBranch: async () => ({ state: 'error', reason: 'unexpected' }),
+        closePr: async () => ({ state: 'error', reason: 'unexpected' })
+      },
+      bd: {
+        setStatus: async (
+          /** @type {string} */ _id,
+          /** @type {string} */ status
+        ) => {
+          bd_record.status = status;
+        },
+        readStatus: async () => bd_record.status,
+        unsetMetadata: async () => {},
+        readMetadata: async () => null,
+        // bd cannot answer — an unreadable child list STOPS the sweep rather
+        // than closing a parent over unknown children (§6).
+        listChildren: async () => {
+          throw new Error('bd down');
+        }
+      },
+      worktree: { remove: async () => ({ code: 0 }) },
+      gitRun,
+      scheduler: {
+        resolveConflict: async () => ({ ok: false, reason: 'unexpected' }),
+        tick: async () => {}
+      },
+      resolveVerify: () => null,
+      requeryDelayMs: 0,
+      sleep: async () => {}
+    });
+
+    const result = await pr_actions.merge('M2');
+
+    expect(result.ok).toBe(false);
+    expect(result.cleanup_step).toBe('child_sweep');
+    const snap = runtime.queueStore.snapshot(WS);
+    // Returned to the human: still in pr_wait, still `resolved`, banner record
+    // written, nothing retried.
+    expect(snap.pr_wait.map((e) => e.bead_id)).toContain('M2');
+    expect(snap.done.map((e) => e.bead_id)).not.toContain('M2');
+    expect(snap.cleanup_failed.M2.step).toBe('child_sweep');
+    expect(bd_record.status).toBe('resolved');
   });
 });
 

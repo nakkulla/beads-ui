@@ -608,7 +608,94 @@ describe('views/worker', () => {
     expect(transport.mock.calls[1][1].expected_revision).toBe(8);
   });
 
-  test('renders pr_wait beads in the Done pane with a PR 대기 label', () => {
+  test('renders the four lifecycle columns in spec order (worker-phase2 §7)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf());
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const titles = Array.from(
+      mount.querySelectorAll('.worker-lanes .worker-pane__title')
+    ).map((el) => (el.textContent || '').trim());
+
+    expect(titles).toEqual([
+      '후보 · Board 연동',
+      '대기',
+      '실행 중 · 슬롯 2',
+      'PR 대기',
+      '완료 · 오늘 0'
+    ]);
+  });
+
+  test('keeps the candidate feed as a distinct source pane, not a fifth state', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const cand = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate')
+    );
+
+    expect(cand.classList.contains('worker-pane--src')).toBe(true);
+    // Enqueueing has no other entry point, so the source pane must still hand
+    // out draggable rows.
+    expect(
+      cand
+        .querySelector('.worker-card[data-bead-id="RD-1"]')
+        ?.getAttribute('draggable')
+    ).toBe('true');
+  });
+
+  test('each column renders only its own members', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'RD-2', added_at: 0 }],
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        done: [{ bead_id: 'BL-1', added_at: 2 }],
+        attempts: {
+          'att-1': {
+            attempt_id: 'att-1',
+            bead_id: 'RD-2',
+            status: 'running',
+            runner: 'claude',
+            started_at: Date.now(),
+            session_id: 'sid-1'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    /** @param {string} id */
+    const idsIn = (id) =>
+      Array.from(
+        /** @type {HTMLElement} */ (mount.querySelector(id)).querySelectorAll(
+          '.worker-mini, .rtile'
+        )
+      ).map((el) => /** @type {HTMLElement} */ (el).dataset.beadId);
+
+    expect(idsIn('#worker-pane-queue')).toEqual(['RD-2']);
+    expect(idsIn('#worker-pane-running')).toEqual(['RD-2']);
+    expect(idsIn('#worker-pane-pr-wait')).toEqual(['RD-1']);
+    expect(idsIn('#worker-pane-done')).toEqual(['BL-1']);
+  });
+
+  test('a pr_wait bead is no longer mixed into the 완료 column', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -627,14 +714,80 @@ describe('views/worker', () => {
       mount.querySelector('#worker-pane-done')
     );
     const row = /** @type {HTMLElement} */ (
-      done_pane.querySelector('.worker-mini[data-bead-id="RD-1"]')
+      mount.querySelector(
+        '#worker-pane-pr-wait .worker-mini[data-bead-id="RD-1"]'
+      )
     );
+
     expect(row.getAttribute('data-lane')).toBe('pr_wait');
-    expect(row.querySelector('.worker-mini__reason')?.textContent).toBe(
-      'PR 대기'
-    );
     expect(row.getAttribute('draggable')).toBe('false');
-    expect(done_pane.querySelectorAll('.worker-mini').length).toBe(2);
+    expect(done_pane.querySelectorAll('.worker-mini').length).toBe(1);
+    expect(
+      done_pane.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    ).toBeNull();
+  });
+
+  test('the observation columns refuse a drop instead of swallowing the drag', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const transport = vi.fn();
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport
+    });
+
+    for (const pane_id of [
+      'worker-pane-running',
+      'worker-pane-pr-wait',
+      'worker-pane-done'
+    ]) {
+      const pane = /** @type {HTMLElement} */ (
+        mount.querySelector(`#${pane_id}`)
+      );
+      const over = new Event('dragover', { bubbles: true, cancelable: true });
+      Object.defineProperty(over, 'dataTransfer', {
+        value: { dropEffect: '' }
+      });
+      pane.dispatchEvent(over);
+
+      expect(over.defaultPrevented).toBe(false);
+      expect(pane.classList.contains('worker-pane--drag-over')).toBe(false);
+    }
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('running tiles render inside the 실행 중 column, not above the lanes', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          'att-1': {
+            attempt_id: 'att-1',
+            bead_id: 'RD-1',
+            status: 'running',
+            runner: 'claude',
+            started_at: Date.now(),
+            session_id: 'sid-1'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      mount.querySelector('#worker-pane-running .worker-rungrid .rtile')
+    ).not.toBeNull();
+    expect(mount.querySelector('.worker-ctrl ~ .worker-rungrid')).toBeNull();
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('#worker-pane-running .worker-pane__count')
+      ).textContent
+    ).toBe('1');
   });
 
   test('a pr_wait bead is not offered again as a candidate', () => {
@@ -2191,6 +2344,87 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     base_badge: '최신',
     reason: 'ci_failed'
   };
+
+  /**
+   * The §5 gate tiers, exactly as `evaluateMergeGate` emits them.
+   *
+   * @type {Array<{ tier: string, gate_badge: string, enabled: boolean, reason: string|null }>}
+   */
+  const PASSING_TIERS = [
+    { tier: 'ci', gate_badge: 'CI ✓', enabled: true, reason: null },
+    {
+      tier: 'local_verify',
+      gate_badge: '로컬검증 ✓',
+      enabled: true,
+      reason: null
+    },
+    { tier: 'none', gate_badge: '검증 신호 없음', enabled: true, reason: null }
+  ];
+
+  /** @type {Array<{ tier: string, gate_badge: string, enabled: boolean, reason: string|null }>} */
+  const REFUSING_TIERS = [
+    { tier: 'ci', gate_badge: 'CI ✗', enabled: false, reason: 'ci_failed' },
+    { tier: 'ci', gate_badge: 'CI 대기', enabled: false, reason: 'ci_pending' },
+    {
+      tier: 'local_verify',
+      gate_badge: '로컬검증 ✗',
+      enabled: false,
+      reason: 'verify_cmd_failed'
+    },
+    {
+      tier: 'undecidable',
+      gate_badge: '관측 오류',
+      enabled: false,
+      reason: 'gh_failed'
+    },
+    {
+      tier: 'unobserved',
+      gate_badge: '관측 대기',
+      enabled: false,
+      reason: 'not_observed'
+    },
+    {
+      tier: 'closed_unmerged',
+      gate_badge: 'PR closed',
+      enabled: false,
+      reason: 'pr_closed_unmerged'
+    },
+    { tier: 'merged', gate_badge: '머지됨', enabled: false, reason: null }
+  ];
+
+  test('enables 머지 in every passing tier and shows what it is based on', () => {
+    for (const t of PASSING_TIERS) {
+      document.body.innerHTML = '<div id="m"></div>';
+      const { mount } = mountWith(queueWithGate({ ...t, base_badge: '최신' }));
+
+      const btn = /** @type {HTMLButtonElement} */ (
+        mount.querySelector('.worker-mini__merge')
+      );
+      expect(btn.disabled).toBe(false);
+      expect(btn.getAttribute('title')).toContain(t.gate_badge);
+      expect(
+        /** @type {HTMLElement} */ (mount.querySelector('.worker-mini__badge'))
+          .textContent
+      ).toBe(t.gate_badge);
+    }
+  });
+
+  test('disables 머지 in every refusing tier and renders that tier badge', () => {
+    for (const t of REFUSING_TIERS) {
+      document.body.innerHTML = '<div id="m"></div>';
+      const { mount } = mountWith(queueWithGate({ ...t, base_badge: '최신' }));
+
+      const btn = /** @type {HTMLButtonElement} */ (
+        mount.querySelector('.worker-mini__merge')
+      );
+      expect(btn.disabled).toBe(true);
+      expect(btn.getAttribute('title')).toContain(t.reason || '정리 진행 중');
+      expect(
+        /** @type {HTMLElement} */ (mount.querySelector('.worker-mini__badge'))
+          .textContent
+      ).toBe(t.gate_badge);
+    }
+  });
 
   test('offers 머지 and 재실행 on a pr_wait row', () => {
     const { mount } = mountWith(queueWithGate(GREEN));
