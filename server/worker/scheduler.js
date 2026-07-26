@@ -16,7 +16,8 @@
  *     PRIOR value into the attempt. On any termination WITHOUT a bead close
  *     (fail/stop/orphan) the prior value is reverted (unset when originally
  *     absent) so a stray fast_track never switches a later manual session to
- *     unattended (spec §5.2).
+ *     unattended (spec §5.2), and a bead left `in_progress` is reopened so the
+ *     claim the session never gave back cannot hide it from `bd ready`.
  *   - On success, INDEPENDENT verification (a SERVER-observed open PR for the
  *     attempt's branch, worker-phase2 §1) gates the move to the PR-wait lane;
  *     any failure turns `auto_advance` OFF and leaves the failure banner to
@@ -62,7 +63,9 @@ const log = debug('worker:scheduler');
  *   snapshotBead: (bead_id: string) => Promise<BeadSnapshot>,
  *   setMetadata: (bead_id: string, key: string, value: string) => Promise<void>,
  *   unsetMetadata: (bead_id: string, key: string) => Promise<void>,
- *   readMetadata: (bead_id: string, key: string) => Promise<string|null>
+ *   readMetadata: (bead_id: string, key: string) => Promise<string|null>,
+ *   setStatus: (bead_id: string, status: string) => Promise<void>,
+ *   readStatus: (bead_id: string) => Promise<string|null>
  * }} bd
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string }> }} verify
@@ -144,6 +147,39 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Record why a bead was skipped and fan out ONLY when the store applied the
+   * record. The store no-ops an unchanged reason, so a bead parked at the same
+   * reason cannot bump the revision on every tick.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} reason
+   */
+  function recordSkipReason(workspace, bead_id, reason) {
+    const result = deps.store.recordAdmission(workspace, { bead_id, reason });
+    if (result && result.ok) {
+      notifyChanged(workspace);
+    }
+  }
+
+  /**
+   * The skip reason for a bead bd did not hand back as runnable. `blocked` is
+   * deliberately NOT the reason: `snapshotBead` derives it from mere absence
+   * from `bd ready`, so it reads as a dependency block even when the real cause
+   * is a session's leftover `in_progress` claim. The status IS the diagnosis.
+   *
+   * @param {BeadSnapshot} snap
+   * @returns {string}
+   */
+  function notReadyReason(snap) {
+    const status =
+      typeof snap.status === 'string' && snap.status.length > 0
+        ? snap.status
+        : 'unknown';
+    return `not_ready:${status}`;
+  }
+
+  /**
    * Run the admission validator fail-closed: absent dep passes (legacy wiring),
    * a validator throw is a git_error refusal, never an escape out of tick.
    *
@@ -215,6 +251,37 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Give back a claim the session held when it ended WITHOUT closing the bead.
+   * Only `in_progress` is reopened — that is the state a session takes and
+   * never gave back, and it hides the bead from `bd ready`, so every later tick
+   * skips it with no trace. `resolved`/`closed` are real progress that a failed
+   * verify must not rewrite.
+   *
+   * Best-effort like the workflow_mode revert: a bd failure is logged and never
+   * escapes the termination path, which is already halted anyway.
+   *
+   * @param {string} bead_id
+   */
+  async function releaseBeadClaim(bead_id) {
+    try {
+      if ((await deps.bd.readStatus(bead_id)) !== 'in_progress') {
+        return;
+      }
+      await deps.bd.setStatus(bead_id, 'open');
+      const readback = await deps.bd.readStatus(bead_id);
+      if (readback !== 'open') {
+        log(
+          'bead claim release readback mismatch for %s: expected open, got %o',
+          bead_id,
+          readback
+        );
+      }
+    } catch (err) {
+      log('bead claim release failed for %s: %o', bead_id, err);
+    }
+  }
+
+  /**
    * Read the durable exec_stamped_keys recorded on an attempt at dispatch.
    *
    * @param {string} workspace
@@ -280,6 +347,10 @@ export function createScheduler(deps) {
     // Revert any exec-setting stamps this attempt wrote (best-effort).
     await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
     deps.store.setAutoAdvance(workspace, false);
+    // STRICTLY after the halt: reopening the bead makes it dispatchable again,
+    // so a tick raised by a sibling attempt finishing concurrently must already
+    // see auto_advance OFF or it would relaunch the attempt that just failed.
+    await releaseBeadClaim(bead_id);
   }
 
   /**
@@ -396,14 +467,19 @@ export function createScheduler(deps) {
    */
   async function dispatch(workspace, bead_id) {
     // RE-READ authoritative ready/blocked/deps/exec-settings at dispatch.
+    // A disagreement with the scan pass is a real TOCTOU stop, so it is
+    // recorded on the same channel the scan uses — without a reason this
+    // dispatch would abort with nothing visible anywhere.
     let snap;
     try {
       snap = await deps.bd.snapshotBead(bead_id);
     } catch {
+      recordSkipReason(workspace, bead_id, 'bd_snapshot_failed');
       claimed.delete(bead_id);
       return;
     }
     if (!snap.ready || snap.blocked) {
+      recordSkipReason(workspace, bead_id, notReadyReason(snap));
       claimed.delete(bead_id);
       return;
     }
@@ -438,10 +514,7 @@ export function createScheduler(deps) {
     // creation (TOCTOU) is caught here, fail-closed.
     const adm = await checkAdmission(snap, wt.base_oid);
     if (!adm.ok) {
-      deps.store.recordAdmission(workspace, {
-        bead_id,
-        reason: adm.reason || 'git_error'
-      });
+      recordSkipReason(workspace, bead_id, adm.reason || 'git_error');
       try {
         await deps.worktree.remove({ repo: snap.repo, bead_id });
       } catch {
@@ -449,7 +522,6 @@ export function createScheduler(deps) {
       }
       claimed.delete(bead_id);
       dispatch_refused.add(bead_id);
-      notifyChanged(workspace);
       await tickPass(workspace);
       return;
     }
@@ -1112,10 +1184,14 @@ export function createScheduler(deps) {
    *
    * Every skip rule of the retired two-lane scan is preserved verbatim — a
    * claimed bead, a dispatch-refused bead, a leaf-paused bead, a bd snapshot
-   * failure, a not-ready/blocked bead, and an admission refusal (recorded +
-   * fanned out) all SKIP to the next entry rather than stopping the scan. That
-   * skip-don't-stop rule is the anti-starvation guarantee: one inadmissible
-   * head can never hold the queue.
+   * failure, a not-ready/blocked bead, and an admission refusal all SKIP to the
+   * next entry rather than stopping the scan. That skip-don't-stop rule is the
+   * anti-starvation guarantee: one inadmissible head can never hold the queue.
+   *
+   * The three skips that reflect the BEAD's own state (snapshot failure,
+   * not-ready, admission refusal) record a reason the UI renders as a badge.
+   * The other three are already visible as a running tile, a just-recorded
+   * refusal, and a user-paused attempt.
    *
    * @param {string} workspace
    * @returns {Promise<void>}
@@ -1146,21 +1222,20 @@ export function createScheduler(deps) {
       try {
         snap = await deps.bd.snapshotBead(entry.bead_id);
       } catch {
+        recordSkipReason(workspace, entry.bead_id, 'bd_snapshot_failed');
         continue;
       }
-      if (snap.ready && !snap.blocked) {
-        const adm = await checkAdmission(snap);
-        if (!adm.ok) {
-          deps.store.recordAdmission(workspace, {
-            bead_id: entry.bead_id,
-            reason: adm.reason || 'git_error'
-          });
-          notifyChanged(workspace);
-          continue;
-        }
-        to_dispatch.push({ bead_id: entry.bead_id, snap });
-        free -= 1;
+      if (!snap.ready || snap.blocked) {
+        recordSkipReason(workspace, entry.bead_id, notReadyReason(snap));
+        continue;
       }
+      const adm = await checkAdmission(snap);
+      if (!adm.ok) {
+        recordSkipReason(workspace, entry.bead_id, adm.reason || 'git_error');
+        continue;
+      }
+      to_dispatch.push({ bead_id: entry.bead_id, snap });
+      free -= 1;
     }
 
     // Claim synchronously, then dispatch (dispatch re-reads authoritatively).
@@ -1274,6 +1349,9 @@ export function createScheduler(deps) {
         patch: { status: 'stopped', cause: null, finished_at: now() }
       });
       await revertStamps(workspace, attempt_id, entry);
+      // The bead already left the lane above, so the reopen cannot re-dispatch
+      // it here; leaving the claim would silently skip it on a later re-queue.
+      await releaseBeadClaim(entry.bead_id);
       notifyChanged(workspace);
       await tick(workspace);
       return true;
@@ -1299,6 +1377,7 @@ export function createScheduler(deps) {
       bead_id: rec.bead_id,
       patch: { status: 'stopped', cause: null, finished_at: now() }
     });
+    await releaseBeadClaim(rec.bead_id);
     notifyChanged(workspace);
     await tick(workspace);
     return true;

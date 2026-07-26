@@ -46,6 +46,18 @@ function seedRunningAttempt(store, patch) {
   return store;
 }
 
+/**
+ * Drain the reap's bd tail. `detect` stays synchronous, but the bd writes run as
+ * one ordered pipeline behind it, so an assertion on them must wait.
+ *
+ * @returns {Promise<void>}
+ */
+async function drainReap() {
+  for (let i = 0; i < 10; i += 1) {
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
 describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
   test('live PID with matching start time is NOT an orphan', () => {
     const store = createQueueStore();
@@ -122,7 +134,7 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
     expect(store.snapshot(WS).attempts['att-1'].status).toBe('orphaned');
   });
 
-  test('orphaning reverts workflow_mode: prior=null → unsetMetadata [F6]', () => {
+  test('orphaning reverts workflow_mode: prior=null → unsetMetadata [F6]', async () => {
     const store = createQueueStore();
     seedRunningAttempt(store, { workflow_mode_prior: null });
     const bd = {
@@ -135,11 +147,12 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
       probePid: () => ({ alive: false, started_at: null })
     });
     det.detect(WS);
+    await drainReap();
     expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'workflow_mode');
     expect(bd.setMetadata).not.toHaveBeenCalled();
   });
 
-  test('orphaning reverts workflow_mode: prior set → setMetadata back [F6]', () => {
+  test('orphaning reverts workflow_mode: prior set → setMetadata back [F6]', async () => {
     const store = createQueueStore();
     seedRunningAttempt(store, { workflow_mode_prior: 'x' });
     const bd = {
@@ -152,11 +165,12 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
       probePid: () => ({ alive: false, started_at: null })
     });
     det.detect(WS);
+    await drainReap();
     expect(bd.setMetadata).toHaveBeenCalledWith('UI-1', 'workflow_mode', 'x');
     expect(bd.unsetMetadata).not.toHaveBeenCalled();
   });
 
-  test('orphaning reverts exec_stamped_keys via unsetMetadata', () => {
+  test('orphaning reverts exec_stamped_keys via unsetMetadata', async () => {
     const store = createQueueStore();
     seedRunningAttempt(store, {
       workflow_mode_prior: null,
@@ -172,6 +186,7 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
       probePid: () => ({ alive: false, started_at: null })
     });
     det.detect(WS);
+    await drainReap();
     // Each stamped exec key is unset, plus workflow_mode (prior null → unset).
     expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'worker_runner');
     expect(bd.unsetMetadata).toHaveBeenCalledWith(
@@ -182,7 +197,7 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
     expect(bd.setMetadata).not.toHaveBeenCalled();
   });
 
-  test('no exec_stamped_keys → no exec unset calls', () => {
+  test('no exec_stamped_keys → no exec unset calls', async () => {
     const store = createQueueStore();
     seedRunningAttempt(store, { workflow_mode_prior: null });
     const bd = {
@@ -195,6 +210,7 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
       probePid: () => ({ alive: false, started_at: null })
     });
     det.detect(WS);
+    await drainReap();
     // Only workflow_mode is unset; no exec keys were stamped.
     expect(bd.unsetMetadata).toHaveBeenCalledTimes(1);
     expect(bd.unsetMetadata).toHaveBeenCalledWith('UI-1', 'workflow_mode');
@@ -208,5 +224,224 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
       probePid: () => ({ alive: false, started_at: null })
     });
     expect(det.detect(WS)).toEqual([]);
+  });
+});
+
+describe('worker/orphan claim release (close-less termination)', () => {
+  /**
+   * @param {string} status - The bead status the dead session left behind.
+   */
+  function bdAt(status) {
+    /** @type {{ status: string }} */
+    const record = { status };
+    /**
+     * Names of the metadata keys unset so far, in completion order — the
+     * ordering test asserts they all land before the reopen.
+     *
+     * @type {string[]}
+     */
+    const unset_order = [];
+    return {
+      record,
+      unset_order,
+      setMetadata: vi.fn(async () => {}),
+      unsetMetadata: vi.fn(
+        async (/** @type {string} */ _id, /** @type {string} */ key) => {
+          unset_order.push(key);
+        }
+      ),
+      setStatus: vi.fn(
+        async (/** @type {string} */ _id, /** @type {string} */ next) => {
+          record.status = next;
+        }
+      ),
+      readStatus: vi.fn(async () => record.status)
+    };
+  }
+
+  /**
+   * Drain the reap's bd tail. It is one ordered pipeline of awaits, so a single
+   * microtask turn is not enough to reach the claim release.
+   *
+   * @returns {Promise<void>}
+   */
+  async function flush() {
+    for (let i = 0; i < 10; i += 1) {
+      await new Promise((r) => setImmediate(r));
+    }
+  }
+
+  test('reopens a bead the dead session left in_progress', async () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: null });
+    const bd = bdAt('in_progress');
+    const det = createOrphanDetector({
+      store,
+      bd,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+
+    det.detect(WS);
+    await flush();
+
+    expect(bd.setStatus).toHaveBeenCalledWith('UI-1', 'open');
+  });
+
+  test('leaves a resolved bead untouched', async () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: null });
+    const bd = bdAt('resolved');
+    const det = createOrphanDetector({
+      store,
+      bd,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+
+    det.detect(WS);
+    await flush();
+
+    expect(bd.setStatus).not.toHaveBeenCalled();
+  });
+
+  test('calls onBeadRecovered once the reopen is confirmed', async () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: null });
+    const bd = bdAt('in_progress');
+    const onBeadRecovered = vi.fn();
+    const det = createOrphanDetector({
+      store,
+      bd,
+      onBeadRecovered,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+
+    det.detect(WS);
+    await flush();
+
+    expect(onBeadRecovered).toHaveBeenCalledWith(WS, 'UI-1');
+  });
+
+  test('does not call onBeadRecovered when nothing was reopened', async () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: null });
+    const bd = bdAt('resolved');
+    const onBeadRecovered = vi.fn();
+    const det = createOrphanDetector({
+      store,
+      bd,
+      onBeadRecovered,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+
+    det.detect(WS);
+    await flush();
+
+    expect(onBeadRecovered).not.toHaveBeenCalled();
+  });
+
+  test('does not call onBeadRecovered when the reopen readback disagrees', async () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: null });
+    const bd = bdAt('in_progress');
+    // The write is accepted but the status never actually moves.
+    bd.setStatus.mockImplementation(async () => {});
+    const onBeadRecovered = vi.fn();
+    const det = createOrphanDetector({
+      store,
+      bd,
+      onBeadRecovered,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+
+    det.detect(WS);
+    await flush();
+
+    expect(onBeadRecovered).not.toHaveBeenCalled();
+  });
+
+  test('reaps the orphan even when the status query fails', async () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: null });
+    const bd = bdAt('in_progress');
+    bd.readStatus.mockRejectedValue(new Error('bd down'));
+    const onBeadRecovered = vi.fn();
+    const det = createOrphanDetector({
+      store,
+      bd,
+      onBeadRecovered,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+
+    const orphans = det.detect(WS);
+    await flush();
+
+    expect(orphans).toHaveLength(1);
+    expect(store.snapshot(WS).attempts['att-1'].status).toBe('orphaned');
+    expect(onBeadRecovered).not.toHaveBeenCalled();
+  });
+
+  test('reverts the dead session metadata before reopening the bead', async () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, {
+      workflow_mode_prior: null,
+      exec_stamped_keys: ['orchestration_model']
+    });
+    const bd = bdAt('in_progress');
+    /** @type {string[]} */
+    const unset_at_reopen = [];
+    bd.setStatus.mockImplementation(
+      async (/** @type {string} */ _id, /** @type {string} */ next) => {
+        unset_at_reopen.push(...bd.unset_order);
+        bd.record.status = next;
+      }
+    );
+    const det = createOrphanDetector({
+      store,
+      bd,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+
+    det.detect(WS);
+    await flush();
+
+    // A reopen that raced ahead would let the next attempt snapshot the dead
+    // session's fast_track / exec stamps as the bead's OWN values.
+    expect(unset_at_reopen).toEqual(['workflow_mode', 'orchestration_model']);
+  });
+
+  test('reopens the bead even when the metadata revert fails', async () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: null });
+    const bd = bdAt('in_progress');
+    bd.unsetMetadata.mockRejectedValue(new Error('bd down'));
+    const det = createOrphanDetector({
+      store,
+      bd,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+
+    det.detect(WS);
+    await flush();
+
+    expect(bd.setStatus).toHaveBeenCalledWith('UI-1', 'open');
+  });
+
+  test('skips the release when the bd dep offers no status pair', async () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { workflow_mode_prior: null });
+    const bd = {
+      setMetadata: vi.fn(async () => {}),
+      unsetMetadata: vi.fn(async () => {})
+    };
+    const det = createOrphanDetector({
+      store,
+      bd,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+
+    const orphans = det.detect(WS);
+    await flush();
+
+    expect(orphans).toHaveLength(1);
   });
 });
