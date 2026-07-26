@@ -15,6 +15,7 @@
  */
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
+import { createPrObservationStore } from './pr-observations.js';
 import { createQueueStore } from './queue-store.js';
 import { createSessionLog } from './session-log.js';
 
@@ -23,6 +24,7 @@ import { createSessionLog } from './session-log.js';
  * @property {ReturnType<typeof createQueueStore>} queueStore
  * @property {ReturnType<typeof createLockManager>} locks
  * @property {ReturnType<typeof createGh>} gh
+ * @property {ReturnType<typeof createPrObservationStore>} prObservations
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number }} status
@@ -40,6 +42,10 @@ export function createWorkerRuntime() {
   // one shared instance keeps the admission check to a single probe across every
   // workspace + (Phase 4) the PR poller.
   const gh = createGh();
+  // Process-wide PR observation cache (worker-phase2 §4): the per-workspace PR
+  // pollers WRITE here and the ws queue-snapshot decoration READS here, so both
+  // must share one instance. Deliberately never persisted — see the module.
+  const prObservations = createPrObservationStore();
   // Shared session-log broker: the scheduler's `attach` persists the raw stream
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
@@ -51,6 +57,7 @@ export function createWorkerRuntime() {
     queueStore,
     locks,
     gh,
+    prObservations,
     sessionLog,
     /**
      * @param {() => number} fn

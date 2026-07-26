@@ -1,10 +1,14 @@
 /**
- * Independent post-merge verification runner (worker-autorun-policy §4).
+ * Independent PRE-MERGE verification runner (worker-phase2 §5).
  *
  * Runs the workspace-configured `verify_cmd` (argv array, NO shell) inside a
- * clean detached worktree pinned to the observed merge SHA. Owned by the
- * WORKER process — the session cannot influence it — and returns THREE
- * distinct failure reasons so the attempt record can tell them apart:
+ * clean detached worktree pinned to an exact commit. The MECHANISM is unchanged
+ * from the retired post-merge runner (worker-autorun-policy §4); only the pin
+ * moved: it used to be the observed merge SHA AFTER an unattended merge, and is
+ * now the PR's head SHA BEFORE a human merge click, so the command stands in
+ * for CI on repos that have none. Owned by the WORKER process — the session
+ * cannot influence it — and returns THREE distinct failure reasons so the
+ * observation record can tell them apart:
  *
  *   - `verify_cmd_timeout`     — the deadline hit (tracked by a flag here;
  *     `runShell` overloads a timeout kill onto the exit code, so this module
@@ -12,6 +16,11 @@
  *   - `verify_cmd_failed`      — spawned, exited non-zero,
  *   - `verify_cmd_spawn_error` — never spawned (missing binary, empty argv) —
  *     runShell's code-127 overload cannot distinguish this from an exit 127.
+ *
+ * {@link runVerifyAtSha} adds the two SETUP outcomes that only exist now that
+ * the pin is a remote PR head rather than a commit the worker just produced
+ * (`verify_sha_unavailable` / `verify_worktree_failed`); the three run outcomes
+ * above are untouched, as is the `[worker.verify."<abs>"]` config schema.
  */
 import { spawn } from 'node:child_process';
 import nodeFs from 'node:fs';
@@ -125,7 +134,7 @@ export function resolveVerifyCmd(repo, config_map, deps = {}) {
 /**
  * @typedef {Object} VerifyCmdResult
  * @property {boolean} ok - Exit 0 within the deadline.
- * @property {'ok'|'verify_cmd_failed'|'verify_cmd_timeout'|'verify_cmd_spawn_error'} reason
+ * @property {'ok'|'verify_cmd_failed'|'verify_cmd_timeout'|'verify_cmd_spawn_error'|'verify_sha_unavailable'|'verify_worktree_failed'} reason
  * @property {number|null} exit - Exit code when the process ran to completion.
  */
 
@@ -215,4 +224,129 @@ export function runVerifyCmd(input) {
       }
     });
   });
+}
+
+/**
+ * Make a commit available in the local object database.
+ *
+ * The PR head is NOT guaranteed to exist locally: the branch may have been
+ * pushed from another clone, the session's `.worktrees/<bead>` may already be
+ * gone, a conflict-resolution push may have advanced the head, or the server
+ * may have been restarted onto a fresh checkout. Verifying a SHA the repo has
+ * never heard of would fail at `git worktree add`, so the head is fetched first.
+ *
+ * `refs/pull/<N>/head` is GitHub's guaranteed handle for a PR head and is
+ * fetched by REF (always allowed), unlike a bare-SHA fetch which only works
+ * when the server enables `uploadpack.allowReachableSHA1InWant`. The bare-SHA
+ * fetch is kept as a last resort for the no-number case. Nothing is merged,
+ * checked out, or written to any local ref — this only populates objects.
+ *
+ * @param {(args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>} git
+ * @param {string} repo
+ * @param {string} sha
+ * @param {number|null} pr_number
+ * @returns {Promise<boolean>}
+ */
+async function ensureCommitPresent(git, repo, sha, pr_number) {
+  /**
+   * @returns {Promise<boolean>}
+   */
+  const present = async () => {
+    try {
+      const r = await git(['cat-file', '-e', `${sha}^{commit}`], { cwd: repo });
+      return r.code === 0;
+    } catch {
+      return false;
+    }
+  };
+  if (await present()) {
+    return true;
+  }
+  if (typeof pr_number === 'number' && Number.isInteger(pr_number)) {
+    try {
+      await git(
+        ['fetch', '--no-tags', 'origin', `refs/pull/${pr_number}/head`],
+        { cwd: repo }
+      );
+    } catch {
+      // Fall through to the bare-SHA attempt below.
+    }
+    if (await present()) {
+      return true;
+    }
+  }
+  try {
+    await git(['fetch', '--no-tags', 'origin', sha], { cwd: repo });
+  } catch {
+    return false;
+  }
+  return present();
+}
+
+/**
+ * Run the resolved `verify_cmd` against an exact PR head SHA (worker-phase2
+ * §5): fetch the commit if the repo does not have it, add a DETACHED worktree
+ * pinned to it, run the command there, and tear the worktree down whatever
+ * happens. The caller binds the returned result to `sha` — a result is only
+ * ever valid for the commit it ran on.
+ *
+ * @param {{
+ *   repo: string,
+ *   bead_id: string,
+ *   sha: string,
+ *   pr_number?: number|null,
+ *   cmd: string[],
+ *   timeout_ms: number,
+ *   worktree: {
+ *     addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
+ *     removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>
+ *   },
+ *   git: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
+ *   spawn_impl?: typeof spawn
+ * }} input
+ * @returns {Promise<VerifyCmdResult>}
+ */
+export async function runVerifyAtSha(input) {
+  if (typeof input.sha !== 'string' || input.sha.length === 0) {
+    return { ok: false, reason: 'verify_sha_unavailable', exit: null };
+  }
+  const available = await ensureCommitPresent(
+    input.git,
+    input.repo,
+    input.sha,
+    input.pr_number ?? null
+  );
+  if (!available) {
+    return { ok: false, reason: 'verify_sha_unavailable', exit: null };
+  }
+  // Distinct from the bead's own `.worktrees/<bead_id>` (which a resume still
+  // owns) and distinct per SHA, so a concurrent verification of an older head
+  // cannot collide with this one.
+  const name = `verify-${input.bead_id}-${input.sha.slice(0, 7)}`;
+  /** @type {{ path: string }} */
+  let wt;
+  try {
+    wt = await input.worktree.addDetached({
+      repo: input.repo,
+      name,
+      sha: input.sha
+    });
+  } catch {
+    return { ok: false, reason: 'verify_worktree_failed', exit: null };
+  }
+  try {
+    return await runVerifyCmd({
+      cwd: wt.path,
+      cmd: input.cmd,
+      timeout_ms: input.timeout_ms,
+      spawn_impl: input.spawn_impl
+    });
+  } finally {
+    try {
+      await input.worktree.removeDetached({ repo: input.repo, name });
+    } catch {
+      // Best-effort teardown; a leftover detached worktree is reaped by the
+      // next `git worktree prune` and must never mask the verdict.
+    }
+  }
 }

@@ -18,6 +18,11 @@ import { stepperTemplate } from '../board/stepper.js';
  * @property {'candidate'|'queue'|'pr_wait'|'done'} lane - Owning lane.
  * `pr_wait` rows render inside the Done pane until Phase 6's 4-column IA.
  * @property {boolean} [done] - Rendered dimmed with no grip.
+ * @property {number|null} [pr_number] - Observed PR number (`pr_wait` rows).
+ * @property {string} [pr_url] - Observed PR URL; renders the `#N ↗` link.
+ * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
+ * @property {boolean} [alert] - Whether the badges report a state needing a
+ * human decision (PR closed, observation error) — rendered in the warn colour.
  * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
  */
@@ -30,6 +35,7 @@ import { stepperTemplate } from '../board/stepper.js';
  */
 export function miniRow(item) {
   const draggable = item.draggable && !item.done;
+  const badges = Array.isArray(item.badges) ? item.badges : [];
   return html`<div
     class="worker-mini${draggable ? '' : ' worker-mini--static'}${item.done
       ? ' worker-mini--done'
@@ -43,6 +49,25 @@ export function miniRow(item) {
       : ''}
     <span class="worker-mini__id" title="클릭하면 ID 복사">${item.id}</span>
     <span class="worker-mini__title">${item.title}</span>
+    ${item.pr_url && item.pr_number
+      ? html`<a
+          class="worker-mini__pr"
+          href=${item.pr_url}
+          target="_blank"
+          rel="noreferrer noopener"
+          title="PR 열기"
+          >#${item.pr_number} ↗</a
+        >`
+      : ''}
+    ${badges.map(
+      (b) =>
+        html`<span
+          class="worker-mini__badge${item.alert
+            ? ' worker-mini__badge--alert'
+            : ''}"
+          >${b}</span
+        >`
+    )}
     ${item.reason
       ? html`<span class="worker-mini__reason">${item.reason}</span>`
       : ''}

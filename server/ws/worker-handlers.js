@@ -36,6 +36,7 @@ import {
   tickWorkerQueue,
   workerSlots
 } from '../worker/attach.js';
+import { evaluateMergeGate } from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { resolveVerifyCmd } from '../worker/verify-cmd.js';
@@ -90,6 +91,68 @@ function subscribersFor(key) {
 }
 
 /**
+ * How many clients are currently subscribed to a workspace's worker queue. The
+ * PR poller gates every `gh` query on this (worker-phase2 §4): nobody watching
+ * ⇒ nothing to refresh ⇒ no queries.
+ *
+ * @param {string} workspace_key
+ * @returns {number}
+ */
+export function workerQueueSubscriberCount(workspace_key) {
+  const set = SUBSCRIBERS.get(workspace_key);
+  return set ? set.size : 0;
+}
+
+/**
+ * Project the PR observation cache onto the beads currently in `pr_wait`, each
+ * with its evaluated merge gate (worker-phase2 §4/§5).
+ *
+ * A PURE READ — it queries nothing and mutates nothing. The poller is the only
+ * writer; this is what puts its findings on the wire, riding the existing
+ * `worker-queue-snapshot` push rather than a new message type. A bead the
+ * poller has not reached yet simply has no entry, and the gate reports that as
+ * "관측 대기" (disabled), never as a passing signal.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @param {boolean} verify_cmd_present
+ * @returns {Record<string, unknown>}
+ */
+function prObservationsFor(workspace_key, queue, verify_cmd_present) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  const lane = Array.isArray(queue.pr_wait)
+    ? /** @type {any[]} */ (queue.pr_wait)
+    : [];
+  if (lane.length === 0) {
+    return out;
+  }
+  /** @type {Record<string, any>} */
+  let observed = {};
+  try {
+    observed = getWorkerRuntime().prObservations.snapshot(workspace_key);
+  } catch {
+    observed = {};
+  }
+  for (const entry of lane) {
+    const bead_id = entry && entry.bead_id;
+    if (typeof bead_id !== 'string' || bead_id.length === 0) {
+      continue;
+    }
+    const record = observed[bead_id] || null;
+    out[bead_id] = {
+      pr: record ? record.pr : null,
+      ci: record ? record.ci : null,
+      verify: record ? record.verify : null,
+      error: record ? record.error : null,
+      observed_at: record ? record.observed_at : null,
+      gate: evaluateMergeGate(record, { verify_cmd_present })
+    };
+  }
+  return out;
+}
+
+/**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the resolved verify_cmd (explicit config > auto-detection > none) with its
  *     `source`, so the ctrl bar can flag a detected command (read-only display —
@@ -97,7 +160,9 @@ function subscribersFor(key) {
  *     verify-autodetect §2),
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
  *     flag live sessions exceeding the cap after a manual resume
- *     (worker-phase1 §2.3, worker-phase2 §3).
+ *     (worker-phase1 §2.3, worker-phase2 §3),
+ *   - `pr_observations`: what the PR poller has SEEN for each `pr_wait` bead
+ *     plus its merge-gate verdict (worker-phase2 §4/§5) — a pure cache read.
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
@@ -123,7 +188,13 @@ function decorateQueue(workspace_key, queue) {
   if (slots === null && typeof queue.slots === 'number') {
     slots = queue.slots;
   }
-  return { ...queue, workspace_info: { verify_cmd, slots } };
+  return {
+    ...queue,
+    workspace_info: { verify_cmd, slots },
+    // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
+    // (worker-phase2 §4) — it exists only on the wire and in server memory.
+    pr_observations: prObservationsFor(workspace_key, queue, !!verify_cmd)
+  };
 }
 
 /**
@@ -288,6 +359,9 @@ export function __resetWorkerQueueForTest() {
   }
   SESSION_LOG_SUBS.clear();
   queueStore().__clearCacheForTest();
+  // The PR observation cache is server memory too — a leftover observation
+  // would decorate the next test's snapshot (worker-phase2 §4).
+  getWorkerRuntime().prObservations.clear();
 }
 
 /**

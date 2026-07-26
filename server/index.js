@@ -13,6 +13,7 @@ import {
   resolveStartupWorkspace
 } from './workspace-discovery.js';
 import { attachWsServer } from './ws.js';
+import { workerQueueSubscriberCount } from './ws/worker-handlers.js';
 
 if (process.argv.includes('--debug') || process.argv.includes('-d')) {
   enableAllDebug();
@@ -114,7 +115,13 @@ server.listen(config.port, config.host, () => {
     worker_roots.add(startup_workspace_root);
   }
   try {
-    initWorkerRuntime({ workspaces: Array.from(worker_roots) });
+    // The subscriber-count provider is what arms the PR pollers: they observe
+    // `pr_wait` PRs only while a client is actually watching that workspace's
+    // queue (worker-phase2 §4).
+    initWorkerRuntime({
+      workspaces: Array.from(worker_roots),
+      getSubscriberCount: workerQueueSubscriberCount
+    });
   } catch (err) {
     log('worker runtime init failed: %o', err);
   }

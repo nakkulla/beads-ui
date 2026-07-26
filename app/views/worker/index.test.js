@@ -1963,3 +1963,161 @@ describe('views/worker', () => {
     expect(mount.querySelector('.worker-banner--failure')).toBeNull();
   });
 });
+
+describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} gate
+   * @param {any} [pr]
+   */
+  function withObservation(gate, pr) {
+    return queueOf({
+      pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_observations: {
+        'RD-1': {
+          pr: pr ?? {
+            number: 304,
+            url: 'https://github.com/o/r/pull/304',
+            state: 'OPEN',
+            head_sha: 'a'.repeat(40)
+          },
+          ci: null,
+          verify: null,
+          error: null,
+          observed_at: 1,
+          gate
+        }
+      }
+    });
+  }
+
+  /**
+   * @param {any} queue
+   * @returns {HTMLElement}
+   */
+  function renderWith(queue) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+  }
+
+  test('renders the PR as a link, not a button', () => {
+    const row = renderWith(
+      withObservation({
+        enabled: true,
+        tier: 'ci',
+        gate_badge: 'CI ✓',
+        base_badge: '최신',
+        reason: null
+      })
+    );
+
+    const link = /** @type {HTMLAnchorElement} */ (
+      row.querySelector('.worker-mini__pr')
+    );
+    expect(link.textContent?.replace(/\s+/g, ' ').trim()).toBe('#304 ↗');
+    expect(link.getAttribute('href')).toBe('https://github.com/o/r/pull/304');
+    expect(row.querySelector('button')).toBe(null);
+  });
+
+  test('renders the gate badge and the base badge', () => {
+    const row = renderWith(
+      withObservation({
+        enabled: true,
+        tier: 'ci',
+        gate_badge: 'CI ✓',
+        base_badge: '최신',
+        reason: null
+      })
+    );
+
+    const badges = Array.from(row.querySelectorAll('.worker-mini__badge')).map(
+      (b) => b.textContent
+    );
+    expect(badges).toEqual(['CI ✓', '최신']);
+  });
+
+  test('renders the local-verification badge for a no-CI repo', () => {
+    const row = renderWith(
+      withObservation({
+        enabled: false,
+        tier: 'local_verify',
+        gate_badge: '로컬검증 대기',
+        base_badge: '최신',
+        reason: 'verify_missing'
+      })
+    );
+
+    expect(row.querySelector('.worker-mini__badge')?.textContent).toBe(
+      '로컬검증 대기'
+    );
+  });
+
+  test('flags a closed-unmerged PR as needing a human decision', () => {
+    const row = renderWith(
+      withObservation(
+        {
+          enabled: false,
+          tier: 'closed_unmerged',
+          gate_badge: 'PR closed',
+          base_badge: 'PR closed',
+          reason: 'pr_closed_unmerged'
+        },
+        {
+          number: 304,
+          url: 'https://github.com/o/r/pull/304',
+          state: 'CLOSED',
+          head_sha: 'a'.repeat(40)
+        }
+      )
+    );
+
+    const badge = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__badge')
+    );
+    expect(badge.textContent).toBe('PR closed');
+    expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
+  });
+
+  test('flags an observation error as an alert badge, not as a pass', () => {
+    const row = renderWith(
+      withObservation({
+        enabled: false,
+        tier: 'undecidable',
+        gate_badge: '관측 오류',
+        base_badge: '',
+        reason: 'gh_failed'
+      })
+    );
+
+    const badge = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__badge')
+    );
+    expect(badge.textContent).toBe('관측 오류');
+    expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
+  });
+
+  test('renders no PR link or badge for a bead with no observation yet', () => {
+    const row = renderWith(
+      queueOf({ pr_wait: [{ bead_id: 'RD-1', added_at: 1 }] })
+    );
+
+    expect(row.querySelector('.worker-mini__pr')).toBe(null);
+    expect(row.querySelector('.worker-mini__badge')).toBe(null);
+    expect(row.querySelector('.worker-mini__reason')?.textContent).toBe(
+      'PR 대기'
+    );
+  });
+});

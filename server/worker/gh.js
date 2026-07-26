@@ -15,7 +15,43 @@
  *
  * The spawn is injected (`deps.run`), so every test drives this adapter with a
  * fake runner — no test ever reaches a real `gh` binary or the network. Later
- * phases add checks/merge/update-branch/close to THIS adapter.
+ * phases add merge/update-branch/close to THIS adapter.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE CHECKS QUERY IS `gh pr view --json statusCheckRollup`, NOT
+ * `gh pr checks` (worker-phase2 §5, the CI-vs-no-CI discrimination)
+ * ---------------------------------------------------------------------------
+ * §5 needs THREE outcomes from the checks observation: "this repo has CI and
+ * here is its verdict", "this repo successfully reported NO checks at all"
+ * (the tier that falls through to the local `verify_cmd`), and "the query
+ * failed" (fail-closed: the gate becomes undecidable, never the no-signal
+ * tier). `gh pr checks` cannot express that, measured on gh 2.89.0:
+ *
+ *   $ gh pr checks 29 --repo nakkulla/beads-ui --json name,state,bucket
+ *     exit 1 · stdout "" · stderr "no checks reported on the 'UI-g8gc' branch"
+ *   $ gh pr checks 999999 --repo nakkulla/beads-ui --json name,state,bucket
+ *     exit 1 · stdout "" · stderr "GraphQL: Could not resolve to a PullRequest…"
+ *
+ * NO checks and a FAILED query are both exit 1 with empty stdout even under
+ * `--json`; the only thing that differs is an English stderr sentence. Keying
+ * a fail-closed safety gate off a localizable CLI message is not a
+ * discriminator we are willing to trust.
+ *
+ * `gh pr view --json statusCheckRollup` gives a STRUCTURAL one instead:
+ *
+ *   $ gh pr view 29 --repo nakkulla/beads-ui --json …,statusCheckRollup
+ *     exit 0 · {"statusCheckRollup":[], …}                  ← no CI (empty)
+ *   $ gh pr view 13969 --repo cli/cli --json …,statusCheckRollup
+ *     exit 0 · {"statusCheckRollup":[{"__typename":"CheckRun",…}]}  ← ok
+ *   $ gh pr view 999999 --repo nakkulla/beads-ui --json number,state,…
+ *     exit 1 · stdout "" · stderr "GraphQL: Could not resolve…"     ← error
+ *
+ * So the discriminator is: exit 0 AND a `statusCheckRollup` key holding an
+ * array — empty array = semantic empty, non-empty = ok. Anything else (non-zero
+ * exit, unparseable output, the key absent or not an array, an item whose shape
+ * we cannot classify) is an ERROR. A missing key is deliberately an error and
+ * never "no CI": a field gh stopped returning must not read as "this repo has
+ * no CI, go ahead and merge".
  */
 import { runShell } from '../bd.js';
 
@@ -35,6 +71,30 @@ import { runShell } from '../bd.js';
  * @property {string} state - GitHub PR state (OPEN for this query).
  */
 
+/**
+ * One pull request's mergeability detail as observed by `prDetail`
+ * (worker-phase2 §4). `mergeable` / `merge_state_status` are GitHub's own
+ * enums, passed through verbatim — `UNKNOWN` is a real value the poller
+ * re-queries rather than a parse failure.
+ *
+ * @typedef {Object} PrDetail
+ * @property {number|null} number - PR number (null when gh omitted it).
+ * @property {string} url - PR URL.
+ * @property {string} state - OPEN | CLOSED | MERGED.
+ * @property {string} mergeable - MERGEABLE | CONFLICTING | UNKNOWN.
+ * @property {string} merge_state_status - CLEAN|BEHIND|BLOCKED|DIRTY|UNKNOWN…
+ * @property {string} head_ref - Head branch name.
+ * @property {string} head_sha - Head commit sha; every gate verdict binds here.
+ */
+
+/**
+ * One normalized CI check from the PR's status-check rollup.
+ *
+ * @typedef {Object} CheckObservation
+ * @property {string} name - Check/context name.
+ * @property {'pass'|'fail'|'pending'|'skip'} conclusion - Normalized verdict.
+ */
+
 /** Re-probe interval while `gh` is NOT usable (ms). */
 const AVAILABILITY_RETRY_MS = 30_000;
 
@@ -45,6 +105,58 @@ const AVAILABILITY_RETRY_MS = 30_000;
  * @type {string}
  */
 const PR_JSON_FIELDS = 'number,url,headRefName,headRefOid,state';
+
+/**
+ * `gh pr view --json` field set for the mergeability detail (worker-phase2 §4).
+ *
+ * @type {string}
+ */
+const PR_DETAIL_FIELDS =
+  'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid';
+
+/**
+ * `gh pr view --json` field set for the checks observation. See the module
+ * docblock for why the rollup — not `gh pr checks` — carries the 3-state.
+ *
+ * @type {string}
+ */
+const PR_CHECKS_FIELDS = 'statusCheckRollup';
+
+/**
+ * Normalize one rollup item to a single verdict. GitHub returns two shapes:
+ * `CheckRun` (Actions et al — `status` + `conclusion`) and `StatusContext`
+ * (the legacy commit-status API — `state`). An item matching NEITHER shape is
+ * unclassifiable, and returning null makes the whole query an error rather
+ * than guessing a verdict for a check we cannot read.
+ *
+ * @param {Record<string, unknown>} item
+ * @returns {'pass'|'fail'|'pending'|'skip'|null}
+ */
+function checkConclusion(item) {
+  if (typeof item.status === 'string') {
+    if (item.status !== 'COMPLETED') {
+      return 'pending';
+    }
+    const c = item.conclusion;
+    if (c === 'SUCCESS' || c === 'NEUTRAL') {
+      return 'pass';
+    }
+    if (c === 'SKIPPED') {
+      return 'skip';
+    }
+    return 'fail';
+  }
+  if (typeof item.state === 'string') {
+    if (item.state === 'SUCCESS') {
+      return 'pass';
+    }
+    if (item.state === 'PENDING' || item.state === 'EXPECTED') {
+      return 'pending';
+    }
+    return 'fail';
+  }
+  return null;
+}
 
 /**
  * Map a non-zero `gh` exit to a stable reason. `runShell` reports a spawn
@@ -80,6 +192,34 @@ export function createGh(deps = {}) {
    * @type {{ ok: boolean, reason: string, at: number } | null}
    */
   let availability = null;
+
+  /**
+   * Run a `gh … --json` query and hand back the parsed payload, collapsing
+   * every "could not complete the query" path (spawn failure, non-zero exit,
+   * unparseable stdout) onto the SAME error state the 3-state contract
+   * requires. Callers own the ok/empty split on the parsed value.
+   *
+   * @param {string[]} args
+   * @param {string} cwd
+   * @returns {Promise<{ state: 'ok', data: unknown } | { state: 'error', reason: string }>}
+   */
+  async function runJson(args, cwd) {
+    /** @type {{ code: number, stdout: string, stderr: string }} */
+    let r;
+    try {
+      r = await run(args, { cwd });
+    } catch {
+      return { state: 'error', reason: 'gh_spawn_failed' };
+    }
+    if (r.code !== 0) {
+      return { state: 'error', reason: exitReason(r.code) };
+    }
+    try {
+      return { state: 'ok', data: JSON.parse(r.stdout) };
+    } catch {
+      return { state: 'error', reason: 'gh_bad_json' };
+    }
+  }
 
   return {
     /**
@@ -145,6 +285,111 @@ export function createGh(deps = {}) {
           state: typeof first.state === 'string' ? first.state : ''
         }
       };
+    },
+
+    /**
+     * Observe one KNOWN pull request's state + mergeability (worker-phase2 §4).
+     *
+     * There is no `empty` outcome here: the caller already holds the PR number,
+     * so "gh could not resolve it" is a failed observation, not an answer. A
+     * merged or closed PR still resolves — its `state` carries that fact, which
+     * is exactly what §4's external-merge classification reads.
+     *
+     * @param {string} repo_dir - Repo root the query runs in (`cwd`).
+     * @param {number} number - The PR to observe, as recorded at `pr_wait` entry.
+     * @returns {Promise<GhResult<PrDetail>>}
+     */
+    async prDetail(repo_dir, number) {
+      const r = await runJson(
+        ['pr', 'view', String(number), '--json', PR_DETAIL_FIELDS],
+        repo_dir
+      );
+      if (r.state === 'error') {
+        return r;
+      }
+      const o = r.data;
+      if (!o || typeof o !== 'object' || Array.isArray(o)) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      const rec = /** @type {Record<string, unknown>} */ (o);
+      const url = typeof rec.url === 'string' ? rec.url : '';
+      const state = typeof rec.state === 'string' ? rec.state : '';
+      if (url.length === 0 || state.length === 0) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      return {
+        state: 'ok',
+        data: {
+          number: typeof rec.number === 'number' ? rec.number : null,
+          url,
+          state,
+          mergeable: typeof rec.mergeable === 'string' ? rec.mergeable : '',
+          merge_state_status:
+            typeof rec.mergeStateStatus === 'string'
+              ? rec.mergeStateStatus
+              : '',
+          head_ref: typeof rec.headRefName === 'string' ? rec.headRefName : '',
+          head_sha: typeof rec.headRefOid === 'string' ? rec.headRefOid : ''
+        }
+      };
+    },
+
+    /**
+     * Observe a PR's CI checks (`gh pr checks` equivalent — see the module
+     * docblock for why this is spelled as a rollup query). THE 3-state split
+     * that §5's merge gate stands on:
+     *
+     *   ok    — the repo reported checks; `data` carries their conclusions.
+     *   empty — the query SUCCEEDED and the repo reported no checks at all
+     *           (the "CI 없음" tier that falls through to `verify_cmd`).
+     *   error — the observation could not be completed, INCLUDING a rollup key
+     *           that is absent or not an array, or an item shape we cannot
+     *           classify. Never degraded to `empty`.
+     *
+     * @param {string} repo_dir - Repo root the query runs in (`cwd`).
+     * @param {number} number - The PR whose checks decide the gate.
+     * @returns {Promise<GhResult<CheckObservation[]>>}
+     */
+    async prChecks(repo_dir, number) {
+      const r = await runJson(
+        ['pr', 'view', String(number), '--json', PR_CHECKS_FIELDS],
+        repo_dir
+      );
+      if (r.state === 'error') {
+        return r;
+      }
+      const o = r.data;
+      if (!o || typeof o !== 'object' || Array.isArray(o)) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      const rollup = /** @type {Record<string, unknown>} */ (o)
+        .statusCheckRollup;
+      if (!Array.isArray(rollup)) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      if (rollup.length === 0) {
+        return { state: 'empty' };
+      }
+      /** @type {CheckObservation[]} */
+      const checks = [];
+      for (const raw of rollup) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        const item = /** @type {Record<string, unknown>} */ (raw);
+        const conclusion = checkConclusion(item);
+        if (conclusion === null) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        const name =
+          typeof item.name === 'string'
+            ? item.name
+            : typeof item.context === 'string'
+              ? item.context
+              : '';
+        checks.push({ name, conclusion });
+      }
+      return { state: 'ok', data: checks };
     },
 
     /**

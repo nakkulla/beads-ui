@@ -27,14 +27,17 @@
 import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
+import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createOrphanDetector } from './orphan.js';
+import { createPrPoller } from './pr-poller.js';
 import { emitQueueChanged } from './queue-events.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
+import { resolveVerifyCmd } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
@@ -227,7 +230,8 @@ export function defaultProbePid(pid) {
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   admission?: any
+ *   admission?: any,
+ *   getSubscriberCount?: () => number
  * }} [options]
  */
 export function createWorkerAttachment(workspace_root, options = {}) {
@@ -320,10 +324,35 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // Keep runtime.status()'s running_count in sync with THIS scheduler.
   runtime.setRunningCountProvider(() => scheduler.runningCount());
 
+  // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
+  // BUILT here but never started here — `initWorkerRuntime` starts it only when
+  // a real subscriber-count provider is wired, so a test that constructs an
+  // attachment can never reach `gh`. Its default subscriber count is 0, which
+  // by itself already makes every pass a no-op.
+  const prPoller = createPrPoller({
+    workspace: keyFor(workspace_root),
+    repo,
+    store: runtime.queueStore,
+    gh,
+    observations: runtime.prObservations,
+    getSubscriberCount: options.getSubscriberCount || (() => 0),
+    resolveVerify: () => {
+      try {
+        return resolveVerifyCmd(repo, getConfig().worker_verify);
+      } catch {
+        return null;
+      }
+    },
+    worktree,
+    gitRun,
+    notifyChanged: (ws_key) => emitQueueChanged(ws_key)
+  });
+
   return {
     runtime,
     scheduler,
     orphan,
+    prPoller,
     bd,
     admission,
     repo,
@@ -351,12 +380,18 @@ function keyFor(workspace_root) {
  * Create + register attachments for each active workspace and reap any orphaned
  * attempts persisted from a prior run (spec §5.3). Idempotent per workspace.
  *
- * @param {{ workspaces: string[] }} input
+ * `getSubscriberCount` is what turns the PR poller on (worker-phase2 §4): the
+ * caller supplies the live worker-queue subscriber count for a workspace, and
+ * the poller queries `gh` only while that is positive. Omitting it leaves every
+ * poller armed-but-silent, which is what keeps tests off the network.
+ *
+ * @param {{ workspaces: string[], getSubscriberCount?: (workspace: string) => number }} input
  * @returns {ReturnType<typeof createWorkerAttachment>[]}
  */
 export function initWorkerRuntime(input) {
   /** @type {ReturnType<typeof createWorkerAttachment>[]} */
   const built = [];
+  const countFor = input.getSubscriberCount;
   for (const ws of input.workspaces || []) {
     if (!ws) {
       continue;
@@ -364,8 +399,18 @@ export function initWorkerRuntime(input) {
     const key = keyFor(ws);
     let att = ATTACHMENTS.get(key);
     if (!att) {
-      att = createWorkerAttachment(key);
+      att = createWorkerAttachment(key, {
+        getSubscriberCount:
+          typeof countFor === 'function' ? () => countFor(key) : undefined
+      });
       ATTACHMENTS.set(key, att);
+      if (typeof countFor === 'function') {
+        try {
+          att.prPoller.start();
+        } catch (err) {
+          log('pr poller start failed for %s: %o', key, err);
+        }
+      }
     }
     try {
       const orphans = att.orphan.detect(key);
@@ -496,8 +541,16 @@ export function __registerWorkerAttachmentForTest(workspace_root, attachment) {
 }
 
 /**
- * Test hook: drop all registered attachments.
+ * Test hook: drop all registered attachments, stopping their PR pollers so no
+ * armed timer or queue-changed hook outlives the test that built it.
  */
 export function __resetWorkerAttachmentsForTest() {
+  for (const att of ATTACHMENTS.values()) {
+    try {
+      att.prPoller?.stop();
+    } catch {
+      /* ignore */
+    }
+  }
   ATTACHMENTS.clear();
 }

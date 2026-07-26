@@ -140,6 +140,29 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(runtime.status(WS).running_count).toBe(0);
   });
 
+  test('builds a PR poller that stays silent without a subscriber provider', async () => {
+    const runtime = createWorkerRuntime();
+    const gh = {
+      prDetail: vi.fn(),
+      prChecks: vi.fn(),
+      openPrForBranch: vi.fn(),
+      checkAvailability: vi.fn(async () => ({ state: 'ok', data: true }))
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      gh,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+
+    await att.prPoller.tick();
+
+    expect(gh.prDetail).not.toHaveBeenCalled();
+    expect(gh.prChecks).not.toHaveBeenCalled();
+  });
+
   test('toggle→tick dispatches via the real runner with the PR-submit preamble injected (fake spawn)', async () => {
     const runtime = createWorkerRuntime();
     const spawn_impl = makeFixtureSpawn({

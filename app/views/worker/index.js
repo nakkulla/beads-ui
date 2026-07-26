@@ -78,6 +78,55 @@ function blockedReason(issue) {
 }
 
 /**
+ * Gate tiers whose badge reports something a HUMAN has to act on rather than
+ * something to wait out: the PR was closed without a merge (worker-phase2 §4 —
+ * not a completion, the bead stays put), or the observation itself could not be
+ * decided (§5 fail-closed).
+ *
+ * @type {string[]}
+ */
+const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
+
+/**
+ * Project one `pr_wait` bead into a lane row, carrying whatever the server's PR
+ * poller has observed (worker-phase2 §4/§5): the PR link and the gate/base
+ * badges. An unobserved bead renders exactly as before — the badges are
+ * additive, never a precondition.
+ *
+ * The row deliberately carries NO merge action: [머지]/[재실행] are Phase 5.
+ *
+ * @param {string} bead_id
+ * @param {string} title
+ * @param {Record<string, any>} observations - Snapshot `pr_observations` map.
+ * @returns {any}
+ */
+function prWaitRow(bead_id, title, observations) {
+  const obs = observations[bead_id] || null;
+  const gate = obs && obs.gate ? obs.gate : null;
+  const pr = obs && obs.pr ? obs.pr : null;
+  /** @type {string[]} */
+  const badges = [];
+  if (gate && gate.gate_badge) {
+    badges.push(gate.gate_badge);
+  }
+  if (gate && gate.base_badge && gate.base_badge !== gate.gate_badge) {
+    badges.push(gate.base_badge);
+  }
+  return {
+    id: bead_id,
+    title,
+    reason: 'PR 대기',
+    draggable: false,
+    done: true,
+    lane: 'pr_wait',
+    pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
+    pr_url: pr && typeof pr.url === 'string' ? pr.url : '',
+    badges,
+    alert: !!gate && ALERT_GATE_TIERS.includes(gate.tier)
+  };
+}
+
+/**
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
@@ -388,6 +437,8 @@ export function createWorkerView(mount_element, options = {}) {
     }
 
     const pr_wait_entries = /** @type {any[]} */ (q.pr_wait || []);
+    /** @type {Record<string, any>} */
+    const pr_obs = q.pr_observations || {};
     const queue_entries = /** @type {any[]} */ (q.queue || []);
     const queued = new Set([
       ...queue_entries.map((/** @type {any} */ e) => e.bead_id),
@@ -562,17 +613,13 @@ export function createWorkerView(mount_element, options = {}) {
       failure,
       waiting: toRows(queue_entries, 'queue'),
       // TEMPORARY (worker-phase2 Phase 1): `pr_wait` beads ride in the Done
-      // column with a "PR 대기" label. Phase 6 gives them their own column with
-      // the PR link, gate badges, and the [머지]/[재실행] buttons.
+      // column with a "PR 대기" label. Phase 4 adds the PR link + the observed
+      // CI/gate/base badges to those rows; Phase 6 moves them into their own
+      // column and hangs the [머지]/[재실행] buttons off them.
       done: [
-        ...pr_wait_entries.map((/** @type {any} */ e) => ({
-          id: e.bead_id,
-          title: idToTitle.get(e.bead_id) || e.bead_id,
-          reason: 'PR 대기',
-          draggable: false,
-          done: true,
-          lane: 'pr_wait'
-        })),
+        ...pr_wait_entries.map((/** @type {any} */ e) =>
+          prWaitRow(e.bead_id, idToTitle.get(e.bead_id) || e.bead_id, pr_obs)
+        ),
         ...toRows(q.done, 'done')
       ]
     };

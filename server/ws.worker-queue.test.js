@@ -8,12 +8,15 @@ import {
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest
 } from './worker/attach.js';
+import { getWorkerRuntime } from './worker/runtime.js';
 import {
   __resetRegistriesForTest,
   __resetWorkerQueueForTest,
   attachWsServer,
   handleMessage
 } from './ws.js';
+import { getConnWorkspace } from './ws/context.js';
+import { workerQueueSubscriberCount } from './ws/worker-handlers.js';
 
 /** @type {string} */
 let tmp_state;
@@ -625,5 +628,132 @@ describe('ws worker-queue-set-slots (worker-phase2 §3)', () => {
     const reply = replyFor(sock, 'm1');
     expect(reply.ok).toBe(false);
     expect(reply.error.code).toBe('bad_request');
+  });
+});
+
+describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
+  const SHA = 'a'.repeat(40);
+
+  /**
+   * The workspace key the ws layer files this connection under (the subscriber
+   * registry keys on the raw root_dir, not a resolved path).
+   *
+   * @param {any} sock
+   * @returns {string}
+   */
+  function keyOf(sock) {
+    return getConnWorkspace(sock)?.root_dir || '';
+  }
+
+  /**
+   * Park a bead in `pr_wait` the way the scheduler does (attempt + atomic lane
+   * move), so the snapshot decoration has something to describe.
+   *
+   * @param {string} bead_id
+   */
+  function parkInPrWait(bead_id) {
+    const store = getWorkerRuntime().queueStore;
+    const rev = store.snapshot('').revision;
+    store.appendAttempt('', {
+      expected_revision: rev,
+      attempt: { attempt_id: `att-${bead_id}`, bead_id }
+    });
+    store.moveToPrWait('', {
+      bead_id,
+      attempt_id: `att-${bead_id}`,
+      patch: { status: 'done', finished_at: 1 }
+    });
+  }
+
+  /**
+   * @param {Partial<import('./worker/gh.js').PrDetail>} [pr]
+   */
+  function observe(pr = {}) {
+    getWorkerRuntime().prObservations.record('', 'UI-9', {
+      error: null,
+      pr: {
+        number: 304,
+        url: 'https://github.com/o/r/pull/304',
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'UI-9',
+        head_sha: SHA,
+        ...pr
+      },
+      ci: {
+        state: 'ok',
+        head_sha: SHA,
+        checks: [{ name: 'build', conclusion: 'pass' }],
+        conclusion: 'pass',
+        reason: null
+      }
+    });
+  }
+
+  test('counts the live subscribers the PR poller gates on', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(workerQueueSubscriberCount(keyOf(sock))).toBe(1);
+  });
+
+  test('reports zero subscribers after an unsubscribe', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    expect(workerQueueSubscriberCount(keyOf(sock))).toBe(1);
+
+    await send(sock, 's2', 'unsubscribe-worker-queue', { id: 'wq' });
+
+    expect(workerQueueSubscriberCount(keyOf(sock))).toBe(0);
+  });
+
+  test('the snapshot carries the observed PR and its merge gate', async () => {
+    parkInPrWait('UI-9');
+    observe();
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    const obs = queueSnapshots(sock).at(-1).pr_observations['UI-9'];
+    expect(obs.pr).toMatchObject({ number: 304, head_sha: SHA });
+    expect(obs.gate).toMatchObject({ enabled: true, gate_badge: 'CI ✓' });
+  });
+
+  test('an unobserved pr_wait bead is gated shut, never enabled', async () => {
+    parkInPrWait('UI-9');
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(
+      queueSnapshots(sock).at(-1).pr_observations['UI-9'].gate
+    ).toMatchObject({ enabled: false, tier: 'unobserved' });
+  });
+
+  test('a closed-unmerged PR keeps the bead in pr_wait with a visible state', async () => {
+    parkInPrWait('UI-9');
+    observe({ state: 'CLOSED' });
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    const snap = queueSnapshots(sock).at(-1);
+    expect(snap.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+      'UI-9'
+    ]);
+    expect(snap.pr_observations['UI-9'].gate).toMatchObject({
+      tier: 'closed_unmerged',
+      gate_badge: 'PR closed'
+    });
+  });
+
+  test('carries no observations when pr_wait is empty', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).pr_observations).toEqual({});
   });
 });
