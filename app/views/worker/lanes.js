@@ -14,7 +14,8 @@ import { stepperTemplate } from '../board/stepper.js';
  * @property {string} title - Bead title (falls back to id).
  * @property {string} [reason] - Candidate reason chip (spec 없음 / 🔒 target).
  * @property {boolean} draggable - Whether this row can be dragged.
- * @property {'candidate'|'serial'|'parallel'|'done'} lane - Owning lane.
+ * @property {'candidate'|'serial'|'parallel'|'pr_wait'|'done'} lane - Owning
+ * lane. `pr_wait` rows render inside the Done pane until Phase 6's 4-column IA.
  * @property {boolean} [done] - Rendered dimmed with no grip.
  * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).

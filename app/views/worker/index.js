@@ -147,6 +147,7 @@ export function createWorkerView(mount_element, options = {}) {
         auto_advance: false,
         serial: [],
         parallel: [],
+        pr_wait: [],
         done: []
       }
     );
@@ -378,9 +379,11 @@ export function createWorkerView(mount_element, options = {}) {
       idToTitle.set(it.id, it.title || it.id);
     }
 
+    const pr_wait_entries = /** @type {any[]} */ (q.pr_wait || []);
     const queued = new Set([
       ...q.serial.map((/** @type {any} */ e) => e.bead_id),
       ...q.parallel.map((/** @type {any} */ e) => e.bead_id),
+      ...pr_wait_entries.map((/** @type {any} */ e) => e.bead_id),
       ...q.done.map((/** @type {any} */ e) => e.bead_id)
     ]);
 
@@ -563,7 +566,20 @@ export function createWorkerView(mount_element, options = {}) {
       breaker,
       serial: toRows(q.serial, 'serial'),
       parallel: toRows(q.parallel, 'parallel'),
-      done: toRows(q.done, 'done')
+      // TEMPORARY (worker-phase2 Phase 1): `pr_wait` beads ride in the Done
+      // column with a "PR 대기" label. Phase 6 gives them their own column with
+      // the PR link, gate badges, and the [머지]/[재실행] buttons.
+      done: [
+        ...pr_wait_entries.map((/** @type {any} */ e) => ({
+          id: e.bead_id,
+          title: idToTitle.get(e.bead_id) || e.bead_id,
+          reason: 'PR 대기',
+          draggable: false,
+          done: true,
+          lane: 'pr_wait'
+        })),
+        ...toRows(q.done, 'done')
+      ]
     };
   }
 

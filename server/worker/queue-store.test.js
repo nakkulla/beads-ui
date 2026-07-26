@@ -503,6 +503,72 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(store.snapshot(WS).serial.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
+  test('moveToPrWait writes the attempt patch AND the lane move in ONE revision', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'UI-1',
+      lane: 'serial'
+    }).queue.revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      patch: { status: 'done', finished_at: 7, done_kind: 'pr_stop' }
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(before + 1);
+    expect(r.queue.attempts['att-1'].status).toBe('done');
+    expect(r.queue.serial).toEqual([]);
+    expect(r.queue.pr_wait.map((e) => e.bead_id)).toEqual(['UI-1']);
+
+    const persisted = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(persisted.revision).toBe(before + 1);
+    expect(persisted.attempts['att-1'].status).toBe('done');
+    expect(persisted.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+      'UI-1'
+    ]);
+  });
+
+  test('moveToPrWait rejects an unknown attempt without moving the bead', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1', lane: 'serial' });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'nope',
+      patch: { status: 'done' }
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+    expect(store.snapshot(WS).pr_wait).toEqual([]);
+    expect(store.snapshot(WS).serial.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('a legacy queue.json without pr_wait loads with an empty lane', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1', lane: 'serial' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.pr_wait;
+    raw.done = [{ bead_id: 'UI-OLD', added_at: 1 }];
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.pr_wait).toEqual([]);
+    // A past pr_stop completion is NOT retroactively re-filed as PR-waiting.
+    expect(loaded.done.map((e) => e.bead_id)).toEqual(['UI-OLD']);
+    expect(loaded.serial.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
   test('a legacy stopped attempt migrates to `stopped` and keeps its lane (§3)', () => {
     const store = createQueueStore();
     store.place(WS, { expected_revision: 0, bead_id: 'UI-1', lane: 'serial' });

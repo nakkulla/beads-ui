@@ -107,7 +107,11 @@ const fakeWorktree = {
 };
 
 const okVerify = {
-  verifyMerge: async () => ({ ok: true, reason: 'ok', work_tip: 'wt' })
+  verifyPrSubmitted: async () => ({
+    ok: true,
+    reason: 'ok',
+    pr_url: 'https://github.com/o/r/pull/1'
+  })
 };
 
 /**

@@ -2,8 +2,8 @@
  * Worker queue store — persistence + revision-CAS concurrency guard.
  *
  * NO EXECUTION lives here (that is Phase 10). This module only owns durable
- * queue placement: which beads sit in the Serial queue / Parallel pool / Done
- * lane, the `auto_advance` flag, and the per-attempt record container
+ * queue placement: which beads sit in the Serial queue / Parallel pool / PR-wait
+ * lane / Done lane, the `auto_advance` flag, and the per-attempt record container
  * (spec §5.2). Ordering mutations are guarded by an integer `revision` CAS so a
  * stale client's drag can never clobber a newer ordering (spec §5.1).
  *
@@ -88,6 +88,9 @@
  * valid enum values survive normalize.
  * @property {QueueEntry[]} serial - Serial queue (one runnable head at a time).
  * @property {QueueEntry[]} parallel - Parallel pool (slot-priority order).
+ * @property {QueueEntry[]} pr_wait - Beads whose PR the server OBSERVED open,
+ * waiting for a human merge click (worker-phase2 §4). Persistent lane: it
+ * survives Phase 3's serial/parallel collapse alongside `done`.
  * @property {QueueEntry[]} done - Completed today.
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
  * @property {Record<string, { reason: string, at: number }>} admission -
@@ -148,6 +151,7 @@ function emptyQueue() {
     exec_defaults: {},
     serial: [],
     parallel: [],
+    pr_wait: [],
     done: [],
     attempts: {},
     admission: {}
@@ -281,6 +285,11 @@ function normalizeQueue(raw) {
       : 0;
   q.serial = normalizeLane(raw.serial);
   q.parallel = normalizeLane(raw.parallel);
+  // A queue.json written before the pr_wait lane existed simply has no key →
+  // empty lane. Past `done` entries STAY in `done`: a pr_stop completion from
+  // the old regime is not retroactively re-filed as "awaiting a merge click"
+  // (worker-phase2 §9 — never rewrite a queue the user built).
+  q.pr_wait = normalizeLane(raw.pr_wait);
   q.done = normalizeLane(raw.done);
   if (isRecord(raw.attempts)) {
     for (const [key, value] of Object.entries(raw.attempts)) {
@@ -335,7 +344,7 @@ function clampIndex(index, length) {
 }
 
 /**
- * Remove a bead from serial/parallel/done (used for two-way moves + dedupe).
+ * Remove a bead from every lane (used for two-way moves + dedupe).
  *
  * @param {Queue} q
  * @param {string} bead_id
@@ -343,6 +352,7 @@ function clampIndex(index, length) {
 function removeFromLanes(q, bead_id) {
   q.serial = q.serial.filter((e) => e.bead_id !== bead_id);
   q.parallel = q.parallel.filter((e) => e.bead_id !== bead_id);
+  q.pr_wait = q.pr_wait.filter((e) => e.bead_id !== bead_id);
   q.done = q.done.filter((e) => e.bead_id !== bead_id);
 }
 
@@ -642,6 +652,41 @@ export function createQueueStore(options = {}) {
         );
         removeFromLanes(next, bead_id);
         delete next.admission[bead_id];
+        return true;
+      });
+    },
+
+    /**
+     * Move a bead into the PR-wait lane: write the attempt's terminal patch AND
+     * place the bead in `pr_wait` in ONE persist (worker-phase2 §4).
+     *
+     * Same rationale as {@link discardAttempt}: splitting this into
+     * `updateAttempt` + a lane move leaves a window where a restart between the
+     * two writes yields "attempt done but bead still queued", and the next tick
+     * would re-dispatch a bead whose PR is already open. Scheduler-owned (no
+     * CAS), like the other lifecycle transitions.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, patch: Partial<Attempt> }} input
+     * @returns {QueueOpResult}
+     */
+    moveToPrWait(workspace, input) {
+      const { bead_id, attempt_id, patch } = input;
+      return applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur || typeof bead_id !== 'string' || bead_id.length === 0) {
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt(
+          /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ ({
+            ...cur,
+            ...patch,
+            attempt_id,
+            bead_id: cur.bead_id
+          })
+        );
+        removeFromLanes(next, bead_id);
+        next.pr_wait.push({ bead_id, added_at: now() });
         return true;
       });
     },

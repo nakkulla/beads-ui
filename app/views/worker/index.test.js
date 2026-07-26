@@ -486,6 +486,52 @@ describe('views/worker', () => {
     expect(vc.textContent).toContain('미설정');
   });
 
+  test('renders pr_wait beads in the Done pane with a PR 대기 label', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        done: [{ bead_id: 'RD-2', added_at: 2 }]
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const done_pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-done')
+    );
+    const row = /** @type {HTMLElement} */ (
+      done_pane.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.getAttribute('data-lane')).toBe('pr_wait');
+    expect(row.querySelector('.worker-mini__reason')?.textContent).toBe(
+      'PR 대기'
+    );
+    expect(row.getAttribute('draggable')).toBe('false');
+    expect(done_pane.querySelectorAll('.worker-mini').length).toBe(2);
+  });
+
+  test('a pr_wait bead is not offered again as a candidate', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ pr_wait: [{ bead_id: 'RD-1', added_at: 1 }] }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const cand = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate')
+    );
+
+    expect(cand.querySelector('.worker-card[data-bead-id="RD-1"]')).toBe(null);
+  });
+
   test('changing a policy select sends worker-queue-set-policy with the current revision', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

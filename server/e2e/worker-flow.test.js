@@ -172,18 +172,58 @@ async function landWorkBranch(bead_id, merge) {
 
 /**
  * Build a scheduler wired to the shared runtime + real runner/verify. The fake
- * runner replays a real fixture through the REAL `runSession` engine.
+ * runner replays a real fixture through the REAL `runSession` engine, and the
+ * REAL verify module runs against a faked `gh` adapter (worker-phase2 §12: the
+ * observation seam is mocked, never the network).
  *
- * @param {{ fixture: string, exit?: number, config: Record<string, any>, bdStatus?: string, bdMetadata?: Record<string, unknown>, landWork?: boolean }} opts
+ * @param {{ fixture: string, exit?: number, config: Record<string, any>, prOpen?: boolean, landWork?: boolean }} opts
  */
 function buildSystem(opts) {
   const runtime = createWorkerRuntime();
   const bd = makeFakeBd(opts.config);
+  const pr_open = opts.prOpen ?? true;
+  /** @type {{ metadata: Record<string, string>, status: string }} */
+  const bd_record = { metadata: {}, status: 'in_progress' };
   const verify = createVerifier({
-    bdShow: async () => ({
-      status: opts.bdStatus ?? 'closed',
-      metadata: opts.bdMetadata ?? {}
-    })
+    gh: {
+      openPrForBranch: async (
+        /** @type {string} */ _repo_dir,
+        /** @type {string} */ branch
+      ) =>
+        pr_open
+          ? {
+              state: 'ok',
+              data: {
+                number: 1,
+                url: `https://github.com/o/r/pull/1`,
+                head_ref: branch,
+                head_sha: 'a'.repeat(40),
+                state: 'OPEN'
+              }
+            }
+          : { state: 'empty' }
+    },
+    bd: {
+      setMetadata: async (
+        /** @type {string} */ _bead_id,
+        /** @type {string} */ key,
+        /** @type {string} */ value
+      ) => {
+        bd_record.metadata[key] = value;
+      },
+      readMetadata: async (
+        /** @type {string} */ _bead_id,
+        /** @type {string} */ key
+      ) => bd_record.metadata[key] ?? null,
+      setStatus: async (
+        /** @type {string} */ _bead_id,
+        /** @type {string} */ status
+      ) => {
+        bd_record.status = status;
+      },
+      readStatus: async () => bd_record.status
+    },
+    sleep: async () => {}
   });
   const land = opts.landWork ?? true;
   const worktree = {
@@ -218,7 +258,7 @@ function buildSystem(opts) {
   });
   // Wire the runtime attach seam Phase 10 deferred.
   runtime.setRunningCountProvider(() => scheduler.runningCount());
-  return { runtime, bd, scheduler };
+  return { runtime, bd, scheduler, bd_record };
 }
 
 /**
@@ -272,14 +312,12 @@ afterEach(() => {
 });
 
 describe('worker e2e — full success flow', () => {
-  test('enqueue → dispatch → merge-lock → verify → Done → next dispatch', async () => {
-    // No verify_cmd is configured for this workspace, so the resolved
-    // auto_merge demotes to pr_stop (worker-autorun-policy §4): success is
-    // bd `resolved` + pr_url metadata, with no merge.
-    const { runtime, bd, scheduler } = buildSystem({
+  test('enqueue → dispatch → merge-lock → PR observation → pr_wait → next dispatch', async () => {
+    // Success is now what the SERVER observes: an open PR on the bead's branch
+    // (worker-phase2 §1). The session's own bd bookkeeping is irrelevant — the
+    // worker back-fills `pr_url`/`resolved` itself.
+    const { runtime, bd, scheduler, bd_record } = buildSystem({
       fixture: 'claude-success.jsonl',
-      bdStatus: 'resolved',
-      bdMetadata: { pr_url: 'https://github.com/o/r/pull/1' },
       config: { S1: { runner: 'claude' }, S2: { runner: 'claude' } }
     });
     seedQueue(runtime.queueStore, ['S1', 'S2'], []);
@@ -296,25 +334,30 @@ describe('worker e2e — full success flow', () => {
     release();
 
     // S1's session replays the success fixture → verdict success → INDEPENDENT
-    // verify (real ancestry + bd readback) → Done; then S2 auto-dispatches and
-    // also completes.
+    // observation of the branch's open PR → pr_wait; then S2 auto-dispatches
+    // and also completes.
     await waitFor(() => {
-      const done = runtime.queueStore.snapshot(WS).done.map((e) => e.bead_id);
-      return done.includes('S1') && done.includes('S2');
+      const waiting = runtime.queueStore
+        .snapshot(WS)
+        .pr_wait.map((e) => e.bead_id);
+      return waiting.includes('S1') && waiting.includes('S2');
     });
 
     const snap = runtime.queueStore.snapshot(WS);
     const attempts = /** @type {any[]} */ (Object.values(snap.attempts));
     expect(attempts.every((a) => a.status === 'done')).toBe(true);
-    // Independent verify judged the pr_stop lane (resolved + pr_url); no
-    // merge happened, so no observed merge_sha and the demotion is recorded.
+    // The observation verdict, and the worker's own bd back-fill of the
+    // contract keys the session never had to write.
     const a1 = /** @type {any} */ (attempts.find((a) => a.bead_id === 'S1'));
     expect(a1.verify_result.ok).toBe(true);
+    expect(a1.verify_result.pr_url).toBe('https://github.com/o/r/pull/1');
     expect(a1.done_kind).toBe('pr_stop');
-    expect(a1.demoted_reason).toBe('verify_cmd_unset');
     expect(a1.merge_sha).toBe(null);
+    expect(bd_record.metadata.pr_url).toBe('https://github.com/o/r/pull/1');
+    expect(bd_record.status).toBe('resolved');
 
-    // pr_stop leaves the bead open → workflow_mode IS reverted (prior unset).
+    // The bead stays open for the human merge click → workflow_mode IS
+    // reverted (prior unset).
     expect(
       bd.calls.some(
         (c) => c.method === 'unsetMetadata' && c.key === 'workflow_mode'
@@ -384,13 +427,13 @@ describe('worker e2e — failure injection trips the breaker', () => {
 });
 
 describe('worker e2e — a session that never delivered fails verification (fail-closed)', () => {
-  test('success verdict but bd never reached the lane status → verify fails → breaker trips', async () => {
-    // The session replays a SUCCESS fixture (verdict success), but bd still
-    // reads `in_progress` — neither lane's completion criteria hold, so the
-    // policy-aware verify fails closed.
+  test('success verdict but no open PR observed → verify fails → breaker trips', async () => {
+    // The session replays a SUCCESS fixture (verdict success), but the SERVER
+    // observes no open PR for the branch — a successful, empty observation, so
+    // the attempt fails closed with pr_missing.
     const { runtime, bd, scheduler } = buildSystem({
       fixture: 'claude-success.jsonl',
-      bdStatus: 'in_progress',
+      prOpen: false,
       config: { S1: { runner: 'claude' } },
       landWork: false
     });
@@ -399,8 +442,8 @@ describe('worker e2e — a session that never delivered fails verification (fail
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
 
-    // Session succeeds, but verify (work tip NOT ancestor of base) fails closed →
-    // breaker trips, auto_advance off, workflow_mode reverted, attempt failed.
+    // Session succeeds, but the observation is empty → fails closed: breaker
+    // trips, auto_advance off, workflow_mode reverted, attempt failed.
     await waitFor(() => runtime.breaker.isTripped(repo_dir));
     expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(false);
 
@@ -411,11 +454,12 @@ describe('worker e2e — a session that never delivered fails verification (fail
     );
     expect(attempt.status).toBe('failed');
     expect(attempt.verify_result.ok).toBe(false);
-    // pr_stop lane (demoted, no verify_cmd): resolved was never recorded.
-    expect(attempt.verify_result.reason).toBe('bd_not_resolved');
-    // S1 was NOT moved to Done.
+    // A SUCCESSFUL empty observation — not an observation error.
+    expect(attempt.verify_result.reason).toBe('pr_missing');
+    expect(attempt.cause).toBe('verify_failed:pr_missing');
+    // S1 was NOT moved to the PR-wait lane.
     expect(
-      runtime.queueStore.snapshot(WS).done.map((e) => e.bead_id)
+      runtime.queueStore.snapshot(WS).pr_wait.map((e) => e.bead_id)
     ).not.toContain('S1');
     // workflow_mode reverted (prior unset → unsetMetadata).
     expect(
@@ -468,7 +512,7 @@ describe('worker e2e — runtime seam reflects the live scheduler', () => {
         remove: async () => ({ code: 0 })
       },
       tokens: runtime.tokens,
-      verify: { verifyMerge: async () => ({ ok: true, reason: 'ok' }) },
+      verify: { verifyPrSubmitted: async () => ({ ok: true, reason: 'ok' }) },
       breaker: runtime.breaker,
       sessionLog: runtime.sessionLog,
       parallel_slots: 1

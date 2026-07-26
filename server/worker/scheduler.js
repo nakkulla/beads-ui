@@ -15,8 +15,9 @@
  *     (fail/stop/orphan) the prior value is reverted (unset when originally
  *     absent) so a stray fast_track never switches a later manual session to
  *     unattended (spec §5.2).
- *   - On success, INDEPENDENT verification (git ancestry + bd readback) gates
- *     the Done move; on any failure the circuit breaker trips (spec §5.3).
+ *   - On success, INDEPENDENT verification (a SERVER-observed open PR for the
+ *     attempt's branch, worker-phase2 §1) gates the move to the PR-wait lane;
+ *     on any failure the circuit breaker trips (spec §5.3).
  *
  * Fully injectable (fake clock / runner / bd / worktree / verify) so no real
  * subprocess is spawned in tests.
@@ -62,7 +63,9 @@ const log = debug('worker:scheduler');
  * }} bd
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
  * @property {{ issue: (attempt_id: string, meta: { repo: string, bead_id: string, target_base?: string }) => string, revoke: (attempt_id: string) => void }} tokens
- * @property {{ verifyMerge: (i: { repo: string, target_base: string, bead_id: string, merge_policy: 'auto_merge'|'pr_stop', merge_sha: string|null }) => Promise<{ ok: boolean, reason: string }> }} verify
+ * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string }> }} verify
+ * Server-observation completion verdict (worker-phase2 §1): an open PR for the
+ * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
  * @property {{ takeHandover: (attempt_id: string) => (() => void) | null }} [mergeLock]
  * Merge-lock handover accessor (worker-autorun-policy §5): a verified release
  * transfers lock ownership to the worker; the scheduler takes it here and
@@ -340,6 +343,10 @@ export function createScheduler(deps) {
    * spawn-error refusal — never a silent pass. The result lands on the
    * attempt record (`verify_cmd_result`).
    *
+   * DEAD CODE — Phase 2 삭제 예정. worker-phase2 §1 detached the completion path
+   * from the merge axis, so nothing calls this any more; the deletion (with the
+   * rest of the merge surface) is Phase 2's single sweep, not this phase's.
+   *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {string} bead_id
@@ -347,6 +354,7 @@ export function createScheduler(deps) {
    * @param {string} merge_sha
    * @returns {Promise<{ ok: boolean, reason: string, exit: number|null }>}
    */
+  // eslint-disable-next-line no-unused-vars
   async function runPostMergeVerify(
     workspace,
     attempt_id,
@@ -414,7 +422,7 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Handle a finished session: policy-aware independent verify → Done, else
+   * Handle a finished session: SERVER-OBSERVED PR verdict → `pr_wait`, else
    * breaker. The handed-over merge lock (verified release) is freed here in
    * EVERY branch — on failure only AFTER the breaker trips, so a waiter can
    * never merge into the failed base.
@@ -469,22 +477,14 @@ export function createScheduler(deps) {
       return;
     }
 
-    // Independent verification — session exit 0 is NOT enough (spec §5.2).
-    // Policy-aware (worker-autorun-policy §3/§5): auto_merge requires the
-    // SERVER-observed merge_sha (recorded by the merge-lock route at release)
-    // + bd `closed`; pr_stop requires bd `resolved` + pr_url metadata.
-    const attempt =
-      deps.store.snapshot(workspace).attempts[attempt_id] ||
-      /** @type {any} */ ({});
-    const merge_policy =
-      attempt.merge_policy === 'pr_stop' ? 'pr_stop' : 'auto_merge';
-    const vr = await deps.verify.verifyMerge({
+    // Independent verification — session exit 0 is NOT enough, and neither is
+    // the session's own bd bookkeeping (worker-phase2 §1). ONE verdict now:
+    // does the server OBSERVE an open PR for this attempt's branch? The
+    // merge_policy branch is gone from this path — `merge_sha`/`closed` no
+    // longer participate in a completion judgment.
+    const vr = await deps.verify.verifyPrSubmitted({
       repo: snap.repo,
-      target_base: snap.target_base,
-      bead_id,
-      merge_policy,
-      merge_sha:
-        typeof attempt.merge_sha === 'string' ? attempt.merge_sha : null
+      bead_id
     });
     deps.store.updateAttempt(workspace, {
       attempt_id,
@@ -492,68 +492,37 @@ export function createScheduler(deps) {
     });
 
     if (vr.ok) {
-      // Post-merge verify_cmd (worker-autorun-policy §4): auto_merge only,
-      // run by the WORKER in a detached worktree pinned to the observed
-      // merge_sha, while the handed-over merge lock is STILL held — no other
-      // attempt can merge into a base that is being verified. On failure the
-      // breaker trips FIRST, then the lock is released.
-      if (merge_policy === 'auto_merge') {
-        const vres = await runPostMergeVerify(
+      releaseHandover();
+      // EVERY success is now PR-stop in nature: the bead stays open for a later
+      // human merge click, so a stray fast_track must not switch that session to
+      // unattended — a failed revert BLOCKS the lane move unconditionally
+      // (fail-closed, implementation review 2026-07-22, now not policy-gated).
+      try {
+        await revertWorkflowMode(bead_id, prior);
+      } catch (err) {
+        log('workflow_mode revert failed on success for %s: %o', bead_id, err);
+        await failAttempt(
           workspace,
           attempt_id,
           bead_id,
           snap,
-          typeof attempt.merge_sha === 'string' ? attempt.merge_sha : ''
+          prior,
+          'workflow_mode_revert_failed'
         );
-        if (!vres.ok) {
-          await failAttempt(
-            workspace,
-            attempt_id,
-            bead_id,
-            snap,
-            prior,
-            vres.reason
-          );
-          releaseHandover();
-          notifyChanged(workspace);
-          await tick(workspace);
-          return;
-        }
+        notifyChanged(workspace);
+        await tick(workspace);
+        return;
       }
-      releaseHandover();
-      if (merge_policy === 'pr_stop') {
-        // pr_stop leaves the bead OPEN for a later human merge session — a
-        // stray fast_track must not switch that session to unattended, so a
-        // failed revert BLOCKS the Done move (fail-closed, implementation
-        // review 2026-07-22).
-        try {
-          await revertWorkflowMode(bead_id, prior);
-        } catch (err) {
-          log('pr_stop workflow_mode revert failed for %s: %o', bead_id, err);
-          await failAttempt(
-            workspace,
-            attempt_id,
-            bead_id,
-            snap,
-            prior,
-            'workflow_mode_revert_failed'
-          );
-          notifyChanged(workspace);
-          await tick(workspace);
-          return;
-        }
-      }
-      // auto_merge: bead closed → workflow_mode intentionally NOT reverted.
-      // Exec-setting stamps ARE reverted regardless of merge_policy (auto_merge
-      // done included): whether the bead was closed (auto_merge) or left open
-      // (pr_stop), the auto-run's global-default fill must not persist as the
-      // bead's own metadata (worker-global-exec-defaults §3; best-effort, never
-      // blocks the Done move).
+      // The auto-run's global-default exec fill must not persist as the bead's
+      // own metadata (worker-global-exec-defaults §3; best-effort, never blocks
+      // the lane move).
       await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
-      deps.store.moveToDone(workspace, { bead_id });
-      deps.store.updateAttempt(workspace, {
+      // Attempt done + bead into `pr_wait` in ONE persist (§4): a split write
+      // could leave the bead queued for re-dispatch with its PR already open.
+      deps.store.moveToPrWait(workspace, {
+        bead_id,
         attempt_id,
-        patch: { status: 'done', finished_at: now(), done_kind: merge_policy }
+        patch: { status: 'done', finished_at: now(), done_kind: 'pr_stop' }
       });
     } else {
       await failAttempt(

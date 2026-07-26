@@ -11,8 +11,11 @@
  *   observing mode over the real repo) → real `git merge --squash` commit →
  *   release (server observes the advanced tip, records merge_sha, hands the
  *   lock over) → a second acquirer keeps WAITING during the handover →
- *   session done → policy-aware verify (observed merge_sha + bd closed) →
- *   Done → the handover release unblocks the second acquirer.
+ *   session done → SERVER-OBSERVED PR verdict (worker-phase2 §1) → pr_wait →
+ *   the handover release unblocks the second acquirer.
+ *
+ * The merge-lock layer itself survives until Phase 2 deletes it; the completion
+ * verdict no longer consults it, so verify is stubbed at its own seam here.
  */
 import express from 'express';
 import { execFile } from 'node:child_process';
@@ -29,7 +32,6 @@ import { createQueueStore } from '../worker/queue-store.js';
 import { createScheduler } from '../worker/scheduler.js';
 import { createSessionLog } from '../worker/session-log.js';
 import { createTokenRegistry } from '../worker/session-tokens.js';
-import { createVerifier } from '../worker/verify.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -230,9 +232,13 @@ describe('worker e2e — squash merge passes the merge_sha verify (수용 기준
         removeDetached: async () => ({ code: 0 })
       },
       tokens,
-      verify: createVerifier({
-        bdShow: async () => ({ status: 'closed', metadata: {} })
-      }),
+      verify: {
+        verifyPrSubmitted: async () => ({
+          ok: true,
+          reason: 'ok',
+          pr_url: 'https://github.com/o/r/pull/1'
+        })
+      },
       breaker,
       sessionLog: createSessionLog(),
       // auto_merge stays (a verify_cmd exists for this workspace); the
@@ -330,7 +336,7 @@ describe('worker e2e — squash merge passes the merge_sha verify (수용 기준
     await waitFor(() =>
       store
         .snapshot(WS)
-        .done.map((e) => e.bead_id)
+        .pr_wait.map((e) => e.bead_id)
         .includes('S1')
     );
 
@@ -338,7 +344,7 @@ describe('worker e2e — squash merge passes the merge_sha verify (수용 기준
       Object.values(store.snapshot(WS).attempts)[0]
     );
     expect(attempt.status).toBe('done');
-    expect(attempt.done_kind).toBe('auto_merge');
+    expect(attempt.done_kind).toBe('pr_stop');
     expect(attempt.merge_sha).toBe(base_tip);
     expect(attempt.verify_result.ok).toBe(true);
     expect(breaker.isTripped(repo_dir)).toBe(false);

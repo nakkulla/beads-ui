@@ -250,6 +250,7 @@ export function defaultProbePid(pid) {
  *   bd?: any,
  *   worktree?: any,
  *   verify?: any,
+ *   gh?: any,
  *   makeRunner?: (name: string) => any,
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
@@ -278,6 +279,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     options.gitRun ||
     ((/** @type {string[]} */ args, /** @type {any} */ opts) =>
       runShell('git', args, opts));
+  // The PR observation adapter (worker-phase2 §1). Shared with admission's
+  // fail-closed `gh_unavailable` check: a workspace whose `gh` cannot observe a
+  // PR can never produce a success verdict, so it must not dispatch at all.
+  const gh = options.gh || runtime.gh;
+  const ghAvailable = async () => (await gh.checkAvailability()).state === 'ok';
   const admission = options.admission || {
     /**
      * @param {import('./scheduler.js').BeadSnapshot} snap
@@ -286,6 +292,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     validate(snap, base) {
       return validateAdmission({
         gitRun,
+        ghAvailable,
         repo: snap.repo,
         base: base || snap.target_base,
         bead: {
@@ -311,18 +318,12 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   };
   const worktree =
     options.worktree || createWorktreeManager({ locks: runtime.locks });
+  // The observation verdict + the worker's `pr_url`/`resolved` back-fill: the
+  // bd writer is the same metadata adapter the scheduler uses (extended with
+  // the status pair), so both write through one confirmed argv encoding.
   const verify =
     options.verify ||
-    createVerifier({
-      // bdShow returns the FULL issue object — verify reads status AND
-      // metadata (pr_url for the pr_stop lane).
-      bdShow: async (bead_id) => {
-        const r = await runBdJson(['show', bead_id, '--json'], {
-          cwd: workspace_root
-        });
-        return /** @type {any} */ (unwrapShowJson(r && r.stdoutJson));
-      }
-    });
+    createVerifier({ gh, bd: createBdMetadata({ cwd: workspace_root }) });
 
   // The lock_state each session sees: the runtime's merge-lock ledger. Fail
   // closed — when no ledger is wired yet, isHeldBy is false, so ANY merge attempt

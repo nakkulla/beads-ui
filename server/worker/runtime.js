@@ -16,6 +16,7 @@
  * `tick` with real deps. Until then `running_count` is 0.
  */
 import { createBreaker } from './breaker.js';
+import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
 import { createQueueStore } from './queue-store.js';
 import { createSessionLog } from './session-log.js';
@@ -26,6 +27,7 @@ import { createTokenRegistry } from './session-tokens.js';
  * @property {ReturnType<typeof createBreaker>} breaker
  * @property {ReturnType<typeof createQueueStore>} queueStore
  * @property {ReturnType<typeof createLockManager>} locks
+ * @property {ReturnType<typeof createGh>} gh
  * @property {ReturnType<typeof createTokenRegistry>} tokens
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {{ isHeldBy: (token: string) => boolean, releaseAllForToken: (token: string) => boolean, takeHandover?: (attempt_id: string) => (() => void) | null } | null} mergeLock
@@ -46,6 +48,10 @@ export function createWorkerRuntime() {
   const locks = createLockManager({
     isMergeBlocked: (repo) => breaker.isTripped(repo)
   });
+  // Process-wide `gh` adapter: the availability probe memoizes per instance, so
+  // one shared instance keeps the admission check to a single probe across every
+  // workspace + (Phase 4) the PR poller.
+  const gh = createGh();
   const tokens = createTokenRegistry();
   // Shared session-log broker: the scheduler's `attach` persists the raw stream
   // AND the ws `subscribe-session-log` handler follows live appends off the
@@ -66,6 +72,7 @@ export function createWorkerRuntime() {
     breaker,
     queueStore,
     locks,
+    gh,
     tokens,
     sessionLog,
     get mergeLock() {

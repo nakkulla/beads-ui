@@ -18,6 +18,19 @@ import { runShell } from '../bd.js';
  */
 
 /**
+ * The branch a bead's session works on: the bead id itself (`add` creates it
+ * with `-B <bead_id>`). Observers of that branch — the PR observation verdict
+ * (worker-phase2 §1) — resolve it through here instead of re-deriving the
+ * convention, so the naming rule has exactly one owner.
+ *
+ * @param {string} bead_id
+ * @returns {string}
+ */
+export function branchForBead(bead_id) {
+  return bead_id;
+}
+
+/**
  * Create a worktree manager bound to a lock manager.
  *
  * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs') }} deps
@@ -76,7 +89,7 @@ export function createWorktreeManager(deps) {
       const release = await locks.topologyLock(input.repo);
       try {
         const wt = pathFor(input.repo, input.bead_id);
-        const branch = input.bead_id;
+        const branch = branchForBead(input.bead_id);
         const added = await run(
           ['worktree', 'add', '-B', branch, wt, input.base],
           { cwd: input.repo }
