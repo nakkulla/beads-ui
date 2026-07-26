@@ -2614,6 +2614,14 @@ html[data-theme='dark'] {
   color: var(--accent-danger);
 }
 
+/* 머지 후 정리가 중간에 멈춘 bead (worker-phase2 §6). 실패 배너와 달리 세션
+   실패가 아니라 "머지는 됐는데 뒷정리가 남았다"는 상태이므로 warn 계열이다. */
+.worker-banner--cleanup {
+  border: 1px solid var(--border-warn);
+  background: color-mix(in srgb, var(--accent-warn) 14%, var(--bg-panel));
+  color: var(--accent-warn);
+}
+
 /* Breaker banner의 수동 이어하기(↻) 버튼 (attempt-resume §1). */
 .worker-banner__resume {
   margin-left: var(--sp-8);
@@ -3150,6 +3158,45 @@ html[data-theme='dark'] {
 
 .worker-mini__badge--alert {
   border-color: var(--accent-warn);
+  color: var(--accent-warn);
+}
+
+/* [머지] — the ONE action-class button in this lane (worker-phase2 §6). It is
+   the only affordance here that changes the world, so it is the only one drawn
+   as a solid action. */
+.worker-mini__merge {
+  padding: 1px var(--sp-6);
+  border: 1px solid var(--border-tile-run);
+  border-radius: var(--r-6);
+  background: var(--bg-tile-run);
+  color: var(--accent-success);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.worker-mini__merge:disabled {
+  border-color: var(--border-card);
+  background: transparent;
+  color: var(--text-secondary);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* [재실행] — deliberately SUBORDINATE: a misclick here throws a PR away, so it
+   is drawn as quiet text rather than a peer of [머지] (§6). */
+.worker-mini__rerun {
+  padding: 1px var(--sp-5);
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.worker-mini__rerun:hover {
   color: var(--accent-warn);
 }
 

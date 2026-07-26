@@ -30,7 +30,9 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
+  mergeWorkerPr,
   pauseWorkerAttempt,
+  rerunWorkerPr,
   resumeWorkerAttempt,
   stopWorkerAttempt,
   tickWorkerQueue,
@@ -777,6 +779,134 @@ export async function handleWorkerAttemptResume(ws, req) {
   );
   if (result.ok) {
     // Push a fresh snapshot so the new running tile appears immediately.
+    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+  }
+}
+
+/**
+ * Handle `worker-pr-merge`. Payload: `{ bead_id, expected_revision }`.
+ *
+ * The human merge click (worker-phase2 §6). Under the same CAS discipline as
+ * `worker-attempt-resume`: a stale revision replies `conflict:true` WITHOUT
+ * acting, because the snapshot the user clicked from may predate the transition
+ * that moved this very bead. Everything else about the decision is re-derived
+ * server-side at click time — the badges in that snapshot are advisory only.
+ *
+ * The reply distinguishes what actually happened (`action`), since a click can
+ * legitimately merge nothing: a DIRTY PR dispatches a conflict-resolution
+ * session instead, and a refused gate merges nothing at all.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerPrMerge(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          ok: false,
+          conflict: true,
+          action: null,
+          reason: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {any} */
+  let result = { ok: false, action: 'refused', reason: 'no_attachment' };
+  try {
+    result = await mergeWorkerPr(key, p.bead_id);
+  } catch (err) {
+    log('worker-pr-merge failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, action: 'refused', reason: 'error' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        ok: !!result.ok,
+        conflict: false,
+        action: result.action || null,
+        reason: result.reason || null,
+        cleanup_step: result.cleanup_step || null,
+        attempt_id: result.attempt_id || null
+      })
+    )
+  );
+  // Even a refusal re-observed the PR, so the badges moved — always fan out.
+  fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+}
+
+/**
+ * Handle `worker-pr-rerun`. Payload: `{ bead_id, expected_revision }`.
+ *
+ * [재실행] (worker-phase2 §6): close the PR, put bd back to `open` without a
+ * `pr_url`, discard the worktree/branch, and move the bead back into the
+ * waiting queue for a fresh-base run. DESTRUCTIVE — the CAS guard matters more
+ * here than anywhere else, so a stale revision refuses without touching a thing.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerPrRerun(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          rerun: false,
+          conflict: true,
+          reason: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string|null }} */
+  let result = { ok: false, reason: 'no_attachment' };
+  try {
+    result = await rerunWorkerPr(key, p.bead_id);
+  } catch (err) {
+    log('worker-pr-rerun failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        rerun: !!result.ok,
+        conflict: false,
+        reason: result.ok ? null : result.reason || null
+      })
+    )
+  );
+  if (result.ok) {
     fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
   }
 }

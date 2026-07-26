@@ -32,12 +32,13 @@ import { debug } from '../logging.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createOrphanDetector } from './orphan.js';
+import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { emitQueueChanged } from './queue-events.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
-import { resolveVerifyCmd } from './verify-cmd.js';
+import { resolveVerifyCmd, runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
@@ -324,6 +325,42 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // Keep runtime.status()'s running_count in sync with THIS scheduler.
   runtime.setRunningCountProvider(() => scheduler.runningCount());
 
+  /**
+   * The workspace's resolved verify command, read LIVE (config can change
+   * between a poll and a click) — shared by the poller's pre-merge tier and the
+   * actions' click-time re-verification + post-merge verification.
+   *
+   * @returns {import('./verify-cmd.js').ResolvedVerifyCmd|null}
+   */
+  const resolveVerify = () => {
+    try {
+      return resolveVerifyCmd(repo, getConfig().worker_verify);
+    } catch {
+      return null;
+    }
+  };
+
+  // The PR-wait actions (worker-phase2 §6): the authoritative [머지] click, the
+  // single post-merge cleanup, and [재실행]. Built with the SAME gh adapter,
+  // observation cache, worktree manager and scheduler the poller and dispatch
+  // use, so a click can never act on a different view of the world than the
+  // badges it followed.
+  const prActions = createPrActions({
+    workspace: keyFor(workspace_root),
+    repo,
+    store: runtime.queueStore,
+    gh,
+    observations: runtime.prObservations,
+    bd,
+    worktree,
+    gitRun,
+    scheduler,
+    resolveVerify,
+    runVerify: (/** @type {any} */ input) =>
+      runVerifyAtSha({ ...input, worktree, git: gitRun }),
+    notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+  });
+
   // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
   // BUILT here but never started here — `initWorkerRuntime` starts it only when
   // a real subscriber-count provider is wired, so a test that constructs an
@@ -336,15 +373,12 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     gh,
     observations: runtime.prObservations,
     getSubscriberCount: options.getSubscriberCount || (() => 0),
-    resolveVerify: () => {
-      try {
-        return resolveVerifyCmd(repo, getConfig().worker_verify);
-      } catch {
-        return null;
-      }
-    },
+    resolveVerify,
     worktree,
     gitRun,
+    // The externally-observed MERGED trigger routes into the SAME cleanup the
+    // button runs — one implementation, two triggers (worker-phase2 §6).
+    onMerged: (bead_id) => prActions.cleanupObservedMerge(bead_id),
     notifyChanged: (ws_key) => emitQueueChanged(ws_key)
   });
 
@@ -353,6 +387,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     scheduler,
     orphan,
     prPoller,
+    prActions,
     bd,
     admission,
     repo,
@@ -527,6 +562,40 @@ export async function resumeWorkerAttempt(workspace_root, attempt_id) {
     return { ok: false, reason: 'no_attachment' };
   }
   return att.scheduler.resume(keyFor(workspace_root), attempt_id);
+}
+
+/**
+ * Run the authoritative [머지] click for a `pr_wait` bead (worker-phase2 §6),
+ * IF an attachment is registered. Inert without one — a ws-handler test never
+ * reaches `gh`, and an unattached workspace could not have dispatched the bead
+ * in the first place.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<import('./pr-actions.js').MergeClickResult>}
+ */
+export async function mergeWorkerPr(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.prActions) {
+    return { ok: false, action: 'refused', reason: 'no_attachment' };
+  }
+  return att.prActions.merge(bead_id);
+}
+
+/**
+ * Discard a PR and re-run its bead from a fresh base ([재실행], §6), IF an
+ * attachment is registered. Inert without one.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<import('./pr-actions.js').RerunResult>}
+ */
+export async function rerunWorkerPr(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.prActions) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.prActions.rerun(bead_id);
 }
 
 /**

@@ -23,6 +23,11 @@ import { stepperTemplate } from '../board/stepper.js';
  * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
  * @property {boolean} [alert] - Whether the badges report a state needing a
  * human decision (PR closed, observation error) — rendered in the warn colour.
+ * @property {boolean} [merge_action] - Render the [머지]/[재실행] actions
+ * (`pr_wait` rows only, worker-phase2 §6).
+ * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
+ * @property {string} [merge_title] - Tooltip: what the click is based on, or
+ * why it is refused.
  * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
  */
@@ -70,6 +75,25 @@ export function miniRow(item) {
     )}
     ${item.reason
       ? html`<span class="worker-mini__reason">${item.reason}</span>`
+      : ''}
+    ${item.merge_action
+      ? html`<button
+            type="button"
+            class="worker-mini__merge"
+            data-bead-id=${item.id}
+            ?disabled=${item.merge_enabled === false}
+            title=${item.merge_title || ''}
+          >
+            머지
+          </button>
+          <button
+            type="button"
+            class="worker-mini__rerun"
+            data-bead-id=${item.id}
+            title="PR을 버리고 새 base에서 다시 실행합니다 (되돌릴 수 없음)"
+          >
+            재실행
+          </button>`
       : ''}
   </div>`;
 }

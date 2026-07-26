@@ -819,3 +819,94 @@ describe('worker/queue-store single lane + slots (worker-phase2 §3/§9)', () =>
     expect(loaded.slots).toBe(2);
   });
 });
+
+describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', () => {
+  /**
+   * @param {any} store
+   */
+  function seedPrWait(store) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'a1',
+      patch: { status: 'done' }
+    });
+  }
+
+  test('records a cleanup failure durably', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'child_sweep',
+      reason: 'child_close_failed:UI-1.1'
+    });
+
+    expect(createQueueStore().load(WS).cleanup_failed['UI-1']).toMatchObject({
+      step: 'child_sweep',
+      reason: 'child_close_failed:UI-1.1'
+    });
+  });
+
+  test('drops the cleanup failure when the bead reaches done', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'base_sync',
+      reason: 'base_fetch_failed'
+    });
+
+    store.moveToDone(WS, { bead_id: 'UI-1' });
+
+    const q = store.snapshot(WS);
+    expect(q.cleanup_failed['UI-1']).toBeUndefined();
+    expect(q.done.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('requeues a pr_wait bead into the waiting queue in one revision', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    const before = store.snapshot(WS).revision;
+
+    const r = store.requeueFromPrWait(WS, { bead_id: 'UI-1' });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(before + 1);
+    expect(r.queue.pr_wait).toEqual([]);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('refuses to requeue a bead that is not in pr_wait', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+
+    const r = store.requeueFromPrWait(WS, { bead_id: 'UI-1' });
+
+    expect(r.ok).toBe(false);
+  });
+
+  test('a legacy queue.json without the key loads with an empty map', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.cleanup_failed;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    expect(createQueueStore().load(WS).cleanup_failed).toEqual({});
+  });
+
+  test('a new attempt is not a conflict-resolution attempt by default', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+
+    expect(store.snapshot(WS).attempts.a1.conflict_resolution).toBe(false);
+  });
+});

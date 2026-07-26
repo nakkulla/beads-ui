@@ -1627,3 +1627,210 @@ describe('scheduler resume (spec §1)', () => {
     expect(child.exec_stamped_keys).toEqual(['orchestration_model']);
   });
 });
+
+describe('scheduler conflict resolution (worker-phase2 §6)', () => {
+  /**
+   * Seed the `done` attempt a `pr_wait` bead carries: the original session,
+   * finished, with its session id captured.
+   *
+   * @param {any} store
+   * @param {Partial<import('./queue-store.js').Attempt>} [over]
+   */
+  function seedDoneAttempt(store, over = {}) {
+    const rev = store.snapshot(WS).revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'd1', bead_id: 'B1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'd1',
+      patch: {
+        bead_id: 'B1',
+        status: 'done',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'base-B1',
+        runner: 'claude',
+        model: 'opus',
+        session_id: 'sid-orig',
+        finished_at: 50,
+        ...over
+      }
+    });
+  }
+
+  test('resumes the original session in its existing worktree', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+
+    expect(res.ok).toBe(true);
+    // `--resume <session_id>` argv branch + the bead's own worktree, not a new one.
+    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-orig');
+    expect(env.worktree.add).not.toHaveBeenCalled();
+  });
+
+  test('links the new attempt with resumed_from and marks it a resolution attempt', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+
+    const child =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(child.resumed_from).toBe('d1');
+    expect(child.conflict_resolution).toBe(true);
+  });
+
+  test('passes conflict_resolution into the runner settings', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+
+    await env.scheduler.resolveConflict(WS, 'B1');
+
+    expect(env.runner.settingsFor('B1').conflict_resolution).toBe(true);
+  });
+
+  test('instructs merge-into-branch, never rebase, and never a PR merge', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+
+    await env.scheduler.resolveConflict(WS, 'B1');
+
+    const prompt = env.runner.spawnedBead('B1').prompt;
+    expect(prompt).toContain('git merge origin/main');
+    expect(prompt).toContain('rebase와 force-push는 금지');
+    expect(prompt).toContain('PR 머지는 절대 수행하지 마라');
+  });
+
+  test('runs even with the slot cap already full (human-click origin)', async () => {
+    const env = setup({
+      config: { A1: { ready: true, repo: '/repo', target_base: 'main' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    await flush();
+    expect(env.scheduler.runningCount()).toBe(1);
+    seedDoneAttempt(env.store);
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+
+    expect(res.ok).toBe(true);
+    expect(env.scheduler.runningCount()).toBe(2);
+  });
+
+  test('refuses no_session_id when no attempt of the bead captured one', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store, { session_id: null });
+
+    expect((await env.scheduler.resolveConflict(WS, 'B1')).reason).toBe(
+      'no_session_id'
+    );
+  });
+
+  test('refuses worktree_missing when the bead worktree is gone', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.worktree.exists.mockReturnValue(false);
+    seedDoneAttempt(env.store);
+
+    expect((await env.scheduler.resolveConflict(WS, 'B1')).reason).toBe(
+      'worktree_missing'
+    );
+  });
+
+  test('a normal dispatch never carries the resolution flag (fail-closed default)', async () => {
+    const env = setup({
+      config: { A1: { ready: true, repo: '/repo', target_base: 'main' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+    await flush();
+
+    expect(env.runner.settingsFor('A1').conflict_resolution).toBe(false);
+  });
+});
+
+describe('conflict resolution reaches the session guard end-to-end (§1/§6)', () => {
+  /**
+   * One claude assistant Bash tool_use, the shape the session guards inspect.
+   *
+   * @param {string} command
+   * @returns {string}
+   */
+  function bashToolLine(command) {
+    return JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', name: 'Bash', input: { command } }]
+      }
+    });
+  }
+
+  /**
+   * Dispatch a conflict resolution through the REAL runner so the settings the
+   * SCHEDULER built are the ones the guard sees — the whole point is that the
+   * flag survives the trip, not that a hand-written settings object works.
+   *
+   * @param {string} command
+   */
+  async function resolveAndRun(command) {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [bashToolLine(command)],
+      pid: 7100,
+      exit: 0
+    });
+    const kill_impl = vi.fn();
+    const env = setup({
+      config: {},
+      slots: 1,
+      makeRunner: (/** @type {string} */ name) =>
+        createRunner(name, { spawn_impl, kill_impl })
+    });
+    const rev = env.store.snapshot(WS).revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'd1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'd1',
+      patch: {
+        bead_id: 'B1',
+        status: 'done',
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-orig',
+        finished_at: 50
+      }
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+    await flush();
+    await flush();
+
+    return { res, kill_impl, spawn_impl };
+  }
+
+  test('does not kill the resolution session for merging the base into its branch', async () => {
+    const { res, kill_impl } = await resolveAndRun('git merge origin/main');
+
+    expect(res.ok).toBe(true);
+    expect(kill_impl).not.toHaveBeenCalled();
+  });
+
+  test('still kills the SAME resolution attempt for gh pr merge', async () => {
+    const { res, kill_impl } = await resolveAndRun('gh pr merge 304 --squash');
+
+    expect(res.ok).toBe(true);
+    expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
+  });
+
+  test('still kills the SAME resolution attempt for a push to the base', async () => {
+    const { kill_impl } = await resolveAndRun('git push origin HEAD:main');
+
+    expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
+  });
+});

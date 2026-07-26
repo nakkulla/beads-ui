@@ -369,3 +369,69 @@ describe('worker/gh — prChecks 3-state (worker-phase2 §5)', () => {
     expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
   });
 });
+
+describe('worker/gh — write operations (worker-phase2 §6)', () => {
+  test('squash-merges without deleting the branch', async () => {
+    const run = makeRun();
+
+    const r = await createGh({ run }).mergeSquash('/repo', 304);
+
+    expect(r).toEqual({ state: 'ok', data: true });
+    expect(run).toHaveBeenCalledWith(['pr', 'merge', '304', '--squash'], {
+      cwd: '/repo'
+    });
+    // Branch removal is a LATER cleanup step, so the merge must not fold it in.
+    expect(/** @type {any} */ (run).mock.calls[0][0]).not.toContain(
+      '--delete-branch'
+    );
+  });
+
+  test('pins the merge to the head sha the gate approved', async () => {
+    const run = makeRun();
+
+    await createGh({ run }).mergeSquash('/repo', 304, 'a'.repeat(40));
+
+    expect(run).toHaveBeenCalledWith(
+      ['pr', 'merge', '304', '--squash', '--match-head-commit', 'a'.repeat(40)],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('reports a refused merge as an error, never as a merge', async () => {
+    const run = makeRun({ code: 1, stderr: 'not mergeable' });
+
+    const r = await createGh({ run }).mergeSquash('/repo', 304);
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_failed' });
+  });
+
+  test('updates the branch from its base', async () => {
+    const run = makeRun();
+
+    const r = await createGh({ run }).updateBranch('/repo', 304);
+
+    expect(r).toEqual({ state: 'ok', data: true });
+    expect(run).toHaveBeenCalledWith(['pr', 'update-branch', '304'], {
+      cwd: '/repo'
+    });
+  });
+
+  test('closes a pull request without merging it', async () => {
+    const run = makeRun();
+
+    const r = await createGh({ run }).closePr('/repo', 304);
+
+    expect(r).toEqual({ state: 'ok', data: true });
+    expect(run).toHaveBeenCalledWith(['pr', 'close', '304'], { cwd: '/repo' });
+  });
+
+  test('reports a spawn failure on the write path too', async () => {
+    const run = vi.fn(async () => {
+      throw new Error('ENOENT');
+    });
+
+    const r = await createGh({ run }).mergeSquash('/repo', 304);
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_spawn_failed' });
+  });
+});

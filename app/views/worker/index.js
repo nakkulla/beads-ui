@@ -89,18 +89,27 @@ const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
 
 /**
  * Project one `pr_wait` bead into a lane row, carrying whatever the server's PR
- * poller has observed (worker-phase2 §4/§5): the PR link and the gate/base
- * badges. An unobserved bead renders exactly as before — the badges are
- * additive, never a precondition.
+ * poller has observed (worker-phase2 §4/§5): the PR link, the gate/base badges,
+ * and the two actions (§6).
  *
- * The row deliberately carries NO merge action: [머지]/[재실행] are Phase 5.
+ * The PR stays a LINK (`#N ↗`), never a button — putting a view affordance and
+ * an execute affordance side by side at the same weight is how a misclick
+ * merges something. [머지] is disabled whenever the gate refuses, and the
+ * disabled tooltip carries the refusal reason so the badge is not the only
+ * explanation. [재실행] is visually subordinate: a misclick there discards a PR.
+ *
+ * The gate shown here is ADVISORY. The click re-queries `gh` server-side and
+ * decides again, so a badge that went stale between render and click cannot
+ * merge anything the fresh gate would refuse.
  *
  * @param {string} bead_id
  * @param {string} title
  * @param {Record<string, any>} observations - Snapshot `pr_observations` map.
+ * @param {{ step: string, reason: string }|null} cleanup_failed - Durable
+ * post-merge cleanup failure for this bead, if any (§6).
  * @returns {any}
  */
-function prWaitRow(bead_id, title, observations) {
+function prWaitRow(bead_id, title, observations, cleanup_failed) {
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
@@ -112,17 +121,37 @@ function prWaitRow(bead_id, title, observations) {
   if (gate && gate.base_badge && gate.base_badge !== gate.gate_badge) {
     badges.push(gate.base_badge);
   }
+  if (cleanup_failed) {
+    badges.push('정리 실패');
+  }
+  const conflicting = !!gate && gate.base_badge === '충돌';
+  const enabled = !!gate && gate.enabled === true;
+  // An already-merged PR whose cleanup stopped: the click re-runs the cleanup
+  // from the top. Nothing retries automatically (§6), so this button is the
+  // human's way back in once they have fixed whatever stopped it.
+  const cleanup_retry = !!cleanup_failed && !!gate && gate.tier === 'merged';
   return {
     id: bead_id,
     title,
-    reason: 'PR 대기',
+    reason: cleanup_failed ? '머지됨 · 정리 미완' : 'PR 대기',
     draggable: false,
     done: true,
     lane: 'pr_wait',
     pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
     pr_url: pr && typeof pr.url === 'string' ? pr.url : '',
     badges,
-    alert: !!gate && ALERT_GATE_TIERS.includes(gate.tier)
+    alert: (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) || !!cleanup_failed,
+    merge_action: true,
+    // A conflicting PR keeps [머지] clickable on purpose: that click is what
+    // dispatches the resolution session (§6), and it merges nothing.
+    merge_enabled: enabled || conflicting || cleanup_retry,
+    merge_title: cleanup_retry
+      ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+      : conflicting
+        ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
+        : enabled
+          ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
+          : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -372,6 +401,103 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The human merge click (worker-phase2 §6). Sends the current revision under
+   * the same CAS discipline as every other mutation and retries ONCE against
+   * the fresh revision on a conflict. What comes back is not just success/fail
+   * but WHAT HAPPENED, because the server may legitimately have merged nothing:
+   * a conflicting PR dispatches a resolution session instead, and a gate that
+   * refuses at click time (the badge was advisory) merges nothing at all.
+   *
+   * @param {string} bead_id
+   */
+  async function mergePr(bead_id) {
+    if (!transport || !bead_id) {
+      return;
+    }
+    let res = /** @type {any} */ (
+      await transport('worker-pr-merge', {
+        bead_id,
+        expected_revision: currentRevision()
+      })
+    );
+    adopt(res);
+    if (res && res.conflict) {
+      res = /** @type {any} */ (
+        await transport('worker-pr-merge', {
+          bead_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+    }
+    if (!res || res.conflict) {
+      return;
+    }
+    if (res.action === 'conflict_resolution') {
+      showToast(
+        res.ok
+          ? '충돌 — 해소 세션을 띄웠습니다 (머지하지 않음)'
+          : `충돌 해소 디스패치 실패: ${res.reason || ''}`,
+        res.ok ? 'success' : 'error',
+        2800
+      );
+      return;
+    }
+    if (res.ok) {
+      showToast('머지 + 정리 완료', 'success', 2000);
+      return;
+    }
+    showToast(
+      res.cleanup_step
+        ? `머지됨 · 정리 실패(${res.cleanup_step}): ${res.reason || ''}`
+        : `머지 거부: ${res.reason || ''}`,
+      'error',
+      3200
+    );
+  }
+
+  /**
+   * Run the [재실행] action (worker-phase2 §6) — destructive: the PR is closed
+   * and the worktree/branch discarded. A confirmation stands in front of it
+   * because it sits next to [머지]; the CAS + the server's own guards do the
+   * rest.
+   *
+   * @param {string} bead_id
+   */
+  async function rerunPr(bead_id) {
+    if (!transport || !bead_id) {
+      return;
+    }
+    const confirmed =
+      typeof globalThis.confirm !== 'function' ||
+      globalThis.confirm(
+        `${bead_id}: PR을 닫고 워크트리/브랜치를 폐기한 뒤 새 base에서 다시 실행합니다. 되돌릴 수 없습니다. 계속할까요?`
+      );
+    if (!confirmed) {
+      return;
+    }
+    let res = /** @type {any} */ (
+      await transport('worker-pr-rerun', {
+        bead_id,
+        expected_revision: currentRevision()
+      })
+    );
+    adopt(res);
+    if (res && res.conflict) {
+      res = /** @type {any} */ (
+        await transport('worker-pr-rerun', {
+          bead_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+    }
+    if (res && res.rerun === false && !res.conflict) {
+      showToast(`재실행 거부: ${res.reason || ''}`, 'error', 2800);
+    }
+  }
+
+  /**
    * @param {boolean} on
    */
   async function setAutoAdvance(on) {
@@ -419,7 +545,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], done: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], done: any[], cleanup_failures: Array<{ bead_id: string, step: string, reason: string }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -439,6 +565,18 @@ export function createWorkerView(mount_element, options = {}) {
     const pr_wait_entries = /** @type {any[]} */ (q.pr_wait || []);
     /** @type {Record<string, any>} */
     const pr_obs = q.pr_observations || {};
+    // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
+    // but the pr-finish sequence stopped part-way, so a human has to finish it.
+    // Nothing retries automatically, which is exactly why this has a banner.
+    /** @type {Record<string, { step: string, reason: string }>} */
+    const cleanup_failed = q.cleanup_failed || {};
+    const cleanup_failures = Object.entries(cleanup_failed).map(
+      ([bead_id, rec]) => ({
+        bead_id,
+        step: rec && rec.step ? rec.step : '',
+        reason: rec && rec.reason ? rec.reason : ''
+      })
+    );
     const queue_entries = /** @type {any[]} */ (q.queue || []);
     const queued = new Set([
       ...queue_entries.map((/** @type {any} */ e) => e.bead_id),
@@ -618,10 +756,16 @@ export function createWorkerView(mount_element, options = {}) {
       // column and hangs the [머지]/[재실행] buttons off them.
       done: [
         ...pr_wait_entries.map((/** @type {any} */ e) =>
-          prWaitRow(e.bead_id, idToTitle.get(e.bead_id) || e.bead_id, pr_obs)
+          prWaitRow(
+            e.bead_id,
+            idToTitle.get(e.bead_id) || e.bead_id,
+            pr_obs,
+            cleanup_failed[e.bead_id] || null
+          )
         ),
         ...toRows(q.done, 'done')
-      ]
+      ],
+      cleanup_failures
     };
   }
 
@@ -671,7 +815,8 @@ export function createWorkerView(mount_element, options = {}) {
       </div>
       ${bannersTemplate({
         autoAdvance: !!m.queue.auto_advance,
-        failure: m.failure
+        failure: m.failure,
+        cleanupFailures: m.cleanup_failures
       })}
       ${runningGridTemplate(m.running, Date.now(), selected_attempt)}`;
   }
@@ -962,6 +1107,27 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (target?.closest?.('.worker-pause')) {
       void setAutoAdvance(false);
+      return;
+    }
+    // PR-wait actions act on the bead and must never also open the detail panel
+    // (the `.worker-mini` default below would otherwise swallow them).
+    const mergeBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__merge')
+    );
+    if (mergeBtn) {
+      void mergePr(mergeBtn.dataset.beadId || '');
+      return;
+    }
+    const rerunBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__rerun')
+    );
+    if (rerunBtn) {
+      void rerunPr(rerunBtn.dataset.beadId || '');
+      return;
+    }
+    // The PR link is a link — let the browser open it, never treat it as a row
+    // click.
+    if (target?.closest?.('.worker-mini__pr')) {
       return;
     }
     // Tile controls act on the attempt and must never also open the drawer.

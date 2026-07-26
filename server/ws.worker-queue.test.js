@@ -277,7 +277,9 @@ describe('ws worker-queue channel', () => {
       'worker-queue-place',
       'worker-queue-reorder',
       'worker-queue-remove',
-      'worker-queue-set-exec-default'
+      'worker-queue-set-exec-default',
+      'worker-pr-merge',
+      'worker-pr-rerun'
     ]) {
       expect(MESSAGE_TYPES).toContain(type);
     }
@@ -755,5 +757,149 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
     expect(queueSnapshots(sock).at(-1).pr_observations).toEqual({});
+  });
+});
+
+describe('ws worker PR actions (worker-phase2 §6)', () => {
+  test('worker-pr-merge reaches the action and reports what it actually did', async () => {
+    const merge = vi.fn(async () => ({
+      ok: true,
+      action: 'merged',
+      reason: null
+    }));
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: { merge, rerun: vi.fn() }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-pr-merge', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(merge).toHaveBeenCalledWith('UI-1');
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      ok: true,
+      conflict: false,
+      action: 'merged'
+    });
+  });
+
+  test('a dispatched conflict resolution is reported as such, not as a merge', async () => {
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: {
+          merge: async () => ({
+            ok: true,
+            action: 'conflict_resolution',
+            reason: null,
+            attempt_id: 'a2'
+          }),
+          rerun: vi.fn()
+        }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-pr-merge', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      action: 'conflict_resolution',
+      attempt_id: 'a2'
+    });
+  });
+
+  test('a stale revision refuses the merge click without acting', async () => {
+    const merge = vi.fn();
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: { merge, rerun: vi.fn() }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-pr-merge', {
+      bead_id: 'UI-1',
+      expected_revision: 99
+    });
+
+    expect(merge).not.toHaveBeenCalled();
+    expect(replyFor(sock, 'm1').payload.conflict).toBe(true);
+  });
+
+  test('a stale revision refuses the destructive rerun without acting', async () => {
+    const rerun = vi.fn();
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: { merge: vi.fn(), rerun }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'r1', 'worker-pr-rerun', {
+      bead_id: 'UI-1',
+      expected_revision: 99
+    });
+
+    expect(rerun).not.toHaveBeenCalled();
+    expect(replyFor(sock, 'r1').payload.conflict).toBe(true);
+  });
+
+  test('worker-pr-rerun reaches the action and reports its refusal reason', async () => {
+    const rerun = vi.fn(async () => ({ ok: false, reason: 'pr_ref_unknown' }));
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: { merge: vi.fn(), rerun }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'r1', 'worker-pr-rerun', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(rerun).toHaveBeenCalledWith('UI-1');
+    expect(replyFor(sock, 'r1').payload).toMatchObject({
+      rerun: false,
+      reason: 'pr_ref_unknown'
+    });
+  });
+
+  test('both actions are inert without a registered attachment', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-pr-merge', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+    await send(sock, 'r1', 'worker-pr-rerun', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').payload.reason).toBe('no_attachment');
+    expect(replyFor(sock, 'r1').payload.reason).toBe('no_attachment');
   });
 });

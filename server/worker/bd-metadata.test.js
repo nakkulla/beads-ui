@@ -44,6 +44,81 @@ describe('worker/bd-metadata argv contract', () => {
   });
 });
 
+describe('worker/bd-metadata child listing (post-merge sweep)', () => {
+  /**
+   * @param {Record<string, any[]>} by_selector - Keyed by the selector flag.
+   */
+  function listRunner(by_selector) {
+    return vi.fn(async (/** @type {string[]} */ args) => {
+      const key = args.includes('--parent') ? 'parent' : 'metadata';
+      return { code: 0, stdoutJson: by_selector[key] || [] };
+    });
+  }
+
+  test('queries both the parent-child dependency and the parent metadata key', async () => {
+    const runJson = listRunner({ parent: [], metadata: [] });
+
+    await createBdMetadata({ runJson, cwd: '/repo' }).listChildren('UI-1');
+
+    expect(runJson).toHaveBeenCalledWith(
+      ['list', '--json', '--all', '--limit', '0', '--parent', 'UI-1'],
+      { cwd: '/repo' }
+    );
+    expect(runJson).toHaveBeenCalledWith(
+      [
+        'list',
+        '--json',
+        '--all',
+        '--limit',
+        '0',
+        '--metadata-field',
+        'parent=UI-1'
+      ],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('unions both relations and dedupes a child carrying both', async () => {
+    const runJson = listRunner({
+      parent: [
+        { id: 'UI-1.1', status: 'resolved' },
+        { id: 'UI-1.2', status: 'closed' }
+      ],
+      metadata: [
+        { id: 'UI-1.2', status: 'closed' },
+        { id: 'UI-1.3', status: 'open' }
+      ]
+    });
+
+    const children = await createBdMetadata({ runJson }).listChildren('UI-1');
+
+    expect(children.map((c) => c.id)).toEqual(['UI-1.1', 'UI-1.2', 'UI-1.3']);
+  });
+
+  test('finds a child linked ONLY by the dependency, with no parent metadata', async () => {
+    const runJson = listRunner({
+      parent: [{ id: 'UI-1.1', status: 'open' }],
+      metadata: []
+    });
+
+    const children = await createBdMetadata({ runJson }).listChildren('UI-1');
+
+    expect(children).toEqual([{ id: 'UI-1.1', status: 'open' }]);
+  });
+
+  test('throws when either selector query exits non-zero', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) =>
+      args.includes('--parent')
+        ? { code: 0, stdoutJson: [] }
+        : { code: 1, stdoutJson: null, stderr: 'boom' }
+    );
+
+    await expect(
+      createBdMetadata({ runJson }).listChildren('UI-1')
+    ).rejects.toThrow(/--metadata-field parent=UI-1 failed \(1\)/);
+  });
+});
+
 describe('worker/bd-metadata fail-closed writes (implementation review 2026-07-22)', () => {
   test('a non-zero bd exit on set/unset THROWS instead of passing silently', async () => {
     const run = vi.fn(async () => ({ code: 1, stdout: '', stderr: 'boom' }));

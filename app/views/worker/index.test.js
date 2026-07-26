@@ -2029,7 +2029,14 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     );
     expect(link.textContent?.replace(/\s+/g, ' ').trim()).toBe('#304 ↗');
     expect(link.getAttribute('href')).toBe('https://github.com/o/r/pull/304');
-    expect(row.querySelector('button')).toBe(null);
+    // The PR itself is never an action control — a view affordance and an
+    // execute affordance at the same weight is how a misclick merges something
+    // (worker-phase2 §6).
+    expect(link.tagName).toBe('A');
+    for (const btn of Array.from(row.querySelectorAll('button'))) {
+      expect(btn.getAttribute('href')).toBe(null);
+      expect(btn.textContent || '').not.toContain('#304');
+    }
   });
 
   test('renders the gate badge and the base badge', () => {
@@ -2119,5 +2126,190 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     expect(row.querySelector('.worker-mini__reason')?.textContent).toBe(
       'PR 대기'
     );
+  });
+});
+
+describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} gate
+   * @param {Record<string, any>} [extra]
+   */
+  function queueWithGate(gate, extra = {}) {
+    return queueOf({
+      pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_observations: {
+        'RD-1': {
+          pr: {
+            number: 304,
+            url: 'https://github.com/o/r/pull/304',
+            state: 'OPEN',
+            head_sha: 'a'.repeat(40)
+          },
+          ci: null,
+          verify: null,
+          error: null,
+          observed_at: 1,
+          gate
+        }
+      },
+      ...extra
+    });
+  }
+
+  /**
+   * @param {any} queue
+   */
+  function mountWith(queue) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    const transport = vi.fn(async () => ({ ok: true, action: 'merged' }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    return { mount, transport };
+  }
+
+  const GREEN = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '최신',
+    reason: null
+  };
+  const RED = {
+    enabled: false,
+    tier: 'ci',
+    gate_badge: 'CI ✗',
+    base_badge: '최신',
+    reason: 'ci_failed'
+  };
+
+  test('offers 머지 and 재실행 on a pr_wait row', () => {
+    const { mount } = mountWith(queueWithGate(GREEN));
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.querySelector('.worker-mini__merge')).not.toBe(null);
+    expect(row.querySelector('.worker-mini__rerun')).not.toBe(null);
+  });
+
+  test('disables 머지 when the gate refuses, and says why', () => {
+    const { mount } = mountWith(queueWithGate(RED));
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute('title')).toContain('ci_failed');
+  });
+
+  test('keeps 머지 clickable on a conflict so the click can dispatch a resolution', () => {
+    const { mount } = mountWith(
+      queueWithGate({
+        enabled: false,
+        tier: 'ci',
+        gate_badge: 'CI ✓',
+        base_badge: '충돌',
+        reason: 'ci_pending'
+      })
+    );
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(false);
+    expect(btn.getAttribute('title')).toContain('머지하지 않음');
+  });
+
+  test('sends worker-pr-merge with the current revision on click', () => {
+    const { mount, transport } = mountWith(queueWithGate(GREEN));
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    ).click();
+
+    expect(transport).toHaveBeenCalledWith('worker-pr-merge', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+  });
+
+  test('confirms before sending the destructive rerun', () => {
+    const { mount, transport } = mountWith(queueWithGate(GREEN));
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__rerun')
+    ).click();
+
+    expect(confirm).toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  test('sends worker-pr-rerun once the user confirms', () => {
+    const { mount, transport } = mountWith(queueWithGate(GREEN));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__rerun')
+    ).click();
+
+    expect(transport).toHaveBeenCalledWith('worker-pr-rerun', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+    vi.unstubAllGlobals();
+  });
+
+  test('renders a merged_cleanup_failed banner that asks a human to finish it', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'child_sweep',
+              reason: 'child_close_failed:RD-1.1',
+              at: 1
+            }
+          }
+        }
+      )
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--cleanup')
+    );
+    const text = (banner.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain('child_sweep');
+    expect(text).toContain('자동 재시도는 하지 않습니다');
+    expect(banner.getAttribute('data-bead-id')).toBe('RD-1');
+    // The bead stays in the PR-wait row (not Done), and the only retry is the
+    // human's own click.
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(false);
+    expect(btn.getAttribute('title')).toContain('남은 정리를');
   });
 });

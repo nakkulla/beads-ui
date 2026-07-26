@@ -73,6 +73,11 @@
  * `already_resumed` guard scans attempts for a child carrying this so a failed
  * attempt is resumed at most once — a scan-derived judgment that survives cold
  * reload.
+ * @property {boolean} conflict_resolution - Whether this attempt was dispatched
+ * to RESOLVE a PR conflict (worker-phase2 §6). It is the single input that
+ * relaxes the session-side base-into-branch `git merge` guard, so it is
+ * recorded durably: an orphan reap or a restart must be able to see what kind
+ * of attempt this was. Defaults false — a missing value fails closed.
  */
 /**
  * @typedef {Object} Queue
@@ -94,6 +99,14 @@
  * @property {Record<string, { reason: string, at: number }>} admission -
  * Auto-run admission refusals by bead_id (badge display). Cleared only on a
  * successful dispatch or queue removal — never auto-expired.
+ * @property {Record<string, { step: string, reason: string, at: number }>} cleanup_failed -
+ * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
+ * on purpose: the PR is already merged and irreversible, the bead is left
+ * `resolved`, and nothing retries by itself — so the record that a human must
+ * finish the cleanup has to outlive a server restart. It lives HERE rather than
+ * in bd metadata because the bd contract surface is owned by dotfiles
+ * (`docs/contracts/workflow.md`) and beads-ui only consumes it; this is
+ * server-owned queue state about a lane member, exactly like {@link admission}.
  */
 /**
  * @typedef {Object} QueueOpResult
@@ -160,7 +173,8 @@ function emptyQueue() {
     pr_wait: [],
     done: [],
     attempts: {},
-    admission: {}
+    admission: {},
+    cleanup_failed: {}
   };
 }
 
@@ -253,7 +267,8 @@ export function makeAttempt(fields) {
       !Array.isArray(fields.exec_values)
         ? fields.exec_values
         : null,
-    resumed_from: fields.resumed_from ?? null
+    resumed_from: fields.resumed_from ?? null,
+    conflict_resolution: fields.conflict_resolution === true
   };
 }
 
@@ -336,6 +351,19 @@ function normalizeQueue(raw) {
     for (const [bead_id, value] of Object.entries(raw.admission)) {
       if (isRecord(value) && typeof value.reason === 'string') {
         q.admission[bead_id] = {
+          reason: value.reason,
+          at: typeof value.at === 'number' ? value.at : 0
+        };
+      }
+    }
+  }
+  // A queue.json written before Phase 5 simply has no key → empty map, which
+  // reads as "no bead is awaiting a cleanup fix" (worker-phase2 §6).
+  if (isRecord(raw.cleanup_failed)) {
+    for (const [bead_id, value] of Object.entries(raw.cleanup_failed)) {
+      if (isRecord(value) && typeof value.reason === 'string') {
+        q.cleanup_failed[bead_id] = {
+          step: typeof value.step === 'string' ? value.step : '',
           reason: value.reason,
           at: typeof value.at === 'number' ? value.at : 0
         };
@@ -603,6 +631,9 @@ export function createQueueStore(options = {}) {
       return applyMutation(workspace, expected_revision, (next) => {
         removeFromLanes(next, bead_id);
         delete next.admission[bead_id];
+        // A bead the user pulled out of every lane carries no pending cleanup
+        // banner either — the record describes a lane member (§6).
+        delete next.cleanup_failed[bead_id];
         return true;
       });
     },
@@ -728,11 +759,14 @@ export function createQueueStore(options = {}) {
 
     /**
      * Move a bead into the Done lane (removing it from every other lane).
-     * Scheduler-owned (no CAS).
+     * Scheduler-owned (no CAS). Wired by Phase 5's post-merge cleanup as its
+     * LAST step: a bead reaches `done` only after the whole pr-finish order ran
+     * through (worker-phase2 §6).
      *
-     * Currently unwired: the merge axis that used to call this is gone, and
-     * `done` is re-populated by Phase 5's post-merge cleanup (worker-phase2 §6).
-     * The lane itself persists, so the mutation is kept rather than re-derived.
+     * Any `cleanup_failed` record is dropped in the SAME mutation — a bead that
+     * completed cleanup cannot simultaneously be one awaiting a human fix, and
+     * splitting that into a second write would leave the banner up after a
+     * successful retry.
      *
      * @param {string} workspace
      * @param {{ bead_id: string }} input
@@ -745,7 +779,92 @@ export function createQueueStore(options = {}) {
           return false;
         }
         removeFromLanes(next, bead_id);
+        delete next.cleanup_failed[bead_id];
         next.done.push({ bead_id, added_at: now() });
+        return true;
+      });
+    },
+
+    /**
+     * Move a bead OUT of `pr_wait` and back onto the tail of the waiting
+     * `queue` in ONE persist — the lane half of [재실행] (worker-phase2 §6).
+     *
+     * Atomicity is the point, twice over. A split write could leave the bead in
+     * neither lane (a crash between remove and place loses queued work), and —
+     * the reason the spec calls the transition order-sensitive — the poller
+     * classifies PR state only for beads that are IN `pr_wait`, so the rerun's
+     * own `gh pr close` must stop being visible to it in a single step rather
+     * than across a window where the bead is half-moved.
+     *
+     * Any stale admission / cleanup_failed record for the bead is dropped: this
+     * is a fresh run from a fresh base, so nothing recorded about the discarded
+     * attempt still applies. Scheduler-owned (no CAS).
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    requeueFromPrWait(workspace, input) {
+      const { bead_id } = input;
+      return applyUnconditional(workspace, (next) => {
+        if (typeof bead_id !== 'string' || bead_id.length === 0) {
+          return false;
+        }
+        if (!next.pr_wait.some((e) => e.bead_id === bead_id)) {
+          return false;
+        }
+        removeFromLanes(next, bead_id);
+        delete next.admission[bead_id];
+        delete next.cleanup_failed[bead_id];
+        next.queue.push({ bead_id, added_at: now() });
+        return true;
+      });
+    },
+
+    /**
+     * Record that a post-merge cleanup stopped at `step` (worker-phase2 §6).
+     * DURABLE + terminal: nothing clears this on a timer and nothing retries —
+     * the bead stays where it is, bd stays `resolved`, and the banner returns
+     * the situation to a human. Scheduler-owned (no CAS).
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, step: string, reason: string }} input
+     * @returns {QueueOpResult}
+     */
+    recordCleanupFailure(workspace, input) {
+      const { bead_id, step, reason } = input;
+      return applyUnconditional(workspace, (next) => {
+        if (
+          typeof bead_id !== 'string' ||
+          bead_id.length === 0 ||
+          typeof reason !== 'string' ||
+          reason.length === 0
+        ) {
+          return false;
+        }
+        next.cleanup_failed[bead_id] = {
+          step: typeof step === 'string' ? step : '',
+          reason,
+          at: now()
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Clear a bead's cleanup-failure record (scheduler-owned, no CAS). No-op
+     * (no revision bump) when absent.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {QueueOpResult}
+     */
+    clearCleanupFailure(workspace, bead_id) {
+      return applyUnconditional(workspace, (next) => {
+        if (!Object.hasOwn(next.cleanup_failed, bead_id)) {
+          return false;
+        }
+        delete next.cleanup_failed[bead_id];
         return true;
       });
     },

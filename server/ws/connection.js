@@ -58,6 +58,8 @@ import {
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
+  handleWorkerPrMerge,
+  handleWorkerPrRerun,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
@@ -454,6 +456,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-attempt-resume':
       await handleWorkerAttemptResume(ws, req);
+      return;
+    case 'worker-pr-merge':
+      await handleWorkerPrMerge(ws, req);
+      return;
+    case 'worker-pr-rerun':
+      await handleWorkerPrRerun(ws, req);
       return;
     case 'subscribe-ui-order':
       handleSubscribeUiOrder(ws, req);

@@ -6,6 +6,7 @@
  *   unset  → `bd update <id> --unset-metadata key`
  *   read   → `bd show <id> --json` then read `.metadata[key]`
  *   status → `bd update <id> --status <status>` / `bd show <id> --json .status`
+ *   children → `bd list --json --all --metadata-field parent=<id>`
  *
  * The status pair exists for the worker's `resolved` back-fill on the PR
  * observation verdict (worker-phase2 §1) — the same contract vocabulary the
@@ -28,7 +29,8 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  *   unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
- *   readStatus: (bead_id: string) => Promise<string|null>
+ *   readStatus: (bead_id: string) => Promise<string|null>,
+ *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>
  * }}
  */
 export function createBdMetadata(deps = {}) {
@@ -114,6 +116,73 @@ export function createBdMetadata(deps = {}) {
       const issue = unwrapShowJson(r && r.stdoutJson);
       const status = issue && issue.status;
       return typeof status === 'string' ? status : null;
+    },
+
+    /**
+     * Direct children of a bead, for the post-merge linked-Beads sweep
+     * (worker-phase2 §6 / pr-finish contract order).
+     *
+     * TWO relations are queried and unioned, because they are genuinely
+     * different things and either one alone under-reports:
+     *   - `--parent <id>` — the canonical `parent-child` DEPENDENCY that
+     *     `bd create --parent` records (AGENTS.md's documented relation),
+     *   - `--metadata-field parent=<id>` — the phase-child metadata convention
+     *     written separately by the workflow skill.
+     * A child carrying only one of them is still a child, and a sweep that
+     * missed it would close the parent over an open leaf.
+     *
+     * `--all` is required: a sweep must SEE already-closed children so it can
+     * skip them, and the default listing hides closed issues. A non-zero bd exit
+     * THROWS, mirroring the other mutators — the sweep is fail-closed, and an
+     * unreadable child list must stop the cleanup rather than read as "this
+     * bead has no children, go ahead and close the parent".
+     *
+     * @param {string} bead_id
+     * @returns {Promise<{ id: string, status: string }[]>}
+     */
+    async listChildren(bead_id) {
+      /** @type {Map<string, { id: string, status: string }>} */
+      const merged = new Map();
+      /** @type {string[][]} */
+      const selectors = [
+        ['--parent', bead_id],
+        ['--metadata-field', `parent=${bead_id}`]
+      ];
+      for (const selector of selectors) {
+        const r = await runJson(
+          ['list', '--json', '--all', '--limit', '0', ...selector],
+          opts
+        );
+        if (r && typeof r.code === 'number' && r.code !== 0) {
+          throw new Error(
+            `bd list ${selector.join(' ')} failed (${r.code}): ${(
+              r.stderr || ''
+            ).trim()}`
+          );
+        }
+        const rows = r && r.stdoutJson;
+        if (!Array.isArray(rows)) {
+          continue;
+        }
+        for (const raw of rows) {
+          if (!raw || typeof raw !== 'object') {
+            continue;
+          }
+          const row = /** @type {Record<string, unknown>} */ (raw);
+          if (
+            typeof row.id === 'string' &&
+            row.id.length > 0 &&
+            row.id !== bead_id &&
+            !merged.has(row.id)
+          ) {
+            merged.set(row.id, {
+              id: row.id,
+              status: typeof row.status === 'string' ? row.status : ''
+            });
+          }
+        }
+      }
+      return [...merged.values()];
     }
   };
 }

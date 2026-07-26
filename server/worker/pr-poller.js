@@ -153,6 +153,7 @@ export function rollupConclusion(checks) {
  *   worktree?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
+ *   onMerged?: (bead_id: string) => Promise<unknown>,
  *   notifyChanged?: (workspace: string) => void,
  *   intervalSeconds?: number,
  *   requeryDelayMs?: number,
@@ -191,6 +192,12 @@ export function createPrPoller(deps) {
    * @type {Set<string>}
    */
   const verifying = new Set();
+  /**
+   * Beads whose externally-observed post-merge cleanup is running.
+   *
+   * @type {Set<string>}
+   */
+  const cleaning = new Set();
   /** @type {(() => void)|null} */
   let off_queue_changed = null;
 
@@ -245,11 +252,15 @@ export function createPrPoller(deps) {
     const pr = detail.data;
 
     // A merged or closed PR is classified by its state alone — there is no gate
-    // left to compute, so no checks query is spent on it. MERGED is RECORDED
-    // here for Phase 5's cleanup to hang off; CLOSED-unmerged is NOT a
-    // completion, so the bead simply stays where it is (§4).
+    // left to compute, so no checks query is spent on it. MERGED hands off to
+    // the SAME post-merge cleanup the [머지] button runs (worker-phase2 §6 — one
+    // implementation, two triggers); CLOSED-unmerged is NOT a completion, so the
+    // bead simply stays where it is awaiting a human decision (§4).
     if (pr.state !== 'OPEN') {
       deps.observations.record(workspace, bead_id, { error: null, pr });
+      if (pr.state === 'MERGED' && typeof deps.onMerged === 'function') {
+        return { verify: cleanupMerged(bead_id) };
+      }
       return { verify: null };
     }
 
@@ -301,6 +312,32 @@ export function createPrPoller(deps) {
     return {
       verify: startVerify(bead_id, ref.number, pr.head_sha, resolved)
     };
+  }
+
+  /**
+   * Hand an externally-observed merge to the shared post-merge cleanup, guarded
+   * against re-entry: a cleanup can outlast a poll interval, and the bead stays
+   * in `pr_wait` until it finishes, so the next pass would otherwise observe
+   * MERGED again and start a second one. The cleanup's own guards refuse a
+   * bead with an existing `merged_cleanup_failed` record — nothing retries a
+   * failed cleanup automatically (§6).
+   *
+   * @param {string} bead_id
+   * @returns {Promise<void>}
+   */
+  async function cleanupMerged(bead_id) {
+    if (cleaning.has(bead_id)) {
+      return;
+    }
+    cleaning.add(bead_id);
+    try {
+      await /** @type {any} */ (deps.onMerged)(bead_id);
+      notifyChanged(workspace);
+    } catch (err) {
+      log('post-merge cleanup failed for %s: %o', bead_id, err);
+    } finally {
+      cleaning.delete(bead_id);
+    }
   }
 
   /**

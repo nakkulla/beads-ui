@@ -90,6 +90,7 @@ const log = debug('worker:scheduler');
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   resume: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   runningCount: () => number,
  *   runningBeads: () => string[],
  *   isRunning: (bead_id: string) => boolean
@@ -827,6 +828,128 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'already_resumed' };
       }
     }
+    return relaunchFromAttempt(workspace, prior, {
+      prompt: resumePrompt(bead_id, prior.status ?? null),
+      conflict_resolution: false
+    });
+  }
+
+  /**
+   * The conflict-resolution task prompt (worker-phase2 §6). The session is the
+   * bead's ORIGINAL one, revived in its own worktree, so it already knows the
+   * change — what it needs is the new fact (its PR conflicts) and the exact
+   * shape of the resolution.
+   *
+   * Three constraints are stated because each one is load-bearing:
+   * merge-into-branch and NOT rebase (a rebase needs a force-push, which the
+   * push-safety rules forbid — and the squash merge discards the merge commit
+   * anyway); resolve preserving BOTH sides' intent; and do NOT merge the PR
+   * (the merge stays a human click — resolving automatically and then merging
+   * automatically would resurrect unattended merging at the single most
+   * dangerous moment).
+   *
+   * @param {string} bead_id
+   * @param {string} target_base
+   * @returns {string}
+   */
+  function conflictPrompt(bead_id, target_base) {
+    const base = target_base || 'main';
+    return [
+      `네 PR이 base(${base})와 충돌한다(bead ${bead_id}).`,
+      `같은 워크트리에서 origin을 fetch한 뒤 \`git merge origin/${base}\`로 base를 이 브랜치에 머지해 충돌을 해소하라.`,
+      'rebase와 force-push는 금지다 — merge-into-branch만 사용한다.',
+      '충돌은 양쪽 변경의 의도가 모두 보존되도록 해소하고, 레포의 테스트/검증을 돌려 통과시킨 뒤 브랜치에 push하라.',
+      'PR 머지는 절대 수행하지 마라 — 머지는 사람이 버튼으로 한다.'
+    ].join(' ');
+  }
+
+  /**
+   * Dispatch a CONFLICT-RESOLUTION session for a bead sitting in `pr_wait`
+   * (worker-phase2 §6). It reuses the resume machinery wholesale rather than
+   * building a second launcher: the same existing worktree, the same
+   * `claude --resume <session_id>`, the same `resumed_from` link, the same
+   * inherited snapshot. Only two things differ — the prompt, and the
+   * `conflict_resolution` flag that travels onto the attempt record AND into the
+   * runner settings, which is the ONLY thing that lets the session's
+   * `git merge origin/<base>` past the fail-closed guard (§1).
+   *
+   * The source attempt is the bead's LATEST one carrying a session id — for a
+   * `pr_wait` bead that is the `done` attempt that opened the PR, and for a
+   * second conflict (base moved again) it is the previous resolution attempt.
+   *
+   * Cap-exempt by design: this is human-click-originated, exactly like a manual
+   * resume (worker-phase1 §2.3), so it does not wait for a free slot.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+   */
+  async function resolveConflict(workspace, bead_id) {
+    const q = deps.store.snapshot(workspace);
+    /** @type {any|null} */
+    let source = null;
+    let source_at = -1;
+    for (const a of Object.values(q.attempts || {})) {
+      if (!a || a.bead_id !== bead_id) {
+        continue;
+      }
+      if (typeof a.session_id !== 'string' || a.session_id.length === 0) {
+        continue;
+      }
+      const at =
+        typeof a.finished_at === 'number'
+          ? a.finished_at
+          : typeof a.started_at === 'number'
+            ? a.started_at
+            : 0;
+      if (at >= source_at) {
+        source = a;
+        source_at = at;
+      }
+    }
+    if (!source) {
+      return { ok: false, reason: 'no_session_id' };
+    }
+    if (claimed.has(bead_id)) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    for (const a of Object.values(q.attempts || {})) {
+      if (a && a.bead_id === bead_id && a.status === 'running') {
+        return { ok: false, reason: 'bead_running' };
+      }
+    }
+    const repo = typeof source.repo === 'string' ? source.repo : '';
+    const wt_present =
+      typeof deps.worktree.exists === 'function'
+        ? deps.worktree.exists(repo, bead_id)
+        : true;
+    if (!wt_present) {
+      return { ok: false, reason: 'worktree_missing' };
+    }
+    const target_base =
+      typeof source.target_base === 'string' ? source.target_base : 'main';
+    return relaunchFromAttempt(workspace, source, {
+      prompt: conflictPrompt(bead_id, target_base),
+      conflict_resolution: true
+    });
+  }
+
+  /**
+   * Shared relaunch tail for a manual resume AND a conflict-resolution dispatch:
+   * mint a child attempt inheriting the source snapshot verbatim, re-stamp
+   * workflow_mode + the exec keys from the PRIOR values, and hand off to the
+   * launch tail with the adapter's `--resume` argv. Every refusal here is a
+   * recorded FAILED child attempt with the stamps rolled back.
+   *
+   * @param {string} workspace
+   * @param {any} prior - The source attempt record (guards already passed).
+   * @param {{ prompt: string, conflict_resolution: boolean }} options
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+   */
+  async function relaunchFromAttempt(workspace, prior, options) {
+    const bead_id = prior.bead_id;
+    const repo = typeof prior.repo === 'string' ? prior.repo : '';
+    const attempt_id = prior.attempt_id;
     const runner_name = 'claude';
 
     claimed.add(bead_id);
@@ -867,6 +990,7 @@ export function createScheduler(deps) {
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values: stamped_keys.length > 0 ? exec_values : null,
         resumed_from: attempt_id,
+        conflict_resolution: options.conflict_resolution,
         status: 'running',
         pid: null
       }
@@ -961,9 +1085,10 @@ export function createScheduler(deps) {
       wt_path,
       spawnBead: {
         id: bead_id,
-        prompt: resumePrompt(bead_id, prior.status ?? null)
+        prompt: options.prompt
       },
-      resume_session_id: prior.session_id
+      resume_session_id: prior.session_id,
+      conflict_resolution: options.conflict_resolution
     });
 
     return { ok: true, attempt_id: new_attempt_id };
@@ -1184,6 +1309,7 @@ export function createScheduler(deps) {
     stop,
     pause,
     resume,
+    resolveConflict,
     runningCount() {
       return running.size;
     },

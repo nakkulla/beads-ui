@@ -41,6 +41,13 @@ import { html } from 'lit-html';
  */
 
 /**
+ * @typedef {Object} CleanupFailure
+ * @property {string} bead_id - The merged bead whose cleanup stopped.
+ * @property {string} step - Which pr-finish step stopped (worker-phase2 §6).
+ * @property {string} reason - Machine-readable cause.
+ */
+
+/**
  * Format an elapsed duration (ms) as `MmSSs` / `SSs`.
  *
  * @param {number} ms
@@ -59,10 +66,13 @@ function formatElapsed(ms) {
 /**
  * Banners area above the running grid.
  *
- * @param {{ autoAdvance: boolean, failure?: FailureBanner|null }} state
+ * @param {{ autoAdvance: boolean, failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[] }} state
  * @returns {import('lit-html').TemplateResult}
  */
 export function bannersTemplate(state) {
+  const cleanup = Array.isArray(state.cleanupFailures)
+    ? state.cleanupFailures
+    : [];
   return html`<div class="worker-banners">
     ${state.autoAdvance
       ? html`<div class="worker-banner worker-banner--on" role="status">
@@ -90,6 +100,18 @@ export function bannersTemplate(state) {
             : ''}
         </div>`
       : ''}
+    ${cleanup.map(
+      (c) =>
+        html`<div
+          class="worker-banner worker-banner--cleanup"
+          role="alert"
+          data-bead-id=${c.bead_id}
+        >
+          ⚠ ${c.bead_id} 머지 완료 — 머지 후 정리가 <b>${c.step}</b> 단계에서
+          멈췄습니다 (${c.reason}). bead는 resolved로 남아 있고 자동 재시도는
+          하지 않습니다 — 정리를 사람이 마무리하세요.
+        </div>`
+    )}
   </div>`;
 }
 

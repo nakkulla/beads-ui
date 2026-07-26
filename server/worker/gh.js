@@ -14,8 +14,11 @@
  * misdiagnose a `gh` outage as "the session never opened a PR".
  *
  * The spawn is injected (`deps.run`), so every test drives this adapter with a
- * fake runner — no test ever reaches a real `gh` binary or the network. Later
- * phases add merge/update-branch/close to THIS adapter.
+ * fake runner — no test ever reaches a real `gh` binary or the network. The
+ * WRITE operations (`mergeSquash` / `updateBranch` / `closePr`, worker-phase2
+ * §6) live here for the same reason: this module is the only place that spawns
+ * `gh`, so mocking it is what keeps "no test ever merges anything" structural
+ * rather than a convention.
  *
  * ---------------------------------------------------------------------------
  * WHY THE CHECKS QUERY IS `gh pr view --json statusCheckRollup`, NOT
@@ -221,6 +224,29 @@ export function createGh(deps = {}) {
     }
   }
 
+  /**
+   * Run a `gh` command that produces no payload (the write operations). Same
+   * error collapsing as {@link runJson}; success carries `true` so the 3-state
+   * shape is identical across the adapter.
+   *
+   * @param {string[]} args
+   * @param {string} cwd
+   * @returns {Promise<GhResult<true>>}
+   */
+  async function runVoid(args, cwd) {
+    /** @type {{ code: number, stdout: string, stderr: string }} */
+    let r;
+    try {
+      r = await run(args, { cwd });
+    } catch {
+      return { state: 'error', reason: 'gh_spawn_failed' };
+    }
+    if (r.code !== 0) {
+      return { state: 'error', reason: exitReason(r.code) };
+    }
+    return { state: 'ok', data: true };
+  }
+
   return {
     /**
      * Observe the OPEN pull request for a branch (§1's only success signal).
@@ -390,6 +416,68 @@ export function createGh(deps = {}) {
         checks.push({ name, conclusion });
       }
       return { state: 'ok', data: checks };
+    },
+
+    /**
+     * SQUASH-merge a pull request (`gh pr merge <n> --squash`) — worker-phase2
+     * §6, the only merge this system performs and always behind a human click.
+     *
+     * The branch is NOT deleted here (`--delete-branch` is deliberately absent):
+     * branch removal is a LATER step of the pr-finish cleanup order, after the
+     * post-merge verification and the bd sweep, and folding it into the merge
+     * call would run it out of order and unconditionally.
+     *
+     * Two states only — the caller holds the PR number, so there is nothing a
+     * successful-but-empty result could mean. A refusal by GitHub (not
+     * mergeable, branch protection, a race with another merge) is a non-zero
+     * exit, i.e. an ERROR: the click path must not treat it as a merge.
+     *
+     * `head_sha` is passed to GitHub as `--match-head-commit`, which closes the
+     * LAST TOCTOU window in the click path: the gate was evaluated against a
+     * specific head, and a push landing between that evaluation and this call
+     * would otherwise merge a commit nothing ever verified. With the pin,
+     * GitHub itself refuses the merge (→ an ERROR, not a merge) and the next
+     * click re-gates the new head. Omitting it merges whatever is current,
+     * which is exactly the stale-approval failure §5/§6 exist to prevent.
+     *
+     * @param {string} repo_dir - Repo root the command runs in (`cwd`).
+     * @param {number} number - The PR to merge.
+     * @param {string} [head_sha] - The exact head the gate approved.
+     * @returns {Promise<GhResult<true>>}
+     */
+    async mergeSquash(repo_dir, number, head_sha) {
+      const args = ['pr', 'merge', String(number), '--squash'];
+      if (typeof head_sha === 'string' && head_sha.length > 0) {
+        args.push('--match-head-commit', head_sha);
+      }
+      return runVoid(args, repo_dir);
+    },
+
+    /**
+     * Merge the BASE into the PR branch on GitHub (`gh pr update-branch <n>`) —
+     * the BEHIND arm of the click branch (worker-phase2 §6). Merge-into-branch,
+     * never a rebase: a rebase would need a force-push, which the push-safety
+     * rules forbid, and the squash merge discards the merge commit anyway.
+     *
+     * @param {string} repo_dir - Repo root the command runs in (`cwd`).
+     * @param {number} number - The PR whose branch is behind its base.
+     * @returns {Promise<GhResult<true>>}
+     */
+    async updateBranch(repo_dir, number) {
+      return runVoid(['pr', 'update-branch', String(number)], repo_dir);
+    },
+
+    /**
+     * Close a pull request WITHOUT merging (`gh pr close <n>`) — the first step
+     * of [재실행] (worker-phase2 §6). The branch is left alone here; discarding
+     * the worktree/branch is a later, separately-verified step.
+     *
+     * @param {string} repo_dir - Repo root the command runs in (`cwd`).
+     * @param {number} number - The PR to abandon.
+     * @returns {Promise<GhResult<true>>}
+     */
+    async closePr(repo_dir, number) {
+      return runVoid(['pr', 'close', String(number)], repo_dir);
     },
 
     /**
