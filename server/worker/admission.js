@@ -14,7 +14,12 @@
  *      `invalid_route` is what makes the badge actionable; the adapter memoizes
  *      the probe, so leading with it costs no extra process per candidate.
  *   1. `route` pinned to the enum (`spec_backed` | `full_plan`),
- *   2. `spec_id` tracked at the base commit (`git cat-file -e <base>:<spec_id>`),
+ *   2. `spec_id` tracked at the base commit (`git cat-file -e <base>:<spec_id>`) —
+ *      a spec absent from THAT base refuses as `spec_missing_at_base:<base>`
+ *      (worker-target-base §2): the spec is not gone, it was not on that branch,
+ *      and the base is what the operator must fix. An absent `spec_id` stays the
+ *      bare `spec_missing`, which keeps the two causes distinguishable in one
+ *      badge string,
  *   3. a `<reviewer>@<40hex>` spec_review receipt — `skipped@<40hex>` counts
  *      (a skip is explicit user authority to proceed), short/non-hex does not,
  *   4. the receipt SHA reachable as a commit,
@@ -35,9 +40,18 @@ const ADMISSION_RECEIPT_RE = /^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{40}$/;
 const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
 
 /**
+ * Refusal reason. `spec_missing_at_base:<base>` follows this repo's existing
+ * `prefix:detail` single-string convention (`verify_failed:<reason>` etc.), so
+ * the persisted `Queue.admission[bead_id].reason` stays a plain string and needs
+ * no schema change or normalize migration.
+ *
+ * @typedef {'gh_unavailable'|'invalid_route'|'spec_missing'|`spec_missing_at_base:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'spec_review_stale'|'git_error'} AdmissionReason
+ */
+
+/**
  * @typedef {Object} AdmissionResult
  * @property {boolean} ok - True when the bead may auto-run.
- * @property {'gh_unavailable'|'invalid_route'|'spec_missing'|'receipt_missing_or_malformed'|'receipt_unreachable'|'spec_review_stale'|'git_error'} [reason]
+ * @property {AdmissionReason} [reason]
  */
 
 /**
@@ -50,17 +64,25 @@ const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
  * it, so production stays fail-closed. A throw from the dep is a refusal, never
  * an escape.
  *
+ * `base_label` is what a refusal REPORTS, while `base` is what git is asked
+ * about: the dispatch re-check pins `base` to the worktree's `base_oid`, and a
+ * SHA is useless to a human deciding whether the repo's base branch is wrong.
+ * Defaults to `base` when absent.
+ *
  * @param {{
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   ghAvailable?: () => Promise<boolean>,
  *   repo: string,
  *   base: string,
+ *   base_label?: string,
  *   bead: { route?: string|null, spec_id?: string|null, spec_review?: unknown }
  * }} input
  * @returns {Promise<AdmissionResult>}
  */
 export async function validateAdmission(input) {
-  const { gitRun, ghAvailable, repo, base, bead } = input;
+  const { gitRun, ghAvailable, repo, base, base_label, bead } = input;
+  const reported_base =
+    typeof base_label === 'string' && base_label.length > 0 ? base_label : base;
 
   if (typeof ghAvailable === 'function') {
     let gh_ok = false;
@@ -117,7 +139,7 @@ export async function validateAdmission(input) {
       return { ok: false, reason: 'git_error' };
     }
     if (spec_exists.code !== 0) {
-      return { ok: false, reason: 'spec_missing' };
+      return { ok: false, reason: `spec_missing_at_base:${reported_base}` };
     }
 
     if (!receipt_ok) {

@@ -494,6 +494,34 @@ describe('views/worker', () => {
     );
   });
 
+  test('renders the base of a spec_missing_at_base refusal apart from the prefix', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        admission: {
+          'RD-1': { reason: 'spec_missing_at_base:ilsun/dev', at: 1 }
+        },
+        workspace_info: { verify_cmd: null }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const rd1 = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-candidate .worker-card[data-bead-id="RD-1"]'
+      )
+    );
+
+    expect(rd1.querySelector('.worker-card__reason')?.textContent).toContain(
+      '⛔ spec_missing_at_base (ilsun/dev)'
+    );
+  });
+
   test('the control bar carries no policy selects or verify_cmd strip (worker-phase2 §2)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
