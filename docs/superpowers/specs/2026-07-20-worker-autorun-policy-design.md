@@ -1,5 +1,14 @@
 # Worker 자동실행 정책 — 진입 가드·머지/drift 정책 세팅·pr_stop·독립 검증·verify squash 정합
 
+> **부분 대체(superseded, 2026-07-26)** — `2026-07-26-worker-phase2-pr-queue.md`(UI-43di)가
+> 이 문서의 **§2(정책 세팅)·§3(pr_stop 의미론)·§4(post-merge 독립 검증)·§5(verify 재설계·머지락 인계)**
+> 를 대체한다. 무인 머지가 폐지되면서 `merge_policy`/`drift_policy` 축·머지락·breaker·
+> post-merge `verify_cmd` 실행은 코드베이스에서 삭제됐고, 완료 판정은 세션 자기보고가 아니라
+> 서버가 `gh`로 관측한 "열린 PR 존재"로 교체됐다. 머지는 사람의 클릭이다.
+>
+> **유효하게 남는 부분**: §1(자동실행 admission 5조건)과 §6의 route 편집 표면.
+> 아래 본문의 대체된 절은 설계 이력으로만 읽을 것.
+
 - 날짜: 2026-07-20
 - 라우트: full_plan (예상 — 독립 단위 3+, 계약 소비 표면 변경)
 - 의존: dotfiles `docs/superpowers/specs/2026-07-20-route-pin-mandate-design.md` (route 핀 의무 계약 — 이 spec의 가드·편집이 그 키를 소비). 병행 가능하나 계약 문언 확정이 선행 권장.
