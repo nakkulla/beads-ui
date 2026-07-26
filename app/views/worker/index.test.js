@@ -745,7 +745,9 @@ describe('views/worker', () => {
         )
       ).map((el) => /** @type {HTMLElement} */ (el).dataset.beadId);
 
-    expect(idsIn('#worker-pane-queue')).toEqual(['RD-2']);
+    // RD-2 has a running attempt: it renders ONLY in 실행 중, never doubled
+    // into 대기 even though the queue entry survives until the attempt ends.
+    expect(idsIn('#worker-pane-queue')).toEqual([]);
     expect(idsIn('#worker-pane-running')).toEqual(['RD-2']);
     expect(idsIn('#worker-pane-pr-wait')).toEqual(['RD-1']);
     expect(idsIn('#worker-pane-done')).toEqual(['BL-1']);

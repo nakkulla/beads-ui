@@ -759,6 +759,9 @@ export function createWorkerView(mount_element, options = {}) {
       };
     }
 
+    /** @type {Set<string>} */
+    const active_bead_ids = new Set(running.map((r) => r.bead_id));
+
     // A manual ▶ may push live sessions past the dispatch cap on purpose (§2.3)
     // — surface it rather than blocking the resume. There is ONE cap now
     // (worker-phase2 §3), so the live total is compared against it directly.
@@ -782,7 +785,15 @@ export function createWorkerView(mount_element, options = {}) {
       slots,
       over_cap,
       failure,
-      waiting: toRows(queue_entries, 'queue'),
+      // 실행 중(leaf paused 포함) attempt가 있는 bead는 attempt가 끝날 때까지
+      // 큐 항목이 남지만, 대기 컬럼에 같이 그리면 두 컬럼 동시 표시가 되므로
+      // 실행 중 컬럼에만 보여준다.
+      waiting: toRows(
+        queue_entries.filter(
+          (/** @type {any} */ e) => !active_bead_ids.has(e.bead_id)
+        ),
+        'queue'
+      ),
       // PR 대기 is its own column (worker-phase2 §7): a bead there is NOT done —
       // the PR is open and waiting for the human merge click. 완료 carries only
       // what actually merged and finished cleanup.
