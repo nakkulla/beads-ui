@@ -363,3 +363,70 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.blocked).toBe(true);
   });
 });
+
+describe('worker/attach createLiveBd fail-visible snapshots', () => {
+  /**
+   * @param {Record<string, any>} by_command - Keyed by the bd subcommand.
+   */
+  function runnerFor(by_command) {
+    return vi.fn(async (/** @type {string[]} */ args) => by_command[args[0]]);
+  }
+
+  /**
+   * @param {(args: string[], options?: any) => Promise<any>} runJson
+   */
+  function bdWith(runJson) {
+    return createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      target_base: 'main',
+      runJson
+    });
+  }
+
+  test('throws when bd show exits non-zero', async () => {
+    const runJson = runnerFor({
+      show: { code: 1, stderr: 'bd down' },
+      ready: { code: 0, stdoutJson: [] }
+    });
+
+    await expect(bdWith(runJson).snapshotBead('UI-1')).rejects.toThrow(
+      /bd show UI-1 failed \(1\)/
+    );
+  });
+
+  test('throws when bd show returns an unreadable payload', async () => {
+    const runJson = runnerFor({
+      show: { code: 0, stdoutJson: 'nonsense' },
+      ready: { code: 0, stdoutJson: [] }
+    });
+
+    await expect(bdWith(runJson).snapshotBead('UI-1')).rejects.toThrow(
+      /unreadable payload/
+    );
+  });
+
+  test('throws when bd ready exits non-zero instead of reading as not-ready', async () => {
+    const runJson = runnerFor({
+      show: { code: 0, stdoutJson: [{ id: 'UI-1', status: 'open' }] },
+      ready: { code: 1, stderr: 'bd down' }
+    });
+
+    // A bd outage must reach the scheduler as `bd_snapshot_failed`, never as a
+    // bead that merely is not in the ready list.
+    await expect(bdWith(runJson).snapshotBead('UI-1')).rejects.toThrow(
+      /bd ready failed \(1\)/
+    );
+  });
+
+  test('throws when bd ready returns an unreadable payload', async () => {
+    const runJson = runnerFor({
+      show: { code: 0, stdoutJson: [{ id: 'UI-1', status: 'open' }] },
+      ready: { code: 0, stderr: 'Invalid JSON from bd' }
+    });
+
+    await expect(bdWith(runJson).snapshotBead('UI-1')).rejects.toThrow(
+      /bd ready returned an unreadable payload/
+    );
+  });
+});

@@ -106,8 +106,11 @@ async function waitFor(pred, timeout_ms = 2000) {
 function makeFakeBd(config) {
   /** @type {Array<{ method: string, bead_id: string, key?: string, value?: string }>} */
   const calls = [];
+  /** @type {Record<string, string>} */
+  const statuses = {};
   return {
     calls,
+    statuses,
     async snapshotBead(/** @type {string} */ bead_id) {
       const c = config[bead_id] || {};
       return {
@@ -151,6 +154,15 @@ function makeFakeBd(config) {
             c.method === 'setMetadata' && c.bead_id === bead_id && c.key === key
         );
       return last?.value ?? null;
+    },
+    async setStatus(
+      /** @type {string} */ bead_id,
+      /** @type {string} */ status
+    ) {
+      statuses[bead_id] = status;
+    },
+    async readStatus(/** @type {string} */ bead_id) {
+      return statuses[bead_id] ?? null;
     }
   };
 }

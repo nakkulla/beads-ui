@@ -34,7 +34,8 @@
  * @param {{
  *   store: any,
  *   probePid: (pid: number|null) => PidProbe,
- *   bd?: { setMetadata: (bead_id: string, key: string, value: string) => Promise<void>, unsetMetadata: (bead_id: string, key: string) => Promise<void> },
+ *   bd?: { setMetadata: (bead_id: string, key: string, value: string) => Promise<void>, unsetMetadata: (bead_id: string, key: string) => Promise<void>, setStatus?: (bead_id: string, status: string) => Promise<void>, readStatus?: (bead_id: string) => Promise<string|null> },
+ *   onBeadRecovered?: (workspace: string, bead_id: string) => void,
  *   now?: () => number,
  *   tolerance_ms?: number
  * }} deps
@@ -82,6 +83,48 @@ export function createOrphanDetector(deps) {
         // Best-effort: the orphan is already recorded + the queue already halted.
       });
     }
+  }
+
+  /**
+   * Reopen a bead the dead session left CLAIMED. Only `in_progress` is touched:
+   * that is the state a session takes and never gave back, and it hides the
+   * bead from `bd ready` so every later tick skips it silently. `resolved` /
+   * `closed` are real progress the reap must not rewrite.
+   *
+   * Fire-and-forget like the other reverts, but `onBeadRecovered` fires on a
+   * CONFIRMED reopen only — the recovery lands after `detect` returned, so a
+   * user who re-armed the queue in that window needs the hook's tick.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   */
+  function releaseBeadClaim(workspace, bead_id) {
+    const bd = deps.bd;
+    if (
+      !bd ||
+      typeof bd.readStatus !== 'function' ||
+      typeof bd.setStatus !== 'function'
+    ) {
+      return;
+    }
+    const readStatus = bd.readStatus;
+    const setStatus = bd.setStatus;
+    Promise.resolve()
+      .then(async () => {
+        if ((await readStatus(bead_id)) !== 'in_progress') {
+          return false;
+        }
+        await setStatus(bead_id, 'open');
+        return (await readStatus(bead_id)) === 'open';
+      })
+      .then((recovered) => {
+        if (recovered && typeof deps.onBeadRecovered === 'function') {
+          deps.onBeadRecovered(workspace, bead_id);
+        }
+      })
+      .catch(() => {
+        // Best-effort: the orphan is already recorded + the queue already halted.
+      });
   }
 
   /**
@@ -135,6 +178,9 @@ export function createOrphanDetector(deps) {
         revertWorkflowMode(a.bead_id, a.workflow_mode_prior ?? null);
         // Revert the exec-setting stamps the dead session wrote (§3).
         revertExecStamps(a.bead_id, a.exec_stamped_keys ?? null);
+        // Give back the claim the dead session held, or the bead stays out of
+        // `bd ready` and every later tick skips it without a trace.
+        releaseBeadClaim(workspace, a.bead_id);
         // Worktree is intentionally NOT removed (ownership unclear → banner).
         orphans.push({ attempt_id, bead_id: a.bead_id, repo: a.repo ?? null });
       }

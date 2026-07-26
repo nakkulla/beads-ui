@@ -123,9 +123,30 @@ function makeFakeRunner() {
 function makeFakeBd(config) {
   /** @type {Array<{ method: string, bead_id: string, key?: string, value?: string }>} */
   const calls = [];
+  /**
+   * Live bd status per bead, seeded from the config's `status` so a test can
+   * model a session that ended still holding its `in_progress` claim.
+   *
+   * @type {Record<string, string>}
+   */
+  const statuses = {};
+  for (const [bead_id, c] of Object.entries(config)) {
+    if (c && typeof c.status === 'string' && c.status.length > 0) {
+      statuses[bead_id] = c.status;
+    }
+  }
+  /**
+   * Per-bead snapshot call count, so a test can make the SECOND read (the
+   * dispatch re-read) disagree with the first (the tick scan) — the TOCTOU
+   * window the dispatch guards cover.
+   *
+   * @type {Record<string, number>}
+   */
+  const snapshot_calls = {};
   let snapshotCount = 0;
   return {
     calls,
+    statuses,
     snapshotCounts: () => snapshotCount,
     /**
      * @param {string} bead_id
@@ -133,13 +154,23 @@ function makeFakeBd(config) {
      */
     async snapshotBead(bead_id) {
       snapshotCount += 1;
-      const c = config[bead_id] || {};
+      const nth = (snapshot_calls[bead_id] =
+        (snapshot_calls[bead_id] ?? 0) + 1);
+      const c = /** @type {any} */ (config[bead_id] || {});
+      if (c.throwOnSnapshotAt === 'all' || c.throwOnSnapshotAt === nth) {
+        throw new Error(`bd snapshot failed for ${bead_id}`);
+      }
+      // `ready_follows_status` models bd's real rule — an `in_progress` bead is
+      // hidden from `bd ready` — for the tests that turn on the claim.
+      const ready = c.ready_follows_status
+        ? (statuses[bead_id] ?? 'open') === 'open'
+        : (c.ready ?? true);
       // `null` in config means the bead metadata key is ABSENT (undefined),
       // vs. omitted keys which fall back to a present default — this lets a
       // test model a bead that leaves model/effort unset so a global default
       // can fill (and stamp) it.
       return {
-        ready: c.ready ?? true,
+        ready: c.notReadyAt === nth ? false : ready,
         blocked: c.blocked ?? false,
         repo: c.repo ?? '/repo',
         target_base: c.target_base ?? 'main',
@@ -198,6 +229,28 @@ function makeFakeBd(config) {
             c.method === 'setMetadata' && c.bead_id === bead_id && c.key === key
         );
       return last?.value ?? null;
+    },
+    async setStatus(
+      /** @type {string} */ bead_id,
+      /** @type {string} */ status
+    ) {
+      const cfg = /** @type {any} */ (config[bead_id]);
+      if (cfg && cfg.throwOnSetStatus) {
+        throw new Error(`bd update --status failed for ${bead_id}`);
+      }
+      calls.push({ method: 'setStatus', bead_id, value: status });
+      statuses[bead_id] = status;
+    },
+    async readStatus(/** @type {string} */ bead_id) {
+      const cfg = /** @type {any} */ (config[bead_id]);
+      if (cfg && cfg.throwOnReadStatus) {
+        throw new Error(`bd show failed for ${bead_id}`);
+      }
+      // A bead configured to swallow its status write reads back unchanged —
+      // the readback-failure case.
+      return cfg && cfg.readStatusStuck
+        ? (cfg.status ?? null)
+        : (statuses[bead_id] ?? null);
     }
   };
 }
@@ -1832,5 +1885,312 @@ describe('conflict resolution reaches the session guard end-to-end (§1/§6)', (
     const { kill_impl } = await resolveAndRun('git push origin HEAD:main');
 
     expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
+  });
+});
+
+describe('scheduler claim release on close-less termination', () => {
+  test('reopens a bead the failed session left in_progress', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    // The session claimed the bead and then died without closing it.
+    env.bd.statuses.S1 = 'in_progress';
+
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.bd.statuses.S1).toBe('open');
+  });
+
+  test('leaves a resolved bead alone when the PR verification fails', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1, verifyOk: false });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    // The session finished its work and recorded `resolved`; only the server's
+    // PR observation failed, so the record must survive.
+    env.bd.statuses.S1 = 'resolved';
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(env.bd.statuses.S1).toBe('resolved');
+  });
+
+  test('leaves a closed bead alone', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.bd.statuses.S1 = 'closed';
+
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.bd.calls.some((c) => c.method === 'setStatus')).toBe(false);
+  });
+
+  test('finalizes the failed attempt even when the status read throws', async () => {
+    const env = setup({
+      config: { S1: { throwOnReadStatus: true } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('failed');
+  });
+
+  test('keeps the queue halted when the reopen write throws', async () => {
+    const env = setup({ config: { S1: { throwOnSetStatus: true } }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.bd.statuses.S1 = 'in_progress';
+
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).auto_advance).toBe(false);
+  });
+
+  test('releases the claim only after the failure halt landed', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.bd.statuses.S1 = 'in_progress';
+    /** @type {boolean|null} */
+    let auto_advance_at_release = null;
+    const setStatus = env.bd.setStatus;
+    env.bd.setStatus = async (
+      /** @type {string} */ bead_id,
+      /** @type {string} */ status
+    ) => {
+      auto_advance_at_release = env.store.snapshot(WS).auto_advance;
+      await setStatus(bead_id, status);
+    };
+
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    // A tick raised by a concurrent attempt finishing must find the queue
+    // already stopped, or it would relaunch the bead that just failed.
+    expect(auto_advance_at_release).toBe(false);
+  });
+
+  test('reopens a bead the stopped session left in_progress', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.bd.statuses.S1 = 'in_progress';
+
+    await env.scheduler.stop(WS, attempt_id);
+
+    expect(env.bd.statuses.S1).toBe('open');
+  });
+
+  test('keeps the claim when the attempt is only paused', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    env.bd.statuses.S1 = 'in_progress';
+
+    await env.scheduler.pause(WS, attempt_id);
+
+    // A pause is not a termination — the session resumes in the same worktree.
+    expect(env.bd.statuses.S1).toBe('in_progress');
+  });
+
+  test('reopens the bead when a paused attempt is discarded', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    env.bd.statuses.S1 = 'in_progress';
+    await env.scheduler.pause(WS, attempt_id);
+
+    await env.scheduler.stop(WS, attempt_id);
+
+    expect(env.bd.statuses.S1).toBe('open');
+  });
+
+  test('makes a failed bead dispatchable again once the queue is re-armed', async () => {
+    const env = setup({
+      config: { S1: { ready_follows_status: true } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    // The claim is exactly what hid the bead from `bd ready` after the failure.
+    env.bd.statuses.S1 = 'in_progress';
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    env.store.setAutoAdvance(WS, true);
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+  });
+});
+
+describe('scheduler silent-skip reasons', () => {
+  test('records not_ready:<status> for a bead the scan cannot dispatch', async () => {
+    const env = setup({
+      config: { S1: { ready: false, status: 'in_progress' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'not_ready:in_progress'
+    );
+  });
+
+  test('records not_ready:unknown when the snapshot carries no status', async () => {
+    const env = setup({ config: { S1: { ready: false } }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'not_ready:unknown'
+    );
+  });
+
+  test('records bd_snapshot_failed when the scan snapshot throws', async () => {
+    const env = setup({
+      config: { S1: { throwOnSnapshotAt: 'all' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'bd_snapshot_failed'
+    );
+  });
+
+  test('records bd_snapshot_failed when the dispatch re-read throws', async () => {
+    const env = setup({ config: { S1: { throwOnSnapshotAt: 2 } }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'bd_snapshot_failed'
+    );
+  });
+
+  test('records not_ready:<status> when the dispatch re-read is no longer ready', async () => {
+    const env = setup({
+      config: { S1: { notReadyAt: 2, status: 'in_progress' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'not_ready:in_progress'
+    );
+  });
+
+  test('clears the reason once the bead dispatches', async () => {
+    /** @type {Record<string, any>} */
+    const config = { S1: { ready: false, status: 'in_progress' } };
+    const env = setup({ config, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    config.S1.ready = true;
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
+  test('does not re-record an unchanged reason on the next tick', async () => {
+    const env = setup({
+      config: { S1: { ready: false, status: 'in_progress' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const revision = env.store.snapshot(WS).revision;
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('does not fan out an unchanged reason on the next tick', async () => {
+    const notify = vi.fn();
+    const env = setup({
+      config: { S1: { ready: false, status: 'in_progress' } },
+      slots: 1,
+      notifyQueueChanged: notify
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    notify.mockClear();
+
+    await env.scheduler.tick(WS);
+
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  test('fans out a reason that changed since the last tick', async () => {
+    const notify = vi.fn();
+    /** @type {Record<string, any>} */
+    const config = { S1: { ready: false, status: 'in_progress' } };
+    const env = setup({ config, slots: 1, notifyQueueChanged: notify });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    notify.mockClear();
+
+    config.S1.status = 'open';
+    await env.scheduler.tick(WS);
+
+    expect(notify).toHaveBeenCalledWith(WS);
+  });
+
+  test('a not-ready head does not starve the next queued bead', async () => {
+    const env = setup({
+      config: { S1: { ready: false, status: 'in_progress' }, S2: {} },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+  });
+
+  test('a snapshot failure at the head does not starve the next queued bead', async () => {
+    const env = setup({
+      config: { S1: { throwOnSnapshotAt: 'all' }, S2: {} },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S2')).toBe(true);
   });
 });

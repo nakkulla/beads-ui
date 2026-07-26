@@ -910,3 +910,63 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     expect(store.snapshot(WS).attempts.a1.conflict_resolution).toBe(false);
   });
 });
+
+describe('worker/queue-store skip-reason recording', () => {
+  test('records a first reason and reports it as applied', () => {
+    const store = createQueueStore();
+    const before = store.snapshot(WS).revision;
+
+    const r = store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'not_ready:in_progress'
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(before + 1);
+    expect(r.queue.admission['UI-1'].reason).toBe('not_ready:in_progress');
+  });
+
+  test('no-ops an unchanged reason without bumping the revision', () => {
+    const store = createQueueStore();
+    store.recordAdmission(WS, { bead_id: 'UI-1', reason: 'not_ready:open' });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'not_ready:open'
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('overwrites a different reason for the same bead', () => {
+    const store = createQueueStore();
+    store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'not_ready:in_progress'
+    });
+
+    const r = store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'bd_snapshot_failed'
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.admission['UI-1'].reason).toBe('bd_snapshot_failed');
+  });
+
+  test('records the same reason again after it was cleared', () => {
+    const store = createQueueStore();
+    store.recordAdmission(WS, { bead_id: 'UI-1', reason: 'spec_missing' });
+    store.clearAdmission(WS, 'UI-1');
+
+    const r = store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'spec_missing'
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.admission['UI-1'].reason).toBe('spec_missing');
+  });
+});
