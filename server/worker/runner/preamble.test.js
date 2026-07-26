@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import * as preamble from './preamble.js';
 import {
   FAST_TRACK_DIRECTIVE,
+  GUARD_CONTRACT_DIRECTIVE,
   PR_SUBMIT_DIRECTIVE,
   UNATTENDED_PREAMBLE,
   applyPreamble
@@ -58,6 +59,25 @@ describe('runner/preamble PR-submit directive (worker-phase2 §1)', () => {
     expect(idx(UNATTENDED_PREAMBLE)).toBeLessThan(idx(FAST_TRACK_DIRECTIVE));
     expect(idx(FAST_TRACK_DIRECTIVE)).toBeLessThan(idx(PR_SUBMIT_DIRECTIVE));
     expect(idx(PR_SUBMIT_DIRECTIVE)).toBeLessThan(idx('작업하라'));
+  });
+});
+
+describe('runner/preamble guard-contract directive (UI-t3wk)', () => {
+  test('injects the guard-contract directive with no options at all', () => {
+    const out = applyPreamble('작업하라');
+
+    expect(out).toContain(GUARD_CONTRACT_DIRECTIVE);
+  });
+
+  test('injects the guard-contract directive under fast_track too', () => {
+    const out = applyPreamble('작업하라', { fast_track: true });
+
+    expect(out).toContain(GUARD_CONTRACT_DIRECTIVE);
+  });
+
+  test('states the merge prohibition and the background-task warning', () => {
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('git merge` 절대 금지');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('턴을 끝내지 말 것');
   });
 });
 
