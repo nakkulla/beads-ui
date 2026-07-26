@@ -23,30 +23,29 @@ afterEach(() => {
 });
 
 describe('worker/runtime status', () => {
-  test('reports auto_advance, running_count, breaker_tripped', () => {
+  test('reports auto_advance and running_count', () => {
     const rt = createWorkerRuntime();
-    expect(rt.status(WS)).toEqual({
-      auto_advance: false,
-      running_count: 0,
-      breaker_tripped: false
-    });
 
     rt.queueStore.setAutoAdvance(WS, true);
     rt.setRunningCountProvider(() => 2);
-    rt.breaker.trip('/repo', { bead_id: 'UI-1', cause: 'verify_failed' });
 
-    expect(rt.status(WS)).toEqual({
-      auto_advance: true,
-      running_count: 2,
-      breaker_tripped: true
-    });
+    expect(rt.status(WS)).toEqual({ auto_advance: true, running_count: 2 });
   });
 
-  test('merge lock is breaker-aware through the shared breaker', async () => {
+  test('omits the retired breaker_tripped field', () => {
     const rt = createWorkerRuntime();
-    rt.breaker.trip('/repo', { bead_id: 'UI-1', cause: 'x' });
-    await expect(rt.locks.acquireMerge('/repo', 'main')).rejects.toMatchObject({
-      code: 'MERGE_BLOCKED'
-    });
+
+    const status = rt.status(WS);
+
+    expect(status).toEqual({ auto_advance: false, running_count: 0 });
+    expect('breaker_tripped' in status).toBe(false);
+  });
+
+  test('exposes no breaker or token registry', () => {
+    const rt = createWorkerRuntime();
+
+    expect(/** @type {any} */ (rt).breaker).toBeUndefined();
+    expect(/** @type {any} */ (rt).tokens).toBeUndefined();
+    expect(/** @type {any} */ (rt).mergeLock).toBeUndefined();
   });
 });

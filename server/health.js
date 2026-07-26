@@ -67,12 +67,16 @@ async function runProbe(fn) {
 }
 
 /**
- * @typedef {{ auto_advance: boolean, running_count: number, breaker_tripped: boolean }} WorkerStatus
+ * @typedef {{ auto_advance: boolean, running_count: number }} WorkerStatus
  */
 
 /**
  * Default worker-status probe: reads the shared Worker runtime (queue
- * auto_advance + live running count + breaker) for the workspace (spec §5.3).
+ * auto_advance + live running count) for the workspace (spec §5.3).
+ *
+ * `breaker_tripped` is GONE rather than frozen at false (worker-phase2 §2): the
+ * breaker no longer exists, and a permanently-false field would misreport a
+ * concept the system dropped.
  *
  * @param {string} root_dir
  * @returns {WorkerStatus}
@@ -81,13 +85,13 @@ export function defaultWorkerStatus(root_dir) {
   try {
     return getWorkerRuntime().status(root_dir);
   } catch {
-    return { auto_advance: false, running_count: 0, breaker_tripped: false };
+    return { auto_advance: false, running_count: 0 };
   }
 }
 
 /**
  * Run readiness checks and compute overall health. `worker` reflects the live
- * Worker subsystem: auto_advance, running session count, and breaker state.
+ * Worker subsystem: auto_advance and the running session count.
  *
  * @param {{ root_dir?: string, bd_probe?: HealthProbe, db_probe?: HealthProbe, worker_status?: () => WorkerStatus }} [options]
  * @returns {Promise<{ ok: boolean, checks: { bd: boolean, db: boolean, worker: WorkerStatus } }>}

@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createBreaker } from './breaker.js';
 import { createOrphanDetector } from './orphan.js';
 import { createQueueStore } from './queue-store.js';
 
@@ -51,25 +50,24 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
   test('live PID with matching start time is NOT an orphan', () => {
     const store = createQueueStore();
     seedRunningAttempt(store, {});
-    const breaker = createBreaker();
     const det = createOrphanDetector({
       store,
-      breaker,
       probePid: () => ({ alive: true, started_at: 1000 }),
       now: () => 2000
     });
+    store.setAutoAdvance(WS, true);
+
     expect(det.detect(WS)).toEqual([]);
     expect(store.snapshot(WS).attempts['att-1'].status).toBe('running');
-    expect(breaker.anyTripped()).toBe(false);
+    // No orphan → the queue keeps running.
+    expect(store.snapshot(WS).auto_advance).toBe(true);
   });
 
-  test('dead PID is an orphan → failed + breaker tripped, worktree left', () => {
+  test('dead PID is an orphan → orphaned + auto_advance OFF, worktree left', () => {
     const store = createQueueStore();
     seedRunningAttempt(store, {});
-    const breaker = createBreaker();
     const det = createOrphanDetector({
       store,
-      breaker,
       probePid: () => ({ alive: false, started_at: null }),
       now: () => 2000
     });
@@ -78,16 +76,43 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
       { attempt_id: 'att-1', bead_id: 'UI-1', repo: '/repo' }
     ]);
     expect(store.snapshot(WS).attempts['att-1'].status).toBe('orphaned');
-    expect(breaker.isTripped('/repo')).toBe(true);
+  });
+
+  test('an orphan turns auto_advance OFF so the queue stops', () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, {});
+    store.setAutoAdvance(WS, true);
+    const det = createOrphanDetector({
+      store,
+      probePid: () => ({ alive: false, started_at: null }),
+      now: () => 2000
+    });
+
+    det.detect(WS);
+
+    expect(store.snapshot(WS).auto_advance).toBe(false);
+  });
+
+  test('an orphan without a repo still turns auto_advance OFF', () => {
+    const store = createQueueStore();
+    seedRunningAttempt(store, { repo: null });
+    store.setAutoAdvance(WS, true);
+    const det = createOrphanDetector({
+      store,
+      probePid: () => ({ alive: false, started_at: null }),
+      now: () => 2000
+    });
+
+    det.detect(WS);
+
+    expect(store.snapshot(WS).auto_advance).toBe(false);
   });
 
   test('recycled PID (alive but start-time mismatch) is an orphan', () => {
     const store = createQueueStore();
     seedRunningAttempt(store, {});
-    const breaker = createBreaker();
     const det = createOrphanDetector({
       store,
-      breaker,
       // Same PID, but the process started much later → recycled.
       probePid: () => ({ alive: true, started_at: 999999 }),
       now: () => 2000,
@@ -106,7 +131,6 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
     };
     const det = createOrphanDetector({
       store,
-      breaker: createBreaker(),
       bd,
       probePid: () => ({ alive: false, started_at: null })
     });
@@ -124,7 +148,6 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
     };
     const det = createOrphanDetector({
       store,
-      breaker: createBreaker(),
       bd,
       probePid: () => ({ alive: false, started_at: null })
     });
@@ -145,7 +168,6 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
     };
     const det = createOrphanDetector({
       store,
-      breaker: createBreaker(),
       bd,
       probePid: () => ({ alive: false, started_at: null })
     });
@@ -169,7 +191,6 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
     };
     const det = createOrphanDetector({
       store,
-      breaker: createBreaker(),
       bd,
       probePid: () => ({ alive: false, started_at: null })
     });
@@ -182,10 +203,8 @@ describe('worker/orphan detection (attempt_id + PID + start-time)', () => {
   test('non-running attempts are ignored', () => {
     const store = createQueueStore();
     seedRunningAttempt(store, { status: 'done' });
-    const breaker = createBreaker();
     const det = createOrphanDetector({
       store,
-      breaker,
       probePid: () => ({ alive: false, started_at: null })
     });
     expect(det.detect(WS)).toEqual([]);

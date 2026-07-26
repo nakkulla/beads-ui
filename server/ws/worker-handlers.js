@@ -31,7 +31,6 @@ import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
   pauseWorkerAttempt,
-  resetWorkerBreakerForWorkspace,
   resumeWorkerAttempt,
   stopWorkerAttempt,
   tickWorkerQueue,
@@ -507,14 +506,6 @@ export function handleWorkerQueueToggle(ws, req) {
   });
   replyMutation(ws, req, key, result);
   if (result.ok && p.on === true) {
-    // Manual ▶ resumes a tripped repo (breaker.js's intended reset path,
-    // worker-autorun-policy Phase 4) — reset BEFORE the tick so the first
-    // dispatch after the resume is not refused by the stale trip.
-    try {
-      resetWorkerBreakerForWorkspace(key);
-    } catch (err) {
-      log('breaker reset on toggle failed for %s: %o', key, err);
-    }
     Promise.resolve(tickWorkerQueue(key)).catch((err) => {
       log('worker tick after toggle failed for %s: %o', key, err);
     });
@@ -522,43 +513,11 @@ export function handleWorkerQueueToggle(ws, req) {
 }
 
 /**
- * Handle `worker-queue-set-policy`. Payload:
- * `{ key: 'merge_policy'|'drift_policy', value: string|null, expected_revision }`.
- * Persists the workspace-global policy (CAS); null/'' unsets. Enum validation
- * lives in the queue store (worker-autorun-policy §2).
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export function handleWorkerQueueSetPolicy(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.key !== 'string') {
-    ws.send(
-      JSON.stringify(
-        makeError(
-          req,
-          'bad_request',
-          'payload requires { key: merge_policy|drift_policy }'
-        )
-      )
-    );
-    return;
-  }
-  const key = workspaceKeyOf(ws);
-  const result = queueStore().setPolicy(key, {
-    expected_revision: revisionOf(p),
-    key: p.key,
-    value: p.value ?? null
-  });
-  replyMutation(ws, req, key, result);
-}
-
-/**
  * Handle `worker-queue-set-exec-default`. Payload:
  * `{ key: <one of the 5 exec keys>, value: string|null, expected_revision }`.
  * Persists the workspace-global exec-setting default (CAS); null/'' unsets. Enum
  * validation (and the runner↔model union check) lives in the queue store's
- * `setExecDefault`, mirroring `worker-queue-set-policy` (spec §2).
+ * `setExecDefault` (spec §2).
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req

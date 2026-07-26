@@ -115,8 +115,8 @@ function detectQuestion(raw) {
 }
 
 /**
- * Extract the shell command from a claude Bash/Shell tool_use, else null. Used
- * by the session engine's merge-lock fail-closed guard (spec §5.2).
+ * Extract the shell command from a claude Bash/Shell tool_use, else null. Feeds
+ * the session engine's two fail-closed merge guards (worker-phase2 §1).
  *
  * @param {any} raw
  * @returns {string|null}
@@ -222,14 +222,7 @@ export function claudeSpec(options = {}) {
         args.push('--effort', String(s.effort));
       }
       args.push('--permission-mode', 'bypassPermissions');
-      args.push(
-        applyPreamble(promptFor(bead), {
-          fast_track: !!s.fast_track,
-          merge_lock: s.merge_lock,
-          merge_policy: s.merge_policy,
-          drift_policy: s.drift_policy
-        })
-      );
+      args.push(applyPreamble(promptFor(bead), { fast_track: !!s.fast_track }));
       return { command: 'claude', args, env: routing_env };
     },
     normalize,

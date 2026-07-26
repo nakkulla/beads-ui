@@ -102,11 +102,7 @@ watchRegistry(
 server.listen(config.port, config.host, () => {
   printServerUrl();
   // Bring up the live worker dispatch loop: build a scheduler per active
-  // workspace, reap any orphaned attempts, and bind the merge-lock endpoint port
-  // injected into session preambles (spec §5.1–§5.3).
-  const address = server.address();
-  const bound_port =
-    address && typeof address === 'object' ? address.port : config.port;
+  // workspace and reap any orphaned attempts (spec §5.1–§5.3).
   /** @type {Set<string>} */
   const worker_roots = new Set();
   for (const workspace of configured_workspaces) {
@@ -118,10 +114,7 @@ server.listen(config.port, config.host, () => {
     worker_roots.add(startup_workspace_root);
   }
   try {
-    initWorkerRuntime({
-      workspaces: Array.from(worker_roots),
-      port: bound_port
-    });
+    initWorkerRuntime({ workspaces: Array.from(worker_roots) });
   } catch (err) {
     log('worker runtime init failed: %o', err);
   }

@@ -10,11 +10,8 @@
  *     REAL deps — child_process spawn via `createRunner`, bd metadata + a bead
  *     snapshot reader over `server/bd.js`, the per-repo git worktree manager, the
  *     independent verifier, the shared session-log broker, and the process-wide
- *     breaker/locks/tokens singletons — plus an orphan detector. EVERYTHING is
- *     injectable so tests pass fakes (never a real spawn).
- *   - The lock_state fed to each session is the runtime's merge-lock ledger, so
- *     the session-side fail-closed guard (session.js) can tell whether THIS
- *     session holds the (repo, target_base) merge lock.
+ *     locks singleton — plus an orphan detector. EVERYTHING is injectable so
+ *     tests pass fakes (never a real spawn).
  *
  * Registration model (chosen for consistency + test hermeticity): attachments
  * are created EAGERLY at server startup, one per active workspace, by
@@ -30,7 +27,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
-import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
@@ -39,7 +35,6 @@ import { emitQueueChanged } from './queue-events.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
-import { resolveVerifyCmd, runVerifyCmd } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
@@ -52,26 +47,6 @@ const log = debug('worker:attach');
  * @type {string}
  */
 const DEFAULT_TARGET_BASE = 'main';
-
-/**
- * Live-bound server port for the merge-lock endpoint injected into each session
- * preamble. Set by {@link setWorkerPort} once the server begins listening; read
- * late (per dispatch) so an attachment built before `listen` still gets it.
- *
- * @type {number}
- */
-let WORKER_PORT = 0;
-
-/**
- * Set the live server port. Called from server startup after `listen`.
- *
- * @param {number} port
- */
-export function setWorkerPort(port) {
-  if (typeof port === 'number' && Number.isFinite(port)) {
-    WORKER_PORT = port;
-  }
-}
 
 /**
  * Extract the ready-issue id set from a `bd ready --json` payload, tolerating
@@ -191,10 +166,6 @@ export function createLiveBd(config) {
         status,
         spec_id,
         spec_review,
-        merge_policy:
-          typeof md.merge_policy === 'string' ? md.merge_policy : null,
-        drift_policy:
-          typeof md.drift_policy === 'string' ? md.drift_policy : null,
         deps: []
       };
     }
@@ -255,12 +226,9 @@ export function defaultProbePid(pid) {
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
- *   port?: number | (() => number),
  *   parallel_slots?: number,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   admission?: any,
- *   verifyCmd?: (repo: string) => { cmd: string[], timeout_ms: number } | null,
- *   runVerifyCmd?: (input: { cwd: string, cmd: string[], timeout_ms: number }) => Promise<{ ok: boolean, reason: string, exit: number|null }>
+ *   admission?: any
  * }} [options]
  */
 export function createWorkerAttachment(workspace_root, options = {}) {
@@ -325,65 +293,28 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     options.verify ||
     createVerifier({ gh, bd: createBdMetadata({ cwd: workspace_root }) });
 
-  // The lock_state each session sees: the runtime's merge-lock ledger. Fail
-  // closed — when no ledger is wired yet, isHeldBy is false, so ANY merge attempt
-  // is treated as unlocked (killed).
-  const lock_state = {
-    /** @param {string|undefined} token */
-    isHeldBy: (token) =>
-      !!(runtime.mergeLock && token && runtime.mergeLock.isHeldBy(token))
-  };
-
   const makeRunner =
     options.makeRunner ||
     ((name) =>
       createRunner(name, {
         spawn_impl: options.spawn_impl || ((c, a, o) => spawn(c, a, o)),
-        kill_impl: options.kill_impl,
-        lock_state
+        kill_impl: options.kill_impl
       }));
-
-  // Workspace verify_cmd resolution: explicit config section > conservative
-  // auto-detection > none (worker-attempt-resume-verify-autodetect §2). Read per
-  // call so a config change (or a new marker file) lands on the next dispatch.
-  const verifyCmd =
-    options.verifyCmd ||
-    ((/** @type {string} */ r) => {
-      try {
-        return resolveVerifyCmd(r, getConfig().worker_verify);
-      } catch {
-        return null;
-      }
-    });
 
   const scheduler = createScheduler({
     store: runtime.queueStore,
     makeRunner,
     bd,
     worktree,
-    tokens: runtime.tokens,
     verify,
-    breaker: runtime.breaker,
     sessionLog: runtime.sessionLog,
     admission,
-    verifyCmd,
-    runVerifyCmd: options.runVerifyCmd || runVerifyCmd,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key),
-    // Late-bound: the merge-lock router (and its handover ledger) is mounted
-    // by the app AFTER attachments are built.
-    mergeLock: {
-      takeHandover: (attempt_id) =>
-        runtime.mergeLock && runtime.mergeLock.takeHandover
-          ? runtime.mergeLock.takeHandover(attempt_id)
-          : null
-    },
-    port: options.port !== undefined ? options.port : () => WORKER_PORT,
     parallel_slots: options.parallel_slots
   });
 
   const orphan = createOrphanDetector({
     store: runtime.queueStore,
-    breaker: runtime.breaker,
     bd,
     probePid: options.probePid || defaultProbePid
   });
@@ -397,7 +328,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     orphan,
     bd,
     admission,
-    verifyCmd,
     parallel_slots:
       typeof options.parallel_slots === 'number' ? options.parallel_slots : 2,
     repo,
@@ -425,13 +355,10 @@ function keyFor(workspace_root) {
  * Create + register attachments for each active workspace and reap any orphaned
  * attempts persisted from a prior run (spec §5.3). Idempotent per workspace.
  *
- * @param {{ workspaces: string[], port?: number }} input
+ * @param {{ workspaces: string[] }} input
  * @returns {ReturnType<typeof createWorkerAttachment>[]}
  */
 export function initWorkerRuntime(input) {
-  if (typeof input.port === 'number') {
-    setWorkerPort(input.port);
-  }
   /** @type {ReturnType<typeof createWorkerAttachment>[]} */
   const built = [];
   for (const ws of input.workspaces || []) {
@@ -488,28 +415,6 @@ export async function checkWorkerQueueAdmission(workspace_root, bead_id) {
     return null;
   }
   return att.admission.check(bead_id);
-}
-
-/**
- * Reset the circuit breaker for a workspace's repo, IF an attachment is
- * registered (worker-autorun-policy Phase 4 — the manual ▶ resume that
- * breaker.js always intended). No-op (false) without an attachment.
- *
- * @param {string} workspace_root
- * @returns {boolean} True when a registered attachment's breaker was reset.
- */
-export function resetWorkerBreakerForWorkspace(workspace_root) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att) {
-    return false;
-  }
-  const repo =
-    typeof (/** @type {any} */ (att).repo) === 'string' &&
-    /** @type {any} */ (att).repo.length > 0
-      ? /** @type {any} */ (att).repo
-      : keyFor(workspace_root);
-  att.runtime.breaker.reset(repo);
-  return true;
 }
 
 /**

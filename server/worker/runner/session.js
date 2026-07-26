@@ -46,7 +46,7 @@ import { EventEmitter } from 'node:events';
 /**
  * A live session handle. Consumers await {@link RunnerHandle.done}; the session
  * log subscribes to the `raw` event; the scheduler may call `kill()` to stop the
- * process group (breaker / pause / orphan reap).
+ * process group (pause / stop / orphan reap).
  *
  * @typedef {Object} RunnerHandle
  * @property {number|null} pid - OS pid of the spawned process (null on failure).
@@ -61,7 +61,7 @@ import { EventEmitter } from 'node:events';
  * @property {(bead: any, workspace: string, settings: any) => { command: string, args: string[], env?: Record<string, string|undefined> }} buildArgv
  * @property {(raw: any) => RunnerEvent|RunnerEvent[]|null} normalize - Map a raw line to normalized event(s) (or null to drop).
  * @property {(raw: any) => (string|null)} detectQuestion - Return a reason string when a raw line is an interactive request, else null.
- * @property {(raw: any) => (string|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use, else null (feeds the merge-lock guard).
+ * @property {(raw: any) => (string|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use, else null (feeds the merge guards).
  * @property {(raw: any) => (string|null)} [extractSessionId] - Return the runner's session identifier from a raw line, else null. The engine emits the FIRST non-null result once on the `session_id` event so the attempt record can persist it for `--resume`/transcript tracking (spec §2).
  * @property {(ctx: { raw: any[], exit: number|null, blocked: boolean }) => { success: boolean, reason: string }} verdict
  */
@@ -70,20 +70,30 @@ import { EventEmitter } from 'node:events';
  * @typedef {Object} EngineDeps
  * @property {(command: string, args: string[], options: any) => ChildProcessLike} [spawn_impl]
  * @property {(pid: number, signal?: NodeJS.Signals|number) => void} [kill_impl]
- * @property {{ isHeldBy: (token: string|undefined) => boolean }} [lock_state] - Merge-lock ledger; when present, an unlocked merge attempt fails closed.
  */
 
 /**
- * Best-effort signature of a merge INTO a base branch. A session must hold the
- * (repo, target_base) merge lock before running any of these; an unlocked match
- * fails closed (blocker + group-kill). Best-effort: a determined session could
- * obfuscate the command, but the server-side merge-lock serialization remains
- * the hard invariant — this is defense-in-depth (spec §5.2).
+ * Landing work on the base itself — `gh pr merge`, or a `git push` aimed at
+ * main/master. NEVER permitted, on any attempt: unattended merging is gone
+ * (worker-phase2 §1/§13), so a session that reaches for the base is killed
+ * fail-closed regardless of what it is trying to accomplish.
  *
  * @type {RegExp}
  */
-const MERGE_RE =
-  /git\s+merge\b|gh\s+pr\s+merge\b|git\s+push\b[\s\S]*?:?\b(main|master)\b/i;
+const BASE_LANDING_RE =
+  /gh\s+pr\s+merge\b|git\s+push\b[\s\S]*?:?\b(main|master)\b/i;
+
+/**
+ * Merging the base INTO the session's own branch (`git merge origin/main`).
+ * Blocked by default, but ALLOWED for a conflict-resolution attempt — that is
+ * exactly the operation such an attempt exists to perform (worker-phase2 §6).
+ * The distinction is the attempt's mode, not a lock: nothing about this command
+ * touches the base, so a normal attempt is refused only because it has no
+ * business merging at all.
+ *
+ * @type {RegExp}
+ */
+const BASE_INTO_BRANCH_RE = /git\s+merge\b/i;
 
 /**
  * Split accumulated stdout into complete lines, returning `[lines, remainder]`.
@@ -119,12 +129,11 @@ export function runSession(spec, bead, workspace, settings, deps) {
   // Avoid MaxListeners warnings when many raw lines are consumed.
   events.setMaxListeners(0);
 
-  // Merge-lock fail-closed inputs: the per-session worker token identifies this
-  // session to the merge-lock ledger; `lock_state.isHeldBy(token)` reports
-  // whether it currently holds a (repo, base) merge lock (spec §5.2).
-  const lock_state = deps.lock_state;
-  const worker_token =
-    settings && settings.env ? settings.env.BDUI_WORKER_TOKEN : undefined;
+  // Conflict-resolution attempts are the ONLY ones allowed to merge the base
+  // into their own branch. Absent/non-true ⇒ blocked, so a caller that forgets
+  // to plumb it fails closed (worker-phase2 §1/§6). Phase 5 sets it true when
+  // dispatching a resolution session.
+  const conflict_resolution = settings?.conflict_resolution === true;
 
   const { command, args, env } = spec.buildArgv(bead, workspace, settings);
   const child = spawn_impl(command, args, {
@@ -217,17 +226,31 @@ export function runSession(spec, bead, workspace, settings, deps) {
       return;
     }
 
-    // Fail-closed: a merge INTO base attempted WITHOUT holding the merge lock →
-    // blocker + process-group kill (the same path as a question) (spec §5.2).
-    if (lock_state && typeof spec.extractShellCommand === 'function') {
+    // Fail-closed merge guards → blocker + process-group kill (the same path as
+    // a question). Two independent guards, gated on the ATTEMPT rather than on
+    // any lock (worker-phase2 §1).
+    if (typeof spec.extractShellCommand === 'function') {
       const cmd = spec.extractShellCommand(obj);
-      if (cmd && MERGE_RE.test(cmd) && !lock_state.isHeldBy(worker_token)) {
+      /** @type {{ reason: string, message: string }|null} */
+      let refusal = null;
+      if (cmd && BASE_LANDING_RE.test(cmd)) {
+        refusal = {
+          reason: 'merge_to_base_blocked',
+          message: `landing on the base branch is never permitted: ${cmd}`
+        };
+      } else if (cmd && !conflict_resolution && BASE_INTO_BRANCH_RE.test(cmd)) {
+        refusal = {
+          reason: 'base_merge_blocked',
+          message: `merging into the branch is permitted only for a conflict-resolution attempt: ${cmd}`
+        };
+      }
+      if (refusal) {
         blocked = true;
         /** @type {RunnerEvent} */
         const merge_blocker = {
           kind: 'blocker',
-          reason: 'merge_without_lock',
-          message: `merge attempt without holding the merge lock: ${cmd}`,
+          reason: refusal.reason,
+          message: refusal.message,
           raw: obj
         };
         norm_events.push(merge_blocker);

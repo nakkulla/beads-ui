@@ -8,7 +8,6 @@ import {
   createLiveBd,
   createWorkerAttachment,
   initWorkerRuntime,
-  setWorkerPort,
   stopWorkerAttempt,
   tickWorkerQueue
 } from './attach.js';
@@ -132,8 +131,7 @@ describe('worker/attach construction + live loop (F1)', () => {
       bd: fakeBd(),
       worktree: fakeWorktree,
       verify: okVerify,
-      spawn_impl: makeFixtureSpawn({ lines: [] }),
-      port: 4321
+      spawn_impl: makeFixtureSpawn({ lines: [] })
     });
     expect(typeof att.scheduler.tick).toBe('function');
     expect(typeof att.scheduler.stop).toBe('function');
@@ -142,7 +140,7 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(runtime.status(WS).running_count).toBe(0);
   });
 
-  test('toggle→tick dispatches via the real runner with the merge-lock preamble injected (fake spawn)', async () => {
+  test('toggle→tick dispatches via the real runner with the PR-submit preamble injected (fake spawn)', async () => {
     const runtime = createWorkerRuntime();
     const spawn_impl = makeFixtureSpawn({
       file: path.join(FIXTURES, 'claude-success.jsonl')
@@ -152,12 +150,9 @@ describe('worker/attach construction + live loop (F1)', () => {
       bd: fakeBd({ S1: { runner: 'claude' } }),
       worktree: fakeWorktree,
       verify: okVerify,
-      // This test probes the spawn/preamble wiring, not the admission gate —
-      // and a configured verify_cmd keeps auto_merge (merge-lock block present).
+      // This test probes the spawn/preamble wiring, not the admission gate.
       admission: { validate: async () => ({ ok: true }) },
-      verifyCmd: () => ({ cmd: ['true'], timeout_ms: 1000 }),
       spawn_impl,
-      port: 4321,
       parallel_slots: 1
     });
     __registerWorkerAttachmentForTest(WS, att);
@@ -169,11 +164,13 @@ describe('worker/attach construction + live loop (F1)', () => {
     await waitFor(() => spawn_impl.captured.calls.length > 0);
     const call = spawn_impl.captured.calls[0];
     expect(call.command).toBe('claude');
-    // The merge-lock protocol block (with the injected port) reached the prompt.
+    // The always-on PR-submit directive reached the prompt …
     const prompt = call.args[call.args.length - 1];
-    expect(prompt).toContain('http://127.0.0.1:4321/api/worker/merge-lock');
-    // The per-session worker token is in the child env.
-    expect(call.options.env.BDUI_WORKER_TOKEN).toBeTruthy();
+    expect(prompt).toContain('PR 제출까지 수행하고 절대 머지하지 말 것');
+    // … and the retired merge-lock protocol did not.
+    expect(prompt).not.toContain('/api/worker/merge-lock');
+    // No per-session worker token is issued any more.
+    expect(call.options.env.BDUI_WORKER_TOKEN).toBe(undefined);
   });
 
   test('tickWorkerQueue is an inert no-op when no attachment is registered', async () => {
@@ -220,25 +217,14 @@ describe('worker/attach construction + live loop (F1)', () => {
     });
     __registerWorkerAttachmentForTest(WS, att);
 
-    initWorkerRuntime({ workspaces: [WS], port: 7777 });
+    runtime.queueStore.setAutoAdvance(WS, true);
+
+    initWorkerRuntime({ workspaces: [WS] });
 
     const snap = runtime.queueStore.snapshot(WS);
     expect(snap.attempts['att-1'].status).toBe('orphaned');
-    expect(runtime.breaker.isTripped('/repo')).toBe(true);
-  });
-
-  test('setWorkerPort late-binds the port for a default-constructed attachment', () => {
-    setWorkerPort(6161);
-    const runtime = createWorkerRuntime();
-    const att = createWorkerAttachment(WS, {
-      runtime,
-      bd: fakeBd(),
-      worktree: fakeWorktree,
-      verify: okVerify,
-      spawn_impl: makeFixtureSpawn({ lines: [] })
-      // no port override → uses the module WORKER_PORT getter
-    });
-    expect(att.scheduler).toBeTruthy();
+    // The orphan reap halts the queue — the breaker used to do this.
+    expect(snap.auto_advance).toBe(false);
   });
 });
 

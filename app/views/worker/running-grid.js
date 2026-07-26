@@ -3,8 +3,8 @@
  *
  * Phase 10: the running grid renders REAL attempt tiles derived from the queue
  * snapshot's `attempts` (status='running'), pushed via `worker-queue-snapshot`.
- * The banners area carries the auto-advance state and the breaker Failed banner
- * (derived from failed/orphaned attempts). The transcript viewer (tile click →
+ * The banners area carries the auto-advance state and the Failed banner (derived
+ * from the latest failed/orphaned attempt). The transcript viewer (tile click →
  * drawer) is Phase 11 — here the tile just surfaces attempt data.
  *
  * Grid: `repeat(auto-fill, minmax(215px,1fr))` with its own internal scroll
@@ -21,8 +21,6 @@ import { html } from 'lit-html';
  * @property {string|null} runner
  * @property {string|null} model
  * @property {number|null} started_at
- * @property {string|null} [merge_policy] - Resolved policy snapshot (§2).
- * @property {string|null} [demoted_reason] - Demotion reason badge (§2/§4).
  * @property {string|null} [resumed_from] - Prior attempt this one resumes (§1).
  * @property {boolean} [paused] - Leaf paused attempt: shows ▶ instead of ⏸ and
  * has no live elapsed clock (worker-phase1 §1.1/§2.1).
@@ -32,7 +30,7 @@ import { html } from 'lit-html';
  */
 
 /**
- * @typedef {Object} BreakerBanner
+ * @typedef {Object} FailureBanner
  * @property {string} repo
  * @property {string} reason
  * @property {string|null} [resume_attempt_id] - The banner's own (latest
@@ -62,7 +60,7 @@ function formatElapsed(ms) {
 /**
  * Banners area above the running grid.
  *
- * @param {{ autoAdvance: boolean, breaker?: BreakerBanner|null }} state
+ * @param {{ autoAdvance: boolean, failure?: FailureBanner|null }} state
  * @returns {import('lit-html').TemplateResult}
  */
 export function bannersTemplate(state) {
@@ -74,20 +72,19 @@ export function bannersTemplate(state) {
       : html`<div class="worker-banner worker-banner--off" role="status">
           ⏸ 자동 진행 꺼짐 — 새 세션을 시작하지 않습니다. ▶로 재개.
         </div>`}
-    ${state.breaker
-      ? html`<div class="worker-banner worker-banner--breaker" role="alert">
-          ⛔ ${state.breaker.repo || 'repo'} 세션 실패로 차단 —
-          ${state.breaker.reason || ''}. 신규 launch·머지 진입 차단, 수동 ▶
-          필요.
-          ${state.breaker.resume_attempt_id
+    ${state.failure
+      ? html`<div class="worker-banner worker-banner--failure" role="alert">
+          ⛔ ${state.failure.repo || 'repo'} 세션 실패 —
+          ${state.failure.reason || ''}. 자동 진행을 껐습니다, 수동 ▶ 필요.
+          ${state.failure.resume_attempt_id
             ? html`<button
                 type="button"
                 class="worker-banner__resume"
-                data-attempt-id=${state.breaker.resume_attempt_id}
-                ?disabled=${!state.breaker.resume_eligible}
-                title=${state.breaker.resume_eligible
+                data-attempt-id=${state.failure.resume_attempt_id}
+                ?disabled=${!state.failure.resume_eligible}
+                title=${state.failure.resume_eligible
                   ? '최근 실패 세션을 같은 워크트리에서 이어서 진행'
-                  : state.breaker.resume_reason || '이어하기 불가'}
+                  : state.failure.resume_reason || '이어하기 불가'}
               >
                 ↻ 이어하기
               </button>`
@@ -167,17 +164,6 @@ function runningTile(tile, now, selected_attempt = null) {
     </div>
     <div class="rtile__title">${tile.title}</div>
     ${meta ? html`<div class="rtile__meta">${meta}</div>` : ''}
-    ${tile.merge_policy
-      ? html`<div class="rtile__meta rtile__meta--policy">
-          ${tile.merge_policy}${tile.demoted_reason
-            ? html` <span
-                class="rtile__demoted"
-                title=${`강등: ${tile.demoted_reason}`}
-                >⤵ ${tile.demoted_reason}</span
-              >`
-            : ''}
-        </div>`
-      : ''}
   </div>`;
 }
 

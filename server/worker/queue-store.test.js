@@ -207,91 +207,67 @@ describe('worker/queue-store', () => {
   });
 });
 
-describe('worker/queue-store policy settings (worker-autorun-policy §2)', () => {
-  test('setPolicy persists merge_policy / drift_policy under the revision CAS', () => {
+describe('worker/queue-store retired policy axis (worker-phase2 §2/§9)', () => {
+  test('a fresh queue carries no policy fields', () => {
     const store = createQueueStore();
-    expect(store.snapshot(WS).merge_policy).toBe(null);
-    expect(store.snapshot(WS).drift_policy).toBe(null);
 
-    let r = store.setPolicy(WS, {
-      expected_revision: 0,
-      key: 'merge_policy',
-      value: 'pr_stop'
-    });
-    expect(r.ok).toBe(true);
-    expect(r.queue.merge_policy).toBe('pr_stop');
+    const q = store.snapshot(WS);
 
-    r = store.setPolicy(WS, {
-      expected_revision: r.queue.revision,
-      key: 'drift_policy',
-      value: 'halt'
-    });
-    expect(r.ok).toBe(true);
-    expect(r.queue.drift_policy).toBe('halt');
-
-    // Stale revision → CAS conflict, no write.
-    const stale = store.setPolicy(WS, {
-      expected_revision: 0,
-      key: 'merge_policy',
-      value: 'auto_merge'
-    });
-    expect(stale.ok).toBe(false);
-    expect(stale.conflict).toBe(true);
-    expect(store.snapshot(WS).merge_policy).toBe('pr_stop');
-
-    // null unsets (falls back to the default at resolution time).
-    const unset = store.setPolicy(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      key: 'merge_policy',
-      value: null
-    });
-    expect(unset.ok).toBe(true);
-    expect(unset.queue.merge_policy).toBe(null);
+    expect('merge_policy' in q).toBe(false);
+    expect('drift_policy' in q).toBe(false);
   });
 
-  test('setPolicy rejects unknown keys and non-enum values', () => {
+  test('exposes no setPolicy mutator', () => {
     const store = createQueueStore();
-    const badKey = store.setPolicy(WS, {
-      expected_revision: 0,
-      key: 'auto_advance',
-      value: 'pr_stop'
-    });
-    expect(badKey.ok).toBe(false);
-    expect(badKey.conflict).toBe(false);
-    const badValue = store.setPolicy(WS, {
-      expected_revision: 0,
-      key: 'merge_policy',
-      value: 'yolo'
-    });
-    expect(badValue.ok).toBe(false);
-    expect(store.snapshot(WS).merge_policy).toBe(null);
+
+    expect(/** @type {any} */ (store).setPolicy).toBeUndefined();
   });
 
-  test('persisted policy values survive a reload; invalid persisted values do not', () => {
+  test('a legacy queue.json with policy keys loads clean with the keys dropped', () => {
     const store = createQueueStore();
-    let r = store.setPolicy(WS, {
-      expected_revision: 0,
-      key: 'merge_policy',
-      value: 'pr_stop'
-    });
-    store.setPolicy(WS, {
-      expected_revision: r.queue.revision,
-      key: 'drift_policy',
-      value: 'halt'
-    });
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1', lane: 'serial' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.merge_policy = 'auto_merge';
+    raw.drift_policy = 'halt';
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
 
     const restarted = createQueueStore();
-    expect(restarted.load(WS).merge_policy).toBe('pr_stop');
-    expect(restarted.load(WS).drift_policy).toBe('halt');
+    const q = restarted.load(WS);
 
-    // Corrupt the persisted values → normalize back to null.
+    expect('merge_policy' in q).toBe(false);
+    expect('drift_policy' in q).toBe(false);
+    // The rest of the legacy queue survives intact.
+    expect(q.serial.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('a legacy attempt keeps its retired merge-axis fields (history is immutable)', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-old', bead_id: 'UI-1' }
+    });
     const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
-    raw.merge_policy = 'yolo';
-    raw.drift_policy = 7;
+    Object.assign(raw.attempts['att-old'], {
+      merge_policy: 'auto_merge',
+      drift_policy: 'halt',
+      demoted_reason: 'verify_cmd_unset',
+      merge_sha: 'a'.repeat(40),
+      done_kind: 'auto_merge',
+      release_rejected: 'base_not_advanced',
+      verify_cmd_result: { ok: false, reason: 'x', exit: 1 }
+    });
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
-    const again = createQueueStore();
-    expect(again.load(WS).merge_policy).toBe(null);
-    expect(again.load(WS).drift_policy).toBe(null);
+
+    const restarted = createQueueStore();
+    const att = restarted.load(WS).attempts['att-old'];
+
+    expect(att.merge_policy).toBe('auto_merge');
+    expect(att.drift_policy).toBe('halt');
+    expect(att.demoted_reason).toBe('verify_cmd_unset');
+    expect(att.merge_sha).toBe('a'.repeat(40));
+    expect(att.done_kind).toBe('auto_merge');
+    expect(att.release_rejected).toBe('base_not_advanced');
+    expect(att.verify_cmd_result).toEqual({ ok: false, reason: 'x', exit: 1 });
   });
 });
 

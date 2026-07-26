@@ -2481,55 +2481,6 @@ html[data-theme='dark'] {
   font-weight: 700;
 }
 
-/* 워크스페이스 전역 정책 select (worker-autorun-policy §2/§6) */
-.worker-policy {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-4);
-  font-size: var(--fs-chip);
-  color: var(--text-muted);
-}
-
-.worker-policy__sel {
-  font-size: var(--fs-chip);
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  padding: 1px var(--sp-4);
-}
-
-/* verify_cmd 읽기 전용 표시 — 편집 표면 없음(서버 설정 파일 전용, §4) */
-.worker-verifycmd {
-  min-width: 0;
-  max-width: 100%;
-  font-size: var(--fs-chip);
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.worker-verifycmd code {
-  display: inline-block;
-  max-width: 40ch;
-  font-family: var(--font-mono, monospace);
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
-}
-
-.worker-verifycmd--unset {
-  color: var(--accent-danger);
-}
-
-/* The compact status badge replaces the argv body only ≤640px (§1.2). */
-.worker-verifycmd__badge {
-  display: none;
-}
-
 /* 전역 실행 설정 ⚙ 버튼 + 다이얼로그 (worker-global-exec-defaults §4) */
 .worker-exec-defaults-btn {
   padding: 1px var(--sp-6);
@@ -2619,14 +2570,6 @@ html[data-theme='dark'] {
   font-size: var(--fs-body);
 }
 
-/* Divider hint above the global policy rows in the ⚙ dialog (§1.3). */
-.exec-defaults__hint--policy {
-  margin-top: var(--sp-12);
-  margin-bottom: var(--sp-8);
-  padding-top: var(--sp-8);
-  border-top: 1px solid var(--border-panel);
-}
-
 .worker-banners {
   display: flex;
   flex-direction: column;
@@ -2652,7 +2595,7 @@ html[data-theme='dark'] {
   color: var(--accent-success);
 }
 
-.worker-banner--breaker {
+.worker-banner--failure {
   border: 1px solid var(--border-danger);
   background: color-mix(in srgb, var(--accent-danger) 14%, var(--bg-panel));
   color: var(--accent-danger);
@@ -2832,11 +2775,6 @@ html[data-theme='dark'] {
 .rtile__meta {
   font-size: var(--fs-chip-lg);
   color: var(--text-dim);
-}
-
-/* 실행 타일 정책·강등 뱃지 (worker-autorun-policy §2/§4) */
-.rtile__demoted {
-  color: var(--accent-danger);
 }
 
 /* ---------- Transcript drawer (session viewer, spec §5.6) ---------- */
@@ -3401,23 +3339,9 @@ html[data-theme='dark'] {
     flex-wrap: wrap;
   }
 
-  /* The global merge/drift selects move to the ⚙ dialog on narrow screens (§1.3). */
-  .worker-policy {
-    display: none;
-  }
-
   /* Cap the vertically-stacked lane bodies so the page can't grow unbounded. */
   .worker-pane__body {
     max-height: 40vh;
-  }
-
-  /* verify_cmd: hide the argv body, show the compact status badge (§1.2). */
-  .worker-verifycmd__full {
-    display: none;
-  }
-
-  .worker-verifycmd__badge {
-    display: inline;
   }
 
   /* Worker-tab in-tab transcript drawer (§1.4). */

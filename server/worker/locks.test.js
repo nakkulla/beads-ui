@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { MergeBlockedError, createLockManager } from './locks.js';
+import { createLockManager } from './locks.js';
 
 describe('worker/locks acquire ordering', () => {
   test('same key serializes: second waits until first releases', async () => {
@@ -52,35 +52,5 @@ describe('worker/locks acquire ordering', () => {
     dup();
     topo();
     svc();
-  });
-});
-
-describe('worker/locks merge lock (breaker-aware)', () => {
-  test('acquireMerge serializes per (repo, base)', async () => {
-    const locks = createLockManager();
-    const r1 = await locks.acquireMerge('/repo', 'main');
-    let held2 = false;
-    const p2 = locks.acquireMerge('/repo', 'main').then((rel) => {
-      held2 = true;
-      return rel;
-    });
-    await Promise.resolve();
-    expect(held2).toBe(false);
-    r1();
-    (await p2)();
-    expect(held2).toBe(true);
-  });
-
-  test('breaker-tripped repo refuses merge acquire', async () => {
-    const locks = createLockManager({
-      isMergeBlocked: (repo) => repo === '/blocked'
-    });
-    await expect(locks.acquireMerge('/blocked', 'main')).rejects.toBeInstanceOf(
-      MergeBlockedError
-    );
-    // A different repo is still acquirable.
-    const ok = await locks.acquireMerge('/ok', 'main');
-    expect(typeof ok).toBe('function');
-    ok();
   });
 });

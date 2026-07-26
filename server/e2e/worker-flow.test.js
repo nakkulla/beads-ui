@@ -6,12 +6,13 @@
  * fixtures) — no subprocess, no network, no real claude/codex:
  *
  *   enqueue → scheduler dispatch (real `createRunner` + real `runSession`
- *   normalizing a fixture) → merge-lock acquire/release → INDEPENDENT verify
- *   (real tmp git repo ancestry + faked bd readback) → Done → next dispatch.
+ *   normalizing a fixture) → INDEPENDENT PR observation (real tmp git repo +
+ *   faked bd readback) → pr_wait → next dispatch.
  *
- * Then a FAILURE-injection variant: a fixture whose verdict fails trips the
- * circuit breaker, reverts `workflow_mode`, turns auto_advance off, and blocks
- * the repo's next launch until the breaker is reset.
+ * Then a FAILURE-injection variant: a fixture whose verdict fails reverts
+ * `workflow_mode` and turns auto_advance off — the whole halt mechanism now that
+ * the circuit breaker is gone (worker-phase2 §2). The repo is NOT blocked, so
+ * re-enabling auto_advance is the entire recovery path.
  *
  * The `runtime.js` attach seam Phase 10 deferred is wired here:
  * `setRunningCountProvider(() => scheduler.runningCount())` so `/healthz`-style
@@ -250,9 +251,7 @@ function buildSystem(opts) {
       }),
     bd,
     worktree,
-    tokens: runtime.tokens,
     verify,
-    breaker: runtime.breaker,
     sessionLog: runtime.sessionLog,
     parallel_slots: 2
   });
@@ -312,7 +311,7 @@ afterEach(() => {
 });
 
 describe('worker e2e — full success flow', () => {
-  test('enqueue → dispatch → merge-lock → PR observation → pr_wait → next dispatch', async () => {
+  test('enqueue → dispatch → PR observation → pr_wait → next dispatch', async () => {
     // Success is now what the SERVER observes: an open PR on the bead's branch
     // (worker-phase2 §1). The session's own bd bookkeeping is irrelevant — the
     // worker back-fills `pr_url`/`resolved` itself.
@@ -326,12 +325,6 @@ describe('worker e2e — full success flow', () => {
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
     expect(scheduler.isRunning('S2')).toBe(false);
-
-    // The merge gate: a session token exists and the (repo, base) merge lock is
-    // acquirable through the runtime's breaker-aware lock manager.
-    expect(runtime.tokens.size()).toBeGreaterThanOrEqual(1);
-    const release = await runtime.locks.acquireMerge(repo_dir, 'main');
-    release();
 
     // S1's session replays the success fixture → verdict success → INDEPENDENT
     // observation of the branch's open PR → pr_wait; then S2 auto-dispatches
@@ -351,8 +344,10 @@ describe('worker e2e — full success flow', () => {
     const a1 = /** @type {any} */ (attempts.find((a) => a.bead_id === 'S1'));
     expect(a1.verify_result.ok).toBe(true);
     expect(a1.verify_result.pr_url).toBe('https://github.com/o/r/pull/1');
-    expect(a1.done_kind).toBe('pr_stop');
+    // The retired merge-axis stamps are never written on a new attempt.
+    expect(a1.done_kind).toBe(null);
     expect(a1.merge_sha).toBe(null);
+    expect(a1.merge_policy).toBe(null);
     expect(bd_record.metadata.pr_url).toBe('https://github.com/o/r/pull/1');
     expect(bd_record.status).toBe('resolved');
 
@@ -363,15 +358,14 @@ describe('worker e2e — full success flow', () => {
         (c) => c.method === 'unsetMetadata' && c.key === 'workflow_mode'
       )
     ).toBe(true);
-    // All tokens revoked + no live sessions → the runtime seam reads 0.
-    expect(runtime.tokens.size()).toBe(0);
+    // No live sessions → the runtime seam reads 0.
     expect(scheduler.runningCount()).toBe(0);
     expect(runtime.status(WS).running_count).toBe(0);
   });
 });
 
-describe('worker e2e — failure injection trips the breaker', () => {
-  test('failed session → breaker + workflow_mode revert + repo blocked', async () => {
+describe('worker e2e — failure injection halts the queue (no breaker)', () => {
+  test('failed session → auto_advance OFF + workflow_mode revert + banner record', async () => {
     const { runtime, bd, scheduler } = buildSystem({
       // codex-failure.jsonl: a turn.failed/error stream → verdict fail.
       fixture: 'codex-failure.jsonl',
@@ -383,11 +377,9 @@ describe('worker e2e — failure injection trips the breaker', () => {
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
 
-    await waitFor(() => runtime.breaker.isTripped(repo_dir));
+    await waitFor(() => !runtime.queueStore.snapshot(WS).auto_advance);
 
-    // Breaker tripped, auto_advance forced off, workflow_mode reverted (unset),
-    // attempt marked failed.
-    expect(runtime.breaker.isTripped(repo_dir)).toBe(true);
+    // auto_advance forced off, workflow_mode reverted (unset), attempt failed.
     expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(false);
     expect(
       bd.calls.some(
@@ -403,13 +395,12 @@ describe('worker e2e — failure injection trips the breaker', () => {
       )
     );
     expect(failed.status).toBe('failed');
+    // The record carries what the failure banner renders.
+    expect(failed.cause).toContain('session_failed:');
+    expect(failed.repo).toBe(repo_dir);
 
-    // A tripped repo refuses the merge-lock entry (423-class block).
-    await expect(
-      runtime.locks.acquireMerge(repo_dir, 'main')
-    ).rejects.toThrow();
-
-    // Queue P1 into the same (blocked) repo + re-enable auto → no new launch.
+    // The repo is NOT blocked: re-enabling auto_advance (the ▶ click) is the
+    // whole recovery path now that the breaker is gone.
     runtime.queueStore.place(WS, {
       expected_revision: runtime.queueStore.snapshot(WS).revision,
       bead_id: 'P1',
@@ -417,17 +408,12 @@ describe('worker e2e — failure injection trips the breaker', () => {
     });
     runtime.queueStore.setAutoAdvance(WS, true);
     await scheduler.tick(WS);
-    expect(scheduler.isRunning('P1')).toBe(false);
-
-    // Manual recovery: reset the breaker → P1 launches on the next tick.
-    runtime.breaker.reset(repo_dir);
-    await scheduler.tick(WS);
     expect(scheduler.isRunning('P1')).toBe(true);
   });
 });
 
 describe('worker e2e — a session that never delivered fails verification (fail-closed)', () => {
-  test('success verdict but no open PR observed → verify fails → breaker trips', async () => {
+  test('success verdict but no open PR observed → verify fails → queue halts', async () => {
     // The session replays a SUCCESS fixture (verdict success), but the SERVER
     // observes no open PR for the branch — a successful, empty observation, so
     // the attempt fails closed with pr_missing.
@@ -442,9 +428,9 @@ describe('worker e2e — a session that never delivered fails verification (fail
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
 
-    // Session succeeds, but the observation is empty → fails closed: breaker
-    // trips, auto_advance off, workflow_mode reverted, attempt failed.
-    await waitFor(() => runtime.breaker.isTripped(repo_dir));
+    // Session succeeds, but the observation is empty → fails closed:
+    // auto_advance off, workflow_mode reverted, attempt failed.
+    await waitFor(() => !runtime.queueStore.snapshot(WS).auto_advance);
     expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(false);
 
     const attempt = /** @type {any} */ (
@@ -511,9 +497,7 @@ describe('worker e2e — runtime seam reflects the live scheduler', () => {
         }),
         remove: async () => ({ code: 0 })
       },
-      tokens: runtime.tokens,
       verify: { verifyPrSubmitted: async () => ({ ok: true, reason: 'ok' }) },
-      breaker: runtime.breaker,
       sessionLog: runtime.sessionLog,
       parallel_slots: 1
     });

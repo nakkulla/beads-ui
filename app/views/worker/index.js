@@ -8,10 +8,11 @@
  * `worker-queue-place` mutation carrying the current queue revision; on a CAS
  * conflict the reply's current snapshot is adopted and the drag retried once.
  *
- * The ▶/⏸ controls flip `auto_advance`. Running tiles + the breaker/Failed
- * banner are derived from the queue snapshot's `attempts` (status='running'
- * → tiles; status='failed'/'orphaned' → breaker banner), which the server-side
- * scheduler fills as sessions dispatch and terminate.
+ * The ▶/⏸ controls flip `auto_advance`. Running tiles + the failure banner are
+ * derived from the queue snapshot's `attempts` (status='running' → tiles;
+ * status='failed'/'orphaned' → failure banner), which the server-side scheduler
+ * fills as sessions dispatch and terminate. The banner reads the LATEST failed
+ * attempt directly — there is no breaker object behind it (worker-phase2 §2).
  */
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
@@ -335,34 +336,9 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Set (or unset with '') a workspace-global policy, retrying ONCE on a CAS
-   * conflict — the same discipline as {@link setAutoAdvance} (§2).
-   *
-   * @param {'merge_policy'|'drift_policy'} key
-   * @param {string} value
-   */
-  async function setPolicy(key, value) {
-    if (!transport) {
-      return;
-    }
-    const payload = { key, value: value || null };
-    const res = await transport('worker-queue-set-policy', {
-      ...payload,
-      expected_revision: currentRevision()
-    });
-    adopt(res);
-    if (res && res.conflict) {
-      await transport('worker-queue-set-policy', {
-        ...payload,
-        expected_revision: currentRevision()
-      }).then(adopt);
-    }
-  }
-
-  /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, over_cap: boolean, breaker: any, serial: any[], parallel: any[], done: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, over_cap: boolean, failure: any, serial: any[], parallel: any[], done: any[] }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -507,8 +483,6 @@ export function createWorkerView(mount_element, options = {}) {
           model: a.model || null,
           effort: a.effort || null,
           started_at: typeof a.started_at === 'number' ? a.started_at : null,
-          merge_policy: a.merge_policy || null,
-          demoted_reason: a.demoted_reason || null,
           resumed_from: a.resumed_from || null,
           paused: leaf_paused,
           can_pause: typeof a.session_id === 'string' && a.session_id.length > 0
@@ -524,13 +498,13 @@ export function createWorkerView(mount_element, options = {}) {
     // would resume a different session than the one reported); ineligibility
     // renders the button disabled with the reason in its title (spec §1.5).
     /** @type {any|null} */
-    let breaker = null;
+    let failure = null;
     if (latest_failed) {
       const has_sid =
         typeof latest_failed.session_id === 'string' &&
         latest_failed.session_id.length > 0;
       const already = resumed_from_ids.has(latest_failed.attempt_id);
-      breaker = {
+      failure = {
         repo: latest_failed.repo || '',
         reason: latest_failed.cause || latest_failed.status,
         resume_attempt_id: latest_failed.attempt_id,
@@ -563,7 +537,7 @@ export function createWorkerView(mount_element, options = {}) {
       running,
       live_count,
       over_cap,
-      breaker,
+      failure,
       serial: toRows(q.serial, 'serial'),
       parallel: toRows(q.parallel, 'parallel'),
       // TEMPORARY (worker-phase2 Phase 1): `pr_wait` beads ride in the Done
@@ -589,51 +563,6 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function topTemplate(m) {
     const serialHead = m.serial.length > 0 ? m.serial[0].id : '—';
-    const info = m.queue.workspace_info || {};
-    const verify_cmd =
-      info.verify_cmd && Array.isArray(info.verify_cmd.cmd)
-        ? info.verify_cmd.cmd.join(' ')
-        : null;
-    // An auto-detected command is flagged `(자동 감지)` so it reads apart from an
-    // explicit config section (worker-attempt-resume-verify-autodetect §2.3).
-    const verify_detected =
-      !!info.verify_cmd && info.verify_cmd.source === 'detected';
-    const detected_suffix = verify_detected ? ' (자동 감지)' : '';
-    // The bar can truncate a long argv (CSS ellipsis), so the FULL command also
-    // rides the title attribute — the only place it can be read on a narrow
-    // screen where the body is hidden for a status badge (spec §1.2).
-    const verify_title = verify_cmd
-      ? `verify_cmd — 설정 파일 명시 > 자동 감지 > 없음, 미설정 시 auto_merge가 pr_stop으로 강등. 전체 명령: ${verify_cmd}${detected_suffix}`
-      : 'verify_cmd — 설정 파일 명시 > 자동 감지 > 없음, 미설정 시 auto_merge가 pr_stop으로 강등';
-    /**
-     * @param {'merge_policy'|'drift_policy'} key
-     * @param {string[]} opts
-     * @param {string} default_label
-     */
-    const policySelect = (key, opts, default_label) => {
-      const value = typeof m.queue[key] === 'string' ? m.queue[key] : '';
-      return html`<label class="worker-policy">
-        <span class="worker-policy__k">${key}</span>
-        <select
-          class="worker-policy__sel"
-          aria-label=${`전역 ${key}`}
-          data-policy-key=${key}
-          @change=${(/** @type {Event} */ ev) =>
-            void setPolicy(
-              key,
-              /** @type {HTMLSelectElement} */ (ev.target).value
-            )}
-        >
-          <option value="" ?selected=${!opts.includes(value)}>
-            ${default_label}
-          </option>
-          ${opts.map(
-            (o) =>
-              html`<option value=${o} ?selected=${value === o}>${o}</option>`
-          )}
-        </select>
-      </label>`;
-    };
     return html`<div class="worker-ctrl">
         <button
           type="button"
@@ -655,16 +584,6 @@ export function createWorkerView(mount_element, options = {}) {
         <span class="worker-tgl"
           >parallel slot <b>${m.parallel.length}</b></span
         >
-        ${policySelect(
-          'merge_policy',
-          ['auto_merge', 'pr_stop'],
-          '(기본 auto_merge)'
-        )}
-        ${policySelect(
-          'drift_policy',
-          ['auto_rereview', 'halt'],
-          '(기본 auto_rereview)'
-        )}
         <button
           type="button"
           class="worker-exec-defaults-btn"
@@ -674,29 +593,10 @@ export function createWorkerView(mount_element, options = {}) {
         >
           ⚙
         </button>
-        <span
-          class="worker-verifycmd${verify_cmd
-            ? ''
-            : ' worker-verifycmd--unset'}"
-          title=${verify_title}
-        >
-          ${verify_cmd
-            ? html`<span class="worker-verifycmd__full"
-                  >verify_cmd:
-                  <code>${verify_cmd}</code>${detected_suffix}</span
-                ><span class="worker-verifycmd__badge"
-                  >verify_cmd ✓${detected_suffix}</span
-                >`
-            : html`<span class="worker-verifycmd__full"
-                  >verify_cmd: 미설정 (auto_merge→pr_stop 강등)</span
-                ><span class="worker-verifycmd__badge"
-                  >verify_cmd 미설정 ⤵pr_stop</span
-                >`}</span
-        >
       </div>
       ${bannersTemplate({
         autoAdvance: !!m.queue.auto_advance,
-        breaker: m.breaker
+        failure: m.failure
       })}
       ${runningGridTemplate(m.running, Date.now(), selected_attempt)}`;
   }
@@ -954,7 +854,7 @@ export function createWorkerView(mount_element, options = {}) {
       exec_defaults_dialog.open();
       return;
     }
-    // The breaker banner's ↻ resumes the newest eligible failed attempt (§1).
+    // The failure banner's ↻ resumes the newest eligible failed attempt (§1).
     const resumeBtn = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-banner__resume')
     );

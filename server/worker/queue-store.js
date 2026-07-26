@@ -39,28 +39,26 @@
  * @property {string|null} effort - Effort snapshot.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
- * @property {string|null} repo - Target repo root (for breaker scope + orphan reap).
+ * @property {string|null} repo - Target repo root (for the orphan reap scope).
  * @property {string|null} status - Attempt lifecycle: running/done/failed/
  * orphaned/paused/stopped. `paused` (tile ⏸, resumable) and `stopped` (tile ■,
  * terminal) are user actions and carry no `cause` — the state is the meaning.
  * @property {string|null} workflow_mode_prior - workflow_mode value snapshotted before launch (null=was unset).
  * @property {string|null} target_base - Merge target base at dispatch.
- * @property {string|null} merge_sha - SERVER-observed merge SHA (recorded by
- * the merge-lock route at a verified release).
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
- * @property {string|null} cause - Failure cause (breaker banner reason).
- * @property {string|null} merge_policy - Resolved merge policy snapshot
- * (auto_merge/pr_stop, post-demotion) at dispatch.
- * @property {string|null} drift_policy - Resolved drift policy snapshot
- * (auto_rereview/halt) at dispatch.
- * @property {string|null} demoted_reason - Why the resolved merge policy was
- * demoted (e.g. verify_cmd_unset), null when not demoted.
- * @property {string|null} release_rejected - Last rejected merge-lock release
- * reason (base_not_advanced/merge_sha_mismatch/git_error), null when none.
- * @property {string|null} done_kind - How the attempt completed
- * ('auto_merge'|'pr_stop'), null until done.
- * @property {unknown} verify_cmd_result - Post-merge verify_cmd result
- * ({ ok, reason, exit }), null when the lane never ran it.
+ * @property {string|null} cause - Failure cause (failure banner reason).
+ *
+ * RETIRED merge-axis fields (worker-phase2 §2). New attempts never write them,
+ * but attempt history is immutable (§9), so the shape is preserved so a legacy
+ * `queue.json` round-trips through {@link makeAttempt} without losing a record
+ * of what the old regime did:
+ * @property {string|null} merge_sha - SERVER-observed merge SHA.
+ * @property {string|null} merge_policy - Resolved merge policy at dispatch.
+ * @property {string|null} drift_policy - Resolved drift policy at dispatch.
+ * @property {string|null} demoted_reason - Why the merge policy was demoted.
+ * @property {string|null} release_rejected - Last rejected merge-lock release.
+ * @property {string|null} done_kind - How the attempt completed.
+ * @property {unknown} verify_cmd_result - Post-merge verify_cmd result.
  * @property {string[]|null} exec_stamped_keys - Exec-setting metadata keys
  * stamped onto the bead at dispatch (bead-absent keys filled from the
  * workspace-global default). Recorded durably BEFORE the first metadata write
@@ -79,10 +77,6 @@
  * @typedef {Object} Queue
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
- * @property {string|null} merge_policy - Workspace-global merge policy
- * (auto_merge/pr_stop); null = unset (default applies at resolution).
- * @property {string|null} drift_policy - Workspace-global drift policy
- * (auto_rereview/halt); null = unset.
  * @property {Record<string, string>} exec_defaults - Workspace-global exec
  * setting defaults (subset of the 5 exec keys; an unset key is absent). Only
  * valid enum values survive normalize.
@@ -106,30 +100,10 @@
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { EXEC_SETTING_ENUMS } from './exec-enums.js';
-import { DRIFT_POLICIES, MERGE_POLICIES } from './policy.js';
 import { queueFilePath } from './state-paths.js';
 
 /** @type {ReadonlyArray<'serial'|'parallel'>} */
 const PLACEABLE_LANES = ['serial', 'parallel'];
-
-/**
- * Workspace-global policy keys settable through `setPolicy`, with their enums.
- *
- * @type {Record<string, ReadonlyArray<string>>}
- */
-const POLICY_KEYS = {
-  merge_policy: MERGE_POLICIES,
-  drift_policy: DRIFT_POLICIES
-};
-
-/**
- * @param {ReadonlyArray<string>} allowed
- * @param {unknown} value
- * @returns {string|null}
- */
-function normalizePolicyValue(allowed, value) {
-  return typeof value === 'string' && allowed.includes(value) ? value : null;
-}
 
 /**
  * @param {unknown} value
@@ -146,8 +120,6 @@ function emptyQueue() {
   return {
     revision: 0,
     auto_advance: false,
-    merge_policy: null,
-    drift_policy: null,
     exec_defaults: {},
     serial: [],
     parallel: [],
@@ -304,8 +276,9 @@ function normalizeQueue(raw) {
       }
     }
   }
-  q.merge_policy = normalizePolicyValue(MERGE_POLICIES, raw.merge_policy);
-  q.drift_policy = normalizePolicyValue(DRIFT_POLICIES, raw.drift_policy);
+  // A legacy queue.json carrying the retired workspace-global `merge_policy` /
+  // `drift_policy` simply has no destination field here, so the keys are DROPPED
+  // on load without error (worker-phase2 §9).
   // Retired keys (`worker_runner`) and values outside the current catalog (the
   // old codex `gpt-5.*` orchestration models) have no entry here, so they are
   // dropped on load and the setting falls back to unset (spec §3).
@@ -695,6 +668,10 @@ export function createQueueStore(options = {}) {
      * Move a bead into the Done lane (removing it from serial/parallel).
      * Scheduler-owned (no CAS).
      *
+     * Currently unwired: the merge axis that used to call this is gone, and
+     * `done` is re-populated by Phase 5's post-merge cleanup (worker-phase2 §6).
+     * The lane itself persists, so the mutation is kept rather than re-derived.
+     *
      * @param {string} workspace
      * @param {{ bead_id: string }} input
      * @returns {QueueOpResult}
@@ -712,36 +689,8 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Set (or unset with null) a workspace-global policy. CAS-guarded.
-     * Rejects unknown keys and non-enum values without a write.
-     *
-     * @param {string} workspace
-     * @param {{ expected_revision: number, key: string, value: unknown }} input
-     * @returns {QueueOpResult}
-     */
-    setPolicy(workspace, input) {
-      const { expected_revision, key, value } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
-        const allowed = POLICY_KEYS[key];
-        if (!allowed) {
-          return false;
-        }
-        if (value === null || value === '') {
-          next[/** @type {'merge_policy'|'drift_policy'} */ (key)] = null;
-          return true;
-        }
-        const normalized = normalizePolicyValue(allowed, value);
-        if (!normalized) {
-          return false;
-        }
-        next[/** @type {'merge_policy'|'drift_policy'} */ (key)] = normalized;
-        return true;
-      });
-    },
-
-    /**
      * Set (or unset with null/'') a workspace-global exec-setting default. CAS-
-     * guarded, mirroring {@link setPolicy}: unknown keys and non-enum values are
+     * guarded: unknown keys and non-enum values are
      * rejected without a write. `orchestration_model` is validated against the
      * runner UNION here (runner↔model cross-compatibility is a dispatch-resolve
      * / UI-filter concern, not a set-time one — spec §2).
@@ -813,7 +762,8 @@ export function createQueueStore(options = {}) {
 
     /**
      * Force the auto_advance flag (scheduler-owned, no CAS) — used to turn
-     * execution OFF when the circuit breaker trips (spec §5.3).
+     * execution OFF on a session failure or an orphan reap, which together with
+     * the failure banner IS the halt behaviour (worker-phase2 §2).
      *
      * @param {string} workspace
      * @param {boolean} on

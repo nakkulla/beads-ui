@@ -17,7 +17,9 @@
  *     unattended (spec §5.2).
  *   - On success, INDEPENDENT verification (a SERVER-observed open PR for the
  *     attempt's branch, worker-phase2 §1) gates the move to the PR-wait lane;
- *     on any failure the circuit breaker trips (spec §5.3).
+ *     any failure turns `auto_advance` OFF and leaves the failure banner to
+ *     render off the terminal attempt record (worker-phase2 §2 — the circuit
+ *     breaker that used to do this is gone with the merge axis).
  *
  * Fully injectable (fake clock / runner / bd / worktree / verify) so no real
  * subprocess is spawned in tests.
@@ -25,7 +27,7 @@
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
 import { debug } from '../logging.js';
-import { resolveExecSettings, resolvePolicies } from './policy.js';
+import { resolveExecSettings } from './policy.js';
 
 const log = debug('worker:scheduler');
 
@@ -46,8 +48,6 @@ const log = debug('worker:scheduler');
  * @property {unknown} [spec_review] - Raw spec_review metadata value. Key
  * absence ⇒ `undefined`; any present value must reach the admission
  * validator so a malformed receipt rejects instead of reading as absent.
- * @property {string|null} [merge_policy] - Bead-pinned merge policy metadata.
- * @property {string|null} [drift_policy] - Bead-pinned drift policy metadata.
  * @property {string[]} [deps] - Dependency ids.
  */
 
@@ -62,33 +62,18 @@ const log = debug('worker:scheduler');
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>
  * }} bd
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
- * @property {{ issue: (attempt_id: string, meta: { repo: string, bead_id: string, target_base?: string }) => string, revoke: (attempt_id: string) => void }} tokens
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
- * @property {{ takeHandover: (attempt_id: string) => (() => void) | null }} [mergeLock]
- * Merge-lock handover accessor (worker-autorun-policy §5): a verified release
- * transfers lock ownership to the worker; the scheduler takes it here and
- * frees it only after post-merge verification (failure order: trip → release).
- * @property {ReturnType<typeof import('./breaker.js').createBreaker>} breaker
  * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string }> }} [admission]
  * Auto-run admission validator (worker-autorun-policy §1). When present, the
  * tick candidate scan AND the dispatch re-check (against the pinned worktree
  * base_oid) both gate on it; refusals are recorded in `Queue.admission`.
- * @property {(repo: string) => { cmd: string[], timeout_ms: number } | null} [verifyCmd]
- * Workspace verify_cmd config lookup (worker-autorun-policy §4). A null (or
- * absent dep) means no independent post-merge verification is available, so a
- * resolved auto_merge demotes to pr_stop at dispatch (`verify_cmd_unset`).
- * @property {(input: { cwd: string, cmd: string[], timeout_ms: number }) => Promise<{ ok: boolean, reason: string, exit: number|null }>} [runVerifyCmd]
- * Post-merge verify_cmd executor (verify-cmd.js). Runs on the auto_merge
- * success path inside a detached worktree pinned to the observed merge_sha,
- * while the handed-over merge lock is still held.
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void }} sessionLog
  * @property {(workspace: string) => void} [notifyQueueChanged]
  * Fired after autonomous queue transitions (dispatch records, admission
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
  * waiting for their next own mutation (worker-autorun-policy §6).
- * @property {number | (() => number)} [port] - Server port for the merge-lock endpoint injected into the preamble.
  * @property {() => number} [now]
  * @property {number} [parallel_slots]
  * @property {(bead_id: string) => string} [makeAttemptId]
@@ -112,17 +97,6 @@ export function createScheduler(deps) {
   const now = deps.now || (() => Date.now());
   const parallel_slots =
     typeof deps.parallel_slots === 'number' ? deps.parallel_slots : 2;
-  /**
-   * Resolve the live server port for the merge-lock endpoint injected into each
-   * session's preamble. Accepts a number or a late-bound getter (the port is
-   * only known after the server begins listening).
-   *
-   * @returns {number}
-   */
-  const resolvePort =
-    typeof deps.port === 'function'
-      ? deps.port
-      : () => (typeof deps.port === 'number' ? deps.port : 0);
   let attempt_seq = 0;
   const makeAttemptId =
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
@@ -138,7 +112,7 @@ export function createScheduler(deps) {
   /**
    * Attempts terminated by an explicit stop (■). Their `done` promise still
    * resolves later; `onSessionDone` must NOT re-run the failure path for them
-   * (no breaker trip, no double revert) — the stop already finalized them.
+   * (no auto_advance halt, no double revert) — the stop already finalized them.
    *
    * @type {Set<string>}
    */
@@ -274,24 +248,21 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Trip the breaker for a failed attempt: mark Failed, revert workflow_mode,
-   * turn auto_advance OFF, block the repo's new launch + merge entry (spec §5.3).
+   * Finalize a failed attempt: mark Failed, revert workflow_mode + exec stamps,
+   * and turn auto_advance OFF.
+   *
+   * The auto_advance halt IS the failure behaviour now (worker-phase2 §2). With
+   * sessions unable to touch the base, a failure's blast radius is one worktree,
+   * so there is nothing to fence off per-repo — stopping the queue and letting
+   * the banner render off this terminal record covers what the breaker covered.
    *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {string} bead_id
-   * @param {BeadSnapshot} snap
    * @param {string|null} prior
    * @param {string} cause
    */
-  async function failAttempt(
-    workspace,
-    attempt_id,
-    bead_id,
-    snap,
-    prior,
-    cause
-  ) {
+  async function failAttempt(workspace, attempt_id, bead_id, prior, cause) {
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: { status: 'failed', cause, finished_at: now() }
@@ -299,133 +270,18 @@ export function createScheduler(deps) {
     try {
       await revertWorkflowMode(bead_id, prior);
     } catch (err) {
-      // Best-effort on the failure path: the trip below already blocks the
-      // repo, so a bd-down revert failure must not escape onSessionDone.
+      // Best-effort on the failure path: the halt below already stops the queue,
+      // so a bd-down revert failure must not escape onSessionDone.
       log('workflow_mode revert failed for %s: %o', bead_id, err);
     }
     // Revert any exec-setting stamps this attempt wrote (best-effort).
     await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
-    deps.breaker.trip(snap.repo, { bead_id, cause });
     deps.store.setAutoAdvance(workspace, false);
   }
 
   /**
-   * Take the handed-over merge lock for an attempt, if any (worker-autorun-
-   * policy §5). Returns a release thunk that is safe to call exactly once.
-   *
-   * @param {string} attempt_id
-   * @returns {() => void}
-   */
-  function takeHandover(attempt_id) {
-    /** @type {(() => void) | null} */
-    let release = null;
-    try {
-      release = deps.mergeLock ? deps.mergeLock.takeHandover(attempt_id) : null;
-    } catch {
-      release = null;
-    }
-    return () => {
-      if (release) {
-        try {
-          release();
-        } catch {
-          // Best-effort; the lock chain still advances on the next acquire.
-        }
-        release = null;
-      }
-    };
-  }
-
-  /**
-   * Run the post-merge verify_cmd in a detached worktree pinned to the
-   * observed merge_sha; the worktree is cleaned up in every branch. Any
-   * infrastructure failure (unset cmd, missing sha, worktree error) is a
-   * spawn-error refusal — never a silent pass. The result lands on the
-   * attempt record (`verify_cmd_result`).
-   *
-   * DEAD CODE — Phase 2 삭제 예정. worker-phase2 §1 detached the completion path
-   * from the merge axis, so nothing calls this any more; the deletion (with the
-   * rest of the merge surface) is Phase 2's single sweep, not this phase's.
-   *
-   * @param {string} workspace
-   * @param {string} attempt_id
-   * @param {string} bead_id
-   * @param {BeadSnapshot} snap
-   * @param {string} merge_sha
-   * @returns {Promise<{ ok: boolean, reason: string, exit: number|null }>}
-   */
-  // eslint-disable-next-line no-unused-vars
-  async function runPostMergeVerify(
-    workspace,
-    attempt_id,
-    bead_id,
-    snap,
-    merge_sha
-  ) {
-    /** @type {{ cmd: string[], timeout_ms: number } | null} */
-    let vc = null;
-    try {
-      vc = deps.verifyCmd ? deps.verifyCmd(snap.repo) : null;
-    } catch {
-      vc = null;
-    }
-    /** @type {{ ok: boolean, reason: string, exit: number|null }} */
-    let vres;
-    const capable =
-      typeof deps.runVerifyCmd === 'function' &&
-      typeof (/** @type {any} */ (deps.worktree).addDetached) === 'function' &&
-      typeof (/** @type {any} */ (deps.worktree).removeDetached) === 'function';
-    if (!vc || !merge_sha || !capable) {
-      // Fail-closed: an auto_merge without a runnable independent
-      // verification (unset cmd, no observed sha, missing runner/worktree
-      // capability) must never pass silently (implementation review
-      // 2026-07-22 — unattended merge without verification is forbidden).
-      vres = { ok: false, reason: 'verify_cmd_spawn_error', exit: null };
-    } else {
-      const name = `verify-${bead_id}`;
-      /** @type {{ path: string } | null} */
-      let wt = null;
-      try {
-        wt = await /** @type {any} */ (deps.worktree).addDetached({
-          repo: snap.repo,
-          sha: merge_sha,
-          name
-        });
-        vres = await /** @type {NonNullable<typeof deps.runVerifyCmd>} */ (
-          deps.runVerifyCmd
-        )({
-          cwd: /** @type {{ path: string }} */ (wt).path,
-          cmd: vc.cmd,
-          timeout_ms: vc.timeout_ms
-        });
-      } catch (err) {
-        log('post-merge verify infra failed for %s: %o', bead_id, err);
-        vres = { ok: false, reason: 'verify_cmd_spawn_error', exit: null };
-      } finally {
-        if (wt) {
-          try {
-            await /** @type {any} */ (deps.worktree).removeDetached({
-              repo: snap.repo,
-              name
-            });
-          } catch {
-            // Best-effort cleanup; the verdict already stands.
-          }
-        }
-      }
-    }
-    deps.store.updateAttempt(workspace, {
-      attempt_id,
-      patch: { verify_cmd_result: vres }
-    });
-    return vres;
-  }
-
-  /**
-   * Handle a finished session: SERVER-OBSERVED PR verdict → `pr_wait`, else
-   * breaker. The handed-over merge lock (verified release) is freed here in
-   * EVERY branch — on failure only AFTER the breaker trips, so a waiter can
-   * never merge into the failed base.
+   * Handle a finished session: SERVER-OBSERVED PR verdict → `pr_wait`, else the
+   * failure path (auto_advance OFF + banner).
    *
    * @param {string} workspace
    * @param {string} attempt_id
@@ -444,14 +300,11 @@ export function createScheduler(deps) {
   ) {
     running.delete(attempt_id);
     claimed.delete(bead_id);
-    deps.tokens.revoke(attempt_id);
-    const releaseHandover = takeHandover(attempt_id);
 
     // An explicit stop already finalized this attempt (failed + mode reverted);
     // the late `done` resolution must not re-run the failure path.
     if (stopped.has(attempt_id)) {
       stopped.delete(attempt_id);
-      releaseHandover();
       return;
     }
 
@@ -465,13 +318,11 @@ export function createScheduler(deps) {
         workspace,
         attempt_id,
         bead_id,
-        snap,
         prior,
         verdict.blocked
           ? 'loud_fail_blocker'
           : `session_failed:${verdict.reason}`
       );
-      releaseHandover();
       notifyChanged(workspace);
       await tick(workspace);
       return;
@@ -479,9 +330,7 @@ export function createScheduler(deps) {
 
     // Independent verification — session exit 0 is NOT enough, and neither is
     // the session's own bd bookkeeping (worker-phase2 §1). ONE verdict now:
-    // does the server OBSERVE an open PR for this attempt's branch? The
-    // merge_policy branch is gone from this path — `merge_sha`/`closed` no
-    // longer participate in a completion judgment.
+    // does the server OBSERVE an open PR for this attempt's branch?
     const vr = await deps.verify.verifyPrSubmitted({
       repo: snap.repo,
       bead_id
@@ -492,7 +341,6 @@ export function createScheduler(deps) {
     });
 
     if (vr.ok) {
-      releaseHandover();
       // EVERY success is now PR-stop in nature: the bead stays open for a later
       // human merge click, so a stray fast_track must not switch that session to
       // unattended — a failed revert BLOCKS the lane move unconditionally
@@ -505,7 +353,6 @@ export function createScheduler(deps) {
           workspace,
           attempt_id,
           bead_id,
-          snap,
           prior,
           'workflow_mode_revert_failed'
         );
@@ -522,18 +369,16 @@ export function createScheduler(deps) {
       deps.store.moveToPrWait(workspace, {
         bead_id,
         attempt_id,
-        patch: { status: 'done', finished_at: now(), done_kind: 'pr_stop' }
+        patch: { status: 'done', finished_at: now() }
       });
     } else {
       await failAttempt(
         workspace,
         attempt_id,
         bead_id,
-        snap,
         prior,
         `verify_failed:${vr.reason}`
       );
-      releaseHandover();
     }
     notifyChanged(workspace);
     await tick(workspace);
@@ -571,12 +416,6 @@ export function createScheduler(deps) {
     });
     const runner_name = 'claude';
 
-    // Breaker: refuse a new launch into a blocked repo.
-    if (deps.breaker.isTripped(snap.repo)) {
-      claimed.delete(bead_id);
-      return;
-    }
-
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
 
@@ -613,37 +452,11 @@ export function createScheduler(deps) {
       return;
     }
 
-    // Resolve the policy settings (bead > workspace global > default) and
-    // apply the verify_cmd-unset demotion (§2/§4): an unattended merge without
-    // independent post-merge verification is structurally forbidden, so a
-    // resolved auto_merge demotes to pr_stop when no verify_cmd is configured.
-    const resolved = resolvePolicies({
-      bead: snap,
-      queue: deps.store.snapshot(workspace)
-    });
-    let merge_policy = resolved.merge_policy;
-    const drift_policy = resolved.drift_policy;
-    /** @type {string|null} */
-    let demoted_reason = null;
-    if (merge_policy === 'auto_merge') {
-      /** @type {{ cmd: string[], timeout_ms: number } | null} */
-      let vcmd = null;
-      try {
-        vcmd = deps.verifyCmd ? deps.verifyCmd(snap.repo) : null;
-      } catch {
-        vcmd = null;
-      }
-      if (!vcmd || !Array.isArray(vcmd.cmd) || vcmd.cmd.length === 0) {
-        merge_policy = 'pr_stop';
-        demoted_reason = 'verify_cmd_unset';
-      }
-    }
-
     // Record + readback workflow_mode=fast_track (double-delivered with prompt).
     // The set AND its confirming readback are contained: a bd failure or a
     // readback that does not echo `fast_track` fails THIS dispatch only (records
     // a failed attempt, reverts the mode, releases the claim) — it never rejects
-    // out of tick's Promise.all, and never trips the breaker or pauses siblings
+    // out of tick's Promise.all, and never halts the queue or pauses siblings
     // (spec §5.2).
     let fast_track_ok = false;
     try {
@@ -720,9 +533,6 @@ export function createScheduler(deps) {
         workflow_mode_prior: prior,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values: stamped_keys.length > 0 ? exec_values : null,
-        merge_policy,
-        drift_policy,
-        demoted_reason,
         status: 'running',
         pid: null
       }
@@ -734,7 +544,7 @@ export function createScheduler(deps) {
     // durably-recorded stamped_keys are unset (idempotent for keys not yet
     // written — a set that succeeded but whose readback threw/mismatched is
     // still cleaned up), the attempt is recorded failed, the mode is reverted,
-    // the claim released — no breaker trip, no sibling pause.
+    // the claim released — no queue halt, no sibling pause.
     let exec_stamp_ok = true;
     for (const key of stamped_keys) {
       const value = /** @type {Record<string, string>} */ (
@@ -791,8 +601,6 @@ export function createScheduler(deps) {
       runner_name,
       model: exec.orchestration_model ?? null,
       effort: exec.orchestration_effort ?? null,
-      merge_policy,
-      drift_policy,
       prior_wf: prior,
       stamped_keys,
       wt_path: wt.path,
@@ -803,12 +611,16 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Shared launch tail for a first dispatch AND a manual resume: issue the
-   * session token, spawn the runner, fill the spawn-time snapshot, attach the
-   * session log, wire session_id capture + the done handler. On a spawn throw it
-   * cleans up exactly like the exec-stamp partial failure (revoke token, revert
-   * stamps + workflow_mode, record `spawn_failed`, release the claim) so no
-   * stamped metadata or leaked `running` record outlives the aborted launch.
+   * Shared launch tail for a first dispatch AND a manual resume: spawn the
+   * runner, fill the spawn-time snapshot, attach the session log, wire
+   * session_id capture + the done handler. On a spawn throw it cleans up exactly
+   * like the exec-stamp partial failure (revert stamps + workflow_mode, record
+   * `spawn_failed`, release the claim) so no stamped metadata or leaked
+   * `running` record outlives the aborted launch.
+   *
+   * `conflict_resolution` marks a resolution attempt (worker-phase2 §6). It is
+   * the ONLY input that relaxes the session-side `git merge` guard, so it
+   * defaults to false here and only Phase 5's resolution dispatch passes true.
    *
    * @param {{
    *   workspace: string,
@@ -821,13 +633,12 @@ export function createScheduler(deps) {
    *   runner_name: string,
    *   model: string|null,
    *   effort: string|null,
-   *   merge_policy: 'auto_merge'|'pr_stop',
-   *   drift_policy: string|null,
    *   prior_wf: string|null,
    *   stamped_keys: string[],
    *   wt_path: string,
    *   spawnBead: any,
-   *   resume_session_id?: string|null
+   *   resume_session_id?: string|null,
+   *   conflict_resolution?: boolean
    * }} input
    */
   async function launchSession(input) {
@@ -842,8 +653,6 @@ export function createScheduler(deps) {
       runner_name,
       model,
       effort,
-      merge_policy,
-      drift_policy,
       prior_wf,
       stamped_keys,
       wt_path,
@@ -851,7 +660,6 @@ export function createScheduler(deps) {
       resume_session_id
     } = input;
 
-    const token = deps.tokens.issue(attempt_id, { repo, bead_id, target_base });
     const runner = deps.makeRunner(runner_name);
     const started_at = now();
 
@@ -860,13 +668,7 @@ export function createScheduler(deps) {
       model: model ?? undefined,
       effort: effort ?? undefined,
       fast_track: true,
-      merge_policy,
-      drift_policy,
-      env: { BDUI_WORKER_TOKEN: token },
-      // Inject the concrete merge-lock endpoint params so the session's
-      // preamble acquires the (repo, target_base) lock before merging (F3).
-      // The preamble omits the block under pr_stop (no merge → no lock).
-      merge_lock: { port: resolvePort(), repo, target_base }
+      conflict_resolution: input.conflict_resolution === true
     };
     // Resume argv branch (spec §1.4): the adapter reads this to continue the
     // prior claude session id / codex thread id.
@@ -879,7 +681,6 @@ export function createScheduler(deps) {
     try {
       handle = runner.spawn(spawnBead, wt_path, settings);
     } catch {
-      deps.tokens.revoke(attempt_id);
       await revertExecStamps(bead_id, stamped_keys);
       deps.store.updateAttempt(workspace, {
         attempt_id,
@@ -896,8 +697,8 @@ export function createScheduler(deps) {
     }
 
     // Fill the runtime snapshot now that the process exists (spec §5.2). The
-    // durable fields (repo/base_oid/exec_stamped_keys/policies) were pre-
-    // recorded above; here we add the spawn-time facts + resolved exec values.
+    // durable fields (repo/base_oid/exec_stamped_keys) were pre-recorded above;
+    // here we add the spawn-time facts + resolved exec values.
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
@@ -928,8 +729,8 @@ export function createScheduler(deps) {
     notifyChanged(workspace);
 
     // onSessionDone reads only repo + target_base off the snap, so a synthetic
-    // snapshot carries everything the termination path needs (breaker scope +
-    // independent verify target) for both first dispatch and resume.
+    // snapshot carries everything the termination path needs (the independent
+    // verify target) for both first dispatch and resume.
     const doneSnap = /** @type {BeadSnapshot} */ (
       /** @type {any} */ ({ repo, target_base })
     );
@@ -972,15 +773,13 @@ export function createScheduler(deps) {
    * `worktree_missing` · `bead_running` · `already_resumed`
    * (`runner_unavailable` is retired with the runner axis — claude is the only
    * runner). A NEW attempt is minted carrying `resumed_from`, the PRIOR snapshot
-   * is inherited verbatim (no re-resolution of globals/policies), workflow_mode
-   * + exec are re-stamped from the prior values, and the shared launch tail
-   * spawns the adapter's resume argv.
+   * is inherited verbatim (no re-resolution of globals), workflow_mode + exec
+   * are re-stamped from the prior values, and the shared launch tail spawns the
+   * adapter's resume argv.
    *
-   * Breaker (worker-phase1 §1.3): only a `failed|orphaned` resume resets it — ↻
-   * on a real failure is a human ▶-grade intervention, and without the reset a
-   * resumed auto_merge would deadlock at the merge-lock gate. A `paused` resume
-   * does NOT reset: pausing is not a failure, so it must not clear a block a
-   * sibling's genuine failure raised.
+   * The breaker-reset branch (worker-phase1 §1.3) is gone with the breaker
+   * itself (worker-phase2 §2): there is no repo-level block for a resume to
+   * clear. Turning `auto_advance` back on stays the user's explicit ▶.
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
@@ -1032,18 +831,11 @@ export function createScheduler(deps) {
     }
     const runner_name = 'claude';
 
-    // Admitted. Breaker reset is scoped to real failures (§1.3): a paused
-    // resume leaves any tripped breaker exactly as it found it.
-    if (prior.status !== 'paused') {
-      deps.breaker.reset(repo);
-    }
     claimed.add(bead_id);
 
     const new_attempt_id = makeAttemptId(bead_id);
     const target_base =
       typeof prior.target_base === 'string' ? prior.target_base : 'main';
-    const merge_policy =
-      prior.merge_policy === 'pr_stop' ? 'pr_stop' : 'auto_merge';
     const prior_wf =
       typeof prior.workflow_mode_prior === 'string'
         ? prior.workflow_mode_prior
@@ -1062,8 +854,9 @@ export function createScheduler(deps) {
       : 'parallel';
 
     // Mint the new attempt inheriting the PRIOR snapshot verbatim (§1.3): repo/
-    // target_base/base_oid/runner/model/effort/policies/demoted_reason AND the
-    // observed merge_sha — never re-resolved from current globals.
+    // target_base/base_oid/runner/model/effort — never re-resolved from current
+    // globals. The retired merge-axis fields are NOT copied forward: history
+    // keeps them on the old record, new attempts stop writing them (§9).
     deps.store.appendAttempt(workspace, {
       expected_revision: deps.store.snapshot(workspace).revision,
       attempt: { attempt_id: new_attempt_id, bead_id }
@@ -1077,10 +870,6 @@ export function createScheduler(deps) {
         runner: runner_name,
         model: prior.model ?? null,
         effort: prior.effort ?? null,
-        merge_policy,
-        drift_policy: prior.drift_policy ?? null,
-        demoted_reason: prior.demoted_reason ?? null,
-        merge_sha: typeof prior.merge_sha === 'string' ? prior.merge_sha : null,
         workflow_mode_prior: prior_wf,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values: stamped_keys.length > 0 ? exec_values : null,
@@ -1175,8 +964,6 @@ export function createScheduler(deps) {
       runner_name,
       model: prior.model ?? null,
       effort: prior.effort ?? null,
-      merge_policy,
-      drift_policy: prior.drift_policy ?? null,
       prior_wf,
       stamped_keys,
       wt_path,
@@ -1299,10 +1086,8 @@ export function createScheduler(deps) {
 
   /**
    * Tear down a live session for a user-initiated halt (⏸ and ■ share this).
-   * Group-kills the tree, drops the claim, revokes the token, and frees a merge
-   * lock already handed over to the worker (token revocation alone would not).
-   * The breaker is NOT tripped and auto_advance is untouched — a user halt of
-   * ONE attempt is not a repo failure (spec §5.2).
+   * Group-kills the tree and drops the claim. `auto_advance` is untouched — a
+   * user halt of ONE attempt is not a failure (spec §5.2).
    *
    * @param {string} attempt_id
    * @param {{ bead_id: string, handle: RunnerHandle }} entry
@@ -1316,8 +1101,6 @@ export function createScheduler(deps) {
     }
     running.delete(attempt_id);
     claimed.delete(entry.bead_id);
-    deps.tokens.revoke(attempt_id);
-    takeHandover(attempt_id)();
   }
 
   /**

@@ -279,7 +279,6 @@ describe('ws worker-queue channel', () => {
       'worker-queue-place',
       'worker-queue-reorder',
       'worker-queue-remove',
-      'worker-queue-set-policy',
       'worker-queue-set-exec-default'
     ]) {
       expect(MESSAGE_TYPES).toContain(type);
@@ -328,14 +327,14 @@ describe('ws worker-queue channel', () => {
     ).toEqual(['UI-7']);
   });
 
-  test('toggle ON resets the workspace repo breaker before ticking (worker-autorun-policy Phase 4)', async () => {
+  test('toggle ON kicks a tick with no breaker reset in between', async () => {
+    // The breaker-reset step is gone with the breaker (worker-phase2 §2): ▶ is
+    // simply auto_advance ON + a tick.
     const tick = vi.fn(async () => {});
-    const reset = vi.fn();
     __registerWorkerAttachmentForTest(
       process.cwd(),
       /** @type {any} */ ({
         scheduler: { tick, stop: vi.fn() },
-        runtime: { breaker: { reset } },
         repo: '/repo'
       })
     );
@@ -346,17 +345,22 @@ describe('ws worker-queue channel', () => {
       on: true,
       expected_revision: 0
     });
-    // The manual ▶ resumed the tripped repo (attachment-known repo key).
-    expect(reset).toHaveBeenCalledWith('/repo');
-    expect(tick).toHaveBeenCalledWith(process.cwd());
 
-    // Turning OFF never resets.
-    reset.mockClear();
-    await send(sock, 'm2', 'worker-queue-toggle', {
-      on: false,
-      expected_revision: 1
+    expect(tick).toHaveBeenCalledWith(process.cwd());
+  });
+
+  test('worker-queue-set-policy is no longer a routed message type', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', /** @type {any} */ ('worker-queue-set-policy'), {
+      key: 'merge_policy',
+      value: 'pr_stop',
+      expected_revision: 0
     });
-    expect(reset).not.toHaveBeenCalled();
+
+    expect(MESSAGE_TYPES).not.toContain('worker-queue-set-policy');
+    expect(replyFor(sock, 'm1')?.payload?.applied).toBe(undefined);
   });
 
   test('toggle OFF does not kick a tick', async () => {

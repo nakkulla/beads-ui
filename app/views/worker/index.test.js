@@ -429,13 +429,12 @@ describe('views/worker', () => {
     expect(mount.querySelector('.worker-banner--on')).not.toBeNull();
   });
 
-  test('admission refusals badge candidate + queued rows; verify_cmd + policy selects render (§2/§6)', () => {
+  test('admission refusals badge candidate + queued rows (§6)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
         serial: [{ bead_id: 'SQ-1', added_at: 0 }],
-        merge_policy: 'pr_stop',
         admission: {
           'RD-1': { reason: 'spec_review_stale', at: 1 },
           'SQ-1': { reason: 'receipt_missing_or_malformed', at: 2 }
@@ -467,23 +466,34 @@ describe('views/worker', () => {
     expect(sq1.querySelector('.worker-mini__reason')?.textContent).toContain(
       '⛔ receipt_missing_or_malformed'
     );
+  });
 
-    // Global policy selects reflect the queue values.
-    const mergeSel = /** @type {HTMLSelectElement} */ (
+  test('the control bar carries no policy selects or verify_cmd strip (worker-phase2 §2)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        workspace_info: {
+          verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 }
+        }
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
       mount.querySelector('select[data-policy-key="merge_policy"]')
-    );
-    expect(mergeSel.value).toBe('pr_stop');
-    const driftSel = /** @type {HTMLSelectElement} */ (
+    ).toBeNull();
+    expect(
       mount.querySelector('select[data-policy-key="drift_policy"]')
-    );
-    expect(driftSel.value).toBe('');
-
-    // verify_cmd read-only display — unset shows the demotion warning.
-    const vc = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-verifycmd')
-    );
-    expect(vc.classList.contains('worker-verifycmd--unset')).toBe(true);
-    expect(vc.textContent).toContain('미설정');
+    ).toBeNull();
+    expect(mount.querySelector('.worker-verifycmd')).toBeNull();
+    // The ⚙ exec-defaults button survives.
+    expect(mount.querySelector('.worker-exec-defaults-btn')).not.toBeNull();
   });
 
   test('renders pr_wait beads in the Done pane with a PR 대기 label', () => {
@@ -532,43 +542,11 @@ describe('views/worker', () => {
     expect(cand.querySelector('.worker-card[data-bead-id="RD-1"]')).toBe(null);
   });
 
-  test('changing a policy select sends worker-queue-set-policy with the current revision', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ revision: 3 }));
-    const transport = vi
-      .fn()
-      .mockResolvedValue(
-        reply(queueOf({ revision: 4, merge_policy: 'pr_stop' }))
-      );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-
-    const sel = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('select[data-policy-key="merge_policy"]')
-    );
-    sel.value = 'pr_stop';
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-set-policy', {
-      key: 'merge_policy',
-      value: 'pr_stop',
-      expected_revision: 3
-    });
-  });
-
-  test('a configured verify_cmd renders read-only argv; a demoted running tile shows the reason', () => {
+  test('a running tile shows no merge_policy or demotion chip (worker-phase2 §2)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        workspace_info: {
-          verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 }
-        },
         attempts: {
           'att-1': {
             attempt_id: 'att-1',
@@ -577,32 +555,28 @@ describe('views/worker', () => {
             runner: 'claude',
             model: 'opus',
             started_at: Date.now(),
+            // A legacy attempt record still carries the retired fields.
             merge_policy: 'pr_stop',
             demoted_reason: 'verify_cmd_unset'
           }
         }
       })
     );
+
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
       transport: vi.fn()
     });
 
-    const vc = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-verifycmd')
-    );
-    expect(vc.classList.contains('worker-verifycmd--unset')).toBe(false);
-    expect(vc.textContent).toContain('npm run all');
-
     const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
-    expect(tile.textContent).toContain('pr_stop');
-    expect(tile.querySelector('.rtile__demoted')?.textContent).toContain(
-      'verify_cmd_unset'
-    );
+    expect(tile).not.toBeNull();
+    expect(tile.textContent).not.toContain('pr_stop');
+    expect(tile.querySelector('.rtile__demoted')).toBeNull();
+    expect(tile.querySelector('.rtile__meta--policy')).toBeNull();
   });
 
-  test('running attempts render tiles + a failed attempt raises the breaker banner', () => {
+  test('running attempts render tiles + a failed attempt raises the failure banner', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -653,12 +627,13 @@ describe('views/worker', () => {
     );
     expect(s1badge.textContent?.trim()).toBe('serial');
 
-    // Failed attempt surfaces the breaker banner.
-    const breaker = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--breaker')
+    // The failed attempt itself is the banner source — no breaker object.
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--failure')
     );
-    expect(breaker).not.toBeNull();
-    expect(breaker.textContent).toContain('/repo');
+    expect(banner).not.toBeNull();
+    expect(banner.textContent).toContain('/repo');
+    expect(mount.querySelector('.worker-banner--breaker')).toBeNull();
   });
 
   test('paused/stopped attempts raise no banner; only a leaf paused renders a tile (worker-phase1 §1)', () => {
@@ -705,7 +680,7 @@ describe('views/worker', () => {
     });
 
     // A user pause/discard is not a failure.
-    expect(mount.querySelector('.worker-banner--breaker')).toBeNull();
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
     // Only the LEAF paused attempt renders — the resumed ancestor is history.
     const tiles = mount.querySelectorAll('.worker-rungrid .rtile');
     expect(tiles.length).toBe(1);
@@ -1688,47 +1663,31 @@ describe('views/worker', () => {
     );
   });
 
-  test('the ⚙ dialog renders global policy rows and sends worker-queue-set-policy (§1.3)', async () => {
+  test('the ⚙ dialog no longer renders global policy rows (worker-phase2 §2)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ revision: 3, merge_policy: 'pr_stop' }));
-    const transport = vi.fn().mockResolvedValue(
-      reply(
-        queueOf({
-          revision: 4,
-          merge_policy: 'pr_stop',
-          drift_policy: 'halt'
-        })
-      )
+    queueStore.set(
+      queueOf(/** @type {any} */ ({ revision: 3, merge_policy: 'pr_stop' }))
     );
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
-      transport
+      transport: vi.fn()
     });
 
     const dialog = openExecDefaults(mount);
-    const mergeSel = /** @type {HTMLSelectElement} */ (
+
+    expect(
       dialog.querySelector('select[data-policy-key="merge_policy"]')
-    );
-    expect(mergeSel).not.toBeNull();
-    expect(mergeSel.value).toBe('pr_stop');
-
-    const driftSel = /** @type {HTMLSelectElement} */ (
+    ).toBeNull();
+    expect(
       dialog.querySelector('select[data-policy-key="drift_policy"]')
-    );
-    driftSel.value = 'halt';
-    driftSel.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-set-policy', {
-      key: 'drift_policy',
-      value: 'halt',
-      expected_revision: 3
-    });
+    ).toBeNull();
+    // The 4 exec rows survive.
+    expect(dialog.querySelectorAll('.exec-defaults__row').length).toBe(4);
   });
 
-  test('breaker banner ↻ resumes the newest eligible failed attempt (§1)', () => {
+  test('failure banner ↻ resumes the newest eligible failed attempt (§1)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -1752,7 +1711,7 @@ describe('views/worker', () => {
       transport
     });
     const btn = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--breaker .worker-banner__resume')
+      mount.querySelector('.worker-banner--failure .worker-banner__resume')
     );
     expect(btn).not.toBeNull();
     expect(btn.dataset.attemptId).toBe('f1');
@@ -1763,7 +1722,7 @@ describe('views/worker', () => {
     });
   });
 
-  test('breaker ↻ targets exactly the latest failure — ineligible renders disabled with the reason, never an older substitute (§1)', () => {
+  test('the ↻ targets exactly the latest failure — ineligible renders disabled with the reason, never an older substitute (§1)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -1793,7 +1752,7 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
     const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-banner--breaker .worker-banner__resume')
+      mount.querySelector('.worker-banner--failure .worker-banner__resume')
     );
     // The banner describes latest_no_sid, so its ↻ must point there — a
     // different (older) session is never silently substituted.
@@ -1832,29 +1791,61 @@ describe('views/worker', () => {
     expect(badge).not.toBeNull();
   });
 
-  test('an auto-detected verify_cmd is flagged (자동 감지) in the ctrl bar (§2)', () => {
+  test('the failure banner is sourced from the latest failed attempt, not a breaker', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        workspace_info: {
-          verify_cmd: {
-            cmd: ['npm', 'test'],
-            timeout_ms: 600000,
-            source: 'detected'
+        attempts: {
+          older: {
+            attempt_id: 'older',
+            bead_id: 'B1',
+            status: 'failed',
+            repo: '/repo',
+            cause: 'session_failed:old',
+            session_id: 'sid-old'
+          },
+          newest: {
+            attempt_id: 'newest',
+            bead_id: 'B2',
+            status: 'orphaned',
+            repo: '/repo',
+            cause: 'orphan',
+            session_id: 'sid-new'
           }
         }
       })
     );
+
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
       transport: vi.fn()
     });
-    const vc = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-verifycmd')
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--failure')
     );
-    expect(vc.textContent).toContain('npm test');
-    expect(vc.textContent).toContain('자동 감지');
+    // The banner reports the LATEST terminal failure record verbatim.
+    expect(banner.textContent).toContain('orphan');
+    expect(
+      /** @type {HTMLElement} */ (
+        banner.querySelector('.worker-banner__resume')
+      ).dataset.attemptId
+    ).toBe('newest');
+  });
+
+  test('no failed attempt renders no failure banner', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({}));
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
   });
 });
