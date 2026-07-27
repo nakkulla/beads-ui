@@ -80,7 +80,7 @@ export function createBdMetadata(deps = {}) {
      * `null` means exactly one thing: the query succeeded and the key is absent.
      * A failed `bd show` (non-zero exit) or a payload that is not a readable
      * issue object THROWS. The distinction is load-bearing for every caller that
-     * uses this as a confirming readback — [재실행]'s `pr_url` removal readback
+     * uses this as a confirming readback — [폐기]'s `pr_url` removal readback
      * passed while bd was DOWN when a failure could return `null`, which is the
      * same shape as "the key really is gone".
      *

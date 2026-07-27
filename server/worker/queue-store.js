@@ -117,6 +117,25 @@
  * in bd metadata because the bd contract surface is owned by dotfiles
  * (`docs/contracts/workflow.md`) and beads-ui only consumes it; this is
  * server-owned queue state about a lane member, exactly like {@link admission}.
+ * @property {LastDeploy|null} last_deploy - The workspace's most recent
+ * post-merge deployment (worker-deploy-hook §3). ONE record, overwritten each
+ * time — the question it answers is "is the running service the merged code?",
+ * which only the latest deploy can answer. Null on a workspace that has never
+ * deployed (no `[worker.deploy]` section, or none run yet).
+ */
+/**
+ * @typedef {Object} LastDeploy
+ * @property {'deployed'|'launched'|'failed'} outcome - `deployed` = the
+ * synchronous command exited 0; `launched` = a DETACHED command was started
+ * after the cleanup was durably recorded — an intent, NOT a confirmation (a
+ * self-restarting deploy kills the observer, so nothing can confirm it);
+ * `failed` = it ran and did not succeed, or never started.
+ * @property {string|null} reason - The failure vocabulary
+ * (`deploy_failed` / `deploy_timeout` / `deploy_spawn_error` /
+ * `deploy_verify_missing` / `deploy_base_not_synced`); null on a success.
+ * @property {string} bead_id - The merge whose cleanup ran this deploy.
+ * @property {string} base_sha - The base commit that was deployed.
+ * @property {number} at - Epoch ms of the record.
  */
 /**
  * @typedef {Object} QueueOpResult
@@ -174,6 +193,14 @@ function normalizeSlots(value) {
 }
 
 /**
+ * The deploy outcomes the record accepts. Anything else is not a vocabulary the
+ * UI can render, so it is refused on write and dropped on load.
+ *
+ * @type {string[]}
+ */
+const DEPLOY_OUTCOMES = ['deployed', 'launched', 'failed'];
+
+/**
  * @returns {Queue}
  */
 function emptyQueue() {
@@ -187,7 +214,8 @@ function emptyQueue() {
     done: [],
     attempts: {},
     admission: {},
-    cleanup_failed: {}
+    cleanup_failed: {},
+    last_deploy: null
   };
 }
 
@@ -386,8 +414,49 @@ function normalizeQueue(raw) {
       }
     }
   }
+  // A queue.json written before the deploy hook simply has no key → null, which
+  // reads as "this workspace has never deployed" (worker-deploy-hook §3). A
+  // record carrying an outcome outside the vocabulary is dropped the same way:
+  // an unrenderable record and no record mean the same thing to the reader.
+  q.last_deploy = normalizeLastDeploy(raw.last_deploy);
   // auto_advance intentionally left false — see load() restart-safety note.
   return q;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {LastDeploy|null}
+ */
+function normalizeLastDeploy(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.outcome !== 'string' ||
+    !DEPLOY_OUTCOMES.includes(value.outcome)
+  ) {
+    return null;
+  }
+  return {
+    outcome: /** @type {'deployed'|'launched'|'failed'} */ (value.outcome),
+    reason: typeof value.reason === 'string' ? value.reason : null,
+    bead_id: typeof value.bead_id === 'string' ? value.bead_id : '',
+    base_sha: typeof value.base_sha === 'string' ? value.base_sha : '',
+    at: typeof value.at === 'number' ? value.at : 0
+  };
+}
+
+/**
+ * Build a {@link LastDeploy} from a caller's input, or null when the input is
+ * not a recordable outcome (which the mutations turn into a refused write).
+ *
+ * @param {unknown} input
+ * @param {number} at
+ * @returns {LastDeploy|null}
+ */
+function buildLastDeploy(input, at) {
+  if (!isRecord(input)) {
+    return null;
+  }
+  return normalizeLastDeploy({ ...input, at });
 }
 
 /**
@@ -842,6 +911,56 @@ export function createQueueStore(options = {}) {
         removeFromLanes(next, bead_id);
         delete next.cleanup_failed[bead_id];
         next.done.push({ bead_id, added_at: now() });
+        return true;
+      });
+    },
+
+    /**
+     * Record the workspace's most recent post-merge deployment, overwriting the
+     * previous one (worker-deploy-hook §3). Scheduler-owned (no CAS). An
+     * outcome outside {@link DEPLOY_OUTCOMES} is refused WITHOUT a write, so a
+     * caller bug cannot replace a real record with an unrenderable one.
+     *
+     * @param {string} workspace
+     * @param {{ outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string }} input
+     * @returns {QueueOpResult}
+     */
+    recordLastDeploy(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const record = buildLastDeploy(input, now());
+        if (!record) {
+          return false;
+        }
+        next.last_deploy = record;
+        return true;
+      });
+    },
+
+    /**
+     * The DETACHED deploy's atomic hand-off: finish the cleanup (`moveToDone`)
+     * and record the launch intent in ONE persist (worker-deploy-hook §2).
+     *
+     * Splitting these would be the whole failure mode the terminal-launch
+     * exception exists to avoid: a self-restarting deploy kills this server, so
+     * anything not durable BEFORE the spawn may never be written at all. One
+     * mutation means a restart either sees "cleanup done + deploy launched" or
+     * neither — never a bead in `done` whose deploy left no trace.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, deploy: { outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string } }} input
+     * @returns {QueueOpResult}
+     */
+    moveToDoneWithDeploy(workspace, input) {
+      const { bead_id, deploy } = input;
+      return applyUnconditional(workspace, (next) => {
+        const record = buildLastDeploy(deploy, now());
+        if (typeof bead_id !== 'string' || bead_id.length === 0 || !record) {
+          return false;
+        }
+        removeFromLanes(next, bead_id);
+        delete next.cleanup_failed[bead_id];
+        next.done.push({ bead_id, added_at: now() });
+        next.last_deploy = record;
         return true;
       });
     },

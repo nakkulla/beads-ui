@@ -1058,6 +1058,90 @@ describe('ws worker-attempt-dismiss (UI-dcw7)', () => {
   });
 });
 
+describe('ws worker-queue workspace_info deploy surface (worker-deploy-hook §3)', () => {
+  const WS_D = { root_dir: '/tmp/wq-ws-D', db_path: '/tmp/wq-ws-D/.beads/db' };
+  /** @type {string[]} */
+  const config_dirs = [];
+
+  /**
+   * @param {string} content
+   * @returns {string}
+   */
+  function writeConfig(content) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-wsq-config-'));
+    config_dirs.push(dir);
+    const file_path = path.join(dir, 'config.toml');
+    fs.writeFileSync(file_path, content);
+    return file_path;
+  }
+
+  afterEach(() => {
+    delete process.env.BDUI_CONFIG_PATH;
+    for (const dir of config_dirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('exposes the configured deploy command', async () => {
+    process.env.BDUI_CONFIG_PATH = writeConfig(`
+[worker.deploy."${WS_D.root_dir}"]
+cmd = ["bdui-shared", "restart"]
+timeout_ms = 120000
+detached = true
+`);
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).workspace_info.deploy_cmd).toEqual({
+      cmd: ['bdui-shared', 'restart'],
+      timeout_ms: 120000,
+      detached: true
+    });
+  });
+
+  test('reports a null deploy_cmd for a workspace with no section', async () => {
+    process.env.BDUI_CONFIG_PATH = writeConfig('workspaces = ["/repo-a"]\n');
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).workspace_info.deploy_cmd).toBeNull();
+  });
+
+  test('exposes the queue last_deploy record', async () => {
+    getWorkerRuntime().queueStore.recordLastDeploy(WS_D.root_dir, {
+      outcome: 'launched',
+      reason: null,
+      bead_id: 'UI-9',
+      base_sha: 'base-sha-9'
+    });
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(
+      queueSnapshots(sock).at(-1).workspace_info.last_deploy
+    ).toMatchObject({
+      outcome: 'launched',
+      bead_id: 'UI-9',
+      base_sha: 'base-sha-9'
+    });
+  });
+
+  test('reports a null last_deploy when nothing has been deployed', async () => {
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).workspace_info.last_deploy).toBeNull();
+  });
+});
+
 describe('ws worker-queue subscription addressing', () => {
   const WS_A = { root_dir: '/tmp/wq-ws-A', db_path: '/tmp/wq-ws-A/.beads/db' };
   const WS_B = { root_dir: '/tmp/wq-ws-B', db_path: '/tmp/wq-ws-B/.beads/db' };

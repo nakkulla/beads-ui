@@ -15,11 +15,12 @@
  *     click-time re-read, and that the poller cannot publish a discard's own
  *     close as an abandonment.
  */
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createPrActions } from './pr-actions.js';
+import { CLEANUP_STEPS, createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller } from './pr-poller.js';
 import { createQueueStore } from './queue-store.js';
@@ -117,7 +118,12 @@ function seedStore(options = {}) {
  *   store?: any,
  *   verify?: { cmd: string[], timeout_ms: number, source: 'config' }|null,
  *   verifyResults?: Array<{ ok: boolean, reason: string }>,
+ *   deploy?: { cmd: string[], timeout_ms: number, detached: boolean }|null,
+ *   deploySpawn?: 'ok'|'fail'|'hang'|'error'|'throw',
  *   gitFail?: (args: string[]) => boolean,
+ *   gitBranch?: string,
+ *   gitStatus?: string,
+ *   gitHead?: string,
  *   children?: Record<string, { id: string, status: string }[]>,
  *   bdFail?: (method: string, id: string) => boolean,
  *   mergeFails?: boolean,
@@ -220,6 +226,13 @@ function makeActions(options = {}) {
     )
   };
 
+  // The LOCAL checkout the deploy re-validation reads: which branch it is on,
+  // whether it is clean, and what HEAD points at. The defaults reproduce the
+  // pre-deploy harness (a `feature` checkout), so existing cases are untouched.
+  const git_branch = options.gitBranch ?? 'feature';
+  const git_status = options.gitStatus ?? '';
+  const git_head = options.gitHead ?? 'base-sha-1';
+
   const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
     calls.push(`git:${args.slice(0, 2).join(' ')}`);
     if (options.gitFail && options.gitFail(args)) {
@@ -229,7 +242,13 @@ function makeActions(options = {}) {
       return { code: 0, stdout: 'base-sha-1\n', stderr: '' };
     }
     if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
-      return { code: 0, stdout: 'feature\n', stderr: '' };
+      return { code: 0, stdout: `${git_branch}\n`, stderr: '' };
+    }
+    if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+      return { code: 0, stdout: `${git_head}\n`, stderr: '' };
+    }
+    if (args[0] === 'status') {
+      return { code: 0, stdout: git_status, stderr: '' };
     }
     if (args[0] === 'ls-remote') {
       return { code: 0, stdout: '', stderr: '' };
@@ -256,6 +275,40 @@ function makeActions(options = {}) {
     return { ...r, exit: r.ok ? 0 : 1 };
   });
 
+  // The deploy process, faked at the spawn boundary — nothing here ever starts
+  // a real process, in either the synchronous or the detached mode.
+  const deploy_spawn_mode = options.deploySpawn || 'ok';
+  const spawnImpl = vi.fn(
+    (
+      /** @type {string} */ cmd,
+      /** @type {string[]} */ _args,
+      /** @type {any} */ spawn_options
+    ) => {
+      calls.push(
+        `spawn:${cmd}:${spawn_options && spawn_options.detached === true ? 'detached' : 'sync'}`
+      );
+      if (deploy_spawn_mode === 'throw') {
+        throw new Error('spawn ENOENT');
+      }
+      const child = /** @type {any} */ (new EventEmitter());
+      child.kill = () => {
+        child.emit('close', null);
+      };
+      child.unref = () => {
+        calls.push('spawn:unref');
+      };
+      if (deploy_spawn_mode === 'ok') {
+        setTimeout(() => child.emit('close', 0), 0);
+      } else if (deploy_spawn_mode === 'fail') {
+        setTimeout(() => child.emit('close', 1), 0);
+      } else if (deploy_spawn_mode === 'error') {
+        setTimeout(() => child.emit('error', new Error('nope')), 0);
+      }
+      // 'hang' emits nothing — the deadline is what ends it.
+      return child;
+    }
+  );
+
   const actions = createPrActions({
     workspace: WS,
     repo: REPO,
@@ -268,6 +321,8 @@ function makeActions(options = {}) {
     scheduler,
     resolveVerify: () => options.verify ?? null,
     runVerify,
+    resolveDeploy: () => options.deploy ?? null,
+    spawnImpl: /** @type {any} */ (spawnImpl),
     requeryDelayMs: 0,
     sleep: async () => {},
     now: () => 1000
@@ -284,9 +339,43 @@ function makeActions(options = {}) {
     worktree,
     gitRun,
     scheduler,
-    runVerify
+    runVerify,
+    spawnImpl
   };
 }
+
+/** A configured, synchronous deploy command. */
+const DEPLOY_SYNC = {
+  cmd: ['bdui-shared', 'restart'],
+  timeout_ms: 1000,
+  detached: false
+};
+
+/** The same command in detached (terminal-launch) mode. */
+const DEPLOY_DETACHED = {
+  cmd: ['bdui-shared', 'restart'],
+  timeout_ms: 1000,
+  detached: true
+};
+
+/** A verify command, which the deploy step REQUIRES to be resolvable. */
+const VERIFY_CFG = {
+  cmd: ['npm', 'test'],
+  timeout_ms: 1000,
+  source: /** @type {const} */ ('config')
+};
+
+/**
+ * The harness options that put the local checkout in the state the deploy
+ * re-validation demands: on the target base, clean, HEAD == the synced base sha.
+ *
+ * @type {{ gitBranch: string, gitStatus: string, gitHead: string }}
+ */
+const ON_BASE = {
+  gitBranch: 'main',
+  gitStatus: '',
+  gitHead: 'base-sha-1'
+};
 
 describe('merge click — the three branches (worker-phase2 §6)', () => {
   test('squash-merges a CLEAN pull request', async () => {
@@ -519,13 +608,11 @@ describe('merge click — click-time SHA re-evaluation (§5/§6)', () => {
 });
 
 describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
-  test('runs base sync → verification → child sweep → parent close → branch cleanup → done', async () => {
+  test('runs base sync → verification → deploy → child sweep → branch cleanup → parent close → done', async () => {
     const h = makeActions({
-      verify: {
-        cmd: ['npm', 'test'],
-        timeout_ms: 1000,
-        source: /** @type {const} */ ('config')
-      },
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      ...ON_BASE,
       children: {
         [BEAD]: [{ id: 'UI-1.1', status: 'open' }],
         'UI-1.1': [{ id: 'UI-1.1.1', status: 'open' }]
@@ -536,12 +623,14 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
 
     // The SEQUENCE, not the end state: every step appears exactly once and in
     // the contract's order, with the deepest child closed before its parent and
-    // the parent bead closed before anything is deleted.
+    // the parent bead closed LAST (the contract's sweep order — install right
+    // after verify, branch/worktree cleanup before the parent close).
     const ordered = h.calls.filter(
       (c) =>
         c === 'gh:mergeSquash' ||
         c === 'git:fetch --no-tags' ||
         c === 'verify:run' ||
+        c.startsWith('spawn:bdui-shared') ||
         c.startsWith('bd:setStatus') ||
         c === 'wt:remove' ||
         c === 'git:branch -D' ||
@@ -555,12 +644,13 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
       'gh:mergeSquash',
       'git:fetch --no-tags',
       'verify:run',
+      'spawn:bdui-shared:sync',
       'bd:setStatus:UI-1.1.1:closed',
       'bd:setStatus:UI-1.1:closed',
-      'bd:setStatus:UI-1:closed',
       'wt:remove',
       'git:branch -D',
-      'git:push origin'
+      'git:push origin',
+      'bd:setStatus:UI-1:closed'
     ]);
     expect(
       h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
@@ -721,11 +811,11 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
 });
 
 describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
-  test('restores the bead to resolved when the branch cleanup fails after the close', async () => {
+  test('leaves bd untouched when the branch cleanup fails — it now runs BEFORE the close', async () => {
     const h = makeActions({
       // The local branch delete fails and the confirming `rev-parse --verify`
-      // still finds the branch → the cleanup stops at `branch_cleanup`, one
-      // step PAST the parent close.
+      // still finds the branch → the cleanup stops at `branch_cleanup`, which
+      // in the contract-aligned order is one step BEFORE the parent close.
       gitFail: (args) => args[0] === 'branch'
     });
     h.bd.readStatus.mockImplementation(async (/** @type {string} */ id) => {
@@ -746,14 +836,13 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
       cleanup_step: 'branch_cleanup',
       reason: 'local_branch_delete_failed'
     });
-    // The close really happened, and was really undone: the contract says a
-    // cleanup failure hands back a `resolved` bead, not a `closed` one.
-    expect(h.calls).toContain('bd:setStatus:UI-1:closed');
-    expect(h.calls).toContain('bd:setStatus:UI-1:resolved');
-    expect(h.bd_status.get(BEAD)).toBe('resolved');
+    // Nothing closed the parent, so there is nothing to restore — `resolved`
+    // still holds by itself.
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:resolved');
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'branch_cleanup',
-      bd_restore: 'restored'
+      bd_restore: null
     });
   });
 
@@ -779,7 +868,8 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
       step: 'parent_close',
       bd_restore: 'restore_failed'
     });
-    expect(h.worktree.remove).not.toHaveBeenCalled();
+    // The parent close is LAST now, so the branch cleanup already ran.
+    expect(h.worktree.remove).toHaveBeenCalled();
   });
 
   test('does not touch bd when the cleanup stops BEFORE the parent close', async () => {
@@ -790,6 +880,316 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
     expect(r).toMatchObject({ ok: false, cleanup_step: 'base_sync' });
     expect(h.bd.setStatus).not.toHaveBeenCalled();
     expect(h.store.snapshot(WS).cleanup_failed[BEAD].bd_restore).toBeNull();
+  });
+});
+
+describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', () => {
+  test('fixes the contract-aligned six-step order', () => {
+    expect(CLEANUP_STEPS).toEqual([
+      'base_sync',
+      'post_merge_verify',
+      'deploy',
+      'child_sweep',
+      'branch_cleanup',
+      'parent_close'
+    ]);
+  });
+
+  test('passes straight through when the repo configures no deploy command', async () => {
+    const h = makeActions({ verify: VERIFY_CFG, ...ON_BASE });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, reason: null });
+    expect(h.spawnImpl).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).last_deploy).toBeNull();
+  });
+
+  test('records `deployed` when the synchronous command exits zero', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      deploySpawn: 'ok',
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.ok).toBe(true);
+    // Spawned WITHOUT a shell, from the repo root, not detached.
+    expect(h.spawnImpl).toHaveBeenCalledWith(
+      'bdui-shared',
+      ['restart'],
+      expect.objectContaining({ cwd: REPO, shell: false })
+    );
+    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'deployed',
+      reason: null,
+      bead_id: BEAD,
+      base_sha: 'base-sha-1'
+    });
+  });
+
+  test('stops the cleanup at `deploy` when the command exits non-zero', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      deploySpawn: 'fail',
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'deploy',
+      reason: 'deploy_failed'
+    });
+    const q = h.store.snapshot(WS);
+    expect(q.cleanup_failed[BEAD]).toMatchObject({
+      step: 'deploy',
+      reason: 'deploy_failed',
+      bd_restore: null
+    });
+    expect(q.last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_failed'
+    });
+    // The steps after deploy never ran.
+    expect(h.worktree.remove).not.toHaveBeenCalled();
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+  });
+
+  test('records deploy_timeout when the command outlives its deadline', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: {
+        cmd: ['bdui-shared', 'restart'],
+        timeout_ms: 5,
+        detached: false
+      },
+      deploySpawn: 'hang',
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      cleanup_step: 'deploy',
+      reason: 'deploy_timeout'
+    });
+    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_timeout'
+    });
+  });
+
+  test('records deploy_spawn_error when the process never starts', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      deploySpawn: 'throw',
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      cleanup_step: 'deploy',
+      reason: 'deploy_spawn_error'
+    });
+  });
+
+  test('refuses to deploy a repo with no resolvable verify command', async () => {
+    const h = makeActions({ verify: null, deploy: DEPLOY_SYNC, ...ON_BASE });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'deploy',
+      reason: 'deploy_verify_missing'
+    });
+    // Fail CLOSED: nothing was spawned on an unverified base.
+    expect(h.spawnImpl).not.toHaveBeenCalled();
+  });
+
+  test('refuses to deploy when the checkout sits on another branch', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      gitBranch: 'feature',
+      gitStatus: '',
+      gitHead: 'base-sha-1'
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      cleanup_step: 'deploy',
+      reason: 'deploy_base_not_synced'
+    });
+    expect(h.spawnImpl).not.toHaveBeenCalled();
+  });
+
+  test('refuses to deploy from a dirty checkout', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      gitBranch: 'main',
+      gitStatus: ' M app/x.js\n',
+      gitHead: 'base-sha-1'
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      cleanup_step: 'deploy',
+      reason: 'deploy_base_not_synced'
+    });
+    expect(h.spawnImpl).not.toHaveBeenCalled();
+  });
+
+  test('refuses to deploy when local HEAD drifted from the synced base sha', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      // A clean checkout ON the base whose HEAD is AHEAD of origin: `--ff-only`
+      // still succeeds, so base_sync alone cannot catch this.
+      gitBranch: 'main',
+      gitStatus: '',
+      gitHead: 'local-ahead-sha'
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      cleanup_step: 'deploy',
+      reason: 'deploy_base_not_synced'
+    });
+    expect(h.spawnImpl).not.toHaveBeenCalled();
+  });
+
+  test('never reaches deploy when the post-merge verification failed', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      ...ON_BASE,
+      verifyResults: [
+        { ok: true, reason: 'ok' },
+        { ok: false, reason: 'verify_cmd_failed' }
+      ]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ cleanup_step: 'post_merge_verify' });
+    expect(h.spawnImpl).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).last_deploy).toBeNull();
+  });
+
+  test('launches a detached deploy only AFTER the durable record is written', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      ...ON_BASE
+    });
+    const moveToDoneWithDeploy = h.store.moveToDoneWithDeploy.bind(h.store);
+    h.store.moveToDoneWithDeploy = (
+      /** @type {string} */ ws,
+      /** @type {any} */ input
+    ) => {
+      const result = moveToDoneWithDeploy(ws, input);
+      h.calls.push('store:moveToDoneWithDeploy');
+      return result;
+    };
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.ok).toBe(true);
+    // The whole cleanup finishes, the durable record lands, and ONLY THEN is
+    // the self-restarting command launched — it may kill this very server.
+    const ordered = h.calls.filter(
+      (c) =>
+        c === 'bd:setStatus:UI-1:closed' ||
+        c === 'store:moveToDoneWithDeploy' ||
+        c.startsWith('spawn:')
+    );
+    expect(ordered).toEqual([
+      'bd:setStatus:UI-1:closed',
+      'store:moveToDoneWithDeploy',
+      'spawn:bdui-shared:detached',
+      'spawn:unref'
+    ]);
+    // Durable, not just in-memory: a restart mid-launch still sees the intent.
+    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
+      outcome: 'launched',
+      reason: null,
+      bead_id: BEAD,
+      base_sha: 'base-sha-1'
+    });
+    expect(
+      h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+
+  test('spawns the detached deploy with detached + stdio ignore', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      ...ON_BASE
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.spawnImpl).toHaveBeenCalledWith(
+      'bdui-shared',
+      ['restart'],
+      expect.objectContaining({
+        cwd: REPO,
+        shell: false,
+        detached: true,
+        stdio: 'ignore'
+      })
+    );
+  });
+
+  test('overwrites `launched` with a failure when the detached spawn throws', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      deploySpawn: 'throw',
+      ...ON_BASE
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_spawn_error',
+      bead_id: BEAD
+    });
+  });
+
+  test('overwrites `launched` when the detached spawn emits an async error event', async () => {
+    // Node reports ENOENT-style pre-exec failures as an `error` EVENT, not a
+    // throw — unhandled it would crash the server with `launched` left durable.
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      deploySpawn: 'error',
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(r.ok).toBe(true);
+    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_spawn_error',
+      bead_id: BEAD
+    });
   });
 });
 
@@ -852,7 +1252,7 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
           c === 'bd:setStatus:UI-1:closed' ||
           c === 'wt:remove'
       )
-    ).toEqual(['git:fetch --no-tags', 'bd:setStatus:UI-1:closed', 'wt:remove']);
+    ).toEqual(['git:fetch --no-tags', 'wt:remove', 'bd:setStatus:UI-1:closed']);
     expect(
       h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);

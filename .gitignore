@@ -11,3 +11,9 @@ tsconfig.tsbuildinfo
 
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
+
+# Runtime log (dolt server appends on every start) — never commit
+.beads/dolt-config.log
+
+# Brainstorming skill session scratch (mockups, pids, tokens)
+.superpowers/

@@ -684,9 +684,10 @@ export function createGh(deps = {}) {
     },
 
     /**
-     * Close a pull request WITHOUT merging (`gh pr close <n>`) — the first step
-     * of [재실행] (worker-phase2 §6). The branch is left alone here; discarding
-     * the worktree/branch is a later, separately-verified step.
+     * Close a pull request WITHOUT merging (`gh pr close <n>`) — the close step
+     * of [폐기] (`2026-07-27-worker-discard-button.md` §1), reached only after
+     * the authoritative re-read saw the PR OPEN. The branch is left alone here;
+     * discarding the worktree/branch is a later, separately-verified step.
      *
      * @param {string} repo_dir - Repo root the command runs in (`cwd`).
      * @param {number} number - The PR to abandon.

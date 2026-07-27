@@ -432,6 +432,21 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     }
   };
 
+  /**
+   * The workspace's post-merge deploy command, also read LIVE so a config edit
+   * lands without a restart. Config-only by design (worker-deploy-hook §1):
+   * absent section = this repo has no deployment.
+   *
+   * @returns {import('./pr-actions.js').ResolvedDeployCmd|null}
+   */
+  const resolveDeploy = () => {
+    try {
+      return getConfig().worker_deploy[repo] || null;
+    } catch {
+      return null;
+    }
+  };
+
   // The PR-wait actions (worker-phase2 §6): the authoritative [머지] click, the
   // single post-merge cleanup, and [폐기]. Built with the SAME gh adapter,
   // observation cache, worktree manager and scheduler the poller and dispatch
@@ -450,6 +465,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     resolveVerify,
     runVerify: (/** @type {any} */ input) =>
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
+    resolveDeploy,
     notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
   });
 
