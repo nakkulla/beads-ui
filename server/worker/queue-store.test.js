@@ -661,6 +661,54 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
       'a39855e0-c3ac'
     );
   });
+
+  test('cause_detail survives updateAttempt and a cold reload (UI-2o4z §2)', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue
+      .revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'failed',
+        cause: 'loud_fail_blocker',
+        cause_detail: {
+          reason: 'merge_to_base_blocked',
+          command: 'gh pr merge 311'
+        }
+      }
+    });
+
+    expect(updated.queue.attempts['att-1'].cause_detail).toEqual({
+      reason: 'merge_to_base_blocked',
+      command: 'gh pr merge 311'
+    });
+    expect(createQueueStore().load(WS).attempts['att-1'].cause_detail).toEqual({
+      reason: 'merge_to_base_blocked',
+      command: 'gh pr merge 311'
+    });
+  });
+
+  test('normalizes a non-object cause_detail to null', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue
+      .revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: /** @type {any} */ ({ cause_detail: 'merge_to_base_blocked' })
+    });
+
+    expect(updated.queue.attempts['att-1'].cause_detail).toBeNull();
+  });
 });
 
 describe('worker/queue-store single lane + slots (worker-phase2 §3/§9)', () => {
@@ -850,6 +898,39 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
       step: 'child_sweep',
       reason: 'child_close_failed:UI-1.1'
     });
+  });
+
+  test('round-trips a cleanup failure detail across a reload', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_worktree_failed',
+      detail: "fatal: '.worktrees/verify-UI-1-abc1234' already exists"
+    });
+
+    expect(createQueueStore().load(WS).cleanup_failed['UI-1'].detail).toBe(
+      "fatal: '.worktrees/verify-UI-1-abc1234' already exists"
+    );
+  });
+
+  test('normalizes a legacy cleanup record with no detail to null', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'child_sweep',
+      reason: 'child_close_failed'
+    });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.cleanup_failed['UI-1'].detail;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.cleanup_failed['UI-1'].detail).toBeNull();
   });
 
   test('drops the cleanup failure when the bead reaches done', () => {

@@ -49,6 +49,11 @@
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
  * @property {string|null} cause - Failure cause (failure banner reason).
+ * @property {{ reason: string, command: string|null }|null} cause_detail -
+ * What the fail-closed path actually caught, when the cause alone cannot say
+ * it (UI-2o4z §2): the guard `reason` plus the simple command it matched
+ * (`command` null for an interactive-question blocker). Only the
+ * `loud_fail_blocker` cause carries one; every other failure leaves it null.
  * @property {number|null} dismissed_at - Epoch ms a human closed (✕) this
  * failure's banner, declaring it handled. Null means "still unhandled", which
  * is one of the two ways the UI stops showing a failure banner (the other is
@@ -105,7 +110,7 @@
  * @property {Record<string, { reason: string, at: number }>} admission -
  * Auto-run admission refusals by bead_id (badge display). Cleared only on a
  * successful dispatch or queue removal — never auto-expired.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and nothing retries by itself — so the record that a human must
@@ -114,7 +119,10 @@
  * still holds by itself), `restored` when the close was undone back to
  * `resolved`, and `restore_failed` when even that did not stick — the one case
  * where the bead's real bd status disagrees with the contract, which must be
- * recorded rather than left silent. It lives HERE rather than
+ * recorded rather than left silent. `detail` is the failing step's own
+ * diagnostic text (e.g. the git stderr behind `verify_worktree_failed`,
+ * UI-2o4z §3); null on a record that carries none, including every record
+ * written before the field existed. It lives HERE rather than
  * in bd metadata because the bd contract surface is owned by dotfiles
  * (`docs/contracts/workflow.md`) and beads-ui only consumes it; this is
  * server-owned queue state about a lane member, exactly like {@link admission}.
@@ -294,6 +302,11 @@ export function makeAttempt(fields) {
     merge_sha: fields.merge_sha ?? null,
     finished_at: fields.finished_at ?? null,
     cause: fields.cause ?? null,
+    cause_detail: isRecord(fields.cause_detail)
+      ? /** @type {{ reason: string, command: string|null }} */ (
+          fields.cause_detail
+        )
+      : null,
     dismissed_at: fields.dismissed_at ?? null,
     merge_policy: fields.merge_policy ?? null,
     drift_policy: fields.drift_policy ?? null,
@@ -410,7 +423,8 @@ function normalizeQueue(raw) {
           reason: value.reason,
           bd_restore:
             typeof value.bd_restore === 'string' ? value.bd_restore : null,
-          at: typeof value.at === 'number' ? value.at : 0
+          at: typeof value.at === 'number' ? value.at : 0,
+          detail: typeof value.detail === 'string' ? value.detail : null
         };
       }
     }
@@ -1012,12 +1026,15 @@ export function createQueueStore(options = {}) {
      * at or after the parent close; omit it for the earlier steps, which never
      * touched bd.
      *
+     * `detail` carries the step's own diagnostic text when it has one (git
+     * stderr, a command's message); omit it otherwise.
+     *
      * @param {string} workspace
-     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null }} input
+     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null }} input
      * @returns {QueueOpResult}
      */
     recordCleanupFailure(workspace, input) {
-      const { bead_id, step, reason, bd_restore } = input;
+      const { bead_id, step, reason, bd_restore, detail } = input;
       return applyUnconditional(workspace, (next) => {
         if (
           typeof bead_id !== 'string' ||
@@ -1031,7 +1048,9 @@ export function createQueueStore(options = {}) {
           step: typeof step === 'string' ? step : '',
           reason,
           bd_restore: typeof bd_restore === 'string' ? bd_restore : null,
-          at: now()
+          at: now(),
+          detail:
+            typeof detail === 'string' && detail.length > 0 ? detail : null
         };
         return true;
       });

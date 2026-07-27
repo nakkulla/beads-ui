@@ -339,4 +339,50 @@ describe('worker/verify-cmd — pre-merge run pinned to a PR head sha (§5)', ()
 
     expect(r.reason).toBe('verify_worktree_failed');
   });
+
+  test('preserves the git stderr as detail on a worktree failure', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+    worktree.addDetached = vi.fn(async () => {
+      throw new Error(
+        "fatal: '.worktrees/verify-UI-1-abc1234' already exists\n"
+      );
+    });
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(r.detail).toBe(
+      "fatal: '.worktrees/verify-UI-1-abc1234' already exists"
+    );
+  });
+
+  test('truncates an oversized worktree failure detail', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+    worktree.addDetached = vi.fn(async () => {
+      throw new Error('e'.repeat(900));
+    });
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(r.detail).toHaveLength(512);
+  });
 });

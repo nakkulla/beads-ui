@@ -620,7 +620,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], cleanup_failures: Array<{ bead_id: string, step: string, reason: string }> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -643,13 +643,15 @@ export function createWorkerView(mount_element, options = {}) {
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
-    /** @type {Record<string, { step: string, reason: string }>} */
+    /** @type {Record<string, { step: string, reason: string, detail?: string|null }>} */
     const cleanup_failed = q.cleanup_failed || {};
     const cleanup_failures = Object.entries(cleanup_failed).map(
       ([bead_id, rec]) => ({
         bead_id,
         step: rec && rec.step ? rec.step : '',
-        reason: rec && rec.reason ? rec.reason : ''
+        reason: rec && rec.reason ? rec.reason : '',
+        // Fail-quiet: a record written before the field existed has none.
+        detail: rec && typeof rec.detail === 'string' ? rec.detail : null
       })
     );
     const queue_entries = /** @type {any[]} */ (q.queue || []);
@@ -816,9 +818,19 @@ export function createWorkerView(mount_element, options = {}) {
         typeof latest_failed.session_id === 'string' &&
         latest_failed.session_id.length > 0;
       const already = resumed_from_ids.has(latest_failed.attempt_id);
+      const detail = latest_failed.cause_detail;
       failure = {
         repo: latest_failed.repo || '',
         reason: latest_failed.cause || latest_failed.status,
+        // Fail-quiet: only a fail-closed blocker records one (UI-2o4z §2).
+        cause_detail:
+          detail && typeof detail.reason === 'string'
+            ? {
+                reason: detail.reason,
+                command:
+                  typeof detail.command === 'string' ? detail.command : null
+              }
+            : null,
         resume_attempt_id: latest_failed.attempt_id,
         resume_eligible: has_sid && !already,
         resume_reason: !has_sid

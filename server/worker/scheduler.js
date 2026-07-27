@@ -55,6 +55,33 @@ const log = debug('worker:scheduler');
 const PID_START_TOLERANCE_MS = 2000;
 
 /**
+ * Upper bound on the matched command persisted with a blocker failure. The
+ * record exists to name what tripped the guard, not to archive a script.
+ *
+ * @type {number}
+ */
+const CAUSE_DETAIL_COMMAND_MAX = 512;
+
+/**
+ * Project a session's `blocked_detail` onto the attempt's durable
+ * `cause_detail` (UI-2o4z §2). Undefined when the session left nothing to
+ * record, so the patch keeps the field null instead of inventing one.
+ *
+ * @param {{ reason: string, command: string|null }|null|undefined} detail
+ * @returns {{ reason: string, command: string|null }|undefined}
+ */
+function blockerCauseDetail(detail) {
+  if (!detail || typeof detail.reason !== 'string') {
+    return undefined;
+  }
+  const command =
+    typeof detail.command === 'string'
+      ? detail.command.slice(0, CAUSE_DETAIL_COMMAND_MAX)
+      : null;
+  return { reason: detail.reason, command };
+}
+
+/**
  * @typedef {Object} BeadSnapshot
  * @property {boolean} ready - Runnable now.
  * @property {boolean} blocked - Blocked by unmet dependencies.
@@ -507,11 +534,26 @@ export function createScheduler(deps) {
    * @param {string} bead_id
    * @param {string|null} prior
    * @param {string} cause
+   * @param {{ reason: string, command: string|null }} [cause_detail] - What the
+   * fail-closed path actually caught (UI-2o4z §2). Only the blocker path has
+   * one; every other cause stays detail-less.
    */
-  async function failAttempt(workspace, attempt_id, bead_id, prior, cause) {
+  async function failAttempt(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    cause,
+    cause_detail
+  ) {
     deps.store.updateAttempt(workspace, {
       attempt_id,
-      patch: { status: 'failed', cause, finished_at: now() }
+      patch: {
+        status: 'failed',
+        cause,
+        finished_at: now(),
+        cause_detail: cause_detail ?? null
+      }
     });
     try {
       await revertWorkflowMode(bead_id, prior);
@@ -579,7 +621,10 @@ export function createScheduler(deps) {
           prior,
           verdict.blocked
             ? 'loud_fail_blocker'
-            : `session_failed:${verdict.reason}`
+            : `session_failed:${verdict.reason}`,
+          verdict.blocked
+            ? blockerCauseDetail(verdict.blocked_detail)
+            : undefined
         );
         notifyChanged(workspace);
         await tick(workspace);

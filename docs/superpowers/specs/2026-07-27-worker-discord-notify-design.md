@@ -82,6 +82,8 @@ scheduler deps에 `notify`로 주입한다. `createLiveBd().snapshotBead` 반환
 
 - 멘션 정책: 시작은 정보성이라 조용히(`-q`), 실패·pr_wait은 사람 개입 가치가
   높아 멘션 포함(CLI 기본).
+- (UI-2o4z 정정) 실패 알림 본문에는 attempt의 `cause_detail`이 있으면
+  가드 `reason`과 매치 명령을 함께 포함한다(없으면 생략).
 - `title`은 첫 디스패치 경로에서만 snapshot으로 확보된다. 수동 재개·충돌 해결
   경로는 snapshot이 없으므로 title 없이 발송한다(생략, 실패 아님).
 - stop(■) 제외 구현: `onSessionDone`은 `stopped` set에 든 attempt를 조기

@@ -76,7 +76,7 @@ function makeFakeRunner() {
     spawnOrder,
     /**
      * @param {string} bead_id
-     * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean }>} v
+     * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null }>} v
      */
     finish(bead_id, v) {
       const rec = byBead.get(bead_id);
@@ -88,6 +88,7 @@ function makeFakeRunner() {
         reason: v.reason ?? 'ok',
         exit: v.exit ?? 0,
         blocked: v.blocked ?? false,
+        blocked_detail: v.blocked_detail ?? null,
         events: [],
         raw: []
       });
@@ -815,6 +816,70 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
           c.key === 'workflow_mode'
       )
     ).toBe(true);
+  });
+
+  test('a blocker failure records the guard reason and matched command', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', {
+      success: false,
+      reason: 'blocker',
+      exit: 143,
+      blocked: true,
+      blocked_detail: {
+        reason: 'merge_to_base_blocked',
+        command: 'gh pr merge 311'
+      }
+    });
+    await flush();
+    await flush();
+
+    const a = env.store.snapshot(WS).attempts[attempt_id];
+    expect(a.cause).toBe('loud_fail_blocker');
+    expect(a.cause_detail).toEqual({
+      reason: 'merge_to_base_blocked',
+      command: 'gh pr merge 311'
+    });
+  });
+
+  test('truncates a very long matched command in cause_detail', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', {
+      success: false,
+      reason: 'blocker',
+      exit: 143,
+      blocked: true,
+      blocked_detail: {
+        reason: 'merge_to_base_blocked',
+        command: 'x'.repeat(900)
+      }
+    });
+    await flush();
+    await flush();
+
+    expect(
+      env.store.snapshot(WS).attempts[attempt_id].cause_detail?.command
+    ).toHaveLength(512);
+  });
+
+  test('leaves cause_detail null on a non-blocker failure', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].cause_detail).toBeNull();
   });
 
   test('a failure does not block the repo: re-enabling auto_advance dispatches again', async () => {

@@ -501,14 +501,14 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string} base_sha
-   * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, detail?: string }>}
    */
   async function postMergeVerify(bead_id, base_sha) {
     const resolved = resolveVerify();
     if (!resolved) {
       return { ok: true };
     }
-    /** @type {{ ok: boolean, reason: string }} */
+    /** @type {{ ok: boolean, reason: string, detail?: string }} */
     let r;
     try {
       r = await runVerify({
@@ -523,7 +523,9 @@ export function createPrActions(deps) {
       log('post-merge verification threw for %s: %o', bead_id, err);
       return { ok: false, reason: 'verify_cmd_spawn_error' };
     }
-    return r.ok ? { ok: true } : { ok: false, reason: r.reason };
+    return r.ok
+      ? { ok: true }
+      : { ok: false, reason: r.reason, detail: r.detail };
   }
 
   /**
@@ -923,7 +925,9 @@ export function createPrActions(deps) {
         bead_id,
         'post_merge_verify',
         verified.reason,
-        base_sync
+        base_sync,
+        undefined,
+        verified.detail
       );
     }
     const deployed = await runDeploy(bead_id, synced.sha, target_base);
@@ -1006,9 +1010,18 @@ export function createPrActions(deps) {
    * @param {string} reason
    * @param {BaseSyncOutcome|null} base_sync
    * @param {boolean} [restore_bd] - Whether the parent close may have landed.
+   * @param {string} [detail] - The step's own diagnostic text, when it has one
+   * (UI-2o4z §3); the reason alone cannot always identify the failure.
    * @returns {Promise<{ ok: false, step: string, reason: string, base_sync: BaseSyncOutcome|null }>}
    */
-  async function failCleanup(bead_id, step, reason, base_sync, restore_bd) {
+  async function failCleanup(
+    bead_id,
+    step,
+    reason,
+    base_sync,
+    restore_bd,
+    detail
+  ) {
     /** @type {string|null} */
     let bd_restore = null;
     if (restore_bd === true) {
@@ -1017,18 +1030,20 @@ export function createPrActions(deps) {
         : 'restore_failed';
     }
     log(
-      'cleanup stopped for %s at %s: %s (base_sync %o, bd_restore %o)',
+      'cleanup stopped for %s at %s: %s (base_sync %o, bd_restore %o, detail %o)',
       bead_id,
       step,
       reason,
       base_sync,
-      bd_restore
+      bd_restore,
+      detail
     );
     deps.store.recordCleanupFailure(workspace, {
       bead_id,
       step,
       reason,
-      bd_restore
+      bd_restore,
+      detail
     });
     notifyChanged(workspace);
     return { ok: false, step, reason, base_sync };

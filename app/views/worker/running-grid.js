@@ -33,6 +33,10 @@ import { html } from 'lit-html';
  * @typedef {Object} FailureBanner
  * @property {string} repo
  * @property {string} reason
+ * @property {{ reason: string, command: string|null }|null} [cause_detail] -
+ * What the fail-closed path caught (UI-2o4z §2). `loud_fail_blocker` alone
+ * cannot say WHICH command tripped WHICH guard, which is exactly the question
+ * a false positive raises; absent/null on every other failure cause.
  * @property {string|null} [resume_attempt_id] - The banner's own (latest
  * unhandled failed) attempt — the ONLY ↻ target, never an older substitute
  * (§1), and the attempt ✕ dismisses.
@@ -47,7 +51,47 @@ import { html } from 'lit-html';
  * @property {string} bead_id - The merged bead whose cleanup stopped.
  * @property {string} step - Which pr-finish step stopped (worker-phase2 §6).
  * @property {string} reason - Machine-readable cause.
+ * @property {string|null} [detail] - The step's own diagnostic text (git stderr
+ * etc., UI-2o4z §3); absent on records written before it was preserved.
  */
+
+/**
+ * How much of a diagnostic string a banner shows before eliding it.
+ *
+ * @type {number}
+ */
+const BANNER_DETAIL_MAX = 160;
+
+/**
+ * Keep a diagnostic string to one banner line.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function truncateDetail(text) {
+  return text.length > BANNER_DETAIL_MAX
+    ? `${text.slice(0, BANNER_DETAIL_MAX)}…`
+    : text;
+}
+
+/**
+ * The guard/command line under a fail-closed failure banner. Text bindings, so
+ * lit-html escapes the command — it is session-authored input.
+ *
+ * @param {{ reason: string, command: string|null }|null|undefined} detail
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+function causeDetailLine(detail) {
+  if (!detail || !detail.reason) {
+    return '';
+  }
+  return html`<div class="worker-banner__detail">
+    가드:
+    ${detail.reason}${detail.command
+      ? html` · <code>${truncateDetail(detail.command)}</code>`
+      : ''}
+  </div>`;
+}
 
 /**
  * Format an elapsed duration (ms) as `MmSSs` / `SSs`.
@@ -104,6 +148,7 @@ export function bannersTemplate(state) {
                 ✕
               </button>`
             : ''}
+          ${causeDetailLine(state.failure.cause_detail)}
         </div>`
       : ''}
     ${cleanup.map(
@@ -116,6 +161,11 @@ export function bannersTemplate(state) {
           ⚠ ${c.bead_id} 머지 완료 — 머지 후 정리가 <b>${c.step}</b> 단계에서
           멈췄습니다 (${c.reason}). bead는 resolved로 남아 있고 자동 재시도는
           하지 않습니다 — 정리를 사람이 마무리하세요.
+          ${c.detail
+            ? html`<div class="worker-banner__detail">
+                <code>${truncateDetail(c.detail)}</code>
+              </div>`
+            : ''}
         </div>`
     )}
   </div>`;
