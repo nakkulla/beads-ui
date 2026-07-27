@@ -1117,6 +1117,21 @@ describe('worker/queue-store attempt dismissal (UI-dcw7)', () => {
     });
   });
 
+  test('rejects an inherited-property attempt_id with reason attempt_not_found', () => {
+    const store = storeWithAttempt('failed');
+
+    const r = store.dismissAttempt(WS, {
+      attempt_id: 'toString',
+      expected_revision: 1
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      conflict: false,
+      reason: 'attempt_not_found'
+    });
+  });
+
   test('rejects a stale expected_revision as a conflict carrying no reason', () => {
     const store = storeWithAttempt('failed');
 

@@ -14,6 +14,7 @@ import { html } from 'lit-html';
  * @property {string|null} [model]
  * @property {string|null} [session_id] - Runner session id (short display).
  * @property {string|null} [resumed_from] - Prior attempt this one resumes (§1).
+ * @property {number|null} [dismissed_at] - Epoch ms the attempt was dismissed (closed as handled), if any.
  */
 
 /** @type {Record<string, string>} */
@@ -83,12 +84,15 @@ export function sessionHistoryTemplate(attempts, handlers = {}) {
     }
     const has_sid = typeof a.session_id === 'string' && a.session_id.length > 0;
     const already = resumed_from_ids.has(a.attempt_id);
-    const eligible = has_sid && !already;
+    const dismissed = typeof a.dismissed_at === 'number';
+    const eligible = has_sid && !already && !dismissed;
     const title = !has_sid
       ? 'session_id 없는 구 attempt — 이어하기 불가'
       : already
         ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
-        : '이 세션을 같은 워크트리에서 이어서 진행';
+        : dismissed
+          ? '처리 완료로 닫은 attempt — 이어하기 불가'
+          : '이 세션을 같은 워크트리에서 이어서 진행';
     return html`<button
       type="button"
       class="detail-session__resume"

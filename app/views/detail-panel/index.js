@@ -125,7 +125,8 @@ export function createDetailPanel(mount_element, options) {
         runner: a.runner || null,
         model: a.model || null,
         session_id: a.session_id || null,
-        resumed_from: a.resumed_from || null
+        resumed_from: a.resumed_from || null,
+        dismissed_at: typeof a.dismissed_at === 'number' ? a.dismissed_at : null
       }));
   }
 

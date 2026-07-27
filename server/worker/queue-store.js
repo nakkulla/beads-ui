@@ -698,11 +698,11 @@ export function createQueueStore(options = {}) {
       /** @type {string|null} */
       let reason = null;
       const result = applyMutation(workspace, expected_revision, (next) => {
-        const cur = next.attempts[attempt_id];
-        if (!cur) {
+        if (!Object.hasOwn(next.attempts, attempt_id)) {
           reason = 'attempt_not_found';
           return false;
         }
+        const cur = next.attempts[attempt_id];
         if (cur.status !== 'failed' && cur.status !== 'orphaned') {
           reason = 'not_dismissable';
           return false;
