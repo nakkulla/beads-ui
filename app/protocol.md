@@ -103,8 +103,12 @@ the session's self-report — so a bead moves `queue` → `pr_wait` → `done`.
 Nothing merges without a human `[머지]` click.
 
 - `subscribe-worker-queue` / `unsubscribe-worker-queue` payload: `{ id }`.
-- `worker-queue-snapshot` (push) payload: `{ id, queue }` — the full queue
-  (`revision`, `auto_advance`, `slots`, `queue[]`, `pr_wait[]`, `done[]`,
+- `worker-queue-snapshot` (push) payload:
+  `{ type: 'worker-queue-snapshot', id, root_dir, queue }` — `root_dir` is the
+  workspace this snapshot describes (envelope addressing, not part of `queue`),
+  so a client that already repointed to another workspace can drop a snapshot
+  from a subscription the server has not torn down yet; the rest is the full
+  queue (`revision`, `auto_advance`, `slots`, `queue[]`, `pr_wait[]`, `done[]`,
   `attempts`, `admission`, `cleanup_failed`, `exec_defaults`) plus two
   server-decorated, NON-persisted keys: `workspace_info: { verify_cmd, slots }`
   and `pr_observations` (per-`pr_wait` PR state + merge-gate verdict, memory

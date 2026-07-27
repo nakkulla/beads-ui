@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  RECONCILE_INTERVAL_SECONDS,
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest,
   createLiveBd,
@@ -121,6 +122,25 @@ const okVerify = {
 };
 
 /**
+ * Persist a `running` attempt the way a PRIOR process left it: the durable
+ * record survives, the in-memory session handle does not.
+ *
+ * @param {any} store
+ * @param {string} attempt_id
+ * @param {string} bead_id
+ */
+function seedDetachedAttempt(store, attempt_id, bead_id) {
+  store.appendAttempt(WS, {
+    expected_revision: store.snapshot(WS).revision,
+    attempt: { attempt_id, bead_id }
+  });
+  store.updateAttempt(WS, {
+    attempt_id,
+    patch: { status: 'running', pid: 999999, started_at: 1000, repo: '/repo' }
+  });
+}
+
+/**
  * @param {any} store
  * @param {string} id
  */
@@ -131,7 +151,7 @@ function seedQueue(store, id) {
 }
 
 describe('worker/attach construction + live loop (F1)', () => {
-  test('createWorkerAttachment builds a scheduler + orphan detector over REAL deps', () => {
+  test('createWorkerAttachment builds a scheduler + reconcile timer over REAL deps', () => {
     const runtime = createWorkerRuntime();
     const att = createWorkerAttachment(WS, {
       runtime,
@@ -142,7 +162,8 @@ describe('worker/attach construction + live loop (F1)', () => {
     });
     expect(typeof att.scheduler.tick).toBe('function');
     expect(typeof att.scheduler.stop).toBe('function');
-    expect(typeof att.orphan.detect).toBe('function');
+    expect(typeof att.scheduler.reconcile).toBe('function');
+    expect(typeof att.reconciler.start).toBe('function');
     // The runtime running-count seam now reflects THIS scheduler.
     expect(runtime.status(WS).running_count).toBe(0);
   });
@@ -224,18 +245,10 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(await stopWorkerAttempt(WS, 'att-9')).toBe(false);
   });
 
-  test('initWorkerRuntime reaps orphaned attempts at startup', async () => {
+  test('initWorkerRuntime reconciles the attempts a prior run left running', async () => {
     const runtime = createWorkerRuntime();
-    // Persist a running attempt whose PID is dead → an orphan on restart.
-    runtime.queueStore.appendAttempt(WS, {
-      expected_revision: runtime.queueStore.snapshot(WS).revision,
-      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
-    });
-    runtime.queueStore.updateAttempt(WS, {
-      attempt_id: 'att-1',
-      patch: { status: 'running', pid: 999999, started_at: 1000, repo: '/repo' }
-    });
-    // Register an attachment whose orphan detector sees the PID as dead.
+    seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
+    // Register an attachment whose PID probe sees the recorded PID as dead.
     const att = createWorkerAttachment(WS, {
       runtime,
       bd: fakeBd(),
@@ -249,11 +262,48 @@ describe('worker/attach construction + live loop (F1)', () => {
     runtime.queueStore.setAutoAdvance(WS, true);
 
     initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(
+      () => runtime.queueStore.snapshot(WS).attempts['att-1'].status === 'done'
+    );
 
     const snap = runtime.queueStore.snapshot(WS);
-    expect(snap.attempts['att-1'].status).toBe('orphaned');
-    // The orphan reap halts the queue — the breaker used to do this.
-    expect(snap.auto_advance).toBe(false);
+    // The server died with the session, but the PR was already open — the
+    // startup pass recovers it instead of failing it.
+    expect(snap.pr_wait.map((e) => e.bead_id)).toEqual(['UI-1']);
+    expect(snap.auto_advance).toBe(true);
+  });
+
+  test('the periodic reconcile disposes a dead attempt with no subscribers and auto_advance off', async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = createWorkerRuntime();
+      const att = createWorkerAttachment(WS, {
+        runtime,
+        bd: fakeBd(),
+        worktree: fakeWorktree,
+        verify: okVerify,
+        spawn_impl: makeFixtureSpawn({ lines: [] }),
+        probePid: () => ({ alive: false, started_at: null }),
+        getSubscriberCount: () => 0
+      });
+      __registerWorkerAttachmentForTest(WS, att);
+
+      initWorkerRuntime({ workspaces: [WS], getSubscriberCount: () => 0 });
+      await vi.advanceTimersByTimeAsync(0);
+
+      // A detached session that outlived the startup pass and died afterwards:
+      // nothing in this process holds its handle, so only the timer sees it.
+      seedDetachedAttempt(runtime.queueStore, 'att-late', 'UI-late');
+      runtime.queueStore.setAutoAdvance(WS, false);
+
+      await vi.advanceTimersByTimeAsync(RECONCILE_INTERVAL_SECONDS * 1000);
+
+      const snap = runtime.queueStore.snapshot(WS);
+      expect(snap.attempts['att-late'].status).toBe('done');
+      expect(snap.pr_wait.map((e) => e.bead_id)).toEqual(['UI-late']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

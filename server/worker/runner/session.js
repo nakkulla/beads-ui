@@ -46,7 +46,7 @@ import { EventEmitter } from 'node:events';
 /**
  * A live session handle. Consumers await {@link RunnerHandle.done}; the session
  * log subscribes to the `raw` event; the scheduler may call `kill()` to stop the
- * process group (pause / stop / orphan reap).
+ * process group (pause / stop).
  *
  * @typedef {Object} RunnerHandle
  * @property {number|null} pid - OS pid of the spawned process (null on failure).

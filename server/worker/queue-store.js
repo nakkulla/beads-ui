@@ -40,7 +40,8 @@
  * @property {string|null} effort - Effort snapshot.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
- * @property {string|null} repo - Target repo root (for the orphan reap scope).
+ * @property {string|null} repo - Target repo root (the reconcile's observation
+ * scope: a dead attempt's PR is looked for in THIS repo).
  * @property {string|null} status - Attempt lifecycle: running/done/failed/
  * orphaned/paused/stopped. `paused` (tile ⏸, resumable) and `stopped` (tile ■,
  * terminal) are user actions and carry no `cause` — the state is the meaning.
@@ -67,7 +68,7 @@
  * @property {string[]|null} exec_stamped_keys - Exec-setting metadata keys
  * stamped onto the bead at dispatch (bead-absent keys filled from the
  * workspace-global default). Recorded durably BEFORE the first metadata write
- * so a restart/orphan reap can revert them; null when nothing was stamped.
+ * so a restart's reconcile can revert them; null when nothing was stamped.
  * @property {Record<string, string>|null} exec_values - Resolved values of the
  * exec keys stamped at dispatch, kept so a manual session resume re-stamps with
  * the PRIOR snapshot values instead of re-resolving the current global defaults
@@ -80,7 +81,7 @@
  * @property {boolean} conflict_resolution - Whether this attempt was dispatched
  * to RESOLVE a PR conflict (worker-phase2 §6). It is the single input that
  * relaxes the session-side base-into-branch `git merge` guard, so it is
- * recorded durably: an orphan reap or a restart must be able to see what kind
+ * recorded durably: a reconcile pass or a restart must be able to see what kind
  * of attempt this was. Defaults false — a missing value fails closed.
  */
 /**
@@ -1051,7 +1052,7 @@ export function createQueueStore(options = {}) {
 
     /**
      * Force the auto_advance flag (scheduler-owned, no CAS) — used to turn
-     * execution OFF on a session failure or an orphan reap, which together with
+     * execution OFF on a session failure or a reconcile failure, which together with
      * the failure banner IS the halt behaviour (worker-phase2 §2).
      *
      * @param {string} workspace

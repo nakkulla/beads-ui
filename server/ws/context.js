@@ -326,11 +326,17 @@ export function emitSubscriptionDelete(ws, client_id, key, issue_id) {
  * the client dispatches queue snapshots separately from issue `'snapshot'`
  * events. The queue carries its own CAS `revision` inside the payload.
  *
+ * `root_dir` names the workspace this snapshot describes so a client can drop a
+ * snapshot addressed to a workspace it is no longer looking at. It rides the
+ * payload top level, NOT inside `queue`, because `queue` is the persisted store
+ * shape and this is envelope addressing.
+ *
  * @param {WebSocket} ws
  * @param {string} client_id
+ * @param {string} root_dir
  * @param {Record<string, unknown>} queue
  */
-export function emitWorkerQueueSnapshot(ws, client_id, queue) {
+export function emitWorkerQueueSnapshot(ws, client_id, root_dir, queue) {
   const msg = JSON.stringify({
     id: `evt-${Date.now()}`,
     ok: true,
@@ -338,6 +344,7 @@ export function emitWorkerQueueSnapshot(ws, client_id, queue) {
     payload: {
       type: 'worker-queue-snapshot',
       id: client_id,
+      root_dir,
       queue
     }
   });

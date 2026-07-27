@@ -15,7 +15,7 @@ import {
   attachWsServer,
   handleMessage
 } from './ws.js';
-import { getConnWorkspace } from './ws/context.js';
+import { getConnWorkspace, setConnWorkspace } from './ws/context.js';
 import { workerQueueSubscriberCount } from './ws/worker-handlers.js';
 
 /** @type {string} */
@@ -76,6 +76,19 @@ function queueSnapshots(sock) {
     .map((m) => JSON.parse(m))
     .filter((m) => m.type === 'worker-queue-snapshot')
     .map((m) => m.payload.queue);
+}
+
+/**
+ * The whole snapshot payload (envelope addressing included), not just `queue`.
+ *
+ * @param {{ sent: string[] }} sock
+ * @returns {any[]}
+ */
+function queueSnapshotPayloads(sock) {
+  return sock.sent
+    .map((m) => JSON.parse(m))
+    .filter((m) => m.type === 'worker-queue-snapshot')
+    .map((m) => m.payload);
 }
 
 beforeEach(() => {
@@ -995,5 +1008,65 @@ describe('ws worker-attempt-dismiss (UI-dcw7)', () => {
 
   test('is a client-sendable MESSAGE_TYPE', () => {
     expect(MESSAGE_TYPES).toContain('worker-attempt-dismiss');
+  });
+});
+
+describe('ws worker-queue subscription addressing', () => {
+  const WS_A = { root_dir: '/tmp/wq-ws-A', db_path: '/tmp/wq-ws-A/.beads/db' };
+  const WS_B = { root_dir: '/tmp/wq-ws-B', db_path: '/tmp/wq-ws-B/.beads/db' };
+
+  test('unsubscribe after a workspace switch removes the old-workspace subscription', async () => {
+    const a = fakeSocket();
+    const b = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (a), { ...WS_A });
+    setConnWorkspace(/** @type {any} */ (b), { ...WS_A });
+    await send(a, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    // The client unsubscribes AFTER set-workspace already repointed the
+    // connection — the entry to remove lives under the PREVIOUS workspace key.
+    setConnWorkspace(/** @type {any} */ (a), { ...WS_B });
+    await send(a, 'u1', 'unsubscribe-worker-queue', { id: 'wq' });
+    expect(replyFor(a, 'u1').payload.unsubscribed).toBe(true);
+    a.sent = [];
+
+    await send(b, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(b, 'm1').payload.applied).toBe(true);
+    expect(queueSnapshots(a).length).toBe(0);
+  });
+
+  test('emits the subscribe snapshot under the fixed payload schema', async () => {
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...WS_A });
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    const payload = queueSnapshotPayloads(sock).at(-1);
+    expect(Object.keys(payload)).toEqual(['type', 'id', 'root_dir', 'queue']);
+  });
+
+  test('addresses the subscribe snapshot to the connection workspace', async () => {
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...WS_A });
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshotPayloads(sock).at(-1).root_dir).toBe(WS_A.root_dir);
+  });
+
+  test('addresses a fanout snapshot to the workspace it describes', async () => {
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...WS_A });
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(queueSnapshotPayloads(sock).at(-1).root_dir).toBe(WS_A.root_dir);
   });
 });
