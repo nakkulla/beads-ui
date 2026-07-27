@@ -4,7 +4,7 @@ import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
 import { createUiOrderStore } from '../../data/ui-order-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
-import { createWorkerView } from './index.js';
+import { applyCandidateFilter, createWorkerView } from './index.js';
 
 function createTestIssueStores() {
   /** @type {Map<string, any>} */
@@ -242,6 +242,19 @@ function dragOnto(mount, bead_id, onto_bead_id) {
   onto.dispatchEvent(drop);
 }
 
+/**
+ * Preseed the candidate display filter (UI-ki09). blocked rows are hidden by
+ * default, so a test about blocked candidates asks for them explicitly.
+ *
+ * @param {Partial<{ show_blocked: boolean, spec: 'all'|'with'|'without' }>} over
+ */
+function presetCandidateFilter(over) {
+  window.localStorage.setItem(
+    'beads-ui.worker.candidate-filter',
+    JSON.stringify({ show_blocked: false, spec: 'all', ...over })
+  );
+}
+
 describe('views/worker', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
@@ -250,6 +263,7 @@ describe('views/worker', () => {
 
   test('candidate lane renders Ready/Blocked with spec-missing + blocked reasons', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    presetCandidateFilter({ show_blocked: true });
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore: createWorkerQueueStore(),
@@ -1400,6 +1414,7 @@ describe('views/worker', () => {
 
   test('candidate lane merges Ready+Blocked in effective-rank order (unranked newest-first)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    presetCandidateFilter({ show_blocked: true });
     createWorkerView(mount, {
       issueStores: seedMerged(),
       queueStore: createWorkerQueueStore(),
@@ -1415,6 +1430,7 @@ describe('views/worker', () => {
   test('an explicit rank lifts a candidate above unranked ones (ranked beats unranked)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const uiOrderStore = createUiOrderStore();
+    presetCandidateFilter({ show_blocked: true });
     // A gets a very-negative rank → sorts to the very top; C,B stay newest-first.
     uiOrderStore.set({ revision: 1, order: { A: -1e15 } });
     createWorkerView(mount, {
@@ -1430,6 +1446,7 @@ describe('views/worker', () => {
   test('dragging a candidate onto another sends ui-order-set + applies optimistically', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const uiOrderStore = createUiOrderStore();
+    presetCandidateFilter({ show_blocked: true });
     // Deterministic starting order A(0) < B(STEP) < C(2*STEP) → A, B, C.
     uiOrderStore.set({
       revision: 4,
@@ -1466,6 +1483,7 @@ describe('views/worker', () => {
   test('an order-only push re-renders the candidate lane', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const uiOrderStore = createUiOrderStore();
+    presetCandidateFilter({ show_blocked: true });
     createWorkerView(mount, {
       issueStores: seedMerged(),
       queueStore: createWorkerQueueStore(),
@@ -3526,5 +3544,296 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
 
     expect(btn.disabled).toBe(true);
     expect(btn.title).toContain('session_id 없는');
+  });
+});
+
+describe('candidate display filter — projection (UI-ki09)', () => {
+  /**
+   * @param {string} id
+   * @param {boolean} blocked
+   * @param {boolean} has_spec
+   */
+  const row = (id, blocked, has_spec) => ({ id, blocked, has_spec });
+
+  /** All four blocked × spec combinations. */
+  const rows = [
+    row('RS', false, true),
+    row('RN', false, false),
+    row('BS', true, true),
+    row('BN', true, false)
+  ];
+
+  /** @param {any[]} out */
+  const ids = (out) => out.map((r) => r.id);
+
+  test('hides blocked rows by default', () => {
+    const out = applyCandidateFilter(rows, {
+      show_blocked: false,
+      spec: 'all'
+    });
+
+    expect(ids(out.visible)).toEqual(['RS', 'RN']);
+    expect(out.hidden_blocked).toBe(2);
+    expect(out.hidden_spec).toBe(0);
+  });
+
+  test('shows blocked rows once the toggle is on', () => {
+    const out = applyCandidateFilter(rows, { show_blocked: true, spec: 'all' });
+
+    expect(ids(out.visible)).toEqual(['RS', 'RN', 'BS', 'BN']);
+    expect(out.hidden_blocked).toBe(0);
+  });
+
+  test('keeps only spec-carrying rows under the spec 있음 filter', () => {
+    const out = applyCandidateFilter(rows, {
+      show_blocked: true,
+      spec: 'with'
+    });
+
+    expect(ids(out.visible)).toEqual(['RS', 'BS']);
+    expect(out.hidden_spec).toBe(2);
+  });
+
+  test('keeps only spec-less rows under the spec 없음 filter', () => {
+    const out = applyCandidateFilter(rows, {
+      show_blocked: true,
+      spec: 'without'
+    });
+
+    expect(ids(out.visible)).toEqual(['RN', 'BN']);
+    expect(out.hidden_spec).toBe(2);
+  });
+
+  test('combines the two filters with AND', () => {
+    const out = applyCandidateFilter(rows, {
+      show_blocked: false,
+      spec: 'with'
+    });
+
+    expect(ids(out.visible)).toEqual(['RS']);
+  });
+
+  test('counts a row refused by both filters in neither control count', () => {
+    const out = applyCandidateFilter(rows, {
+      show_blocked: false,
+      spec: 'with'
+    });
+
+    // BN fails BOTH — relaxing either one alone still hides it.
+    expect(out.hidden_blocked).toBe(1);
+    expect(out.hidden_spec).toBe(1);
+    expect(out.visible.length + out.hidden_blocked + out.hidden_spec).toBe(3);
+  });
+
+  test('returns every row when nothing is filtered out', () => {
+    const out = applyCandidateFilter([row('RS', false, true)], {
+      show_blocked: false,
+      spec: 'all'
+    });
+
+    expect(ids(out.visible)).toEqual(['RS']);
+    expect(out.hidden_blocked).toBe(0);
+    expect(out.hidden_spec).toBe(0);
+  });
+});
+
+describe('candidate display filter — view (UI-ki09)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @returns {HTMLElement} A mounted worker view over seedCandidates()
+   * (RD-1 ready+spec, RD-2 ready+no-spec, BL-1 blocked+spec).
+   */
+  function mountCandidates() {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  /** @param {HTMLElement} mount */
+  const candIds = (mount) =>
+    Array.from(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('#worker-pane-candidate')
+      ).querySelectorAll('.worker-card')
+    ).map((el) => /** @type {HTMLElement} */ (el).dataset.beadId);
+
+  /** @param {HTMLElement} mount */
+  const blockedToggle = (mount) =>
+    /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-filter__blocked')
+    );
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} value
+   */
+  const clickSpecChip = (mount, value) => {
+    /** @type {HTMLElement} */ (
+      mount.querySelector(`.worker-filter__chip[data-spec="${value}"]`)
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  };
+
+  test('renders no blocked candidate on a first visit', () => {
+    const mount = mountCandidates();
+
+    expect(candIds(mount)).toEqual(['RD-1', 'RD-2']);
+    expect(blockedToggle(mount).checked).toBe(false);
+  });
+
+  test('counts only the visible rows in the pane header', () => {
+    const mount = mountCandidates();
+
+    const count = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-pane__count')
+    );
+
+    expect(count.textContent).toBe('2');
+  });
+
+  test('names the hidden blocked count on the toggle label', () => {
+    const mount = mountCandidates();
+
+    const label = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-filter__tgl')
+    );
+
+    expect(label.textContent).toContain('🔒 blocked 1');
+  });
+
+  test('reveals blocked candidates when the toggle is switched on', () => {
+    const mount = mountCandidates();
+
+    const tgl = blockedToggle(mount);
+    tgl.checked = true;
+    tgl.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(candIds(mount)).toContain('BL-1');
+  });
+
+  test('filters to spec-less candidates when the spec 없음 chip is clicked', () => {
+    const mount = mountCandidates();
+
+    clickSpecChip(mount, 'without');
+
+    expect(candIds(mount)).toEqual(['RD-2']);
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.worker-filter__chip[data-spec="without"]')
+      ).classList.contains('is-active')
+    ).toBe(true);
+  });
+
+  test('reports the spec-filtered rows apart from the blocked ones', () => {
+    const mount = mountCandidates();
+
+    clickSpecChip(mount, 'with');
+
+    // RD-2 is hidden by the spec chip; BL-1 by the blocked toggle. BL-1 passes
+    // the spec chip, so it counts on the toggle only.
+    expect(
+      /** @type {HTMLElement} */ (mount.querySelector('.worker-filter__hidden'))
+        .textContent
+    ).toContain('숨김 1');
+    expect(
+      /** @type {HTMLElement} */ (mount.querySelector('.worker-filter__tgl'))
+        .textContent
+    ).toContain('🔒 blocked 1');
+  });
+
+  test('stores the filter state as JSON on every change', () => {
+    const mount = mountCandidates();
+
+    clickSpecChip(mount, 'with');
+    const tgl = blockedToggle(mount);
+    tgl.checked = true;
+    tgl.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.worker.candidate-filter') ||
+          'null'
+      )
+    ).toEqual({ show_blocked: true, spec: 'with' });
+  });
+
+  test('restores a stored filter when the view is created', () => {
+    presetCandidateFilter({ show_blocked: true, spec: 'with' });
+
+    const mount = mountCandidates();
+
+    expect(candIds(mount).slice().sort()).toEqual(['BL-1', 'RD-1']);
+    expect(blockedToggle(mount).checked).toBe(true);
+  });
+
+  test('falls back to the defaults on a malformed stored value', () => {
+    window.localStorage.setItem(
+      'beads-ui.worker.candidate-filter',
+      '{not json'
+    );
+
+    const mount = mountCandidates();
+
+    expect(candIds(mount)).toEqual(['RD-1', 'RD-2']);
+    expect(blockedToggle(mount).checked).toBe(false);
+  });
+
+  test('falls back to the defaults on an out-of-vocabulary spec value', () => {
+    window.localStorage.setItem(
+      'beads-ui.worker.candidate-filter',
+      JSON.stringify({ show_blocked: 'yes', spec: 'bogus' })
+    );
+
+    const mount = mountCandidates();
+
+    expect(candIds(mount)).toEqual(['RD-1', 'RD-2']);
+    expect(blockedToggle(mount).checked).toBe(false);
+  });
+
+  test('renders the filter strip on the candidate pane only', () => {
+    const mount = mountCandidates();
+
+    expect(
+      mount.querySelectorAll('#worker-pane-candidate .worker-filter').length
+    ).toBe(1);
+    expect(mount.querySelectorAll('.worker-filter').length).toBe(1);
+  });
+
+  test('keeps drag rank math on the unfiltered lane while blocked rows are hidden', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const uiOrderStore = createUiOrderStore();
+    uiOrderStore.set({
+      revision: 4,
+      order: { A: 0, B: RANK_STEP, C: 2 * RANK_STEP }
+    });
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      revision: 5,
+      order: {}
+    });
+    createWorkerView(mount, {
+      issueStores: seedMerged(),
+      queueStore: createWorkerQueueStore(),
+      uiOrderStore,
+      transport
+    });
+
+    // Blocked B sits between A and C but is hidden; dropping C onto A must
+    // still rank against the full merged list, exactly as if B were shown.
+    expect(candidateOrder(mount)).toEqual(['A', 'C']);
+    dragOnto(mount, 'C', 'A');
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('ui-order-set', {
+      expected_revision: 4,
+      entries: [{ bead_id: 'C', rank: -RANK_STEP }]
+    });
   });
 });

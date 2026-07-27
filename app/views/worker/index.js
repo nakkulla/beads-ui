@@ -63,6 +63,117 @@ function hasSpec(issue) {
 }
 
 /**
+ * Display-filter state for the candidate SOURCE pane (UI-ki09), persisted under
+ * this localStorage key.
+ *
+ * @type {string}
+ */
+const CANDIDATE_FILTER_KEY = 'beads-ui.worker.candidate-filter';
+
+/**
+ * @typedef {{ show_blocked: boolean, spec: 'all'|'with'|'without' }} CandidateFilter
+ */
+
+/**
+ * blocked is hidden by DEFAULT: a blocked bead cannot run now, so it is noise in
+ * a pane whose whole job is "what can I dispatch". It is hidden, never dropped —
+ * the admission gate ignores blocked-ness, so pre-queuing a blocked bead that
+ * already has a spec is a live path and the toggle preserves it.
+ *
+ * @type {CandidateFilter}
+ */
+const CANDIDATE_FILTER_DEFAULT = { show_blocked: false, spec: 'all' };
+
+/**
+ * Read the persisted filter. Anything unreadable (absent, malformed JSON, wrong
+ * shape, storage denied) falls back to the default rather than throwing — a bad
+ * stored value must never take the Worker tab down.
+ *
+ * @returns {CandidateFilter}
+ */
+function loadCandidateFilter() {
+  try {
+    const raw = window.localStorage.getItem(CANDIDATE_FILTER_KEY);
+    if (!raw) {
+      return { ...CANDIDATE_FILTER_DEFAULT };
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return { ...CANDIDATE_FILTER_DEFAULT };
+    }
+    const spec = parsed.spec;
+    return {
+      show_blocked: parsed.show_blocked === true,
+      spec: spec === 'with' || spec === 'without' ? spec : 'all'
+    };
+  } catch {
+    return { ...CANDIDATE_FILTER_DEFAULT };
+  }
+}
+
+/**
+ * @param {CandidateFilter} filter
+ */
+function saveCandidateFilter(filter) {
+  try {
+    window.localStorage.setItem(CANDIDATE_FILTER_KEY, JSON.stringify(filter));
+  } catch {
+    /* ignore — a private-mode storage denial must not break the toggle */
+  }
+}
+
+/**
+ * Apply the two candidate display filters (AND) and report, per control, how
+ * many rows THAT control alone is hiding.
+ *
+ * The per-control count is "rows that would appear if only this control were
+ * relaxed" — so a row refused by BOTH filters is counted by neither (relaxing
+ * one keeps it hidden, and counting it twice would promise a reveal that does
+ * not happen).
+ *
+ * @template {{ blocked: boolean, has_spec: boolean }} T
+ * @param {T[]} rows
+ * @param {CandidateFilter} filter
+ * @returns {{ visible: T[], hidden_blocked: number, hidden_spec: number }}
+ */
+export function applyCandidateFilter(rows, filter) {
+  /** @param {{ blocked: boolean }} row */
+  const blockedPass = (row) => filter.show_blocked || !row.blocked;
+  /** @param {{ has_spec: boolean }} row */
+  const specPass = (row) =>
+    filter.spec === 'all' ||
+    (filter.spec === 'with' ? row.has_spec : !row.has_spec);
+
+  /** @type {T[]} */
+  const visible = [];
+  let hidden_blocked = 0;
+  let hidden_spec = 0;
+  for (const row of rows) {
+    const by_blocked = blockedPass(row);
+    const by_spec = specPass(row);
+    if (by_blocked && by_spec) {
+      visible.push(row);
+    } else if (!by_blocked && by_spec) {
+      hidden_blocked += 1;
+    } else if (by_blocked && !by_spec) {
+      hidden_spec += 1;
+    }
+  }
+  return { visible, hidden_blocked, hidden_spec };
+}
+
+/**
+ * spec filter chips, in render order.
+ *
+ * @type {Array<{ value: 'all'|'with'|'without', label: string }>}
+ */
+const SPEC_FILTER_OPTIONS = [
+  { value: 'all', label: '전체' },
+  { value: 'with', label: 'spec 있음' },
+  { value: 'without', label: 'spec 없음' }
+];
+
+/**
  * A full_plan phase child (`UI-xxxx.N`) is a sub-unit of its parent plan's
  * execution, never a standalone worker candidate (spec §1). Judged by the
  * flattened `parent` edge (same field Board's `parentIdOf` reads) OR a dotted id
@@ -214,6 +325,12 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {any[]}
    */
   let candidate_issues = [];
+  /**
+   * Candidate pane display filter (UI-ki09), restored at view creation.
+   *
+   * @type {CandidateFilter}
+   */
+  let candidate_filter = loadCandidateFilter();
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -620,7 +737,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null }> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -714,11 +831,12 @@ export function createWorkerView(mount_element, options = {}) {
     };
 
     /** @type {any[]} */
-    const candidates = merged.map((/** @type {any} */ it) => {
+    const candidate_rows = merged.map((/** @type {any} */ it) => {
       const eligible = hasSpec(it);
+      const is_blocked = blocked_ids.has(it.id);
       /** @type {string[]} */
       const parts = [];
-      if (blocked_ids.has(it.id)) {
+      if (is_blocked) {
         parts.push(blockedReason(it));
       }
       if (!eligible) {
@@ -737,9 +855,17 @@ export function createWorkerView(mount_element, options = {}) {
         // Candidate cards consume the server-enriched workflow/status (spec §2);
         // queue lanes carry no workflow snapshot, so they stay on miniRow.
         workflow: it.workflow,
-        status: it.status
+        status: it.status,
+        // Filter inputs (UI-ki09); the card template ignores them.
+        blocked: is_blocked,
+        has_spec: eligible
       };
     });
+    // DISPLAY-only projection: `candidate_issues` above stays the unfiltered
+    // merged list, so a candidate→candidate drop still computes its rank against
+    // the whole lane and hiding rows never changes the reorder result.
+    const filtered = applyCandidateFilter(candidate_rows, candidate_filter);
+    const candidates = filtered.visible;
 
     /**
      * @param {any[]} entries
@@ -866,6 +992,10 @@ export function createWorkerView(mount_element, options = {}) {
       queue: q,
       idToTitle,
       candidates,
+      candidate_hidden: {
+        blocked: filtered.hidden_blocked,
+        spec: filtered.hidden_spec
+      },
       running,
       live_count,
       slots,
@@ -946,6 +1076,48 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Candidate pane filter strip (UI-ki09). The pane header counts VISIBLE rows,
+   * so each control carries the count it alone is hiding — "왜 안 보이지" has an
+   * answer without opening anything.
+   *
+   * @param {ReturnType<typeof buildModel>} m
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function candidateControlsTemplate(m) {
+    const hidden = m.candidate_hidden;
+    return html`<div class="worker-filter">
+      <label class="worker-filter__tgl" title="blocked 이슈 표시 (기본 숨김)">
+        <input
+          type="checkbox"
+          class="worker-filter__blocked"
+          .checked=${candidate_filter.show_blocked}
+        />
+        🔒 blocked${hidden.blocked > 0 ? ` ${hidden.blocked}` : ''}
+      </label>
+      <div class="worker-filter__spec" role="group" aria-label="spec 필터">
+        ${SPEC_FILTER_OPTIONS.map(
+          (o) =>
+            html`<button
+              type="button"
+              class="worker-filter__chip${candidate_filter.spec === o.value
+                ? ' is-active'
+                : ''}"
+              data-spec=${o.value}
+              aria-pressed=${candidate_filter.spec === o.value
+                ? 'true'
+                : 'false'}
+            >
+              ${o.label}
+            </button>`
+        )}
+        ${hidden.spec > 0
+          ? html`<span class="worker-filter__hidden">숨김 ${hidden.spec}</span>`
+          : ''}
+      </div>
+    </div>`;
+  }
+
+  /**
    * @param {ReturnType<typeof buildModel>} m
    * @returns {import('lit-html').TemplateResult}
    */
@@ -957,7 +1129,8 @@ export function createWorkerView(mount_element, options = {}) {
         title: '후보 · Board 연동',
         items: m.candidates,
         src: true,
-        empty: '후보 없음'
+        empty: '후보 없음',
+        controls: candidateControlsTemplate(m)
       })}
       ${paneTemplate({
         id: 'worker-pane-queue',
@@ -1151,6 +1324,18 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Adopt a new candidate filter: persist first, then re-render, so a reload
+   * shows exactly what the last click produced.
+   *
+   * @param {CandidateFilter} next
+   */
+  function setCandidateFilter(next) {
+    candidate_filter = next;
+    saveCandidateFilter(next);
+    doRender();
+  }
+
+  /**
    * Commit a slot-count edit (worker-phase2 §3). Fired on `change` so a partial
    * keystroke does not spam mutations; the value is clamped to the lower bound
    * before it is sent and the input is re-rendered from the authoritative
@@ -1159,6 +1344,18 @@ export function createWorkerView(mount_element, options = {}) {
    * @param {Event} ev
    */
   function onChange(ev) {
+    const blocked_tgl = /** @type {HTMLInputElement|null} */ (
+      /** @type {HTMLElement} */ (ev.target)?.closest?.(
+        '.worker-filter__blocked'
+      )
+    );
+    if (blocked_tgl) {
+      setCandidateFilter({
+        ...candidate_filter,
+        show_blocked: blocked_tgl.checked
+      });
+      return;
+    }
     const input = /** @type {HTMLInputElement|null} */ (
       /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-slots__input')
     );
@@ -1265,6 +1462,18 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (target?.closest?.('.worker-play')) {
       void setAutoAdvance(!currentQueue().auto_advance);
+      return;
+    }
+    // Candidate filter chips live inside the pane; handle them before any row
+    // handler so a click never falls through to the card default.
+    const spec_chip = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-filter__chip')
+    );
+    if (spec_chip) {
+      const value = spec_chip.dataset.spec;
+      if (value === 'all' || value === 'with' || value === 'without') {
+        setCandidateFilter({ ...candidate_filter, spec: value });
+      }
       return;
     }
     // PR-wait actions act on the bead and must never also open the detail panel
