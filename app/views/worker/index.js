@@ -408,6 +408,8 @@ export function mergeStepView(step) {
  * bead's last attempt (UI-raqh §1).
  * @param {{ activity: 'checking'|'verifying'|null, merge_progress: { step: string }|null }|null} [active]
  * What the server is doing to this bead right now (UI-raqh §3/§4).
+ * @param {'running'|'paused'|null} [conflict_session] - State of this bead's own
+ * conflict-resolution attempt, when one exists (UI-dxgz §1).
  * @returns {any}
  */
 function prWaitRow(
@@ -416,17 +418,29 @@ function prWaitRow(
   observations,
   cleanup_failed,
   usage = null,
-  active = null
+  active = null,
+  conflict_session = null
 ) {
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
   /** @type {string[]} */
   const badges = [];
+  const conflict_badge = conflict_session
+    ? conflict_session === 'running'
+      ? '충돌 해소 중'
+      : '충돌 해소 일시정지'
+    : null;
   const substituted = activityBadge(
     (gate && gate.gate_badge) || '',
-    (active && active.activity) || null
+    // A resolution session outranks poller activity (UI-dxgz §1): the row has
+    // one live slot, and "what is being done about the conflict" is the state a
+    // reader has to act on, not that a gh round-trip is in flight.
+    conflict_badge ? null : (active && active.activity) || null
   );
+  if (conflict_badge) {
+    badges.push(conflict_badge);
+  }
   if (substituted.label) {
     badges.push(substituted.label);
   }
@@ -460,7 +474,16 @@ function prWaitRow(
     // Which badge (if any) reports live server activity rather than a settled
     // state — the row draws that one with the breathing dot and no colour
     // emphasis, because nobody has to act on it.
-    live_badge: substituted.live ? substituted.label : null,
+    live_badge:
+      conflict_session === 'running'
+        ? conflict_badge
+        : conflict_badge
+          ? // A paused resolution session is a settled state, not live work:
+            // the badge shows, the breathing dot does not.
+            null
+          : substituted.live
+            ? substituted.label
+            : null,
     usage,
     alert: (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) || !!cleanup_failed,
     merge_action: true,
@@ -469,23 +492,42 @@ function prWaitRow(
     // on a tile whose merge already landed (discard spec §2).
     discard_action: !cleanup_failed && !(gate && gate.tier === 'merged'),
     merge_step,
-    discard_enabled: !merge_step,
+    discard_enabled: !merge_step && !conflict_session,
+    // Not a guard — the scheduler already refuses a second dispatch for a
+    // claimed/running attempt. The disabled buttons say WHY clicking now is
+    // pointless, which the server's refusal never reaches the user with.
+    discard_title: conflict_session
+      ? '충돌 해소 세션 있음 — 폐기하려면 먼저 세션을 정리하세요'
+      : undefined,
     // A conflicting PR keeps [머지] clickable on purpose: that click is what
-    // dispatches the resolution session (§6), and it merges nothing.
-    merge_enabled: !merge_step && (enabled || conflicting || cleanup_retry),
+    // dispatches the resolution session (§6), and it merges nothing. Once that
+    // session exists, there is nothing left to dispatch until it settles.
+    merge_enabled:
+      !merge_step &&
+      !conflict_session &&
+      (enabled || conflicting || cleanup_retry),
+    // The label says what the click DOES: on a conflicting gate it dispatches a
+    // resolution session, and a button reading 머지 there is the misread that
+    // put this bead here (UI-dxgz §2).
+    merge_label:
+      conflicting && !merge_step && !cleanup_retry ? '충돌 해소' : undefined,
     merge_title: merge_step
       ? `머지 진행 중 — ${merge_step.label}`
-      : cleanup_retry
-        ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
-        : conflicting
-          ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
-          : enabled
-            ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
-            : gate && gate.tier === 'merged'
-              ? // Already merged with no cleanup failure recorded: the cleanup
-                // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                '머지됨 — 머지 후 정리 진행 중'
-              : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+      : conflict_session === 'running'
+        ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
+        : conflict_session === 'paused'
+          ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
+          : cleanup_retry
+            ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+            : conflicting
+              ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
+              : enabled
+                ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
+                : gate && gate.tier === 'merged'
+                  ? // Already merged with no cleanup failure recorded: the cleanup
+                    // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                    '머지됨 — 머지 후 정리 진행 중'
+                  : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -1160,6 +1202,10 @@ export function createWorkerView(mount_element, options = {}) {
           started_at: typeof a.started_at === 'number' ? a.started_at : null,
           resumed_from: a.resumed_from || null,
           paused: leaf_paused,
+          // 충돌 해소 세션은 일반 실행과 결과가 다르다 (PR을 머지하지 않고
+          // 브랜치를 고친다) — 타일에서 구분되지 않으면 "진행중"의 정체를
+          // 알 수 없다 (UI-dxgz §1).
+          conflict_resolution: a.conflict_resolution === true,
           can_pause:
             typeof a.session_id === 'string' && a.session_id.length > 0,
           // 실행 중 타일은 이 attempt의 라이브 usage를 그대로 쓴다 — 스냅샷의
@@ -1214,6 +1260,21 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {Set<string>} */
     const active_bead_ids = new Set(running.map((r) => r.bead_id));
 
+    // The running list carries leaf-paused attempts too, so the PR 대기 card
+    // needs both sets apart: only a live session gets the breathing badge, while
+    // both states keep [머지]/[폐기] quiet (UI-dxgz §1).
+    /** @type {Map<string, 'running'|'paused'>} */
+    const conflict_sessions = new Map();
+    for (const r of running) {
+      if (r.conflict_resolution) {
+        if (!r.paused) {
+          conflict_sessions.set(r.bead_id, 'running');
+        } else if (!conflict_sessions.has(r.bead_id)) {
+          conflict_sessions.set(r.bead_id, 'paused');
+        }
+      }
+    }
+
     // A manual ▶ may push live sessions past the dispatch cap on purpose (§2.3)
     // — surface it rather than blocking the resume. There is ONE cap now
     // (worker-phase2 §3), so the live total is compared against it directly.
@@ -1265,7 +1326,8 @@ export function createWorkerView(mount_element, options = {}) {
           pr_activity[e.bead_id] ||
             (merge_pending.has(e.bead_id)
               ? { activity: null, merge_progress: { step: 'merging' } }
-              : null)
+              : null),
+          conflict_sessions.get(e.bead_id) || null
         )
       ),
       done: toRows(q.done, 'done'),
