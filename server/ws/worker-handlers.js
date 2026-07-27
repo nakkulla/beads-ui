@@ -26,6 +26,7 @@
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
+import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
@@ -164,7 +165,11 @@ function prObservationsFor(workspace_key, queue, verify_cmd_present) {
  *     flag live sessions exceeding the cap after a manual resume
  *     (worker-phase1 §2.3, worker-phase2 §3),
  *   - `pr_observations`: what the PR poller has SEEN for each `pr_wait` bead
- *     plus its merge-gate verdict (worker-phase2 §4/§5) — a pure cache read.
+ *     plus its merge-gate verdict (worker-phase2 §4/§5) — a pure cache read,
+ *   - the configured `deploy_cmd` and the workspace's `last_deploy` record
+ *     (worker-deploy-hook §3), so the ⚙ dialog can show what the merge click
+ *     will run and what the last one did. Read-only on the wire: the commands
+ *     are defined in `config.toml` only, which is the security boundary.
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
@@ -178,6 +183,18 @@ function decorateQueue(workspace_key, queue) {
   } catch {
     verify_cmd = null;
   }
+  /** @type {{ cmd: string[], timeout_ms: number, detached: boolean } | null} */
+  let deploy_cmd = null;
+  try {
+    deploy_cmd =
+      getConfig().worker_deploy[path.resolve(String(workspace_key || ''))] ||
+      null;
+  } catch {
+    deploy_cmd = null;
+  }
+  // Absent on a legacy queue.json — the contract-consumer rule is fail-quiet,
+  // so it travels as null and the renderer omits the row.
+  const last_deploy = queue.last_deploy || null;
   /** @type {number|null} */
   let slots = null;
   try {
@@ -192,7 +209,7 @@ function decorateQueue(workspace_key, queue) {
   }
   return {
     ...queue,
-    workspace_info: { verify_cmd, slots },
+    workspace_info: { verify_cmd, deploy_cmd, last_deploy, slots },
     // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
     // (worker-phase2 §4) — it exists only on the wire and in server memory.
     pr_observations: prObservationsFor(workspace_key, queue, !!verify_cmd)

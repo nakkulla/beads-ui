@@ -1111,7 +1111,8 @@ export function bootstrap(root_element) {
       queueStore: worker_queue_store,
       sessionLogStore: session_log_store,
       uiOrderStore: ui_order_store,
-      gotoIssue: (id) => store.setState({ selected_id: id })
+      gotoIssue: (id) => store.setState({ selected_id: id }),
+      getWorkspacePath: () => store.getState().workspace.current?.path
     });
 
     // Shared detail overlay.

@@ -1,4 +1,5 @@
 import { html, render } from 'lit-html';
+import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import {
   DEFAULT_LABELS,
@@ -23,11 +24,68 @@ import {
  * claude-only change) shows as its own selected `(비호환)` option, still
  * resettable to `(기본)`.
  *
+ * Below the editing form the dialog also renders the read-only 「검증·배포 설정」
+ * section (worker-deploy-hook §4): what the merge click verifies and deploys for
+ * the current workspace, plus the last deploy's outcome. Its data rides the
+ * queue snapshot's `workspace_info` decoration — no extra request or channel —
+ * and it carries NO editing control: the commands live in `config.toml` only,
+ * which is the security boundary.
+ *
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
  * @typedef {Object} ExecDefaultsOptions
  * @property {QueueStore} queueStore
  * @property {(type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<any>} [transport]
+ * @property {() => (string|undefined)} [getWorkspacePath] - Current workspace
+ * path, used only to name the `[worker.deploy."<path>"]` section a user must
+ * write when no deploy command is configured.
  */
+
+/**
+ * Render a timeout in the unit the dialog shows it in (minutes above a minute,
+ * seconds below it). An unusable value renders as '' so the caller drops it.
+ *
+ * @param {unknown} timeout_ms
+ * @returns {string}
+ */
+function formatTimeout(timeout_ms) {
+  if (typeof timeout_ms !== 'number' || !Number.isFinite(timeout_ms)) {
+    return '';
+  }
+  if (timeout_ms <= 0) {
+    return '';
+  }
+  if (timeout_ms < 60000) {
+    return `${Math.round(timeout_ms / 1000)}초`;
+  }
+  const minutes = timeout_ms / 60000;
+  return `${Number.isInteger(minutes) ? minutes : Math.round(minutes * 10) / 10}분`;
+}
+
+/**
+ * Join an argv array the way the dialog displays it. A non-argv value (a legacy
+ * or malformed record) renders as '' so the row falls back to its absent form.
+ *
+ * @param {unknown} cmd
+ * @returns {string}
+ */
+function formatCmd(cmd) {
+  if (!Array.isArray(cmd)) {
+    return '';
+  }
+  return cmd.filter((part) => typeof part === 'string').join(' ');
+}
+
+/**
+ * The badge each deploy outcome renders as. An outcome outside the vocabulary
+ * has no badge, so the row is dropped (fail-quiet contract consumption).
+ *
+ * @type {Record<string, { modifier: string, label: string }>}
+ */
+const DEPLOY_OUTCOME_BADGES = {
+  deployed: { modifier: 'ok', label: '성공' },
+  launched: { modifier: 'launched', label: '발사됨' },
+  failed: { modifier: 'fail', label: '실패' }
+};
 
 /** The 4 workspace-global exec keys, in display order (workflow_mode excluded). */
 const EXEC_ROWS = [
@@ -45,7 +103,7 @@ const EXEC_ROWS = [
  * @returns {{ open: () => void, close: () => void, destroy: () => void }}
  */
 export function createExecDefaultsDialog(mount_element, options) {
-  const { queueStore, transport } = options;
+  const { queueStore, transport, getWorkspacePath } = options;
 
   const dialog = /** @type {HTMLDialogElement} */ (
     document.createElement('dialog')
@@ -170,6 +228,148 @@ export function createExecDefaultsDialog(mount_element, options) {
     </div>`;
   }
 
+  /**
+   * @returns {any} The snapshot's `workspace_info` decoration (or an empty
+   * shape: a pre-snapshot or legacy queue simply has nothing to show).
+   */
+  function currentWorkspaceInfo() {
+    const info = currentQueue().workspace_info;
+    return info && typeof info === 'object' ? info : {};
+  }
+
+  /**
+   * @param {string} modifier
+   * @param {string} label
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function badge(modifier, label) {
+    return html`<span
+      class="exec-defaults__vd-badge exec-defaults__vd-badge--${modifier}"
+      >${label}</span
+    >`;
+  }
+
+  /**
+   * The verify row: what the merge gate runs before merging, and whether that
+   * command came from config or from auto-detection.
+   *
+   * @param {any} verify_cmd
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function verifyGroup(verify_cmd) {
+    const cmd_text = verify_cmd ? formatCmd(verify_cmd.cmd) : '';
+    const timeout_text = verify_cmd ? formatTimeout(verify_cmd.timeout_ms) : '';
+    const detected = Boolean(verify_cmd) && verify_cmd.source === 'detected';
+    return html`<div class="exec-defaults__vd-group" data-vd="verify">
+      <div class="exec-defaults__vd-label">머지 전 검증 (verify)</div>
+      ${cmd_text
+        ? html`<div class="exec-defaults__vd-line">
+            <span class="exec-defaults__vd-cmd">${cmd_text}</span>
+            ${detected
+              ? badge('detected', '자동감지')
+              : badge('config', 'config')}
+            ${timeout_text
+              ? html`<span class="exec-defaults__vd-meta"
+                  >timeout ${timeout_text}</span
+                >`
+              : ''}
+          </div>`
+        : html`<div class="exec-defaults__vd-line exec-defaults__vd-absent">
+            검증 없음
+          </div>`}
+    </div>`;
+  }
+
+  /**
+   * The deploy row: what the merge click runs after a green verify. Unset, it
+   * names the config section a user has to write — the only place a deploy
+   * command can be defined.
+   *
+   * @param {any} deploy_cmd
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function deployGroup(deploy_cmd) {
+    const cmd_text = deploy_cmd ? formatCmd(deploy_cmd.cmd) : '';
+    const timeout_text = deploy_cmd ? formatTimeout(deploy_cmd.timeout_ms) : '';
+    const note = timeout_text
+      ? `timeout ${timeout_text} · verify 통과 시에만 실행`
+      : 'verify 통과 시에만 실행';
+    const workspace_path =
+      (getWorkspacePath && getWorkspacePath()) || '<workspace 경로>';
+    return html`<div class="exec-defaults__vd-group" data-vd="deploy">
+      <div class="exec-defaults__vd-label">머지 후 배포 (deploy)</div>
+      ${cmd_text
+        ? html`<div class="exec-defaults__vd-line">
+            <span class="exec-defaults__vd-cmd">${cmd_text}</span>
+            ${badge('config', 'config')}
+            ${deploy_cmd.detached === true ? badge('detached', 'detached') : ''}
+            <span class="exec-defaults__vd-meta">${note}</span>
+          </div>`
+        : html`<div class="exec-defaults__vd-line exec-defaults__vd-absent">
+            배포 없음 —
+            <span class="exec-defaults__vd-cmd"
+              >[worker.deploy."${workspace_path}"]</span
+            >
+            섹션으로 정의
+          </div>`}
+    </div>`;
+  }
+
+  /**
+   * The last-deploy row, or nothing at all when the workspace has never
+   * deployed (or recorded an outcome outside the vocabulary) — the row is
+   * omitted rather than rendered empty.
+   *
+   * @param {any} last_deploy
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function lastDeployGroup(last_deploy) {
+    if (!last_deploy || typeof last_deploy !== 'object') {
+      return '';
+    }
+    const spec = DEPLOY_OUTCOME_BADGES[String(last_deploy.outcome)];
+    if (!spec) {
+      return '';
+    }
+    const label =
+      last_deploy.outcome === 'failed' && last_deploy.reason
+        ? `${spec.label} · ${last_deploy.reason}`
+        : spec.label;
+    const meta = [
+      formatTimestampLocal(last_deploy.at),
+      typeof last_deploy.bead_id === 'string' ? last_deploy.bead_id : '',
+      typeof last_deploy.base_sha === 'string'
+        ? last_deploy.base_sha.slice(0, 7)
+        : ''
+    ]
+      .filter((part) => part.length > 0)
+      .join(' · ');
+    return html`<div class="exec-defaults__vd-group" data-vd="last-deploy">
+      <div class="exec-defaults__vd-label">마지막 배포</div>
+      <div class="exec-defaults__vd-line">
+        ${badge(spec.modifier, label)}
+        ${meta ? html`<span class="exec-defaults__vd-meta">${meta}</span>` : ''}
+      </div>
+    </div>`;
+  }
+
+  /**
+   * @param {any} info
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function verifyDeploySection(info) {
+    return html`<section class="exec-defaults__vd">
+      <p class="exec-defaults__vd-title">
+        검증·배포 설정
+        <span class="exec-defaults__vd-ro"
+          >읽기 전용 — config.toml에서 정의</span
+        >
+      </p>
+      ${verifyGroup(info.verify_cmd)} ${deployGroup(info.deploy_cmd)}
+      ${lastDeployGroup(info.last_deploy)}
+    </section>`;
+  }
+
   function doRender() {
     const defaults = currentDefaults();
     render(
@@ -195,6 +395,7 @@ export function createExecDefaultsDialog(mount_element, options) {
             ${EXEC_ROWS.map((row) =>
               selectRow(row.key, row.values(), defaults[row.key] || '')
             )}
+            ${verifyDeploySection(currentWorkspaceInfo())}
           </div>
         </div>
       `,
