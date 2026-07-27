@@ -70,14 +70,17 @@ detached = true                    # 선택: boolean 아니면 false
   base 체크아웃**에서 돈다. base_sync의 `fast_forwarded` 결과만으로는 부족하다
   — 로컬이 origin보다 ahead여도 `--ff-only`는 성공하고, 1단계와 6단계 사이에
   체크아웃이 변할 수도 있다. 따라서 **deploy 직전에** 현재 브랜치 ==
-  target_base, `git status --porcelain --untracked-files=no` clean(tracked
-  변경만), `HEAD == base_sha` 세 가지를 재검증하고, 하나라도 불일치하면
-  stale/미검증 코드 배포를 막기 위해 `deploy_base_not_synced`로 실패 처리한다.
-  (개정 2026-07-27 2차, UI-2mzm: 최초 개정본의 clean 판정은 untracked 포함
-  전체 porcelain이었는데, 공유 체크아웃에는 배포물에 영향 없는 세션 스크래치가
-  상존할 수 있어 상시 실패한다. tracked 파일의 수정·스테이징만 stale 배포
-  위험이므로 untracked는 판정에서 제외한다 — untracked 파일은 tracked 코드가
-  참조하지 않아 서빙 산출물을 바꾸지 못한다.)
+  target_base, `git status --porcelain` clean, `HEAD == base_sha` 세 가지를
+  재검증하고, 하나라도 불일치하면 stale/미검증 코드 배포를 막기 위해
+  `deploy_base_not_synced`로 실패 처리한다.
+  (개정 2026-07-27 2차, UI-2mzm: 공유 체크아웃의 상시 스크래치로 clean 판정이
+  항상 실패하는 문제의 해소 채널은 판정 완화가 아니라 **`.gitignore` 선언**이다
+  — porcelain은 ignored 파일을 원래 출력하지 않으므로, 배포 입력이 아님이
+  명시적으로 보장된 스크래치 경로(`.superpowers/`, `.beads/dolt-config.log` 등)
+  를 `.gitignore`에 선언하면 판정에서 빠진다. `--untracked-files=no` 전면
+  제외는 기각: `express.static(app_dir)`가 untracked `app/**` 파일도 그대로
+  서빙하고 deploy cmd가 untracked 실행 파일을 가리킬 수 있어, 비-ignored
+  untracked는 검증된 SHA 밖의 런타임 입력일 수 있으므로 계속 거부한다.)
 - 동기 모드 (기본, `detached = false`): repo 루트에서 `cmd`를 셸 없이 spawn,
   `timeout_ms` 데드라인. 종료코드 0 = `deployed`, 비0 = `deploy_failed`,
   타임아웃 = `deploy_timeout`, spawn 불가 = `deploy_spawn_error`.
