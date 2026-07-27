@@ -448,7 +448,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   };
 
   // The PR-wait actions (worker-phase2 §6): the authoritative [머지] click, the
-  // single post-merge cleanup, and [재실행]. Built with the SAME gh adapter,
+  // single post-merge cleanup, and [폐기]. Built with the SAME gh adapter,
   // observation cache, worktree manager and scheduler the poller and dispatch
   // use, so a click can never act on a different view of the world than the
   // badges it followed.
@@ -700,19 +700,19 @@ export async function mergeWorkerPr(workspace_root, bead_id) {
 }
 
 /**
- * Discard a PR and re-run its bead from a fresh base ([재실행], §6), IF an
- * attachment is registered. Inert without one.
+ * Discard a `pr_wait` bead's PR, worktree and branch ([폐기], discard spec §1),
+ * IF an attachment is registered. Inert without one.
  *
  * @param {string} workspace_root
  * @param {string} bead_id
- * @returns {Promise<import('./pr-actions.js').RerunResult>}
+ * @returns {Promise<import('./pr-actions.js').DiscardResult>}
  */
-export async function rerunWorkerPr(workspace_root, bead_id) {
+export async function discardWorkerPr(workspace_root, bead_id) {
   const att = ATTACHMENTS.get(keyFor(workspace_root));
   if (!att || !att.prActions) {
-    return { ok: false, reason: 'no_attachment', redispatched: false };
+    return { ok: false, reason: 'no_attachment' };
   }
-  return att.prActions.rerun(bead_id);
+  return att.prActions.discard(bead_id);
 }
 
 /**

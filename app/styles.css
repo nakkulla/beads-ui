@@ -3335,9 +3335,9 @@ html[data-theme='dark'] {
   cursor: not-allowed;
 }
 
-/* [재실행] — deliberately SUBORDINATE: a misclick here throws a PR away, so it
+/* [폐기] — deliberately SUBORDINATE: a misclick here throws a PR away, so it
    is drawn as quiet text rather than a peer of [머지] (§6). */
-.worker-mini__rerun {
+.worker-mini__discard {
   padding: 1px var(--sp-5);
   border: none;
   background: transparent;
@@ -3348,7 +3348,7 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.worker-mini__rerun:hover {
+.worker-mini__discard:hover {
   color: var(--accent-warn);
 }
 

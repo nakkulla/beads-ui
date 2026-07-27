@@ -72,28 +72,28 @@ export function createPrObservationStore(options = {}) {
   const by_workspace = new Map();
 
   /**
-   * Beads whose [재실행] transition is IN FLIGHT, keyed `<workspace>\0<bead>`.
+   * Beads whose [폐기] transition is IN FLIGHT, keyed `<workspace>\0<bead>`.
    *
-   * This is the barrier that makes worker-phase2 §4's "a rerun's own close is
-   * not the poller's CLOSED case" structural rather than a timing hope. A rerun
-   * closes the PR first and only then moves the bead out of `pr_wait`; a poll
-   * pass landing inside that window would otherwise observe `state: CLOSED` and
-   * publish "PR closed — 사람 처분 대기" for a bead the server itself just
+   * This is the barrier that makes worker-phase2 §4's "a discard's own close is
+   * not the poller's CLOSED case" structural rather than a timing hope. A
+   * discard closes the PR first and only then removes the bead from `pr_wait`; a
+   * poll pass landing inside that window would otherwise observe `state: CLOSED`
+   * and publish "PR closed — 사람 처분 대기" for a bead the server itself just
    * abandoned on purpose. While a bead is marked, {@link record} /
    * {@link recordVerify} are NO-OPS, so no such observation can ever be written,
    * and the mark is taken BEFORE the `gh pr close` and released only after the
-   * atomic lane move (or after a failed rerun restores the bead).
+   * atomic lane removal (or after a failed discard leaves the bead in place).
    *
    * @type {Set<string>}
    */
-  const rerunning = new Set();
+  const discarding = new Set();
 
   /**
    * @param {string} workspace
    * @param {string} bead_id
    * @returns {string}
    */
-  function rerunKey(workspace, bead_id) {
+  function discardKey(workspace, bead_id) {
     return `${path.resolve(String(workspace || ''))}\u0000${bead_id}`;
   }
 
@@ -160,8 +160,8 @@ export function createPrObservationStore(options = {}) {
      * @returns {PrObservationEntry}
      */
     record(workspace, bead_id, input) {
-      // Suppressed while a [재실행] transition is in flight — see `rerunning`.
-      if (rerunning.has(rerunKey(workspace, bead_id))) {
+      // Suppressed while a [폐기] transition is in flight — see `discarding`.
+      if (discarding.has(discardKey(workspace, bead_id))) {
         return laneFor(workspace).get(bead_id) || emptyEntry(bead_id);
       }
       const lane = laneFor(workspace);
@@ -187,7 +187,7 @@ export function createPrObservationStore(options = {}) {
      * @param {VerifyObservation} verify
      */
     recordVerify(workspace, bead_id, verify) {
-      if (rerunning.has(rerunKey(workspace, bead_id))) {
+      if (discarding.has(discardKey(workspace, bead_id))) {
         return;
       }
       const lane = laneFor(workspace);
@@ -203,8 +203,8 @@ export function createPrObservationStore(options = {}) {
     },
 
     /**
-     * Drop observations for beads no longer in `pr_wait` (a merge, a rerun, or
-     * a manual queue removal), so the cache cannot outlive the lane it
+     * Drop observations for beads no longer in `pr_wait` (a merge, a discard,
+     * or a manual queue removal), so the cache cannot outlive the lane it
      * describes.
      *
      * @param {string} workspace
@@ -237,42 +237,42 @@ export function createPrObservationStore(options = {}) {
     },
 
     /**
-     * Open the [재실행] barrier for a bead: drop whatever was observed and
-     * refuse every further write until {@link clearRerunning} (worker-phase2
-     * §4/§6). Called BEFORE the rerun's `gh pr close`, so the CLOSED state that
-     * close produces can never be recorded, let alone published as "PR closed —
-     * awaiting a human".
+     * Open the [폐기] barrier for a bead: drop whatever was observed and
+     * refuse every further write until {@link clearDiscarding} (worker-phase2
+     * §4/§6). Called BEFORE the discard's `gh pr close`, so the CLOSED state
+     * that close produces can never be recorded, let alone published as "PR
+     * closed — awaiting a human".
      *
      * @param {string} workspace
      * @param {string} bead_id
      */
-    markRerunning(workspace, bead_id) {
-      rerunning.add(rerunKey(workspace, bead_id));
+    markDiscarding(workspace, bead_id) {
+      discarding.add(discardKey(workspace, bead_id));
       laneFor(workspace).delete(bead_id);
     },
 
     /**
-     * Close the barrier. Called after the atomic lane move (the bead is out of
-     * `pr_wait`, so the poller no longer observes it at all) — or after a failed
-     * rerun that left the bead in place, where re-observation is what the human
-     * needs to see the real state.
+     * Close the barrier. Called after the atomic lane removal (the bead is out
+     * of `pr_wait`, so the poller no longer observes it at all) — or after a
+     * failed discard that left the bead in place, where re-observation is what
+     * the human needs to see the real state.
      *
      * @param {string} workspace
      * @param {string} bead_id
      */
-    clearRerunning(workspace, bead_id) {
-      rerunning.delete(rerunKey(workspace, bead_id));
+    clearDiscarding(workspace, bead_id) {
+      discarding.delete(discardKey(workspace, bead_id));
     },
 
     /**
-     * Whether a bead's rerun transition is in flight (test/diagnostic read).
+     * Whether a bead's discard transition is in flight (test/diagnostic read).
      *
      * @param {string} workspace
      * @param {string} bead_id
      * @returns {boolean}
      */
-    isRerunning(workspace, bead_id) {
-      return rerunning.has(rerunKey(workspace, bead_id));
+    isDiscarding(workspace, bead_id) {
+      return discarding.has(discardKey(workspace, bead_id));
     },
 
     /**
@@ -280,7 +280,7 @@ export function createPrObservationStore(options = {}) {
      */
     clear() {
       by_workspace.clear();
-      rerunning.clear();
+      discarding.clear();
     }
   };
 }

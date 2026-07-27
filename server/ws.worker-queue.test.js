@@ -292,7 +292,7 @@ describe('ws worker-queue channel', () => {
       'worker-queue-remove',
       'worker-queue-set-exec-default',
       'worker-pr-merge',
-      'worker-pr-rerun'
+      'worker-pr-discard'
     ]) {
       expect(MESSAGE_TYPES).toContain(type);
     }
@@ -336,6 +336,50 @@ describe('ws worker-queue channel', () => {
     expect(
       placed.payload.queue.queue.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual(['UI-7']);
+  });
+
+  test('a successful place kicks the live tick (discard spec §1)', async () => {
+    // The drag into 대기 is the ONLY dispatch path a discarded bead has, so the
+    // placement itself must ask for a dispatch.
+    const tick = vi.fn(async () => {});
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick, stop: vi.fn() },
+        admission: { check: async () => ({ ok: true }) }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-7',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').payload.applied).toBe(true);
+    expect(tick).toHaveBeenCalledWith(process.cwd());
+  });
+
+  test('a stale-revision place kicks no tick', async () => {
+    const tick = vi.fn(async () => {});
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick, stop: vi.fn() },
+        admission: { check: async () => ({ ok: true }) }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-7',
+      expected_revision: 99
+    });
+
+    expect(replyFor(sock, 'm1').payload.conflict).toBe(true);
+    expect(tick).not.toHaveBeenCalled();
   });
 
   test('toggle ON kicks a tick with no breaker reset in between', async () => {
@@ -784,7 +828,7 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
       process.cwd(),
       /** @type {any} */ ({
         scheduler: { tick: vi.fn(), stop: vi.fn() },
-        prActions: { merge, rerun: vi.fn() }
+        prActions: { merge, discard: vi.fn() }
       })
     );
     const sock = fakeSocket();
@@ -815,7 +859,7 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
             reason: null,
             attempt_id: 'a2'
           }),
-          rerun: vi.fn()
+          discard: vi.fn()
         }
       })
     );
@@ -839,7 +883,7 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
       process.cwd(),
       /** @type {any} */ ({
         scheduler: { tick: vi.fn(), stop: vi.fn() },
-        prActions: { merge, rerun: vi.fn() }
+        prActions: { merge, discard: vi.fn() }
       })
     );
     const sock = fakeSocket();
@@ -854,48 +898,51 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
     expect(replyFor(sock, 'm1').payload.conflict).toBe(true);
   });
 
-  test('a stale revision refuses the destructive rerun without acting', async () => {
-    const rerun = vi.fn();
+  test('a stale revision refuses the destructive discard without acting', async () => {
+    const discard = vi.fn();
     __registerWorkerAttachmentForTest(
       process.cwd(),
       /** @type {any} */ ({
         scheduler: { tick: vi.fn(), stop: vi.fn() },
-        prActions: { merge: vi.fn(), rerun }
+        prActions: { merge: vi.fn(), discard }
       })
     );
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
-    await send(sock, 'r1', 'worker-pr-rerun', {
+    await send(sock, 'r1', 'worker-pr-discard', {
       bead_id: 'UI-1',
       expected_revision: 99
     });
 
-    expect(rerun).not.toHaveBeenCalled();
+    expect(discard).not.toHaveBeenCalled();
     expect(replyFor(sock, 'r1').payload.conflict).toBe(true);
   });
 
-  test('worker-pr-rerun reaches the action and reports its refusal reason', async () => {
-    const rerun = vi.fn(async () => ({ ok: false, reason: 'pr_ref_unknown' }));
+  test('worker-pr-discard reaches the action and reports its refusal reason', async () => {
+    const discard = vi.fn(async () => ({
+      ok: false,
+      reason: 'pr_already_merged'
+    }));
     __registerWorkerAttachmentForTest(
       process.cwd(),
       /** @type {any} */ ({
         scheduler: { tick: vi.fn(), stop: vi.fn() },
-        prActions: { merge: vi.fn(), rerun }
+        prActions: { merge: vi.fn(), discard }
       })
     );
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
-    await send(sock, 'r1', 'worker-pr-rerun', {
+    await send(sock, 'r1', 'worker-pr-discard', {
       bead_id: 'UI-1',
       expected_revision: 0
     });
 
-    expect(rerun).toHaveBeenCalledWith('UI-1');
+    expect(discard).toHaveBeenCalledWith('UI-1');
     expect(replyFor(sock, 'r1').payload).toMatchObject({
-      rerun: false,
-      reason: 'pr_ref_unknown'
+      discarded: false,
+      reason: 'pr_already_merged'
     });
   });
 
@@ -907,7 +954,7 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
       bead_id: 'UI-1',
       expected_revision: 0
     });
-    await send(sock, 'r1', 'worker-pr-rerun', {
+    await send(sock, 'r1', 'worker-pr-discard', {
       bead_id: 'UI-1',
       expected_revision: 0
     });

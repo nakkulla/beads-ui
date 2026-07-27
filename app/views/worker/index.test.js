@@ -2880,14 +2880,76 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     }
   });
 
-  test('offers 머지 and 재실행 on a pr_wait row', () => {
+  test('offers 머지 and 폐기 on a pr_wait row', () => {
     const { mount } = mountWith(queueWithGate(GREEN));
 
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
     expect(row.querySelector('.worker-mini__merge')).not.toBe(null);
-    expect(row.querySelector('.worker-mini__rerun')).not.toBe(null);
+    const discard = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__discard')
+    );
+    expect(discard.textContent?.trim()).toBe('폐기');
+  });
+
+  test('withholds 폐기 on a merged tile — a landed merge cannot be discarded', () => {
+    const { mount } = mountWith(
+      queueWithGate({
+        enabled: false,
+        tier: 'merged',
+        gate_badge: '머지됨',
+        base_badge: '머지됨',
+        reason: null
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.querySelector('.worker-mini__discard')).toBe(null);
+    // [머지] stays: on a merged tile it is the cleanup-retry button.
+    expect(row.querySelector('.worker-mini__merge')).not.toBe(null);
+  });
+
+  test('withholds 폐기 on a merged tile whose cleanup failed', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': { step: 'child_sweep', reason: 'boom', at: 1 }
+          }
+        }
+      )
+    );
+
+    expect(mount.querySelector('.worker-mini__discard')).toBe(null);
+  });
+
+  test('withholds 폐기 on a cleanup_failed tile even without observations', () => {
+    // Right after a restart the observation cache is empty — the durable
+    // cleanup_failed record alone must keep [폐기] off a merged tile.
+    const { mount } = mountWith(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {},
+        cleanup_failed: {
+          'RD-1': { step: 'child_sweep', reason: 'boom', at: 1 }
+        }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.querySelector('.worker-mini__discard')).toBe(null);
   });
 
   test('disables 머지 when the gate refuses, and says why', () => {
@@ -2931,13 +2993,13 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     });
   });
 
-  test('confirms before sending the destructive rerun', () => {
+  test('confirms before sending the destructive discard', () => {
     const { mount, transport } = mountWith(queueWithGate(GREEN));
     const confirm = vi.fn(() => false);
     vi.stubGlobal('confirm', confirm);
 
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-mini__rerun')
+      mount.querySelector('.worker-mini__discard')
     ).click();
 
     expect(confirm).toHaveBeenCalled();
@@ -2945,7 +3007,27 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     vi.unstubAllGlobals();
   });
 
-  test('sends worker-pr-rerun once the user confirms', () => {
+  test('teaches the drag-back re-run path in the discard confirmation', () => {
+    const { mount } = mountWith(queueWithGate(GREEN));
+    /** @type {string[]} */
+    const messages = [];
+    vi.stubGlobal(
+      'confirm',
+      vi.fn((/** @type {string} */ message) => {
+        messages.push(message);
+        return false;
+      })
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__discard')
+    ).click();
+
+    expect(messages[0]).toContain('대기 레인으로 옮기세요');
+    vi.unstubAllGlobals();
+  });
+
+  test('sends worker-pr-discard once the user confirms', () => {
     const { mount, transport } = mountWith(queueWithGate(GREEN));
     vi.stubGlobal(
       'confirm',
@@ -2953,13 +3035,40 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     );
 
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-mini__rerun')
+      mount.querySelector('.worker-mini__discard')
     ).click();
 
-    expect(transport).toHaveBeenCalledWith('worker-pr-rerun', {
+    expect(transport).toHaveBeenCalledWith('worker-pr-discard', {
       bead_id: 'RD-1',
       expected_revision: 1
     });
+    vi.unstubAllGlobals();
+  });
+
+  test('announces a completed discard with a success toast', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueWithGate(GREEN));
+    const transport = vi.fn(async () => ({ discarded: true, conflict: false }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__discard')
+    ).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const toast = /** @type {HTMLElement|null} */ (
+      document.querySelector('.toast')
+    );
+    expect(toast?.textContent).toContain('폐기 완료');
     vi.unstubAllGlobals();
   });
 

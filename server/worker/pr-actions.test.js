@@ -11,8 +11,9 @@
  *   - the cleanup ORDER (asserted as a sequence, not just an end state), its
  *     mid-sequence failure behaviour, and that the externally-observed MERGED
  *     trigger runs the identical path,
- *   - the [재실행] transition, step by step and in order, and that the poller
- *     cannot publish a rerun's own close as an abandonment.
+ *   - the [폐기] transition, step by step and in order, its authoritative
+ *     click-time re-read, and that the poller cannot publish a discard's own
+ *     close as an abandonment.
  */
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
@@ -23,7 +24,6 @@ import { CLEANUP_STEPS, createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller } from './pr-poller.js';
 import { createQueueStore } from './queue-store.js';
-import { createScheduler } from './scheduler.js';
 
 const WS = '/tmp/example-workspace/project-p5';
 const REPO = '/tmp/example-workspace/project-p5';
@@ -1271,63 +1271,143 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
   });
 });
 
-describe('[재실행] — the order-sensitive discard transition (§6)', () => {
-  test('closes the PR, restores bd to open with pr_url gone, discards the worktree, and requeues', async () => {
+describe('[폐기] — the order-sensitive discard transition (discard spec §1)', () => {
+  test('closes an OPEN pull request, restores bd, discards the worktree, and removes the bead from pr_wait', async () => {
     const h = makeActions();
     h.bd_status.set(BEAD, 'open');
 
-    const r = await h.actions.rerun(BEAD);
+    const r = await h.actions.discard(BEAD);
 
-    expect(r).toMatchObject({ ok: true });
+    expect(r).toEqual({ ok: true, reason: null });
     expect(
       h.calls.filter(
         (c) =>
-          c.startsWith('gh:closePr') ||
+          c === 'gh:prDetail' ||
+          c === 'gh:closePr' ||
           c.startsWith('bd:') ||
           c === 'wt:remove' ||
-          c === 'git:push origin' ||
-          c === 'sched:tick'
+          c === 'git:push origin'
       )
     ).toEqual([
+      // The click re-reads the PR state before it closes anything.
+      'gh:prDetail',
       'gh:closePr',
       'bd:setStatus:UI-1:open',
       'bd:readStatus:UI-1',
       'bd:unsetMetadata:UI-1:pr_url',
       'bd:readMetadata:UI-1:pr_url',
       'wt:remove',
-      'git:push origin',
-      'sched:tick'
+      'git:push origin'
     ]);
+  });
+
+  test('leaves the bead in NO lane so the candidate lane reclaims it', async () => {
+    const h = makeActions();
+    h.bd_status.set(BEAD, 'open');
+
+    await h.actions.discard(BEAD);
+
     const q = h.store.snapshot(WS);
     expect(q.pr_wait).toEqual([]);
-    expect(q.queue.map((/** @type {any} */ e) => e.bead_id)).toEqual([BEAD]);
+    // Not requeued: re-running is the 후보 → 대기 drag, which re-passes
+    // admission — so nothing is dispatched from here either.
+    expect(q.queue).toEqual([]);
+    expect(h.scheduler.tick).not.toHaveBeenCalled();
+  });
+
+  test('skips the close when the authoritative re-read reports CLOSED-unmerged', async () => {
+    const h = makeActions({ details: [prOf({ state: 'CLOSED' })] });
+    h.bd_status.set(BEAD, 'open');
+
+    const r = await h.actions.discard(BEAD);
+
+    expect(r).toEqual({ ok: true, reason: null });
+    expect(h.gh.closePr).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).pr_wait).toEqual([]);
+  });
+
+  test('closes a PR the cached observation called CLOSED but gh reports OPEN', async () => {
+    const h = makeActions({ details: [prOf({ state: 'OPEN' })] });
+    h.bd_status.set(BEAD, 'open');
+    // A stale cache is advisory only — acting on it would skip the close of a
+    // live PR and leave it open forever.
+    h.observations.record(WS, BEAD, {
+      error: null,
+      pr: prOf({ state: 'CLOSED' })
+    });
+
+    const r = await h.actions.discard(BEAD);
+
+    expect(r.ok).toBe(true);
+    expect(h.gh.closePr).toHaveBeenCalledWith(REPO, 304);
+  });
+
+  test('refuses a MERGED pull request without touching bd', async () => {
+    const h = makeActions({ details: [prOf({ state: 'MERGED' })] });
+
+    const r = await h.actions.discard(BEAD);
+
+    expect(r).toEqual({ ok: false, reason: 'pr_already_merged' });
+    expect(h.gh.closePr).not.toHaveBeenCalled();
+    expect(h.bd.setStatus).not.toHaveBeenCalled();
+    expect(
+      h.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+
+  test('fails closed when the authoritative re-read cannot be completed', async () => {
+    const h = makeActions({
+      details: [{ state: 'error', reason: 'gh_failed' }]
+    });
+
+    const r = await h.actions.discard(BEAD);
+
+    expect(r).toEqual({ ok: false, reason: 'pr_state_unknown:gh_failed' });
+    expect(h.gh.closePr).not.toHaveBeenCalled();
+    expect(h.bd.setStatus).not.toHaveBeenCalled();
+    expect(
+      h.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+
+  test('stops before touching bd when the close fails', async () => {
+    const h = makeActions();
+    h.bd_status.set(BEAD, 'open');
+    // A merge that landed between the re-read and the close shows up exactly
+    // here: `gh pr close` refuses, and the bead is left for the poller's MERGED
+    // cleanup.
+    h.gh.closePr.mockImplementation(
+      async () => /** @type {any} */ ({ state: 'error', reason: 'gh_failed' })
+    );
+
+    const r = await h.actions.discard(BEAD);
+
+    expect(r).toEqual({ ok: false, reason: 'pr_close_failed:gh_failed' });
+    expect(h.bd.setStatus).not.toHaveBeenCalled();
+    expect(h.worktree.remove).not.toHaveBeenCalled();
+    expect(
+      h.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
   });
 
   test('refuses when the bd status readback does not confirm open', async () => {
     const h = makeActions();
     h.bd_status.set(BEAD, 'resolved');
 
-    const r = await h.actions.rerun(BEAD);
+    const r = await h.actions.discard(BEAD);
 
     expect(r).toMatchObject({ ok: false, reason: 'bd_status_readback_failed' });
-    // The bead stays in `pr_wait` — a half-applied transition never lands in
-    // the queue, where dispatch would skip it as not-ready anyway.
+    // The bead stays in `pr_wait` — a half-applied transition never leaves the
+    // lane the poller and the banners read.
     expect(
       h.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
   });
 
-  test('reports redispatched:false when the transition itself failed', async () => {
-    const h = makeActions();
-    h.bd_status.set(BEAD, 'resolved');
-
-    const r = await h.actions.rerun(BEAD);
-
-    expect(r).toMatchObject({ ok: false, redispatched: false });
-  });
-
-  test('the poller cannot publish a rerun own close as an abandonment', async () => {
-    const h = makeActions({ details: [prOf({ state: 'CLOSED' })] });
+  test('the poller cannot publish a discard own close as an abandonment', async () => {
+    const h = makeActions({
+      details: [prOf(), prOf({ state: 'CLOSED' })]
+    });
     h.bd_status.set(BEAD, 'open');
     const poller = createPrPoller({
       workspace: WS,
@@ -1338,139 +1418,31 @@ describe('[재실행] — the order-sensitive discard transition (§6)', () => {
       getSubscriberCount: () => 1,
       sleep: async () => {}
     });
-    // A poll pass lands INSIDE the rerun window: the PR is already closed by
-    // the rerun, and the bead has not left `pr_wait` yet.
+    // A poll pass lands INSIDE the discard window: the PR is already closed by
+    // the discard, and the bead has not left `pr_wait` yet.
     h.gh.closePr.mockImplementation(async () => {
       h.calls.push('gh:closePr');
       await poller.tick();
       return { state: 'ok', data: true };
     });
 
-    await h.actions.rerun(BEAD);
+    await h.actions.discard(BEAD);
 
     // The poller really did read the closed PR inside the window (otherwise
     // this test would pass vacuously)…
-    expect(h.gh.prDetail).toHaveBeenCalled();
+    expect(h.gh.prDetail.mock.calls.length).toBeGreaterThan(1);
     // …and nothing about that CLOSED reading survives: it was refused at the
     // cache, so no "PR closed — 사람 처분 대기" can ever be published for it.
     expect(h.observations.get(WS, BEAD)).toBeNull();
-    expect(h.observations.isRerunning(WS, BEAD)).toBe(false);
-    expect(
-      h.store.snapshot(WS).queue.map((/** @type {any} */ e) => e.bead_id)
-    ).toEqual([BEAD]);
-  });
-});
-
-describe('[재실행] — the re-dispatch is real, and respects ⏸ (§6 · phase1 §1)', () => {
-  /**
-   * Wire the actions to a REAL scheduler over the SAME store, so the follow-up
-   * tick either genuinely dispatches or genuinely does not — a fake scheduler
-   * could only prove that `tick()` was called.
-   *
-   * @param {{ auto_advance: boolean }} options
-   */
-  function makeRerunSystem(options) {
-    const h = makeActions();
-    /** @type {string[]} */
-    const spawned = [];
-    const bd = {
-      ...h.bd,
-      async snapshotBead() {
-        return {
-          ready: true,
-          blocked: false,
-          repo: REPO,
-          target_base: 'main',
-          workflow_mode: null,
-          route: null,
-          status: 'open',
-          deps: []
-        };
-      },
-      setMetadata: vi.fn(async () => {}),
-      // The dispatch stamps read back what they wrote; `pr_url` is genuinely
-      // gone by the time the tick runs, which is what the rerun asserted.
-      readMetadata: vi.fn(async (/** @type {string} */ _id, key) =>
-        key === 'pr_url' ? null : 'fast_track'
-      )
-    };
-    const scheduler = createScheduler({
-      store: h.store,
-      makeRunner: () => ({
-        name: 'claude',
-        spawn(/** @type {any} */ bead) {
-          spawned.push(bead.id);
-          return {
-            pid: 4242,
-            kill: vi.fn(),
-            events: new EventEmitter(),
-            done: new Promise(() => {})
-          };
-        }
-      }),
-      bd,
-      worktree: {
-        ...h.worktree,
-        add: vi.fn(async (/** @type {any} */ { bead_id }) => ({
-          path: `/wt/${bead_id}`,
-          branch: bead_id,
-          base_oid: 'base-1'
-        }))
-      },
-      verify: {
-        verifyPrSubmitted: vi.fn(async () => ({ ok: true, reason: 'ok' }))
-      },
-      sessionLog: { attach: vi.fn() }
-    });
-    const actions = createPrActions({
-      workspace: WS,
-      repo: REPO,
-      store: h.store,
-      gh: /** @type {any} */ (h.gh),
-      observations: h.observations,
-      bd: /** @type {any} */ (bd),
-      worktree: /** @type {any} */ (h.worktree),
-      gitRun: h.gitRun,
-      scheduler,
-      requeryDelayMs: 0,
-      sleep: async () => {},
-      now: () => 1000
-    });
-    h.store.setAutoAdvance(WS, options.auto_advance);
-    h.bd_status.set(BEAD, 'open');
-    return { h, actions, scheduler, spawned };
-  }
-
-  test('starts a NEW attempt for the bead when auto_advance is on', async () => {
-    const s = makeRerunSystem({ auto_advance: true });
-
-    const r = await s.actions.rerun(BEAD);
-
-    // Not merely a lane move: a session really spawned for this bead, and the
-    // store carries a second, RUNNING attempt for it.
-    expect(r).toMatchObject({ ok: true, redispatched: true });
-    expect(s.spawned).toEqual([BEAD]);
-    expect(s.scheduler.runningBeads()).toEqual([BEAD]);
-    const attempts = Object.values(s.h.store.snapshot(WS).attempts);
-    expect(
-      attempts.filter(
-        (/** @type {any} */ a) => a.bead_id === BEAD && a.status === 'running'
-      )
-    ).toHaveLength(1);
+    expect(h.observations.isDiscarding(WS, BEAD)).toBe(false);
+    expect(h.store.snapshot(WS).pr_wait).toEqual([]);
   });
 
-  test('leaves the bead waiting in queue with no session when auto_advance is off', async () => {
-    const s = makeRerunSystem({ auto_advance: false });
+  test('releases the barrier after a refused discard so the real state is observable again', async () => {
+    const h = makeActions({ details: [prOf({ state: 'MERGED' })] });
 
-    const r = await s.actions.rerun(BEAD);
+    await h.actions.discard(BEAD);
 
-    // ⏸ starts no new sessions — a human-clicked rerun defers rather than
-    // overriding the pause (worker-phase1, spec §8 protected core).
-    expect(r).toMatchObject({ ok: true, redispatched: false });
-    expect(s.spawned).toEqual([]);
-    expect(s.scheduler.runningCount()).toBe(0);
-    expect(
-      s.h.store.snapshot(WS).queue.map((/** @type {any} */ e) => e.bead_id)
-    ).toEqual([BEAD]);
+    expect(h.observations.isDiscarding(WS, BEAD)).toBe(false);
   });
 });
