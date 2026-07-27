@@ -3,9 +3,12 @@
  *
  * CLI: `claude -p --output-format stream-json --verbose --model <alias>
  * [--effort <lv>] --permission-mode bypassPermissions "<prompt>"` with stdin
- * closed. Success is the confirmed 3-rule test over the LAST `result` event:
- * subtype==='success' ∧ is_error===false ∧ permission_denials===[]
- * (runner-spike-findings.md).
+ * closed. Success is the confirmed 2-rule test over the LAST `result` event:
+ * subtype==='success' ∧ is_error===false (runner-spike-findings.md).
+ * `permission_denials` is NOT a rule: under bypassPermissions those are
+ * hook/policy denials the session observes as tool errors and routinely
+ * recovers from — real interactive asks are caught by the question-tool
+ * blocker, and unrecovered work loss by independent PR verification.
  *
  * @import { AdapterSpec, RunnerEvent, RunnerHandle, EngineDeps } from './session.js'
  */
@@ -78,8 +81,8 @@ function normalize(raw) {
 }
 
 /**
- * Detect a claude interactive request (fail-closed). A question tool_use mid
- * stream, or non-empty `permission_denials` on the terminal result event.
+ * Detect a claude interactive request (fail-closed): a question tool_use mid
+ * stream.
  *
  * @param {any} raw
  * @returns {string|null}
@@ -103,13 +106,6 @@ function detectQuestion(raw) {
         return `question tool: ${c.name}`;
       }
     }
-  }
-  if (
-    raw.type === 'result' &&
-    Array.isArray(raw.permission_denials) &&
-    raw.permission_denials.length > 0
-  ) {
-    return 'permission_denials non-empty';
   }
   return null;
 }
@@ -168,7 +164,7 @@ function extractSessionId(raw) {
 }
 
 /**
- * Compute the claude 3-rule success verdict over the LAST `result` event. A
+ * Compute the claude 2-rule success verdict over the LAST `result` event. A
  * headless session may accumulate multiple `result` events (e.g. background
  * task-notification re-entry mid-session); only the final one is judged.
  *
@@ -186,12 +182,6 @@ function verdict(ctx) {
   }
   if (r.is_error !== false) {
     return { success: false, reason: 'is_error' };
-  }
-  if (
-    !Array.isArray(r.permission_denials) ||
-    r.permission_denials.length !== 0
-  ) {
-    return { success: false, reason: 'permission_denials' };
   }
   return { success: true, reason: 'ok' };
 }

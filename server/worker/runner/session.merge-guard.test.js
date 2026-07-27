@@ -325,8 +325,12 @@ describe('runner/session blocked_detail', () => {
     const spawn_impl = makeFixtureSpawn({
       lines: [
         JSON.stringify({
-          type: 'result',
-          permission_denials: [{ tool_name: 'Bash' }]
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'tool_use', name: 'AskUserQuestion', input: { q: '?' } }
+            ]
+          }
         })
       ],
       pid: 5150
@@ -339,8 +343,32 @@ describe('runner/session blocked_detail', () => {
     const verdict = await handle.done;
 
     expect(verdict.blocked_detail).toEqual({
-      reason: 'permission_denials non-empty',
+      reason: 'question tool: AskUserQuestion',
       command: null
     });
+  });
+
+  test('raises no blocker for a result carrying permission_denials', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          permission_denials: [{ tool_name: 'Bash' }]
+        })
+      ],
+      pid: 5150
+    });
+
+    const handle = runSession(claudeSpec(), { id: 'UI-1' }, WS, NORMAL, {
+      spawn_impl,
+      kill_impl: vi.fn()
+    });
+    const verdict = await handle.done;
+
+    expect(verdict.blocked).toBe(false);
+    expect(verdict.blocked_detail).toBeNull();
+    expect(verdict.success).toBe(true);
   });
 });
