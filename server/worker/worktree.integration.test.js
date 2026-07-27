@@ -17,6 +17,29 @@ function git(args, cwd) {
   execFileSync('git', args, { cwd, stdio: 'pipe' });
 }
 
+/**
+ * @param {string} cwd
+ * @param {string} rev
+ * @returns {string}
+ */
+function headOf(cwd, rev = 'HEAD') {
+  return execFileSync('git', ['rev-parse', rev], {
+    cwd,
+    encoding: 'utf8'
+  }).trim();
+}
+
+/**
+ * @param {string} cwd
+ * @param {string} file
+ * @param {string} message
+ */
+function commit(cwd, file, message) {
+  fs.writeFileSync(path.join(cwd, file), `${message}\n`);
+  git(['add', '.'], cwd);
+  git(['commit', '-q', '-m', message], cwd);
+}
+
 beforeEach(() => {
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-wt-'));
   git(['init', '-q'], repo);
@@ -98,6 +121,140 @@ describe('worker/worktree (real git)', () => {
     const removed = await wt.removeDetached({ repo, name: 'verify-UI-1' });
     expect(removed.code).toBe(0);
     expect(fs.existsSync(created.path)).toBe(false);
+  });
+
+  test('removeIfDiscardable clears a clean residue whose branch and HEAD carry nothing', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base });
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base
+    });
+
+    expect(result).toEqual({ ok: true, reason: null });
+    expect(fs.existsSync(created.path)).toBe(false);
+  });
+
+  test('removeIfDiscardable reports ok when there is no residue at all', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-none',
+      base: headOf(repo)
+    });
+
+    expect(result).toEqual({ ok: true, reason: null });
+  });
+
+  test('removeIfDiscardable preserves a dirty worktree', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base });
+    fs.writeFileSync(path.join(created.path, 'scratch.txt'), 'work\n');
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'dirty' });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeIfDiscardable preserves a branch carrying its own commits', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base });
+    commit(created.path, 'work.txt', 'work');
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'branch_ahead' });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeIfDiscardable preserves an ahead branch whose worktree is already gone', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base });
+    commit(created.path, 'work.txt', 'work');
+    await wt.remove({ repo, bead_id: 'UI-1' });
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'branch_ahead' });
+    expect(headOf(repo, 'UI-1')).not.toBe(base);
+  });
+
+  test('removeIfDiscardable preserves a detached HEAD commit the branch cannot show', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base });
+    // Detach first, so the commit lands on HEAD only: the branch stays at base.
+    git(['checkout', '-q', '--detach'], created.path);
+    commit(created.path, 'work.txt', 'work');
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base
+    });
+
+    expect(headOf(repo, 'UI-1')).toBe(base);
+    expect(result).toEqual({ ok: false, reason: 'head_ahead' });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeIfDiscardable preserves the worktree when the non-forced remove is refused', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base });
+    // A locked worktree is exactly what `--force` would override — and does not.
+    git(['worktree', 'lock', created.path], repo);
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'remove_failed' });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeIfDiscardable fails closed when the base cannot be resolved', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: headOf(repo) });
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: 'no-such-base'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'observe_failed' });
+    expect(fs.existsSync(created.path)).toBe(true);
   });
 
   test('add is serialized by the topology lock (no ref-db race)', async () => {

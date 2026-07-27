@@ -67,7 +67,7 @@ const log = debug('worker:scheduler');
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
  *   readStatus: (bead_id: string) => Promise<string|null>
  * }} bd
- * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
+ * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, reason: string|null }>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
@@ -130,6 +130,14 @@ export function createScheduler(deps) {
    * @type {Set<string>}
    */
   const dispatch_refused = new Set();
+  /**
+   * Beads whose ■ stop cleanup has not finished yet. A live stop's residue
+   * check waits for the killed process to actually exit, and re-dispatching in
+   * that window would run against a worktree that is still being torn down.
+   *
+   * @type {Set<string>}
+   */
+  const cleanup_pending = new Set();
 
   /**
    * Notify ws subscribers of an autonomous queue transition (best-effort).
@@ -177,6 +185,120 @@ export function createScheduler(deps) {
         ? snap.status
         : 'unknown';
     return `not_ready:${status}`;
+  }
+
+  /**
+   * Refuse a dispatch that already took the claim: record the reason as a badge,
+   * give the claim back, fence the bead for the rest of THIS tick cascade, and
+   * re-enter the pass so the slot it was holding still goes to another bead.
+   * The fence is what keeps the re-entry from retrying the same bead forever.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} reason
+   */
+  async function refuseDispatch(workspace, bead_id, reason) {
+    recordSkipReason(workspace, bead_id, reason);
+    claimed.delete(bead_id);
+    dispatch_refused.add(bead_id);
+    await tickPass(workspace);
+  }
+
+  /**
+   * Drop a bead whose bd status is terminal out of the queue instead of badging
+   * it. A bead closed outside the worker (a manual PR merge) can never become
+   * dispatchable, so the badge would repeat on every tick forever. Only `closed`
+   * qualifies — `resolved`/`in_progress` are states work can still move out of,
+   * and their badge is the information.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {BeadSnapshot} snap
+   * @returns {boolean} True when the bead is terminal (caller skips the badge).
+   */
+  function dequeueIfClosed(workspace, bead_id, snap) {
+    if (snap.status !== 'closed') {
+      return false;
+    }
+    const result = deps.store.dropFromQueue(workspace, { bead_id });
+    if (result && result.ok) {
+      notifyChanged(workspace);
+    }
+    return true;
+  }
+
+  /**
+   * Best-effort residue cleanup after a discard (■): the SAME fail-closed
+   * primitive the dispatch pre-flight uses, so a worktree still carrying
+   * unfinished work survives the discard instead of being force-removed.
+   * A refusal or a git error is logged only — the halt already happened, and
+   * the pre-flight is the next line of defence.
+   *
+   * @param {string} repo
+   * @param {string} bead_id
+   * @param {string} base
+   */
+  async function cleanupStopResidue(repo, bead_id, base) {
+    if (
+      typeof deps.worktree.removeIfDiscardable !== 'function' ||
+      typeof repo !== 'string' ||
+      repo.length === 0
+    ) {
+      return;
+    }
+    try {
+      const result = await deps.worktree.removeIfDiscardable({
+        repo,
+        bead_id,
+        base
+      });
+      if (!result.ok) {
+        log('stop residue preserved for %s: %s', bead_id, result.reason);
+      }
+    } catch (err) {
+      log('stop residue cleanup failed for %s: %o', bead_id, err);
+    }
+  }
+
+  /**
+   * The merge target an attempt was pinned to — the base every residue
+   * observation compares against. Falls back to `main` for a record written
+   * before the field existed.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {string}
+   */
+  function attemptBase(workspace, attempt_id) {
+    const a = deps.store.snapshot(workspace).attempts[attempt_id];
+    return a && typeof a.target_base === 'string' && a.target_base.length > 0
+      ? a.target_base
+      : 'main';
+  }
+
+  /**
+   * Tail of a LIVE stop: the process has now exited, so the residue can be
+   * judged safely. The fence is lifted whatever the verdict, and the queue is
+   * ticked so the slot the stop freed keeps advancing.
+   *
+   * @param {string} workspace
+   * @param {string} repo
+   * @param {string} bead_id
+   * @param {string} base
+   */
+  async function finishStopCleanup(workspace, repo, bead_id, base) {
+    try {
+      await cleanupStopResidue(repo, bead_id, base);
+    } finally {
+      cleanup_pending.delete(bead_id);
+    }
+    notifyChanged(workspace);
+    // Detached from stop()'s caller, so nothing here may reject unhandled.
+    try {
+      await tick(workspace);
+    } catch (err) {
+      log('stop cleanup tick failed for %s: %o', bead_id, err);
+    }
   }
 
   /**
@@ -479,7 +601,9 @@ export function createScheduler(deps) {
       return;
     }
     if (!snap.ready || snap.blocked) {
-      recordSkipReason(workspace, bead_id, notReadyReason(snap));
+      if (!dequeueIfClosed(workspace, bead_id, snap)) {
+        recordSkipReason(workspace, bead_id, notReadyReason(snap));
+      }
       claimed.delete(bead_id);
       return;
     }
@@ -497,6 +621,29 @@ export function createScheduler(deps) {
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
 
+    // PRE-FLIGHT (spec §2): a leftover worktree/branch from an earlier ■ makes
+    // `add` fail outright, and — once the worktree alone is gone — makes its
+    // `-B` silently reset a branch that may still hold the only copy of its
+    // commits. Clear it when nothing would be lost, refuse VISIBLY otherwise.
+    if (typeof deps.worktree.removeIfDiscardable === 'function') {
+      /** @type {{ ok: boolean, reason: string|null }} */
+      let residue;
+      try {
+        residue = await deps.worktree.removeIfDiscardable({
+          repo: snap.repo,
+          bead_id,
+          base: snap.target_base
+        });
+      } catch {
+        await refuseDispatch(workspace, bead_id, 'git_error');
+        return;
+      }
+      if (!residue.ok) {
+        await refuseDispatch(workspace, bead_id, 'worktree_stale_work');
+        return;
+      }
+    }
+
     let wt;
     try {
       wt = await deps.worktree.add({
@@ -505,7 +652,9 @@ export function createScheduler(deps) {
         base: snap.target_base
       });
     } catch {
-      claimed.delete(bead_id);
+      // Fail-VISIBLE: this used to abort with no badge, no log and no attempt,
+      // leaving a re-queued bead permanently stuck with nothing to see.
+      await refuseDispatch(workspace, bead_id, 'worktree_add_failed');
       return;
     }
 
@@ -1211,6 +1360,12 @@ export function createScheduler(deps) {
       if (free <= 0) {
         break;
       }
+      // A stop whose residue cleanup is still in flight: RECORDED, not silent —
+      // a silent skip is the exact failure mode this phase removes.
+      if (cleanup_pending.has(entry.bead_id)) {
+        recordSkipReason(workspace, entry.bead_id, 'stop_cleanup_pending');
+        continue;
+      }
       if (
         claimed.has(entry.bead_id) ||
         dispatch_refused.has(entry.bead_id) ||
@@ -1226,7 +1381,9 @@ export function createScheduler(deps) {
         continue;
       }
       if (!snap.ready || snap.blocked) {
-        recordSkipReason(workspace, entry.bead_id, notReadyReason(snap));
+        if (!dequeueIfClosed(workspace, entry.bead_id, snap)) {
+          recordSkipReason(workspace, entry.bead_id, notReadyReason(snap));
+        }
         continue;
       }
       const adm = await checkAdmission(snap);
@@ -1342,6 +1499,12 @@ export function createScheduler(deps) {
   async function stop(workspace, attempt_id) {
     const entry = running.get(attempt_id);
     if (entry) {
+      const base = attemptBase(workspace, attempt_id);
+      // Fenced from the moment of the halt: the residue check below runs only
+      // after the killed process is gone, and a re-dispatch in that window
+      // would race the teardown.
+      cleanup_pending.add(entry.bead_id);
+      const done = entry.handle.done;
       teardownLiveSession(attempt_id, entry);
       deps.store.discardAttempt(workspace, {
         attempt_id,
@@ -1352,6 +1515,18 @@ export function createScheduler(deps) {
       // The bead already left the lane above, so the reopen cannot re-dispatch
       // it here; leaving the claim would silently skip it on a later re-queue.
       await releaseBeadClaim(entry.bead_id);
+      // SIGTERM does not wait for the exit, so the residue check rides on the
+      // handle's own `done` — checking now could clear a worktree the dying
+      // process is still writing to. It is deliberately NOT awaited: stop()
+      // must return to its ws caller even if the process ignores the signal.
+      done.then(
+        () => finishStopCleanup(workspace, entry.repo, entry.bead_id, base),
+        () => {
+          // A rejected `done` leaves the exit state unknown — keep the residue
+          // (the dispatch pre-flight is the next defence) and lift the fence.
+          cleanup_pending.delete(entry.bead_id);
+        }
+      );
       notifyChanged(workspace);
       await tick(workspace);
       return true;
@@ -1378,6 +1553,12 @@ export function createScheduler(deps) {
       patch: { status: 'stopped', cause: null, finished_at: now() }
     });
     await releaseBeadClaim(rec.bead_id);
+    // No live process to outlive the check, so the residue is settled inline.
+    await cleanupStopResidue(
+      typeof rec.repo === 'string' ? rec.repo : '',
+      rec.bead_id,
+      attemptBase(workspace, attempt_id)
+    );
     notifyChanged(workspace);
     await tick(workspace);
     return true;

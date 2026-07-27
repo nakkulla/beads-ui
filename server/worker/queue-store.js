@@ -946,6 +946,39 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Drop a bead from the lanes AND its skip badge in ONE persist
+     * (scheduler-owned, no CAS) — the terminal-status dequeue: a bead closed
+     * outside the worker can never dispatch, so re-badging it every tick is the
+     * only thing repeating it would achieve.
+     *
+     * Reports `ok:false` WITHOUT a revision bump when there was nothing to drop,
+     * for the same reason {@link recordAdmission} no-ops an unchanged reason: a
+     * repeating tick must not bump the revision forever.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    dropFromQueue(workspace, input) {
+      const { bead_id } = input;
+      return applyUnconditional(workspace, (next) => {
+        if (typeof bead_id !== 'string' || bead_id.length === 0) {
+          return false;
+        }
+        const in_lane =
+          next.queue.some((e) => e.bead_id === bead_id) ||
+          next.pr_wait.some((e) => e.bead_id === bead_id) ||
+          next.done.some((e) => e.bead_id === bead_id);
+        if (!in_lane && !Object.hasOwn(next.admission, bead_id)) {
+          return false;
+        }
+        removeFromLanes(next, bead_id);
+        delete next.admission[bead_id];
+        return true;
+      });
+    },
+
+    /**
      * Clear a bead's admission record (scheduler-owned, no CAS). No-op (no
      * revision bump) when absent.
      *
