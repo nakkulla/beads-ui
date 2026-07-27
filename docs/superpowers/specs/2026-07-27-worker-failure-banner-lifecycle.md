@@ -46,18 +46,26 @@ attempt 성공도, ↻ 이어하기도, 머지도 배너를 끄지 못한다. �
   `failure.resume_attempt_id`와 동일 건이다. ↻ 버튼과 비활성 사유 표시는
   무변경.
 
-### 서버 (`server/worker/queue-store.js`, `server/ws/worker-handlers.js`, `app/protocol.{js,md}`)
+### 서버 (`server/worker/queue-store.js`, `server/ws/worker-handlers.js`, `server/ws/connection.js`, `app/protocol.{js,md}`)
 
 - `makeAttempt`에 `dismissed_at: fields.dismissed_at ?? null` 필드를 추가해
   라운드트립에 보존한다.
 - 새 store op `dismissAttempt(workspace, { attempt_id, expected_revision })`:
-  대상 status가 `failed|orphaned`일 때만 `dismissed_at = now()`를 스탬프.
-  이미 dismissed면 no-op 성공, 그 외 status는 사유와 함께 거부. 사용자 개시
-  편집이므로 CAS 경로(`applyMutation`)를 쓴다 — scheduler-owned 무CAS
-  경로(`applyUnconditional`)가 아니다.
-- ws 메시지 `worker-attempt-dismiss` 핸들러를 기존 액션 패턴(revision 검사,
-  적용 후 스냅샷 push)으로 추가하고 `protocol.js`/`protocol.md` 어휘에
-  등재한다.
+  대상 status가 `failed|orphaned`이고 아직 dismissed가 아닐 때만
+  `dismissed_at = now()`를 스탬프하고 revision을 올린다. 그 외는 거부 —
+  `QueueOpResult`를 선택적 `reason` 필드로 확장해
+  `ok:false, conflict:false, reason` 으로 반환한다(안정 사유 값:
+  `attempt_not_found` / `not_dismissable`(비대상 status) /
+  `already_dismissed`). 이미 dismissed를 거부로 두는 근거: 첫 dismiss가
+  revision을 올리므로 중복 클릭은 대부분 CAS conflict로 걸러지고, 같은
+  revision에서 도달해도 거부가 일관적이다(성공인데 revision 불변인 상태를
+  만들지 않는다). 사용자 개시 편집이므로 CAS 경로(`applyMutation`)를 쓴다 —
+  scheduler-owned 무CAS 경로(`applyUnconditional`)가 아니다.
+- ws 메시지 `worker-attempt-dismiss` 핸들러를 `worker-handlers.js`에 기존
+  액션 패턴(revision 검사, 적용 후 스냅샷 push, 거부 시 `reason` 포함 응답)
+  으로 추가하고, `server/ws/connection.js`에 handler import와 dispatch
+  switch case를 등재한다(등재 없이는 `unknown_type`으로 라우팅되지 않음).
+  `protocol.js`/`protocol.md` 어휘에도 추가한다.
 - 기록 삭제/prune은 하지 않는다 — resume 계보(`resumed_from`)와 진단 이력을
   보존한다.
 
@@ -81,11 +89,16 @@ attempt 성공도, ↻ 이어하기도, 머지도 배너를 끄지 못한다. �
    뜨지 않는다. 미처리 실패가 둘이면 최신이 표시되고, 그것을 dismiss하면
    이전 건이 표시된다.
 2. queue-store: `dismissAttempt`가 `dismissed_at` 스탬프와 revision 증가를
-   한 번에 수행한다; `failed|orphaned` 외 status 거부; stale
-   `expected_revision` 거부(CAS); 이미 dismissed는 no-op 성공;
-   `makeAttempt` 라운드트립에 `dismissed_at`이 보존된다.
+   한 번에 수행한다; `failed|orphaned` 외 status는
+   `ok:false, reason:'not_dismissable'` 거부; 이미 dismissed는
+   `reason:'already_dismissed'` 거부(revision 불변); 미존재 attempt는
+   `reason:'attempt_not_found'`; stale `expected_revision`은
+   `conflict:true` 거부(CAS); `makeAttempt` 라운드트립에 `dismissed_at`이
+   보존된다.
 3. ws: `worker-attempt-dismiss` 라운드트립 — 성공 시 push된 스냅샷에
-   `dismissed_at`이 반영되고, stale revision은 거부 응답을 받는다.
+   `dismissed_at`이 반영되고, stale revision은 conflict 거부 응답을,
+   비대상 status는 `reason` 포함 거부 응답을 받는다(`connection.js` 경유
+   실제 dispatch로 검증 — `unknown_type`이 아니어야 한다).
 4. ↻ 이어하기 직후(child attempt 생성 시점) 조상 실패 배너가 내려간다.
 5. `npm run all` green; `npm run build` 산출물
    (`app/main.bundle.js`{,`.map`}) 포함.
