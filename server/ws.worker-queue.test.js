@@ -903,3 +903,97 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
     expect(replyFor(sock, 'r1').payload.reason).toBe('no_attachment');
   });
 });
+
+describe('ws worker-attempt-dismiss (UI-dcw7)', () => {
+  /**
+   * Seed one terminal attempt the way the scheduler records it, so the dismiss
+   * has a real target in the connection's workspace queue.
+   *
+   * @param {string} status
+   */
+  function seedAttempt(status) {
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt('', {
+      expected_revision: store.snapshot('').revision,
+      attempt: {
+        attempt_id: 'att-1',
+        bead_id: 'UI-1',
+        status,
+        repo: '/repo',
+        cause: 'verify_failed:x'
+      }
+    });
+  }
+
+  test('stamps dismissed_at and pushes it in a fresh snapshot', async () => {
+    seedAttempt('failed');
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const rev = queueSnapshots(sock).at(-1).revision;
+    sock.sent = [];
+
+    await send(sock, 'd1', 'worker-attempt-dismiss', {
+      attempt_id: 'att-1',
+      expected_revision: rev
+    });
+
+    const reply = replyFor(sock, 'd1');
+    expect(reply.payload).toMatchObject({ dismissed: true, conflict: false });
+    expect(
+      typeof queueSnapshots(sock).at(-1).attempts['att-1'].dismissed_at
+    ).toBe('number');
+  });
+
+  test('routes through the real dispatch switch, never unknown_type', async () => {
+    seedAttempt('failed');
+    const sock = fakeSocket();
+
+    await send(sock, 'd1', 'worker-attempt-dismiss', {
+      attempt_id: 'att-1',
+      expected_revision: 1
+    });
+
+    const reply = replyFor(sock, 'd1');
+    expect(reply.ok).toBe(true);
+    expect(reply.error).toBeUndefined();
+  });
+
+  test('rejects a stale revision as a conflict without dismissing', async () => {
+    seedAttempt('failed');
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'd1', 'worker-attempt-dismiss', {
+      attempt_id: 'att-1',
+      expected_revision: 0
+    });
+
+    const reply = replyFor(sock, 'd1');
+    expect(reply.payload).toMatchObject({ dismissed: false, conflict: true });
+    expect(reply.payload.queue.attempts['att-1'].dismissed_at).toBe(null);
+    expect(queueSnapshots(sock).length).toBe(0);
+  });
+
+  test('rejects a running attempt with a reason', async () => {
+    seedAttempt('running');
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const rev = queueSnapshots(sock).at(-1).revision;
+
+    await send(sock, 'd1', 'worker-attempt-dismiss', {
+      attempt_id: 'att-1',
+      expected_revision: rev
+    });
+
+    expect(replyFor(sock, 'd1').payload).toMatchObject({
+      dismissed: false,
+      conflict: false,
+      reason: 'not_dismissable'
+    });
+  });
+
+  test('is a client-sendable MESSAGE_TYPE', () => {
+    expect(MESSAGE_TYPES).toContain('worker-attempt-dismiss');
+  });
+});

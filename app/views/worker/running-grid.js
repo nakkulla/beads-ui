@@ -34,7 +34,8 @@ import { html } from 'lit-html';
  * @property {string} repo
  * @property {string} reason
  * @property {string|null} [resume_attempt_id] - The banner's own (latest
- * failed) attempt — the ONLY ↻ target, never an older substitute (§1).
+ * unhandled failed) attempt — the ONLY ↻ target, never an older substitute
+ * (§1), and the attempt ✕ dismisses.
  * @property {boolean} [resume_eligible] - Whether that attempt can be resumed
  * (session_id present, not already resumed); ineligible renders disabled.
  * @property {string|null} [resume_reason] - Ineligibility reason for the
@@ -90,6 +91,17 @@ export function bannersTemplate(state) {
                   : state.failure.resume_reason || '이어하기 불가'}
               >
                 ↻ 이어하기
+              </button>`
+            : ''}
+          ${state.failure.resume_attempt_id
+            ? html`<button
+                type="button"
+                class="worker-banner__dismiss"
+                data-attempt-id=${state.failure.resume_attempt_id}
+                title="이 실패를 처리 완료로 표시하고 배너를 닫습니다"
+                aria-label="배너 닫기"
+              >
+                ✕
               </button>`
             : ''}
         </div>`

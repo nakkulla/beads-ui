@@ -55,6 +55,7 @@ import {
   handleSubscribeWorkerQueue,
   handleUnsubscribeSessionLog,
   handleUnsubscribeWorkerQueue,
+  handleWorkerAttemptDismiss,
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
@@ -456,6 +457,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-attempt-resume':
       await handleWorkerAttemptResume(ws, req);
+      return;
+    case 'worker-attempt-dismiss':
+      handleWorkerAttemptDismiss(ws, req);
       return;
     case 'worker-pr-merge':
       await handleWorkerPrMerge(ws, req);

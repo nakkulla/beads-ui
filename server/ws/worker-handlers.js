@@ -784,6 +784,50 @@ export async function handleWorkerAttemptResume(ws, req) {
 }
 
 /**
+ * Handle `worker-attempt-dismiss`. Payload: `{ attempt_id, expected_revision }`.
+ *
+ * The failure banner's ✕ — a pure store edit (no scheduler, no session): it
+ * stamps `dismissed_at` on a `failed`/`orphaned` attempt so the UI stops
+ * counting that failure as unhandled. CAS-guarded like the queue mutations; a
+ * non-conflict rejection carries the store's `reason` (`attempt_not_found` /
+ * `not_dismissable` / `already_dismissed`).
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerAttemptDismiss(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const result = queueStore().dismissAttempt(key, {
+    attempt_id: p.attempt_id,
+    expected_revision: revisionOf(p)
+  });
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        attempt_id: p.attempt_id,
+        dismissed: result.ok,
+        conflict: result.conflict,
+        reason: result.reason || null,
+        queue: decorateQueue(key, /** @type {any} */ (result.queue))
+      })
+    )
+  );
+  if (result.ok) {
+    // Push a fresh snapshot so the banner clears on every client at once.
+    fanout(key, /** @type {any} */ (result.queue));
+  }
+}
+
+/**
  * Handle `worker-pr-merge`. Payload: `{ bead_id, expected_revision }`.
  *
  * The human merge click (worker-phase2 §6). Under the same CAS discipline as
