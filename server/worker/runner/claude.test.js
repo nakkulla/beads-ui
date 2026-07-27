@@ -151,6 +151,100 @@ describe('runner/claude event normalization', () => {
   });
 });
 
+describe('runner/claude usage extraction (UI-raqh §1)', () => {
+  test('carries assistant message usage and id onto every event of that message', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            id: 'msg_1',
+            usage: { input_tokens: 10, output_tokens: 4 },
+            content: [
+              { type: 'text', text: 'hi' },
+              { type: 'tool_use', name: 'Read', input: {} }
+            ]
+          }
+        }),
+        resultLine()
+      ],
+      exit: 0
+    });
+    const handle = spawnClaude(BEAD, WS, {}, { spawn_impl });
+
+    const v = await handle.done;
+
+    const carried = v.events
+      .filter((e) => e.kind === 'text' || e.kind === 'tool')
+      .map((e) => e.usage);
+    expect(carried).toEqual([
+      { message_id: 'msg_1', input_tokens: 10, output_tokens: 4 },
+      { message_id: 'msg_1', input_tokens: 10, output_tokens: 4 }
+    ]);
+  });
+
+  test('carries result usage and cost onto the result event', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          usage: { input_tokens: 18, output_tokens: 1113 },
+          total_cost_usd: 0.0353
+        })
+      ],
+      exit: 0
+    });
+    const handle = spawnClaude(BEAD, WS, {}, { spawn_impl });
+
+    const v = await handle.done;
+
+    expect(v.events.find((e) => e.kind === 'result')?.usage).toEqual({
+      input_tokens: 18,
+      output_tokens: 1113,
+      total_cost_usd: 0.0353
+    });
+  });
+
+  test('omits usage when the event carries none', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({
+          type: 'assistant',
+          message: { id: 'msg_1', content: [{ type: 'text', text: 'hi' }] }
+        }),
+        resultLine()
+      ],
+      exit: 0
+    });
+    const handle = spawnClaude(BEAD, WS, {}, { spawn_impl });
+
+    const v = await handle.done;
+
+    expect(v.events.find((e) => e.kind === 'text')?.usage).toBe(undefined);
+  });
+
+  test('omits usage when the payload is not an object', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          usage: 'lots'
+        })
+      ],
+      exit: 0
+    });
+    const handle = spawnClaude(BEAD, WS, {}, { spawn_impl });
+
+    const v = await handle.done;
+
+    expect(v.events.find((e) => e.kind === 'result')?.usage).toBe(undefined);
+  });
+});
+
 describe('runner/claude fail-closed (question → blocker + group kill)', () => {
   test('question tool_use emits blocker and group-kills via negative pid', async () => {
     const spawn_impl = makeFixtureSpawn({

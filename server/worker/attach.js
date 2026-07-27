@@ -393,6 +393,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     worktree,
     verify,
     sessionLog: runtime.sessionLog,
+    usage: runtime.usageStore,
     admission,
     probePid: options.probePid || defaultProbePid,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
@@ -458,6 +459,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     store: runtime.queueStore,
     gh,
     observations: runtime.prObservations,
+    activity: runtime.activityStore,
     bd,
     worktree,
     gitRun,
@@ -480,6 +482,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     store: runtime.queueStore,
     gh,
     observations: runtime.prObservations,
+    activity: runtime.activityStore,
     getSubscriberCount: options.getSubscriberCount || (() => 0),
     resolveVerify,
     worktree,
