@@ -208,7 +208,7 @@ function decorateQueue(workspace_key, queue) {
 function fanout(workspace_key, queue) {
   const decorated = decorateQueue(workspace_key, queue);
   for (const sub of subscribersFor(workspace_key)) {
-    emitWorkerQueueSnapshot(sub.ws, sub.client_id, decorated);
+    emitWorkerQueueSnapshot(sub.ws, sub.client_id, workspace_key, decorated);
   }
 }
 
@@ -389,6 +389,7 @@ export function handleSubscribeWorkerQueue(ws, req) {
   emitWorkerQueueSnapshot(
     ws,
     client_id,
+    key,
     decorateQueue(key, queueStore().snapshot(key))
   );
 }
@@ -396,18 +397,23 @@ export function handleSubscribeWorkerQueue(ws, req) {
 /**
  * Handle `unsubscribe-worker-queue`. Payload: `{ id: client_id }`.
  *
+ * Sweeps the WHOLE registry the way {@link detachWorkerQueue} does, not just the
+ * connection's current workspace bucket: the client unsubscribes AFTER
+ * `set-workspace` has already repointed the connection, so the entry to remove
+ * lives under the PREVIOUS workspace key.
+ *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export function handleUnsubscribeWorkerQueue(ws, req) {
   const client_id = /** @type {any} */ (req.payload)?.id;
-  const key = workspaceKeyOf(ws);
-  const set = subscribersFor(key);
   let removed = false;
-  for (const sub of set) {
-    if (sub.ws === ws && sub.client_id === client_id) {
-      set.delete(sub);
-      removed = true;
+  for (const set of SUBSCRIBERS.values()) {
+    for (const sub of set) {
+      if (sub.ws === ws && sub.client_id === client_id) {
+        set.delete(sub);
+        removed = true;
+      }
     }
   }
   ws.send(
