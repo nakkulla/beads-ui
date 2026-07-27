@@ -4,7 +4,11 @@ import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
 import { createUiOrderStore } from '../../data/ui-order-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
-import { applyCandidateFilter, createWorkerView } from './index.js';
+import {
+  applyCandidateFilter,
+  applyCandidateSort,
+  createWorkerView
+} from './index.js';
 
 function createTestIssueStores() {
   /** @type {Map<string, any>} */
@@ -4002,5 +4006,168 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
         '#worker-pane-queue .worker-mini[data-bead-id="RD-1"] .worker-usage'
       )
     ).toBe(null);
+  });
+});
+
+describe('candidate sort — projection (UI-raqh §2)', () => {
+  const ORDER = { A: 10, B: 20, C: 30 };
+
+  /**
+   * @param {string} id
+   * @param {number} created_at
+   * @param {boolean} has_spec
+   */
+  function issue(id, created_at, has_spec) {
+    return {
+      id,
+      created_at,
+      metadata: has_spec ? { spec_id: 'S' } : {}
+    };
+  }
+
+  test('keeps the effective-rank order in board mode', () => {
+    const list = [issue('C', 300, true), issue('A', 100, false)];
+
+    const sorted = applyCandidateSort(list, 'board', ORDER);
+
+    expect(sorted.map((i) => i.id)).toEqual(['A', 'C']);
+  });
+
+  test('puts spec-carrying issues first in spec mode', () => {
+    const list = [issue('A', 100, false), issue('B', 200, true)];
+
+    const sorted = applyCandidateSort(list, 'spec', ORDER);
+
+    expect(sorted.map((i) => i.id)).toEqual(['B', 'A']);
+  });
+
+  test('keeps the effective-rank order inside each spec group', () => {
+    const list = [
+      issue('C', 300, true),
+      issue('B', 200, false),
+      issue('A', 100, true)
+    ];
+
+    const sorted = applyCandidateSort(list, 'spec', ORDER);
+
+    expect(sorted.map((i) => i.id)).toEqual(['A', 'C', 'B']);
+  });
+
+  test('orders by newest created_at in created mode', () => {
+    const list = [issue('A', 100, true), issue('C', 300, false)];
+
+    const sorted = applyCandidateSort(list, 'created', ORDER);
+
+    expect(sorted.map((i) => i.id)).toEqual(['C', 'A']);
+  });
+
+  test('falls back to spec mode for an unknown mode', () => {
+    const list = [issue('A', 100, false), issue('B', 200, true)];
+
+    const sorted = applyCandidateSort(
+      list,
+      /** @type {any} */ ('nonsense'),
+      ORDER
+    );
+
+    expect(sorted.map((i) => i.id)).toEqual(['B', 'A']);
+  });
+
+  test('leaves the input array untouched', () => {
+    const list = [issue('A', 100, false), issue('B', 200, true)];
+
+    applyCandidateSort(list, 'spec', ORDER);
+
+    expect(list.map((i) => i.id)).toEqual(['A', 'B']);
+  });
+});
+
+describe('candidate sort — view (UI-raqh §2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @returns {HTMLElement}
+   */
+  function mountMerged() {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf());
+    presetCandidateFilter({ show_blocked: true });
+    createWorkerView(mount, {
+      issueStores: seedMerged(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('renders the sort select in the candidate pane header', () => {
+    const mount = mountMerged();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      'spec',
+      'board',
+      'created'
+    ]);
+  });
+
+  test('defaults to spec-first when nothing is stored', () => {
+    const mount = mountMerged();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+    expect(select.value).toBe('spec');
+  });
+
+  test('reorders the lane when the mode changes', () => {
+    const mount = mountMerged();
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+
+    select.value = 'created';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
+  });
+
+  test('persists the selected mode', () => {
+    const mount = mountMerged();
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+
+    select.value = 'board';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(window.localStorage.getItem('bdui.worker.candidate_sort')).toBe(
+      'board'
+    );
+  });
+
+  test('restores a persisted mode on mount', () => {
+    window.localStorage.setItem('bdui.worker.candidate_sort', 'created');
+
+    const mount = mountMerged();
+
+    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
+  });
+
+  test('falls back to the default for an unknown stored mode', () => {
+    window.localStorage.setItem('bdui.worker.candidate_sort', 'nonsense');
+
+    const mount = mountMerged();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+    expect(select.value).toBe('spec');
   });
 });

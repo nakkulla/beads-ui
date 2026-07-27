@@ -32,7 +32,10 @@
  */
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
-import { cmpEffectiveRank } from '../../data/sort.js';
+import {
+  cmpCreatedDescThenPriority,
+  cmpEffectiveRank
+} from '../../data/sort.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { showToast } from '../../utils/toast.js';
 import { createReorderController } from '../reorder.js';
@@ -173,6 +176,94 @@ const SPEC_FILTER_OPTIONS = [
   { value: 'with', label: 'spec 있음' },
   { value: 'without', label: 'spec 없음' }
 ];
+
+/**
+ * Candidate pane sort mode (UI-raqh §2), persisted under this localStorage key.
+ * A purely CLIENT-side preference: the server sends one candidate feed and the
+ * lane decides how to read it.
+ *
+ * @type {string}
+ */
+const CANDIDATE_SORT_KEY = 'bdui.worker.candidate_sort';
+
+/**
+ * @typedef {'spec'|'board'|'created'} CandidateSort
+ */
+
+/**
+ * Sort options, in render order. `spec` leads because the pane's job is "what
+ * can I dispatch" and only a spec-carrying bead is queue-eligible (§5.4).
+ *
+ * @type {Array<{ value: CandidateSort, label: string }>}
+ */
+const CANDIDATE_SORT_OPTIONS = [
+  { value: 'spec', label: 'spec 우선' },
+  { value: 'board', label: 'Board 순서' },
+  { value: 'created', label: '최신 생성순' }
+];
+
+/**
+ * @type {CandidateSort}
+ */
+const CANDIDATE_SORT_DEFAULT = 'spec';
+
+/**
+ * Read the persisted sort mode; anything unreadable or unknown falls back to
+ * the default rather than throwing (same defence as the display filter).
+ *
+ * @returns {CandidateSort}
+ */
+function loadCandidateSort() {
+  try {
+    const raw = window.localStorage.getItem(CANDIDATE_SORT_KEY);
+    return raw === 'board' || raw === 'created' || raw === 'spec'
+      ? raw
+      : CANDIDATE_SORT_DEFAULT;
+  } catch {
+    return CANDIDATE_SORT_DEFAULT;
+  }
+}
+
+/**
+ * @param {CandidateSort} mode
+ */
+function saveCandidateSort(mode) {
+  try {
+    window.localStorage.setItem(CANDIDATE_SORT_KEY, mode);
+  } catch {
+    /* ignore — a private-mode storage denial must not break the select */
+  }
+}
+
+/**
+ * Order the merged candidate list for one sort mode (UI-raqh §2).
+ *
+ * `board` is the Board's own manual order and stays the reference: the other
+ * two are derived FROM it rather than replacing it. `spec` is a stable
+ * partition of that order — spec-carrying beads first, each group keeping its
+ * Board sequence — so switching to it never scrambles a hand-placed lane, it
+ * only lifts the dispatchable beads to the top. `created` is the one mode that
+ * ignores the rank map entirely, which is the point of having it.
+ *
+ * Returns a NEW array; the caller's list is left alone.
+ *
+ * @param {any[]} issues
+ * @param {CandidateSort} mode
+ * @param {Record<string, number>} order - Manual rank map.
+ * @returns {any[]}
+ */
+export function applyCandidateSort(issues, mode, order) {
+  const list = Array.isArray(issues) ? issues.slice() : [];
+  if (mode === 'created') {
+    return list.sort(cmpCreatedDescThenPriority);
+  }
+  list.sort(cmpEffectiveRank(order));
+  if (mode === 'board') {
+    return list;
+  }
+  // spec (default): stable partition over the rank order.
+  return [...list.filter(hasSpec), ...list.filter((it) => !hasSpec(it))];
+}
 
 /**
  * A full_plan phase child (`UI-xxxx.N`) is a sub-unit of its parent plan's
@@ -335,6 +426,12 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {CandidateFilter}
    */
   let candidate_filter = loadCandidateFilter();
+  /**
+   * Candidate pane sort mode (UI-raqh §2), restored at view creation.
+   *
+   * @type {CandidateSort}
+   */
+  let candidate_sort = loadCandidateSort();
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -805,8 +902,10 @@ export function createWorkerView(mount_element, options = {}) {
       seen.add(it.id);
       merged.push(it);
     }
-    merged.sort(cmpEffectiveRank(order));
-    candidate_issues = merged;
+    // The chosen sort decides the RENDERED order, and `candidate_issues` must
+    // match it: a candidate→candidate drop computes its new rank from the
+    // neighbours the user actually saw (spec §4).
+    candidate_issues = applyCandidateSort(merged, candidate_sort, order);
 
     // Admission refusals recorded by the scheduler/place gate (§1) surface as
     // reason badges on candidate AND queued rows.
@@ -835,7 +934,7 @@ export function createWorkerView(mount_element, options = {}) {
     };
 
     /** @type {any[]} */
-    const candidate_rows = merged.map((/** @type {any} */ it) => {
+    const candidate_rows = candidate_issues.map((/** @type {any} */ it) => {
       const eligible = hasSpec(it);
       const is_blocked = blocked_ids.has(it.id);
       /** @type {string[]} */
@@ -1131,6 +1230,30 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Candidate pane sort select (UI-raqh §2). It sits IN the pane header rather
+   * than in the filter strip below it: the filters answer "what is shown", this
+   * answers "in what order", and reading it as part of the header keeps the
+   * strip about one question only.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function candidateSortTemplate() {
+    return html`<select
+      class="worker-sort"
+      aria-label="후보 정렬"
+      title="후보 정렬"
+      .value=${candidate_sort}
+    >
+      ${CANDIDATE_SORT_OPTIONS.map(
+        (o) =>
+          html`<option value=${o.value} ?selected=${candidate_sort === o.value}>
+            ${o.label}
+          </option>`
+      )}
+    </select>`;
+  }
+
+  /**
    * @param {ReturnType<typeof buildModel>} m
    * @returns {import('lit-html').TemplateResult}
    */
@@ -1143,6 +1266,7 @@ export function createWorkerView(mount_element, options = {}) {
         items: m.candidates,
         src: true,
         empty: '후보 없음',
+        header_control: candidateSortTemplate(),
         controls: candidateControlsTemplate(m)
       })}
       ${paneTemplate({
@@ -1349,6 +1473,21 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Adopt a new candidate sort mode (UI-raqh §2): persist first, then re-render,
+   * so a reload shows exactly what the last selection produced.
+   *
+   * @param {CandidateSort} next
+   */
+  function setCandidateSort(next) {
+    candidate_sort =
+      next === 'board' || next === 'created' || next === 'spec'
+        ? next
+        : CANDIDATE_SORT_DEFAULT;
+    saveCandidateSort(candidate_sort);
+    doRender();
+  }
+
+  /**
    * Commit a slot-count edit (worker-phase2 §3). Fired on `change` so a partial
    * keystroke does not spam mutations; the value is clamped to the lower bound
    * before it is sent and the input is re-rendered from the authoritative
@@ -1367,6 +1506,17 @@ export function createWorkerView(mount_element, options = {}) {
         ...candidate_filter,
         show_blocked: blocked_tgl.checked
       });
+      return;
+    }
+    const sort_select = /** @type {HTMLSelectElement|null} */ (
+      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-sort')
+    );
+    if (sort_select) {
+      setCandidateSort(
+        /** @type {CandidateSort} */ (
+          sort_select.value || CANDIDATE_SORT_DEFAULT
+        )
+      );
       return;
     }
     const input = /** @type {HTMLInputElement|null} */ (

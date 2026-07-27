@@ -3403,6 +3403,27 @@ html[data-theme='dark'] {
   color: var(--accent-warn);
 }
 
+/* Candidate sort select (UI-raqh §2) — part of the pane header, not a control
+   competing with it: borderless until hover, header-sized, no uppercase. */
+.worker-sort {
+  margin-left: auto;
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-chip);
+  letter-spacing: normal;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.worker-sort:hover {
+  border-color: var(--border-chip);
+  color: var(--text-primary);
+}
+
 /* Token usage (UI-raqh §1) — the LOWEST rung of the row's hierarchy: it is
    read when someone goes looking for it, never something that competes with a
    gate badge or an action. Dim, monospaced, tabular so a column of rows lines

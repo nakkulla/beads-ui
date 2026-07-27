@@ -174,10 +174,11 @@ export function candidateCard(item) {
  * One lane pane. `body` overrides the row rendering for a column whose contents
  * are not mini rows (실행 중); `items` still supplies the header count so every
  * column counts its members the same way. `controls` is an optional strip under
- * the header (candidate display filters, UI-ki09) — a pane that passes none
- * renders exactly as before.
+ * the header (candidate display filters, UI-ki09) and `header_control` an
+ * optional trailing element INSIDE it (the candidate sort select, UI-raqh §2) —
+ * a pane that passes neither renders exactly as before.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -189,6 +190,7 @@ export function paneTemplate(pane) {
     <header class="worker-pane__hd">
       <span class="worker-pane__title">${pane.title}</span>
       <span class="worker-pane__count">${pane.items.length}</span>
+      ${pane.header_control ? pane.header_control : ''}
     </header>
     ${pane.controls ? pane.controls : ''}
     <div class="worker-pane__body">
