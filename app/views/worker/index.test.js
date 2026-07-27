@@ -2065,7 +2065,7 @@ describe('views/worker', () => {
     // always the static final-fallback label — not a `(… — 전역)` echo.
     const modelUnset = execSelect(dialog, 'orchestration_model').options[0];
     expect(modelUnset.value).toBe('');
-    expect(modelUnset.textContent).toContain('기본: CLI 기본 모델');
+    expect(modelUnset.textContent).toContain('기본: opus');
     expect(execSelect(dialog, 'review_model').options[0].textContent).toContain(
       '기본: codex'
     );

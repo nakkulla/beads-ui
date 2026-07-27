@@ -104,6 +104,7 @@ rungrid 1열·lanes 세로 전환은 동작하나, 아래 지점이 좁은 화�
    |---|---|---|
    | worker_runner | 하드코딩 `claude` (policy.js:153) | `(기본: claude)` |
    | orchestration_model | `--model` 미전달 → runner CLI 자체 기본 | `(기본: CLI 기본 모델)` |
+   | ↳ superseded | 하드코딩 `opus` ([2026-07-27-worker-orchestration-model-default-opus.md](2026-07-27-worker-orchestration-model-default-opus.md)) | `(기본: opus)` |
    | orchestration_effort | `--effort` 미전달 → CLI 기본 | `(기본: CLI 기본)` |
    | review_model | 세션 워크플로 게이트 기본 `codex` | `(기본: codex)` |
    | impl_model | 워크플로 위임 티어 자동(복잡=opus·경계=sonnet) | `(기본: 티어 자동)` |

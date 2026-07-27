@@ -62,6 +62,8 @@ describe('views/detail-panel/exec-settings', () => {
     expect(review.options[0].textContent).toContain('기본: codex');
     const impl = selectFor(mount, 'impl_model');
     expect(impl.options[0].textContent).toContain('기본: 티어 자동');
+    const model = selectFor(mount, 'orchestration_model');
+    expect(model.options[0].textContent).toContain('기본: opus');
   });
 
   test('a workspace-global exec default surfaces as the (기본: <값> — 전역) label (§3.2)', () => {

@@ -90,7 +90,8 @@
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
  * @property {Record<string, string>} exec_defaults - Workspace-global exec
  * setting defaults (subset of the 5 exec keys; an unset key is absent). Only
- * valid enum values survive normalize.
+ * valid enum values survive normalize. An absent key leaves dispatch on the
+ * final fallback: `opus` for orchestration_model, unset for the other 3.
  * @property {number} slots - Concurrency cap: how many sessions the scheduler
  * may run at once (worker-phase2 §3). Integer ≥ 1, default 2. `slots = 1` IS
  * the retired serial lane's semantics.

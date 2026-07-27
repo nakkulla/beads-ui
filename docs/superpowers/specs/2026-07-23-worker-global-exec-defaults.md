@@ -12,6 +12,11 @@ orchestration_effort / review_model / impl_model)를 워크스페이스 전역
 bead metadata > 워크스페이스 전역 기본값 > 하드코딩 기본(runner='claude',
 나머지 키는 미설정). 전역 기본값은 워크스페이스(큐) 단위다.
 
+> **superseded (부분)**: `orchestration_model`의 하드코딩 기본은 이제
+> 미설정이 아니라 `opus`다 —
+> [2026-07-27-worker-orchestration-model-default-opus.md](2026-07-27-worker-orchestration-model-default-opus.md).
+> 나머지 3키의 미설정 폴백은 그대로다.
+
 키별 독립 해석이 아니라 runner를 먼저 확정한다: `worker_runner`를 위
 순서로 resolve한 뒤, `orchestration_model`은 계층 순서(bead → 전역)에서
 확정된 runner의 카탈로그(RUNNER_MODELS)와 호환되는 첫 값만 채택하고,
@@ -68,6 +73,9 @@ review_model/impl_model/effort는 runner 비의존 enum이므로 계층 순서�
 - bead `worker_runner=claude` + 전역 `orchestration_model=gpt-5.6`처럼
   비호환 교차 계층 조합은 model unset으로 귀결(claude 기본 모델 경로),
   스탬핑 없음.
+  (superseded: 이제 `opus`로 귀결한다 —
+  [2026-07-27-worker-orchestration-model-default-opus.md](2026-07-27-worker-orchestration-model-default-opus.md).
+  스탬핑 없음은 유지.)
 - 스탬핑된 attempt가 서버 재시작 후 orphan으로 reap되면 attempt record의
   `exec_stamped_keys` 근거로 metadata가 원복된다.
 

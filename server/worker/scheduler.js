@@ -879,9 +879,10 @@ export function createScheduler(deps) {
     }
 
     // Resolve the 4 exec settings (bead metadata > workspace-global default >
-    // unset). `stamped_keys` names the bead-absent keys filled from the global
-    // default that this dispatch must stamp (and later revert) —
-    // worker-global-exec-defaults §3.
+    // final fallback: `opus` for orchestration_model, unset for the other 3).
+    // `stamped_keys` names the bead-absent keys filled from the global default
+    // that this dispatch must stamp (and later revert) —
+    // worker-global-exec-defaults §3; the hardcoded fallback never stamps.
     const exec = resolveExecSettings({
       bead: snap,
       defaults: deps.store.snapshot(workspace).exec_defaults

@@ -18,8 +18,9 @@ import {
  * adopts the authoritative queue the reply carries, and replays the SAME edit once
  * against the fresh revision on a CAS conflict.
  *
- * Values resolve bead metadata > this global default > unset, so selecting
- * `(기본)` records an unset (null) — the store drops the key. A stored value
+ * Values resolve bead metadata > this global default > final fallback (`opus`
+ * for orchestration_model, unset for the other 3), so selecting `(기본)` records
+ * an unset (null) — the store drops the key. A stored value
  * outside the current catalog (e.g. a codex model left over from before the
  * claude-only change) shows as its own selected `(비호환)` option, still
  * resettable to `(기본)`.
