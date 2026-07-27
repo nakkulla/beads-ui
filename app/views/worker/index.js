@@ -643,7 +643,7 @@ export function createWorkerView(mount_element, options = {}) {
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
-    /** @type {Record<string, { step: string, reason: string, detail?: string|null }>} */
+    /** @type {Record<string, { step: string, reason: string, detail?: string|null, output_tail?: string }>} */
     const cleanup_failed = q.cleanup_failed || {};
     const cleanup_failures = Object.entries(cleanup_failed).map(
       ([bead_id, rec]) => ({
@@ -651,7 +651,11 @@ export function createWorkerView(mount_element, options = {}) {
         step: rec && rec.step ? rec.step : '',
         reason: rec && rec.reason ? rec.reason : '',
         // Fail-quiet: a record written before the field existed has none.
-        detail: rec && typeof rec.detail === 'string' ? rec.detail : null
+        detail: rec && typeof rec.detail === 'string' ? rec.detail : null,
+        output_tail:
+          rec && typeof rec.output_tail === 'string' && rec.output_tail
+            ? rec.output_tail
+            : undefined
       })
     );
     const queue_entries = /** @type {any[]} */ (q.queue || []);

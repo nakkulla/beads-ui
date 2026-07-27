@@ -557,7 +557,7 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
-  test('session-history disables ↻ 이어하기 with a closed-by-dismissal title on a dismissed attempt', () => {
+  test('session-history keeps ↻ 이어하기 active on a dismissed attempt (UI-qult §4)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -590,10 +590,112 @@ describe('views/detail-panel', () => {
       )
     );
 
-    expect(btn.disabled).toBe(true);
+    // The server's `scheduler.resume()` never reads `dismissed_at`, so the UI
+    // must not be stricter than the API it calls.
+    expect(btn.disabled).toBe(false);
     expect(btn.getAttribute('title')).toBe(
-      '처리 완료로 닫은 attempt — 이어하기 불가'
+      '이 세션을 같은 워크트리에서 이어서 진행'
     );
+
+    panel.destroy();
+  });
+
+  test('session-history renders the failure cause line with its detail tooltip (UI-qult §4)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'UI-1',
+            status: 'failed',
+            session_id: 'sid-a1',
+            started_at: 1000,
+            cause: 'loud_fail_blocker',
+            cause_detail: {
+              reason: 'merge_guard',
+              command: 'git merge --no-ff UI-1'
+            }
+          }
+        }
+      })
+    );
+    const panel = createDetailPanel(mount, { queueStore, onClose: vi.fn() });
+    panel.load('UI-1');
+
+    const line = /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-session__cause')
+    );
+
+    expect(line.textContent?.trim()).toBe('loud_fail_blocker');
+    expect(line.getAttribute('title')).toBe(
+      'merge_guard · git merge --no-ff UI-1'
+    );
+
+    panel.destroy();
+  });
+
+  test('session-history tooltips a null cause_detail command as the reason alone', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'UI-1',
+            status: 'orphaned',
+            started_at: 1000,
+            cause: 'runner_exit',
+            cause_detail: { reason: 'merge_guard', command: null }
+          }
+        }
+      })
+    );
+    const panel = createDetailPanel(mount, { queueStore, onClose: vi.fn() });
+    panel.load('UI-1');
+
+    const line = /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-session__cause')
+    );
+
+    expect(line.getAttribute('title')).toBe('merge_guard');
+
+    panel.destroy();
+  });
+
+  test('session-history renders nothing for an attempt without a cause', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'UI-1',
+            status: 'failed',
+            started_at: 1000
+          }
+        }
+      })
+    );
+    const panel = createDetailPanel(mount, { queueStore, onClose: vi.fn() });
+    panel.load('UI-1');
+
+    expect(mount.querySelector('.detail-session__cause')).toBeNull();
 
     panel.destroy();
   });

@@ -3162,6 +3162,92 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       mount.querySelector('.worker-banner--cleanup .worker-banner__detail')
     ).toBeNull();
   });
+
+  test('renders the verify output tail as a collapsed details block (UI-qult §3)', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'post_merge_verify',
+              reason: 'verify_cmd_failed',
+              at: 1,
+              output_tail: 'FAIL test/x.test.js\nrg: command not found'
+            }
+          }
+        }
+      )
+    );
+
+    const details = /** @type {HTMLDetailsElement} */ (
+      mount.querySelector('.worker-banner--cleanup details.worker-banner__tail')
+    );
+    const pre = /** @type {HTMLElement} */ (details.querySelector('pre'));
+
+    expect(details.open).toBe(false);
+    expect(pre.textContent).toContain('rg: command not found');
+  });
+
+  test('omits the tail block on a cleanup record without one', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': { step: 'child_sweep', reason: 'child_close_failed', at: 1 }
+          }
+        }
+      )
+    );
+
+    expect(
+      mount.querySelector('.worker-banner--cleanup .worker-banner__tail')
+    ).toBeNull();
+  });
+
+  test('escapes markup in the verify output tail', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'post_merge_verify',
+              reason: 'verify_cmd_failed',
+              at: 1,
+              output_tail: '<img src=x onerror="boom()">'
+            }
+          }
+        }
+      )
+    );
+
+    const pre = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner__tail pre')
+    );
+
+    expect(pre.querySelector('img')).toBeNull();
+    expect(pre.textContent).toContain('<img src=x onerror="boom()">');
+  });
 });
 
 describe('worker view — failure banner lifecycle (UI-dcw7)', () => {

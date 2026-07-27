@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { describe, expect, test, vi } from 'vitest';
 import {
   detectVerifyCmd,
@@ -57,6 +58,127 @@ describe('worker/verify-cmd — independent post-merge verification runner (수�
     });
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('verify_cmd_spawn_error');
+  });
+});
+
+describe('worker/verify-cmd — failure output tail (UI-qult §1)', () => {
+  /**
+   * A fake `spawn_impl` whose stdout/stderr are real event emitters, so the
+   * capture path runs against arbitrary scripted output without a real process.
+   *
+   * @param {(child: any) => void} run - Emits the run's output and its end.
+   * @returns {any}
+   */
+  function fakeSpawn(run) {
+    return () => {
+      const child = /** @type {any} */ (new EventEmitter());
+      child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+      child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+      child.kill = () => {
+        child.emit('close', null);
+      };
+      setTimeout(() => run(child), 0);
+      return child;
+    };
+  }
+
+  /**
+   * @param {(child: any) => void} run
+   * @param {number} [timeout_ms]
+   */
+  function runFake(run, timeout_ms = 10000) {
+    return runVerifyCmd({
+      cwd: '/repo',
+      cmd: ['npm', 'test'],
+      timeout_ms,
+      spawn_impl: fakeSpawn(run)
+    });
+  }
+
+  test('preserves the command output tail on a non-zero exit', async () => {
+    const r = await runFake((child) => {
+      child.stdout.emit('data', 'rg: command not found\n');
+      child.emit('close', 1);
+    });
+
+    expect(r.reason).toBe('verify_cmd_failed');
+    expect(r.output_tail).toBe('rg: command not found');
+  });
+
+  test('omits the output tail on a successful run', async () => {
+    const r = await runFake((child) => {
+      child.stdout.emit('data', 'all tests passed\n');
+      child.emit('close', 0);
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.output_tail).toBeUndefined();
+  });
+
+  test('omits the output tail when the run printed nothing', async () => {
+    const r = await runFake((child) => {
+      child.emit('close', 2);
+    });
+
+    expect(r.reason).toBe('verify_cmd_failed');
+    expect(r.output_tail).toBeUndefined();
+  });
+
+  test('keeps the last 100 CONTENT lines of a newline-terminated output', async () => {
+    const output = `${Array.from(
+      { length: 101 },
+      (_unused, i) => `line-${i + 1}`
+    ).join('\n')}\n`;
+
+    const r = await runFake((child) => {
+      child.stdout.emit('data', output);
+      child.emit('close', 1);
+    });
+
+    const lines = String(r.output_tail).split('\n');
+    expect(lines).toHaveLength(100);
+    expect(lines[0]).toBe('line-2');
+    expect(lines[99]).toBe('line-101');
+  });
+
+  test('joins stdout and stderr into one buffer in arrival order', async () => {
+    const r = await runFake((child) => {
+      child.stdout.emit('data', 'running x\n');
+      child.stderr.emit('data', 'warn: y\n');
+      child.stdout.emit('data', 'done x\n');
+      child.emit('close', 1);
+    });
+
+    expect(r.output_tail).toBe('running x\nwarn: y\ndone x');
+  });
+
+  test('caps the output tail at 8192 characters', async () => {
+    const r = await runFake((child) => {
+      child.stdout.emit('data', 'x'.repeat(20000));
+      child.emit('close', 1);
+    });
+
+    expect(r.output_tail).toHaveLength(8192);
+  });
+
+  test('includes the partial output captured before a timeout', async () => {
+    const r = await runFake((child) => {
+      // Never closes on its own — the deadline's SIGKILL is what ends it.
+      child.stdout.emit('data', 'step 3/9 building…\n');
+    }, 25);
+
+    expect(r.reason).toBe('verify_cmd_timeout');
+    expect(r.output_tail).toBe('step 3/9 building…');
+  });
+
+  test('omits the output tail on a spawn error', async () => {
+    const r = await runFake((child) => {
+      child.stdout.emit('data', 'partial\n');
+      child.emit('error', new Error('ENOENT'));
+    });
+
+    expect(r.reason).toBe('verify_cmd_spawn_error');
+    expect(r.output_tail).toBeUndefined();
   });
 });
 

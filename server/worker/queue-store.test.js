@@ -916,6 +916,72 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     );
   });
 
+  test('stores the verify output tail on a cleanup failure (UI-qult §1)', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      output_tail: 'FAIL test/x.test.js\nrg: command not found'
+    });
+
+    expect(store.snapshot(WS).cleanup_failed['UI-1'].output_tail).toBe(
+      'FAIL test/x.test.js\nrg: command not found'
+    );
+  });
+
+  test('ignores an empty output tail rather than storing it', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      output_tail: ''
+    });
+
+    expect(
+      store.snapshot(WS).cleanup_failed['UI-1'].output_tail
+    ).toBeUndefined();
+  });
+
+  test('round-trips the cleanup output tail across a reload', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_timeout',
+      output_tail: 'step 3/9 building…'
+    });
+
+    expect(createQueueStore().load(WS).cleanup_failed['UI-1'].output_tail).toBe(
+      'step 3/9 building…'
+    );
+  });
+
+  test('drops a non-string output tail on load', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      output_tail: 'tail'
+    });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.cleanup_failed['UI-1'].output_tail = 42;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.cleanup_failed['UI-1'].output_tail).toBeUndefined();
+  });
+
   test('normalizes a legacy cleanup record with no detail to null', () => {
     const store = createQueueStore();
     seedPrWait(store);

@@ -501,14 +501,14 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string} base_sha
-   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, detail?: string }>}
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, detail?: string, output_tail?: string }>}
    */
   async function postMergeVerify(bead_id, base_sha) {
     const resolved = resolveVerify();
     if (!resolved) {
       return { ok: true };
     }
-    /** @type {{ ok: boolean, reason: string, detail?: string }} */
+    /** @type {{ ok: boolean, reason: string, detail?: string, output_tail?: string }} */
     let r;
     try {
       r = await runVerify({
@@ -525,7 +525,12 @@ export function createPrActions(deps) {
     }
     return r.ok
       ? { ok: true }
-      : { ok: false, reason: r.reason, detail: r.detail };
+      : {
+          ok: false,
+          reason: r.reason,
+          detail: r.detail,
+          output_tail: r.output_tail
+        };
   }
 
   /**
@@ -927,7 +932,8 @@ export function createPrActions(deps) {
         verified.reason,
         base_sync,
         undefined,
-        verified.detail
+        verified.detail,
+        verified.output_tail
       );
     }
     const deployed = await runDeploy(bead_id, synced.sha, target_base);
@@ -1012,6 +1018,8 @@ export function createPrActions(deps) {
    * @param {boolean} [restore_bd] - Whether the parent close may have landed.
    * @param {string} [detail] - The step's own diagnostic text, when it has one
    * (UI-2o4z §3); the reason alone cannot always identify the failure.
+   * @param {string} [output_tail] - The failing command's own output tail, when
+   * the step ran one (UI-qult §1). Today only `post_merge_verify` has one.
    * @returns {Promise<{ ok: false, step: string, reason: string, base_sync: BaseSyncOutcome|null }>}
    */
   async function failCleanup(
@@ -1020,7 +1028,8 @@ export function createPrActions(deps) {
     reason,
     base_sync,
     restore_bd,
-    detail
+    detail,
+    output_tail
   ) {
     /** @type {string|null} */
     let bd_restore = null;
@@ -1043,7 +1052,8 @@ export function createPrActions(deps) {
       step,
       reason,
       bd_restore,
-      detail
+      detail,
+      output_tail
     });
     notifyChanged(workspace);
     return { ok: false, step, reason, base_sync };

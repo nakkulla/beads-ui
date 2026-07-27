@@ -117,7 +117,7 @@ function seedStore(options = {}) {
  *   checks?: any,
  *   store?: any,
  *   verify?: { cmd: string[], timeout_ms: number, source: 'config' }|null,
- *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string }>,
+ *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string }>,
  *   deploy?: { cmd: string[], timeout_ms: number, detached: boolean }|null,
  *   deploySpawn?: 'ok'|'fail'|'hang'|'error'|'throw',
  *   gitFail?: (args: string[]) => boolean,
@@ -738,6 +738,51 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
       reason: 'verify_worktree_failed',
       detail: "fatal: could not lock ref 'refs/heads/x'"
     });
+  });
+
+  test('records the verify command output tail on a post-merge failure (UI-qult §1)', async () => {
+    const h = makeActions({
+      verify: {
+        cmd: ['npm', 'test'],
+        timeout_ms: 1000,
+        source: /** @type {const} */ ('config')
+      },
+      verifyResults: [
+        { ok: true, reason: 'ok' },
+        {
+          ok: false,
+          reason: 'verify_cmd_failed',
+          output_tail: 'FAIL test/x.test.js\nrg: command not found'
+        }
+      ]
+    });
+
+    await h.actions.merge(BEAD);
+    h.store.__clearCacheForTest();
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD].output_tail).toBe(
+      'FAIL test/x.test.js\nrg: command not found'
+    );
+  });
+
+  test('leaves the output tail absent when the verification reports none', async () => {
+    const h = makeActions({
+      verify: {
+        cmd: ['npm', 'test'],
+        timeout_ms: 1000,
+        source: /** @type {const} */ ('config')
+      },
+      verifyResults: [
+        { ok: true, reason: 'ok' },
+        { ok: false, reason: 'verify_cmd_failed' }
+      ]
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(
+      h.store.snapshot(WS).cleanup_failed[BEAD].output_tail
+    ).toBeUndefined();
   });
 
   test('leaves detail null when the failing step reports none', async () => {
