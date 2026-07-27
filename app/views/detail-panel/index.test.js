@@ -557,6 +557,47 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('session-history disables ↻ 이어하기 with a closed-by-dismissal title on a dismissed attempt', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          dismissed: {
+            attempt_id: 'dismissed',
+            bead_id: 'UI-1',
+            status: 'failed',
+            session_id: 'sid-dismissed',
+            dismissed_at: 5000,
+            started_at: 4000
+          }
+        }
+      })
+    );
+    const panel = createDetailPanel(mount, {
+      queueStore,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.detail-session__resume[data-attempt-id="dismissed"]'
+      )
+    );
+
+    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute('title')).toBe(
+      '처리 완료로 닫은 attempt — 이어하기 불가'
+    );
+
+    panel.destroy();
+  });
+
   test('exec settings default-option follows the queue exec_defaults (§3.2)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const issueStores = createSubscriptionIssueStores();

@@ -128,6 +128,11 @@ Nothing merges without a human `[머지]` click.
   revert); stop replies `{ attempt_id, stopped }`.
 - `worker-attempt-resume` payload: `{ attempt_id, expected_revision }` — ▶ on a
   paused/failed/orphaned attempt; cap-exempt (human-originated).
+- `worker-attempt-dismiss` payload: `{ attempt_id, expected_revision }` — the
+  failure banner's ✕: stamps `dismissed_at` on a `failed`/`orphaned` attempt so
+  it stops reading as an unhandled failure. Reply
+  `{ attempt_id, dismissed, conflict, reason, queue }`; `reason` is
+  `attempt_not_found` / `not_dismissable` / `already_dismissed`.
 - `worker-pr-merge` payload: `{ bead_id, expected_revision }` — the
   authoritative `[머지]` click. The badges in the snapshot are ADVISORY; the
   click re-reads `gh` server-side and re-evaluates the merge gate against the

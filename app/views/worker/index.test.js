@@ -2605,3 +2605,219 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(btn.getAttribute('title')).toContain('남은 정리를');
   });
 });
+
+describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * Mount the view over a queue snapshot carrying exactly `attempts`.
+   *
+   * @param {Record<string, any>} attempts
+   * @param {(type: string, payload?: unknown) => Promise<any>} [transport]
+   * @returns {HTMLElement}
+   */
+  function mountWithAttempts(attempts, transport = vi.fn()) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ attempts }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    return mount;
+  }
+
+  test('renders no banner for a failure a later same-bead attempt superseded', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'verify_failed:x',
+        session_id: 'sid-1'
+      },
+      later: {
+        attempt_id: 'later',
+        bead_id: 'B1',
+        status: 'running',
+        started_at: Date.now()
+      }
+    });
+
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+  });
+
+  test('renders no banner when the later same-bead failure is itself dismissed', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'verify_failed:x'
+      },
+      f2: {
+        attempt_id: 'f2',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'verify_failed:y',
+        dismissed_at: 111
+      }
+    });
+
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+  });
+
+  test('renders no banner for a dismissed failed attempt', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'verify_failed:x',
+        dismissed_at: 1720000000000
+      }
+    });
+
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+  });
+
+  test('renders no banner for a dismissed orphaned attempt', () => {
+    const mount = mountWithAttempts({
+      o1: {
+        attempt_id: 'o1',
+        bead_id: 'B1',
+        status: 'orphaned',
+        repo: '/repo',
+        cause: 'orphan',
+        dismissed_at: 1720000000000
+      }
+    });
+
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+  });
+
+  test('drops the ancestor banner as soon as a resume child exists', () => {
+    const mount = mountWithAttempts({
+      anc: {
+        attempt_id: 'anc',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'verify_failed:x',
+        session_id: 'sid-1'
+      },
+      child: {
+        attempt_id: 'child',
+        bead_id: 'B1',
+        status: 'running',
+        resumed_from: 'anc',
+        started_at: Date.now()
+      }
+    });
+
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+  });
+
+  test('shows the newest of two unhandled failures, then the older once it is dismissed', () => {
+    const attempts = {
+      older: {
+        attempt_id: 'older',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'session_failed:old',
+        session_id: 'sid-old'
+      },
+      newer: {
+        attempt_id: 'newer',
+        bead_id: 'B2',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'session_failed:new',
+        session_id: 'sid-new'
+      }
+    };
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ attempts }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    expect(
+      /** @type {HTMLElement} */ (mount.querySelector('.worker-banner__resume'))
+        .dataset.attemptId
+    ).toBe('newer');
+
+    queueStore.set(
+      queueOf({
+        revision: 2,
+        attempts: {
+          ...attempts,
+          newer: { ...attempts.newer, dismissed_at: 1720000000000 }
+        }
+      })
+    );
+
+    expect(
+      /** @type {HTMLElement} */ (mount.querySelector('.worker-banner__resume'))
+        .dataset.attemptId
+    ).toBe('older');
+  });
+
+  test('the banner ✕ dismisses exactly the attempt the banner describes', () => {
+    const transport = vi.fn().mockResolvedValue({ dismissed: true });
+    const mount = mountWithAttempts(
+      {
+        f1: {
+          attempt_id: 'f1',
+          bead_id: 'B1',
+          status: 'failed',
+          repo: '/repo',
+          cause: 'verify_failed:x',
+          session_id: 'sid-1'
+        }
+      },
+      transport
+    );
+
+    const btn = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--failure .worker-banner__dismiss')
+    );
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(btn.dataset.attemptId).toBe('f1');
+    expect(transport).toHaveBeenCalledWith('worker-attempt-dismiss', {
+      attempt_id: 'f1',
+      expected_revision: 1
+    });
+  });
+
+  test('leaves the ↻ button and its disabled reason untouched', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'verify_failed:x'
+      }
+    });
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-banner__resume')
+    );
+
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toContain('session_id 없는');
+  });
+});

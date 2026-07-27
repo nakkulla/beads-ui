@@ -49,6 +49,10 @@
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
  * @property {string|null} cause - Failure cause (failure banner reason).
+ * @property {number|null} dismissed_at - Epoch ms a human closed (✕) this
+ * failure's banner, declaring it handled. Null means "still unhandled", which
+ * is one of the two ways the UI stops showing a failure banner (the other is
+ * being superseded by a later attempt for the same bead).
  *
  * RETIRED merge-axis fields (worker-phase2 §2). New attempts never write them,
  * but attempt history is immutable (§9), so the shape is preserved so a legacy
@@ -119,6 +123,9 @@
  * @property {boolean} ok - True when the mutation was applied.
  * @property {boolean} conflict - True when rejected by a revision mismatch.
  * @property {Queue} queue - Current snapshot (new on success, unchanged else).
+ * @property {string} [reason] - Why a non-conflict rejection happened, for the
+ * ops that distinguish causes (only {@link createQueueStore}'s `dismissAttempt`
+ * today); absent when there is nothing to distinguish.
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
@@ -258,6 +265,7 @@ export function makeAttempt(fields) {
     merge_sha: fields.merge_sha ?? null,
     finished_at: fields.finished_at ?? null,
     cause: fields.cause ?? null,
+    dismissed_at: fields.dismissed_at ?? null,
     merge_policy: fields.merge_policy ?? null,
     drift_policy: fields.drift_policy ?? null,
     demoted_reason: fields.demoted_reason ?? null,
@@ -666,6 +674,51 @@ export function createQueueStore(options = {}) {
         next.attempts[attempt.attempt_id] = makeAttempt(attempt);
         return true;
       });
+    },
+
+    /**
+     * Stamp `dismissed_at` on a `failed`/`orphaned` attempt — the human ✕ that
+     * declares a failure handled so its banner stops rendering. A USER-initiated
+     * edit, so it runs the CAS path like the other client mutations; a stale
+     * `expected_revision` rejects with `conflict:true`.
+     *
+     * Every other rejection is `conflict:false` + a `reason`, which is why the
+     * checks live inside the mutate closure rather than in front of it: the
+     * decision must read the same clone the write lands on, in ONE persist.
+     * Dismissing an already-dismissed attempt is a REJECTION rather than a no-op
+     * success — the first dismiss bumped the revision, so a double click is
+     * normally caught by the CAS, and reporting success without a revision bump
+     * would be the one inconsistent outcome.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, expected_revision: number }} input
+     * @returns {QueueOpResult}
+     */
+    dismissAttempt(workspace, input) {
+      const { attempt_id, expected_revision } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyMutation(workspace, expected_revision, (next) => {
+        if (!Object.hasOwn(next.attempts, attempt_id)) {
+          reason = 'attempt_not_found';
+          return false;
+        }
+        const cur = next.attempts[attempt_id];
+        if (cur.status !== 'failed' && cur.status !== 'orphaned') {
+          reason = 'not_dismissable';
+          return false;
+        }
+        if (typeof cur.dismissed_at === 'number') {
+          reason = 'already_dismissed';
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt({
+          ...cur,
+          dismissed_at: now()
+        });
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
     },
 
     /**

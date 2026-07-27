@@ -419,6 +419,40 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Dismiss (✕) the failure banner's attempt: stamp `dismissed_at` so the
+   * failure stops counting as unhandled and the banner drops to the next one (if
+   * any). Same CAS discipline as {@link resumeAttempt} — send the current
+   * revision, adopt the conflict reply's queue, retry ONCE. A refusal surfaces
+   * its reason as a toast.
+   *
+   * @param {string} attempt_id
+   */
+  async function dismissAttempt(attempt_id) {
+    if (!transport || !attempt_id) {
+      return;
+    }
+    let res = /** @type {any} */ (
+      await transport('worker-attempt-dismiss', {
+        attempt_id,
+        expected_revision: currentRevision()
+      })
+    );
+    adopt(res);
+    if (res && res.conflict) {
+      res = /** @type {any} */ (
+        await transport('worker-attempt-dismiss', {
+          attempt_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+    }
+    if (res && res.dismissed === false && !res.conflict && res.reason) {
+      showToast(`배너 닫기 거부: ${res.reason}`, 'error', 2400);
+    }
+  }
+
+  /**
    * The human merge click (worker-phase2 §6). Sends the current revision under
    * the same CAS discipline as every other mutation and retries ONCE against
    * the fresh revision on a conflict. What comes back is not just success/fail
@@ -707,6 +741,14 @@ export function createWorkerView(mount_element, options = {}) {
         resumed_from_ids.add(a.resumed_from);
       }
     }
+    // Supersede: the LAST attempt recorded for a bead, by attempts-map insertion
+    // order. The map is append-only, so its order IS time — `started_at` is not
+    // used because legacy records carry null there.
+    /** @type {Map<string, string>} */
+    const last_attempt_by_bead = new Map();
+    for (const a of /** @type {any[]} */ (attempts)) {
+      last_attempt_by_bead.set(a.bead_id, a.attempt_id);
+    }
     /** @type {any[]} */
     const running = [];
     /** @type {any|null} */
@@ -731,8 +773,13 @@ export function createWorkerView(mount_element, options = {}) {
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
         // Only a real failure surfaces the banner — a user pause/discard is not
-        // a failure and never renders one (worker-phase1 §1).
-        latest_failed = a;
+        // a failure and never renders one (worker-phase1 §1) — and only an
+        // UNHANDLED one: a later attempt for the same bead (↻ child, redispatch,
+        // whatever its outcome) supersedes it, and a ✕ dismisses it.
+        const superseded = last_attempt_by_bead.get(a.bead_id) !== a.attempt_id;
+        if (!superseded && typeof a.dismissed_at !== 'number') {
+          latest_failed = a;
+        }
       }
     }
     // The banner's ↻ targets EXACTLY the attempt the banner describes — the
@@ -1157,6 +1204,17 @@ export function createWorkerView(mount_element, options = {}) {
       const att = resumeBtn.dataset.attemptId;
       if (att) {
         void resumeAttempt(att);
+      }
+      return;
+    }
+    // The failure banner's ✕ marks that same attempt handled.
+    const dismissBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-banner__dismiss')
+    );
+    if (dismissBtn) {
+      const att = dismissBtn.dataset.attemptId;
+      if (att) {
+        void dismissAttempt(att);
       }
       return;
     }

@@ -1005,3 +1005,160 @@ describe('worker/queue-store skip-reason recording', () => {
     expect(r.queue.admission['UI-1'].reason).toBe('spec_missing');
   });
 });
+
+describe('worker/queue-store attempt dismissal (UI-dcw7)', () => {
+  /**
+   * Seed one attempt with the given status, returning the store it lives in.
+   *
+   * @param {string} status
+   * @param {Partial<import('./queue-store.js').Attempt>} [extra]
+   */
+  function storeWithAttempt(status, extra = {}) {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1', status, ...extra }
+    });
+    return store;
+  }
+
+  test('stamps dismissed_at and bumps the revision in one persist', () => {
+    let writes = 0;
+    const store = createQueueStore({
+      now: () => 1234,
+      fs: /** @type {any} */ ({
+        readFileSync: fs.readFileSync,
+        mkdirSync: fs.mkdirSync,
+        renameSync: fs.renameSync,
+        /**
+         * @param {string} file
+         * @param {string} data
+         */
+        writeFileSync(file, data) {
+          writes += 1;
+          fs.writeFileSync(file, data);
+        }
+      })
+    });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1', status: 'failed' }
+    });
+    writes = 0;
+
+    const r = store.dismissAttempt(WS, {
+      attempt_id: 'att-1',
+      expected_revision: 1
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(2);
+    expect(r.queue.attempts['att-1'].dismissed_at).toBe(1234);
+    expect(writes).toBe(1);
+  });
+
+  test('dismisses an orphaned attempt too', () => {
+    const store = storeWithAttempt('orphaned');
+
+    const r = store.dismissAttempt(WS, {
+      attempt_id: 'att-1',
+      expected_revision: 1
+    });
+
+    expect(r.ok).toBe(true);
+    expect(typeof r.queue.attempts['att-1'].dismissed_at).toBe('number');
+  });
+
+  test('rejects a non-failed attempt with reason not_dismissable', () => {
+    const store = storeWithAttempt('running');
+
+    const r = store.dismissAttempt(WS, {
+      attempt_id: 'att-1',
+      expected_revision: 1
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      conflict: false,
+      reason: 'not_dismissable'
+    });
+    expect(r.queue.revision).toBe(1);
+  });
+
+  test('rejects an already-dismissed attempt without bumping the revision', () => {
+    const store = storeWithAttempt('failed');
+    store.dismissAttempt(WS, { attempt_id: 'att-1', expected_revision: 1 });
+
+    const r = store.dismissAttempt(WS, {
+      attempt_id: 'att-1',
+      expected_revision: 2
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      conflict: false,
+      reason: 'already_dismissed'
+    });
+    expect(r.queue.revision).toBe(2);
+  });
+
+  test('rejects an unknown attempt with reason attempt_not_found', () => {
+    const store = storeWithAttempt('failed');
+
+    const r = store.dismissAttempt(WS, {
+      attempt_id: 'nope',
+      expected_revision: 1
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      conflict: false,
+      reason: 'attempt_not_found'
+    });
+  });
+
+  test('rejects an inherited-property attempt_id with reason attempt_not_found', () => {
+    const store = storeWithAttempt('failed');
+
+    const r = store.dismissAttempt(WS, {
+      attempt_id: 'toString',
+      expected_revision: 1
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      conflict: false,
+      reason: 'attempt_not_found'
+    });
+  });
+
+  test('rejects a stale expected_revision as a conflict carrying no reason', () => {
+    const store = storeWithAttempt('failed');
+
+    const r = store.dismissAttempt(WS, {
+      attempt_id: 'att-1',
+      expected_revision: 0
+    });
+
+    expect(r).toMatchObject({ ok: false, conflict: true });
+    expect(r.reason).toBeUndefined();
+    expect(r.queue.attempts['att-1'].dismissed_at).toBe(null);
+  });
+
+  test('round-trips dismissed_at through a cold reload', () => {
+    const store = storeWithAttempt('failed');
+    store.dismissAttempt(WS, { attempt_id: 'att-1', expected_revision: 1 });
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(typeof reloaded.attempts['att-1'].dismissed_at).toBe('number');
+  });
+
+  test('defaults dismissed_at to null on a record that carries none', () => {
+    const store = storeWithAttempt('failed');
+
+    const snap = store.snapshot(WS);
+
+    expect(snap.attempts['att-1'].dismissed_at).toBe(null);
+  });
+});
