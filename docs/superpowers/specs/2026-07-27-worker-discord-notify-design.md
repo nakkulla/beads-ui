@@ -14,9 +14,12 @@ UI-2wa9 attempt가 `session_failed:result_count`로 조용히 실패했을 때, 
 
 1. **attempt 시작** — 첫 디스패치·수동 재개·충돌 해결 세션 공통
    (`launchSession` 공용 꼬리).
-2. **attempt 실패** — `cause` 포함(`session_failed:*`, `verify_failed:*`,
-   `loud_fail_blocker`, `workflow_mode_revert_failed`, `spawn_failed`,
-   `exec_stamp_failed`).
+2. **attempt 실패** — `cause` 포함. `failAttempt` 경유
+   (`session_failed:*`, `verify_failed:*`, `loud_fail_blocker`,
+   `workflow_mode_revert_failed`)와 직접 실패 기록 5곳
+   (`workflow_mode_record_failed` — 디스패치·relaunch 각 1곳,
+   `exec_stamp_failed` — 디스패치·relaunch 각 1곳, `spawn_failed` —
+   `launchSession` 1곳) 전부.
 3. **pr_wait 진입** — 성공 종료. `onSessionDone` 성공 경로와 reconcile 처분
    경로 모두.
 
@@ -25,8 +28,9 @@ UI-2wa9 attempt가 `session_failed:result_count`로 조용히 실패했을 때, 
 - 디스패치 거부/스킵 배지(`recordSkipReason` — `spec_missing_at_base:*` 등)는
   알림하지 않는다. attempt를 만들지 않는 경로이고, UI-pvqz로 이미 UI에
   노출되며, 틱마다 반복 재발송될 수 있어 푸시로는 노이즈다.
-- 사용자가 명시적으로 중단(■)한 attempt의 종결은 실패 알림을 보내지 않는다 —
-  사용자 자신의 행동이다.
+- 사용자가 명시적으로 중단(■)·일시정지(⏸)한 attempt의 종결은 알림을 보내지
+  않는다 — 사용자 자신의 행동이다(`stopped`/`paused`는 `cause: null`로
+  기록되는 별도 상태이며 실패 알림 경로에 걸리지 않는다).
 - 채널 라우팅: `discord` CLI는 단일 웹훅(채널 옵션 없음)이다. 대상을 바꾸려면
   config의 `cmd`를 다른 명령/래퍼로 교체한다. CLI 확장은 이 스펙 밖.
 - [머지] 클릭 이후(머지 완료·deploy 결과) 알림은 범위 밖.
@@ -73,7 +77,7 @@ scheduler deps에 `notify`로 주입한다. `createLiveBd().snapshotBead` 반환
 | 이벤트 | 호출 지점 | discord 인자 | 메시지 내용 |
 |---|---|---|---|
 | 시작 | `launchSession` spawn 성공 직후(runtime snapshot 기록 근처) | `-q -t "워커 시작"` (멘션 없음) | bead ID · 제목(있으면) · model/effort · 리포 basename. 재개는 "재개", 충돌 해결은 "충돌 해결" 라벨 |
-| 실패 | `failAttempt` 내부 1곳 + 직접 실패 기록 2곳(`spawn_failed`, `exec_stamp_failed`) | `-c red -t "워커 실패"` (멘션 포함) | bead ID · `cause` · 리포 basename |
+| 실패 | `failAttempt` 내부 1곳 + 직접 실패 기록 5곳(`workflow_mode_record_failed` ×2, `exec_stamp_failed` ×2, `spawn_failed` ×1 — 디스패치·relaunch 양 경로) | `-c red -t "워커 실패"` (멘션 포함) | bead ID · `cause` · 리포 basename |
 | pr_wait 진입 | `moveToPrWait` 호출 2곳(onSessionDone 성공, reconcile 처분) | `-c green -t "PR 대기"` (멘션 포함) | bead ID · PR URL(`vr.pr_url`, 없으면 생략) · 리포 basename |
 
 - 멘션 정책: 시작은 정보성이라 조용히(`-q`), 실패·pr_wait은 사람 개입 가치가
@@ -106,7 +110,7 @@ spawnImpl(cmd[0], [...cmd.slice(1), ...플래그, 메시지],
 2. discord CLI 부재·실패가 워커 큐 진행을 절대 막지 않는다(fire-and-forget,
    no-throw).
 3. config로 비활성화 가능하며, 섹션 부재 시 알림 없음(fail-quiet)이 기본이다.
-4. 디스패치 거부 배지와 stop(■)발 종결은 알림되지 않는다.
+4. 디스패치 거부 배지와 stop(■)·pause(⏸)발 종결은 알림되지 않는다.
 5. `npm run tsc` · `npm test` · `npm run lint` · `npm run build` green, 번들
    커밋 포함(프론트엔드 무변경이라 번들 무변화 예상).
 
@@ -116,6 +120,7 @@ spawnImpl(cmd[0], [...cmd.slice(1), ...플래그, 메시지],
   내용) 검증, disabled/섹션 부재 no-op, spawn throw·error 이벤트 무해성.
 - `config.test.js`: `worker.notify` 파싱 — 부재/유효/불량 `cmd`.
 - `scheduler.test.js`: fake `notify` 주입 — 디스패치 시 `attemptStarted`,
-  실패 시 `attemptFailed(cause)`, 성공 시 `prWaitEntered` 호출, stop 시
-  미호출.
+  실패 시 `attemptFailed(cause)`(디스패치·relaunch 양 경로의
+  `workflow_mode_record_failed` 직접 기록 지점 포함), 성공 시 `prWaitEntered`
+  호출, stop/pause 시 미호출.
 - `attach.test.js`: `snapshotBead`의 `title` 필드.
