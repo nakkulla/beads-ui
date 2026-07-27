@@ -48,23 +48,36 @@ detached = true                    # 선택: boolean 아니면 false
 
 - `CLEANUP_STEPS`를 6단계로 확장: `[..., 'branch_cleanup', 'deploy']`.
   deploy는 최종 단계. `post_merge_verify` 실패 시 파이프라인이 2단계에서 이미
-  멈추므로 깨진 커밋은 deploy에 도달할 수 없다 (fail closed는 구조로 보장).
-- 실행 대상: 배포는 verify와 달리 detached worktree가 아니라 **base_sync된
-  로컬 base 체크아웃**을 전제로 한다. base_sync 결과가 `fast_forwarded`가
-  아니면 (`fetch_only:dirty` / `fetch_only:not_on_base` — 로컬 체크아웃이 머지
-  커밋과 다를 수 있는 상태) stale 코드 배포를 막기 위해 deploy 단계를
-  `deploy_base_not_synced`로 실패 처리한다. 사용자가 체크아웃을 정리한 뒤
-  [재실행]하면 된다.
+  멈추므로 깨진 커밋은 deploy에 도달할 수 없다.
+- verify 필수 (fail closed): `postMergeVerify`는 verify 명령이 없으면 "실행할
+  게 없음 = 통과"라서, 그것만으로는 deploy-only repo가 검증 없이 배포된다.
+  따라서 deploy 단계는 자체적으로 verify 명령 해석 가능 여부(`resolveVerify`
+  — config 또는 자동 감지)를 확인하고, 해석 불가면 `deploy_verify_missing`으로
+  실패한다. "verify 없음 = 통과"는 머지 게이트 의미론이고, 배포는 검증 없이
+  일어나지 않는다.
+- 실행 대상 재검증: 배포는 verify와 달리 detached worktree가 아니라 **로컬
+  base 체크아웃**에서 돈다. base_sync의 `fast_forwarded` 결과만으로는 부족하다
+  — 로컬이 origin보다 ahead여도 `--ff-only`는 성공하고, 1단계와 6단계 사이에
+  체크아웃이 변할 수도 있다. 따라서 **deploy 직전에** 현재 브랜치 ==
+  target_base, `git status --porcelain` clean, `HEAD == base_sha` 세 가지를
+  재검증하고, 하나라도 불일치하면 stale/미검증 코드 배포를 막기 위해
+  `deploy_base_not_synced`로 실패 처리한다.
 - 동기 모드 (기본, `detached = false`): repo 루트에서 `cmd`를 셸 없이 spawn,
   `timeout_ms` 데드라인. 종료코드 0 = `deployed`, 비0 = `deploy_failed`,
   타임아웃 = `deploy_timeout`, spawn 불가 = `deploy_spawn_error`.
-- detached 모드 (`detached = true`): 앞 5단계와 durable 기록(`last_deploy` +
-  cleanup 완료 기록)을 모두 마친 뒤 detached + unref로 발사하고 즉시
-  `launched`로 기록. 프로세스 결과는 추적하지 않는다 (자기재시작 repo — 예:
-  beads-ui의 `bdui-shared restart` — 는 서버 자신이 죽으므로 추적 불가).
+- detached 모드 (`detached = true`): 발사 **전에** `last_deploy = { outcome:
+  'launched', ... }`와 cleanup 완료 기록을 **하나의 atomic queue-store 변경**
+  으로 durable하게 기록한 뒤 detached + unref로 발사한다. `launched`는 "발사
+  의도의 durable 기록"이지 성공 확인이 아니다 — 이후 프로세스 결과는 추적하지
+  않는다 (자기재시작 repo — 예: beads-ui의 `bdui-shared restart` — 는 서버
+  자신이 죽으므로 추적 불가). 단 spawn 자체가 동기적으로 실패하면 (프로세스는
+  아직 살아 있음) 기록을 `failed / deploy_spawn_error`로 덮어쓴다.
 - 실패 처리: deploy 단계 실패는 기존 `merged_cleanup_failed` durable 레코드에
-  `cleanup_step: 'deploy'`로 기록 — 기존 실패 배너 + [재실행] 경로 재사용.
-  머지는 이미 일어난 뒤라는 기존 cleanup 실패 의미론과 동일하다.
+  `cleanup_step: 'deploy'`로 기록 — 기존 실패 배너가 뜨고, 정리 실패 상태의
+  [머지] 버튼 재클릭이 `runCleanup()`을 다시 호출하는 기존 cleanup 재시도
+  경로를 그대로 재사용한다 ([재실행]은 PR·브랜치를 폐기하는 별개 경로이므로
+  여기에 쓰지 않는다). 머지는 이미 일어난 뒤라는 기존 cleanup 실패 의미론과
+  동일하다.
 
 ## 3. Durable 기록 + 페이로드
 
@@ -97,18 +110,21 @@ detached = true                    # 선택: boolean 아니면 false
 
 cleanup 단계 시퀀스는 dotfiles pr-finish 계약이 소유하는 표면이다. beads-ui
 구현과 같은 전달 단위로 dotfiles 계약 문서에 반영한다: 6단계 확장(`deploy`
-최종), 실행 조건(verify green에서만 도달), `detached` 의미론(기록 후 발사 =
-`launched`), `deploy_base_not_synced` 실패 사유. 반영 순서는 계약 문서
+최종), 실행 조건(실제 verify green에서만 — 해석 불가 시
+`deploy_verify_missing`), `detached` 의미론(발사 전 atomic 기록 = `launched`),
+deploy 직전 재검증 실패 사유 `deploy_base_not_synced`. 반영 순서는 계약 문서
 먼저(또는 동시) → beads-ui PR 머지.
 
 ## 6. 테스트
 
 - `config.test.js`: `normalizeWorkerDeploy` — argv 아닌 cmd 거부, timeout
   기본값, `detached` boolean 강제, 비절대경로 키 스킵.
-- `pr-actions.test.js`: 동기 성공/실패/타임아웃 기록, detached "기록 후 발사"
-  순서(발사 전 durable 기록 완료 검증), `fetch_only:*` →
-  `deploy_base_not_synced`, verify 실패 시 deploy 미도달, deploy 미설정 시
-  통과, 실패 시 `merged_cleanup_failed`에 `cleanup_step: 'deploy'`.
+- `pr-actions.test.js`: 동기 성공/실패/타임아웃 기록, detached "발사 전 atomic
+  기록" 순서(발사 전 durable 기록 완료 검증) + 동기 spawn 실패 시 `failed`
+  덮어쓰기, deploy 직전 재검증(브랜치 불일치·dirty·**로컬 ahead 등 HEAD ≠
+  base_sha 드리프트** 각각) → `deploy_base_not_synced`, verify 명령 해석 불가 +
+  deploy 설정 → `deploy_verify_missing`, verify 실패 시 deploy 미도달, deploy
+  미설정 시 통과, 실패 시 `merged_cleanup_failed`에 `cleanup_step: 'deploy'`.
 - `worker-handlers` 테스트: `workspace_info.deploy_cmd`/`last_deploy` 노출.
 - `exec-defaults-dialog` 테스트: 설정 있음/없음/마지막 배포 배지 렌더,
   detached 배지, 편집 요소 부재.
