@@ -109,7 +109,9 @@ const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
  * an execute affordance side by side at the same weight is how a misclick
  * merges something. [머지] is disabled whenever the gate refuses, and the
  * disabled tooltip carries the refusal reason so the badge is not the only
- * explanation. [재실행] is visually subordinate: a misclick there discards a PR.
+ * explanation. [폐기] is visually subordinate: a misclick there discards a PR.
+ * It is withheld entirely on a merged tile — a landed merge cannot be discarded
+ * (discard spec §2), and there [머지] is the cleanup-retry button.
  *
  * The gate shown here is ADVISORY. The click re-queries `gh` server-side and
  * decides again, so a badge that went stale between render and click cannot
@@ -155,6 +157,10 @@ function prWaitRow(bead_id, title, observations, cleanup_failed) {
     badges,
     alert: (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) || !!cleanup_failed,
     merge_action: true,
+    // `cleanup_failed` is DURABLE merged evidence — right after a restart the
+    // observation cache is empty, so the gate tier alone would re-offer [폐기]
+    // on a tile whose merge already landed (discard spec §2).
+    discard_action: !cleanup_failed && !(gate && gate.tier === 'merged'),
     // A conflicting PR keeps [머지] clickable on purpose: that click is what
     // dispatches the resolution session (§6), and it merges nothing.
     merge_enabled: enabled || conflicting || cleanup_retry,
@@ -176,7 +182,7 @@ function prWaitRow(bead_id, title, observations, cleanup_failed) {
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined) }} [options]
  * @returns {{ load: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -186,7 +192,8 @@ export function createWorkerView(mount_element, options = {}) {
     queueStore,
     sessionLogStore,
     uiOrderStore,
-    gotoIssue
+    gotoIssue,
+    getWorkspacePath
   } = options;
   // The shared ui-order store feeds list-selectors so an order-only push
   // re-renders the candidate lane, and drives the same effective-rank sort the
@@ -211,20 +218,25 @@ export function createWorkerView(mount_element, options = {}) {
   const unsubscribers = [];
 
   // Persistent console shell: the control bar + banners (top) and the lane row
-  // (bottom) render into their own targets so the transcript drawer can sit
-  // BETWEEN them (the mockup pushes the lanes down when a tile opens the
-  // drawer) without a full-template re-render clobbering the drawer's own
-  // lit-html root.
+  // (bottom) render into their own targets, and the transcript drawer lives in
+  // its own fixed overlay host so a full-template re-render never clobbers the
+  // drawer's lit-html root and an open drawer never pushes the lanes down.
   const console_el = document.createElement('div');
   console_el.className = 'worker-console';
   const top_el = document.createElement('div');
+  const drawer_overlay_el = document.createElement('div');
+  drawer_overlay_el.className = 'worker-drawer-overlay';
+  drawer_overlay_el.hidden = true;
+  const drawer_backdrop_el = document.createElement('div');
+  drawer_backdrop_el.className = 'worker-drawer-overlay__backdrop';
   const drawer_el = document.createElement('div');
   drawer_el.className = 'worker-drawer-host';
+  drawer_overlay_el.append(drawer_backdrop_el, drawer_el);
   const lanes_el = document.createElement('div');
   // Flex host so .worker-lanes' flex sizing is live — a plain block div here
   // breaks the min-height:0 chain and the pane bodies can never scroll.
   lanes_el.className = 'worker-lanes-host';
-  console_el.append(top_el, drawer_el, lanes_el);
+  console_el.append(top_el, drawer_overlay_el, lanes_el);
   mount_element.appendChild(console_el);
 
   /** @type {string|null} Currently open attempt (for the tile ring). */
@@ -235,6 +247,7 @@ export function createWorkerView(mount_element, options = {}) {
     sessionLogStore,
     onClose: () => {
       selected_attempt = null;
+      drawer_overlay_el.hidden = true;
       doRender();
     }
   });
@@ -243,7 +256,8 @@ export function createWorkerView(mount_element, options = {}) {
   // queueStore subscription so an open dialog re-renders as snapshots arrive.
   const exec_defaults_dialog = createExecDefaultsDialog(console_el, {
     queueStore,
-    transport
+    transport,
+    getWorkspacePath
   });
 
   /**
@@ -509,27 +523,28 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Run the [재실행] action (worker-phase2 §6) — destructive: the PR is closed
-   * and the worktree/branch discarded. A confirmation stands in front of it
-   * because it sits next to [머지]; the CAS + the server's own guards do the
-   * rest.
+   * Run the [폐기] action (discard spec §1) — destructive: the PR is closed and
+   * the worktree/branch discarded, and nothing is re-queued. A confirmation
+   * stands in front of it because it sits next to [머지], and it also teaches
+   * the two-step flow: re-running is the 후보 → 대기 drag. The CAS + the
+   * server's own guards do the rest.
    *
    * @param {string} bead_id
    */
-  async function rerunPr(bead_id) {
+  async function discardPr(bead_id) {
     if (!transport || !bead_id) {
       return;
     }
     const confirmed =
       typeof globalThis.confirm !== 'function' ||
       globalThis.confirm(
-        `${bead_id}: PR을 닫고 워크트리/브랜치를 폐기한 뒤 새 base에서 다시 실행합니다. 되돌릴 수 없습니다. 계속할까요?`
+        `${bead_id}: PR을 닫고 워크트리/브랜치를 폐기합니다. 되돌릴 수 없습니다. 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요. 계속할까요?`
       );
     if (!confirmed) {
       return;
     }
     let res = /** @type {any} */ (
-      await transport('worker-pr-rerun', {
+      await transport('worker-pr-discard', {
         bead_id,
         expected_revision: currentRevision()
       })
@@ -537,15 +552,23 @@ export function createWorkerView(mount_element, options = {}) {
     adopt(res);
     if (res && res.conflict) {
       res = /** @type {any} */ (
-        await transport('worker-pr-rerun', {
+        await transport('worker-pr-discard', {
           bead_id,
           expected_revision: currentRevision()
         })
       );
       adopt(res);
     }
-    if (res && res.rerun === false && !res.conflict) {
-      showToast(`재실행 거부: ${res.reason || ''}`, 'error', 2800);
+    if (res && res.discarded === true) {
+      showToast(
+        '폐기 완료 — 후보 레인에서 다시 실행할 수 있습니다',
+        'success',
+        2400
+      );
+      return;
+    }
+    if (res && res.discarded === false && !res.conflict) {
+      showToast(`폐기 거부: ${res.reason || ''}`, 'error', 2800);
     }
   }
 
@@ -1162,6 +1185,7 @@ export function createWorkerView(mount_element, options = {}) {
     const q = currentQueue();
     const a = q.attempts ? q.attempts[attempt_id] : null;
     selected_attempt = attempt_id;
+    drawer_overlay_el.hidden = false;
     drawer.open({ attempt_id, meta: metaForAttempt(a) });
     doRender();
   }
@@ -1180,7 +1204,12 @@ export function createWorkerView(mount_element, options = {}) {
     const a = q.attempts ? q.attempts[selected_attempt] : null;
     if (a) {
       drawer.updateMeta(metaForAttempt(a));
+      return;
     }
+    // Attempt records are never pruned within a workspace, so a vanished
+    // attempt means the store was cleared (workspace switch): close the modal
+    // or its backdrop would keep blocking the new workspace's UI.
+    drawer.close();
   }
 
   /**
@@ -1231,11 +1260,11 @@ export function createWorkerView(mount_element, options = {}) {
       void mergePr(mergeBtn.dataset.beadId || '');
       return;
     }
-    const rerunBtn = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-mini__rerun')
+    const discardBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__discard')
     );
-    if (rerunBtn) {
-      void rerunPr(rerunBtn.dataset.beadId || '');
+    if (discardBtn) {
+      void discardPr(discardBtn.dataset.beadId || '');
       return;
     }
     // The PR link is a link — let the browser open it, never treat it as a row
@@ -1284,6 +1313,12 @@ export function createWorkerView(mount_element, options = {}) {
       if (id && gotoIssue) {
         gotoIssue(id);
       }
+      return;
+    }
+    // Backdrop click closes the drawer modal (the ✕ inside the bar is the
+    // drawer's own handler).
+    if (target?.closest?.('.worker-drawer-overlay__backdrop')) {
+      drawer.close();
       return;
     }
     // Clicks inside the drawer are owned by the drawer's own handlers.
@@ -1379,6 +1414,7 @@ export function createWorkerView(mount_element, options = {}) {
       } catch {
         /* ignore */
       }
+      drawer_overlay_el.hidden = true;
       try {
         exec_defaults_dialog.destroy();
       } catch {

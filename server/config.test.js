@@ -271,6 +271,110 @@ workspaces = ["/repo-a"]
   });
 });
 
+describe('[worker.deploy] section (worker-deploy-hook §1)', () => {
+  test('reads a per-repo deploy command keyed by absolute path', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.deploy."/repo-a"]
+cmd = ["bdui-shared", "restart"]
+timeout_ms = 120000
+detached = true
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_deploy).toEqual({
+      '/repo-a': {
+        cmd: ['bdui-shared', 'restart'],
+        timeout_ms: 120000,
+        detached: true
+      }
+    });
+  });
+
+  test('rejects a shell one-liner string instead of an argv array', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.deploy."/repo-a"]
+cmd = "bdui-shared restart"
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_deploy).toEqual({});
+  });
+
+  test('rejects an empty argv array', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.deploy."/repo-a"]
+cmd = []
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_deploy).toEqual({});
+  });
+
+  test('defaults timeout_ms to 600000 when absent or not positive', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.deploy."/repo-a"]
+cmd = ["deploy"]
+
+[worker.deploy."/repo-b"]
+cmd = ["deploy"]
+timeout_ms = 0
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_deploy['/repo-a'].timeout_ms).toBe(600000);
+    expect(config.worker_deploy['/repo-b'].timeout_ms).toBe(600000);
+  });
+
+  test('coerces a non-true detached value to false', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.deploy."/repo-a"]
+cmd = ["deploy"]
+detached = "yes"
+
+[worker.deploy."/repo-b"]
+cmd = ["deploy"]
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_deploy['/repo-a'].detached).toBe(false);
+    expect(config.worker_deploy['/repo-b'].detached).toBe(false);
+  });
+
+  test('ignores a non-absolute key', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.deploy."relative/repo"]
+cmd = ["deploy"]
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_deploy).toEqual({});
+  });
+
+  test('returns an empty map when the section is absent', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+workspaces = ["/repo-a"]
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_deploy).toEqual({});
+  });
+
+  test('returns an empty map when the config file is missing', () => {
+    process.env.BDUI_CONFIG_PATH = missingConfigPath();
+
+    const config = getConfig();
+
+    expect(config.worker_deploy).toEqual({});
+  });
+});
+
 describe('obsolete [auth] section', () => {
   test('warns once and drops the section when [auth] is present', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`

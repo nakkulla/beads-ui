@@ -59,8 +59,8 @@ import {
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
+  handleWorkerPrDiscard,
   handleWorkerPrMerge,
-  handleWorkerPrRerun,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
@@ -464,8 +464,8 @@ export async function handleMessage(ws, data) {
     case 'worker-pr-merge':
       await handleWorkerPrMerge(ws, req);
       return;
-    case 'worker-pr-rerun':
-      await handleWorkerPrRerun(ws, req);
+    case 'worker-pr-discard':
+      await handleWorkerPrDiscard(ws, req);
       return;
     case 'subscribe-ui-order':
       handleSubscribeUiOrder(ws, req);

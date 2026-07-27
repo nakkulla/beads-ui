@@ -868,26 +868,43 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     expect(q.done.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
-  test('requeues a pr_wait bead into the waiting queue in one revision', () => {
+  test('removes a pr_wait bead from every lane in one revision', () => {
     const store = createQueueStore();
     seedPrWait(store);
     const before = store.snapshot(WS).revision;
 
-    const r = store.requeueFromPrWait(WS, { bead_id: 'UI-1' });
+    const r = store.removeFromPrWait(WS, { bead_id: 'UI-1' });
 
     expect(r.ok).toBe(true);
     expect(r.queue.revision).toBe(before + 1);
     expect(r.queue.pr_wait).toEqual([]);
-    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+    // NOT requeued: the bead is `open` again and reappears as a candidate.
+    expect(r.queue.queue).toEqual([]);
+    expect(r.queue.done).toEqual([]);
   });
 
-  test('refuses to requeue a bead that is not in pr_wait', () => {
+  test('drops the stale cleanup failure record of the removed bead', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'base_sync',
+      reason: 'base_fetch_failed'
+    });
+
+    const r = store.removeFromPrWait(WS, { bead_id: 'UI-1' });
+
+    expect(r.queue.cleanup_failed['UI-1']).toBeUndefined();
+  });
+
+  test('refuses to remove a bead that is not in pr_wait', () => {
     const store = createQueueStore();
     store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
 
-    const r = store.requeueFromPrWait(WS, { bead_id: 'UI-1' });
+    const r = store.removeFromPrWait(WS, { bead_id: 'UI-1' });
 
     expect(r.ok).toBe(false);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
   test('a legacy queue.json without the key loads with an empty map', () => {
@@ -908,6 +925,149 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     });
 
     expect(store.snapshot(WS).attempts.a1.conflict_resolution).toBe(false);
+  });
+});
+
+describe('worker/queue-store — last_deploy record (worker-deploy-hook §3)', () => {
+  /**
+   * @param {any} store
+   */
+  function seedPrWait(store) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'a1',
+      patch: { status: 'done' }
+    });
+  }
+
+  test('starts null on a fresh queue', () => {
+    const store = createQueueStore();
+
+    expect(store.snapshot(WS).last_deploy).toBeNull();
+  });
+
+  test('records a deploy result durably', () => {
+    const store = createQueueStore();
+
+    store.recordLastDeploy(WS, {
+      outcome: 'deployed',
+      reason: null,
+      bead_id: 'UI-1',
+      base_sha: 'base-sha-1'
+    });
+
+    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
+      outcome: 'deployed',
+      reason: null,
+      bead_id: 'UI-1',
+      base_sha: 'base-sha-1'
+    });
+  });
+
+  test('overwrites the previous record instead of accumulating', () => {
+    const store = createQueueStore();
+    store.recordLastDeploy(WS, {
+      outcome: 'deployed',
+      reason: null,
+      bead_id: 'UI-1',
+      base_sha: 'base-sha-1'
+    });
+
+    store.recordLastDeploy(WS, {
+      outcome: 'failed',
+      reason: 'deploy_failed',
+      bead_id: 'UI-2',
+      base_sha: 'base-sha-2'
+    });
+
+    expect(store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_failed',
+      bead_id: 'UI-2'
+    });
+  });
+
+  test('rejects an unknown outcome without a write', () => {
+    const store = createQueueStore();
+    const before = store.snapshot(WS).revision;
+
+    const r = store.recordLastDeploy(WS, {
+      outcome: /** @type {any} */ ('exploded'),
+      reason: null,
+      bead_id: 'UI-1',
+      base_sha: 'base-sha-1'
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('moves the bead to done and records launched in ONE revision', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    const before = store.snapshot(WS).revision;
+
+    const r = store.moveToDoneWithDeploy(WS, {
+      bead_id: 'UI-1',
+      deploy: {
+        outcome: 'launched',
+        reason: null,
+        bead_id: 'UI-1',
+        base_sha: 'base-sha-1'
+      }
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(before + 1);
+    expect(r.queue.done.map((e) => e.bead_id)).toEqual(['UI-1']);
+    expect(r.queue.pr_wait).toEqual([]);
+    expect(r.queue.last_deploy).toMatchObject({ outcome: 'launched' });
+  });
+
+  test('drops a cleanup failure in the same atomic move', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'deploy',
+      reason: 'deploy_failed'
+    });
+
+    store.moveToDoneWithDeploy(WS, {
+      bead_id: 'UI-1',
+      deploy: {
+        outcome: 'launched',
+        reason: null,
+        bead_id: 'UI-1',
+        base_sha: 'base-sha-1'
+      }
+    });
+
+    expect(store.snapshot(WS).cleanup_failed['UI-1']).toBeUndefined();
+  });
+
+  test('a legacy queue.json without the key loads with a null record', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.last_deploy;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    expect(createQueueStore().load(WS).last_deploy).toBeNull();
+  });
+
+  test('a malformed persisted record loads as null', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.last_deploy = { outcome: 'exploded' };
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    expect(createQueueStore().load(WS).last_deploy).toBeNull();
   });
 });
 

@@ -2573,6 +2573,119 @@ html[data-theme='dark'] {
   font-size: var(--fs-body);
 }
 
+/* Read-only 검증·배포 설정 section (worker-deploy-hook §4): display only —
+   the commands are defined in config.toml, which is the security boundary, so
+   this block styles no interactive control. */
+.exec-defaults__vd {
+  margin-top: var(--sp-14);
+  padding-top: var(--sp-10);
+  border-top: 1px solid var(--border-panel);
+}
+
+.exec-defaults__vd-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin: 0 0 var(--sp-8);
+  color: var(--text-title);
+  font-size: var(--fs-body-sm);
+  font-weight: 600;
+}
+
+.exec-defaults__vd-ro {
+  padding: 0 var(--sp-6);
+  border-radius: var(--r-9);
+  border: 1px solid var(--border-chip);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  font-weight: 400;
+}
+
+.exec-defaults__vd-group + .exec-defaults__vd-group {
+  margin-top: var(--sp-10);
+}
+
+.exec-defaults__vd-label {
+  margin-bottom: var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+}
+
+.exec-defaults__vd-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  color: var(--text-primary);
+  font-size: var(--fs-body-sm);
+}
+
+.exec-defaults__vd-cmd {
+  padding: var(--sp-1) var(--sp-6);
+  border-radius: var(--r-4);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.exec-defaults__vd-badge {
+  display: inline-block;
+  padding: 0 var(--sp-7);
+  border-radius: var(--r-9);
+  border: 1px solid var(--border-chip);
+  color: var(--chip-neutral);
+  font-size: var(--fs-caption);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.exec-defaults__vd-badge--config {
+  border-color: var(--border-route);
+  color: var(--chip-route);
+}
+
+.exec-defaults__vd-badge--detected {
+  border-color: var(--border-ft);
+  color: var(--chip-ft);
+}
+
+.exec-defaults__vd-badge--detached {
+  border-color: var(--border-warn);
+  color: var(--accent-warn);
+}
+
+.exec-defaults__vd-badge--ok {
+  border-color: var(--border-tile-run);
+  color: var(--accent-success);
+}
+
+.exec-defaults__vd-badge--launched {
+  border-color: var(--border-warn);
+  color: var(--accent-warn);
+}
+
+.exec-defaults__vd-badge--fail {
+  border-color: var(--border-danger);
+  color: var(--accent-danger);
+}
+
+.exec-defaults__vd-meta {
+  color: var(--text-muted);
+  font-size: var(--fs-chip-lg);
+}
+
+.exec-defaults__vd-absent {
+  color: var(--text-dim);
+}
+
+.exec-defaults__vd-absent .exec-defaults__vd-cmd {
+  border: 1px dashed var(--border-chip);
+  background: none;
+  color: var(--text-muted);
+}
+
 .worker-banners {
   display: flex;
   flex-direction: column;
@@ -2768,6 +2881,50 @@ html[data-theme='dark'] {
 /* ---------- Transcript drawer (session viewer, spec §5.6) ---------- */
 .worker-drawer-host:empty {
   display: none;
+}
+
+/* Worker-tab drawer modal (UI-89q5): the drawer floats over the lanes instead
+   of pushing them down. `hidden` must beat the flex display. */
+.worker-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.worker-drawer-overlay[hidden] {
+  display: none;
+}
+
+.worker-drawer-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.worker-drawer-overlay .worker-drawer-host {
+  position: relative;
+  display: flex;
+  width: min(860px, 94vw);
+  max-height: 85vh;
+}
+
+.worker-drawer-overlay .sv {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-bottom: 0;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* The overlay height bound owns the scroll; the inline drawer's vh cap would
+   double-bound it. */
+.worker-drawer-overlay .sv__body {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .sv {
@@ -2985,13 +3142,14 @@ html[data-theme='dark'] {
 }
 
 /* Detail-panel transcript overlay: the drawer opened from a session-history row
-   floats above the detail overlay. */
+   is a body-level sibling of `.detail-overlay` (z 900), so it must sit above
+   that and below the md viewer (z 1000). */
 .session-log-root .sv {
   position: fixed;
   inset: auto 3vw 3vh 3vw;
   max-width: 720px;
   margin: 0 auto;
-  z-index: 60;
+  z-index: 950;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
 }
 
@@ -3177,9 +3335,9 @@ html[data-theme='dark'] {
   cursor: not-allowed;
 }
 
-/* [재실행] — deliberately SUBORDINATE: a misclick here throws a PR away, so it
+/* [폐기] — deliberately SUBORDINATE: a misclick here throws a PR away, so it
    is drawn as quiet text rather than a peer of [머지] (§6). */
-.worker-mini__rerun {
+.worker-mini__discard {
   padding: 1px var(--sp-5);
   border: none;
   background: transparent;
@@ -3190,7 +3348,7 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.worker-mini__rerun:hover {
+.worker-mini__discard:hover {
   color: var(--accent-warn);
 }
 
@@ -3435,6 +3593,20 @@ html[data-theme='dark'] {
 
   .sv__body {
     max-height: 60vh;
+  }
+
+  /* Worker-tab drawer modal falls back to the bottom-sheet shape. */
+  .worker-drawer-overlay {
+    align-items: flex-end;
+  }
+
+  .worker-drawer-overlay .worker-drawer-host {
+    width: 100%;
+    max-height: 70vh;
+  }
+
+  .worker-drawer-overlay .sv {
+    border-radius: var(--r-10) var(--r-10) 0 0;
   }
 
   .session-log-root .sv {

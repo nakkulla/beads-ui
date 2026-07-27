@@ -113,7 +113,10 @@ Nothing merges without a human `[머지]` click.
   server-decorated, NON-persisted keys: `workspace_info: { verify_cmd, slots }`
   and `pr_observations` (per-`pr_wait` PR state + merge-gate verdict, memory
   cache only).
-- `worker-queue-place` payload: `{ bead_id, index?, expected_revision }`
+- `worker-queue-place` payload: `{ bead_id, index?, expected_revision }` — a
+  successful placement also kicks the live dispatch loop (`tick`), so an
+  auto_advance-ON queue with a free slot starts the bead without waiting for
+  another trigger.
 - `worker-queue-reorder` payload: `{ bead_id, to_index, expected_revision }`
 - `worker-queue-toggle` payload: `{ on, expected_revision }` — persists
   `auto_advance` and, on turn-ON, kicks the live dispatch loop (`tick`).
@@ -142,11 +145,13 @@ Nothing merges without a human `[머지]` click.
   `merge_unconfirmed` (the merge command succeeded but the PR is not observed
   MERGED — e.g. a merge queue took it) / `conflict_resolution` (a DIRTY PR
   dispatched a resolution session and merged nothing) / `refused`.
-- `worker-pr-rerun` payload: `{ bead_id, expected_revision }` — `[재실행]`:
-  close the PR, put bd back to `open` without `pr_url`, discard the
-  worktree/branch, requeue. Reply
-  `{ bead_id, rerun, conflict, redispatched, reason }`; `redispatched` is false
-  when the queue is paused, which requeues without starting a session.
+- `worker-pr-discard` payload: `{ bead_id, expected_revision }` — `[폐기]`:
+  re-read the PR state authoritatively, close it when it is still OPEN (`MERGED`
+  refuses with `pr_already_merged`, an unreadable state fails closed), put bd
+  back to `open` without `pr_url`, discard the worktree/branch, and REMOVE the
+  bead from `pr_wait`. It is NOT re-queued and nothing is dispatched — the bead
+  reappears in the candidate lane and re-running it is a drag back into 대기,
+  which re-passes admission. Reply `{ bead_id, discarded, conflict, reason }`.
 
 Every queue mutation replies `{ applied, conflict, queue }`; a stale
 `expected_revision` yields `conflict:true` + the current queue for re-sync.

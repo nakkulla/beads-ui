@@ -1570,6 +1570,92 @@ describe('views/worker', () => {
     expect(gotoIssue).not.toHaveBeenCalled();
   });
 
+  /**
+   * Mount a worker view with one running attempt and open its transcript
+   * drawer by clicking the tile body (UI-89q5 modal overlay tests).
+   *
+   * @param {HTMLElement} mount
+   * @returns {{ get: () => any, set: (q: any) => void, clear: () => void, subscribe: (fn: () => void) => () => void }}
+   */
+  function openRunningTileDrawer(mount) {
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            runner: 'claude',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+    const sessionLogStore = createSessionLogStore();
+    sessionLogStore.set('a1', [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'go' }] }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      sessionLogStore,
+      transport: vi.fn().mockResolvedValue({ ok: true }),
+      gotoIssue: vi.fn()
+    });
+
+    const title = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__title')
+    );
+    title.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    return queueStore;
+  }
+
+  test('reveals the drawer overlay only while a transcript is open', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    openRunningTileDrawer(mount);
+
+    const overlay = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-drawer-overlay')
+    );
+    expect(overlay.hidden).toBe(false);
+  });
+
+  test('closes the transcript drawer on an overlay backdrop click', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    openRunningTileDrawer(mount);
+
+    const backdrop = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-drawer-overlay__backdrop')
+    );
+    backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const overlay = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-drawer-overlay')
+    );
+    expect(overlay.hidden).toBe(true);
+    expect(mount.querySelector('.sv')).toBeNull();
+  });
+
+  test('closes the drawer overlay when the queue store is cleared (workspace switch)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = openRunningTileDrawer(mount);
+
+    queueStore.clear();
+
+    const overlay = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-drawer-overlay')
+    );
+    expect(overlay.hidden).toBe(true);
+    expect(mount.querySelector('.sv')).toBeNull();
+  });
+
   test('excludes phase-child candidates (parent edge or dotted id); a normal issue stays', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const stores = createTestIssueStores();
@@ -2010,6 +2096,316 @@ describe('views/worker', () => {
     ).toBeNull();
     // The 4 exec rows survive.
     expect(dialog.querySelectorAll('.exec-defaults__row').length).toBe(4);
+  });
+
+  /**
+   * Open the ⚙ dialog over a queue snapshot carrying the given
+   * `workspace_info` (worker-deploy-hook §3/§4 read-only decoration).
+   *
+   * @param {HTMLElement} mount
+   * @param {any} workspace_info
+   * @returns {HTMLElement}
+   */
+  function openWithWorkspaceInfo(mount, workspace_info) {
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ revision: 2, workspace_info }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn(),
+      getWorkspacePath: () => '/Users/me/GitHub/other-repo'
+    });
+
+    return openExecDefaults(mount);
+  }
+
+  /**
+   * @param {HTMLElement} dialog
+   * @param {string} name - `verify` | `deploy` | `last-deploy`
+   * @returns {HTMLElement|null}
+   */
+  function vdGroup(dialog, name) {
+    return dialog.querySelector(`.exec-defaults__vd-group[data-vd="${name}"]`);
+  }
+
+  test('renders the verify row with its command, config badge and timeout', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: {
+        cmd: ['npm', 'run', 'all'],
+        timeout_ms: 600000,
+        source: 'config'
+      },
+      deploy_cmd: null,
+      last_deploy: null,
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'verify'));
+    expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
+      'npm run all'
+    );
+    expect(
+      group.querySelector('.exec-defaults__vd-badge--config')?.textContent
+    ).toBe('config');
+    expect(group.querySelector('.exec-defaults__vd-meta')?.textContent).toBe(
+      'timeout 10분'
+    );
+  });
+
+  test('marks an auto-detected verify command with the 자동감지 badge', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: {
+        cmd: ['npm', 'test'],
+        timeout_ms: 600000,
+        source: 'detected'
+      },
+      deploy_cmd: null,
+      last_deploy: null,
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'verify'));
+    expect(
+      group.querySelector('.exec-defaults__vd-badge--detected')?.textContent
+    ).toBe('자동감지');
+    expect(group.querySelector('.exec-defaults__vd-badge--config')).toBeNull();
+  });
+
+  test('renders 검증 없음 when no verify command resolves', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: null,
+      deploy_cmd: null,
+      last_deploy: null,
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'verify'));
+    expect(group.querySelector('.exec-defaults__vd-cmd')).toBeNull();
+    expect(group.textContent).toContain('검증 없음');
+  });
+
+  test('renders the deploy row with a detached badge and the verify-gated note', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: {
+        cmd: ['npm', 'run', 'all'],
+        timeout_ms: 600000,
+        source: 'config'
+      },
+      deploy_cmd: {
+        cmd: ['bdui-shared', 'restart'],
+        timeout_ms: 600000,
+        detached: true
+      },
+      last_deploy: null,
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'deploy'));
+    expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
+      'bdui-shared restart'
+    );
+    expect(
+      group.querySelector('.exec-defaults__vd-badge--config')?.textContent
+    ).toBe('config');
+    expect(
+      group.querySelector('.exec-defaults__vd-badge--detached')?.textContent
+    ).toBe('detached');
+    expect(group.querySelector('.exec-defaults__vd-meta')?.textContent).toBe(
+      'timeout 10분 · verify 통과 시에만 실행'
+    );
+  });
+
+  test('renders no detached badge for a synchronous deploy command', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: null,
+      deploy_cmd: {
+        cmd: ['bash', 'scripts/install.sh'],
+        timeout_ms: 900000,
+        detached: false
+      },
+      last_deploy: null,
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'deploy'));
+    expect(
+      group.querySelector('.exec-defaults__vd-badge--detached')
+    ).toBeNull();
+    expect(group.querySelector('.exec-defaults__vd-meta')?.textContent).toBe(
+      'timeout 15분 · verify 통과 시에만 실행'
+    );
+  });
+
+  test('an unconfigured deploy names the config section for the current workspace', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: {
+        cmd: ['npm', 'test'],
+        timeout_ms: 600000,
+        source: 'detected'
+      },
+      deploy_cmd: null,
+      last_deploy: null,
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'deploy'));
+    expect(group.textContent).toContain('배포 없음');
+    expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
+      '[worker.deploy."/Users/me/GitHub/other-repo"]'
+    );
+  });
+
+  test('renders the last deploy as a 발사됨 badge with time, bead id and short sha', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: null,
+      deploy_cmd: {
+        cmd: ['bdui-shared', 'restart'],
+        timeout_ms: 600000,
+        detached: true
+      },
+      last_deploy: {
+        outcome: 'launched',
+        reason: null,
+        bead_id: 'UI-89q5',
+        base_sha: '5fe1fd3aa11bb22cc33dd44',
+        at: Date.UTC(2026, 6, 27, 3, 54)
+      },
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'last-deploy'));
+    expect(
+      group.querySelector('.exec-defaults__vd-badge--launched')?.textContent
+    ).toBe('발사됨');
+    const meta = /** @type {string} */ (
+      group.querySelector('.exec-defaults__vd-meta')?.textContent
+    );
+    expect(meta).toContain('UI-89q5');
+    expect(meta).toContain('5fe1fd3');
+    expect(meta).not.toContain('5fe1fd3a');
+  });
+
+  test('renders a successful last deploy as a 성공 badge', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: null,
+      deploy_cmd: null,
+      last_deploy: {
+        outcome: 'deployed',
+        reason: null,
+        bead_id: 'DF-1',
+        base_sha: 'a3f0a9812345',
+        at: Date.UTC(2026, 6, 26, 9, 2)
+      },
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'last-deploy'));
+    expect(
+      group.querySelector('.exec-defaults__vd-badge--ok')?.textContent
+    ).toBe('성공');
+  });
+
+  test('renders a failed last deploy with its reason in the badge', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: null,
+      deploy_cmd: null,
+      last_deploy: {
+        outcome: 'failed',
+        reason: 'deploy_base_not_synced',
+        bead_id: 'UI-3onr',
+        base_sha: '9c21b44ffff',
+        at: Date.UTC(2026, 6, 27, 4, 10)
+      },
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'last-deploy'));
+    expect(
+      group.querySelector('.exec-defaults__vd-badge--fail')?.textContent
+    ).toBe('실패 · deploy_base_not_synced');
+  });
+
+  test('omits the last-deploy row entirely when there is no record', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: null,
+      deploy_cmd: null,
+      last_deploy: null,
+      slots: 2
+    });
+
+    expect(vdGroup(dialog, 'last-deploy')).toBeNull();
+    expect(dialog.textContent).not.toContain('마지막 배포');
+  });
+
+  test('renders the verify/deploy section as read-only — no editable control in it', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: {
+        cmd: ['npm', 'run', 'all'],
+        timeout_ms: 600000,
+        source: 'config'
+      },
+      deploy_cmd: {
+        cmd: ['bdui-shared', 'restart'],
+        timeout_ms: 600000,
+        detached: true
+      },
+      last_deploy: {
+        outcome: 'deployed',
+        reason: null,
+        bead_id: 'UI-3onr',
+        base_sha: '9c21b44ffff',
+        at: Date.UTC(2026, 6, 27, 4, 10)
+      },
+      slots: 2
+    });
+
+    const section = /** @type {HTMLElement} */ (
+      dialog.querySelector('.exec-defaults__vd')
+    );
+    expect(section).not.toBeNull();
+    expect(section.textContent).toContain('읽기 전용');
+    expect(
+      section.querySelectorAll('input, select, textarea, button').length
+    ).toBe(0);
+  });
+
+  test('renders the section without throwing when the snapshot carries no workspace_info', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ revision: 2 }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const dialog = openExecDefaults(mount);
+
+    expect(dialog.querySelector('.exec-defaults__vd')).not.toBeNull();
+    expect(vdGroup(dialog, 'verify')?.textContent).toContain('검증 없음');
+    expect(vdGroup(dialog, 'deploy')?.textContent).toContain('배포 없음');
   });
 
   test('failure banner ↻ resumes the newest eligible failed attempt (§1)', () => {
@@ -2484,14 +2880,76 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     }
   });
 
-  test('offers 머지 and 재실행 on a pr_wait row', () => {
+  test('offers 머지 and 폐기 on a pr_wait row', () => {
     const { mount } = mountWith(queueWithGate(GREEN));
 
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
     expect(row.querySelector('.worker-mini__merge')).not.toBe(null);
-    expect(row.querySelector('.worker-mini__rerun')).not.toBe(null);
+    const discard = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__discard')
+    );
+    expect(discard.textContent?.trim()).toBe('폐기');
+  });
+
+  test('withholds 폐기 on a merged tile — a landed merge cannot be discarded', () => {
+    const { mount } = mountWith(
+      queueWithGate({
+        enabled: false,
+        tier: 'merged',
+        gate_badge: '머지됨',
+        base_badge: '머지됨',
+        reason: null
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.querySelector('.worker-mini__discard')).toBe(null);
+    // [머지] stays: on a merged tile it is the cleanup-retry button.
+    expect(row.querySelector('.worker-mini__merge')).not.toBe(null);
+  });
+
+  test('withholds 폐기 on a merged tile whose cleanup failed', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': { step: 'child_sweep', reason: 'boom', at: 1 }
+          }
+        }
+      )
+    );
+
+    expect(mount.querySelector('.worker-mini__discard')).toBe(null);
+  });
+
+  test('withholds 폐기 on a cleanup_failed tile even without observations', () => {
+    // Right after a restart the observation cache is empty — the durable
+    // cleanup_failed record alone must keep [폐기] off a merged tile.
+    const { mount } = mountWith(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {},
+        cleanup_failed: {
+          'RD-1': { step: 'child_sweep', reason: 'boom', at: 1 }
+        }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.querySelector('.worker-mini__discard')).toBe(null);
   });
 
   test('disables 머지 when the gate refuses, and says why', () => {
@@ -2535,13 +2993,13 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     });
   });
 
-  test('confirms before sending the destructive rerun', () => {
+  test('confirms before sending the destructive discard', () => {
     const { mount, transport } = mountWith(queueWithGate(GREEN));
     const confirm = vi.fn(() => false);
     vi.stubGlobal('confirm', confirm);
 
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-mini__rerun')
+      mount.querySelector('.worker-mini__discard')
     ).click();
 
     expect(confirm).toHaveBeenCalled();
@@ -2549,7 +3007,27 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     vi.unstubAllGlobals();
   });
 
-  test('sends worker-pr-rerun once the user confirms', () => {
+  test('teaches the drag-back re-run path in the discard confirmation', () => {
+    const { mount } = mountWith(queueWithGate(GREEN));
+    /** @type {string[]} */
+    const messages = [];
+    vi.stubGlobal(
+      'confirm',
+      vi.fn((/** @type {string} */ message) => {
+        messages.push(message);
+        return false;
+      })
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__discard')
+    ).click();
+
+    expect(messages[0]).toContain('대기 레인으로 옮기세요');
+    vi.unstubAllGlobals();
+  });
+
+  test('sends worker-pr-discard once the user confirms', () => {
     const { mount, transport } = mountWith(queueWithGate(GREEN));
     vi.stubGlobal(
       'confirm',
@@ -2557,13 +3035,40 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     );
 
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-mini__rerun')
+      mount.querySelector('.worker-mini__discard')
     ).click();
 
-    expect(transport).toHaveBeenCalledWith('worker-pr-rerun', {
+    expect(transport).toHaveBeenCalledWith('worker-pr-discard', {
       bead_id: 'RD-1',
       expected_revision: 1
     });
+    vi.unstubAllGlobals();
+  });
+
+  test('announces a completed discard with a success toast', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueWithGate(GREEN));
+    const transport = vi.fn(async () => ({ discarded: true, conflict: false }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__discard')
+    ).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const toast = /** @type {HTMLElement|null} */ (
+      document.querySelector('.toast')
+    );
+    expect(toast?.textContent).toContain('폐기 완료');
     vi.unstubAllGlobals();
   });
 

@@ -1,6 +1,7 @@
 /**
  * The PR-wait ACTIONS (worker-phase2 §6): the authoritative [머지] click, the
- * ONE post-merge cleanup, the conflict-resolution dispatch, and [재실행].
+ * ONE post-merge cleanup, the conflict-resolution dispatch, and [폐기]
+ * (`2026-07-27-worker-discard-button.md`).
  *
  * Everything Phase 4 built is ADVISORY — a poller writing badges into a
  * non-persistent cache. This module is where a human decision turns into an
@@ -27,9 +28,9 @@
  *
  * CLEANUP ORDER IS THE `pr-finish` SKILL CONTRACT'S, not this module's:
  *
- *   base 동기화 → repo-required post-merge 검증 → linked Beads 스윕
- *   (child leaves-first, readback) → parent bd close → 워크트리·원격/로컬 브랜치
- *   정리 → bead `done(merged)`
+ *   base 동기화 → repo-required post-merge 검증 → 배포(install) → linked Beads
+ *   스윕 (child leaves-first, readback) → 워크트리·원격/로컬 브랜치 정리 →
+ *   parent bd close → bead `done(merged)`
  *
  * It is deliberately NOT an unconditional immediate `bd close`. A step that
  * fails STOPS the sequence, leaves the bead `resolved` in `pr_wait`, records a
@@ -38,13 +39,22 @@
  * the designed outcome: the merge already happened and cannot be undone, so
  * guessing at the remainder is strictly worse than reporting it.
  *
+ * A MERGE IS NOT A DELIVERY (worker-deploy-hook): until something restarts the
+ * shared service it keeps serving the pre-merge build, which is exactly how a
+ * merged fix stayed invisible. The deploy step closes that gap, and everything
+ * about it is fail-closed — it refuses without a resolvable verification, and
+ * it re-checks the LOCAL checkout immediately before spawning rather than
+ * trusting step 1's report of it.
+ *
  * @import { Queue } from './queue-store.js'
  * @import { PrDetail } from './gh.js'
  * @import { ResolvedVerifyCmd } from './verify-cmd.js'
  */
+import { spawn } from 'node:child_process';
 import { debug } from '../logging.js';
 import { evaluateMergeGate } from './merge-gate.js';
 import { resolvePrRef, rollupConclusion } from './pr-poller.js';
+import { runVerifyCmd } from './verify-cmd.js';
 import { branchForBead } from './worktree.js';
 
 const log = debug('worker:pr-actions');
@@ -61,18 +71,40 @@ export const DEFAULT_CLICK_REQUERY_DELAY_MS = 2000;
 
 /**
  * The post-merge cleanup steps, IN THE ORDER the pr-finish contract fixes them
- * (worker-phase2 §6). Exported so the failure record, the banner, and the tests
- * all name the same sequence rather than three private copies of it.
+ * (worker-phase2 §6, worker-deploy-hook §2). Exported so the failure record,
+ * the banner, and the tests all name the same sequence rather than three
+ * private copies of it.
+ *
+ * Aligned with the contract's sweep order: install (= `deploy`) sits directly
+ * after sync + verify, and the parent close comes LAST — after the branch and
+ * worktree cleanup, not before it. Putting the close last is what collapses the
+ * old `restoreResolved` question: no step can fail after it, so only the close
+ * itself can leave a bead `closed` that the failure contract says must be
+ * `resolved`.
  *
  * @type {string[]}
  */
 export const CLEANUP_STEPS = [
   'base_sync',
   'post_merge_verify',
+  'deploy',
   'child_sweep',
-  'parent_close',
-  'branch_cleanup'
+  'branch_cleanup',
+  'parent_close'
 ];
+
+/**
+ * A workspace's resolved post-merge deploy command (`[worker.deploy."<abs>"]`).
+ * Config-only — unlike verify there is NO auto-detection, so a null resolution
+ * means "this repo has no deployment", never "we could not guess one".
+ *
+ * @typedef {Object} ResolvedDeployCmd
+ * @property {string[]} cmd - Deploy argv (spawned WITHOUT a shell).
+ * @property {number} timeout_ms - Deadline for the synchronous mode.
+ * @property {boolean} detached - Whether the command restarts the process
+ * running this code, and therefore must be launched unattended AFTER the
+ * cleanup is durably recorded.
+ */
 
 /**
  * What step 1 of the cleanup actually did to the LOCAL checkout. `fast_forwarded`
@@ -101,13 +133,9 @@ export const CLEANUP_STEPS = [
  */
 
 /**
- * @typedef {Object} RerunResult
+ * @typedef {Object} DiscardResult
  * @property {boolean} ok
  * @property {string|null} reason
- * @property {boolean} redispatched - Whether a NEW attempt actually started for
- * the bead. A paused queue (`auto_advance` off) legitimately leaves this false:
- * ⏸ starts no new sessions, so the bead simply waits in `queue` — reporting
- * `ok: true, redispatched: false` is what makes that visible instead of implied.
  */
 
 /**
@@ -147,6 +175,8 @@ function isConflicting(pr) {
  *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
  *   resolveVerify?: () => ResolvedVerifyCmd|null,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
+ *   resolveDeploy?: () => ResolvedDeployCmd|null,
+ *   spawnImpl?: typeof spawn,
  *   notifyChanged?: (workspace: string) => void,
  *   requeryDelayMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
@@ -166,6 +196,8 @@ export function createPrActions(deps) {
       : DEFAULT_CLICK_REQUERY_DELAY_MS;
   const notifyChanged = deps.notifyChanged || (() => {});
   const resolveVerify = deps.resolveVerify || (() => null);
+  const resolveDeploy = deps.resolveDeploy || (() => null);
+  const spawnImpl = deps.spawnImpl || spawn;
   const runVerify =
     deps.runVerify ||
     (() =>
@@ -495,9 +527,198 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Step 3 — the linked Beads sweep, LEAVES FIRST. Children are walked depth
+   * The deploy step's LAST-MOMENT check on the local checkout
+   * (worker-deploy-hook §2).
+   *
+   * Unlike the verification — which runs in its own detached worktree pinned to
+   * an exact sha — the deploy runs a command against the LOCAL base checkout,
+   * so what that checkout contains IS what gets deployed. Step 1's outcome is
+   * not enough evidence: `fetch_only:*` means the checkout was never moved, a
+   * local branch AHEAD of origin still fast-forwards cleanly, and minutes of
+   * verification sit between step 1 and here during which a human can check out
+   * anything at all.
+   *
+   * So all three facts are re-read immediately before the spawn: on the target
+   * base, clean, and HEAD exactly at the base commit that was verified. Any
+   * mismatch means the thing about to be deployed is not the thing that passed
+   * — the one outcome worse than not deploying.
+   *
+   * Read-only (`rev-parse` / `status`), so it deliberately does NOT take the
+   * topology lock: it mutates no ref, and holding the lock across the deploy
+   * spawn would block every other repo operation for the deploy's duration.
+   *
+   * @param {string} target_base
+   * @param {string} base_sha
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
+   */
+  async function revalidateBaseCheckout(target_base, base_sha) {
+    const branch = await deps.gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: repo
+    });
+    if (branch.code !== 0 || branch.stdout.trim() !== target_base) {
+      return { ok: false, reason: 'checkout_not_on_base' };
+    }
+    const status = await deps.gitRun(['status', '--porcelain'], { cwd: repo });
+    if (status.code !== 0 || status.stdout.trim().length > 0) {
+      return { ok: false, reason: 'checkout_dirty' };
+    }
+    const head = await deps.gitRun(['rev-parse', 'HEAD'], { cwd: repo });
+    if (head.code !== 0 || head.stdout.trim() !== base_sha) {
+      return { ok: false, reason: 'head_not_base_sha' };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Map a {@link runVerifyCmd} outcome onto the deploy failure vocabulary. The
+   * RUNNER is shared (same shell-less argv spawn, same deadline handling); only
+   * the names differ, and they must differ — a `deploy_timeout` in the record
+   * has to be distinguishable from a verification that timed out.
+   *
+   * @param {string} reason
+   * @returns {string}
+   */
+  function deployReasonFor(reason) {
+    if (reason === 'verify_cmd_failed') {
+      return 'deploy_failed';
+    }
+    if (reason === 'verify_cmd_timeout') {
+      return 'deploy_timeout';
+    }
+    return 'deploy_spawn_error';
+  }
+
+  /**
+   * @param {'deployed'|'launched'|'failed'} outcome
+   * @param {string|null} reason
+   * @param {string} bead_id
+   * @param {string} base_sha
+   * @returns {{ outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string }}
+   */
+  function deployRecord(outcome, reason, bead_id, base_sha) {
+    return { outcome, reason, bead_id, base_sha };
+  }
+
+  /**
+   * Step 3 — the repo's post-merge DEPLOYMENT (worker-deploy-hook §2).
+   *
+   * Three ways this returns without spawning anything:
+   *
+   *   - no `[worker.deploy]` section → nothing to run, which is a pass with the
+   *     same meaning verify's "no command" has,
+   *   - no RESOLVABLE verify command → `deploy_verify_missing`. "No verify = a
+   *     pass" is a MERGE-GATE semantics; a deployment is not allowed to inherit
+   *     it, or a deploy-only repo would ship code nothing ever checked,
+   *   - the local checkout is not the verified base → `deploy_base_not_synced`.
+   *
+   * `detached` does not spawn here either: it returns the resolved command as
+   * `pending` for {@link runCleanup} to launch after the whole cleanup is
+   * durably recorded. A `bdui-shared restart` deploy kills this process, and
+   * the remaining cleanup steps must not die with it.
+   *
+   * @param {string} bead_id
+   * @param {string} base_sha
+   * @param {string} target_base
+   * @returns {Promise<{ ok: true, pending: ResolvedDeployCmd|null }|{ ok: false, reason: string }>}
+   */
+  async function runDeploy(bead_id, base_sha, target_base) {
+    const deploy = resolveDeploy();
+    if (!deploy) {
+      return { ok: true, pending: null };
+    }
+    if (!resolveVerify()) {
+      return { ok: false, reason: 'deploy_verify_missing' };
+    }
+    const revalidated = await revalidateBaseCheckout(target_base, base_sha);
+    if (!revalidated.ok) {
+      log(
+        'deploy refused for %s: local checkout %s (base %s)',
+        bead_id,
+        revalidated.reason,
+        base_sha
+      );
+      return { ok: false, reason: 'deploy_base_not_synced' };
+    }
+    if (deploy.detached) {
+      return { ok: true, pending: deploy };
+    }
+
+    /** @type {{ ok: boolean, reason: string }} */
+    let r;
+    try {
+      r = await runVerifyCmd({
+        cwd: repo,
+        cmd: deploy.cmd,
+        timeout_ms: deploy.timeout_ms,
+        spawn_impl: spawnImpl
+      });
+    } catch (err) {
+      log('deploy threw for %s: %o', bead_id, err);
+      r = { ok: false, reason: 'verify_cmd_spawn_error' };
+    }
+    if (r.ok) {
+      deps.store.recordLastDeploy(
+        workspace,
+        deployRecord('deployed', null, bead_id, base_sha)
+      );
+      return { ok: true, pending: null };
+    }
+    const reason = deployReasonFor(r.reason);
+    deps.store.recordLastDeploy(
+      workspace,
+      deployRecord('failed', reason, bead_id, base_sha)
+    );
+    return { ok: false, reason };
+  }
+
+  /**
+   * Fire a detached deploy and stop caring about its RESULT — no wait, `unref`
+   * so it cannot hold the event loop open. The result is UNKNOWABLE by design:
+   * the canonical case restarts this very server, so there is no survivor to
+   * observe the exit code. `launched` is therefore recorded as an INTENT before
+   * this runs, and the only thing that can still be learned here is that the
+   * spawn itself never happened.
+   *
+   * One listener IS attached: `error`. Node reports a pre-exec failure (ENOENT
+   * and friends) as an asynchronous `error` event, not a throw — unhandled it
+   * would crash this server while the record still says `launched`. That event
+   * is exactly the "spawn never happened" case, so it feeds the same
+   * `on_spawn_error` repair as a synchronous throw.
+   *
+   * @param {ResolvedDeployCmd} deploy
+   * @param {() => void} on_spawn_error - Overwrites the `launched` record; may
+   * fire asynchronously, but only ever for a process that never started.
+   * @returns {boolean} Whether the spawn call itself succeeded.
+   */
+  function launchDetachedDeploy(deploy, on_spawn_error) {
+    try {
+      const child = spawnImpl(deploy.cmd[0], deploy.cmd.slice(1), {
+        cwd: repo,
+        shell: false,
+        stdio: 'ignore',
+        detached: true,
+        windowsHide: true
+      });
+      if (child && typeof child.once === 'function') {
+        child.once('error', (/** @type {unknown} */ err) => {
+          log('detached deploy spawn failed: %o', err);
+          on_spawn_error();
+        });
+      }
+      if (child && typeof child.unref === 'function') {
+        child.unref();
+      }
+      return true;
+    } catch (err) {
+      log('detached deploy spawn failed: %o', err);
+      return false;
+    }
+  }
+
+  /**
+   * Step 4 — the linked Beads sweep, LEAVES FIRST. Children are walked depth
    * first and closed from the deepest up, each with a confirming readback,
-   * before the parent is touched at all (step 4). An unreadable child list is a
+   * before the parent is touched at all (step 6). An unreadable child list is a
    * STOP, never an empty sweep: "this bead has no children" and "bd would not
    * tell us" must not produce the same act.
    *
@@ -582,13 +803,16 @@ export function createPrActions(deps) {
 
   /**
    * Put a bead back to `resolved` with a confirming readback — the repair for a
-   * cleanup that stopped AT OR AFTER the parent close (§6).
+   * cleanup that stopped AT the parent close (§6, worker-deploy-hook §2).
    *
    * The spec's failure contract is "bead stays `resolved`, handed back to a
-   * human". Once the parent close has run that is no longer true by doing
-   * nothing: the bead is `closed` (or unconfirmably so), which reads on the
-   * board as finished work while its worktree and branches are still lying
-   * around. Restoring first is what makes the durable failure record accurate.
+   * human". A close that landed (or may have landed) makes that false by doing
+   * nothing: the bead reads on the board as finished work while the cleanup
+   * actually stopped. Restoring first is what makes the durable failure record
+   * accurate.
+   *
+   * With the parent close moved LAST there is exactly one caller: no step runs
+   * after it, so no other failure can find bd already touched.
    *
    * @param {string} id
    * @returns {Promise<boolean>}
@@ -702,12 +926,21 @@ export function createPrActions(deps) {
         base_sync
       );
     }
+    const deployed = await runDeploy(bead_id, synced.sha, target_base);
+    if (!deployed.ok) {
+      return failCleanup(bead_id, 'deploy', deployed.reason, base_sync);
+    }
+    const pending_deploy = deployed.pending;
     const swept = await sweepChildren(bead_id);
     if (!swept.ok) {
       return failCleanup(bead_id, 'child_sweep', swept.reason, base_sync);
     }
-    // From HERE ON the parent bead's status has been touched, so every later
-    // failure must put it back to `resolved` before recording the stop (§6).
+    const branches = await cleanupBranches(bead_id);
+    if (!branches.ok) {
+      return failCleanup(bead_id, 'branch_cleanup', branches.reason, base_sync);
+    }
+    // The parent close is LAST, so this is the only step after which bd needs
+    // restoring — everything before it left the bead `resolved` untouched (§6).
     const closed = await closeBead(bead_id);
     if (!closed.ok) {
       return failCleanup(
@@ -720,19 +953,38 @@ export function createPrActions(deps) {
         closed.wrote
       );
     }
-    const branches = await cleanupBranches(bead_id);
-    if (!branches.ok) {
-      return failCleanup(
-        bead_id,
-        'branch_cleanup',
-        branches.reason,
-        base_sync,
-        true
-      );
+
+    if (!pending_deploy) {
+      deps.store.moveToDone(workspace, { bead_id });
+      notifyChanged(workspace);
+      return { ok: true, step: null, reason: null, base_sync };
     }
 
-    deps.store.moveToDone(workspace, { bead_id });
+    // THE TERMINAL LAUNCH (worker-deploy-hook §2). Everything durable is
+    // written FIRST, in one mutation, because the next line may kill this
+    // process: a `launched` record that only exists in memory when the server
+    // restarts itself is a record that never existed.
+    deps.store.moveToDoneWithDeploy(workspace, {
+      bead_id,
+      deploy: deployRecord('launched', null, bead_id, synced.sha)
+    });
     notifyChanged(workspace);
+    // A spawn that never started — a synchronous throw or Node's asynchronous
+    // `error` event — means we are still alive, so the intent was wrong and can
+    // be corrected. The cleanup itself still succeeded — the bead really is
+    // done and its branches really are gone — so this surfaces as a failed
+    // DEPLOY record rather than a cleanup stop that would ask a human to redo
+    // finished work.
+    const record_spawn_failure = () => {
+      deps.store.recordLastDeploy(
+        workspace,
+        deployRecord('failed', 'deploy_spawn_error', bead_id, synced.sha)
+      );
+      notifyChanged(workspace);
+    };
+    if (!launchDetachedDeploy(pending_deploy, record_spawn_failure)) {
+      record_spawn_failure();
+    }
     return { ok: true, step: null, reason: null, base_sync };
   }
 
@@ -741,8 +993,9 @@ export function createPrActions(deps) {
    * in `pr_wait`, bd is left `resolved`, the banner renders off the record, and
    * NOTHING retries on its own.
    *
-   * When the stop happened at or after the parent close, the bead is FIRST put
-   * back to `resolved` (with a readback) — otherwise "bd stays `resolved`" would
+   * When the stop happened AT the parent close (the last step), the bead is
+   * FIRST put back to `resolved` (with a readback) — otherwise "bd stays
+   * `resolved`" would
    * be a claim the record makes and the database contradicts. A restore that
    * itself fails is written into the record as `restore_failed` rather than
    * left silent: a human needs to know the status is wrong, not merely that a
@@ -1011,87 +1264,108 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Run [재실행]: throw the PR away and re-run the bead from a fresh base (§6,
-   * the Renovate pattern — resolving stitches two histories together, re-running
-   * has only one).
+   * Run [폐기]: throw the PR, the worktree and the branch away, and hand the
+   * bead back to the candidate lane. It does NOT re-queue and does NOT dispatch
+   * — re-running is the drag path (후보 → 대기), which re-passes admission
+   * against the CURRENT base, so this button makes exactly one promise and keeps
+   * it whether or not the queue is paused (discard spec §1/§4).
    *
    * The transition is ORDER-SENSITIVE and every step is verified:
    *
-   *   0. mark the rerun in flight in the observation cache — the barrier that
+   *   0. mark the discard in flight in the observation cache — the barrier that
    *      makes this close invisible to the poller's CLOSED-unmerged handling,
-   *   1. close the PR,
-   *   2. bd status back to `open` AND `metadata.pr_url` removed, each with a
-   *      readback (a `resolved` bead put back in the queue would just be skipped
-   *      by dispatch as not-ready — codex finding 3),
-   *   3. discard the worktree and the local+remote branch, so the new attempt
-   *      starts from the base instead of needing a force-push over the old
-   *      history,
-   *   4. move `pr_wait` → `queue` in ONE mutation, then tick.
-   *
-   * The tick is a REQUEST for a dispatch, not a guarantee of one: with the queue
-   * paused (`auto_advance` off) it correctly starts nothing, because ⏸ means "no
-   * new sessions" and a human-clicked rerun does not override that — it defers.
-   * The result reports which of the two happened (`redispatched`) rather than
-   * letting `ok: true` imply a session that may not exist.
+   *   1. re-read the PR state authoritatively: the badge is advisory, so a
+   *      stale cache can neither skip the close of a genuinely OPEN PR nor let
+   *      an already-MERGED one be discarded,
+   *   2. close the PR (only when step 1 saw it OPEN),
+   *   3. bd status back to `open` AND `metadata.pr_url` removed, each with a
+   *      readback (a `resolved` bead would be skipped by a later dispatch as
+   *      not-ready — codex finding 3),
+   *   4. discard the worktree and the local+remote branch,
+   *   5. REMOVE the bead from `pr_wait` in ONE mutation.
    *
    * @param {string} bead_id
-   * @returns {Promise<RerunResult>}
+   * @returns {Promise<DiscardResult>}
    */
-  async function rerun(bead_id) {
+  async function discard(bead_id) {
     if (in_flight.has(bead_id)) {
-      return { ok: false, reason: 'action_in_flight', redispatched: false };
+      return { ok: false, reason: 'action_in_flight' };
     }
     const q = deps.store.snapshot(workspace);
     if (!inPrWait(q, bead_id)) {
-      return { ok: false, reason: 'not_in_pr_wait', redispatched: false };
+      return { ok: false, reason: 'not_in_pr_wait' };
     }
     const ref = resolvePrRef(q, bead_id);
     if (!ref) {
-      return { ok: false, reason: 'pr_ref_unknown', redispatched: false };
+      return { ok: false, reason: 'pr_ref_unknown' };
     }
     in_flight.add(bead_id);
-    deps.observations.markRerunning(workspace, bead_id);
-    /** @type {{ ok: boolean, reason: string|null }} */
-    let outcome = { ok: false, reason: 'rerun_incomplete' };
+    deps.observations.markDiscarding(workspace, bead_id);
     try {
-      outcome = await rerunTransition(bead_id, ref.number);
+      return await discardTransition(bead_id, ref.number);
     } finally {
       // Released only here: by this point the bead has either left `pr_wait`
-      // (nothing observes it any more) or the rerun failed and the human needs
+      // (nothing observes it any more) or the discard failed and the human needs
       // to see the real state again.
-      deps.observations.clearRerunning(workspace, bead_id);
+      deps.observations.clearDiscarding(workspace, bead_id);
       in_flight.delete(bead_id);
-      try {
-        await deps.scheduler.tick(workspace);
-      } catch (err) {
-        log('rerun tick failed for %s: %o', bead_id, err);
-      }
     }
-    return {
-      ok: outcome.ok,
-      reason: outcome.reason,
-      redispatched: outcome.ok && hasRunningAttempt(bead_id)
-    };
   }
 
   /**
-   * The ordered body of [재실행], separated from the in-flight/observation
-   * bookkeeping so the caller can report on what the follow-up tick did.
+   * The click-time authoritative PR state (discard spec §1 step 1). Only the
+   * `state` field decides here, so no checks query is spent and no observation
+   * is recorded — the barrier is already open and would suppress the write
+   * anyway.
+   *
+   * @param {number} number
+   * @returns {Promise<{ pr_state: string }|{ error: string }>}
+   */
+  async function readPrState(number) {
+    /** @type {any} */
+    let detail;
+    try {
+      detail = await deps.gh.prDetail(repo, number);
+    } catch {
+      detail = { state: 'error', reason: 'gh_spawn_failed' };
+    }
+    if (detail.state !== 'ok') {
+      return { error: detail.state === 'error' ? detail.reason : 'gh_empty' };
+    }
+    return { pr_state: /** @type {PrDetail} */ (detail.data).state };
+  }
+
+  /**
+   * The ordered body of [폐기], separated from the in-flight/observation
+   * bookkeeping.
+   *
+   * A close that fails stops the transition BEFORE bd is touched: the bead stays
+   * in `pr_wait` and a merge that landed between the re-read and the close is
+   * caught by exactly that failure, leaving it to the poller's MERGED cleanup.
    *
    * @param {string} bead_id
    * @param {number} number
    * @returns {Promise<{ ok: boolean, reason: string|null }>}
    */
-  async function rerunTransition(bead_id, number) {
-    /** @type {any} */
-    let closed;
-    try {
-      closed = await deps.gh.closePr(repo, number);
-    } catch {
-      closed = { state: 'error', reason: 'gh_spawn_failed' };
+  async function discardTransition(bead_id, number) {
+    const observed = await readPrState(number);
+    if ('error' in observed) {
+      return { ok: false, reason: `pr_state_unknown:${observed.error}` };
     }
-    if (closed.state !== 'ok') {
-      return { ok: false, reason: `pr_close_failed:${closed.reason}` };
+    if (observed.pr_state === 'MERGED') {
+      return { ok: false, reason: 'pr_already_merged' };
+    }
+    if (observed.pr_state === 'OPEN') {
+      /** @type {any} */
+      let closed;
+      try {
+        closed = await deps.gh.closePr(repo, number);
+      } catch {
+        closed = { state: 'error', reason: 'gh_spawn_failed' };
+      }
+      if (closed.state !== 'ok') {
+        return { ok: false, reason: `pr_close_failed:${closed.reason}` };
+      }
     }
 
     try {
@@ -1104,7 +1378,7 @@ export function createPrActions(deps) {
         return { ok: false, reason: 'bd_pr_url_readback_failed' };
       }
     } catch (err) {
-      log('rerun bd transition failed for %s: %o', bead_id, err);
+      log('discard bd transition failed for %s: %o', bead_id, err);
       return { ok: false, reason: 'bd_record_failed' };
     }
 
@@ -1116,29 +1390,13 @@ export function createPrActions(deps) {
       };
     }
 
-    const moved = deps.store.requeueFromPrWait(workspace, { bead_id });
-    if (!moved.ok) {
-      return { ok: false, reason: 'requeue_failed' };
+    const removed = deps.store.removeFromPrWait(workspace, { bead_id });
+    if (!removed.ok) {
+      return { ok: false, reason: 'pr_wait_remove_failed' };
     }
     notifyChanged(workspace);
     return { ok: true, reason: null };
   }
 
-  /**
-   * Whether the bead currently has a RUNNING attempt — read from the store, so
-   * it reports a dispatch that actually happened rather than one that was asked
-   * for.
-   *
-   * @param {string} bead_id
-   * @returns {boolean}
-   */
-  function hasRunningAttempt(bead_id) {
-    const attempts = deps.store.snapshot(workspace).attempts || {};
-    return Object.values(attempts).some(
-      (/** @type {any} */ a) =>
-        a && a.bead_id === bead_id && a.status === 'running'
-    );
-  }
-
-  return { merge, rerun, cleanupObservedMerge };
+  return { merge, discard, cleanupObservedMerge };
 }

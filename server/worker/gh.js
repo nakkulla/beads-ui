@@ -55,6 +55,25 @@
  * we cannot classify) is an ERROR. A missing key is deliberately an error and
  * never "no CI": a field gh stopped returning must not read as "this repo has
  * no CI, go ahead and merge".
+ *
+ * ---------------------------------------------------------------------------
+ * WHY EVERY PR OPERATION PASSES AN EXPLICIT `--repo`
+ * ---------------------------------------------------------------------------
+ * Without it, gh resolves the repository from the remotes in `cwd`, and in a
+ * fork checkout (origin = the writable fork, upstream = the read-only source)
+ * it picks the upstream unless `gh repo set-default` was run in that very
+ * checkout. Measured 2026-07-27: a session opened PR #39 on the fork and
+ * `openPrForBranch` queried the upstream instead, got `[]` with exit 0, and §1
+ * read that successful-but-empty observation as `pr_missing` — the attempt
+ * failed and auto_advance switched itself off. `gh repo set-default` is
+ * per-checkout state, so it fixes one machine and lets the next clone repeat
+ * the bug; the repository the worker means is the one it pushes to, i.e.
+ * origin's push URL, and that is what {@link parseOriginRepo} derives.
+ *
+ * Resolution failure is an `error` state (`origin_unresolvable`), never a
+ * silent fallback to an argv without `--repo` — that fallback IS the bug above,
+ * and verify reads the error as `gh_observation_failed` (retry) rather than
+ * `pr_missing` (attempt failed).
  */
 import { runShell } from '../bd.js';
 
@@ -120,6 +139,18 @@ const AVAILABILITY_RETRY_MS = 30_000;
 const AVAILABILITY_OK_TTL_MS = 60_000;
 
 /**
+ * How long a resolved `--repo` value stays good per repo dir (ms).
+ *
+ * Same 60 s as {@link AVAILABILITY_OK_TTL_MS} and for the same reason: a whole
+ * tick pass shares one `git remote get-url` spawn, while a remote that was
+ * repointed (fork renamed, origin swapped) cannot stay invisible for longer
+ * than a minute.
+ *
+ * @type {number}
+ */
+const ORIGIN_TTL_MS = 60_000;
+
+/**
  * `gh pr list --json` field set. Phase 1 needs number+url; head_ref/head_sha are
  * observed now so Phase 4's SHA-bound gate reads the same shape.
  *
@@ -180,6 +211,57 @@ function checkConclusion(item) {
 }
 
 /**
+ * Derive gh's `--repo` value from a git remote URL. Handles the three forms
+ * git writes: scp-like (`git@HOST:OWNER/REPO.git`), `ssh://git@HOST/OWNER/REPO`
+ * and `https://HOST/OWNER/REPO`. github.com yields the bare `OWNER/REPO`; any
+ * other host keeps its `HOST/OWNER/REPO` prefix, which is how gh addresses a
+ * GitHub Enterprise repo.
+ *
+ * Anything that does not resolve to exactly one owner and one repo returns
+ * null — the caller turns that into an error state rather than guessing.
+ *
+ * @param {string} raw - Remote URL as `git remote get-url` printed it.
+ * @returns {string|null}
+ */
+function parseOriginRepo(raw) {
+  const url = raw.trim();
+  if (url.length === 0) {
+    return null;
+  }
+  let host = '';
+  let path = '';
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+    /** @type {URL} */
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return null;
+    }
+    host = parsed.hostname;
+    path = parsed.pathname;
+  } else {
+    const scp = /^(?:[^@/]+@)?([^@/:]+):(.+)$/.exec(url);
+    if (!scp) {
+      return null;
+    }
+    host = scp[1];
+    path = scp[2];
+  }
+  const segments = path
+    .replace(/\.git$/, '')
+    .split('/')
+    .filter((part) => part.length > 0);
+  if (host.length === 0 || segments.length !== 2) {
+    return null;
+  }
+  const [owner, repo] = segments;
+  return host.toLowerCase() === 'github.com'
+    ? `${owner}/${repo}`
+    : `${host}/${owner}/${repo}`;
+}
+
+/**
  * Map a non-zero `gh` exit to a stable reason. `runShell` reports a spawn
  * failure (no `gh` on PATH) as code 127, which is exactly the "cannot observe"
  * case admission refuses with `gh_unavailable`.
@@ -194,13 +276,20 @@ function exitReason(code) {
 /**
  * Create the `gh` adapter.
  *
+ * `run` spawns `gh` and `git_run` spawns `git`; they stay separate runners
+ * because each is bound to its own binary — reusing `run` for the origin lookup
+ * would hand `git` arguments to `gh`.
+ *
  * @param {{
  *   run?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
+ *   git_run?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   now?: () => number
  * }} [deps]
  */
 export function createGh(deps = {}) {
   const run = deps.run || ((args, options) => runShell('gh', args, options));
+  const gitRun =
+    deps.git_run || ((args, options) => runShell('git', args, options));
   const now = deps.now || (() => Date.now());
 
   /**
@@ -213,6 +302,51 @@ export function createGh(deps = {}) {
    * @type {{ ok: boolean, reason: string, at: number } | null}
    */
   let availability = null;
+
+  /**
+   * Resolved `--repo` values keyed BY REPO DIR. One worker serves several
+   * repos, so a single-slot cache would hand one repo's `--repo` to another's
+   * PR query.
+   *
+   * @type {Map<string, { repo: string, at: number }>}
+   */
+  const origin_repos = new Map();
+
+  /**
+   * Resolve the `--repo` value for a repo dir from origin's PUSH url — the
+   * repository this worker's sessions actually push branches to. Only
+   * successes are memoized; a failure re-probes on the next call so a repo
+   * that gains its origin back recovers without waiting out a TTL.
+   *
+   * @param {string} repo_dir
+   * @returns {Promise<string|null>} null when origin is absent, unparseable or
+   * the lookup itself failed.
+   */
+  async function resolveRepo(repo_dir) {
+    const at = now();
+    const cached = origin_repos.get(repo_dir);
+    if (cached && at - cached.at < ORIGIN_TTL_MS) {
+      return cached.repo;
+    }
+    /** @type {{ code: number, stdout: string, stderr: string }} */
+    let r;
+    try {
+      r = await gitRun(['remote', 'get-url', '--push', 'origin'], {
+        cwd: repo_dir
+      });
+    } catch {
+      return null;
+    }
+    if (r.code !== 0) {
+      return null;
+    }
+    const repo = parseOriginRepo(r.stdout);
+    if (repo === null) {
+      return null;
+    }
+    origin_repos.set(repo_dir, { repo, at });
+    return repo;
+  }
 
   /**
    * Run a `gh … --json` query and hand back the parsed payload, collapsing
@@ -277,6 +411,10 @@ export function createGh(deps = {}) {
      * @returns {Promise<GhResult<PrObservation>>}
      */
     async openPrForBranch(repo_dir, branch) {
+      const repo = await resolveRepo(repo_dir);
+      if (repo === null) {
+        return { state: 'error', reason: 'origin_unresolvable' };
+      }
       /** @type {{ code: number, stdout: string, stderr: string }} */
       let r;
       try {
@@ -289,7 +427,9 @@ export function createGh(deps = {}) {
             '--state',
             'open',
             '--json',
-            PR_JSON_FIELDS
+            PR_JSON_FIELDS,
+            '--repo',
+            repo
           ],
           { cwd: repo_dir }
         );
@@ -344,8 +484,20 @@ export function createGh(deps = {}) {
      * @returns {Promise<GhResult<PrDetail>>}
      */
     async prDetail(repo_dir, number) {
+      const repo = await resolveRepo(repo_dir);
+      if (repo === null) {
+        return { state: 'error', reason: 'origin_unresolvable' };
+      }
       const r = await runJson(
-        ['pr', 'view', String(number), '--json', PR_DETAIL_FIELDS],
+        [
+          'pr',
+          'view',
+          String(number),
+          '--json',
+          PR_DETAIL_FIELDS,
+          '--repo',
+          repo
+        ],
         repo_dir
       );
       if (r.state === 'error') {
@@ -401,8 +553,20 @@ export function createGh(deps = {}) {
      * @returns {Promise<GhResult<CheckObservation[]>>}
      */
     async prChecks(repo_dir, number) {
+      const repo = await resolveRepo(repo_dir);
+      if (repo === null) {
+        return { state: 'error', reason: 'origin_unresolvable' };
+      }
       const r = await runJson(
-        ['pr', 'view', String(number), '--json', PR_CHECKS_FIELDS],
+        [
+          'pr',
+          'view',
+          String(number),
+          '--json',
+          PR_CHECKS_FIELDS,
+          '--repo',
+          repo
+        ],
         repo_dir
       );
       if (r.state === 'error') {
@@ -479,6 +643,10 @@ export function createGh(deps = {}) {
       if (typeof head_sha !== 'string' || head_sha.length === 0) {
         return { state: 'error', reason: 'head_sha_required' };
       }
+      const repo = await resolveRepo(repo_dir);
+      if (repo === null) {
+        return { state: 'error', reason: 'origin_unresolvable' };
+      }
       return runVoid(
         [
           'pr',
@@ -486,7 +654,9 @@ export function createGh(deps = {}) {
           String(number),
           '--squash',
           '--match-head-commit',
-          head_sha
+          head_sha,
+          '--repo',
+          repo
         ],
         repo_dir
       );
@@ -503,20 +673,32 @@ export function createGh(deps = {}) {
      * @returns {Promise<GhResult<true>>}
      */
     async updateBranch(repo_dir, number) {
-      return runVoid(['pr', 'update-branch', String(number)], repo_dir);
+      const repo = await resolveRepo(repo_dir);
+      if (repo === null) {
+        return { state: 'error', reason: 'origin_unresolvable' };
+      }
+      return runVoid(
+        ['pr', 'update-branch', String(number), '--repo', repo],
+        repo_dir
+      );
     },
 
     /**
-     * Close a pull request WITHOUT merging (`gh pr close <n>`) — the first step
-     * of [재실행] (worker-phase2 §6). The branch is left alone here; discarding
-     * the worktree/branch is a later, separately-verified step.
+     * Close a pull request WITHOUT merging (`gh pr close <n>`) — the close step
+     * of [폐기] (`2026-07-27-worker-discard-button.md` §1), reached only after
+     * the authoritative re-read saw the PR OPEN. The branch is left alone here;
+     * discarding the worktree/branch is a later, separately-verified step.
      *
      * @param {string} repo_dir - Repo root the command runs in (`cwd`).
      * @param {number} number - The PR to abandon.
      * @returns {Promise<GhResult<true>>}
      */
     async closePr(repo_dir, number) {
-      return runVoid(['pr', 'close', String(number)], repo_dir);
+      const repo = await resolveRepo(repo_dir);
+      if (repo === null) {
+        return { state: 'error', reason: 'origin_unresolvable' };
+      }
+      return runVoid(['pr', 'close', String(number), '--repo', repo], repo_dir);
     },
 
     /**

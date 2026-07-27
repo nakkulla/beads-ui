@@ -118,6 +118,25 @@
  * in bd metadata because the bd contract surface is owned by dotfiles
  * (`docs/contracts/workflow.md`) and beads-ui only consumes it; this is
  * server-owned queue state about a lane member, exactly like {@link admission}.
+ * @property {LastDeploy|null} last_deploy - The workspace's most recent
+ * post-merge deployment (worker-deploy-hook §3). ONE record, overwritten each
+ * time — the question it answers is "is the running service the merged code?",
+ * which only the latest deploy can answer. Null on a workspace that has never
+ * deployed (no `[worker.deploy]` section, or none run yet).
+ */
+/**
+ * @typedef {Object} LastDeploy
+ * @property {'deployed'|'launched'|'failed'} outcome - `deployed` = the
+ * synchronous command exited 0; `launched` = a DETACHED command was started
+ * after the cleanup was durably recorded — an intent, NOT a confirmation (a
+ * self-restarting deploy kills the observer, so nothing can confirm it);
+ * `failed` = it ran and did not succeed, or never started.
+ * @property {string|null} reason - The failure vocabulary
+ * (`deploy_failed` / `deploy_timeout` / `deploy_spawn_error` /
+ * `deploy_verify_missing` / `deploy_base_not_synced`); null on a success.
+ * @property {string} bead_id - The merge whose cleanup ran this deploy.
+ * @property {string} base_sha - The base commit that was deployed.
+ * @property {number} at - Epoch ms of the record.
  */
 /**
  * @typedef {Object} QueueOpResult
@@ -175,6 +194,14 @@ function normalizeSlots(value) {
 }
 
 /**
+ * The deploy outcomes the record accepts. Anything else is not a vocabulary the
+ * UI can render, so it is refused on write and dropped on load.
+ *
+ * @type {string[]}
+ */
+const DEPLOY_OUTCOMES = ['deployed', 'launched', 'failed'];
+
+/**
  * @returns {Queue}
  */
 function emptyQueue() {
@@ -188,7 +215,8 @@ function emptyQueue() {
     done: [],
     attempts: {},
     admission: {},
-    cleanup_failed: {}
+    cleanup_failed: {},
+    last_deploy: null
   };
 }
 
@@ -387,8 +415,49 @@ function normalizeQueue(raw) {
       }
     }
   }
+  // A queue.json written before the deploy hook simply has no key → null, which
+  // reads as "this workspace has never deployed" (worker-deploy-hook §3). A
+  // record carrying an outcome outside the vocabulary is dropped the same way:
+  // an unrenderable record and no record mean the same thing to the reader.
+  q.last_deploy = normalizeLastDeploy(raw.last_deploy);
   // auto_advance intentionally left false — see load() restart-safety note.
   return q;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {LastDeploy|null}
+ */
+function normalizeLastDeploy(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.outcome !== 'string' ||
+    !DEPLOY_OUTCOMES.includes(value.outcome)
+  ) {
+    return null;
+  }
+  return {
+    outcome: /** @type {'deployed'|'launched'|'failed'} */ (value.outcome),
+    reason: typeof value.reason === 'string' ? value.reason : null,
+    bead_id: typeof value.bead_id === 'string' ? value.bead_id : '',
+    base_sha: typeof value.base_sha === 'string' ? value.base_sha : '',
+    at: typeof value.at === 'number' ? value.at : 0
+  };
+}
+
+/**
+ * Build a {@link LastDeploy} from a caller's input, or null when the input is
+ * not a recordable outcome (which the mutations turn into a refused write).
+ *
+ * @param {unknown} input
+ * @param {number} at
+ * @returns {LastDeploy|null}
+ */
+function buildLastDeploy(input, at) {
+  if (!isRecord(input)) {
+    return null;
+  }
+  return normalizeLastDeploy({ ...input, at });
 }
 
 /**
@@ -848,25 +917,76 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Move a bead OUT of `pr_wait` and back onto the tail of the waiting
-     * `queue` in ONE persist — the lane half of [재실행] (worker-phase2 §6).
+     * Record the workspace's most recent post-merge deployment, overwriting the
+     * previous one (worker-deploy-hook §3). Scheduler-owned (no CAS). An
+     * outcome outside {@link DEPLOY_OUTCOMES} is refused WITHOUT a write, so a
+     * caller bug cannot replace a real record with an unrenderable one.
      *
-     * Atomicity is the point, twice over. A split write could leave the bead in
-     * neither lane (a crash between remove and place loses queued work), and —
-     * the reason the spec calls the transition order-sensitive — the poller
-     * classifies PR state only for beads that are IN `pr_wait`, so the rerun's
-     * own `gh pr close` must stop being visible to it in a single step rather
-     * than across a window where the bead is half-moved.
+     * @param {string} workspace
+     * @param {{ outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string }} input
+     * @returns {QueueOpResult}
+     */
+    recordLastDeploy(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const record = buildLastDeploy(input, now());
+        if (!record) {
+          return false;
+        }
+        next.last_deploy = record;
+        return true;
+      });
+    },
+
+    /**
+     * The DETACHED deploy's atomic hand-off: finish the cleanup (`moveToDone`)
+     * and record the launch intent in ONE persist (worker-deploy-hook §2).
      *
-     * Any stale admission / cleanup_failed record for the bead is dropped: this
-     * is a fresh run from a fresh base, so nothing recorded about the discarded
-     * attempt still applies. Scheduler-owned (no CAS).
+     * Splitting these would be the whole failure mode the terminal-launch
+     * exception exists to avoid: a self-restarting deploy kills this server, so
+     * anything not durable BEFORE the spawn may never be written at all. One
+     * mutation means a restart either sees "cleanup done + deploy launched" or
+     * neither — never a bead in `done` whose deploy left no trace.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, deploy: { outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string } }} input
+     * @returns {QueueOpResult}
+     */
+    moveToDoneWithDeploy(workspace, input) {
+      const { bead_id, deploy } = input;
+      return applyUnconditional(workspace, (next) => {
+        const record = buildLastDeploy(deploy, now());
+        if (typeof bead_id !== 'string' || bead_id.length === 0 || !record) {
+          return false;
+        }
+        removeFromLanes(next, bead_id);
+        delete next.cleanup_failed[bead_id];
+        next.done.push({ bead_id, added_at: now() });
+        next.last_deploy = record;
+        return true;
+      });
+    },
+
+    /**
+     * REMOVE a bead from `pr_wait` in ONE persist — the lane half of [폐기]
+     * (`2026-07-27-worker-discard-button.md` §1). It lands in no lane at all:
+     * the bead is `open` again and the candidate lane is synthesized as
+     * ready − queue∪pr_wait∪done, so it reappears there on its own. Re-running
+     * it is a deliberate drag back into `queue`, which re-passes admission.
+     *
+     * The single mutation is the reason the spec calls the transition
+     * order-sensitive: the poller classifies PR state only for beads that are IN
+     * `pr_wait`, so the discard's own `gh pr close` must stop being visible to it
+     * in one step rather than across a window where the bead is half-moved.
+     *
+     * Any stale admission / cleanup_failed record for the bead is dropped:
+     * nothing recorded about the discarded attempt still applies. Scheduler-owned
+     * (no CAS).
      *
      * @param {string} workspace
      * @param {{ bead_id: string }} input
      * @returns {QueueOpResult}
      */
-    requeueFromPrWait(workspace, input) {
+    removeFromPrWait(workspace, input) {
       const { bead_id } = input;
       return applyUnconditional(workspace, (next) => {
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
@@ -878,7 +998,6 @@ export function createQueueStore(options = {}) {
         removeFromLanes(next, bead_id);
         delete next.admission[bead_id];
         delete next.cleanup_failed[bead_id];
-        next.queue.push({ bead_id, added_at: now() });
         return true;
       });
     },
