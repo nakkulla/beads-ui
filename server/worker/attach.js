@@ -33,6 +33,7 @@ import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
+import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { emitQueueChanged } from './queue-events.js';
@@ -240,6 +241,7 @@ export function createLiveBd(config) {
           typeof md.workflow_mode === 'string' ? md.workflow_mode : null,
         route,
         status,
+        title: typeof issue.title === 'string' ? issue.title : null,
         spec_id,
         spec_review,
         deps: []
@@ -304,6 +306,7 @@ export function defaultProbePid(pid) {
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
+ *   notify?: any,
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -386,6 +389,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         kill_impl: options.kill_impl
       }));
 
+  // The outward attempt-lifecycle push (UI-2yoq). Config is read per call, so a
+  // machine that never opted into `[worker.notify]` pushes nothing and a toggle
+  // takes effect without a restart.
+  const notify = options.notify || createNotifier({ getConfig });
+
   const scheduler = createScheduler({
     store: runtime.queueStore,
     makeRunner,
@@ -395,6 +403,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     sessionLog: runtime.sessionLog,
     usage: runtime.usageStore,
     admission,
+    notify,
     probePid: options.probePid || defaultProbePid,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });

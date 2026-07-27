@@ -149,7 +149,8 @@ describe('main', () => {
       poll_interval_seconds: 30,
       worker_verify: {},
       worker_deploy: {},
-      worker_target_base: {}
+      worker_target_base: {},
+      worker_notify: { enabled: false, cmd: ['discord'] }
     });
 
     const code = await main(['resolve-startup-cwd']);

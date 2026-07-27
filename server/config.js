@@ -7,6 +7,8 @@ import { debug } from './logging.js';
 
 const log = debug('config');
 const DEFAULT_POLL_INTERVAL_SECONDS = 30;
+/** Argv of the notification command when `[worker.notify]` pins none. */
+const DEFAULT_NOTIFY_CMD = ['discord'];
 const DEFAULT_WORKSPACE_CONFIG = {
   default_workspace: null,
   scan_roots: [],
@@ -259,6 +261,53 @@ function normalizeWorkerTargetBase(parsed) {
 }
 
 /**
+ * Normalize the `[worker.notify]` section (UI-2yoq) into
+ * `{ enabled, cmd }`.
+ *
+ * Worker attempt lifecycle pushes are a MACHINE-level concern, not a per-repo
+ * one — a single operator watches every workspace's queue from one Discord
+ * channel — so this is one global section instead of the workspace-keyed map
+ * `[worker.verify]`/`[worker.deploy]` use:
+ *
+ *   [worker.notify]
+ *   enabled = true
+ *   # cmd = ["discord"]   # optional: argv array (spawned WITHOUT a shell)
+ *
+ * Fail-quiet by default: an absent section, `enabled != true`, or an invalid
+ * `cmd` all yield disabled, so a machine that never opted in simply pushes
+ * nothing. Retargeting the channel means swapping `cmd` for another
+ * command/wrapper — the `discord` CLI itself has a single webhook.
+ *
+ * @param {any} parsed
+ * @returns {{ enabled: boolean, cmd: string[] }}
+ */
+function normalizeWorkerNotify(parsed) {
+  const disabled = { enabled: false, cmd: DEFAULT_NOTIFY_CMD.slice() };
+  const section = parsed?.worker?.notify;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return disabled;
+  }
+  if (/** @type {any} */ (section).enabled !== true) {
+    return disabled;
+  }
+  const raw_cmd = /** @type {any} */ (section).cmd;
+  if (raw_cmd === undefined) {
+    return { enabled: true, cmd: DEFAULT_NOTIFY_CMD.slice() };
+  }
+  const cmd =
+    Array.isArray(raw_cmd) &&
+    raw_cmd.length > 0 &&
+    raw_cmd.every((a) => typeof a === 'string' && a.length > 0)
+      ? raw_cmd.slice()
+      : null;
+  if (!cmd) {
+    log('worker.notify ignored: cmd must be a non-empty argv array');
+    return disabled;
+  }
+  return { enabled: true, cmd };
+}
+
+/**
  * Normalize the top-level `poll_interval_seconds` setting (spec §7). Governs the
  * server-side periodic list-refresh poller: default 30, an explicit `0` disables
  * polling, and any missing / non-numeric / negative value falls back to the
@@ -285,7 +334,8 @@ function normalizePollIntervalSeconds(value) {
  *   poll_interval_seconds: number,
  *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
  *   worker_deploy: Record<string, { cmd: string[], timeout_ms: number, detached: boolean }>,
- *   worker_target_base: Record<string, string>
+ *   worker_target_base: Record<string, string>,
+ *   worker_notify: { enabled: boolean, cmd: string[] }
  * }}
  */
 function readRuntimeConfig(config_path) {
@@ -322,7 +372,8 @@ function readRuntimeConfig(config_path) {
       ),
       worker_verify: normalizeWorkerVerify(parsed),
       worker_deploy: normalizeWorkerDeploy(parsed),
-      worker_target_base: normalizeWorkerTargetBase(parsed)
+      worker_target_base: normalizeWorkerTargetBase(parsed),
+      worker_notify: normalizeWorkerNotify(parsed)
     };
   } catch (error) {
     if (
@@ -344,7 +395,8 @@ function readRuntimeConfig(config_path) {
       poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
       worker_verify: {},
       worker_deploy: {},
-      worker_target_base: {}
+      worker_target_base: {},
+      worker_notify: { enabled: false, cmd: DEFAULT_NOTIFY_CMD.slice() }
     };
   }
 }
@@ -375,7 +427,8 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *   poll_interval_seconds: number,
  *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
  *   worker_deploy: Record<string, { cmd: string[], timeout_ms: number, detached: boolean }>,
- *   worker_target_base: Record<string, string>
+ *   worker_target_base: Record<string, string>,
+ *   worker_notify: { enabled: boolean, cmd: string[] }
  * }}
  */
 export function getConfig() {
