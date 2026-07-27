@@ -307,7 +307,12 @@ export function createScheduler(deps) {
     }
     const usage = deps.usage.get(workspace, attempt_id);
     deps.usage.clearAttempt(workspace, attempt_id);
-    clearUsageFanout(workspace);
+    // The timer is per WORKSPACE, so it belongs to every live session in it:
+    // reclaiming it while another attempt is still streaming would drop that
+    // attempt's pending update. Only the last session out turns it off.
+    if (running.size === 0) {
+      clearUsageFanout(workspace);
+    }
     return usage ? { usage } : {};
   }
 
@@ -677,10 +682,18 @@ export function createScheduler(deps) {
       running.delete(attempt_id);
       claimed.delete(bead_id);
 
-      // An explicit stop already finalized this attempt (failed + mode
+      // An explicit stop/pause already finalized this attempt (status + mode
       // reverted); the late `done` resolution must not re-run the failure path.
+      // It IS still this attempt's last word on usage: the SIGTERM does not
+      // wait for the exit, so events buffered behind it land after the
+      // finalizing write and would otherwise strand a live tally forever.
       if (stopped.has(attempt_id)) {
         stopped.delete(attempt_id);
+        const patch = usagePatch(workspace, attempt_id);
+        if (patch.usage) {
+          deps.store.updateAttempt(workspace, { attempt_id, patch });
+          notifyChanged(workspace);
+        }
         return;
       }
 

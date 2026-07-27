@@ -313,7 +313,7 @@ function setup(opts) {
     expected_revision: store.snapshot(WS).revision,
     slots: opts.slots ?? 2
   });
-  return { store, runner, bd, verify, worktree, scheduler };
+  return { store, runner, bd, verify, worktree, scheduler, usage };
 }
 
 /**
@@ -3219,6 +3219,106 @@ describe('scheduler token usage (UI-raqh §1)', () => {
       vi.advanceTimersByTime(3000);
 
       expect(notifyQueueChanged.mock.calls.length).toBe(after_end);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('scheduler usage after a pause or a stop (UI-raqh §1)', () => {
+  test('persists a trailing usage event that lands after the pause', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+    events.emit('session_id', 'sid-1');
+    events.emit('event', {
+      kind: 'text',
+      usage: { message_id: 'm1', input_tokens: 7, output_tokens: 2 }
+    });
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.pause(WS, attempt_id);
+
+    // Buffered behind the SIGTERM: the process was still writing when we asked
+    // it to stop.
+    events.emit('event', {
+      kind: 'result',
+      usage: { input_tokens: 40, output_tokens: 11, total_cost_usd: 0.01 }
+    });
+    env.runner.finish('A1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].usage).toMatchObject({
+      input_tokens: 40,
+      output_tokens: 11
+    });
+  });
+
+  test('leaves no live tally behind after a paused attempt settles', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+    events.emit('session_id', 'sid-1');
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.pause(WS, attempt_id);
+    events.emit('event', {
+      kind: 'text',
+      usage: { message_id: 'm1', input_tokens: 5, output_tokens: 1 }
+    });
+
+    env.runner.finish('A1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+
+    expect(env.usage?.get(WS, attempt_id)).toBe(null);
+  });
+
+  test('keeps the paused status when the trailing usage is written', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+    events.emit('session_id', 'sid-1');
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.pause(WS, attempt_id);
+    events.emit('event', {
+      kind: 'text',
+      usage: { message_id: 'm1', input_tokens: 5, output_tokens: 1 }
+    });
+
+    env.runner.finish('A1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('paused');
+  });
+
+  test('keeps a second running session usage fanout armed when one ends', async () => {
+    vi.useFakeTimers();
+    try {
+      const notifyQueueChanged = vi.fn();
+      const env = setup({
+        config: { A1: {}, A2: {} },
+        slots: 2,
+        notifyQueueChanged
+      });
+      seedQueue(env.store, ['A1', 'A2']);
+      await env.scheduler.tick(WS);
+      env.runner.eventsFor('A2').emit('event', {
+        kind: 'text',
+        usage: { message_id: 'm1', input_tokens: 3, output_tokens: 1 }
+      });
+      notifyQueueChanged.mockClear();
+
+      env.runner.finish('A1', { success: true });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      const after_end = notifyQueueChanged.mock.calls.length;
+      vi.advanceTimersByTime(3000);
+
+      expect(notifyQueueChanged.mock.calls.length).toBeGreaterThan(after_end);
     } finally {
       vi.useRealTimers();
     }
