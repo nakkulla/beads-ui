@@ -3266,6 +3266,51 @@ html[data-theme='dark'] {
   overflow-y: auto;
 }
 
+/* Candidate pane display filters (UI-ki09): a compact strip between the header
+   and the rows, carrying the per-control hidden counts. */
+.worker-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-6);
+  font-size: var(--fs-chip);
+}
+
+.worker-filter__tgl {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.worker-filter__spec {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-left: auto;
+}
+
+.worker-filter__chip {
+  padding: 1px var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  cursor: pointer;
+}
+
+.worker-filter__chip.is-active {
+  border-color: var(--accent-success);
+  color: var(--text-primary);
+}
+
+.worker-filter__hidden {
+  color: var(--text-dim);
+}
+
 .worker-pane__empty {
   padding: var(--sp-8);
   color: var(--text-dim);
