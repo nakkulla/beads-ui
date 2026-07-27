@@ -25,6 +25,9 @@
 import { spawn } from 'node:child_process';
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { debug } from '../logging.js';
+
+const log = debug('worker:verify-cmd');
 
 /**
  * Default verify_cmd timeout for an AUTO-DETECTED command (worker-attempt-
@@ -403,6 +406,55 @@ async function ensureCommitPresent(git, repo, sha, pr_number) {
 }
 
 /**
+ * Tail of the pending verify lifecycle chain per `<repo>\0<name>` key (UI-egj7
+ * §2). Entries are deleted once their own chain is the last one, so the map
+ * never grows past the runs actually in flight.
+ *
+ * @type {Map<string, Promise<void>>}
+ */
+const lifecycle_chains = new Map();
+
+/**
+ * Serialize the WHOLE add→verify→remove lifecycle of one detached verify
+ * worktree name (UI-egj7 §2).
+ *
+ * The same `(repo, bead_id, sha)` verify really can run twice at once: the
+ * poller's `verifying` set guards only the poller, and a click-time re-verify
+ * (`pr-actions`'s `gateNow`) shares no guard with it. Before §1 the loser's
+ * `worktree add` merely failed; with the reclaim ladder in place the loser
+ * would instead DESTROY the winner's live worktree mid-run. Serializing here is
+ * what keeps that ladder safe to be unconditional.
+ *
+ * The second run reclaims and re-runs rather than reusing the first verdict —
+ * duplicated work is accepted because the caller-level result cache
+ * (`recordVerify`) already absorbs most of it, and correctness comes first.
+ *
+ * LOCK ORDER: this mutex is always taken OUTSIDE the repo topology lock (which
+ * only ever wraps raw git calls inside `worktree`), so the two cannot deadlock.
+ *
+ * @template T
+ * @param {string} key
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+function withLifecycleMutex(key, fn) {
+  const prior = lifecycle_chains.get(key) ?? Promise.resolve();
+  const run = prior.then(fn);
+  // The stored tail never rejects: a failed run must not poison the next one.
+  const chain = run.then(
+    () => {},
+    () => {}
+  );
+  lifecycle_chains.set(key, chain);
+  chain.then(() => {
+    if (lifecycle_chains.get(key) === chain) {
+      lifecycle_chains.delete(key);
+    }
+  });
+  return run;
+}
+
+/**
  * Run the resolved `verify_cmd` against an exact PR head SHA (worker-phase2
  * §5): fetch the commit if the repo does not have it, add a DETACHED worktree
  * pinned to it, run the command there, and tear the worktree down whatever
@@ -449,38 +501,59 @@ export async function runVerifyAtSha(input) {
   // owns) and distinct per SHA, so a concurrent verification of an older head
   // cannot collide with this one.
   const name = `verify-${input.bead_id}-${input.sha.slice(0, 7)}`;
-  /** @type {{ path: string }} */
-  let wt;
-  try {
-    wt = await input.worktree.addDetached({
-      repo: input.repo,
-      name,
-      sha: input.sha
-    });
-  } catch (err) {
-    // The thrown message carries git's own stderr, which is the only thing that
-    // says WHY the detached worktree could not be created — dropping it left an
-    // unfalsifiable "transient?" guess behind (UI-2o4z §3).
-    return {
-      ok: false,
-      reason: 'verify_worktree_failed',
-      exit: null,
-      detail: errorDetail(err)
-    };
-  }
-  try {
-    return await runVerifyCmd({
-      cwd: wt.path,
-      cmd: input.cmd,
-      timeout_ms: input.timeout_ms,
-      spawn_impl: input.spawn_impl
-    });
-  } finally {
+  // The whole lifecycle — reclaim + add, run, teardown — is one critical
+  // section per worktree name (UI-egj7 §2); `ensureCommitPresent` above is
+  // name-independent and stays outside it.
+  return withLifecycleMutex(`${input.repo}\0${name}`, async () => {
+    /** @type {{ path: string }} */
+    let wt;
     try {
-      await input.worktree.removeDetached({ repo: input.repo, name });
-    } catch {
-      // Best-effort teardown; a leftover detached worktree is reaped by the
-      // next `git worktree prune` and must never mask the verdict.
+      wt = await input.worktree.addDetached({
+        repo: input.repo,
+        name,
+        sha: input.sha
+      });
+    } catch (err) {
+      // The thrown message carries git's own stderr, which is the only thing
+      // that says WHY the detached worktree could not be created — dropping it
+      // left an unfalsifiable "transient?" guess behind (UI-2o4z §3).
+      return {
+        ok: false,
+        reason: 'verify_worktree_failed',
+        exit: null,
+        detail: errorDetail(err)
+      };
     }
-  }
+    try {
+      return await runVerifyCmd({
+        cwd: wt.path,
+        cmd: input.cmd,
+        timeout_ms: input.timeout_ms,
+        spawn_impl: input.spawn_impl
+      });
+    } finally {
+      // Best-effort teardown that must NEVER mask the verdict (UI-egj7 §3):
+      // the failure is only recorded, never returned. The next run's reclaim
+      // ladder (§1) is what actually clears the residue.
+      try {
+        const removed = await input.worktree.removeDetached({
+          repo: input.repo,
+          name
+        });
+        if (removed && removed.code !== 0) {
+          log(
+            'verify worktree teardown failed for %s: %s',
+            name,
+            String(removed.stderr || '').trim()
+          );
+        }
+      } catch (err) {
+        log(
+          'verify worktree teardown failed for %s: %s',
+          name,
+          errorDetail(err)
+        );
+      }
+    }
+  });
 }
