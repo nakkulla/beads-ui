@@ -4751,6 +4751,64 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
     );
   });
 
+  test('keeps the marking on a resumed resolution child, which carries no flag of its own', () => {
+    const mount = mountBoard({
+      attempts: {
+        ...resolutionAttempt({ status: 'paused' }),
+        c2: {
+          attempt_id: 'c2',
+          bead_id: 'RD-1',
+          status: 'running',
+          runner: 'claude',
+          model: 'opus',
+          session_id: 'sid-1',
+          started_at: Date.now() - 1000,
+          resumed_from: 'c1',
+          conflict_resolution: false
+        }
+      }
+    });
+
+    // The spent ancestor is history; only the resumed child renders.
+    expect(mount.querySelector('.rtile[data-attempt-id="c1"]')).toBe(null);
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="c2"]')
+    );
+    expect(tile.querySelector('.worker-mini__badge')?.textContent).toBe(
+      '충돌 해소'
+    );
+    expect(
+      card(mount)
+        .querySelector('.worker-mini__badge--activity')
+        ?.textContent?.trim()
+    ).toBe('충돌 해소 중');
+    expect(button(mount, '.worker-mini__merge').disabled).toBe(true);
+    expect(button(mount, '.worker-mini__discard').disabled).toBe(true);
+  });
+
+  test('does not inherit the flag onto an unrelated later attempt', () => {
+    const mount = mountBoard({
+      attempts: {
+        ...resolutionAttempt({ status: 'done' }),
+        c3: {
+          attempt_id: 'c3',
+          bead_id: 'RD-1',
+          status: 'running',
+          runner: 'claude',
+          model: 'opus',
+          started_at: Date.now() - 1000,
+          conflict_resolution: false
+        }
+      }
+    });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="c3"]')
+    );
+    expect(tile.querySelector('.worker-mini__badge')).toBe(null);
+    expect(button(mount, '.worker-mini__merge').disabled).toBe(false);
+  });
+
   test('restores the card once the resolution session ends', () => {
     const mount = mountBoard({
       attempts: resolutionAttempt({ status: 'done' })

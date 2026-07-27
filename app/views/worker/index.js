@@ -1182,6 +1182,38 @@ export function createWorkerView(mount_element, options = {}) {
     for (const a of /** @type {any[]} */ (attempts)) {
       last_attempt_by_bead.set(a.bead_id, a.attempt_id);
     }
+    /** @type {Map<string, any>} */
+    const attempt_by_id = new Map();
+    for (const a of /** @type {any[]} */ (attempts)) {
+      attempt_by_id.set(a.attempt_id, a);
+    }
+    /**
+     * Whether this attempt is doing conflict-resolution work. The ▶ resume path
+     * mints its child with `conflict_resolution: false` (scheduler
+     * `resumeAttempt`) even when the paused ancestor was a resolution session,
+     * so the flag is inherited through `resumed_from` — otherwise resuming a
+     * paused resolution makes the badge vanish and re-arms [머지] on a PR that
+     * is still being fixed.
+     *
+     * @param {any} attempt
+     * @returns {boolean}
+     */
+    function resolvesConflict(attempt) {
+      /** @type {Set<string>} */
+      const seen = new Set();
+      let cur = attempt;
+      while (cur && !seen.has(cur.attempt_id)) {
+        if (cur.conflict_resolution === true) {
+          return true;
+        }
+        seen.add(cur.attempt_id);
+        cur =
+          typeof cur.resumed_from === 'string' && cur.resumed_from.length > 0
+            ? attempt_by_id.get(cur.resumed_from) || null
+            : null;
+      }
+      return false;
+    }
     /** @type {any[]} */
     const running = [];
     /** @type {any|null} */
@@ -1204,8 +1236,9 @@ export function createWorkerView(mount_element, options = {}) {
           paused: leaf_paused,
           // 충돌 해소 세션은 일반 실행과 결과가 다르다 (PR을 머지하지 않고
           // 브랜치를 고친다) — 타일에서 구분되지 않으면 "진행중"의 정체를
-          // 알 수 없다 (UI-dxgz §1).
-          conflict_resolution: a.conflict_resolution === true,
+          // 알 수 없다 (UI-dxgz §1). 재개된 child는 자기 플래그가 false라
+          // resumed_from 조상에서 상속한다.
+          conflict_resolution: resolvesConflict(a),
           can_pause:
             typeof a.session_id === 'string' && a.session_id.length > 0,
           // 실행 중 타일은 이 attempt의 라이브 usage를 그대로 쓴다 — 스냅샷의
