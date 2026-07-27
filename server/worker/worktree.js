@@ -34,6 +34,22 @@ export function branchForBead(bead_id) {
 }
 
 /**
+ * Parse a `rev-list --count` result. Anything that is not a plain integer —
+ * including a nonzero exit — reads as "unobserved" rather than zero, so a
+ * failed observation can never be mistaken for "no unique commits".
+ *
+ * @param {{ code: number, stdout: string }} result
+ * @returns {number|null}
+ */
+function parseCount(result) {
+  if (result.code !== 0) {
+    return null;
+  }
+  const text = result.stdout.trim();
+  return /^\d+$/.test(text) ? Number(text) : null;
+}
+
+/**
  * Create a worktree manager bound to a lock manager.
  *
  * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs') }} deps
@@ -42,6 +58,7 @@ export function branchForBead(bead_id) {
  *   exists: (repo: string, bead_id: string) => boolean,
  *   add: (input: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>,
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
+ *   removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *   addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
  *   removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>,
  *   withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
@@ -157,6 +174,106 @@ export function createWorktreeManager(deps) {
           cwd: input.repo
         });
         return { code: removed.code, stderr: removed.stderr };
+      } finally {
+        release();
+      }
+    },
+
+    /**
+     * Remove a leftover bead worktree ONLY when nothing would be lost. The
+     * observations and the removal share ONE topology-lock hold, so no
+     * concurrent add/remove can change the repo in between (a check released
+     * before the removal would decide on state that no longer holds).
+     *
+     * `ok` answers the caller's actual question — "is there residue blocking a
+     * fresh run?" — so it is true both when nothing was there and when a
+     * discardable residue was removed. `removed` separates those two: false
+     * means nothing had to go, true means a discardable worktree really was
+     * taken down. Every other outcome is `ok:false, removed:false` with the
+     * reason and leaves the residue untouched: `add`'s `-B` resets the branch to
+     * base, so refusing fail-closed is what protects unique commits.
+     *
+     * DEADLOCK BOUNDARY (see {@link withTopologyLock}): raw git only in here —
+     * never `add` / `remove` / `addDetached` / `removeDetached`, which take the
+     * same non-reentrant lock.
+     *
+     * @param {{ repo: string, bead_id: string, base: string }} input
+     * @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null }>}
+     */
+    async removeIfDiscardable(input) {
+      const release = await locks.topologyLock(input.repo);
+      try {
+        const wt = pathFor(input.repo, input.bead_id);
+        const branch = branchForBead(input.bead_id);
+
+        let wt_present = false;
+        try {
+          wt_present = fs.existsSync(wt);
+        } catch {
+          return { ok: false, removed: false, reason: 'observe_failed' };
+        }
+
+        const branch_probe = await run(
+          ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+          { cwd: input.repo }
+        );
+        // `--quiet` reports a missing ref as exit 1; any other nonzero is a
+        // failed observation, not an absence.
+        if (branch_probe.code !== 0 && branch_probe.code !== 1) {
+          return { ok: false, removed: false, reason: 'observe_failed' };
+        }
+        const branch_present = branch_probe.code === 0;
+
+        if (wt_present) {
+          const status = await run(['status', '--porcelain'], { cwd: wt });
+          if (status.code !== 0) {
+            return { ok: false, removed: false, reason: 'observe_failed' };
+          }
+          if (status.stdout.trim().length > 0) {
+            return { ok: false, removed: false, reason: 'dirty' };
+          }
+        }
+
+        if (branch_present) {
+          const branch_ahead = parseCount(
+            await run(['rev-list', '--count', `${input.base}..${branch}`], {
+              cwd: input.repo
+            })
+          );
+          if (branch_ahead === null) {
+            return { ok: false, removed: false, reason: 'observe_failed' };
+          }
+          if (branch_ahead > 0) {
+            return { ok: false, removed: false, reason: 'branch_ahead' };
+          }
+        }
+
+        if (wt_present) {
+          // A detached (or re-pointed) HEAD carries commits no branch check can
+          // see — without this, `-B` would strand them as unreachable objects.
+          const head_ahead = parseCount(
+            await run(['rev-list', '--count', `${input.base}..HEAD`], {
+              cwd: wt
+            })
+          );
+          if (head_ahead === null) {
+            return { ok: false, removed: false, reason: 'observe_failed' };
+          }
+          if (head_ahead > 0) {
+            return { ok: false, removed: false, reason: 'head_ahead' };
+          }
+          // NEVER `--force`: git's own refusal is the last guard against
+          // removing a worktree whose state the observations above missed.
+          const removed = await run(['worktree', 'remove', wt], {
+            cwd: input.repo
+          });
+          if (removed.code !== 0) {
+            return { ok: false, removed: false, reason: 'remove_failed' };
+          }
+          return { ok: true, removed: true, reason: null };
+        }
+
+        return { ok: true, removed: false, reason: null };
       } finally {
         release();
       }

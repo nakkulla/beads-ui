@@ -956,6 +956,41 @@ describe('worker/queue-store skip-reason recording', () => {
     expect(r.queue.admission['UI-1'].reason).toBe('bd_snapshot_failed');
   });
 
+  test('drops a queued bead and its badge in one persist', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    store.recordAdmission(WS, { bead_id: 'UI-1', reason: 'not_ready:closed' });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.dropFromQueue(WS, { bead_id: 'UI-1' });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(before + 1);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual([]);
+    expect(r.queue.admission['UI-1']).toBeUndefined();
+  });
+
+  test('drops a leftover badge for a bead that is in no lane', () => {
+    const store = createQueueStore();
+    store.recordAdmission(WS, { bead_id: 'UI-1', reason: 'not_ready:closed' });
+
+    const r = store.dropFromQueue(WS, { bead_id: 'UI-1' });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.admission['UI-1']).toBeUndefined();
+  });
+
+  test('no-ops without bumping the revision when there is nothing to drop', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.dropFromQueue(WS, { bead_id: 'UI-2' });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
   test('records the same reason again after it was cleared', () => {
     const store = createQueueStore();
     store.recordAdmission(WS, { bead_id: 'UI-1', reason: 'spec_missing' });

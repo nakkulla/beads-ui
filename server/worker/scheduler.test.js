@@ -276,6 +276,12 @@ function setup(opts) {
       base_oid: `base-${bead_id}`
     })),
     remove: vi.fn(async () => ({ code: 0 })),
+    // Default: no residue in the way (the primitive's own verdicts are covered
+    // against real git in worktree.integration.test.js). Loosely typed so a
+    // test can swap in a refusing or throwing variant.
+    removeIfDiscardable: /** @type {any} */ (
+      vi.fn(async () => ({ ok: true, removed: false, reason: null }))
+    ),
     addDetached: vi.fn(async (/** @type {any} */ { name }) => ({
       path: `/wt-verify/${name}`
     })),
@@ -2185,6 +2191,421 @@ describe('scheduler silent-skip reasons', () => {
   test('a snapshot failure at the head does not starve the next queued bead', async () => {
     const env = setup({
       config: { S1: { throwOnSnapshotAt: 'all' }, S2: {} },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+  });
+});
+
+describe('scheduler worktree residue hygiene', () => {
+  test('records worktree_add_failed when the add throws', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.add = vi.fn(async () => {
+      throw new Error('already used by worktree');
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'worktree_add_failed'
+    );
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+  });
+
+  test('does not retry the failing add inside the same tick cascade', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    const add = vi.fn(async () => {
+      throw new Error('already used by worktree');
+    });
+    env.worktree.add = add;
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(add).toHaveBeenCalledTimes(1);
+  });
+
+  test('an add failure does not starve the next queued bead', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
+    env.worktree.add = vi.fn(async (/** @type {any} */ { bead_id }) => {
+      if (bead_id === 'S1') {
+        throw new Error('already used by worktree');
+      }
+      return { path: `/wt/${bead_id}`, branch: bead_id, base_oid: 'base' };
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+  });
+
+  test('keeps the refill after an add failure inside the slot cap', async () => {
+    const env = setup({
+      config: { S1: {}, S2: {}, S3: {}, S4: {} },
+      slots: 2
+    });
+    // S1 refuses mid-dispatch while S2 is still in flight (not yet spawned):
+    // the refusal's re-entrant pass must count S2's claim as an occupied slot.
+    env.worktree.add = vi.fn(async (/** @type {any} */ { bead_id }) => {
+      if (bead_id === 'S1') {
+        throw new Error('already used by worktree');
+      }
+      return { path: `/wt/${bead_id}`, branch: bead_id, base_oid: 'base' };
+    });
+    seedQueue(env.store, ['S1', 'S2', 'S3', 'S4']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(2);
+  });
+
+  test('checks the residue against the pinned base before creating the worktree', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'S1',
+      base: 'main'
+    });
+    expect(
+      env.worktree.removeIfDiscardable.mock.invocationCallOrder[0]
+    ).toBeLessThan(env.worktree.add.mock.invocationCallOrder[0]);
+  });
+
+  test('dispatches normally once a discardable residue is cleared', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
+  for (const reason of [
+    'dirty',
+    'branch_ahead',
+    'head_ahead',
+    'observe_failed',
+    'remove_failed'
+  ]) {
+    test(`refuses with worktree_stale_work when the residue is preserved (${reason})`, async () => {
+      const env = setup({ config: { S1: {} }, slots: 1 });
+      env.worktree.removeIfDiscardable = vi.fn(async () => ({
+        ok: false,
+        removed: false,
+        reason
+      }));
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+        'worktree_stale_work'
+      );
+      expect(env.worktree.add).not.toHaveBeenCalled();
+      expect(env.scheduler.isRunning('S1')).toBe(false);
+    });
+  }
+
+  test('never force-removes a residue it refused', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: false,
+      removed: false,
+      reason: 'dirty'
+    }));
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.remove).not.toHaveBeenCalled();
+  });
+
+  test('records git_error when the residue check itself throws', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.removeIfDiscardable = vi.fn(async () => {
+      throw new Error('git exploded');
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe('git_error');
+    expect(env.worktree.add).not.toHaveBeenCalled();
+  });
+
+  test('a residue refusal does not starve the next queued bead', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
+    env.worktree.removeIfDiscardable = vi.fn(
+      async (/** @type {any} */ { bead_id }) =>
+        bead_id === 'S1'
+          ? { ok: false, removed: false, reason: 'dirty' }
+          : { ok: true, removed: false, reason: null }
+    );
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+  });
+});
+
+describe('scheduler stop residue cleanup', () => {
+  test('a live stop cleans the residue only after the killed session exits', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.worktree.removeIfDiscardable.mockClear();
+
+    await env.scheduler.stop(WS, attempt_id);
+
+    // SIGTERM does not wait: checking here would race a process still writing.
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+
+    env.runner.finish('S1', { success: false, reason: 'killed', exit: null });
+    await flush();
+    await flush();
+
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'S1',
+      base: 'main'
+    });
+  });
+
+  test('refuses a re-queued bead with stop_cleanup_pending until the cleanup lands', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.stop(WS, attempt_id);
+    // The user re-queues the bead while the killed process is still exiting.
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'S1'
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'stop_cleanup_pending'
+    );
+  });
+
+  test('dispatches the re-queued bead once the stop cleanup finished', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.stop(WS, attempt_id);
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'S1'
+    });
+
+    env.runner.finish('S1', { success: false, reason: 'killed', exit: null });
+    await flush();
+    await flush();
+
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+  });
+
+  test('keeps the residue when the killed session never reports its exit', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.worktree.removeIfDiscardable.mockClear();
+
+    await env.scheduler.stop(WS, attempt_id);
+    await flush();
+    await flush();
+
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+  });
+
+  test('a paused discard leaves the residue alone while the killed session is still exiting', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, attempt_id);
+    env.worktree.removeIfDiscardable.mockClear();
+
+    await env.scheduler.stop(WS, attempt_id);
+
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+  });
+
+  test('a paused discard cleans the residue once the killed session exits', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, attempt_id);
+    env.worktree.removeIfDiscardable.mockClear();
+    await env.scheduler.stop(WS, attempt_id);
+
+    env.runner.finish('S1', { success: false, reason: 'killed', exit: null });
+    await flush();
+    await flush();
+
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'S1',
+      base: 'main'
+    });
+  });
+
+  test('a paused record restored without a live handle is cleaned inline', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'A-restored', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'A-restored',
+      patch: {
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-1',
+        status: 'paused'
+      }
+    });
+
+    const discarded = await env.scheduler.stop(WS, 'A-restored');
+
+    expect(discarded).toBe(true);
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'S1',
+      base: 'main'
+    });
+  });
+
+  test('never force-removes a residue the stop cleanup refused', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, attempt_id);
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: false,
+      removed: false,
+      reason: 'branch_ahead'
+    }));
+
+    expect(await env.scheduler.stop(WS, attempt_id)).toBe(true);
+    env.runner.finish('S1', { success: false, reason: 'killed', exit: null });
+    await flush();
+    await flush();
+
+    expect(env.worktree.remove).not.toHaveBeenCalled();
+  });
+
+  test('a pause leaves the residue for the resume', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    env.worktree.removeIfDiscardable.mockClear();
+
+    await env.scheduler.pause(WS, attempt_id);
+
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduler terminal-status dequeue', () => {
+  test('drops a closed bead from the queue instead of badging it', async () => {
+    const env = setup({
+      config: { S1: { ready: false, status: 'closed' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual([]);
+    expect(snap.admission.S1).toBeUndefined();
+  });
+
+  test('fans out the closed dequeue to subscribers', async () => {
+    const notify = vi.fn();
+    const env = setup({
+      config: { S1: { ready: false, status: 'closed' } },
+      slots: 1,
+      notifyQueueChanged: notify
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(notify).toHaveBeenCalledWith(WS);
+  });
+
+  test('drops a bead that closed between the scan and the dispatch re-read', async () => {
+    const env = setup({
+      config: { S1: { notReadyAt: 2, status: 'closed' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual([]);
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+  });
+
+  test('stops bumping the revision once the closed bead is gone', async () => {
+    const env = setup({
+      config: { S1: { ready: false, status: 'closed' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const revision = env.store.snapshot(WS).revision;
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('keeps badging a resolved bead instead of dequeuing it', async () => {
+    const env = setup({
+      config: { S1: { ready: false, status: 'resolved' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(snap.admission.S1.reason).toBe('not_ready:resolved');
+  });
+
+  test('a closed head does not starve the next queued bead', async () => {
+    const env = setup({
+      config: { S1: { ready: false, status: 'closed' }, S2: {} },
       slots: 1
     });
     seedQueue(env.store, ['S1', 'S2']);
