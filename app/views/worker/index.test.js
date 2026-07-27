@@ -2623,6 +2623,25 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(mount.querySelector('.worker-mini__discard')).toBe(null);
   });
 
+  test('withholds 폐기 on a cleanup_failed tile even without observations', () => {
+    // Right after a restart the observation cache is empty — the durable
+    // cleanup_failed record alone must keep [폐기] off a merged tile.
+    const { mount } = mountWith(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {},
+        cleanup_failed: {
+          'RD-1': { step: 'child_sweep', reason: 'boom', at: 1 }
+        }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.querySelector('.worker-mini__discard')).toBe(null);
+  });
+
   test('disables 머지 when the gate refuses, and says why', () => {
     const { mount } = mountWith(queueWithGate(RED));
 
@@ -2713,6 +2732,33 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       bead_id: 'RD-1',
       expected_revision: 1
     });
+    vi.unstubAllGlobals();
+  });
+
+  test('announces a completed discard with a success toast', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueWithGate(GREEN));
+    const transport = vi.fn(async () => ({ discarded: true, conflict: false }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__discard')
+    ).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const toast = /** @type {HTMLElement|null} */ (
+      document.querySelector('.toast')
+    );
+    expect(toast?.textContent).toContain('폐기 완료');
     vi.unstubAllGlobals();
   });
 

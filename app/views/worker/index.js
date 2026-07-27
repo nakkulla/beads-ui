@@ -157,7 +157,10 @@ function prWaitRow(bead_id, title, observations, cleanup_failed) {
     badges,
     alert: (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) || !!cleanup_failed,
     merge_action: true,
-    discard_action: !(gate && gate.tier === 'merged'),
+    // `cleanup_failed` is DURABLE merged evidence — right after a restart the
+    // observation cache is empty, so the gate tier alone would re-offer [폐기]
+    // on a tile whose merge already landed (discard spec §2).
+    discard_action: !cleanup_failed && !(gate && gate.tier === 'merged'),
     // A conflicting PR keeps [머지] clickable on purpose: that click is what
     // dispatches the resolution session (§6), and it merges nothing.
     merge_enabled: enabled || conflicting || cleanup_retry,
@@ -553,6 +556,14 @@ export function createWorkerView(mount_element, options = {}) {
         })
       );
       adopt(res);
+    }
+    if (res && res.discarded === true) {
+      showToast(
+        '폐기 완료 — 후보 레인에서 다시 실행할 수 있습니다',
+        'success',
+        2400
+      );
+      return;
     }
     if (res && res.discarded === false && !res.conflict) {
       showToast(`폐기 거부: ${res.reason || ''}`, 'error', 2800);
