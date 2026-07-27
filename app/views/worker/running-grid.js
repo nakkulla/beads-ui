@@ -12,6 +12,7 @@
  * (`worker-final.html`); one column on mobile.
  */
 import { html } from 'lit-html';
+import { formatUsageTotal, usageTooltip } from './usage.js';
 
 /**
  * @typedef {Object} RunningTile
@@ -27,6 +28,8 @@ import { html } from 'lit-html';
  * @property {boolean} [can_pause] - Running attempt whose session id is already
  * captured. Pausing before that would strand an unresumable attempt, so the ⏸
  * button renders disabled until it lands (§2.1).
+ * @property {import('./usage.js').UsageRecord|null} [usage] - Live token usage
+ * of this attempt (UI-raqh §1); absent/null renders nothing.
  */
 
 /**
@@ -210,6 +213,7 @@ function runningTile(tile, now, selected_attempt = null) {
       ? formatElapsed(now - tile.started_at)
       : '—';
   const meta = [tile.runner, tile.model].filter(Boolean).join(' · ');
+  const usage_label = formatUsageTotal(tile.usage);
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused ? ' rtile--paused' : ''}"
@@ -260,7 +264,16 @@ function runningTile(tile, now, selected_attempt = null) {
       </button>
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${meta ? html`<div class="rtile__meta">${meta}</div>` : ''}
+    ${meta || usage_label
+      ? html`<div class="rtile__meta">
+          ${meta ? html`<span>${meta}</span>` : ''}
+          ${usage_label
+            ? html`<span class="worker-usage" title=${usageTooltip(tile.usage)}
+                >${usage_label}</span
+              >`
+            : ''}
+        </div>`
+      : ''}
   </div>`;
 }
 

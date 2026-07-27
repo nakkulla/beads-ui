@@ -2912,8 +2912,15 @@ html[data-theme='dark'] {
 }
 
 .rtile__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
   font-size: var(--fs-chip-lg);
   color: var(--text-dim);
+}
+
+.rtile__meta .worker-usage {
+  font-size: var(--fs-chip-lg);
 }
 
 /* ---------- Transcript drawer (session viewer, spec §5.6) ---------- */
@@ -3394,6 +3401,134 @@ html[data-theme='dark'] {
 .worker-mini__badge--alert {
   border-color: var(--accent-warn);
   color: var(--accent-warn);
+}
+
+/* Merge in progress (UI-raqh §4) — the ONE bold place on this board. A merge is
+   irreversible and runs for minutes, so the row itself becomes the gauge: a
+   left rail, a bottom progress line, and the step name with its n/7 counter.
+   No spinner — the counter says how much is left, which a spinner cannot. */
+.worker-mini--merging {
+  position: relative;
+  overflow: hidden;
+  border-color: var(--border-tile-run);
+}
+
+.worker-mini--merging::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--accent-success);
+}
+
+.worker-mini--merging::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 1px;
+  width: var(--progress, 0%);
+  background: var(--accent-success);
+  opacity: 0.8;
+  transition: width 0.45s ease;
+}
+
+.merge-step {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--accent-success);
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+
+.merge-step__n {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .worker-mini--merging::after {
+    transition: none;
+  }
+}
+
+/* Live poller activity (UI-raqh §3) — deliberately the QUIETEST live signal on
+   the board: no colour, no spinner. Work the server does by itself needs no
+   human decision, so it only has to look alive, which one breathing dot does.
+   Colour and emphasis stay reserved for states a person must act on. */
+.worker-mini__badge--activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-color: var(--border-card);
+  color: var(--text-secondary);
+}
+
+.act-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: act-breathe 1.9s ease-in-out infinite;
+}
+
+@keyframes act-breathe {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .act-dot {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
+/* Candidate sort select (UI-raqh §2) — part of the pane header, not a control
+   competing with it: borderless until hover, header-sized, no uppercase. */
+.worker-sort {
+  margin-left: auto;
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-chip);
+  letter-spacing: normal;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.worker-sort:hover {
+  border-color: var(--border-chip);
+  color: var(--text-primary);
+}
+
+/* Token usage (UI-raqh §1) — the LOWEST rung of the row's hierarchy: it is
+   read when someone goes looking for it, never something that competes with a
+   gate badge or an action. Dim, monospaced, tabular so a column of rows lines
+   up; the breakdown lives in the title tooltip. */
+.worker-usage {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
 }
 
 /* [머지] — the ONE action-class button in this lane (worker-phase2 §6). It is

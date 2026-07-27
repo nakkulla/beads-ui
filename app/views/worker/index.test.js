@@ -4,7 +4,13 @@ import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
 import { createUiOrderStore } from '../../data/ui-order-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
-import { applyCandidateFilter, createWorkerView } from './index.js';
+import {
+  activityBadge,
+  applyCandidateFilter,
+  applyCandidateSort,
+  createWorkerView,
+  mergeStepView
+} from './index.js';
 
 function createTestIssueStores() {
   /** @type {Map<string, any>} */
@@ -3835,5 +3841,683 @@ describe('candidate display filter — view (UI-ki09)', () => {
       expected_revision: 4,
       entries: [{ bead_id: 'C', rank: -RANK_STEP }]
     });
+  });
+});
+
+describe('worker view — token usage display (UI-raqh §1)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} queue
+   * @returns {HTMLElement}
+   */
+  function renderQueue(queue) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('shows the live usage on a running tile', () => {
+    const mount = renderQueue(
+      queueOf({
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: 1,
+            usage: { input_tokens: 8420, output_tokens: 3910 }
+          }
+        }
+      })
+    );
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(tile.textContent?.trim()).toBe('τ 12.3k');
+  });
+
+  test('puts the breakdown in the running tile tooltip', () => {
+    const mount = renderQueue(
+      queueOf({
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'running',
+            started_at: 1,
+            usage: {
+              input_tokens: 8420,
+              output_tokens: 3910,
+              cache_read_input_tokens: 214300,
+              cache_creation_input_tokens: 12800,
+              total_cost_usd: 0.42
+            }
+          }
+        }
+      })
+    );
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(el.getAttribute('title')).toBe(
+      '입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800 · $0.42'
+    );
+  });
+
+  test('shows the last attempt usage on a pr_wait row', () => {
+    const mount = renderQueue(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: { input_tokens: 100, output_tokens: 50 }
+          },
+          a2: {
+            attempt_id: 'a2',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: { input_tokens: 21600, output_tokens: 9340 }
+          }
+        }
+      })
+    );
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(el.textContent?.trim()).toBe('τ 30.9k');
+  });
+
+  test('shows the last attempt usage on a done row', () => {
+    const mount = renderQueue(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: { input_tokens: 9700, output_tokens: 4120 }
+          }
+        }
+      })
+    );
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(el.textContent?.trim()).toBe('τ 13.8k');
+  });
+
+  test('renders nothing for an attempt that recorded no usage', () => {
+    const mount = renderQueue(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: null
+          }
+        }
+      })
+    );
+
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+    ).toBe(null);
+  });
+
+  test('leaves a waiting row without a usage badge', () => {
+    const mount = renderQueue(
+      queueOf({
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'failed',
+            usage: { input_tokens: 10, output_tokens: 5 }
+          }
+        }
+      })
+    );
+
+    expect(
+      mount.querySelector(
+        '#worker-pane-queue .worker-mini[data-bead-id="RD-1"] .worker-usage'
+      )
+    ).toBe(null);
+  });
+});
+
+describe('candidate sort — projection (UI-raqh §2)', () => {
+  const ORDER = { A: 10, B: 20, C: 30 };
+
+  /**
+   * @param {string} id
+   * @param {number} created_at
+   * @param {boolean} has_spec
+   */
+  function issue(id, created_at, has_spec) {
+    return {
+      id,
+      created_at,
+      metadata: has_spec ? { spec_id: 'S' } : {}
+    };
+  }
+
+  test('keeps the effective-rank order in board mode', () => {
+    const list = [issue('C', 300, true), issue('A', 100, false)];
+
+    const sorted = applyCandidateSort(list, 'board', ORDER);
+
+    expect(sorted.map((i) => i.id)).toEqual(['A', 'C']);
+  });
+
+  test('puts spec-carrying issues first in spec mode', () => {
+    const list = [issue('A', 100, false), issue('B', 200, true)];
+
+    const sorted = applyCandidateSort(list, 'spec', ORDER);
+
+    expect(sorted.map((i) => i.id)).toEqual(['B', 'A']);
+  });
+
+  test('keeps the effective-rank order inside each spec group', () => {
+    const list = [
+      issue('C', 300, true),
+      issue('B', 200, false),
+      issue('A', 100, true)
+    ];
+
+    const sorted = applyCandidateSort(list, 'spec', ORDER);
+
+    expect(sorted.map((i) => i.id)).toEqual(['A', 'C', 'B']);
+  });
+
+  test('orders by newest created_at in created mode', () => {
+    const list = [issue('A', 100, true), issue('C', 300, false)];
+
+    const sorted = applyCandidateSort(list, 'created', ORDER);
+
+    expect(sorted.map((i) => i.id)).toEqual(['C', 'A']);
+  });
+
+  test('falls back to spec mode for an unknown mode', () => {
+    const list = [issue('A', 100, false), issue('B', 200, true)];
+
+    const sorted = applyCandidateSort(
+      list,
+      /** @type {any} */ ('nonsense'),
+      ORDER
+    );
+
+    expect(sorted.map((i) => i.id)).toEqual(['B', 'A']);
+  });
+
+  test('leaves the input array untouched', () => {
+    const list = [issue('A', 100, false), issue('B', 200, true)];
+
+    applyCandidateSort(list, 'spec', ORDER);
+
+    expect(list.map((i) => i.id)).toEqual(['A', 'B']);
+  });
+});
+
+describe('candidate sort — view (UI-raqh §2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @returns {HTMLElement}
+   */
+  function mountMerged() {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf());
+    presetCandidateFilter({ show_blocked: true });
+    createWorkerView(mount, {
+      issueStores: seedMerged(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('renders the sort select in the candidate pane header', () => {
+    const mount = mountMerged();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      'spec',
+      'board',
+      'created'
+    ]);
+  });
+
+  test('defaults to spec-first when nothing is stored', () => {
+    const mount = mountMerged();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+    expect(select.value).toBe('spec');
+  });
+
+  test('reorders the lane when the mode changes', () => {
+    const mount = mountMerged();
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+
+    select.value = 'created';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
+  });
+
+  test('persists the selected mode', () => {
+    const mount = mountMerged();
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+
+    select.value = 'board';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(window.localStorage.getItem('bdui.worker.candidate_sort')).toBe(
+      'board'
+    );
+  });
+
+  test('restores a persisted mode on mount', () => {
+    window.localStorage.setItem('bdui.worker.candidate_sort', 'created');
+
+    const mount = mountMerged();
+
+    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
+  });
+
+  test('falls back to the default for an unknown stored mode', () => {
+    window.localStorage.setItem('bdui.worker.candidate_sort', 'nonsense');
+
+    const mount = mountMerged();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+    expect(select.value).toBe('spec');
+  });
+});
+
+describe('poller activity badge — projection (UI-raqh §3)', () => {
+  test('renames 관측 대기 to 확인중 while an observation runs', () => {
+    expect(activityBadge('관측 대기', 'checking')).toEqual({
+      label: '확인중',
+      live: true
+    });
+  });
+
+  test('renames 로컬검증 대기 to 로컬검증 실행 중 while the suite runs', () => {
+    expect(activityBadge('로컬검증 대기', 'verifying')).toEqual({
+      label: '로컬검증 실행 중',
+      live: true
+    });
+  });
+
+  test('leaves 관측 대기 alone when nothing is running', () => {
+    expect(activityBadge('관측 대기', null)).toEqual({
+      label: '관측 대기',
+      live: false
+    });
+  });
+
+  test('leaves a CI badge alone while the poller works', () => {
+    expect(activityBadge('CI ✓', 'checking')).toEqual({
+      label: 'CI ✓',
+      live: false
+    });
+  });
+
+  test('does not cross the two substitutions', () => {
+    expect(activityBadge('관측 대기', 'verifying')).toEqual({
+      label: '관측 대기',
+      live: false
+    });
+  });
+});
+
+describe('poller activity badge — view (UI-raqh §3)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} gate
+   * @param {any} activity
+   * @returns {HTMLElement}
+   */
+  function renderRow(gate, activity) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 304,
+              url: 'https://github.com/o/r/pull/304',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            ci: null,
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate
+          }
+        },
+        pr_activity: activity
+          ? { 'RD-1': { activity, merge_progress: null } }
+          : {}
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+  }
+
+  const UNOBSERVED = {
+    enabled: false,
+    tier: 'unobserved',
+    gate_badge: '관측 대기',
+    base_badge: '',
+    reason: 'not_observed'
+  };
+  const VERIFY_PENDING = {
+    enabled: false,
+    tier: 'local_verify',
+    gate_badge: '로컬검증 대기',
+    base_badge: '최신',
+    reason: 'verify_missing'
+  };
+  const CI_PASS = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '최신',
+    reason: null
+  };
+
+  test('shows 확인중 with a breathing dot while observing', () => {
+    const row = renderRow(UNOBSERVED, 'checking');
+
+    const badge = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__badge--activity')
+    );
+    expect(badge.textContent?.trim()).toBe('확인중');
+    expect(badge.querySelector('.act-dot')).not.toBe(null);
+  });
+
+  test('shows 로컬검증 실행 중 while the local suite runs', () => {
+    const row = renderRow(VERIFY_PENDING, 'verifying');
+
+    expect(
+      row.querySelector('.worker-mini__badge--activity')?.textContent?.trim()
+    ).toBe('로컬검증 실행 중');
+  });
+
+  test('keeps the settled badge when nothing is running', () => {
+    const row = renderRow(UNOBSERVED, null);
+
+    expect(row.querySelector('.worker-mini__badge--activity')).toBe(null);
+    expect(row.textContent).toContain('관측 대기');
+  });
+
+  test('leaves a CI badge untouched while the poller works', () => {
+    const row = renderRow(CI_PASS, 'checking');
+
+    expect(row.querySelector('.worker-mini__badge--activity')).toBe(null);
+    expect(row.textContent).toContain('CI ✓');
+  });
+
+  test('draws the activity badge without the alert colour', () => {
+    const row = renderRow(UNOBSERVED, 'checking');
+
+    const badge = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__badge--activity')
+    );
+    expect(badge.classList.contains('worker-mini__badge--alert')).toBe(false);
+  });
+});
+
+describe('merge progress — projection (UI-raqh §4)', () => {
+  test('labels the first step as 1 of 7', () => {
+    expect(mergeStepView('merging')).toEqual({
+      label: '머지 중',
+      index: 1,
+      total: 7,
+      percent: 14
+    });
+  });
+
+  test('labels the last step as 7 of 7', () => {
+    expect(mergeStepView('parent_close')).toMatchObject({
+      label: '부모 close',
+      index: 7,
+      total: 7,
+      percent: 100
+    });
+  });
+
+  test('translates every cleanup step to Korean', () => {
+    const labels = [
+      'base_sync',
+      'post_merge_verify',
+      'deploy',
+      'child_sweep',
+      'branch_cleanup'
+    ].map((s) => mergeStepView(s)?.label);
+
+    expect(labels).toEqual([
+      'base 동기화',
+      '머지 후 검증',
+      '배포',
+      '자식 정리',
+      '브랜치 정리'
+    ]);
+  });
+
+  test('returns null when no merge is running', () => {
+    expect(mergeStepView(null)).toBe(null);
+  });
+
+  test('still renders an unknown step, without a position', () => {
+    expect(mergeStepView('teleport')).toMatchObject({
+      label: 'teleport',
+      index: 0
+    });
+  });
+});
+
+describe('merge progress — view (UI-raqh §4)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  const GATE_OK = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '최신',
+    reason: null
+  };
+
+  /**
+   * @param {any} activity
+   * @param {any} [transport]
+   * @returns {HTMLElement}
+   */
+  function mountRow(activity, transport) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 304,
+              url: 'https://github.com/o/r/pull/304',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            ci: null,
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate: GATE_OK
+          }
+        },
+        pr_activity: activity ? { 'RD-1': activity } : {}
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: transport || vi.fn()
+    });
+    return mount;
+  }
+
+  test('shows the step name and its position while merging', () => {
+    const mount = mountRow({
+      activity: null,
+      merge_progress: { step: 'deploy', started_at: 1 }
+    });
+
+    const step = /** @type {HTMLElement} */ (
+      mount.querySelector('.merge-step')
+    );
+    expect(step.textContent?.replace(/\s+/g, '')).toBe('배포4/7');
+  });
+
+  test('marks the row and its progress width', () => {
+    const mount = mountRow({
+      activity: null,
+      merge_progress: { step: 'deploy', started_at: 1 }
+    });
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.classList.contains('worker-mini--merging')).toBe(true);
+    expect(row.getAttribute('style')).toContain('--progress: 57%');
+  });
+
+  test('disables both actions while merging', () => {
+    const mount = mountRow({
+      activity: null,
+      merge_progress: { step: 'base_sync', started_at: 1 }
+    });
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        row.querySelector('.worker-mini__merge')
+      ).disabled
+    ).toBe(true);
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        row.querySelector('.worker-mini__discard')
+      ).disabled
+    ).toBe(true);
+  });
+
+  test('leaves the row alone when no merge is running', () => {
+    const mount = mountRow(null);
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.classList.contains('worker-mini--merging')).toBe(false);
+    expect(row.querySelector('.merge-step')).toBe(null);
+  });
+
+  test('covers the click with a local pending step before the snapshot lands', async () => {
+    /** @type {(v: any) => void} */
+    let release = () => {};
+    const transport = vi.fn(
+      (/** @type {string} */ type) =>
+        new Promise((resolve) => {
+          if (type === 'worker-pr-merge') {
+            release = resolve;
+          } else {
+            resolve({ applied: true, conflict: false });
+          }
+        })
+    );
+    const mount = mountRow(null, transport);
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    ).click();
+    await flush();
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.querySelector('.merge-step')?.textContent).toContain('머지 중');
+
+    release({ ok: true, action: 'merged', conflict: false });
+    await flush();
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .merge-step')
+    ).toBe(null);
+  });
+
+  test('lets the server step supersede the local pending one', async () => {
+    const mount = mountRow({
+      activity: null,
+      merge_progress: { step: 'child_sweep', started_at: 1 }
+    });
+
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .merge-step')
+        ?.textContent
+    ).toContain('자식 정리');
   });
 });

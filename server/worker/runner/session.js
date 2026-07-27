@@ -29,6 +29,12 @@ import { findMergeViolation } from './command-guard.js';
  * @property {unknown} [input] - Tool input (kind='tool').
  * @property {string} [message] - Error/blocker message.
  * @property {string} [reason] - Fail-closed reason (kind='blocker').
+ * @property {{ message_id?: string, input_tokens?: number, output_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number, total_cost_usd?: number }} [usage] -
+ * Token usage the adapter lifted off this line (UI-raqh §1). Absent whenever
+ * the runner reported none — the consumer's fail-quiet contract. `message_id`
+ * identifies the assistant message a streaming snapshot belongs to, so a repeat
+ * REPLACES instead of adding; a `result` event's usage carries no id and is the
+ * session's authoritative total.
  * @property {unknown} raw - The original parsed jsonl object.
  */
 

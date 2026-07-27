@@ -32,7 +32,10 @@
  */
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../../data/list-selectors.js';
-import { cmpEffectiveRank } from '../../data/sort.js';
+import {
+  cmpCreatedDescThenPriority,
+  cmpEffectiveRank
+} from '../../data/sort.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { showToast } from '../../utils/toast.js';
 import { createReorderController } from '../reorder.js';
@@ -40,6 +43,7 @@ import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
 import { paneTemplate } from './lanes.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
+import { lastAttemptUsage } from './usage.js';
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
@@ -174,6 +178,94 @@ const SPEC_FILTER_OPTIONS = [
 ];
 
 /**
+ * Candidate pane sort mode (UI-raqh §2), persisted under this localStorage key.
+ * A purely CLIENT-side preference: the server sends one candidate feed and the
+ * lane decides how to read it.
+ *
+ * @type {string}
+ */
+const CANDIDATE_SORT_KEY = 'bdui.worker.candidate_sort';
+
+/**
+ * @typedef {'spec'|'board'|'created'} CandidateSort
+ */
+
+/**
+ * Sort options, in render order. `spec` leads because the pane's job is "what
+ * can I dispatch" and only a spec-carrying bead is queue-eligible (§5.4).
+ *
+ * @type {Array<{ value: CandidateSort, label: string }>}
+ */
+const CANDIDATE_SORT_OPTIONS = [
+  { value: 'spec', label: 'spec 우선' },
+  { value: 'board', label: 'Board 순서' },
+  { value: 'created', label: '최신 생성순' }
+];
+
+/**
+ * @type {CandidateSort}
+ */
+const CANDIDATE_SORT_DEFAULT = 'spec';
+
+/**
+ * Read the persisted sort mode; anything unreadable or unknown falls back to
+ * the default rather than throwing (same defence as the display filter).
+ *
+ * @returns {CandidateSort}
+ */
+function loadCandidateSort() {
+  try {
+    const raw = window.localStorage.getItem(CANDIDATE_SORT_KEY);
+    return raw === 'board' || raw === 'created' || raw === 'spec'
+      ? raw
+      : CANDIDATE_SORT_DEFAULT;
+  } catch {
+    return CANDIDATE_SORT_DEFAULT;
+  }
+}
+
+/**
+ * @param {CandidateSort} mode
+ */
+function saveCandidateSort(mode) {
+  try {
+    window.localStorage.setItem(CANDIDATE_SORT_KEY, mode);
+  } catch {
+    /* ignore — a private-mode storage denial must not break the select */
+  }
+}
+
+/**
+ * Order the merged candidate list for one sort mode (UI-raqh §2).
+ *
+ * `board` is the Board's own manual order and stays the reference: the other
+ * two are derived FROM it rather than replacing it. `spec` is a stable
+ * partition of that order — spec-carrying beads first, each group keeping its
+ * Board sequence — so switching to it never scrambles a hand-placed lane, it
+ * only lifts the dispatchable beads to the top. `created` is the one mode that
+ * ignores the rank map entirely, which is the point of having it.
+ *
+ * Returns a NEW array; the caller's list is left alone.
+ *
+ * @param {any[]} issues
+ * @param {CandidateSort} mode
+ * @param {Record<string, number>} order - Manual rank map.
+ * @returns {any[]}
+ */
+export function applyCandidateSort(issues, mode, order) {
+  const list = Array.isArray(issues) ? issues.slice() : [];
+  if (mode === 'created') {
+    return list.sort(cmpCreatedDescThenPriority);
+  }
+  list.sort(cmpEffectiveRank(order));
+  if (mode === 'board') {
+    return list;
+  }
+  // spec (default): stable partition over the rank order.
+  return [...list.filter(hasSpec), ...list.filter((it) => !hasSpec(it))];
+}
+
+/**
  * A full_plan phase child (`UI-xxxx.N`) is a sub-unit of its parent plan's
  * execution, never a standalone worker candidate (spec §1). Judged by the
  * flattened `parent` edge (same field Board's `parentIdOf` reads) OR a dotted id
@@ -212,6 +304,85 @@ function blockedReason(issue) {
 const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
 
 /**
+ * Poller activity replaces a gate badge ONLY where it changes what the badge
+ * MEANS (UI-raqh §3): "관측 대기" while a gh round-trip is actually in flight is
+ * 확인중, and "로컬검증 대기" while the suite is actually running is 로컬검증
+ * 실행 중. Anywhere else — CI ✓/✗, 머지됨, 관측 오류 — the poller working
+ * changes nothing about the state, and swapping the badge there would make the
+ * row flicker every poll interval for no information.
+ *
+ * @type {Array<{ from: string, activity: 'checking'|'verifying', to: string }>}
+ */
+const ACTIVITY_BADGE_SUBSTITUTIONS = [
+  { from: '관측 대기', activity: 'checking', to: '확인중' },
+  { from: '로컬검증 대기', activity: 'verifying', to: '로컬검증 실행 중' }
+];
+
+/**
+ * The badge a row shows for its verification signal, after the activity
+ * substitution above.
+ *
+ * @param {string} gate_badge
+ * @param {'checking'|'verifying'|null} activity
+ * @returns {{ label: string, live: boolean }}
+ */
+export function activityBadge(gate_badge, activity) {
+  for (const rule of ACTIVITY_BADGE_SUBSTITUTIONS) {
+    if (gate_badge === rule.from && activity === rule.activity) {
+      return { label: rule.to, live: true };
+    }
+  }
+  return { label: gate_badge, live: false };
+}
+
+/**
+ * The merge's seven steps in server order (UI-raqh §4), each with the label the
+ * row shows. Mirrors `pr-actions.js` — `merging` plus the six `CLEANUP_STEPS` —
+ * and the client keeps its own copy because a view must not import server code.
+ * An unknown step still renders (by its raw name) rather than blanking the row.
+ *
+ * @type {Array<{ step: string, label: string }>}
+ */
+const MERGE_STEPS = [
+  { step: 'merging', label: '머지 중' },
+  { step: 'base_sync', label: 'base 동기화' },
+  { step: 'post_merge_verify', label: '머지 후 검증' },
+  { step: 'deploy', label: '배포' },
+  { step: 'child_sweep', label: '자식 정리' },
+  { step: 'branch_cleanup', label: '브랜치 정리' },
+  { step: 'parent_close', label: '부모 close' }
+];
+
+/**
+ * Project a merge step onto what the row draws: its Korean label, its position
+ * in the sequence, and how far along the bar is.
+ *
+ * The counter is not decoration — this is an ORDERED sequence with a known
+ * length, so `4/7` tells a reader how much is left, which "머지 중…" alone
+ * cannot. A step the client does not know still shows, with no counter: a
+ * server that grew a step must not blank the row.
+ *
+ * @param {string|null|undefined} step
+ * @returns {{ label: string, index: number, total: number, percent: number }|null}
+ */
+export function mergeStepView(step) {
+  if (typeof step !== 'string' || step.length === 0) {
+    return null;
+  }
+  const total = MERGE_STEPS.length;
+  const i = MERGE_STEPS.findIndex((s) => s.step === step);
+  if (i < 0) {
+    return { label: step, index: 0, total, percent: 0 };
+  }
+  return {
+    label: MERGE_STEPS[i].label,
+    index: i + 1,
+    total,
+    percent: Math.round(((i + 1) / total) * 100)
+  };
+}
+
+/**
  * Project one `pr_wait` bead into a lane row, carrying whatever the server's PR
  * poller has observed (worker-phase2 §4/§5): the PR link, the gate/base badges,
  * and the two actions (§6).
@@ -233,16 +404,31 @@ const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
  * @param {Record<string, any>} observations - Snapshot `pr_observations` map.
  * @param {{ step: string, reason: string }|null} cleanup_failed - Durable
  * post-merge cleanup failure for this bead, if any (§6).
+ * @param {import('./usage.js').UsageRecord|null} [usage] - Token usage of the
+ * bead's last attempt (UI-raqh §1).
+ * @param {{ activity: 'checking'|'verifying'|null, merge_progress: { step: string }|null }|null} [active]
+ * What the server is doing to this bead right now (UI-raqh §3/§4).
  * @returns {any}
  */
-function prWaitRow(bead_id, title, observations, cleanup_failed) {
+function prWaitRow(
+  bead_id,
+  title,
+  observations,
+  cleanup_failed,
+  usage = null,
+  active = null
+) {
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
   /** @type {string[]} */
   const badges = [];
-  if (gate && gate.gate_badge) {
-    badges.push(gate.gate_badge);
+  const substituted = activityBadge(
+    (gate && gate.gate_badge) || '',
+    (active && active.activity) || null
+  );
+  if (substituted.label) {
+    badges.push(substituted.label);
   }
   if (gate && gate.base_badge && gate.base_badge !== gate.gate_badge) {
     badges.push(gate.base_badge);
@@ -252,6 +438,11 @@ function prWaitRow(bead_id, title, observations, cleanup_failed) {
   }
   const conflicting = !!gate && gate.base_badge === '충돌';
   const enabled = !!gate && gate.enabled === true;
+  // A merge in flight owns the row: both buttons go quiet until it settles, so
+  // a second click cannot land on an action the server would refuse anyway.
+  const merge_step = mergeStepView(
+    active && active.merge_progress ? active.merge_progress.step : null
+  );
   // An already-merged PR whose cleanup stopped: the click re-runs the cleanup
   // from the top. Nothing retries automatically (§6), so this button is the
   // human's way back in once they have fixed whatever stopped it.
@@ -266,26 +457,35 @@ function prWaitRow(bead_id, title, observations, cleanup_failed) {
     pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
     pr_url: pr && typeof pr.url === 'string' ? pr.url : '',
     badges,
+    // Which badge (if any) reports live server activity rather than a settled
+    // state — the row draws that one with the breathing dot and no colour
+    // emphasis, because nobody has to act on it.
+    live_badge: substituted.live ? substituted.label : null,
+    usage,
     alert: (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) || !!cleanup_failed,
     merge_action: true,
     // `cleanup_failed` is DURABLE merged evidence — right after a restart the
     // observation cache is empty, so the gate tier alone would re-offer [폐기]
     // on a tile whose merge already landed (discard spec §2).
     discard_action: !cleanup_failed && !(gate && gate.tier === 'merged'),
+    merge_step,
+    discard_enabled: !merge_step,
     // A conflicting PR keeps [머지] clickable on purpose: that click is what
     // dispatches the resolution session (§6), and it merges nothing.
-    merge_enabled: enabled || conflicting || cleanup_retry,
-    merge_title: cleanup_retry
-      ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
-      : conflicting
-        ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
-        : enabled
-          ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
-          : gate && gate.tier === 'merged'
-            ? // Already merged with no cleanup failure recorded: the cleanup is
-              // running, so "머지 불가: 관측 대기" would be a lie about why.
-              '머지됨 — 머지 후 정리 진행 중'
-            : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+    merge_enabled: !merge_step && (enabled || conflicting || cleanup_retry),
+    merge_title: merge_step
+      ? `머지 진행 중 — ${merge_step.label}`
+      : cleanup_retry
+        ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+        : conflicting
+          ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
+          : enabled
+            ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
+            : gate && gate.tier === 'merged'
+              ? // Already merged with no cleanup failure recorded: the cleanup
+                // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                '머지됨 — 머지 후 정리 진행 중'
+              : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -331,6 +531,21 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {CandidateFilter}
    */
   let candidate_filter = loadCandidateFilter();
+  /**
+   * Candidate pane sort mode (UI-raqh §2), restored at view creation.
+   *
+   * @type {CandidateSort}
+   */
+  let candidate_sort = loadCandidateSort();
+  /**
+   * Beads whose [머지] click has been sent but whose first progress snapshot has
+   * not arrived yet (UI-raqh §4). It covers exactly that gap so the row reacts
+   * to the click immediately; the server's own `merge_progress` supersedes it
+   * as soon as it lands, and the reply clears it either way.
+   *
+   * @type {Set<string>}
+   */
+  const merge_pending = new Set();
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -597,14 +812,11 @@ export function createWorkerView(mount_element, options = {}) {
     if (!transport || !bead_id) {
       return;
     }
-    let res = /** @type {any} */ (
-      await transport('worker-pr-merge', {
-        bead_id,
-        expected_revision: currentRevision()
-      })
-    );
-    adopt(res);
-    if (res && res.conflict) {
+    merge_pending.add(bead_id);
+    doRender();
+    /** @type {any} */
+    let res;
+    try {
       res = /** @type {any} */ (
         await transport('worker-pr-merge', {
           bead_id,
@@ -612,6 +824,20 @@ export function createWorkerView(mount_element, options = {}) {
         })
       );
       adopt(res);
+      if (res && res.conflict) {
+        res = /** @type {any} */ (
+          await transport('worker-pr-merge', {
+            bead_id,
+            expected_revision: currentRevision()
+          })
+        );
+        adopt(res);
+      }
+    } finally {
+      // The reply means the whole click is over — success, refusal, or a
+      // dispatched resolution — so the local cover is spent either way.
+      merge_pending.delete(bead_id);
+      doRender();
     }
     if (!res || res.conflict) {
       return;
@@ -757,6 +983,10 @@ export function createWorkerView(mount_element, options = {}) {
     const pr_wait_entries = /** @type {any[]} */ (q.pr_wait || []);
     /** @type {Record<string, any>} */
     const pr_obs = q.pr_observations || {};
+    // Live server activity per `pr_wait` bead (UI-raqh §3/§4). Fail-quiet: a
+    // server that does not send it simply renders the settled badges.
+    /** @type {Record<string, any>} */
+    const pr_activity = q.pr_activity || {};
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
@@ -801,8 +1031,10 @@ export function createWorkerView(mount_element, options = {}) {
       seen.add(it.id);
       merged.push(it);
     }
-    merged.sort(cmpEffectiveRank(order));
-    candidate_issues = merged;
+    // The chosen sort decides the RENDERED order, and `candidate_issues` must
+    // match it: a candidate→candidate drop computes its new rank from the
+    // neighbours the user actually saw (spec §4).
+    candidate_issues = applyCandidateSort(merged, candidate_sort, order);
 
     // Admission refusals recorded by the scheduler/place gate (§1) surface as
     // reason badges on candidate AND queued rows.
@@ -831,7 +1063,7 @@ export function createWorkerView(mount_element, options = {}) {
     };
 
     /** @type {any[]} */
-    const candidate_rows = merged.map((/** @type {any} */ it) => {
+    const candidate_rows = candidate_issues.map((/** @type {any} */ it) => {
       const eligible = hasSpec(it);
       const is_blocked = blocked_ids.has(it.id);
       /** @type {string[]} */
@@ -879,7 +1111,11 @@ export function createWorkerView(mount_element, options = {}) {
         reason: lane === 'done' ? '' : admissionBadge(e.bead_id),
         draggable: lane !== 'done',
         done: lane === 'done',
-        lane
+        lane,
+        // 완료 행은 마지막 attempt의 토큰 사용량을 함께 보여준다 (UI-raqh §1);
+        // 대기 행은 아직 실행 전이라 붙일 것이 없다.
+        usage:
+          lane === 'done' ? lastAttemptUsage(q.attempts || {}, e.bead_id) : null
       }));
 
     const attempts = q.attempts ? Object.values(q.attempts) : [];
@@ -924,7 +1160,11 @@ export function createWorkerView(mount_element, options = {}) {
           started_at: typeof a.started_at === 'number' ? a.started_at : null,
           resumed_from: a.resumed_from || null,
           paused: leaf_paused,
-          can_pause: typeof a.session_id === 'string' && a.session_id.length > 0
+          can_pause:
+            typeof a.session_id === 'string' && a.session_id.length > 0,
+          // 실행 중 타일은 이 attempt의 라이브 usage를 그대로 쓴다 — 스냅샷의
+          // decorateQueue가 실행 중 attempt에 라이브 값을 실어 보낸다.
+          usage: a.usage || null
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
         // Only a real failure surfaces the banner — a user pause/discard is not
@@ -1018,7 +1258,14 @@ export function createWorkerView(mount_element, options = {}) {
           e.bead_id,
           idToTitle.get(e.bead_id) || e.bead_id,
           pr_obs,
-          cleanup_failed[e.bead_id] || null
+          cleanup_failed[e.bead_id] || null,
+          lastAttemptUsage(q.attempts || {}, e.bead_id),
+          // The server's own progress wins; the local pending only covers the
+          // window before the first snapshot carrying it arrives.
+          pr_activity[e.bead_id] ||
+            (merge_pending.has(e.bead_id)
+              ? { activity: null, merge_progress: { step: 'merging' } }
+              : null)
         )
       ),
       done: toRows(q.done, 'done'),
@@ -1118,6 +1365,30 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Candidate pane sort select (UI-raqh §2). It sits IN the pane header rather
+   * than in the filter strip below it: the filters answer "what is shown", this
+   * answers "in what order", and reading it as part of the header keeps the
+   * strip about one question only.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function candidateSortTemplate() {
+    return html`<select
+      class="worker-sort"
+      aria-label="후보 정렬"
+      title="후보 정렬"
+      .value=${candidate_sort}
+    >
+      ${CANDIDATE_SORT_OPTIONS.map(
+        (o) =>
+          html`<option value=${o.value} ?selected=${candidate_sort === o.value}>
+            ${o.label}
+          </option>`
+      )}
+    </select>`;
+  }
+
+  /**
    * @param {ReturnType<typeof buildModel>} m
    * @returns {import('lit-html').TemplateResult}
    */
@@ -1130,6 +1401,7 @@ export function createWorkerView(mount_element, options = {}) {
         items: m.candidates,
         src: true,
         empty: '후보 없음',
+        header_control: candidateSortTemplate(),
         controls: candidateControlsTemplate(m)
       })}
       ${paneTemplate({
@@ -1336,6 +1608,21 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Adopt a new candidate sort mode (UI-raqh §2): persist first, then re-render,
+   * so a reload shows exactly what the last selection produced.
+   *
+   * @param {CandidateSort} next
+   */
+  function setCandidateSort(next) {
+    candidate_sort =
+      next === 'board' || next === 'created' || next === 'spec'
+        ? next
+        : CANDIDATE_SORT_DEFAULT;
+    saveCandidateSort(candidate_sort);
+    doRender();
+  }
+
+  /**
    * Commit a slot-count edit (worker-phase2 §3). Fired on `change` so a partial
    * keystroke does not spam mutations; the value is clamped to the lower bound
    * before it is sent and the input is re-rendered from the authoritative
@@ -1354,6 +1641,17 @@ export function createWorkerView(mount_element, options = {}) {
         ...candidate_filter,
         show_blocked: blocked_tgl.checked
       });
+      return;
+    }
+    const sort_select = /** @type {HTMLSelectElement|null} */ (
+      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-sort')
+    );
+    if (sort_select) {
+      setCandidateSort(
+        /** @type {CandidateSort} */ (
+          sort_select.value || CANDIDATE_SORT_DEFAULT
+        )
+      );
       return;
     }
     const input = /** @type {HTMLInputElement|null} */ (

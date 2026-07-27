@@ -13,6 +13,7 @@
  */
 import { html } from 'lit-html';
 import { stepperTemplate } from '../board/stepper.js';
+import { formatUsageTotal, usageTooltip } from './usage.js';
 
 /**
  * @typedef {Object} MiniItem
@@ -25,6 +26,9 @@ import { stepperTemplate } from '../board/stepper.js';
  * @property {number|null} [pr_number] - Observed PR number (`pr_wait` rows).
  * @property {string} [pr_url] - Observed PR URL; renders the `#N ↗` link.
  * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
+ * @property {string|null} [live_badge] - Which of {@link MiniItem.badges}
+ * reports live server activity rather than a settled state (UI-raqh §3); it is
+ * drawn neutral with a breathing dot instead of the alert colour.
  * @property {boolean} [alert] - Whether the badges report a state needing a
  * human decision (PR closed, observation error) — rendered in the warn colour.
  * @property {boolean} [merge_action] - Render the [머지] action (`pr_wait` rows
@@ -33,10 +37,16 @@ import { stepperTemplate } from '../board/stepper.js';
  * from `merge_action` because a merged tile keeps [머지] as its cleanup-retry
  * button while [폐기] must not be offered there at all (discard spec §2).
  * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
+ * @property {boolean} [discard_enabled] - Whether [폐기] may be clicked; false
+ * only while a merge is in flight (UI-raqh §4).
+ * @property {{ label: string, index: number, total: number, percent: number }|null} [merge_step] -
+ * The merge's current step, when one is running (UI-raqh §4).
  * @property {string} [merge_title] - Tooltip: what the click is based on, or
  * why it is refused.
  * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
+ * @property {import('./usage.js').UsageRecord|null} [usage] - Token usage of
+ * the bead's last attempt (UI-raqh §1); absent/null renders nothing.
  */
 
 /**
@@ -48,10 +58,13 @@ import { stepperTemplate } from '../board/stepper.js';
 export function miniRow(item) {
   const draggable = item.draggable && !item.done;
   const badges = Array.isArray(item.badges) ? item.badges : [];
+  const usage_label = formatUsageTotal(item.usage);
+  const merging = item.merge_step || null;
   return html`<div
     class="worker-mini${draggable ? '' : ' worker-mini--static'}${item.done
       ? ' worker-mini--done'
-      : ''}"
+      : ''}${merging ? ' worker-mini--merging' : ''}"
+    style=${merging ? `--progress: ${merging.percent}%` : ''}
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
     data-lane=${item.lane}
@@ -71,17 +84,41 @@ export function miniRow(item) {
           >#${item.pr_number} ↗</a
         >`
       : ''}
-    ${badges.map(
-      (b) =>
-        html`<span
-          class="worker-mini__badge${item.alert
-            ? ' worker-mini__badge--alert'
-            : ''}"
-          >${b}</span
-        >`
+    ${badges.map((b) =>
+      b === item.live_badge
+        ? // Live server activity (UI-raqh §3): neutral, never the warn colour —
+          // nothing here asks the reader to act, it only says work is running.
+          // The breathing dot carries the aliveness a colour would overstate.
+          html`<span
+            class="worker-mini__badge worker-mini__badge--activity"
+            title="서버가 이 PR을 처리하는 중입니다"
+            ><span class="act-dot" aria-hidden="true"></span>${b}</span
+          >`
+        : html`<span
+            class="worker-mini__badge${item.alert
+              ? ' worker-mini__badge--alert'
+              : ''}"
+            >${b}</span
+          >`
     )}
     ${item.reason
       ? html`<span class="worker-mini__reason">${item.reason}</span>`
+      : ''}
+    ${usage_label
+      ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
+          >${usage_label}</span
+        >`
+      : ''}
+    ${merging
+      ? // The one place this board raises its voice (UI-raqh §4): a merge is
+        // irreversible and minutes long, so the row itself becomes the gauge —
+        // side rail, bottom progress line, step name and n/7. No spinner: the
+        // counter says more than a spinner can.
+        html`<span class="merge-step"
+          >${merging.label}<span class="merge-step__n"
+            >${merging.index}/${merging.total}</span
+          ></span
+        >`
       : ''}
     ${item.merge_action
       ? html`<button
@@ -99,7 +136,10 @@ export function miniRow(item) {
           type="button"
           class="worker-mini__discard"
           data-bead-id=${item.id}
-          title="PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음). 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요"
+          ?disabled=${item.discard_enabled === false}
+          title=${item.discard_enabled === false
+            ? '머지 진행 중 — 폐기할 수 없습니다'
+            : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음). 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요'}
         >
           폐기
         </button>`
@@ -165,10 +205,11 @@ export function candidateCard(item) {
  * One lane pane. `body` overrides the row rendering for a column whose contents
  * are not mini rows (실행 중); `items` still supplies the header count so every
  * column counts its members the same way. `controls` is an optional strip under
- * the header (candidate display filters, UI-ki09) — a pane that passes none
- * renders exactly as before.
+ * the header (candidate display filters, UI-ki09) and `header_control` an
+ * optional trailing element INSIDE it (the candidate sort select, UI-raqh §2) —
+ * a pane that passes neither renders exactly as before.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -180,6 +221,7 @@ export function paneTemplate(pane) {
     <header class="worker-pane__hd">
       <span class="worker-pane__title">${pane.title}</span>
       <span class="worker-pane__count">${pane.items.length}</span>
+      ${pane.header_control ? pane.header_control : ''}
     </header>
     ${pane.controls ? pane.controls : ''}
     <div class="worker-pane__body">

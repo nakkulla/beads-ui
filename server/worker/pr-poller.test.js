@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { createActivityStore } from './activity-store.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller, resolvePrRef, rollupConclusion } from './pr-poller.js';
 import { __resetQueueEventsForTest } from './queue-events.js';
@@ -71,6 +72,7 @@ function queueOf(input = {}) {
  *   checks?: any,
  *   subscribers?: number,
  *   observations?: any,
+ *   activity?: any,
  *   resolveVerify?: any,
  *   runVerify?: any
  * }} [input]
@@ -84,6 +86,7 @@ function makePoller(input = {}) {
   );
   const prChecks = vi.fn(async () => input.checks ?? { state: 'empty' });
   const observations = input.observations ?? createPrObservationStore();
+  const activity = input.activity ?? createActivityStore();
   const notifyChanged = vi.fn();
   const poller = createPrPoller({
     workspace: '/ws',
@@ -91,6 +94,7 @@ function makePoller(input = {}) {
     store: { snapshot: () => queue },
     gh: { prDetail, prChecks },
     observations,
+    activity,
     getSubscriberCount: () => input.subscribers ?? 1,
     resolveVerify: input.resolveVerify ?? (() => null),
     runVerify: input.runVerify,
@@ -99,7 +103,7 @@ function makePoller(input = {}) {
     sleep: async () => {},
     now: () => 5000
   });
-  return { poller, prDetail, prChecks, observations, notifyChanged };
+  return { poller, prDetail, prChecks, observations, activity, notifyChanged };
 }
 
 describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
@@ -427,5 +431,112 @@ describe('worker/pr-poller — pure helpers', () => {
     ];
 
     expect(rollupConclusion(checks)).toBe('pass');
+  });
+});
+
+describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
+  test('reports checking while the gh round-trip is in flight', async () => {
+    /** @type {(v: any) => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const activity = createActivityStore();
+    const { poller } = makePoller({
+      activity,
+      detail: () => gate.then(() => ({ state: 'ok', data: detailOf() }))
+    });
+
+    const pass = poller.tick();
+    await Promise.resolve();
+
+    expect(activity.get('/ws', 'UI-1')?.activity).toBe('checking');
+    release({});
+    await pass;
+  });
+
+  test('clears checking once the pass ends', async () => {
+    const activity = createActivityStore();
+    const { poller } = makePoller({ activity });
+
+    await poller.tick();
+
+    expect(activity.get('/ws', 'UI-1')).toBe(null);
+  });
+
+  test('clears checking even when the observation throws', async () => {
+    const activity = createActivityStore();
+    const { poller } = makePoller({
+      activity,
+      detail: () => {
+        throw new Error('boom');
+      }
+    });
+
+    await poller.tick();
+
+    expect(activity.get('/ws', 'UI-1')).toBe(null);
+  });
+
+  test('reports verifying while the local suite runs', async () => {
+    /** @type {(v: any) => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const activity = createActivityStore();
+    const { poller } = makePoller({
+      activity,
+      checks: { state: 'empty' },
+      resolveVerify: () => ({ cmd: ['npm', 'test'], timeout_ms: 1000 }),
+      runVerify: () => gate.then(() => ({ ok: true, reason: 'ok', exit: 0 }))
+    });
+
+    const pass = poller.tick();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(activity.get('/ws', 'UI-1')?.activity).toBe('verifying');
+    release({});
+    await pass;
+    expect(activity.get('/ws', 'UI-1')).toBe(null);
+  });
+
+  test('keeps a long verification visible across a later observation pass', async () => {
+    /** @type {(v: any) => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const activity = createActivityStore();
+    const { poller } = makePoller({
+      activity,
+      checks: { state: 'empty' },
+      resolveVerify: () => ({ cmd: ['npm', 'test'], timeout_ms: 1000 }),
+      runVerify: () => gate.then(() => ({ ok: true, reason: 'ok', exit: 0 }))
+    });
+    const first = poller.tick();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await poller.tick();
+
+    expect(activity.get('/ws', 'UI-1')?.activity).toBe('verifying');
+    release({});
+    await first;
+  });
+
+  test('prunes the activity of a bead that left the lane', async () => {
+    const activity = createActivityStore();
+    activity.beginChecking('/ws', 'UI-GONE');
+    const { poller } = makePoller({ activity });
+
+    await poller.tick();
+
+    expect(activity.get('/ws', 'UI-GONE')).toBe(null);
   });
 });
