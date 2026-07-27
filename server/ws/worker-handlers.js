@@ -614,10 +614,21 @@ export async function handleWorkerQueuePlace(ws, req) {
     index: typeof p.index === 'number' ? p.index : undefined
   });
   if (result.ok) {
-    // A successful (admission-passed) placement clears any stale refusal.
-    const cleared = queueStore().clearAdmission(key, p.bead_id);
-    if (cleared.ok) {
-      result = { ...result, queue: cleared.queue };
+    // A successful (admission-passed) placement clears any prior refusal —
+    // unless the pass itself observed a stale receipt (UI-dlim §3.2), in which
+    // case the placement REPLACES the refusal with the non-blocking stale mark
+    // so the queued row announces the in-session re-review from the moment it
+    // enters the lane.
+    const applied =
+      admission && admission.stale
+        ? queueStore().recordAdmission(key, {
+            bead_id: p.bead_id,
+            reason: 'spec_review_stale',
+            stale: true
+          })
+        : queueStore().clearAdmission(key, p.bead_id);
+    if (applied.ok) {
+      result = { ...result, queue: applied.queue };
     }
   }
   replyMutation(ws, req, key, result);

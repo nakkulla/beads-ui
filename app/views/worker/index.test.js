@@ -482,7 +482,7 @@ describe('views/worker', () => {
       queueOf({
         queue: [{ bead_id: 'SQ-1', added_at: 0 }],
         admission: {
-          'RD-1': { reason: 'spec_review_stale', at: 1 },
+          'RD-1': { reason: 'receipt_unreachable', at: 1 },
           'SQ-1': { reason: 'receipt_missing_or_malformed', at: 2 }
         },
         workspace_info: { verify_cmd: null }
@@ -501,7 +501,7 @@ describe('views/worker', () => {
       )
     );
     expect(rd1.querySelector('.worker-card__reason')?.textContent).toContain(
-      '⛔ spec_review_stale'
+      '⛔ receipt_unreachable'
     );
     // Queued row badge (tick/dispatch refusal).
     const sq1 = /** @type {HTMLElement} */ (
@@ -540,6 +540,41 @@ describe('views/worker', () => {
     expect(rd1.querySelector('.worker-card__reason')?.textContent).toContain(
       '⛔ spec_missing_at_base (ilsun/dev)'
     );
+  });
+
+  test('renders an admitted stale receipt as a non-blocking re-review mark (UI-dlim §3.4)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'SQ-1', added_at: 0 }],
+        admission: {
+          'RD-1': { reason: 'spec_review_stale', at: 1, stale: true },
+          'SQ-1': { reason: 'spec_review_stale', at: 2, stale: true }
+        },
+        workspace_info: { verify_cmd: null }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const rd1 = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-candidate .worker-card[data-bead-id="RD-1"]'
+      )
+    );
+    const rd1_reason = rd1.querySelector('.worker-card__reason')?.textContent;
+    expect(rd1_reason).toContain('♻️ stale→재리뷰');
+    expect(rd1_reason).not.toContain('⛔');
+    // The bead is admitted, so the queued row reads the same way.
+    expect(
+      mount
+        .querySelector('#worker-pane-queue .worker-mini[data-bead-id="SQ-1"]')
+        ?.querySelector('.worker-mini__reason')?.textContent
+    ).toContain('♻️ stale→재리뷰');
   });
 
   test('the control bar carries no policy selects or verify_cmd strip (worker-phase2 §2)', () => {

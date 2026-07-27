@@ -23,8 +23,15 @@
  *   3. a `<reviewer>@<40hex>` spec_review receipt — `skipped@<40hex>` counts
  *      (a skip is explicit user authority to proceed), short/non-hex does not,
  *   4. the receipt SHA reachable as a commit,
- *   5. freshness: `git log <sha>..<base> -- <spec_id>` runs successfully AND is
- *      empty (no spec change after the receipt).
+ *   5. freshness: `git log <sha>..<base> -- <spec_id>` runs successfully. A
+ *      NON-empty delta no longer refuses (UI-dlim §3.1): the file-scoped probe
+ *      cannot tell a change inside this bead's spec scope from another bead
+ *      editing its own section of a shared spec, and refusing on it stopped the
+ *      unattended lane until a human refreshed the receipt by hand. The bead is
+ *      admitted with a `stale` payload instead, and the dispatched session
+ *      re-reviews it in-session (the lane's procedure is contract-owned —
+ *      dotfiles `docs/contracts/workflow.md`). The probe FAILING is still a
+ *      refusal: a stale verdict that cannot be computed is not a pass.
  *
  * EVERY git failure is a rejection (`git_error`) — the fail-quiet `runGit` of
  * workflow-enrich.js is deliberately not reused here. `git cat-file -e` cannot
@@ -45,13 +52,26 @@ const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
  * the persisted `Queue.admission[bead_id].reason` stays a plain string and needs
  * no schema change or normalize migration.
  *
- * @typedef {'gh_unavailable'|'invalid_route'|'spec_missing'|`spec_missing_at_base:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'spec_review_stale'|'git_error'} AdmissionReason
+ * @typedef {'gh_unavailable'|'invalid_route'|'spec_missing'|`spec_missing_at_base:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
+ */
+
+/**
+ * Non-blocking staleness observation carried by an ADMITTED result (UI-dlim
+ * §3.1): the receipt the bead currently pins, and the spec commits that landed
+ * after it at the checked base. Both are pure observation — the session decides
+ * what they mean, this validator never judges the delta's scope.
+ *
+ * @typedef {Object} AdmissionStale
+ * @property {string} receipt_sha - The 40-hex SHA of the pinned spec_review.
+ * @property {string[]} delta_shas - Post-receipt spec commits, newest first.
  */
 
 /**
  * @typedef {Object} AdmissionResult
  * @property {boolean} ok - True when the bead may auto-run.
  * @property {AdmissionReason} [reason]
+ * @property {AdmissionStale} [stale] - Present only on an admitted result whose
+ * spec changed after the receipt; absent means the receipt is fresh.
  */
 
 /**
@@ -159,12 +179,25 @@ export async function validateAdmission(input) {
       return { ok: false, reason: 'receipt_unreachable' };
     }
 
-    const fresh = await git(['log', `${receipt_sha}..${base}`, '--', spec_id]);
+    // `--format=%H` makes the delta directly consumable: the same single probe
+    // now yields the commit list the session is told about, with no second git
+    // call and no parsing of the default log layout.
+    const fresh = await git([
+      'log',
+      '--format=%H',
+      `${receipt_sha}..${base}`,
+      '--',
+      spec_id
+    ]);
     if (fresh.code !== 0) {
       return { ok: false, reason: 'git_error' };
     }
-    if (fresh.stdout.trim().length > 0) {
-      return { ok: false, reason: 'spec_review_stale' };
+    const delta_shas = fresh.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (delta_shas.length > 0) {
+      return { ok: true, stale: { receipt_sha, delta_shas } };
     }
   } catch {
     return { ok: false, reason: 'git_error' };

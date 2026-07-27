@@ -41,6 +41,7 @@
 import { debug } from '../logging.js';
 import { resolveExecSettings } from './policy.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
+import { defaultTaskPrompt } from './runner/preamble.js';
 
 const log = debug('worker:scheduler');
 
@@ -82,6 +83,31 @@ function blockerCauseDetail(detail) {
 }
 
 /**
+ * The first-dispatch prompt for a bead admitted with a STALE spec_review
+ * receipt (UI-dlim §3.2): the default task prompt plus the observed facts the
+ * session cannot see from inside its worktree — the receipt it currently pins,
+ * the base the staleness was computed against, and the spec commits that landed
+ * after the receipt.
+ *
+ * The lane's PROCEDURE is deliberately not restated here: it belongs to the
+ * workflow contract (dotfiles `docs/contracts/workflow.md`), and beads-ui is
+ * that contract's consumer, not its author. The prompt therefore delivers the
+ * trigger plus observations and points at the contract for the rest.
+ *
+ * @param {string} bead_id
+ * @param {{ receipt: string, base: string, delta_shas: string[] }} stale
+ * @returns {string}
+ */
+function staleDispatchPrompt(bead_id, stale) {
+  return [
+    defaultTaskPrompt(bead_id),
+    `stale spec_review 관측 — 이 비드의 spec_review 영수증 \`${stale.receipt}\` 이후 base \`${stale.base}\`에서 스펙 파일이 변경되었다.`,
+    `delta 커밋: ${stale.delta_shas.join(', ')}`,
+    '구현에 들어가기 전에 workflow 계약의 워커 재리뷰 레인(stale receipt 갱신)을 먼저 수행하라.'
+  ].join('\n\n');
+}
+
+/**
  * @typedef {Object} BeadSnapshot
  * @property {boolean} ready - Runnable now.
  * @property {boolean} blocked - Blocked by unmet dependencies.
@@ -118,10 +144,13 @@ function blockerCauseDetail(detail) {
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
- * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string }> }} [admission]
+ * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha: string, delta_shas: string[] } }> }} [admission]
  * Auto-run admission validator (worker-autorun-policy §1). When present, the
  * tick candidate scan AND the dispatch re-check (against the pinned worktree
- * base_oid) both gate on it; refusals are recorded in `Queue.admission`.
+ * base_oid) both gate on it; refusals are recorded in `Queue.admission`. An
+ * ADMITTED result may still carry `stale` (UI-dlim §3.1) — a non-blocking
+ * observation that the spec moved after the receipt, which flags the badge and
+ * the attempt and is injected into the session prompt.
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void }} sessionLog
  * @property {ReturnType<typeof import('./usage-store.js').createUsageStore>} [usage]
  * Live token-usage tally for running attempts (UI-raqh §1). Absent wiring
@@ -380,6 +409,27 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Record the NON-blocking stale-receipt observation of an ADMITTED bead
+   * (UI-dlim §3.4). It rides the same record the refusals use so both render
+   * through one badge path, but carries `stale:true` so the UI never shows it
+   * as a refusal. The record is cleared by the dispatch that follows, exactly
+   * like a refusal cleared by a successful launch.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   */
+  function recordStale(workspace, bead_id) {
+    const result = deps.store.recordAdmission(workspace, {
+      bead_id,
+      reason: 'spec_review_stale',
+      stale: true
+    });
+    if (result && result.ok) {
+      notifyChanged(workspace);
+    }
+  }
+
+  /**
    * The skip reason for a bead bd did not hand back as runnable. `blocked` is
    * deliberately NOT the reason: `snapshotBead` derives it from mere absence
    * from `bd ready`, so it reads as a dependency block even when the real cause
@@ -516,7 +566,7 @@ export function createScheduler(deps) {
    *
    * @param {BeadSnapshot} snap
    * @param {string} [base]
-   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   * @returns {Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha: string, delta_shas: string[] } }>}
    */
   async function checkAdmission(snap, base) {
     if (!deps.admission) {
@@ -1130,6 +1180,12 @@ export function createScheduler(deps) {
     // against a moving base tip, so a base advance between scan and worktree
     // creation (TOCTOU) is caught here, fail-closed.
     const adm = await checkAdmission(snap, wt.base_oid);
+    if (adm.ok && adm.stale) {
+      // The re-check is pinned to base_oid, so ITS payload — not the scan's —
+      // is what the session is told about (UI-dlim §3.2). A bead that was fresh
+      // at scan time and stale here is flagged, never refused.
+      recordStale(workspace, bead_id);
+    }
     if (!adm.ok) {
       recordSkipReason(workspace, bead_id, adm.reason || 'git_error');
       try {
@@ -1232,6 +1288,7 @@ export function createScheduler(deps) {
         workflow_mode_prior: prior,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values: stamped_keys.length > 0 ? exec_values : null,
+        spec_review_stale: !!adm.stale,
         status: 'running',
         pid: null
       }
@@ -1314,7 +1371,22 @@ export function createScheduler(deps) {
       launch_kind: 'dispatch',
       // The adapter reads only `id`/`prompt`; the plan-receipt fields the
       // retired runner guard needed are no longer carried (worker-phase1 §4).
-      spawnBead: { id: bead_id }
+      // A fresh receipt carries no `prompt`, so the adapter builds the default
+      // one — only a stale dispatch overrides it (UI-dlim §3.2).
+      spawnBead: adm.stale
+        ? {
+            id: bead_id,
+            prompt: staleDispatchPrompt(bead_id, {
+              receipt:
+                typeof snap.spec_review === 'string' &&
+                snap.spec_review.trim().length > 0
+                  ? snap.spec_review.trim()
+                  : adm.stale.receipt_sha,
+              base: wt.base_oid,
+              delta_shas: adm.stale.delta_shas
+            })
+          }
+        : { id: bead_id }
     });
   }
 
@@ -1931,6 +2003,12 @@ export function createScheduler(deps) {
       if (!adm.ok) {
         recordSkipReason(workspace, entry.bead_id, adm.reason || 'git_error');
         continue;
+      }
+      // Admitted-but-stale: badge it and dispatch anyway. The scan's verdict is
+      // display only — the dispatch re-check, pinned to the worktree base_oid,
+      // is what the session prompt is built from (UI-dlim §3.2).
+      if (adm.stale) {
+        recordStale(workspace, entry.bead_id);
       }
       to_dispatch.push({ bead_id: entry.bead_id, snap });
       free -= 1;

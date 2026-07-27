@@ -1036,15 +1036,19 @@ export function createWorkerView(mount_element, options = {}) {
     // neighbours the user actually saw (spec §4).
     candidate_issues = applyCandidateSort(merged, candidate_sort, order);
 
-    // Admission refusals recorded by the scheduler/place gate (§1) surface as
-    // reason badges on candidate AND queued rows.
-    /** @type {Record<string, { reason: string, at: number }>} */
+    // Admission observations recorded by the scheduler/place gate (§1) surface
+    // as badges on candidate AND queued rows.
+    /** @type {Record<string, { reason: string, at: number, stale?: true }>} */
     const admission = q.admission || {};
     /**
      * A `prefix:detail` reason (`spec_missing_at_base:<base>`) renders its detail
      * apart so the base reads at a glance; a bare reason renders unchanged, which
      * is what keeps already-persisted `spec_missing` records renderable without
      * any normalization.
+     *
+     * A `stale` record is the one NON-blocking observation (UI-dlim §3.4): the
+     * bead was admitted and will run, so it must not wear the ⛔ refusal mark —
+     * it announces the in-session re-review the dispatch asks the session for.
      *
      * @param {string} bead_id
      * @returns {string}
@@ -1053,6 +1057,9 @@ export function createWorkerView(mount_element, options = {}) {
       const record = admission[bead_id];
       if (!record) {
         return '';
+      }
+      if (record.stale === true) {
+        return '♻️ stale→재리뷰';
       }
       const reason = typeof record.reason === 'string' ? record.reason : '';
       const sep = reason.indexOf(':');
