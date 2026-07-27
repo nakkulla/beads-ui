@@ -115,8 +115,11 @@ scheduler.reconcile 단위 테스트(주입 fake probe/verify/store/bd):
 - PID 재사용(생존·시작시각 불일치) → 사망 판정 (orphan.test.js 승계).
 - 패스 중복 가드.
 
-attach/init 테스트: 기동 시 reconcile 호출(기존 attach.test.js orphan 기대 갱신),
-타이머가 구독자 provider 없이도 arm 되는지.
+attach/init 테스트: 기동 시 reconcile 호출(기존 attach.test.js orphan 기대 갱신).
+주기 경로는 arm 여부 확인으로 끝내지 않는다 — fake timer 로 간격 경과를 흉내내어
+`getSubscriberCount: () => 0` + auto_advance OFF 상태에서 실제로
+`scheduler.reconcile` 이 호출되고 사망 attempt 가 처분되는지 검증한다(구독자
+게이팅이 섞인 타이머 재사용을 테스트가 걸러내야 한다).
 
 ## 비목표
 
