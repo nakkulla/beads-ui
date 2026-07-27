@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createActivityStore } from './activity-store.js';
 import { CLEANUP_STEPS, createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller } from './pr-poller.js';
@@ -129,7 +130,8 @@ function seedStore(options = {}) {
  *   mergeFails?: boolean,
  *   afterMerge?: any,
  *   worktreeExists?: boolean,
- *   resolveConflictResult?: any
+ *   resolveConflictResult?: any,
+ *   activity?: any
  * }} [options]
  */
 function makeActions(options = {}) {
@@ -137,6 +139,9 @@ function makeActions(options = {}) {
   const calls = [];
   const store = options.store || seedStore();
   const observations = createPrObservationStore();
+  const activity = options.activity ?? createActivityStore({ now: () => 1000 });
+  /** @type {string[]} */
+  const steps = [];
 
   const details = options.details || [prOf()];
   let detail_i = 0;
@@ -315,6 +320,26 @@ function makeActions(options = {}) {
     store,
     gh,
     observations,
+    activity: {
+      ...activity,
+      /**
+       * @param {string} ws
+       * @param {string} bead_id
+       * @param {string} step
+       */
+      setMergeProgress(ws, bead_id, step) {
+        steps.push(step);
+        activity.setMergeProgress(ws, bead_id, step);
+      },
+      /**
+       * @param {string} ws
+       * @param {string} bead_id
+       */
+      clearMergeProgress(ws, bead_id) {
+        steps.push('(cleared)');
+        activity.clearMergeProgress(ws, bead_id);
+      }
+    },
     bd,
     worktree,
     gitRun,
@@ -333,6 +358,8 @@ function makeActions(options = {}) {
     calls,
     store,
     observations,
+    activity,
+    steps,
     gh,
     bd,
     bd_status,
@@ -1524,5 +1551,77 @@ describe('[폐기] — the order-sensitive discard transition (discard spec §1)
     await h.actions.discard(BEAD);
 
     expect(h.observations.isDiscarding(WS, BEAD)).toBe(false);
+  });
+});
+
+describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
+  test('walks the seven steps in contract order on a clean merge', async () => {
+    const env = makeActions();
+
+    await env.actions.merge(BEAD);
+
+    expect(env.steps).toEqual([
+      'merging',
+      'base_sync',
+      'post_merge_verify',
+      'deploy',
+      'child_sweep',
+      'branch_cleanup',
+      'parent_close',
+      '(cleared)'
+    ]);
+  });
+
+  test('holds no progress once the merge finished', async () => {
+    const env = makeActions();
+
+    await env.actions.merge(BEAD);
+
+    expect(env.activity.get(WS, BEAD)).toBe(null);
+  });
+
+  test('releases the progress when a cleanup step fails', async () => {
+    const env = makeActions({
+      children: { [BEAD]: [{ id: `${BEAD}.1`, status: 'open' }] }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.activity.get(WS, BEAD)).toBe(null);
+  });
+
+  test('releases the progress before a conflict resolution is dispatched', async () => {
+    const env = makeActions({
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+
+    const r = await env.actions.merge(BEAD);
+
+    expect(r.action).toBe('conflict_resolution');
+    expect(env.steps.indexOf('(cleared)')).toBeLessThan(env.steps.length);
+    expect(env.activity.get(WS, BEAD)).toBe(null);
+  });
+
+  test('releases the progress when the gate refuses the click', async () => {
+    const env = makeActions({
+      checks: {
+        state: 'ok',
+        data: [{ name: 'ci', conclusion: 'fail', status: 'completed' }]
+      }
+    });
+
+    const r = await env.actions.merge(BEAD);
+
+    expect(r.ok).toBe(false);
+    expect(env.activity.get(WS, BEAD)).toBe(null);
+  });
+
+  test('reports progress for an externally observed merge too', async () => {
+    const env = makeActions({ details: [prOf({ state: 'MERGED' })] });
+
+    await env.actions.cleanupObservedMerge(BEAD);
+
+    expect(env.steps[0]).toBe('base_sync');
+    expect(env.steps[env.steps.length - 1]).toBe('(cleared)');
   });
 });

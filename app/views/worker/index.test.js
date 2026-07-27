@@ -8,7 +8,8 @@ import {
   activityBadge,
   applyCandidateFilter,
   applyCandidateSort,
-  createWorkerView
+  createWorkerView,
+  mergeStepView
 } from './index.js';
 
 function createTestIssueStores() {
@@ -4318,5 +4319,205 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
       row.querySelector('.worker-mini__badge--activity')
     );
     expect(badge.classList.contains('worker-mini__badge--alert')).toBe(false);
+  });
+});
+
+describe('merge progress — projection (UI-raqh §4)', () => {
+  test('labels the first step as 1 of 7', () => {
+    expect(mergeStepView('merging')).toEqual({
+      label: '머지 중',
+      index: 1,
+      total: 7,
+      percent: 14
+    });
+  });
+
+  test('labels the last step as 7 of 7', () => {
+    expect(mergeStepView('parent_close')).toMatchObject({
+      label: '부모 close',
+      index: 7,
+      total: 7,
+      percent: 100
+    });
+  });
+
+  test('translates every cleanup step to Korean', () => {
+    const labels = [
+      'base_sync',
+      'post_merge_verify',
+      'deploy',
+      'child_sweep',
+      'branch_cleanup'
+    ].map((s) => mergeStepView(s)?.label);
+
+    expect(labels).toEqual([
+      'base 동기화',
+      '머지 후 검증',
+      '배포',
+      '자식 정리',
+      '브랜치 정리'
+    ]);
+  });
+
+  test('returns null when no merge is running', () => {
+    expect(mergeStepView(null)).toBe(null);
+  });
+
+  test('still renders an unknown step, without a position', () => {
+    expect(mergeStepView('teleport')).toMatchObject({
+      label: 'teleport',
+      index: 0
+    });
+  });
+});
+
+describe('merge progress — view (UI-raqh §4)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  const GATE_OK = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '최신',
+    reason: null
+  };
+
+  /**
+   * @param {any} activity
+   * @param {any} [transport]
+   * @returns {HTMLElement}
+   */
+  function mountRow(activity, transport) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 304,
+              url: 'https://github.com/o/r/pull/304',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            ci: null,
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate: GATE_OK
+          }
+        },
+        pr_activity: activity ? { 'RD-1': activity } : {}
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: transport || vi.fn()
+    });
+    return mount;
+  }
+
+  test('shows the step name and its position while merging', () => {
+    const mount = mountRow({
+      activity: null,
+      merge_progress: { step: 'deploy', started_at: 1 }
+    });
+
+    const step = /** @type {HTMLElement} */ (
+      mount.querySelector('.merge-step')
+    );
+    expect(step.textContent?.replace(/\s+/g, '')).toBe('배포4/7');
+  });
+
+  test('marks the row and its progress width', () => {
+    const mount = mountRow({
+      activity: null,
+      merge_progress: { step: 'deploy', started_at: 1 }
+    });
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.classList.contains('worker-mini--merging')).toBe(true);
+    expect(row.getAttribute('style')).toContain('--progress: 57%');
+  });
+
+  test('disables both actions while merging', () => {
+    const mount = mountRow({
+      activity: null,
+      merge_progress: { step: 'base_sync', started_at: 1 }
+    });
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        row.querySelector('.worker-mini__merge')
+      ).disabled
+    ).toBe(true);
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        row.querySelector('.worker-mini__discard')
+      ).disabled
+    ).toBe(true);
+  });
+
+  test('leaves the row alone when no merge is running', () => {
+    const mount = mountRow(null);
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.classList.contains('worker-mini--merging')).toBe(false);
+    expect(row.querySelector('.merge-step')).toBe(null);
+  });
+
+  test('covers the click with a local pending step before the snapshot lands', async () => {
+    /** @type {(v: any) => void} */
+    let release = () => {};
+    const transport = vi.fn(
+      (/** @type {string} */ type) =>
+        new Promise((resolve) => {
+          if (type === 'worker-pr-merge') {
+            release = resolve;
+          } else {
+            resolve({ applied: true, conflict: false });
+          }
+        })
+    );
+    const mount = mountRow(null, transport);
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    ).click();
+    await flush();
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.querySelector('.merge-step')?.textContent).toContain('머지 중');
+
+    release({ ok: true, action: 'merged', conflict: false });
+    await flush();
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .merge-step')
+    ).toBe(null);
+  });
+
+  test('lets the server step supersede the local pending one', async () => {
+    const mount = mountRow({
+      activity: null,
+      merge_progress: { step: 'child_sweep', started_at: 1 }
+    });
+
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .merge-step')
+        ?.textContent
+    ).toContain('자식 정리');
   });
 });

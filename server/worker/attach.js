@@ -459,6 +459,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     store: runtime.queueStore,
     gh,
     observations: runtime.prObservations,
+    activity: runtime.activityStore,
     bd,
     worktree,
     gitRun,

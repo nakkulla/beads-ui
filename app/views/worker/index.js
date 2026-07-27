@@ -336,6 +336,53 @@ export function activityBadge(gate_badge, activity) {
 }
 
 /**
+ * The merge's seven steps in server order (UI-raqh §4), each with the label the
+ * row shows. Mirrors `pr-actions.js` — `merging` plus the six `CLEANUP_STEPS` —
+ * and the client keeps its own copy because a view must not import server code.
+ * An unknown step still renders (by its raw name) rather than blanking the row.
+ *
+ * @type {Array<{ step: string, label: string }>}
+ */
+const MERGE_STEPS = [
+  { step: 'merging', label: '머지 중' },
+  { step: 'base_sync', label: 'base 동기화' },
+  { step: 'post_merge_verify', label: '머지 후 검증' },
+  { step: 'deploy', label: '배포' },
+  { step: 'child_sweep', label: '자식 정리' },
+  { step: 'branch_cleanup', label: '브랜치 정리' },
+  { step: 'parent_close', label: '부모 close' }
+];
+
+/**
+ * Project a merge step onto what the row draws: its Korean label, its position
+ * in the sequence, and how far along the bar is.
+ *
+ * The counter is not decoration — this is an ORDERED sequence with a known
+ * length, so `4/7` tells a reader how much is left, which "머지 중…" alone
+ * cannot. A step the client does not know still shows, with no counter: a
+ * server that grew a step must not blank the row.
+ *
+ * @param {string|null|undefined} step
+ * @returns {{ label: string, index: number, total: number, percent: number }|null}
+ */
+export function mergeStepView(step) {
+  if (typeof step !== 'string' || step.length === 0) {
+    return null;
+  }
+  const total = MERGE_STEPS.length;
+  const i = MERGE_STEPS.findIndex((s) => s.step === step);
+  if (i < 0) {
+    return { label: step, index: 0, total, percent: 0 };
+  }
+  return {
+    label: MERGE_STEPS[i].label,
+    index: i + 1,
+    total,
+    percent: Math.round(((i + 1) / total) * 100)
+  };
+}
+
+/**
  * Project one `pr_wait` bead into a lane row, carrying whatever the server's PR
  * poller has observed (worker-phase2 §4/§5): the PR link, the gate/base badges,
  * and the two actions (§6).
@@ -391,6 +438,11 @@ function prWaitRow(
   }
   const conflicting = !!gate && gate.base_badge === '충돌';
   const enabled = !!gate && gate.enabled === true;
+  // A merge in flight owns the row: both buttons go quiet until it settles, so
+  // a second click cannot land on an action the server would refuse anyway.
+  const merge_step = mergeStepView(
+    active && active.merge_progress ? active.merge_progress.step : null
+  );
   // An already-merged PR whose cleanup stopped: the click re-runs the cleanup
   // from the top. Nothing retries automatically (§6), so this button is the
   // human's way back in once they have fixed whatever stopped it.
@@ -416,20 +468,24 @@ function prWaitRow(
     // observation cache is empty, so the gate tier alone would re-offer [폐기]
     // on a tile whose merge already landed (discard spec §2).
     discard_action: !cleanup_failed && !(gate && gate.tier === 'merged'),
+    merge_step,
+    discard_enabled: !merge_step,
     // A conflicting PR keeps [머지] clickable on purpose: that click is what
     // dispatches the resolution session (§6), and it merges nothing.
-    merge_enabled: enabled || conflicting || cleanup_retry,
-    merge_title: cleanup_retry
-      ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
-      : conflicting
-        ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
-        : enabled
-          ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
-          : gate && gate.tier === 'merged'
-            ? // Already merged with no cleanup failure recorded: the cleanup is
-              // running, so "머지 불가: 관측 대기" would be a lie about why.
-              '머지됨 — 머지 후 정리 진행 중'
-            : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+    merge_enabled: !merge_step && (enabled || conflicting || cleanup_retry),
+    merge_title: merge_step
+      ? `머지 진행 중 — ${merge_step.label}`
+      : cleanup_retry
+        ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+        : conflicting
+          ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
+          : enabled
+            ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
+            : gate && gate.tier === 'merged'
+              ? // Already merged with no cleanup failure recorded: the cleanup
+                // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                '머지됨 — 머지 후 정리 진행 중'
+              : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -481,6 +537,15 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {CandidateSort}
    */
   let candidate_sort = loadCandidateSort();
+  /**
+   * Beads whose [머지] click has been sent but whose first progress snapshot has
+   * not arrived yet (UI-raqh §4). It covers exactly that gap so the row reacts
+   * to the click immediately; the server's own `merge_progress` supersedes it
+   * as soon as it lands, and the reply clears it either way.
+   *
+   * @type {Set<string>}
+   */
+  const merge_pending = new Set();
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -747,14 +812,11 @@ export function createWorkerView(mount_element, options = {}) {
     if (!transport || !bead_id) {
       return;
     }
-    let res = /** @type {any} */ (
-      await transport('worker-pr-merge', {
-        bead_id,
-        expected_revision: currentRevision()
-      })
-    );
-    adopt(res);
-    if (res && res.conflict) {
+    merge_pending.add(bead_id);
+    doRender();
+    /** @type {any} */
+    let res;
+    try {
       res = /** @type {any} */ (
         await transport('worker-pr-merge', {
           bead_id,
@@ -762,6 +824,20 @@ export function createWorkerView(mount_element, options = {}) {
         })
       );
       adopt(res);
+      if (res && res.conflict) {
+        res = /** @type {any} */ (
+          await transport('worker-pr-merge', {
+            bead_id,
+            expected_revision: currentRevision()
+          })
+        );
+        adopt(res);
+      }
+    } finally {
+      // The reply means the whole click is over — success, refusal, or a
+      // dispatched resolution — so the local cover is spent either way.
+      merge_pending.delete(bead_id);
+      doRender();
     }
     if (!res || res.conflict) {
       return;
@@ -1184,7 +1260,12 @@ export function createWorkerView(mount_element, options = {}) {
           pr_obs,
           cleanup_failed[e.bead_id] || null,
           lastAttemptUsage(q.attempts || {}, e.bead_id),
-          pr_activity[e.bead_id] || null
+          // The server's own progress wins; the local pending only covers the
+          // window before the first snapshot carrying it arrives.
+          pr_activity[e.bead_id] ||
+            (merge_pending.has(e.bead_id)
+              ? { activity: null, merge_progress: { step: 'merging' } }
+              : null)
         )
       ),
       done: toRows(q.done, 'done'),

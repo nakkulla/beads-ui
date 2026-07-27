@@ -159,6 +159,7 @@ function isConflicting(pr) {
  *   store: any,
  *   gh: any,
  *   observations: ReturnType<typeof import('./pr-observations.js').createPrObservationStore>,
+ *   activity?: ReturnType<typeof import('./activity-store.js').createActivityStore>,
  *   bd: {
  *     setStatus: (bead_id: string, status: string) => Promise<void>,
  *     readStatus: (bead_id: string) => Promise<string|null>,
@@ -216,6 +217,40 @@ export function createPrActions(deps) {
    * @type {Set<string>}
    */
   const in_flight = new Set();
+
+  const activity = deps.activity || null;
+
+  /**
+   * Publish the merge's current step (UI-raqh §4). The click runs for minutes
+   * and the client has no other way to see where it is; the fanout is what
+   * makes the step visible to every subscriber, including one that reloaded
+   * mid-merge.
+   *
+   * @param {string} bead_id
+   * @param {string} step
+   */
+  function markStep(bead_id, step) {
+    if (!activity) {
+      return;
+    }
+    activity.setMergeProgress(workspace, bead_id, step);
+    notifyChanged(workspace);
+  }
+
+  /**
+   * Release the merge progress — on success, on failure, and before handing a
+   * conflicting PR to a resolution session (which merges nothing, so leaving
+   * the row "merging" would be a lie).
+   *
+   * @param {string} bead_id
+   */
+  function clearStep(bead_id) {
+    if (!activity) {
+      return;
+    }
+    activity.clearMergeProgress(workspace, bead_id);
+    notifyChanged(workspace);
+  }
 
   /**
    * @param {string} reason
@@ -913,6 +948,7 @@ export function createPrActions(deps) {
     const q = deps.store.snapshot(workspace);
     const target_base = targetBaseFor(q, bead_id);
 
+    markStep(bead_id, 'base_sync');
     const synced = await syncBase(target_base);
     if (!synced.ok) {
       return failCleanup(bead_id, 'base_sync', synced.reason, null);
@@ -924,6 +960,7 @@ export function createPrActions(deps) {
       base_sync,
       synced.sha
     );
+    markStep(bead_id, 'post_merge_verify');
     const verified = await postMergeVerify(bead_id, synced.sha);
     if (!verified.ok) {
       return failCleanup(
@@ -936,21 +973,25 @@ export function createPrActions(deps) {
         verified.output_tail
       );
     }
+    markStep(bead_id, 'deploy');
     const deployed = await runDeploy(bead_id, synced.sha, target_base);
     if (!deployed.ok) {
       return failCleanup(bead_id, 'deploy', deployed.reason, base_sync);
     }
     const pending_deploy = deployed.pending;
+    markStep(bead_id, 'child_sweep');
     const swept = await sweepChildren(bead_id);
     if (!swept.ok) {
       return failCleanup(bead_id, 'child_sweep', swept.reason, base_sync);
     }
+    markStep(bead_id, 'branch_cleanup');
     const branches = await cleanupBranches(bead_id);
     if (!branches.ok) {
       return failCleanup(bead_id, 'branch_cleanup', branches.reason, base_sync);
     }
     // The parent close is LAST, so this is the only step after which bd needs
     // restoring — everything before it left the bead `resolved` untouched (§6).
+    markStep(bead_id, 'parent_close');
     const closed = await closeBead(bead_id);
     if (!closed.ok) {
       return failCleanup(
@@ -1074,6 +1115,9 @@ export function createPrActions(deps) {
       return refuse('action_in_flight');
     }
     in_flight.add(bead_id);
+    // Step 1 of 7 (UI-raqh §4): the re-gate + the merge itself, including the
+    // BEHIND arm's update-branch and its re-observation.
+    markStep(bead_id, 'merging');
     try {
       const q = deps.store.snapshot(workspace);
       if (!inPrWait(q, bead_id)) {
@@ -1114,7 +1158,11 @@ export function createPrActions(deps) {
       }
 
       if (first.pr.merge_state_status !== 'BEHIND') {
-        return doMerge(bead_id, ref.number, first.pr.head_sha, 'merged');
+        // AWAITED: `in_flight` and the progress record must both outlive the
+        // cleanup, which is exactly what the guard promises — returning the
+        // promise unawaited would run this `finally` before the merge even
+        // issued.
+        return await doMerge(bead_id, ref.number, first.pr.head_sha, 'merged');
       }
 
       // BEHIND — merge the base into the branch ON GITHUB, then re-confirm.
@@ -1150,7 +1198,7 @@ export function createPrActions(deps) {
       if (second.pr.merge_state_status === 'BEHIND') {
         return refuse('still_behind');
       }
-      return doMerge(
+      return await doMerge(
         bead_id,
         ref.number,
         second.pr.head_sha,
@@ -1158,6 +1206,7 @@ export function createPrActions(deps) {
       );
     } finally {
       in_flight.delete(bead_id);
+      clearStep(bead_id);
     }
   }
 
@@ -1248,6 +1297,10 @@ export function createPrActions(deps) {
    * @returns {Promise<MergeClickResult>}
    */
   async function dispatchResolution(bead_id, head_sha) {
+    // Resolving is not merging: drop the progress BEFORE the session appears,
+    // so the row goes back to its ordinary conflict state rather than showing a
+    // merge that is not happening.
+    clearStep(bead_id);
     const r = await deps.scheduler.resolveConflict(workspace, bead_id);
     notifyChanged(workspace);
     return {
@@ -1285,6 +1338,7 @@ export function createPrActions(deps) {
       return await runCleanup(bead_id);
     } finally {
       in_flight.delete(bead_id);
+      clearStep(bead_id);
     }
   }
 
