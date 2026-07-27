@@ -256,13 +256,13 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, makeRunner?: (name: string) => any, admission?: any, notifyQueueChanged?: (workspace: string) => void }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notifyQueueChanged?: (workspace: string) => void }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
   const runner = makeFakeRunner();
   const bd = makeFakeBd(opts.config);
-  const verify = {
+  const verify = opts.verify || {
     verifyPrSubmitted: vi.fn(async () => ({
       ok: opts.verifyOk ?? true,
       reason: (opts.verifyOk ?? true) ? 'ok' : 'pr_missing',
@@ -299,6 +299,7 @@ function setup(opts) {
     verify,
     sessionLog,
     admission: opts.admission,
+    probePid: opts.probePid,
     notifyQueueChanged: opts.notifyQueueChanged,
     now: () => 1000
   });
@@ -2613,5 +2614,257 @@ describe('scheduler terminal-status dequeue', () => {
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.isRunning('S2')).toBe(true);
+  });
+});
+
+describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
+  /**
+   * Persist a `running` attempt exactly as a PRIOR process left it: the durable
+   * record survives the restart, the in-memory session handle does not.
+   *
+   * @param {any} store
+   * @param {Partial<import('./queue-store.js').Attempt>} [patch]
+   */
+  function seedDetachedAttempt(store, patch = {}) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        workflow_mode_prior: null,
+        ...patch
+      }
+    });
+  }
+
+  /**
+   * A scheduler whose PID probe answers exactly once per attempt.
+   *
+   * @param {{ alive: boolean, started_at: number|null }} probe
+   * @param {Record<string, any>} [config]
+   * @param {Record<string, any>} [extra]
+   */
+  function reconcileEnv(probe, config = { 'UI-1': {} }, extra = {}) {
+    return setup({ config, probePid: () => probe, ...extra });
+  }
+
+  test('leaves a live attempt whose PID start time matches untouched', async () => {
+    const env = reconcileEnv({ alive: true, started_at: 1000 });
+    seedDetachedAttempt(env.store);
+    env.store.setAutoAdvance(WS, true);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('running');
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('keeps an attempt whose probed start time is inside the tolerance', async () => {
+    const env = reconcileEnv({ alive: true, started_at: 2999 });
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('running');
+  });
+
+  test('treats a recycled PID (alive, start time mismatch) as dead', async () => {
+    const env = reconcileEnv({ alive: true, started_at: 999999 });
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
+  });
+
+  test('treats an attempt with no recorded pid as dead', async () => {
+    const env = reconcileEnv({ alive: true, started_at: 1000 });
+    seedDetachedAttempt(env.store, { pid: null });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
+  });
+
+  test('ignores attempts that are not running', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store, { status: 'done' });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('skips an attempt this process still holds a session handle for', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    await env.scheduler.reconcile(WS);
+
+    // onSessionDone is this attempt's authority — a reconcile disposition here
+    // would double-process the session the moment it exits.
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('running');
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('moves a dead attempt whose PR the server observes into pr_wait', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store);
+    env.store.setAutoAdvance(WS, true);
+
+    await env.scheduler.reconcile(WS);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts['att-1'].status).toBe('done');
+    expect(snap.pr_wait.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('does not halt the queue when it recovers a normal completion', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store);
+    env.store.setAutoAdvance(WS, true);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).auto_advance).toBe(true);
+  });
+
+  test('records the verify_result the PR poller resolves its PR number from', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(
+      env.store.snapshot(WS).attempts['att-1'].verify_result
+    ).toMatchObject({ ok: true, pr_url: 'https://github.com/o/r/pull/1' });
+  });
+
+  test('leaves exit null — a detached session exit is never observed', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].exit).toBe(null);
+  });
+
+  test('reverts the exec stamps the dead session left on the bead', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store, {
+      exec_stamped_keys: ['orchestration_model']
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.bd.calls).toContainEqual({
+      method: 'unsetMetadata',
+      bead_id: 'UI-1',
+      key: 'orchestration_model'
+    });
+  });
+
+  test('fails a dead attempt whose PR is missing and halts the queue', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      verifyOk: false
+    });
+    seedDetachedAttempt(env.store);
+    env.store.setAutoAdvance(WS, true);
+
+    await env.scheduler.reconcile(WS);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts['att-1'].cause).toBe('verify_failed:pr_missing');
+    expect(snap.attempts['att-1'].status).toBe('failed');
+    expect(snap.auto_advance).toBe(false);
+  });
+
+  test('fails closed when the PR observation could not be completed', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: false,
+          reason: 'gh_observation_failed',
+          pr_url: null
+        }))
+      }
+    });
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    // An observation error must never be downgraded to "no PR was opened".
+    expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(
+      'verify_failed:gh_observation_failed'
+    );
+  });
+
+  test('fails closed without an observation when the attempt records no repo', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store, { repo: null });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(
+      'verify_failed:gh_observation_failed'
+    );
+  });
+
+  test('blocks the lane move when the workflow_mode revert fails', async () => {
+    const env = reconcileEnv(
+      { alive: false, started_at: null },
+      {
+        'UI-1': { throwOnUnset: true }
+      }
+    );
+    seedDetachedAttempt(env.store);
+    env.store.setAutoAdvance(WS, true);
+
+    await env.scheduler.reconcile(WS);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts['att-1'].cause).toBe('workflow_mode_revert_failed');
+    expect(snap.pr_wait).toEqual([]);
+  });
+
+  test('runs one reconcile pass at a time per workspace', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    const verifyPrSubmitted = vi.fn(async () => {
+      await gate;
+      return {
+        ok: true,
+        reason: 'ok',
+        pr_url: 'https://github.com/o/r/pull/1'
+      };
+    });
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      verify: { verifyPrSubmitted }
+    });
+    seedDetachedAttempt(env.store);
+
+    const first = env.scheduler.reconcile(WS);
+    await flush();
+    await env.scheduler.reconcile(WS);
+    release();
+    await first;
+
+    expect(verifyPrSubmitted).toHaveBeenCalledTimes(1);
   });
 });

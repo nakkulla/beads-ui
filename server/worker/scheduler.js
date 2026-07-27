@@ -14,7 +14,7 @@
  *     model, effort — spec §5.1/§5.2).
  *   - Record + readback `workflow_mode=fast_track` on the bead, snapshotting the
  *     PRIOR value into the attempt. On any termination WITHOUT a bead close
- *     (fail/stop/orphan) the prior value is reverted (unset when originally
+ *     (fail/stop/reconcile) the prior value is reverted (unset when originally
  *     absent) so a stray fast_track never switches a later manual session to
  *     unattended (spec §5.2), and a bead left `in_progress` is reopened so the
  *     claim the session never gave back cannot hide it from `bd ready`.
@@ -24,8 +24,17 @@
  *     render off the terminal attempt record (worker-phase2 §2 — the circuit
  *     breaker that used to do this is gone with the merge axis).
  *
- * Fully injectable (fake clock / runner / bd / worktree / verify) so no real
- * subprocess is spawned in tests.
+ * {@link createScheduler}'s `reconcile` is the second observation path
+ * (worker-detached-session-reconcile §1). Sessions are spawned detached so they
+ * survive a server restart, which means `onSessionDone` — a child-process handle
+ * this process holds — can never observe the end of a session it did not spawn.
+ * `reconcile` judges those persisted `running` attempts by PID + process start
+ * time and disposes the dead ones through the SAME verify/branch logic
+ * `onSessionDone` uses, so a restart-surviving session that already pushed its
+ * PR still reaches `pr_wait`.
+ *
+ * Fully injectable (fake clock / runner / bd / worktree / verify / PID probe) so
+ * no real subprocess is spawned in tests.
  *
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
@@ -34,6 +43,16 @@ import { resolveExecSettings } from './policy.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
 
 const log = debug('worker:scheduler');
+
+/**
+ * How far a probed process start time may differ from the attempt's recorded
+ * `started_at` before the PID counts as RECYCLED (a different process wearing
+ * the same number). `ps -o lstart=` resolves to whole seconds, so the tolerance
+ * has to absorb that coarseness.
+ *
+ * @type {number}
+ */
+const PID_START_TOLERANCE_MS = 2000;
 
 /**
  * @typedef {Object} BeadSnapshot
@@ -80,6 +99,10 @@ const log = debug('worker:scheduler');
  * Fired after autonomous queue transitions (dispatch records, admission
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
  * waiting for their next own mutation (worker-autorun-policy §6).
+ * @property {(pid: number|null) => { alive: boolean, started_at: number|null }} [probePid]
+ * Liveness + start-time probe for {@link createScheduler}'s `reconcile`. Absent
+ * (legacy wiring / dispatch-only tests) makes every reconcile pass a no-op:
+ * without a probe there is no evidence a detached session died.
  * @property {() => number} [now]
  * @property {(bead_id: string) => string} [makeAttemptId]
  */
@@ -94,6 +117,7 @@ const log = debug('worker:scheduler');
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   resume: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   reconcile: (workspace: string) => Promise<void>,
  *   runningCount: () => number,
  *   runningBeads: () => string[],
  *   isRunning: (bead_id: string) => boolean
@@ -150,6 +174,14 @@ export function createScheduler(deps) {
    * @type {Map<string, Promise<RunnerVerdict>>}
    */
   const paused_done = new Map();
+  /**
+   * Workspaces with a reconcile pass in flight. A pass can spend seconds inside
+   * `gh`, so the periodic timer would otherwise stack overlapping passes that
+   * each see the same still-`running` attempt and dispose it twice.
+   *
+   * @type {Set<string>}
+   */
+  const reconciling = new Set();
 
   /**
    * Notify ws subscribers of an autonomous queue transition (best-effort).
@@ -593,6 +625,153 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Is a persisted `running` attempt's process gone? The judgment is
+   * attempt_id + PID + START TIME, never mere PID existence: a recycled PID
+   * (same number, unrelated process) must read as dead, or a dead session would
+   * hold its slot until the number is reused by nothing.
+   *
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function isDeadAttempt(attempt) {
+    const probePid = deps.probePid;
+    if (typeof probePid !== 'function') {
+      return false;
+    }
+    if (attempt.pid == null) {
+      return true;
+    }
+    const probe = probePid(attempt.pid);
+    if (!probe.alive) {
+      return true;
+    }
+    return (
+      attempt.started_at != null &&
+      probe.started_at != null &&
+      Math.abs(probe.started_at - attempt.started_at) > PID_START_TOLERANCE_MS
+    );
+  }
+
+  /**
+   * Dispose ONE attempt whose detached session is gone
+   * (worker-detached-session-reconcile §1). The exit code is unobservable here,
+   * so `exit` is left null and the verdict comes from the same independent
+   * observation `onSessionDone` runs — exit 0 was never the authority anyway.
+   * Both branches then mirror `onSessionDone` verbatim, including the
+   * `verify_result` record the PR poller's `resolvePrRef` reads to learn which
+   * PR a `pr_wait` bead is waiting on.
+   *
+   * A dead attempt with no recorded `repo` cannot be observed at all, so it
+   * fails closed rather than guessing a repo — an unobservable attempt must
+   * never read as "no PR was ever opened".
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {any} attempt
+   */
+  async function disposeDeadAttempt(workspace, attempt_id, attempt) {
+    const bead_id = attempt.bead_id;
+    const prior = attempt.workflow_mode_prior ?? null;
+    const repo = typeof attempt.repo === 'string' ? attempt.repo : '';
+    /** @type {{ ok: boolean, reason: string }} */
+    let vr;
+    if (repo.length === 0) {
+      vr = { ok: false, reason: 'gh_observation_failed' };
+    } else {
+      try {
+        vr = await deps.verify.verifyPrSubmitted({ repo, bead_id });
+      } catch (err) {
+        // The verifier is fail-closed internally; a throw is a defect, and
+        // letting it escape would leave the attempt `running` for the next pass
+        // to re-observe forever.
+        log('reconcile verify threw for %s: %o', attempt_id, err);
+        vr = { ok: false, reason: 'gh_observation_failed' };
+      }
+    }
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { verify_result: vr }
+    });
+
+    if (vr.ok) {
+      try {
+        await revertWorkflowMode(bead_id, prior);
+      } catch (err) {
+        log(
+          'workflow_mode revert failed on reconcile for %s: %o',
+          bead_id,
+          err
+        );
+        await failAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          'workflow_mode_revert_failed'
+        );
+        notifyChanged(workspace);
+        await tick(workspace);
+        return;
+      }
+      await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
+      // A recovered normal completion must NOT stop the queue: `auto_advance`
+      // is deliberately untouched on this branch.
+      deps.store.moveToPrWait(workspace, {
+        bead_id,
+        attempt_id,
+        patch: { status: 'done', finished_at: now() }
+      });
+    } else {
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        `verify_failed:${vr.reason}`
+      );
+    }
+    notifyChanged(workspace);
+    await tick(workspace);
+  }
+
+  /**
+   * Reconcile persisted `running` attempts against the OS
+   * (worker-detached-session-reconcile §1). Both entry points — server startup
+   * and the periodic timer — share this one routine.
+   *
+   * Attempts THIS process holds a handle for are skipped: `onSessionDone` is
+   * their authority, and a reconcile pass racing a session that is finishing
+   * right now would dispose it twice.
+   *
+   * @param {string} workspace
+   */
+  async function reconcile(workspace) {
+    if (reconciling.has(workspace)) {
+      return;
+    }
+    reconciling.add(workspace);
+    try {
+      const q = deps.store.snapshot(workspace);
+      /** @type {Array<{ attempt_id: string, attempt: any }>} */
+      const dead = [];
+      for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
+        const a = /** @type {any} */ (attempt);
+        if (!a || a.status !== 'running' || running.has(attempt_id)) {
+          continue;
+        }
+        if (isDeadAttempt(a)) {
+          dead.push({ attempt_id, attempt: a });
+        }
+      }
+      for (const d of dead) {
+        await disposeDeadAttempt(workspace, d.attempt_id, d.attempt);
+      }
+    } finally {
+      reconciling.delete(workspace);
+    }
+  }
+
+  /**
    * Dispatch one bead: re-read bd, guard, worktree, workflow_mode, attempt
    * snapshot, spawn. Releases the claim on any pre-spawn abort.
    *
@@ -739,7 +918,7 @@ export function createScheduler(deps) {
     // DURABLE pre-record: persist the attempt (status 'running', pid null)
     // BEFORE the first exec-setting metadata write, recording the exact keys
     // this dispatch will stamp. If a crash lands between here and spawn, a
-    // restart's orphan reap can revert the stamps from this record — an
+    // restart's reconcile can revert the stamps from this record — an
     // in-memory-only registry could not (worker-global-exec-defaults §3).
     const stamped_keys = exec.stamped_keys;
     // Persist the resolved values of the stamped keys too (spec §1): a later
@@ -1616,6 +1795,7 @@ export function createScheduler(deps) {
     pause,
     resume,
     resolveConflict,
+    reconcile,
     runningCount() {
       return running.size;
     },

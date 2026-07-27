@@ -103,7 +103,9 @@ watchRegistry(
 server.listen(config.port, config.host, () => {
   printServerUrl();
   // Bring up the live worker dispatch loop: build a scheduler per active
-  // workspace and reap any orphaned attempts (spec §5.1–§5.3).
+  // workspace, reconcile the `running` attempts a prior run left behind, and
+  // arm each workspace's periodic reconcile
+  // (spec §5.1–§5.3, worker-detached-session-reconcile §2).
   /** @type {Set<string>} */
   const worker_roots = new Set();
   for (const workspace of configured_workspaces) {
