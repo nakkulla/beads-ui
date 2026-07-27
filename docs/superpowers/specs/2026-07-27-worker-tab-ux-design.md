@@ -43,7 +43,11 @@
 ### 누적·저장 (세션 엔진 + server/worker/queue-store.js)
 
 - 세션 엔진이 attempt별 누적 카운터를 메모리에 유지한다:
-  - 실행 중: assistant 이벤트마다 `input_tokens + output_tokens`를 합산.
+  - 실행 중: `message.id`별 최신 usage로 교체 저장한다(스트리밍 중 같은
+    `message.id`의 assistant 이벤트가 동일 usage를 반복 전달하므로 — fixture
+    `claude-tools.jsonl`에서 4회/2회 반복 확인 — 이벤트 단위 합산은 중복
+    집계다). 표시값은 id별 usage의 `input_tokens + output_tokens` 합.
+    스트리밍 중간 이벤트의 output 과소계상은 허용(후속 이벤트/result가 갱신).
   - `result` 도착 시: 해당 이벤트의 최종 usage로 교체(권위값).
 - 세션 종료(성공/실패/일시정지/중단) 시 `Attempt`에 선택 필드로 영속화:
   `usage { input_tokens, output_tokens, cache_read_input_tokens,
@@ -84,11 +88,14 @@
 
 ### 서버 (server/worker/pr-poller.js)
 
-- bead별 활동 상태 `activity: 'checking' | 'verifying' | null`을 기록:
-  - `observeBead` 시작 시 `checking`.
-  - `verify_cmd` 실행 동안 `verifying`.
-  - `finally`에서 해제(leak 방지).
-- 스냅샷에 포함(`decorateQueue()` 경유)하고 전이 시 fanout.
+- bead별 활동을 독립 플래그 두 개로 기록한다: `{ checking, verifying }`.
+  단일 enum은 장시간 로컬검증과 다음 관측 패스가 겹칠 때 `checking` 전이나
+  그 `finally` 해제가 `verifying`을 덮어쓰는 경합이 있으므로 쓰지 않는다.
+  - `observeBead` 시작 시 `checking=true`, 그 `finally`에서 `checking=false`.
+  - `verify_cmd` 실행 시 `verifying=true`, 그 `finally`에서 `verifying=false`.
+  - 각 플래그는 자기 작업의 `finally`만이 해제한다(상호 불간섭).
+- 스냅샷 노출 시 단일 표시값으로 축약: `verifying` 우선
+  (`verifying > checking > null`). `decorateQueue()` 경유, 전이 시 fanout.
 
 ### 표시 규칙 (app/views/worker/index.js `prWaitRow`)
 
@@ -132,6 +139,10 @@
 
 - `claude.js` `normalize()`: assistant/result 이벤트 usage 추출, 필드 결손 시
   생략.
+- usage 중복 방지: 같은 `message.id` 반복 이벤트에서 중복 집계 없음
+  (`claude-tools.jsonl` fixture 회귀 테스트).
+- activity 겹침: 장시간 `verifying` 중 새 관측 패스의 `checking` 시작·종료가
+  `verifying` 표시를 되돌리지 않음.
 - queue-store: `Attempt.usage` 영속화·재로드.
 - `decorateQueue()`: 라이브/영속 usage 및 `activity`·`merge_progress` 노출.
 - `buildModel()`: 실행 중 타일·PR 대기·완료 행 usage 매핑(마지막 attempt).
