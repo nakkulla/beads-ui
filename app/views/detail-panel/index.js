@@ -126,7 +126,10 @@ export function createDetailPanel(mount_element, options) {
         model: a.model || null,
         session_id: a.session_id || null,
         resumed_from: a.resumed_from || null,
-        dismissed_at: typeof a.dismissed_at === 'number' ? a.dismissed_at : null
+        dismissed_at:
+          typeof a.dismissed_at === 'number' ? a.dismissed_at : null,
+        cause: typeof a.cause === 'string' ? a.cause : null,
+        cause_detail: a.cause_detail || null
       }));
   }
 

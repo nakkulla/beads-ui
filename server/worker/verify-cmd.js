@@ -159,6 +159,32 @@ function errorDetail(err) {
 }
 
 /**
+ * Rolling capture window for the verify command's own output (UI-qult §1). The
+ * process may print megabytes; only the END is diagnostic, so the buffer is
+ * trimmed from the front to keep memory bounded. 16KB comfortably covers both
+ * caps below, so neither the line cap nor the char cap can lose a line the
+ * other would have kept.
+ *
+ * @type {number}
+ */
+const TAIL_WINDOW = 16384;
+
+/**
+ * How many trailing lines of the captured output survive into the result.
+ *
+ * @type {number}
+ */
+const TAIL_MAX_LINES = 100;
+
+/**
+ * Hard character cap on the preserved tail — a `queue.json` bound, applied
+ * after the line cap.
+ *
+ * @type {number}
+ */
+const TAIL_MAX_CHARS = 8192;
+
+/**
  * @typedef {Object} VerifyCmdResult
  * @property {boolean} ok - Exit 0 within the deadline.
  * @property {'ok'|'verify_cmd_failed'|'verify_cmd_timeout'|'verify_cmd_spawn_error'|'verify_sha_unavailable'|'verify_worktree_failed'} reason
@@ -166,6 +192,11 @@ function errorDetail(err) {
  * @property {string} [detail] - Diagnostic text for a failure whose reason
  * alone cannot be acted on (today: the git stderr behind
  * `verify_worktree_failed`, UI-2o4z §3). Absent when there is nothing to add.
+ * @property {string} [output_tail] - The tail of the command's own stdout+stderr
+ * (UI-qult §1), interleaved in ARRIVAL order because that is the order a human
+ * reading a terminal would have seen. Present only on `verify_cmd_failed` /
+ * `verify_cmd_timeout` with non-empty output; absent on success, on a spawn
+ * error (nothing ran), and on a run that printed nothing.
  */
 
 /**
@@ -200,13 +231,67 @@ export function runVerifyCmd(input) {
       child = spawn_impl(input.cmd[0], input.cmd.slice(1), {
         cwd: input.cwd,
         shell: false,
-        stdio: 'ignore',
+        // Piped so the failure's own output can be preserved (UI-qult §1). Both
+        // pipes are drained below — an unread pipe would stall the child once
+        // its buffer fills.
+        stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true
       });
     } catch {
       resolve({ ok: false, reason: 'verify_cmd_spawn_error', exit: null });
       return;
     }
+
+    // ONE shared buffer for both streams: a verify failure is read as a
+    // terminal transcript, and collecting the two streams separately would
+    // reorder the stderr line against the stdout line that explains it.
+    let captured = '';
+    /**
+     * @param {import('node:stream').Readable|null|undefined} stream
+     */
+    const capture = (stream) => {
+      if (!stream) {
+        return;
+      }
+      stream.setEncoding('utf8');
+      stream.on('data', (/** @type {string} */ chunk) => {
+        captured += chunk;
+        if (captured.length > TAIL_WINDOW) {
+          captured = captured.slice(captured.length - TAIL_WINDOW);
+        }
+      });
+      // Capture is best-effort: a broken pipe must never change the verdict.
+      stream.on('error', () => {});
+    };
+    capture(child.stdout);
+    capture(child.stderr);
+
+    /**
+     * @returns {string}
+     */
+    const outputTail = () => {
+      const lines = captured.split('\n');
+      // A normal trailing newline leaves an empty last element; counting it as
+      // a line would drop a real one from the far end of the window.
+      if (lines.length > 0 && lines[lines.length - 1] === '') {
+        lines.pop();
+      }
+      const text = lines.slice(-TAIL_MAX_LINES).join('\n');
+      return (
+        text.length > TAIL_MAX_CHARS
+          ? text.slice(text.length - TAIL_MAX_CHARS)
+          : text
+      ).trim();
+    };
+
+    /**
+     * @param {VerifyCmdResult} result
+     * @returns {VerifyCmdResult}
+     */
+    const withTail = (result) => {
+      const tail = outputTail();
+      return tail.length > 0 ? { ...result, output_tail: tail } : result;
+    };
 
     let settled = false;
     let timed_out = false;
@@ -243,14 +328,18 @@ export function runVerifyCmd(input) {
     });
     child.on('close', (code) => {
       if (timed_out) {
-        finish({ ok: false, reason: 'verify_cmd_timeout', exit: null });
+        // Partial output is the most diagnostic thing a timeout leaves behind —
+        // it says WHERE the command stopped making progress.
+        finish(
+          withTail({ ok: false, reason: 'verify_cmd_timeout', exit: null })
+        );
         return;
       }
       const exit = typeof code === 'number' ? code : null;
       if (exit === 0) {
         finish({ ok: true, reason: 'ok', exit });
       } else {
-        finish({ ok: false, reason: 'verify_cmd_failed', exit });
+        finish(withTail({ ok: false, reason: 'verify_cmd_failed', exit }));
       }
     });
   });

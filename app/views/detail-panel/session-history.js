@@ -15,6 +15,11 @@ import { html } from 'lit-html';
  * @property {string|null} [session_id] - Runner session id (short display).
  * @property {string|null} [resumed_from] - Prior attempt this one resumes (§1).
  * @property {number|null} [dismissed_at] - Epoch ms the attempt was dismissed (closed as handled), if any.
+ * @property {string|null} [cause] - Why a failed/orphaned attempt ended
+ * (UI-qult §4); absent on records written before the field existed.
+ * @property {{ reason: string, command: string|null }|null} [cause_detail] -
+ * What the fail-closed path caught behind that cause. `command` is nullable —
+ * a guard can trip without one.
  */
 
 /** @type {Record<string, string>} */
@@ -84,15 +89,15 @@ export function sessionHistoryTemplate(attempts, handlers = {}) {
     }
     const has_sid = typeof a.session_id === 'string' && a.session_id.length > 0;
     const already = resumed_from_ids.has(a.attempt_id);
-    const dismissed = typeof a.dismissed_at === 'number';
-    const eligible = has_sid && !already && !dismissed;
+    // `dismissed_at` is deliberately NOT part of the eligibility: the server's
+    // `scheduler.resume()` never reads it, so excluding dismissed attempts here
+    // made the UI stricter than the API it drives (UI-qult §4).
+    const eligible = has_sid && !already;
     const title = !has_sid
       ? 'session_id 없는 구 attempt — 이어하기 불가'
       : already
         ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
-        : dismissed
-          ? '처리 완료로 닫은 attempt — 이어하기 불가'
-          : '이 세션을 같은 워크트리에서 이어서 진행';
+        : '이 세션을 같은 워크트리에서 이어서 진행';
     return html`<button
       type="button"
       class="detail-session__resume"
@@ -108,6 +113,33 @@ export function sessionHistoryTemplate(attempts, handlers = {}) {
     >
       ↻ 이어하기
     </button>`;
+  };
+
+  /**
+   * The one-line failure cause under a failed/orphaned row (UI-qult §4). A
+   * record written before the field existed renders nothing rather than an
+   * empty line.
+   *
+   * @param {SessionAttempt} a
+   * @returns {TemplateResult|''}
+   */
+  const causeLine = (a) => {
+    const is_terminal_fail = a.status === 'failed' || a.status === 'orphaned';
+    if (!is_terminal_fail || typeof a.cause !== 'string' || a.cause === '') {
+      return '';
+    }
+    const detail = a.cause_detail;
+    // `command` is nullable, so it is appended only when it really is one —
+    // a tooltip reading "… · null" says less than no tooltip at all.
+    const title =
+      detail && typeof detail.reason === 'string' && detail.reason.length > 0
+        ? typeof detail.command === 'string' && detail.command.length > 0
+          ? `${detail.reason} · ${detail.command}`
+          : detail.reason
+        : a.cause;
+    return html`<div class="detail-session__cause" title=${title}>
+      ${a.cause}
+    </div>`;
   };
 
   return html`
@@ -145,7 +177,7 @@ export function sessionHistoryTemplate(attempts, handlers = {}) {
                 >${shortTime(a.started_at)}</span
               >
             </button>
-            ${resumeButton(a)}
+            ${resumeButton(a)} ${causeLine(a)}
           </div>`
       )}
     </div>

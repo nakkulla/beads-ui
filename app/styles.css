@@ -2751,6 +2751,29 @@ html[data-theme='dark'] {
   font-family: var(--font-mono);
 }
 
+/* 실패한 verify 명령의 출력 tail (UI-qult §1). 기본은 접힘이고, 펼쳤을 때도
+   배너가 화면을 삼키지 않도록 높이를 묶고 내부 스크롤로 보낸다. */
+.worker-banner__tail {
+  margin-top: var(--sp-4);
+  font-size: var(--fs-chip);
+}
+
+.worker-banner__tail summary {
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.worker-banner__tail pre {
+  max-height: 240px;
+  margin: var(--sp-4) 0 0;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  /* 긴 줄은 접어서 배너 폭을 넘기지 않게 한다. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .worker-rungrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
@@ -3497,11 +3520,26 @@ html[data-theme='dark'] {
   color: var(--text-dim);
 }
 
-/* 이력 행 wrapper: 행 버튼(드로어 열기) + 별도 이어하기 버튼 (attempt-resume §1). */
+/* 이력 행 wrapper: 행 버튼(드로어 열기) + 별도 이어하기 버튼 (attempt-resume §1).
+   실패 원인 줄(UI-qult §4)은 wrap으로 아래 줄에 떨어진다. */
 .detail-session-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: var(--sp-4);
+}
+
+/* 실패/고아 attempt의 원인 한 줄. 폭을 다 차지해 항상 다음 줄로 떨어지고,
+   길면 말줄임 — 전체 문구는 title 툴팁에 있다. */
+.detail-session__cause {
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: 0 var(--sp-8);
+  color: var(--accent-danger);
+  font-size: var(--fs-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail-session-row .detail-session {

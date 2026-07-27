@@ -53,6 +53,8 @@ import { html } from 'lit-html';
  * @property {string} reason - Machine-readable cause.
  * @property {string|null} [detail] - The step's own diagnostic text (git stderr
  * etc., UI-2o4z §3); absent on records written before it was preserved.
+ * @property {string} [output_tail] - The failing command's own trailing output
+ * (UI-qult §1); absent when the step ran no command or printed nothing.
  */
 
 /**
@@ -91,6 +93,25 @@ function causeDetailLine(detail) {
       ? html` · <code>${truncateDetail(detail.command)}</code>`
       : ''}
   </div>`;
+}
+
+/**
+ * The collapsed verify-output block under a cleanup banner (UI-qult §3). `open`
+ * is deliberately NOT bound, which leaves it DOM state — a user's expanded tail
+ * then survives every queue-snapshot re-render. The tail is a text binding, so
+ * lit-html escapes it: command output is untrusted input.
+ *
+ * @param {string|null|undefined} tail
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+function outputTailBlock(tail) {
+  if (!tail) {
+    return '';
+  }
+  return html`<details class="worker-banner__tail">
+    <summary>출력 tail</summary>
+    <pre>${tail}</pre>
+  </details>`;
 }
 
 /**
@@ -166,6 +187,7 @@ export function bannersTemplate(state) {
                 <code>${truncateDetail(c.detail)}</code>
               </div>`
             : ''}
+          ${outputTailBlock(c.output_tail)}
         </div>`
     )}
   </div>`;
