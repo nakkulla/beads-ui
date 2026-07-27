@@ -3403,6 +3403,43 @@ html[data-theme='dark'] {
   color: var(--accent-warn);
 }
 
+/* Live poller activity (UI-raqh §3) — deliberately the QUIETEST live signal on
+   the board: no colour, no spinner. Work the server does by itself needs no
+   human decision, so it only has to look alive, which one breathing dot does.
+   Colour and emphasis stay reserved for states a person must act on. */
+.worker-mini__badge--activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-color: var(--border-card);
+  color: var(--text-secondary);
+}
+
+.act-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: act-breathe 1.9s ease-in-out infinite;
+}
+
+@keyframes act-breathe {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .act-dot {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
 /* Candidate sort select (UI-raqh §2) — part of the pane header, not a control
    competing with it: borderless until hover, header-sized, no uppercase. */
 .worker-sort {

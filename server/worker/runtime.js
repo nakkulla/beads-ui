@@ -13,6 +13,7 @@
  * bead has, discard spec §1). Without a registered attachment those kicks are
  * inert and `running_count` stays 0.
  */
+import { createActivityStore } from './activity-store.js';
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
 import { createPrObservationStore } from './pr-observations.js';
@@ -27,6 +28,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createGh>} gh
  * @property {ReturnType<typeof createPrObservationStore>} prObservations
  * @property {ReturnType<typeof createUsageStore>} usageStore
+ * @property {ReturnType<typeof createActivityStore>} activityStore
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number }} status
@@ -53,6 +55,10 @@ export function createWorkerRuntime() {
   // exactly like the observation cache — both must share one instance. Also
   // never persisted: the durable copy lands on the attempt at termination.
   const usageStore = createUsageStore();
+  // Process-wide activity cache (UI-raqh §3/§4): the PR poller and the PR
+  // actions WRITE what they are doing right now, the ws queue-snapshot
+  // decoration READS it. Non-persistent — nothing is in flight after a restart.
+  const activityStore = createActivityStore();
   // Shared session-log broker: the scheduler's `attach` persists the raw stream
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
@@ -66,6 +72,7 @@ export function createWorkerRuntime() {
     gh,
     prObservations,
     usageStore,
+    activityStore,
     sessionLog,
     /**
      * @param {() => number} fn

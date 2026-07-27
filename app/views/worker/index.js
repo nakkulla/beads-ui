@@ -304,6 +304,38 @@ function blockedReason(issue) {
 const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
 
 /**
+ * Poller activity replaces a gate badge ONLY where it changes what the badge
+ * MEANS (UI-raqh §3): "관측 대기" while a gh round-trip is actually in flight is
+ * 확인중, and "로컬검증 대기" while the suite is actually running is 로컬검증
+ * 실행 중. Anywhere else — CI ✓/✗, 머지됨, 관측 오류 — the poller working
+ * changes nothing about the state, and swapping the badge there would make the
+ * row flicker every poll interval for no information.
+ *
+ * @type {Array<{ from: string, activity: 'checking'|'verifying', to: string }>}
+ */
+const ACTIVITY_BADGE_SUBSTITUTIONS = [
+  { from: '관측 대기', activity: 'checking', to: '확인중' },
+  { from: '로컬검증 대기', activity: 'verifying', to: '로컬검증 실행 중' }
+];
+
+/**
+ * The badge a row shows for its verification signal, after the activity
+ * substitution above.
+ *
+ * @param {string} gate_badge
+ * @param {'checking'|'verifying'|null} activity
+ * @returns {{ label: string, live: boolean }}
+ */
+export function activityBadge(gate_badge, activity) {
+  for (const rule of ACTIVITY_BADGE_SUBSTITUTIONS) {
+    if (gate_badge === rule.from && activity === rule.activity) {
+      return { label: rule.to, live: true };
+    }
+  }
+  return { label: gate_badge, live: false };
+}
+
+/**
  * Project one `pr_wait` bead into a lane row, carrying whatever the server's PR
  * poller has observed (worker-phase2 §4/§5): the PR link, the gate/base badges,
  * and the two actions (§6).
@@ -327,16 +359,29 @@ const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
  * post-merge cleanup failure for this bead, if any (§6).
  * @param {import('./usage.js').UsageRecord|null} [usage] - Token usage of the
  * bead's last attempt (UI-raqh §1).
+ * @param {{ activity: 'checking'|'verifying'|null, merge_progress: { step: string }|null }|null} [active]
+ * What the server is doing to this bead right now (UI-raqh §3/§4).
  * @returns {any}
  */
-function prWaitRow(bead_id, title, observations, cleanup_failed, usage = null) {
+function prWaitRow(
+  bead_id,
+  title,
+  observations,
+  cleanup_failed,
+  usage = null,
+  active = null
+) {
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
   /** @type {string[]} */
   const badges = [];
-  if (gate && gate.gate_badge) {
-    badges.push(gate.gate_badge);
+  const substituted = activityBadge(
+    (gate && gate.gate_badge) || '',
+    (active && active.activity) || null
+  );
+  if (substituted.label) {
+    badges.push(substituted.label);
   }
   if (gate && gate.base_badge && gate.base_badge !== gate.gate_badge) {
     badges.push(gate.base_badge);
@@ -360,6 +405,10 @@ function prWaitRow(bead_id, title, observations, cleanup_failed, usage = null) {
     pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
     pr_url: pr && typeof pr.url === 'string' ? pr.url : '',
     badges,
+    // Which badge (if any) reports live server activity rather than a settled
+    // state — the row draws that one with the breathing dot and no colour
+    // emphasis, because nobody has to act on it.
+    live_badge: substituted.live ? substituted.label : null,
     usage,
     alert: (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) || !!cleanup_failed,
     merge_action: true,
@@ -858,6 +907,10 @@ export function createWorkerView(mount_element, options = {}) {
     const pr_wait_entries = /** @type {any[]} */ (q.pr_wait || []);
     /** @type {Record<string, any>} */
     const pr_obs = q.pr_observations || {};
+    // Live server activity per `pr_wait` bead (UI-raqh §3/§4). Fail-quiet: a
+    // server that does not send it simply renders the settled badges.
+    /** @type {Record<string, any>} */
+    const pr_activity = q.pr_activity || {};
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
@@ -1130,7 +1183,8 @@ export function createWorkerView(mount_element, options = {}) {
           idToTitle.get(e.bead_id) || e.bead_id,
           pr_obs,
           cleanup_failed[e.bead_id] || null,
-          lastAttemptUsage(q.attempts || {}, e.bead_id)
+          lastAttemptUsage(q.attempts || {}, e.bead_id),
+          pr_activity[e.bead_id] || null
         )
       ),
       done: toRows(q.done, 'done'),

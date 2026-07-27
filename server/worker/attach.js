@@ -481,6 +481,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     store: runtime.queueStore,
     gh,
     observations: runtime.prObservations,
+    activity: runtime.activityStore,
     getSubscriberCount: options.getSubscriberCount || (() => 0),
     resolveVerify,
     worktree,

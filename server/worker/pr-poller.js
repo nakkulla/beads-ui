@@ -148,6 +148,7 @@ export function rollupConclusion(checks) {
  *     prChecks: (repo_dir: string, number: number) => Promise<import('./gh.js').GhResult<import('./gh.js').CheckObservation[]>>
  *   },
  *   observations: ReturnType<typeof import('./pr-observations.js').createPrObservationStore>,
+ *   activity?: ReturnType<typeof import('./activity-store.js').createActivityStore>,
  *   getSubscriberCount: () => number,
  *   resolveVerify?: () => import('./verify-cmd.js').ResolvedVerifyCmd|null,
  *   worktree?: any,
@@ -182,6 +183,24 @@ export function createPrPoller(deps) {
         worktree: deps.worktree,
         git: deps.gitRun
       }));
+
+  const activity = deps.activity || null;
+
+  /**
+   * Mark an activity transition and publish it (UI-raqh §3). The fanout is what
+   * turns the flag into a badge; without it the state would only surface on the
+   * next unrelated snapshot.
+   *
+   * @param {'beginChecking'|'endChecking'|'beginVerifying'|'endVerifying'} op
+   * @param {string} bead_id
+   */
+  function markActivity(op, bead_id) {
+    if (!activity) {
+      return;
+    }
+    activity[op](workspace, bead_id);
+    notifyChanged(workspace);
+  }
 
   /** Guards the OBSERVATION phase so overlapping ticks never double-query. */
   let observing = false;
@@ -356,6 +375,9 @@ export function createPrPoller(deps) {
       return;
     }
     verifying.add(key);
+    // A bead may hold one run per head SHA, so the display flag is a counter:
+    // the first run to finish must not switch the badge off under the second.
+    markActivity('beginVerifying', bead_id);
     try {
       const r = await runVerify({
         repo,
@@ -376,6 +398,7 @@ export function createPrPoller(deps) {
       log('verify run failed for %s@%s: %o', bead_id, head_sha, err);
     } finally {
       verifying.delete(key);
+      markActivity('endVerifying', bead_id);
     }
   }
 
@@ -403,14 +426,21 @@ export function createPrPoller(deps) {
     try {
       const queue = deps.store.snapshot(workspace);
       const entries = Array.isArray(queue.pr_wait) ? queue.pr_wait : [];
-      deps.observations.prune(
-        workspace,
-        entries.map((e) => e.bead_id)
-      );
+      const lane_ids = entries.map((e) => e.bead_id);
+      deps.observations.prune(workspace, lane_ids);
+      // The activity cache describes the same lane, so it is pruned with it —
+      // a bead that merged or was discarded must not keep a stale badge.
+      if (activity) {
+        activity.prune(workspace, lane_ids);
+      }
       if (entries.length === 0) {
         return;
       }
       for (const entry of entries) {
+        // `확인중` covers exactly the gh round-trip for this bead (UI-raqh §3);
+        // its own `finally` is the only thing that clears it, so an overlapping
+        // local verification's badge is never touched.
+        markActivity('beginChecking', entry.bead_id);
         try {
           const r = await observeBead(queue, entry.bead_id);
           if (r.verify) {
@@ -424,6 +454,8 @@ export function createPrPoller(deps) {
           deps.observations.record(workspace, entry.bead_id, {
             error: 'observation_error'
           });
+        } finally {
+          markActivity('endChecking', entry.bead_id);
         }
       }
       notifyChanged(workspace);

@@ -156,6 +156,46 @@ function prObservationsFor(workspace_key, queue, verify_cmd_present) {
 }
 
 /**
+ * Project what the server is DOING to each `pr_wait` bead right now
+ * (UI-raqh §3/§4): the poller's collapsed activity and the merge's current
+ * step. A PURE read of the shared activity cache — the poller and the PR
+ * actions are the only writers — riding the existing snapshot push exactly
+ * like {@link prObservationsFor}.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, unknown>}
+ */
+function prActivityFor(workspace_key, queue) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  const lane = Array.isArray(queue.pr_wait)
+    ? /** @type {any[]} */ (queue.pr_wait)
+    : [];
+  if (lane.length === 0) {
+    return out;
+  }
+  /** @type {Record<string, any>} */
+  let active = {};
+  try {
+    active = getWorkerRuntime().activityStore.snapshot(workspace_key);
+  } catch {
+    active = {};
+  }
+  for (const entry of lane) {
+    const bead_id = entry && entry.bead_id;
+    if (typeof bead_id !== 'string' || bead_id.length === 0) {
+      continue;
+    }
+    const record = active[bead_id];
+    if (record) {
+      out[bead_id] = record;
+    }
+  }
+  return out;
+}
+
+/**
  * Project the attempts map with LIVE token usage folded in (UI-raqh §1): a
  * running attempt shows the in-memory tally, a terminated one keeps whatever
  * was persisted onto its record. A pure read of the shared store — the
@@ -249,7 +289,10 @@ function decorateQueue(workspace_key, queue) {
     workspace_info: { verify_cmd, deploy_cmd, last_deploy, slots },
     // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
     // (worker-phase2 §4) — it exists only on the wire and in server memory.
-    pr_observations: prObservationsFor(workspace_key, queue, !!verify_cmd)
+    pr_observations: prObservationsFor(workspace_key, queue, !!verify_cmd),
+    // What is RUNNING against each `pr_wait` bead right now (UI-raqh §3/§4) —
+    // observation/verification activity and merge progress. Also non-persisted.
+    pr_activity: prActivityFor(workspace_key, queue)
   };
 }
 

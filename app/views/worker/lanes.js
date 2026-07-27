@@ -26,6 +26,9 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  * @property {number|null} [pr_number] - Observed PR number (`pr_wait` rows).
  * @property {string} [pr_url] - Observed PR URL; renders the `#N ↗` link.
  * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
+ * @property {string|null} [live_badge] - Which of {@link MiniItem.badges}
+ * reports live server activity rather than a settled state (UI-raqh §3); it is
+ * drawn neutral with a breathing dot instead of the alert colour.
  * @property {boolean} [alert] - Whether the badges report a state needing a
  * human decision (PR closed, observation error) — rendered in the warn colour.
  * @property {boolean} [merge_action] - Render the [머지] action (`pr_wait` rows
@@ -75,14 +78,22 @@ export function miniRow(item) {
           >#${item.pr_number} ↗</a
         >`
       : ''}
-    ${badges.map(
-      (b) =>
-        html`<span
-          class="worker-mini__badge${item.alert
-            ? ' worker-mini__badge--alert'
-            : ''}"
-          >${b}</span
-        >`
+    ${badges.map((b) =>
+      b === item.live_badge
+        ? // Live server activity (UI-raqh §3): neutral, never the warn colour —
+          // nothing here asks the reader to act, it only says work is running.
+          // The breathing dot carries the aliveness a colour would overstate.
+          html`<span
+            class="worker-mini__badge worker-mini__badge--activity"
+            title="서버가 이 PR을 처리하는 중입니다"
+            ><span class="act-dot" aria-hidden="true"></span>${b}</span
+          >`
+        : html`<span
+            class="worker-mini__badge${item.alert
+              ? ' worker-mini__badge--alert'
+              : ''}"
+            >${b}</span
+          >`
     )}
     ${item.reason
       ? html`<span class="worker-mini__reason">${item.reason}</span>`

@@ -5,6 +5,7 @@ import { createSubscriptionIssueStore } from '../../data/subscription-issue-stor
 import { createUiOrderStore } from '../../data/ui-order-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import {
+  activityBadge,
   applyCandidateFilter,
   applyCandidateSort,
   createWorkerView
@@ -4169,5 +4170,153 @@ describe('candidate sort — view (UI-raqh §2)', () => {
       mount.querySelector('#worker-pane-candidate .worker-sort')
     );
     expect(select.value).toBe('spec');
+  });
+});
+
+describe('poller activity badge — projection (UI-raqh §3)', () => {
+  test('renames 관측 대기 to 확인중 while an observation runs', () => {
+    expect(activityBadge('관측 대기', 'checking')).toEqual({
+      label: '확인중',
+      live: true
+    });
+  });
+
+  test('renames 로컬검증 대기 to 로컬검증 실행 중 while the suite runs', () => {
+    expect(activityBadge('로컬검증 대기', 'verifying')).toEqual({
+      label: '로컬검증 실행 중',
+      live: true
+    });
+  });
+
+  test('leaves 관측 대기 alone when nothing is running', () => {
+    expect(activityBadge('관측 대기', null)).toEqual({
+      label: '관측 대기',
+      live: false
+    });
+  });
+
+  test('leaves a CI badge alone while the poller works', () => {
+    expect(activityBadge('CI ✓', 'checking')).toEqual({
+      label: 'CI ✓',
+      live: false
+    });
+  });
+
+  test('does not cross the two substitutions', () => {
+    expect(activityBadge('관측 대기', 'verifying')).toEqual({
+      label: '관측 대기',
+      live: false
+    });
+  });
+});
+
+describe('poller activity badge — view (UI-raqh §3)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} gate
+   * @param {any} activity
+   * @returns {HTMLElement}
+   */
+  function renderRow(gate, activity) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 304,
+              url: 'https://github.com/o/r/pull/304',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            ci: null,
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate
+          }
+        },
+        pr_activity: activity
+          ? { 'RD-1': { activity, merge_progress: null } }
+          : {}
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+  }
+
+  const UNOBSERVED = {
+    enabled: false,
+    tier: 'unobserved',
+    gate_badge: '관측 대기',
+    base_badge: '',
+    reason: 'not_observed'
+  };
+  const VERIFY_PENDING = {
+    enabled: false,
+    tier: 'local_verify',
+    gate_badge: '로컬검증 대기',
+    base_badge: '최신',
+    reason: 'verify_missing'
+  };
+  const CI_PASS = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '최신',
+    reason: null
+  };
+
+  test('shows 확인중 with a breathing dot while observing', () => {
+    const row = renderRow(UNOBSERVED, 'checking');
+
+    const badge = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__badge--activity')
+    );
+    expect(badge.textContent?.trim()).toBe('확인중');
+    expect(badge.querySelector('.act-dot')).not.toBe(null);
+  });
+
+  test('shows 로컬검증 실행 중 while the local suite runs', () => {
+    const row = renderRow(VERIFY_PENDING, 'verifying');
+
+    expect(
+      row.querySelector('.worker-mini__badge--activity')?.textContent?.trim()
+    ).toBe('로컬검증 실행 중');
+  });
+
+  test('keeps the settled badge when nothing is running', () => {
+    const row = renderRow(UNOBSERVED, null);
+
+    expect(row.querySelector('.worker-mini__badge--activity')).toBe(null);
+    expect(row.textContent).toContain('관측 대기');
+  });
+
+  test('leaves a CI badge untouched while the poller works', () => {
+    const row = renderRow(CI_PASS, 'checking');
+
+    expect(row.querySelector('.worker-mini__badge--activity')).toBe(null);
+    expect(row.textContent).toContain('CI ✓');
+  });
+
+  test('draws the activity badge without the alert colour', () => {
+    const row = renderRow(UNOBSERVED, 'checking');
+
+    const badge = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__badge--activity')
+    );
+    expect(badge.classList.contains('worker-mini__badge--alert')).toBe(false);
   });
 });
