@@ -117,7 +117,7 @@ function seedStore(options = {}) {
  *   checks?: any,
  *   store?: any,
  *   verify?: { cmd: string[], timeout_ms: number, source: 'config' }|null,
- *   verifyResults?: Array<{ ok: boolean, reason: string }>,
+ *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string }>,
  *   deploy?: { cmd: string[], timeout_ms: number, detached: boolean }|null,
  *   deploySpawn?: 'ok'|'fail'|'hang'|'error'|'throw',
  *   gitFail?: (args: string[]) => boolean,
@@ -711,6 +711,41 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'post_merge_verify'
     });
+  });
+
+  test('records the verify detail and keeps it across a restart (UI-2o4z §3)', async () => {
+    const h = makeActions({
+      verify: {
+        cmd: ['npm', 'test'],
+        timeout_ms: 1000,
+        source: /** @type {const} */ ('config')
+      },
+      verifyResults: [
+        { ok: true, reason: 'ok' },
+        {
+          ok: false,
+          reason: 'verify_worktree_failed',
+          detail: "fatal: could not lock ref 'refs/heads/x'"
+        }
+      ]
+    });
+
+    await h.actions.merge(BEAD);
+    h.store.__clearCacheForTest();
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_verify',
+      reason: 'verify_worktree_failed',
+      detail: "fatal: could not lock ref 'refs/heads/x'"
+    });
+  });
+
+  test('leaves detail null when the failing step reports none', async () => {
+    const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD].detail).toBeNull();
   });
 
   test('stops on an unreadable child list rather than closing the parent', async () => {

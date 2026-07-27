@@ -3109,6 +3109,59 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(btn.disabled).toBe(false);
     expect(btn.getAttribute('title')).toContain('남은 정리를');
   });
+
+  test('shows the cleanup failure detail line when the record carries one', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'post_merge_verify',
+              reason: 'verify_worktree_failed',
+              at: 1,
+              detail: "fatal: could not lock ref 'refs/heads/x'"
+            }
+          }
+        }
+      )
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--cleanup .worker-banner__detail')
+    );
+
+    expect(banner.textContent).toContain("could not lock ref 'refs/heads/x'");
+  });
+
+  test('omits the cleanup detail line on a record without one', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': { step: 'child_sweep', reason: 'child_close_failed', at: 1 }
+          }
+        }
+      )
+    );
+
+    expect(
+      mount.querySelector('.worker-banner--cleanup .worker-banner__detail')
+    ).toBeNull();
+  });
 });
 
 describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
@@ -3135,6 +3188,69 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
     });
     return mount;
   }
+
+  test('shows the guard reason AND the matched command on a blocker failure', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'loud_fail_blocker',
+        cause_detail: {
+          reason: 'merge_to_base_blocked',
+          command: 'gh pr merge 311 --squash'
+        }
+      }
+    });
+
+    const detail = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--failure .worker-banner__detail')
+    );
+    const text = (detail.textContent || '').replace(/\s+/g, ' ');
+
+    expect(text).toContain('merge_to_base_blocked');
+    expect(text).toContain('gh pr merge 311 --squash');
+  });
+
+  test('shows only the reason when a blocker names no command', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'loud_fail_blocker',
+        cause_detail: {
+          reason: 'question tool: AskUserQuestion',
+          command: null
+        }
+      }
+    });
+
+    const detail = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--failure .worker-banner__detail')
+    );
+
+    expect(detail.textContent).toContain('question tool: AskUserQuestion');
+    expect(detail.querySelector('code')).toBeNull();
+  });
+
+  test('renders no detail line for a failure without cause_detail', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'verify_failed:pr_missing'
+      }
+    });
+
+    expect(
+      mount.querySelector('.worker-banner--failure .worker-banner__detail')
+    ).toBeNull();
+  });
 
   test('renders no banner for a failure a later same-bead attempt superseded', () => {
     const mount = mountWithAttempts({

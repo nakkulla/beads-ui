@@ -221,4 +221,126 @@ describe('runner/session merge guards leave innocent commands alone', () => {
 
     expect(kill_impl).not.toHaveBeenCalled();
   });
+
+  // The 2026-07-27 dotfiles-h3z2 incident, verbatim: the guarded phrase sits
+  // inside an `rg` SEARCH PATTERN, never in a command position (UI-2o4z §1).
+  test('does not kill an rg search whose pattern contains the guarded phrase', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'rg -n "permissions|contents:|pull-requests:|gh pr merge|merge" .github/workflows/ai-pr-review.yml'
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+  });
+
+  test('does not kill a commit message quoting the guarded phrase', async () => {
+    const { kill_impl } = await runCommand(
+      'git commit -m "gh pr merge 관련 수정"'
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+  });
+
+  test('does not kill a non-interpreter heredoc body naming the guarded phrase', async () => {
+    const { kill_impl } = await runCommand(
+      ["cat <<'EOF' > notes.md", 'do not run gh pr merge', 'EOF'].join('\n')
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+  });
+
+  test('does not kill `git push main feature`, where main is the remote name', async () => {
+    const { kill_impl } = await runCommand('git push main feature');
+
+    expect(kill_impl).not.toHaveBeenCalled();
+  });
+});
+
+describe('runner/session merge guards see through wrappers and interpreters', () => {
+  test('kills `gh pr merge` behind an assignment prefix', async () => {
+    const { kill_impl } = await runCommand('FOO=1 gh pr merge 311');
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+  });
+
+  test('kills `gh pr merge` invoked by absolute path', async () => {
+    const { kill_impl } = await runCommand('/usr/bin/gh pr merge 311');
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+  });
+
+  test('kills `gh pr merge` behind an if/then prefix', async () => {
+    const { kill_impl } = await runCommand('if true; then gh pr merge 311; fi');
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+  });
+
+  test('kills a `bash -c` payload', async () => {
+    const { kill_impl } = await runCommand('bash -c "gh pr merge 311"');
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+  });
+
+  test('kills an interpreter heredoc payload', async () => {
+    const { kill_impl } = await runCommand(
+      ["bash <<'EOF'", 'gh pr merge 311', 'EOF'].join('\n')
+    );
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+  });
+
+  test('kills an unbalanced-quote command by the regex fallback', async () => {
+    const { kill_impl } = await runCommand('echo "gh pr merge');
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+  });
+});
+
+describe('runner/session blocked_detail', () => {
+  test('records the guard reason and the matched command', async () => {
+    const { verdict } = await runCommand('gh pr merge 311 --squash');
+
+    expect(verdict.blocked_detail).toEqual({
+      reason: 'merge_to_base_blocked',
+      command: 'gh pr merge 311 --squash'
+    });
+  });
+
+  test('records the INNER command for an interpreter payload', async () => {
+    const { verdict } = await runCommand('bash -c "gh pr merge 311"');
+
+    expect(verdict.blocked_detail).toEqual({
+      reason: 'merge_to_base_blocked',
+      command: 'gh pr merge 311'
+    });
+  });
+
+  test('leaves blocked_detail null on an unblocked session', async () => {
+    const { verdict } = await runCommand('gh pr create --fill');
+
+    expect(verdict.blocked_detail).toBeNull();
+  });
+
+  test('records a question blocker with no command', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({
+          type: 'result',
+          permission_denials: [{ tool_name: 'Bash' }]
+        })
+      ],
+      pid: 5150
+    });
+
+    const handle = runSession(claudeSpec(), { id: 'UI-1' }, WS, NORMAL, {
+      spawn_impl,
+      kill_impl: vi.fn()
+    });
+    const verdict = await handle.done;
+
+    expect(verdict.blocked_detail).toEqual({
+      reason: 'permission_denials non-empty',
+      command: null
+    });
+  });
 });

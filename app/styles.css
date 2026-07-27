@@ -2736,6 +2736,21 @@ html[data-theme='dark'] {
   cursor: not-allowed;
 }
 
+/* 배너의 진단 한 줄 (가드 이름 + 매치 명령 / git stderr, UI-2o4z). 배너 색을
+   그대로 쓰되 한 줄로 잘라 배너가 세로로 번지지 않게 한다. */
+.worker-banner__detail {
+  margin-top: var(--sp-4);
+  font-size: var(--fs-chip);
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worker-banner__detail code {
+  font-family: var(--font-mono);
+}
+
 .worker-rungrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));

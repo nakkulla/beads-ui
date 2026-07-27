@@ -45,7 +45,7 @@ export const PR_SUBMIT_DIRECTIVE =
  * mode. The session engine enforces two fail-closed guards that a session
  * cannot see from its own vantage point, so the prompt must state them
  * explicitly rather than let the session discover them by triggering a kill:
- * (a) the merge guard (`session.js` `BASE_INTO_BRANCH_RE`) SIGTERMs the
+ * (a) the merge guard (`command-guard.js` base-into-branch rule) SIGTERMs the
  * session the instant it runs `git merge` — a session that doesn't know this
  * can lose real work mid-merge instead of just being blocked at admission; a
  * conflict-resolution attempt is the sole named exception, since resolving an

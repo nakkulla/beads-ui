@@ -135,10 +135,37 @@ export function resolveVerifyCmd(repo, config_map, deps = {}) {
 }
 
 /**
+ * Upper bound on a preserved diagnostic string — enough to name a git failure,
+ * not enough to bloat `queue.json`.
+ *
+ * @type {number}
+ */
+const DETAIL_MAX = 512;
+
+/**
+ * Reduce a thrown value to the diagnostic text worth persisting.
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+function errorDetail(err) {
+  const text =
+    err instanceof Error
+      ? err.message
+      : typeof err === 'string'
+        ? err
+        : String(err);
+  return text.trim().slice(0, DETAIL_MAX);
+}
+
+/**
  * @typedef {Object} VerifyCmdResult
  * @property {boolean} ok - Exit 0 within the deadline.
  * @property {'ok'|'verify_cmd_failed'|'verify_cmd_timeout'|'verify_cmd_spawn_error'|'verify_sha_unavailable'|'verify_worktree_failed'} reason
  * @property {number|null} exit - Exit code when the process ran to completion.
+ * @property {string} [detail] - Diagnostic text for a failure whose reason
+ * alone cannot be acted on (today: the git stderr behind
+ * `verify_worktree_failed`, UI-2o4z §3). Absent when there is nothing to add.
  */
 
 /**
@@ -341,8 +368,16 @@ export async function runVerifyAtSha(input) {
       name,
       sha: input.sha
     });
-  } catch {
-    return { ok: false, reason: 'verify_worktree_failed', exit: null };
+  } catch (err) {
+    // The thrown message carries git's own stderr, which is the only thing that
+    // says WHY the detached worktree could not be created — dropping it left an
+    // unfalsifiable "transient?" guess behind (UI-2o4z §3).
+    return {
+      ok: false,
+      reason: 'verify_worktree_failed',
+      exit: null,
+      detail: errorDetail(err)
+    };
   }
   try {
     return await runVerifyCmd({
