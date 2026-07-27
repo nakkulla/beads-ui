@@ -1273,9 +1273,9 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     );
   });
 
-  test('a retired codex model in the globals resolves to UNSET (no spawn model, no stamp)', async () => {
+  test('a retired codex model in the globals resolves to the opus fallback (no stamp)', async () => {
     // The global orchestration_model predates the claude-only change, so it is
-    // outside the catalog → unset (the CLI default applies).
+    // outside the catalog → the hardcoded fallback applies.
     const env = setup({
       config: { S1: { model: null } },
       slots: 1,
@@ -1285,10 +1285,30 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
-    expect(env.runner.settingsFor('S1').model).toBeUndefined();
+    expect(env.runner.settingsFor('S1').model).toBe('opus');
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     const a = /** @type {any} */ (env.store.snapshot(WS).attempts[attempt_id]);
-    expect(a.model).toBe(null);
+    expect(a.model).toBe('opus');
+    expect(a.exec_stamped_keys).toBe(null);
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
+      false
+    );
+  });
+
+  test('a bead with no exec settings and no globals dispatches on the opus fallback', async () => {
+    const env = setup({
+      config: { S1: { model: null } },
+      slots: 1,
+      verifyOk: true
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('S1').model).toBe('opus');
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    const a = /** @type {any} */ (env.store.snapshot(WS).attempts[attempt_id]);
+    expect(a.model).toBe('opus');
     expect(a.exec_stamped_keys).toBe(null);
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
       false

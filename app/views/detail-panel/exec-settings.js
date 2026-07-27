@@ -24,15 +24,17 @@ export const WORKFLOW_MODES = ['standard', 'fast_track'];
  * detail-panel fallback when no global override exists (spec §3).
  *
  * MIRROR: keep in sync with the resolution fallbacks —
- *   - orchestration_model/effort: no `--model`/`--effort` passed ⇒ the claude
- *     CLI's own default (claude.js buildArgv omits the flag when unset).
+ *   - orchestration_model: hardcoded `opus` (policy.js
+ *     ORCHESTRATION_MODEL_FALLBACK), so `--model opus` is always passed.
+ *   - orchestration_effort: no `--effort` passed ⇒ the claude CLI's own default
+ *     (claude.js buildArgv omits the flag when unset).
  *   - review_model: session workflow gate default `codex`.
  *   - impl_model: workflow delegation tier auto (complex=opus / boundary=sonnet).
  *
  * @type {Record<string, string>}
  */
 export const DEFAULT_LABELS = {
-  orchestration_model: '(기본: CLI 기본 모델)',
+  orchestration_model: '(기본: opus)',
   orchestration_effort: '(기본: CLI 기본)',
   review_model: '(기본: codex)',
   impl_model: '(기본: 티어 자동)'

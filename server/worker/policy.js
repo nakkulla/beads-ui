@@ -2,9 +2,10 @@
  * Worker exec settings — resolution order (worker-global-exec-defaults §3).
  *
  * The 4 exec keys (orchestration_model / orchestration_effort / review_model /
- * impl_model) resolve bead metadata > workspace global (queue store) > unset.
- * A non-enum value at any level falls through to the next level instead of
- * blocking.
+ * impl_model) resolve bead metadata > workspace global (queue store) > final
+ * fallback. A non-enum value at any level falls through to the next level
+ * instead of blocking. The final fallback is `opus` for orchestration_model
+ * (worker-orchestration-model-default-opus) and unset for the other 3 keys.
  *
  * The `merge_policy`/`drift_policy` axis is retired with the merge axis
  * (worker-phase2 §2): every session is PR-stop by construction and drift
@@ -12,6 +13,16 @@
  * per-dispatch choice any more.
  */
 import { EFFORTS, IMPL_MODELS, MODELS, REVIEW_MODELS } from './exec-enums.js';
+
+/**
+ * Hardcoded final fallback for `orchestration_model`: what dispatch runs when
+ * NEITHER the bead metadata NOR the workspace-global default resolves. Unlike
+ * the global layer this never lands in `stamped_keys` — a constant carries no
+ * information worth writing back to every bead's metadata.
+ *
+ * MIRROR: app/views/detail-panel/exec-settings.js DEFAULT_LABELS.
+ */
+export const ORCHESTRATION_MODEL_FALLBACK = 'opus';
 
 /**
  * @param {ReadonlyArray<string>} allowed
@@ -52,9 +63,11 @@ function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
  * Resolve the 4 exec settings for one dispatch (worker-global-exec-defaults;
  * runner axis retired by worker-phase1 §4).
  *
- * Order is bead metadata > workspace-global default > unset. All four keys are
- * plain enum-hierarchy picks — with claude as the only runner there is no
- * runner-dependent model catalog to reconcile.
+ * Order is bead metadata > workspace-global default > final fallback. All four
+ * keys are plain enum-hierarchy picks — with claude as the only runner there is
+ * no runner-dependent model catalog to reconcile. `orchestration_model` alone
+ * has a hardcoded final fallback (`opus`) and therefore never resolves to
+ * undefined; the other 3 keys still end at unset.
  *
  * `stamped_keys` is the list of METADATA key names whose bead value was absent
  * and whose resolved value came from the workspace-global default — i.e. the
@@ -71,7 +84,7 @@ function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
  *   defaults?: { orchestration_model?: unknown, orchestration_effort?: unknown, review_model?: unknown, impl_model?: unknown } | null
  * }} input
  * @returns {{
- *   orchestration_model: string|undefined,
+ *   orchestration_model: string,
  *   orchestration_effort: string|undefined,
  *   review_model: string|undefined,
  *   impl_model: string|undefined,
@@ -84,13 +97,14 @@ export function resolveExecSettings(input) {
   /** @type {string[]} */
   const stamped_keys = [];
 
-  const orchestration_model = pickLayered(
-    MODELS,
-    bead.model,
-    defaults.orchestration_model,
-    'orchestration_model',
-    stamped_keys
-  );
+  const orchestration_model =
+    pickLayered(
+      MODELS,
+      bead.model,
+      defaults.orchestration_model,
+      'orchestration_model',
+      stamped_keys
+    ) ?? ORCHESTRATION_MODEL_FALLBACK;
   const orchestration_effort = pickLayered(
     EFFORTS,
     bead.effort,

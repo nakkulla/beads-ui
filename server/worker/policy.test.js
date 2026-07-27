@@ -10,13 +10,14 @@ describe('worker/policy merge axis removal', () => {
   });
 });
 
-describe('worker/policy resolveExecSettings (bead > global > unset)', () => {
-  test('everything unset when nothing is set', () => {
+describe('worker/policy resolveExecSettings (bead > global > final fallback)', () => {
+  test('falls back to opus for the model and unset for the other 3 when nothing is set', () => {
     const r = resolveExecSettings({ bead: {}, defaults: {} });
-    expect(r.orchestration_model).toBe(undefined);
+    expect(r.orchestration_model).toBe('opus');
     expect(r.orchestration_effort).toBe(undefined);
     expect(r.review_model).toBe(undefined);
     expect(r.impl_model).toBe(undefined);
+    // The hardcoded fallback is never a stamp/revert target.
     expect(r.stamped_keys).toEqual([]);
     // Tolerates null/undefined levels.
     expect(
@@ -83,12 +84,12 @@ describe('worker/policy resolveExecSettings (bead > global > unset)', () => {
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('a retired codex model value resolves unset at both layers', () => {
+  test('a retired codex model value falls back to opus at both layers', () => {
     const bead_pinned = resolveExecSettings({
       bead: { model: 'gpt-5.6' },
       defaults: {}
     });
-    expect(bead_pinned.orchestration_model).toBe(undefined);
+    expect(bead_pinned.orchestration_model).toBe('opus');
     expect(bead_pinned.stamped_keys).toEqual([]);
 
     const global_only = resolveExecSettings({
@@ -98,11 +99,35 @@ describe('worker/policy resolveExecSettings (bead > global > unset)', () => {
         orchestration_effort: 'medium'
       }
     });
-    // The stale model is dropped (unset, not stamped); the valid effort still
+    // The stale model is dropped (fallback, not stamped); the valid effort still
     // resolves from the global layer.
-    expect(global_only.orchestration_model).toBe(undefined);
+    expect(global_only.orchestration_model).toBe('opus');
     expect(global_only.orchestration_effort).toBe('medium');
     expect(global_only.stamped_keys).toEqual(['orchestration_effort']);
+  });
+
+  test('a global model still beats the fallback and is stamped', () => {
+    const r = resolveExecSettings({
+      bead: {},
+      defaults: { orchestration_model: 'sonnet' }
+    });
+
+    expect(r.orchestration_model).toBe('sonnet');
+    expect(r.stamped_keys).toEqual(['orchestration_model']);
+  });
+
+  test('a bead model beats both the global and the fallback without stamping', () => {
+    const r = resolveExecSettings({
+      bead: { model: 'haiku' },
+      defaults: { orchestration_model: 'sonnet' }
+    });
+
+    expect(r.orchestration_model).toBe('haiku');
+    expect(r.stamped_keys).toEqual([]);
+  });
+
+  test('exports the hardcoded model fallback as a named constant', () => {
+    expect(policy.ORCHESTRATION_MODEL_FALLBACK).toBe('opus');
   });
 
   test('an invalid bead value falls through to the global, but a bead-SET key is never stamped', () => {
