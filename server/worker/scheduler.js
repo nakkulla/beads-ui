@@ -94,6 +94,7 @@ function blockerCauseDetail(detail) {
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
+ * @property {string|null} [title] - Issue title, for the start notification.
  * @property {string|null} [spec_id] - Spec doc path metadata (admission input).
  * @property {unknown} [spec_review] - Raw spec_review metadata value. Key
  * absence ⇒ `undefined`; any present value must reach the admission
@@ -114,7 +115,7 @@ function blockerCauseDetail(detail) {
  *   readStatus: (bead_id: string) => Promise<string|null>
  * }} bd
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
- * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string }> }} verify
+ * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
  * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string }> }} [admission]
@@ -126,6 +127,14 @@ function blockerCauseDetail(detail) {
  * Fired after autonomous queue transitions (dispatch records, admission
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
  * waiting for their next own mutation (worker-autorun-policy §6).
+ * @property {{
+ *   attemptStarted: (i: any) => void,
+ *   attemptFailed: (i: any) => void,
+ *   prWaitEntered: (i: any) => void
+ * }} [notify]
+ * Outward attempt-lifecycle push (UI-2yoq, notify.js). Optional: absent wiring
+ * (every dispatch-only test) simply pushes nothing, exactly like a machine that
+ * left `[worker.notify]` off.
  * @property {(pid: number|null) => { alive: boolean, started_at: number|null }} [probePid]
  * Liveness + start-time probe for {@link createScheduler}'s `reconcile`. Absent
  * (legacy wiring / dispatch-only tests) makes every reconcile pass a no-op:
@@ -232,6 +241,44 @@ export function createScheduler(deps) {
       } catch {
         // A broken fanout must never break the scheduler.
       }
+    }
+  }
+
+  /**
+   * Fire one outward lifecycle push (UI-2yoq). The notifier is no-throw by
+   * contract; this guard exists so a broken injected fake still cannot turn a
+   * notification into a queue-transition failure.
+   *
+   * @param {'attemptStarted'|'attemptFailed'|'prWaitEntered'} event
+   * @param {any} input
+   */
+  function notifyLifecycle(event, input) {
+    if (!deps.notify) {
+      return;
+    }
+    try {
+      deps.notify[event](input);
+    } catch (err) {
+      log('worker notify %s failed: %o', event, err);
+    }
+  }
+
+  /**
+   * The repo an attempt was dispatched against, read off its durable record.
+   * `failAttempt` is reached from paths that do not all carry the repo in
+   * scope, and the record has held it since the pre-spawn write.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {string|null}
+   */
+  function repoOfAttempt(workspace, attempt_id) {
+    try {
+      const q = deps.store.snapshot(workspace);
+      const attempt = q && q.attempts ? q.attempts[attempt_id] : null;
+      return attempt && typeof attempt.repo === 'string' ? attempt.repo : null;
+    } catch {
+      return null;
     }
   }
 
@@ -555,6 +602,12 @@ export function createScheduler(deps) {
         cause_detail: cause_detail ?? null
       }
     });
+    notifyLifecycle('attemptFailed', {
+      bead_id,
+      cause,
+      repo: repoOfAttempt(workspace, attempt_id),
+      cause_detail: cause_detail ?? null
+    });
     try {
       await revertWorkflowMode(bead_id, prior);
     } catch (err) {
@@ -682,6 +735,11 @@ export function createScheduler(deps) {
           attempt_id,
           patch: { status: 'done', finished_at: now() }
         });
+        notifyLifecycle('prWaitEntered', {
+          bead_id,
+          pr_url: vr.pr_url ?? null,
+          repo: snap.repo
+        });
       } else {
         await failAttempt(
           workspace,
@@ -762,7 +820,7 @@ export function createScheduler(deps) {
     const repo = typeof attempt.repo === 'string' ? attempt.repo : '';
     claimed.add(bead_id);
     try {
-      /** @type {{ ok: boolean, reason: string }} */
+      /** @type {{ ok: boolean, reason: string, pr_url?: string|null }} */
       let vr;
       if (repo.length === 0) {
         vr = { ok: false, reason: 'gh_observation_failed' };
@@ -808,6 +866,11 @@ export function createScheduler(deps) {
             bead_id,
             attempt_id,
             patch: { status: 'done', finished_at: now() }
+          });
+          notifyLifecycle('prWaitEntered', {
+            bead_id,
+            pr_url: vr.pr_url ?? null,
+            repo
           });
         } else {
           await failAttempt(
@@ -1030,6 +1093,14 @@ export function createScheduler(deps) {
           finished_at: now()
         }
       });
+      // Direct failure record — this path never reaches `failAttempt`, so the
+      // push is fired here (UI-2yoq §2).
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: 'workflow_mode_record_failed',
+        repo: snap.repo,
+        cause_detail: null
+      });
       try {
         await revertWorkflowMode(bead_id, prior);
       } catch {
@@ -1119,6 +1190,12 @@ export function createScheduler(deps) {
           finished_at: now()
         }
       });
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: 'exec_stamp_failed',
+        repo: snap.repo,
+        cause_detail: null
+      });
       try {
         await revertWorkflowMode(bead_id, prior);
       } catch {
@@ -1142,6 +1219,10 @@ export function createScheduler(deps) {
       prior_wf: prior,
       stamped_keys,
       wt_path: wt.path,
+      // Only the FIRST dispatch holds a bead snapshot, so only it can name the
+      // bead in the start push; a resume/conflict relaunch pushes without one.
+      title: snap.title ?? null,
+      launch_kind: 'dispatch',
       // The adapter reads only `id`/`prompt`; the plan-receipt fields the
       // retired runner guard needed are no longer carried (worker-phase1 §4).
       spawnBead: { id: bead_id }
@@ -1174,6 +1255,8 @@ export function createScheduler(deps) {
    *   stamped_keys: string[],
    *   wt_path: string,
    *   spawnBead: any,
+   *   title?: string|null,
+   *   launch_kind?: 'dispatch'|'resume'|'conflict',
    *   resume_session_id?: string|null,
    *   conflict_resolution?: boolean
    * }} input
@@ -1222,6 +1305,12 @@ export function createScheduler(deps) {
         attempt_id,
         patch: { status: 'failed', cause: 'spawn_failed', finished_at: now() }
       });
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: 'spawn_failed',
+        repo,
+        cause_detail: null
+      });
       try {
         await revertWorkflowMode(bead_id, prior_wf);
       } catch {
@@ -1245,6 +1334,15 @@ export function createScheduler(deps) {
         model: model ?? null,
         effort: effort ?? null
       }
+    });
+
+    notifyLifecycle('attemptStarted', {
+      bead_id,
+      title: input.title ?? null,
+      model,
+      effort,
+      repo,
+      kind: input.launch_kind ?? 'dispatch'
     });
 
     deps.store.clearAdmission(workspace, bead_id);
@@ -1555,6 +1653,12 @@ export function createScheduler(deps) {
           finished_at: now()
         }
       });
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: 'workflow_mode_record_failed',
+        repo,
+        cause_detail: null
+      });
       try {
         await revertWorkflowMode(bead_id, prior_wf);
       } catch {
@@ -1595,6 +1699,12 @@ export function createScheduler(deps) {
           finished_at: now()
         }
       });
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: 'exec_stamp_failed',
+        repo,
+        cause_detail: null
+      });
       try {
         await revertWorkflowMode(bead_id, prior_wf);
       } catch {
@@ -1623,6 +1733,7 @@ export function createScheduler(deps) {
       prior_wf,
       stamped_keys,
       wt_path,
+      launch_kind: options.conflict_resolution ? 'conflict' : 'resume',
       spawnBead: {
         id: bead_id,
         prompt: options.prompt

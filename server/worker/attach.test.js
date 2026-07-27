@@ -341,6 +341,52 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.ready).toBe(true);
   });
 
+  test('snapshotBead carries the issue title for the start notification', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [
+            { id: 'UI-1', status: 'open', title: '워커 알림', metadata: {} }
+          ]
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      target_base: 'main',
+      runJson
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(snap.title).toBe('워커 알림');
+  });
+
+  test('snapshotBead leaves the title null when the payload carries none', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [{ id: 'UI-1', status: 'open', metadata: {} }]
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      target_base: 'main',
+      runJson
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(snap.title).toBe(null);
+  });
+
   test('snapshotBead extracts review_model and impl_model metadata', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {

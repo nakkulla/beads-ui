@@ -182,6 +182,7 @@ function makeFakeBd(config) {
         workflow_mode: c.workflow_mode ?? null,
         route: c.route ?? null,
         status: c.status ?? '',
+        title: c.title ?? null,
         deps: c.deps ?? []
       };
     },
@@ -257,7 +258,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notifyQueueChanged?: (workspace: string) => void }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notify?: any, notifyQueueChanged?: (workspace: string) => void }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -300,6 +301,7 @@ function setup(opts) {
     verify,
     sessionLog,
     admission: opts.admission,
+    notify: opts.notify,
     probePid: opts.probePid,
     notifyQueueChanged: opts.notifyQueueChanged,
     now: () => 1000
@@ -3092,5 +3094,308 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     await first;
 
     expect(verifyPrSubmitted).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
+  /** A fake notifier recording every lifecycle push. */
+  function makeFakeNotify() {
+    return {
+      attemptStarted: vi.fn(),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn()
+    };
+  }
+
+  /**
+   * Seed a terminal attempt directly into the store, so the resume/conflict
+   * paths can be driven without a first dispatch.
+   *
+   * @param {any} store
+   * @param {string} attempt_id
+   * @param {any} patch
+   */
+  function seedAttempt(store, attempt_id, patch) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id: patch.bead_id }
+    });
+    store.updateAttempt(WS, { attempt_id, patch });
+  }
+
+  /** @returns {any} */
+  function resumablePrior(over = {}) {
+    return {
+      bead_id: 'B1',
+      status: 'failed',
+      repo: '/repo',
+      target_base: 'main',
+      base_oid: 'base-B1',
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      session_id: 'sid-abc',
+      workflow_mode_prior: null,
+      cause: 'verify_failed:pr_missing',
+      ...over
+    };
+  }
+
+  test('pushes attemptStarted with the bead title on a first dispatch', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({
+      config: { S1: { title: '워커 알림' } },
+      slots: 1,
+      notify
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(notify.attemptStarted).toHaveBeenCalledTimes(1);
+    expect(notify.attemptStarted.mock.calls[0][0]).toEqual({
+      bead_id: 'S1',
+      title: '워커 알림',
+      model: 'opus',
+      effort: 'high',
+      repo: '/repo',
+      kind: 'dispatch'
+    });
+  });
+
+  test('marks a manual resume launch as a resume', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({ config: {}, slots: 1, notify });
+    seedAttempt(env.store, 'f1', resumablePrior());
+
+    expect((await env.scheduler.resume(WS, 'f1')).ok).toBe(true);
+
+    expect(notify.attemptStarted.mock.calls[0][0].kind).toBe('resume');
+    expect(notify.attemptStarted.mock.calls[0][0].title).toBe(null);
+  });
+
+  test('marks a conflict-resolution launch as a conflict', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({ config: {}, slots: 1, notify });
+    seedAttempt(env.store, 'f1', resumablePrior());
+
+    expect((await env.scheduler.resolveConflict(WS, 'B1')).ok).toBe(true);
+
+    expect(notify.attemptStarted.mock.calls[0][0].kind).toBe('conflict');
+  });
+
+  test('pushes attemptFailed with the session cause', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({ config: { S1: {} }, slots: 1, notify });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', {
+      success: false,
+      reason: 'result_count',
+      exit: 1
+    });
+    await flush();
+    await flush();
+
+    expect(notify.attemptFailed).toHaveBeenCalledTimes(1);
+    expect(notify.attemptFailed.mock.calls[0][0]).toEqual({
+      bead_id: 'S1',
+      cause: 'session_failed:result_count',
+      repo: '/repo',
+      cause_detail: null
+    });
+  });
+
+  test('carries the blocker cause_detail into the failure push', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({ config: { S1: {} }, slots: 1, notify });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', {
+      success: false,
+      reason: 'blocked',
+      exit: 1,
+      blocked: true,
+      blocked_detail: { reason: 'git_merge_guard', command: 'git merge main' }
+    });
+    await flush();
+    await flush();
+
+    expect(notify.attemptFailed.mock.calls[0][0].cause).toBe(
+      'loud_fail_blocker'
+    );
+    expect(notify.attemptFailed.mock.calls[0][0].cause_detail).toEqual({
+      reason: 'git_merge_guard',
+      command: 'git merge main'
+    });
+  });
+
+  test('pushes attemptFailed from the dispatch workflow_mode_record_failed path', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({
+      config: { S1: { throwOnSet: true } },
+      slots: 1,
+      notify
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(notify.attemptFailed).toHaveBeenCalledTimes(1);
+    expect(notify.attemptFailed.mock.calls[0][0]).toEqual({
+      bead_id: 'S1',
+      cause: 'workflow_mode_record_failed',
+      repo: '/repo',
+      cause_detail: null
+    });
+    expect(notify.attemptStarted).not.toHaveBeenCalled();
+  });
+
+  test('pushes attemptFailed from the relaunch workflow_mode_record_failed path', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({
+      config: { B1: { throwOnSet: true } },
+      slots: 1,
+      notify
+    });
+    seedAttempt(env.store, 'f1', resumablePrior());
+
+    expect((await env.scheduler.resume(WS, 'f1')).reason).toBe(
+      'workflow_mode_record_failed'
+    );
+
+    expect(notify.attemptFailed).toHaveBeenCalledTimes(1);
+    expect(notify.attemptFailed.mock.calls[0][0]).toEqual({
+      bead_id: 'B1',
+      cause: 'workflow_mode_record_failed',
+      repo: '/repo',
+      cause_detail: null
+    });
+    expect(notify.attemptStarted).not.toHaveBeenCalled();
+  });
+
+  test('pushes attemptFailed from the dispatch exec_stamp_failed path', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({
+      config: {
+        S1: { model: null, effort: null, throwOnSetKey: 'orchestration_model' }
+      },
+      slots: 1,
+      notify
+    });
+    seedExecDefaults(env.store, { orchestration_model: 'sonnet' });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(notify.attemptFailed).toHaveBeenCalledTimes(1);
+    expect(notify.attemptFailed.mock.calls[0][0].cause).toBe(
+      'exec_stamp_failed'
+    );
+    expect(notify.attemptStarted).not.toHaveBeenCalled();
+  });
+
+  test('pushes attemptFailed when the runner spawn throws', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      notify,
+      makeRunner: () => ({
+        name: 'claude',
+        spawn() {
+          throw new Error('spawn exploded');
+        }
+      })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(notify.attemptFailed).toHaveBeenCalledTimes(1);
+    expect(notify.attemptFailed.mock.calls[0][0]).toEqual({
+      bead_id: 'S1',
+      cause: 'spawn_failed',
+      repo: '/repo',
+      cause_detail: null
+    });
+    expect(notify.attemptStarted).not.toHaveBeenCalled();
+  });
+
+  test('pushes prWaitEntered with the observed PR url on success', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({ config: { S1: {} }, slots: 1, notify });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(notify.prWaitEntered).toHaveBeenCalledTimes(1);
+    expect(notify.prWaitEntered.mock.calls[0][0]).toEqual({
+      bead_id: 'S1',
+      pr_url: 'https://github.com/o/r/pull/1',
+      repo: '/repo'
+    });
+    expect(notify.attemptFailed).not.toHaveBeenCalled();
+  });
+
+  test('pushes nothing terminal when the user stops the attempt', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({ config: { S1: {} }, slots: 1, notify });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    await env.scheduler.stop(WS, attempt_id);
+    env.runner.finish('S1', { success: false, reason: 'killed', exit: null });
+    await flush();
+    await flush();
+
+    expect(notify.attemptStarted).toHaveBeenCalledTimes(1);
+    expect(notify.attemptFailed).not.toHaveBeenCalled();
+    expect(notify.prWaitEntered).not.toHaveBeenCalled();
+  });
+
+  test('pushes nothing terminal when the user pauses the attempt', async () => {
+    const notify = makeFakeNotify();
+    const env = setup({ config: { S1: {} }, slots: 1, notify });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+
+    expect(await env.scheduler.pause(WS, attempt_id)).toEqual({ ok: true });
+    await flush();
+
+    expect(notify.attemptFailed).not.toHaveBeenCalled();
+    expect(notify.prWaitEntered).not.toHaveBeenCalled();
+  });
+
+  test('a throwing notifier never breaks a queue transition', async () => {
+    const notify = {
+      attemptStarted: vi.fn(() => {
+        throw new Error('notifier exploded');
+      }),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn(() => {
+        throw new Error('notifier exploded');
+      })
+    };
+    const env = setup({ config: { S1: {} }, slots: 1, notify });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('done');
   });
 });

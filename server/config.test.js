@@ -375,6 +375,87 @@ workspaces = ["/repo-a"]
   });
 });
 
+describe('[worker.notify] section (UI-2yoq)', () => {
+  test('reads an enabled section with the default command', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.notify]
+enabled = true
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_notify).toEqual({ enabled: true, cmd: ['discord'] });
+  });
+
+  test('reads an explicit command argv', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.notify]
+enabled = true
+cmd = ["/opt/bin/notify", "--to", "ops"]
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_notify).toEqual({
+      enabled: true,
+      cmd: ['/opt/bin/notify', '--to', 'ops']
+    });
+  });
+
+  test('disables on a shell one-liner string instead of an argv array', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.notify]
+enabled = true
+cmd = "discord -q"
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_notify).toEqual({ enabled: false, cmd: ['discord'] });
+  });
+
+  test('disables on an empty argv array', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.notify]
+enabled = true
+cmd = []
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_notify).toEqual({ enabled: false, cmd: ['discord'] });
+  });
+
+  test('disables when enabled is not exactly true', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.notify]
+enabled = "yes"
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_notify.enabled).toBe(false);
+  });
+
+  test('disables when the section is absent', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+workspaces = ["/repo-a"]
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_notify).toEqual({ enabled: false, cmd: ['discord'] });
+  });
+
+  test('disables when the config file is missing', () => {
+    process.env.BDUI_CONFIG_PATH = missingConfigPath();
+
+    const config = getConfig();
+
+    expect(config.worker_notify).toEqual({ enabled: false, cmd: ['discord'] });
+  });
+});
+
 describe('obsolete [auth] section', () => {
   test('warns once and drops the section when [auth] is present', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
