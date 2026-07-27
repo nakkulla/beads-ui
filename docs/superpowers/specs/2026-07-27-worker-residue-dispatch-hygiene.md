@@ -28,24 +28,35 @@
 
 ## 변경 ② — 정지 잔재 수명주기 정합
 
-- **공유 안전 판정**: `worktree.js`에 잔재 검사 헬퍼를 추가한다. 입력
-  `{repo, bead_id, base}`, 판정 대상은 워크트리 디렉터리와 브랜치
-  `<bead_id>` 각각의 존재 여부, 워크트리 dirty 여부(`status --porcelain`),
-  브랜치 고유 커밋 수(`git rev-list --count <base>..<branch>`). 반환은
-  구조화된 관측값(존재/dirty/ahead)이며 정책 판단은 scheduler가 한다.
-  "폐기 가능"의 정의: **워크트리 clean 그리고 브랜치 ahead == 0** (브랜치나
-  워크트리가 아예 없으면 해당 항목은 자동 통과).
-- **dispatch pre-flight**: `worktree.add` 호출 전에 잔재를 검사한다.
-  - 폐기 가능 → 잔재 워크트리 제거 후 정상 진행(자가 치유).
-  - 폐기 불가(dirty 또는 ahead > 0, 워크트리 없이 브랜치만 ahead인 경우 포함)
-    → `recordSkipReason(workspace, bead_id, 'worktree_stale_work')`로
-    fail-closed 거절(잔재는 건드리지 않음), `dispatch_refused` + `tickPass`
-    재진입. 이것이 `-B` 강제 리셋에 의한 커밋 손실 방지막이다.
-  - 검사 자체가 실패(git 오류)하면 fail-closed로 `'git_error'` 거절.
-- **stop() best-effort 정리**: ■ 종료 경로(라이브 세션 stop과 paused-discard
-  stop 모두)에서 같은 안전 판정을 돌려 폐기 가능할 때만 워크트리를 제거한다.
-  판정 불가·제거 실패는 로그만 남기고 무시(pre-flight가 다음 방어선).
-  `pause()`는 재개용이므로 잔재를 유지한다(변경 없음).
+- **원자적 안전 제거 프리미티브**: `worktree.js`에 검사와 제거를 **하나의
+  topology-lock 구간에서** 수행하는 연산을 추가한다(예:
+  `removeIfDiscardable({repo, bead_id, base})`). 락 안에서 관측하는 값:
+  워크트리 디렉터리·브랜치 `<bead_id>` 각각의 존재, 워크트리 dirty 여부
+  (`status --porcelain`), 브랜치 고유 커밋 수
+  (`rev-list --count <base>..<branch>`), **워크트리 HEAD의 고유 커밋 수**
+  (`rev-list --count <base>..HEAD`, detached HEAD 커밋 유실 방지).
+  "폐기 가능"의 정의: **워크트리 clean ∧ 브랜치 ahead == 0 ∧ HEAD ahead == 0**
+  (없는 항목은 자동 통과, 관측 실패는 폐기 불가). 폐기 가능할 때만 **비강제**
+  `git worktree remove`를 같은 락 안에서 수행하고, 제거 명령의 nonzero 종료는
+  실패(보존)로 처리한다. 반환은 구조화된 결과(removed 여부 + 보존 사유)이며
+  강제 옵션은 두지 않는다.
+- **dispatch pre-flight**: `worktree.add` 호출 전에 잔재가 존재하면 위
+  프리미티브를 호출한다.
+  - 제거됨(또는 잔재 없음) → 정상 진행(자가 치유).
+  - 보존됨(dirty, 브랜치/HEAD ahead > 0, 관측 실패, 제거 실패 — 워크트리 없이
+    브랜치만 ahead인 경우 포함) →
+    `recordSkipReason(workspace, bead_id, 'worktree_stale_work')`로 fail-closed
+    거절(잔재는 건드리지 않음), `dispatch_refused` + `tickPass` 재진입.
+    이것이 `-B` 강제 리셋에 의한 커밋 손실 방지막이다.
+  - pre-flight 자체의 git 오류는 fail-closed로 `'git_error'` 거절.
+- **stop() best-effort 정리**: ■ 종료 경로에서 같은 프리미티브로 워크트리를
+  정리하되, **live 세션 stop은 프로세스 종료가 확인된 뒤**(`handle.done`
+  해소 후)에만 수행한다 — SIGTERM 직후의 검사는 아직 살아 있는 프로세스가
+  검사 뒤에 만든 변경을 지울 수 있기 때문. 정지 시점부터 정리 완료까지 해당
+  bead는 재dispatch되지 않아야 한다(claim 유지 등 구현 재량, 요구는 "정지~정리
+  완료 사이 dispatch 불가"). paused-discard stop은 프로세스가 이미 없으므로
+  즉시 수행한다. 판정 불가·제거 실패는 로그만 남기고 보존(pre-flight가 다음
+  방어선). `pause()`는 재개용이므로 잔재를 유지한다(변경 없음).
 
 ## 변경 ③ — 터미널 bead 자동 dequeue
 
@@ -68,13 +79,19 @@
 
 1. `worktree.add`가 throw하면 `worktree_add_failed` 배지가 기록되고 같은 tick
    캐스케이드에서 재시도 루프가 생기지 않는다(scheduler 단위 테스트).
-2. clean + ahead==0 잔재가 있으면 dispatch가 이를 제거하고 정상 실행된다.
-3. dirty 잔재 또는 ahead>0 브랜치(워크트리 유무 무관)가 있으면
-   `worktree_stale_work` 배지로 거절되고 잔재가 그대로 보존된다.
-4. ■ stop 시 폐기 가능한 잔재는 제거되고, 폐기 불가 잔재는 보존된다
-   (두 stop 경로 모두).
-5. 대기열의 `closed` bead는 다음 tick에서 배지 없이 대기열에서 제거되고
+2. clean + 브랜치/HEAD ahead==0 잔재가 있으면 dispatch가 이를 제거하고 정상
+   실행된다.
+3. dirty 잔재, ahead>0 브랜치(워크트리 유무 무관), **브랜치 ahead==0이지만
+   HEAD(detached 포함)에 고유 커밋이 있는 잔재**는 `worktree_stale_work`
+   배지로 거절되고 잔재가 그대로 보존된다.
+4. 제거 명령이 nonzero로 끝나면(비강제 remove 거부 등) 잔재가 보존되고
+   fail-closed로 처리된다.
+5. ■ stop 시 폐기 가능한 잔재는 제거되고, 폐기 불가 잔재는 보존된다(두 stop
+   경로 모두). live stop은 프로세스 종료 확인 후에만 정리하며, 정지~정리 완료
+   사이에 해당 bead의 재dispatch가 거절되는 테스트를 포함한다.
+6. 대기열의 `closed` bead는 다음 tick에서 배지 없이 대기열에서 제거되고
    구독자 스냅샷에 반영된다; `resolved`는 기존처럼 배지만 남는다.
-6. 잔재 검사 헬퍼의 관측값(존재/dirty/ahead)이 실제 git 상태와 일치한다
-   (worktree 통합 테스트).
-7. `npm run all` green (tsc·test·lint·prettier).
+7. 안전 제거 프리미티브의 관측값(존재/dirty/브랜치·HEAD ahead)과 제거/보존
+   판정이 실제 git 상태와 일치한다(worktree 통합 테스트, detached HEAD 케이스
+   포함).
+8. `npm run all` green (tsc·test·lint·prettier).
