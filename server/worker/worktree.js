@@ -79,6 +79,24 @@ export function createWorktreeManager(deps) {
     return path.join(repo, '.worktrees', bead_id);
   }
 
+  /**
+   * Path of a WORKER-OWNED, single-use detached verify worktree (UI-egj7 §1).
+   *
+   * OWNERSHIP INVARIANT: `.worktrees/.verify/` is a namespace no session
+   * worktree can reach — {@link pathFor} names its directory after the bead id,
+   * and a bead id cannot contain `/`. The destructive reclaim ladder in {@link
+   * createWorktreeManager}'s `addDetached` therefore only ever operates on
+   * worker-owned residue, structurally rather than by a `verify-` prefix
+   * convention.
+   *
+   * @param {string} repo
+   * @param {string} name
+   * @returns {string}
+   */
+  function detachedPathFor(repo, name) {
+    return path.join(repo, '.worktrees', '.verify', name);
+  }
+
   return {
     pathFor,
 
@@ -285,13 +303,54 @@ export function createWorktreeManager(deps) {
      * never a moving base tip. `add`'s `-B` branch form cannot express this.
      * Topology-lock guarded; clean up with {@link removeDetached}.
      *
+     * RECLAIM BEFORE ADD (UI-egj7 §1): every `git worktree add` failure of the
+     * "Preparing worktree … fatal: '<path>' …" family is a name collision with
+     * residue of a previous run — a live worktree, a stale registration whose
+     * directory is gone, a lock left by a process that died mid-add, or an
+     * unregistered leftover directory. The worktree named here is worker-owned
+     * and single-use (see {@link detachedPathFor}), so the residue is reclaimed
+     * unconditionally rather than diagnosed: each step is best-effort, the
+     * whole ladder is idempotent, and verify runs are rare enough that three
+     * extra git spawns cost nothing next to parsing porcelain to decide.
+     *
+     * The ladder may only ever meet DEAD residue — `verify-cmd`'s per-(repo,
+     * name) lifecycle mutex (UI-egj7 §2) serializes same-name runs, so it can
+     * never destroy a live sibling's worktree.
+     *
      * @param {{ repo: string, name: string, sha: string }} input
      * @returns {Promise<{ path: string }>}
      */
     async addDetached(input) {
       const release = await locks.topologyLock(input.repo);
       try {
-        const wt = pathFor(input.repo, input.name);
+        const wt = detachedPathFor(input.repo, input.name);
+        /**
+         * A reclaim step never decides the outcome — only the `add` below does,
+         * so neither a nonzero exit nor a throw may escape.
+         *
+         * @param {string[]} args
+         */
+        const reclaim = async (args) => {
+          try {
+            await run(args, { cwd: input.repo });
+          } catch {
+            // Ignored on purpose; the add below reports the real failure.
+          }
+        };
+        // 1. release a lock left behind by a process that died mid-add.
+        await reclaim(['worktree', 'unlock', wt]);
+        // 2. take down a registered leftover, dirty or not.
+        await reclaim(['worktree', 'remove', '--force', wt]);
+        // 3. an unregistered leftover directory git will not touch itself.
+        try {
+          if (fs.existsSync(wt)) {
+            fs.rmSync(wt, { recursive: true, force: true });
+          }
+        } catch {
+          // Best-effort; the add below reports the real failure.
+        }
+        // 4. drop registrations whose directory is already gone.
+        await reclaim(['worktree', 'prune']);
         const added = await run(
           ['worktree', 'add', '--detach', wt, input.sha],
           { cwd: input.repo }
@@ -316,7 +375,7 @@ export function createWorktreeManager(deps) {
     async removeDetached(input) {
       const release = await locks.topologyLock(input.repo);
       try {
-        const wt = pathFor(input.repo, input.name);
+        const wt = detachedPathFor(input.repo, input.name);
         const removed = await run(['worktree', 'remove', '--force', wt], {
           cwd: input.repo
         });

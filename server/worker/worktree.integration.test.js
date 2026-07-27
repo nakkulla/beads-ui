@@ -105,7 +105,9 @@ describe('worker/worktree (real git)', () => {
       name: 'verify-UI-1',
       sha: first
     });
-    expect(created.path).toBe(path.join(repo, '.worktrees', 'verify-UI-1'));
+    expect(created.path).toBe(
+      path.join(repo, '.worktrees', '.verify', 'verify-UI-1')
+    );
     // Pinned to the exact sha, detached (no branch ref created).
     const head = execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: created.path,
@@ -121,6 +123,110 @@ describe('worker/worktree (real git)', () => {
     const removed = await wt.removeDetached({ repo, name: 'verify-UI-1' });
     expect(removed.code).toBe(0);
     expect(fs.existsSync(created.path)).toBe(false);
+  });
+
+  test('addDetached reclaims a live worktree left under the same name', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const head = headOf(repo);
+    const first = await wt.addDetached({
+      repo,
+      name: 'verify-UI-1',
+      sha: head
+    });
+    // Residue of a previous run that was never torn down.
+    fs.writeFileSync(path.join(first.path, 'stale.txt'), 'stale\n');
+
+    const second = await wt.addDetached({
+      repo,
+      name: 'verify-UI-1',
+      sha: head
+    });
+
+    expect(second.path).toBe(first.path);
+    expect(headOf(second.path)).toBe(head);
+    expect(fs.existsSync(path.join(second.path, 'stale.txt'))).toBe(false);
+  });
+
+  test('addDetached reclaims a stale registration whose directory is gone', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const head = headOf(repo);
+    const first = await wt.addDetached({
+      repo,
+      name: 'verify-UI-1',
+      sha: head
+    });
+    // Directory removed behind git's back: the registration survives.
+    fs.rmSync(first.path, { recursive: true, force: true });
+
+    const second = await wt.addDetached({
+      repo,
+      name: 'verify-UI-1',
+      sha: head
+    });
+
+    expect(fs.existsSync(path.join(second.path, 'README.md'))).toBe(true);
+    expect(headOf(second.path)).toBe(head);
+  });
+
+  test('addDetached reclaims a locked stale worktree', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const head = headOf(repo);
+    const first = await wt.addDetached({
+      repo,
+      name: 'verify-UI-1',
+      sha: head
+    });
+    // A lock left by a process that died mid-add — `remove --force` alone
+    // refuses this one.
+    git(['worktree', 'lock', first.path], repo);
+
+    const second = await wt.addDetached({
+      repo,
+      name: 'verify-UI-1',
+      sha: head
+    });
+
+    expect(headOf(second.path)).toBe(head);
+  });
+
+  test('addDetached reclaims an unregistered leftover directory', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const head = headOf(repo);
+    const leftover = path.join(repo, '.worktrees', '.verify', 'verify-UI-1');
+    fs.mkdirSync(leftover, { recursive: true });
+    fs.writeFileSync(path.join(leftover, 'junk.txt'), 'junk\n');
+
+    const created = await wt.addDetached({
+      repo,
+      name: 'verify-UI-1',
+      sha: head
+    });
+
+    expect(created.path).toBe(leftover);
+    expect(fs.existsSync(path.join(created.path, 'junk.txt'))).toBe(false);
+    expect(headOf(created.path)).toBe(head);
+  });
+
+  test('addDetached never touches a session worktree of the same name', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    const session = await wt.add({ repo, bead_id: 'UI-1', base });
+    fs.writeFileSync(path.join(session.path, 'session.txt'), 'session\n');
+
+    const detached = await wt.addDetached({ repo, name: 'UI-1', sha: base });
+
+    // Separate namespace: the reclaim ladder cannot reach `.worktrees/UI-1`.
+    expect(detached.path).toBe(
+      path.join(repo, '.worktrees', '.verify', 'UI-1')
+    );
+    expect(fs.existsSync(session.path)).toBe(true);
+    expect(fs.existsSync(path.join(session.path, 'session.txt'))).toBe(true);
+    expect(headOf(session.path, 'UI-1')).toBe(base);
   });
 
   test('removeIfDiscardable clears a clean residue whose branch and HEAD carry nothing', async () => {

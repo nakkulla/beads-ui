@@ -507,4 +507,83 @@ describe('worker/verify-cmd — pre-merge run pinned to a PR head sha (§5)', ()
 
     expect(r.detail).toHaveLength(512);
   });
+
+  test('serializes two concurrent runs of the same (repo, name) lifecycle', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+    /** @type {string[]} */
+    const order = [];
+    worktree.addDetached = vi.fn(async () => {
+      order.push('add');
+      // A real add is not instantaneous; without the mutex the second add would
+      // start inside this window and the order would interleave.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return { path: process.cwd() };
+    });
+    worktree.removeDetached = vi.fn(async () => {
+      order.push('remove');
+      return { code: 0, stderr: '' };
+    });
+    const runOnce = () =>
+      runVerifyAtSha({
+        repo: '/repo-concurrent',
+        bead_id: 'UI-1',
+        sha: SHA,
+        pr_number: 304,
+        cmd: [process.execPath, '-e', 'process.exit(0)'],
+        timeout_ms: 10000,
+        worktree,
+        git
+      });
+
+    const [first, second] = await Promise.all([runOnce(), runOnce()]);
+
+    expect(order).toEqual(['add', 'remove', 'add', 'remove']);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+  });
+
+  test('keeps the verdict when the teardown exits non-zero', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+    worktree.removeDetached = vi.fn(async () => ({
+      code: 1,
+      stderr: "fatal: '.worktrees/.verify/verify-UI-1-aaaaaaa' is locked"
+    }));
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(r).toEqual({ ok: true, reason: 'ok', exit: 0 });
+  });
+
+  test('keeps the verdict when the teardown throws', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+    worktree.removeDetached = vi.fn(async () => {
+      throw new Error('teardown exploded');
+    });
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(5)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(r.reason).toBe('verify_cmd_failed');
+    expect(r.exit).toBe(5);
+  });
 });
