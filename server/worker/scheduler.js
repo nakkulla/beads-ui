@@ -67,7 +67,7 @@ const log = debug('worker:scheduler');
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
  *   readStatus: (bead_id: string) => Promise<string|null>
  * }} bd
- * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, reason: string|null }>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
+ * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
@@ -138,6 +138,18 @@ export function createScheduler(deps) {
    * @type {Set<string>}
    */
   const cleanup_pending = new Set();
+  /**
+   * `handle.done` of each PAUSED attempt, keyed by attempt_id. `pause()` sends
+   * SIGTERM without waiting for the exit, so a ■ that follows it immediately
+   * still faces a dying process — and a residue check racing that process could
+   * discard work it writes after the check. Holding the promise here lets the
+   * paused-discard path wait exactly like the live one. Entries are dropped when
+   * the promise settles, when a discard consumes it, and when a relaunch spends
+   * the ancestor, so nothing accumulates.
+   *
+   * @type {Map<string, Promise<RunnerVerdict>>}
+   */
+  const paused_done = new Map();
 
   /**
    * Notify ws subscribers of an autonomous queue transition (best-effort).
@@ -626,7 +638,7 @@ export function createScheduler(deps) {
     // `-B` silently reset a branch that may still hold the only copy of its
     // commits. Clear it when nothing would be lost, refuse VISIBLY otherwise.
     if (typeof deps.worktree.removeIfDiscardable === 'function') {
-      /** @type {{ ok: boolean, reason: string|null }} */
+      /** @type {{ ok: boolean, removed: boolean, reason: string|null }} */
       let residue;
       try {
         residue = await deps.worktree.removeIfDiscardable({
@@ -1173,6 +1185,9 @@ export function createScheduler(deps) {
     const attempt_id = prior.attempt_id;
     const runner_name = 'claude';
 
+    // The ancestor is spent from here on: nothing can discard it any more, so
+    // its parked `done` promise must not outlive the relaunch.
+    paused_done.delete(attempt_id);
     claimed.add(bead_id);
 
     const new_attempt_id = makeAttemptId(bead_id);
@@ -1355,7 +1370,10 @@ export function createScheduler(deps) {
     /** @type {Array<{ bead_id: string, snap: BeadSnapshot }>} */
     const to_dispatch = [];
 
-    let free = slotsOf(q) - running.size;
+    // Occupancy is `claimed`, NOT `running`: a dispatch that has taken its claim
+    // but has not spawned yet already owns a slot, and a refusal's re-entrant
+    // pass would otherwise count those in-flight siblings as free and overbook.
+    let free = slotsOf(q) - claimed.size;
     for (const entry of q.queue) {
       if (free <= 0) {
         break;
@@ -1468,6 +1486,14 @@ export function createScheduler(deps) {
     if (typeof sid !== 'string' || sid.length === 0) {
       return { ok: false, reason: 'no_session_id' };
     }
+    // SIGTERM below does not wait for the exit, so a ■ arriving right after
+    // this pause must be able to wait for the same process (see `paused_done`).
+    const done = entry.handle.done;
+    paused_done.set(attempt_id, done);
+    const forgetDone = () => {
+      paused_done.delete(attempt_id);
+    };
+    done.then(forgetDone, forgetDone);
     teardownLiveSession(attempt_id, entry);
     deps.store.updateAttempt(workspace, {
       attempt_id,
@@ -1547,18 +1573,38 @@ export function createScheduler(deps) {
         return false;
       }
     }
+    // `pause()` only signalled the process; it never waited for the exit. When
+    // that promise is still held, the discard owes the same wait a live stop
+    // does — otherwise the residue check races a process that is still writing.
+    const pending_done = paused_done.get(attempt_id);
+    paused_done.delete(attempt_id);
+    const repo = typeof rec.repo === 'string' ? rec.repo : '';
+    const base = attemptBase(workspace, attempt_id);
+    if (pending_done) {
+      cleanup_pending.add(rec.bead_id);
+    }
     deps.store.discardAttempt(workspace, {
       attempt_id,
       bead_id: rec.bead_id,
       patch: { status: 'stopped', cause: null, finished_at: now() }
     });
     await releaseBeadClaim(rec.bead_id);
-    // No live process to outlive the check, so the residue is settled inline.
-    await cleanupStopResidue(
-      typeof rec.repo === 'string' ? rec.repo : '',
-      rec.bead_id,
-      attemptBase(workspace, attempt_id)
-    );
+    if (pending_done) {
+      // Detached exactly like the live path: stop() must answer its ws caller
+      // even when the paused process ignores the signal.
+      pending_done.then(
+        () => finishStopCleanup(workspace, repo, rec.bead_id, base),
+        () => {
+          // Unknown exit state — keep the residue, lift the fence (the dispatch
+          // pre-flight is the next defence).
+          cleanup_pending.delete(rec.bead_id);
+        }
+      );
+    } else {
+      // A paused record with no live handle (restored after a restart): the
+      // process is long gone, so the residue is settled inline.
+      await cleanupStopResidue(repo, rec.bead_id, base);
+    }
     notifyChanged(workspace);
     await tick(workspace);
     return true;

@@ -135,7 +135,7 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({ ok: true, reason: null });
+    expect(result).toEqual({ ok: true, removed: true, reason: null });
     expect(fs.existsSync(created.path)).toBe(false);
   });
 
@@ -149,7 +149,24 @@ describe('worker/worktree (real git)', () => {
       base: headOf(repo)
     });
 
-    expect(result).toEqual({ ok: true, reason: null });
+    expect(result).toEqual({ ok: true, removed: false, reason: null });
+  });
+
+  test('removeIfDiscardable reports no removal when only a spent branch is left', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    await wt.add({ repo, bead_id: 'UI-1', base });
+    await wt.remove({ repo, bead_id: 'UI-1' });
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base
+    });
+
+    expect(result).toEqual({ ok: true, removed: false, reason: null });
+    expect(headOf(repo, 'UI-1')).toBe(base);
   });
 
   test('removeIfDiscardable preserves a dirty worktree', async () => {
@@ -165,7 +182,7 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({ ok: false, reason: 'dirty' });
+    expect(result).toEqual({ ok: false, removed: false, reason: 'dirty' });
     expect(fs.existsSync(created.path)).toBe(true);
   });
 
@@ -182,7 +199,11 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({ ok: false, reason: 'branch_ahead' });
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'branch_ahead'
+    });
     expect(fs.existsSync(created.path)).toBe(true);
   });
 
@@ -200,7 +221,11 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({ ok: false, reason: 'branch_ahead' });
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'branch_ahead'
+    });
     expect(headOf(repo, 'UI-1')).not.toBe(base);
   });
 
@@ -220,7 +245,7 @@ describe('worker/worktree (real git)', () => {
     });
 
     expect(headOf(repo, 'UI-1')).toBe(base);
-    expect(result).toEqual({ ok: false, reason: 'head_ahead' });
+    expect(result).toEqual({ ok: false, removed: false, reason: 'head_ahead' });
     expect(fs.existsSync(created.path)).toBe(true);
   });
 
@@ -238,7 +263,11 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({ ok: false, reason: 'remove_failed' });
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'remove_failed'
+    });
     expect(fs.existsSync(created.path)).toBe(true);
   });
 
@@ -253,7 +282,11 @@ describe('worker/worktree (real git)', () => {
       base: 'no-such-base'
     });
 
-    expect(result).toEqual({ ok: false, reason: 'observe_failed' });
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'observe_failed'
+    });
     expect(fs.existsSync(created.path)).toBe(true);
   });
 

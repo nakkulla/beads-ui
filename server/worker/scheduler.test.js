@@ -280,7 +280,7 @@ function setup(opts) {
     // against real git in worktree.integration.test.js). Loosely typed so a
     // test can swap in a refusing or throwing variant.
     removeIfDiscardable: /** @type {any} */ (
-      vi.fn(async () => ({ ok: true, reason: null }))
+      vi.fn(async () => ({ ok: true, removed: false, reason: null }))
     ),
     addDetached: vi.fn(async (/** @type {any} */ { name }) => ({
       path: `/wt-verify/${name}`
@@ -2245,6 +2245,26 @@ describe('scheduler worktree residue hygiene', () => {
     expect(env.scheduler.isRunning('S2')).toBe(true);
   });
 
+  test('keeps the refill after an add failure inside the slot cap', async () => {
+    const env = setup({
+      config: { S1: {}, S2: {}, S3: {}, S4: {} },
+      slots: 2
+    });
+    // S1 refuses mid-dispatch while S2 is still in flight (not yet spawned):
+    // the refusal's re-entrant pass must count S2's claim as an occupied slot.
+    env.worktree.add = vi.fn(async (/** @type {any} */ { bead_id }) => {
+      if (bead_id === 'S1') {
+        throw new Error('already used by worktree');
+      }
+      return { path: `/wt/${bead_id}`, branch: bead_id, base_oid: 'base' };
+    });
+    seedQueue(env.store, ['S1', 'S2', 'S3', 'S4']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(2);
+  });
+
   test('checks the residue against the pinned base before creating the worktree', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
@@ -2282,6 +2302,7 @@ describe('scheduler worktree residue hygiene', () => {
       const env = setup({ config: { S1: {} }, slots: 1 });
       env.worktree.removeIfDiscardable = vi.fn(async () => ({
         ok: false,
+        removed: false,
         reason
       }));
       seedQueue(env.store, ['S1']);
@@ -2300,6 +2321,7 @@ describe('scheduler worktree residue hygiene', () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     env.worktree.removeIfDiscardable = vi.fn(async () => ({
       ok: false,
+      removed: false,
       reason: 'dirty'
     }));
     seedQueue(env.store, ['S1']);
@@ -2327,8 +2349,8 @@ describe('scheduler worktree residue hygiene', () => {
     env.worktree.removeIfDiscardable = vi.fn(
       async (/** @type {any} */ { bead_id }) =>
         bead_id === 'S1'
-          ? { ok: false, reason: 'dirty' }
-          : { ok: true, reason: null }
+          ? { ok: false, removed: false, reason: 'dirty' }
+          : { ok: true, removed: false, reason: null }
     );
     seedQueue(env.store, ['S1', 'S2']);
 
@@ -2414,7 +2436,7 @@ describe('scheduler stop residue cleanup', () => {
     expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
   });
 
-  test('a paused discard cleans the residue immediately', async () => {
+  test('a paused discard leaves the residue alone while the killed session is still exiting', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -2425,6 +2447,49 @@ describe('scheduler stop residue cleanup', () => {
 
     await env.scheduler.stop(WS, attempt_id);
 
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+  });
+
+  test('a paused discard cleans the residue once the killed session exits', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, attempt_id);
+    env.worktree.removeIfDiscardable.mockClear();
+    await env.scheduler.stop(WS, attempt_id);
+
+    env.runner.finish('S1', { success: false, reason: 'killed', exit: null });
+    await flush();
+    await flush();
+
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'S1',
+      base: 'main'
+    });
+  });
+
+  test('a paused record restored without a live handle is cleaned inline', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'A-restored', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'A-restored',
+      patch: {
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-1',
+        status: 'paused'
+      }
+    });
+
+    const discarded = await env.scheduler.stop(WS, 'A-restored');
+
+    expect(discarded).toBe(true);
     expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
       repo: '/repo',
       bead_id: 'S1',
@@ -2441,10 +2506,14 @@ describe('scheduler stop residue cleanup', () => {
     await env.scheduler.pause(WS, attempt_id);
     env.worktree.removeIfDiscardable = vi.fn(async () => ({
       ok: false,
+      removed: false,
       reason: 'branch_ahead'
     }));
 
     expect(await env.scheduler.stop(WS, attempt_id)).toBe(true);
+    env.runner.finish('S1', { success: false, reason: 'killed', exit: null });
+    await flush();
+    await flush();
 
     expect(env.worktree.remove).not.toHaveBeenCalled();
   });

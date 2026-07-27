@@ -58,7 +58,7 @@ function parseCount(result) {
  *   exists: (repo: string, bead_id: string) => boolean,
  *   add: (input: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>,
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
- *   removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, reason: string|null }>,
+ *   removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *   addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
  *   removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>,
  *   withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
@@ -187,16 +187,18 @@ export function createWorktreeManager(deps) {
      *
      * `ok` answers the caller's actual question — "is there residue blocking a
      * fresh run?" — so it is true both when nothing was there and when a
-     * discardable residue was removed. Every other outcome is `ok:false` with
-     * the reason and leaves the residue untouched: `add`'s `-B` resets the
-     * branch to base, so refusing fail-closed is what protects unique commits.
+     * discardable residue was removed. `removed` separates those two: false
+     * means nothing had to go, true means a discardable worktree really was
+     * taken down. Every other outcome is `ok:false, removed:false` with the
+     * reason and leaves the residue untouched: `add`'s `-B` resets the branch to
+     * base, so refusing fail-closed is what protects unique commits.
      *
      * DEADLOCK BOUNDARY (see {@link withTopologyLock}): raw git only in here —
      * never `add` / `remove` / `addDetached` / `removeDetached`, which take the
      * same non-reentrant lock.
      *
      * @param {{ repo: string, bead_id: string, base: string }} input
-     * @returns {Promise<{ ok: boolean, reason: string|null }>}
+     * @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null }>}
      */
     async removeIfDiscardable(input) {
       const release = await locks.topologyLock(input.repo);
@@ -208,7 +210,7 @@ export function createWorktreeManager(deps) {
         try {
           wt_present = fs.existsSync(wt);
         } catch {
-          return { ok: false, reason: 'observe_failed' };
+          return { ok: false, removed: false, reason: 'observe_failed' };
         }
 
         const branch_probe = await run(
@@ -218,17 +220,17 @@ export function createWorktreeManager(deps) {
         // `--quiet` reports a missing ref as exit 1; any other nonzero is a
         // failed observation, not an absence.
         if (branch_probe.code !== 0 && branch_probe.code !== 1) {
-          return { ok: false, reason: 'observe_failed' };
+          return { ok: false, removed: false, reason: 'observe_failed' };
         }
         const branch_present = branch_probe.code === 0;
 
         if (wt_present) {
           const status = await run(['status', '--porcelain'], { cwd: wt });
           if (status.code !== 0) {
-            return { ok: false, reason: 'observe_failed' };
+            return { ok: false, removed: false, reason: 'observe_failed' };
           }
           if (status.stdout.trim().length > 0) {
-            return { ok: false, reason: 'dirty' };
+            return { ok: false, removed: false, reason: 'dirty' };
           }
         }
 
@@ -239,10 +241,10 @@ export function createWorktreeManager(deps) {
             })
           );
           if (branch_ahead === null) {
-            return { ok: false, reason: 'observe_failed' };
+            return { ok: false, removed: false, reason: 'observe_failed' };
           }
           if (branch_ahead > 0) {
-            return { ok: false, reason: 'branch_ahead' };
+            return { ok: false, removed: false, reason: 'branch_ahead' };
           }
         }
 
@@ -255,10 +257,10 @@ export function createWorktreeManager(deps) {
             })
           );
           if (head_ahead === null) {
-            return { ok: false, reason: 'observe_failed' };
+            return { ok: false, removed: false, reason: 'observe_failed' };
           }
           if (head_ahead > 0) {
-            return { ok: false, reason: 'head_ahead' };
+            return { ok: false, removed: false, reason: 'head_ahead' };
           }
           // NEVER `--force`: git's own refusal is the last guard against
           // removing a worktree whose state the observations above missed.
@@ -266,11 +268,12 @@ export function createWorktreeManager(deps) {
             cwd: input.repo
           });
           if (removed.code !== 0) {
-            return { ok: false, reason: 'remove_failed' };
+            return { ok: false, removed: false, reason: 'remove_failed' };
           }
+          return { ok: true, removed: true, reason: null };
         }
 
-        return { ok: true, reason: null };
+        return { ok: true, removed: false, reason: null };
       } finally {
         release();
       }
