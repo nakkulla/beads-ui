@@ -3029,13 +3029,14 @@ html[data-theme='dark'] {
 }
 
 /* Detail-panel transcript overlay: the drawer opened from a session-history row
-   floats above the detail overlay. */
+   is a body-level sibling of `.detail-overlay` (z 900), so it must sit above
+   that and below the md viewer (z 1000). */
 .session-log-root .sv {
   position: fixed;
   inset: auto 3vw 3vh 3vw;
   max-width: 720px;
   margin: 0 auto;
-  z-index: 60;
+  z-index: 950;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
 }
 

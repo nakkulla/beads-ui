@@ -1187,7 +1187,12 @@ export function createWorkerView(mount_element, options = {}) {
     const a = q.attempts ? q.attempts[selected_attempt] : null;
     if (a) {
       drawer.updateMeta(metaForAttempt(a));
+      return;
     }
+    // Attempt records are never pruned within a workspace, so a vanished
+    // attempt means the store was cleared (workspace switch): close the modal
+    // or its backdrop would keep blocking the new workspace's UI.
+    drawer.close();
   }
 
   /**
@@ -1392,6 +1397,7 @@ export function createWorkerView(mount_element, options = {}) {
       } catch {
         /* ignore */
       }
+      drawer_overlay_el.hidden = true;
       try {
         exec_defaults_dialog.destroy();
       } catch {

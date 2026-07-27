@@ -1575,6 +1575,7 @@ describe('views/worker', () => {
    * drawer by clicking the tile body (UI-89q5 modal overlay tests).
    *
    * @param {HTMLElement} mount
+   * @returns {{ get: () => any, set: (q: any) => void, clear: () => void, subscribe: (fn: () => void) => () => void }}
    */
   function openRunningTileDrawer(mount) {
     const queueStore = createWorkerQueueStore();
@@ -1611,6 +1612,8 @@ describe('views/worker', () => {
       mount.querySelector('.rtile[data-bead-id="S1"] .rtile__title')
     );
     title.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    return queueStore;
   }
 
   test('reveals the drawer overlay only while a transcript is open', () => {
@@ -1632,6 +1635,19 @@ describe('views/worker', () => {
       mount.querySelector('.worker-drawer-overlay__backdrop')
     );
     backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const overlay = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-drawer-overlay')
+    );
+    expect(overlay.hidden).toBe(true);
+    expect(mount.querySelector('.sv')).toBeNull();
+  });
+
+  test('closes the drawer overlay when the queue store is cleared (workspace switch)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = openRunningTileDrawer(mount);
+
+    queueStore.clear();
 
     const overlay = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-drawer-overlay')
