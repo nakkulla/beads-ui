@@ -1354,22 +1354,28 @@ export function createWorkerView(mount_element, options = {}) {
     // 목록 자체가 오늘의 범위이므로 별도 날짜 필터도 두지 않는다.
     let token_in = 0;
     let token_out = 0;
+    // 보고된 0과 아예 보고되지 않은 usage는 다른 사실이다 — 행 배지가 그 둘을
+    // 가르는 방식(`formatUsageTotal`의 토큰 필드 존재 검사)을 합계도 따른다.
+    let token_reported = false;
     for (const row of done_rows) {
       const u = row.usage;
       if (u && typeof u === 'object') {
-        token_in += Number.isFinite(u.input_tokens) ? u.input_tokens : 0;
-        token_out += Number.isFinite(u.output_tokens) ? u.output_tokens : 0;
+        if (Number.isFinite(u.input_tokens)) {
+          token_in += u.input_tokens;
+          token_reported = true;
+        }
+        if (Number.isFinite(u.output_tokens)) {
+          token_out += u.output_tokens;
+          token_reported = true;
+        }
       }
     }
-    // 0은 "아직 쓴 게 없다"가 아니라 "보고된 usage가 없다"이므로 칩을 숨긴다 —
-    // 행 배지가 usage 부재를 다루는 방식과 같다.
-    const token_total =
-      token_in > 0 || token_out > 0
-        ? formatUsageTotal({
-            input_tokens: token_in,
-            output_tokens: token_out
-          })
-        : null;
+    const token_total = token_reported
+      ? formatUsageTotal({
+          input_tokens: token_in,
+          output_tokens: token_out
+        })
+      : null;
 
     return {
       queue: q,
@@ -1423,54 +1429,72 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function topTemplate(m) {
     const next_head = m.waiting.length > 0 ? m.waiting[0].id : '—';
-    // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바). 모바일에서는 같은 바가 sticky
-    // 리본이 되며 KPI만 남기고 "다음" 같은 폭 먹는 항목을 접는다 — 구성은
-    // 하나이고 CSS가 밀도를 바꾼다.
-    return html`<div class="worker-ctrl">
-        <div class="worker-ctrl__ops">
-          <button
-            type="button"
-            class="worker-play${m.queue.auto_advance ? ' is-active' : ''}"
-          >
-            ${m.queue.auto_advance ? '⏸ 일시정지' : '▶ 자동 진행'}
-          </button>
-          <label class="worker-tgl worker-slots"
-            >동시 실행
-            <input
-              type="number"
-              class="worker-slots__input"
-              min=${MIN_SLOTS}
-              step="1"
-              .value=${String(m.slots)}
-              title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
-          /></label>
-          <button
-            type="button"
-            class="worker-exec-defaults-btn"
-            aria-haspopup="dialog"
-            aria-label="전역 실행 설정"
-            title="전역 실행 설정"
-          >
-            ⚙
-          </button>
+    const play = html`<button
+      type="button"
+      class="worker-play${m.queue.auto_advance ? ' is-active' : ''}"
+    >
+      ${m.queue.auto_advance ? '⏸ 일시정지' : '▶ 자동 진행'}
+    </button>`;
+    const overcap = m.over_cap
+      ? html`<span
+          class="worker-overcap"
+          title="수동 재개(▶)는 슬롯 cap을 초과할 수 있습니다 — 자동 진행은 cap을 지킵니다"
+          >cap 초과</span
+        >`
+      : '';
+    // 세 카운트는 데스크톱 KPI 줄과 모바일 리본이 함께 쓴다 — 같은 수를 두 번
+    // 정의하지 않기 위해 템플릿 하나로 둔다.
+    const counts = html`<span class="worker-kpi__chip worker-kpi__chip--running"
+        >실행 <b>${m.live_count}</b></span
+      >
+      <span class="worker-kpi__chip worker-kpi__chip--pr"
+        >PR 대기 <b>${m.pr_wait.length}</b></span
+      >
+      <span class="worker-kpi__chip worker-kpi__chip--done"
+        >오늘 완료 <b>${m.done.length}</b></span
+      >`;
+    const settings = html`<label class="worker-tgl worker-slots"
+        >동시 실행
+        <input
+          type="number"
+          class="worker-slots__input"
+          min=${MIN_SLOTS}
+          step="1"
+          .value=${String(m.slots)}
+          title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
+      /></label>
+      <button
+        type="button"
+        class="worker-exec-defaults-btn"
+        aria-haspopup="dialog"
+        aria-label="전역 실행 설정"
+        title="전역 실행 설정"
+      >
+        ⚙
+      </button>`;
+    const banners = bannersTemplate({
+      failure: m.failure,
+      cleanupFailures: m.cleanup_failures
+    });
+    if (is_mobile) {
+      // sticky 리본 (UI-58y2 §모바일 1)에는 자동 진행 토글과 세 카운트만 둔다.
+      // 슬롯·⚙는 아래 조작 줄로 내리고 배너는 리본 밖에 남긴다 — 고정되는 것은
+      // "항상 읽혀야 하는 한 줄"뿐이어야 하고, 배너가 같이 붙으면 스크롤할수록
+      // 화면이 줄어든다.
+      return html`<div class="worker-ribbon">
+          ${play}
+          <div class="worker-kpi worker-kpi--ribbon">${overcap}${counts}</div>
         </div>
+        <div class="worker-ctrl worker-ctrl--mobile">
+          <div class="worker-ctrl__ops">${settings}</div>
+        </div>
+        ${banners}`;
+    }
+    // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
+    return html`<div class="worker-ctrl">
+        <div class="worker-ctrl__ops">${play}${settings}</div>
         <div class="worker-kpi">
-          ${m.over_cap
-            ? html`<span
-                class="worker-overcap"
-                title="수동 재개(▶)는 슬롯 cap을 초과할 수 있습니다 — 자동 진행은 cap을 지킵니다"
-                >cap 초과</span
-              >`
-            : ''}
-          <span class="worker-kpi__chip worker-kpi__chip--running"
-            >실행 <b>${m.live_count}</b></span
-          >
-          <span class="worker-kpi__chip worker-kpi__chip--pr"
-            >PR 대기 <b>${m.pr_wait.length}</b></span
-          >
-          <span class="worker-kpi__chip worker-kpi__chip--done"
-            >오늘 완료 <b>${m.done.length}</b></span
-          >
+          ${overcap}${counts}
           ${m.token_total
             ? html`<span
                 class="worker-kpi__chip worker-kpi__chip--tokens"
@@ -1483,10 +1507,7 @@ export function createWorkerView(mount_element, options = {}) {
           >
         </div>
       </div>
-      ${bannersTemplate({
-        failure: m.failure,
-        cleanupFailures: m.cleanup_failures
-      })}`;
+      ${banners}`;
   }
 
   /**
@@ -1684,6 +1705,32 @@ export function createWorkerView(mount_element, options = {}) {
     const m = buildModel();
     render(topTemplate(m), top_el);
     render(lanesTemplate(m), lanes_el);
+  }
+
+  /**
+   * Publish the sticky app header's measured height as `--worker-ribbon-top`
+   * (UI-58y2). The mobile layout scrolls the PAGE, so the ribbon's sticky stop
+   * has to clear the header — and the header wraps to two rows on a phone, so
+   * its height cannot be a constant. Measuring is the only honest source.
+   */
+  function watchHeaderOffset() {
+    const header = document.querySelector('.app-header');
+    if (!header) {
+      return;
+    }
+    const apply = () => {
+      const height = Math.round(header.getBoundingClientRect().height);
+      console_el.style.setProperty('--worker-ribbon-top', `${height}px`);
+    };
+    apply();
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(apply);
+      ro.observe(header);
+      unsubscribers.push(() => ro.disconnect());
+    } else {
+      window.addEventListener('resize', apply);
+      unsubscribers.push(() => window.removeEventListener('resize', apply));
+    }
   }
 
   /**
@@ -2200,6 +2247,7 @@ export function createWorkerView(mount_element, options = {}) {
   mount_element.addEventListener('change', /** @type {any} */ (onChange));
 
   watchViewport();
+  watchHeaderOffset();
 
   if (selectors) {
     unsubscribers.push(selectors.subscribe(doRender));

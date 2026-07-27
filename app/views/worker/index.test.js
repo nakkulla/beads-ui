@@ -4996,3 +4996,136 @@ describe('running tile stage accent (UI-58y2)', () => {
     ).toBe(false);
   });
 });
+
+describe('mobile sticky ribbon (UI-58y2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+    stubMatchMedia(true);
+  });
+
+  afterEach(() => {
+    clearMatchMedia();
+  });
+
+  /**
+   * @param {any} [over]
+   * @returns {HTMLElement}
+   */
+  function mountRibbon(over) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf(over || {}));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('carries the auto-advance toggle and the three counts', () => {
+    const mount = mountRibbon({
+      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }],
+      done: [{ bead_id: 'BL-1', added_at: 1 }]
+    });
+
+    const ribbon = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-ribbon')
+    );
+    expect(ribbon.querySelector('.worker-play')).not.toBe(null);
+    expect(
+      Array.from(ribbon.querySelectorAll('.worker-kpi__chip')).map((el) =>
+        (el.textContent || '').replace(/\s+/g, ' ').trim()
+      )
+    ).toEqual(['실행 0', 'PR 대기 1', '오늘 완료 1']);
+  });
+
+  test('keeps the slot stepper and settings out of the ribbon', () => {
+    const mount = mountRibbon();
+
+    const ribbon = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-ribbon')
+    );
+    expect(ribbon.querySelector('.worker-slots__input')).toBe(null);
+    expect(ribbon.querySelector('.worker-exec-defaults-btn')).toBe(null);
+    expect(mount.querySelector('.worker-slots__input')).not.toBe(null);
+    expect(mount.querySelector('.worker-exec-defaults-btn')).not.toBe(null);
+  });
+
+  test('leaves the failure banner outside the ribbon', () => {
+    const mount = mountRibbon({
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'failed',
+          repo: 'r',
+          cause: 'boom'
+        }
+      }
+    });
+
+    expect(mount.querySelector('.worker-banner--failure')).not.toBe(null);
+    expect(mount.querySelector('.worker-ribbon .worker-banner--failure')).toBe(
+      null
+    );
+  });
+
+  test('publishes the measured header height as the ribbon sticky offset', () => {
+    document.body.innerHTML =
+      '<header class="app-header"></header><div id="m"></div>';
+    const header = /** @type {HTMLElement} */ (
+      document.querySelector('.app-header')
+    );
+    header.getBoundingClientRect = () =>
+      /** @type {any} */ ({ height: 96, width: 0, top: 0, left: 0 });
+
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.worker-console')
+      ).style.getPropertyValue('--worker-ribbon-top')
+    ).toBe('96px');
+  });
+});
+
+describe('token KPI zero handling (UI-58y2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  test('shows an explicit zero rather than hiding the chip', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'succeeded',
+            usage: { input_tokens: 0, output_tokens: 0 }
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(mount.querySelector('.worker-kpi__chip--tokens')?.textContent).toBe(
+      'τ 0'
+    );
+  });
+});

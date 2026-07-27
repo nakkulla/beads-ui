@@ -4112,45 +4112,70 @@ html[data-theme='dark'] {
     max-height: 40vh;
   }
 
-  /* 관제 우선 배치 (UI-58y2 §모바일): 뷰포트 5등분을 폐기하고 콘솔 자체를
-     스크롤러로 만든다. 레인은 내용만큼 높이를 갖고 페이지와 함께 흐른다. */
+  /* 관제 우선 배치 (UI-58y2 §모바일): 뷰포트 5등분을 폐기하고 페이지 자연 세로
+     스크롤로 넘긴다. ≤900px에서 `.app-shell`이 `height: auto`가 되므로 높이
+     상한을 되살리려 하지 않고, 대신 라우트 셸의 높이 고정과 클리핑을 푼다 —
+     스크롤러는 문서이고, sticky의 기준도 뷰포트가 된다. */
+  #worker-root.route.worker {
+    height: auto;
+    overflow: visible;
+  }
+
   .worker-console {
     display: block;
     padding: var(--sp-8);
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
+    overflow: visible;
   }
 
-  /* sticky 리본 (§모바일 1): 스크롤을 내려도 자동 진행 토글과 카운트가 한 줄로
-     남는다. sticky는 이 래퍼에 걸어야 한다 — 안쪽 바에 걸면 래퍼가 지나가는
-     순간 같이 밀려 올라간다. */
+  /* 렌더 호스트일 뿐이므로 박스를 없앤다: 그래야 안쪽 리본의 sticky 기준이 이
+     래퍼가 아니라 문서가 되어, 배너를 지나 스크롤해도 리본이 남는다. */
   .worker-top {
+    display: contents;
+  }
+
+  /* sticky 리본 (§모바일 1): 자동 진행 토글 + 실행/PR/완료 카운트만 한 줄로
+     고정한다. `top`은 sticky 앱 헤더의 실측 높이 — 헤더가 폰에서 두 줄로
+     접히므로 상수로 둘 수 없다(JS가 `--worker-ribbon-top`을 채운다). */
+  .worker-ribbon {
     position: sticky;
-    top: 0;
+    top: var(--worker-ribbon-top, 0px);
     z-index: 6;
-    margin: calc(-1 * var(--sp-8)) calc(-1 * var(--sp-8)) 0;
-    padding: var(--sp-6) var(--sp-8) 0;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: var(--sp-6);
+    margin: calc(-1 * var(--sp-8)) calc(-1 * var(--sp-8)) var(--sp-6);
+    padding: var(--sp-6) var(--sp-8);
     background: var(--bg-app);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .worker-ribbon .worker-play {
+    flex: 0 0 auto;
+  }
+
+  .worker-kpi--ribbon {
+    flex-wrap: nowrap;
+    margin-left: auto;
+  }
+
+  .worker-kpi--ribbon .worker-kpi__chip {
+    flex: 0 0 auto;
+  }
+
+  /* 리본 밖으로 내린 조작 줄: 슬롯·⚙는 항상 보일 필요가 없다. */
+  .worker-ctrl--mobile {
+    margin-bottom: var(--sp-6);
   }
 
   .worker-ctrl {
     flex-wrap: wrap;
     gap: var(--sp-6);
-    margin-bottom: var(--sp-6);
   }
 
   .worker-ctrl__ops {
     gap: var(--sp-6);
-  }
-
-  .worker-kpi {
-    margin-left: auto;
-  }
-
-  /* 폭이 가장 아쉬운 곳: "다음 <id>"는 리본에서 접고 대기 스트립이 대신
-     미리보기로 말한다. */
-  .worker-kpi__next {
-    display: none;
   }
 
   .worker-lanes-host {
