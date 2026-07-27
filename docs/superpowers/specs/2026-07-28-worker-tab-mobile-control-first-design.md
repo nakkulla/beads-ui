@@ -36,8 +36,12 @@
 - **레인 스파인**: 페인 상단 2px 보더 + 헤더 점 + 카운트 필을 레인별 생애
   단계 색으로. 후보 페인은 점선 보더·`--bg-candidate` 배경 유지(SOURCE 구분
   불변).
-- **실행 타일**: 페이즈·경과 시간 표시와 진행 바(violet 그라데이션). 실행 중
-  레인 헤더 점은 breathing 애니메이션(`prefers-reduced-motion`이면 정지).
+- **실행 타일**: 기존 attempt 데이터만 표시한다 — 경과 시간(`started_at`
+  파생), runner/model, 토큰 usage. 큐 스냅샷에 페이즈명·진행률이 없으므로
+  진행 바는 만들지 않고, 타일 하단의 비의미적 violet stage 액센트 라인으로
+  살아있음만 표현한다(목업의 "구현 · 12분"·퍼센트 바는 데이터 부재로 미채택).
+  실행 중 레인 헤더 점은 breathing 애니메이션(`prefers-reduced-motion`이면
+  정지).
 - **실패·정리 배너**: 좌측 3px 레드 레일 스타일로 정돈, 위치·동작 불변.
 
 ## 모바일 (≤640px)
@@ -64,7 +68,9 @@
 - 후보 카드에 추가하는 큐 적재 버튼. coarse pointer 또는 ≤640px에서만 표시.
 - 탭하면 기존 `worker-queue-place` 뮤테이션을 큐 말미 배치로 발행 — 드래그와
   같은 경로·같은 CAS 규율(충돌 시 스냅샷 채택 후 1회 재시도).
-- 자격 조건은 드래그와 동일: `⛔ spec 없음`·`🔒 blocked` 후보는 비활성.
+- 자격 조건은 드래그와 완전 동일(`hasSpec`만): `⛔ spec 없음` 후보만 비활성.
+  `🔒 blocked-with-spec` 후보는 드래그와 마찬가지로 적재 가능(활성) — 현행
+  드래그의 의도적 허용을 그대로 따른다.
 
 ## 구현 범위
 
@@ -72,6 +78,8 @@
   변형, `candidateCard`에 [대기로 ↴] 버튼.
 - `app/views/worker/index.js`: 모바일 조합("지금" 패널·스트립 순서), [대기로]
   핸들러(worker-queue-place 재사용), 접힘 상태 저장/복원, 툴바 KPI 파생.
+- `app/views/worker/running-grid.js`: 실행 타일 시각 정돈(stage 액센트,
+  메타 배치) + 관련 테스트.
 - `app/styles.css`: worker 섹션 정돈(툴바·스파인·타일·배너·모바일 640px
   블록 재작성). `app/styles/tokens.css`: 무변경.
 - 서버·스토어·프로토콜: 무변경. 새 뮤테이션 없음.
