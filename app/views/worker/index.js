@@ -176,7 +176,7 @@ function prWaitRow(bead_id, title, observations, cleanup_failed) {
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined) }} [options]
  * @returns {{ load: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -186,7 +186,8 @@ export function createWorkerView(mount_element, options = {}) {
     queueStore,
     sessionLogStore,
     uiOrderStore,
-    gotoIssue
+    gotoIssue,
+    getWorkspacePath
   } = options;
   // The shared ui-order store feeds list-selectors so an order-only push
   // re-renders the candidate lane, and drives the same effective-rank sort the
@@ -249,7 +250,8 @@ export function createWorkerView(mount_element, options = {}) {
   // queueStore subscription so an open dialog re-renders as snapshots arrive.
   const exec_defaults_dialog = createExecDefaultsDialog(console_el, {
     queueStore,
-    transport
+    transport,
+    getWorkspacePath
   });
 
   /**
