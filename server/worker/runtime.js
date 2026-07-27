@@ -6,12 +6,12 @@
  * handlers and `/healthz` read the SAME instances here so their views stay
  * coherent — a ws toggle of auto_advance is immediately visible to `/healthz`.
  *
- * NOTE (Phase 10 boundary): the live auto-dispatch loop that calls
- * `scheduler.tick()` is intentionally NOT triggered from the ws handlers in this
- * phase — Phase 9's contract is that toggling auto_advance persists the flag
- * without dispatching. The scheduler engine + all its parts are complete and
- * tested; a live loop attaches here via `setRunningCountProvider` and drives
- * `tick` with real deps. Until then `running_count` is 0.
+ * The live auto-dispatch loop lives on the per-workspace attachment
+ * (`worker/attach.js`), not here. The ws handlers kick it through
+ * `tickWorkerQueue` on the two events that can newly fill a slot — auto_advance
+ * turned ON and a successful queue placement (the only dispatch path a discarded
+ * bead has, discard spec §1). Without a registered attachment those kicks are
+ * inert and `running_count` stays 0.
  */
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';

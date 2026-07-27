@@ -28,8 +28,9 @@ A dark-first control tower with **two tabs** plus a shared detail panel:
   open PR for the session's branch — never by the session's self-report — so a
   finished bead lands in **PR 대기** with CI / local-verification / base badges.
   Merging is always a human `[머지]` click, gated on a verification result bound
-  to the PR's current head SHA (a stale green never passes); `[재실행]` throws
-  the PR away and re-runs the bead from a fresh base.
+  to the PR's current head SHA (a stale green never passes); `[폐기]` throws the
+  PR, worktree and branch away and returns the bead to the candidate lane, from
+  where dragging it back into 대기 re-runs it on the current base.
 - 🎞️ **Transcript viewer** – Click a running tile (or a session-history row) to
   open the session drawer: parsed assistant / tool / gate / phase lines with
   live-follow for a running attempt and the same viewer for a Done/Failed log.

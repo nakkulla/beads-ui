@@ -109,7 +109,9 @@ const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
  * an execute affordance side by side at the same weight is how a misclick
  * merges something. [머지] is disabled whenever the gate refuses, and the
  * disabled tooltip carries the refusal reason so the badge is not the only
- * explanation. [재실행] is visually subordinate: a misclick there discards a PR.
+ * explanation. [폐기] is visually subordinate: a misclick there discards a PR.
+ * It is withheld entirely on a merged tile — a landed merge cannot be discarded
+ * (discard spec §2), and there [머지] is the cleanup-retry button.
  *
  * The gate shown here is ADVISORY. The click re-queries `gh` server-side and
  * decides again, so a badge that went stale between render and click cannot
@@ -155,6 +157,7 @@ function prWaitRow(bead_id, title, observations, cleanup_failed) {
     badges,
     alert: (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) || !!cleanup_failed,
     merge_action: true,
+    discard_action: !(gate && gate.tier === 'merged'),
     // A conflicting PR keeps [머지] clickable on purpose: that click is what
     // dispatches the resolution session (§6), and it merges nothing.
     merge_enabled: enabled || conflicting || cleanup_retry,
@@ -515,27 +518,28 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Run the [재실행] action (worker-phase2 §6) — destructive: the PR is closed
-   * and the worktree/branch discarded. A confirmation stands in front of it
-   * because it sits next to [머지]; the CAS + the server's own guards do the
-   * rest.
+   * Run the [폐기] action (discard spec §1) — destructive: the PR is closed and
+   * the worktree/branch discarded, and nothing is re-queued. A confirmation
+   * stands in front of it because it sits next to [머지], and it also teaches
+   * the two-step flow: re-running is the 후보 → 대기 drag. The CAS + the
+   * server's own guards do the rest.
    *
    * @param {string} bead_id
    */
-  async function rerunPr(bead_id) {
+  async function discardPr(bead_id) {
     if (!transport || !bead_id) {
       return;
     }
     const confirmed =
       typeof globalThis.confirm !== 'function' ||
       globalThis.confirm(
-        `${bead_id}: PR을 닫고 워크트리/브랜치를 폐기한 뒤 새 base에서 다시 실행합니다. 되돌릴 수 없습니다. 계속할까요?`
+        `${bead_id}: PR을 닫고 워크트리/브랜치를 폐기합니다. 되돌릴 수 없습니다. 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요. 계속할까요?`
       );
     if (!confirmed) {
       return;
     }
     let res = /** @type {any} */ (
-      await transport('worker-pr-rerun', {
+      await transport('worker-pr-discard', {
         bead_id,
         expected_revision: currentRevision()
       })
@@ -543,15 +547,15 @@ export function createWorkerView(mount_element, options = {}) {
     adopt(res);
     if (res && res.conflict) {
       res = /** @type {any} */ (
-        await transport('worker-pr-rerun', {
+        await transport('worker-pr-discard', {
           bead_id,
           expected_revision: currentRevision()
         })
       );
       adopt(res);
     }
-    if (res && res.rerun === false && !res.conflict) {
-      showToast(`재실행 거부: ${res.reason || ''}`, 'error', 2800);
+    if (res && res.discarded === false && !res.conflict) {
+      showToast(`폐기 거부: ${res.reason || ''}`, 'error', 2800);
     }
   }
 
@@ -1243,11 +1247,11 @@ export function createWorkerView(mount_element, options = {}) {
       void mergePr(mergeBtn.dataset.beadId || '');
       return;
     }
-    const rerunBtn = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-mini__rerun')
+    const discardBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__discard')
     );
-    if (rerunBtn) {
-      void rerunPr(rerunBtn.dataset.beadId || '');
+    if (discardBtn) {
+      void discardPr(discardBtn.dataset.beadId || '');
       return;
     }
     // The PR link is a link — let the browser open it, never treat it as a row

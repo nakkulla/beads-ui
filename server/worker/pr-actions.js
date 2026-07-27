@@ -1,6 +1,7 @@
 /**
  * The PR-wait ACTIONS (worker-phase2 §6): the authoritative [머지] click, the
- * ONE post-merge cleanup, the conflict-resolution dispatch, and [재실행].
+ * ONE post-merge cleanup, the conflict-resolution dispatch, and [폐기]
+ * (`2026-07-27-worker-discard-button.md`).
  *
  * Everything Phase 4 built is ADVISORY — a poller writing badges into a
  * non-persistent cache. This module is where a human decision turns into an
@@ -101,13 +102,9 @@ export const CLEANUP_STEPS = [
  */
 
 /**
- * @typedef {Object} RerunResult
+ * @typedef {Object} DiscardResult
  * @property {boolean} ok
  * @property {string|null} reason
- * @property {boolean} redispatched - Whether a NEW attempt actually started for
- * the bead. A paused queue (`auto_advance` off) legitimately leaves this false:
- * ⏸ starts no new sessions, so the bead simply waits in `queue` — reporting
- * `ok: true, redispatched: false` is what makes that visible instead of implied.
  */
 
 /**
@@ -1011,87 +1008,108 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Run [재실행]: throw the PR away and re-run the bead from a fresh base (§6,
-   * the Renovate pattern — resolving stitches two histories together, re-running
-   * has only one).
+   * Run [폐기]: throw the PR, the worktree and the branch away, and hand the
+   * bead back to the candidate lane. It does NOT re-queue and does NOT dispatch
+   * — re-running is the drag path (후보 → 대기), which re-passes admission
+   * against the CURRENT base, so this button makes exactly one promise and keeps
+   * it whether or not the queue is paused (discard spec §1/§4).
    *
    * The transition is ORDER-SENSITIVE and every step is verified:
    *
-   *   0. mark the rerun in flight in the observation cache — the barrier that
+   *   0. mark the discard in flight in the observation cache — the barrier that
    *      makes this close invisible to the poller's CLOSED-unmerged handling,
-   *   1. close the PR,
-   *   2. bd status back to `open` AND `metadata.pr_url` removed, each with a
-   *      readback (a `resolved` bead put back in the queue would just be skipped
-   *      by dispatch as not-ready — codex finding 3),
-   *   3. discard the worktree and the local+remote branch, so the new attempt
-   *      starts from the base instead of needing a force-push over the old
-   *      history,
-   *   4. move `pr_wait` → `queue` in ONE mutation, then tick.
-   *
-   * The tick is a REQUEST for a dispatch, not a guarantee of one: with the queue
-   * paused (`auto_advance` off) it correctly starts nothing, because ⏸ means "no
-   * new sessions" and a human-clicked rerun does not override that — it defers.
-   * The result reports which of the two happened (`redispatched`) rather than
-   * letting `ok: true` imply a session that may not exist.
+   *   1. re-read the PR state authoritatively: the badge is advisory, so a
+   *      stale cache can neither skip the close of a genuinely OPEN PR nor let
+   *      an already-MERGED one be discarded,
+   *   2. close the PR (only when step 1 saw it OPEN),
+   *   3. bd status back to `open` AND `metadata.pr_url` removed, each with a
+   *      readback (a `resolved` bead would be skipped by a later dispatch as
+   *      not-ready — codex finding 3),
+   *   4. discard the worktree and the local+remote branch,
+   *   5. REMOVE the bead from `pr_wait` in ONE mutation.
    *
    * @param {string} bead_id
-   * @returns {Promise<RerunResult>}
+   * @returns {Promise<DiscardResult>}
    */
-  async function rerun(bead_id) {
+  async function discard(bead_id) {
     if (in_flight.has(bead_id)) {
-      return { ok: false, reason: 'action_in_flight', redispatched: false };
+      return { ok: false, reason: 'action_in_flight' };
     }
     const q = deps.store.snapshot(workspace);
     if (!inPrWait(q, bead_id)) {
-      return { ok: false, reason: 'not_in_pr_wait', redispatched: false };
+      return { ok: false, reason: 'not_in_pr_wait' };
     }
     const ref = resolvePrRef(q, bead_id);
     if (!ref) {
-      return { ok: false, reason: 'pr_ref_unknown', redispatched: false };
+      return { ok: false, reason: 'pr_ref_unknown' };
     }
     in_flight.add(bead_id);
-    deps.observations.markRerunning(workspace, bead_id);
-    /** @type {{ ok: boolean, reason: string|null }} */
-    let outcome = { ok: false, reason: 'rerun_incomplete' };
+    deps.observations.markDiscarding(workspace, bead_id);
     try {
-      outcome = await rerunTransition(bead_id, ref.number);
+      return await discardTransition(bead_id, ref.number);
     } finally {
       // Released only here: by this point the bead has either left `pr_wait`
-      // (nothing observes it any more) or the rerun failed and the human needs
+      // (nothing observes it any more) or the discard failed and the human needs
       // to see the real state again.
-      deps.observations.clearRerunning(workspace, bead_id);
+      deps.observations.clearDiscarding(workspace, bead_id);
       in_flight.delete(bead_id);
-      try {
-        await deps.scheduler.tick(workspace);
-      } catch (err) {
-        log('rerun tick failed for %s: %o', bead_id, err);
-      }
     }
-    return {
-      ok: outcome.ok,
-      reason: outcome.reason,
-      redispatched: outcome.ok && hasRunningAttempt(bead_id)
-    };
   }
 
   /**
-   * The ordered body of [재실행], separated from the in-flight/observation
-   * bookkeeping so the caller can report on what the follow-up tick did.
+   * The click-time authoritative PR state (discard spec §1 step 1). Only the
+   * `state` field decides here, so no checks query is spent and no observation
+   * is recorded — the barrier is already open and would suppress the write
+   * anyway.
+   *
+   * @param {number} number
+   * @returns {Promise<{ pr_state: string }|{ error: string }>}
+   */
+  async function readPrState(number) {
+    /** @type {any} */
+    let detail;
+    try {
+      detail = await deps.gh.prDetail(repo, number);
+    } catch {
+      detail = { state: 'error', reason: 'gh_spawn_failed' };
+    }
+    if (detail.state !== 'ok') {
+      return { error: detail.state === 'error' ? detail.reason : 'gh_empty' };
+    }
+    return { pr_state: /** @type {PrDetail} */ (detail.data).state };
+  }
+
+  /**
+   * The ordered body of [폐기], separated from the in-flight/observation
+   * bookkeeping.
+   *
+   * A close that fails stops the transition BEFORE bd is touched: the bead stays
+   * in `pr_wait` and a merge that landed between the re-read and the close is
+   * caught by exactly that failure, leaving it to the poller's MERGED cleanup.
    *
    * @param {string} bead_id
    * @param {number} number
    * @returns {Promise<{ ok: boolean, reason: string|null }>}
    */
-  async function rerunTransition(bead_id, number) {
-    /** @type {any} */
-    let closed;
-    try {
-      closed = await deps.gh.closePr(repo, number);
-    } catch {
-      closed = { state: 'error', reason: 'gh_spawn_failed' };
+  async function discardTransition(bead_id, number) {
+    const observed = await readPrState(number);
+    if ('error' in observed) {
+      return { ok: false, reason: `pr_state_unknown:${observed.error}` };
     }
-    if (closed.state !== 'ok') {
-      return { ok: false, reason: `pr_close_failed:${closed.reason}` };
+    if (observed.pr_state === 'MERGED') {
+      return { ok: false, reason: 'pr_already_merged' };
+    }
+    if (observed.pr_state === 'OPEN') {
+      /** @type {any} */
+      let closed;
+      try {
+        closed = await deps.gh.closePr(repo, number);
+      } catch {
+        closed = { state: 'error', reason: 'gh_spawn_failed' };
+      }
+      if (closed.state !== 'ok') {
+        return { ok: false, reason: `pr_close_failed:${closed.reason}` };
+      }
     }
 
     try {
@@ -1104,7 +1122,7 @@ export function createPrActions(deps) {
         return { ok: false, reason: 'bd_pr_url_readback_failed' };
       }
     } catch (err) {
-      log('rerun bd transition failed for %s: %o', bead_id, err);
+      log('discard bd transition failed for %s: %o', bead_id, err);
       return { ok: false, reason: 'bd_record_failed' };
     }
 
@@ -1116,29 +1134,13 @@ export function createPrActions(deps) {
       };
     }
 
-    const moved = deps.store.requeueFromPrWait(workspace, { bead_id });
-    if (!moved.ok) {
-      return { ok: false, reason: 'requeue_failed' };
+    const removed = deps.store.removeFromPrWait(workspace, { bead_id });
+    if (!removed.ok) {
+      return { ok: false, reason: 'pr_wait_remove_failed' };
     }
     notifyChanged(workspace);
     return { ok: true, reason: null };
   }
 
-  /**
-   * Whether the bead currently has a RUNNING attempt — read from the store, so
-   * it reports a dispatch that actually happened rather than one that was asked
-   * for.
-   *
-   * @param {string} bead_id
-   * @returns {boolean}
-   */
-  function hasRunningAttempt(bead_id) {
-    const attempts = deps.store.snapshot(workspace).attempts || {};
-    return Object.values(attempts).some(
-      (/** @type {any} */ a) =>
-        a && a.bead_id === bead_id && a.status === 'running'
-    );
-  }
-
-  return { merge, rerun, cleanupObservedMerge };
+  return { merge, discard, cleanupObservedMerge };
 }

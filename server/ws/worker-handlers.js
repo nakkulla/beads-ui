@@ -30,9 +30,9 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
+  discardWorkerPr,
   mergeWorkerPr,
   pauseWorkerAttempt,
-  rerunWorkerPr,
   resumeWorkerAttempt,
   stopWorkerAttempt,
   tickWorkerQueue,
@@ -524,6 +524,15 @@ export async function handleWorkerQueuePlace(ws, req) {
     }
   }
   replyMutation(ws, req, key, result);
+  if (result.ok) {
+    // A placement is the OTHER thing that can fill a free slot, and it is the
+    // only dispatch path a discarded bead has (discard spec §1): without this
+    // kick an auto_advance-ON queue would sit idle until the next attempt
+    // finished. Same fire-and-forget pattern as the toggle-ON tick.
+    Promise.resolve(tickWorkerQueue(key)).catch((err) => {
+      log('worker tick after place failed for %s: %o', key, err);
+    });
+  }
 }
 
 /**
@@ -902,17 +911,18 @@ export async function handleWorkerPrMerge(ws, req) {
 }
 
 /**
- * Handle `worker-pr-rerun`. Payload: `{ bead_id, expected_revision }`.
+ * Handle `worker-pr-discard`. Payload: `{ bead_id, expected_revision }`.
  *
- * [재실행] (worker-phase2 §6): close the PR, put bd back to `open` without a
- * `pr_url`, discard the worktree/branch, and move the bead back into the
- * waiting queue for a fresh-base run. DESTRUCTIVE — the CAS guard matters more
- * here than anywhere else, so a stale revision refuses without touching a thing.
+ * [폐기] (discard spec §1): close the PR, put bd back to `open` without a
+ * `pr_url`, discard the worktree/branch, and REMOVE the bead from `pr_wait` — it
+ * is not re-queued, so re-running it is the deliberate 후보 → 대기 drag.
+ * DESTRUCTIVE — the CAS guard matters more here than anywhere else, so a stale
+ * revision refuses without touching a thing.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export async function handleWorkerPrRerun(ws, req) {
+export async function handleWorkerPrDiscard(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
     ws.send(
@@ -929,7 +939,7 @@ export async function handleWorkerPrRerun(ws, req) {
       JSON.stringify(
         makeOk(req, {
           bead_id: p.bead_id,
-          rerun: false,
+          discarded: false,
           conflict: true,
           reason: null,
           queue: decorateQueue(key, current)
@@ -938,23 +948,20 @@ export async function handleWorkerPrRerun(ws, req) {
     );
     return;
   }
-  /** @type {{ ok: boolean, reason?: string|null, redispatched?: boolean }} */
-  let result = { ok: false, reason: 'no_attachment', redispatched: false };
+  /** @type {{ ok: boolean, reason?: string|null }} */
+  let result = { ok: false, reason: 'no_attachment' };
   try {
-    result = await rerunWorkerPr(key, p.bead_id);
+    result = await discardWorkerPr(key, p.bead_id);
   } catch (err) {
-    log('worker-pr-rerun failed for %s/%s: %o', key, p.bead_id, err);
-    result = { ok: false, reason: 'error', redispatched: false };
+    log('worker-pr-discard failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, reason: 'error' };
   }
   ws.send(
     JSON.stringify(
       makeOk(req, {
         bead_id: p.bead_id,
-        rerun: !!result.ok,
+        discarded: !!result.ok,
         conflict: false,
-        // A paused queue requeues the bead without starting anything — ⏸ starts
-        // no new sessions, so the reply says which of the two happened.
-        redispatched: !!result.redispatched,
         reason: result.ok ? null : result.reason || null
       })
     )

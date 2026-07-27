@@ -847,25 +847,26 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Move a bead OUT of `pr_wait` and back onto the tail of the waiting
-     * `queue` in ONE persist — the lane half of [재실행] (worker-phase2 §6).
+     * REMOVE a bead from `pr_wait` in ONE persist — the lane half of [폐기]
+     * (`2026-07-27-worker-discard-button.md` §1). It lands in no lane at all:
+     * the bead is `open` again and the candidate lane is synthesized as
+     * ready − queue∪pr_wait∪done, so it reappears there on its own. Re-running
+     * it is a deliberate drag back into `queue`, which re-passes admission.
      *
-     * Atomicity is the point, twice over. A split write could leave the bead in
-     * neither lane (a crash between remove and place loses queued work), and —
-     * the reason the spec calls the transition order-sensitive — the poller
-     * classifies PR state only for beads that are IN `pr_wait`, so the rerun's
-     * own `gh pr close` must stop being visible to it in a single step rather
-     * than across a window where the bead is half-moved.
+     * The single mutation is the reason the spec calls the transition
+     * order-sensitive: the poller classifies PR state only for beads that are IN
+     * `pr_wait`, so the discard's own `gh pr close` must stop being visible to it
+     * in one step rather than across a window where the bead is half-moved.
      *
-     * Any stale admission / cleanup_failed record for the bead is dropped: this
-     * is a fresh run from a fresh base, so nothing recorded about the discarded
-     * attempt still applies. Scheduler-owned (no CAS).
+     * Any stale admission / cleanup_failed record for the bead is dropped:
+     * nothing recorded about the discarded attempt still applies. Scheduler-owned
+     * (no CAS).
      *
      * @param {string} workspace
      * @param {{ bead_id: string }} input
      * @returns {QueueOpResult}
      */
-    requeueFromPrWait(workspace, input) {
+    removeFromPrWait(workspace, input) {
       const { bead_id } = input;
       return applyUnconditional(workspace, (next) => {
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
@@ -877,7 +878,6 @@ export function createQueueStore(options = {}) {
         removeFromLanes(next, bead_id);
         delete next.admission[bead_id];
         delete next.cleanup_failed[bead_id];
-        next.queue.push({ bead_id, added_at: now() });
         return true;
       });
     },
