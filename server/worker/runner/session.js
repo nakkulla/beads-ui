@@ -91,9 +91,16 @@ const BASE_LANDING_RE =
  * touches the base, so a normal attempt is refused only because it has no
  * business merging at all.
  *
+ * The negative lookahead is an explicit ALLOWLIST of the three `git merge-*`
+ * subcommands that create no merge commit and update no ref — `merge-base`
+ * (ancestry query), `merge-tree` (tree-level simulation), `merge-file` (3-way
+ * file merge). Every other `merge-*` form stays blocked (`merge-index` and
+ * friends can mutate the index/worktree), so the guard remains fail-closed
+ * outside those three.
+ *
  * @type {RegExp}
  */
-const BASE_INTO_BRANCH_RE = /git\s+merge\b/i;
+const BASE_INTO_BRANCH_RE = /git\s+merge(?!-(?:base|tree|file)\b)/i;
 
 /**
  * Split accumulated stdout into complete lines, returning `[lines, remainder]`.

@@ -138,6 +138,74 @@ describe('runner/session base-into-branch guard (mode-gated)', () => {
 
     expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
   });
+
+  test('kills `git merge --ff-only` on a normal attempt', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git merge --ff-only origin/release',
+      NORMAL
+    );
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(verdict.events.some((e) => e.reason === 'base_merge_blocked')).toBe(
+      true
+    );
+  });
+});
+
+describe('runner/session base-into-branch guard subcommand allowlist', () => {
+  test('allows `git merge-base --is-ancestor` on a normal attempt', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git merge-base --is-ancestor 1a2b3c4 HEAD',
+      NORMAL
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+  });
+
+  test('allows `git merge-tree` on a normal attempt', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git merge-tree 1a2b3c4 5d6e7f8',
+      NORMAL
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+  });
+
+  test('allows `git merge-file` on a normal attempt', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git merge-file a.txt base.txt b.txt',
+      NORMAL
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+  });
+
+  test('kills `git merge-index`, outside the allowlist', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git merge-index git-merge-one-file -a',
+      NORMAL
+    );
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(verdict.events.some((e) => e.reason === 'base_merge_blocked')).toBe(
+      true
+    );
+  });
+
+  test('kills `git merge-resolve`, outside the allowlist', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git merge-resolve 1a2b3c4 -- HEAD 5d6e7f8',
+      NORMAL
+    );
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(verdict.events.some((e) => e.reason === 'base_merge_blocked')).toBe(
+      true
+    );
+  });
 });
 
 describe('runner/session merge guards leave innocent commands alone', () => {
