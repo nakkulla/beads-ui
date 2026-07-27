@@ -60,10 +60,11 @@ no_session_id / worktree_missing / bead_running / already_resumed) UI가 서버�
 - 두 스트림 각각 `setEncoding('utf8')` 후 `'data'`마다 **공유 롤링 버퍼**(단일
   문자열 누적, 도착 순서) 뒤에 붙이고, 길이가 `TAIL_WINDOW`(16384자)를 넘으면
   앞에서 잘라 유지한다 — 메모리 유계.
-- `close` 시점에 tail 계산: 버퍼를 `\n` 기준으로 나눠 마지막
-  `TAIL_MAX_LINES`(100)줄을 취하고, 이어서 `TAIL_MAX_CHARS`(8192자) 상한을
-  앞에서부터 잘라 적용한다. 16KB 윈도는 줄 수·문자 수 어느 캡이 지배해도 최종
-  tail에 손실을 만들지 않는다.
+- `close` 시점에 tail 계산: 버퍼를 `\n` 기준으로 나누되 **trailing newline이
+  만드는 마지막 빈 요소는 줄 수 계산에서 제외**하고(`\n`으로 끝나는 일반 출력이
+  99줄만 남는 off-by-one 방지), 마지막 `TAIL_MAX_LINES`(100)줄을 취한 뒤
+  `TAIL_MAX_CHARS`(8192자) 상한을 앞에서부터 잘라 적용한다. 16KB 윈도는
+  줄 수·문자 수 어느 캡이 지배해도 최종 tail에 손실을 만들지 않는다.
 - 결과 부착 조건: `reason`이 `verify_cmd_failed` 또는 `verify_cmd_timeout`이고
   trim 후 비어 있지 않을 때만 `VerifyCmdResult.output_tail`(string, optional)로
   반환. 성공·`verify_cmd_spawn_error`(출력 없음)·빈 캡처는 필드 부재. 타임아웃의
@@ -111,16 +112,20 @@ no_session_id / worktree_missing / bead_running / already_resumed) UI가 서버�
 - `detail-panel/index.js` `attemptsForBead` projection에서 store attempt의
   `cause`/`cause_detail`을 복사.
 - failed/orphaned row에 `cause`가 있으면 `detail-session__cause` 한 줄(CSS
-  말줄임)로 표시하고, `cause_detail`이 있으면 title 툴팁에
-  `"{reason} · {command}"`를 넣는다. cause 부재 시 아무것도 렌더하지 않음
-  (구 레코드 fail-quiet).
+  말줄임)로 표시하고, `cause_detail`이 있으면 title 툴팁에 `reason`을 넣되
+  `command`가 비어 있지 않은 string일 때만 `" · {command}"`를 덧붙인다
+  (`command`는 nullable — null을 문자열로 노출하지 않는다). cause 부재 시
+  아무것도 렌더하지 않음(구 레코드 fail-quiet).
 
 ### §5 테스트
 
 - `server/worker/verify-cmd.test.js` (fake `spawn_impl`에 stdout/stderr 스트림
   추가):
   - 실패 시 `output_tail` 포함, 성공 시 부재
-  - 100줄 초과 출력 → 마지막 100줄만
+  - 100줄 초과 출력 → 마지막 100줄만 (trailing newline 포함 101줄 입력에서
+    실제 마지막 100 내용 줄이 남는지 — off-by-one 검증)
+  - stdout→stderr→stdout 교차 emit → 단일 버퍼 도착 순서 결합 검증
+    (스트림별 tail을 따로 모아 합치는 오구현 차단)
   - 8192자 상한 적용
   - 타임아웃 시 부분 출력 포함
   - spawn_error 시 필드 부재
@@ -132,7 +137,7 @@ no_session_id / worktree_missing / bead_running / already_resumed) UI가 서버�
   `<details>`/`<pre>` 렌더, 없는 레코드는 현행 렌더 유지, 내용 이스케이프.
 - session-history 테스트: dismissed failed row의 이어하기 버튼 활성화(기존
   "처리 완료로 닫은 attempt" 비활성 테스트는 반전), cause 표시·cause 부재 시
-  미표시.
+  미표시, `cause_detail.command`가 null일 때 툴팁에 reason만(“null” 미노출).
 
 ## 수용 기준 (bead와 동일)
 
