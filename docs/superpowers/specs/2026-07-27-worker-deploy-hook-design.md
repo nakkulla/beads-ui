@@ -46,9 +46,20 @@ detached = true                    # 선택: boolean 아니면 false
 
 ## 2. 파이프라인 통합 (`server/worker/pr-actions.js`)
 
-- `CLEANUP_STEPS`를 6단계로 확장: `[..., 'branch_cleanup', 'deploy']`.
-  deploy는 최종 단계. `post_merge_verify` 실패 시 파이프라인이 2단계에서 이미
-  멈추므로 깨진 커밋은 deploy에 도달할 수 없다.
+- `CLEANUP_STEPS`를 dotfiles finishing 계약의 sweep 순서(install은 sync+verify
+  직후, branch/worktree 정리 후 parent close 마지막)에 정합화해 6단계로
+  재배열한다: `base_sync → post_merge_verify → deploy → child_sweep →
+  branch_cleanup → parent_close`. `post_merge_verify` 실패 시 파이프라인이
+  2단계에서 멈추므로 깨진 커밋은 deploy에 도달할 수 없다. (개정 2026-07-27:
+  최초 승인본의 "deploy 최종 단계" 배치를 사용자 명시 승인으로 계약 정렬
+  위치(3단계)로 이동 — 기존 `parent_close → branch_cleanup` 역순도 함께 계약
+  순서로 정정.)
+- `restoreResolved` 의미론 단순화: parent_close가 마지막 단계가 되므로 close
+  이후에 실패할 수 있는 단계가 없다. branch_cleanup 실패는 close 이전이라
+  resolved 복원이 불필요하고, parent_close 자체 실패만 복원 대상으로 남는다.
+- deploy `cmd`는 재실행 안전(멱등)해야 한다 — 정리 실패 상태의 [머지] 재클릭
+  재시도는 항상 1단계부터 전체 재실행이므로 이미 성공했던 deploy가 다시 실행될
+  수 있다 (config 문서에 명시).
 - verify 필수 (fail closed): `postMergeVerify`는 verify 명령이 없으면 "실행할
   게 없음 = 통과"라서, 그것만으로는 deploy-only repo가 검증 없이 배포된다.
   따라서 deploy 단계는 자체적으로 verify 명령 해석 가능 여부(`resolveVerify`
@@ -65,9 +76,13 @@ detached = true                    # 선택: boolean 아니면 false
 - 동기 모드 (기본, `detached = false`): repo 루트에서 `cmd`를 셸 없이 spawn,
   `timeout_ms` 데드라인. 종료코드 0 = `deployed`, 비0 = `deploy_failed`,
   타임아웃 = `deploy_timeout`, spawn 불가 = `deploy_spawn_error`.
-- detached 모드 (`detached = true`): 발사 **전에** `last_deploy = { outcome:
-  'launched', ... }`와 cleanup 완료 기록을 **하나의 atomic queue-store 변경**
-  으로 durable하게 기록한 뒤 detached + unref로 발사한다. `launched`는 "발사
+- detached 모드 (`detached = true`): **터미널 발사 예외** — deploy 단계
+  (3단계)에서는 사전 검사(verify 해석 가능 여부·직전 재검증)만 수행하고 발사를
+  보류한다. 실제 발사는 parent_close까지 남은 단계가 모두 완료된 뒤,
+  `last_deploy = { outcome: 'launched', ... }`와 cleanup 완료 기록
+  (`moveToDone`)을 **하나의 atomic queue-store 변경**으로 durable하게 기록한
+  다음 detached + unref로 수행한다 — 자기재시작 명령이 남은 cleanup 단계를
+  죽이면 안 되기 때문이다. `launched`는 "발사
   의도의 durable 기록"이지 성공 확인이 아니다 — 이후 프로세스 결과는 추적하지
   않는다 (자기재시작 repo — 예: beads-ui의 `bdui-shared restart` — 는 서버
   자신이 죽으므로 추적 불가). 단 spawn 자체가 동기적으로 실패하면 (프로세스는
@@ -109,19 +124,22 @@ detached = true                    # 선택: boolean 아니면 false
 ## 5. 계약 co-update (dotfiles)
 
 cleanup 단계 시퀀스는 dotfiles pr-finish 계약이 소유하는 표면이다. beads-ui
-구현과 같은 전달 단위로 dotfiles 계약 문서에 반영한다: 6단계 확장(`deploy`
-최종), 실행 조건(실제 verify green에서만 — 해석 불가 시
-`deploy_verify_missing`), `detached` 의미론(발사 전 atomic 기록 = `launched`),
-deploy 직전 재검증 실패 사유 `deploy_base_not_synced`. 반영 순서는 계약 문서
-먼저(또는 동시) → beads-ui PR 머지.
+구현과 같은 전달 단위로 dotfiles 계약 문서에 반영한다: cleanup 순서 자체의
+계약 정합화(6단계 — install(=deploy)은 sync+verify 직후, branch/worktree 정리
+후 parent close 마지막), 실행 조건(실제 verify green에서만 — 해석 불가 시
+`deploy_verify_missing`), `detached` 의미론(터미널 발사 예외 — parent_close 후
+atomic 기록 = `launched` 다음 발사), deploy 직전 재검증 실패 사유
+`deploy_base_not_synced`. 반영 순서는 계약 문서 먼저(또는 동시) → beads-ui PR
+머지.
 
 ## 6. 테스트
 
 - `config.test.js`: `normalizeWorkerDeploy` — argv 아닌 cmd 거부, timeout
   기본값, `detached` boolean 강제, 비절대경로 키 스킵.
-- `pr-actions.test.js`: 동기 성공/실패/타임아웃 기록, detached "발사 전 atomic
-  기록" 순서(발사 전 durable 기록 완료 검증) + 동기 spawn 실패 시 `failed`
-  덮어쓰기, deploy 직전 재검증(브랜치 불일치·dirty·**로컬 ahead 등 HEAD ≠
+- `pr-actions.test.js`: 정합화 6단계 순서 시퀀스(calls 로그), 새 순서에서의
+  `restoreResolved` 조건(parent_close 실패만 복원), 동기 성공/실패/타임아웃
+  기록, detached "발사 전 atomic 기록" 순서(parent_close 후·발사 전 durable
+  기록 완료 검증) + 동기 spawn 실패 시 `failed` 덮어쓰기, deploy 직전 재검증(브랜치 불일치·dirty·**로컬 ahead 등 HEAD ≠
   base_sha 드리프트** 각각) → `deploy_base_not_synced`, verify 명령 해석 불가 +
   deploy 설정 → `deploy_verify_missing`, verify 실패 시 deploy 미도달, deploy
   미설정 시 통과, 실패 시 `merged_cleanup_failed`에 `cleanup_step: 'deploy'`.
