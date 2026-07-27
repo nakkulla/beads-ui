@@ -182,6 +182,20 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   `app/main.bundle.js`; after frontend source edits, run `npm run build` before
   expecting UI changes to appear.
 
+## GitHub Actions — 이 fork에서는 CI가 돌지 않는다
+
+- `nakkulla/beads-ui` fork에서 `Build`(ci.yml) 워크플로는 push/PR 어느
+  이벤트로도 트리거되지 않는다(2026-07-27 기준 실행 이력 0회, PR head 커밋에
+  check-suite 미생성). GitHub CI를 활성화하지 않고 로컬 검증이 CI 역할을
+  대신하는 것이 이 저장소의 결정이다.
+- 따라서 PR 체크를 기다리지 마라: `gh pr checks` 결과가 비어 있으면 "체크 없음 =
+  즉시 통과(vacuous pass)"로 처리하고 다음 단계로 진행한다.
+- 체크 상태를 폴링해야 할 때도 반드시 유한 타임아웃을 두고, "체크가 1개 이상
+  생길 때까지"(`length > 0`) 같은 존재 조건으로 대기하지 마라 — 이 저장소에선
+  영원히 충족되지 않는다.
+- 머지 전 검증은 Pre‑Handoff Validation(lint/tsc/test/prettier/build, 전체 약
+  12초)으로 수행한다.
+
 ## Pull Request Target
 
 - When creating a PR from this repository, target the writable fork on `origin`
