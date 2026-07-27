@@ -63,7 +63,9 @@ attempt 안에서 재리뷰(triage/codex 레그)로 정합을 맞춘 뒤 구현�
 `triage@<새 40hex>`로 갱신, ⓑ 교차 또는 불확실이면 codex delta 리뷰 레그를
 1회 디스패치해 APPROVE 시 `codex@<새 40hex>`로 갱신한 뒤 구현을 계속한다.
 갱신 쓰기는 notes 계보(원 receipt·delta SHA·판정 요약)와 동일 `bd update`,
-readback 필수. REVISE(판정 불능 포함)면 `status=blocked` +
+readback 필수. 원 receipt가 `skipped@`면 절차는 동일하되 갱신 receipt도
+`skipped@<새 40hex>`로 쓴다(skip은 진행 권한이지 리뷰 증거가 아니므로 —
+계약 짝 스펙 §4). REVISE(판정 불능 포함)면 `status=blocked` +
 `blocked_reason=spec_review_stale:revise` + notes에 findings를 기록하고
 attempt를 종료한다(수정→재리뷰 루프 없음). 정식 규칙은 계약 짝 스펙 참조.
 
@@ -71,8 +73,10 @@ attempt를 종료한다(수정→재리뷰 루프 없음). 정식 규칙은 계�
 
 - 후보 카드의 `spec_review_stale` 거부 뱃지를 비차단 "stale→재리뷰" 뱃지로
   전환한다(admit되므로 거부 뱃지 어휘에서 제거).
-- blocked 파킹된 비드는 기존 blocked 기본 숨김(UI-ki09) 동작을 그대로 탄다.
-  attempt 종료는 기존 no-PR 종료 경로 재사용 — 새 수명주기 상태 없음.
+- REVISE 파킹된 attempt는 기존 실패 경로를 그대로 탄다: 비드는 대기 큐에 남고
+  failure banner와 함께 `auto_advance`가 꺼진다(worker-phase2 §2 실패 정책 —
+  후보 페인의 blocked 기본 숨김(UI-ki09)은 후보 전용이라 여기 적용되지 않는다).
+  findings 처분·재큐잉은 사람 몫이며 새 수명주기 상태는 만들지 않는다.
 
 ## 4. 수용 기준
 

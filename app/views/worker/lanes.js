@@ -38,7 +38,13 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  * button while [폐기] must not be offered there at all (discard spec §2).
  * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
  * @property {boolean} [discard_enabled] - Whether [폐기] may be clicked; false
- * only while a merge is in flight (UI-raqh §4).
+ * while a merge is in flight (UI-raqh §4) or a conflict-resolution session owns
+ * the bead (UI-dxgz §1).
+ * @property {string} [discard_title] - Tooltip for a refused [폐기]; absent
+ * keeps the merge-in-flight wording (UI-dxgz §1).
+ * @property {string} [merge_label] - Text of the [머지] button; absent renders
+ * 머지. A conflicting gate dispatches a resolution session instead of merging,
+ * so its button says so (UI-dxgz §2).
  * @property {{ label: string, index: number, total: number, percent: number }|null} [merge_step] -
  * The merge's current step, when one is running (UI-raqh §4).
  * @property {string} [merge_title] - Tooltip: what the click is based on, or
@@ -128,7 +134,7 @@ export function miniRow(item) {
           ?disabled=${item.merge_enabled === false}
           title=${item.merge_title || ''}
         >
-          머지
+          ${item.merge_label || '머지'}
         </button>`
       : ''}
     ${item.discard_action
@@ -138,7 +144,7 @@ export function miniRow(item) {
           data-bead-id=${item.id}
           ?disabled=${item.discard_enabled === false}
           title=${item.discard_enabled === false
-            ? '머지 진행 중 — 폐기할 수 없습니다'
+            ? item.discard_title || '머지 진행 중 — 폐기할 수 없습니다'
             : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음). 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요'}
         >
           폐기
