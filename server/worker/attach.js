@@ -9,9 +9,10 @@
  *   - {@link createWorkerAttachment} builds a per-workspace scheduler wired to
  *     REAL deps — child_process spawn via `createRunner`, bd metadata + a bead
  *     snapshot reader over `server/bd.js`, the per-repo git worktree manager, the
- *     independent verifier, the shared session-log broker, and the process-wide
- *     locks singleton — plus an orphan detector. EVERYTHING is injectable so
- *     tests pass fakes (never a real spawn).
+ *     independent verifier, the shared session-log broker, the process-wide
+ *     locks singleton, and the PID probe the scheduler's reconcile judges
+ *     detached sessions with. EVERYTHING is injectable so tests pass fakes
+ *     (never a real spawn).
  *
  * Registration model (chosen for consistency + test hermeticity): attachments
  * are created EAGERLY at server startup, one per active workspace, by
@@ -29,9 +30,9 @@ import path from 'node:path';
 import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
+import { createPoller } from '../poller.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
-import { createOrphanDetector } from './orphan.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { emitQueueChanged } from './queue-events.js';
@@ -52,6 +53,21 @@ const log = debug('worker:attach');
  * @type {string}
  */
 const DEFAULT_TARGET_BASE = 'main';
+
+/**
+ * Cadence of the per-attachment reconcile pass
+ * (worker-detached-session-reconcile §2). Sessions are detached, so a session
+ * that outlived a restart ends with nobody holding its handle; only this timer
+ * observes that end.
+ *
+ * A pass with no persisted `running` attempt costs one in-memory snapshot read,
+ * and a dead attempt costs ONE `gh` observation before it stops being
+ * `running` — so 60 s buys bounded recovery latency at essentially no
+ * steady-state cost.
+ *
+ * @type {number}
+ */
+export const RECONCILE_INTERVAL_SECONDS = 60;
 
 /**
  * The workspace's configured merge target base from `[worker.target_base]`
@@ -120,8 +136,8 @@ function readyIdSet(arr) {
 }
 
 /**
- * Build the live `bd` dependency the scheduler + orphan detector consume:
- * metadata set/unset/read (from bd-metadata.js) PLUS `snapshotBead` which reads
+ * Build the live `bd` dependency the scheduler consumes: metadata
+ * set/unset/read (from bd-metadata.js) PLUS `snapshotBead` which reads
  * `bd show --json` (status + exec-settings metadata) and `bd ready --json`
  * (authoritative runnable set) for the workspace.
  *
@@ -233,10 +249,10 @@ export function createLiveBd(config) {
 }
 
 /**
- * Real PID liveness + start-time probe for orphan detection. Aliveness via
- * `kill(pid, 0)`; start time via `ps -o lstart=` (second resolution — the
- * detector's tolerance absorbs the coarseness). Fail-safe: any error yields
- * `{ alive:false }` so a genuinely-dead PID is reaped.
+ * Real PID liveness + start-time probe for the scheduler's reconcile. Aliveness
+ * via `kill(pid, 0)`; start time via `ps -o lstart=` (second resolution — the
+ * reconcile's tolerance absorbs the coarseness). Fail-safe: any error yields
+ * `{ alive:false }` so a genuinely-dead PID is disposed.
  *
  * @param {number|null} pid
  * @returns {{ alive: boolean, started_at: number|null }}
@@ -378,23 +394,23 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     verify,
     sessionLog: runtime.sessionLog,
     admission,
+    probePid: options.probePid || defaultProbePid,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
 
-  const orphan = createOrphanDetector({
-    store: runtime.queueStore,
-    bd,
-    probePid: options.probePid || defaultProbePid,
-    // The reap's claim release completes AFTER `detect` returned, so a user who
-    // turns auto_advance back on in that window sees a bead that is still
-    // `in_progress` and gets nothing. This tick is the correction; it is a
-    // no-op while auto_advance is off, which is the normal post-reap state.
-    onBeadRecovered: (ws_key) => {
-      Promise.resolve(scheduler.tick(ws_key))
-        .catch((err) => {
-          log('orphan recovery tick failed for %s: %o', ws_key, err);
-        })
-        .then(() => emitQueueChanged(ws_key));
+  // The periodic reconcile pass. `createPoller` is reused for the unref'd
+  // interval and its double-start guard, but its gate is a SUBSCRIBER gate and
+  // reconcile must run without one: the state needing recovery most is a
+  // just-restarted workspace with auto_advance OFF and nobody watching the
+  // Worker tab (worker-detached-session-reconcile §2). Hence the constant 1.
+  const reconciler = createPoller({
+    intervalSeconds: RECONCILE_INTERVAL_SECONDS,
+    getClientCount: () => 1,
+    onTick: () => {
+      const ws_key = keyFor(workspace_root);
+      Promise.resolve(scheduler.reconcile(ws_key)).catch((err) => {
+        log('reconcile pass failed for %s: %o', ws_key, err);
+      });
     }
   });
 
@@ -461,7 +477,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   return {
     runtime,
     scheduler,
-    orphan,
+    reconciler,
     prPoller,
     prActions,
     bd,
@@ -489,8 +505,9 @@ function keyFor(workspace_root) {
 }
 
 /**
- * Create + register attachments for each active workspace and reap any orphaned
- * attempts persisted from a prior run (spec §5.3). Idempotent per workspace.
+ * Create + register attachments for each active workspace, then reconcile the
+ * `running` attempts persisted from a prior run and arm the periodic reconcile
+ * timer (worker-detached-session-reconcile §2). Idempotent per workspace.
  *
  * `getSubscriberCount` is what turns the PR poller on (worker-phase2 §4): the
  * caller supplies the live worker-queue subscriber count for a workspace, and
@@ -525,12 +542,19 @@ export function initWorkerRuntime(input) {
       }
     }
     try {
-      const orphans = att.orphan.detect(key);
-      if (orphans.length > 0) {
-        log('reaped %d orphaned attempt(s) in %s', orphans.length, key);
-      }
+      att.reconciler.start();
     } catch (err) {
-      log('orphan detection failed for %s: %o', key, err);
+      log('reconcile timer start failed for %s: %o', key, err);
+    }
+    // Startup pass: a session that died WITH the old server may already have
+    // pushed its PR, so the same routine that handles a later death decides
+    // this one too. Fire-and-forget — a slow `gh` must not hold up startup.
+    try {
+      Promise.resolve(att.scheduler.reconcile(key)).catch((err) => {
+        log('startup reconcile failed for %s: %o', key, err);
+      });
+    } catch (err) {
+      log('startup reconcile failed for %s: %o', key, err);
     }
     built.push(att);
   }
@@ -687,13 +711,19 @@ export function __registerWorkerAttachmentForTest(workspace_root, attachment) {
 }
 
 /**
- * Test hook: drop all registered attachments, stopping their PR pollers so no
- * armed timer or queue-changed hook outlives the test that built it.
+ * Test hook: drop all registered attachments, stopping their PR pollers and
+ * reconcile timers so no armed timer or queue-changed hook outlives the test
+ * that built it.
  */
 export function __resetWorkerAttachmentsForTest() {
   for (const att of ATTACHMENTS.values()) {
     try {
       att.prPoller?.stop();
+    } catch {
+      /* ignore */
+    }
+    try {
+      att.reconciler?.stop();
     } catch {
       /* ignore */
     }

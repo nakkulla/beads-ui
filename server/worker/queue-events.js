@@ -2,7 +2,7 @@
  * Worker queue change events (worker-autorun-policy §6 실시간 반영).
  *
  * The scheduler's autonomous transitions (dispatch start, admission refusal,
- * session done/fail, orphan reap) mutate the queue store WITHOUT a client
+ * session done/fail, reconcile disposition) mutate the queue store WITHOUT a client
  * mutation, so nothing fanned the fresh snapshot out — clients stayed on the
  * old state until their next own mutation. This tiny process-wide emitter
  * closes that gap without an import cycle: the scheduler/attachment emits
