@@ -7,6 +7,7 @@ import { createQueueStore } from './queue-store.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { createScheduler } from './scheduler.js';
+import { createUsageStore } from './usage-store.js';
 
 const WS = '/tmp/example-workspace/project-a';
 
@@ -257,7 +258,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notifyQueueChanged?: (workspace: string) => void }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -292,6 +293,7 @@ function setup(opts) {
     exists: vi.fn(() => true)
   };
   const sessionLog = { attach: vi.fn() };
+  const usage = opts.usage === null ? undefined : createUsageStore();
   const scheduler = createScheduler({
     store,
     makeRunner: opts.makeRunner || runner.factory,
@@ -299,6 +301,7 @@ function setup(opts) {
     worktree,
     verify,
     sessionLog,
+    usage,
     admission: opts.admission,
     probePid: opts.probePid,
     notifyQueueChanged: opts.notifyQueueChanged,
@@ -3092,5 +3095,132 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     await first;
 
     expect(verifyPrSubmitted).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('scheduler token usage (UI-raqh §1)', () => {
+  test('persists the tallied usage onto the attempt when the session ends', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('A1').emit('event', {
+      kind: 'text',
+      usage: { message_id: 'm1', input_tokens: 10, output_tokens: 4 }
+    });
+
+    env.runner.finish('A1', { success: true });
+    await flush();
+    await flush();
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.usage).toMatchObject({ input_tokens: 10, output_tokens: 4 });
+  });
+
+  test('lets the result total replace the per-message tally', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+    events.emit('event', {
+      kind: 'text',
+      usage: { message_id: 'm1', input_tokens: 10, output_tokens: 4 }
+    });
+    events.emit('event', {
+      kind: 'result',
+      usage: { input_tokens: 18, output_tokens: 1113, total_cost_usd: 0.035 }
+    });
+
+    env.runner.finish('A1', { success: true });
+    await flush();
+    await flush();
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.usage).toMatchObject({
+      input_tokens: 18,
+      output_tokens: 1113,
+      total_cost_usd: 0.035
+    });
+  });
+
+  test('leaves usage null when the runner reported none', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('A1', { success: true });
+    await flush();
+    await flush();
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.usage).toBe(null);
+  });
+
+  test('persists usage when the attempt is paused', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+    events.emit('session_id', 'sid-1');
+    events.emit('event', {
+      kind: 'text',
+      usage: { message_id: 'm1', input_tokens: 7, output_tokens: 2 }
+    });
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    await env.scheduler.pause(WS, attempt_id);
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].usage).toMatchObject({
+      input_tokens: 7,
+      output_tokens: 2
+    });
+  });
+
+  test('merges a burst of usage events into one throttled fanout', async () => {
+    vi.useFakeTimers();
+    try {
+      const notifyQueueChanged = vi.fn();
+      const env = setup({ config: { A1: {} }, notifyQueueChanged });
+      seedQueue(env.store, ['A1']);
+      await env.scheduler.tick(WS);
+      const events = env.runner.eventsFor('A1');
+      notifyQueueChanged.mockClear();
+
+      for (let i = 0; i < 5; i += 1) {
+        events.emit('event', {
+          kind: 'text',
+          usage: { message_id: `m${i}`, input_tokens: 1, output_tokens: 1 }
+        });
+      }
+      expect(notifyQueueChanged).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(3000);
+
+      expect(notifyQueueChanged).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('clears the pending usage fanout when the attempt ends', async () => {
+    vi.useFakeTimers();
+    try {
+      const notifyQueueChanged = vi.fn();
+      const env = setup({ config: { A1: {} }, notifyQueueChanged });
+      seedQueue(env.store, ['A1']);
+      await env.scheduler.tick(WS);
+      env.runner.eventsFor('A1').emit('event', {
+        kind: 'text',
+        usage: { message_id: 'm1', input_tokens: 1, output_tokens: 1 }
+      });
+
+      env.runner.finish('A1', { success: true });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      const after_end = notifyQueueChanged.mock.calls.length;
+      vi.advanceTimersByTime(3000);
+
+      expect(notifyQueueChanged.mock.calls.length).toBe(after_end);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

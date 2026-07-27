@@ -156,6 +156,40 @@ function prObservationsFor(workspace_key, queue, verify_cmd_present) {
 }
 
 /**
+ * Project the attempts map with LIVE token usage folded in (UI-raqh §1): a
+ * running attempt shows the in-memory tally, a terminated one keeps whatever
+ * was persisted onto its record. A pure read of the shared store — the
+ * scheduler is the only writer.
+ *
+ * @param {Record<string, unknown>} queue
+ * @param {string} workspace_key
+ * @returns {Record<string, unknown>}
+ */
+function attemptsWithUsage(queue, workspace_key) {
+  const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
+  /** @type {ReturnType<typeof import('../worker/usage-store.js').createUsageStore>|null} */
+  let store = null;
+  try {
+    store = getWorkerRuntime().usageStore;
+  } catch {
+    store = null;
+  }
+  if (!store) {
+    return attempts;
+  }
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const [attempt_id, attempt] of Object.entries(attempts)) {
+    const live =
+      attempt && attempt.status === 'running'
+        ? store.get(workspace_key, attempt_id)
+        : null;
+    out[attempt_id] = live ? { ...attempt, usage: live } : attempt;
+  }
+  return out;
+}
+
+/**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the resolved verify_cmd (explicit config > auto-detection > none) with its
  *     `source`, so the ctrl bar can flag a detected command (read-only display —
@@ -209,6 +243,9 @@ function decorateQueue(workspace_key, queue) {
   }
   return {
     ...queue,
+    // Attempts carry the LIVE usage tally while they run (UI-raqh §1); the
+    // persisted `Attempt.usage` stands on its own once they end.
+    attempts: attemptsWithUsage(queue, workspace_key),
     workspace_info: { verify_cmd, deploy_cmd, last_deploy, slots },
     // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
     // (worker-phase2 §4) — it exists only on the wire and in server memory.

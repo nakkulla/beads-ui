@@ -13,6 +13,7 @@
  */
 import { html } from 'lit-html';
 import { stepperTemplate } from '../board/stepper.js';
+import { formatUsageTotal, usageTooltip } from './usage.js';
 
 /**
  * @typedef {Object} MiniItem
@@ -37,6 +38,8 @@ import { stepperTemplate } from '../board/stepper.js';
  * why it is refused.
  * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
+ * @property {import('./usage.js').UsageRecord|null} [usage] - Token usage of
+ * the bead's last attempt (UI-raqh §1); absent/null renders nothing.
  */
 
 /**
@@ -48,6 +51,7 @@ import { stepperTemplate } from '../board/stepper.js';
 export function miniRow(item) {
   const draggable = item.draggable && !item.done;
   const badges = Array.isArray(item.badges) ? item.badges : [];
+  const usage_label = formatUsageTotal(item.usage);
   return html`<div
     class="worker-mini${draggable ? '' : ' worker-mini--static'}${item.done
       ? ' worker-mini--done'
@@ -82,6 +86,11 @@ export function miniRow(item) {
     )}
     ${item.reason
       ? html`<span class="worker-mini__reason">${item.reason}</span>`
+      : ''}
+    ${usage_label
+      ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
+          >${usage_label}</span
+        >`
       : ''}
     ${item.merge_action
       ? html`<button

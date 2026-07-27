@@ -662,6 +662,36 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     );
   });
 
+  test('usage survives updateAttempt and a cold reload (UI-raqh §1)', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue
+      .revision;
+    const appended = store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    expect(appended.queue.attempts['att-1'].usage).toBe(null);
+
+    store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: {
+        usage: {
+          input_tokens: 18,
+          output_tokens: 1113,
+          cache_read_input_tokens: 45784,
+          cache_creation_input_tokens: 12577,
+          total_cost_usd: 0.0353
+        }
+      }
+    });
+
+    expect(createQueueStore().load(WS).attempts['att-1'].usage).toMatchObject({
+      input_tokens: 18,
+      output_tokens: 1113,
+      total_cost_usd: 0.0353
+    });
+  });
+
   test('cause_detail survives updateAttempt and a cold reload (UI-2o4z §2)', () => {
     const store = createQueueStore();
     const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue

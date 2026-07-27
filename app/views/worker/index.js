@@ -40,6 +40,7 @@ import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
 import { paneTemplate } from './lanes.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
+import { lastAttemptUsage } from './usage.js';
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
@@ -233,9 +234,11 @@ const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
  * @param {Record<string, any>} observations - Snapshot `pr_observations` map.
  * @param {{ step: string, reason: string }|null} cleanup_failed - Durable
  * post-merge cleanup failure for this bead, if any (§6).
+ * @param {import('./usage.js').UsageRecord|null} [usage] - Token usage of the
+ * bead's last attempt (UI-raqh §1).
  * @returns {any}
  */
-function prWaitRow(bead_id, title, observations, cleanup_failed) {
+function prWaitRow(bead_id, title, observations, cleanup_failed, usage = null) {
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
@@ -266,6 +269,7 @@ function prWaitRow(bead_id, title, observations, cleanup_failed) {
     pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
     pr_url: pr && typeof pr.url === 'string' ? pr.url : '',
     badges,
+    usage,
     alert: (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) || !!cleanup_failed,
     merge_action: true,
     // `cleanup_failed` is DURABLE merged evidence — right after a restart the
@@ -879,7 +883,11 @@ export function createWorkerView(mount_element, options = {}) {
         reason: lane === 'done' ? '' : admissionBadge(e.bead_id),
         draggable: lane !== 'done',
         done: lane === 'done',
-        lane
+        lane,
+        // 완료 행은 마지막 attempt의 토큰 사용량을 함께 보여준다 (UI-raqh §1);
+        // 대기 행은 아직 실행 전이라 붙일 것이 없다.
+        usage:
+          lane === 'done' ? lastAttemptUsage(q.attempts || {}, e.bead_id) : null
       }));
 
     const attempts = q.attempts ? Object.values(q.attempts) : [];
@@ -924,7 +932,11 @@ export function createWorkerView(mount_element, options = {}) {
           started_at: typeof a.started_at === 'number' ? a.started_at : null,
           resumed_from: a.resumed_from || null,
           paused: leaf_paused,
-          can_pause: typeof a.session_id === 'string' && a.session_id.length > 0
+          can_pause:
+            typeof a.session_id === 'string' && a.session_id.length > 0,
+          // 실행 중 타일은 이 attempt의 라이브 usage를 그대로 쓴다 — 스냅샷의
+          // decorateQueue가 실행 중 attempt에 라이브 값을 실어 보낸다.
+          usage: a.usage || null
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
         // Only a real failure surfaces the banner — a user pause/discard is not
@@ -1018,7 +1030,8 @@ export function createWorkerView(mount_element, options = {}) {
           e.bead_id,
           idToTitle.get(e.bead_id) || e.bead_id,
           pr_obs,
-          cleanup_failed[e.bead_id] || null
+          cleanup_failed[e.bead_id] || null,
+          lastAttemptUsage(q.attempts || {}, e.bead_id)
         )
       ),
       done: toRows(q.done, 'done'),

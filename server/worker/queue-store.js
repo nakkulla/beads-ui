@@ -58,6 +58,12 @@
  * failure's banner, declaring it handled. Null means "still unhandled", which
  * is one of the two ways the UI stops showing a failure banner (the other is
  * being superseded by a later attempt for the same bead).
+ * @property {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, total_cost_usd?: number }|null} usage -
+ * Token usage this attempt consumed (UI-raqh §1), persisted when the session
+ * ends (success/failure/pause/stop) from the live tally in `usage-store.js`.
+ * Null on an attempt whose runner reported none and on every record written
+ * before the field existed — the display is fail-quiet, so a null simply
+ * renders nothing.
  *
  * RETIRED merge-axis fields (worker-phase2 §2). New attempts never write them,
  * but attempt history is immutable (§9), so the shape is preserved so a legacy
@@ -310,6 +316,9 @@ export function makeAttempt(fields) {
         )
       : null,
     dismissed_at: fields.dismissed_at ?? null,
+    usage: isRecord(fields.usage)
+      ? /** @type {Attempt['usage']} */ (fields.usage)
+      : null,
     merge_policy: fields.merge_policy ?? null,
     drift_policy: fields.drift_policy ?? null,
     demoted_reason: fields.demoted_reason ?? null,

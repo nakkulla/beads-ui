@@ -393,6 +393,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     worktree,
     verify,
     sessionLog: runtime.sessionLog,
+    usage: runtime.usageStore,
     admission,
     probePid: options.probePid || defaultProbePid,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)

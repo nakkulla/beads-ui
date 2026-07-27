@@ -18,6 +18,7 @@ import { createLockManager } from './locks.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createQueueStore } from './queue-store.js';
 import { createSessionLog } from './session-log.js';
+import { createUsageStore } from './usage-store.js';
 
 /**
  * @typedef {Object} WorkerRuntime
@@ -25,6 +26,7 @@ import { createSessionLog } from './session-log.js';
  * @property {ReturnType<typeof createLockManager>} locks
  * @property {ReturnType<typeof createGh>} gh
  * @property {ReturnType<typeof createPrObservationStore>} prObservations
+ * @property {ReturnType<typeof createUsageStore>} usageStore
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number }} status
@@ -46,6 +48,11 @@ export function createWorkerRuntime() {
   // pollers WRITE here and the ws queue-snapshot decoration READS here, so both
   // must share one instance. Deliberately never persisted — see the module.
   const prObservations = createPrObservationStore();
+  // Process-wide live token-usage tally (UI-raqh §1): the scheduler WRITES it
+  // off the runner stream and the ws queue-snapshot decoration READS it, so —
+  // exactly like the observation cache — both must share one instance. Also
+  // never persisted: the durable copy lands on the attempt at termination.
+  const usageStore = createUsageStore();
   // Shared session-log broker: the scheduler's `attach` persists the raw stream
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
@@ -58,6 +65,7 @@ export function createWorkerRuntime() {
     locks,
     gh,
     prObservations,
+    usageStore,
     sessionLog,
     /**
      * @param {() => number} fn

@@ -122,6 +122,9 @@ function blockerCauseDetail(detail) {
  * tick candidate scan AND the dispatch re-check (against the pinned worktree
  * base_oid) both gate on it; refusals are recorded in `Queue.admission`.
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void }} sessionLog
+ * @property {ReturnType<typeof import('./usage-store.js').createUsageStore>} [usage]
+ * Live token-usage tally for running attempts (UI-raqh §1). Absent wiring
+ * (older tests) simply means no usage is tallied or persisted.
  * @property {(workspace: string) => void} [notifyQueueChanged]
  * Fired after autonomous queue transitions (dispatch records, admission
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
@@ -233,6 +236,79 @@ export function createScheduler(deps) {
         // A broken fanout must never break the scheduler.
       }
     }
+  }
+
+  /**
+   * How long a usage-only change waits before it reaches subscribers
+   * (UI-raqh §1). A streaming session emits usage many times a second, and none
+   * of those ticks is a queue transition — so they are merged on a trailing
+   * edge instead of fanning out a full snapshot per event. Queue changes keep
+   * their immediate fanout.
+   *
+   * @type {number}
+   */
+  const USAGE_FANOUT_THROTTLE_MS = 3000;
+  /**
+   * Pending usage-only fanouts, one per workspace.
+   *
+   * @type {Map<string, ReturnType<typeof setTimeout>>}
+   */
+  const usage_fanout_timers = new Map();
+
+  /**
+   * Merge a usage-only change into the workspace's pending fanout. The FIRST
+   * change arms the timer and later ones ride it, so a burst costs exactly one
+   * snapshot per interval.
+   *
+   * @param {string} workspace
+   */
+  function scheduleUsageFanout(workspace) {
+    if (usage_fanout_timers.has(workspace)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      usage_fanout_timers.delete(workspace);
+      notifyChanged(workspace);
+    }, USAGE_FANOUT_THROTTLE_MS);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    usage_fanout_timers.set(workspace, timer);
+  }
+
+  /**
+   * Drop a pending usage fanout — called at attempt termination, where the
+   * terminal `notifyChanged` publishes the final value anyway and a timer left
+   * armed would just re-send it.
+   *
+   * @param {string} workspace
+   */
+  function clearUsageFanout(workspace) {
+    const timer = usage_fanout_timers.get(workspace);
+    if (timer) {
+      clearTimeout(timer);
+      usage_fanout_timers.delete(workspace);
+    }
+  }
+
+  /**
+   * The terminal usage patch for an attempt: the live tally, lifted out of the
+   * store so the record carries it after the process is gone. Returns an empty
+   * patch when nothing was tallied, which keeps `usage: null` on an attempt
+   * whose runner reported none.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {{ usage?: any }}
+   */
+  function usagePatch(workspace, attempt_id) {
+    if (!deps.usage) {
+      return {};
+    }
+    const usage = deps.usage.get(workspace, attempt_id);
+    deps.usage.clearAttempt(workspace, attempt_id);
+    clearUsageFanout(workspace);
+    return usage ? { usage } : {};
   }
 
   /**
@@ -610,7 +686,7 @@ export function createScheduler(deps) {
 
       deps.store.updateAttempt(workspace, {
         attempt_id,
-        patch: { exit: verdict.exit }
+        patch: { exit: verdict.exit, ...usagePatch(workspace, attempt_id) }
       });
 
       if (!verdict.success) {
@@ -1261,6 +1337,25 @@ export function createScheduler(deps) {
       });
       notifyChanged(workspace);
     });
+    // Token usage (UI-raqh §1): assistant snapshots accumulate per message id,
+    // the `result` total replaces them. Kept in memory while the session runs
+    // and persisted onto the attempt at termination; the fanout is throttled
+    // because a usage tick is not a queue transition.
+    const usage_store = deps.usage;
+    if (usage_store) {
+      handle.events.on('event', (ev) => {
+        const usage = ev && ev.usage;
+        if (!usage) {
+          return;
+        }
+        if (ev.kind === 'result') {
+          usage_store.recordResult(workspace, attempt_id, usage);
+        } else {
+          usage_store.record(workspace, attempt_id, usage);
+        }
+        scheduleUsageFanout(workspace);
+      });
+    }
     running.set(attempt_id, { bead_id, repo, handle, prior: prior_wf });
     notifyChanged(workspace);
 
@@ -1801,7 +1896,12 @@ export function createScheduler(deps) {
     teardownLiveSession(attempt_id, entry);
     deps.store.updateAttempt(workspace, {
       attempt_id,
-      patch: { status: 'paused', cause: null, finished_at: now() }
+      patch: {
+        status: 'paused',
+        cause: null,
+        finished_at: now(),
+        ...usagePatch(workspace, attempt_id)
+      }
     });
     await revertStamps(workspace, attempt_id, entry);
     notifyChanged(workspace);
@@ -1839,7 +1939,12 @@ export function createScheduler(deps) {
       deps.store.discardAttempt(workspace, {
         attempt_id,
         bead_id: entry.bead_id,
-        patch: { status: 'stopped', cause: null, finished_at: now() }
+        patch: {
+          status: 'stopped',
+          cause: null,
+          finished_at: now(),
+          ...usagePatch(workspace, attempt_id)
+        }
       });
       await revertStamps(workspace, attempt_id, entry);
       // The bead already left the lane above, so the reopen cannot re-dispatch

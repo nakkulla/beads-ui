@@ -3837,3 +3837,170 @@ describe('candidate display filter — view (UI-ki09)', () => {
     });
   });
 });
+
+describe('worker view — token usage display (UI-raqh §1)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} queue
+   * @returns {HTMLElement}
+   */
+  function renderQueue(queue) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('shows the live usage on a running tile', () => {
+    const mount = renderQueue(
+      queueOf({
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: 1,
+            usage: { input_tokens: 8420, output_tokens: 3910 }
+          }
+        }
+      })
+    );
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(tile.textContent?.trim()).toBe('τ 12.3k');
+  });
+
+  test('puts the breakdown in the running tile tooltip', () => {
+    const mount = renderQueue(
+      queueOf({
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'running',
+            started_at: 1,
+            usage: {
+              input_tokens: 8420,
+              output_tokens: 3910,
+              cache_read_input_tokens: 214300,
+              cache_creation_input_tokens: 12800,
+              total_cost_usd: 0.42
+            }
+          }
+        }
+      })
+    );
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(el.getAttribute('title')).toBe(
+      '입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800 · $0.42'
+    );
+  });
+
+  test('shows the last attempt usage on a pr_wait row', () => {
+    const mount = renderQueue(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: { input_tokens: 100, output_tokens: 50 }
+          },
+          a2: {
+            attempt_id: 'a2',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: { input_tokens: 21600, output_tokens: 9340 }
+          }
+        }
+      })
+    );
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(el.textContent?.trim()).toBe('τ 30.9k');
+  });
+
+  test('shows the last attempt usage on a done row', () => {
+    const mount = renderQueue(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: { input_tokens: 9700, output_tokens: 4120 }
+          }
+        }
+      })
+    );
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(el.textContent?.trim()).toBe('τ 13.8k');
+  });
+
+  test('renders nothing for an attempt that recorded no usage', () => {
+    const mount = renderQueue(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: null
+          }
+        }
+      })
+    );
+
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+    ).toBe(null);
+  });
+
+  test('leaves a waiting row without a usage badge', () => {
+    const mount = renderQueue(
+      queueOf({
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'failed',
+            usage: { input_tokens: 10, output_tokens: 5 }
+          }
+        }
+      })
+    );
+
+    expect(
+      mount.querySelector(
+        '#worker-pane-queue .worker-mini[data-bead-id="RD-1"] .worker-usage'
+      )
+    ).toBe(null);
+  });
+});

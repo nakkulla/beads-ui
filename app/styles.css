@@ -2912,8 +2912,15 @@ html[data-theme='dark'] {
 }
 
 .rtile__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
   font-size: var(--fs-chip-lg);
   color: var(--text-dim);
+}
+
+.rtile__meta .worker-usage {
+  font-size: var(--fs-chip-lg);
 }
 
 /* ---------- Transcript drawer (session viewer, spec §5.6) ---------- */
@@ -3394,6 +3401,21 @@ html[data-theme='dark'] {
 .worker-mini__badge--alert {
   border-color: var(--accent-warn);
   color: var(--accent-warn);
+}
+
+/* Token usage (UI-raqh §1) — the LOWEST rung of the row's hierarchy: it is
+   read when someone goes looking for it, never something that competes with a
+   gate badge or an action. Dim, monospaced, tabular so a column of rows lines
+   up; the breakdown lives in the title tooltip. */
+.worker-usage {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
 }
 
 /* [머지] — the ONE action-class button in this lane (worker-phase2 §6). It is

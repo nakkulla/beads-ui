@@ -37,6 +37,59 @@ function promptFor(bead) {
 }
 
 /**
+ * The usage fields the worker tallies (UI-raqh §1), lifted verbatim off a
+ * stream payload. Everything else claude reports there (`cache_creation`
+ * breakdowns, `server_tool_use`, `service_tier`) is dropped: the tally only
+ * ever shows these five.
+ *
+ * @type {string[]}
+ */
+const USAGE_FIELDS = [
+  'input_tokens',
+  'output_tokens',
+  'cache_read_input_tokens',
+  'cache_creation_input_tokens'
+];
+
+/**
+ * Project a raw `usage` payload onto the tallied fields, optionally stamped
+ * with the message it belongs to (the id is what keeps a repeated streaming
+ * message from being counted twice) and the session cost. Returns undefined
+ * when there is nothing usable — fail-quiet, exactly like the rest of the
+ * adapter: a runner build that stops reporting usage must degrade to "no
+ * badge", never to a throw.
+ *
+ * @param {any} usage
+ * @param {{ message_id?: unknown, total_cost_usd?: unknown }} [extra]
+ * @returns {Record<string, number|string>|undefined}
+ */
+function pickUsage(usage, extra = {}) {
+  if (!usage || typeof usage !== 'object') {
+    return undefined;
+  }
+  /** @type {Record<string, number|string>} */
+  const out = {};
+  if (typeof extra.message_id === 'string' && extra.message_id.length > 0) {
+    out.message_id = extra.message_id;
+  }
+  for (const field of USAGE_FIELDS) {
+    const value = usage[field];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      out[field] = value;
+    }
+  }
+  if (
+    typeof extra.total_cost_usd === 'number' &&
+    Number.isFinite(extra.total_cost_usd)
+  ) {
+    out.total_cost_usd = extra.total_cost_usd;
+  }
+  // A payload with an id but no number says nothing about consumption.
+  const has_number = Object.keys(out).some((k) => k !== 'message_id');
+  return has_number ? out : undefined;
+}
+
+/**
  * Normalize a claude stream-json line to zero or more normalized events.
  *
  * @param {any} raw
@@ -51,6 +104,11 @@ function normalize(raw) {
       raw.message && Array.isArray(raw.message.content)
         ? raw.message.content
         : [];
+    // Every event of one assistant message carries the SAME usage snapshot, so
+    // the consumer must key on `message_id` and replace rather than add.
+    const usage = raw.message
+      ? pickUsage(raw.message.usage, { message_id: raw.message.id })
+      : undefined;
     /** @type {RunnerEvent[]} */
     const out = [];
     for (const c of content) {
@@ -58,13 +116,14 @@ function normalize(raw) {
         continue;
       }
       if (c.type === 'text' && typeof c.text === 'string') {
-        out.push({ kind: 'text', text: c.text, raw });
+        out.push({ kind: 'text', text: c.text, raw, usage });
       } else if (c.type === 'tool_use') {
         out.push({
           kind: 'tool',
           name: String(c.name || ''),
           input: c.input,
-          raw
+          raw,
+          usage
         });
       }
     }
@@ -74,7 +133,10 @@ function normalize(raw) {
     return {
       kind: 'result',
       message: typeof raw.result === 'string' ? raw.result : undefined,
-      raw
+      raw,
+      // The session's own total — authoritative, so the consumer replaces the
+      // per-message tally with it.
+      usage: pickUsage(raw.usage, { total_cost_usd: raw.total_cost_usd })
     };
   }
   return null;
