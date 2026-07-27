@@ -26,7 +26,7 @@ function resultLine(over = {}) {
 const BEAD = { id: 'UI-1' };
 const WS = '/tmp/ws';
 
-describe('runner/claude 3-rule success (judged over the last result)', () => {
+describe('runner/claude 2-rule success (judged over the last result)', () => {
   test('passes on the real success fixture (one result, subtype success)', async () => {
     const spawn_impl = makeFixtureSpawn({ file: SUCCESS_FIXTURE, exit: 0 });
     const handle = spawnClaude(BEAD, WS, { model: 'opus' }, { spawn_impl });
@@ -125,16 +125,17 @@ describe('runner/claude 3-rule success (judged over the last result)', () => {
     expect(v.reason).toBe('is_error');
   });
 
-  test('fails rule 4: permission_denials non-empty (also blocks)', async () => {
+  test('succeeds on a clean last result despite non-empty permission_denials', async () => {
     const spawn_impl = makeFixtureSpawn({
-      lines: [resultLine({ permission_denials: [{ tool_name: 'Bash' }] })],
+      lines: [resultLine({ permission_denials: [{ tool_name: 'Read' }] })],
       exit: 0
     });
+
     const v = await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
-    expect(v.success).toBe(false);
-    // permission_denials non-empty is a fail-closed blocker signal.
-    expect(v.blocked).toBe(true);
-    expect(v.reason).toBe('blocker');
+
+    expect(v.success).toBe(true);
+    expect(v.blocked).toBe(false);
+    expect(v.reason).toBe('ok');
   });
 });
 
