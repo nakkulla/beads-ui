@@ -675,17 +675,25 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Fire a detached deploy and stop caring about it — no listeners, no wait,
-   * `unref` so it cannot hold the event loop open. The result is UNKNOWABLE by
-   * design: the canonical case restarts this very server, so there is no
-   * survivor to observe the exit code. `launched` is therefore recorded as an
-   * INTENT before this runs, and the only thing that can still be learned here
-   * is that the spawn itself never happened.
+   * Fire a detached deploy and stop caring about its RESULT — no wait, `unref`
+   * so it cannot hold the event loop open. The result is UNKNOWABLE by design:
+   * the canonical case restarts this very server, so there is no survivor to
+   * observe the exit code. `launched` is therefore recorded as an INTENT before
+   * this runs, and the only thing that can still be learned here is that the
+   * spawn itself never happened.
+   *
+   * One listener IS attached: `error`. Node reports a pre-exec failure (ENOENT
+   * and friends) as an asynchronous `error` event, not a throw — unhandled it
+   * would crash this server while the record still says `launched`. That event
+   * is exactly the "spawn never happened" case, so it feeds the same
+   * `on_spawn_error` repair as a synchronous throw.
    *
    * @param {ResolvedDeployCmd} deploy
-   * @returns {boolean} Whether the process was handed to the OS.
+   * @param {() => void} on_spawn_error - Overwrites the `launched` record; may
+   * fire asynchronously, but only ever for a process that never started.
+   * @returns {boolean} Whether the spawn call itself succeeded.
    */
-  function launchDetachedDeploy(deploy) {
+  function launchDetachedDeploy(deploy, on_spawn_error) {
     try {
       const child = spawnImpl(deploy.cmd[0], deploy.cmd.slice(1), {
         cwd: repo,
@@ -694,7 +702,13 @@ export function createPrActions(deps) {
         detached: true,
         windowsHide: true
       });
-      if (typeof child.unref === 'function') {
+      if (child && typeof child.once === 'function') {
+        child.once('error', (/** @type {unknown} */ err) => {
+          log('detached deploy spawn failed: %o', err);
+          on_spawn_error();
+        });
+      }
+      if (child && typeof child.unref === 'function') {
         child.unref();
       }
       return true;
@@ -958,16 +972,21 @@ export function createPrActions(deps) {
       deploy: deployRecord('launched', null, bead_id, synced.sha)
     });
     notifyChanged(workspace);
-    if (!launchDetachedDeploy(pending_deploy)) {
-      // We are still alive, so the intent was wrong and can be corrected. The
-      // cleanup itself still succeeded — the bead really is done and its
-      // branches really are gone — so this surfaces as a failed DEPLOY record
-      // rather than a cleanup stop that would ask a human to redo finished work.
+    // A spawn that never started — a synchronous throw or Node's asynchronous
+    // `error` event — means we are still alive, so the intent was wrong and can
+    // be corrected. The cleanup itself still succeeded — the bead really is
+    // done and its branches really are gone — so this surfaces as a failed
+    // DEPLOY record rather than a cleanup stop that would ask a human to redo
+    // finished work.
+    const record_spawn_failure = () => {
       deps.store.recordLastDeploy(
         workspace,
         deployRecord('failed', 'deploy_spawn_error', bead_id, synced.sha)
       );
       notifyChanged(workspace);
+    };
+    if (!launchDetachedDeploy(pending_deploy, record_spawn_failure)) {
+      record_spawn_failure();
     }
     return { ok: true, step: null, reason: null, base_sync };
   }

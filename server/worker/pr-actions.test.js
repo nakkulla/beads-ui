@@ -1170,6 +1170,27 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
       bead_id: BEAD
     });
   });
+
+  test('overwrites `launched` when the detached spawn emits an async error event', async () => {
+    // Node reports ENOENT-style pre-exec failures as an `error` EVENT, not a
+    // throw — unhandled it would crash the server with `launched` left durable.
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      deploySpawn: 'error',
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(r.ok).toBe(true);
+    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_spawn_error',
+      bead_id: BEAD
+    });
+  });
 });
 
 describe('post-merge cleanup — ref operations hold the topology lock (§8)', () => {
