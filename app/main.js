@@ -202,19 +202,6 @@ export function bootstrap(root_element) {
     const display_policy_store = createDisplayPolicyStore();
     const session_log_store = createSessionLogStore();
 
-    // Route worker-queue snapshots (unified push protocol; distinct top-level
-    // event type) into the client-side queue store.
-    client.on('worker-queue-snapshot', (payload) => {
-      const p = /** @type {any} */ (payload);
-      if (p && p.queue) {
-        try {
-          worker_queue_store.set(p.queue);
-        } catch {
-          // ignore
-        }
-      }
-    });
-
     // Route manual UI-order snapshots (same unified push protocol) into the
     // client-side order store shared by Board and Worker (spec §2).
     client.on('ui-order-snapshot', (payload) => {
@@ -675,21 +662,24 @@ export function bootstrap(root_element) {
     }
 
     /**
-     * Re-establish the display-policy subscription on a NEW socket after a
+     * Re-establish the per-workspace push subscriptions on a NEW socket after a
      * reconnect.
      *
      * A reconnected socket starts on the server's default workspace, and the
      * client has no automatic workspace restore. Subscribing before repointing
-     * it would deliver the DEFAULT workspace's policy and let that snapshot
-     * overwrite the policy for the workspace the user is actually looking at,
-     * so the workspace is restored first and the policy is dropped until the
-     * correct snapshot lands.
+     * it would deliver the DEFAULT workspace's data and let that snapshot
+     * overwrite what the user is actually looking at, so the workspace is
+     * restored first and both channels resubscribe after it — one
+     * `set-workspace` for all of them.
      */
-    async function resubscribeDisplayPolicyAfterReconnect() {
+    async function resubscribeAfterReconnect() {
       // The old socket is gone, so there is nothing to unsubscribe from — only
-      // the singleton guard and the now-unowned cached policy to release.
+      // the singleton guards and the now-unowned cached policy to release.
+      // Without clearing the worker-queue guard the new socket would never get a
+      // `subscribe-worker-queue` and the Worker view would sit frozen.
       display_policy_unsub = null;
       display_policy_store.clear();
+      worker_queue_unsub = null;
       const selected = store.getState().workspace.current?.path;
       if (selected) {
         try {
@@ -700,6 +690,7 @@ export function bootstrap(root_element) {
         }
       }
       subscribeDisplayPolicy();
+      ensureWorkerSubscriptions(store.getState().view === 'worker');
     }
 
     // --- Workspace management ---
@@ -956,7 +947,7 @@ export function bootstrap(root_element) {
           void refreshConfigSnapshot(store, (message, err) => {
             log(`${message}: %o`, err);
           });
-          void resubscribeDisplayPolicyAfterReconnect();
+          void resubscribeAfterReconnect();
         }
       };
       client.onConnection(onConn);
@@ -978,6 +969,39 @@ export function bootstrap(root_element) {
       config: readBootstrapConfig(),
       view: last_view
     });
+
+    // Route worker-queue snapshots (unified push protocol; distinct top-level
+    // event type) into the client-side queue store. Registered here rather than
+    // with the other push handlers because the workspace guard below reads
+    // `store`; nothing can push a queue snapshot before the first
+    // `subscribe-worker-queue`, which only goes out further down.
+    //
+    // Defense layer against a stale server-side subscription: a snapshot
+    // addressed to another workspace is dropped — but only once a workspace is
+    // actually selected. The bootstrap snapshot arrives while `current` is still
+    // null and nothing would re-send it, so an unconditional check would leave
+    // the first Worker render empty.
+    client.on('worker-queue-snapshot', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (!p || !p.queue) {
+        return;
+      }
+      const current_path = store.getState().workspace.current?.path;
+      if (
+        typeof current_path === 'string' &&
+        current_path.length > 0 &&
+        p.root_dir !== current_path
+      ) {
+        log('dropping worker-queue snapshot for %s', String(p.root_dir));
+        return;
+      }
+      try {
+        worker_queue_store.set(p.queue);
+      } catch {
+        // ignore
+      }
+    });
+
     const router = createHashRouter(store);
     router.start();
 
