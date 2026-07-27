@@ -1,8 +1,9 @@
 /**
  * Session transcript drawer (spec §5.6, mockup `worker-session-log.html`).
  *
- * A running tile (or a session-history row) opens this drawer BELOW the running
- * grid — lanes push down, not a modal overlay. It subscribes to the live append
+ * A running tile (or a session-history row) opens this drawer as a modal
+ * overlay above the lanes — the host owns the overlay/backdrop chrome, the
+ * drawer only renders its own bar+body. It subscribes to the live append
  * stream via `subscribe-session-log` (server pushes a snapshot then per-event
  * appends into `sessionLogStore`), parses the raw stream with `parseTranscript`,
  * and renders assistant / tool / gate / phase / result / error lines. The same

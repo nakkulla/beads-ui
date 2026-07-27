@@ -211,20 +211,25 @@ export function createWorkerView(mount_element, options = {}) {
   const unsubscribers = [];
 
   // Persistent console shell: the control bar + banners (top) and the lane row
-  // (bottom) render into their own targets so the transcript drawer can sit
-  // BETWEEN them (the mockup pushes the lanes down when a tile opens the
-  // drawer) without a full-template re-render clobbering the drawer's own
-  // lit-html root.
+  // (bottom) render into their own targets, and the transcript drawer lives in
+  // its own fixed overlay host so a full-template re-render never clobbers the
+  // drawer's lit-html root and an open drawer never pushes the lanes down.
   const console_el = document.createElement('div');
   console_el.className = 'worker-console';
   const top_el = document.createElement('div');
+  const drawer_overlay_el = document.createElement('div');
+  drawer_overlay_el.className = 'worker-drawer-overlay';
+  drawer_overlay_el.hidden = true;
+  const drawer_backdrop_el = document.createElement('div');
+  drawer_backdrop_el.className = 'worker-drawer-overlay__backdrop';
   const drawer_el = document.createElement('div');
   drawer_el.className = 'worker-drawer-host';
+  drawer_overlay_el.append(drawer_backdrop_el, drawer_el);
   const lanes_el = document.createElement('div');
   // Flex host so .worker-lanes' flex sizing is live — a plain block div here
   // breaks the min-height:0 chain and the pane bodies can never scroll.
   lanes_el.className = 'worker-lanes-host';
-  console_el.append(top_el, drawer_el, lanes_el);
+  console_el.append(top_el, drawer_overlay_el, lanes_el);
   mount_element.appendChild(console_el);
 
   /** @type {string|null} Currently open attempt (for the tile ring). */
@@ -235,6 +240,7 @@ export function createWorkerView(mount_element, options = {}) {
     sessionLogStore,
     onClose: () => {
       selected_attempt = null;
+      drawer_overlay_el.hidden = true;
       doRender();
     }
   });
@@ -1162,6 +1168,7 @@ export function createWorkerView(mount_element, options = {}) {
     const q = currentQueue();
     const a = q.attempts ? q.attempts[attempt_id] : null;
     selected_attempt = attempt_id;
+    drawer_overlay_el.hidden = false;
     drawer.open({ attempt_id, meta: metaForAttempt(a) });
     doRender();
   }
@@ -1180,7 +1187,12 @@ export function createWorkerView(mount_element, options = {}) {
     const a = q.attempts ? q.attempts[selected_attempt] : null;
     if (a) {
       drawer.updateMeta(metaForAttempt(a));
+      return;
     }
+    // Attempt records are never pruned within a workspace, so a vanished
+    // attempt means the store was cleared (workspace switch): close the modal
+    // or its backdrop would keep blocking the new workspace's UI.
+    drawer.close();
   }
 
   /**
@@ -1286,6 +1298,12 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
+    // Backdrop click closes the drawer modal (the ✕ inside the bar is the
+    // drawer's own handler).
+    if (target?.closest?.('.worker-drawer-overlay__backdrop')) {
+      drawer.close();
+      return;
+    }
     // Clicks inside the drawer are owned by the drawer's own handlers.
     if (target?.closest?.('.worker-drawer-host')) {
       return;
@@ -1379,6 +1397,7 @@ export function createWorkerView(mount_element, options = {}) {
       } catch {
         /* ignore */
       }
+      drawer_overlay_el.hidden = true;
       try {
         exec_defaults_dialog.destroy();
       } catch {

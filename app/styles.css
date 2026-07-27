@@ -2770,6 +2770,50 @@ html[data-theme='dark'] {
   display: none;
 }
 
+/* Worker-tab drawer modal (UI-89q5): the drawer floats over the lanes instead
+   of pushing them down. `hidden` must beat the flex display. */
+.worker-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.worker-drawer-overlay[hidden] {
+  display: none;
+}
+
+.worker-drawer-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.worker-drawer-overlay .worker-drawer-host {
+  position: relative;
+  display: flex;
+  width: min(860px, 94vw);
+  max-height: 85vh;
+}
+
+.worker-drawer-overlay .sv {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-bottom: 0;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* The overlay height bound owns the scroll; the inline drawer's vh cap would
+   double-bound it. */
+.worker-drawer-overlay .sv__body {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .sv {
   margin-bottom: var(--sp-10);
   border: 1px solid var(--border-tile-run);
@@ -2985,13 +3029,14 @@ html[data-theme='dark'] {
 }
 
 /* Detail-panel transcript overlay: the drawer opened from a session-history row
-   floats above the detail overlay. */
+   is a body-level sibling of `.detail-overlay` (z 900), so it must sit above
+   that and below the md viewer (z 1000). */
 .session-log-root .sv {
   position: fixed;
   inset: auto 3vw 3vh 3vw;
   max-width: 720px;
   margin: 0 auto;
-  z-index: 60;
+  z-index: 950;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
 }
 
@@ -3435,6 +3480,20 @@ html[data-theme='dark'] {
 
   .sv__body {
     max-height: 60vh;
+  }
+
+  /* Worker-tab drawer modal falls back to the bottom-sheet shape. */
+  .worker-drawer-overlay {
+    align-items: flex-end;
+  }
+
+  .worker-drawer-overlay .worker-drawer-host {
+    width: 100%;
+    max-height: 70vh;
+  }
+
+  .worker-drawer-overlay .sv {
+    border-radius: var(--r-10) var(--r-10) 0 0;
   }
 
   .session-log-root .sv {

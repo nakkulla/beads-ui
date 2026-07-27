@@ -1570,6 +1570,92 @@ describe('views/worker', () => {
     expect(gotoIssue).not.toHaveBeenCalled();
   });
 
+  /**
+   * Mount a worker view with one running attempt and open its transcript
+   * drawer by clicking the tile body (UI-89q5 modal overlay tests).
+   *
+   * @param {HTMLElement} mount
+   * @returns {{ get: () => any, set: (q: any) => void, clear: () => void, subscribe: (fn: () => void) => () => void }}
+   */
+  function openRunningTileDrawer(mount) {
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            runner: 'claude',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+    const sessionLogStore = createSessionLogStore();
+    sessionLogStore.set('a1', [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'go' }] }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      sessionLogStore,
+      transport: vi.fn().mockResolvedValue({ ok: true }),
+      gotoIssue: vi.fn()
+    });
+
+    const title = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__title')
+    );
+    title.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    return queueStore;
+  }
+
+  test('reveals the drawer overlay only while a transcript is open', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    openRunningTileDrawer(mount);
+
+    const overlay = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-drawer-overlay')
+    );
+    expect(overlay.hidden).toBe(false);
+  });
+
+  test('closes the transcript drawer on an overlay backdrop click', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    openRunningTileDrawer(mount);
+
+    const backdrop = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-drawer-overlay__backdrop')
+    );
+    backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const overlay = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-drawer-overlay')
+    );
+    expect(overlay.hidden).toBe(true);
+    expect(mount.querySelector('.sv')).toBeNull();
+  });
+
+  test('closes the drawer overlay when the queue store is cleared (workspace switch)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = openRunningTileDrawer(mount);
+
+    queueStore.clear();
+
+    const overlay = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-drawer-overlay')
+    );
+    expect(overlay.hidden).toBe(true);
+    expect(mount.querySelector('.sv')).toBeNull();
+  });
+
   test('excludes phase-child candidates (parent edge or dotted id); a normal issue stays', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const stores = createTestIssueStores();
