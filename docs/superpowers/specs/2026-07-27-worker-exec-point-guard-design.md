@@ -36,11 +36,19 @@ shim·훅 스크립트를 **JS 템플릿 리터럴 상수로 내장**한다(패�
   mode `0o755`로 기록한다. 매 기동 무조건 재작성(idempotent, 업그레이드 자동
   반영). 자산은 워크스페이스 공용 1벌 — attempt별 데이터(`target_base`)는
   파일이 아니라 env로 전달되므로 per-attempt 자산이 필요 없다.
+  **실패 비치명**: mkdir/write/chmod 실패는 `initWorkerRuntime`의 기존
+  start 계열과 같은 try/catch + 로그 패턴으로 삼켜 워커 attachment 생성을
+  막지 않는다 — dispatch 거부의 최종 권위는 spawn 직전
+  `verifyGuardReady()`이며, 초기 기록이 실패했으면 그 검증이
+  `exec_guard_unavailable` 정리 경로로 떨어진다.
 - `guardEnv({ target_base })` — spawn env 조각을 반환:
   `PATH`(shim `bin` 디렉터리를 현재 `process.env.PATH` 앞에 prepend),
   `GIT_CONFIG_COUNT=1` / `GIT_CONFIG_KEY_0=core.hooksPath` /
   `GIT_CONFIG_VALUE_0=<hooks 디렉터리>`, `BDUI_GUARD_BASE=<target_base>`.
-- `verifyGuardReady()` — 두 자산 파일의 존재 + 실행권한(`X_OK`) 확인.
+- `verifyGuardReady()` — 두 자산 파일 각각에 대해 regular file 여부 +
+  실행권한(`X_OK`) + **내용이 내장 상수와 바이트 단위로 일치**하는지 확인
+  (파일이 작으므로 그대로 비교). truncated/corrupt 자산은 실행권한이
+  남아 있어도 거부된다 — "broken asset도 fail-closed" 요구의 실체.
 - `EXEC_GUARD_MARKER` — 거부 메시지의 고유 마커 상수(예:
   `bdui-exec-guard: refused`). 스크립트 본문과 엔진 감지가 이 상수 하나를
   공유한다.
@@ -76,12 +84,21 @@ remote ref)까지 정확히 거부하며 오탐이 구조적으로 불가능하�
 
 ### ③ 마커 감지 → blocker (`session.js` + `runner/claude.js`)
 
-- `AdapterSpec`에 `extractToolResultText(raw)` 추가 — claude 어댑터가
-  tool_result 이벤트의 내용 텍스트를 반환(비 tool_result 행은 null).
+- `AdapterSpec`에 `extractToolResultText(raw)` 추가. **claude 스트림 실제
+  스키마 기준**(fixture `server/worker/__fixtures__/claude-tools.jsonl` 실측):
+  tool_result는 최상위 이벤트가 아니라 `raw.type === 'user'` 행의
+  `raw.message.content[]` 안에 `{ type: 'tool_result', content }`로 중첩되고,
+  Bash의 stderr는 최상위 `raw.tool_use_result.stderr`로도 별도 제공된다.
+  shim/훅 마커는 **stderr**에 찍히므로 추출기는 (a) 중첩 tool_result의
+  `content`(문자열, 또는 text 블록 배열의 text 연결)와 (b)
+  `raw.tool_use_result.stderr`(문자열일 때)를 모두 이어붙여 반환한다.
+  해당 없음은 null.
 - 엔진 `onLine`: 추출 텍스트에 `EXEC_GUARD_MARKER`가 포함되면 기존 blocker
-  경로로 `reason: 'exec_guard_refused'`, message에 마커가 있는 행(512자
-  truncate)을 담아 SIGTERM. UI-2o4z의 `blocked_detail` → `cause_detail`
-  플럼빙을 그대로 타서 attempt 기록·배너·알림까지 전달된다.
+  경로로 SIGTERM. durable 전파를 위해 **`blocked_detail =
+  { reason: 'exec_guard_refused', command: <마커가 있는 행, 512자 truncate> }`
+  를 명시적으로 채운다** — 기존 플럼빙은 `blocked_detail.command`만
+  `cause_detail.command`로 복사하므로, message에만 담으면 attempt 기록·배너·
+  알림에서 마커 행이 유실된다. blocker 이벤트 message에도 같은 행을 담는다.
 - 기존 merge 가드(스트림 argv 검사)는 판정 로직 변경 없이 유지 — 우회 잔존면
   (절대경로 `gh`, `--no-verify`, env 초기화)의 최후 보루.
 
@@ -122,22 +139,30 @@ remote ref)까지 정확히 거부하며 오탐이 구조적으로 불가능하�
    두고 위임 도달을 검증). node 테스트에서 `sh`로 스크립트를 실제 실행해
    검증한다.
 2. 훅: stdin ref 조합별 — `refs/heads/main`·`refs/heads/master`·
-   `refs/heads/<BDUI_GUARD_BASE>` 착지 거부, bead 브랜치·`refs/tags/*` 통과,
-   삭제 푸시(zero-oid local ref + base remote ref) 거부. env 없는 경우
-   main/master만 거부.
+   `refs/heads/<BDUI_GUARD_BASE>` 착지 거부, bead 브랜치·`refs/tags/*` 통과.
+   삭제 푸시는 **실제 pre-push 프로토콜 형태**(`(delete)` local ref +
+   zero-OID local oid + base remote ref)로 입력해 거부를 검증한다.
+   `BDUI_GUARD_BASE`가 **unset인 경우와 명시적 빈 문자열인 경우를 각각**
+   테스트하며 둘 다 main/master만 거부한다.
 3. 실측 git 통합: 임시 리포 2개(로컬 remote)에서 guard env를 적용한
    `git push origin HEAD:main`이 훅에 의해 실패하고, `git push origin
    HEAD:refs/heads/<bead-branch>`는 성공한다. `git push origin $BR`(BR=main)
    도 거부된다 — 스트림 가드가 못 보는 변수 확장 케이스의 실행 지점 차단
    증명.
-4. 엔진: tool_result에 마커가 포함된 fixture 재생 시 blocker
-   (`exec_guard_refused`) + group-kill + `blocked_detail` 채움(기존
-   fixture-spawn 하네스).
+4. 엔진: **실제 스트림 형태의 fixture**(중첩 tool_result의 content에는
+   마커 없음 + `tool_use_result.stderr`에만 마커 + exit 1) 재생 시 blocker
+   (`exec_guard_refused`) + group-kill + `blocked_detail.command`에 마커 행
+   포함(기존 fixture-spawn 하네스). 중첩 content에 마커가 실리는 변형도
+   감지된다.
 5. 스케줄러: `verifyGuardReady` 실패 주입 시 spawn 미발생·attempt
    `exec_guard_unavailable` 기록·스탬프/claim 정리 완료. `guardEnv`가
    `settings.env`로 전달되어 spawn env에 PATH 선두 shim 디렉터리와
    `GIT_CONFIG_*`·`BDUI_GUARD_BASE`가 실리는 것을 spawn_impl 주입 테스트로
-   검증.
+   검증. blocker 사망 시 `blocked_detail`이 attempt `cause_detail`로
+   보존되는 round-trip도 검증한다.
 6. `ensureGuardAssets` idempotency(재기동 재작성)와 mode `0o755` 검증.
+   truncated/corrupt 자산(내용 불일치)이 `verifyGuardReady`에서 거부되는
+   케이스, 그리고 초기 기록 실패(쓰기 불가 주입) 후에도 attachment는 살아
+   있고 dispatch만 `exec_guard_unavailable`로 거부되는 케이스를 포함한다.
 7. Pre-Handoff Validation 전체 green(tsc/test/lint/prettier) +
    `npm run build` 번들(`app/main.bundle.js`(.map)) 포함.
