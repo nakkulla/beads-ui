@@ -138,6 +138,16 @@ export function createScheduler(deps) {
   /** Beads currently claimed (dispatching or running) — prevents double launch. @type {Set<string>} */
   const claimed = new Set();
   /**
+   * Attempts whose `onSessionDone` is in flight. That handler drops the
+   * `running` + `claimed` fences at entry and only THEN awaits the verify, so
+   * in between the attempt is still durably `running` with nothing else marking
+   * it as this process's work — a reconcile pass landing there would dispose an
+   * attempt that is already being disposed.
+   *
+   * @type {Set<string>}
+   */
+  const settling = new Set();
+  /**
    * Attempts terminated by an explicit stop (■). Their `done` promise still
    * resolves later; `onSessionDone` must NOT re-run the failure path for them
    * (no auto_advance halt, no double revert) — the stop already finalized them.
@@ -523,6 +533,12 @@ export function createScheduler(deps) {
    * Handle a finished session: SERVER-OBSERVED PR verdict → `pr_wait`, else the
    * failure path (auto_advance OFF + banner).
    *
+   * The whole body runs under the `settling` fence: the `running`/`claimed`
+   * entries are dropped immediately (a finished session holds no slot), but the
+   * attempt stays durably `running` until the terminal write lands several
+   * awaits later, and `reconcile` must not read that window as an unowned
+   * detached session.
+   *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {string} bead_id
@@ -538,90 +554,103 @@ export function createScheduler(deps) {
     prior,
     verdict
   ) {
-    running.delete(attempt_id);
-    claimed.delete(bead_id);
+    settling.add(attempt_id);
+    try {
+      running.delete(attempt_id);
+      claimed.delete(bead_id);
 
-    // An explicit stop already finalized this attempt (failed + mode reverted);
-    // the late `done` resolution must not re-run the failure path.
-    if (stopped.has(attempt_id)) {
-      stopped.delete(attempt_id);
-      return;
-    }
+      // An explicit stop already finalized this attempt (failed + mode
+      // reverted); the late `done` resolution must not re-run the failure path.
+      if (stopped.has(attempt_id)) {
+        stopped.delete(attempt_id);
+        return;
+      }
 
-    deps.store.updateAttempt(workspace, {
-      attempt_id,
-      patch: { exit: verdict.exit }
-    });
-
-    if (!verdict.success) {
-      await failAttempt(
-        workspace,
+      deps.store.updateAttempt(workspace, {
         attempt_id,
-        bead_id,
-        prior,
-        verdict.blocked
-          ? 'loud_fail_blocker'
-          : `session_failed:${verdict.reason}`
-      );
-      notifyChanged(workspace);
-      await tick(workspace);
-      return;
-    }
+        patch: { exit: verdict.exit }
+      });
 
-    // Independent verification — session exit 0 is NOT enough, and neither is
-    // the session's own bd bookkeeping (worker-phase2 §1). ONE verdict now:
-    // does the server OBSERVE an open PR for this attempt's branch?
-    const vr = await deps.verify.verifyPrSubmitted({
-      repo: snap.repo,
-      bead_id
-    });
-    deps.store.updateAttempt(workspace, {
-      attempt_id,
-      patch: { verify_result: vr }
-    });
-
-    if (vr.ok) {
-      // EVERY success is now PR-stop in nature: the bead stays open for a later
-      // human merge click, so a stray fast_track must not switch that session to
-      // unattended — a failed revert BLOCKS the lane move unconditionally
-      // (fail-closed, implementation review 2026-07-22, now not policy-gated).
-      try {
-        await revertWorkflowMode(bead_id, prior);
-      } catch (err) {
-        log('workflow_mode revert failed on success for %s: %o', bead_id, err);
+      if (!verdict.success) {
         await failAttempt(
           workspace,
           attempt_id,
           bead_id,
           prior,
-          'workflow_mode_revert_failed'
+          verdict.blocked
+            ? 'loud_fail_blocker'
+            : `session_failed:${verdict.reason}`
         );
         notifyChanged(workspace);
         await tick(workspace);
         return;
       }
-      // The auto-run's global-default exec fill must not persist as the bead's
-      // own metadata (worker-global-exec-defaults §3; best-effort, never blocks
-      // the lane move).
-      await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
-      // Attempt done + bead into `pr_wait` in ONE persist (§4): a split write
-      // could leave the bead queued for re-dispatch with its PR already open.
-      deps.store.moveToPrWait(workspace, {
-        bead_id,
-        attempt_id,
-        patch: { status: 'done', finished_at: now() }
+
+      // Independent verification — session exit 0 is NOT enough, and neither is
+      // the session's own bd bookkeeping (worker-phase2 §1). ONE verdict now:
+      // does the server OBSERVE an open PR for this attempt's branch?
+      const vr = await deps.verify.verifyPrSubmitted({
+        repo: snap.repo,
+        bead_id
       });
-    } else {
-      await failAttempt(
-        workspace,
+      deps.store.updateAttempt(workspace, {
         attempt_id,
-        bead_id,
-        prior,
-        `verify_failed:${vr.reason}`
-      );
+        patch: { verify_result: vr }
+      });
+
+      if (vr.ok) {
+        // EVERY success is now PR-stop in nature: the bead stays open for a
+        // later human merge click, so a stray fast_track must not switch that
+        // session to unattended — a failed revert BLOCKS the lane move
+        // unconditionally (fail-closed, implementation review 2026-07-22, now
+        // not policy-gated).
+        try {
+          await revertWorkflowMode(bead_id, prior);
+        } catch (err) {
+          log(
+            'workflow_mode revert failed on success for %s: %o',
+            bead_id,
+            err
+          );
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            'workflow_mode_revert_failed'
+          );
+          notifyChanged(workspace);
+          await tick(workspace);
+          return;
+        }
+        // The auto-run's global-default exec fill must not persist as the
+        // bead's own metadata (worker-global-exec-defaults §3; best-effort,
+        // never blocks the lane move).
+        await revertExecStamps(
+          bead_id,
+          execStampedKeysOf(workspace, attempt_id)
+        );
+        // Attempt done + bead into `pr_wait` in ONE persist (§4): a split write
+        // could leave the bead queued for re-dispatch with its PR already open.
+        deps.store.moveToPrWait(workspace, {
+          bead_id,
+          attempt_id,
+          patch: { status: 'done', finished_at: now() }
+        });
+      } else {
+        await failAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          `verify_failed:${vr.reason}`
+        );
+      }
+      notifyChanged(workspace);
+      await tick(workspace);
+    } finally {
+      settling.delete(attempt_id);
     }
-    notifyChanged(workspace);
-    await tick(workspace);
   }
 
   /**
@@ -629,6 +658,11 @@ export function createScheduler(deps) {
    * attempt_id + PID + START TIME, never mere PID existence: a recycled PID
    * (same number, unrelated process) must read as dead, or a dead session would
    * hold its slot until the number is reused by nothing.
+   *
+   * `pid == null` reads as dead, which is only sound for an attempt no part of
+   * this process owns — a dispatch that has pre-recorded but not yet spawned
+   * has exactly that shape. {@link reconcile}'s `running`/`settling`/`claimed`
+   * fences are what guarantee that, so this must not be called on its own.
    *
    * @param {any} attempt
    * @returns {boolean}
@@ -665,6 +699,14 @@ export function createScheduler(deps) {
    * fails closed rather than guessing a repo — an unobservable attempt must
    * never read as "no PR was ever opened".
    *
+   * The bead is CLAIMED for the whole disposition, taken before the first await.
+   * The `gh` observation can take seconds, and `tick` skips claimed beads — so
+   * without the claim a user flipping auto_advance back on mid-observation
+   * could re-dispatch the same bead, and this disposition's `failAttempt` would
+   * then release the NEW session's bd claim and revert ITS metadata. The claim
+   * is given back before the trailing `notifyChanged`/`tick` so the bead this
+   * pass just recovered is dispatchable to the tick it raises itself.
+   *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {any} attempt
@@ -673,62 +715,77 @@ export function createScheduler(deps) {
     const bead_id = attempt.bead_id;
     const prior = attempt.workflow_mode_prior ?? null;
     const repo = typeof attempt.repo === 'string' ? attempt.repo : '';
-    /** @type {{ ok: boolean, reason: string }} */
-    let vr;
-    if (repo.length === 0) {
-      vr = { ok: false, reason: 'gh_observation_failed' };
-    } else {
-      try {
-        vr = await deps.verify.verifyPrSubmitted({ repo, bead_id });
-      } catch (err) {
-        // The verifier is fail-closed internally; a throw is a defect, and
-        // letting it escape would leave the attempt `running` for the next pass
-        // to re-observe forever.
-        log('reconcile verify threw for %s: %o', attempt_id, err);
+    claimed.add(bead_id);
+    try {
+      /** @type {{ ok: boolean, reason: string }} */
+      let vr;
+      if (repo.length === 0) {
         vr = { ok: false, reason: 'gh_observation_failed' };
+      } else {
+        try {
+          vr = await deps.verify.verifyPrSubmitted({ repo, bead_id });
+        } catch (err) {
+          // The verifier is fail-closed internally; a throw is a defect, and
+          // letting it escape would leave the attempt `running` for the next
+          // pass to re-observe forever.
+          log('reconcile verify threw for %s: %o', attempt_id, err);
+          vr = { ok: false, reason: 'gh_observation_failed' };
+        }
       }
-    }
-    deps.store.updateAttempt(workspace, {
-      attempt_id,
-      patch: { verify_result: vr }
-    });
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: { verify_result: vr }
+      });
 
-    if (vr.ok) {
-      try {
-        await revertWorkflowMode(bead_id, prior);
-      } catch (err) {
-        log(
-          'workflow_mode revert failed on reconcile for %s: %o',
-          bead_id,
-          err
-        );
+      if (vr.ok) {
+        // A failed revert BLOCKS the lane move (fail-closed): a stray
+        // `fast_track` left on the bead would switch a later manual session to
+        // unattended.
+        let mode_reverted = true;
+        try {
+          await revertWorkflowMode(bead_id, prior);
+        } catch (err) {
+          log(
+            'workflow_mode revert failed on reconcile for %s: %o',
+            bead_id,
+            err
+          );
+          mode_reverted = false;
+        }
+        if (mode_reverted) {
+          await revertExecStamps(
+            bead_id,
+            execStampedKeysOf(workspace, attempt_id)
+          );
+          // A recovered normal completion must NOT stop the queue:
+          // `auto_advance` is deliberately untouched on this branch.
+          deps.store.moveToPrWait(workspace, {
+            bead_id,
+            attempt_id,
+            patch: { status: 'done', finished_at: now() }
+          });
+        } else {
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            'workflow_mode_revert_failed'
+          );
+        }
+      } else {
         await failAttempt(
           workspace,
           attempt_id,
           bead_id,
           prior,
-          'workflow_mode_revert_failed'
+          `verify_failed:${vr.reason}`
         );
-        notifyChanged(workspace);
-        await tick(workspace);
-        return;
       }
-      await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
-      // A recovered normal completion must NOT stop the queue: `auto_advance`
-      // is deliberately untouched on this branch.
-      deps.store.moveToPrWait(workspace, {
-        bead_id,
-        attempt_id,
-        patch: { status: 'done', finished_at: now() }
-      });
-    } else {
-      await failAttempt(
-        workspace,
-        attempt_id,
-        bead_id,
-        prior,
-        `verify_failed:${vr.reason}`
-      );
+    } finally {
+      // Never leak the claim: an unexpected throw here would otherwise fence
+      // the bead out of every later dispatch for the life of the process.
+      claimed.delete(bead_id);
     }
     notifyChanged(workspace);
     await tick(workspace);
@@ -739,9 +796,18 @@ export function createScheduler(deps) {
    * (worker-detached-session-reconcile §1). Both entry points — server startup
    * and the periodic timer — share this one routine.
    *
-   * Attempts THIS process holds a handle for are skipped: `onSessionDone` is
-   * their authority, and a reconcile pass racing a session that is finishing
-   * right now would dispose it twice.
+   * ONLY attempts no part of THIS process owns are candidates, behind three
+   * fences, because a durable `running` record is not by itself evidence of a
+   * detached session:
+   *
+   *   - `running` — a live session handle: `onSessionDone` is its authority.
+   *   - `settling` — `onSessionDone` is mid-flight for it: it already dropped
+   *     the handle but has not written the terminal status yet.
+   *   - `claimed` (by BEAD) — a dispatch or relaunch is in flight. Between the
+   *     durable pre-record (`status:'running'`, `pid:null`) and `running.set`
+   *     at spawn, the attempt looks exactly like a dead one — `pid == null` —
+   *     and the claim, taken in the tick cascade before dispatch and released
+   *     only on abort/termination, is what tells the two apart.
    *
    * @param {string} workspace
    */
@@ -756,7 +822,14 @@ export function createScheduler(deps) {
       const dead = [];
       for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
         const a = /** @type {any} */ (attempt);
-        if (!a || a.status !== 'running' || running.has(attempt_id)) {
+        if (!a || a.status !== 'running') {
+          continue;
+        }
+        if (
+          running.has(attempt_id) ||
+          settling.has(attempt_id) ||
+          claimed.has(a.bead_id)
+        ) {
           continue;
         }
         if (isDeadAttempt(a)) {
@@ -764,6 +837,12 @@ export function createScheduler(deps) {
         }
       }
       for (const d of dead) {
+        // Re-checked per iteration, not just at selection: each disposition
+        // ends in a `tick`, so an earlier one in this same pass may already
+        // have re-dispatched the bead of a later candidate.
+        if (claimed.has(d.attempt.bead_id)) {
+          continue;
+        }
         await disposeDeadAttempt(workspace, d.attempt_id, d.attempt);
       }
     } finally {
