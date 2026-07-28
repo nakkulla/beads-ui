@@ -184,6 +184,7 @@ function makeFakeBd(config) {
         route: c.route ?? null,
         status: c.status ?? '',
         title: c.title ?? null,
+        spec_review: c.spec_review,
         deps: c.deps ?? []
       };
     },
@@ -1021,12 +1022,12 @@ describe('scheduler admission gate (worker-autorun-policy §1)', () => {
 
   test('dispatch re-checks admission against the pinned worktree base_oid (TOCTOU)', async () => {
     const admission = {
-      // Valid at the tick scan (no base pinned yet), stale once dispatch pins
+      // Valid at the tick scan (no base pinned yet), refused once dispatch pins
       // the worktree base_oid — models a base advancing between scan and add.
       validate: vi.fn(
         async (/** @type {any} */ _snap, /** @type {any} */ base) =>
           base === 'base-S1'
-            ? { ok: false, reason: 'spec_review_stale' }
+            ? { ok: false, reason: 'receipt_unreachable' }
             : { ok: true }
       )
     };
@@ -1041,7 +1042,7 @@ describe('scheduler admission gate (worker-autorun-policy §1)', () => {
       bead_id: 'S1'
     });
     expect(env.store.snapshot(WS).admission.S1).toEqual({
-      reason: 'spec_review_stale',
+      reason: 'receipt_unreachable',
       at: expect.any(Number)
     });
     // No session spawned, no attempt persisted for the refused dispatch.
@@ -1067,6 +1068,117 @@ describe('scheduler admission gate (worker-autorun-policy §1)', () => {
     await env.scheduler.tick(WS);
     expect(env.scheduler.isRunning('S1')).toBe(true);
     expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+});
+
+describe('scheduler stale spec_review lane (UI-dlim §3.2)', () => {
+  const RECEIPT_SHA = 'a'.repeat(40);
+  const DELTA_SHA = 'b'.repeat(40);
+
+  /**
+   * Admission that ADMITS with a stale payload — the validator's new verdict
+   * for a spec that moved after the receipt.
+   *
+   * @param {{ delta_shas?: string[], onlyAtBase?: string }} [opts]
+   */
+  function staleAdmission(opts = {}) {
+    return {
+      validate: vi.fn(
+        async (/** @type {any} */ _snap, /** @type {any} */ base) => {
+          if (opts.onlyAtBase && base !== opts.onlyAtBase) {
+            return { ok: true };
+          }
+          return {
+            ok: true,
+            stale: {
+              receipt_sha: RECEIPT_SHA,
+              delta_shas: opts.delta_shas ?? [DELTA_SHA]
+            }
+          };
+        }
+      )
+    };
+  }
+
+  test('dispatches a stale bead instead of refusing it', async () => {
+    const env = setup({
+      config: { S1: { spec_review: `codex@${RECEIPT_SHA}` } },
+      slots: 1,
+      admission: staleAdmission()
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.worktree.remove).not.toHaveBeenCalled();
+  });
+
+  test('records the stale flag on the dispatched attempt', async () => {
+    const env = setup({
+      config: { S1: { spec_review: `codex@${RECEIPT_SHA}` } },
+      slots: 1,
+      admission: staleAdmission()
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempts = Object.values(env.store.snapshot(WS).attempts);
+    expect(attempts[0].spec_review_stale).toBe(true);
+    // The badge record is cleared by the launch that followed it — from here on
+    // the running attempt's own flag carries the fact.
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
+  test('injects the receipt, base and delta commits into the dispatch prompt', async () => {
+    const env = setup({
+      config: { S1: { spec_review: `codex@${RECEIPT_SHA}` } },
+      slots: 1,
+      admission: staleAdmission({ delta_shas: [DELTA_SHA, 'c'.repeat(40)] })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const prompt = env.runner.spawnedBead('S1').prompt;
+    expect(prompt).toContain('Bead S1 작업을 계약 네이티브 흐름으로 완료하라.');
+    expect(prompt).toContain(`codex@${RECEIPT_SHA}`);
+    expect(prompt).toContain('base-S1');
+    expect(prompt).toContain(DELTA_SHA);
+    expect(prompt).toContain('c'.repeat(40));
+    expect(prompt).toContain('워커 재리뷰 레인');
+  });
+
+  test('builds the prompt from the DISPATCH re-check, not the tick scan', async () => {
+    // Fresh at the scan (moving base tip), stale only once the worktree base is
+    // pinned — the pinned payload is what the session must be told about.
+    const env = setup({
+      config: { S1: { spec_review: `codex@${RECEIPT_SHA}` } },
+      slots: 1,
+      admission: staleAdmission({ onlyAtBase: 'base-S1' })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.runner.spawnedBead('S1').prompt).toContain(DELTA_SHA);
+  });
+
+  test('leaves a fresh dispatch on the adapter default prompt and flag', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      admission: { validate: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnedBead('S1').prompt).toBeUndefined();
+    const attempts = Object.values(env.store.snapshot(WS).attempts);
+    expect(attempts[0].spec_review_stale).toBe(false);
   });
 });
 

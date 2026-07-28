@@ -338,6 +338,39 @@ describe('ws worker-queue channel', () => {
     ).toEqual(['UI-7']);
   });
 
+  test('a stale-but-admitted place enters the lane wearing a non-blocking mark (UI-dlim §3.2)', async () => {
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        admission: {
+          check: async () => ({
+            ok: true,
+            stale: { receipt_sha: 'a'.repeat(40), delta_shas: ['b'.repeat(40)] }
+          })
+        }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-8',
+      expected_revision: 0
+    });
+
+    const placed = replyFor(sock, 'm1');
+    expect(placed.payload.applied).toBe(true);
+    expect(
+      placed.payload.queue.queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-8']);
+    expect(placed.payload.queue.admission['UI-8']).toEqual({
+      reason: 'spec_review_stale',
+      at: expect.any(Number),
+      stale: true
+    });
+  });
+
   test('a successful place kicks the live tick (discard spec §1)', async () => {
     // The drag into 대기 is the ONLY dispatch path a discarded bead has, so the
     // placement itself must ask for a dispatch.

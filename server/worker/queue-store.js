@@ -94,6 +94,11 @@
  * relaxes the session-side base-into-branch `git merge` guard, so it is
  * recorded durably: a reconcile pass or a restart must be able to see what kind
  * of attempt this was. Defaults false — a missing value fails closed.
+ * @property {boolean} spec_review_stale - Whether this attempt was dispatched
+ * with a stale spec_review receipt (UI-dlim §3.2), i.e. the session was asked
+ * to run the contract's in-session re-review lane before implementing. Recorded
+ * durably so the activity log and the UI can tell a plain attempt from one that
+ * spent its opening on a receipt refresh. Defaults false.
  */
 /**
  * @typedef {Object} Queue
@@ -113,9 +118,12 @@
  * waiting for a human merge click (worker-phase2 §4).
  * @property {QueueEntry[]} done - Completed today.
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
- * @property {Record<string, { reason: string, at: number }>} admission -
- * Auto-run admission refusals by bead_id (badge display). Cleared only on a
- * successful dispatch or queue removal — never auto-expired.
+ * @property {Record<string, { reason: string, at: number, stale?: true }>} admission -
+ * Auto-run admission observations by bead_id (badge display). Cleared only on a
+ * successful dispatch or queue removal — never auto-expired. `stale:true` marks
+ * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
+ * stale spec_review receipt, so the badge must not read as a refusal. Every
+ * record without the flag is a refusal, exactly as before.
  * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
@@ -335,7 +343,8 @@ export function makeAttempt(fields) {
         ? fields.exec_values
         : null,
     resumed_from: fields.resumed_from ?? null,
-    conflict_resolution: fields.conflict_resolution === true
+    conflict_resolution: fields.conflict_resolution === true,
+    spec_review_stale: fields.spec_review_stale === true
   };
 }
 
@@ -421,6 +430,11 @@ function normalizeQueue(raw) {
           reason: value.reason,
           at: typeof value.at === 'number' ? value.at : 0
         };
+        // Absent on every record written before UI-dlim → reads as a refusal,
+        // which is what those records were.
+        if (value.stale === true) {
+          q.admission[bead_id].stale = true;
+        }
       }
     }
   }
@@ -1134,12 +1148,17 @@ export function createQueueStore(options = {}) {
      * every tick. `ok` therefore reports whether the record was APPLIED, which
      * is what the scheduler gates its fanout on.
      *
+     * `stale:true` records the non-blocking admitted-with-a-stale-receipt
+     * observation instead of a refusal (UI-dlim §3.4); it participates in the
+     * same-record no-op guard, so a stale flag flipping is a real change.
+     *
      * @param {string} workspace
-     * @param {{ bead_id: string, reason: string }} input
+     * @param {{ bead_id: string, reason: string, stale?: boolean }} input
      * @returns {QueueOpResult}
      */
     recordAdmission(workspace, input) {
       const { bead_id, reason } = input;
+      const stale = input.stale === true;
       return applyUnconditional(workspace, (next) => {
         if (
           typeof bead_id !== 'string' ||
@@ -1150,10 +1169,16 @@ export function createQueueStore(options = {}) {
           return false;
         }
         const prior = next.admission[bead_id];
-        if (prior && prior.reason === reason) {
+        if (
+          prior &&
+          prior.reason === reason &&
+          (prior.stale === true) === stale
+        ) {
           return false;
         }
-        next.admission[bead_id] = { reason, at: now() };
+        next.admission[bead_id] = stale
+          ? { reason, at: now(), stale: true }
+          : { reason, at: now() };
         return true;
       });
     },

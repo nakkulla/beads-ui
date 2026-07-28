@@ -62,6 +62,20 @@ export const GUARD_CONTRACT_DIRECTIVE =
   '가드 계약 고지 — (1) `git merge` 절대 금지: 충돌 해소 attempt를 제외하고 세션 엔진이 `git merge` 실행 즉시 세션을 종료한다. (2) 백그라운드 태스크를 대기 상태로 둔 채 턴을 끝내지 말 것: headless 프로세스가 턴 종료와 동시에 종료되며 대기 중이던 태스크가 함께 kill되어 결과(예: 리뷰 결과)가 유실된다.';
 
 /**
+ * The default task prompt for a first dispatch: the bead id plus the instruction
+ * to run it through the contract-native flow. It lives here rather than only in
+ * the adapter because the scheduler builds ON it when a dispatch carries extra
+ * observed facts (the stale-receipt block, UI-dlim §3.2) — one source keeps the
+ * two from drifting apart.
+ *
+ * @param {string} bead_id
+ * @returns {string}
+ */
+export function defaultTaskPrompt(bead_id) {
+  return `Bead ${bead_id} 작업을 계약 네이티브 흐름으로 완료하라.`;
+}
+
+/**
  * Compose the full prompt sent to a runner: the unattended preamble, an optional
  * fast_track directive, the always-on PR-submit and guard-contract directives,
  * then the caller's base prompt.

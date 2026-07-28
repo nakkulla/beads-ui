@@ -12,7 +12,7 @@
  *
  * @import { AdapterSpec, RunnerEvent, RunnerHandle, EngineDeps } from './session.js'
  */
-import { applyPreamble } from './preamble.js';
+import { applyPreamble, defaultTaskPrompt } from './preamble.js';
 import { runSession } from './session.js';
 
 /**
@@ -33,7 +33,7 @@ function promptFor(bead) {
     return bead.prompt;
   }
   const id = bead && typeof bead.id === 'string' ? bead.id : 'bead';
-  return `Bead ${id} 작업을 계약 네이티브 흐름으로 완료하라.`;
+  return defaultTaskPrompt(id);
 }
 
 /**

@@ -62,7 +62,7 @@ describe('worker/admission fail-closed validator', () => {
     expect(r).toEqual({ ok: true });
     // Freshness probe ran against the pinned base, scoped to the spec path.
     expect(gitRun).toHaveBeenCalledWith(
-      ['log', `${SHA}..${BASE}`, '--', 'docs/specs/x.md'],
+      ['log', '--format=%H', `${SHA}..${BASE}`, '--', 'docs/specs/x.md'],
       { cwd: '/repo' }
     );
   });
@@ -144,12 +144,39 @@ describe('worker/admission fail-closed validator', () => {
     expect(r).toEqual({ ok: false, reason: 'receipt_unreachable' });
   });
 
-  test('rejects a post-receipt spec change as spec_review_stale', async () => {
+  test('admits a post-receipt spec change with a stale payload (UI-dlim §3.1)', async () => {
+    const delta_a = 'b'.repeat(40);
+    const delta_b = 'c'.repeat(40);
+
     const r = await run(
-      makeGitRun({ log_out: 'commit deadbeef\n' }),
+      makeGitRun({ log_out: `${delta_a}\n${delta_b}\n` }),
       makeBead()
     );
-    expect(r).toEqual({ ok: false, reason: 'spec_review_stale' });
+
+    expect(r).toEqual({
+      ok: true,
+      stale: { receipt_sha: SHA, delta_shas: [delta_a, delta_b] }
+    });
+  });
+
+  test('admits a stale skipped@ receipt exactly like a reviewed one', async () => {
+    const delta = 'd'.repeat(40);
+
+    const r = await run(
+      makeGitRun({ log_out: `${delta}\n` }),
+      makeBead({ spec_review: `skipped@${SHA}` })
+    );
+
+    expect(r).toEqual({
+      ok: true,
+      stale: { receipt_sha: SHA, delta_shas: [delta] }
+    });
+  });
+
+  test('carries no stale payload when the receipt is fresh', async () => {
+    const r = await run(makeGitRun({ log_out: '  \n' }), makeBead());
+
+    expect(r).toEqual({ ok: true });
   });
 
   test('maps every git command failure to git_error (fail-closed, no fail-quiet)', async () => {
@@ -163,11 +190,18 @@ describe('worker/admission fail-closed validator', () => {
       ok: false,
       reason: 'git_error'
     });
-    // Freshness probe errored → NOT fresh-by-default.
+    // Freshness probe errored → refused, never admitted-with-a-stale-flag: a
+    // staleness verdict that could not be computed is not an admission.
     expect(await run(makeGitRun({ log_code: 128 }), makeBead())).toEqual({
       ok: false,
       reason: 'git_error'
     });
+    expect(
+      await run(
+        makeGitRun({ log_code: 128, log_out: `${'e'.repeat(40)}\n` }),
+        makeBead()
+      )
+    ).toEqual({ ok: false, reason: 'git_error' });
     // gitRun rejecting entirely is still a rejection, not a throw.
     const throwing = vi.fn(async () => {
       throw new Error('spawn EPERM');
