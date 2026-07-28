@@ -44,15 +44,17 @@
 ## 변경 2 — 머지 완료 훅 (`notify.js` + `pr-actions.js` + `attach.js`)
 
 - `notify.js`에 `mergeCompleted(input)` 메서드 추가.
-  - 입력: `{ bead_id, pr_url?: string|null, repo?: string|null, deploy_started?: boolean }`.
-  - 본문: bead ID, PR URL(있으면), `리포:`(있으면), 배포가 시작된 경우
-    `배포: 시작됨` 한 줄.
+  - 입력: `{ bead_id, pr_url?: string|null, repo?: string|null }`.
+  - 본문: bead ID, PR URL(있으면), `리포:`(있으면).
+  - 배포 상태는 알리지 않는다. `runCleanup`의 성공 반환 지점에서 배포는 "없음 /
+    동기 완료 / detached launch 예정"이 섞여 있어 어느 경로를 탔는지로 배포
+    여부를 추론하면 부정확하다(codex 스펙 리뷰 finding 1). 배포 상태 알림은
+    범위 밖.
   - 기존 메서드와 동일한 fire-and-forget·no-throw·per-call config 읽기 계약.
-- `pr-actions.js`의 `runCleanup` 성공 지점(`moveToDone` /
-  `moveToDoneWithDeploy` 직후)에서 `notify.mergeCompleted(...)` 호출.
+- `pr-actions.js`의 `runCleanup` 두 성공 반환 지점에서
+  `notify.mergeCompleted(...)` 호출.
   - 수동 머지 클릭과 외부 관측 MERGED가 모두 `runCleanup` 하나로 수렴하므로 훅은
     이 한 곳이면 두 경로를 모두 덮는다.
-  - `deploy_started`는 어느 성공 지점을 탔는지로 결정된다.
   - 가용한 필드만 채운다(fail-quiet): PR URL·리포가 없으면 해당 줄을 생략한다.
 - `attach.js`: `createNotifier` 인스턴스를 `createPrActions` deps에 추가
   주입한다. `notify`가 주입되지 않은 기존 테스트 경로를 위해 옵셔널로 처리한다
@@ -76,9 +78,10 @@
 
 - `notify.test.js`: 제목·색 변경 반영, `mergeCompleted`의 플래그(`-q`,
   `-c green`, `-t`)와 본문 라인 구성, 필드 생략(fail-quiet), config off 시 미전송.
-- `pr-actions.test.js`: `runCleanup` 성공 시(배포 있음/없음 각 1회)
-  `mergeCompleted`가 정확히 1회 호출되고 실패·거부 경로에서는 호출되지 않음.
-  `notify` 미주입 시에도 cleanup이 정상 동작함.
+- `pr-actions.test.js`: `runCleanup`의 두 성공 반환 경로(즉시 완료 경로,
+  detached deploy 경로) 각각에서 `mergeCompleted`가 정확히 1회 호출되고,
+  실패·거부 경로에서는 호출되지 않음. `notify` 미주입 시에도 cleanup이 정상
+  동작함.
 
 ## 범위 밖 / 상호작용
 
