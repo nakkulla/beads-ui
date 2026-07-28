@@ -555,65 +555,54 @@ function keyFor(workspace_root) {
 }
 
 /**
- * Rebuild the token tally of every persisted `running` attempt from its session
- * log (UI-ediw). Runs on the STARTUP path only, never on the periodic reconcile
- * pass: at startup this process owns no session, so every `running` record is a
- * prior run's whose in-memory tally died with it, while a session live in THIS
- * process records straight off its stream and re-reading its log per pass would
- * buy nothing. An attempt that already has a tally is skipped for the same
- * reason — a live tally is always the better one.
+ * Recover every persisted `running` attempt this process does not own: rebuild
+ * its token tally from the session log (UI-ediw) and reattach a detached-session
+ * monitor to it (UI-o2yt §3.3).
+ *
+ * Both halves are STARTUP-only and share ONE observation of the log — the line
+ * boundary. The replay owns `[0, boundary)` and the monitor continues at
+ * `boundary`, so the two readers cover the file exactly once between them:
+ * computing a boundary per reader would leave the lines appended in between
+ * counted twice or by nobody, and the usage and guard evidence in that window
+ * are precisely what this recovery exists to preserve.
+ *
+ * An attempt the SCHEDULER is running is skipped entirely: its own engine
+ * already reads the log, so a monitor would double-broadcast it and a replay
+ * would fight a live tally. That guard is what keeps a repeat
+ * `initWorkerRuntime` call harmless.
  *
  * @param {ReturnType<typeof createWorkerAttachment>} att
  * @param {string} key - Resolved workspace root.
  */
-function replayRunningUsage(att, key) {
+function recoverRunningAttempts(att, key) {
   try {
     const q = att.runtime.queueStore.snapshot(key);
     const usage_store = att.runtime.usageStore;
+    const session_log = att.runtime.sessionLog;
     for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
       const a = /** @type {any} */ (attempt);
       if (!a || a.status !== 'running') {
         continue;
       }
-      if (usage_store.get(key, attempt_id)) {
+      if (att.scheduler.isRunning(a.bead_id)) {
         continue;
       }
-      replayUsage({
-        session_log: att.runtime.sessionLog,
-        usage_store,
-        workspace: key,
-        attempt_id
+      const boundary = session_log.lineBoundaryOf(key, attempt_id);
+      if (!usage_store.get(key, attempt_id)) {
+        replayUsage({
+          session_log,
+          usage_store,
+          workspace: key,
+          attempt_id,
+          ...(boundary == null ? {} : { end_offset: boundary })
+        });
+      }
+      att.sessionMonitors.start(key, a, {
+        start_offset: boundary ?? 0
       });
     }
   } catch (err) {
-    log('usage replay failed for %s: %o', key, err);
-  }
-}
-
-/**
- * Reattach a detached-session monitor to every persisted `running` attempt whose
- * process is still alive (UI-o2yt §3.3). STARTUP path only, for the same reason
- * the usage replay is: a session live in THIS process has its own engine reading
- * the log, and a second reader would double-broadcast it.
- *
- * Runs AFTER the usage replay so the replay's whole-file pass owns the past and
- * the monitor owns only what is appended from its EOF seed onward.
- *
- * @param {ReturnType<typeof createWorkerAttachment>} att
- * @param {string} key - Resolved workspace root.
- */
-function startSessionMonitors(att, key) {
-  try {
-    const q = att.runtime.queueStore.snapshot(key);
-    for (const attempt of Object.values(q.attempts || {})) {
-      const a = /** @type {any} */ (attempt);
-      if (!a || a.status !== 'running') {
-        continue;
-      }
-      att.sessionMonitors.start(key, a);
-    }
-  } catch (err) {
-    log('session monitor start failed for %s: %o', key, err);
+    log('running-attempt recovery failed for %s: %o', key, err);
   }
 }
 
@@ -659,12 +648,11 @@ export function initWorkerRuntime(input) {
     } catch (err) {
       log('reconcile timer start failed for %s: %o', key, err);
     }
-    // Before the startup pass judges those attempts, rebuild what their tally
-    // was — the disposition below is the write that persists it (UI-ediw).
-    replayRunningUsage(att, key);
-    // Then re-arm the live half for the ones still running: drawer follow, merge
-    // guard, and continued usage (UI-o2yt §3.3).
-    startSessionMonitors(att, key);
+    // Before the startup pass judges those attempts: rebuild what their tally
+    // was (the disposition below is the write that persists it — UI-ediw) and
+    // re-arm the live half for the ones still running — drawer follow, merge
+    // guard, continued usage (UI-o2yt §3.3).
+    recoverRunningAttempts(att, key);
     // Startup pass: a session that died WITH the old server may already have
     // pushed its PR, so the same routine that handles a later death decides
     // this one too. Fire-and-forget — a slow `gh` must not hold up startup.

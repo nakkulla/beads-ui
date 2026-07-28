@@ -90,6 +90,19 @@ function bashLine(command) {
 }
 
 /**
+ * Start a monitor the way startup recovery does: at the line boundary the usage
+ * replay consumed up to.
+ *
+ * @param {any} env
+ * @param {any} attempt
+ */
+function startAtBoundary(env, attempt) {
+  return env.monitors.start(WS, attempt, {
+    start_offset: env.session_log.lineBoundaryOf(WS, 'att-1') ?? 0
+  });
+}
+
+/**
  * @param {{ probe?: { alive: boolean, started_at: number|null }, usage?: boolean }} [options]
  */
 function setup(options = {}) {
@@ -121,7 +134,7 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
     const pushed = [];
     env.session_log.subscribe((a) => pushed.push(a));
 
-    env.monitors.start(WS, attempt);
+    startAtBoundary(env, attempt);
     sessionWrites(env.session_log, assistantText('after the restart'));
     env.monitors.stop(WS, 'att-1');
 
@@ -255,6 +268,26 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
     expect(env.kill_impl).not.toHaveBeenCalled();
   });
 
+  test('sends NO signal when the blocker evidence did not become durable', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store);
+    env.monitors.start(WS, attempt);
+    const write_spy = vi
+      .spyOn(env.store, 'updateAttempt')
+      .mockImplementation(() => {
+        throw new Error('queue write failed');
+      });
+
+    sessionWrites(env.session_log, bashLine('git merge origin/main'));
+    env.monitors.stop(WS, 'att-1');
+    write_spy.mockRestore();
+
+    // Killing without the record would let the reconcile pass read an already
+    // pushed PR as success — the exact laundering the evidence prevents.
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_kill).toBe(null);
+  });
+
   test('refuses to monitor an attempt whose pid is already dead', () => {
     const env = setup({ probe: { alive: false, started_at: null } });
     const attempt = seedRunningAttempt(env.store);
@@ -290,7 +323,7 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
     const pushed = [];
     env.session_log.subscribe((a) => pushed.push(a));
 
-    env.monitors.start(WS, attempt);
+    startAtBoundary(env, attempt);
     sessionWrites(env.session_log, half.slice(cut));
     env.monitors.stop(WS, 'att-1');
 

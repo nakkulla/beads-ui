@@ -32,15 +32,6 @@ export const TAIL_POLL_MS = 500;
 const READ_CHUNK_BYTES = 64 * 1024;
 
 /**
- * How far back from EOF the seed scan looks for the last newline. A jsonl line
- * longer than this is not a line worth reconstructing mid-write, so the seed
- * degrades to "start clean at EOF" instead of paging in an unbounded tail.
- *
- * @type {number}
- */
-const SEED_SCAN_BYTES = 64 * 1024;
-
-/**
  * How many consecutive open failures are tolerated before the reader gives up.
  * A session log appears at spawn, so an absent file is normally a one-poll race;
  * a file still missing after this many polls is a real absence.
@@ -59,10 +50,11 @@ const OPEN_RETRY_LIMIT = 10;
  * (`read`, retried on the next poll). Never throws into the caller.
  * @property {typeof import('node:fs')} [fs]
  * @property {number} [poll_ms]
- * @property {boolean} [seed_from_end] - Start at EOF instead of at byte 0,
- * seeding the partial-line buffer with the bytes after the last newline so a
- * line being written WHILE the reader attaches is emitted exactly once, whole
- * (UI-o2yt §3.3 mid-line reattach).
+ * @property {number} [start_offset] - Byte offset to begin reading at (default
+ * 0). A restart monitor passes the LINE BOUNDARY its predecessor consumed up to
+ * (UI-o2yt §3.3), so the bytes of a line that was half-written at reattach are
+ * read normally and buffered — the line is then emitted exactly once, whole,
+ * with no size cap and no multibyte cut.
  */
 
 /**
@@ -78,11 +70,14 @@ export function createTailReader(input) {
   const onError = input.onError || (() => {});
   const poll_ms =
     typeof input.poll_ms === 'number' ? input.poll_ms : TAIL_POLL_MS;
-  const seed_from_end = input.seed_from_end === true;
+  const start_offset =
+    typeof input.start_offset === 'number' && input.start_offset > 0
+      ? input.start_offset
+      : 0;
 
   /** @type {number|null} */
   let fd = null;
-  let offset = 0;
+  let offset = start_offset;
   let buffer = '';
   let decoder = new StringDecoder('utf8');
   /** @type {import('node:fs').FSWatcher|null} */
@@ -91,47 +86,11 @@ export function createTailReader(input) {
   let timer = null;
   let stopped = false;
   let open_failures = 0;
-  // The EOF seed belongs to the FIRST open attempt only. A file that did not
-  // exist when the reader attached has no past to skip, so an open that lands
-  // later must start at byte 0 — seeding it would silently drop every line
-  // written between the attach and the file's creation.
-  let seed_pending = seed_from_end;
   // A watch event firing INSIDE a pump would re-enter and interleave lines.
   let pumping = false;
 
   /**
-   * Seed the cursor at EOF, carrying the trailing partial line into the buffer.
-   *
-   * @param {number} fd_open
-   * @param {number} size
-   */
-  function seedFromEnd(fd_open, size) {
-    offset = size;
-    if (size === 0) {
-      return;
-    }
-    const span = Math.min(size, SEED_SCAN_BYTES);
-    const buf = Buffer.allocUnsafe(span);
-    let read = 0;
-    try {
-      read = fs.readSync(fd_open, buf, 0, span, size - span);
-    } catch (err) {
-      onError(err, 'read');
-      return;
-    }
-    const slice = buf.subarray(0, read);
-    const nl = slice.lastIndexOf(0x0a);
-    if (nl >= 0) {
-      buffer = slice.subarray(nl + 1).toString('utf8');
-      return;
-    }
-    // No newline in the scan window: only the whole-file case can be seeded
-    // safely — anything else would be an arbitrary mid-line cut.
-    buffer = span === size ? slice.toString('utf8') : '';
-  }
-
-  /**
-   * Open the file and place the cursor. Returns false while the file is absent.
+   * Open the file. Returns false while the file is absent.
    *
    * @returns {boolean}
    */
@@ -140,7 +99,6 @@ export function createTailReader(input) {
       fd = fs.openSync(file, 'r');
     } catch (err) {
       open_failures += 1;
-      seed_pending = false;
       if (open_failures >= OPEN_RETRY_LIMIT) {
         onError(err, 'open');
         stop();
@@ -148,14 +106,6 @@ export function createTailReader(input) {
       return false;
     }
     open_failures = 0;
-    if (seed_pending) {
-      seed_pending = false;
-      try {
-        seedFromEnd(fd, fs.fstatSync(fd).size);
-      } catch (err) {
-        onError(err, 'read');
-      }
-    }
     return true;
   }
 
@@ -196,8 +146,8 @@ export function createTailReader(input) {
       }
       if (size < offset) {
         // Truncated/replaced underneath us: re-read from the new start rather
-        // than reading past EOF forever.
-        offset = 0;
+        // than waiting for an EOF that already moved backwards.
+        offset = Math.min(start_offset, size);
         buffer = '';
         decoder = new StringDecoder('utf8');
       }

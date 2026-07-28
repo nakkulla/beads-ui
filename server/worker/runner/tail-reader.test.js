@@ -30,7 +30,7 @@ function write(text) {
 }
 
 /**
- * @param {{ seed_from_end?: boolean }} [options]
+ * @param {{ start_offset?: number }} [options]
  */
 function reader(options = {}) {
   /** @type {string[]} */
@@ -42,7 +42,7 @@ function reader(options = {}) {
     onLine: (l) => lines.push(l),
     onError: (_err, kind) => errors.push({ kind }),
     poll_ms: 5,
-    seed_from_end: options.seed_from_end === true
+    start_offset: options.start_offset
   });
   return { tail, lines, errors };
 }
@@ -115,9 +115,10 @@ describe('runner/tail-reader', () => {
     expect(lines).toEqual(['{"a":1}', '{"a":2}']);
   });
 
-  test('seed_from_end skips the past and starts at EOF', () => {
-    write('{"old":1}\n');
-    const { tail, lines } = reader({ seed_from_end: true });
+  test('start_offset skips the bytes another reader already owns', () => {
+    const past = '{"old":1}\n';
+    write(past);
+    const { tail, lines } = reader({ start_offset: past.length });
 
     tail.start();
     write('{"new":1}\n');
@@ -127,10 +128,12 @@ describe('runner/tail-reader', () => {
     expect(lines).toEqual(['{"new":1}']);
   });
 
-  test('seed_from_end carries a half-written line so it is emitted whole, once', () => {
-    // EOF lands mid-line: the reattach point is the last newline BOUNDARY.
-    write('{"old":1}\n{"nea');
-    const { tail, lines } = reader({ seed_from_end: true });
+  test('a line half-written at the start offset is emitted whole, exactly once', () => {
+    // The reattach point is the last newline BOUNDARY, so the partial line's
+    // bytes are read normally and completed by the next append.
+    const past = '{"old":1}\n';
+    write(`${past}{"nea`);
+    const { tail, lines } = reader({ start_offset: past.length });
 
     tail.start();
     write('r":1}\n');
@@ -138,6 +141,36 @@ describe('runner/tail-reader', () => {
     tail.stop();
 
     expect(lines).toEqual(['{"near":1}']);
+  });
+
+  test('a multibyte character split across the start offset survives', () => {
+    const past = '{"old":1}\n';
+    write(past);
+    const partial = Buffer.from('{"t":"한"}\n', 'utf8');
+    fs.appendFileSync(file, partial.subarray(0, 8));
+    const { tail, lines } = reader({ start_offset: past.length });
+
+    tail.start();
+    fs.appendFileSync(file, partial.subarray(8));
+    tail.pump();
+    tail.stop();
+
+    expect(lines).toEqual(['{"t":"한"}']);
+  });
+
+  test('a partial line longer than the read chunk is still completed', () => {
+    const past = '{"old":1}\n';
+    write(past);
+    const big = 'x'.repeat(200 * 1024);
+    write(`{"t":"${big}`);
+    const { tail, lines } = reader({ start_offset: past.length });
+
+    tail.start();
+    write('"}\n');
+    tail.pump();
+    tail.stop();
+
+    expect(lines).toEqual([`{"t":"${big}"}`]);
   });
 
   test('reports the file as absent after the open retry budget', () => {

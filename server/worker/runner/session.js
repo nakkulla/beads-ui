@@ -436,7 +436,17 @@ export function runSession(spec, bead, workspace, settings, deps) {
   const done = new Promise((resolve) => {
     let settled = false;
 
-    source.start();
+    // Deferred by one microtask on purpose: a FILE source has lines available
+    // synchronously (the child may already have written, and a relaunch reads an
+    // existing log), so starting it here would emit `raw`/`session_id`/`event`
+    // before the caller — which only gets this handle when runSession returns —
+    // has attached its listeners. `session_id` is emitted exactly once, so those
+    // lost lines would cost the attempt its resume identity.
+    queueMicrotask(() => {
+      if (!settled) {
+        source.start();
+      }
+    });
 
     /**
      * @param {number|null} exit

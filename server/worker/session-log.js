@@ -49,7 +49,8 @@ export function stderrPathOf(log_path) {
  *   stderrPathFor: (workspace: string, attempt_id: string) => string,
  *   publish: (workspace: string, attempt_id: string, event: unknown) => void,
  *   attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void,
- *   read: (workspace: string, attempt_id: string) => unknown[],
+ *   read: (workspace: string, attempt_id: string, options?: { end_offset?: number }) => unknown[],
+ *   lineBoundaryOf: (workspace: string, attempt_id: string) => number|null,
  *   subscribe: (fn: (a: SessionLogAppend) => void) => (() => void)
  * }}
  */
@@ -101,17 +102,49 @@ export function createSessionLog(options = {}) {
     },
 
     /**
+     * The byte offset just past the LAST newline in an attempt's log — the
+     * line boundary a reader can hand off at (UI-o2yt §3.3).
+     *
+     * Startup recovery splits one log between two consumers: the usage replay
+     * owns `[0, boundary)` and the reattached monitor owns `[boundary, ∞)`.
+     * Deriving both from ONE observation is what makes the split exact — a
+     * boundary each side computed for itself would leave the lines appended
+     * in between either counted twice or, worse, by nobody.
+     *
+     * Null when the file cannot be read at all (absent yet, or unreadable):
+     * there is no boundary to hand off, so the caller starts from zero.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     * @returns {number|null}
+     */
+    lineBoundaryOf(workspace, attempt_id) {
+      try {
+        const raw = fs.readFileSync(pathFor(workspace, attempt_id));
+        return raw.lastIndexOf(0x0a) + 1;
+      } catch {
+        return null;
+      }
+    },
+
+    /**
      * Read the persisted stream back as parsed objects (empty when absent).
      *
      * @param {string} workspace
      * @param {string} attempt_id
+     * @param {{ end_offset?: number }} [options] - Stop at this byte offset
+     * (the handoff boundary above); the rest belongs to another reader.
      * @returns {unknown[]}
      */
-    read(workspace, attempt_id) {
+    read(workspace, attempt_id, options = {}) {
       const file = pathFor(workspace, attempt_id);
       let raw = '';
       try {
-        raw = fs.readFileSync(file, 'utf8');
+        const bytes = fs.readFileSync(file);
+        raw =
+          typeof options.end_offset === 'number'
+            ? bytes.subarray(0, options.end_offset).toString('utf8')
+            : bytes.toString('utf8');
       } catch {
         return [];
       }

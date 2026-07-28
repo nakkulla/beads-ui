@@ -321,6 +321,77 @@ describe('worker/attach construction + live loop (F1)', () => {
     );
   });
 
+  test('initWorkerRuntime reattaches a monitor that continues where the replay stopped (UI-o2yt §3.3)', async () => {
+    const runtime = createWorkerRuntime();
+    seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
+    writeRunnerLine('att-1', {
+      type: 'assistant',
+      message: {
+        id: 'm1',
+        content: [{ type: 'text', text: 'before' }],
+        usage: { input_tokens: 10, output_tokens: 4 }
+      }
+    });
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      probePid: () => ({ alive: true, started_at: 1000 })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    // The orphan keeps writing to the file the previous process could not read.
+    /** @type {any[]} */
+    const pushed = [];
+    runtime.sessionLog.subscribe((a) => pushed.push(a));
+    writeRunnerLine('att-1', {
+      type: 'assistant',
+      message: {
+        id: 'm2',
+        content: [{ type: 'text', text: 'after' }],
+        usage: { input_tokens: 5, output_tokens: 1 }
+      }
+    });
+    att.sessionMonitors.stop(WS, 'att-1');
+
+    // The replay owns the past, the monitor the rest: counted once each.
+    expect(runtime.usageStore.get(WS, 'att-1')).toMatchObject({
+      input_tokens: 15,
+      output_tokens: 5
+    });
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0].event.message.content[0].text).toBe('after');
+  });
+
+  test('initWorkerRuntime does not monitor an attempt the scheduler is running', async () => {
+    const runtime = createWorkerRuntime();
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({
+        file: path.join(FIXTURES, 'claude-success.jsonl')
+      }),
+      probePid: () => ({ alive: true, started_at: 1000 })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+    runtime.queueStore.place(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      bead_id: 'UI-1'
+    });
+    runtime.queueStore.setAutoAdvance(WS, true);
+    await tickWorkerQueue(WS);
+
+    initWorkerRuntime({ workspaces: [WS] });
+
+    // Its own engine already reads that log; a monitor would double-broadcast.
+    expect(att.sessionMonitors.size()).toBe(0);
+  });
+
   test('initWorkerRuntime leaves a live tally alone instead of replaying over it', async () => {
     const runtime = createWorkerRuntime();
     seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
