@@ -2699,11 +2699,6 @@ html[data-theme='dark'] {
   color: var(--chip-route);
 }
 
-.exec-defaults__vd-badge--detected {
-  border-color: var(--border-ft);
-  color: var(--chip-ft);
-}
-
 .exec-defaults__vd-badge--detached {
   border-color: var(--border-warn);
   color: var(--accent-warn);

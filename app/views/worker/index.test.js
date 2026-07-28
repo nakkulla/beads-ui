@@ -2233,11 +2233,7 @@ describe('views/worker', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: {
-        cmd: ['npm', 'run', 'all'],
-        timeout_ms: 600000,
-        source: 'config'
-      },
+      verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 },
       deploy_cmd: null,
       last_deploy: null,
       slots: 2
@@ -2255,28 +2251,7 @@ describe('views/worker', () => {
     );
   });
 
-  test('marks an auto-detected verify command with the 자동감지 badge', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: {
-        cmd: ['npm', 'test'],
-        timeout_ms: 600000,
-        source: 'detected'
-      },
-      deploy_cmd: null,
-      last_deploy: null,
-      slots: 2
-    });
-
-    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'verify'));
-    expect(
-      group.querySelector('.exec-defaults__vd-badge--detected')?.textContent
-    ).toBe('자동감지');
-    expect(group.querySelector('.exec-defaults__vd-badge--config')).toBeNull();
-  });
-
-  test('renders 검증 없음 when no verify command resolves', () => {
+  test('an unconfigured verify names the config section for the current workspace', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const dialog = openWithWorkspaceInfo(mount, {
@@ -2287,19 +2262,17 @@ describe('views/worker', () => {
     });
 
     const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'verify'));
-    expect(group.querySelector('.exec-defaults__vd-cmd')).toBeNull();
     expect(group.textContent).toContain('검증 없음');
+    expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
+      '[worker.verify."/Users/me/GitHub/other-repo"]'
+    );
   });
 
   test('renders the deploy row with a detached badge and the verify-gated note', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: {
-        cmd: ['npm', 'run', 'all'],
-        timeout_ms: 600000,
-        source: 'config'
-      },
+      verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 },
       deploy_cmd: {
         cmd: ['bdui-shared', 'restart'],
         timeout_ms: 600000,
@@ -2351,11 +2324,7 @@ describe('views/worker', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: {
-        cmd: ['npm', 'test'],
-        timeout_ms: 600000,
-        source: 'detected'
-      },
+      verify_cmd: { cmd: ['npm', 'test'], timeout_ms: 600000 },
       deploy_cmd: null,
       last_deploy: null,
       slots: 2
@@ -2462,11 +2431,7 @@ describe('views/worker', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: {
-        cmd: ['npm', 'run', 'all'],
-        timeout_ms: 600000,
-        source: 'config'
-      },
+      verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 },
       deploy_cmd: {
         cmd: ['bdui-shared', 'restart'],
         timeout_ms: 600000,

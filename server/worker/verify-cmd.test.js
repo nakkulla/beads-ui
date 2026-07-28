@@ -5,7 +5,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { verifyLogDir } from './state-paths.js';
 import {
-  detectVerifyCmd,
   resolveVerifyCmd,
   runVerifyAtSha,
   runVerifyCmd
@@ -208,79 +207,17 @@ describe('worker/verify-cmd — failure output tail (UI-qult §1)', () => {
   });
 });
 
-describe('worker/verify-cmd auto-detection + resolution (§2)', () => {
-  /**
-   * @param {Record<string, string>} files - Absolute path → file contents.
-   */
-  function fakeFs(files) {
-    return /** @type {any} */ ({
-      existsSync: (/** @type {string} */ p) => Object.hasOwn(files, p),
-      readFileSync: (/** @type {string} */ p) => {
-        if (!Object.hasOwn(files, p)) {
-          const err = new Error('ENOENT');
-          /** @type {any} */ (err).code = 'ENOENT';
-          throw err;
-        }
-        return files[p];
-      }
-    });
-  }
-
-  test('package.json with scripts.test → npm test', () => {
-    const fs = fakeFs({
-      '/repo/package.json': JSON.stringify({ scripts: { test: 'vitest' } })
-    });
-    expect(detectVerifyCmd('/repo', { fs })).toEqual(['npm', 'test']);
-  });
-
-  test('package.json WITHOUT scripts.test → no detection', () => {
-    const fs = fakeFs({
-      '/repo/package.json': JSON.stringify({ scripts: {} })
-    });
-    expect(detectVerifyCmd('/repo', { fs })).toBeNull();
-  });
-
-  test('Cargo.toml → cargo test', () => {
-    const fs = fakeFs({ '/repo/Cargo.toml': '[package]' });
-    expect(detectVerifyCmd('/repo', { fs })).toEqual(['cargo', 'test']);
-  });
-
-  test('go.mod → go test ./...', () => {
-    const fs = fakeFs({ '/repo/go.mod': 'module x' });
-    expect(detectVerifyCmd('/repo', { fs })).toEqual(['go', 'test', './...']);
-  });
-
-  test('ambiguous toolchain (python etc.) → no detection', () => {
-    const fs = fakeFs({ '/repo/requirements.txt': 'pytest' });
-    expect(detectVerifyCmd('/repo', { fs })).toBeNull();
-  });
-
-  test('resolve: explicit config ALWAYS wins over detection (source=config)', () => {
-    const fs = fakeFs({
-      '/repo/package.json': JSON.stringify({ scripts: { test: 'vitest' } })
-    });
+describe('worker/verify-cmd resolution — config sections only (UI-uk6d)', () => {
+  test('resolve: a config section yields its cmd and timeout', () => {
     const config = { '/repo': { cmd: ['npm', 'run', 'all'], timeout_ms: 900 } };
-    const r = resolveVerifyCmd('/repo', config, { fs });
-    expect(r).toEqual({
-      cmd: ['npm', 'run', 'all'],
-      timeout_ms: 900,
-      source: 'config'
-    });
+
+    const r = resolveVerifyCmd('/repo', config);
+
+    expect(r).toEqual({ cmd: ['npm', 'run', 'all'], timeout_ms: 900 });
   });
 
-  test('resolve: no config → detected command with source=detected + default timeout', () => {
-    const fs = fakeFs({ '/repo/go.mod': 'module x' });
-    const r = resolveVerifyCmd('/repo', {}, { fs });
-    expect(r).toEqual({
-      cmd: ['go', 'test', './...'],
-      timeout_ms: 600000,
-      source: 'detected'
-    });
-  });
-
-  test('resolve: neither config nor detection → null (no local verify signal)', () => {
-    const fs = fakeFs({ '/repo/requirements.txt': 'pytest' });
-    expect(resolveVerifyCmd('/repo', {}, { fs })).toBeNull();
+  test('resolve: no config section → null even for a probeable toolchain', () => {
+    expect(resolveVerifyCmd(process.cwd(), {})).toBeNull();
   });
 });
 
