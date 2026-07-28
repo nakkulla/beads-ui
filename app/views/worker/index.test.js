@@ -105,11 +105,23 @@ function reply(q) {
 }
 
 /**
+ * Start of the current local day, matching `closedRangeSince('today')`.
+ *
+ * @returns {number}
+ */
+function startOfToday() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
  * @param {Partial<any>} [over]
  * @returns {any}
  */
 function queueOf(over = {}) {
-  return {
+  /** @type {any} */
+  const q = {
     revision: 1,
     auto_advance: false,
     slots: 2,
@@ -118,6 +130,23 @@ function queueOf(over = {}) {
     attempts: {},
     ...over
   };
+  // 완료 레인은 기간 필터를 타고 기본값이 '오늘'이다 (UI-d7pw §3.2). 픽스처의
+  // `added_at`은 1/2 같은 순서 표식이라 그대로 두면 1970년으로 읽혀 전부
+  // 걸러진다. 오늘 자정을 더해 상대 순서는 그대로 두고 범위 안으로 옮긴다.
+  // 판정은 SENTINEL 미만인지로만 한다 — "오늘 자정 이전"으로 잡으면 기간 필터
+  // 자체를 검증하려고 실제 epoch 값을 넣은 테스트까지 덮어써 버린다.
+  const SENTINEL_MAX = 1e6;
+  if (Array.isArray(q.done)) {
+    const base = startOfToday();
+    /** @type {any[]} */
+    const stamped = q.done.map((/** @type {any} */ e) =>
+      typeof e.added_at === 'number' && e.added_at < SENTINEL_MAX
+        ? { ...e, added_at: base + e.added_at }
+        : e
+    );
+    q.done = stamped;
+  }
+  return q;
 }
 
 /**
@@ -4303,7 +4332,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     );
   });
 
-  test('shows the last attempt usage on a pr_wait row', () => {
+  test('sums every attempt usage on a pr_wait row (UI-d7pw §1)', () => {
     const mount = renderQueue(
       queueOf({
         pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
@@ -4327,7 +4356,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     const el = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
     );
-    expect(el.textContent?.trim()).toBe('τ 30.9k');
+    expect(el.textContent?.trim()).toBe('τ 31.1k');
   });
 
   test('shows the last attempt usage on a done row', () => {
@@ -5313,9 +5342,9 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
       }
     });
 
-    expect(mount.querySelector('.worker-kpi__chip--tokens')?.textContent).toBe(
-      'τ 2.0k'
-    );
+    expect(
+      mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
+    ).toBe('오늘 완료 · 누적 τ 2.0k');
   });
 
   test('renders no token chip when no completed session reported usage', () => {
@@ -5519,9 +5548,9 @@ describe('token KPI zero handling (UI-58y2)', () => {
       transport: vi.fn()
     });
 
-    expect(mount.querySelector('.worker-kpi__chip--tokens')?.textContent).toBe(
-      'τ 0'
-    );
+    expect(
+      mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
+    ).toBe('오늘 완료 · 누적 τ 0');
   });
 });
 
@@ -6421,5 +6450,308 @@ describe('mergeFailureText (UI-5v7d §4)', () => {
 
   test('passes an unknown reason through instead of blanking the badge', () => {
     expect(mergeFailureText('brand_new_reason')).toBe('brand_new_reason');
+  });
+});
+
+describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} q
+   * @returns {HTMLElement}
+   */
+  function renderDone(q) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(q);
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function doneIds(mount) {
+    return Array.from(
+      mount.querySelectorAll('#worker-pane-done .worker-mini')
+    ).map((el) => el.getAttribute('data-bead-id') || '');
+  }
+
+  const DAY = 864e5;
+
+  test('orders the 완료 lane newest first', () => {
+    const base = startOfToday();
+
+    const mount = renderDone(
+      queueOf({
+        done: [
+          { bead_id: 'OLD', added_at: base + 1000 },
+          { bead_id: 'MID', added_at: base + 2000 },
+          { bead_id: 'NEW', added_at: base + 3000 }
+        ]
+      })
+    );
+
+    expect(doneIds(mount)).toEqual(['NEW', 'MID', 'OLD']);
+  });
+
+  test('hides an entry completed before today by default', () => {
+    const base = startOfToday();
+
+    const mount = renderDone(
+      queueOf({
+        done: [
+          { bead_id: 'YESTERDAY', added_at: base - 1 },
+          { bead_id: 'TODAY', added_at: base + 1 }
+        ]
+      })
+    );
+
+    expect(doneIds(mount)).toEqual(['TODAY']);
+  });
+
+  test('keeps an entry completed exactly at the day boundary', () => {
+    const base = startOfToday();
+
+    const mount = renderDone(
+      queueOf({ done: [{ bead_id: 'BOUNDARY', added_at: base }] })
+    );
+
+    expect(doneIds(mount)).toEqual(['BOUNDARY']);
+  });
+
+  test('shows an older entry once the persisted range widens', () => {
+    window.localStorage.setItem('bdui.worker.done-range', '7d');
+    const now = Date.now();
+
+    const mount = renderDone(
+      queueOf({ done: [{ bead_id: 'THREE-DAYS', added_at: now - 3 * DAY }] })
+    );
+
+    expect(doneIds(mount)).toEqual(['THREE-DAYS']);
+  });
+
+  test('keeps an entry whose added_at is missing rather than hiding it', () => {
+    const mount = renderDone(queueOf({ done: [{ bead_id: 'LEGACY' }] }));
+
+    expect(doneIds(mount)).toEqual(['LEGACY']);
+  });
+
+  test('names the selected range in the lane header', () => {
+    window.localStorage.setItem('bdui.worker.done-range', '30d');
+
+    const mount = renderDone(queueOf({ done: [] }));
+
+    expect(
+      mount.querySelector('#worker-pane-done .worker-pane__title')?.textContent
+    ).toContain('최근 30일');
+  });
+
+  test('renders the range select inside the pane controls strip', () => {
+    const mount = renderDone(queueOf({ done: [] }));
+
+    expect(
+      mount.querySelector('#worker-pane-done .worker-done-range')
+    ).not.toBe(null);
+  });
+
+  test('persists a range change to localStorage', () => {
+    const mount = renderDone(queueOf({ done: [] }));
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.worker-done-range')
+    );
+
+    select.value = 'all';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(window.localStorage.getItem('bdui.worker.done-range')).toBe('all');
+  });
+
+  test('does not treat the range select as the candidate sort', () => {
+    const mount = renderDone(queueOf({ done: [] }));
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.worker-done-range')
+    );
+
+    select.value = 'all';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(window.localStorage.getItem('bdui.worker.candidate_sort')).toBe(
+      null
+    );
+  });
+});
+
+describe('레인 행 생성·수정 시각 (UI-d7pw §4)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} q
+   * @param {any} [stores]
+   * @returns {HTMLElement}
+   */
+  function renderTimes(q, stores) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(q);
+    createWorkerView(mount, {
+      issueStores: stores || createTestIssueStores(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  const HOUR = 36e5;
+
+  test('renders a meta line on a 완료 row from bead_times', () => {
+    const now = Date.now();
+
+    const mount = renderTimes(
+      queueOf({
+        done: [{ bead_id: 'DN-1', added_at: 1 }],
+        bead_times: {
+          'DN-1': { created_at: now - 48 * HOUR, updated_at: now - 3 * HOUR }
+        }
+      })
+    );
+
+    expect(
+      mount.querySelector(
+        '.worker-mini[data-bead-id="DN-1"] .worker-mini__meta'
+      )?.textContent
+    ).toContain('생성');
+  });
+
+  test('renders no meta line when the server sends no bead_times', () => {
+    const mount = renderTimes(
+      queueOf({ done: [{ bead_id: 'DN-1', added_at: 1 }] })
+    );
+
+    expect(
+      mount.querySelector(
+        '.worker-mini[data-bead-id="DN-1"] .worker-mini__meta'
+      )
+    ).toBe(null);
+  });
+
+  test('renders no meta line for a bead missing from bead_times', () => {
+    const now = Date.now();
+
+    const mount = renderTimes(
+      queueOf({
+        done: [{ bead_id: 'DN-1', added_at: 1 }],
+        bead_times: { OTHER: { created_at: now, updated_at: now } }
+      })
+    );
+
+    expect(
+      mount.querySelector(
+        '.worker-mini[data-bead-id="DN-1"] .worker-mini__meta'
+      )
+    ).toBe(null);
+  });
+
+  test('renders the 수정 half when only updated_at is known', () => {
+    const now = Date.now();
+
+    const mount = renderTimes(
+      queueOf({
+        done: [{ bead_id: 'DN-1', added_at: 1 }],
+        bead_times: { 'DN-1': { created_at: null, updated_at: now - HOUR } }
+      })
+    );
+
+    const meta = mount.querySelector(
+      '.worker-mini[data-bead-id="DN-1"] .worker-mini__meta'
+    );
+    expect(meta?.textContent).toContain('수정');
+    expect(meta?.textContent).not.toContain('생성');
+  });
+
+  test('wraps the single-line row body so the meta line is a sibling', () => {
+    const now = Date.now();
+
+    const mount = renderTimes(
+      queueOf({
+        done: [{ bead_id: 'DN-1', added_at: 1 }],
+        bead_times: { 'DN-1': { created_at: now, updated_at: now } }
+      })
+    );
+
+    expect(
+      mount.querySelector(
+        '.worker-mini[data-bead-id="DN-1"] > .worker-mini__line'
+      )
+    ).not.toBe(null);
+  });
+
+  test('keeps the drag contract on the row shell', () => {
+    const now = Date.now();
+
+    const mount = renderTimes(
+      queueOf({
+        queue: [{ bead_id: 'QQ-1', added_at: 1 }],
+        bead_times: { 'QQ-1': { created_at: now, updated_at: now } }
+      })
+    );
+
+    const row = mount.querySelector('.worker-mini[data-bead-id="QQ-1"]');
+    expect(row?.getAttribute('data-lane')).toBe('queue');
+  });
+
+  test('renders a meta line on a PR 대기 card', () => {
+    const now = Date.now();
+
+    const mount = renderTimes(
+      queueOf({
+        pr_wait: [{ bead_id: 'PW-1', added_at: 1 }],
+        bead_times: {
+          'PW-1': { created_at: now - 72 * HOUR, updated_at: now - 20 * 6e4 }
+        }
+      })
+    );
+
+    expect(
+      mount.querySelector(
+        '.worker-mini[data-bead-id="PW-1"] .worker-mini__meta'
+      )?.textContent
+    ).toContain('수정');
+  });
+
+  test('renders a meta line on a running tile', () => {
+    const now = Date.now();
+
+    const mount = renderTimes(
+      queueOf({
+        queue: [{ bead_id: 'RN-1', added_at: 1 }],
+        bead_times: {
+          'RN-1': { created_at: now - 5 * HOUR, updated_at: now - HOUR }
+        },
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RN-1',
+            status: 'running',
+            started_at: now
+          }
+        }
+      })
+    );
+
+    expect(
+      mount.querySelector('.rtile .worker-mini__meta')?.textContent
+    ).toContain('생성');
   });
 });

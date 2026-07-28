@@ -1,8 +1,108 @@
 import { html } from 'lit-html';
+import { formatUsageTotal } from '../../utils/token-usage.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  */
+
+/**
+ * @typedef {import('../../utils/token-usage.js').UsageRecord} UsageRecord
+ */
+
+/**
+ * The breakdown rows behind [τ 자세히] (UI-d7pw §2.2), in tally order. Cost is
+ * appended separately because it is reported once per session, not per field.
+ *
+ * @type {ReadonlyArray<{ key: 'input_tokens'|'output_tokens'|'cache_read_input_tokens'|'cache_creation_input_tokens', label: string }>}
+ */
+const USAGE_BREAKDOWN = [
+  { key: 'input_tokens', label: '입력' },
+  { key: 'output_tokens', label: '출력' },
+  { key: 'cache_read_input_tokens', label: '캐시 읽기' },
+  { key: 'cache_creation_input_tokens', label: '캐시 생성' }
+];
+
+/**
+ * The note a restart-recovered tally carries (UI-ediw): events lost with the
+ * old server's pipe are unrecoverable, so the number is a floor.
+ *
+ * @type {string}
+ */
+const REPLAYED_NOTE = '서버 재시작 복구 — 부분 집계';
+
+/**
+ * @param {unknown} value
+ * @returns {number}
+ */
+function usageNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * The `τ 총 …` label beside the section heading. Null when nothing was
+ * reported, so the heading renders exactly as it did before.
+ *
+ * @param {UsageRecord|null|undefined} total
+ * @returns {TemplateResult|''}
+ */
+function totalTemplate(total) {
+  const label = formatUsageTotal(total);
+  if (!label || !total) {
+    return '';
+  }
+  const cost =
+    typeof total.total_cost_usd === 'number' &&
+    Number.isFinite(total.total_cost_usd)
+      ? ` · $${total.total_cost_usd.toFixed(2)}`
+      : '';
+  return html`<span
+      class="detail-usage-total"
+      title="이 이슈의 모든 attempt 토큰 합계 (입력+출력)"
+      >${label.replace(/^τ /, 'τ 총 ')}${cost}</span
+    >${total.replayed
+      ? html`<span class="detail-usage-partial" title=${REPLAYED_NOTE}
+          >부분 집계</span
+        >`
+      : ''}`;
+}
+
+/**
+ * The expanded breakdown under one session row. Rendered only while that row is
+ * toggled open — a sibling block, exactly like {@link causeLine}, so the
+ * row-click=open-transcript convention stays intact.
+ *
+ * @param {UsageRecord} usage
+ * @returns {TemplateResult}
+ */
+function usageDetail(usage) {
+  const cost =
+    typeof usage.total_cost_usd === 'number' &&
+    Number.isFinite(usage.total_cost_usd)
+      ? usage.total_cost_usd
+      : null;
+  return html`<div class="detail-session__usage-detail">
+    ${USAGE_BREAKDOWN.map(
+      (row) =>
+        html`<span class="detail-session__usage-field"
+          ><span class="detail-session__usage-label">${row.label}</span
+          ><span class="detail-session__usage-value"
+            >${usageNumber(usage[row.key]).toLocaleString('en-US')}</span
+          ></span
+        >`
+    )}
+    ${cost === null
+      ? ''
+      : html`<span class="detail-session__usage-field"
+          ><span class="detail-session__usage-label">비용</span
+          ><span class="detail-session__usage-value"
+            >$${cost.toFixed(2)}</span
+          ></span
+        >`}
+    ${usage.replayed
+      ? html`<span class="detail-session__usage-note">${REPLAYED_NOTE}</span>`
+      : ''}
+  </div>`;
+}
 
 /**
  * @typedef {Object} SessionAttempt
@@ -20,6 +120,8 @@ import { html } from 'lit-html';
  * @property {{ reason: string, command: string|null }|null} [cause_detail] -
  * What the fail-closed path caught behind that cause. `command` is nullable —
  * a guard can trip without one.
+ * @property {UsageRecord|null} [usage] - This attempt's token usage (UI-d7pw
+ * §2.2); absent/null renders no badge and no [τ 자세히] button.
  */
 
 /** @type {Record<string, string>} */
@@ -57,12 +159,22 @@ function shortTime(ms) {
  * disabled with the reason in its title. A resume attempt shows a `↻` badge
  * titled with its `resumed_from`.
  *
+ * Token usage rides along per row (UI-d7pw §2.2): a `τ …` badge, a [τ 자세히]
+ * sibling button that expands the breakdown under the row, and the issue's
+ * total beside the section heading.
+ *
  * @param {SessionAttempt[]} [attempts]
- * @param {{ onOpen?: (attempt_id: string) => void, onResume?: (attempt_id: string) => void }} [handlers]
+ * @param {{ onOpen?: (attempt_id: string) => void, onResume?: (attempt_id: string) => void, onToggleUsage?: (attempt_id: string) => void }} [handlers]
+ * @param {{ total?: UsageRecord|null, expanded?: Set<string> }} [usage_view]
  * @returns {TemplateResult}
  */
-export function sessionHistoryTemplate(attempts, handlers = {}) {
+export function sessionHistoryTemplate(
+  attempts,
+  handlers = {},
+  usage_view = {}
+) {
   const list = Array.isArray(attempts) ? attempts : [];
+  const expanded = usage_view.expanded || new Set();
   if (list.length === 0) {
     return html`
       <div class="detail-section-label">세션 이력</div>
@@ -142,8 +254,39 @@ export function sessionHistoryTemplate(attempts, handlers = {}) {
     </div>`;
   };
 
+  /**
+   * The [τ 자세히] toggle. Absent on an attempt that reported no usage — there
+   * would be nothing behind it.
+   *
+   * @param {SessionAttempt} a
+   * @returns {TemplateResult|''}
+   */
+  const usageButton = (a) => {
+    if (!formatUsageTotal(a.usage)) {
+      return '';
+    }
+    const open = expanded.has(a.attempt_id);
+    return html`<button
+      type="button"
+      class="detail-session__usage-toggle"
+      data-attempt-id=${a.attempt_id}
+      aria-expanded=${open ? 'true' : 'false'}
+      title=${open ? '토큰 내역 접기' : '토큰 내역 펼치기'}
+      @click=${(/** @type {Event} */ ev) => {
+        ev.stopPropagation();
+        if (handlers.onToggleUsage) {
+          handlers.onToggleUsage(a.attempt_id);
+        }
+      }}
+    >
+      τ 자세히
+    </button>`;
+  };
+
   return html`
-    <div class="detail-section-label">세션 이력</div>
+    <div class="detail-section-label">
+      세션 이력${totalTemplate(usage_view.total)}
+    </div>
     <div class="detail-sessions" data-seam="session-history">
       ${list.map(
         (a) =>
@@ -173,11 +316,17 @@ export function sessionHistoryTemplate(attempts, handlers = {}) {
                     >${String(a.session_id).slice(0, 8)}</span
                   >`
                 : ''}
+              ${formatUsageTotal(a.usage)
+                ? html`<span class="detail-session__usage"
+                    >${formatUsageTotal(a.usage)}</span
+                  >`
+                : ''}
               <span class="detail-session__time"
                 >${shortTime(a.started_at)}</span
               >
             </button>
-            ${resumeButton(a)} ${causeLine(a)}
+            ${usageButton(a)} ${resumeButton(a)} ${causeLine(a)}
+            ${expanded.has(a.attempt_id) && a.usage ? usageDetail(a.usage) : ''}
           </div>`
       )}
     </div>

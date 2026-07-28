@@ -3580,6 +3580,49 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip);
 }
 
+/* 완료 레인 기간 선택 스트립 (UI-d7pw §3.3). 후보 필터 스트립과 톤은 같지만
+   클래스를 나눈다 — `.worker-filter`를 세는 자리가 이미 후보 pane 전용이다. */
+.worker-done-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--sp-6);
+  font-size: var(--fs-chip);
+}
+
+/* 생성·수정 시각 메타 줄 (UI-d7pw §4.1). 본문 줄 아래 별도 줄이라 제목이
+   밀리지 않는다. 행 껍데기가 flex row이므로 한 줄 변형은 내부를 `__line`으로
+   감싸고 메타를 형제로 두며, 껍데기만 column으로 뒤집는다. */
+.worker-mini__line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.worker-mini:has(> .worker-mini__line) {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-2);
+}
+
+.worker-mini__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+
+.worker-card__foot ~ .worker-mini__meta,
+.worker-card .worker-mini__meta {
+  margin-top: var(--sp-4);
+}
+
+.rtile .worker-mini__meta {
+  margin-top: var(--sp-2);
+}
+
 .worker-filter__tgl {
   display: inline-flex;
   align-items: center;
@@ -4227,6 +4270,87 @@ html[data-theme='dark'] {
 .detail-session__resume:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* 세션 행의 토큰 배지 (UI-d7pw §2.2). 레인의 .worker-usage와 같은 톤 —
+   두 곳이 같은 수를 말하므로 생김새도 같아야 한다. */
+.detail-session__usage {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* [τ 자세히] — 이어하기와 같은 형제 버튼 톤. */
+.detail-session__usage-toggle {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-6);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.detail-session__usage-toggle:hover {
+  border-color: var(--border-tile-run);
+  color: var(--text-primary);
+}
+
+/* 펼친 토큰 내역: 원인 줄과 같이 폭을 다 차지해 행 아래로 떨어진다. */
+.detail-session__usage-detail {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4) var(--sp-12);
+  padding: var(--sp-4) var(--sp-8);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-session__usage-field {
+  display: flex;
+  gap: var(--sp-4);
+}
+
+.detail-session__usage-label {
+  color: var(--text-dim);
+}
+
+.detail-session__usage-value {
+  color: var(--text-primary);
+}
+
+.detail-session__usage-note {
+  flex: 1 1 100%;
+  color: var(--text-muted);
+}
+
+/* 섹션 헤딩 옆 이슈 총합. 라벨이 uppercase라 총합만 원래 자형을 되돌린다. */
+.detail-usage-total {
+  margin-left: var(--sp-8);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.detail-usage-partial {
+  margin-left: var(--sp-4);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: help;
 }
 
 /* 이어받은 세션 ↻ 배지 (이력 행·running 타일 공용 톤). */

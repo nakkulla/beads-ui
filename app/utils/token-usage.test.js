@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { formatUsageTotal, lastAttemptUsage, usageTooltip } from './usage.js';
+import {
+  formatUsageTotal,
+  sumAttemptUsage,
+  usageTooltip
+} from './token-usage.js';
 
 describe('views/worker usage formatting (UI-raqh §1)', () => {
   test('sums input and output into a k-abbreviated total', () => {
@@ -85,25 +89,36 @@ describe('views/worker usage formatting (UI-raqh §1)', () => {
   });
 });
 
-describe('views/worker last-attempt usage (UI-raqh §1)', () => {
-  test('reads the usage of the LAST attempt recorded for a bead', () => {
+describe('summed attempt usage (UI-d7pw §1)', () => {
+  test('sums every attempt recorded for a bead', () => {
     const attempts = {
-      a1: { attempt_id: 'a1', bead_id: 'UI-1', usage: { input_tokens: 1 } },
-      a2: { attempt_id: 'a2', bead_id: 'UI-1', usage: { input_tokens: 2 } }
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        usage: { input_tokens: 1, output_tokens: 10 }
+      },
+      a2: {
+        attempt_id: 'a2',
+        bead_id: 'UI-1',
+        usage: { input_tokens: 2, output_tokens: 20 }
+      }
     };
 
-    expect(lastAttemptUsage(attempts, 'UI-1')).toMatchObject({
-      input_tokens: 2
+    expect(sumAttemptUsage(attempts, 'UI-1')).toMatchObject({
+      input_tokens: 3,
+      output_tokens: 30
     });
   });
 
-  test('does not fall back to an older attempt when the last one has none', () => {
+  test('skips an attempt with no usage but keeps the others', () => {
     const attempts = {
       a1: { attempt_id: 'a1', bead_id: 'UI-1', usage: { input_tokens: 1 } },
       a2: { attempt_id: 'a2', bead_id: 'UI-1', usage: null }
     };
 
-    expect(lastAttemptUsage(attempts, 'UI-1')).toBe(null);
+    expect(sumAttemptUsage(attempts, 'UI-1')).toMatchObject({
+      input_tokens: 1
+    });
   });
 
   test('ignores attempts of other beads', () => {
@@ -111,10 +126,74 @@ describe('views/worker last-attempt usage (UI-raqh §1)', () => {
       a1: { attempt_id: 'a1', bead_id: 'UI-2', usage: { input_tokens: 9 } }
     };
 
-    expect(lastAttemptUsage(attempts, 'UI-1')).toBe(null);
+    expect(sumAttemptUsage(attempts, 'UI-1')).toBe(null);
   });
 
   test('returns null for an empty attempts map', () => {
-    expect(lastAttemptUsage({}, 'UI-1')).toBe(null);
+    expect(sumAttemptUsage({}, 'UI-1')).toBe(null);
+  });
+
+  test('returns null when every attempt reported no token field', () => {
+    const attempts = {
+      a1: { attempt_id: 'a1', bead_id: 'UI-1', usage: { total_cost_usd: 0.4 } },
+      a2: { attempt_id: 'a2', bead_id: 'UI-1', usage: null }
+    };
+
+    expect(sumAttemptUsage(attempts, 'UI-1')).toBe(null);
+  });
+
+  test('sums the cost of only the attempts that reported one', () => {
+    const attempts = {
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        usage: { input_tokens: 1, total_cost_usd: 0.25 }
+      },
+      a2: { attempt_id: 'a2', bead_id: 'UI-1', usage: { input_tokens: 2 } }
+    };
+
+    expect(sumAttemptUsage(attempts, 'UI-1')?.total_cost_usd).toBe(0.25);
+  });
+
+  test('omits the cost when no attempt reported one', () => {
+    const attempts = {
+      a1: { attempt_id: 'a1', bead_id: 'UI-1', usage: { input_tokens: 1 } }
+    };
+
+    expect(sumAttemptUsage(attempts, 'UI-1')).not.toHaveProperty(
+      'total_cost_usd'
+    );
+  });
+
+  test('propagates replayed when any summed attempt carried it', () => {
+    const attempts = {
+      a1: { attempt_id: 'a1', bead_id: 'UI-1', usage: { input_tokens: 1 } },
+      a2: {
+        attempt_id: 'a2',
+        bead_id: 'UI-1',
+        usage: { input_tokens: 2, replayed: true }
+      }
+    };
+
+    expect(sumAttemptUsage(attempts, 'UI-1')?.replayed).toBe(true);
+  });
+
+  test('sums the cache fields alongside the headline fields', () => {
+    const attempts = {
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        usage: { input_tokens: 1, cache_read_input_tokens: 100 }
+      },
+      a2: {
+        attempt_id: 'a2',
+        bead_id: 'UI-1',
+        usage: { input_tokens: 1, cache_read_input_tokens: 200 }
+      }
+    };
+
+    expect(sumAttemptUsage(attempts, 'UI-1')?.cache_read_input_tokens).toBe(
+      300
+    );
   });
 });

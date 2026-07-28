@@ -31,6 +31,12 @@
  * (`worker-pane--src`) precisely so it does not read as one of the four.
  */
 import { html, render } from 'lit-html';
+import {
+  CLOSED_RANGE_OPTIONS,
+  DEFAULT_CLOSED_RANGE,
+  closedRangeSince,
+  isClosedRange
+} from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
 import {
   cmpCreatedDescThenPriority,
@@ -38,12 +44,12 @@ import {
 } from '../../data/sort.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { showToast } from '../../utils/toast.js';
+import { formatUsageTotal, sumAttemptUsage } from '../../utils/token-usage.js';
 import { createReorderController } from '../reorder.js';
 import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
 import { miniRow, paneTemplate } from './lanes.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
-import { formatUsageTotal, lastAttemptUsage } from './usage.js';
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
@@ -230,6 +236,38 @@ function loadCandidateSort() {
 function saveCandidateSort(mode) {
   try {
     window.localStorage.setItem(CANDIDATE_SORT_KEY, mode);
+  } catch {
+    /* ignore — a private-mode storage denial must not break the select */
+  }
+}
+
+/**
+ * Persisted period range for the 완료 lane (UI-d7pw §3.2). The Board's Closed
+ * column vocabulary is REUSED rather than copied — the two tabs must not drift
+ * into having a `최근 7일` that means different things.
+ *
+ * @type {string}
+ */
+const DONE_RANGE_KEY = 'bdui.worker.done-range';
+
+/**
+ * @returns {import('../../data/closed-range.js').ClosedRange}
+ */
+function loadDoneRange() {
+  try {
+    const raw = window.localStorage.getItem(DONE_RANGE_KEY);
+    return isClosedRange(raw) ? raw : DEFAULT_CLOSED_RANGE;
+  } catch {
+    return DEFAULT_CLOSED_RANGE;
+  }
+}
+
+/**
+ * @param {import('../../data/closed-range.js').ClosedRange} range
+ */
+function saveDoneRange(range) {
+  try {
+    window.localStorage.setItem(DONE_RANGE_KEY, range);
   } catch {
     /* ignore — a private-mode storage denial must not break the select */
   }
@@ -529,7 +567,7 @@ export function mergeFailureText(reason) {
  * @param {Record<string, any>} observations - Snapshot `pr_observations` map.
  * @param {{ step: string, reason: string }|null} cleanup_failed - Durable
  * post-merge cleanup failure for this bead, if any (§6).
- * @param {import('./usage.js').UsageRecord|null} [usage] - Token usage of the
+ * @param {import('../../utils/token-usage.js').UsageRecord|null} [usage] - Token usage of the
  * bead's last attempt (UI-raqh §1).
  * @param {{ activity: 'checking'|'verifying'|null, merge_progress: { step: string }|null }|null} [active]
  * What the server is doing to this bead right now (UI-raqh §3/§4).
@@ -773,6 +811,22 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {CandidateSort}
    */
   let candidate_sort = loadCandidateSort();
+  /**
+   * 완료 lane period range (UI-d7pw §3.2), restored at view creation.
+   *
+   * @type {import('../../data/closed-range.js').ClosedRange}
+   */
+  let done_range = loadDoneRange();
+  /**
+   * The current range's display label, used by the lane header and the two
+   * toolbar KPIs so all three name the same period (§3.4/§3.5).
+   *
+   * @returns {string}
+   */
+  function doneRangeLabel() {
+    const opt = CLOSED_RANGE_OPTIONS.find((o) => o.value === done_range);
+    return opt ? opt.label : '오늘';
+  }
   /**
    * Mobile lane collapse state (UI-58y2), restored at view creation.
    *
@@ -1374,6 +1428,30 @@ export function createWorkerView(mount_element, options = {}) {
       idToTitle.set(it.id, it.title || it.id);
     }
 
+    // 생성·수정 시각 (UI-d7pw §4.3). 후보/Ready/Blocked bead는 구독 이슈가
+    // 이미 들고 있고, 대기/PR 대기/완료 bead는 서버가 `bead_times`로 실어
+    // 보낸다. 서버가 안 보내면 빈 객체 → 메타 줄이 그냥 안 그려진다.
+    /** @type {Record<string, any>} */
+    const bead_times = q.bead_times || {};
+    /** @type {Map<string, { created_at?: number|string, updated_at?: number|string }>} */
+    const idToTimes = new Map();
+    for (const [bead_id, times] of Object.entries(bead_times)) {
+      if (times && typeof times === 'object') {
+        idToTimes.set(bead_id, times);
+      }
+    }
+    for (const it of [...ready, ...blocked]) {
+      idToTimes.set(it.id, {
+        created_at: it.created_at,
+        updated_at: it.updated_at
+      });
+    }
+    /**
+     * @param {string} bead_id
+     * @returns {{ created_at?: number|string, updated_at?: number|string }}
+     */
+    const timesOf = (bead_id) => idToTimes.get(bead_id) || {};
+
     const pr_wait_entries = /** @type {any[]} */ (q.pr_wait || []);
     /** @type {Record<string, any>} */
     const pr_obs = q.pr_observations || {};
@@ -1507,6 +1585,8 @@ export function createWorkerView(mount_element, options = {}) {
         reason: parts.join(' · '),
         draggable: eligible,
         lane: 'candidate',
+        created_at: it.created_at,
+        updated_at: it.updated_at,
         // Candidate cards consume the server-enriched workflow/status (spec §2);
         // queue lanes carry no workflow snapshot, so they stay on miniRow.
         workflow: it.workflow,
@@ -1557,8 +1637,9 @@ export function createWorkerView(mount_element, options = {}) {
           // 대기 행은 아직 실행 전이라 붙일 것이 없다.
           usage:
             lane === 'done'
-              ? lastAttemptUsage(q.attempts || {}, e.bead_id)
-              : null
+              ? sumAttemptUsage(q.attempts || {}, e.bead_id)
+              : null,
+          ...timesOf(e.bead_id)
         };
       });
 
@@ -1643,9 +1724,13 @@ export function createWorkerView(mount_element, options = {}) {
           conflict_resolution: resolvesConflict(a),
           can_pause:
             typeof a.session_id === 'string' && a.session_id.length > 0,
-          // 실행 중 타일은 이 attempt의 라이브 usage를 그대로 쓴다 — 스냅샷의
-          // decorateQueue가 실행 중 attempt에 라이브 값을 실어 보낸다.
-          usage: a.usage || null
+          // 실행 중 타일도 bead의 전체 attempt 합계를 쓴다 (UI-d7pw §1.4).
+          // 이 attempt의 라이브 값만 쓰면 재실행된 bead의 실행 타일만 혼자
+          // 다른 수를 보이게 되어 "모든 배지가 같은 질문에 답한다"가 깨진다.
+          // 스냅샷의 decorateQueue가 실행 중 attempt에 라이브 값을 실어
+          // 보내므로 합계에 현재 진행분이 포함되고 계속 올라간다.
+          usage: sumAttemptUsage(q.attempts || {}, a.bead_id),
+          ...timesOf(a.bead_id)
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
         // Only a real failure surfaces the banner — a user pause/discard is not
@@ -1738,10 +1823,30 @@ export function createWorkerView(mount_element, options = {}) {
           : MIN_SLOTS;
     const over_cap = live_count > slots;
 
-    const done_rows = toRows(q.done, 'done');
-    // 툴바 KPI "오늘 토큰" (UI-58y2 데스크톱 §툴바): 완료 레인의 행이 이미 들고
-    // 있는 마지막 attempt usage를 합산할 뿐이라 새 데이터 소스가 없다. 완료
-    // 목록 자체가 오늘의 범위이므로 별도 날짜 필터도 두지 않는다.
+    // 완료 레인은 최신순 + 기간 필터 (UI-d7pw §3). `q.done`은 append 순서라
+    // 오래된 것이 위에 오고 정렬도 가지치기도 없었다. 스냅샷은 공유 객체이므로
+    // 복사해서 정렬한다. 비교 기준은 `added_at`(레인 진입 = 완료 시각)이지
+    // bead의 `updated_at`이 아니다.
+    const done_since = closedRangeSince(done_range);
+    const done_entries = (Array.isArray(q.done) ? q.done.slice() : [])
+      // `added_at`이 없는 엔트리(구버전 queue.json)는 기간으로 판정할 수 없으므로
+      // 거른다기보다 남긴다 — 타임스탬프가 없다는 이유로 사용자가 실제로 끝낸
+      // 일을 화면에서 지우는 쪽이 더 나쁜 오답이다.
+      .filter(
+        (/** @type {any} */ e) =>
+          done_since === undefined ||
+          typeof e.added_at !== 'number' ||
+          e.added_at >= done_since
+      )
+      .sort(
+        (/** @type {any} */ a, /** @type {any} */ b) =>
+          (b.added_at || 0) - (a.added_at || 0)
+      );
+    const done_rows = toRows(done_entries, 'done');
+    // 툴바 토큰 KPI (UI-58y2 데스크톱 §툴바): 완료 레인의 행이 이미 들고 있는
+    // usage를 합산할 뿐이라 새 데이터 소스가 없다. 행의 usage가 bead의 전체
+    // attempt 합계이므로(UI-d7pw §1) 이 KPI는 "선택된 기간에 완료된 이슈들이
+    // 생애 전체에 쓴 토큰" — 코호트 합계다. 기간 내 소모량이 아니다 (§3.5).
     let token_in = 0;
     let token_out = 0;
     // 보고된 0과 아예 보고되지 않은 usage는 다른 사실이다 — 행 배지가 그 둘을
@@ -1792,32 +1897,34 @@ export function createWorkerView(mount_element, options = {}) {
       // PR 대기 is its own column (worker-phase2 §7): a bead there is NOT done —
       // the PR is open and waiting for the human merge click. 완료 carries only
       // what actually merged and finished cleanup.
-      pr_wait: pr_wait_entries.map((/** @type {any} */ e) =>
-        prWaitRow(
-          e.bead_id,
-          idToTitle.get(e.bead_id) || e.bead_id,
-          pr_obs,
-          cleanup_failed[e.bead_id] || null,
-          lastAttemptUsage(q.attempts || {}, e.bead_id),
-          // The server's own progress wins; the local pending only covers the
-          // window before the first snapshot carrying it arrives.
-          pr_activity[e.bead_id] ||
-            (merge_pending.has(e.bead_id)
-              ? { activity: null, merge_progress: { step: 'merging' } }
-              : null),
-          conflict_sessions.get(e.bead_id) || null,
-          // Overlaid by the server (UI-7agi §2) — absent on every durable row.
-          e.external === true,
-          {
-            position: merge_positions.get(e.bead_id) || 0,
-            active: merge_state.active === e.bead_id,
-            failure: merge_failures[e.bead_id] || null
-          },
-          // Also overlay-only (UI-w0hi §3): a durable row has no field here and
-          // must keep the pre-existing behaviour, so absence reads as present.
-          e.wt_present !== false
+      pr_wait: pr_wait_entries
+        .map((/** @type {any} */ e) =>
+          prWaitRow(
+            e.bead_id,
+            idToTitle.get(e.bead_id) || e.bead_id,
+            pr_obs,
+            cleanup_failed[e.bead_id] || null,
+            sumAttemptUsage(q.attempts || {}, e.bead_id),
+            // The server's own progress wins; the local pending only covers the
+            // window before the first snapshot carrying it arrives.
+            pr_activity[e.bead_id] ||
+              (merge_pending.has(e.bead_id)
+                ? { activity: null, merge_progress: { step: 'merging' } }
+                : null),
+            conflict_sessions.get(e.bead_id) || null,
+            // Overlaid by the server (UI-7agi §2) — absent on every durable row.
+            e.external === true,
+            {
+              position: merge_positions.get(e.bead_id) || 0,
+              active: merge_state.active === e.bead_id,
+              failure: merge_failures[e.bead_id] || null
+            },
+            // Also overlay-only (UI-w0hi §3): a durable row has no field here and
+            // must keep the pre-existing behaviour, so absence reads as present.
+            e.wt_present !== false
+          )
         )
-      ),
+        .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),
       merge_queue_length: merge_queue.length,
       merge_queue_running: merge_queue.length > 0,
       done: done_rows,
@@ -1855,7 +1962,7 @@ export function createWorkerView(mount_element, options = {}) {
         >PR 대기 <b>${m.pr_wait.length}</b></span
       >
       <span class="worker-kpi__chip worker-kpi__chip--done"
-        >오늘 완료 <b>${m.done.length}</b></span
+        >${doneRangeLabel()} 완료 <b>${m.done.length}</b></span
       >`;
     const settings = html`<label class="worker-tgl worker-slots"
         >동시 실행
@@ -1903,8 +2010,8 @@ export function createWorkerView(mount_element, options = {}) {
           ${m.token_total
             ? html`<span
                 class="worker-kpi__chip worker-kpi__chip--tokens"
-                title="완료된 세션들의 토큰 합계 (입력+출력)"
-                >${m.token_total}</span
+                title=${`${doneRangeLabel()} 완료된 이슈들이 생애 전체에 쓴 토큰 누적 (입력+출력). 이 기간에 소모된 양이 아니다`}
+                >${doneRangeLabel()} 완료 · 누적 ${m.token_total}</span
               >`
             : ''}
           <span class="worker-kpi__next worker-stat"
@@ -2018,6 +2125,32 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The 완료 pane period select (UI-d7pw §3.3). It lives in the pane's `controls`
+   * strip, NOT in `header_control`: the 완료 pane is `collapsible` on mobile and
+   * `paneTemplate` renders `header_control` only on the non-collapsible header
+   * branch, so putting it there would make the select vanish on phones.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function doneRangeTemplate() {
+    return html`<div class="worker-done-controls">
+      <select
+        class="worker-sort worker-done-range"
+        aria-label="완료 기간"
+        title="완료 기간"
+        .value=${done_range}
+      >
+        ${CLOSED_RANGE_OPTIONS.map(
+          (o) =>
+            html`<option value=${o.value} ?selected=${done_range === o.value}>
+              ${o.label}
+            </option>`
+        )}
+      </select>
+    </div>`;
+  }
+
+  /**
    * The PR 대기 lane header's bulk control (UI-5v7d §4). One button with two
    * states, never both: while the queue is empty it fills it, and while the
    * queue runs it empties the WAITING part. Two side-by-side buttons would ask
@@ -2089,7 +2222,8 @@ export function createWorkerView(mount_element, options = {}) {
           lane: 'done',
           title: '완료',
           items: m.done,
-          empty: '완료 없음',
+          empty: `${doneRangeLabel()} 완료 없음`,
+          controls: doneRangeTemplate(),
           collapsible: true,
           collapsed: lane_collapse.done,
           preview: m.token_total || stripPreview(m.done)
@@ -2124,9 +2258,10 @@ export function createWorkerView(mount_element, options = {}) {
       ${paneTemplate({
         id: 'worker-pane-done',
         lane: 'done',
-        title: `완료 · 오늘 ${m.done.length}`,
+        title: `완료 · ${doneRangeLabel()} ${m.done.length}`,
         items: m.done,
-        empty: '완료 없음'
+        empty: `${doneRangeLabel()} 완료 없음`,
+        controls: doneRangeTemplate()
       })}
     </div>`;
   }
@@ -2397,6 +2532,18 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Adopt a new 완료 lane period (UI-d7pw §3.2). Purely local — every entry the
+   * filter reads is already in the client snapshot, so no request is sent.
+   *
+   * @param {string} next
+   */
+  function setDoneRange(next) {
+    done_range = isClosedRange(next) ? next : DEFAULT_CLOSED_RANGE;
+    saveDoneRange(done_range);
+    doRender();
+  }
+
+  /**
    * Commit a slot-count edit (worker-phase2 §3). Fired on `change` so a partial
    * keystroke does not spam mutations; the value is clamped to the lower bound
    * before it is sent and the input is re-rendered from the authoritative
@@ -2415,6 +2562,15 @@ export function createWorkerView(mount_element, options = {}) {
         ...candidate_filter,
         show_blocked: blocked_tgl.checked
       });
+      return;
+    }
+    // 완료 기간 select가 먼저다 — `.worker-done-range`는 `.worker-sort` 톤을
+    // 공유하므로 순서를 뒤집으면 후보 정렬로 잘못 해석된다.
+    const range_select = /** @type {HTMLSelectElement|null} */ (
+      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-done-range')
+    );
+    if (range_select) {
+      setDoneRange(range_select.value);
       return;
     }
     const sort_select = /** @type {HTMLSelectElement|null} */ (
