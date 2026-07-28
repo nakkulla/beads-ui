@@ -96,11 +96,13 @@ worker attempt 없이 일반 세션에서 PR Delivery까지 끝난 bead(`status=
   플래그를 `prWaitRow()`(`app/views/worker/index.js`)까지 전달한다.
 - MERGED 관측 시 버튼 라벨 `정리`(클릭이 cleanup 실행), CLOSED(미머지)는
   `닫힘` 배지 + 머지 비활성.
-- **충돌 시 외부 행은 충돌 해소 버튼을 비활성화**하고 배지로만 표시한다 —
-  기존 충돌 해소는 `scheduler.resolveConflict()`가 attempt의 `session_id`와
-  worker worktree를 요구해(`server/worker/scheduler.js`, `no_session_id` 거부)
-  attempt 없는 외부 행에선 항상 실패한다. 외부 PR의 충돌은 사용자가 세션에서
-  해소한다(향후 확장 범위 밖).
+- **충돌 시 외부 행도 충돌 해소 버튼을 활성화한다**(UI-w0hi 개정). 최초 설계는
+  `scheduler.resolveConflict()`가 attempt의 `session_id`를 요구해
+  (`server/worker/scheduler.js`, `no_session_id` 거부) 외부 행에선 항상
+  실패한다는 이유로 비활성화했으나, UI-w0hi가 attempt 없는 fresh 해소 세션
+  디스패치(`scheduler.dispatchExternalConflict()`)를 신설해 그 전제가 사라졌다.
+  워크트리가 남아 있지 않을 때만 비활성 + 사유 툴팁(워크트리 재생성은 여전히
+  범위 밖)이며, 그 판정은 오버레이 행의 `wt_present`가 싣는다.
 - **외부 행은 `폐기` 액션을 숨긴다**(`discard_action: false`) — 기존
   `discard()`는 durable `q.pr_wait` 멤버십과 `removeFromPrWait()` 성공을
   전제하므로(`server/worker/pr-actions.js`) 외부 행에선 거부되거나 부분 실패
@@ -124,7 +126,8 @@ worker attempt 없이 일반 세션에서 PR Delivery까지 끝난 bead(`status=
 - MERGED(cleanup-only)/CLOSED(거부) 분기, 외부 행 MERGED 자동 cleanup 미실행
   (관측 캐시만) + `정리` 클릭 시 cleanup 실행.
 - 프론트 `prWaitRow`: `세션` 배지, MERGED `정리` 라벨, CLOSED 비활성, 외부 행
-  충돌 해소 비활성·`폐기` 숨김 회귀 테스트.
+  충돌 해소 활성(워크트리 부재 시에만 비활성, UI-w0hi 개정)·`폐기` 숨김 회귀
+  테스트.
 - 기존 `test/` 하위 패턴 준수.
 
 ## 범위 밖

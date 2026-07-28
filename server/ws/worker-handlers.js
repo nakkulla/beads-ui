@@ -40,7 +40,8 @@ import {
   reviseFixWorkerBead,
   stopWorkerAttempt,
   tickWorkerQueue,
-  workerSlots
+  workerSlots,
+  workerWorktreeExists
 } from '../worker/attach.js';
 import { evaluateMergeGate } from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
@@ -123,6 +124,11 @@ export function workerQueueSubscriberCount(workspace_key) {
  * A bead the worker itself put in `pr_wait` is left alone: the durable attempt
  * is the more specific record, so the overlay yields to it.
  *
+ * Each overlay row also carries `wt_present` (UI-w0hi §3): whether the
+ * delivering session's worktree is still there, which decides whether the
+ * conflict-resolution click has anywhere to run. Durable rows carry nothing new
+ * — their own attempt already answers it.
+ *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
  * @returns {Record<string, unknown>}
@@ -144,11 +150,22 @@ function withExternalPrWait(workspace_key, queue) {
   const durable = new Set(lane.map((e) => e && e.bead_id));
   const overlay = rows
     .filter((row) => !durable.has(row.bead_id))
-    .map((row) => ({
-      bead_id: row.bead_id,
-      added_at: row.added_at,
-      external: true
-    }));
+    .map((row) => {
+      let wt_present = false;
+      try {
+        wt_present = workerWorktreeExists(workspace_key, row.bead_id);
+      } catch {
+        // Fail-quiet, like every other decoration here: an unreadable repo
+        // renders a disabled button with a reason, never a guessed `true`.
+        wt_present = false;
+      }
+      return {
+        bead_id: row.bead_id,
+        added_at: row.added_at,
+        external: true,
+        wt_present
+      };
+    });
   if (overlay.length === 0) {
     return queue;
   }

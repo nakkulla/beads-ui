@@ -3725,6 +3725,16 @@ html[data-theme='dark'] {
   color: var(--accent-warn);
 }
 
+/* 외부 세션이 배달한 PR 행 (UI-w0hi §4). 워커가 실행한 행과 출처가 다르다는
+   사실만 조용히 알린다 — 액센트는 PR 링크와 같은 --accent-child로 맞추고,
+   틴트는 카드 배경에 섞어 대비를 거의 올리지 않는다. 왼쪽 액센트는 요소 자체의
+   border-left라서, 진행 중 행의 ::before 레일(패딩 박스 기준)과 같은 자리를
+   다투지 않고 나란히 놓인다. */
+.worker-mini--external {
+  border-left: 2px solid var(--accent-child);
+  background: color-mix(in srgb, var(--accent-child) 6%, var(--bg-card));
+}
+
 /* Merge in progress (UI-raqh §4) — the ONE bold place on this board. A merge is
    irreversible and runs for minutes, so the row itself becomes the gauge: a
    left rail, a bottom progress line, and the step name with its n/7 counter.

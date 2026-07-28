@@ -160,6 +160,12 @@ function staleDispatchPrompt(bead_id, stale) {
  * ends with would fail it as `no_pr`; this dep judges the disposition's own
  * durable result instead. Absent wiring simply means no disposition can be
  * dispatched (the entry point refuses).
+ * @property {{ get: (workspace: string, bead_id: string) => import('./external-pr.js').ExternalPrRow|null }} [externalPrs]
+ * The EXTERNAL PR registry (UI-7agi §1), read by {@link createScheduler}'s
+ * `dispatchExternalConflict` to confirm the bead really is an external row
+ * before launching a resolution session for it. Optional and FAIL-CLOSED: an
+ * attachment built without it (every hermetic test) refuses the dispatch as
+ * `not_external` rather than launching against an unverified bead.
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, pathFor?: (workspace: string, attempt_id: string) => string, stderrPathFor?: (workspace: string, attempt_id: string) => string }} sessionLog
  * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
@@ -202,6 +208,7 @@ function staleDispatchPrompt(bead_id, stale) {
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   resume: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   runningCount: () => number,
@@ -881,6 +888,47 @@ export function createScheduler(deps) {
         return;
       }
 
+      // An EXTERNAL-PR resolution takes its own completion path (UI-w0hi §1):
+      // the bead's lane membership belongs to the external overlay, so the
+      // ordinary success — verify the PR, then `moveToPrWait` — would inject a
+      // bead into the durable lane that never ran here. The attempt is the only
+      // thing this path owns, so the attempt is the only thing it closes.
+      if (externalConflictOf(workspace, attempt_id)) {
+        // The revert stays fail-closed exactly as below: a stray `fast_track`
+        // left on the bead would switch the user's next manual session to
+        // unattended, which is worse than a failed attempt record.
+        try {
+          await revertWorkflowMode(bead_id, prior);
+        } catch (err) {
+          log(
+            'workflow_mode revert failed on external resolution for %s: %o',
+            bead_id,
+            err
+          );
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            'workflow_mode_revert_failed'
+          );
+          notifyChanged(workspace);
+          await tick(workspace);
+          return;
+        }
+        await revertExecStamps(
+          bead_id,
+          execStampedKeysOf(workspace, attempt_id)
+        );
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: { status: 'done', finished_at: now() }
+        });
+        notifyChanged(workspace);
+        await tick(workspace);
+        return;
+      }
+
       // Independent verification — session exit 0 is NOT enough, and neither is
       // the session's own bd bookkeeping (worker-phase2 §1). ONE verdict now:
       // does the server OBSERVE an open PR for this attempt's branch?
@@ -966,6 +1014,26 @@ export function createScheduler(deps) {
     return a && typeof a.disposition === 'string' && a.disposition.length > 0
       ? a.disposition
       : null;
+  }
+
+  /**
+   * Whether an attempt resolves an EXTERNAL PR's conflict (UI-w0hi §1), read
+   * off the durable record exactly like {@link dispositionKindOf}. The flag has
+   * to survive a restart: `disposeDeadAttempt` disposes attempts this process
+   * never launched, and lane membership of an external bead is the overlay's,
+   * not `queue.json`'s.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {boolean}
+   */
+  function externalConflictOf(workspace, attempt_id) {
+    try {
+      const a = deps.store.snapshot(workspace).attempts[attempt_id];
+      return !!a && a.external_conflict === true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -1271,6 +1339,12 @@ export function createScheduler(deps) {
       typeof attempt.disposition === 'string' && attempt.disposition.length > 0
         ? attempt.disposition
         : null;
+    // An EXTERNAL-PR resolution that outlived a restart is judged the same way
+    // (UI-w0hi §1): it opens no PR of its own — the PR already exists and is
+    // the external overlay's — so the observation below would both fail it as
+    // `pr_missing` and, on a pass, move a bead into a durable lane the worker
+    // never put it in.
+    const external_conflict = attempt.external_conflict === true;
     // FIRST, before any observation and for BOTH attempt kinds: retire this
     // attempt's detached monitor. The stop drains its session log to EOF, which
     // is what completes the usage tally lifted below AND settles any guard
@@ -1323,6 +1397,77 @@ export function createScheduler(deps) {
         ),
         kind
       );
+      return;
+    }
+    if (external_conflict) {
+      // An EXTERNAL resolution takes the same claim the ordinary arm does, for
+      // the same reason, but never reaches `gh`: there is no PR of its own to
+      // observe, and a pass would move a bead into a durable lane the worker
+      // never put it in (UI-w0hi §1). The usage patch is the only part of the
+      // ordinary observation write that still applies.
+      claimed.add(bead_id);
+      try {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: usagePatch(workspace, attempt_id)
+        });
+        if (guard_kill) {
+          // Guard evidence outranks here exactly as it does on the ordinary
+          // arm: a monitor-killed session fails however far its writes got.
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            'loud_fail_blocker',
+            blockerCauseDetail({
+              reason: guard_kill.reason,
+              command: guard_kill.command ?? null
+            })
+          );
+        } else {
+          // Nothing observable says whether the resolution succeeded — the PR
+          // belongs to the external row and the merge gate re-observes it on
+          // the next click anyway. So this closes the attempt, reverts its
+          // stamps, and leaves the durable lanes alone. The revert stays
+          // fail-closed for the reason it is everywhere else: a stray
+          // `fast_track` would switch the user's next manual session to
+          // unattended.
+          let mode_reverted = true;
+          try {
+            await revertWorkflowMode(bead_id, prior);
+          } catch (err) {
+            log(
+              'workflow_mode revert failed on external resolution reconcile for %s: %o',
+              bead_id,
+              err
+            );
+            mode_reverted = false;
+          }
+          if (mode_reverted) {
+            await revertExecStamps(
+              bead_id,
+              execStampedKeysOf(workspace, attempt_id)
+            );
+            deps.store.updateAttempt(workspace, {
+              attempt_id,
+              patch: { status: 'done', finished_at: now() }
+            });
+          } else {
+            await failAttempt(
+              workspace,
+              attempt_id,
+              bead_id,
+              prior,
+              'workflow_mode_revert_failed'
+            );
+          }
+        }
+      } finally {
+        claimed.delete(bead_id);
+      }
+      notifyChanged(workspace);
+      await tick(workspace);
       return;
     }
     claimed.add(bead_id);
@@ -2162,6 +2307,252 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Dispatch a conflict-resolution session for an EXTERNAL PR row (UI-w0hi §1):
+   * a bead an ordinary session delivered a PR for, which the durable lanes and
+   * the attempt registry never held.
+   *
+   * {@link resolveConflict} cannot serve it — it relaunches FROM an attempt, so
+   * a bead with none is refused `no_session_id` every time. The way out is that
+   * {@link conflictPrompt} is self-contained (fetch, merge base into branch,
+   * preserve both intents, verify, push, never merge the PR): the original
+   * session's context improves the result, it is not an input the task needs.
+   * So this mints a FRESH attempt-less session instead — `resume_session_id`
+   * null, `dispatchReviseFix`'s precedent — in the worktree the shared
+   * `<repo>/.worktrees/<bead-id>` convention already put there.
+   *
+   * The four guards refuse BEFORE anything is recorded, because none of them is
+   * a session that failed: `bead_running` (a resolution is already up),
+   * `not_external` (the click is about a row this registry does not know —
+   * fail-closed when the registry is not wired at all), `bd_snapshot_failed`
+   * (nothing to resolve exec settings or the repo from), `worktree_missing`
+   * (this path never recreates one).
+   *
+   * `snapshotBead` is read for the repo AND the exec settings, but its
+   * `ready`/`blocked` verdict is deliberately NOT consulted: an external bead is
+   * `resolved`, hence always blocked. This is a human click on an existing PR,
+   * not a queue dispatch.
+   *
+   * Cap-exempt like every other human-click dispatch.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} [target_base] - The base branch the CLICK observed on the
+   * PR (pr-actions §2); empty/absent falls back to `main`.
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+   */
+  async function dispatchExternalConflict(workspace, bead_id, target_base) {
+    const q = deps.store.snapshot(workspace);
+    if (claimed.has(bead_id)) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    for (const a of Object.values(q.attempts || {})) {
+      if (a && a.bead_id === bead_id && a.status === 'running') {
+        return { ok: false, reason: 'bead_running' };
+      }
+    }
+    // The registry IS the evidence that this bead is an external row. Without
+    // the dep there is no evidence at all, which is a refusal, not a pass.
+    if (!deps.externalPrs || !deps.externalPrs.get(workspace, bead_id)) {
+      return { ok: false, reason: 'not_external' };
+    }
+    /** @type {BeadSnapshot} */
+    let snap;
+    try {
+      snap = await deps.bd.snapshotBead(bead_id);
+    } catch {
+      return { ok: false, reason: 'bd_snapshot_failed' };
+    }
+    const repo = snap.repo;
+    const wt_present =
+      typeof deps.worktree.exists === 'function'
+        ? deps.worktree.exists(repo, bead_id)
+        : true;
+    if (!wt_present) {
+      return { ok: false, reason: 'worktree_missing' };
+    }
+
+    const base =
+      typeof target_base === 'string' && target_base.length > 0
+        ? target_base
+        : 'main';
+    // Resolved from scratch, not inherited: there is no prior attempt to carry
+    // a snapshot forward from, so this is the queue dispatch's contract
+    // verbatim (bead metadata > workspace default > hardcoded fallback), with
+    // the same stamp-and-revert duty for the globally-filled keys.
+    const exec = resolveExecSettings({
+      bead: snap,
+      defaults: deps.store.snapshot(workspace).exec_defaults
+    });
+    const runner_name = 'claude';
+    const attempt_id = makeAttemptId(bead_id);
+    const prior = snap.workflow_mode ?? null;
+    const stamped_keys = exec.stamped_keys;
+    /** @type {Record<string, string>} */
+    const exec_values = {};
+    for (const key of stamped_keys) {
+      const value = /** @type {Record<string, string>} */ (
+        /** @type {any} */ (exec)
+      )[key];
+      if (typeof value === 'string') {
+        exec_values[key] = value;
+      }
+    }
+
+    claimed.add(bead_id);
+
+    // DURABLE pre-record before the first metadata write, exactly as the queue
+    // dispatch does it: a crash between here and spawn leaves a record a
+    // restart can revert the stamps from. `base_oid` stays null — this dispatch
+    // creates no worktree and passes no admission, so there is no pinned base
+    // to honestly record.
+    deps.store.appendAttempt(workspace, {
+      expected_revision: deps.store.snapshot(workspace).revision,
+      attempt: { attempt_id, bead_id }
+    });
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        repo,
+        target_base: base,
+        base_oid: null,
+        runner: runner_name,
+        model: exec.orchestration_model ?? null,
+        effort: exec.orchestration_effort ?? null,
+        workflow_mode_prior: prior,
+        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+        exec_values: stamped_keys.length > 0 ? exec_values : null,
+        conflict_resolution: true,
+        external_conflict: true,
+        status: 'running',
+        pid: null
+      }
+    });
+
+    let mode_ok = false;
+    try {
+      await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
+      const rb = await deps.bd.readMetadata(bead_id, 'workflow_mode');
+      mode_ok = rb === 'fast_track';
+    } catch (err) {
+      log(
+        'external conflict workflow_mode set/readback failed for %s: %o',
+        bead_id,
+        err
+      );
+      mode_ok = false;
+    }
+    if (!mode_ok) {
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          status: 'failed',
+          cause: 'workflow_mode_record_failed',
+          finished_at: now()
+        }
+      });
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: 'workflow_mode_record_failed',
+        repo,
+        cause_detail: null
+      });
+      try {
+        await revertWorkflowMode(bead_id, prior);
+      } catch {
+        // Best-effort: bd may be down; the failed record already reflects it.
+      }
+      claimed.delete(bead_id);
+      notifyChanged(workspace);
+      return { ok: false, reason: 'workflow_mode_record_failed' };
+    }
+
+    let exec_ok = true;
+    for (const key of stamped_keys) {
+      const value = exec_values[key];
+      if (typeof value !== 'string') {
+        continue;
+      }
+      try {
+        await deps.bd.setMetadata(bead_id, key, value);
+        const rb = await deps.bd.readMetadata(bead_id, key);
+        if (rb !== value) {
+          log(
+            'external conflict exec stamp readback mismatch for %s %s: expected %o, got %o',
+            bead_id,
+            key,
+            value,
+            rb
+          );
+          exec_ok = false;
+          break;
+        }
+      } catch (err) {
+        log(
+          'external conflict exec stamp failed for %s %s: %o',
+          bead_id,
+          key,
+          err
+        );
+        exec_ok = false;
+        break;
+      }
+    }
+    if (!exec_ok) {
+      await revertExecStamps(bead_id, stamped_keys);
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          status: 'failed',
+          cause: 'exec_stamp_failed',
+          finished_at: now()
+        }
+      });
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: 'exec_stamp_failed',
+        repo,
+        cause_detail: null
+      });
+      try {
+        await revertWorkflowMode(bead_id, prior);
+      } catch {
+        // Best-effort: bd may be down; the failed record already reflects it.
+      }
+      claimed.delete(bead_id);
+      notifyChanged(workspace);
+      return { ok: false, reason: 'exec_stamp_failed' };
+    }
+
+    const launched = await launchSession({
+      workspace,
+      attempt_id,
+      bead_id,
+      repo,
+      target_base: base,
+      base_oid: null,
+      runner_name,
+      model: exec.orchestration_model ?? null,
+      effort: exec.orchestration_effort ?? null,
+      prior_wf: prior,
+      stamped_keys,
+      wt_path:
+        typeof deps.worktree.pathFor === 'function'
+          ? deps.worktree.pathFor(repo, bead_id)
+          : '',
+      launch_kind: 'conflict',
+      // A FRESH session, not a resume: an external row carries no session id to
+      // continue, and the prompt is self-contained.
+      resume_session_id: null,
+      conflict_resolution: true,
+      spawnBead: { id: bead_id, prompt: conflictPrompt(bead_id, base) }
+    });
+    if (!launched.ok) {
+      return { ok: false, reason: launched.reason || 'spawn_failed' };
+    }
+    return { ok: true, attempt_id };
+  }
+
+  /**
    * Shared relaunch tail for a manual resume AND a conflict-resolution dispatch:
    * mint a child attempt inheriting the source snapshot verbatim, re-stamp
    * workflow_mode + the exec keys from the PRIOR values, and hand off to the
@@ -2737,6 +3128,7 @@ export function createScheduler(deps) {
     pause,
     resume,
     resolveConflict,
+    dispatchExternalConflict,
     dispatchReviseFix,
     reconcile,
     runningCount() {

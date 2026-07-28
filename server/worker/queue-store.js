@@ -94,6 +94,15 @@
  * relaxes the session-side base-into-branch `git merge` guard, so it is
  * recorded durably: a reconcile pass or a restart must be able to see what kind
  * of attempt this was. Defaults false — a missing value fails closed.
+ * @property {boolean} external_conflict - Whether this resolution attempt was
+ * dispatched for an EXTERNAL PR row (UI-w0hi §1) — a bead a normal session
+ * delivered, which the durable lanes never held. It is what routes the two
+ * termination paths away from `moveToPrWait`: a successful external resolution
+ * must close its attempt WITHOUT injecting the bead into the durable `pr_wait`
+ * lane, whose membership stays the external overlay's. Durable because the
+ * restart-recovery path (`disposeDeadAttempt`) has no in-memory record of what
+ * kind of attempt it is disposing. Defaults false — a missing value fails
+ * closed onto the ordinary completion.
  * @property {{ reason: string, command: string|null, at: number }|null} guard_kill -
  * The fail-closed evidence a DETACHED session monitor recorded before killing an
  * orphan session (UI-o2yt §3.3). A killed session leaves no verdict behind, so
@@ -371,6 +380,7 @@ export function makeAttempt(fields) {
         : null,
     resumed_from: fields.resumed_from ?? null,
     conflict_resolution: fields.conflict_resolution === true,
+    external_conflict: fields.external_conflict === true,
     guard_kill: isRecord(fields.guard_kill)
       ? /** @type {Attempt['guard_kill']} */ (fields.guard_kill)
       : null,

@@ -178,7 +178,7 @@ function isConflicting(pr) {
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
+ *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
  *   resolveVerify?: () => ResolvedVerifyCmd|null,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
  *   resolveDeploy?: () => ResolvedDeployCmd|null,
@@ -1347,13 +1347,17 @@ export function createPrActions(deps) {
       // DIRTY comes BEFORE the gate: a conflicting PR needs resolving whatever
       // its CI says, and resolving is not merging.
       if (isConflicting(first.pr)) {
-        // An EXTERNAL row has no attempt, so it has no `session_id` and no
-        // worker worktree — `scheduler.resolveConflict()` would refuse with
-        // `no_session_id` every time (UI-7agi §5). Refusing here says so
-        // honestly instead of dispatching something that cannot run; the user
-        // resolves an external PR's conflict in their own session.
+        // An EXTERNAL row has no attempt to relaunch from, so it takes the
+        // attempt-less dispatch instead (UI-w0hi §2). The base is the one THIS
+        // click observed, not a stored one: an external row has no attempt
+        // recording a `target_base`, and the prompt names the branch the
+        // session must merge.
         if (is_external) {
-          return refuse('external_conflict_needs_session');
+          return dispatchExternalResolution(
+            bead_id,
+            first.pr.head_sha,
+            first.pr.base_ref || ''
+          );
         }
         return dispatchResolution(bead_id, first.pr.head_sha);
       }
@@ -1401,7 +1405,11 @@ export function createPrActions(deps) {
       }
       if (isConflicting(second.pr)) {
         if (is_external) {
-          return refuse('external_conflict_needs_session');
+          return dispatchExternalResolution(
+            bead_id,
+            second.pr.head_sha,
+            second.pr.base_ref || ''
+          );
         }
         return dispatchResolution(bead_id, second.pr.head_sha);
       }
@@ -1523,6 +1531,34 @@ export function createPrActions(deps) {
     // merge that is not happening.
     clearStep(bead_id);
     const r = await deps.scheduler.resolveConflict(workspace, bead_id);
+    notifyChanged(workspace);
+    return {
+      ok: !!r.ok,
+      action: 'conflict_resolution',
+      reason: r.ok ? null : r.reason || 'resolution_refused',
+      attempt_id: r.attempt_id || null,
+      head_sha
+    };
+  }
+
+  /**
+   * DIRTY arm for an EXTERNAL row (UI-w0hi §2): the same hand-off, minus the
+   * attempt to relaunch from. The scheduler mints a fresh session in the
+   * worktree the delivering session left behind, and refuses visibly
+   * (`worktree_missing`) when there is none.
+   *
+   * @param {string} bead_id
+   * @param {string} head_sha
+   * @param {string} base_ref - The base branch this click OBSERVED on the PR.
+   * @returns {Promise<MergeClickResult>}
+   */
+  async function dispatchExternalResolution(bead_id, head_sha, base_ref) {
+    clearStep(bead_id);
+    const r = await deps.scheduler.dispatchExternalConflict(
+      workspace,
+      bead_id,
+      base_ref
+    );
     notifyChanged(workspace);
     return {
       ok: !!r.ok,

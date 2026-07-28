@@ -506,6 +506,10 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
       gitRun,
       scheduler: {
         resolveConflict: async () => ({ ok: false, reason: 'unexpected' }),
+        dispatchExternalConflict: async () => ({
+          ok: false,
+          reason: 'unexpected'
+        }),
         tick: async () => {}
       },
       resolveVerify: () => null,
@@ -610,6 +614,10 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
       gitRun,
       scheduler: {
         resolveConflict: async () => ({ ok: false, reason: 'unexpected' }),
+        dispatchExternalConflict: async () => ({
+          ok: false,
+          reason: 'unexpected'
+        }),
         tick: async () => {}
       },
       resolveVerify: () => null,

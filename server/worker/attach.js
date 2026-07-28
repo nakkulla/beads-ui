@@ -435,6 +435,13 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     usage: runtime.usageStore,
     admission,
     notify,
+    // The external-row evidence the attempt-less conflict dispatch stands on
+    // (UI-w0hi §1) — the SAME registry the poller refreshes and the merge click
+    // reads, so a dispatch can never disagree with the row that was clicked.
+    externalPrs: {
+      get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
+        runtime.externalPrs.get(ws_key, bead_id)
+    },
     disposition: {
       /**
        * @param {{ workspace: string, attempt_id: string, bead_id: string, kind: string, prior_receipt?: string|null, target_base?: string|null }} input
@@ -621,6 +628,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reviseDisposition,
     sessionMonitors,
     bd,
+    // Exposed so the ws snapshot decoration can ask whether a bead's worktree
+    // still exists (UI-w0hi §3); the manager itself stays attachment-owned.
+    worktree,
     admission,
     repo,
     target_base,
@@ -812,6 +822,26 @@ export function workerSlots(workspace_root) {
   }
   const slots = att.runtime.queueStore.snapshot(key).slots;
   return typeof slots === 'number' ? slots : null;
+}
+
+/**
+ * Whether a bead's worktree still exists in the workspace's repo (UI-w0hi §3).
+ *
+ * READ-ONLY and fail-quiet: no attachment, no worktree manager, or a manager
+ * without the probe all answer `false`, which the lane renders as a disabled
+ * [충돌 해소] with a reason tooltip. Guessing `true` would offer a click whose
+ * dispatch could only refuse.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {boolean}
+ */
+export function workerWorktreeExists(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.worktree || typeof att.worktree.exists !== 'function') {
+    return false;
+  }
+  return att.worktree.exists(att.repo, bead_id) === true;
 }
 
 /**

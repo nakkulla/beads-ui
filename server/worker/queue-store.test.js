@@ -1175,6 +1175,26 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
 
     expect(store.snapshot(WS).attempts.a1.conflict_resolution).toBe(false);
   });
+
+  test('external_conflict defaults false and survives a cold reload (UI-w0hi §1)', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+    expect(store.snapshot(WS).attempts.a1.external_conflict).toBe(false);
+
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: { external_conflict: true, status: 'running' }
+    });
+
+    // The restart-recovery branch reads this off the reloaded record, so the
+    // whitelist has to carry it through the persist.
+    expect(createQueueStore().load(WS).attempts.a1.external_conflict).toBe(
+      true
+    );
+  });
 });
 
 describe('worker/queue-store — last_deploy record (worker-deploy-hook §3)', () => {

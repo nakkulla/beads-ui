@@ -270,7 +270,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notify?: any, disposition?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -317,6 +317,14 @@ function setup(opts) {
     admission: opts.admission,
     notify: opts.notify,
     disposition: opts.disposition,
+    // Absent by default: the external registry is a live-wiring dep, and a
+    // scheduler built without it must refuse the external dispatch outright.
+    externalPrs: opts.externalPrs
+      ? {
+          get: (/** @type {string} */ _ws, /** @type {string} */ bead_id) =>
+            /** @type {any} */ (opts.externalPrs)[bead_id] || null
+        }
+      : undefined,
     probePid: opts.probePid,
     sessionMonitors: opts.sessionMonitors,
     notifyQueueChanged: opts.notifyQueueChanged,
@@ -2025,6 +2033,345 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     await flush();
 
     expect(env.runner.settingsFor('A1').conflict_resolution).toBe(false);
+  });
+});
+
+describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
+  const EXT_ROW = {
+    bead_id: 'X1',
+    pr_url: 'https://github.com/o/r/pull/777',
+    pr_number: 777,
+    added_at: 1
+  };
+
+  /**
+   * An external bead as bd really holds it: `resolved`, hence blocked and not
+   * ready — the two verdicts this dispatch must NOT consult.
+   *
+   * @param {{ bead?: Record<string, any>, registry?: boolean, defaults?: Record<string, string>, notify?: any }} [over]
+   */
+  function extEnv(over = {}) {
+    const env = setup({
+      config: {
+        X1: {
+          repo: '/repo',
+          target_base: 'main',
+          status: 'resolved',
+          ready: false,
+          blocked: true,
+          ...(over.bead || {})
+        }
+      },
+      slots: 1,
+      notify: over.notify,
+      externalPrs: over.registry === false ? undefined : { X1: EXT_ROW }
+    });
+    if (over.defaults) {
+      seedExecDefaults(env.store, over.defaults);
+    }
+    return env;
+  }
+
+  /**
+   * Persist a `running` attempt for a bead, the way a live session leaves one.
+   *
+   * @param {any} store
+   * @param {Partial<import('./queue-store.js').Attempt>} patch
+   */
+  function seedRunningAttempt(store, patch) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'prev-1', bead_id: 'X1' }
+    });
+    store.updateAttempt(WS, { attempt_id: 'prev-1', patch });
+  }
+
+  test('dispatches a fresh session in the bead worktree with no resume', async () => {
+    const env = extEnv();
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res.ok).toBe(true);
+    expect(env.runner.settingsFor('X1').resume_session_id).toBe(undefined);
+    expect(env.runner.cwdFor('X1')).toBe('/wt/X1');
+    expect(env.worktree.add).not.toHaveBeenCalled();
+  });
+
+  test('records the attempt as an external conflict resolution', async () => {
+    const env = extEnv();
+
+    const res = await env.scheduler.dispatchExternalConflict(
+      WS,
+      'X1',
+      'develop'
+    );
+
+    const a =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(a).toMatchObject({
+      bead_id: 'X1',
+      repo: '/repo',
+      target_base: 'develop',
+      base_oid: null,
+      runner: 'claude',
+      resumed_from: null,
+      conflict_resolution: true,
+      external_conflict: true
+    });
+  });
+
+  test('falls back to main when the click observed no base', async () => {
+    const env = extEnv();
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', '');
+
+    expect(env.runner.spawnedBead('X1').prompt).toContain(
+      'git merge origin/main'
+    );
+  });
+
+  test('passes conflict_resolution into the runner settings', async () => {
+    const env = extEnv();
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.settingsFor('X1').conflict_resolution).toBe(true);
+  });
+
+  test('runs with the slot cap already full (human-click origin)', async () => {
+    const env = setup({
+      config: {
+        A1: { repo: '/repo', target_base: 'main' },
+        X1: { repo: '/repo', target_base: 'main', ready: false, blocked: true }
+      },
+      slots: 1,
+      externalPrs: { X1: EXT_ROW }
+    });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    await flush();
+    expect(env.scheduler.runningCount()).toBe(1);
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res.ok).toBe(true);
+    expect(env.scheduler.runningCount()).toBe(2);
+  });
+
+  test('refuses bead_running while an attempt of the bead is running', async () => {
+    const env = extEnv();
+    seedRunningAttempt(env.store, { status: 'running', repo: '/repo' });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res).toEqual({ ok: false, reason: 'bead_running' });
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual(['prev-1']);
+  });
+
+  test('refuses not_external when the registry does not know the bead', async () => {
+    const env = extEnv({ registry: false });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res).toEqual({ ok: false, reason: 'not_external' });
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+  });
+
+  test('refuses bd_snapshot_failed when bd cannot be read', async () => {
+    const env = extEnv({ bead: { throwOnSnapshotAt: 'all' } });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res).toEqual({ ok: false, reason: 'bd_snapshot_failed' });
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+  });
+
+  test('refuses worktree_missing when the delivering worktree is gone', async () => {
+    const env = extEnv();
+    env.worktree.exists.mockReturnValue(false);
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+  });
+
+  test('stamps workflow_mode=fast_track and reverts it when the session ends', async () => {
+    const env = extEnv();
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.bd.calls).toContainEqual({
+      method: 'setMetadata',
+      bead_id: 'X1',
+      key: 'workflow_mode',
+      value: 'fast_track'
+    });
+    env.runner.finish('X1', { success: true });
+    await flush();
+    await flush();
+    expect(env.bd.calls).toContainEqual({
+      method: 'unsetMetadata',
+      bead_id: 'X1',
+      key: 'workflow_mode'
+    });
+  });
+
+  test('records workflow_mode_record_failed and launches nothing when the stamp fails', async () => {
+    const env = extEnv({ bead: { throwOnSet: true } });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res).toEqual({ ok: false, reason: 'workflow_mode_record_failed' });
+    const a = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(a.status).toBe('failed');
+    expect(a.cause).toBe('workflow_mode_record_failed');
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('stamps the globally-filled exec keys and records them on the attempt', async () => {
+    const env = extEnv({
+      bead: { model: null, effort: null },
+      defaults: {
+        orchestration_model: 'sonnet',
+        orchestration_effort: 'high',
+        review_model: 'opus'
+      }
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    const a =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(a.exec_stamped_keys).toEqual([
+      'orchestration_model',
+      'orchestration_effort',
+      'review_model'
+    ]);
+    expect(a.model).toBe('sonnet');
+    expect(env.runner.settingsFor('X1').model).toBe('sonnet');
+  });
+
+  test('restores every written stamp when one exec key fails to stamp', async () => {
+    const env = extEnv({
+      bead: { model: null, effort: null, throwOnSetKey: 'review_model' },
+      defaults: {
+        orchestration_model: 'sonnet',
+        orchestration_effort: 'high',
+        review_model: 'opus'
+      }
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res).toEqual({ ok: false, reason: 'exec_stamp_failed' });
+    for (const key of [
+      'orchestration_model',
+      'orchestration_effort',
+      'review_model',
+      'workflow_mode'
+    ]) {
+      expect(env.bd.calls).toContainEqual({
+        method: 'unsetMetadata',
+        bead_id: 'X1',
+        key
+      });
+    }
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('closes a successful live resolution without touching the durable lane', async () => {
+    const notify = {
+      attemptStarted: vi.fn(),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn()
+    };
+    const env = extEnv({ notify });
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    env.runner.finish('X1', { success: true });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts[/** @type {string} */ (res.attempt_id)].status).toBe(
+      'done'
+    );
+    expect(q.pr_wait).toEqual([]);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(notify.prWaitEntered).not.toHaveBeenCalled();
+    expect(env.bd.calls).toContainEqual({
+      method: 'unsetMetadata',
+      bead_id: 'X1',
+      key: 'workflow_mode'
+    });
+  });
+
+  test('keeps the ordinary failure route when the resolution session fails', async () => {
+    const env = extEnv();
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    env.runner.finish('X1', { success: false, reason: 'nonzero_exit' });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts[/** @type {string} */ (res.attempt_id)].status).toBe(
+      'failed'
+    );
+    expect(q.pr_wait).toEqual([]);
+    expect(q.queue).toEqual([]);
+  });
+
+  test('recovers a restart-surviving resolution attempt as done, not into pr_wait', async () => {
+    const notify = {
+      attemptStarted: vi.fn(),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn()
+    };
+    const env = setup({
+      config: { X1: {} },
+      slots: 1,
+      notify,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'ext-1', bead_id: 'X1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'ext-1',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        target_base: 'main',
+        workflow_mode_prior: null,
+        exec_stamped_keys: ['review_model'],
+        exec_values: { review_model: 'opus' },
+        conflict_resolution: true,
+        external_conflict: true
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts['ext-1'].status).toBe('done');
+    expect(q.pr_wait).toEqual([]);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(notify.prWaitEntered).not.toHaveBeenCalled();
+    expect(env.bd.calls).toContainEqual({
+      method: 'unsetMetadata',
+      bead_id: 'X1',
+      key: 'review_model'
+    });
+    expect(env.bd.calls).toContainEqual({
+      method: 'unsetMetadata',
+      bead_id: 'X1',
+      key: 'workflow_mode'
+    });
   });
 });
 

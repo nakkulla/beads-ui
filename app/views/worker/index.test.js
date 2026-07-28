@@ -5808,7 +5808,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
 
   /**
    * @param {any} gate
-   * @param {{ external?: boolean }} [over]
+   * @param {{ external?: boolean, wt_present?: boolean, attempts?: Record<string, any> }} [over]
    * @returns {HTMLElement}
    */
   function mountRow(gate, over = {}) {
@@ -5816,11 +5816,14 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
+        attempts: over.attempts || {},
         pr_wait: [
           {
             bead_id: 'RD-1',
             added_at: 1,
-            ...(over.external === false ? {} : { external: true })
+            ...(over.external === false
+              ? {}
+              : { external: true, wt_present: over.wt_present !== false })
           }
         ],
         pr_observations: {
@@ -5914,15 +5917,54 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     expect(badgesOf(mount)).toContain('닫힘');
   });
 
-  test('disables 충돌 해소 on an external row and explains why', () => {
+  test('offers 충돌 해소 on an external row whose worktree is still there', () => {
     const mount = mountRow(CONFLICTING);
 
     const btn = /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-mini__merge')
     );
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent?.trim()).toBe('충돌 해소');
+    expect(btn.getAttribute('title')).toBe(
+      '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
+    );
+  });
+
+  test('disables 충돌 해소 when the external row lost its worktree', () => {
+    const mount = mountRow(CONFLICTING, { wt_present: false });
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
     expect(btn.disabled).toBe(true);
-    expect(btn.textContent?.trim()).not.toBe('충돌 해소');
-    expect(btn.getAttribute('title')).toContain('세션에서 직접 해소');
+    expect(btn.getAttribute('title')).toBe(
+      '워크트리 없음 — 세션에서 직접 해소하세요'
+    );
+  });
+
+  test('locks the external row while its resolution session runs', () => {
+    const mount = mountRow(CONFLICTING, {
+      attempts: {
+        c1: {
+          attempt_id: 'c1',
+          bead_id: 'RD-1',
+          status: 'running',
+          runner: 'claude',
+          model: 'opus',
+          session_id: 'sid-1',
+          started_at: Date.now() - 3000,
+          conflict_resolution: true
+        }
+      }
+    });
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute('title')).toBe(
+      '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
+    );
   });
 
   test('keeps 충돌 해소 clickable on a worker row', () => {
@@ -5933,5 +5975,23 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     );
     expect(btn.disabled).toBe(false);
     expect(btn.textContent?.trim()).toBe('충돌 해소');
+  });
+
+  test('marks an external card with the external modifier class', () => {
+    const mount = mountRow(OPEN_GREEN);
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(card.classList.contains('worker-mini--external')).toBe(true);
+  });
+
+  test('leaves a worker card without the external modifier class', () => {
+    const mount = mountRow(OPEN_GREEN, { external: false });
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(card.classList.contains('worker-mini--external')).toBe(false);
   });
 });
