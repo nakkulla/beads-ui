@@ -279,7 +279,7 @@ function runningTile(tile, now, selected_attempt = null) {
           ${conflict_badge
             ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
             : ''}
-          ${meta ? html`<span>${meta}</span>` : ''}
+          ${meta ? html`<span class="rtile__runner">${meta}</span>` : ''}
           ${usage_label
             ? html`<span class="worker-usage" title=${usageTooltip(tile.usage)}
                 >${usage_label}</span
@@ -287,6 +287,10 @@ function runningTile(tile, now, selected_attempt = null) {
             : ''}
         </div>`
       : ''}
+    <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일): 큐
+         스냅샷에는 페이즈명도 진행률도 없으므로 진행 바는 만들지 않는다.
+         일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->
+    ${paused ? '' : html`<div class="rtile__accent" aria-hidden="true"></div>`}
   </div>`;
 }
 

@@ -40,10 +40,10 @@ import { copyToClipboard } from '../../utils/clipboard.js';
 import { showToast } from '../../utils/toast.js';
 import { createReorderController } from '../reorder.js';
 import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
-import { paneTemplate } from './lanes.js';
+import { miniRow, paneTemplate } from './lanes.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
-import { lastAttemptUsage } from './usage.js';
+import { formatUsageTotal, lastAttemptUsage } from './usage.js';
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
@@ -233,6 +233,96 @@ function saveCandidateSort(mode) {
   } catch {
     /* ignore — a private-mode storage denial must not break the select */
   }
+}
+
+/**
+ * The viewport below which the Worker tab switches to the control-first mobile
+ * composition (UI-58y2). It matches the `@media (max-width: 640px)` block in
+ * `styles.css`: the layout is JS-composed (the "지금" panel is a RECOMBINATION of
+ * lanes, not a restyle of them), so the same boundary has to exist in both.
+ *
+ * @type {string}
+ */
+const MOBILE_QUERY = '(max-width: 640px)';
+
+/**
+ * Which mobile lanes are collapsed to a one-line strip, persisted under this
+ * localStorage key (`beads-ui.worker.*`, the tab's existing key pattern).
+ *
+ * @type {string}
+ */
+const LANE_COLLAPSE_KEY = 'beads-ui.worker.lane-collapsed';
+
+/**
+ * @typedef {{ queue: boolean, done: boolean }} LaneCollapse
+ */
+
+/**
+ * 대기·완료 both start collapsed: the whole point of the mobile layout is that
+ * "지금" and 후보 own the screen, and these two are the lanes a phone reader
+ * consults rather than works in.
+ *
+ * @type {LaneCollapse}
+ */
+const LANE_COLLAPSE_DEFAULT = { queue: true, done: true };
+
+/**
+ * Read the persisted collapse state. Anything unreadable falls back to the
+ * default rather than throwing (same defence as the display filter).
+ *
+ * @returns {LaneCollapse}
+ */
+function loadLaneCollapse() {
+  try {
+    const raw = window.localStorage.getItem(LANE_COLLAPSE_KEY);
+    if (!raw) {
+      return { ...LANE_COLLAPSE_DEFAULT };
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return { ...LANE_COLLAPSE_DEFAULT };
+    }
+    return {
+      queue:
+        typeof parsed.queue === 'boolean'
+          ? parsed.queue
+          : LANE_COLLAPSE_DEFAULT.queue,
+      done:
+        typeof parsed.done === 'boolean'
+          ? parsed.done
+          : LANE_COLLAPSE_DEFAULT.done
+    };
+  } catch {
+    return { ...LANE_COLLAPSE_DEFAULT };
+  }
+}
+
+/**
+ * @param {LaneCollapse} state
+ */
+function saveLaneCollapse(state) {
+  try {
+    window.localStorage.setItem(LANE_COLLAPSE_KEY, JSON.stringify(state));
+  } catch {
+    /* ignore — a private-mode storage denial must not break the accordion */
+  }
+}
+
+/**
+ * The one-line preview a collapsed strip carries: the first row's title, cut to
+ * a phone-width fragment. An empty lane previews nothing — the count already
+ * says 0.
+ *
+ * @param {any[]} rows
+ * @returns {string}
+ */
+function stripPreview(rows) {
+  const head = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+  if (!head) {
+    return '';
+  }
+  const title = typeof head.title === 'string' ? head.title : head.id || '';
+  return title.length > 22 ? `${title.slice(0, 22)}…` : title;
 }
 
 /**
@@ -580,6 +670,21 @@ export function createWorkerView(mount_element, options = {}) {
    */
   let candidate_sort = loadCandidateSort();
   /**
+   * Mobile lane collapse state (UI-58y2), restored at view creation.
+   *
+   * @type {LaneCollapse}
+   */
+  let lane_collapse = loadLaneCollapse();
+  /**
+   * Whether the control-first mobile composition is active (UI-58y2). A runtime
+   * without `matchMedia` (jsdom, very old browsers) stays on the desktop
+   * composition — the five-pane row is the layout that works without any media
+   * information at all.
+   *
+   * @type {boolean}
+   */
+  let is_mobile = false;
+  /**
    * Beads whose [머지] click has been sent but whose first progress snapshot has
    * not arrived yet (UI-raqh §4). It covers exactly that gap so the row reacts
    * to the click immediately; the server's own `merge_progress` supersedes it
@@ -598,6 +703,10 @@ export function createWorkerView(mount_element, options = {}) {
   const console_el = document.createElement('div');
   console_el.className = 'worker-console';
   const top_el = document.createElement('div');
+  // Named so the mobile block can pin it as the sticky ribbon (UI-58y2): the
+  // sticky element has to be this wrapper, not the bar inside it, or the ribbon
+  // unsticks as soon as its own parent scrolls past.
+  top_el.className = 'worker-top';
   const drawer_overlay_el = document.createElement('div');
   drawer_overlay_el.className = 'worker-drawer-overlay';
   drawer_overlay_el.hidden = true;
@@ -668,6 +777,17 @@ export function createWorkerView(mount_element, options = {}) {
     if (res && res.queue && queueStore) {
       queueStore.set(res.queue);
     }
+  }
+
+  /**
+   * The index that appends to the waiting queue — what both the collapsed-strip
+   * drop and [대기로 ↴] mean by "큐 말미" (UI-58y2).
+   *
+   * @returns {number}
+   */
+  function queueTailIndex() {
+    const entries = currentQueue().queue;
+    return Array.isArray(entries) ? entries.length : 0;
   }
 
   /**
@@ -1005,7 +1125,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null }> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -1322,6 +1442,35 @@ export function createWorkerView(mount_element, options = {}) {
           : MIN_SLOTS;
     const over_cap = live_count > slots;
 
+    const done_rows = toRows(q.done, 'done');
+    // 툴바 KPI "오늘 토큰" (UI-58y2 데스크톱 §툴바): 완료 레인의 행이 이미 들고
+    // 있는 마지막 attempt usage를 합산할 뿐이라 새 데이터 소스가 없다. 완료
+    // 목록 자체가 오늘의 범위이므로 별도 날짜 필터도 두지 않는다.
+    let token_in = 0;
+    let token_out = 0;
+    // 보고된 0과 아예 보고되지 않은 usage는 다른 사실이다 — 행 배지가 그 둘을
+    // 가르는 방식(`formatUsageTotal`의 토큰 필드 존재 검사)을 합계도 따른다.
+    let token_reported = false;
+    for (const row of done_rows) {
+      const u = row.usage;
+      if (u && typeof u === 'object') {
+        if (Number.isFinite(u.input_tokens)) {
+          token_in += u.input_tokens;
+          token_reported = true;
+        }
+        if (Number.isFinite(u.output_tokens)) {
+          token_out += u.output_tokens;
+          token_reported = true;
+        }
+      }
+    }
+    const token_total = token_reported
+      ? formatUsageTotal({
+          input_tokens: token_in,
+          output_tokens: token_out
+        })
+      : null;
+
     return {
       queue: q,
       idToTitle,
@@ -1363,7 +1512,8 @@ export function createWorkerView(mount_element, options = {}) {
           conflict_sessions.get(e.bead_id) || null
         )
       ),
-      done: toRows(q.done, 'done'),
+      done: done_rows,
+      token_total,
       cleanup_failures
     };
   }
@@ -1374,47 +1524,120 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function topTemplate(m) {
     const next_head = m.waiting.length > 0 ? m.waiting[0].id : '—';
+    const play = html`<button
+      type="button"
+      class="worker-play${m.queue.auto_advance ? ' is-active' : ''}"
+    >
+      ${m.queue.auto_advance ? '⏸ 일시정지' : '▶ 자동 진행'}
+    </button>`;
+    const overcap = m.over_cap
+      ? html`<span
+          class="worker-overcap"
+          title="수동 재개(▶)는 슬롯 cap을 초과할 수 있습니다 — 자동 진행은 cap을 지킵니다"
+          >cap 초과</span
+        >`
+      : '';
+    // 세 카운트는 데스크톱 KPI 줄과 모바일 리본이 함께 쓴다 — 같은 수를 두 번
+    // 정의하지 않기 위해 템플릿 하나로 둔다.
+    const counts = html`<span class="worker-kpi__chip worker-kpi__chip--running"
+        >실행 <b>${m.live_count}</b></span
+      >
+      <span class="worker-kpi__chip worker-kpi__chip--pr"
+        >PR 대기 <b>${m.pr_wait.length}</b></span
+      >
+      <span class="worker-kpi__chip worker-kpi__chip--done"
+        >오늘 완료 <b>${m.done.length}</b></span
+      >`;
+    const settings = html`<label class="worker-tgl worker-slots"
+        >동시 실행
+        <input
+          type="number"
+          class="worker-slots__input"
+          min=${MIN_SLOTS}
+          step="1"
+          .value=${String(m.slots)}
+          title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
+      /></label>
+      <button
+        type="button"
+        class="worker-exec-defaults-btn"
+        aria-haspopup="dialog"
+        aria-label="전역 실행 설정"
+        title="전역 실행 설정"
+      >
+        ⚙
+      </button>`;
+    const banners = bannersTemplate({
+      failure: m.failure,
+      cleanupFailures: m.cleanup_failures
+    });
+    if (is_mobile) {
+      // sticky 리본 (UI-58y2 §모바일 1)에는 자동 진행 토글과 세 카운트만 둔다.
+      // 슬롯·⚙는 아래 조작 줄로 내리고 배너는 리본 밖에 남긴다 — 고정되는 것은
+      // "항상 읽혀야 하는 한 줄"뿐이어야 하고, 배너가 같이 붙으면 스크롤할수록
+      // 화면이 줄어든다.
+      return html`<div class="worker-ribbon">
+          ${play}
+          <div class="worker-kpi worker-kpi--ribbon">${overcap}${counts}</div>
+        </div>
+        <div class="worker-ctrl worker-ctrl--mobile">
+          <div class="worker-ctrl__ops">${settings}</div>
+        </div>
+        ${banners}`;
+    }
+    // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
-        <button
-          type="button"
-          class="worker-play${m.queue.auto_advance ? ' is-active' : ''}"
-        >
-          ${m.queue.auto_advance ? '⏸ 일시정지' : '▶ 자동 진행'}
-        </button>
-        <span class="worker-stat"
-          >실행 <b>${m.live_count}</b> · 다음 <b>${next_head}</b></span
-        >
-        ${m.over_cap
-          ? html`<span
-              class="worker-overcap"
-              title="수동 재개(▶)는 슬롯 cap을 초과할 수 있습니다 — 자동 진행은 cap을 지킵니다"
-              >cap 초과</span
-            >`
-          : ''}
-        <label class="worker-tgl worker-slots"
-          >동시 실행
-          <input
-            type="number"
-            class="worker-slots__input"
-            min=${MIN_SLOTS}
-            step="1"
-            .value=${String(m.slots)}
-            title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
-        /></label>
-        <button
-          type="button"
-          class="worker-exec-defaults-btn"
-          aria-haspopup="dialog"
-          aria-label="전역 실행 설정"
-          title="전역 실행 설정"
-        >
-          ⚙
-        </button>
+        <div class="worker-ctrl__ops">${play}${settings}</div>
+        <div class="worker-kpi">
+          ${overcap}${counts}
+          ${m.token_total
+            ? html`<span
+                class="worker-kpi__chip worker-kpi__chip--tokens"
+                title="완료된 세션들의 토큰 합계 (입력+출력)"
+                >${m.token_total}</span
+              >`
+            : ''}
+          <span class="worker-kpi__next worker-stat"
+            >다음 <b>${next_head}</b></span
+          >
+        </div>
       </div>
-      ${bannersTemplate({
-        failure: m.failure,
-        cleanupFailures: m.cleanup_failures
-      })}`;
+      ${banners}`;
+  }
+
+  /**
+   * The mobile "지금" panel (UI-58y2 §모바일 2): 실행 중 타일과 PR 대기 행을 한
+   * 패널로 묶어 리본 바로 아래에 둔다. 둘 다 0건이면 패널 자체를 렌더하지
+   * 않는다 — 빈 관제 패널은 화면만 먹고 아무것도 말하지 않는다. 별도 상태 없이
+   * 기존 타일/mini 템플릿을 재조합할 뿐이다.
+   *
+   * @param {ReturnType<typeof buildModel>} m
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function nowPanelTemplate(m) {
+    if (m.running.length === 0 && m.pr_wait.length === 0) {
+      return '';
+    }
+    const live = m.running.some((r) => !r.paused);
+    return html`<section
+      class="worker-now${live ? ' worker-pane--live' : ''}"
+      id="worker-now"
+    >
+      <header class="worker-now__hd">
+        <span
+          class="worker-pane__dot worker-pane__dot--running"
+          aria-hidden="true"
+        ></span>
+        <span class="worker-now__title">지금</span>
+        <span class="worker-now__count"
+          >${m.running.length + m.pr_wait.length}</span
+        >
+      </header>
+      ${m.running.length > 0
+        ? runningGridTemplate(m.running, Date.now(), selected_attempt)
+        : ''}
+      ${m.pr_wait.map((it) => miniRow(it))}
+    </section>`;
   }
 
   /**
@@ -1488,17 +1711,47 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {import('lit-html').TemplateResult}
    */
   function lanesTemplate(m) {
+    const candidate_pane = paneTemplate({
+      id: 'worker-pane-candidate',
+      lane: 'candidate',
+      title: '후보 · Board 연동',
+      items: m.candidates,
+      src: true,
+      empty: '후보 없음',
+      header_control: candidateSortTemplate(),
+      controls: candidateControlsTemplate(m)
+    });
+    if (is_mobile) {
+      // 관제 우선 배치 (UI-58y2 §모바일): 지금 → 대기 → 후보 → 완료. 실행 중과
+      // PR 대기는 "지금" 패널이 가져가므로 레인으로 다시 그리지 않는다 — 같은
+      // bead가 두 곳에 보이는 것이 이 화면에서 가장 비싼 오해다.
+      return html`<div class="worker-lanes worker-lanes--mobile">
+        ${nowPanelTemplate(m)}
+        ${paneTemplate({
+          id: 'worker-pane-queue',
+          lane: 'queue',
+          title: '대기',
+          items: m.waiting,
+          empty: '드래그 또는 [대기로 ↴]로 배치',
+          collapsible: true,
+          collapsed: lane_collapse.queue,
+          preview: stripPreview(m.waiting)
+        })}
+        ${candidate_pane}
+        ${paneTemplate({
+          id: 'worker-pane-done',
+          lane: 'done',
+          title: '완료',
+          items: m.done,
+          empty: '완료 없음',
+          collapsible: true,
+          collapsed: lane_collapse.done,
+          preview: m.token_total || stripPreview(m.done)
+        })}
+      </div>`;
+    }
     return html`<div class="worker-lanes">
-      ${paneTemplate({
-        id: 'worker-pane-candidate',
-        lane: 'candidate',
-        title: '후보 · Board 연동',
-        items: m.candidates,
-        src: true,
-        empty: '후보 없음',
-        header_control: candidateSortTemplate(),
-        controls: candidateControlsTemplate(m)
-      })}
+      ${candidate_pane}
       ${paneTemplate({
         id: 'worker-pane-queue',
         lane: 'queue',
@@ -1511,6 +1764,7 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'running',
         title: `실행 중 · 슬롯 ${m.slots}`,
         items: m.running,
+        live: m.running.some((r) => !r.paused),
         body: runningGridTemplate(m.running, Date.now(), selected_attempt)
       })}
       ${paneTemplate({
@@ -1530,10 +1784,82 @@ export function createWorkerView(mount_element, options = {}) {
     </div>`;
   }
 
+  /**
+   * Adopt a new collapse state for one mobile lane: persist first, then
+   * re-render, so a reload shows exactly what the last tap produced.
+   *
+   * @param {'queue'|'done'} lane
+   */
+  function toggleLaneCollapse(lane) {
+    lane_collapse = { ...lane_collapse, [lane]: !lane_collapse[lane] };
+    saveLaneCollapse(lane_collapse);
+    doRender();
+  }
+
   function doRender() {
     const m = buildModel();
     render(topTemplate(m), top_el);
     render(lanesTemplate(m), lanes_el);
+  }
+
+  /**
+   * Publish the sticky app header's measured height as `--worker-ribbon-top`
+   * (UI-58y2). The mobile layout scrolls the PAGE, so the ribbon's sticky stop
+   * has to clear the header — and the header wraps to two rows on a phone, so
+   * its height cannot be a constant. Measuring is the only honest source.
+   */
+  function watchHeaderOffset() {
+    const header = document.querySelector('.app-header');
+    if (!header) {
+      return;
+    }
+    const apply = () => {
+      const height = Math.round(header.getBoundingClientRect().height);
+      console_el.style.setProperty('--worker-ribbon-top', `${height}px`);
+    };
+    apply();
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(apply);
+      ro.observe(header);
+      unsubscribers.push(() => ro.disconnect());
+    } else {
+      window.addEventListener('resize', apply);
+      unsubscribers.push(() => window.removeEventListener('resize', apply));
+    }
+  }
+
+  /**
+   * Track the mobile breakpoint (UI-58y2). Registered as an unsubscriber like
+   * every other live source so a destroyed view stops re-rendering; a runtime
+   * with no `matchMedia` simply never registers one and stays desktop.
+   */
+  function watchViewport() {
+    if (typeof window.matchMedia !== 'function') {
+      return;
+    }
+    const mql = window.matchMedia(MOBILE_QUERY);
+    is_mobile = !!mql.matches;
+    /** @param {any} ev */
+    const onViewportChange = (ev) => {
+      const next = !!(ev && typeof ev.matches === 'boolean'
+        ? ev.matches
+        : mql.matches);
+      if (next === is_mobile) {
+        return;
+      }
+      is_mobile = next;
+      doRender();
+    };
+    if (typeof mql.addEventListener === 'function') {
+      mql.addEventListener('change', onViewportChange);
+      unsubscribers.push(() =>
+        mql.removeEventListener('change', onViewportChange)
+      );
+    } else if (typeof mql.addListener === 'function') {
+      // Safari < 14 and jsdom shims that only carry the legacy API.
+      mql.addListener(onViewportChange);
+      unsubscribers.push(() => mql.removeListener(onViewportChange));
+    }
   }
 
   // --- Native drag/drop (no library), mirroring board.js conventions. ---
@@ -1667,6 +1993,12 @@ export function createWorkerView(mount_element, options = {}) {
       if (i >= 0) {
         index = i;
       }
+    }
+    // 접힌 스트립은 행을 하나도 그리지 않으므로 위 계산이 0(=큐 맨 앞)을 낸다.
+    // 스트립에 떨어뜨린 사람이 원한 것은 "대기에 넣기"이지 "다음으로 실행"이
+    // 아니므로, 버튼과 같은 큐 말미 의미로 맞춘다 (UI-58y2 §모바일 3).
+    if (pane.classList.contains('worker-pane--collapsed')) {
+      index = queueTailIndex();
     }
 
     if (to_lane === 'candidate') {
@@ -1857,6 +2189,32 @@ export function createWorkerView(mount_element, options = {}) {
       void setAutoAdvance(!currentQueue().auto_advance);
       return;
     }
+    // 접힌 레인 스트립 ↔ 펼침 (UI-58y2 §모바일 3/5).
+    const lane_toggle = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-pane__hd--toggle')
+    );
+    if (lane_toggle) {
+      const lane = lane_toggle.dataset.lane;
+      if (lane === 'queue' || lane === 'done') {
+        toggleLaneCollapse(lane);
+      }
+      return;
+    }
+    // [대기로 ↴]: 드래그와 같은 경로(worker-queue-place)로 큐 말미에 적재한다.
+    // 카드 기본 동작(상세 패널 열기)보다 먼저 처리해야 탭이 삼켜지지 않는다.
+    const place_btn = /** @type {HTMLButtonElement|null} */ (
+      target?.closest?.('.worker-card__place')
+    );
+    if (place_btn) {
+      const id = place_btn.dataset.beadId;
+      // 자격 없는 후보의 클릭은 여기서 끝난다 — 브라우저가 disabled 버튼의
+      // 클릭을 막아 주더라도, 적재 경로가 자격을 스스로 확인해야 드래그와
+      // 같은 규율이 된다.
+      if (id && !place_btn.disabled) {
+        void placeBead(id, queueTailIndex());
+      }
+      return;
+    }
     // Candidate filter chips live inside the pane; handle them before any row
     // handler so a click never falls through to the card default.
     const spec_chip = /** @type {HTMLElement|null} */ (
@@ -1982,6 +2340,9 @@ export function createWorkerView(mount_element, options = {}) {
   mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
   mount_element.addEventListener('click', /** @type {any} */ (onClick));
   mount_element.addEventListener('change', /** @type {any} */ (onChange));
+
+  watchViewport();
+  watchHeaderOffset();
 
   if (selectors) {
     unsubscribers.push(selectors.subscribe(doRender));
