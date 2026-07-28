@@ -102,7 +102,7 @@ export function dispositionNotes(input) {
  *     updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>
  *   },
  *   parked: ReturnType<typeof import('./revise-parked.js').createReviseParkedStore>,
- *   scheduler: { dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }> },
+ *   scheduler: { dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }> },
  *   locks: ReturnType<typeof import('./locks.js').createLockManager>,
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   notifyChanged?: (workspace: string) => void,
@@ -121,6 +121,10 @@ export function createReviseDisposition(deps) {
    * multi-minute session would dispatch a second one against the same bead.
    * A `fix` entry lives until its completion verdict; an `approve` entry only
    * spans its own write.
+   *
+   * The entry is RESERVED before the first `await`, not after the
+   * verification: two clicks arriving in the same tick would otherwise both
+   * pass a check taken before either had recorded itself, and both proceed.
    *
    * @type {Map<string, { kind: 'fix'|'approve', receipt: string|null, target_base: string, release: (() => void)|null }>}
    */
@@ -267,14 +271,66 @@ export function createReviseDisposition(deps) {
    * `auto_advance` OFF through the failure path, so leaving it off would end the
    * disposition with the queue still stopped — the exact state this feature
    * exists to leave behind.
+   *
+   * FAIL-VISIBLE: a persist that throws means the queue is still stopped, so
+   * the disposition did not achieve what it claims. The caller turns that into
+   * a refusal rather than reporting a success the user cannot see.
+   *
+   * @returns {boolean}
    */
   function resumeAutoAdvance() {
     try {
       deps.store.setAutoAdvance(workspace, true);
     } catch (err) {
       log('auto_advance resume failed for %s: %o', workspace, err);
+      return false;
     }
     notifyChanged(workspace);
+    return true;
+  }
+
+  /**
+   * Is a fix (and therefore the repo lease) currently held by any bead? Read
+   * off {@link in_flight} rather than `locks.isLocked`, because the lock
+   * manager drops its key entry only after the release chain drains a microtask
+   * later — a check right after a release would still read as busy.
+   *
+   * @returns {boolean}
+   */
+  function fixInFlight() {
+    for (const entry of in_flight.values()) {
+      if (entry.kind === 'fix') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Is a disposition session already running against this repo's shared
+   * checkout? Derived from the STORE, not from {@link in_flight}, so it
+   * survives a restart: the in-memory lease dies with the process while the
+   * `running` disposition attempt it was protecting does not.
+   *
+   * @returns {boolean}
+   */
+  function dispositionRunning() {
+    /** @type {Record<string, any>} */
+    let attempts;
+    try {
+      attempts = deps.store.snapshot(workspace).attempts || {};
+    } catch (err) {
+      log('disposition running probe failed for %s: %o', workspace, err);
+      // Unknown counts as busy — a fix that cannot see the lane must not
+      // launch a second editor of the shared checkout.
+      return true;
+    }
+    for (const attempt of Object.values(attempts)) {
+      if (attempt && attempt.status === 'running' && attempt.disposition) {
+        return true;
+      }
+    }
+    return false;
   }
 
   return {
@@ -288,71 +344,117 @@ export function createReviseDisposition(deps) {
       if (in_flight.has(bead_id)) {
         return refuse('action_in_flight');
       }
-      const verified = await deps.parked.verify(
-        workspace,
-        deps.store.snapshot(workspace),
-        bead_id
-      );
-      if (!verified.ok) {
-        return refuse(verified.reason);
-      }
-      const observation = verified.observation;
-      // Check-then-acquire with NO await between the two, so the check is
-      // authoritative in this single-threaded process.
-      if (deps.locks.isLocked(lease_key)) {
+      // Check and RESERVE in one synchronous run, BEFORE the first await: two
+      // clicks arriving in the same tick must not both get past this point.
+      // The reservation is also what keeps the lease acquisition below from
+      // ever queueing behind a live fix — a click that waits minutes on a lock
+      // is indistinguishable from a hung UI.
+      if (fixInFlight() || dispositionRunning()) {
         return refuse('lease_busy');
       }
-      const release = await deps.locks.acquire(lease_key);
-      in_flight.set(bead_id, {
+      /** @type {{ kind: 'fix'|'approve', receipt: string|null, target_base: string, release: (() => void)|null }} */
+      const reservation = {
         kind: 'fix',
-        receipt: observation.receipt,
-        target_base: observation.target_base,
-        release
-      });
-      /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
-      let dispatched;
+        receipt: null,
+        target_base: 'main',
+        release: null
+      };
+      in_flight.set(bead_id, reservation);
       try {
-        dispatched = await deps.scheduler.dispatchReviseFix(workspace, {
-          bead_id,
-          attempt_id: observation.attempt_id,
-          prompt: reviseFixPrompt({
+        reservation.release = await deps.locks.acquire(lease_key);
+        const verified = await deps.parked.verify(
+          workspace,
+          deps.store.snapshot(workspace),
+          bead_id
+        );
+        if (!verified.ok) {
+          releaseInFlight(bead_id);
+          return refuse(verified.reason);
+        }
+        const observation = verified.observation;
+        const entry = in_flight.get(bead_id);
+        if (entry) {
+          entry.receipt = observation.receipt;
+          entry.target_base = observation.target_base;
+        }
+        /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
+        let dispatched;
+        try {
+          dispatched = await deps.scheduler.dispatchReviseFix(workspace, {
             bead_id,
-            receipt: observation.receipt,
-            repo,
-            target_base: observation.target_base
-          })
-        });
+            attempt_id: observation.attempt_id,
+            prior_receipt: observation.receipt,
+            prompt: reviseFixPrompt({
+              bead_id,
+              receipt: observation.receipt,
+              repo,
+              target_base: observation.target_base
+            })
+          });
+        } catch (err) {
+          log('revise fix dispatch threw for %s: %o', bead_id, err);
+          dispatched = { ok: false, reason: 'error' };
+        }
+        if (!dispatched.ok) {
+          releaseInFlight(bead_id);
+          return refuse(dispatched.reason || 'dispatch_failed');
+        }
+        // The park is over as an observation the moment a session owns it.
+        deps.parked.invalidate(workspace, bead_id);
+        return dispatched;
       } catch (err) {
-        log('revise fix dispatch threw for %s: %o', bead_id, err);
-        dispatched = { ok: false, reason: 'error' };
-      }
-      if (!dispatched.ok) {
+        // Nothing below the reservation may leak the lease.
+        log('revise fix failed for %s: %o', bead_id, err);
         releaseInFlight(bead_id);
-        return refuse(dispatched.reason || 'dispatch_failed');
+        return refuse('error');
       }
-      // The park is over as an observation the moment a session owns it.
-      deps.parked.invalidate(workspace, bead_id);
-      return dispatched;
+    },
+
+    /**
+     * Release a bead's guard + lease without judging anything (§3.3). Every
+     * disposition termination that does NOT reach {@link complete} — a failed
+     * session, a spawn abort, a ⏸/■ halt — must call this, or the bead and the
+     * repo's whole fix lane stay fenced for the life of the process.
+     *
+     * @param {string} bead_id
+     */
+    release(bead_id) {
+      releaseInFlight(bead_id);
     },
 
     /**
      * The disposition session's completion verdict (§3.3), called by the
      * scheduler in place of the PR-existence check. Success requires ALL of:
-     * the receipt refreshed to a NEW `skipped@<40hex>`, the park left (status
-     * off `blocked`, `blocked_reason` gone), and the receipt commit published
+     * the receipt refreshed to a NEW `skipped@<40hex>`, the bead back at
+     * exactly `open` with no `blocked_reason`, and the receipt commit published
      * on the base's upstream. Anything else is a failure the banner reports.
+     *
+     * `open` is checked exactly, not merely "not blocked": the acceptance
+     * criterion is that the ORDINARY lane re-dispatches the implementation, and
+     * a `resolved`/`closed` bead never becomes ready again — that would end the
+     * disposition looking successful with the work silently dropped.
+     *
+     * `prior_receipt` and `target_base` come from the caller (which reads them
+     * off the durable attempt record) so the verdict survives a restart, where
+     * this module's in-memory entry is gone; the entry is only a fallback.
      *
      * The lease and the in-flight guard are released here whatever the verdict
      * — this is the end of the disposition either way.
      *
-     * @param {{ bead_id: string }} input
+     * @param {{ bead_id: string, prior_receipt?: string|null, target_base?: string|null }} input
      * @returns {Promise<{ ok: boolean, reason?: string }>}
      */
     async complete(input) {
       const bead_id = input.bead_id;
       const entry = in_flight.get(bead_id);
-      const prior_receipt = entry ? entry.receipt : null;
-      const target_base = entry ? entry.target_base : 'main';
+      const prior_receipt =
+        input.prior_receipt !== undefined
+          ? input.prior_receipt
+          : entry
+            ? entry.receipt
+            : null;
+      const target_base =
+        input.target_base || (entry ? entry.target_base : 'main');
       try {
         const back = await readBack(bead_id);
         if (!back.ok) {
@@ -367,7 +469,7 @@ export function createReviseDisposition(deps) {
         ) {
           return refuse('receipt_not_refreshed');
         }
-        if (back.status === 'blocked' || back.blocked_reason != null) {
+        if (back.status !== 'open' || back.blocked_reason != null) {
           return refuse('still_blocked');
         }
         const sha = receipt.slice(DISPOSITION_RECEIPT_PREFIX.length);
@@ -375,7 +477,6 @@ export function createReviseDisposition(deps) {
           return refuse('receipt_not_published');
         }
         deps.parked.invalidate(workspace, bead_id);
-        resumeAutoAdvance();
         return { ok: true };
       } finally {
         releaseInFlight(bead_id);
@@ -396,22 +497,23 @@ export function createReviseDisposition(deps) {
       if (in_flight.has(bead_id)) {
         return refuse('action_in_flight');
       }
-      const verified = await deps.parked.verify(
-        workspace,
-        deps.store.snapshot(workspace),
-        bead_id
-      );
-      if (!verified.ok) {
-        return refuse(verified.reason);
-      }
-      const observation = verified.observation;
+      // RESERVE before the first await, for the same reason `fix` does.
       in_flight.set(bead_id, {
         kind: 'approve',
-        receipt: observation.receipt,
-        target_base: observation.target_base,
+        receipt: null,
+        target_base: 'main',
         release: null
       });
       try {
+        const verified = await deps.parked.verify(
+          workspace,
+          deps.store.snapshot(workspace),
+          bead_id
+        );
+        if (!verified.ok) {
+          return refuse(verified.reason);
+        }
+        const observation = verified.observation;
         const tip = await baseTip(observation.target_base);
         if (!tip.ok) {
           return refuse(tip.reason);
@@ -440,11 +542,15 @@ export function createReviseDisposition(deps) {
         if (back.receipt !== receipt) {
           return refuse('receipt_not_refreshed');
         }
-        if (back.status === 'blocked' || back.blocked_reason != null) {
+        if (back.status !== 'open' || back.blocked_reason != null) {
           return refuse('still_blocked');
         }
         deps.parked.invalidate(workspace, bead_id);
-        resumeAutoAdvance();
+        // The unblock without the queue restart is only half the disposition,
+        // so a failed persist is a failed approve.
+        if (!resumeAutoAdvance()) {
+          return refuse('auto_advance_resume_failed');
+        }
         return { ok: true, sha: tip.sha };
       } finally {
         releaseInFlight(bead_id);

@@ -2266,7 +2266,7 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     ).toBeGreaterThan(0);
   });
 
-  test('resumption of auto_advance is the disposition dep’s call, not the scheduler’s', async () => {
+  test('resumes auto_advance so the ordinary lane re-dispatches the bead', async () => {
     const env = setup({
       config: {},
       slots: 1,
@@ -2277,9 +2277,194 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     env.runner.finish('B1', { success: true });
     await flush();
 
-    // The fake dep resumes nothing, so the scheduler must not have done it
-    // behind its back — the halt is the dep's to lift.
+    expect(env.store.snapshot(WS).auto_advance).toBe(true);
+  });
+
+  test('a failed workflow_mode revert blocks the success, fail-closed', async () => {
+    const env = setup({
+      config: { B1: { throwOnUnset: true } },
+      slots: 1,
+      disposition: { complete: async () => ({ ok: true }) }
+    });
+    const child = await dispatchDisposition(env);
+
+    env.runner.finish('B1', { success: true });
+    await flush();
+
+    const attempt = env.store.snapshot(WS).attempts[child];
+    expect(attempt.status).toBe('failed');
+    expect(attempt.cause).toBe('workflow_mode_revert_failed');
     expect(env.store.snapshot(WS).auto_advance).toBe(false);
+  });
+
+  test('gives the disposition guard back on every failing termination', async () => {
+    const release = vi.fn();
+    const env = setup({
+      config: {},
+      slots: 1,
+      disposition: {
+        complete: async () => ({ ok: false, reason: 'still_blocked' }),
+        release
+      }
+    });
+    await dispatchDisposition(env);
+
+    env.runner.finish('B1', { success: true });
+    await flush();
+
+    expect(release).toHaveBeenCalledWith('B1');
+  });
+
+  test('gives the disposition guard back when the session is discarded', async () => {
+    const release = vi.fn();
+    const env = setup({
+      config: {},
+      slots: 1,
+      disposition: { complete: vi.fn(), release }
+    });
+    const child = await dispatchDisposition(env);
+
+    await env.scheduler.stop(WS, child);
+    env.runner.finish('B1', { success: false, reason: 'killed' });
+    await flush();
+
+    expect(release).toHaveBeenCalledWith('B1');
+  });
+
+  test('reports a spawn abort as a refusal instead of a running session', async () => {
+    const env = setup({
+      config: {},
+      slots: 1,
+      makeRunner: () => ({
+        name: 'claude',
+        spawn() {
+          throw new Error('spawn failed');
+        }
+      }),
+      disposition: { complete: vi.fn(), release: vi.fn() }
+    });
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.place(WS, { expected_revision: rev, bead_id: 'B1' }).queue
+      .revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'p1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'p1',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        spec_review_stale: true,
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-park'
+      }
+    });
+
+    const res = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+
+    expect(res).toEqual({ ok: false, reason: 'spawn_failed' });
+  });
+
+  test('retries a failed resume ONCE as a fresh substitute session', async () => {
+    const release = vi.fn();
+    const env = setup({
+      config: {},
+      slots: 1,
+      disposition: { complete: vi.fn(), release }
+    });
+    const child = await dispatchDisposition(env);
+
+    env.runner.finish('B1', { success: false, reason: 'no_result' });
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts[child].cause).toBe('disposition_resume_failed:no_result');
+    const substitute = Object.values(q.attempts).find(
+      (/** @type {any} */ a) => a.resumed_from === child
+    );
+    expect(substitute).toMatchObject({
+      disposition: 'revise_fix',
+      disposition_resume: false,
+      status: 'running'
+    });
+    // The disposition is still in flight, so its guard must NOT have been
+    // handed back yet.
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  test('a substitute session that fails again takes the ordinary failure path', async () => {
+    const release = vi.fn();
+    const env = setup({
+      config: {},
+      slots: 1,
+      disposition: { complete: vi.fn(), release }
+    });
+    await dispatchDisposition(env);
+    env.runner.finish('B1', { success: false, reason: 'no_result' });
+    await flush();
+
+    env.runner.finish('B1', { success: false, reason: 'subtype' });
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    const substitute = /** @type {any} */ (
+      Object.values(q.attempts).find(
+        (/** @type {any} */ a) =>
+          a.disposition_resume === false && a.disposition
+      )
+    );
+    expect(substitute.cause).toBe('session_failed:subtype');
+    expect(release).toHaveBeenCalledWith('B1');
+  });
+
+  test('judges a restart-surviving disposition by its own verdict, not by a PR', async () => {
+    const complete = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: {},
+      slots: 1,
+      verifyOk: false,
+      probePid: () => ({ alive: false, started_at: null }),
+      disposition: { complete, release: vi.fn() }
+    });
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.place(WS, { expected_revision: rev, bead_id: 'B1' }).queue
+      .revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'd1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'd1',
+      patch: {
+        bead_id: 'B1',
+        status: 'running',
+        pid: 4242,
+        repo: '/repo',
+        target_base: 'main',
+        disposition: 'revise_fix',
+        disposition_receipt: 'codex@' + 'a'.repeat(40)
+      }
+    });
+    env.store.setAutoAdvance(WS, false);
+
+    await env.scheduler.reconcile(WS);
+    await flush();
+
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bead_id: 'B1',
+        prior_receipt: 'codex@' + 'a'.repeat(40),
+        target_base: 'main'
+      })
+    );
+    expect(env.store.snapshot(WS).attempts.d1.status).toBe('done');
   });
 
   test('a rejected verdict fails the attempt with the reason', async () => {
@@ -2300,18 +2485,19 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     expect(attempt.cause).toBe('disposition_failed:receipt_not_refreshed');
   });
 
-  test('a failed session takes the ordinary failure path', async () => {
+  test('a failed session never reaches the completion verdict', async () => {
     const complete = vi.fn();
-    const env = setup({ config: {}, slots: 1, disposition: { complete } });
-    const child = await dispatchDisposition(env);
+    const env = setup({
+      config: {},
+      slots: 1,
+      disposition: { complete, release: vi.fn() }
+    });
+    await dispatchDisposition(env);
 
     env.runner.finish('B1', { success: false, reason: 'subtype' });
     await flush();
 
     expect(complete).not.toHaveBeenCalled();
-    expect(env.store.snapshot(WS).attempts[child].cause).toBe(
-      'session_failed:subtype'
-    );
   });
 
   test('fails closed when no disposition dep is wired at all', async () => {

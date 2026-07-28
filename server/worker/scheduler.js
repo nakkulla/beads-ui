@@ -151,7 +151,7 @@ function staleDispatchPrompt(bead_id, stale) {
  * ADMITTED result may still carry `stale` (UI-dlim §3.1) — a non-blocking
  * observation that the spec moved after the receipt, which flags the badge and
  * the attempt and is injected into the session prompt.
- * @property {{ complete: (input: { workspace: string, attempt_id: string, bead_id: string, kind: string }) => Promise<{ ok: boolean, reason?: string }> }} [disposition]
+ * @property {{ complete: (input: { workspace: string, attempt_id: string, bead_id: string, kind: string, prior_receipt?: string|null, target_base?: string|null }) => Promise<{ ok: boolean, reason?: string }>, release?: (bead_id: string) => void }} [disposition]
  * Completion verdict for a DISPOSITION attempt (UI-hs11 §3.3). A disposition
  * session opens no PR, so the PR-existence check every implementation attempt
  * ends with would fail it as `no_pr`; this dep judges the disposition's own
@@ -799,6 +799,12 @@ export function createScheduler(deps) {
       // finalizing write and would otherwise strand a live tally forever.
       if (stopped.has(attempt_id)) {
         stopped.delete(attempt_id);
+        // A ⏸/■ of a disposition session ends that disposition: the guard and
+        // the repo lease it holds must come back, or the bead and every later
+        // fix in this repo stay fenced (UI-hs11 §3.3).
+        if (dispositionKindOf(workspace, attempt_id)) {
+          releaseDisposition(bead_id);
+        }
         const patch = usagePatch(workspace, attempt_id);
         if (patch.usage) {
           deps.store.updateAttempt(workspace, { attempt_id, patch });
@@ -960,7 +966,25 @@ export function createScheduler(deps) {
     verdict,
     kind
   ) {
+    const record = deps.store.snapshot(workspace).attempts[attempt_id] || {};
     if (!verdict.success) {
+      // A `--resume` launch whose transcript turned out to be gone fails before
+      // it can do anything; the spec's fallback is a substitute session
+      // carrying the same prompt (its lineage lives in the bead notes). Bounded
+      // to ONE retry by the flag the retry itself clears.
+      if (record.disposition_resume === true) {
+        const retried = await retryDispositionFresh(
+          workspace,
+          attempt_id,
+          bead_id,
+          record,
+          verdict
+        );
+        if (retried) {
+          return;
+        }
+      }
+      releaseDisposition(bead_id);
       await failAttempt(
         workspace,
         attempt_id,
@@ -983,7 +1007,12 @@ export function createScheduler(deps) {
           workspace,
           attempt_id,
           bead_id,
-          kind
+          kind,
+          // Read off the DURABLE record so the verdict is the same after a
+          // restart, where the disposition module holds nothing in memory.
+          prior_receipt: record.disposition_receipt ?? null,
+          target_base:
+            typeof record.target_base === 'string' ? record.target_base : 'main'
         });
       } catch (err) {
         log('disposition completion threw for %s: %o', attempt_id, err);
@@ -991,6 +1020,7 @@ export function createScheduler(deps) {
       }
     }
     if (!result.ok) {
+      releaseDisposition(bead_id);
       await failAttempt(
         workspace,
         attempt_id,
@@ -1002,10 +1032,28 @@ export function createScheduler(deps) {
       await tick(workspace);
       return;
     }
+    // FAIL-CLOSED, exactly like the normal completion path: a stray
+    // `fast_track` left on the bead would switch a later manual session to
+    // unattended, so a failed revert blocks the success.
+    let reverted = true;
     try {
       await revertWorkflowMode(bead_id, prior);
     } catch (err) {
       log('workflow_mode revert failed after disposition %s: %o', bead_id, err);
+      reverted = false;
+    }
+    if (!reverted) {
+      releaseDisposition(bead_id);
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        'workflow_mode_revert_failed'
+      );
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
     }
     await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
     // The disposition writes `open` itself; this only covers a session that
@@ -1015,8 +1063,110 @@ export function createScheduler(deps) {
       attempt_id,
       patch: { status: 'done', finished_at: now() }
     });
+    // Resuming the queue is the LAST step, after the metadata is restored: the
+    // acceptance criterion is that the ordinary lane re-dispatches this bead,
+    // and it must not do so against a half-restored bead. A persist failure
+    // here means the disposition did not achieve its point, so it fails.
+    let resumed = true;
+    try {
+      deps.store.setAutoAdvance(workspace, true);
+    } catch (err) {
+      log('auto_advance resume failed after disposition %s: %o', bead_id, err);
+      resumed = false;
+    }
+    if (!resumed) {
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        'disposition_failed:auto_advance_resume_failed'
+      );
+    }
     notifyChanged(workspace);
     await tick(workspace);
+  }
+
+  /**
+   * Give a disposition's per-Bead guard and per-repo lease back (UI-hs11
+   * §3.3). Every termination that does not reach the completion verdict must
+   * call this, or the bead — and the repo's whole fix lane — stays fenced for
+   * the life of the process.
+   *
+   * @param {string} bead_id
+   */
+  function releaseDisposition(bead_id) {
+    if (!deps.disposition || typeof deps.disposition.release !== 'function') {
+      return;
+    }
+    try {
+      deps.disposition.release(bead_id);
+    } catch (err) {
+      log('disposition release failed for %s: %o', bead_id, err);
+    }
+  }
+
+  /**
+   * Relaunch a failed `--resume` disposition as a FRESH substitute session
+   * (UI-hs11 §3.3 fallback). The worktree and the session id can both still be
+   * present while the transcript itself is gone, in which case the resume dies
+   * without doing anything — indistinguishable from a session that ran and
+   * failed, so the retry is attempted once for both and the flag on the child
+   * (`disposition_resume:false`) is what stops a second one.
+   *
+   * The failed ancestor is recorded terminally first, because the relaunch
+   * links to it through `resumed_from` and the guards read that chain.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {any} record - The failed attempt.
+   * @param {RunnerVerdict} verdict
+   * @returns {Promise<boolean>} Whether a substitute session was launched.
+   */
+  async function retryDispositionFresh(
+    workspace,
+    attempt_id,
+    bead_id,
+    record,
+    verdict
+  ) {
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        status: 'failed',
+        cause: `disposition_resume_failed:${verdict.reason}`,
+        finished_at: now()
+      }
+    });
+    /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
+    let relaunched;
+    try {
+      relaunched = await dispatchReviseFix(workspace, {
+        bead_id,
+        attempt_id,
+        prompt:
+          typeof record.disposition_prompt === 'string' &&
+          record.disposition_prompt.length > 0
+            ? record.disposition_prompt
+            : defaultTaskPrompt(bead_id),
+        prior_receipt: record.disposition_receipt ?? null,
+        resume: false
+      });
+    } catch (err) {
+      log('disposition substitute launch threw for %s: %o', bead_id, err);
+      relaunched = { ok: false, reason: 'error' };
+    }
+    if (!relaunched.ok) {
+      log(
+        'disposition substitute launch refused for %s: %s',
+        bead_id,
+        relaunched.reason
+      );
+      return false;
+    }
+    notifyChanged(workspace);
+    return true;
   }
 
   /**
@@ -1081,6 +1231,34 @@ export function createScheduler(deps) {
     const bead_id = attempt.bead_id;
     const prior = attempt.workflow_mode_prior ?? null;
     const repo = typeof attempt.repo === 'string' ? attempt.repo : '';
+    // A DISPOSITION session that outlived a restart is judged by its own
+    // verdict, never by the PR observation (UI-hs11 §3.3): it opens no PR, so
+    // the branch below would fail every successful repair as `pr_missing`.
+    const kind =
+      typeof attempt.disposition === 'string' && attempt.disposition.length > 0
+        ? attempt.disposition
+        : null;
+    if (kind) {
+      // No claim is taken here, unlike the branch below: the disposition path
+      // owns its own relaunch (which takes the claim itself), and a claim
+      // released around it would drop the NEW session's fence. Nothing can
+      // re-dispatch this bead meanwhile either — the park left `auto_advance`
+      // off, and turning it back on is the last step of a successful verdict.
+      await onDispositionDone(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        /** @type {any} */ ({
+          success: true,
+          reason: 'reconciled',
+          exit: null,
+          blocked: false
+        }),
+        kind
+      );
+      return;
+    }
     claimed.add(bead_id);
     try {
       /** @type {{ ok: boolean, reason: string, pr_url?: string|null }} */
@@ -1551,6 +1729,10 @@ export function createScheduler(deps) {
    *   conflict_resolution?: boolean,
    *   disposition?: string|null
    * }} input
+   * @returns {Promise<{ ok: boolean, reason?: string }>} Whether the session
+   * actually started. A spawn abort is REPORTED rather than swallowed: the
+   * relaunch callers hand their verdict to a click that would otherwise be told
+   * a session is running when none is.
    */
   async function launchSession(input) {
     const {
@@ -1613,7 +1795,7 @@ export function createScheduler(deps) {
       }
       claimed.delete(bead_id);
       notifyChanged(workspace);
-      return;
+      return { ok: false, reason: 'spawn_failed' };
     }
 
     // Fill the runtime snapshot now that the process exists (spec §5.2). The
@@ -1685,6 +1867,7 @@ export function createScheduler(deps) {
     handle.done.then((verdict) =>
       onSessionDone(workspace, attempt_id, bead_id, doneSnap, prior_wf, verdict)
     );
+    return { ok: true };
   }
 
   /**
@@ -1898,7 +2081,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {any} prior - The source attempt record (guards already passed).
-   * @param {{ prompt: string, conflict_resolution: boolean, disposition?: string|null, cwd?: string|null, resume?: boolean }} options
+   * @param {{ prompt: string, conflict_resolution: boolean, disposition?: string|null, disposition_receipt?: string|null, cwd?: string|null, resume?: boolean }} options
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function relaunchFromAttempt(workspace, prior, options) {
@@ -1950,6 +2133,11 @@ export function createScheduler(deps) {
         resumed_from: attempt_id,
         conflict_resolution: options.conflict_resolution,
         disposition: options.disposition ?? null,
+        disposition_receipt: options.disposition_receipt ?? null,
+        disposition_resume: options.disposition
+          ? options.resume !== false
+          : false,
+        disposition_prompt: options.disposition ? options.prompt : null,
         status: 'running',
         pid: null
       }
@@ -2046,7 +2234,7 @@ export function createScheduler(deps) {
         : '');
     const resume_session_id =
       options.resume === false ? null : prior.session_id;
-    await launchSession({
+    const launched = await launchSession({
       workspace,
       attempt_id: new_attempt_id,
       bead_id,
@@ -2072,6 +2260,9 @@ export function createScheduler(deps) {
       conflict_resolution: options.conflict_resolution,
       disposition: options.disposition ?? null
     });
+    if (!launched.ok) {
+      return { ok: false, reason: launched.reason || 'spawn_failed' };
+    }
 
     return { ok: true, attempt_id: new_attempt_id };
   }
@@ -2094,7 +2285,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
@@ -2127,11 +2318,17 @@ export function createScheduler(deps) {
         : false;
     const has_session =
       typeof prior.session_id === 'string' && prior.session_id.length > 0;
-    const resume = wt_present && has_session;
+    // `input.resume === false` is the substitute-session retry: the first
+    // launch's `--resume` found no transcript, so this one starts fresh.
+    const resume = input.resume !== false && wt_present && has_session;
     return relaunchFromAttempt(workspace, prior, {
       prompt,
       conflict_resolution: false,
       disposition: 'revise_fix',
+      disposition_receipt:
+        input.prior_receipt !== undefined
+          ? input.prior_receipt
+          : (prior.disposition_receipt ?? null),
       // Resuming needs the ORIGINAL cwd; a fresh session goes straight to the
       // shared checkout the repair is committed on.
       cwd: resume

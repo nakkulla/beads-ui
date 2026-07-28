@@ -417,12 +417,18 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     notify,
     disposition: {
       /**
-       * @param {{ workspace: string, attempt_id: string, bead_id: string, kind: string }} input
+       * @param {{ workspace: string, attempt_id: string, bead_id: string, kind: string, prior_receipt?: string|null, target_base?: string|null }} input
        */
       complete(input) {
         return reviseDisposition
           ? reviseDisposition.complete(input)
           : Promise.resolve({ ok: false, reason: 'no_disposition_dep' });
+      },
+      /**
+       * @param {string} bead_id
+       */
+      release(bead_id) {
+        reviseDisposition?.release(bead_id);
       }
     },
     probePid: options.probePid || defaultProbePid,

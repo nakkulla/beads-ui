@@ -53,7 +53,7 @@ function harness(over = {}) {
           }
         };
         for (const key of f.unset || []) {
-          delete /** @type {any} */ (issue.metadata)[key];
+          delete (/** @type {any} */ (issue.metadata)[key]);
         }
       }
     )
@@ -113,8 +113,64 @@ describe('revise disposition — fix', () => {
     expect(h.scheduler.dispatchReviseFix).toHaveBeenCalledWith('/ws', {
       bead_id: 'UI-1',
       attempt_id: 'a1',
+      prior_receipt: `codex@${OLD_SHA}`,
       prompt: expect.stringContaining('finding 수용')
     });
+  });
+
+  test('refuses while a disposition attempt is still running in the store', async () => {
+    const h = harness();
+    h.store.snapshot.mockReturnValue(
+      /** @type {any} */ ({
+        revision: 0,
+        queue: [],
+        attempts: {
+          d1: { attempt_id: 'd1', status: 'running', disposition: 'revise_fix' }
+        }
+      })
+    );
+
+    const result = await h.disposition.fix('UI-2');
+
+    expect(result).toEqual({ ok: false, reason: 'lease_busy' });
+    expect(h.scheduler.dispatchReviseFix).not.toHaveBeenCalled();
+  });
+
+  test('concurrent fix and approve clicks let exactly one through', async () => {
+    const h = harness();
+
+    const [fixed, approved] = await Promise.all([
+      h.disposition.fix('UI-1'),
+      h.disposition.approve('UI-1')
+    ]);
+
+    const ran = [fixed, approved].filter((r) => r.ok);
+    expect(ran.length).toBe(1);
+    expect([fixed, approved].map((r) => r.reason).filter(Boolean)).toEqual([
+      'action_in_flight'
+    ]);
+  });
+
+  test('concurrent fix clicks on different beads let exactly one through', async () => {
+    const h = harness();
+
+    const results = await Promise.all([
+      h.disposition.fix('UI-1'),
+      h.disposition.fix('UI-2')
+    ]);
+
+    expect(results.filter((r) => r.ok).length).toBe(1);
+    expect(results.filter((r) => r.reason === 'lease_busy').length).toBe(1);
+  });
+
+  test('releases the guard and the lease when a session halt reports it', async () => {
+    const h = harness();
+
+    await h.disposition.fix('UI-1');
+    h.disposition.release('UI-1');
+    const again = await h.disposition.fix('UI-1');
+
+    expect(again).toMatchObject({ ok: true });
   });
 
   test('refuses a bead the click-time re-verification no longer finds parked', async () => {
@@ -185,7 +241,54 @@ describe('revise disposition — completion verdict', () => {
     const result = await h.disposition.complete({ bead_id: 'UI-1' });
 
     expect(result).toEqual({ ok: true });
-    expect(h.store.setAutoAdvance).toHaveBeenCalledWith('/ws', true);
+  });
+
+  test('leaves auto_advance to the caller, which resumes it after restoring metadata', async () => {
+    const h = harness();
+    await h.disposition.fix('UI-1');
+    h.setIssue({
+      status: 'open',
+      metadata: { spec_review: `skipped@${FIX_SHA}` }
+    });
+
+    await h.disposition.complete({ bead_id: 'UI-1' });
+
+    expect(h.store.setAutoAdvance).not.toHaveBeenCalled();
+  });
+
+  test('rejects a bead that ended resolved or closed instead of open', async () => {
+    const h = harness();
+    await h.disposition.fix('UI-1');
+    h.setIssue({
+      status: 'resolved',
+      metadata: { spec_review: `skipped@${FIX_SHA}` }
+    });
+
+    const result = await h.disposition.complete({ bead_id: 'UI-1' });
+
+    expect(result).toEqual({ ok: false, reason: 'still_blocked' });
+  });
+
+  test('judges against the caller-supplied receipt so a restart still decides', async () => {
+    const h = harness();
+    h.setIssue({
+      status: 'open',
+      metadata: { spec_review: `skipped@${FIX_SHA}` }
+    });
+
+    const stale = await h.disposition.complete({
+      bead_id: 'UI-1',
+      prior_receipt: `skipped@${FIX_SHA}`,
+      target_base: 'main'
+    });
+    const fresh = await h.disposition.complete({
+      bead_id: 'UI-1',
+      prior_receipt: `codex@${OLD_SHA}`,
+      target_base: 'main'
+    });
+
+    expect(stale).toEqual({ ok: false, reason: 'receipt_not_refreshed' });
+    expect(fresh).toEqual({ ok: true });
   });
 
   test('rejects a session that never refreshed the receipt', async () => {
@@ -274,6 +377,20 @@ describe('revise disposition — approve', () => {
     await h.disposition.approve('UI-1');
 
     expect(h.store.setAutoAdvance).toHaveBeenCalledWith('/ws', true);
+  });
+
+  test('reports a failed auto_advance persist instead of claiming success', async () => {
+    const h = harness();
+    h.store.setAutoAdvance.mockImplementation(() => {
+      throw new Error('disk full');
+    });
+
+    const result = await h.disposition.approve('UI-1');
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'auto_advance_resume_failed'
+    });
   });
 
   test('dispatches no session at all', async () => {
