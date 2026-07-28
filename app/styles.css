@@ -2808,6 +2808,20 @@ html[data-theme='dark'] {
   font-family: var(--font-mono);
 }
 
+/* verify 실행의 전체 출력 로그 파일 경로 (UI-0x54). tail은 캡이 있어 실패 원인을
+   담지 못할 수 있으므로, 사람이 열어볼 절대 경로를 한 줄로 보여준다. 경로는
+   잘리면 쓸모가 없으니 말줄임 대신 줄바꿈한다. */
+.worker-banner__log-path {
+  margin-top: var(--sp-4);
+  font-size: var(--fs-chip);
+  opacity: 0.85;
+  word-break: break-all;
+}
+
+.worker-banner__log-path code {
+  font-family: var(--font-mono);
+}
+
 /* 실패한 verify 명령의 출력 tail (UI-qult §1). 기본은 접힘이고, 펼쳤을 때도
    배너가 화면을 삼키지 않도록 높이를 묶고 내부 스크롤로 보낸다. */
 .worker-banner__tail {

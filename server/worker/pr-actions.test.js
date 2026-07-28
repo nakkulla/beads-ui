@@ -118,7 +118,7 @@ function seedStore(options = {}) {
  *   checks?: any,
  *   store?: any,
  *   verify?: { cmd: string[], timeout_ms: number, source: 'config' }|null,
- *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string }>,
+ *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string }>,
  *   deploy?: { cmd: string[], timeout_ms: number, detached: boolean }|null,
  *   deploySpawn?: 'ok'|'fail'|'hang'|'error'|'throw',
  *   gitFail?: (args: string[]) => boolean,
@@ -790,6 +790,49 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     expect(h.store.snapshot(WS).cleanup_failed[BEAD].output_tail).toBe(
       'FAIL test/x.test.js\nrg: command not found'
     );
+  });
+
+  test('records the full verify log path on a post-merge failure (UI-0x54)', async () => {
+    const h = makeActions({
+      verify: {
+        cmd: ['npm', 'test'],
+        timeout_ms: 1000,
+        source: /** @type {const} */ ('config')
+      },
+      verifyResults: [
+        { ok: true, reason: 'ok' },
+        {
+          ok: false,
+          reason: 'verify_cmd_failed',
+          log_path: '/state/bdui/ws-abc/verify-logs/verify-UI-1-abc1234-17.log'
+        }
+      ]
+    });
+
+    await h.actions.merge(BEAD);
+    h.store.__clearCacheForTest();
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD].log_path).toBe(
+      '/state/bdui/ws-abc/verify-logs/verify-UI-1-abc1234-17.log'
+    );
+  });
+
+  test('leaves the log path absent when the verification wrote no log', async () => {
+    const h = makeActions({
+      verify: {
+        cmd: ['npm', 'test'],
+        timeout_ms: 1000,
+        source: /** @type {const} */ ('config')
+      },
+      verifyResults: [
+        { ok: true, reason: 'ok' },
+        { ok: false, reason: 'verify_cmd_failed' }
+      ]
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD].log_path).toBeUndefined();
   });
 
   test('leaves the output tail absent when the verification reports none', async () => {

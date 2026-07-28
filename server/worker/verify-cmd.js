@@ -26,6 +26,7 @@ import { spawn } from 'node:child_process';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { debug } from '../logging.js';
+import { verifyLogDir } from './state-paths.js';
 
 const log = debug('worker:verify-cmd');
 
@@ -188,6 +189,184 @@ const TAIL_MAX_LINES = 100;
 const TAIL_MAX_CHARS = 8192;
 
 /**
+ * Hard per-file cap on a preserved verify log (UI-0x54). Output past it is
+ * dropped rather than truncating the FRONT: the tail already survives in
+ * `queue.json`, so what the log file exists to keep is the beginning — the
+ * failure summary a long runner prints before the rest of its output.
+ *
+ * @type {number}
+ */
+const LOG_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * How many verify logs a workspace keeps. Every run writes one (a passing run
+ * is the comparison baseline for the next failure), so rotation — not
+ * selective writing — is what bounds the directory.
+ *
+ * @type {number}
+ */
+const LOG_KEEP = 20;
+
+/**
+ * The one line appended when {@link LOG_MAX_BYTES} was hit, so a truncated log
+ * cannot be misread as a complete one.
+ *
+ * @type {string}
+ */
+const LOG_TRUNCATED_MARKER = `\n[bdui] output truncated at ${LOG_MAX_BYTES} bytes — the rest of this run's output was dropped.\n`;
+
+/**
+ * Where a verify run's full output is preserved (UI-0x54). Explicit because
+ * `runVerifyCmd`'s `cwd` is a throwaway detached worktree that cannot name a
+ * stable state directory; a caller that omits this — the shared deploy path —
+ * writes no log at all.
+ *
+ * @typedef {Object} VerifyLogContext
+ * @property {string} workspace_root - The REPO root the log dir is keyed on
+ * (never the detached worktree `cwd`).
+ * @property {string} bead_id
+ * @property {string} sha
+ * @property {number} started_at_ms - Run start, which is also the filename's
+ * timestamp component.
+ */
+
+/**
+ * Delete the oldest logs so the directory holds at most {@link LOG_KEEP} files
+ * once the run about to start has added its own. Best-effort throughout: a
+ * directory that cannot be listed or a file that cannot be removed only means
+ * this run skips the pruning.
+ *
+ * @param {typeof import('node:fs')} fs
+ * @param {string} dir
+ */
+function rotateVerifyLogs(fs, dir) {
+  /** @type {{ file: string, mtime_ms: number }[]} */
+  const entries = [];
+  /** @type {string[]} */
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith('verify-') || !name.endsWith('.log')) {
+      continue;
+    }
+    const file = path.join(dir, name);
+    try {
+      entries.push({ file, mtime_ms: fs.statSync(file).mtimeMs });
+    } catch {
+      // Vanished or unreadable — nothing to rotate.
+    }
+  }
+  const excess = entries.length - (LOG_KEEP - 1);
+  if (excess <= 0) {
+    return;
+  }
+  entries.sort((a, b) => a.mtime_ms - b.mtime_ms);
+  for (const entry of entries.slice(0, excess)) {
+    try {
+      fs.rmSync(entry.file, { force: true });
+    } catch {
+      // Best-effort rotation.
+    }
+  }
+}
+
+/**
+ * Open the full-output log for one verify run.
+ *
+ * Fail-quiet by construction: a null return (the open failed) means the run
+ * simply goes unlogged, and a failure at any later stage clears the path so the
+ * result never points at a file that may be incomplete.
+ *
+ * @param {VerifyLogContext} log_context
+ * @param {typeof import('node:fs')} fs
+ * @returns {{ write: (chunk: string) => void, finish: () => string|null }|null}
+ */
+function openVerifyLog(log_context, fs) {
+  const dir = verifyLogDir(log_context.workspace_root);
+  const safe_bead = String(log_context.bead_id || 'bead').replace(
+    /[^A-Za-z0-9._-]/g,
+    '_'
+  );
+  const sha7 = String(log_context.sha || '').slice(0, 7);
+  const file = path.join(
+    dir,
+    `verify-${safe_bead}-${sha7}-${log_context.started_at_ms}.log`
+  );
+  /** @type {number} */
+  let fd;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    rotateVerifyLogs(fs, dir);
+    fd = fs.openSync(file, 'w');
+  } catch (err) {
+    log('verify log open failed for %s: %s', file, errorDetail(err));
+    return null;
+  }
+  let written = 0;
+  let truncated = false;
+  let failed = false;
+  let closed = false;
+  return {
+    /**
+     * @param {string} chunk
+     */
+    write(chunk) {
+      if (failed || closed) {
+        return;
+      }
+      const buf = Buffer.from(chunk, 'utf8');
+      const room = LOG_MAX_BYTES - written;
+      if (buf.length > room) {
+        truncated = true;
+      }
+      if (room <= 0) {
+        return;
+      }
+      const slice = buf.length > room ? buf.subarray(0, room) : buf;
+      try {
+        fs.writeSync(fd, slice);
+        written += slice.length;
+      } catch (err) {
+        failed = true;
+        log('verify log write failed for %s: %s', file, errorDetail(err));
+      }
+    },
+
+    /**
+     * Flush the truncation marker and close. Returns the log path ONLY when
+     * every stage succeeded.
+     *
+     * @returns {string|null}
+     */
+    finish() {
+      if (closed) {
+        return null;
+      }
+      closed = true;
+      if (truncated && !failed) {
+        try {
+          fs.writeSync(fd, Buffer.from(LOG_TRUNCATED_MARKER, 'utf8'));
+        } catch (err) {
+          failed = true;
+          log('verify log write failed for %s: %s', file, errorDetail(err));
+        }
+      }
+      try {
+        fs.closeSync(fd);
+      } catch (err) {
+        failed = true;
+        log('verify log close failed for %s: %s', file, errorDetail(err));
+      }
+      return failed ? null : file;
+    }
+  };
+}
+
+/**
  * @typedef {Object} VerifyCmdResult
  * @property {boolean} ok - Exit 0 within the deadline.
  * @property {'ok'|'verify_cmd_failed'|'verify_cmd_timeout'|'verify_cmd_spawn_error'|'verify_sha_unavailable'|'verify_worktree_failed'} reason
@@ -200,6 +379,10 @@ const TAIL_MAX_CHARS = 8192;
  * reading a terminal would have seen. Present only on `verify_cmd_failed` /
  * `verify_cmd_timeout` with non-empty output; absent on success, on a spawn
  * error (nothing ran), and on a run that printed nothing.
+ * @property {string} [log_path] - Absolute path to the run's FULL preserved
+ * output (UI-0x54). Present only when a `log_context` was given AND every log
+ * stage — open, writes, close — succeeded; a path to a possibly incomplete file
+ * is worse than none.
  */
 
 /**
@@ -209,7 +392,9 @@ const TAIL_MAX_CHARS = 8192;
  *   cwd: string,
  *   cmd: string[],
  *   timeout_ms: number,
- *   spawn_impl?: typeof spawn
+ *   spawn_impl?: typeof spawn,
+ *   log_context?: VerifyLogContext|null,
+ *   fs_impl?: typeof import('node:fs')
  * }} input
  * @returns {Promise<VerifyCmdResult>}
  */
@@ -245,6 +430,13 @@ export function runVerifyCmd(input) {
       return;
     }
 
+    // The full-output log runs ALONGSIDE the rolling tail window (UI-0x54):
+    // the window keeps the end for `queue.json`, the file keeps everything for
+    // a human. Absent `log_context` (the shared deploy path) there is no file.
+    const log_writer = input.log_context
+      ? openVerifyLog(input.log_context, input.fs_impl || nodeFs)
+      : null;
+
     // ONE shared buffer for both streams: a verify failure is read as a
     // terminal transcript, and collecting the two streams separately would
     // reorder the stderr line against the stdout line that explains it.
@@ -258,6 +450,9 @@ export function runVerifyCmd(input) {
       }
       stream.setEncoding('utf8');
       stream.on('data', (/** @type {string} */ chunk) => {
+        if (log_writer) {
+          log_writer.write(chunk);
+        }
         captured += chunk;
         if (captured.length > TAIL_WINDOW) {
           captured = captured.slice(captured.length - TAIL_WINDOW);
@@ -323,7 +518,10 @@ export function runVerifyCmd(input) {
       if (timer) {
         clearTimeout(timer);
       }
-      resolve(result);
+      // The path is only attached once the file is fully flushed and closed —
+      // and never at the cost of the verdict, which is already decided here.
+      const log_path = log_writer ? log_writer.finish() : null;
+      resolve(log_path ? { ...result, log_path } : result);
     };
 
     child.on('error', () => {
@@ -461,6 +659,10 @@ function withLifecycleMutex(key, fn) {
  * happens. The caller binds the returned result to `sha` — a result is only
  * ever valid for the commit it ran on.
  *
+ * The run's FULL output is preserved under the repo's own state dir and
+ * returned as `log_path` (UI-0x54): the worktree it ran in is gone by the time
+ * anyone reads the failure, and the tail in `queue.json` is capped.
+ *
  * @param {{
  *   repo: string,
  *   bead_id: string,
@@ -474,7 +676,8 @@ function withLifecycleMutex(key, fn) {
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   git: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   spawn_impl?: typeof spawn
+ *   spawn_impl?: typeof spawn,
+ *   fs_impl?: typeof import('node:fs')
  * }} input
  * @returns {Promise<VerifyCmdResult>}
  */
@@ -529,7 +732,16 @@ export async function runVerifyAtSha(input) {
         cwd: wt.path,
         cmd: input.cmd,
         timeout_ms: input.timeout_ms,
-        spawn_impl: input.spawn_impl
+        spawn_impl: input.spawn_impl,
+        // `cwd` is the detached worktree, which is deleted in the `finally`
+        // below — the log has to be keyed on the REPO instead (UI-0x54).
+        log_context: {
+          workspace_root: input.repo,
+          bead_id: input.bead_id,
+          sha: input.sha,
+          started_at_ms: Date.now()
+        },
+        fs_impl: input.fs_impl
       });
     } finally {
       // Best-effort teardown that must NEVER mask the verdict (UI-egj7 §3):
