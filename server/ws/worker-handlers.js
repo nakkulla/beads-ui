@@ -469,6 +469,30 @@ const TITLE_FILL_WIRED = new WeakSet();
  * @returns {Record<string, string>}
  */
 function beadTitlesFor(workspace_key, queue) {
+  return beadDecorationFor(workspace_key, queue, 'titlesFor');
+}
+
+/**
+ * The 생성·수정 시각 of every bead the lanes render (UI-d7pw §4.3). Rides the SAME
+ * cache and the same `bd show` as {@link beadTitlesFor} — no extra process per
+ * bead — and carries the same partiality: a cache miss is omitted here and
+ * arrives on the snapshot the fill callback triggers.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, { created_at: number|string|null, updated_at: number|string|null }>}
+ */
+function beadTimesFor(workspace_key, queue) {
+  return beadDecorationFor(workspace_key, queue, 'timesFor');
+}
+
+/**
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @param {'titlesFor'|'timesFor'} method
+ * @returns {any}
+ */
+function beadDecorationFor(workspace_key, queue, method) {
   /** @type {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} */
   let cache = null;
   try {
@@ -506,9 +530,9 @@ function beadTitlesFor(workspace_key, queue) {
     return {};
   }
   try {
-    return cache.titlesFor(workspace_key, ids);
+    return cache[method](workspace_key, ids);
   } catch (err) {
-    log('title lookup failed for %s: %o', workspace_key, err);
+    log('bead %s lookup failed for %s: %o', method, workspace_key, err);
     return {};
   }
 }
@@ -559,6 +583,8 @@ function attemptsWithUsage(queue, workspace_key) {
  *     session delivered a PR for, which no attempt ever placed in the lane,
  *   - `pr_observations`: what the PR poller has SEEN for each `pr_wait` bead
  *     plus its merge-gate verdict (worker-phase2 §4/§5) — a pure cache read,
+ *   - `bead_times`: 생성·수정 시각 for those same beads (UI-d7pw §4.3), on the
+ *     same partiality contract as `bead_titles`.
  *   - `bead_titles`: display titles for the queue/pr_wait/done beads (UI-12k6),
  *     which are in no subscribed issue column and would otherwise render as
  *     bare ids,
@@ -621,6 +647,10 @@ function decorateQueue(workspace_key, raw_queue) {
     // Titles for the queue/pr_wait/done beads (UI-12k6) — non-persisted and
     // partial (cache hits only); the client falls back to the id without it.
     bead_titles: beadTitlesFor(workspace_key, queue),
+    // 생성·수정 시각 for the same beads (UI-d7pw §4.3), from the same cache and
+    // the same `bd show`. Kept as its own key rather than folded into
+    // `bead_titles` so the existing title contract is untouched.
+    bead_times: beadTimesFor(workspace_key, queue),
     // Which waiting beads are parked awaiting a REVISE disposition (UI-hs11
     // §3.1). Non-persisted, partial and advisory — see the projection.
     revise_parked: reviseParkedFor(workspace_key, queue),

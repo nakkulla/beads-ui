@@ -12,8 +12,43 @@
  * rather than growing a second one.
  */
 import { html } from 'lit-html';
+import {
+  formatRelativeTime,
+  formatTimestampLocal
+} from '../../utils/relative-time.js';
+import { formatUsageTotal, usageTooltip } from '../../utils/token-usage.js';
 import { stepperTemplate } from '../board/stepper.js';
-import { formatUsageTotal, usageTooltip } from './usage.js';
+
+/**
+ * The 생성·수정 시각 meta line (UI-d7pw §4.1). Board 카드의 `timesTemplate`과
+ * 같은 표기·툴팁을 쓴다 — 같은 사실을 두 탭이 다르게 적으면 안 된다.
+ *
+ * 인라인이 아니라 별도 줄인 이유: 한 줄 변형 행은 이미 그립·ID·제목·PR·뱃지·
+ * reason·usage·버튼을 싣고 있어 인라인으로 넣으면 제목이 먼저 잘린다.
+ *
+ * 두 시각이 모두 없으면 아무것도 그리지 않는다 (fail-quiet).
+ *
+ * @param {{ created_at?: number|string, updated_at?: number|string }} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function timesMeta(item) {
+  const created = formatRelativeTime(item.created_at);
+  const updated = formatRelativeTime(item.updated_at);
+  if (!created && !updated) {
+    return '';
+  }
+  return html`<div class="worker-mini__meta">
+    ${created
+      ? html`<span title=${`생성 ${formatTimestampLocal(item.created_at)}`}
+          >생성 ${created}</span
+        >`
+      : ''}${created && updated ? html`<span>·</span>` : ''}${updated
+      ? html`<span title=${`수정 ${formatTimestampLocal(item.updated_at)}`}
+          >수정 ${updated}</span
+        >`
+      : ''}
+  </div>`;
+}
 
 /**
  * @typedef {Object} MiniItem
@@ -65,8 +100,10 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  * why it is refused.
  * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
- * @property {import('./usage.js').UsageRecord|null} [usage] - Token usage of
- * the bead's last attempt (UI-raqh §1); absent/null renders nothing.
+ * @property {import('../../utils/token-usage.js').UsageRecord|null} [usage] - Token usage
+ * summed across the bead's attempts (UI-d7pw §1); absent/null renders nothing.
+ * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4).
+ * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4).
  */
 
 /**
@@ -235,8 +272,15 @@ export function miniRow(item) {
                   >${merge_el}${cancel_el}${discard_el}${revise_els}</span
                 >
               </div>`
-            : ''}`
-      : html`${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}`}
+            : ''}
+          ${timesMeta(item)}`
+      : // 한 줄 변형은 본문을 `__line`으로 감싸고 메타 줄을 형제로 붙인다
+        // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
+        // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
+        html`<div class="worker-mini__line">
+            ${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
+          </div>
+          ${timesMeta(item)}`}
   </div>`;
 }
 
@@ -310,6 +354,7 @@ export function candidateCard(item) {
         대기로 ↴
       </button>
     </div>
+    ${timesMeta(item)}
   </div>`;
 }
 

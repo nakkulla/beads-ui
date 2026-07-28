@@ -2,6 +2,7 @@ import { html, render } from 'lit-html';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
+import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { execSettingsTemplate } from './exec-settings.js';
@@ -129,8 +130,45 @@ export function createDetailPanel(mount_element, options) {
         dismissed_at:
           typeof a.dismissed_at === 'number' ? a.dismissed_at : null,
         cause: typeof a.cause === 'string' ? a.cause : null,
-        cause_detail: a.cause_detail || null
+        cause_detail: a.cause_detail || null,
+        usage: a.usage || null
       }));
+  }
+
+  /**
+   * The issue's total token usage across every attempt (UI-d7pw §2.2). Uses the
+   * SAME projection the worker lanes use, so the two surfaces can never report
+   * different numbers for one bead.
+   *
+   * @returns {import('../../utils/token-usage.js').UsageRecord|null}
+   */
+  function totalUsageForBead() {
+    if (!queueStore || !current_id) {
+      return null;
+    }
+    const q = queueStore.get();
+    return sumAttemptUsage((q && q.attempts) || {}, current_id);
+  }
+
+  /**
+   * Which session rows have their token breakdown expanded ([τ 자세히],
+   * UI-d7pw §2.2). Component-local and deliberately NOT persisted — an expanded
+   * breakdown answers a question the reader is asking right now.
+   *
+   * @type {Set<string>}
+   */
+  const usage_expanded = new Set();
+
+  /**
+   * @param {string} attempt_id
+   */
+  function toggleUsageDetail(attempt_id) {
+    if (usage_expanded.has(attempt_id)) {
+      usage_expanded.delete(attempt_id);
+    } else {
+      usage_expanded.add(attempt_id);
+    }
+    doRender();
   }
 
   /**
@@ -196,7 +234,11 @@ export function createDetailPanel(mount_element, options) {
     }
   }
 
-  const session_handlers = { onOpen: openTranscript, onResume: resumeAttempt };
+  const session_handlers = {
+    onOpen: openTranscript,
+    onResume: resumeAttempt,
+    onToggleUsage: toggleUsageDetail
+  };
 
   /**
    * Workspace-global exec defaults from the queue snapshot (spec §3.2): a
@@ -1012,7 +1054,10 @@ export function createDetailPanel(mount_element, options) {
           ${workflowTemplate(data)} ${workflowMetaTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
           ${execSettingsTemplate(effective, exec_handlers, execDefaults())}
-          ${sessionHistoryTemplate(attemptsForBead(), session_handlers)}
+          ${sessionHistoryTemplate(attemptsForBead(), session_handlers, {
+            total: totalUsageForBead(),
+            expanded: usage_expanded
+          })}
         </div>
       </div>
     `;

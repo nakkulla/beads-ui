@@ -38,10 +38,34 @@ const log = debug('worker:title-cache');
 const NEGATIVE_TTL_MS = 60_000;
 
 /**
+ * How long a SUCCESSFUL lookup stays fresh (UI-d7pw §4.4).
+ *
+ * The original contract let a cached title go stale until the process
+ * restarted — acceptable for a rename, which is rare and carries no correctness
+ * claim. `updated_at` breaks that bargain: it moves on every edit, and a lane
+ * row reading "수정 3시간 전" forever is visibly wrong.
+ *
+ * 5 minutes because the lane renders a RELATIVE time ("대략 얼마 전"), for which
+ * 5-minute resolution is plenty, and because 12 `bd show` per bead per hour is
+ * negligible at lane scale (tens of rows).
+ */
+const POSITIVE_TTL_MS = 5 * 60_000;
+
+/**
+ * One cached bead record.
+ *
+ * @typedef {Object} BeadRecord
+ * @property {string} title
+ * @property {number|string|null} created_at
+ * @property {number|string|null} updated_at
+ * @property {number} at - Epoch ms this record was read, for {@link POSITIVE_TTL_MS}.
+ */
+
+/**
  * Create a bead title cache. One instance is held process-wide by the worker
  * runtime so every workspace's snapshot decoration shares the fill queue.
  *
- * @param {{ now?: () => number, negative_ttl_ms?: number, runJson?: typeof runBdJson }} [options]
+ * @param {{ now?: () => number, negative_ttl_ms?: number, positive_ttl_ms?: number, runJson?: typeof runBdJson }} [options]
  */
 export function createTitleCache(options = {}) {
   const now = options.now || (() => Date.now());
@@ -49,11 +73,15 @@ export function createTitleCache(options = {}) {
     typeof options.negative_ttl_ms === 'number'
       ? options.negative_ttl_ms
       : NEGATIVE_TTL_MS;
+  const positive_ttl_ms =
+    typeof options.positive_ttl_ms === 'number'
+      ? options.positive_ttl_ms
+      : POSITIVE_TTL_MS;
   const runJson =
     options.runJson ||
     ((args, opts) => runBdJson(args, /** @type {any} */ (opts)));
 
-  /** @type {Map<string, Map<string, string>>} */
+  /** @type {Map<string, Map<string, BeadRecord>>} */
   const titles_by_workspace = new Map();
   /** @type {Map<string, Map<string, number>>} */
   const failed_by_workspace = new Map();
@@ -97,7 +125,7 @@ export function createTitleCache(options = {}) {
 
   /**
    * @param {string} workspace
-   * @returns {Map<string, string>}
+   * @returns {Map<string, BeadRecord>}
    */
   function laneFor(workspace) {
     const key = keyOf(workspace);
@@ -124,22 +152,45 @@ export function createTitleCache(options = {}) {
   }
 
   /**
-   * Read one bead's title through `bd show`. Every failure mode — non-zero
-   * exit, unreadable payload, missing/empty title — collapses to null, because
-   * the caller treats them identically: negative-cache and move on.
+   * Read one bead's title AND timestamps through `bd show`. The timestamps ride
+   * on the same response as the title (UI-d7pw §4.3), so the lane's 생성·수정
+   * display costs no extra `bd` call. Every failure mode — non-zero exit,
+   * unreadable payload, missing/empty title — collapses to null, because the
+   * caller treats them identically: negative-cache and move on.
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @returns {Promise<string|null>}
+   * @returns {Promise<{ title: string, created_at: number|string|null, updated_at: number|string|null }|null>}
    */
-  async function fetchTitle(workspace, bead_id) {
+  async function fetchBead(workspace, bead_id) {
     const r = await runJson(['show', bead_id, '--json'], { cwd: workspace });
     if (!r || r.code !== 0) {
       return null;
     }
     const issue = unwrapShowJson(r.stdoutJson);
     const title = issue && typeof issue.title === 'string' ? issue.title : '';
-    return title.length > 0 ? title : null;
+    if (title.length === 0) {
+      return null;
+    }
+    return {
+      title,
+      created_at: stampOf(issue && issue.created_at),
+      updated_at: stampOf(issue && issue.updated_at)
+    };
+  }
+
+  /**
+   * Keep a timestamp only in the shapes the client can format; anything else
+   * becomes null so the row simply renders no meta line.
+   *
+   * @param {unknown} value
+   * @returns {number|string|null}
+   */
+  function stampOf(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    return typeof value === 'string' && value.length > 0 ? value : null;
   }
 
   /**
@@ -170,19 +221,24 @@ export function createTitleCache(options = {}) {
       const lane = laneFor(workspace);
       const failed = failedFor(workspace);
       try {
-        const title = await fetchTitle(workspace, bead_id);
-        if (title) {
-          lane.set(bead_id, title);
+        const bead = await fetchBead(workspace, bead_id);
+        if (bead) {
+          lane.set(bead_id, { ...bead, at: now() });
           failed.delete(bead_id);
-          return title;
+          return bead.title;
         }
+        // A refresh that failed must NOT evict what is already cached
+        // (UI-d7pw §4.4): dropping a title the reader already sees because `bd`
+        // hiccupped is a regression. Only the retry is suppressed.
         failed.set(bead_id, now() + negative_ttl_ms);
         log('no title for %s in %s', bead_id, workspace);
-        return null;
+        const stale = lane.get(bead_id);
+        return stale ? stale.title : null;
       } catch (err) {
         failed.set(bead_id, now() + negative_ttl_ms);
         log('title lookup failed for %s in %s: %o', bead_id, workspace, err);
-        return null;
+        const stale = lane.get(bead_id);
+        return stale ? stale.title : null;
       } finally {
         in_flight.delete(flight_key);
       }
@@ -220,6 +276,83 @@ export function createTitleCache(options = {}) {
     }
   }
 
+  /**
+   * The shared synchronous read behind `titlesFor`/`timesFor` (UI-d7pw §4.4).
+   *
+   * Three states, deliberately distinguished — collapsing them is what makes
+   * "keep serving the old value while it refreshes" and "drop a bead that could
+   * not be read" contradict each other:
+   *
+   * - COLD MISS (no record): omitted from the result, queued for an async fill
+   *   whose completion re-fans the snapshot. Unchanged behaviour.
+   * - FRESH HIT (within the positive TTL): returned, no work.
+   * - EXPIRED HIT (record present, TTL spent): the STALE value is returned AND
+   *   one refresh is queued. The snapshot never blocks, and a failed refresh
+   *   leaves the stale value in place (see `lookup`).
+   *
+   * @template T
+   * @param {string} workspace
+   * @param {string[]} ids
+   * @param {(rec: BeadRecord) => T} project
+   * @returns {Record<string, T>}
+   */
+  function collect(workspace, ids, project) {
+    /** @type {Record<string, T>} */
+    const out = {};
+    const lane = laneFor(workspace);
+    const failed = failedFor(workspace);
+    const at = now();
+    /** @type {string[]} */
+    const missing = [];
+    /** @type {Set<string>} */
+    const seen = new Set();
+    for (const raw of ids) {
+      const bead_id = typeof raw === 'string' ? raw : '';
+      if (bead_id.length === 0 || seen.has(bead_id)) {
+        continue;
+      }
+      seen.add(bead_id);
+      const hit = lane.get(bead_id);
+      if (hit) {
+        out[bead_id] = project(hit);
+        if (at - hit.at < positive_ttl_ms) {
+          continue;
+        }
+        // Expired: the value above still ships, but a refresh is queued below
+        // unless the negative cache or an in-flight run already owns this id.
+      }
+      const until = failed.get(bead_id);
+      if (typeof until === 'number') {
+        if (until > at) {
+          continue;
+        }
+        failed.delete(bead_id);
+      }
+      if (in_flight.has(flightKey(workspace, bead_id))) {
+        // Someone else's run already covers this id and will fan out when it
+        // lands; joining it here would only duplicate that fanout.
+        continue;
+      }
+      missing.push(bead_id);
+    }
+    if (missing.length > 0) {
+      // Fire-and-forget: the decoration must stay synchronous, and `fill`
+      // swallows everything it can fail on. The runs are CHAINED, so the
+      // batch still costs one `bd` at a time.
+      /** @type {Promise<string|null>[]} */
+      const runs = [];
+      /** @type {Promise<unknown>|undefined} */
+      let gate;
+      for (const bead_id of missing) {
+        const run = lookup(workspace, bead_id, gate);
+        runs.push(run);
+        gate = run;
+      }
+      void fill(workspace, runs);
+    }
+    return out;
+  }
+
   return {
     /**
      * Register the "new titles landed" callback. The ws layer wires this to a
@@ -242,56 +375,23 @@ export function createTitleCache(options = {}) {
      * @returns {Record<string, string>}
      */
     titlesFor(workspace, ids) {
-      /** @type {Record<string, string>} */
-      const out = {};
-      const lane = laneFor(workspace);
-      const failed = failedFor(workspace);
-      const at = now();
-      /** @type {string[]} */
-      const missing = [];
-      /** @type {Set<string>} */
-      const seen = new Set();
-      for (const raw of ids) {
-        const bead_id = typeof raw === 'string' ? raw : '';
-        if (bead_id.length === 0 || seen.has(bead_id)) {
-          continue;
-        }
-        seen.add(bead_id);
-        const hit = lane.get(bead_id);
-        if (hit) {
-          out[bead_id] = hit;
-          continue;
-        }
-        const until = failed.get(bead_id);
-        if (typeof until === 'number') {
-          if (until > at) {
-            continue;
-          }
-          failed.delete(bead_id);
-        }
-        if (in_flight.has(flightKey(workspace, bead_id))) {
-          // Someone else's run already covers this id and will fan out when it
-          // lands; joining it here would only duplicate that fanout.
-          continue;
-        }
-        missing.push(bead_id);
-      }
-      if (missing.length > 0) {
-        // Fire-and-forget: the decoration must stay synchronous, and `fill`
-        // swallows everything it can fail on. The runs are CHAINED, so the
-        // batch still costs one `bd` at a time.
-        /** @type {Promise<string|null>[]} */
-        const runs = [];
-        /** @type {Promise<unknown>|undefined} */
-        let gate;
-        for (const bead_id of missing) {
-          const run = lookup(workspace, bead_id, gate);
-          runs.push(run);
-          gate = run;
-        }
-        void fill(workspace, runs);
-      }
-      return out;
+      return collect(workspace, ids, (rec) => rec.title);
+    },
+
+    /**
+     * Cache hits for `ids` as `{ created_at, updated_at }`, on exactly the same
+     * partiality contract as {@link titlesFor} (UI-d7pw §4.3). Reads the SAME
+     * records, so a bead present in one result is present in the other.
+     *
+     * @param {string} workspace
+     * @param {string[]} ids
+     * @returns {Record<string, { created_at: number|string|null, updated_at: number|string|null }>}
+     */
+    timesFor(workspace, ids) {
+      return collect(workspace, ids, (rec) => ({
+        created_at: rec.created_at,
+        updated_at: rec.updated_at
+      }));
     },
 
     /**
@@ -313,17 +413,24 @@ export function createTitleCache(options = {}) {
         return null;
       }
       const hit = laneFor(workspace).get(id);
-      if (hit) {
-        return hit;
+      if (hit && now() - hit.at < positive_ttl_ms) {
+        return hit.title;
       }
       const failed = failedFor(workspace);
       const until = failed.get(id);
       if (typeof until === 'number') {
         if (until > now()) {
-          return null;
+          // Negative-cached. A stale record still beats null for this caller —
+          // a push naming the bead by a slightly old title reads better than one
+          // naming it by id.
+          return hit ? hit.title : null;
         }
         failed.delete(id);
       }
+      // EXPIRED HIT awaits the refresh rather than shipping the stale value
+      // (UI-d7pw §4.4): this caller has no "next snapshot" to correct it, so
+      // stale-while-revalidate does not apply. `lookup` returns the stale title
+      // if the refresh fails, so the result is never worse than before.
       // Only the caller that STARTS a run announces its result — a joiner would
       // just repeat the fanout the starter already owes.
       const started = !in_flight.has(flightKey(workspace, id));

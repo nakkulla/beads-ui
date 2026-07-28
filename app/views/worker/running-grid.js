@@ -12,7 +12,8 @@
  * (`worker-final.html`); one column on mobile.
  */
 import { html } from 'lit-html';
-import { formatUsageTotal, usageTooltip } from './usage.js';
+import { formatUsageTotal, usageTooltip } from '../../utils/token-usage.js';
+import { timesMeta } from './lanes.js';
 
 /**
  * @typedef {Object} RunningTile
@@ -28,7 +29,9 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  * @property {boolean} [can_pause] - Running attempt whose session id is already
  * captured. Pausing before that would strand an unresumable attempt, so the ⏸
  * button renders disabled until it lands (§2.1).
- * @property {import('./usage.js').UsageRecord|null} [usage] - Live token usage
+ * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4.1).
+ * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4.1).
+ * @property {import('../../utils/token-usage.js').UsageRecord|null} [usage] - Live token usage
  * of this attempt (UI-raqh §1); absent/null renders nothing.
  * @property {boolean} [conflict_resolution] - Attempt dispatched to resolve a
  * PR conflict (worker-phase2 §6) rather than to do the bead's work; the tile
@@ -386,6 +389,7 @@ function runningTile(tile, now, selected_attempt = null) {
             : ''}
         </div>`
       : ''}
+    ${timesMeta(tile)}
     <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일): 큐
          스냅샷에는 페이즈명도 진행률도 없으므로 진행 바는 만들지 않는다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->

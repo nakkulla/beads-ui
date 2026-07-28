@@ -316,3 +316,153 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
     expect(bd.runJson).not.toHaveBeenCalled();
   });
 });
+
+describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
+  /**
+   * A `bd show` stub answering full bead records, with a mutable payload so a
+   * refresh can observe a changed `updated_at`.
+   *
+   * @param {Record<string, any>} beads
+   */
+  function fakeBeads(beads) {
+    const runJson = vi.fn((/** @type {string[]} */ args) => {
+      const bead_id = args[1];
+      const bead = beads[bead_id];
+      if (!bead) {
+        return Promise.resolve({ code: 1, stderr: 'not found' });
+      }
+      return Promise.resolve({
+        code: 0,
+        stdoutJson: [{ id: bead_id, ...bead }]
+      });
+    });
+    return runJson;
+  }
+
+  test('carries created_at and updated_at alongside the title', async () => {
+    const runJson = fakeBeads({
+      'UI-1': { title: 't', created_at: 100, updated_at: 200 }
+    });
+    const cache = createTitleCache({ runJson });
+
+    cache.titlesFor('/ws', ['UI-1']);
+    await cache.ensureTitle('/ws', 'UI-1');
+
+    expect(cache.timesFor('/ws', ['UI-1'])).toEqual({
+      'UI-1': { created_at: 100, updated_at: 200 }
+    });
+  });
+
+  test('omits a cold miss from timesFor', () => {
+    const cache = createTitleCache({ runJson: fakeBeads({}) });
+
+    expect(cache.timesFor('/ws', ['UI-1'])).toEqual({});
+  });
+
+  test('costs one bd call for the title and the timestamps together', async () => {
+    const runJson = fakeBeads({
+      'UI-1': { title: 't', created_at: 1, updated_at: 2 }
+    });
+    const cache = createTitleCache({ runJson });
+
+    await cache.ensureTitle('/ws', 'UI-1');
+    cache.titlesFor('/ws', ['UI-1']);
+    cache.timesFor('/ws', ['UI-1']);
+
+    expect(runJson).toHaveBeenCalledTimes(1);
+  });
+
+  test('serves a fresh hit without re-reading bd', async () => {
+    let clock = 1000;
+    const runJson = fakeBeads({
+      'UI-1': { title: 't', created_at: 1, updated_at: 2 }
+    });
+    const cache = createTitleCache({ runJson, now: () => clock });
+
+    await cache.ensureTitle('/ws', 'UI-1');
+    clock += 60_000;
+    cache.titlesFor('/ws', ['UI-1']);
+
+    expect(runJson).toHaveBeenCalledTimes(1);
+  });
+
+  test('serves the stale value AND refreshes on an expired hit', async () => {
+    let clock = 1000;
+    const beads = {
+      'UI-1': { title: 'old', created_at: 1, updated_at: 2 }
+    };
+    const runJson = fakeBeads(beads);
+    const cache = createTitleCache({ runJson, now: () => clock });
+    await cache.ensureTitle('/ws', 'UI-1');
+    beads['UI-1'] = { title: 'new', created_at: 1, updated_at: 9 };
+    clock += 6 * 60_000;
+
+    const served = cache.titlesFor('/ws', ['UI-1']);
+    await vi.waitFor(() =>
+      expect(cache.timesFor('/ws', ['UI-1'])).toEqual({
+        'UI-1': { created_at: 1, updated_at: 9 }
+      })
+    );
+
+    expect(served).toEqual({ 'UI-1': 'old' });
+  });
+
+  test('keeps the stale value when the refresh fails', async () => {
+    let clock = 1000;
+    /** @type {Record<string, any>} */
+    const beads = { 'UI-1': { title: 'old', created_at: 1, updated_at: 2 } };
+    const runJson = fakeBeads(beads);
+    const cache = createTitleCache({ runJson, now: () => clock });
+    await cache.ensureTitle('/ws', 'UI-1');
+    delete beads['UI-1'];
+    clock += 6 * 60_000;
+
+    cache.titlesFor('/ws', ['UI-1']);
+    await vi.waitFor(() => expect(runJson).toHaveBeenCalledTimes(2));
+
+    expect(cache.titlesFor('/ws', ['UI-1'])).toEqual({ 'UI-1': 'old' });
+  });
+
+  test('awaits the refresh in ensureTitle on an expired hit', async () => {
+    let clock = 1000;
+    /** @type {Record<string, any>} */
+    const beads = { 'UI-1': { title: 'old', created_at: 1, updated_at: 2 } };
+    const runJson = fakeBeads(beads);
+    const cache = createTitleCache({ runJson, now: () => clock });
+    await cache.ensureTitle('/ws', 'UI-1');
+    beads['UI-1'] = { title: 'new', created_at: 1, updated_at: 9 };
+    clock += 6 * 60_000;
+
+    const title = await cache.ensureTitle('/ws', 'UI-1');
+
+    expect(title).toBe('new');
+  });
+
+  test('returns the stale title from ensureTitle when the refresh fails', async () => {
+    let clock = 1000;
+    /** @type {Record<string, any>} */
+    const beads = { 'UI-1': { title: 'old', created_at: 1, updated_at: 2 } };
+    const runJson = fakeBeads(beads);
+    const cache = createTitleCache({ runJson, now: () => clock });
+    await cache.ensureTitle('/ws', 'UI-1');
+    delete beads['UI-1'];
+    clock += 6 * 60_000;
+
+    const title = await cache.ensureTitle('/ws', 'UI-1');
+
+    expect(title).toBe('old');
+  });
+
+  test('drops a timestamp shape the client cannot format', async () => {
+    const runJson = fakeBeads({
+      'UI-1': { title: 't', created_at: {}, updated_at: '2026-07-28' }
+    });
+    const cache = createTitleCache({ runJson });
+
+    await cache.ensureTitle('/ws', 'UI-1');
+
+    expect(cache.timesFor('/ws', ['UI-1'])).toEqual({
+      'UI-1': { created_at: null, updated_at: '2026-07-28' }
+    });
+  });
+});
