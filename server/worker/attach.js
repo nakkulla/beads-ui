@@ -33,7 +33,9 @@ import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { validateAdmission } from './admission.js';
+import { createAutoMerge } from './auto-merge.js';
 import { createBdMetadata } from './bd-metadata.js';
+import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
@@ -315,6 +317,7 @@ export function defaultProbePid(pid) {
  *   notify?: any,
  *   reviseDisposition?: any,
  *   mergeQueue?: any,
+ *   autoMerge?: any,
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -613,12 +616,41 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       store: runtime.queueStore,
       merge: (/** @type {string} */ bead_id) => prActions.merge(bead_id),
       observePr: (/** @type {string} */ bead_id) => prActions.prState(bead_id),
+      // The head an auto-merge exclusion is pinned to (UI-yk55 §3.3). A cache
+      // read only — `observePr` returns `{state, error}` and cannot serve it.
+      headSha: (/** @type {string} */ bead_id) =>
+        observedHeadSha(keyFor(workspace_root), bead_id),
       // Re-derive the EXTERNAL rows once before the resumed queue's first item
       // (UI-5v7d §2): at boot the registry is empty until something scans bd,
       // and a restored external head would otherwise be refused as a non-member.
       prepare: refreshExternalPrs,
       subscribeQueueChanged: onQueueChanged,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
+      log
+    });
+
+  // The automatic enroller (UI-yk55 §4). Same lifetime as the driver it feeds,
+  // and it never merges anything itself — it only decides what takes a place in
+  // the driver's queue. Started by `initWorkerRuntime`, like the driver.
+  const autoMerge =
+    options.autoMerge ||
+    createAutoMerge({
+      workspace: keyFor(workspace_root),
+      store: runtime.queueStore,
+      verifyCmdPresent: () => {
+        try {
+          return !!resolveVerifyCmd(
+            keyFor(workspace_root),
+            getConfig().worker_verify
+          );
+        } catch {
+          return false;
+        }
+      },
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
+      // Persist alone leaves items in a queue nobody drains (UI-yk55 §4.2).
+      kick: () => mergeQueue.kick(),
+      subscribeQueueChanged: onQueueChanged,
       log
     });
 
@@ -658,6 +690,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     prPoller,
     prActions,
     mergeQueue,
+    autoMerge,
     refreshExternalPrs,
     reviseDisposition,
     sessionMonitors,
@@ -789,6 +822,22 @@ export function initWorkerRuntime(input) {
       att.mergeQueue.start();
     } catch (err) {
       log('merge queue start failed for %s: %o', key, err);
+    }
+    // The auto-merge enroller resumes the same way, and for the same reason: the
+    // flag it reads is durable because a beads-ui merge restarts this process
+    // (UI-yk55 §2). One immediate observation is fired for a workspace that
+    // comes up with the mode ON — the observation cache is empty after a
+    // restart, so without it every candidate would read as `unobserved` until
+    // the first poll interval elapsed (§4.4).
+    try {
+      att.autoMerge.start();
+      if (att.runtime.queueStore.snapshot(key).auto_merge === true) {
+        Promise.resolve(att.prPoller.tick()).catch((err) => {
+          log('auto-merge boot observation failed for %s: %o', key, err);
+        });
+      }
+    } catch (err) {
+      log('auto-merge start failed for %s: %o', key, err);
     }
     // Before the startup pass judges those attempts: rebuild what their tally
     // was (the disposition below is the write that persists it — UI-ediw) and
@@ -954,6 +1003,61 @@ export async function kickWorkerMergeQueue(workspace_root) {
 }
 
 /**
+ * Run the SHARED enrollment step (UI-yk55 §4.2): judge the lane, apply the
+ * exclusion filter, persist, fan out, and wake the driver. Both the lane's
+ * toggle and `worker-merge-queue-add-all` come through here, which is what keeps
+ * one eligibility rule for one queue.
+ *
+ * A workspace with no attachment still enrolls: the queue store and the
+ * observation cache are runtime-wide, so the judgment is just as valid there —
+ * only the driver kick lands on nothing, which is what an unattached workspace
+ * means. A transient enroller is built for that case rather than refusing, so
+ * the ws path behaves identically with and without a live attachment. It
+ * subscribes to nothing, so it leaves no listener behind.
+ *
+ * @param {string} workspace_root
+ * @param {{ expected_revision?: number|null }} [input]
+ * @returns {{ applied: boolean, conflict: boolean, queued: number, queue: import('./queue-store.js').Queue|null }}
+ */
+export function enrollWorkerMergeCandidates(workspace_root, input = {}) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  const enroller =
+    (att && att.autoMerge) ||
+    createAutoMerge({
+      workspace: key,
+      store: getWorkerRuntime().queueStore,
+      verifyCmdPresent: () => {
+        try {
+          return !!resolveVerifyCmd(key, getConfig().worker_verify);
+        } catch {
+          return false;
+        }
+      },
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
+      kick: () => kickWorkerMergeQueue(key),
+      log
+    });
+  return enroller.enroll(input);
+}
+
+/**
+ * Observe this workspace's PRs ONCE, IF an attachment is registered — the
+ * immediate pass §4.4 requires when `auto_merge` flips OFF→ON, so the enroll
+ * that follows judges against a fresh cache instead of an empty one.
+ *
+ * @param {string} workspace_root
+ * @returns {Promise<void>}
+ */
+export async function observeWorkerPrs(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.prPoller) {
+    return;
+  }
+  await att.prPoller.tick();
+}
+
+/**
  * The merge driver's non-durable view (active item + per-item failure reasons)
  * for the queue-snapshot decoration. Null without an attachment, which the
  * decoration reads as "nothing is running", the same fail-quiet default the
@@ -1065,6 +1169,11 @@ export function __resetWorkerAttachmentsForTest() {
     }
     try {
       att.reconciler?.stop();
+    } catch {
+      /* ignore */
+    }
+    try {
+      att.autoMerge?.stop();
     } catch {
       /* ignore */
     }

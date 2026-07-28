@@ -1278,6 +1278,113 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     ).toEqual(['UI-1', 'UI-2']);
   });
 
+  test('the auto-merge toggle persists the flag and enrolls what is eligible', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    const kick = registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-auto-toggle', {
+      on: true,
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: true,
+      conflict: false
+    });
+    const q = getWorkerRuntime().queueStore.snapshot('');
+    expect(q.auto_merge).toBe(true);
+    expect(q.merge_queue.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+      'UI-1'
+    ]);
+    expect(kick).toHaveBeenCalled();
+  });
+
+  test('turning the toggle OFF also empties the waiting queue', async () => {
+    parkInPrWait('UI-1');
+    parkInPrWait('UI-2');
+    observeGreen('UI-1');
+    observeGreen('UI-2');
+    registerDriver({ active: 'UI-1' });
+    const store = getWorkerRuntime().queueStore;
+    store.enqueueMerge('', {
+      expected_revision: store.snapshot('').revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
+    });
+    store.toggleAutoMerge('', {
+      expected_revision: store.snapshot('').revision,
+      on: true
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-auto-toggle', {
+      on: false,
+      expected_revision: store.snapshot('').revision
+    });
+
+    // 켜진 채 큐만 비우면 다음 관측에서 다시 차므로 "중단"이 중단이 아니게 된다
+    // (UI-yk55 §5.2). 진행 중인 항목은 이미 GitHub에 도달했으므로 남긴다.
+    const q = store.snapshot('');
+    expect(q.auto_merge).toBe(false);
+    expect(q.merge_queue.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+      'UI-1'
+    ]);
+  });
+
+  test('a stale revision refuses the auto-merge toggle without acting', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-auto-toggle', {
+      on: true,
+      expected_revision: 99
+    });
+
+    expect(replyFor(sock, 'm1').payload.conflict).toBe(true);
+    expect(getWorkerRuntime().queueStore.snapshot('').auto_merge).toBe(false);
+  });
+
+  test('the toggle refuses a payload without an on flag', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-auto-toggle', {
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').error?.code).toBe('bad_request');
+  });
+
+  test('add-all leaves out a row excluded at the same head', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    registerDriver();
+    const store = getWorkerRuntime().queueStore;
+    store.recordMergeSkip('', {
+      bead_id: 'UI-1',
+      head_sha: 'f'.repeat(40),
+      reason: 'ci_failed'
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: store.snapshot('').revision
+    });
+
+    // 두 호출자가 같은 공용 함수를 쓰므로 제외 필터도 같이 걸린다 (§4.2).
+    expect(replyFor(sock, 'm1').payload.applied).toBe(false);
+    expect(store.snapshot('').merge_queue).toEqual([]);
+  });
+
   test('add-all with nothing mergeable applies nothing', async () => {
     parkInPrWait('UI-1');
     registerDriver();

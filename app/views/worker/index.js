@@ -586,6 +586,10 @@ export function mergeFailureText(reason) {
  * @param {boolean} [wt_present] - Whether the delivering session's worktree is
  * still there (UI-w0hi §3/§4), server-observed per external row. Defaults true
  * so a durable row — which carries no such field — is unaffected.
+ * @param {string|null} [auto_skip] - Why the automatic enroller is passing this
+ * row over (UI-yk55 §3.4), or null when it is not. Only ever non-null while the
+ * mode is ON: with it off the record is not the reason the row is standing
+ * still, and a badge saying otherwise would be a lie.
  * @returns {any}
  */
 function prWaitRow(
@@ -598,7 +602,8 @@ function prWaitRow(
   conflict_session = null,
   external = false,
   merge_queue = null,
-  wt_present = true
+  wt_present = true,
+  auto_skip = null
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const queue_active = !!merge_queue && merge_queue.active === true;
@@ -645,6 +650,12 @@ function prWaitRow(
   }
   if (queue_failure) {
     badges.push(`일괄 머지 실패: ${mergeFailureText(queue_failure)}`);
+  }
+  // 자동 모드가 켜져 있는데 이 행만 서 있는 이유 (UI-yk55 §3.4). 실패 뱃지는
+  // 프로세스가 살아 있는 동안만 남지만 제외 기록은 durable하므로, 재시작 뒤에도
+  // "왜 이 행은 안 도는가"에 답하는 것은 이쪽뿐이다.
+  if (auto_skip) {
+    badges.push(`자동 제외: ${mergeFailureText(auto_skip)}`);
   }
   const conflicting = !!gate && gate.base_badge === '충돌';
   const enabled = !!gate && gate.enabled === true;
@@ -734,10 +745,13 @@ function prWaitRow(
     // The label says what the click DOES: on a conflicting gate it dispatches a
     // resolution session, and a button reading 머지 there is the misread that
     // put this bead here (UI-dxgz §2).
+    // 해소만 하고 멈추는 것처럼 읽히던 라벨을 실제 동작에 맞춘다 (UI-yk55 §1):
+    // 이 클릭이 띄우는 세션은 완료 후 자동으로 재머지된다 — 툴팁이 이미 그렇게
+    // 말하고 있었고, 라벨만 어긋나 있었다.
     merge_label: external_cleanup
       ? '정리'
       : conflicting && !merge_step && !cleanup_retry
-        ? '충돌 해소'
+        ? '충돌 해소 후 머지'
         : undefined,
     merge_title: merge_step
       ? `머지 진행 중 — ${merge_step.label}`
@@ -919,6 +933,7 @@ export function createWorkerView(mount_element, options = {}) {
       (queueStore && queueStore.get()) || {
         revision: 0,
         auto_advance: false,
+        auto_merge: false,
         slots: MIN_SLOTS,
         queue: [],
         pr_wait: [],
@@ -1195,23 +1210,27 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The lane header's [일괄 머지] (UI-5v7d §4): queue every row the SERVER
-   * judges mergeable right now, in lane order. The client sends no list — a
-   * stale tab must not be able to queue rows whose gate has since closed.
+   * Flip the durable auto-merge mode (UI-yk55 §5). Turning it ON also enrolls
+   * whatever is eligible right now, and turning it OFF empties the waiting queue
+   * — both server-side, in the one handler, because a toggle that left the queue
+   * running would not be a stop and a toggle that queued nothing would look
+   * broken.
+   *
+   * @param {boolean} on
    */
-  async function queueMergeAll() {
+  async function setAutoMerge(on) {
     if (!transport) {
       return;
     }
-    const res = await sendMergeQueue('worker-merge-queue-add-all', {});
+    const res = await sendMergeQueue('worker-merge-auto-toggle', { on });
     if (!res || res.conflict) {
       return;
     }
     showToast(
-      res.applied
-        ? `머지 큐에 ${res.queued}건 추가`
-        : '머지 가능한 행이 없습니다',
-      res.applied ? 'success' : 'error',
+      on
+        ? '자동 머지 켜짐 — 자격이 생기는 PR을 계속 머지합니다'
+        : '자동 머지 꺼짐 — 대기 항목을 비웠습니다',
+      on ? 'success' : 'info',
       2400
     );
   }
@@ -1398,7 +1417,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, ship_failure: { bead_id: string, reason: string, detail: string|null, pr_url: string|null }|null }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, verify_cmd_present: boolean, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, ship_failure: { bead_id: string, reason: string, detail: string|null, pr_url: string|null }|null }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -1793,6 +1812,10 @@ export function createWorkerView(mount_element, options = {}) {
     const merge_state = q.merge_queue_state || { active: null, failures: {} };
     /** @type {Record<string, string>} */
     const merge_failures = merge_state.failures || {};
+    // durable 제외 기록 (UI-yk55 §3): 계약 키가 없는 구버전 스냅샷은 빈 맵으로
+    // 읽고 뱃지를 생략한다 (fail-quiet).
+    /** @type {Record<string, { head_sha: string, reason: string, at: number }>} */
+    const auto_merge_skips = q.auto_merge_skips || {};
 
     // The running list carries leaf-paused attempts too, so the PR 대기 card
     // needs both sets apart: only a live session gets the breathing badge, while
@@ -1921,12 +1944,21 @@ export function createWorkerView(mount_element, options = {}) {
             },
             // Also overlay-only (UI-w0hi §3): a durable row has no field here and
             // must keep the pre-existing behaviour, so absence reads as present.
-            e.wt_present !== false
+            e.wt_present !== false,
+            // 자동 모드가 꺼져 있으면 제외 기록은 이 행이 서 있는 이유가 아니다
+            // (UI-yk55 §3.4) — 기록이 지워지는 시점도 자동 스캔이므로, 꺼진
+            // 상태의 잔여 기록을 뱃지로 보이면 사실이 아닌 설명이 된다.
+            q.auto_merge === true && auto_merge_skips[e.bead_id]
+              ? auto_merge_skips[e.bead_id].reason || ''
+              : null
           )
         )
         .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),
       merge_queue_length: merge_queue.length,
       merge_queue_running: merge_queue.length > 0,
+      // 자동 머지 경고 문구의 근거 (UI-yk55 §6): 검증 신호가 없는 워크스페이스는
+      // 게이트 Tier 3이라 클릭 없이 머지된다는 사실을 버튼이 말해야 한다.
+      verify_cmd_present: !!(q.workspace_info || {}).verify_cmd,
       done: done_rows,
       token_total,
       cleanup_failures,
@@ -2151,37 +2183,60 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The PR 대기 lane header's bulk control (UI-5v7d §4). One button with two
-   * states, never both: while the queue is empty it fills it, and while the
-   * queue runs it empties the WAITING part. Two side-by-side buttons would ask
-   * the reader to tell start from stop at a glance, which is exactly the misread
-   * that costs a merge.
+   * The PR 대기 lane header's bulk control (UI-5v7d §4, made a durable toggle by
+   * UI-yk55 §5.1). ONE button, four states, never two side by side: asking the
+   * reader to tell start from stop at a glance is exactly the misread that costs
+   * a merge.
+   *
+   * | 머지 큐 | auto_merge | 버튼 |
+   * |---|---|---|
+   * | 비어 있음 | OFF | `▶ 자동 머지 N` (N = 지금 자격 있는 행) |
+   * | 비어 있음 | ON  | `⏸ 자동 머지` (무장, 아직 대상 없음) |
+   * | 진행 중   | ON  | `⏸ 자동 머지 중단 N` |
+   * | 진행 중   | OFF | `일괄 머지 중단 N` (수동으로 넣은 항목) |
+   *
+   * N = 0 에서도 버튼은 남는다. 일회성 액션에서는 넣을 게 없으면 지우는 것이
+   * 옳았지만, 토글에서 같은 규칙을 쓰면 **앞으로 도착할 PR을 위해 미리 무장해 둘
+   * 방법이 사라진다** — 그게 이 토글의 존재 이유다.
    *
    * @param {ReturnType<typeof buildModel>} m
    * @returns {import('lit-html').TemplateResult|string}
    */
   function mergeAllTemplate(m) {
+    const auto = m.queue.auto_merge === true;
     if (m.merge_queue_running) {
       return html`<button
         type="button"
-        class="worker-merge-all worker-merge-all--stop"
-        title="대기 중인 항목을 모두 뺍니다 (진행 중인 항목은 끝까지 수행)"
+        class="worker-merge-all worker-merge-all--stop${auto
+          ? ' is-active'
+          : ''}"
+        title=${auto
+          ? '자동 머지를 끄고 대기 중인 항목을 모두 뺍니다 (진행 중인 항목은 끝까지 수행)'
+          : '대기 중인 항목을 모두 뺍니다 (진행 중인 항목은 끝까지 수행)'}
       >
-        일괄 머지 중단 ${m.merge_queue_length}
+        ${auto ? '⏸ 자동 머지 중단' : '일괄 머지 중단'} ${m.merge_queue_length}
+      </button>`;
+    }
+    if (auto) {
+      return html`<button
+        type="button"
+        class="worker-merge-all worker-merge-all--stop is-active"
+        title="자동 머지 켜짐 — 자격이 생기는 PR을 계속 큐에 넣습니다. 클릭하면 끕니다"
+      >
+        ⏸ 자동 머지
       </button>`;
     }
     const count = m.pr_wait.filter(
       (/** @type {any} */ r) => r.merge_action && r.merge_enabled
     ).length;
-    if (count === 0) {
-      return '';
-    }
     return html`<button
       type="button"
       class="worker-merge-all"
-      title="머지 가능한 행을 모두 큐에 넣어 순서대로 머지합니다"
+      title=${m.verify_cmd_present
+        ? '켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다'
+        : '켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다 — 이 워크스페이스는 검증 신호가 없어 CI·로컬검증 없이 머지됩니다'}
     >
-      일괄 머지 ${count}
+      ▶ 자동 머지${count > 0 ? ` ${count}` : ''}
     </button>`;
   }
 
@@ -2699,9 +2754,15 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (mergeAllBtn) {
       if (mergeAllBtn.classList.contains('worker-merge-all--stop')) {
-        void cancelMergeAll();
+        // 자동 모드에서의 중단은 토글까지 끈다 (UI-yk55 §5.2): 켜진 채 큐만
+        // 비우면 다음 관측에서 즉시 다시 차 "중단"이 중단이 아니게 된다.
+        if (currentQueue().auto_merge === true) {
+          void setAutoMerge(false);
+        } else {
+          void cancelMergeAll();
+        }
       } else {
-        void queueMergeAll();
+        void setAutoMerge(true);
       }
       return;
     }

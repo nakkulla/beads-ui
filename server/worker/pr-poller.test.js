@@ -140,6 +140,30 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prChecks).not.toHaveBeenCalled();
   });
 
+  test('observes with no subscriber at all while auto_merge is ON', async () => {
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue: { ...queueOf(), auto_merge: true }
+    });
+
+    await poller.tick();
+
+    // 자동 머지는 브라우저 탭에 묶여서는 안 된다 (UI-yk55 §4.4): 탭이 닫히면
+    // 관측이 멎고, 편입할 것이 영원히 생기지 않는다.
+    expect(prDetail).toHaveBeenCalled();
+  });
+
+  test('keeps the old silence when the toggle is OFF and nobody is watching', async () => {
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue: { ...queueOf(), auto_merge: false }
+    });
+
+    await poller.tick();
+
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
   test('makes no gh call when pr_wait is empty', async () => {
     const { poller, prDetail, prChecks } = makePoller({
       queue: queueOf({ pr_wait: [] })

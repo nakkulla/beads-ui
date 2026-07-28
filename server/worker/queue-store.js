@@ -187,6 +187,22 @@
  * (which item is active, why one failed, the waiting clocks) stays in memory
  * like {@link Queue.admission}'s live siblings: after a restart nothing is in
  * flight.
+ * @property {boolean} auto_merge - Whether the auto-merge enroller may keep
+ * feeding eligible `pr_wait` rows into {@link Queue.merge_queue} (UI-yk55 §2).
+ * DURABLE, unlike {@link Queue.auto_advance}: merging beads-ui DEPLOYS beads-ui,
+ * which restarts this process, so a flag kept in memory would switch itself off
+ * exactly when the queue merged its own repository. The restart-safety argument
+ * that forces `auto_advance` to false on load does not apply — nothing here
+ * resumes a half-run session, and the enroller's own members are re-judged by
+ * the driver at their turn.
+ * @property {Record<string, MergeSkip>} auto_merge_skips - Beads the driver gave
+ * up on, by bead_id, each pinned to the head SHA it failed at (UI-yk55 §3).
+ * DURABLE for the same reason as the flag, and it is what stops the enroller
+ * from re-queuing a failed item forever: `enqueueMerge` resets
+ * `resolution_rounds` to 0, so an automatic re-entry on the SAME head would hand
+ * a conflict item an endless supply of resolution sessions. A record is dropped
+ * as soon as the head moves (someone actually changed the branch), when a human
+ * clicks [머지] on the row, or when the bead leaves the lane.
  * @property {LastDeploy|null} last_deploy - The workspace's most recent
  * post-merge deployment (worker-deploy-hook §3). ONE record, overwritten each
  * time — the question it answers is "is the running service the merged code?",
@@ -222,6 +238,18 @@
  * @property {number} resolution_rounds - How many conflict-resolution rounds
  * this item has already consumed. Persisted so the 2-round cap survives the
  * deploy restart a merge can trigger.
+ */
+/**
+ * One auto-merge exclusion record (UI-yk55 §3.2).
+ *
+ * @typedef {Object} MergeSkip
+ * @property {string} head_sha - The head SHA OBSERVED when the driver gave up.
+ * The exclusion holds only while the branch still points there; a different head
+ * means someone (a resolution session, a human) moved it, and the row becomes a
+ * candidate again.
+ * @property {string} reason - The driver's own skip vocabulary, so the row can
+ * say WHY it is being passed over with the same words the failure badge uses.
+ * @property {number} at - Epoch ms of the disposition.
  */
 /**
  * @typedef {Object} LastDeploy
@@ -316,9 +344,44 @@ function emptyQueue() {
     admission: {},
     cleanup_failed: {},
     merge_queue: [],
+    auto_merge: false,
+    auto_merge_skips: {},
     last_deploy: null,
     ship_failure: null
   };
+}
+
+/**
+ * Normalize the durable auto-merge exclusion map. A record missing the head SHA
+ * it is pinned to is DROPPED rather than kept: the whole exclusion is "this head
+ * already failed", and a record that cannot name a head would exclude the row
+ * forever.
+ *
+ * @param {unknown} raw
+ * @returns {Record<string, MergeSkip>}
+ */
+function normalizeMergeSkips(raw) {
+  /** @type {Record<string, MergeSkip>} */
+  const out = {};
+  if (!isRecord(raw)) {
+    return out;
+  }
+  for (const [bead_id, value] of Object.entries(raw)) {
+    if (
+      !isRecord(value) ||
+      typeof value.head_sha !== 'string' ||
+      value.head_sha.length === 0
+    ) {
+      continue;
+    }
+    out[bead_id] = {
+      head_sha: value.head_sha,
+      reason: typeof value.reason === 'string' ? value.reason : '',
+      at:
+        typeof value.at === 'number' && Number.isFinite(value.at) ? value.at : 0
+    };
+  }
+  return out;
 }
 
 /**
@@ -585,6 +648,11 @@ function normalizeQueue(raw) {
   // A queue.json written before UI-5v7d has no key → empty queue, which reads
   // as "nothing is waiting to merge" — the state a restart should resume into.
   q.merge_queue = normalizeMergeQueue(raw.merge_queue);
+  // A queue.json written before UI-yk55 has neither key → auto-merge OFF with no
+  // exclusions, which is the state every such workspace was actually in. Unlike
+  // `auto_advance` the stored value IS honoured on load — see the field doc.
+  q.auto_merge = raw.auto_merge === true;
+  q.auto_merge_skips = normalizeMergeSkips(raw.auto_merge_skips);
   // A queue.json written before the deploy hook simply has no key → null, which
   // reads as "this workspace has never deployed" (worker-deploy-hook §3). A
   // record carrying an outcome outside the vocabulary is dropped the same way:
@@ -689,6 +757,10 @@ function removeFromLanes(q, bead_id) {
   q.pr_wait = q.pr_wait.filter((e) => e.bead_id !== bead_id);
   q.done = q.done.filter((e) => e.bead_id !== bead_id);
   q.merge_queue = q.merge_queue.filter((e) => e.bead_id !== bead_id);
+  // The auto-merge exclusion describes a `pr_wait` member (UI-yk55 §3.2.1): a
+  // bead that merged, was discarded, or was dragged back out of the lane carries
+  // no exclusion into whatever happens to it next.
+  delete q.auto_merge_skips[bead_id];
 }
 
 /**
@@ -1519,6 +1591,7 @@ export function createQueueStore(options = {}) {
           return false;
         }
         let added = 0;
+        let cleared = 0;
         for (const entry of entries) {
           const bead_id = entry && entry.bead_id;
           if (typeof bead_id !== 'string' || bead_id.length === 0) {
@@ -1530,13 +1603,148 @@ export function createQueueStore(options = {}) {
           if (!member) {
             continue;
           }
+          // A human clicking [머지] on an auto-excluded row IS the retry the
+          // exclusion must not block (UI-yk55 §3.2): the record is dropped even
+          // when the row turns out to be queued already, so the driver's entry
+          // filter cannot drop the item the click just asked for.
+          if (next.auto_merge_skips[bead_id]) {
+            delete next.auto_merge_skips[bead_id];
+            cleared += 1;
+          }
           if (next.merge_queue.some((e) => e.bead_id === bead_id)) {
             continue;
           }
           next.merge_queue.push({ bead_id, resolution_rounds: 0 });
           added += 1;
         }
-        return added > 0;
+        return added > 0 || cleared > 0;
+      });
+    },
+
+    /**
+     * Queue every eligible row the AUTO enroller (or the lane's toggle click)
+     * judged, applying the exclusion filter and the record prune inside the SAME
+     * mutation (UI-yk55 §3.2/§3.2.1).
+     *
+     * The head comparison lives HERE rather than in the caller because the
+     * decision and the write must not straddle a persist: a filter evaluated
+     * against a snapshot and applied to a later one is exactly how an excluded
+     * item slips back into the queue.
+     *
+     * `expected_revision` is optional: the ws add-all passes the revision its
+     * user saw, the enroller passes none (it is a server-owned mutation, like
+     * every other scheduler/driver write).
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string }>, present_ids?: string[] }} input
+     * @returns {QueueOpResult}
+     */
+    enqueueMergeAuto(workspace, input) {
+      const { expected_revision, entries, present_ids } = input;
+      /**
+       * @param {Queue} next
+       * @returns {boolean}
+       */
+      const mutate = (next) => {
+        let changed = 0;
+        // Prune first: an external row that vanished leaves NO lane mutation
+        // behind (its row is a memory overlay), so this scan is the only place
+        // its record can be reclaimed (§3.2.1).
+        if (Array.isArray(present_ids)) {
+          const present = new Set(present_ids);
+          for (const bead_id of Object.keys(next.auto_merge_skips)) {
+            if (!present.has(bead_id)) {
+              delete next.auto_merge_skips[bead_id];
+              changed += 1;
+            }
+          }
+        }
+        for (const entry of Array.isArray(entries) ? entries : []) {
+          const bead_id = entry && entry.bead_id;
+          if (typeof bead_id !== 'string' || bead_id.length === 0) {
+            continue;
+          }
+          const member =
+            entry.external === true ||
+            next.pr_wait.some((e) => e.bead_id === bead_id);
+          if (!member) {
+            continue;
+          }
+          const skip = next.auto_merge_skips[bead_id];
+          if (skip) {
+            if (skip.head_sha === entry.head_sha) {
+              // Same head that already failed — the exclusion still holds.
+              continue;
+            }
+            // The branch moved, so whatever failed last time is not what would
+            // be merged now.
+            delete next.auto_merge_skips[bead_id];
+            changed += 1;
+          }
+          if (next.merge_queue.some((e) => e.bead_id === bead_id)) {
+            continue;
+          }
+          next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+          changed += 1;
+        }
+        return changed > 0;
+      };
+      return typeof expected_revision === 'number'
+        ? applyMutation(workspace, expected_revision, mutate)
+        : applyUnconditional(workspace, mutate);
+    },
+
+    /**
+     * Toggle the durable `auto_merge` flag. CAS-guarded, mirroring
+     * {@link toggleAutoAdvance} — the click starts an irreversible chain of
+     * merges, so it must not apply against a snapshot the user never saw.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, on: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    toggleAutoMerge(workspace, input) {
+      const { expected_revision, on } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        next.auto_merge = !!on;
+        return true;
+      });
+    },
+
+    /**
+     * Record an auto-merge exclusion AND drop the item from the merge queue in
+     * ONE mutation (UI-yk55 §3.2). Driver-owned, so no CAS.
+     *
+     * The atomicity is the whole point. Recording and dequeuing as two writes
+     * leaves a crash window in either order: record-then-crash keeps a merged-in
+     * head at the queue head for the boot-resume driver to merge again, and
+     * dequeue-then-crash leaves the row eligible with no exclusion, which is the
+     * §3.1 loop verbatim.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, head_sha: string, reason: string }} input
+     * @returns {QueueOpResult}
+     */
+    recordMergeSkip(workspace, input) {
+      const { bead_id, head_sha, reason } = input;
+      return applyUnconditional(workspace, (next) => {
+        if (
+          typeof bead_id !== 'string' ||
+          bead_id.length === 0 ||
+          typeof head_sha !== 'string' ||
+          head_sha.length === 0
+        ) {
+          return false;
+        }
+        next.auto_merge_skips[bead_id] = {
+          head_sha,
+          reason: typeof reason === 'string' ? reason : '',
+          at: now()
+        };
+        next.merge_queue = next.merge_queue.filter(
+          (e) => e.bead_id !== bead_id
+        );
+        return true;
       });
     },
 

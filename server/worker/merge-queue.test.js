@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createMergeQueue } from './merge-queue.js';
 import { createQueueStore } from './queue-store.js';
+import { queueFilePath } from './state-paths.js';
 
 /** @type {string} */
 let tmp_state;
@@ -91,6 +92,10 @@ function driver(queue_store, deps, on_tick = null) {
     store: queue_store,
     merge: async () => ({ ok: true, action: 'merged', reason: null }),
     observePr: async () => ({ state: 'OPEN', error: null }),
+    // Every real driver has an observation cache behind this (UI-yk55 §3.3); a
+    // failure disposition with no readable head deliberately does NOT dequeue,
+    // so the default here is the OBSERVED case and the halt gets its own tests.
+    headSha: () => 'a'.repeat(40),
     now: clock.now,
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
@@ -629,8 +634,10 @@ describe('worker/merge-queue — lifecycle', () => {
     const mq = driver(
       {
         ...store,
-        // Simulates an unwritable state dir: the item stays at the head.
-        dequeueMerge: () => ({ ok: false, conflict: false, queue: null })
+        // Simulates an unwritable state dir: the skip record + dequeue is ONE
+        // mutation now (UI-yk55 §3.2), so a failed write leaves the item at the
+        // head with no exclusion — which must halt, not re-merge.
+        recordMergeSkip: () => ({ ok: false, conflict: false, queue: null })
       },
       { merge }
     );
@@ -691,5 +698,159 @@ describe('worker/merge-queue — lifecycle', () => {
     expect(
       store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual(['UI-2']);
+  });
+});
+
+describe('worker/merge-queue — 자동 머지 제외 기록 (UI-yk55 §3)', () => {
+  const HEAD = 'a'.repeat(40);
+
+  test('records the head SHA with every failure disposition', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: async () => ({ ok: false, action: 'refused', reason: 'ci_failed' })
+    });
+
+    await mq.kick();
+
+    expect(store.snapshot(WS).auto_merge_skips['UI-1']).toMatchObject({
+      head_sha: HEAD,
+      reason: 'ci_failed'
+    });
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('records one for a merge that landed but whose cleanup stopped', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: async () => ({
+        ok: false,
+        action: 'merged',
+        reason: 'deploy_failed',
+        cleanup_step: 'deploy'
+      })
+    });
+
+    await mq.kick();
+
+    // A cleanup-failed row stays eligible, so without the record the enroller
+    // would re-queue the same broken cleanup forever.
+    expect(store.snapshot(WS).auto_merge_skips['UI-1'].head_sha).toBe(HEAD);
+  });
+
+  test('records nothing for a clean merge — the row left the lane', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      merge: async (/** @type {string} */ bead_id) => {
+        landMerge(store, bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      }
+    });
+
+    await mq.kick();
+
+    expect(store.snapshot(WS).auto_merge_skips).toEqual({});
+  });
+
+  test('holds the item instead of dequeuing when the head SHA is unreadable', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    const merge = vi.fn(async () => ({
+      ok: false,
+      action: 'refused',
+      reason: 'ci_failed'
+    }));
+
+    const mq = driver(store, { merge, headSha: () => null });
+    await mq.kick();
+
+    // Dequeuing with no exclusion is the ONE path back into the §3.1 loop, so
+    // the drain ends and the durable queue waits for an observation.
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(
+      store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1', 'UI-2']);
+    expect(store.snapshot(WS).auto_merge_skips).toEqual({});
+  });
+
+  test('a boot resume drops an excluded head without merging it', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: HEAD,
+      reason: 'resolution_round_cap'
+    });
+    // The crash window §3.2 names: the record landed on disk with the item
+    // still in the queue. Written straight to `queue.json` because no API can
+    // produce that pair — which is the point of making the two halves atomic.
+    const file = queueFilePath(WS);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.merge_queue.unshift({ bead_id: 'UI-1', resolution_rounds: 0 });
+    fs.writeFileSync(file, JSON.stringify(raw));
+    store.__clearCacheForTest();
+    /** @type {string[]} */
+    const merged = [];
+    const mq = driver(store, {
+      merge: async (/** @type {string} */ bead_id) => {
+        merged.push(bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      }
+    });
+
+    await mq.kick();
+
+    // `drain()` takes the durable head straight into processItem, so the filter
+    // has to live there too — the enroller alone would be bypassed by a restart.
+    expect(merged).not.toContain('UI-1');
+    expect(mq.state().failures['UI-1']).toBe('resolution_round_cap');
+  });
+
+  test('a moved head lets an excluded item merge on its turn', async () => {
+    const store = seed(['UI-1']);
+    store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: 'b'.repeat(40),
+      reason: 'refused'
+    });
+    store.enqueueMergeAuto(WS, {
+      entries: [{ bead_id: 'UI-1', head_sha: HEAD }],
+      present_ids: ['UI-1']
+    });
+    /** @type {string[]} */
+    const merged = [];
+    const mq = driver(store, {
+      merge: async (/** @type {string} */ bead_id) => {
+        merged.push(bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      }
+    });
+
+    await mq.kick();
+
+    expect(merged).toEqual(['UI-1']);
+  });
+
+  test('the round cap plus the exclusion bounds the resolution loop', async () => {
+    const store = seed(['UI-1']);
+    const merge = vi.fn(async () => ({
+      ok: true,
+      action: 'conflict_resolution',
+      attempt_id: null,
+      reason: null
+    }));
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+    // The enroller judges the same conflicting row eligible again straight
+    // away; the exclusion is what makes the second pass a no-op.
+    const again = store.enqueueMergeAuto(WS, {
+      entries: [{ bead_id: 'UI-1', head_sha: HEAD }],
+      present_ids: ['UI-1']
+    });
+    await mq.kick();
+
+    expect(again.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).auto_merge_skips['UI-1'].reason).toBe(
+      'resolution_round_cap'
+    );
   });
 });

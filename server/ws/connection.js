@@ -59,6 +59,7 @@ import {
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
+  handleWorkerMergeAutoToggle,
   handleWorkerMergeQueueAdd,
   handleWorkerMergeQueueAddAll,
   handleWorkerMergeQueueRemove,
@@ -470,6 +471,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-merge-queue-add-all':
       handleWorkerMergeQueueAddAll(ws, req);
+      return;
+    case 'worker-merge-auto-toggle':
+      handleWorkerMergeAutoToggle(ws, req);
       return;
     case 'worker-merge-queue-remove':
       handleWorkerMergeQueueRemove(ws, req);
