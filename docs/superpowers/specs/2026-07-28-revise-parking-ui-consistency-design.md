@@ -45,8 +45,11 @@ UI-hs11(워커 REVISE 파킹 처분 카드) 후속. 세 결함이 겹쳐 파킹 
   버튼이 사라진다).
 - 비카드 분기의 revise 버튼 배치는 제거한다 — 파킹 행은 이제 항상 카드라
   죽은 경로다.
-- CSS 신규는 `.worker-mini__foot { flex-wrap: wrap; }` 하나(좁은 컬럼에서
-  버튼 2개가 잘리지 않도록). 버튼·배지·카드 스타일은 전부 기존 규칙 재사용.
+- CSS 신규는 좁은 컬럼 방어 두 곳: `.worker-mini__foot { flex-wrap: wrap; }`
+  와 `.worker-mini__actions { flex-wrap: wrap; max-width: 100%;
+  justify-content: flex-end; }`. foot만 wrap해서는 단일 자식인 actions span
+  내부의 nowrap 버튼 2개가 줄바꿈되지 않아 계속 잘린다(codex spec 리뷰
+  finding 반영). 버튼·배지·카드 스타일은 전부 기존 규칙 재사용.
 - 드래그 계약(`data-bead-id`/`data-lane`)과 클릭 위임·`revise_title` 툴팁은
   변형과 무관하게 유지 — 기존 pr_wait 카드가 이미 증명한 경로.
 
