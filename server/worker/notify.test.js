@@ -25,24 +25,29 @@ function makeFakeSpawn() {
 
 /**
  * @param {any} worker_notify
- * @param {{ spawnImpl?: any, log?: any }} [overrides]
+ * @param {{ spawnImpl?: any, log?: any, resolveTitle?: any }} [overrides]
  */
 function makeNotifier(worker_notify, overrides = {}) {
   return createNotifier({
     getConfig: () => ({ worker_notify }),
     spawnImpl: overrides.spawnImpl,
+    resolveTitle: overrides.resolveTitle,
     log: overrides.log || (() => {})
   });
 }
 
 const ENABLED = { enabled: true, cmd: ['discord'] };
 
+/** The message is the last argument, and the only one after the argv. */
+const messageOf = (/** @type {{ args: string[] }} */ call) =>
+  call.args[call.args.length - 1];
+
 describe('worker/notify argv assembly', () => {
-  test('sends the start event quietly with bead id, title, repo and exec', () => {
+  test('sends the start event with the transition, bead, repo and exec', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    notifier.attemptStarted({
+    await notifier.attemptStarted({
       bead_id: 'UI-1',
       title: '워커 알림',
       model: 'opus',
@@ -53,47 +58,65 @@ describe('worker/notify argv assembly', () => {
 
     const call = spawn.last();
     expect(call.command).toBe('discord');
-    expect(call.args.slice(0, 3)).toEqual([
-      '-q',
-      '-t',
-      '🚀 beads worker · 시작'
+    expect(call.args).toEqual([
+      '🚀 beads worker · 시작 — UI-1 워커 알림\n리포: beads-ui\n실행: opus / high'
     ]);
-    expect(call.args[3]).toBe(
-      'UI-1 — 워커 알림\n리포: beads-ui\n실행: opus / high'
-    );
   });
 
-  test('labels a resume launch in the start message', () => {
+  test('sends no title, colour or quiet flag', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    notifier.attemptStarted({
+    await notifier.attemptStarted({ bead_id: 'UI-1' });
+    await notifier.attemptFailed({ bead_id: 'UI-1', cause: 'verify_failed' });
+    await notifier.prWaitEntered({ bead_id: 'UI-1' });
+    await notifier.mergeCompleted({ bead_id: 'UI-1' });
+
+    for (const call of spawn.calls) {
+      expect(call.args).toHaveLength(1);
+      expect(call.args).not.toContain('-t');
+      expect(call.args).not.toContain('-c');
+      expect(call.args).not.toContain('-q');
+    }
+  });
+
+  test('names a resume launch as its own transition', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.attemptStarted({
       bead_id: 'UI-1',
+      title: '워커 알림',
       repo: '/r/proj',
       kind: 'resume'
     });
 
-    expect(spawn.last().args[3]).toBe('[재개] UI-1\n리포: proj');
+    expect(messageOf(spawn.last())).toBe(
+      '🚀 beads worker · 재개 — UI-1 워커 알림\n리포: proj'
+    );
   });
 
-  test('labels a conflict-resolution launch in the start message', () => {
+  test('names a conflict-resolution launch as its own transition', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    notifier.attemptStarted({
+    await notifier.attemptStarted({
       bead_id: 'UI-1',
+      title: '워커 알림',
       repo: '/r/proj',
       kind: 'conflict'
     });
 
-    expect(spawn.last().args[3]).toBe('[충돌 해결] UI-1\n리포: proj');
+    expect(messageOf(spawn.last())).toBe(
+      '🚀 beads worker · 충돌 해결 — UI-1 워커 알림\n리포: proj'
+    );
   });
 
-  test('omits an absent title and absent exec settings', () => {
+  test('omits an absent title and absent exec settings', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    notifier.attemptStarted({
+    await notifier.attemptStarted({
       bead_id: 'UI-1',
       title: null,
       model: null,
@@ -101,145 +124,166 @@ describe('worker/notify argv assembly', () => {
       repo: '/r/proj'
     });
 
-    expect(spawn.last().args[3]).toBe('UI-1\n리포: proj');
+    expect(messageOf(spawn.last())).toBe(
+      '🚀 beads worker · 시작 — UI-1\n리포: proj'
+    );
   });
 
-  test('sends the failure event in red with the cause', () => {
+  test('truncates a bead title that would eat the preview budget', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    notifier.attemptFailed({
+    await notifier.attemptStarted({ bead_id: 'UI-1', title: '가'.repeat(61) });
+
+    expect(messageOf(spawn.last())).toBe(
+      `🚀 beads worker · 시작 — UI-1 ${'가'.repeat(60)}…`
+    );
+  });
+
+  test('keeps a bead title exactly at the limit intact', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.attemptStarted({ bead_id: 'UI-1', title: '가'.repeat(60) });
+
+    expect(messageOf(spawn.last())).toBe(
+      `🚀 beads worker · 시작 — UI-1 ${'가'.repeat(60)}`
+    );
+  });
+
+  test('sends the failure event with the cause', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: spawn.spawnImpl,
+      resolveTitle: async () => '워커 알림'
+    });
+
+    await notifier.attemptFailed({
       bead_id: 'UI-1',
       cause: 'session_failed:result_count',
       repo: '/r/proj'
     });
 
-    const call = spawn.last();
-    expect(call.args.slice(0, 4)).toEqual([
-      '-c',
-      'red',
-      '-t',
-      '❌ beads worker · 실패'
-    ]);
-    expect(call.args[4]).toBe(
-      'UI-1\n사유: session_failed:result_count\n리포: proj'
+    expect(messageOf(spawn.last())).toBe(
+      '❌ beads worker · 실패 — UI-1 워커 알림\n사유: session_failed:result_count\n리포: proj'
     );
   });
 
-  test('carries the blocker cause_detail into the failure message', () => {
+  test('carries the blocker cause_detail into the failure message', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    notifier.attemptFailed({
+    await notifier.attemptFailed({
       bead_id: 'UI-1',
       cause: 'loud_fail_blocker',
       repo: '/r/proj',
       cause_detail: { reason: 'git_merge_guard', command: 'git merge main' }
     });
 
-    expect(spawn.last().args[4]).toBe(
-      'UI-1\n사유: loud_fail_blocker\n리포: proj\n가드: git_merge_guard\n명령: git merge main'
+    expect(messageOf(spawn.last())).toBe(
+      '❌ beads worker · 실패 — UI-1\n사유: loud_fail_blocker\n리포: proj\n가드: git_merge_guard\n명령: git merge main'
     );
   });
 
-  test('drops a null command from the cause_detail', () => {
+  test('drops a null command from the cause_detail', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    notifier.attemptFailed({
+    await notifier.attemptFailed({
       bead_id: 'UI-1',
       cause: 'loud_fail_blocker',
       repo: '/r/proj',
       cause_detail: { reason: 'git_merge_guard', command: null }
     });
 
-    expect(spawn.last().args[4]).toBe(
-      'UI-1\n사유: loud_fail_blocker\n리포: proj\n가드: git_merge_guard'
+    expect(messageOf(spawn.last())).toBe(
+      '❌ beads worker · 실패 — UI-1\n사유: loud_fail_blocker\n리포: proj\n가드: git_merge_guard'
     );
   });
 
-  test('sends the pr_wait event in blue with the PR url', () => {
+  test('sends the pr_wait event with the PR url', async () => {
     const spawn = makeFakeSpawn();
-    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: spawn.spawnImpl,
+      resolveTitle: async () => '워커 알림'
+    });
 
-    notifier.prWaitEntered({
+    await notifier.prWaitEntered({
       bead_id: 'UI-1',
       pr_url: 'https://github.com/o/r/pull/7',
       repo: '/r/proj'
     });
 
-    const call = spawn.last();
-    expect(call.args.slice(0, 4)).toEqual([
-      '-c',
-      'blue',
-      '-t',
-      '📬 beads worker · PR 제출'
-    ]);
-    expect(call.args[4]).toBe(
-      'UI-1\nhttps://github.com/o/r/pull/7\n리포: proj'
+    expect(messageOf(spawn.last())).toBe(
+      '📬 beads worker · PR 제출 — UI-1 워커 알림\nhttps://github.com/o/r/pull/7\n리포: proj'
     );
   });
 
-  test('omits an unobserved PR url', () => {
+  test('omits an unobserved PR url', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    notifier.prWaitEntered({ bead_id: 'UI-1', pr_url: null, repo: '/r/proj' });
+    await notifier.prWaitEntered({
+      bead_id: 'UI-1',
+      pr_url: null,
+      repo: '/r/proj'
+    });
 
-    expect(spawn.last().args[4]).toBe('UI-1\n리포: proj');
+    expect(messageOf(spawn.last())).toBe(
+      '📬 beads worker · PR 제출 — UI-1\n리포: proj'
+    );
   });
 
-  test('sends the merge event quietly in green with the PR url', () => {
+  test('sends the merge event with the PR url', async () => {
     const spawn = makeFakeSpawn();
-    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: spawn.spawnImpl,
+      resolveTitle: async () => '워커 알림'
+    });
 
-    notifier.mergeCompleted({
+    await notifier.mergeCompleted({
       bead_id: 'UI-1',
       pr_url: 'https://github.com/o/r/pull/7',
       repo: '/r/proj'
     });
 
-    const call = spawn.last();
-    expect(call.args.slice(0, 5)).toEqual([
-      '-q',
-      '-c',
-      'green',
-      '-t',
-      '✅ beads worker · 머지 완료'
-    ]);
-    expect(call.args[5]).toBe(
-      'UI-1\nhttps://github.com/o/r/pull/7\n리포: proj'
+    expect(messageOf(spawn.last())).toBe(
+      '✅ beads worker · 머지 완료 — UI-1 워커 알림\nhttps://github.com/o/r/pull/7\n리포: proj'
     );
   });
 
-  test('omits an unknown PR url and repo from the merge message', () => {
+  test('omits an unknown PR url and repo from the merge message', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    notifier.mergeCompleted({ bead_id: 'UI-1', pr_url: null, repo: null });
+    await notifier.mergeCompleted({
+      bead_id: 'UI-1',
+      pr_url: null,
+      repo: null
+    });
 
-    expect(spawn.last().args[5]).toBe('UI-1');
+    expect(messageOf(spawn.last())).toBe('✅ beads worker · 머지 완료 — UI-1');
   });
 
-  test('spawns the configured command argv without a shell', () => {
+  test('spawns the configured command argv without a shell', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(
       { enabled: true, cmd: ['/opt/bin/notify', '--to', 'ops'] },
       { spawnImpl: spawn.spawnImpl }
     );
 
-    notifier.attemptFailed({ bead_id: 'UI-1', cause: 'spawn_failed' });
+    await notifier.attemptFailed({ bead_id: 'UI-1', cause: 'spawn_failed' });
 
     const call = spawn.last();
     expect(call.command).toBe('/opt/bin/notify');
     expect(call.args.slice(0, 2)).toEqual(['--to', 'ops']);
   });
 
-  test('detaches and unrefs the child so nothing waits on it', () => {
+  test('detaches and unrefs the child so nothing waits on it', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
-    notifier.attemptStarted({ bead_id: 'UI-1' });
+    await notifier.attemptStarted({ bead_id: 'UI-1' });
 
     const call = spawn.last();
     expect(call.options).toEqual({ stdio: 'ignore', detached: true });
@@ -247,44 +291,116 @@ describe('worker/notify argv assembly', () => {
   });
 });
 
+describe('worker/notify bead title lookup (UI-vb0t)', () => {
+  test('reads the bead title for a launch the caller could not name', async () => {
+    const spawn = makeFakeSpawn();
+    const resolveTitle = vi.fn(async () => '조회된 제목');
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: spawn.spawnImpl,
+      resolveTitle
+    });
+
+    await notifier.attemptStarted({ bead_id: 'UI-1', kind: 'resume' });
+
+    expect(resolveTitle).toHaveBeenCalledWith('UI-1');
+    expect(messageOf(spawn.last())).toBe(
+      '🚀 beads worker · 재개 — UI-1 조회된 제목'
+    );
+  });
+
+  test('skips the lookup when the caller already supplied a title', async () => {
+    const spawn = makeFakeSpawn();
+    const resolveTitle = vi.fn(async () => '조회된 제목');
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: spawn.spawnImpl,
+      resolveTitle
+    });
+
+    await notifier.attemptStarted({ bead_id: 'UI-1', title: '주어진 제목' });
+
+    expect(resolveTitle).not.toHaveBeenCalled();
+    expect(messageOf(spawn.last())).toBe(
+      '🚀 beads worker · 시작 — UI-1 주어진 제목'
+    );
+  });
+
+  test('sends an id-only headline when the lookup finds nothing', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: spawn.spawnImpl,
+      resolveTitle: async () => null
+    });
+
+    await notifier.mergeCompleted({ bead_id: 'UI-1' });
+
+    expect(messageOf(spawn.last())).toBe('✅ beads worker · 머지 완료 — UI-1');
+  });
+
+  test('still sends when the lookup rejects', async () => {
+    const spawn = makeFakeSpawn();
+    const log = vi.fn();
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: spawn.spawnImpl,
+      resolveTitle: async () => {
+        throw new Error('bd exploded');
+      },
+      log
+    });
+
+    await notifier.mergeCompleted({ bead_id: 'UI-1' });
+
+    expect(messageOf(spawn.last())).toBe('✅ beads worker · 머지 완료 — UI-1');
+    expect(log).toHaveBeenCalled();
+  });
+
+  test('sends without a title when no lookup was injected', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.prWaitEntered({ bead_id: 'UI-1' });
+
+    expect(messageOf(spawn.last())).toBe('📬 beads worker · PR 제출 — UI-1');
+  });
+});
+
 describe('worker/notify fail-quiet', () => {
-  test('sends nothing when the section is absent', () => {
+  test('sends nothing when the section is absent', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(undefined, { spawnImpl: spawn.spawnImpl });
 
-    notifier.attemptStarted({ bead_id: 'UI-1' });
-    notifier.attemptFailed({ bead_id: 'UI-1', cause: 'spawn_failed' });
-    notifier.prWaitEntered({ bead_id: 'UI-1' });
-    notifier.mergeCompleted({ bead_id: 'UI-1' });
+    await notifier.attemptStarted({ bead_id: 'UI-1' });
+    await notifier.attemptFailed({ bead_id: 'UI-1', cause: 'spawn_failed' });
+    await notifier.prWaitEntered({ bead_id: 'UI-1' });
+    await notifier.mergeCompleted({ bead_id: 'UI-1' });
 
     expect(spawn.calls).toHaveLength(0);
   });
 
-  test('sends nothing when disabled', () => {
+  test('sends nothing when disabled', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(
       { enabled: false, cmd: ['discord'] },
       { spawnImpl: spawn.spawnImpl }
     );
 
-    notifier.attemptStarted({ bead_id: 'UI-1' });
+    await notifier.attemptStarted({ bead_id: 'UI-1' });
 
     expect(spawn.calls).toHaveLength(0);
   });
 
-  test('sends nothing when the configured cmd is empty', () => {
+  test('sends nothing when the configured cmd is empty', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(
       { enabled: true, cmd: [] },
       { spawnImpl: spawn.spawnImpl }
     );
 
-    notifier.attemptStarted({ bead_id: 'UI-1' });
+    await notifier.attemptStarted({ bead_id: 'UI-1' });
 
     expect(spawn.calls).toHaveLength(0);
   });
 
-  test('swallows a config read that throws', () => {
+  test('swallows a config read that throws', async () => {
     const notifier = createNotifier({
       getConfig: () => {
         throw new Error('config exploded');
@@ -295,10 +411,12 @@ describe('worker/notify fail-quiet', () => {
       log: () => {}
     });
 
-    expect(() => notifier.attemptStarted({ bead_id: 'UI-1' })).not.toThrow();
+    await expect(
+      notifier.attemptStarted({ bead_id: 'UI-1' })
+    ).resolves.toBeUndefined();
   });
 
-  test('swallows a spawn that throws synchronously', () => {
+  test('swallows a spawn that throws synchronously', async () => {
     const log = vi.fn();
     const notifier = makeNotifier(ENABLED, {
       spawnImpl: () => {
@@ -307,18 +425,18 @@ describe('worker/notify fail-quiet', () => {
       log
     });
 
-    expect(() =>
+    await expect(
       notifier.attemptFailed({ bead_id: 'UI-1', cause: 'spawn_failed' })
-    ).not.toThrow();
+    ).resolves.toBeUndefined();
     expect(log).toHaveBeenCalled();
   });
 
-  test('swallows the async error event a missing CLI emits', () => {
+  test('swallows the async error event a missing CLI emits', async () => {
     const spawn = makeFakeSpawn();
     const log = vi.fn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl, log });
 
-    notifier.attemptStarted({ bead_id: 'UI-1' });
+    await notifier.attemptStarted({ bead_id: 'UI-1' });
 
     expect(() =>
       spawn
