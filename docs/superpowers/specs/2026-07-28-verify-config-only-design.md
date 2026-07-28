@@ -72,8 +72,12 @@ verify 명령의 유일한 정의처**이고, 그 밖의 추론 경로는 없다
   섹션 부재 시 `null` 두 갈래만 남긴다. `source` 단언 삭제.
 - `app/views/worker/index.test.js`: 자동감지 배지 테스트를 제거하고, verify 행이
   항상 `config` 배지를 다는 것과 미설정 시 `[worker.verify."<경로>"]` 안내가
-  뜨는 것을 검증하는 테스트로 교체한다. 다른 테스트가 fixture로 넘기던
-  `source: 'detected'`도 정리한다.
+  뜨는 것을 검증하는 테스트로 교체한다.
+- `source` 필드를 모델링하는 나머지 fixture·타입 주석도 같은 커밋에서 정리한다
+  — `server/worker/pr-actions.test.js`(JSDoc 타입 1곳 + `source: 'config'`
+  리터럴 7곳), `server/worker/pr-poller.test.js`(1곳),
+  `app/views/worker/index.test.js`의 `source: 'config'` fixture 3곳. 폐기된
+  3필드 계약을 테스트가 계속 모델링하면 안 된다.
 
 ## 수용 기준
 
@@ -82,6 +86,7 @@ verify 명령의 유일한 정의처**이고, 그 밖의 추론 경로는 없다
 2. 섹션이 없는 workspace: repo 루트에 `package.json`/`Cargo.toml`/`go.mod`가
    있어도 verify는 실행되지 않으며, 다이얼로그는 `검증 없음`과 함께 써야 할
    config 섹션 이름을 보여준다.
-3. `detectVerifyCmd` 심볼과 `source: 'detected'` 값이 저장소 런타임 코드·테스트
-   어디에도 남지 않는다.
+3. `detectVerifyCmd` 심볼과 `verify_cmd`의 `source` 필드(`'config'`/`'detected'`
+   양쪽 모두)가 저장소 런타임 코드·테스트 어디에도 남지 않는다. 해결된 verify
+   명령의 형태는 `{ cmd, timeout_ms }` 두 필드다.
 4. `npm run all` 통과, `npm run build`로 갱신된 번들 포함.
