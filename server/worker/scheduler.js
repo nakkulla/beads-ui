@@ -2876,7 +2876,35 @@ export function createScheduler(deps) {
     // Occupancy is `claimed`, NOT `running`: a dispatch that has taken its claim
     // but has not spawned yet already owns a slot, and a refusal's re-entrant
     // pass would otherwise count those in-flight siblings as free and overbook.
-    let free = slotsOf(q) - claimed.size;
+    //
+    // `claimed` alone is complete only while THIS server's lifetime contains
+    // every attempt's lifetime. A detached session survives the restart that
+    // empties the Set, so a durable `running` attempt no part of this process
+    // owns counts too — selected behind the same three fences
+    // {@link reconcile} picks orphans with, so both sides define "orphan"
+    // identically and cannot drift apart. The union is keyed by BEAD, matching
+    // what the cap limits, so a bead in both sets is never counted twice.
+    const occupied = new Set(claimed);
+    for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
+      const a = /** @type {any} */ (attempt);
+      if (!a || a.status !== 'running') {
+        continue;
+      }
+      if (
+        running.has(attempt_id) ||
+        settling.has(attempt_id) ||
+        claimed.has(a.bead_id)
+      ) {
+        continue;
+      }
+      // Same judgment as dispose, opposite safe default: an unprobeable attempt
+      // reads as NOT dead, which here spends one slot less instead of
+      // overbooking — the two consumers' risks point in opposite directions.
+      if (!isDeadAttempt(a)) {
+        occupied.add(a.bead_id);
+      }
+    }
+    let free = slotsOf(q) - occupied.size;
     for (const entry of q.queue) {
       if (free <= 0) {
         break;
