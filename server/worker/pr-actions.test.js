@@ -2070,12 +2070,21 @@ describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
 
     expect(r.ok).toBe(true);
     expect(h.notify.mergeCompleted).toHaveBeenCalledTimes(1);
+    // No click resolved a url here, so this is the snapshot fallback: the
+    // attempt's own recorded PR.
+    expect(h.merge_notices[0]).toEqual({
+      bead_id: BEAD,
+      pr_url: 'https://github.com/o/r/pull/304',
+      repo: REPO
+    });
   });
 
-  test('takes the url from the external registry for a row the lane never held', async () => {
+  test('names the PR the click merged, not a stale external registry row', async () => {
+    const fresh_url = 'https://github.com/o/r/pull/778';
     const h = makeActions({
       store: createQueueStore(),
       external: {
+        // One scan stale: the bead has since been re-delivered against 778.
         [EXT_BEAD]: {
           bead_id: EXT_BEAD,
           pr_url: EXT_URL,
@@ -2084,15 +2093,15 @@ describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
         }
       },
       bdStatus: { [EXT_BEAD]: 'resolved' },
-      bdPrUrl: EXT_URL,
-      details: [prOf({ number: 777, url: EXT_URL })]
+      bdPrUrl: fresh_url,
+      details: [prOf({ number: 778, url: fresh_url })]
     });
 
     await h.actions.merge(EXT_BEAD);
 
     expect(h.merge_notices[0]).toEqual({
       bead_id: EXT_BEAD,
-      pr_url: EXT_URL,
+      pr_url: fresh_url,
       repo: REPO
     });
   });
@@ -2100,13 +2109,18 @@ describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
   test('announces nothing when the cleanup stops mid-sequence', async () => {
     const h = makeActions({
       verify: VERIFY_CFG,
-      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }],
+      // Green at the CLICK-time gate, red at `post_merge_verify` — otherwise
+      // the click would refuse and the cleanup would never run at all.
+      verifyResults: [
+        { ok: true, reason: 'ok' },
+        { ok: false, reason: 'verify_cmd_failed' }
+      ],
       ...ON_BASE
     });
 
     const r = await h.actions.merge(BEAD);
 
-    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({ ok: false, cleanup_step: 'post_merge_verify' });
     expect(h.notify.mergeCompleted).not.toHaveBeenCalled();
   });
 

@@ -1051,17 +1051,13 @@ export function createPrActions(deps) {
    * into a failed one.
    *
    * @param {string} bead_id
-   * @param {{ number: number, url: string }|null} pr_ref
+   * @param {string|null} pr_url
    */
-  function announceMerged(bead_id, pr_ref) {
+  function announceMerged(bead_id, pr_url) {
     if (!notify) {
       return;
     }
-    notify.mergeCompleted({
-      bead_id,
-      pr_url: pr_ref && pr_ref.url ? pr_ref.url : null,
-      repo
-    });
+    notify.mergeCompleted({ bead_id, pr_url, repo });
   }
 
   /**
@@ -1070,22 +1066,27 @@ export function createPrActions(deps) {
    * second copy for the external case is exactly the divergence §6 forbids.
    *
    * @param {string} bead_id
-   * @param {{ base_ref?: string|null, head_ref?: string|null }} [refs] - What
-   * the click-time gate observed on GitHub (UI-7agi §3). Load-bearing for an
-   * external PR, which has no attempt to read a target base from.
+   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null }} [refs]
+   * - What the click-time gate observed on GitHub (UI-7agi §3). Load-bearing
+   * for an external PR, which has no attempt to read a target base from.
    * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
   async function runCleanup(bead_id, refs = {}) {
     const q = deps.store.snapshot(workspace);
     const target_base = targetBaseFor(q, bead_id, refs.base_ref || null);
-    // The merge notification's url, read from the SNAPSHOT the cleanup started
-    // from (UI-9rrk): by the time it fires, the lane row is gone and the
-    // external registry entry is one scan away from disappearing too.
-    const pr_ref = resolvePrRef(
-      q,
-      bead_id,
-      external ? external.get(workspace, bead_id) : null
-    );
+    // The merge notification's url (UI-9rrk). The CLICK's own resolution wins:
+    // an external row's registry entry can be one scan stale, and naming the
+    // previous PR would be worse than naming none. Without a click (the
+    // poller's observed MERGED) it falls back to this snapshot — read now,
+    // because by the time it fires the lane row is already gone.
+    const pr_url =
+      refs.pr_url ||
+      resolvePrRef(
+        q,
+        bead_id,
+        external ? external.get(workspace, bead_id) : null
+      )?.url ||
+      null;
     // Lane bookkeeping belongs to beads the LANE actually holds. An external row
     // exists only in memory (UI-7agi §1/§2), so pushing it into the durable
     // `done` lane would make `queue.json` record a run that never happened here
@@ -1157,7 +1158,7 @@ export function createPrActions(deps) {
         deps.store.moveToDone(workspace, { bead_id });
       }
       notifyChanged(workspace);
-      announceMerged(bead_id, pr_ref);
+      announceMerged(bead_id, pr_url);
       return { ok: true, step: null, reason: null, base_sync };
     }
 
@@ -1178,7 +1179,7 @@ export function createPrActions(deps) {
     // Announced BEFORE the launch, for the same reason the durable write is:
     // the detached deploy may restart this process, and a notification that
     // never got sent is a merge nobody heard about.
-    announceMerged(bead_id, pr_ref);
+    announceMerged(bead_id, pr_url);
     // A spawn that never started — a synchronous throw or Node's asynchronous
     // `error` event — means we are still alive, so the intent was wrong and can
     // be corrected. The cleanup itself still succeeded — the bead really is
@@ -1319,7 +1320,11 @@ export function createPrActions(deps) {
       }
       const refs = {
         base_ref: first.pr.base_ref || null,
-        head_ref: first.pr.head_ref || null
+        head_ref: first.pr.head_ref || null,
+        // The url the click itself resolved (UI-9rrk). For an external row the
+        // registry may be one scan stale, so the notification must name the PR
+        // this click actually merged, not the previous one.
+        pr_url: ref.url || null
       };
       // A merge that already happened (here or on github.com) runs the same
       // cleanup rather than a second merge. For an EXTERNAL row this is the
@@ -1413,7 +1418,8 @@ export function createPrActions(deps) {
         'updated_and_merged',
         {
           base_ref: second.pr.base_ref || null,
-          head_ref: second.pr.head_ref || null
+          head_ref: second.pr.head_ref || null,
+          pr_url: ref.url || null
         }
       );
     } finally {
@@ -1443,8 +1449,9 @@ export function createPrActions(deps) {
    * @param {number} number
    * @param {string} head_sha
    * @param {'merged'|'updated_and_merged'} action
-   * @param {{ base_ref?: string|null, head_ref?: string|null }} [refs] - The
-   * gate-time base/head branch names, forwarded to the cleanup (UI-7agi §3).
+   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null }} [refs]
+   * - The gate-time base/head branch names and the click-resolved PR url,
+   * forwarded to the cleanup (UI-7agi §3, UI-9rrk).
    * @returns {Promise<MergeClickResult>}
    */
   async function doMerge(bead_id, number, head_sha, action, refs = {}) {
