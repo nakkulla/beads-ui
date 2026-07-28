@@ -2311,6 +2311,21 @@ export function createWorkerView(mount_element, options = {}) {
     // 타일 기본 클릭 = 이슈 상세 (UI-k59y §3): 다른 모든 레인 표면과 같은 규칙.
     const rtile = /** @type {HTMLElement|null} */ (target?.closest?.('.rtile'));
     if (rtile) {
+      // The ID element copies the bead id (Board onCopyId convention) and must
+      // never also open the detail panel.
+      if (target?.closest?.('.rtile__id')) {
+        const id = rtile.dataset.beadId;
+        if (id) {
+          void copyToClipboard(id).then((ok) => {
+            if (ok) {
+              showToast('복사됨', 'success', 1200);
+            } else {
+              showToast('복사 실패', 'error', 1600);
+            }
+          });
+        }
+        return;
+      }
       const id = rtile.dataset.beadId;
       if (id && gotoIssue) {
         gotoIssue(id);

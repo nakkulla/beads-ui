@@ -3918,12 +3918,14 @@ html[data-theme='dark'] {
 
 /* ID = click-to-copy (Board convention) */
 .worker-card__id,
-.worker-mini__id {
+.worker-mini__id,
+.rtile__id {
   cursor: copy;
 }
 
 .worker-card__id:hover,
-.worker-mini__id:hover {
+.worker-mini__id:hover,
+.rtile__id:hover {
   text-decoration: underline;
 }
 

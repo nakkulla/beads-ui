@@ -1582,6 +1582,47 @@ describe('views/worker', () => {
     expect(mount.querySelector('.sv')).toBeNull();
   });
 
+  test('clicking a running tile ID copies the bead id and never opens the detail', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+    const gotoIssue = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn().mockResolvedValue({ ok: true }),
+      gotoIssue
+    });
+
+    const id_el = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__id')
+    );
+    id_el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(writeText).toHaveBeenCalledWith('S1');
+    expect(gotoIssue).not.toHaveBeenCalled();
+  });
+
   test('clicking [▤ 세션] opens the transcript drawer, not the detail', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

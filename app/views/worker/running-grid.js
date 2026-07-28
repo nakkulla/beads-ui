@@ -234,7 +234,7 @@ function runningTile(tile, now, selected_attempt = null) {
   >
     <div class="rtile__hd">
       <span class="rtile__dot" aria-hidden="true"></span>
-      <span class="rtile__id">${tile.bead_id}</span>
+      <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
       ${tile.resumed_from
         ? html`<span
             class="rtile__resumed"
