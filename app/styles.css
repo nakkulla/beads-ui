@@ -2894,7 +2894,10 @@ html[data-theme='dark'] {
   font-variant-numeric: tabular-nums;
 }
 
-.rtile__info {
+/* [▤ 세션] (UI-k59y §3) — 타일 기본 클릭이 상세로 넘어간 뒤 라이브 전사를 여는
+   유일한 진입점. ⓘ가 쓰던 조용한 버튼 스타일을 그대로 물려받는다: 타일 안에서
+   가장 눈에 띄어야 할 것은 여전히 실행 상태이지 이 버튼이 아니다. */
+.rtile__session {
   flex: 0 0 auto;
   border: none;
   background: transparent;
@@ -2903,9 +2906,10 @@ html[data-theme='dark'] {
   font-size: var(--fs-small);
   line-height: 1;
   padding: 0 2px;
+  white-space: nowrap;
 }
 
-.rtile__info:hover {
+.rtile__session:hover {
   color: var(--accent);
 }
 
@@ -2963,9 +2967,7 @@ html[data-theme='dark'] {
 .rtile__title {
   font-size: var(--fs-body-sm);
   color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .rtile__meta {
@@ -3602,7 +3604,9 @@ html[data-theme='dark'] {
 
 .worker-mini {
   display: flex;
-  align-items: center;
+  /* 제목이 여러 줄이 될 수 있으므로(UI-k59y §2) 가운데가 아니라 첫 줄에
+     맞춘다 — 3줄짜리 제목 옆에서 ID가 허공에 뜨는 것을 막는다. */
+  align-items: flex-start;
   gap: var(--sp-6);
   margin-bottom: var(--sp-5);
   padding: var(--sp-5) var(--sp-8);
@@ -3613,8 +3617,37 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.worker-mini--static {
-  cursor: default;
+/* PR 대기 다단 카드 (UI-k59y §1): 부속 요소가 가장 많은 레인이라 한 줄에
+   욱여넣으면 제목이 먼저 희생된다. 머리(ID·PR·뱃지·reason) / 제목 / 꼬리
+   (usage·진행·행동)로 나눠 각 줄이 자기 폭을 갖는다. */
+.worker-mini--card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-4);
+  padding: var(--sp-7) var(--sp-8);
+}
+
+.worker-mini__head,
+.worker-mini__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.worker-mini__head {
+  flex-wrap: wrap;
+}
+
+.worker-mini__foot .worker-usage {
+  margin-left: 0;
+}
+
+.worker-mini__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin-left: auto;
 }
 
 .worker-mini--done {
@@ -3626,20 +3659,25 @@ html[data-theme='dark'] {
   cursor: grab;
 }
 
+/* 제목이 줄바꿈을 얻은 뒤(UI-k59y §2) 한 줄 행의 shrink 대상이 ID로 옮겨붙는다
+   — ID는 4글자짜리 식별자라 한 글자도 접히면 안 된다. */
 .worker-mini__id {
+  flex: 0 0 auto;
   color: var(--text-id-mono);
   font-family: var(--font-mono);
   font-size: var(--fs-chip);
+  white-space: nowrap;
 }
 
+/* 제목은 잘리지 않는다 (UI-k59y §2): 잘린 제목은 어느 bead인지 못 알아보게
+   만들고, 이 보드에서 행 높이보다 값진 정보다. 긴 토큰(브랜치명·URL)만
+   `anywhere`로 방어한다. */
 .worker-mini__title {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
   color: var(--text-primary);
   font-size: var(--fs-small);
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .worker-mini__reason {
@@ -3859,10 +3897,6 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.worker-card--static {
-  cursor: default;
-}
-
 .worker-card__head {
   display: flex;
   align-items: center;
@@ -3875,9 +3909,11 @@ html[data-theme='dark'] {
 }
 
 .worker-card__id {
+  flex: 0 0 auto;
   color: var(--text-id-mono);
   font-family: var(--font-mono);
   font-size: var(--fs-chip);
+  white-space: nowrap;
 }
 
 /* ID = click-to-copy (Board convention) */
@@ -3896,13 +3932,9 @@ html[data-theme='dark'] {
 }
 
 .worker-card__title {
-  display: -webkit-box;
-  overflow: hidden;
   color: var(--text-primary);
   font-size: var(--fs-small);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  overflow-wrap: anywhere;
 }
 
 .worker-card__foot {
@@ -3963,6 +3995,16 @@ html[data-theme='dark'] {
   .worker-card__place {
     display: inline-block;
   }
+}
+
+/* 클릭 어포던스 (UI-k59y §4): 기준은 드래그 가능 여부가 아니라 "클릭하면 상세가
+   열리는가"다 — PR 대기 카드는 draggable=false지만 클릭하면 상세를 연다. 테두리
+   한 단계만 밝히는 절제된 신호이고, 자기 테두리로 상태를 말하는 표면(선택된
+   타일·머지 진행 중인 카드)은 건드리지 않는다. */
+.worker-mini:not(.worker-mini--merging):hover,
+.worker-card:hover,
+.rtile:not(.rtile--sel):hover {
+  border-color: var(--border-chip);
 }
 
 /* ---------- Detail-panel session history (spec §5.6) ---------- */

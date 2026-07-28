@@ -2286,15 +2286,15 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
-    // The ⓘ opens the shared detail panel; it must never also open the drawer,
-    // so it is handled BEFORE the .rtile transcript default (spec §4).
-    if (target?.closest?.('.rtile__info')) {
+    // [▤ 세션] opens the live transcript; it must never also fall through to
+    // the tile's detail default, so it is handled BEFORE it (UI-k59y §3).
+    if (target?.closest?.('.rtile__session')) {
       const tile = /** @type {HTMLElement|null} */ (
         target?.closest?.('.rtile')
       );
-      const id = tile?.dataset?.beadId;
-      if (id && gotoIssue) {
-        gotoIssue(id);
+      const att = tile?.dataset?.attemptId;
+      if (att) {
+        openDrawerForAttempt(att);
       }
       return;
     }
@@ -2308,11 +2308,12 @@ export function createWorkerView(mount_element, options = {}) {
     if (target?.closest?.('.worker-drawer-host')) {
       return;
     }
+    // 타일 기본 클릭 = 이슈 상세 (UI-k59y §3): 다른 모든 레인 표면과 같은 규칙.
     const rtile = /** @type {HTMLElement|null} */ (target?.closest?.('.rtile'));
     if (rtile) {
-      const att = rtile.dataset.attemptId;
-      if (att) {
-        openDrawerForAttempt(att);
+      const id = rtile.dataset.beadId;
+      if (id && gotoIssue) {
+        gotoIssue(id);
       }
       return;
     }
