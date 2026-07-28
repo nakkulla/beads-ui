@@ -194,11 +194,16 @@ function makeActions(options = {}) {
   };
 
   const children = options.children || {};
+  /** @type {Set<string>} */
+  const closed_by_sweep = new Set();
   const bd = {
     setStatus: vi.fn(async (/** @type {string} */ id, s) => {
       calls.push(`bd:setStatus:${id}:${s}`);
       if (options.bdFail && options.bdFail('setStatus', id)) {
         throw new Error('bd down');
+      }
+      if (s === 'closed') {
+        closed_by_sweep.add(id);
       }
     }),
     readStatus: vi.fn(async (/** @type {string} */ id) => {
@@ -220,7 +225,13 @@ function makeActions(options = {}) {
     }),
     listChildren: vi.fn(async (/** @type {string} */ id) => {
       calls.push(`bd:listChildren:${id}`);
-      return children[id] || [];
+      // A child this run already closed reads back as `closed`, so a SECOND
+      // cleanup over the same bead sees the real post-close world (UI-4ii4:
+      // the retry must enumerate already-closed descendants).
+      return (children[id] || []).map((c) => ({
+        ...c,
+        status: closed_by_sweep.has(c.id) ? 'closed' : c.status
+      }));
     }),
     readIssue: vi.fn(async (/** @type {string} */ id) => {
       calls.push(`bd:readIssue:${id}`);
@@ -2256,9 +2267,17 @@ describe('worker/pr-actions — capability ship after the close (UI-4ii4)', () =
     // The retry finds parent AND child already `closed` — the enumeration is
     // deliberately the whole walked set, not "what this sweep closed".
     ship_broken = false;
+    const closes_before = env.calls.filter(
+      (c) => c === `bd:setStatus:${CHILD}:closed`
+    ).length;
     const second = await env.actions.merge(BEAD);
 
     expect(second).toMatchObject({ ok: true, reason: null });
+    // The child is NOT closed a second time — so its capability was published
+    // purely off the wide enumeration, which is acceptance criterion 6.
+    expect(
+      env.calls.filter((c) => c === `bd:setStatus:${CHILD}:closed`)
+    ).toHaveLength(closes_before);
     expect(env.bd.ship.mock.calls.map((c) => c[0])).toEqual([
       'cap-a',
       'cap-a',
@@ -2336,5 +2355,28 @@ describe('worker/pr-actions — capability ship after the close (UI-4ii4)', () =
     await env.actions.merge(BEAD);
 
     expect(env.store.snapshot(WS).ship_failure).toBeNull();
+  });
+});
+
+describe('worker/pr-actions — ship failure records exactly one place (impl review)', () => {
+  test('a bead that left the lane mid-cleanup still gets the workspace record', async () => {
+    const env = makeActions({
+      labels: { [BEAD]: ['export:cap-a'] },
+      shipFail: () => true
+    });
+    // The lane loses the bead WHILE the cleanup runs (a [폐기] during a long
+    // post-merge suite): the start-of-cleanup snapshot said durable, the
+    // failure-time one says otherwise.
+    env.bd.ship.mockImplementationOnce(async () => {
+      env.store.removeFromPrWait(WS, { bead_id: BEAD });
+      throw new Error('bd ship failed');
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).ship_failure).toMatchObject({
+      bead_id: BEAD,
+      reason: 'ship_failed:cap-a'
+    });
   });
 });

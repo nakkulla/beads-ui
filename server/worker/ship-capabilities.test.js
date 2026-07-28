@@ -268,6 +268,72 @@ describe('worker/ship-capabilities', () => {
     });
   });
 
+  test('an unreadable collection payload fails closed instead of reading as no labels', async () => {
+    const bd = {
+      readIssue: vi.fn(async () => null),
+      ship: vi.fn(),
+      removeLabel: vi.fn()
+    };
+
+    const r = await shipExportedCapabilities({
+      bd: /** @type {any} */ (bd),
+      bead_ids: ['UI-1']
+    });
+
+    expect(r).toMatchObject({ ok: false, reason: 'ship_read_failed:UI-1' });
+    expect(bd.ship).not.toHaveBeenCalled();
+  });
+
+  test('an unreadable removal readback is not a confirmed removal', async () => {
+    let reads = 0;
+    const bd = {
+      readIssue: vi.fn(async (/** @type {string} */ id) => {
+        reads += 1;
+        return reads === 1
+          ? {
+              id,
+              labels: ['export:cap-b'],
+              metadata: { child_disposition: 'canceled' }
+            }
+          : null;
+      }),
+      ship: vi.fn(),
+      removeLabel: vi.fn(async () => {})
+    };
+
+    const r = await shipExportedCapabilities({
+      bd: /** @type {any} */ (bd),
+      bead_ids: ['UI-2']
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'export_removal_failed:UI-2:cap-b'
+    });
+  });
+
+  test('an unreadable ship readback fails closed', async () => {
+    let reads = 0;
+    const bd = {
+      readIssue: vi.fn(async (/** @type {string} */ id) => {
+        reads += 1;
+        return reads === 1 ? { id, labels: ['export:cap-a'] } : 'nonsense';
+      }),
+      ship: vi.fn(async () => ({ status: 'shipped', issue_id: 'UI-1' })),
+      removeLabel: vi.fn()
+    };
+
+    const r = await shipExportedCapabilities({
+      bd: /** @type {any} */ (bd),
+      bead_ids: ['UI-1']
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'ship_readback_failed:cap-a'
+    });
+  });
+
   test('an adapter without ship/removeLabel is unavailable, not a no-op', async () => {
     const readIssue = vi.fn();
 

@@ -1179,7 +1179,16 @@ export function createPrActions(deps) {
       bead_ids: swept.closed_ids
     });
     if (!shipped.ok) {
-      return failShip(bead_id, shipped, base_sync, durable, pr_url);
+      return failShip(bead_id, shipped, base_sync, pr_url);
+    }
+    if (shipped.removed.length > 0) {
+      // The `export:` labels stripped off canceling-disposition descendants —
+      // a mutation nothing else records, so it belongs in the run log.
+      log(
+        'cleanup for %s removed export labels: %s',
+        bead_id,
+        shipped.removed.join(',')
+      );
     }
     // A successful ship — including the one inside a `[정리]` retry — is what
     // retires the workspace record the external path leaves behind.
@@ -1328,13 +1337,20 @@ export function createPrActions(deps) {
    *     screen. It carries no retry button — the row is gone — so its banner
    *     names the manual `bd ship` instead.
    *
+   * The membership is re-read HERE, at the moment of failure, rather than taken
+   * from the snapshot the cleanup opened with. `failCleanup` makes its own
+   * failure-time check, so a bead that left the lane mid-cleanup (a [폐기] while
+   * a long post-merge suite ran) would fall between a start-time `durable=true`
+   * and a failure-time `inPrWait=false` and get NO record at all. One reading,
+   * used by both halves, is what guarantees exactly one of them writes.
+   *
    * @param {string} bead_id
    * @param {{ reason: string, detail?: string }} failure
    * @param {BaseSyncOutcome|null} base_sync
-   * @param {boolean} durable - Whether the lane actually holds this bead.
    * @param {string|null} pr_url
    */
-  async function failShip(bead_id, failure, base_sync, durable, pr_url) {
+  async function failShip(bead_id, failure, base_sync, pr_url) {
+    const durable = inPrWait(deps.store.snapshot(workspace), bead_id);
     if (!durable) {
       deps.store.recordShipFailure(workspace, {
         bead_id,

@@ -1093,23 +1093,30 @@ ${Tl}`:r}function Wn(t,e){let r=null;for(let n of Object.values(t||{}))n&&n.bead
     <pre>${t}</pre>
   </details>`:""}function Dl(t){return t?d`<div class="worker-banner__log-path">
     전체 로그: <code>${t}</code>
-  </div>`:""}function Ol(t){if(!Number.isFinite(t)||t<0)return"0s";let e=Math.floor(t/1e3),r=Math.floor(e/60),n=e%60;return r>0?`${r}m ${String(n).padStart(2,"0")}s`:`${n}s`}function Ml(t){return!t||!t.reason?"":d`<div
+  </div>`:""}function Ol(t){if(!Number.isFinite(t)||t<0)return"0s";let e=Math.floor(t/1e3),r=Math.floor(e/60),n=e%60;return r>0?`${r}m ${String(n).padStart(2,"0")}s`:`${n}s`}function Ml(t){if(!t||!t.reason)return"";let e=t.reason.startsWith("export_removal_failed:");return d`<div
     class="worker-banner worker-banner--ship"
     role="alert"
     data-bead-id=${t.bead_id||""}
   >
     ⚠ ${t.bead_id||"(bead \uBBF8\uC0C1)"} 머지 완료 — capability 발행이
     실패했습니다 (${t.reason}). bead는 closed지만
-    <code>provides:</code> 라벨이 없어 이 capability에 걸린 external 의존은 계속
-    막혀 있습니다.
+    ${e?d`취소 처분된 자손의 <code>export:</code> 라벨이 남아 있어 다음
+          스윕이 이를 다시 발행 대상으로 읽습니다.`:d`<code>provides:</code> 라벨이 없어 이 capability에 걸린 external
+          의존은 계속 막혀 있습니다.`}
     ${t.detail?d`<div class="worker-banner__detail">
           남은 작업: <code>${jn(t.detail)}</code>
         </div>`:""}
     <div class="worker-banner__detail">
-      수동 복구:
-      <code>bd -C &lt;워크스페이스&gt; ship &lt;capability&gt;</code> 실행 후
-      <code>bd show &lt;id&gt; --json</code>으로 <code>provides:</code> 라벨을
-      확인하세요.
+      ${e?d`수동 복구:
+            <code
+              >bd -C &lt;워크스페이스&gt; label remove &lt;id&gt;
+              export:&lt;capability&gt;</code
+            >
+            실행 후 <code>bd show &lt;id&gt; --json</code>으로 라벨이 사라졌는지
+            확인하세요 — 이 자손은 ship하지 마세요.`:d`수동 복구:
+            <code>bd -C &lt;워크스페이스&gt; ship &lt;capability&gt;</code> 실행
+            후 <code>bd show &lt;id&gt; --json</code>으로
+            <code>provides:</code> 라벨을 확인하세요.`}
     </div>
     ${t.pr_url?d`<div class="worker-banner__detail">
           <code>${t.pr_url}</code>
@@ -1144,8 +1151,12 @@ ${Tl}`:r}function Wn(t,e){let r=null;for(let n of Object.values(t||{}))n&&n.bead
           data-bead-id=${r.bead_id}
         >
           ⚠ ${r.bead_id} 머지 완료 — 머지 후 정리가 <b>${r.step}</b> 단계에서
-          멈췄습니다 (${r.reason}). bead는 resolved로 남아 있고 자동 재시도는
-          하지 않습니다 — 정리를 사람이 마무리하세요.
+          멈췄습니다 (${r.reason}).
+          <!-- capability 발행은 close 뒤에 오는 유일한 단계라 실패해도 close를
+               롤백하지 않는다 (UI-4ii4). "resolved로 남아 있다"는 다른 모든
+               단계에만 참이므로 여기서만 문안을 바꾼다. -->
+          ${r.step==="ship_exported_capabilities"?"bead\uB294 closed\uB85C \uB0A8\uC544 \uC788\uACE0(close\uB294 \uB864\uBC31\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4)":"bead\uB294 resolved\uB85C \uB0A8\uC544 \uC788\uACE0"}
+          자동 재시도는 하지 않습니다 — 정리를 사람이 마무리하세요.
           ${r.detail?d`<div class="worker-banner__detail">
                 <code>${jn(r.detail)}</code>
               </div>`:""}

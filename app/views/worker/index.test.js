@@ -3385,6 +3385,67 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(banner.getAttribute('data-bead-id')).toBe('RD-9');
   });
 
+  test('guides label removal, not a ship, when a canceled export could not be stripped', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          ship_failure: {
+            bead_id: 'RD-9',
+            reason: 'export_removal_failed:RD-9.1:cap-b',
+            detail: 'pending=cap-b',
+            pr_url: null,
+            at: 1
+          }
+        }
+      )
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--ship')
+    );
+    const text = (banner.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain('label remove');
+    expect(text).toContain('ship하지 마세요');
+    expect(text).not.toContain('ship <capability>');
+  });
+
+  test('says the bead stays closed when the cleanup stopped at the capability ship', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'ship_exported_capabilities',
+              reason: 'ship_failed:cap-a',
+              at: 1
+            }
+          }
+        }
+      )
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--cleanup')
+    );
+    const text = (banner.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain('closed로 남아 있고');
+    expect(text).not.toContain('resolved로 남아 있고');
+  });
+
   test('renders no ship banner when the workspace carries no record', () => {
     const { mount } = mountWith(
       queueWithGate({

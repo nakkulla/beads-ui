@@ -38,6 +38,21 @@ const CANCELING_DISPOSITIONS = ['out_of_scope', 'canceled'];
  */
 
 /**
+ * Whether a `readIssue` payload is an issue at all.
+ *
+ * Checked at EVERY read site rather than trusted: a null/array payload passed to
+ * {@link labelsOf} would read as "this bead has no labels", which collapses "bd
+ * could not answer" into "there is nothing to publish" — the exact collapse the
+ * whole module is fail-closed against.
+ *
+ * @param {unknown} value
+ * @returns {value is Record<string, any>}
+ */
+function isIssue(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
  * Read one bead's labels as strings, tolerating a payload that carries none.
  *
  * @param {Record<string, any>} issue
@@ -116,12 +131,15 @@ export async function shipExportedCapabilities(input) {
 
   for (let i = 0; i < bead_ids.length; i += 1) {
     const bead_id = bead_ids[i];
-    /** @type {Record<string, any>} */
+    /** @type {unknown} */
     let issue;
     try {
       issue = await readIssue(bead_id);
     } catch (err) {
       log('ship collection read failed for %s: %o', bead_id, err);
+      issue = null;
+    }
+    if (!isIssue(issue)) {
       return {
         ok: false,
         reason: `ship_read_failed:${bead_id}`,
@@ -187,19 +205,18 @@ export async function shipExportedCapabilities(input) {
         detail: remainingDetail(rest, [])
       };
     }
-    /** @type {Record<string, any>} */
+    /** @type {unknown} */
     let after;
     try {
       after = await readIssue(task.bead_id);
     } catch (err) {
       log('export removal readback failed for %s: %o', task.bead_id, err);
-      return {
-        ok: false,
-        reason: `export_removal_failed:${task.bead_id}:${task.capability}`,
-        detail: remainingDetail(rest, [])
-      };
+      after = null;
     }
-    if (labelsOf(after).includes(label)) {
+    // An unreadable readback is NOT a confirmed removal: the label may well
+    // still be there, and reporting it gone would leave a canceled child
+    // looking shippable to the next sweep.
+    if (!isIssue(after) || labelsOf(after).includes(label)) {
       return {
         ok: false,
         reason: `export_removal_failed:${task.bead_id}:${task.capability}`,
@@ -234,19 +251,18 @@ export async function shipExportedCapabilities(input) {
         detail: remainingDetail(rest, [])
       };
     }
-    /** @type {Record<string, any>} */
+    /** @type {unknown} */
     let after;
     try {
       after = await readIssue(task.bead_id);
     } catch (err) {
       log('ship readback failed for %s: %o', task.bead_id, err);
-      return {
-        ok: false,
-        reason: `ship_readback_failed:${task.capability}`,
-        detail: remainingDetail(rest, [])
-      };
+      after = null;
     }
-    if (!labelsOf(after).includes(PROVIDES_PREFIX + task.capability)) {
+    if (
+      !isIssue(after) ||
+      !labelsOf(after).includes(PROVIDES_PREFIX + task.capability)
+    ) {
       return {
         ok: false,
         reason: `ship_readback_failed:${task.capability}`,
