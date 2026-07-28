@@ -3495,6 +3495,63 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(pre.querySelector('img')).toBeNull();
     expect(pre.textContent).toContain('<img src=x onerror="boom()">');
   });
+
+  test('renders the full verify log path line (UI-0x54)', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'post_merge_verify',
+              reason: 'verify_cmd_failed',
+              at: 1,
+              log_path:
+                '/state/bdui/ws-abc/verify-logs/verify-RD-1-abc1234-17.log'
+            }
+          }
+        }
+      )
+    );
+
+    const line = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--cleanup .worker-banner__log-path')
+    );
+
+    expect(line.textContent).toContain('전체 로그:');
+    expect(line.textContent).toContain(
+      '/state/bdui/ws-abc/verify-logs/verify-RD-1-abc1234-17.log'
+    );
+  });
+
+  test('omits the log path line on a cleanup record without one', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': { step: 'child_sweep', reason: 'child_close_failed', at: 1 }
+          }
+        }
+      )
+    );
+
+    expect(
+      mount.querySelector('.worker-banner--cleanup .worker-banner__log-path')
+    ).toBeNull();
+  });
 });
 
 describe('worker view — failure banner lifecycle (UI-dcw7)', () => {

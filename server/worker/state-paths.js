@@ -106,6 +106,20 @@ export function visibleWorkspacesFilePath() {
 }
 
 /**
+ * Absolute directory that holds a workspace's full verify-run output logs
+ * (UI-0x54). Shares the per-workspace state dir with the queue file so a verify
+ * failure's evidence outlives the detached worktree the run happened in — that
+ * worktree is torn down the moment the run ends, and `queue.json` only keeps a
+ * capped tail.
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/verify-logs`.
+ */
+export function verifyLogDir(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'verify-logs');
+}
+
+/**
  * Absolute path to a per-attempt session-log jsonl file (spec §5.2 / §5.6).
  * The raw runner event stream is persisted here for the transcript viewer.
  *

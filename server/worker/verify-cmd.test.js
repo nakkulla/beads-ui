@@ -1,11 +1,37 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, test, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { verifyLogDir } from './state-paths.js';
 import {
   detectVerifyCmd,
   resolveVerifyCmd,
   runVerifyAtSha,
   runVerifyCmd
 } from './verify-cmd.js';
+
+/**
+ * Every run through `runVerifyAtSha` writes a full-output log (UI-0x54), so the
+ * whole file runs against a throwaway state home.
+ *
+ * @type {string}
+ */
+let tmp_state;
+
+beforeEach(() => {
+  tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-vlog-'));
+  process.env.XDG_STATE_HOME = tmp_state;
+});
+
+afterEach(() => {
+  delete process.env.XDG_STATE_HOME;
+  try {
+    fs.rmSync(tmp_state, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+});
 
 describe('worker/verify-cmd — independent post-merge verification runner (수용 기준 12)', () => {
   test('exit 0 → ok', async () => {
@@ -562,7 +588,7 @@ describe('worker/verify-cmd — pre-merge run pinned to a PR head sha (§5)', ()
       git
     });
 
-    expect(r).toEqual({ ok: true, reason: 'ok', exit: 0 });
+    expect(r).toMatchObject({ ok: true, reason: 'ok', exit: 0 });
   });
 
   test('keeps the verdict when the teardown throws', async () => {
@@ -585,5 +611,326 @@ describe('worker/verify-cmd — pre-merge run pinned to a PR head sha (§5)', ()
 
     expect(r.reason).toBe('verify_cmd_failed');
     expect(r.exit).toBe(5);
+  });
+});
+
+describe('worker/verify-cmd — full output log (UI-0x54)', () => {
+  const WS = '/tmp/example-workspace/project-log';
+  const SHA = 'b'.repeat(40);
+
+  /**
+   * A fake `spawn_impl` whose stdout/stderr are real event emitters, so the
+   * log-tee path runs against arbitrary scripted output without a real process.
+   *
+   * @param {(child: any) => void} run - Emits the run's output and its end.
+   * @returns {any}
+   */
+  function fakeSpawn(run) {
+    return () => {
+      const child = /** @type {any} */ (new EventEmitter());
+      child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+      child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+      child.kill = () => {
+        child.emit('close', null);
+      };
+      setTimeout(() => run(child), 0);
+      return child;
+    };
+  }
+
+  /**
+   * @param {(child: any) => void} run
+   * @param {{ log?: boolean, fs_impl?: any }} [options]
+   */
+  function runFake(run, options = {}) {
+    return runVerifyCmd({
+      cwd: '/detached-worktree',
+      cmd: ['npm', 'test'],
+      timeout_ms: 10000,
+      spawn_impl: fakeSpawn(run),
+      log_context:
+        options.log === false
+          ? null
+          : {
+              workspace_root: WS,
+              bead_id: 'UI-1',
+              sha: SHA,
+              started_at_ms: 1700000000000
+            },
+      fs_impl: options.fs_impl
+    });
+  }
+
+  test('preserves output the tail cap dropped', async () => {
+    const r = await runFake((child) => {
+      child.stdout.emit('data', 'FAIL shell/first-case\n');
+      child.stdout.emit('data', `${'x'.repeat(40000)}\n`);
+      child.emit('close', 1);
+    });
+
+    expect(r.output_tail).not.toContain('FAIL shell/first-case');
+    expect(fs.readFileSync(String(r.log_path), 'utf8')).toContain(
+      'FAIL shell/first-case'
+    );
+  });
+
+  test('names the log file after the bead, sha7 and start timestamp', async () => {
+    const r = await runFake((child) => {
+      child.emit('close', 0);
+    });
+
+    expect(r.log_path).toBe(
+      path.join(
+        verifyLogDir(WS),
+        `verify-UI-1-${SHA.slice(0, 7)}-1700000000000.log`
+      )
+    );
+  });
+
+  test('writes a log for a successful run too', async () => {
+    const r = await runFake((child) => {
+      child.stdout.emit('data', 'all tests passed\n');
+      child.emit('close', 0);
+    });
+
+    expect(r.ok).toBe(true);
+    expect(fs.readFileSync(String(r.log_path), 'utf8')).toBe(
+      'all tests passed\n'
+    );
+  });
+
+  test('appends a truncation marker once past the 10MB cap', async () => {
+    const r = await runFake((child) => {
+      for (let i = 0; i < 11; i += 1) {
+        child.stdout.emit('data', 'y'.repeat(1024 * 1024));
+      }
+      child.emit('close', 1);
+    });
+
+    const written = fs.readFileSync(String(r.log_path), 'utf8');
+    expect(written).toContain('[bdui] output truncated at 10485760 bytes');
+    expect(written.match(/\[bdui] output truncated/g)).toHaveLength(1);
+  });
+
+  test('drops output past the 10MB cap instead of the beginning', async () => {
+    const r = await runFake((child) => {
+      child.stdout.emit('data', 'FIRST LINE\n');
+      for (let i = 0; i < 11; i += 1) {
+        child.stdout.emit('data', 'y'.repeat(1024 * 1024));
+      }
+      child.emit('close', 1);
+    });
+
+    const written = fs.readFileSync(String(r.log_path), 'utf8');
+    expect(written.startsWith('FIRST LINE\n')).toBe(true);
+  });
+
+  test('keeps a truncated file within the 10MB cap, marker included', async () => {
+    const r = await runFake((child) => {
+      for (let i = 0; i < 11; i += 1) {
+        child.stdout.emit('data', 'y'.repeat(1024 * 1024));
+      }
+      child.emit('close', 1);
+    });
+
+    expect(fs.statSync(String(r.log_path)).size).toBeLessThanOrEqual(
+      10 * 1024 * 1024
+    );
+  });
+
+  test('writes the whole chunk when writeSync only writes part of it', async () => {
+    const fs_impl = /** @type {any} */ ({
+      ...fs,
+      writeSync: (
+        /** @type {number} */ fd,
+        /** @type {Buffer} */ buf,
+        /** @type {number} */ offset,
+        /** @type {number} */ length
+      ) => fs.writeSync(fd, buf, offset, Math.min(length, 5))
+    });
+
+    const r = await runFake(
+      (child) => {
+        child.stdout.emit(
+          'data',
+          'a long line the kernel only takes in bits\n'
+        );
+        child.emit('close', 1);
+      },
+      { fs_impl }
+    );
+
+    expect(fs.readFileSync(String(r.log_path), 'utf8')).toBe(
+      'a long line the kernel only takes in bits\n'
+    );
+  });
+
+  test('keeps the verdict and omits log_path when a write makes no progress', async () => {
+    const fs_impl = /** @type {any} */ ({ ...fs, writeSync: () => 0 });
+
+    const r = await runFake(
+      (child) => {
+        child.stdout.emit('data', 'never lands\n');
+        child.emit('close', 3);
+      },
+      { fs_impl }
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'verify_cmd_failed',
+      exit: 3
+    });
+    expect(r.log_path).toBeUndefined();
+  });
+
+  test('prunes the log directory to 20 files', async () => {
+    const dir = verifyLogDir(WS);
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < 25; i += 1) {
+      const file = path.join(dir, `verify-UI-old-abc1234-${1000 + i}.log`);
+      fs.writeFileSync(file, 'old\n');
+      fs.utimesSync(file, new Date(1000 + i), new Date(1000 + i));
+    }
+
+    await runFake((child) => {
+      child.emit('close', 0);
+    });
+
+    expect(fs.readdirSync(dir)).toHaveLength(20);
+  });
+
+  test('deletes the OLDEST logs when it prunes', async () => {
+    const dir = verifyLogDir(WS);
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < 25; i += 1) {
+      const file = path.join(dir, `verify-UI-old-abc1234-${1000 + i}.log`);
+      fs.writeFileSync(file, 'old\n');
+      fs.utimesSync(file, new Date(1000 + i), new Date(1000 + i));
+    }
+
+    await runFake((child) => {
+      child.emit('close', 0);
+    });
+
+    const kept = fs
+      .readdirSync(dir)
+      .filter((name) => name.includes('UI-old'))
+      .sort();
+    expect(kept[0]).toBe('verify-UI-old-abc1234-1006.log');
+  });
+
+  test('writes no log file without a log_context (the deploy path)', async () => {
+    const r = await runFake(
+      (child) => {
+        child.stdout.emit('data', 'deploying\n');
+        child.emit('close', 0);
+      },
+      { log: false }
+    );
+
+    expect(r.log_path).toBeUndefined();
+    expect(fs.existsSync(verifyLogDir(WS))).toBe(false);
+  });
+
+  test('keeps the verdict and omits log_path when the log cannot be opened', async () => {
+    const fs_impl = /** @type {any} */ ({
+      ...fs,
+      openSync: () => {
+        throw new Error('EACCES: permission denied');
+      }
+    });
+
+    const r = await runFake(
+      (child) => {
+        child.stdout.emit('data', '1 test failed\n');
+        child.emit('close', 3);
+      },
+      { fs_impl }
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'verify_cmd_failed',
+      exit: 3
+    });
+    expect(r.log_path).toBeUndefined();
+  });
+
+  test('keeps the verdict and omits log_path when a write fails mid-run', async () => {
+    let writes = 0;
+    const fs_impl = /** @type {any} */ ({
+      ...fs,
+      writeSync: (/** @type {any[]} */ ...args) => {
+        writes += 1;
+        if (writes === 2) {
+          throw new Error('ENOSPC: no space left on device');
+        }
+        return /** @type {any} */ (fs.writeSync)(...args);
+      }
+    });
+
+    const r = await runFake(
+      (child) => {
+        child.stdout.emit('data', 'chunk one\n');
+        child.stdout.emit('data', 'chunk two\n');
+        child.emit('close', 3);
+      },
+      { fs_impl }
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'verify_cmd_failed',
+      exit: 3
+    });
+    expect(r.log_path).toBeUndefined();
+  });
+
+  test('keeps the verdict and omits log_path when the close fails', async () => {
+    const fs_impl = /** @type {any} */ ({
+      ...fs,
+      closeSync: () => {
+        throw new Error('EIO');
+      }
+    });
+
+    const r = await runFake(
+      (child) => {
+        child.stdout.emit('data', 'done\n');
+        child.emit('close', 0);
+      },
+      { fs_impl }
+    );
+
+    expect(r).toMatchObject({ ok: true, reason: 'ok', exit: 0 });
+    expect(r.log_path).toBeUndefined();
+  });
+
+  test('runVerifyAtSha logs under the REPO state dir, not the detached worktree', async () => {
+    const git = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const worktree = {
+      addDetached: vi.fn(async () => ({ path: process.cwd() })),
+      removeDetached: vi.fn(async () => ({ code: 0, stderr: '' })),
+      withTopologyLock: vi.fn(
+        async (/** @type {string} */ _repo, /** @type {any} */ fn) => fn()
+      )
+    };
+
+    const r = await runVerifyAtSha({
+      repo: WS,
+      bead_id: 'UI-9',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'console.log("hello from verify")'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(String(r.log_path).startsWith(verifyLogDir(WS))).toBe(true);
+    expect(fs.readFileSync(String(r.log_path), 'utf8')).toContain(
+      'hello from verify'
+    );
   });
 });

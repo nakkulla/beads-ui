@@ -148,7 +148,7 @@
  * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
  * stale spec_review receipt, so the badge must not read as a refusal. Every
  * record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and nothing retries by itself — so the record that a human must
@@ -162,7 +162,10 @@
  * UI-2o4z §3); null on a record that carries none, including every record
  * written before the field existed. `output_tail` is the failing command's own
  * trailing output (UI-qult §1) — absent, not null, on every record that has
- * none. It lives HERE rather than
+ * none. `log_path` is the absolute path to that command's FULL preserved output
+ * (UI-0x54), which the capped `output_tail` cannot hold; absent when the run
+ * wrote no complete log file, and overwritten by a cleanup retry's own run.
+ * Both live HERE rather than
  * in bd metadata because the bd contract surface is owned by dotfiles
  * (`docs/contracts/workflow.md`) and beads-ui only consumes it; this is
  * server-owned queue state about a lane member, exactly like {@link admission}.
@@ -484,6 +487,9 @@ function normalizeQueue(raw) {
         };
         if (typeof value.output_tail === 'string') {
           q.cleanup_failed[bead_id].output_tail = value.output_tail;
+        }
+        if (typeof value.log_path === 'string') {
+          q.cleanup_failed[bead_id].log_path = value.log_path;
         }
       }
     }
@@ -1091,12 +1097,23 @@ export function createQueueStore(options = {}) {
      * `output_tail` carries the failing command's own trailing output when the
      * step ran one (UI-qult §1); omit it otherwise.
      *
+     * `log_path` carries the absolute path to that command's full preserved
+     * output (UI-0x54); omit it when the run left no complete log file.
+     *
      * @param {string} workspace
-     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, output_tail?: string|null }} input
+     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, output_tail?: string|null, log_path?: string|null }} input
      * @returns {QueueOpResult}
      */
     recordCleanupFailure(workspace, input) {
-      const { bead_id, step, reason, bd_restore, detail, output_tail } = input;
+      const {
+        bead_id,
+        step,
+        reason,
+        bd_restore,
+        detail,
+        output_tail,
+        log_path
+      } = input;
       return applyUnconditional(workspace, (next) => {
         if (
           typeof bead_id !== 'string' ||
@@ -1116,6 +1133,9 @@ export function createQueueStore(options = {}) {
         };
         if (typeof output_tail === 'string' && output_tail.length > 0) {
           next.cleanup_failed[bead_id].output_tail = output_tail;
+        }
+        if (typeof log_path === 'string' && log_path.length > 0) {
+          next.cleanup_failed[bead_id].log_path = log_path;
         }
         return true;
       });

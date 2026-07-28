@@ -1012,6 +1012,78 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     expect(loaded.cleanup_failed['UI-1'].output_tail).toBeUndefined();
   });
 
+  test('stores the full verify log path on a cleanup failure (UI-0x54)', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      log_path: '/state/bdui/ws-abc/verify-logs/verify-UI-1-abc1234-17.log'
+    });
+
+    expect(store.snapshot(WS).cleanup_failed['UI-1'].log_path).toBe(
+      '/state/bdui/ws-abc/verify-logs/verify-UI-1-abc1234-17.log'
+    );
+  });
+
+  test('overwrites the log path when the cleanup is retried', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      log_path: '/logs/first.log'
+    });
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      log_path: '/logs/second.log'
+    });
+
+    expect(store.snapshot(WS).cleanup_failed['UI-1'].log_path).toBe(
+      '/logs/second.log'
+    );
+  });
+
+  test('round-trips the cleanup log path across a reload', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      log_path: '/logs/verify-UI-1-abc1234-17.log'
+    });
+
+    expect(createQueueStore().load(WS).cleanup_failed['UI-1'].log_path).toBe(
+      '/logs/verify-UI-1-abc1234-17.log'
+    );
+  });
+
+  test('drops a non-string log path on load', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      log_path: '/logs/verify.log'
+    });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.cleanup_failed['UI-1'].log_path = 42;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.cleanup_failed['UI-1'].log_path).toBeUndefined();
+  });
+
   test('normalizes a legacy cleanup record with no detail to null', () => {
     const store = createQueueStore();
     seedPrWait(store);

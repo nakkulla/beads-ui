@@ -637,14 +637,14 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string} base_sha
-   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, detail?: string, output_tail?: string }>}
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, detail?: string, output_tail?: string, log_path?: string }>}
    */
   async function postMergeVerify(bead_id, base_sha) {
     const resolved = resolveVerify();
     if (!resolved) {
       return { ok: true };
     }
-    /** @type {{ ok: boolean, reason: string, detail?: string, output_tail?: string }} */
+    /** @type {{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string }} */
     let r;
     try {
       r = await runVerify({
@@ -665,7 +665,8 @@ export function createPrActions(deps) {
           ok: false,
           reason: r.reason,
           detail: r.detail,
-          output_tail: r.output_tail
+          output_tail: r.output_tail,
+          log_path: r.log_path
         };
   }
 
@@ -1083,7 +1084,8 @@ export function createPrActions(deps) {
         base_sync,
         undefined,
         verified.detail,
-        verified.output_tail
+        verified.output_tail,
+        verified.log_path
       );
     }
     markStep(bead_id, 'deploy');
@@ -1181,6 +1183,9 @@ export function createPrActions(deps) {
    * (UI-2o4z §3); the reason alone cannot always identify the failure.
    * @param {string} [output_tail] - The failing command's own output tail, when
    * the step ran one (UI-qult §1). Today only `post_merge_verify` has one.
+   * @param {string} [log_path] - Absolute path to that command's FULL preserved
+   * output (UI-0x54), when the run produced a complete log file. A cleanup
+   * retry overwrites it with its own run's log.
    * @returns {Promise<{ ok: false, step: string, reason: string, base_sync: BaseSyncOutcome|null }>}
    */
   async function failCleanup(
@@ -1190,7 +1195,8 @@ export function createPrActions(deps) {
     base_sync,
     restore_bd,
     detail,
-    output_tail
+    output_tail,
+    log_path
   ) {
     /** @type {string|null} */
     let bd_restore = null;
@@ -1219,7 +1225,8 @@ export function createPrActions(deps) {
         reason,
         bd_restore,
         detail,
-        output_tail
+        output_tail,
+        log_path
       });
     }
     notifyChanged(workspace);

@@ -1226,7 +1226,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null }> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -1266,7 +1266,7 @@ export function createWorkerView(mount_element, options = {}) {
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
-    /** @type {Record<string, { step: string, reason: string, detail?: string|null, output_tail?: string }>} */
+    /** @type {Record<string, { step: string, reason: string, detail?: string|null, output_tail?: string, log_path?: string }>} */
     const cleanup_failed = q.cleanup_failed || {};
     const cleanup_failures = Object.entries(cleanup_failed).map(
       ([bead_id, rec]) => ({
@@ -1278,6 +1278,10 @@ export function createWorkerView(mount_element, options = {}) {
         output_tail:
           rec && typeof rec.output_tail === 'string' && rec.output_tail
             ? rec.output_tail
+            : undefined,
+        log_path:
+          rec && typeof rec.log_path === 'string' && rec.log_path
+            ? rec.log_path
             : undefined
       })
     );

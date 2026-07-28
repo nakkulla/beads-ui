@@ -61,6 +61,9 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  * etc., UI-2o4z §3); absent on records written before it was preserved.
  * @property {string} [output_tail] - The failing command's own trailing output
  * (UI-qult §1); absent when the step ran no command or printed nothing.
+ * @property {string} [log_path] - Absolute path to that command's FULL
+ * preserved output (UI-0x54), which the capped tail above cannot hold; absent
+ * on a record whose run left no complete log file.
  */
 
 /**
@@ -118,6 +121,23 @@ function outputTailBlock(tail) {
     <summary>출력 tail</summary>
     <pre>${tail}</pre>
   </details>`;
+}
+
+/**
+ * The full-log path line under a cleanup banner (UI-0x54). The tail above is
+ * capped, so this is what a human opens when the capped end does not name the
+ * failure. A text binding — lit-html escapes it.
+ *
+ * @param {string|null|undefined} log_path
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+function logPathLine(log_path) {
+  if (!log_path) {
+    return '';
+  }
+  return html`<div class="worker-banner__log-path">
+    전체 로그: <code>${log_path}</code>
+  </div>`;
 }
 
 /**
@@ -193,7 +213,7 @@ export function bannersTemplate(state) {
                 <code>${truncateDetail(c.detail)}</code>
               </div>`
             : ''}
-          ${outputTailBlock(c.output_tail)}
+          ${logPathLine(c.log_path)} ${outputTailBlock(c.output_tail)}
         </div>`
     )}
   </div>`;
