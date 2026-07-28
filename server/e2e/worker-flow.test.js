@@ -221,6 +221,7 @@ function buildSystem(opts) {
                 number: 1,
                 url: `https://github.com/o/r/pull/1`,
                 head_ref: branch,
+                base_ref: 'main',
                 head_sha: 'a'.repeat(40),
                 state: 'OPEN'
               }

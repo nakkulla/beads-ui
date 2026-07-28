@@ -7,6 +7,7 @@
  *   read   → `bd show <id> --json` then read `.metadata[key]`
  *   status → `bd update <id> --status <status>` / `bd show <id> --json .status`
  *   children → `bd list --json --all --metadata-field parent=<id>`
+ *   external → `bd list --json --all --limit 0` filtered to resolved + pr_url
  *
  * The status pair exists for the worker's `resolved` back-fill on the PR
  * observation verdict (worker-phase2 §1) — the same contract vocabulary the
@@ -30,7 +31,8 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
  *   readStatus: (bead_id: string) => Promise<string|null>,
- *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>
+ *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
+ *   listResolvedPrBeads: () => Promise<{ bead_id: string, pr_url: string }[]>
  * }}
  */
 export function createBdMetadata(deps = {}) {
@@ -223,6 +225,62 @@ export function createBdMetadata(deps = {}) {
         }
       }
       return [...merged.values()];
+    },
+
+    /**
+     * Every bead that a normal session already delivered a PR for: `resolved`
+     * with a `metadata.pr_url` (UI-7agi §1). The source of the external PR
+     * registry.
+     *
+     * `--limit 0` is REQUIRED: bd's default listing stops at 50 rows, and a
+     * silently truncated scan would make an external PR invisible in the lane
+     * for no reason a reader could see. `--all` is required for the same class
+     * of reason — the filter is done here, not by bd's default status view.
+     *
+     * Fail-closed like {@link listChildren}: a non-zero exit or a non-array
+     * payload THROWS rather than reading as "no external PRs", which would
+     * silently empty the lane every time bd is unavailable.
+     *
+     * @returns {Promise<{ bead_id: string, pr_url: string }[]>}
+     */
+    async listResolvedPrBeads() {
+      const r = await runJson(
+        ['list', '--json', '--all', '--limit', '0'],
+        opts
+      );
+      if (r && typeof r.code === 'number' && r.code !== 0) {
+        throw new Error(
+          `bd list --all failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
+      const rows = r && r.stdoutJson;
+      if (!Array.isArray(rows)) {
+        throw new Error('bd list --all returned a non-array payload');
+      }
+      /** @type {{ bead_id: string, pr_url: string }[]} */
+      const out = [];
+      for (const raw of rows) {
+        if (!raw || typeof raw !== 'object') {
+          continue;
+        }
+        const row = /** @type {Record<string, unknown>} */ (raw);
+        if (typeof row.id !== 'string' || row.id.length === 0) {
+          continue;
+        }
+        if (row.status !== 'resolved') {
+          continue;
+        }
+        const md = row.metadata;
+        const pr_url =
+          md && typeof md === 'object'
+            ? /** @type {Record<string, unknown>} */ (md).pr_url
+            : undefined;
+        if (typeof pr_url !== 'string' || pr_url.length === 0) {
+          continue;
+        }
+        out.push({ bead_id: row.id, pr_url });
+      }
+      return out;
     }
   };
 }

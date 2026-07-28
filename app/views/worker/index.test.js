@@ -5602,3 +5602,168 @@ describe('worker view — server-decorated bead titles (UI-12k6)', () => {
     expect(titleOf(mount, 'BL-1')).toBe('blocked with spec');
   });
 });
+
+describe('외부 세션 PR 행 (UI-7agi §5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  const OPEN_GREEN = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '최신',
+    reason: null
+  };
+  const CONFLICTING = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '충돌',
+    reason: null
+  };
+  const MERGED = {
+    enabled: false,
+    tier: 'merged',
+    gate_badge: '머지됨',
+    base_badge: '머지됨',
+    reason: null
+  };
+  const CLOSED = {
+    enabled: false,
+    tier: 'closed_unmerged',
+    gate_badge: 'PR closed',
+    base_badge: 'PR closed',
+    reason: 'pr_closed_unmerged'
+  };
+
+  /**
+   * @param {any} gate
+   * @param {{ external?: boolean }} [over]
+   * @returns {HTMLElement}
+   */
+  function mountRow(gate, over = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [
+          {
+            bead_id: 'RD-1',
+            added_at: 1,
+            ...(over.external === false ? {} : { external: true })
+          }
+        ],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 777,
+              url: 'https://github.com/o/r/pull/777',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            ci: null,
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function badgesOf(mount) {
+    return Array.from(mount.querySelectorAll('.worker-mini__badge')).map(
+      (b) => b.textContent?.trim() || ''
+    );
+  }
+
+  test('marks an external row with a 세션 badge', () => {
+    const mount = mountRow(OPEN_GREEN);
+
+    expect(badgesOf(mount)).toContain('세션');
+  });
+
+  test('leaves a worker row without the 세션 badge', () => {
+    const mount = mountRow(OPEN_GREEN, { external: false });
+
+    expect(badgesOf(mount)).not.toContain('세션');
+  });
+
+  test('hides 폐기 on an external row', () => {
+    const mount = mountRow(OPEN_GREEN);
+
+    expect(mount.querySelector('.worker-mini__discard')).toBe(null);
+  });
+
+  test('still merges an external row whose gate passes', () => {
+    const mount = mountRow(OPEN_GREEN);
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(false);
+  });
+
+  test('offers 정리 on a merged external row — nothing auto-cleans it', () => {
+    const mount = mountRow(MERGED);
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.textContent?.trim()).toBe('정리');
+    expect(btn.disabled).toBe(false);
+  });
+
+  test('keeps a merged WORKER row quiet — its cleanup runs on its own', () => {
+    const mount = mountRow(MERGED, { external: false });
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(true);
+  });
+
+  test('disables the button on a closed external PR and says 닫힘', () => {
+    const mount = mountRow(CLOSED);
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(true);
+    expect(badgesOf(mount)).toContain('닫힘');
+  });
+
+  test('disables 충돌 해소 on an external row and explains why', () => {
+    const mount = mountRow(CONFLICTING);
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent?.trim()).not.toBe('충돌 해소');
+    expect(btn.getAttribute('title')).toContain('세션에서 직접 해소');
+  });
+
+  test('keeps 충돌 해소 clickable on a worker row', () => {
+    const mount = mountRow(CONFLICTING, { external: false });
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent?.trim()).toBe('충돌 해소');
+  });
+});

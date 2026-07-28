@@ -167,6 +167,9 @@ function isConflicting(pr) {
  *     readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *     listChildren?: (bead_id: string) => Promise<{ id: string, status: string }[]>
  *   },
+ *   external?: {
+ *     get: (workspace: string, bead_id: string) => import('./external-pr.js').ExternalPrRow|null
+ *   },
  *   worktree: {
  *     remove: (input: { repo: string, bead_id: string }) => Promise<unknown>,
  *     exists?: (repo: string, bead_id: string) => boolean,
@@ -219,6 +222,7 @@ export function createPrActions(deps) {
   const in_flight = new Set();
 
   const activity = deps.activity || null;
+  const external = deps.external || null;
 
   /**
    * Publish the merge's current step (UI-raqh §4). The click runs for minutes
@@ -271,14 +275,65 @@ export function createPrActions(deps) {
   }
 
   /**
-   * The bead's merge target base, from the attempt that produced the PR. A bead
-   * whose attempts predate the field falls back to `main`, exactly like resume.
+   * Decide whether a clicked bead is a legitimate lane member, and which KIND
+   * (UI-7agi §4).
+   *
+   * A durable `pr_wait` entry is a WORKER row and passes as before. Anything
+   * else may still be an EXTERNAL row — a PR a normal session delivered — but
+   * only when bd CONFIRMS it right now: `status=resolved` AND a `metadata.pr_url`
+   * still present. That re-read is not a convenience: an external row is not a
+   * queue-revision CAS target, so this is the only thing standing between the
+   * click and a bead that was closed, discarded, or re-opened since the snapshot
+   * the user clicked on was rendered. Fail-closed — an unreadable bd throws out
+   * of `readStatus`/`readMetadata` and the click is refused.
    *
    * @param {Queue} q
    * @param {string} bead_id
+   * @returns {Promise<{ ok: true, external: false }|{ ok: true, external: true, pr_url: string }|{ ok: false, reason: string }>}
+   */
+  async function laneMembership(q, bead_id) {
+    if (inPrWait(q, bead_id)) {
+      return { ok: true, external: false };
+    }
+    if (!external || !external.get(workspace, bead_id)) {
+      return { ok: false, reason: 'not_in_pr_wait' };
+    }
+    /** @type {string|null} */
+    let status;
+    /** @type {string|null} */
+    let pr_url;
+    try {
+      status = await deps.bd.readStatus(bead_id);
+      pr_url = await deps.bd.readMetadata(bead_id, 'pr_url');
+    } catch (err) {
+      log('external lane re-read failed for %s: %o', bead_id, err);
+      return { ok: false, reason: 'bd_read_failed' };
+    }
+    if (status !== 'resolved') {
+      return { ok: false, reason: 'not_resolved' };
+    }
+    if (typeof pr_url !== 'string' || pr_url.length === 0) {
+      return { ok: false, reason: 'pr_url_missing' };
+    }
+    return { ok: true, external: true, pr_url };
+  }
+
+  /**
+   * The bead's merge target base, from the attempt that produced the PR. A bead
+   * whose attempts predate the field falls back to `main`, exactly like resume.
+   *
+   * An EXTERNAL bead has no attempt at all, so the ordering continues into
+   * GitHub's own `baseRefName` (UI-7agi §3) — passed in as `hint` from the
+   * click-time gate, else read from the observation cache. `main` stays the last
+   * resort, but reaching it for a PR that targeted another branch would sync,
+   * verify and deploy the WRONG branch, which is why the hint exists at all.
+   *
+   * @param {Queue} q
+   * @param {string} bead_id
+   * @param {string|null} [hint] - `base_ref` as the click-time gate observed it.
    * @returns {string}
    */
-  function targetBaseFor(q, bead_id) {
+  function targetBaseFor(q, bead_id, hint = null) {
     const attempts = q && q.attempts ? Object.values(q.attempts) : [];
     /** @type {{ base: string, at: number }|null} */
     let best = null;
@@ -291,7 +346,39 @@ export function createPrActions(deps) {
         best = { base: a.target_base, at };
       }
     }
-    return best && best.base.length > 0 ? best.base : 'main';
+    if (best && best.base.length > 0) {
+      return best.base;
+    }
+    if (typeof hint === 'string' && hint.length > 0) {
+      return hint;
+    }
+    const observed = deps.observations.get(workspace, bead_id);
+    const base_ref = observed && observed.pr ? observed.pr.base_ref : '';
+    return typeof base_ref === 'string' && base_ref.length > 0
+      ? base_ref
+      : 'main';
+  }
+
+  /**
+   * The branch the PR was opened FROM. Convention makes it the bead id, and a
+   * worker attempt guarantees it — an external PR does not, so GitHub's own
+   * `headRefName` wins when it says something else (UI-7agi §3). Deleting the
+   * wrong branch is not a risk here: an unknown branch is a no-op, and the one
+   * that just merged is the one gh names.
+   *
+   * @param {string} bead_id
+   * @param {string|null} hint
+   * @returns {string}
+   */
+  function headBranchFor(bead_id, hint) {
+    if (typeof hint === 'string' && hint.length > 0) {
+      return hint;
+    }
+    const observed = deps.observations.get(workspace, bead_id);
+    const head_ref = observed && observed.pr ? observed.pr.head_ref : '';
+    return typeof head_ref === 'string' && head_ref.length > 0
+      ? head_ref
+      : branchForBead(bead_id);
   }
 
   /**
@@ -884,10 +971,12 @@ export function createPrActions(deps) {
    * non-reentrant mutex.
    *
    * @param {string} bead_id
+   * @param {string|null} [head_ref] - GitHub's own head branch name, when the
+   * click-time gate observed one (UI-7agi §3).
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
    */
-  async function cleanupBranches(bead_id) {
-    const branch = branchForBead(bead_id);
+  async function cleanupBranches(bead_id, head_ref = null) {
+    const branch = headBranchFor(bead_id, head_ref);
     try {
       await deps.worktree.remove({ repo, bead_id });
     } catch (err) {
@@ -942,11 +1031,14 @@ export function createPrActions(deps) {
    * second copy for the external case is exactly the divergence §6 forbids.
    *
    * @param {string} bead_id
+   * @param {{ base_ref?: string|null, head_ref?: string|null }} [refs] - What
+   * the click-time gate observed on GitHub (UI-7agi §3). Load-bearing for an
+   * external PR, which has no attempt to read a target base from.
    * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
-  async function runCleanup(bead_id) {
+  async function runCleanup(bead_id, refs = {}) {
     const q = deps.store.snapshot(workspace);
-    const target_base = targetBaseFor(q, bead_id);
+    const target_base = targetBaseFor(q, bead_id, refs.base_ref || null);
 
     markStep(bead_id, 'base_sync');
     const synced = await syncBase(target_base);
@@ -985,7 +1077,7 @@ export function createPrActions(deps) {
       return failCleanup(bead_id, 'child_sweep', swept.reason, base_sync);
     }
     markStep(bead_id, 'branch_cleanup');
-    const branches = await cleanupBranches(bead_id);
+    const branches = await cleanupBranches(bead_id, refs.head_ref || null);
     if (!branches.ok) {
       return failCleanup(bead_id, 'branch_cleanup', branches.reason, base_sync);
     }
@@ -1120,10 +1212,24 @@ export function createPrActions(deps) {
     markStep(bead_id, 'merging');
     try {
       const q = deps.store.snapshot(workspace);
-      if (!inPrWait(q, bead_id)) {
-        return refuse('not_in_pr_wait');
+      const member = await laneMembership(q, bead_id);
+      if (!member.ok) {
+        return refuse(member.reason);
       }
-      const ref = resolvePrRef(q, bead_id);
+      const is_external = member.external === true;
+      const ref = resolvePrRef(
+        q,
+        bead_id,
+        is_external
+          ? {
+              pr_url: member.pr_url,
+              pr_number:
+                (external &&
+                  (external.get(workspace, bead_id) || {}).pr_number) ??
+                null
+            }
+          : null
+      );
       if (!ref) {
         return refuse('pr_ref_unknown');
       }
@@ -1132,10 +1238,16 @@ export function createPrActions(deps) {
       if ('error' in first) {
         return refuse(first.error);
       }
+      const refs = {
+        base_ref: first.pr.base_ref || null,
+        head_ref: first.pr.head_ref || null
+      };
       // A merge that already happened (here or on github.com) runs the same
-      // cleanup rather than a second merge.
+      // cleanup rather than a second merge. For an EXTERNAL row this is the
+      // whole of the [정리] button: the poller deliberately never auto-cleans
+      // one, so the click is the only trigger (UI-7agi §1).
       if (first.pr.state === 'MERGED') {
-        const c = await runCleanup(bead_id);
+        const c = await runCleanup(bead_id, refs);
         return {
           ok: c.ok,
           action: 'already_merged',
@@ -1151,6 +1263,14 @@ export function createPrActions(deps) {
       // DIRTY comes BEFORE the gate: a conflicting PR needs resolving whatever
       // its CI says, and resolving is not merging.
       if (isConflicting(first.pr)) {
+        // An EXTERNAL row has no attempt, so it has no `session_id` and no
+        // worker worktree — `scheduler.resolveConflict()` would refuse with
+        // `no_session_id` every time (UI-7agi §5). Refusing here says so
+        // honestly instead of dispatching something that cannot run; the user
+        // resolves an external PR's conflict in their own session.
+        if (is_external) {
+          return refuse('external_conflict_needs_session');
+        }
         return dispatchResolution(bead_id, first.pr.head_sha);
       }
       if (!first.verdict.enabled) {
@@ -1162,7 +1282,13 @@ export function createPrActions(deps) {
         // cleanup, which is exactly what the guard promises — returning the
         // promise unawaited would run this `finally` before the merge even
         // issued.
-        return await doMerge(bead_id, ref.number, first.pr.head_sha, 'merged');
+        return await doMerge(
+          bead_id,
+          ref.number,
+          first.pr.head_sha,
+          'merged',
+          refs
+        );
       }
 
       // BEHIND — merge the base into the branch ON GITHUB, then re-confirm.
@@ -1190,6 +1316,9 @@ export function createPrActions(deps) {
         );
       }
       if (isConflicting(second.pr)) {
+        if (is_external) {
+          return refuse('external_conflict_needs_session');
+        }
         return dispatchResolution(bead_id, second.pr.head_sha);
       }
       if (!second.verdict.enabled) {
@@ -1202,7 +1331,11 @@ export function createPrActions(deps) {
         bead_id,
         ref.number,
         second.pr.head_sha,
-        'updated_and_merged'
+        'updated_and_merged',
+        {
+          base_ref: second.pr.base_ref || null,
+          head_ref: second.pr.head_ref || null
+        }
       );
     } finally {
       in_flight.delete(bead_id);
@@ -1231,9 +1364,11 @@ export function createPrActions(deps) {
    * @param {number} number
    * @param {string} head_sha
    * @param {'merged'|'updated_and_merged'} action
+   * @param {{ base_ref?: string|null, head_ref?: string|null }} [refs] - The
+   * gate-time base/head branch names, forwarded to the cleanup (UI-7agi §3).
    * @returns {Promise<MergeClickResult>}
    */
-  async function doMerge(bead_id, number, head_sha, action) {
+  async function doMerge(bead_id, number, head_sha, action, refs = {}) {
     /** @type {any} */
     let merged;
     try {
@@ -1278,7 +1413,7 @@ export function createPrActions(deps) {
       };
     }
 
-    const c = await runCleanup(bead_id);
+    const c = await runCleanup(bead_id, refs);
     return {
       ok: c.ok,
       action,

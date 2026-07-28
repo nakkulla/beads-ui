@@ -31,6 +31,7 @@ import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
+import { parsePrNumber } from '../workflow-enrich.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createNotifier } from './notify.js';
@@ -458,6 +459,32 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     }
   };
 
+  /**
+   * Re-derive the workspace's EXTERNAL PR rows from bd (UI-7agi §1): every
+   * `resolved` bead still carrying a `metadata.pr_url`. Memory only — nothing
+   * is written into `queue.json`, because none of these beads ran here.
+   *
+   * A bd that cannot be read THROWS out of `listResolvedPrBeads`; the caller
+   * (the poller pass) logs and keeps the previous rows, so a transient bd
+   * failure does not blank the lane.
+   *
+   * @returns {Promise<void>}
+   */
+  async function refreshExternalPrs() {
+    if (typeof bd.listResolvedPrBeads !== 'function') {
+      return;
+    }
+    const rows = await bd.listResolvedPrBeads();
+    runtime.externalPrs.replace(
+      keyFor(workspace_root),
+      rows.map((/** @type {{ bead_id: string, pr_url: string }} */ row) => ({
+        bead_id: row.bead_id,
+        pr_url: row.pr_url,
+        pr_number: parsePrNumber(row.pr_url)
+      }))
+    );
+  }
+
   // The PR-wait actions (worker-phase2 §6): the authoritative [머지] click, the
   // single post-merge cleanup, and [폐기]. Built with the SAME gh adapter,
   // observation cache, worktree manager and scheduler the poller and dispatch
@@ -471,6 +498,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     observations: runtime.prObservations,
     activity: runtime.activityStore,
     bd,
+    // The external row lookup the relaxed `pr_wait` guard stands on (UI-7agi §4).
+    external: {
+      get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
+        runtime.externalPrs.get(ws_key, bead_id)
+    },
     worktree,
     gitRun,
     scheduler,
@@ -500,6 +532,13 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // The externally-observed MERGED trigger routes into the SAME cleanup the
     // button runs — one implementation, two triggers (worker-phase2 §6).
     onMerged: (bead_id) => prActions.cleanupObservedMerge(bead_id),
+    // The external registry rides the poller's own subscriber gate and cadence
+    // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:
+    // never.
+    external: {
+      refresh: refreshExternalPrs,
+      list: () => runtime.externalPrs.list(keyFor(workspace_root))
+    },
     notifyChanged: (ws_key) => emitQueueChanged(ws_key)
   });
 
@@ -509,6 +548,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reconciler,
     prPoller,
     prActions,
+    refreshExternalPrs,
     bd,
     admission,
     repo,
@@ -749,6 +789,26 @@ export async function mergeWorkerPr(workspace_root, bead_id) {
     return { ok: false, action: 'refused', reason: 'no_attachment' };
   }
   return att.prActions.merge(bead_id);
+}
+
+/**
+ * Re-scan a workspace's external PR rows (UI-7agi §1), IF an attachment is
+ * registered. Inert without one — an unattached workspace renders no lane.
+ *
+ * Called on `subscribe-worker-queue` so the first snapshot a client receives
+ * already carries the external rows instead of waiting up to a poll interval
+ * for them.
+ *
+ * @param {string} workspace_root
+ * @returns {Promise<boolean>} Whether a scan actually ran.
+ */
+export async function refreshWorkerExternalPrs(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || typeof att.refreshExternalPrs !== 'function') {
+    return false;
+  }
+  await att.refreshExternalPrs();
+  return true;
 }
 
 /**

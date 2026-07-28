@@ -14,6 +14,7 @@
  * inert and `running_count` stays 0.
  */
 import { createActivityStore } from './activity-store.js';
+import { createExternalPrStore } from './external-pr.js';
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
 import { createPrObservationStore } from './pr-observations.js';
@@ -28,6 +29,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createLockManager>} locks
  * @property {ReturnType<typeof createGh>} gh
  * @property {ReturnType<typeof createPrObservationStore>} prObservations
+ * @property {ReturnType<typeof createExternalPrStore>} externalPrs
  * @property {ReturnType<typeof createUsageStore>} usageStore
  * @property {ReturnType<typeof createActivityStore>} activityStore
  * @property {ReturnType<typeof createTitleCache>} titleCache
@@ -52,6 +54,10 @@ export function createWorkerRuntime() {
   // pollers WRITE here and the ws queue-snapshot decoration READS here, so both
   // must share one instance. Deliberately never persisted — see the module.
   const prObservations = createPrObservationStore();
+  // Process-wide external PR registry (UI-7agi §1): the per-workspace scan
+  // WRITES it, the PR poller and the ws queue-snapshot overlay READ it. Also
+  // never persisted — bd is the source of truth and every scan re-derives it.
+  const externalPrs = createExternalPrStore();
   // Process-wide live token-usage tally (UI-raqh §1): the scheduler WRITES it
   // off the runner stream and the ws queue-snapshot decoration READS it, so —
   // exactly like the observation cache — both must share one instance. Also
@@ -77,6 +83,7 @@ export function createWorkerRuntime() {
     locks,
     gh,
     prObservations,
+    externalPrs,
     usageStore,
     activityStore,
     titleCache,
