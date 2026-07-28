@@ -31,7 +31,8 @@ UI-5v7d로 순차 머지 큐가 이미 있다. `merge_queue`는 durable하고, �
 2. `[일괄 머지]`를 durable 토글로 바꿔, 켜 두면 `pr_wait`에 쌓이는 PR을
    자격이 생기는 대로 계속 큐에 편입해 순서대로 충돌 해소·머지한다.
 3. 자동 편입이 실패 항목을 무한히 재시도하지 않는다.
-4. beads-ui 자신을 머지해 서버가 재시작해도 자동화가 이어진다.
+4. beads-ui 자신을 머지해 서버가 재시작해도, 그리고 브라우저 탭을 닫아도
+   자동화가 이어진다.
 
 ## 비목표
 
@@ -86,9 +87,25 @@ Tier 3(`검증 신호 없음`)에서는 `gate.enabled`가 계속 `true`라 같�
 
 ### 3.2 규칙
 
-- 드라이버가 항목을 실패로 처분할 때(`fail()` 호출 지점 = 모두 그 직후
-  `dequeue()`가 따라온다), 그 시점의 **관측 head SHA**와 사유를
+- 드라이버가 항목을 실패로 처분할 때, 그 시점의 **관측 head SHA**와 사유를
   `auto_merge_skips[bead_id]`에 durable 기록한다.
+- **기록과 dequeue는 하나의 원자적 변이여야 한다.** 둘을 따로 쓰면 "기록은
+  됐는데 dequeue 전에 크래시" 사이에서 항목이 큐에 남고, 부팅 재개 드라이버가
+  같은 head를 다시 머지한다. 반대 순서면 skip 없이 dequeue되어 자동 편입기가
+  즉시 재편입한다. `queue-store`에 두 변이를 함께 수행하는 단일 API를 만든다.
+- **head SHA를 읽을 수 없거나 기록이 persist되지 않으면 dequeue하지 않는다.**
+  대신 드라이버를 `halted`시켜 이번 드레인을 끝낸다 — 큐는 durable하므로 다음
+  kick이나 재시작이 이어받고, 관측이 복구된 뒤 제대로 처분된다. skip을 남기지
+  못한 채 dequeue하는 것이 §3.1 루프의 유일한 재발 경로다.
+- **부팅 재개 드라이버도 skip 필터를 통과해야 한다.** `drain()`은 durable
+  `merge_queue`의 head를 그대로 집어 `processItem`을 돌리므로, 편입기에만
+  필터를 두면 재시작이 필터를 우회한다. `processItem` 진입 시 해당 bead의
+  skip 레코드를 확인하고, 현재 head SHA와 같으면 머지를 시도하지 않고 그
+  자리에서 dequeue한다.
+- `restored`(부팅 시 살아 있던 해소 세션) 경로의 `resolution_round_cap` /
+  `resolution_timeout` 처분은 `merge()` 호출 **전에** 일어난다. 재시작 직후에는
+  `pr-observations` 캐시가 비어 있어 head SHA를 못 읽으므로, 이 경로는 위
+  규칙에 따라 dequeue하지 않고 관측이 도착할 때까지 기다린다.
 - 자동 편입기는 skip 레코드가 있고 **현재 관측 head_sha가 기록된 값과 같으면**
   편입하지 않는다.
 - head_sha가 **다르면** 레코드를 지우고 편입한다. 해소 세션이든 사람이든
@@ -97,15 +114,25 @@ Tier 3(`검증 신호 없음`)에서는 `gate.enabled`가 계속 `true`라 같�
   closed. 게이트의 첫 번째 규칙과 같은 태도다.
 - **수동 `[머지]` 클릭은 레코드를 무시하고 삭제한다.** 사람이 명시적으로
   재시도한 것이므로 자동화의 제외 판단이 이를 막아서는 안 된다.
-- bead가 **어떤 이유로든** `pr_wait`을 떠나면(머지 성공, `[폐기]`, PR closed
-  처분) 레코드를 삭제한다. 레코드는 `pr_wait` 멤버십에 종속되며, 떠난 bead의
-  기록이 남으면 `auto_merge_skips`가 무한히 자란다.
+
+### 3.2.1 레코드 수명 — external 행 때문에 lane 훅으로는 부족하다
+
+durable `pr_wait` 이탈(머지 성공, `[폐기]`, PR closed 처분)에는 lane 변이
+훅에서 레코드를 지운다. 그러나 **external 행은 `queue.json.pr_wait`에 없다** —
+`getWorkerRuntime().externalPrs.list()`가 돌려주는 메모리 overlay를 스냅샷
+합성 시점에 얹은 것이다(`server/ws/worker-handlers.js:152`~`:173`). external
+행이 사라질 때는 어떤 lane 변이도 일어나지 않으므로 훅이 발화하지 않는다.
+
+따라서 자동 스캔이 돌 때마다 **durable `pr_wait` ∪ external overlay**의
+합집합에 없는 `auto_merge_skips` 키를 함께 prune한다(편입과 같은 변이 안에서).
+그대로 두면 기록이 누적되고, 같은 bead가 같은 head로 다시 나타났을 때 지난
+실패가 잘못 적용된다.
 
 ### 3.3 구현 지점
 
 - `merge-queue.js`의 `fail(bead_id, reason)`은 현재 메모리 `failures` Map만
-  쓴다. 여기에 durable skip 기록을 추가한다 — 모든 실패 처분이 이 한 함수를
-  지나므로 누락 지점이 없다.
+  쓴다. 모든 실패 처분이 이 한 함수를 지나므로 durable skip 기록도 여기에서
+  출발하되, 실제 쓰기는 §3.2의 "기록 + dequeue 원자 변이" API를 호출한다.
 - head SHA는 새 dep `headSha: (bead_id) => string|null`로 주입한다
   (`pr-observations` 캐시의 동기 읽기). `deps.observePr`는 `{state, error}`만
   돌려주므로 재사용할 수 없다.
@@ -123,8 +150,7 @@ Tier 3(`검증 신호 없음`)에서는 `gate.enabled`가 계속 `true`라 같�
 
 새 모듈 `server/worker/auto-merge.js`를 만들고
 `onQueueChanged(workspace)`(`server/worker/queue-events.js`)를 구독한다.
-`auto_merge`가 켜져 있으면 `mergeQueueCandidates()`를 돌려 자격 있는 행을
-`merge_queue`에 편입한다.
+`auto_merge`가 켜져 있으면 §4.2의 공용 편입 함수를 호출한다.
 
 PR poller는 관측을 갱신할 때마다 이미 `queue-changed`를 emit한다
 (`pr-poller.js:225`, `:389`, `:431`, `:515`, `:545`). 따라서 새 타이머 없이
@@ -138,26 +164,64 @@ PR poller는 관측을 갱신할 때마다 이미 `queue-changed`를 emit한다
 - *주기 타이머 폴링*: 30초마다 스캔. 가장 단순하지만 반응이 느리고, 쓸 수
   있는 이벤트 배선이 이미 있는데 새 타이머를 하나 더 단다.
 
-### 4.2 자격 판정
+### 4.2 편입은 persist 하나로 끝나지 않는다 — 공용 함수 추출
 
-`server/ws/worker-handlers.js`의 `mergeQueueCandidates()`를 **그대로** 쓴다.
-`[일괄 머지]`와 자동 편입이 같은 판정을 쓰는 것이 요점이다 — 두 경로가 다른
-기준을 갖게 되면 어느 쪽이 옳은지 알 수 없게 된다. 이 함수는 이미
-해소 세션 보유 행, external + 충돌 행을 제외한다.
+현재 `[일괄 머지]`가 실제로 하는 일은 네 단계다:
 
-자동 편입기는 그 결과에 §3.2의 skip 필터를 한 겹 더 씌운다.
+1. external overlay를 얹은 스냅샷으로 `mergeQueueCandidates()` 자격 판정
+   (`server/ws/worker-handlers.js:345`)
+2. `queueStore().enqueueMerge()`로 durable persist (`queue-store.js:1515`)
+3. `replyMergeQueue()`가 클라이언트 fanout (`worker-handlers.js:1322`)
+4. 같은 함수가 `kickWorkerMergeQueue()`로 **드라이버를 깨움**
+   (`worker-handlers.js:1337`, `attach.js:948`)
+
+**`enqueueMerge()`는 persist만 한다.** 이벤트를 emit하지도, 드라이버를 깨우지도
+않는다. 자동 편입기가 `enqueueMerge()`만 호출하면 항목이 durable 큐에 쌓인 채
+아무도 실행하지 않는 상태가 된다.
+
+따라서 위 네 단계 + §3.2의 skip 필터 + §3.2.1의 prune을 묶은 **worker-side
+공용 함수**를 추출하고, WS의 add-all 핸들러와 자동 편입기가 **같은 함수**를
+호출한다. 자격 판정 로직이 갈라지지 않는 것이 요점이다 — 두 경로가 다른 기준을
+갖게 되면 어느 쪽이 옳은지 알 수 없게 된다.
+
+공용 함수는 external overlay를 얹은 스냅샷을 입력으로 받는다. `[일괄 머지]`가
+이미 그렇게 동작하며(`worker-handlers.js:340` "the OVERLAID snapshot"), external
+행은 durable lane에 없으므로 overlay 없이는 자격 판정 자체가 성립하지 않는다.
+
+`mergeQueueCandidates()`의 자격 판정은 **바꾸지 않는다**. 이미 해소 세션을
+보유한 행과 external + 충돌 행을 제외하며, 그 판정이 `[일괄 머지]`와 자동
+편입의 공통 기준이 된다. 자동 편입기가 얹는 것은 §3.2의 skip 필터 한 겹뿐이다.
 
 ### 4.3 재진입 방지
 
-편입은 `queue-store` 변이를 일으키고, 그 변이는 다시 `queue-changed`를
-emit한다 → 자기 자신을 재귀 호출할 수 있다. 두 겹으로 막는다:
+공용 함수는 편입 후 명시적으로 `emitQueueChanged()`를 부른다(§4.2). 편입기는
+바로 그 이벤트를 구독하고 있으므로 자기 자신을 재귀 호출할 수 있다. 두 겹으로
+막는다:
 
 - 워크스페이스별 재진입 플래그: 스캔 중 들어온 이벤트는 "한 번 더 스캔해야
   함" 표시만 남기고 즉시 반환한다(coalesce).
-- 편입할 대상이 실제로 하나도 없으면 아무 변이도 하지 않는다. `merge_queue`에
-  이미 있는 bead는 `queue-store`의 add가 no-op으로 처리하므로 변이가 없다.
+- 편입·prune 대상이 실제로 하나도 없으면 아무 변이도, 아무 emit도 하지 않는다.
+  이것이 재귀를 실제로 종료시키는 조건이다. `merge_queue`에 이미 있는 bead는
+  `queue-store`의 add가 no-op으로 처리한다.
 
-### 4.4 안전
+### 4.4 관측 수요 — 구독자 게이트를 풀어야 한다
+
+`pr-poller.js`의 `tick()`은 첫 줄에서 `getSubscriberCount() <= 0`이면 즉시
+반환한다. 구독자란 워커 큐를 구독 중인 WS 클라이언트, 즉 **열려 있는 브라우저
+탭**이다. external PR 스캔(`external.refresh()`)도 같은 게이트 안에 있다.
+
+이대로 두면 자동 머지가 목표를 달성하지 못한다. 탭을 닫는 순간 관측이 멈추고,
+새 PR도 새 head도 새 CI 결과도 들어오지 않으므로 `auto_merge`가 ON이어도
+편입할 것이 영원히 생기지 않는다. 관측 캐시는 비영속이라 서버 재시작 뒤에도
+같은 상태가 된다. "켜 두면 알아서 돈다"는 요구가 브라우저 탭에 묶여서는 안 된다.
+
+- poll 수요 판정을 **`subscriber_count > 0 || auto_merge`**로 바꾼다.
+- 다음 세 시점에 즉시 1회 관측을 돌린다: 서버 부팅(`auto_merge`가 ON인
+  워크스페이스), 토글 OFF→ON 전이, bead가 `pr_wait`에 새로 진입.
+- 토글이 OFF이고 구독자도 없으면 현행 그대로 아무것도 관측하지 않는다 —
+  유휴 서버가 `gh`를 계속 때리지 않는다는 기존 성질을 유지한다.
+
+### 4.5 안전
 
 자동 편입은 `merge_queue`를 통과하므로 기존 안전장치가 **전부 그대로** 걸린다:
 순차 실행, 차례마다 재게이트, `RESOLUTION_ROUND_CAP = 2`, 해소 대기 30분,
@@ -177,12 +241,23 @@ UI-5v7d의 불변식을 유지한다.
 
 | 머지 큐 | `auto_merge` | 버튼 |
 |---|---|---|
-| 비어 있음 | OFF | `▶ 자동 머지 N` (N = 현재 자격 있는 행 수). N이 0이면 버튼 없음 |
+| 비어 있음 | OFF | `▶ 자동 머지 N` (N = 현재 자격 있는 행 수) |
 | 비어 있음 | ON | `⏸ 자동 머지` (무장 상태, 아직 대상 없음) |
 | 진행 중 | ON | `⏸ 자동 머지 중단 N` (N = 큐 대기 수) |
 | 진행 중 | OFF | `일괄 머지 중단 N` (현행 그대로 — 수동으로 넣은 항목) |
 
 어느 상태에서도 버튼은 하나다.
+
+**N이 0이어도 `▶ 자동 머지` 버튼은 보이고 클릭할 수 있다.** 현행
+`mergeAllTemplate`은 `count === 0`이면 `''`을 반환해 버튼을 지운다
+(`index.js:2043`~`:2045`) — 일회성 액션에서는 옳았다(넣을 게 없는데 넣기 버튼을
+보일 이유가 없다). 토글에는 그 규칙을 그대로 쓰면 안 된다: 지금 자격 있는 행이
+없다는 이유로 버튼이 사라지면 **앞으로 도착할 PR을 위해 미리 무장해 둘 방법이
+없어지고**, 그것이 이 토글의 존재 이유다. N이 0이면 숫자만 생략하고
+`▶ 자동 머지`로 표시한다.
+
+`auto_merge`가 OFF이고 큐도 비어 있고 `pr_wait` 레인 자체가 비어 있으면 PR 대기
+레인이 렌더되지 않으므로 버튼 표시 여부는 문제가 되지 않는다.
 
 ### 5.2 중단의 의미
 
@@ -193,10 +268,15 @@ UI-5v7d의 불변식을 유지한다.
 
 ### 5.3 켜는 순간
 
-토글을 ON으로 바꾸면 **즉시** 1회 편입 스캔을 돌린다. 기존
-`worker-merge-queue-add-all` 경로를 그대로 재사용하므로, 일회성 `[일괄 머지]`의
-기능이 "토글 ON"에 흡수된다. 프로토콜 타입 `worker-merge-queue-add-all`은
-유지한다.
+토글을 ON으로 바꾸면 **즉시** §4.2의 공용 편입 함수를 1회 호출한다 — persist뿐
+아니라 fanout과 드라이버 kick까지 포함된 그 함수여야 한다. 일회성
+`[일괄 머지]`의 기능이 "토글 ON"에 흡수된다. 프로토콜 타입
+`worker-merge-queue-add-all`은 유지한다(같은 공용 함수를 부르는 두 번째
+호출자가 된다).
+
+§4.4에 따라 토글 OFF→ON 전이는 즉시 1회 관측도 함께 트리거한다. 관측 없이
+편입 스캔만 돌리면 캐시가 빈 상태에서 자격 판정이 전부 `unobserved`로 떨어져
+아무것도 편입되지 않는다.
 
 ### 5.4 프로토콜
 
@@ -232,12 +312,18 @@ Tier 3을 별도로 배제하지 않는다.
 이 위험을 줄이려면 후속으로 "자동 모드는 양성 검증 신호를 요구" 옵션을 둘 수
 있으나, 이번 범위에는 넣지 않는다.
 
+§4.4가 구독자 게이트를 푸는 것도 여기에 함께 기록해 둔다: 자동 모드를 켜 두면
+**아무도 화면을 보고 있지 않은 동안에도** 서버가 PR을 관측하고 머지한다.
+이것은 요구된 동작이지만, 되돌릴 수 없는 작업이 무인 상태에서 진행된다는
+뜻이기도 하다. 토글이 OFF이면 관측 수요도 원래대로 돌아간다.
+
 ## 오류 처리
 
 - 관측 오류/미관측 bead는 자동 편입 대상이 아니다(fail closed).
-- durable skip 기록이 실패하면 그 항목을 편입 대상에서 빼고 로그를 남긴다 —
-  기록 없이 편입하면 §3.1의 루프가 그대로 돌아온다. 드라이버의 `halted`
-  패턴과 같은 태도다.
+- 실패 처분 시 head SHA를 못 읽거나 skip 기록이 persist되지 않으면
+  **dequeue하지 않고 `halted`로 이번 드레인을 끝낸다**(§3.2). 기록 없이
+  dequeue하면 §3.1의 루프가 그대로 돌아온다. 큐는 durable하므로 다음 kick이나
+  재시작이 이어받는다.
 - `queue-changed` 구독 중 던진 예외는 삼키고 로그만 남긴다. 편입기가 깨져도
   수동 `[머지]`/`[일괄 머지]` 경로는 살아 있어야 한다.
 - 편입기는 `stop()`에서 구독을 해제한다. 워크스페이스 attach/detach 수명은
@@ -248,14 +334,29 @@ Tier 3을 별도로 배제하지 않는다.
 - 라벨: 충돌 게이트에서 `merge_label`이 `충돌 해소 후 머지`.
 - `queue-store`: `auto_merge` / `auto_merge_skips` 정규화, 구버전 `queue.json`
   로드, CAS 토글.
-- skip 기록: `fail()`의 모든 처분 경로에서 head_sha와 함께 기록되는지,
-  머지 성공 시 삭제되는지, 수동 `[머지]`가 삭제하는지.
+- skip 기록: `fail()`의 모든 처분 경로(`refused`, `resolution_round_cap`,
+  `resolution_timeout`, `resolution_refused`, `merge_unconfirmed_timeout`,
+  `pr_closed_unmerged`, 정리 실패)에서 head_sha와 함께 기록되는지;
+  기록과 dequeue가 하나의 변이인지; head_sha 미상 또는 persist 실패 시
+  dequeue하지 않고 `halted`가 되는지; 머지 성공 시 삭제되는지;
+  수동 `[머지]`가 삭제하는지.
+- 부팅 재개: `restored` 경로에서 관측 캐시가 비어 있을 때 dequeue하지 않는지;
+  `processItem` 진입 시 skip 필터가 걸려 같은 head를 다시 머지하지 않는지.
 - 자동 편입기: `auto_merge` OFF면 무동작; ON이면 자격 행 편입; skip 레코드가
   있고 head_sha 동일이면 미편입; head_sha 변경 시 편입 + 레코드 삭제;
-  head_sha 미상이면 미편입; 재진입 coalesce.
+  head_sha 미상이면 미편입; 재진입 coalesce; 편입 대상이 없으면 emit도 없음.
+- 공용 편입 함수: WS add-all과 자동 편입기가 같은 함수를 부르는지;
+  persist 후 fanout과 드라이버 kick이 함께 일어나는지 — persist만 하고
+  드라이버가 안 깨어나는 회귀를 잡는다.
+- skip prune: durable `pr_wait` ∪ external overlay에 없는 키가 제거되는지;
+  external 행이 사라졌다 같은 head로 재등장할 때 지난 실패가 적용되지 않는지.
+- 관측 수요: 구독자 0 + `auto_merge` ON이면 관측이 돌고, 구독자 0 +
+  `auto_merge` OFF이면 돌지 않는지; 부팅·토글 ON·`pr_wait` 진입 시 즉시 1회
+  관측하는지; 서버 재시작 후 탭 없이 자동화가 이어지는지.
 - 무한 루프 회귀: `resolution_round_cap`으로 스킵된 충돌 행이 head_sha가
   그대로인 동안 재편입되지 않는다.
-- UI: 네 상태 버튼 렌더, 중단이 토글까지 끄는지, ON 시 즉시 편입.
+- UI: 네 상태 버튼 렌더, N=0에서도 `▶ 자동 머지`가 보이고 클릭 가능한지,
+  중단이 토글까지 끄는지, ON 시 즉시 편입 + 즉시 관측.
 
 ## 마감 조건
 

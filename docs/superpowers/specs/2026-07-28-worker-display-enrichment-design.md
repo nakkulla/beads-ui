@@ -89,13 +89,32 @@ Ready/Blocked 구독 컬럼 밖이라 클라이언트가 타임스탬프를 가�
 
 - `app/views/worker/index.js:1560`(완료 행), `:1801`(PR 대기 행)의
   `lastAttemptUsage` 호출을 `sumAttemptUsage`로 교체한다.
+- **실행 중 타일도 합계로 바꾼다.** 지금 실행 타일은
+  `usage: a.usage || null`(`index.js:1648`)로 그 attempt의 라이브 tally만
+  쓴다. 이대로 두면 재실행된 bead의 실행 타일만 혼자 다른 수를 보이게 되어
+  "모든 레인의 τ 배지가 같은 질문에 답한다"는 §1.2가 깨진다.
+  `sumAttemptUsage(q.attempts, a.bead_id)`로 교체한다 — 서버가 스냅샷에
+  라이브 tally를 이미 접어 넣으므로(`worker-handlers.js:517`) 합계에 실행
+  중 attempt의 현재값이 포함되고, 실행이 진행되면 값이 계속 올라간다.
 - 툴바 KPI `token_total`("오늘 토큰", `index.js:1745`~`:1768`)은 완료 행의
   `usage`를 합산할 뿐이므로 **코드 변경 없이** 참 총합이 된다. 다만 그 위의
   주석(`"완료 레인의 행이 이미 들고 있는 마지막 attempt usage를 합산할 뿐"`)은
   사실이 아니게 되므로 갱신한다.
-- `app/views/worker/lanes.js:16`의 import 경로를 갱신한다.
-- 기존 `usage.test.js`의 `lastAttemptUsage` 테스트 2건을 `sumAttemptUsage`
-  테스트로 교체하고, 합산·`replayed` 전파·미보고 `null` 케이스를 추가한다.
+- import 경로를 갱신해야 하는 곳은 **런타임 2곳 + JSDoc 3곳**이다. 하나라도
+  빠지면 파일 이동 시 import 또는 `tsc`가 깨진다:
+  - 런타임 `import`: `app/views/worker/lanes.js:16`,
+    `app/views/worker/running-grid.js:15`,
+    `app/views/worker/index.js:46`
+  - JSDoc `@property`/`@param` 타입 참조: `app/views/worker/lanes.js:68`,
+    `app/views/worker/running-grid.js:31`, `app/views/worker/index.js:532`
+- 기존 `usage.test.js`의 `lastAttemptUsage` 테스트는 **4건**이다
+  (`:89` 마지막 attempt 선택, `:100` 마지막이 usage 없을 때 폴백 금지,
+  `:109` 다른 bead의 attempt 무시, `:117` 빈 attempts map). 네 건 모두
+  `sumAttemptUsage`로 이관하되 계약이 바뀌는 두 건은 의미를 다시 쓴다:
+  `:89`는 "모든 attempt를 합산", `:100`은 "usage 없는 attempt는 합계에서
+  건너뛰되 다른 attempt의 값은 살린다"가 된다. `:109`(bead 필터)와
+  `:117`(빈 map → `null`)의 계약은 그대로다. 여기에 합산·`replayed` 전파·
+  `total_cost_usd` 부분 보고·전원 미보고 시 `null` 케이스를 추가한다.
 
 ## 2. 이슈 상세 — 세션 이력에 토큰
 
@@ -112,6 +131,10 @@ Ready/Blocked 구독 컬럼 밖이라 클라이언트가 타임스탬프를 가�
 - **섹션 총합**: `세션 이력` 라벨 옆에 이슈 전체 합계를 `τ 총 139.4k · $2.41`
   형태로 싣는다. 합계는 §1.3의 합산 규칙을 그대로 쓴다. 비용은 보고된
   attempt가 있을 때만 붙인다.
+  합계에 `replayed`가 섞였으면(§1.3에 따라 하나라도 있으면 전파된다)
+  총합 옆에 `부분 집계` 표시를 붙이고 툴팁에
+  `서버 재시작 복구 — 부분 집계`를 싣는다. 하한값을 정확한 총합처럼
+  보이게 두지 않는다.
 - **[τ 자세히] 버튼**: 각 행에 형제 버튼으로 붙인다. 클릭하면 그 행 아래로
   분해가 펼쳐진다 — 입력 / 출력 / 캐시 읽기 / 캐시 생성 / 비용. `replayed`인
   attempt는 `서버 재시작 복구 — 부분 집계` 주석을 함께 그린다.
@@ -169,8 +192,21 @@ Ready/Blocked 구독 컬럼 밖이라 클라이언트가 타임스탬프를 가�
 툴바의 `오늘 완료 N`(`index.js:1858`)과 `오늘 토큰`(`token_total`)은 둘 다
 완료 행에서 계산된다. 완료 행이 기간 필터를 타면 두 KPI도 선택된 범위를
 따라간다. 이는 의도한 동작이다 — 화면에 보이는 목록과 그 목록의 집계가
-다른 범위를 가리키는 편이 더 나쁜 오독이다. 두 KPI의 라벨도 §3.4와 같은
-규칙으로 범위를 반영한다(`최근 7일 완료`, `최근 7일 토큰`).
+다른 범위를 가리키는 편이 더 나쁜 오독이다.
+
+다만 토큰 KPI의 라벨을 `최근 7일 토큰`으로 두어서는 안 된다. §1의 합계는
+bead의 **전 생애 attempt 합**이므로, 이 KPI가 세는 것은 "최근 7일에 쓴
+토큰"이 아니라 **"최근 7일에 완료된 이슈들이 생애 전체에 쓴 토큰"**이다.
+7일 전에 시작해 어제 끝난 bead의 첫날 토큰까지 들어간다. 따라서 라벨을
+코호트 의미로 적는다: `오늘 완료 이슈 누적 토큰` /
+`최근 7일 완료 이슈 누적 토큰`. 라벨이 길어지므로 축약형
+(`오늘 완료 · 누적 τ`)을 쓰고 정확한 문장은 툴팁에 싣는다.
+
+완료 건수 KPI는 코호트 자체를 세므로 모호하지 않다 — `최근 7일 완료`로
+범위만 반영한다.
+
+"기간 내에 실제로 소모된 토큰"은 attempt의 종료 시각으로 따로 필터링해야
+나오는 다른 수이며, 이번 범위 밖이다.
 
 ## 4. 레인 행에 생성·수정 시각
 
@@ -194,14 +230,25 @@ Ready/Blocked 구독 컬럼 밖이라 클라이언트가 타임스탬프를 가�
 - **카드 변형**(PR 대기 / REVISE 파킹): `worker-mini__foot`에 usage 옆으로
   넣는다. 이미 3단 카드이므로 줄이 늘지 않는다.
 - **후보 카드**: `worker-card__foot`에 넣는다.
+- **실행 중 타일**(`running-grid.js`): 목표가 "워커 탭 모든 레인"이므로
+  실행 타일도 포함한다. 현재 `RunningTile` typedef에는 시각 필드도 렌더
+  경로도 없으므로 둘 다 새로 만든다 — `RunningTile`에
+  `created_at`/`updated_at`을 추가하고, usage 배지가 사는
+  메타 영역(`running-grid.js:376`~`:386`) 아래에 같은 메타 줄을 그린다.
+  데스크톱 레인과 모바일 "지금" 패널이 같은 타일을 쓰므로 두 경로 모두
+  테스트한다.
 
 시각이 하나도 없는 행은 메타 줄 자체를 그리지 않는다(fail-quiet).
 
 ### 4.2 데이터 — 클라이언트
 
-`MiniItem`에 `created_at`/`updated_at`(`number|string|undefined`)을 추가한다.
+`MiniItem`과 `RunningTile`에 `created_at`/`updated_at`
+(`number|string|undefined`)을 추가한다.
+
 후보 레인은 Board 구독 이슈이므로 이미 두 필드를 들고 있다 — 서버 배선 없이
-바로 그린다.
+바로 그린다. 실행 중 타일이 그리는 bead는 `q.queue` 멤버이므로 §4.3의
+`bead_times`가 그대로 덮는다(별도 배선 없음). 실행 타일 projection
+(`index.js:1629`~)에서 `bead_times`를 조회해 두 필드를 실어 준다.
 
 ### 4.3 데이터 — 서버 배선
 
@@ -225,13 +272,35 @@ title-cache의 현행 계약은 "제목 rename은 프로세스 재시작까지 s
 **"수정 3시간 전"이 영원히 갱신되지 않는다** — `updated_at`은 rename보다 훨씬
 자주 바뀌고, stale이 화면에서 즉시 눈에 띈다.
 
-따라서 title-cache에 **positive TTL 5분**을 도입한다. 만료된 엔트리는 다음
-스냅샷 요청 때 비동기 재조회 대상이 되고, 그 사이에는 기존 값을 계속 실어
-보낸다(동기 읽기 계약 유지 — miss가 스냅샷을 블로킹하지 않는다).
+따라서 title-cache에 **positive TTL 5분**을 도입한다.
+
+**cold miss와 expired hit은 서로 다른 상태이며 다르게 처리한다.** 둘을 뭉뚱그리면
+"만료 중에도 기존 값을 계속 보낸다"는 규칙과 "실패한 bead는 이번 스냅샷에서
+뺀다"는 규칙이 서로 모순된다.
+
+| 상태 | 동기 읽기(`titlesFor`) 반환 | 재조회 |
+|---|---|---|
+| cold miss (캐시에 값이 없음) | **생략** — 이번 스냅샷에서 뺀다 (현행 동작) | 비동기 fill 큐에 넣고, 도착하면 fanout |
+| fresh hit (TTL 이내) | 캐시 값 | 없음 |
+| expired hit (값은 있고 TTL 초과) | **stale 값을 그대로 반환** | 1회 비동기 재조회 |
+
+재조회가 **실패**했을 때:
+
+- cold miss였으면 현행과 같다 — 계속 생략하고 `NEGATIVE_TTL_MS`(60초) 동안
+  재시도를 억제한다.
+- expired hit이었으면 **stale 값을 유지**한다. 값을 지우지 않는다 — `bd`가
+  잠시 실패했다는 이유로 이미 보여 주던 제목과 시각을 화면에서 없애는 것은
+  퇴행이다. `NEGATIVE_TTL_MS` 동안 재시도만 억제하고, 그 뒤 다시 시도한다.
+
+`ensureTitle(workspace, bead_id)`(`title-cache.js:310`, 다음 스냅샷이 없는
+Discord 푸시 소비자용)의 계약도 함께 고정한다: **expired hit이면 재조회를
+await한다** — 이 호출자는 "다음 스냅샷에 도착"이라는 폴백이 없으므로
+stale-while-revalidate가 성립하지 않는다. 재조회가 실패하면 stale 값을
+반환한다(`null`이 아니다). cold miss에서 실패했을 때만 지금처럼 `null`이다.
 
 5분인 근거: 레인의 상대시각은 "대략 얼마 전"을 읽는 값이라 5분 해상도로
 충분하고, bead당 최대 12회/시간이면 레인 크기(수십 건)에서 `bd` 부하가
-무시할 수준이다. 기존 `NEGATIVE_TTL_MS`(60초, 실패 재조회 억제)는 그대로 둔다.
+무시할 수준이다. 기존 `NEGATIVE_TTL_MS`(60초)는 값과 의미 모두 그대로 둔다.
 
 제목도 같은 TTL을 타게 되므로 rename 반영이 덤으로 개선된다.
 
@@ -242,19 +311,26 @@ title-cache의 현행 계약은 "제목 rename은 프로세스 재시작까지 s
   않는다 — 미보고와 0은 다른 사실이라는 기존 규칙을 따른다.
 - `localStorage` 읽기/쓰기 실패는 삼켜지고 기본값으로 폴백한다(기존
   `candidate_sort`/`lane-collapsed` 패턴과 동일).
-- `title-cache`의 `bd show` 실패는 기존과 동일하게 `NEGATIVE_TTL_MS` 동안
-  재시도를 억제하고, 그 bead는 이번 스냅샷에서 빠진다.
+- `title-cache`의 `bd show` 실패는 `NEGATIVE_TTL_MS` 동안 재시도를 억제한다.
+  그 bead가 이번 스냅샷에서 빠지는 것은 **cold miss일 때만**이다 —
+  expired hit은 stale 값을 유지한다(§4.4 표).
 
 ## 테스트 범위
 
-- `app/utils/token-usage.test.js`: `sumAttemptUsage` 합산, `total_cost_usd`
-  부분 보고, `replayed` 전파, 토큰 미보고 시 `null`.
+- `app/utils/token-usage.test.js`: 기존 4건 이관(마지막→합산, usage 없는
+  attempt 건너뛰기, bead 필터, 빈 map → `null`) + `total_cost_usd` 부분 보고,
+  `replayed` 전파, 전원 미보고 시 `null`.
+- 실행 중 타일: 이전 attempt + 실행 중 attempt의 라이브 usage가 합산되어
+  배지에 나오는지 (§1.4).
 - 완료 레인: `added_at` 내림차순 정렬, 기간 필터 경계(`today` 시작 시각),
-  범위별 헤더 문구.
-- 세션 이력: `usage` 배지 렌더, 섹션 총합, [자세히] 펼침 토글,
-  `usage` 없는 attempt에서 배지 미렌더.
-- 레인 메타 줄: `bead_times` 있음/없음, 세 변형(한 줄/카드/후보 카드)별 배치.
-- 서버: `title-cache`의 타임스탬프 캐시, positive TTL 만료 후 재조회,
+  범위별 헤더 문구, 코호트 의미의 KPI 라벨(§3.5).
+- 세션 이력: `usage` 배지 렌더, 섹션 총합, 총합의 `replayed` 부분 집계 표시,
+  [자세히] 펼침 토글, `usage` 없는 attempt에서 배지 미렌더.
+- 레인 메타 줄: `bead_times` 있음/없음, 네 변형(한 줄 / 카드 / 후보 카드 /
+  실행 타일)별 배치, 실행 타일은 데스크톱·모바일 두 경로.
+- 서버 `title-cache`: 타임스탬프 캐시, cold miss 생략, expired hit의 stale
+  반환 + 1회 재조회, 재조회 실패 시 expired hit의 stale 유지 대 cold miss의
+  생략, `ensureTitle`의 expired hit await 및 실패 시 stale 반환,
   `bead_times` 와이어 필드의 부분성.
 
 ## 마감 조건
