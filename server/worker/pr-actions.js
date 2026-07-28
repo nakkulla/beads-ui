@@ -184,6 +184,7 @@ function isConflicting(pr) {
  *   resolveDeploy?: () => ResolvedDeployCmd|null,
  *   spawnImpl?: typeof spawn,
  *   notifyChanged?: (workspace: string) => void,
+ *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => void },
  *   requeryDelayMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
  *   now?: () => number
@@ -225,6 +226,9 @@ export function createPrActions(deps) {
 
   const activity = deps.activity || null;
   const external = deps.external || null;
+  // Optional so every existing construction site (and test) keeps working with
+  // no notifier at all — a missing one is silence, never a cleanup failure.
+  const notify = deps.notify || null;
 
   /**
    * Publish the merge's current step (UI-raqh §4). The click runs for minutes
@@ -1041,6 +1045,26 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Announce the merge that CLOSED the bead (UI-9rrk). One hook covers both
+   * triggers because both converge on `runCleanup`. The notifier is optional
+   * and no-throw by its own contract, so this can never turn a finished cleanup
+   * into a failed one.
+   *
+   * @param {string} bead_id
+   * @param {{ number: number, url: string }|null} pr_ref
+   */
+  function announceMerged(bead_id, pr_ref) {
+    if (!notify) {
+      return;
+    }
+    notify.mergeCompleted({
+      bead_id,
+      pr_url: pr_ref && pr_ref.url ? pr_ref.url : null,
+      repo
+    });
+  }
+
+  /**
    * Run the whole cleanup in contract order. The SINGLE implementation both the
    * [머지] button and the poller's externally-observed MERGED go through — a
    * second copy for the external case is exactly the divergence §6 forbids.
@@ -1054,6 +1078,14 @@ export function createPrActions(deps) {
   async function runCleanup(bead_id, refs = {}) {
     const q = deps.store.snapshot(workspace);
     const target_base = targetBaseFor(q, bead_id, refs.base_ref || null);
+    // The merge notification's url, read from the SNAPSHOT the cleanup started
+    // from (UI-9rrk): by the time it fires, the lane row is gone and the
+    // external registry entry is one scan away from disappearing too.
+    const pr_ref = resolvePrRef(
+      q,
+      bead_id,
+      external ? external.get(workspace, bead_id) : null
+    );
     // Lane bookkeeping belongs to beads the LANE actually holds. An external row
     // exists only in memory (UI-7agi §1/§2), so pushing it into the durable
     // `done` lane would make `queue.json` record a run that never happened here
@@ -1125,6 +1157,7 @@ export function createPrActions(deps) {
         deps.store.moveToDone(workspace, { bead_id });
       }
       notifyChanged(workspace);
+      announceMerged(bead_id, pr_ref);
       return { ok: true, step: null, reason: null, base_sync };
     }
 
@@ -1142,6 +1175,10 @@ export function createPrActions(deps) {
       deps.store.recordLastDeploy(workspace, launch_record);
     }
     notifyChanged(workspace);
+    // Announced BEFORE the launch, for the same reason the durable write is:
+    // the detached deploy may restart this process, and a notification that
+    // never got sent is a merge nobody heard about.
+    announceMerged(bead_id, pr_ref);
     // A spawn that never started — a synchronous throw or Node's asynchronous
     // `error` event — means we are still alive, so the intent was wrong and can
     // be corrected. The cleanup itself still succeeded — the bead really is

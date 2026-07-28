@@ -135,7 +135,8 @@ function seedStore(options = {}) {
  *   activity?: any,
  *   external?: Record<string, { bead_id: string, pr_url: string, pr_number: number|null, added_at: number }>,
  *   bdStatus?: Record<string, string>,
- *   bdPrUrl?: string|null
+ *   bdPrUrl?: string|null,
+ *   noNotify?: boolean
  * }} [options]
  */
 function makeActions(options = {}) {
@@ -289,6 +290,17 @@ function makeActions(options = {}) {
     return { code: 0, stdout: '', stderr: '' };
   });
 
+  // The merge notification (UI-9rrk), recorded on the same ordered log so a
+  // test can place it relative to the cleanup's other outward calls.
+  /** @type {any[]} */
+  const merge_notices = [];
+  const notify = {
+    mergeCompleted: vi.fn((/** @type {any} */ input) => {
+      calls.push('notify:mergeCompleted');
+      merge_notices.push(input);
+    })
+  };
+
   const scheduler = {
     resolveConflict: vi.fn(async () => {
       calls.push('sched:resolveConflict');
@@ -382,7 +394,10 @@ function makeActions(options = {}) {
     spawnImpl: /** @type {any} */ (spawnImpl),
     requeryDelayMs: 0,
     sleep: async () => {},
-    now: () => 1000
+    now: () => 1000,
+    // `noNotify` builds the actions with no notifier at all — the shape every
+    // pre-UI-9rrk construction site still has.
+    notify: options.noNotify === true ? undefined : notify
   });
 
   return {
@@ -400,7 +415,9 @@ function makeActions(options = {}) {
     git_argv,
     scheduler,
     runVerify,
-    spawnImpl
+    spawnImpl,
+    notify,
+    merge_notices
   };
 }
 
@@ -2006,5 +2023,110 @@ describe('worker/pr-actions — external rows write no durable lane state (impl 
 
     expect(env.gh.prDetail).toHaveBeenCalledWith(REPO, 778);
     expect(env.gh.prDetail).not.toHaveBeenCalledWith(REPO, 777);
+  });
+});
+
+describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
+  const EXT_BEAD = 'UI-EXT';
+  const EXT_URL = 'https://github.com/o/r/pull/777';
+
+  test('announces the merge once on the immediate success path', async () => {
+    const h = makeActions({ verify: VERIFY_CFG, ...ON_BASE });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.ok).toBe(true);
+    expect(h.notify.mergeCompleted).toHaveBeenCalledTimes(1);
+    expect(h.merge_notices[0]).toEqual({
+      bead_id: BEAD,
+      pr_url: 'https://github.com/o/r/pull/304',
+      repo: REPO
+    });
+  });
+
+  test('announces the merge BEFORE the detached deploy launch', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      deploySpawn: 'ok',
+      ...ON_BASE
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.notify.mergeCompleted).toHaveBeenCalledTimes(1);
+    // The launch may restart this process, so an announcement after it is one
+    // that may never be sent.
+    const announced_at = h.calls.indexOf('notify:mergeCompleted');
+    const launched_at = h.calls.indexOf('spawn:bdui-shared:detached');
+    expect(announced_at).toBeGreaterThanOrEqual(0);
+    expect(launched_at).toBeGreaterThan(announced_at);
+  });
+
+  test('announces the externally-observed merge through the same hook', async () => {
+    const h = makeActions({ details: [prOf({ state: 'MERGED' })] });
+
+    const r = await h.actions.cleanupObservedMerge(BEAD);
+
+    expect(r.ok).toBe(true);
+    expect(h.notify.mergeCompleted).toHaveBeenCalledTimes(1);
+  });
+
+  test('takes the url from the external registry for a row the lane never held', async () => {
+    const h = makeActions({
+      store: createQueueStore(),
+      external: {
+        [EXT_BEAD]: {
+          bead_id: EXT_BEAD,
+          pr_url: EXT_URL,
+          pr_number: 777,
+          added_at: 1
+        }
+      },
+      bdStatus: { [EXT_BEAD]: 'resolved' },
+      bdPrUrl: EXT_URL,
+      details: [prOf({ number: 777, url: EXT_URL })]
+    });
+
+    await h.actions.merge(EXT_BEAD);
+
+    expect(h.merge_notices[0]).toEqual({
+      bead_id: EXT_BEAD,
+      pr_url: EXT_URL,
+      repo: REPO
+    });
+  });
+
+  test('announces nothing when the cleanup stops mid-sequence', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }],
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.ok).toBe(false);
+    expect(h.notify.mergeCompleted).not.toHaveBeenCalled();
+  });
+
+  test('announces nothing when the click-time gate refuses the merge', async () => {
+    const h = makeActions({
+      checks: { state: 'ok', data: [{ name: 'ci', conclusion: 'fail' }] }
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.ok).toBe(false);
+    expect(h.notify.mergeCompleted).not.toHaveBeenCalled();
+  });
+
+  test('cleans up normally when no notifier is injected at all', async () => {
+    const h = makeActions({ noNotify: true, verify: VERIFY_CFG, ...ON_BASE });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, reason: null });
+    expect(h.notify.mergeCompleted).not.toHaveBeenCalled();
   });
 });

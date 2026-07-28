@@ -53,7 +53,11 @@ describe('worker/notify argv assembly', () => {
 
     const call = spawn.last();
     expect(call.command).toBe('discord');
-    expect(call.args.slice(0, 3)).toEqual(['-q', '-t', '워커 시작']);
+    expect(call.args.slice(0, 3)).toEqual([
+      '-q',
+      '-t',
+      '🚀 beads worker · 시작'
+    ]);
     expect(call.args[3]).toBe(
       'UI-1 — 워커 알림\n리포: beads-ui\n실행: opus / high'
     );
@@ -111,7 +115,12 @@ describe('worker/notify argv assembly', () => {
     });
 
     const call = spawn.last();
-    expect(call.args.slice(0, 4)).toEqual(['-c', 'red', '-t', '워커 실패']);
+    expect(call.args.slice(0, 4)).toEqual([
+      '-c',
+      'red',
+      '-t',
+      '❌ beads worker · 실패'
+    ]);
     expect(call.args[4]).toBe(
       'UI-1\n사유: session_failed:result_count\n리포: proj'
     );
@@ -149,7 +158,7 @@ describe('worker/notify argv assembly', () => {
     );
   });
 
-  test('sends the pr_wait event in green with the PR url', () => {
+  test('sends the pr_wait event in blue with the PR url', () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
@@ -160,7 +169,12 @@ describe('worker/notify argv assembly', () => {
     });
 
     const call = spawn.last();
-    expect(call.args.slice(0, 4)).toEqual(['-c', 'green', '-t', 'PR 대기']);
+    expect(call.args.slice(0, 4)).toEqual([
+      '-c',
+      'blue',
+      '-t',
+      '📬 beads worker · PR 제출'
+    ]);
     expect(call.args[4]).toBe(
       'UI-1\nhttps://github.com/o/r/pull/7\n리포: proj'
     );
@@ -173,6 +187,38 @@ describe('worker/notify argv assembly', () => {
     notifier.prWaitEntered({ bead_id: 'UI-1', pr_url: null, repo: '/r/proj' });
 
     expect(spawn.last().args[4]).toBe('UI-1\n리포: proj');
+  });
+
+  test('sends the merge event quietly in green with the PR url', () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    notifier.mergeCompleted({
+      bead_id: 'UI-1',
+      pr_url: 'https://github.com/o/r/pull/7',
+      repo: '/r/proj'
+    });
+
+    const call = spawn.last();
+    expect(call.args.slice(0, 5)).toEqual([
+      '-q',
+      '-c',
+      'green',
+      '-t',
+      '✅ beads worker · 머지 완료'
+    ]);
+    expect(call.args[5]).toBe(
+      'UI-1\nhttps://github.com/o/r/pull/7\n리포: proj'
+    );
+  });
+
+  test('omits an unknown PR url and repo from the merge message', () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    notifier.mergeCompleted({ bead_id: 'UI-1', pr_url: null, repo: null });
+
+    expect(spawn.last().args[5]).toBe('UI-1');
   });
 
   test('spawns the configured command argv without a shell', () => {
@@ -209,6 +255,7 @@ describe('worker/notify fail-quiet', () => {
     notifier.attemptStarted({ bead_id: 'UI-1' });
     notifier.attemptFailed({ bead_id: 'UI-1', cause: 'spawn_failed' });
     notifier.prWaitEntered({ bead_id: 'UI-1' });
+    notifier.mergeCompleted({ bead_id: 'UI-1' });
 
     expect(spawn.calls).toHaveLength(0);
   });
