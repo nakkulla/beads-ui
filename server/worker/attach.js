@@ -40,6 +40,7 @@ import { emitQueueChanged } from './queue-events.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
+import { replayUsage } from './usage-replay.js';
 import { resolveVerifyCmd, runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
@@ -533,6 +534,42 @@ function keyFor(workspace_root) {
 }
 
 /**
+ * Rebuild the token tally of every persisted `running` attempt from its session
+ * log (UI-ediw). Runs on the STARTUP path only, never on the periodic reconcile
+ * pass: at startup this process owns no session, so every `running` record is a
+ * prior run's whose in-memory tally died with it, while a session live in THIS
+ * process records straight off its stream and re-reading its log per pass would
+ * buy nothing. An attempt that already has a tally is skipped for the same
+ * reason — a live tally is always the better one.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key - Resolved workspace root.
+ */
+function replayRunningUsage(att, key) {
+  try {
+    const q = att.runtime.queueStore.snapshot(key);
+    const usage_store = att.runtime.usageStore;
+    for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
+      const a = /** @type {any} */ (attempt);
+      if (!a || a.status !== 'running') {
+        continue;
+      }
+      if (usage_store.get(key, attempt_id)) {
+        continue;
+      }
+      replayUsage({
+        session_log: att.runtime.sessionLog,
+        usage_store,
+        workspace: key,
+        attempt_id
+      });
+    }
+  } catch (err) {
+    log('usage replay failed for %s: %o', key, err);
+  }
+}
+
+/**
  * Create + register attachments for each active workspace, then reconcile the
  * `running` attempts persisted from a prior run and arm the periodic reconcile
  * timer (worker-detached-session-reconcile §2). Idempotent per workspace.
@@ -574,6 +611,9 @@ export function initWorkerRuntime(input) {
     } catch (err) {
       log('reconcile timer start failed for %s: %o', key, err);
     }
+    // Before the startup pass judges those attempts, rebuild what their tally
+    // was — the disposition below is the write that persists it (UI-ediw).
+    replayRunningUsage(att, key);
     // Startup pass: a session that died WITH the old server may already have
     // pushed its PR, so the same routine that handles a later death decides
     // this one too. Fire-and-forget — a slow `gh` must not hold up startup.
