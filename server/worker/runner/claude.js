@@ -90,6 +90,36 @@ function pickUsage(usage, extra = {}) {
 }
 
 /**
+ * Lift the usage off ONE raw stream event, tagged with which recording rule it
+ * obeys: `message` usage is keyed by `message_id` and a repeat REPLACES, while
+ * `result` usage is the session's own authoritative total. Null when the event
+ * carries no usable usage.
+ *
+ * `normalize()` (live path) and `usage-replay.js` (session-log replay path)
+ * both go through this, so a restart-recovered tally can never drift from the
+ * one the live stream would have produced.
+ *
+ * @param {any} raw
+ * @returns {{ kind: 'message'|'result', usage: Record<string, number|string> }|null}
+ */
+export function liftUsage(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  if (raw.type === 'assistant') {
+    const usage = raw.message
+      ? pickUsage(raw.message.usage, { message_id: raw.message.id })
+      : undefined;
+    return usage ? { kind: 'message', usage } : null;
+  }
+  if (raw.type === 'result') {
+    const usage = pickUsage(raw.usage, { total_cost_usd: raw.total_cost_usd });
+    return usage ? { kind: 'result', usage } : null;
+  }
+  return null;
+}
+
+/**
  * Normalize a claude stream-json line to zero or more normalized events.
  *
  * @param {any} raw
@@ -106,9 +136,7 @@ function normalize(raw) {
         : [];
     // Every event of one assistant message carries the SAME usage snapshot, so
     // the consumer must key on `message_id` and replace rather than add.
-    const usage = raw.message
-      ? pickUsage(raw.message.usage, { message_id: raw.message.id })
-      : undefined;
+    const usage = liftUsage(raw)?.usage;
     /** @type {RunnerEvent[]} */
     const out = [];
     for (const c of content) {
@@ -136,7 +164,7 @@ function normalize(raw) {
       raw,
       // The session's own total — authoritative, so the consumer replaces the
       // per-message tally with it.
-      usage: pickUsage(raw.usage, { total_cost_usd: raw.total_cost_usd })
+      usage: liftUsage(raw)?.usage
     };
   }
   return null;

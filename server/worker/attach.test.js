@@ -273,6 +273,76 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(snap.auto_advance).toBe(true);
   });
 
+  test('initWorkerRuntime replays the session log of a running attempt into the usage store (UI-ediw)', async () => {
+    const runtime = createWorkerRuntime();
+    seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
+    // The raw stream the PRIOR server persisted before it died.
+    runtime.sessionLog.append(WS, 'att-1', {
+      type: 'assistant',
+      message: {
+        id: 'm1',
+        content: [{ type: 'text', text: 'hi' }],
+        usage: { input_tokens: 10, output_tokens: 4 }
+      }
+    });
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      // Alive orphan: reconcile leaves it running, so only the replay writes.
+      probePid: () => ({ alive: true, started_at: 1000 })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+
+    expect(runtime.usageStore.get(WS, 'att-1')).toMatchObject({
+      input_tokens: 10,
+      output_tokens: 4,
+      replayed: true
+    });
+    expect(runtime.queueStore.snapshot(WS).attempts['att-1'].status).toBe(
+      'running'
+    );
+  });
+
+  test('initWorkerRuntime leaves a live tally alone instead of replaying over it', async () => {
+    const runtime = createWorkerRuntime();
+    seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
+    runtime.sessionLog.append(WS, 'att-1', {
+      type: 'assistant',
+      message: {
+        id: 'm1',
+        content: [{ type: 'text', text: 'hi' }],
+        usage: { input_tokens: 10, output_tokens: 4 }
+      }
+    });
+    // A tally already in the store belongs to a session THIS process streams.
+    runtime.usageStore.record(WS, 'att-1', {
+      message_id: 'm1',
+      input_tokens: 99,
+      output_tokens: 1
+    });
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      probePid: () => ({ alive: true, started_at: 1000 })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+
+    expect(runtime.usageStore.get(WS, 'att-1')).toMatchObject({
+      input_tokens: 99
+    });
+    expect(runtime.usageStore.get(WS, 'att-1')?.replayed).toBe(undefined);
+  });
+
   test('the periodic reconcile disposes a dead attempt with no subscribers and auto_advance off', async () => {
     vi.useFakeTimers();
     try {

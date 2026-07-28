@@ -10,8 +10,17 @@
  */
 
 /**
- * @typedef {{ input_tokens?: number, output_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number, total_cost_usd?: number }} UsageRecord
+ * @typedef {{ input_tokens?: number, output_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number, total_cost_usd?: number, replayed?: boolean }} UsageRecord
  */
+
+/**
+ * The tooltip line a restart-recovered tally carries (UI-ediw): the events lost
+ * with the old server's pipe can never be recovered, so the number below is a
+ * floor, not the session's total.
+ *
+ * @type {string}
+ */
+const REPLAYED_NOTE = '서버 재시작 복구 — 부분 집계';
 
 /**
  * @param {unknown} value
@@ -90,7 +99,8 @@ export function usageTooltip(usage) {
   ) {
     parts.push(`$${usage.total_cost_usd.toFixed(2)}`);
   }
-  return parts.join(' · ');
+  const line = parts.join(' · ');
+  return usage.replayed ? `${line}\n${REPLAYED_NOTE}` : line;
 }
 
 /**

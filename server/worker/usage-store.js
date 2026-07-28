@@ -28,6 +28,8 @@ import path from 'node:path';
  * @property {number} cache_creation_input_tokens
  * @property {number} [total_cost_usd] - Present only once a `result` event
  * reported one (assistant events carry no cost).
+ * @property {boolean} [replayed] - Present only on a tally rebuilt from the
+ * session log after a restart (UI-ediw): a PARTIAL number.
  */
 
 /**
@@ -104,7 +106,11 @@ function toTally(input) {
  * One attempt's live tally: either per-message records still accumulating, or
  * the authoritative total a `result` event settled.
  *
- * @typedef {{ by_message: Map<string, UsageTally>, authoritative: UsageTally|null }} AttemptTally
+ * `replayed` marks a tally rebuilt from the session log after a server restart
+ * (UI-ediw): the events the dead pipe swallowed are unrecoverable, so the
+ * number is a partial one and must say so.
+ *
+ * @typedef {{ by_message: Map<string, UsageTally>, authoritative: UsageTally|null, replayed?: boolean }} AttemptTally
  */
 
 /**
@@ -191,6 +197,17 @@ export function createUsageStore() {
     },
 
     /**
+     * Mark an attempt's tally as rebuilt from the session log (UI-ediw). Only
+     * the replay routine calls this, so a live session never carries the flag.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     */
+    markReplayed(workspace, attempt_id) {
+      entryFor(workspace, attempt_id).replayed = true;
+    },
+
+    /**
      * One attempt's usage so far, or null when nothing usable was recorded.
      *
      * @param {string} workspace
@@ -203,7 +220,9 @@ export function createUsageStore() {
         return null;
       }
       if (entry.authoritative) {
-        return { ...entry.authoritative };
+        return entry.replayed
+          ? { ...entry.authoritative, replayed: true }
+          : { ...entry.authoritative };
       }
       if (entry.by_message.size === 0) {
         return null;
@@ -228,6 +247,9 @@ export function createUsageStore() {
       }
       if (has_cost) {
         total.total_cost_usd = cost;
+      }
+      if (entry.replayed) {
+        total.replayed = true;
       }
       return total;
     },

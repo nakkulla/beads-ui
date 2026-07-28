@@ -184,4 +184,40 @@ describe('worker/usage-store', () => {
 
     expect(store.get('/ws', 'a1')).toBe(null);
   });
+
+  test('flags a summed tally marked replayed', () => {
+    const store = createUsageStore();
+    store.record('/ws', 'a1', { message_id: 'm1', input_tokens: 10 });
+
+    store.markReplayed('/ws', 'a1');
+
+    expect(store.get('/ws', 'a1')?.replayed).toBe(true);
+  });
+
+  test('flags an authoritative tally marked replayed', () => {
+    const store = createUsageStore();
+    store.recordResult('/ws', 'a1', { input_tokens: 18, output_tokens: 1113 });
+
+    store.markReplayed('/ws', 'a1');
+
+    expect(store.get('/ws', 'a1')?.replayed).toBe(true);
+  });
+
+  test('leaves a live tally without the replayed flag', () => {
+    const store = createUsageStore();
+
+    store.record('/ws', 'a1', { message_id: 'm1', input_tokens: 10 });
+
+    expect(store.get('/ws', 'a1')?.replayed).toBe(undefined);
+  });
+
+  test('drops the replayed flag with the attempt', () => {
+    const store = createUsageStore();
+    store.record('/ws', 'a1', { message_id: 'm1', input_tokens: 10 });
+    store.markReplayed('/ws', 'a1');
+
+    store.clearAttempt('/ws', 'a1');
+
+    expect(store.get('/ws', 'a1')).toBe(null);
+  });
 });

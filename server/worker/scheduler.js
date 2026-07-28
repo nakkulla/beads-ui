@@ -974,9 +974,14 @@ export function createScheduler(deps) {
           vr = { ok: false, reason: 'gh_observation_failed' };
         }
       }
+      // The usage patch rides this write exactly as it rides `onSessionDone`'s
+      // exit write: a tally rebuilt from the session log at startup (UI-ediw)
+      // is the only usage a dead detached attempt can carry, so persisting it
+      // here is what keeps the number past disposition. Nothing recovered →
+      // empty patch → `usage: null`, unchanged.
       deps.store.updateAttempt(workspace, {
         attempt_id,
-        patch: { verify_result: vr }
+        patch: { verify_result: vr, ...usagePatch(workspace, attempt_id) }
       });
 
       if (vr.ok) {
