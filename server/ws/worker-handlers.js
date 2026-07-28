@@ -196,6 +196,75 @@ function prActivityFor(workspace_key, queue) {
 }
 
 /**
+ * Worker runtimes whose title cache already has its fill callback wired. The
+ * runtime is a lazily-built singleton that tests reset, so the wiring cannot
+ * happen at module load — it would bind to an instance that is later thrown
+ * away, and the refill fanout would silently stop happening.
+ *
+ * @type {WeakSet<object>}
+ */
+const TITLE_FILL_WIRED = new WeakSet();
+
+/**
+ * Titles for every bead the lanes render (UI-12k6). Ready/Blocked beads reach
+ * the client through their own live subscription; `queue`/`pr_wait`/`done`
+ * beads do not, so without this decoration the client has no title for them
+ * and prints the bead id.
+ *
+ * PARTIAL BY DESIGN: only cache hits travel. The decoration is synchronous, so
+ * a miss is omitted here, queued for an async `bd show`, and delivered by the
+ * fanout the fill callback triggers — never by blocking this snapshot.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, string>}
+ */
+function beadTitlesFor(workspace_key, queue) {
+  /** @type {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} */
+  let cache = null;
+  try {
+    cache = getWorkerRuntime().titleCache;
+  } catch {
+    cache = null;
+  }
+  if (!cache) {
+    return {};
+  }
+  if (!TITLE_FILL_WIRED.has(cache)) {
+    TITLE_FILL_WIRED.add(cache);
+    cache.setOnFilled((workspace) => {
+      try {
+        fanout(workspace, queueStore().snapshot(workspace));
+      } catch (err) {
+        log('title fill fanout failed for %s: %o', workspace, err);
+      }
+    });
+  }
+  /** @type {string[]} */
+  const ids = [];
+  for (const lane of ['queue', 'pr_wait', 'done']) {
+    const entries = Array.isArray(queue[lane])
+      ? /** @type {any[]} */ (queue[lane])
+      : [];
+    for (const entry of entries) {
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id === 'string' && bead_id.length > 0) {
+        ids.push(bead_id);
+      }
+    }
+  }
+  if (ids.length === 0) {
+    return {};
+  }
+  try {
+    return cache.titlesFor(workspace_key, ids);
+  } catch (err) {
+    log('title lookup failed for %s: %o', workspace_key, err);
+    return {};
+  }
+}
+
+/**
  * Project the attempts map with LIVE token usage folded in (UI-raqh §1): a
  * running attempt shows the in-memory tally, a terminated one keeps whatever
  * was persisted onto its record. A pure read of the shared store — the
@@ -240,6 +309,9 @@ function attemptsWithUsage(queue, workspace_key) {
  *     (worker-phase1 §2.3, worker-phase2 §3),
  *   - `pr_observations`: what the PR poller has SEEN for each `pr_wait` bead
  *     plus its merge-gate verdict (worker-phase2 §4/§5) — a pure cache read,
+ *   - `bead_titles`: display titles for the queue/pr_wait/done beads (UI-12k6),
+ *     which are in no subscribed issue column and would otherwise render as
+ *     bare ids,
  *   - the configured `deploy_cmd` and the workspace's `last_deploy` record
  *     (worker-deploy-hook §3), so the ⚙ dialog can show what the merge click
  *     will run and what the last one did. Read-only on the wire: the commands
@@ -292,7 +364,10 @@ function decorateQueue(workspace_key, queue) {
     pr_observations: prObservationsFor(workspace_key, queue, !!verify_cmd),
     // What is RUNNING against each `pr_wait` bead right now (UI-raqh §3/§4) —
     // observation/verification activity and merge progress. Also non-persisted.
-    pr_activity: prActivityFor(workspace_key, queue)
+    pr_activity: prActivityFor(workspace_key, queue),
+    // Titles for the queue/pr_wait/done beads (UI-12k6) — non-persisted and
+    // partial (cache hits only); the client falls back to the id without it.
+    bead_titles: beadTitlesFor(workspace_key, queue)
   };
 }
 
@@ -461,6 +536,8 @@ export function __resetWorkerQueueForTest() {
   // The PR observation cache is server memory too — a leftover observation
   // would decorate the next test's snapshot (worker-phase2 §4).
   getWorkerRuntime().prObservations.clear();
+  // Same for cached bead titles (UI-12k6).
+  getWorkerRuntime().titleCache.clear();
 }
 
 /**

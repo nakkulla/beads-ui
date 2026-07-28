@@ -5507,3 +5507,98 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
     );
   });
 });
+
+describe('worker view — server-decorated bead titles (UI-12k6)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} queue
+   * @returns {HTMLElement}
+   */
+  function render(queue) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} bead_id
+   * @returns {string}
+   */
+  function titleOf(mount, bead_id) {
+    const el = mount.querySelector(
+      `.worker-mini[data-bead-id="${bead_id}"] .worker-mini__title`
+    );
+    return el?.textContent?.trim() || '';
+  }
+
+  test('renders the decorated title on a pr_wait card', () => {
+    const mount = render(
+      queueOf({
+        pr_wait: [{ bead_id: 'PW-9', added_at: 1 }],
+        bead_titles: { 'PW-9': 'PR 대기 제목' }
+      })
+    );
+
+    expect(titleOf(mount, 'PW-9')).toBe('PR 대기 제목');
+  });
+
+  test('renders the decorated title on a done card', () => {
+    const mount = render(
+      queueOf({
+        done: [{ bead_id: 'DN-9', added_at: 1 }],
+        bead_titles: { 'DN-9': '완료 제목' }
+      })
+    );
+
+    expect(titleOf(mount, 'DN-9')).toBe('완료 제목');
+  });
+
+  test('falls back to the bead id when the server sends no bead_titles', () => {
+    const mount = render(
+      queueOf({
+        pr_wait: [{ bead_id: 'PW-9', added_at: 1 }],
+        done: [{ bead_id: 'DN-9', added_at: 2 }]
+      })
+    );
+
+    expect(titleOf(mount, 'PW-9')).toBe('PW-9');
+    expect(titleOf(mount, 'DN-9')).toBe('DN-9');
+  });
+
+  test('falls back to the bead id for an entry missing from bead_titles', () => {
+    const mount = render(
+      queueOf({
+        pr_wait: [{ bead_id: 'PW-9', added_at: 1 }],
+        done: [{ bead_id: 'DN-9', added_at: 2 }],
+        bead_titles: { 'PW-9': 'PR 대기 제목' }
+      })
+    );
+
+    expect(titleOf(mount, 'PW-9')).toBe('PR 대기 제목');
+    expect(titleOf(mount, 'DN-9')).toBe('DN-9');
+  });
+
+  test('prefers the live Ready/Blocked title over the decorated one', () => {
+    const mount = render(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        done: [{ bead_id: 'BL-1', added_at: 2 }],
+        bead_titles: { 'RD-1': '오래된 제목', 'BL-1': '오래된 blocked 제목' }
+      })
+    );
+
+    expect(titleOf(mount, 'RD-1')).toBe('ready with spec');
+    expect(titleOf(mount, 'BL-1')).toBe('blocked with spec');
+  });
+});
