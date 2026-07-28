@@ -19,6 +19,7 @@ import { createLockManager } from './locks.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createQueueStore } from './queue-store.js';
 import { createSessionLog } from './session-log.js';
+import { createTitleCache } from './title-cache.js';
 import { createUsageStore } from './usage-store.js';
 
 /**
@@ -29,6 +30,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createPrObservationStore>} prObservations
  * @property {ReturnType<typeof createUsageStore>} usageStore
  * @property {ReturnType<typeof createActivityStore>} activityStore
+ * @property {ReturnType<typeof createTitleCache>} titleCache
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number }} status
@@ -59,6 +61,10 @@ export function createWorkerRuntime() {
   // actions WRITE what they are doing right now, the ws queue-snapshot
   // decoration READS it. Non-persistent — nothing is in flight after a restart.
   const activityStore = createActivityStore();
+  // Process-wide bead title cache (UI-12k6): the ws queue-snapshot decoration
+  // READS it and its own async `bd show` fill WRITES it. Non-persistent, and
+  // display-only — see the module for why staleness is accepted here.
+  const titleCache = createTitleCache();
   // Shared session-log broker: the scheduler's `attach` persists the raw stream
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
@@ -73,6 +79,7 @@ export function createWorkerRuntime() {
     prObservations,
     usageStore,
     activityStore,
+    titleCache,
     sessionLog,
     /**
      * @param {() => number} fn

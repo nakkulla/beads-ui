@@ -1136,8 +1136,21 @@ export function createWorkerView(mount_element, options = {}) {
       ? selectors.selectBoardColumn(BLOCKED_KEY, 'blocked')
       : [];
 
+    // Server-decorated titles for the queue/pr_wait/done beads (UI-12k6). Those
+    // lanes hold resolved/closed beads that are in no subscribed column, so
+    // without this they render as bare ids. Seeded FIRST and then overwritten by
+    // the live Ready/Blocked stores, which are the fresher source; fail-quiet on
+    // an older server that sends no `bead_titles`, and the `bead_id` fallback
+    // below still covers a title the server has not cached yet.
+    /** @type {Record<string, unknown>} */
+    const bead_titles = q.bead_titles || {};
     /** @type {Map<string, string>} */
     const idToTitle = new Map();
+    for (const [bead_id, title] of Object.entries(bead_titles)) {
+      if (typeof title === 'string' && title.length > 0) {
+        idToTitle.set(bead_id, title);
+      }
+    }
     for (const it of [...ready, ...blocked]) {
       idToTitle.set(it.id, it.title || it.id);
     }
