@@ -1682,6 +1682,44 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Read one `pr_wait` bead's PR state, with no gate, no checks query and no
+   * side effect at all. The merge queue's `merge_unconfirmed` watch (UI-5v7d §2
+   * step 4) is the caller: it holds the head while asking, once a minute, the
+   * ONE question that can end that state — did the PR actually land?
+   *
+   * It resolves the PR reference exactly as the merge click does, EXTERNAL rows
+   * included, so the watch reads the same PR the merge targeted.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ state: string|null, error: string|null }>}
+   */
+  async function prState(bead_id) {
+    const q = deps.store.snapshot(workspace);
+    const member = await laneMembership(q, bead_id);
+    if (!member.ok) {
+      return { state: null, error: member.reason || 'not_in_pr_wait' };
+    }
+    const ref = resolvePrRef(
+      q,
+      bead_id,
+      member.external === true
+        ? {
+            pr_url: member.pr_url,
+            pr_number: parsePrNumber(member.pr_url)
+          }
+        : null
+    );
+    if (!ref) {
+      return { state: null, error: 'pr_ref_unknown' };
+    }
+    const observed = await readPrState(ref.number);
+    if ('error' in observed) {
+      return { state: null, error: observed.error };
+    }
+    return { state: observed.pr_state, error: null };
+  }
+
+  /**
    * The ordered body of [폐기], separated from the in-flight/observation
    * bookkeeping.
    *
@@ -1744,5 +1782,5 @@ export function createPrActions(deps) {
     return { ok: true, reason: null };
   }
 
-  return { merge, discard, cleanupObservedMerge };
+  return { merge, discard, cleanupObservedMerge, prState };
 }

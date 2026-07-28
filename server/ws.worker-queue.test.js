@@ -291,7 +291,9 @@ describe('ws worker-queue channel', () => {
       'worker-queue-reorder',
       'worker-queue-remove',
       'worker-queue-set-exec-default',
-      'worker-pr-merge',
+      'worker-merge-queue-add',
+      'worker-merge-queue-add-all',
+      'worker-merge-queue-remove',
       'worker-pr-discard'
     ]) {
       expect(MESSAGE_TYPES).toContain(type);
@@ -1119,87 +1121,396 @@ describe('ws worker REVISE disposition (UI-hs11 §3.2)', () => {
   });
 });
 
-describe('ws worker PR actions (worker-phase2 §6)', () => {
-  test('worker-pr-merge reaches the action and reports what it actually did', async () => {
-    const merge = vi.fn(async () => ({
-      ok: true,
-      action: 'merged',
-      reason: null
-    }));
+describe('ws worker merge queue (UI-5v7d §3)', () => {
+  /**
+   * Park a bead in the durable `pr_wait` lane, which is the membership
+   * `worker-merge-queue-add` checks.
+   *
+   * @param {string} bead_id
+   */
+  function parkInPrWait(bead_id) {
+    const store = getWorkerRuntime().queueStore;
+    const rev = store.snapshot('').revision;
+    store.appendAttempt('', {
+      expected_revision: rev,
+      attempt: { attempt_id: `att-${bead_id}`, bead_id }
+    });
+    store.moveToPrWait('', {
+      bead_id,
+      attempt_id: `att-${bead_id}`,
+      patch: { status: 'done', finished_at: 1 }
+    });
+  }
+
+  /**
+   * @param {string} bead_id
+   * @param {Partial<import('./worker/gh.js').PrDetail>} [pr]
+   */
+  function observeGreen(bead_id, pr = {}) {
+    const sha = 'f'.repeat(40);
+    getWorkerRuntime().prObservations.record('', bead_id, {
+      error: null,
+      pr: {
+        number: 7,
+        url: `https://github.com/o/r/pull/7`,
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: bead_id,
+        base_ref: 'main',
+        head_sha: sha,
+        ...pr
+      },
+      ci: {
+        state: 'ok',
+        head_sha: sha,
+        checks: [{ name: 'build', conclusion: 'pass' }],
+        conclusion: 'pass',
+        reason: null
+      }
+    });
+  }
+
+  /**
+   * A driver stub whose `kick` never merges: these tests assert the QUEUE
+   * contract, and letting the real loop run would reach `gh`.
+   *
+   * @param {{ active?: string|null }} [state]
+   */
+  function registerDriver(state = {}) {
+    const kick = vi.fn(async () => {});
     __registerWorkerAttachmentForTest(
       process.cwd(),
       /** @type {any} */ ({
         scheduler: { tick: vi.fn(), stop: vi.fn() },
-        prActions: { merge, discard: vi.fn() }
-      })
-    );
-    const sock = fakeSocket();
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
-
-    await send(sock, 'm1', 'worker-pr-merge', {
-      bead_id: 'UI-1',
-      expected_revision: 0
-    });
-
-    expect(merge).toHaveBeenCalledWith('UI-1');
-    expect(replyFor(sock, 'm1').payload).toMatchObject({
-      ok: true,
-      conflict: false,
-      action: 'merged'
-    });
-  });
-
-  test('a dispatched conflict resolution is reported as such, not as a merge', async () => {
-    __registerWorkerAttachmentForTest(
-      process.cwd(),
-      /** @type {any} */ ({
-        scheduler: { tick: vi.fn(), stop: vi.fn() },
-        prActions: {
-          merge: async () => ({
-            ok: true,
-            action: 'conflict_resolution',
-            reason: null,
-            attempt_id: 'a2'
-          }),
-          discard: vi.fn()
+        prActions: { merge: vi.fn(), discard: vi.fn() },
+        mergeQueue: {
+          kick,
+          state: () => ({ active: state.active ?? null, failures: {} })
         }
       })
     );
+    return kick;
+  }
+
+  test('queues a pr_wait bead and kicks the driver', async () => {
+    parkInPrWait('UI-1');
+    const kick = registerDriver();
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const rev = getWorkerRuntime().queueStore.snapshot('').revision;
 
-    await send(sock, 'm1', 'worker-pr-merge', {
+    await send(sock, 'm1', 'worker-merge-queue-add', {
       bead_id: 'UI-1',
-      expected_revision: 0
+      expected_revision: rev
     });
 
     expect(replyFor(sock, 'm1').payload).toMatchObject({
-      action: 'conflict_resolution',
-      attempt_id: 'a2'
+      applied: true,
+      conflict: false,
+      queued: 1
     });
+    expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual([
+      { bead_id: 'UI-1', resolution_rounds: 0 }
+    ]);
+    expect(kick).toHaveBeenCalled();
   });
 
-  test('a stale revision refuses the merge click without acting', async () => {
-    const merge = vi.fn();
-    __registerWorkerAttachmentForTest(
-      process.cwd(),
-      /** @type {any} */ ({
-        scheduler: { tick: vi.fn(), stop: vi.fn() },
-        prActions: { merge, discard: vi.fn() }
-      })
-    );
+  test('a stale revision refuses the queue placement without acting', async () => {
+    parkInPrWait('UI-1');
+    const kick = registerDriver();
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
-    await send(sock, 'm1', 'worker-pr-merge', {
+    await send(sock, 'm1', 'worker-merge-queue-add', {
       bead_id: 'UI-1',
       expected_revision: 99
     });
 
-    expect(merge).not.toHaveBeenCalled();
     expect(replyFor(sock, 'm1').payload.conflict).toBe(true);
+    expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual([]);
+    expect(kick).not.toHaveBeenCalled();
   });
 
+  test('queuing the same bead twice is a no-op, not a second place in line', async () => {
+    parkInPrWait('UI-1');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+
+    await send(sock, 'm1', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+    await send(sock, 'm2', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm2').payload.applied).toBe(false);
+    expect(store.snapshot('').merge_queue.length).toBe(1);
+  });
+
+  test('add-all queues every mergeable row in lane order', async () => {
+    parkInPrWait('UI-1');
+    parkInPrWait('UI-2');
+    parkInPrWait('UI-3');
+    observeGreen('UI-1');
+    observeGreen('UI-2');
+    // UI-3 is unobserved → the gate refuses → add-all leaves it out.
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: true,
+      queued: 2
+    });
+    expect(
+      getWorkerRuntime()
+        .queueStore.snapshot('')
+        .merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1', 'UI-2']);
+  });
+
+  test('add-all with nothing mergeable applies nothing', async () => {
+    parkInPrWait('UI-1');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: false,
+      conflict: false,
+      queued: 0
+    });
+  });
+
+  test('a stale revision refuses add-all without acting', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: 99
+    });
+
+    expect(replyFor(sock, 'm1').payload.conflict).toBe(true);
+    expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual([]);
+  });
+
+  test('removes a waiting item', async () => {
+    parkInPrWait('UI-1');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    await send(sock, 'm1', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+
+    await send(sock, 'm2', 'worker-merge-queue-remove', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm2').payload.applied).toBe(true);
+    expect(store.snapshot('').merge_queue).toEqual([]);
+  });
+
+  test('refuses to remove the item the driver is merging', async () => {
+    parkInPrWait('UI-1');
+    registerDriver({ active: 'UI-1' });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    await send(sock, 'm1', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+
+    await send(sock, 'm2', 'worker-merge-queue-remove', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm2').payload).toMatchObject({
+      applied: false,
+      reason: 'merge_active'
+    });
+    expect(store.snapshot('').merge_queue.length).toBe(1);
+  });
+
+  test('add-all leaves out an EXTERNAL conflicting row even on a green gate', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1', {
+      mergeable: 'CONFLICTING',
+      merge_state_status: 'DIRTY'
+    });
+    getWorkerRuntime().externalPrs.replace('', [
+      {
+        bead_id: 'UI-EXT',
+        pr_url: 'https://github.com/o/r/pull/9',
+        pr_number: 9
+      }
+    ]);
+    observeGreen('UI-EXT', {
+      mergeable: 'CONFLICTING',
+      merge_state_status: 'DIRTY'
+    });
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    // The durable conflicting row IS queued (its click dispatches a resolution);
+    // the external one cannot dispatch anything, so it is left out.
+    expect(
+      getWorkerRuntime()
+        .queueStore.snapshot('')
+        .merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1']);
+  });
+
+  test('add-all ignores a paused resolution attempt that was already resumed', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt('', {
+      expected_revision: store.snapshot('').revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        status: 'paused',
+        conflict_resolution: true
+      }
+    });
+    store.appendAttempt('', {
+      expected_revision: store.snapshot('').revision,
+      attempt: {
+        attempt_id: 'res-2',
+        bead_id: 'UI-1',
+        status: 'done',
+        resumed_from: 'res-1'
+      }
+    });
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: store.snapshot('').revision
+    });
+
+    // The paused ancestor is spent history — its child ended, so the row is
+    // mergeable exactly as the lane draws it.
+    expect(store.snapshot('').merge_queue.length).toBe(1);
+  });
+
+  test('add-all leaves out a row whose LEAF resolution session is paused', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt('', {
+      expected_revision: store.snapshot('').revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        status: 'paused',
+        conflict_resolution: true
+      }
+    });
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(store.snapshot('').merge_queue).toEqual([]);
+  });
+
+  test('bulk remove drops every waiting item and keeps the active one', async () => {
+    parkInPrWait('UI-1');
+    parkInPrWait('UI-2');
+    parkInPrWait('UI-3');
+    registerDriver({ active: 'UI-1' });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    store.enqueueMerge('', {
+      expected_revision: store.snapshot('').revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }, { bead_id: 'UI-3' }]
+    });
+
+    await send(sock, 'm1', 'worker-merge-queue-remove', {
+      all: true,
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm1').payload.applied).toBe(true);
+    expect(
+      store.snapshot('').merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1']);
+  });
+
+  test('rejects a queue-add payload without a bead_id', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'm1', 'worker-merge-queue-add', { expected_revision: 0 });
+
+    expect(replyFor(sock, 'm1').ok).toBe(false);
+  });
+
+  test('the snapshot carries the driver state for the lane badges', async () => {
+    parkInPrWait('UI-1');
+    registerDriver({ active: 'UI-1' });
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).merge_queue_state).toEqual({
+      active: 'UI-1',
+      failures: {}
+    });
+  });
+
+  test('is inert without a registered attachment', async () => {
+    parkInPrWait('UI-1');
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    // The placement is durable regardless: it is resumed by whatever driver
+    // starts next, exactly like a queue that survived a restart.
+    expect(replyFor(sock, 'm1').payload.applied).toBe(true);
+    expect(getWorkerRuntime().queueStore.snapshot('').merge_queue.length).toBe(
+      1
+    );
+  });
+});
+
+describe('ws worker PR actions (worker-phase2 §6)', () => {
   test('a stale revision refuses the destructive discard without acting', async () => {
     const discard = vi.fn();
     __registerWorkerAttachmentForTest(
@@ -1248,20 +1559,15 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
     });
   });
 
-  test('both actions are inert without a registered attachment', async () => {
+  test('discard is inert without a registered attachment', async () => {
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
-    await send(sock, 'm1', 'worker-pr-merge', {
-      bead_id: 'UI-1',
-      expected_revision: 0
-    });
     await send(sock, 'r1', 'worker-pr-discard', {
       bead_id: 'UI-1',
       expected_revision: 0
     });
 
-    expect(replyFor(sock, 'm1').payload.reason).toBe('no_attachment');
     expect(replyFor(sock, 'r1').payload.reason).toBe('no_attachment');
   });
 });

@@ -48,6 +48,12 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  * @property {string} [merge_label] - Text of the [머지] button; absent renders
  * 머지. A conflicting gate dispatches a resolution session instead of merging,
  * so its button says so (UI-dxgz §2).
+ * @property {boolean} [cancel_action] - Render [취소] INSTEAD of [머지]
+ * (UI-5v7d §4): the row is already waiting its turn in the merge queue, so the
+ * only thing left to click is giving that turn up.
+ * @property {boolean} [cancel_enabled] - Whether [취소] may be clicked; false on
+ * the item the driver is actively merging.
+ * @property {string} [cancel_title] - Tooltip for [취소].
  * @property {boolean} [revise_action] - Render the REVISE-disposition actions
  * (`queue` rows parked at `spec_review_stale:revise`, UI-hs11 §3.5).
  * @property {boolean} [revise_enabled] - Whether the two disposition buttons
@@ -66,10 +72,11 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
 /**
  * One `.mini` row.
  *
- * PR 대기 레인만 다단 카드로 그린다 (UI-k59y §1): 한 줄에 ID·제목·PR·뱃지·
- * reason·usage·[머지]/[폐기]를 전부 실으면 제목이 몇 글자만 남기 때문이다.
- * 부속 요소가 적은 대기/완료 레인은 한 줄 그대로 둔다 — 거기서는 카드화가
- * 과하다. 두 변형 모두 같은 `.worker-mini` 껍데기를 쓰므로 드래그 계약
+ * PR 대기 레인과 REVISE 파킹 행만 다단 카드로 그린다 (UI-k59y §1, UI-yp64 §3):
+ * 한 줄에 ID·제목·PR·뱃지·reason·usage·행동 버튼을 전부 실으면 제목이 몇 글자만
+ * 남기 때문이다. 파킹 행은 부속 요소 수가 PR 대기와 사실상 같다. 부속 요소가
+ * 적은 나머지 대기/완료 행은 한 줄 그대로 둔다 — 거기서는 카드화가 과하다.
+ * 두 변형 모두 같은 `.worker-mini` 껍데기를 쓰므로 드래그 계약
  * (`data-bead-id`/`data-lane`)과 머지 진행 시각화는 변형과 무관하게 유지된다.
  *
  * @param {MiniItem} item
@@ -80,7 +87,7 @@ export function miniRow(item) {
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const usage_label = formatUsageTotal(item.usage);
   const merging = item.merge_step || null;
-  const card = item.lane === 'pr_wait';
+  const card = item.lane === 'pr_wait' || !!item.revise_action;
   const grip = draggable
     ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
     : '';
@@ -146,6 +153,20 @@ export function miniRow(item) {
         ${item.merge_label || '머지'}
       </button>`
     : '';
+  // [취소] takes [머지]'s place while the row waits its turn (UI-5v7d §4). It
+  // is drawn quiet like [폐기]: giving up a place in line is cheap and
+  // reversible (re-click 머지), so it must not compete with the action button.
+  const cancel_el = item.cancel_action
+    ? html`<button
+        type="button"
+        class="worker-mini__merge-cancel"
+        data-bead-id=${item.id}
+        ?disabled=${item.cancel_enabled === false}
+        title=${item.cancel_title || ''}
+      >
+        취소
+      </button>`
+    : '';
   const discard_el = item.discard_action
     ? html`<button
         type="button"
@@ -160,8 +181,8 @@ export function miniRow(item) {
       </button>`
     : '';
   // 파킹 처분 두 버튼 (UI-hs11 §3.5). 대기 레인 행에만 붙고, 머지/폐기와 같은
-  // 클릭 위임·CAS 재시도 계약을 쓴다. findings 상세는 카드 클릭 → 이슈 상세로
-  // 가고 여기서는 툴팁 요약만 싣는다.
+  // 클릭 위임·CAS 재시도 계약을 쓴다. findings 상세는 카드 클릭 → 이슈 상세
+  // (notes 섹션, UI-yp64 §4)로 가고 여기서는 툴팁 요약만 싣는다.
   const revise_els = item.revise_action
     ? html`<button
           type="button"
@@ -187,7 +208,9 @@ export function miniRow(item) {
     usage_label ||
     merging ||
     item.merge_action ||
-    item.discard_action
+    item.cancel_action ||
+    item.discard_action ||
+    item.revise_action
   );
   return html`<div
     class="worker-mini${card ? ' worker-mini--card' : ''}${draggable
@@ -209,11 +232,11 @@ export function miniRow(item) {
             ? html`<div class="worker-mini__foot">
                 ${usage_el}${merge_step_el}
                 <span class="worker-mini__actions"
-                  >${merge_el}${discard_el}</span
+                  >${merge_el}${cancel_el}${discard_el}${revise_els}</span
                 >
               </div>`
             : ''}`
-      : html`${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${discard_el}${revise_els}`}
+      : html`${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}`}
   </div>`;
 }
 
@@ -303,7 +326,7 @@ export function candidateCard(item) {
  * so 후보→대기 still drops onto the strip. `live` marks the lane whose work is
  * actually running, which is the only lane whose header dot breathes.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {

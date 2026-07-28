@@ -34,10 +34,11 @@ import { createPoller } from '../poller.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
+import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
-import { emitQueueChanged } from './queue-events.js';
+import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
@@ -313,6 +314,7 @@ export function defaultProbePid(pid) {
  *   admission?: any,
  *   notify?: any,
  *   reviseDisposition?: any,
+ *   mergeQueue?: any,
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -589,6 +591,27 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     notify
   });
 
+  // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
+  // `prActions.merge()` for a queued item, so it is built with the same actions
+  // instance every click routes into — a click queues, this merges. Started by
+  // `initWorkerRuntime` (not here) so a constructed-but-uninitialized attachment
+  // in a test never reaches `gh`.
+  const mergeQueue =
+    options.mergeQueue ||
+    createMergeQueue({
+      workspace: keyFor(workspace_root),
+      store: runtime.queueStore,
+      merge: (/** @type {string} */ bead_id) => prActions.merge(bead_id),
+      observePr: (/** @type {string} */ bead_id) => prActions.prState(bead_id),
+      // Re-derive the EXTERNAL rows once before the resumed queue's first item
+      // (UI-5v7d §2): at boot the registry is empty until something scans bd,
+      // and a restored external head would otherwise be refused as a non-member.
+      prepare: refreshExternalPrs,
+      subscribeQueueChanged: onQueueChanged,
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
+      log
+    });
+
   // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
   // BUILT here but never started here — `initWorkerRuntime` starts it only when
   // a real subscriber-count provider is wired, so a test that constructs an
@@ -624,6 +647,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reconciler,
     prPoller,
     prActions,
+    mergeQueue,
     refreshExternalPrs,
     reviseDisposition,
     sessionMonitors,
@@ -747,6 +771,14 @@ export function initWorkerRuntime(input) {
       att.reconciler.start();
     } catch (err) {
       log('reconcile timer start failed for %s: %o', key, err);
+    }
+    // The merge queue is DURABLE precisely because merging beads-ui restarts
+    // this process, so starting it here is the resume: whatever was still
+    // queued when the old process died is picked up from the head (UI-5v7d §2).
+    try {
+      att.mergeQueue.start();
+    } catch (err) {
+      log('merge queue start failed for %s: %o', key, err);
     }
     // Before the startup pass judges those attempts: rebuild what their tally
     // was (the disposition below is the write that persists it — UI-ediw) and
@@ -893,21 +925,39 @@ export async function resumeWorkerAttempt(workspace_root, attempt_id) {
 }
 
 /**
- * Run the authoritative [머지] click for a `pr_wait` bead (worker-phase2 §6),
- * IF an attachment is registered. Inert without one — a ws-handler test never
- * reaches `gh`, and an unattached workspace could not have dispatched the bead
- * in the first place.
+ * Kick the sequential merge driver after a queue placement (UI-5v7d §2), IF an
+ * attachment is registered. Inert without one — nothing could have merged there
+ * anyway, and the item stays durably queued for whenever one appears.
+ *
+ * Fire-and-forget by the caller, exactly like the dispatch tick: the returned
+ * promise settles when the whole QUEUE drains, not when one merge does.
  *
  * @param {string} workspace_root
- * @param {string} bead_id
- * @returns {Promise<import('./pr-actions.js').MergeClickResult>}
+ * @returns {Promise<void>}
  */
-export async function mergeWorkerPr(workspace_root, bead_id) {
+export async function kickWorkerMergeQueue(workspace_root) {
   const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att || !att.prActions) {
-    return { ok: false, action: 'refused', reason: 'no_attachment' };
+  if (!att || !att.mergeQueue) {
+    return;
   }
-  return att.prActions.merge(bead_id);
+  await att.mergeQueue.kick();
+}
+
+/**
+ * The merge driver's non-durable view (active item + per-item failure reasons)
+ * for the queue-snapshot decoration. Null without an attachment, which the
+ * decoration reads as "nothing is running", the same fail-quiet default the
+ * other projections use.
+ *
+ * @param {string} workspace_root
+ * @returns {import('./merge-queue.js').MergeQueueState|null}
+ */
+export function workerMergeQueueState(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.mergeQueue) {
+    return null;
+  }
+  return att.mergeQueue.state();
 }
 
 /**
