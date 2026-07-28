@@ -2868,6 +2868,36 @@ describe('worker view — REVISE 파킹 처분 카드 (UI-hs11 §3.5)', () => {
     expect(row.querySelector('.worker-mini__revise-approve')).not.toBe(null);
   });
 
+  test('renders the parked row as a multi-line card (UI-yp64 §3)', () => {
+    const { mount } = mountWith(parkedQueue());
+
+    const row = rowOf(mount);
+    expect(row.classList.contains('worker-mini--card')).toBe(true);
+    expect(
+      row.querySelector('.worker-mini__body .worker-mini__title')
+    ).not.toBe(null);
+  });
+
+  test('renders both disposition buttons inside the card foot', () => {
+    const { mount } = mountWith(parkedQueue());
+
+    const actions = rowOf(mount).querySelector(
+      '.worker-mini__foot .worker-mini__actions'
+    );
+    expect(actions?.querySelector('.worker-mini__revise-fix')).not.toBe(null);
+    expect(actions?.querySelector('.worker-mini__revise-approve')).not.toBe(
+      null
+    );
+  });
+
+  test('keeps an unparked queued row on the single-line variant', () => {
+    const { mount } = mountWith(
+      queueOf({ queue: [{ bead_id: 'RD-1', added_at: 1 }] })
+    );
+
+    expect(rowOf(mount).classList.contains('worker-mini--card')).toBe(false);
+  });
+
   test('carries the findings summary as the fix button tooltip', () => {
     const { mount } = mountWith(parkedQueue());
 

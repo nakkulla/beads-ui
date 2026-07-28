@@ -3648,6 +3648,12 @@ html[data-theme='dark'] {
   flex-wrap: wrap;
 }
 
+/* 좁은 컬럼 방어 (UI-yp64 §3): foot만 접어서는 단일 자식인 actions span 안의
+   nowrap 버튼들이 줄바꿈되지 않아 컬럼 밖으로 잘린다 — 둘 다 접혀야 한다. */
+.worker-mini__foot {
+  flex-wrap: wrap;
+}
+
 .worker-mini__foot .worker-usage {
   margin-left: 0;
 }
@@ -3657,6 +3663,9 @@ html[data-theme='dark'] {
   align-items: center;
   gap: var(--sp-6);
   margin-left: auto;
+  flex-wrap: wrap;
+  max-width: 100%;
+  justify-content: flex-end;
 }
 
 .worker-mini--done {
