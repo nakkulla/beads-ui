@@ -45,13 +45,20 @@ worker attempt 없이 일반 세션에서 PR Delivery까지 끝난 bead(`status=
 ### 1. 외부 행 발견 (서버, 메모리 전용)
 
 - worker 런타임에 워크스페이스별 외부 PR 레지스트리(메모리)를 둔다. 소스는
-  `bd list --json` 스캔에서 `status=resolved` && `metadata.pr_url` 존재 필터.
-  PR 번호는 `server/workflow-enrich.js`의 `parsePrNumber()` 재사용.
+  `bd list --json --all --limit 0` 스캔(기본 50개 제한 회피)에서
+  `status=resolved` && `metadata.pr_url` 존재 필터. PR 번호는
+  `server/workflow-enrich.js`의 `parsePrNumber()` 재사용.
 - 갱신 트리거: worker 큐 구독 시 1회 + pr-poller `tick()` 주기에 편승
   (구독자가 있을 때만). queue.json에는 아무것도 쓰지 않는다.
 - pr-poller `tick()`은 store `pr_wait`와 외부 레지스트리의 합집합을 순회한다
   (현재는 raw store만 읽으므로 오버레이만으로는 외부 행이 gh 관측 대상에
   들어가지 않음). 빈 store `pr_wait` 조기 반환 조건도 합집합 기준으로 바꾼다.
+- 외부 행의 MERGED 관측은 **관측 캐시 기록만** 하고 worker 행과 달리 자동
+  cleanup(`observeBead()` → `cleanupMerged()` → `onMerged`,
+  `server/worker/pr-poller.js`)을 호출하지 않는다 — deploy를 포함한 후처리가
+  사용자 클릭 없이 실행되면 안 되고, `머지됨·정리` 상태를 UI에 보여주는 결정과
+  상충하기 때문. 외부 행의 후처리는 `정리` 버튼 클릭이 기존 cleanup 경로를
+  실행하는 것으로만 트리거된다.
 - worker `q.pr_wait`에 이미 있는 bead_id는 오버레이에서 제외(worker 행 우선).
 
 ### 2. 스냅샷 오버레이
@@ -65,8 +72,12 @@ worker attempt 없이 일반 세션에서 PR Delivery까지 끝난 bead(`status=
 
 - `resolvePrRef()`: attempts 우선, 실패 시 bead `metadata.pr_url` →
   `parsePrNumber` 폴백. 외부 행에서 `pr_ref_unknown`이 사라진다.
-- `targetBaseFor()`: attempts 우선, 외부 행은 gh 게이트가 주는 `baseRefName`,
-  최종 폴백 `'main'`.
+- `targetBaseFor()`: attempts 우선, 외부 행은 gh가 주는 `baseRefName`, 최종
+  폴백 `'main'`. 단 현재 `server/worker/gh.js`의
+  `PR_DETAIL_FIELDS`/`PR_JSON_FIELDS`와 `PrDetail`에는 head 정보만 있고 base가
+  없으므로, `baseRefName`을 필드에 추가하고 normalized `base_ref`를 관측
+  캐시와 클릭 시점 게이트 결과를 통해 cleanup(`runCleanup`)까지 전달한다 —
+  이것이 없으면 베이스 동기화·검증·deploy가 잘못된 브랜치를 대상으로 한다.
 - 브랜치/워크트리 정리: 기존 `branchForBead(bead_id)` 유지(규약상 브랜치==bead
   ID). gh `headRefName`이 bead_id와 다르면 브랜치 삭제 대상은 `headRefName`을
   우선 사용. 없는 브랜치/워크트리는 기존처럼 무해한 no-op.
@@ -81,10 +92,20 @@ worker attempt 없이 일반 세션에서 PR Delivery까지 끝난 bead(`status=
 
 ### 5. UI (프론트)
 
-- 외부 행에 `세션` 배지(worker attempt 없이 세션이 배달한 PR 표시).
-- MERGED 관측 시 버튼 라벨 `정리`, CLOSED(미머지)는 `닫힘` 배지 + 머지 비활성.
-- 충돌 해소 버튼, base 배지, gate 활성화 등 나머지는 기존
-  `prWaitRow()`(`app/views/worker/index.js`) 로직 그대로.
+- 외부 행에 `세션` 배지(worker attempt 없이 세션이 배달한 PR 표시). `external`
+  플래그를 `prWaitRow()`(`app/views/worker/index.js`)까지 전달한다.
+- MERGED 관측 시 버튼 라벨 `정리`(클릭이 cleanup 실행), CLOSED(미머지)는
+  `닫힘` 배지 + 머지 비활성.
+- **충돌 시 외부 행은 충돌 해소 버튼을 비활성화**하고 배지로만 표시한다 —
+  기존 충돌 해소는 `scheduler.resolveConflict()`가 attempt의 `session_id`와
+  worker worktree를 요구해(`server/worker/scheduler.js`, `no_session_id` 거부)
+  attempt 없는 외부 행에선 항상 실패한다. 외부 PR의 충돌은 사용자가 세션에서
+  해소한다(향후 확장 범위 밖).
+- **외부 행은 `폐기` 액션을 숨긴다**(`discard_action: false`) — 기존
+  `discard()`는 durable `q.pr_wait` 멤버십과 `removeFromPrWait()` 성공을
+  전제하므로(`server/worker/pr-actions.js`) 외부 행에선 거부되거나 부분 실패
+  (`pr_wait_remove_failed`)한다.
+- base 배지, gate 활성화 등 나머지는 기존 `prWaitRow()` 로직 그대로.
 
 ### 6. 에러 처리·엣지 케이스
 
@@ -97,10 +118,13 @@ worker attempt 없이 일반 세션에서 PR Delivery까지 끝난 bead(`status=
 ### 7. 테스트
 
 - 오버레이 합성: 중복 제외(worker 행 우선)·`external: true` 플래그.
-- `resolvePrRef` metadata 폴백, `targetBaseFor` 폴백 순서.
+- `resolvePrRef` metadata 폴백, `targetBaseFor` 폴백 순서(`baseRefName` 전달
+  포함).
 - 머지 가드: 외부 행 허용, 클릭 시점 재조회 거부 레이스.
-- MERGED(cleanup-only)/CLOSED(거부) 분기.
-- 프론트 `prWaitRow`: `세션` 배지, MERGED `정리` 라벨, CLOSED 비활성.
+- MERGED(cleanup-only)/CLOSED(거부) 분기, 외부 행 MERGED 자동 cleanup 미실행
+  (관측 캐시만) + `정리` 클릭 시 cleanup 실행.
+- 프론트 `prWaitRow`: `세션` 배지, MERGED `정리` 라벨, CLOSED 비활성, 외부 행
+  충돌 해소 비활성·`폐기` 숨김 회귀 테스트.
 - 기존 `test/` 하위 패턴 준수.
 
 ## 범위 밖
