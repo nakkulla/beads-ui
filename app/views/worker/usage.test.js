@@ -61,6 +61,28 @@ describe('views/worker usage formatting (UI-raqh §1)', () => {
 
     expect(title).toBe('입력 10 · 출력 5 · 캐시읽기 0 · 캐시생성 0');
   });
+
+  test('labels a restart-recovered tally as partial (UI-ediw)', () => {
+    const title = usageTooltip({
+      input_tokens: 10,
+      output_tokens: 5,
+      replayed: true
+    });
+
+    expect(title).toBe(
+      '입력 10 · 출력 5 · 캐시읽기 0 · 캐시생성 0\n서버 재시작 복구 — 부분 집계'
+    );
+  });
+
+  test('leaves the badge total unchanged for a replayed tally', () => {
+    const label = formatUsageTotal({
+      input_tokens: 8420,
+      output_tokens: 3910,
+      replayed: true
+    });
+
+    expect(label).toBe('τ 12.3k');
+  });
 });
 
 describe('views/worker last-attempt usage (UI-raqh §1)', () => {

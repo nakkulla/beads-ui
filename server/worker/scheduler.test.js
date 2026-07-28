@@ -3210,6 +3210,53 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
 
     expect(verifyPrSubmitted).toHaveBeenCalledTimes(1);
   });
+
+  test('persists the replayed usage of a dead attempt it disposes (UI-ediw)', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store);
+    // What the startup replay left behind for an attempt this process never
+    // owned: a tally rebuilt from the session log.
+    env.usage?.record(WS, 'att-1', {
+      message_id: 'm1',
+      input_tokens: 10,
+      output_tokens: 4
+    });
+    env.usage?.markReplayed(WS, 'att-1');
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].usage).toMatchObject({
+      input_tokens: 10,
+      output_tokens: 4,
+      replayed: true
+    });
+    // …and the in-memory entry is reclaimed with it.
+    expect(env.usage?.get(WS, 'att-1')).toBe(null);
+  });
+
+  test('leaves usage null on a disposed attempt with nothing replayed', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].usage).toBe(null);
+  });
+
+  test('persists the replayed usage on the FAILED disposition branch too', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      verifyOk: false
+    });
+    seedDetachedAttempt(env.store);
+    env.usage?.record(WS, 'att-1', { message_id: 'm1', input_tokens: 7 });
+    env.usage?.markReplayed(WS, 'att-1');
+
+    await env.scheduler.reconcile(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['att-1'];
+    expect(attempt.status).toBe('failed');
+    expect(attempt.usage).toMatchObject({ input_tokens: 7, replayed: true });
+  });
 });
 
 describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
