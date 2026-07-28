@@ -442,7 +442,7 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
           return {
             ok: false,
             action: 'conflict_resolution',
-            reason: 'external_conflict_needs_session'
+            reason: 'worktree_missing'
           };
         }
         landMerge(store, bead_id);
@@ -452,7 +452,7 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
 
     await mq.kick();
 
-    expect(mq.state().failures['UI-1']).toBe('external_conflict_needs_session');
+    expect(mq.state().failures['UI-1']).toBe('worktree_missing');
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 

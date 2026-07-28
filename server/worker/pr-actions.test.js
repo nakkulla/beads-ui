@@ -132,6 +132,7 @@ function seedStore(options = {}) {
  *   afterMerge?: any,
  *   worktreeExists?: boolean,
  *   resolveConflictResult?: any,
+ *   externalConflictResult?: any,
  *   activity?: any,
  *   external?: Record<string, { bead_id: string, pr_url: string, pr_number: number|null, added_at: number }>,
  *   bdStatus?: Record<string, string>,
@@ -305,6 +306,10 @@ function makeActions(options = {}) {
     resolveConflict: vi.fn(async () => {
       calls.push('sched:resolveConflict');
       return options.resolveConflictResult || { ok: true, attempt_id: 'a2' };
+    }),
+    dispatchExternalConflict: vi.fn(async () => {
+      calls.push('sched:dispatchExternalConflict');
+      return options.externalConflictResult || { ok: true, attempt_id: 'x1' };
     }),
     tick: vi.fn(async () => {
       calls.push('sched:tick');
@@ -1828,7 +1833,7 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     expect(r.reason).toBe('pr_closed_unmerged');
   });
 
-  test('refuses an external conflict instead of dispatching a resolution session', async () => {
+  test('dispatches an attempt-less resolution session for an external conflict', async () => {
     const env = makeActions(
       externalOptions({
         details: [
@@ -1839,8 +1844,113 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
 
     const r = await env.actions.merge(EXTERNAL_BEAD);
 
-    expect(r.reason).toBe('external_conflict_needs_session');
+    expect(r).toMatchObject({
+      ok: true,
+      action: 'conflict_resolution',
+      reason: null,
+      attempt_id: 'x1'
+    });
+    // The attempt-less path, never the relaunch one.
     expect(env.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('forwards the base_ref this click observed as the resolution target_base', async () => {
+    const env = makeActions(
+      externalOptions({
+        details: [
+          prOf({
+            mergeable: 'CONFLICTING',
+            merge_state_status: 'DIRTY',
+            base_ref: 'develop'
+          })
+        ]
+      })
+    );
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.scheduler.dispatchExternalConflict).toHaveBeenCalledWith(
+      WS,
+      EXTERNAL_BEAD,
+      'develop'
+    );
+  });
+
+  test('dispatches after the BEHIND update-branch re-observes a conflict', async () => {
+    const env = makeActions(
+      externalOptions({
+        details: [
+          prOf({ merge_state_status: 'BEHIND' }),
+          prOf({
+            mergeable: 'CONFLICTING',
+            merge_state_status: 'DIRTY',
+            base_ref: 'release'
+          })
+        ]
+      })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.gh.updateBranch).toHaveBeenCalled();
+    expect(r.action).toBe('conflict_resolution');
+    expect(env.scheduler.dispatchExternalConflict).toHaveBeenCalledWith(
+      WS,
+      EXTERNAL_BEAD,
+      'release'
+    );
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('reports a refused external dispatch on the same result channel', async () => {
+    const env = makeActions(
+      externalOptions({
+        details: [
+          prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })
+        ],
+        externalConflictResult: { ok: false, reason: 'worktree_missing' }
+      })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      action: 'conflict_resolution',
+      reason: 'worktree_missing',
+      attempt_id: null
+    });
+  });
+
+  test('refuses a second click while an external dispatch is in flight', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((r) => {
+      release = () => r(undefined);
+    });
+    const env = makeActions(
+      externalOptions({
+        details: [
+          prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })
+        ]
+      })
+    );
+    env.scheduler.dispatchExternalConflict.mockImplementation(async () => {
+      await gate;
+      return { ok: true, attempt_id: 'x1' };
+    });
+
+    const first = env.actions.merge(EXTERNAL_BEAD);
+    const second = await env.actions.merge(EXTERNAL_BEAD);
+    release();
+    await first;
+
+    expect(second).toEqual({
+      ok: false,
+      action: 'refused',
+      reason: 'action_in_flight'
+    });
+    expect(env.scheduler.dispatchExternalConflict).toHaveBeenCalledTimes(1);
   });
 
   test('syncs the base branch gh reports rather than falling back to main', async () => {
@@ -1849,6 +1959,42 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
         details: [prOf({ state: 'MERGED', base_ref: 'develop' })]
       })
     );
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.git_argv).toContainEqual([
+      'fetch',
+      '--no-tags',
+      'origin',
+      'develop'
+    ]);
+  });
+
+  test('ignores a prior resolution attempt when resolving the cleanup base', async () => {
+    const env = makeActions(
+      externalOptions({
+        details: [prOf({ state: 'MERGED', base_ref: 'develop' })]
+      })
+    );
+    // A resolution session ran against the base the CLICK saw back then; the
+    // PR has moved to `develop` since. That attempt is not the record that
+    // produced the PR, so it must not outrank this click's observation
+    // (UI-w0hi, implementation review 2026-07-28).
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'ext-conf-1', bead_id: EXTERNAL_BEAD }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'ext-conf-1',
+      patch: {
+        status: 'done',
+        finished_at: 9999,
+        repo: REPO,
+        target_base: 'main',
+        conflict_resolution: true,
+        external_conflict: true
+      }
+    });
 
     await env.actions.merge(EXTERNAL_BEAD);
 

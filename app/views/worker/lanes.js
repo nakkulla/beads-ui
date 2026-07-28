@@ -23,6 +23,9 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  * @property {boolean} draggable - Whether this row can be dragged.
  * @property {'candidate'|'queue'|'pr_wait'|'done'} lane - Owning lane.
  * @property {boolean} [done] - Rendered dimmed with no grip.
+ * @property {boolean} [external] - PR 대기 행이 외부 세션이 배달한 PR인지
+ * (UI-w0hi §4). 좌측 액센트 보더 + 미세 배경 틴트로 구분만 하고 행동은 바꾸지
+ * 않는다.
  * @property {number|null} [pr_number] - Observed PR number (`pr_wait` rows).
  * @property {string} [pr_url] - Observed PR URL; renders the `#N ↗` link.
  * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
@@ -214,7 +217,7 @@ export function miniRow(item) {
       ? ''
       : ' worker-mini--static'}${item.done ? ' worker-mini--done' : ''}${merging
       ? ' worker-mini--merging'
-      : ''}"
+      : ''}${item.external ? ' worker-mini--external' : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}

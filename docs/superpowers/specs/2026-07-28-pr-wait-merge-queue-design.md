@@ -15,8 +15,9 @@ Set과 git ref 변이 구간의 `topologyLock`만 존재).
 충돌(DIRTY/CONFLICTING) PR은 머지 대신 충돌 해소 세션이 비동기로 뜨고
 (`dispatchResolution` → `scheduler.resolveConflict`, `claude --resume`),
 세션이 끝나도 자동 재머지가 없어 사용자가 다시 [머지]를 눌러야 한다.
-외부 행(UI-7agi, 구현 완료)은 해소 세션을 디스패치할 수 없어
-`external_conflict_needs_session`으로 거부된다.
+외부 행(UI-7agi, 구현 완료)도 UI-w0hi 이후 같은 해소 경로를 탄다 —
+attempt 없는 fresh 세션(`scheduler.dispatchExternalConflict`)이 뜨며,
+워크트리가 없을 때만 `worktree_missing`으로 거부된다.
 
 `merge()`의 반환 계약(`MergeClickResult`)의 `action`은
 `merged`/`updated_and_merged`/`already_merged`/`merge_unconfirmed`/
@@ -79,7 +80,7 @@ Set과 git ref 변이 구간의 `topologyLock`만 존재).
    `bumpResolutionRound` 후 자동 재머지(1로 복귀). 항목당 해소 라운드 캡
    2회(durable `resolution_rounds` 기준), 세션 종료 대기 타임아웃 30분 —
    초과 시 실패 처리 후 skip(세션 자체는 중단하지 않는다).
-   `ok: false`(`resolution_refused`, `external_conflict_needs_session` 등)
+   `ok: false`(`resolution_refused`, `worktree_missing` 등)
    → 실패 처리 후 skip. 캡 판정 시점: 라운드 캡에 이미 도달한 항목의
    재머지가 다시 `conflict_resolution`을 반환하면 실패 처리 후 skip하되,
    그 반환 시점에 이미 디스패치된 세션은 중단하지 않고 그대로 두며 큐만
@@ -140,7 +141,7 @@ attempt 종료를 기다린 뒤 재머지한다(타임아웃 시계는 부팅 �
 | --- | --- |
 | 머지 거부(CI 빨강·닫힘 등) | 사유 배지 기록, skip 후 계속 |
 | 충돌 | 해소 세션 자동 디스패치 → 종료 감지 → 자동 재머지 |
-| 해소 디스패치 거부(`external_conflict_needs_session` 등) | 실패 처리, skip 후 계속 |
+| 해소 디스패치 거부(`worktree_missing` 등) | 실패 처리, skip 후 계속 |
 | 해소 라운드 2회 초과 / 대기 30분 초과 | 실패 처리, skip 후 계속(세션은 중단하지 않음) |
 | `merge_unconfirmed` | dequeue 금지, head 유지, 재관측으로 MERGED/CLOSED/타임아웃 판정 |
 | cleanup 실패 | 현행 durable `cleanup_failed` 계약 유지, 해당 항목 종료 후 다음 진행 |
@@ -151,9 +152,10 @@ attempt 종료를 기다린 뒤 재머지한다(타임아웃 시계는 부팅 �
 
 큐잉 대상은 "merge action이 활성인 pr_wait 행"으로 정의하며, 구현 완료된
 외부 행(일반 세션 PR)도 동일하게 편입된다 — 외부 행의 [머지]/[정리] 클릭과
-add-all 포함 모두 같은 큐를 거친다. 충돌 해소가 불가능한 외부 행은
-`merge()`가 `external_conflict_needs_session`으로 거부하므로 드라이버의
-실패→skip 경로로 안전하게 처리된다.
+add-all 포함 모두 같은 큐를 거친다. 충돌한 외부 행도 UI-w0hi 이후 동일한
+자동 해소 대상이다 — `merge()`가 attempt 없는 해소 세션을 디스패치하고
+드라이버는 워커 행과 같은 종료 감지 → 자동 재머지 경로를 탄다. 워크트리가
+없어 `worktree_missing`으로 거부되는 경우만 실패→skip으로 남는다.
 
 ## 테스트 범위
 

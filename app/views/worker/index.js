@@ -489,8 +489,11 @@ export function mergeFailureText(reason) {
       return '충돌 해소 대기 시간 초과';
     case 'resolution_refused':
       return '해소 세션 디스패치 거부';
-    case 'external_conflict_needs_session':
-      return '외부 PR 충돌 — 세션 필요';
+    // The external row's own refusal is `worktree_missing` now (UI-w0hi §2):
+    // the dispatch itself is no longer external-specific, only the worktree it
+    // needs to run in is, and that is the one thing this path cannot recreate.
+    case 'worktree_missing':
+      return '워크트리 없음 — 세션에서 해소 필요';
     case 'merge_unconfirmed_timeout':
       return '머지 확인 시간 초과';
     case 'pr_closed_unmerged':
@@ -532,14 +535,17 @@ export function mergeFailureText(reason) {
  * conflict-resolution attempt, when one exists (UI-dxgz §1).
  * @param {boolean} [external] - Whether this row is an EXTERNAL PR — one a
  * normal session delivered, with no worker attempt behind it (UI-7agi §5).
- * Three affordances change: [폐기] disappears (the server's discard needs the
- * durable lane membership an external row does not have), 충돌 해소 goes away
- * (it needs the attempt's `session_id`), and a MERGED row becomes a [정리]
- * button because nothing auto-cleans it.
+ * Two affordances change: [폐기] disappears (the server's discard needs the
+ * durable lane membership an external row does not have), and a MERGED row
+ * becomes a [정리] button because nothing auto-cleans it. 충돌 해소 is NOT one
+ * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
  * @param {{ position: number, active: boolean, failure: string|null }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
  * `position` while it waits (0 = not queued), whether the driver is on it right
  * now, and the reason it was skipped, if any.
+ * @param {boolean} [wt_present] - Whether the delivering session's worktree is
+ * still there (UI-w0hi §3/§4), server-observed per external row. Defaults true
+ * so a durable row — which carries no such field — is unaffected.
  * @returns {any}
  */
 function prWaitRow(
@@ -551,7 +557,8 @@ function prWaitRow(
   active = null,
   conflict_session = null,
   external = false,
-  merge_queue = null
+  merge_queue = null,
+  wt_present = true
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const queue_active = !!merge_queue && merge_queue.active === true;
@@ -613,10 +620,11 @@ function prWaitRow(
   // An external MERGED row is never auto-cleaned (UI-7agi §1), so the button IS
   // the cleanup trigger — with or without a recorded failure.
   const external_cleanup = external && !!gate && gate.tier === 'merged';
-  // An external conflict cannot be dispatched anywhere: `resolveConflict()`
-  // needs the attempt's session_id and worker worktree, so the button would
-  // refuse every time. The badge reports it; the user resolves it in a session.
-  const external_conflict = external && conflicting;
+  // An external conflict WITHOUT a worktree has nowhere to run: the dispatch
+  // never recreates one (UI-w0hi 제외), so the button would refuse every time.
+  // The badge reports the conflict; the user resolves it in their own session.
+  const external_conflict_unresolvable =
+    external && conflicting && wt_present === false;
   return {
     id: bead_id,
     title,
@@ -624,6 +632,10 @@ function prWaitRow(
     draggable: false,
     done: true,
     lane: 'pr_wait',
+    // Card tone, not an affordance (UI-w0hi §4): an external row came from
+    // somewhere else, and the lane reads better when that is visible before the
+    // 세션 badge is read.
+    external,
     pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
     pr_url: pr && typeof pr.url === 'string' ? pr.url : '',
     badges,
@@ -671,31 +683,28 @@ function prWaitRow(
     // A conflicting PR keeps [머지] clickable on purpose: that click is what
     // dispatches the resolution session (§6), and it merges nothing. Once that
     // session exists, there is nothing left to dispatch until it settles.
-    // `external_conflict` vetoes even a GREEN gate: the click-time branch order
-    // puts DIRTY before the gate, so the server refuses a conflicting external
-    // PR whatever its CI says (UI-7agi §5).
+    // A worktree-less external conflict vetoes even a GREEN gate: the
+    // click-time branch order puts DIRTY before the gate, so the server refuses
+    // a conflicting external PR whatever its CI says (UI-7agi §5).
     merge_enabled:
       !merge_step &&
       !conflict_session &&
-      !external_conflict &&
-      (enabled ||
-        (conflicting && !external) ||
-        cleanup_retry ||
-        external_cleanup),
+      !external_conflict_unresolvable &&
+      (enabled || conflicting || cleanup_retry || external_cleanup),
     // The label says what the click DOES: on a conflicting gate it dispatches a
     // resolution session, and a button reading 머지 there is the misread that
     // put this bead here (UI-dxgz §2).
     merge_label: external_cleanup
       ? '정리'
-      : conflicting && !external && !merge_step && !cleanup_retry
+      : conflicting && !merge_step && !cleanup_retry
         ? '충돌 해소'
         : undefined,
     merge_title: merge_step
       ? `머지 진행 중 — ${merge_step.label}`
       : external_cleanup
         ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
-        : external_conflict
-          ? '외부 PR 충돌 — 세션에서 직접 해소하세요 (여기서는 해소 세션을 띄울 수 없습니다)'
+        : external_conflict_unresolvable
+          ? '워크트리 없음 — 세션에서 직접 해소하세요'
           : conflict_session === 'running'
             ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
             : conflict_session === 'paused'
@@ -1783,7 +1792,10 @@ export function createWorkerView(mount_element, options = {}) {
             position: merge_positions.get(e.bead_id) || 0,
             active: merge_state.active === e.bead_id,
             failure: merge_failures[e.bead_id] || null
-          }
+          },
+          // Also overlay-only (UI-w0hi §3): a durable row has no field here and
+          // must keep the pre-existing behaviour, so absence reads as present.
+          e.wt_present !== false
         )
       ),
       merge_queue_length: merge_queue.length,

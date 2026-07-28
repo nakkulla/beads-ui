@@ -875,6 +875,24 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
     expect(persisted.pr_wait).toEqual([]);
   });
 
+  /**
+   * Register an attachment whose worktree manager answers a fixed verdict —
+   * the only input `wt_present` has (UI-w0hi §3).
+   *
+   * @param {boolean} exists
+   */
+  function registerWorktree(exists) {
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: { merge: vi.fn(), discard: vi.fn() },
+        repo: '/repo',
+        worktree: { exists: () => exists }
+      })
+    );
+  }
+
   test('the snapshot carries the external row flagged as external', async () => {
     registerExternal('UI-ext');
     const sock = fakeSocket();
@@ -882,8 +900,42 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
     expect(queueSnapshots(sock).at(-1).pr_wait).toEqual([
-      { bead_id: 'UI-ext', added_at: expect.any(Number), external: true }
+      {
+        bead_id: 'UI-ext',
+        added_at: expect.any(Number),
+        external: true,
+        wt_present: false
+      }
     ]);
+  });
+
+  test('reports wt_present true when the delivering worktree is still there', async () => {
+    registerExternal('UI-ext');
+    registerWorktree(true);
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).pr_wait[0].wt_present).toBe(true);
+  });
+
+  test('reports wt_present false when the worktree is gone', async () => {
+    registerExternal('UI-ext');
+    registerWorktree(false);
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).pr_wait[0].wt_present).toBe(false);
+  });
+
+  test('reports wt_present false when no attachment is registered', async () => {
+    registerExternal('UI-ext');
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).pr_wait[0].wt_present).toBe(false);
   });
 
   test('an external row gets the same observation/gate decoration as a worker row', async () => {
