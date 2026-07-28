@@ -5752,11 +5752,11 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
     expect(card(mount).textContent).toContain('관측 대기');
   });
 
-  test('reads the action button as 충돌 해소 on a conflicting gate', () => {
+  test('reads the action button as 충돌 해소 후 머지 on a conflicting gate', () => {
     const mount = mountBoard();
 
     expect(button(mount, '.worker-mini__merge').textContent?.trim()).toBe(
-      '충돌 해소'
+      '충돌 해소 후 머지'
     );
     expect(button(mount, '.worker-mini__merge').disabled).toBe(false);
   });
@@ -5850,7 +5850,7 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
     expect(button(mount, '.worker-mini__merge').disabled).toBe(false);
     expect(button(mount, '.worker-mini__discard').disabled).toBe(false);
     expect(button(mount, '.worker-mini__merge').textContent?.trim()).toBe(
-      '충돌 해소'
+      '충돌 해소 후 머지'
     );
   });
 });
@@ -6103,7 +6103,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
       mount.querySelector('.worker-mini__merge')
     );
     expect(btn.disabled).toBe(false);
-    expect(btn.textContent?.trim()).toBe('충돌 해소');
+    expect(btn.textContent?.trim()).toBe('충돌 해소 후 머지');
     // The SAME tooltip a worker row gets — that identity is the point (UI-w0hi
     // §4), so it tracks whatever UI-5v7d's queue wording is rather than pinning
     // a copy of it.
@@ -6156,7 +6156,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
       mount.querySelector('.worker-mini__merge')
     );
     expect(btn.disabled).toBe(false);
-    expect(btn.textContent?.trim()).toBe('충돌 해소');
+    expect(btn.textContent?.trim()).toBe('충돌 해소 후 머지');
   });
 
   test('marks an external card with the external modifier class', () => {
@@ -6348,19 +6348,157 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     ).toBe(true);
   });
 
-  test('the lane header offers 일괄 머지 with the mergeable count', () => {
+  test('the lane header offers 자동 머지 with the eligible count', () => {
     const { mount, transport } = mountLane(laneOf(['RD-1', 'RD-2']));
 
     const btn = /** @type {HTMLButtonElement} */ (
       mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
     );
-    expect(btn.textContent?.trim()).toBe('일괄 머지 2');
+    expect(btn.textContent?.trim()).toBe('▶ 자동 머지 2');
 
     btn.click();
 
-    expect(transport).toHaveBeenCalledWith('worker-merge-queue-add-all', {
+    expect(transport).toHaveBeenCalledWith('worker-merge-auto-toggle', {
+      on: true,
       expected_revision: 1
     });
+  });
+
+  test('keeps the 자동 머지 button with no eligible row, so it can be armed early', () => {
+    const { mount } = mountLane(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {}
+      })
+    );
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+    );
+    expect(btn.textContent?.trim()).toBe('▶ 자동 머지');
+    expect(btn.disabled).toBe(false);
+  });
+
+  test('an armed mode with an empty queue reads as ⏸ 자동 머지', () => {
+    const { mount } = mountLane(
+      queueOf({
+        auto_merge: true,
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {}
+      })
+    );
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+      ).textContent?.trim()
+    ).toBe('⏸ 자동 머지');
+  });
+
+  test('중단 in auto mode turns the toggle OFF rather than only emptying the queue', async () => {
+    const { mount, transport } = mountLane(
+      laneOf(['RD-1', 'RD-2'], {
+        auto_merge: true,
+        merge_queue: [
+          { bead_id: 'RD-1', resolution_rounds: 0 },
+          { bead_id: 'RD-2', resolution_rounds: 0 }
+        ],
+        merge_queue_state: { active: 'RD-1', failures: {} }
+      })
+    );
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+    );
+    expect(btn.textContent?.trim()).toBe('⏸ 자동 머지 중단 2');
+
+    btn.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Emptying the queue while the toggle stays on is not a stop: the next
+    // observation refills it (UI-yk55 §5.2).
+    expect(transport).toHaveBeenCalledWith('worker-merge-auto-toggle', {
+      on: false,
+      expected_revision: 1
+    });
+  });
+
+  test('marks an auto-excluded row with the reason it is being passed over', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        auto_merge: true,
+        auto_merge_skips: {
+          'RD-1': {
+            head_sha: 'a'.repeat(40),
+            reason: 'resolution_round_cap',
+            at: 1
+          }
+        }
+      })
+    );
+
+    expect(rowOf(mount, 'RD-1').textContent).toContain(
+      '자동 제외: 충돌 해소 2회 초과'
+    );
+  });
+
+  test('leaves an auto-excluded row out of the ▶ 자동 머지 count', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        auto_merge_skips: {
+          'RD-1': {
+            head_sha: 'a'.repeat(40),
+            reason: 'ci_failed',
+            at: 1
+          }
+        }
+      })
+    );
+
+    // N은 "켜면 들어갈 수"다 (UI-yk55 §5.1): 같은 head로 제외된 행을 세면 실제
+    // 편입은 0건인데 양수를 보이게 된다.
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+      ).textContent?.trim()
+    ).toBe('▶ 자동 머지');
+  });
+
+  test('still counts a row whose exclusion was pinned to an older head', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        auto_merge_skips: {
+          'RD-1': {
+            head_sha: '9'.repeat(40),
+            reason: 'ci_failed',
+            at: 1
+          }
+        }
+      })
+    );
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+      ).textContent?.trim()
+    ).toBe('▶ 자동 머지 1');
+  });
+
+  test('says nothing about an exclusion while auto mode is OFF', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        auto_merge_skips: {
+          'RD-1': {
+            head_sha: 'a'.repeat(40),
+            reason: 'resolution_round_cap',
+            at: 1
+          }
+        }
+      })
+    );
+
+    expect(rowOf(mount, 'RD-1').textContent).not.toContain('자동 제외');
   });
 
   test('a running queue turns the header button into 일괄 머지 중단', async () => {
@@ -6391,19 +6529,6 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       all: true,
       expected_revision: 1
     });
-  });
-
-  test('no header button when nothing is mergeable', () => {
-    const { mount } = mountLane(
-      queueOf({
-        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
-        pr_observations: {}
-      })
-    );
-
-    expect(mount.querySelector('#worker-pane-pr-wait .worker-merge-all')).toBe(
-      null
-    );
   });
 
   test('[취소] sends the remove message for that row', () => {

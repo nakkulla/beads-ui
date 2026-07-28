@@ -12,10 +12,11 @@
  * bead — Phase 5 owns every action.
  *
  * Cost discipline (spec §4):
- *   - it runs ONLY while the workspace has worker-queue subscribers, and
+ *   - it runs ONLY while the workspace has worker-queue subscribers OR the
+ *     durable `auto_merge` flag is on (UI-yk55 §4.4), and
  *   - it makes ZERO `gh` calls when `pr_wait` is empty.
  * Both gates are checked before any query, so an idle server is silent. The
- * subscriber gate is inherited by reusing {@link createPoller}.
+ * demand gate is inherited by reusing {@link createPoller}.
  *
  * `mergeable: UNKNOWN` is re-queried after a short delay rather than reported:
  * GitHub computes mergeability lazily and the first read after a base advance
@@ -208,6 +209,33 @@ export function createPrPoller(deps) {
 
   const activity = deps.activity || null;
   const external = deps.external || null;
+
+  /**
+   * Whether anything still NEEDS this workspace observed (UI-yk55 §4.4).
+   *
+   * The subscriber count alone used to answer this, and "subscriber" means an
+   * open browser tab. That was right while every merge came from a click: with
+   * nobody looking, nothing could act on an observation. `auto_merge` breaks
+   * that equivalence — the server itself becomes a consumer, and a poller gated
+   * on tabs would stop feeding it the moment the last tab closed, so the mode
+   * would silently do nothing. The observation cache is non-persistent, so a
+   * restart lands in the same state.
+   *
+   * With the toggle off the old rule stands exactly as it was: no subscribers,
+   * no `gh` traffic.
+   *
+   * @returns {boolean}
+   */
+  function pollDemand() {
+    if (deps.getSubscriberCount() > 0) {
+      return true;
+    }
+    try {
+      return deps.store.snapshot(workspace).auto_merge === true;
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Mark an activity transition and publish it (UI-raqh §3). The fanout is what
@@ -452,7 +480,7 @@ export function createPrPoller(deps) {
    * @returns {Promise<void>}
    */
   async function tick() {
-    if (deps.getSubscriberCount() <= 0) {
+    if (!pollDemand()) {
       return;
     }
     if (observing) {
@@ -494,11 +522,20 @@ export function createPrPoller(deps) {
         }))
       ];
       const lane_ids = entries.map((e) => e.bead_id);
+      // A MERGE QUEUE member keeps its observation even after it drops out of
+      // the lane (UI-yk55 §3.2). An external row vanishes from the overlay with
+      // no lane mutation behind it, and the driver still has to dispose of the
+      // item — which it can only do by reading the head SHA this cache holds.
+      // Pruning it there would leave the driver unable to record an exclusion,
+      // so it would hold the item and halt, blocking every item behind it.
+      const queued_ids = Array.isArray(queue.merge_queue)
+        ? queue.merge_queue.map((/** @type {any} */ e) => e.bead_id)
+        : [];
       // Whether anything was being observed BEFORE this pass pruned. It decides
       // the empty-lane fanout below.
       const had_observations =
         Object.keys(deps.observations.snapshot(workspace)).length > 0;
-      deps.observations.prune(workspace, lane_ids);
+      deps.observations.prune(workspace, [...lane_ids, ...queued_ids]);
       // The activity cache describes the same lane, so it is pruned with it —
       // a bead that merged or was discarded must not keep a stale badge.
       if (activity) {
@@ -554,7 +591,10 @@ export function createPrPoller(deps) {
       typeof deps.intervalSeconds === 'number'
         ? deps.intervalSeconds
         : DEFAULT_PR_POLL_INTERVAL_SECONDS,
-    getClientCount: deps.getSubscriberCount,
+    // The interval carries the SAME demand rule as `tick` — the shared poller
+    // gates on this count before it ever calls onTick, so gating only inside
+    // `tick` would leave the timer half-armed (UI-yk55 §4.4).
+    getClientCount: () => (pollDemand() ? 1 : 0),
     onTick: () => {
       void tick().catch((err) => log('pr poll tick failed: %o', err));
     }

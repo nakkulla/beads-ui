@@ -28,6 +28,12 @@
  * - `refused` → skip and continue. No auto-retry: a red CI or a closed PR is a
  *   human's problem, and the queue's job is to not stop for it.
  *
+ * Every FAILURE disposition also writes a durable exclusion pinned to the head
+ * SHA it failed at (UI-yk55 §3), because the automatic enroller judges the same
+ * row eligible again a moment later and `enqueueMerge` hands each new entry a
+ * fresh `resolution_rounds` budget. Without the exclusion, "gave up after 2
+ * resolution rounds" would mean "2 more rounds, forever".
+ *
  * Durable vs memory: the queue and each item's consumed resolution rounds live
  * in `queue.json` because merging beads-ui DEPLOYS beads-ui, which restarts this
  * process mid-queue. Everything else — which item is active, why one failed, the
@@ -92,6 +98,7 @@ const RESOLUTION_POLL_MS = 30 * 1000;
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
  *   merge: (bead_id: string) => Promise<MergeClickResult>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
+ *   headSha?: (bead_id: string) => string|null,
  *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
  *   notifyChanged?: (workspace: string) => void,
@@ -121,6 +128,9 @@ export function createMergeQueue(deps) {
   const clearTimer =
     deps.clearTimer || ((/** @type {any} */ h) => clearTimeout(h));
   const log = deps.log || (() => {});
+  // The head SHA an exclusion is pinned to (UI-yk55 §3.3). A cache read, not a
+  // network call: the driver adds no `gh` traffic of its own.
+  const headSha = deps.headSha || (() => null);
   const round_cap = deps.resolution_round_cap ?? RESOLUTION_ROUND_CAP;
   const resolution_wait_ms = deps.resolution_wait_ms ?? RESOLUTION_WAIT_MS;
   const unconfirmed_poll_ms = deps.unconfirmed_poll_ms ?? UNCONFIRMED_POLL_MS;
@@ -133,6 +143,19 @@ export function createMergeQueue(deps) {
   // current drain instead of retrying in place; the queue is durable, so the
   // next kick or restart resumes it.
   let halted = false;
+  /**
+   * The bead whose UNREADABLE head SHA ended the last drain (UI-yk55 §3.2).
+   *
+   * That halt has a specific recovery signal — an observation arriving — and
+   * nothing else would deliver it: `queue-changed` only WAKES a sleeping wait,
+   * and an enroller pass that changes nothing kicks nobody. Without this the
+   * queue would sit halted forever with a perfectly mergeable head. The other
+   * halt causes (a persist that did not stick) keep the pre-existing contract:
+   * the next kick or restart resumes them.
+   *
+   * @type {string|null}
+   */
+  let halted_on_head = null;
   let prepared = false;
   /** @type {string|null} */
   let active = null;
@@ -292,6 +315,74 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * This bead's durable auto-merge exclusion, if it has one.
+   *
+   * @param {string} bead_id
+   * @returns {{ head_sha: string, reason: string }|null}
+   */
+  function skipRecord(bead_id) {
+    const q = snapshot();
+    const skips = (q && q.auto_merge_skips) || {};
+    return skips[bead_id] || null;
+  }
+
+  /**
+   * Dispose of an item as a FAILURE: record the exclusion and drop it from the
+   * queue in ONE durable mutation (UI-yk55 §3.2).
+   *
+   * The two halves cannot be separate writes. Dequeue without a record and the
+   * enroller re-queues the same head with `resolution_rounds` reset to 0, which
+   * is the unbounded resolution-session loop the exclusion exists to stop;
+   * record without a dequeue and the boot-resume driver merges the same head
+   * again. So when the head SHA is unreadable — or the write does not stick —
+   * the item is NOT dequeued: the drain halts and the durable queue is picked up
+   * by the next kick or restart, once the observation is back.
+   *
+   * An item that already left the queue (the ordinary merged-and-cleaned path,
+   * where `removeFromLanes` took it) needs neither half.
+   *
+   * @param {string} bead_id
+   * @param {string} reason
+   */
+  function failAndDequeue(bead_id, reason) {
+    fail(bead_id, reason);
+    if (!queuedEntry(bead_id)) {
+      notify();
+      return;
+    }
+    const head_sha = headSha(bead_id);
+    if (!head_sha) {
+      log(
+        'merge queue: %s head SHA unreadable — not dequeued, halting this drain',
+        bead_id
+      );
+      halted = true;
+      halted_on_head = bead_id;
+      notify();
+      return;
+    }
+    let ok = false;
+    try {
+      ok = deps.store.recordMergeSkip(workspace, {
+        bead_id,
+        head_sha,
+        reason
+      }).ok;
+    } catch (err) {
+      log('merge queue skip record failed for %s: %o', bead_id, err);
+      ok = false;
+    }
+    if (!ok && queuedEntry(bead_id)) {
+      log(
+        'merge queue: %s could not be dequeued — halting this drain',
+        bead_id
+      );
+      halted = true;
+    }
+    notify();
+  }
+
+  /**
    * Drop the item from the durable queue. Returns whether it actually left.
    *
    * A persist that throws (a full or unwritable state dir) leaves the item AT
@@ -444,6 +535,32 @@ export function createMergeQueue(deps) {
     /** @type {number|null} */
     let unconfirmed_deadline = null;
 
+    // The exclusion filter has to be HERE and not only in the enroller
+    // (UI-yk55 §3.2): `drain()` takes the durable queue's head straight into
+    // this function, so a restart that resumes a queue written before the
+    // disposition landed would merge exactly the head the exclusion names.
+    const skip = skipRecord(bead_id);
+    if (skip) {
+      const head_sha = headSha(bead_id);
+      if (!head_sha) {
+        // Cannot tell whether the branch moved since it failed. Merging on that
+        // guess is the one thing the record exists to prevent, so the item stays
+        // queued and the drain ends — the next observation decides it.
+        log(
+          'merge queue: %s excluded but head SHA unreadable — halting this drain',
+          bead_id
+        );
+        halted = true;
+        halted_on_head = bead_id;
+        return;
+      }
+      if (head_sha === skip.head_sha) {
+        fail(bead_id, skip.reason || 'auto_merge_skipped');
+        dequeue(bead_id);
+        return;
+      }
+    }
+
     // Boot resume (spec §2 부팅 정합): a durable `running` resolution attempt is
     // restored as the step-3 wait rather than judged a failure.
     const restored = runningResolutionAttempt(bead_id);
@@ -452,8 +569,10 @@ export function createMergeQueue(deps) {
       if (entry && entry.resolution_rounds >= round_cap) {
         // The cap is spent, so this item gets no more rounds — including this
         // restored one. The session is left running, as everywhere else.
-        fail(bead_id, 'resolution_round_cap');
-        dequeue(bead_id);
+        // Right after a restart the observation cache is empty, so the head SHA
+        // is usually unreadable here: the disposition then HOLDS the item (§3.2)
+        // instead of dropping it without an exclusion.
+        failAndDequeue(bead_id, 'resolution_round_cap');
         return;
       }
       const outcome = await waitForResolution(bead_id, restored);
@@ -461,8 +580,7 @@ export function createMergeQueue(deps) {
         return;
       }
       if (outcome === 'timeout') {
-        fail(bead_id, 'resolution_timeout');
-        dequeue(bead_id);
+        failAndDequeue(bead_id, 'resolution_timeout');
         return;
       }
       if (!bumpRound(bead_id)) {
@@ -488,11 +606,15 @@ export function createMergeQueue(deps) {
         if (!result.ok) {
           // The merge LANDED; only the cleanup stopped, and that is already a
           // durable `cleanup_failed` record with its own banner. The item is
-          // finished either way — nothing here retries a cleanup.
-          fail(
+          // finished either way — nothing here retries a cleanup. The exclusion
+          // still gets written (UI-yk55 §3.2): a cleanup-failed row stays
+          // eligible (`cleanup_failed` + merged tier), so without one the
+          // enroller would re-queue the same broken cleanup forever.
+          failAndDequeue(
             bead_id,
             `정리 실패(${result.cleanup_step || '?'}): ${result.reason || ''}`
           );
+          return;
         }
         dequeue(bead_id);
         return;
@@ -500,8 +622,7 @@ export function createMergeQueue(deps) {
 
       if (action === 'conflict_resolution') {
         if (!result.ok) {
-          fail(bead_id, result.reason || 'resolution_refused');
-          dequeue(bead_id);
+          failAndDequeue(bead_id, result.reason || 'resolution_refused');
           return;
         }
         const entry = queuedEntry(bead_id);
@@ -510,8 +631,7 @@ export function createMergeQueue(deps) {
           // Cap reached. The session just dispatched is deliberately LEFT
           // RUNNING (spec §2): the queue gives up its turn, the human keeps
           // the resolution work.
-          fail(bead_id, 'resolution_round_cap');
-          dequeue(bead_id);
+          failAndDequeue(bead_id, 'resolution_round_cap');
           return;
         }
         const outcome = await waitForResolution(
@@ -522,8 +642,7 @@ export function createMergeQueue(deps) {
           return;
         }
         if (outcome === 'timeout') {
-          fail(bead_id, 'resolution_timeout');
-          dequeue(bead_id);
+          failAndDequeue(bead_id, 'resolution_timeout');
           return;
         }
         if (!bumpRound(bead_id)) {
@@ -546,13 +665,11 @@ export function createMergeQueue(deps) {
           // `already_merged` arm — one cleanup implementation, as everywhere.
           continue;
         }
-        fail(bead_id, verdict);
-        dequeue(bead_id);
+        failAndDequeue(bead_id, verdict);
         return;
       }
 
-      fail(bead_id, (result && result.reason) || 'refused');
-      dequeue(bead_id);
+      failAndDequeue(bead_id, (result && result.reason) || 'refused');
       return;
     }
   }
@@ -569,6 +686,7 @@ export function createMergeQueue(deps) {
     }
     draining = true;
     halted = false;
+    halted_on_head = null;
     try {
       // A queue resumed after a restart can hold EXTERNAL rows, and those exist
       // only in the in-memory registry the ws overlay reads — empty until
@@ -614,8 +732,22 @@ export function createMergeQueue(deps) {
       stopped = false;
       if (typeof deps.subscribeQueueChanged === 'function') {
         unsubscribe = deps.subscribeQueueChanged((ws_key) => {
-          if (ws_key === workspace) {
-            wake();
+          if (ws_key !== workspace) {
+            return;
+          }
+          wake();
+          // The PR poller emits this on every observation pass, so it is also
+          // the arrival signal for the head SHA a halt was waiting on. Only a
+          // head that is now READABLE resumes — an event that changes nothing
+          // must not re-enter `merge()` on the same unreadable state.
+          if (
+            !draining &&
+            halted_on_head &&
+            headSha(halted_on_head) &&
+            queuedEntry(halted_on_head)
+          ) {
+            halted_on_head = null;
+            void drain();
           }
         });
       }

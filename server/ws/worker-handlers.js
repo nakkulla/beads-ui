@@ -32,7 +32,9 @@ import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
   discardWorkerPr,
+  enrollWorkerMergeCandidates,
   kickWorkerMergeQueue,
+  observeWorkerPrs,
   pauseWorkerAttempt,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
@@ -258,135 +260,6 @@ function prActivityFor(workspace_key, queue) {
     if (record) {
       out[bead_id] = record;
     }
-  }
-  return out;
-}
-
-/**
- * Whether a bead has a conflict-resolution session of its own in flight
- * (running or paused). The lane row's [머지] is quiet in exactly that state
- * (UI-dxgz §1), so [일괄 머지] must not queue it either — there is nothing to
- * dispatch until the session settles.
- *
- * @param {Record<string, unknown>} queue
- * @param {string} bead_id
- * @returns {boolean}
- */
-function hasConflictSession(queue, bead_id) {
-  const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
-  const values = Object.values(attempts);
-  // A paused attempt that was already RESUMED is spent history — its child is
-  // the live one. Counting it forever would keep a row out of [일괄 머지] long
-  // after the row's own badge said the session was over, which is the exact
-  // leaf/supersession rule the client's running list applies (§1.1).
-  const resumed_from = new Set(
-    values
-      .map((a) => a && a.resumed_from)
-      .filter((id) => typeof id === 'string')
-  );
-  /**
-   * `conflict_resolution` is INHERITED through `resumed_from`, exactly as the
-   * client inherits it: resuming a paused resolution mints a child that does
-   * not re-declare the flag.
-   *
-   * @param {any} attempt
-   * @returns {boolean}
-   */
-  function isResolution(attempt) {
-    let cur = attempt;
-    const seen = new Set();
-    while (cur && !seen.has(cur.attempt_id)) {
-      if (cur.conflict_resolution === true) {
-        return true;
-      }
-      seen.add(cur.attempt_id);
-      cur =
-        typeof cur.resumed_from === 'string'
-          ? attempts[cur.resumed_from]
-          : null;
-    }
-    return false;
-  }
-  for (const attempt of values) {
-    if (!attempt || attempt.bead_id !== bead_id) {
-      continue;
-    }
-    const live =
-      attempt.status === 'running' ||
-      (attempt.status === 'paused' && !resumed_from.has(attempt.attempt_id));
-    if (live && isResolution(attempt)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * The rows [일괄 머지] queues, in lane display order (UI-5v7d §3).
- *
- * This is the SERVER's copy of the row's `merge_enabled` judgment, deliberately
- * expressed as the same four disjuncts the client uses: a passing gate, a
- * conflicting non-external row (whose click dispatches a resolution — a
- * first-class queue path, §2 step 3), a cleanup retry, and an external merged
- * row's [정리]. It has to live here because add-all has no per-row click to
- * carry the client's own verdict, and the queue must not be filled with rows
- * the driver would only refuse.
- *
- * Advisory exactly like the badge it mirrors: the driver re-gates every item at
- * its turn, so a row that goes stale between this call and its merge is refused
- * there, not merged wrongly.
- *
- * @param {string} workspace_key
- * @param {Record<string, unknown>} queue - The OVERLAID snapshot (external rows
- * included), i.e. what the lane actually renders.
- * @param {boolean} verify_cmd_present
- * @returns {Array<{ bead_id: string, external: boolean }>}
- */
-export function mergeQueueCandidates(workspace_key, queue, verify_cmd_present) {
-  const lane = Array.isArray(queue.pr_wait)
-    ? /** @type {any[]} */ (queue.pr_wait)
-    : [];
-  /** @type {Record<string, any>} */
-  let observed = {};
-  try {
-    observed = getWorkerRuntime().prObservations.snapshot(workspace_key);
-  } catch {
-    observed = {};
-  }
-  const cleanup_failed = /** @type {Record<string, any>} */ (
-    queue.cleanup_failed || {}
-  );
-  /** @type {Array<{ bead_id: string, external: boolean }>} */
-  const out = [];
-  for (const entry of lane) {
-    const bead_id = entry && entry.bead_id;
-    if (typeof bead_id !== 'string' || bead_id.length === 0) {
-      continue;
-    }
-    if (hasConflictSession(queue, bead_id)) {
-      continue;
-    }
-    const external = entry.external === true;
-    const gate = evaluateMergeGate(observed[bead_id] || null, {
-      verify_cmd_present
-    });
-    const conflicting = gate.base_badge === '충돌';
-    const merged_tier = gate.tier === 'merged';
-    // An EXTERNAL conflict vetoes even a green gate, exactly as the row does
-    // (UI-7agi §5): the click-time branch order puts DIRTY before the gate, so
-    // `merge()` refuses it whatever its CI says.
-    if (external && conflicting) {
-      continue;
-    }
-    const eligible =
-      gate.enabled === true ||
-      (conflicting && !external) ||
-      (!!cleanup_failed[bead_id] && merged_tier) ||
-      (external && merged_tier);
-    if (!eligible) {
-      continue;
-    }
-    out.push({ bead_id, external });
   }
   return out;
 }
@@ -1406,27 +1279,41 @@ export function handleWorkerMergeQueueAdd(ws, req) {
     ? /** @type {any[]} */ (overlaid.pr_wait)
     : [];
   const row = lane.find((e) => e && e.bead_id === p.bead_id) || null;
+  const before = Array.isArray(overlaid.merge_queue)
+    ? /** @type {any[]} */ (overlaid.merge_queue).length
+    : 0;
   const result = queueStore().enqueueMerge(key, {
     expected_revision: revisionOf(p),
     entries: [{ bead_id: p.bead_id, external: !!row && row.external === true }]
   });
+  // The write also APPLIES when it only dropped an auto-merge exclusion for an
+  // already-queued row (UI-yk55 §3.2), so the count comes from the queue itself
+  // rather than from `ok` — a click that queued nothing must not report a place
+  // in line it did not take.
+  const after =
+    result.ok && Array.isArray(result.queue.merge_queue)
+      ? result.queue.merge_queue.length
+      : before;
   replyMergeQueue(ws, req, key, result, {
     bead_id: p.bead_id,
-    queued: result.ok ? 1 : 0
+    queued: Math.max(0, after - before)
   });
 }
 
 /**
  * Handle `worker-merge-queue-add-all`. Payload: `{ expected_revision }`.
  *
- * [일괄 머지] (UI-5v7d §3): queue every currently mergeable `pr_wait` row in
- * lane order, in ONE CAS write — a write per row would make every row after the
- * first fail its own revision check.
+ * Bulk enrolment (UI-5v7d §3, shared with the auto enroller by UI-yk55 §4.2):
+ * queue every currently mergeable `pr_wait` row in lane order, in ONE write — a
+ * write per row would make every row after the first fail its own revision
+ * check.
  *
- * The eligibility judgment is the server's own ({@link mergeQueueCandidates}),
- * not a client-supplied list: a list would let a stale tab queue rows whose gate
- * has since closed, and the queue's whole value is that its members are the ones
- * worth merging right now.
+ * The eligibility judgment is the server's own, not a client-supplied list: a
+ * list would let a stale tab queue rows whose gate has since closed, and the
+ * queue's whole value is that its members are the ones worth merging right now.
+ * It runs through the SAME shared step the automatic enroller uses, so the two
+ * callers cannot drift into two different notions of "mergeable" — which
+ * includes the auto-merge exclusion filter.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -1434,57 +1321,137 @@ export function handleWorkerMergeQueueAdd(ws, req) {
 export function handleWorkerMergeQueueAddAll(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   const key = workspaceKeyOf(ws);
-  const current = /** @type {any} */ (queueStore().snapshot(key));
-  if (revisionOf(p) !== current.revision) {
+  const result = enrollWorkerMergeCandidates(key, {
+    expected_revision: revisionOf(p)
+  });
+  const queue = /** @type {any} */ (result.queue || queueStore().snapshot(key));
+  if (!result.applied) {
+    // Nothing enrolled: a stale revision (conflict), or no eligible row at all.
+    // The enroller already fanned out and kicked when it DID apply, so only this
+    // arm has to answer by itself.
     ws.send(
       JSON.stringify(
         makeOk(req, {
           applied: false,
-          conflict: true,
+          conflict: result.conflict,
           queued: 0,
-          queue: decorateQueue(key, current)
+          queue: decorateQueue(key, queue)
         })
       )
     );
     return;
   }
-  /** @type {import('../worker/verify-cmd.js').ResolvedVerifyCmd|null} */
-  let verify_cmd = null;
-  try {
-    verify_cmd = resolveVerifyCmd(key, getConfig().worker_verify);
-  } catch {
-    verify_cmd = null;
-  }
-  const entries = mergeQueueCandidates(
-    key,
-    withExternalPrWait(key, current),
-    !!verify_cmd
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        applied: true,
+        conflict: false,
+        queued: result.queued,
+        queue: decorateQueue(key, queue)
+      })
+    )
   );
-  if (entries.length === 0) {
+}
+
+/**
+ * Handle `worker-merge-auto-toggle`. Payload: `{ on: boolean, expected_revision }`.
+ *
+ * The PR 대기 lane's durable auto-merge switch (UI-yk55 §5). Symmetric with
+ * `worker-queue-toggle` down to the CAS, and deliberately NOT the same switch:
+ * starting a session is reversible, landing a merge is not, so one control must
+ * never turn both on.
+ *
+ * Turning it ON does three things in order — persist, observe once, enroll once
+ * — because the enrolment judges against the observation cache, and after a
+ * restart (or on a workspace nobody has been watching) that cache is empty, so
+ * enrolling first would find every candidate `unobserved` and queue nothing.
+ *
+ * Turning it OFF also empties the WAITING queue (§5.2): leaving the queue full
+ * while the switch says off is not a stop, and the next observation would refill
+ * it anyway. The item being merged runs to completion — it already reached
+ * GitHub.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerMergeAutoToggle(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.on !== 'boolean') {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { on: boolean }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const state = p.on === false ? workerMergeQueueState(key) : null;
+  const result = queueStore().toggleAutoMerge(key, {
+    expected_revision: revisionOf(p),
+    on: p.on,
+    // OFF flips the flag and empties the waiting queue in ONE write: a restart
+    // between two writes would leave "stopped" with a full queue for the
+    // boot-resume driver to merge (§5.2).
+    clear_waiting: p.on === false,
+    keep: state ? state.active : null
+  });
+  if (!result.ok) {
     ws.send(
       JSON.stringify(
         makeOk(req, {
           applied: false,
+          conflict: result.conflict,
+          queued: 0,
+          queue: decorateQueue(key, /** @type {any} */ (result.queue))
+        })
+      )
+    );
+    return;
+  }
+  if (p.on === false) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: true,
           conflict: false,
           queued: 0,
-          queue: decorateQueue(key, current)
+          queue: decorateQueue(key, /** @type {any} */ (result.queue))
         })
       )
     );
+    fanout(key, /** @type {any} */ (result.queue));
     return;
   }
-  const before = Array.isArray(current.merge_queue)
-    ? current.merge_queue.length
-    : 0;
-  const result = queueStore().enqueueMerge(key, {
-    expected_revision: revisionOf(p),
-    entries
-  });
-  const after =
-    result.ok && Array.isArray(result.queue.merge_queue)
-      ? result.queue.merge_queue.length
-      : before;
-  replyMergeQueue(ws, req, key, result, { queued: after - before });
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        applied: true,
+        conflict: false,
+        queued: 0,
+        queue: decorateQueue(key, /** @type {any} */ (result.queue))
+      })
+    )
+  );
+  fanout(key, /** @type {any} */ (result.queue));
+  // Fire-and-forget: the observation is a `gh` round-trip per open PR, and the
+  // reply above already carries the persisted flag.
+  Promise.resolve(observeWorkerPrs(key))
+    .catch((err) => {
+      log('auto-merge toggle observation failed for %s: %o', key, err);
+    })
+    .then(() => {
+      // The observation is a `gh` round-trip, and the user can turn the mode
+      // back OFF while it is in flight. Enrolling on the strength of the flag
+      // this request SAW would merge after a stop click — so the flag is read
+      // again, now.
+      if (queueStore().snapshot(key).auto_merge !== true) {
+        return;
+      }
+      enrollWorkerMergeCandidates(key);
+    })
+    .catch((err) => {
+      log('auto-merge toggle enrolment failed for %s: %o', key, err);
+    });
 }
 
 /**

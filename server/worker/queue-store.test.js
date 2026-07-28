@@ -1963,3 +1963,285 @@ describe('worker/queue-store — merge queue lane coupling (UI-5v7d)', () => {
     expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 });
+
+describe('worker/queue-store — 자동 머지 durable 상태 (UI-yk55 §2/§3)', () => {
+  /**
+   * @param {any} store
+   * @param {string[]} bead_ids
+   */
+  function park(store, bead_ids) {
+    for (const bead_id of bead_ids) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: { attempt_id: `att-${bead_id}`, bead_id }
+      });
+      store.moveToPrWait(WS, {
+        bead_id,
+        attempt_id: `att-${bead_id}`,
+        patch: { status: 'done' }
+      });
+    }
+  }
+
+  test('defaults auto_merge off with no exclusions', () => {
+    const store = createQueueStore();
+
+    const q = store.snapshot(WS);
+
+    expect(q.auto_merge).toBe(false);
+    expect(q.auto_merge_skips).toEqual({});
+  });
+
+  test('loads a legacy queue.json that has neither key', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ revision: 4, pr_wait: [{ bead_id: 'UI-1' }] })
+    );
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.auto_merge).toBe(false);
+    expect(q.auto_merge_skips).toEqual({});
+    expect(q.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+      'UI-1'
+    ]);
+  });
+
+  test('honors a persisted auto_merge across a cold load, unlike auto_advance', () => {
+    const a = createQueueStore();
+    a.toggleAutoMerge(WS, { expected_revision: 0, on: true });
+    a.setAutoAdvance(WS, true);
+
+    const q = createQueueStore().snapshot(WS);
+
+    // The merge toggle survives the restart a merge itself causes; the session
+    // toggle deliberately does not.
+    expect(q.auto_merge).toBe(true);
+    expect(q.auto_advance).toBe(false);
+  });
+
+  test('drops an exclusion record that names no head SHA', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 1,
+        auto_merge_skips: {
+          'UI-1': { reason: 'refused' },
+          'UI-2': { head_sha: 'abc', reason: 'refused', at: 5 }
+        }
+      })
+    );
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(Object.keys(q.auto_merge_skips)).toEqual(['UI-2']);
+  });
+
+  test('refuses the toggle on a stale revision', () => {
+    const store = createQueueStore();
+
+    const r = store.toggleAutoMerge(WS, { expected_revision: 99, on: true });
+
+    expect(r.conflict).toBe(true);
+    expect(store.snapshot(WS).auto_merge).toBe(false);
+  });
+
+  test('records the exclusion and dequeues in ONE revision', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1', 'UI-2']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
+    });
+    const rev = store.snapshot(WS).revision;
+
+    const r = store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: 'a'.repeat(40),
+      reason: 'resolution_round_cap'
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(rev + 1);
+    expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-2']);
+    expect(r.queue.auto_merge_skips['UI-1']).toMatchObject({
+      head_sha: 'a'.repeat(40),
+      reason: 'resolution_round_cap'
+    });
+  });
+
+  test('leaving pr_wait drops the exclusion with the row', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1']);
+    store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: 'a'.repeat(40),
+      reason: 'refused'
+    });
+
+    store.removeFromPrWait(WS, { bead_id: 'UI-1' });
+
+    expect(store.snapshot(WS).auto_merge_skips).toEqual({});
+  });
+
+  test('a manual [머지] clears the exclusion even when the row is already queued', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: 'a'.repeat(40),
+      reason: 'refused'
+    });
+    // Back in line by hand, then excluded again while queued.
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: 'a'.repeat(40),
+      reason: 'refused'
+    });
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    const r = store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    expect(store.snapshot(WS).auto_merge_skips).toEqual({});
+    expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('turning the toggle OFF empties the waiting queue in the same write', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1', 'UI-2']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
+    });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const rev = store.snapshot(WS).revision;
+
+    const r = store.toggleAutoMerge(WS, {
+      expected_revision: rev,
+      on: false,
+      clear_waiting: true,
+      keep: 'UI-1'
+    });
+
+    // Two writes would leave a restart in between with the flag off and the
+    // queue full — the boot driver would merge what a stop click just cancelled.
+    expect(r.queue.revision).toBe(rev + 1);
+    expect(r.queue.auto_merge).toBe(false);
+    expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('auto enrolment passes over a row excluded at the SAME head', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1']);
+    store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: 'a'.repeat(40),
+      reason: 'refused'
+    });
+
+    const r = store.enqueueMergeAuto(WS, {
+      entries: [{ bead_id: 'UI-1', head_sha: 'a'.repeat(40) }],
+      present_ids: ['UI-1']
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('a moved head clears the exclusion and enrolls the row', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1']);
+    store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: 'a'.repeat(40),
+      reason: 'refused'
+    });
+
+    const r = store.enqueueMergeAuto(WS, {
+      entries: [{ bead_id: 'UI-1', head_sha: 'b'.repeat(40) }],
+      present_ids: ['UI-1']
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+    expect(r.queue.auto_merge_skips).toEqual({});
+  });
+
+  test('prunes exclusions whose row is no longer in the lane at all', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1']);
+    store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: 'a'.repeat(40),
+      reason: 'refused'
+    });
+
+    // An EXTERNAL row that vanished leaves no lane mutation behind, so this
+    // scan is the only reclaim path (§3.2.1).
+    const r = store.enqueueMergeAuto(WS, { entries: [], present_ids: [] });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.auto_merge_skips).toEqual({});
+  });
+
+  test('an auto pass with nothing to enroll or prune writes nothing', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1']);
+    const rev = store.snapshot(WS).revision;
+
+    const r = store.enqueueMergeAuto(WS, {
+      entries: [],
+      present_ids: ['UI-1']
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(rev);
+  });
+
+  test('auto enrolment honours the CAS when the caller passes a revision', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1']);
+
+    const r = store.enqueueMergeAuto(WS, {
+      expected_revision: 99,
+      entries: [{ bead_id: 'UI-1', head_sha: 'a'.repeat(40) }],
+      present_ids: ['UI-1']
+    });
+
+    expect(r.conflict).toBe(true);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('enrols an EXTERNAL row the durable lane cannot vouch for', () => {
+    const store = createQueueStore();
+
+    const r = store.enqueueMergeAuto(WS, {
+      entries: [
+        { bead_id: 'UI-9', external: true, head_sha: 'a'.repeat(40) },
+        { bead_id: 'UI-8', head_sha: 'a'.repeat(40) }
+      ],
+      present_ids: ['UI-9']
+    });
+
+    expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-9']);
+  });
+});

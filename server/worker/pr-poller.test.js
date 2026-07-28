@@ -140,6 +140,59 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prChecks).not.toHaveBeenCalled();
   });
 
+  test('observes with no subscriber at all while auto_merge is ON', async () => {
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue: { ...queueOf(), auto_merge: true }
+    });
+
+    await poller.tick();
+
+    // 자동 머지는 브라우저 탭에 묶여서는 안 된다 (UI-yk55 §4.4): 탭이 닫히면
+    // 관측이 멎고, 편입할 것이 영원히 생기지 않는다.
+    expect(prDetail).toHaveBeenCalled();
+  });
+
+  test('keeps the old silence when the toggle is OFF and nobody is watching', async () => {
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue: { ...queueOf(), auto_merge: false }
+    });
+
+    await poller.tick();
+
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test('keeps a merge-queue member observed after its row leaves the lane', async () => {
+    const observations = createPrObservationStore();
+    observations.record('/ws', 'UI-9', { error: null, pr: detailOf() });
+    const { poller } = makePoller({
+      observations,
+      queue: {
+        ...queueOf(),
+        merge_queue: [{ bead_id: 'UI-9', resolution_rounds: 0 }]
+      }
+    });
+
+    await poller.tick();
+
+    // The driver disposes of a queued item by reading its head SHA from here
+    // (UI-yk55 §3.2). Pruning it would leave the driver unable to record an
+    // exclusion, so it would hold the item and halt the whole queue.
+    expect(observations.get('/ws', 'UI-9')).not.toBe(null);
+  });
+
+  test('still prunes a bead that is in neither the lane nor the merge queue', async () => {
+    const observations = createPrObservationStore();
+    observations.record('/ws', 'GONE-1', { error: null, pr: detailOf() });
+    const { poller } = makePoller({ observations });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'GONE-1')).toBe(null);
+  });
+
   test('makes no gh call when pr_wait is empty', async () => {
     const { poller, prDetail, prChecks } = makePoller({
       queue: queueOf({ pr_wait: [] })
