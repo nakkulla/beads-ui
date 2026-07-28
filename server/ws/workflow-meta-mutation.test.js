@@ -69,46 +69,44 @@ describe('handleUpdateWorkflowMeta (worker-autorun-policy §6, 수용 기준 7)'
     });
   });
 
-  test('every workflow-meta key accepts its own enum', async () => {
-    for (const [key, value] of [
-      ['merge_policy', 'pr_stop'],
-      ['drift_policy', 'halt']
-    ]) {
-      runBdInWorkspace.mockClear();
-      const { ws } = fakeWs();
-      await handleUpdateWorkflowMeta(ws, {
-        id: 'r1',
-        type: 'update-workflow-meta',
-        payload: { id: 'UI-1', key, value }
-      });
-      expect(runBdInWorkspace).toHaveBeenCalledWith(expect.anything(), [
-        'update',
-        'UI-1',
-        '--set-metadata',
-        `${key}=${value}`
-      ]);
-    }
-  });
-
   test('an empty value unsets the key (--unset-metadata)', async () => {
     const { ws } = fakeWs();
     await handleUpdateWorkflowMeta(ws, {
       id: 'r1',
       type: 'update-workflow-meta',
-      payload: { id: 'UI-1', key: 'merge_policy', value: '' }
+      payload: { id: 'UI-1', key: 'route', value: '' }
     });
     expect(runBdInWorkspace).toHaveBeenCalledWith(expect.anything(), [
       'update',
       'UI-1',
       '--unset-metadata',
-      'merge_policy'
+      'route'
     ]);
+  });
+
+  test('rejects the retired merge axis keys on both set and unset without touching bd', async () => {
+    for (const payload of [
+      { id: 'UI-1', key: 'merge_policy', value: 'pr_stop' },
+      { id: 'UI-1', key: 'merge_policy', value: '' },
+      { id: 'UI-1', key: 'drift_policy', value: 'halt' },
+      { id: 'UI-1', key: 'drift_policy', value: '' }
+    ]) {
+      runBdInWorkspace.mockClear();
+      const { ws, sent } = fakeWs();
+      await handleUpdateWorkflowMeta(ws, {
+        id: 'r1',
+        type: 'update-workflow-meta',
+        payload
+      });
+      expect(runBdInWorkspace).not.toHaveBeenCalled();
+      expect(sent[0].ok).toBe(false);
+      expect(sent[0].error.code).toBe('bad_request');
+    }
   });
 
   test('rejects a non-enum value and an unknown key without touching bd', async () => {
     for (const payload of [
       { id: 'UI-1', key: 'route', value: 'quick_fix' },
-      { id: 'UI-1', key: 'merge_policy', value: 'yolo' },
       { id: 'UI-1', key: 'spec_review', value: 'x' } // not an editable key
     ]) {
       runBdInWorkspace.mockClear();
