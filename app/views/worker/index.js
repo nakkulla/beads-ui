@@ -473,6 +473,36 @@ export function mergeStepView(step) {
 }
 
 /**
+ * Korean text for a merge-queue skip reason (UI-5v7d §4). The driver's
+ * vocabulary is machine-readable; an unknown value travels through verbatim
+ * rather than being swallowed — a server that grew a reason must not blank the
+ * badge.
+ *
+ * @param {string} reason
+ * @returns {string}
+ */
+export function mergeFailureText(reason) {
+  switch (reason) {
+    case 'resolution_round_cap':
+      return '충돌 해소 2회 초과';
+    case 'resolution_timeout':
+      return '충돌 해소 대기 시간 초과';
+    case 'resolution_refused':
+      return '해소 세션 디스패치 거부';
+    case 'external_conflict_needs_session':
+      return '외부 PR 충돌 — 세션 필요';
+    case 'merge_unconfirmed_timeout':
+      return '머지 확인 시간 초과';
+    case 'pr_closed_unmerged':
+      return 'PR 닫힘';
+    case 'merge_error':
+      return '머지 오류';
+    default:
+      return reason;
+  }
+}
+
+/**
  * Project one `pr_wait` bead into a lane row, carrying whatever the server's PR
  * poller has observed (worker-phase2 §4/§5): the PR link, the gate/base badges,
  * and the two actions (§6).
@@ -506,6 +536,10 @@ export function mergeStepView(step) {
  * durable lane membership an external row does not have), 충돌 해소 goes away
  * (it needs the attempt's `session_id`), and a MERGED row becomes a [정리]
  * button because nothing auto-cleans it.
+ * @param {{ position: number, active: boolean, failure: string|null }|null} [merge_queue]
+ * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
+ * `position` while it waits (0 = not queued), whether the driver is on it right
+ * now, and the reason it was skipped, if any.
  * @returns {any}
  */
 function prWaitRow(
@@ -516,8 +550,12 @@ function prWaitRow(
   usage = null,
   active = null,
   conflict_session = null,
-  external = false
+  external = false,
+  merge_queue = null
 ) {
+  const queued = !!merge_queue && merge_queue.position > 0;
+  const queue_active = !!merge_queue && merge_queue.active === true;
+  const queue_failure = (merge_queue && merge_queue.failure) || null;
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
@@ -551,6 +589,15 @@ function prWaitRow(
   }
   if (cleanup_failed) {
     badges.push('정리 실패');
+  }
+  // Its place in line, or why it lost it (UI-5v7d §4). The waiting badge is the
+  // only thing that tells a reader why a row with a green gate is sitting still,
+  // and the failure badge is non-durable — it describes the run that just ended.
+  if (queued && !queue_active) {
+    badges.push(`머지 대기 #${merge_queue.position}`);
+  }
+  if (queue_failure) {
+    badges.push(`일괄 머지 실패: ${mergeFailureText(queue_failure)}`);
   }
   const conflicting = !!gate && gate.base_badge === '충돌';
   const enabled = !!gate && gate.enabled === true;
@@ -594,21 +641,33 @@ function prWaitRow(
             ? substituted.label
             : null,
     usage,
-    alert: (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) || !!cleanup_failed,
-    merge_action: true,
+    alert:
+      (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) ||
+      !!cleanup_failed ||
+      !!queue_failure,
+    // A queued row has nothing to click but [취소]: the merge is the driver's
+    // now, and a second [머지] would only be a no-op re-queue (UI-5v7d §4).
+    merge_action: !queued,
+    cancel_action: queued,
+    cancel_enabled: !queue_active,
+    cancel_title: queue_active
+      ? '머지 진행 중 — 취소할 수 없습니다'
+      : '머지 큐에서 이 항목을 뺍니다 (다시 [머지]로 넣을 수 있습니다)',
     // `cleanup_failed` is DURABLE merged evidence — right after a restart the
     // observation cache is empty, so the gate tier alone would re-offer [폐기]
     // on a tile whose merge already landed (discard spec §2).
     discard_action:
       !external && !cleanup_failed && !(gate && gate.tier === 'merged'),
     merge_step,
-    discard_enabled: !merge_step && !conflict_session,
+    discard_enabled: !merge_step && !conflict_session && !queued,
     // Not a guard — the scheduler already refuses a second dispatch for a
     // claimed/running attempt. The disabled buttons say WHY clicking now is
     // pointless, which the server's refusal never reaches the user with.
     discard_title: conflict_session
       ? '충돌 해소 세션 있음 — 폐기하려면 먼저 세션을 정리하세요'
-      : undefined,
+      : queued
+        ? '머지 큐에 있음 — 폐기하려면 먼저 [취소]하세요'
+        : undefined,
     // A conflicting PR keeps [머지] clickable on purpose: that click is what
     // dispatches the resolution session (§6), and it merges nothing. Once that
     // session exists, there is nothing left to dispatch until it settles.
@@ -644,9 +703,9 @@ function prWaitRow(
               : cleanup_retry
                 ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
                 : conflicting
-                  ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
+                  ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
                   : enabled
-                    ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
+                    ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
                     : gate && gate.tier === 'merged'
                       ? // Already merged with no cleanup failure recorded: the cleanup
                         // is running, so "머지 불가: 관측 대기" would be a lie about why.
@@ -1005,16 +1064,46 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The human merge click (worker-phase2 §6). Sends the current revision under
-   * the same CAS discipline as every other mutation and retries ONCE against
-   * the fresh revision on a conflict. What comes back is not just success/fail
-   * but WHAT HAPPENED, because the server may legitimately have merged nothing:
-   * a conflicting PR dispatches a resolution session instead, and a gate that
-   * refuses at click time (the badge was advisory) merges nothing at all.
+   * Send one merge-queue mutation under the shared CAS discipline: retry ONCE
+   * against the fresh revision on a conflict, adopting the authoritative queue
+   * from each reply so the row's place in line renders without waiting for the
+   * fanout push.
+   *
+   * @param {string} type
+   * @param {Record<string, unknown>} payload
+   * @returns {Promise<any>}
+   */
+  async function sendMergeQueue(type, payload) {
+    if (!transport) {
+      return null;
+    }
+    const send = transport;
+    let res = /** @type {any} */ (
+      await send(type, { ...payload, expected_revision: currentRevision() })
+    );
+    adopt(res);
+    if (res && res.conflict) {
+      res = /** @type {any} */ (
+        await send(type, {
+          ...payload,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+    }
+    return res;
+  }
+
+  /**
+   * The [머지] click (UI-5v7d §4). It no longer merges — it takes a place in the
+   * sequential queue, and the server's driver merges when the turn comes. What
+   * the old direct click decided at click time (re-gate, BEHIND update, DIRTY
+   * resolution) is decided the same way, just at that later moment, so the
+   * badges here stay advisory exactly as before.
    *
    * @param {string} bead_id
    */
-  async function mergePr(bead_id) {
+  async function queueMerge(bead_id) {
     if (!transport || !bead_id) {
       return;
     }
@@ -1023,52 +1112,83 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {any} */
     let res;
     try {
-      res = /** @type {any} */ (
-        await transport('worker-pr-merge', {
-          bead_id,
-          expected_revision: currentRevision()
-        })
-      );
-      adopt(res);
-      if (res && res.conflict) {
-        res = /** @type {any} */ (
-          await transport('worker-pr-merge', {
-            bead_id,
-            expected_revision: currentRevision()
-          })
-        );
-        adopt(res);
-      }
+      res = await sendMergeQueue('worker-merge-queue-add', { bead_id });
     } finally {
-      // The reply means the whole click is over — success, refusal, or a
-      // dispatched resolution — so the local cover is spent either way.
       merge_pending.delete(bead_id);
       doRender();
     }
+    if (!res || res.conflict || res.applied) {
+      return;
+    }
+    // Not applied and not a CAS conflict: the row is already queued (a no-op) or
+    // it is no longer a lane member the server will merge.
+    showToast(
+      '머지 큐에 넣지 못했습니다 (이미 대기 중이거나 대상 아님)',
+      'error',
+      2400
+    );
+  }
+
+  /**
+   * The lane header's [일괄 머지] (UI-5v7d §4): queue every row the SERVER
+   * judges mergeable right now, in lane order. The client sends no list — a
+   * stale tab must not be able to queue rows whose gate has since closed.
+   */
+  async function queueMergeAll() {
+    if (!transport) {
+      return;
+    }
+    const res = await sendMergeQueue('worker-merge-queue-add-all', {});
     if (!res || res.conflict) {
       return;
     }
-    if (res.action === 'conflict_resolution') {
-      showToast(
-        res.ok
-          ? '충돌 — 해소 세션을 띄웠습니다 (머지하지 않음)'
-          : `충돌 해소 디스패치 실패: ${res.reason || ''}`,
-        res.ok ? 'success' : 'error',
-        2800
-      );
-      return;
-    }
-    if (res.ok) {
-      showToast('머지 + 정리 완료', 'success', 2000);
-      return;
-    }
     showToast(
-      res.cleanup_step
-        ? `머지됨 · 정리 실패(${res.cleanup_step}): ${res.reason || ''}`
-        : `머지 거부: ${res.reason || ''}`,
-      'error',
-      3200
+      res.applied
+        ? `머지 큐에 ${res.queued}건 추가`
+        : '머지 가능한 행이 없습니다',
+      res.applied ? 'success' : 'error',
+      2400
     );
+  }
+
+  /**
+   * Give up one waiting item's place in line ([취소]). The ACTIVE item is
+   * refused server-side (`merge_active`) — its merge already reached GitHub.
+   *
+   * @param {string} bead_id
+   */
+  async function cancelMerge(bead_id) {
+    if (!transport || !bead_id) {
+      return;
+    }
+    const res = await sendMergeQueue('worker-merge-queue-remove', { bead_id });
+    if (res && !res.conflict && !res.applied && res.reason === 'merge_active') {
+      showToast('머지 진행 중 — 취소할 수 없습니다', 'error', 2400);
+    }
+  }
+
+  /**
+   * Empty the queue ([일괄 머지 중단]): drop every WAITING item, while the
+   * active one runs to completion — its merge already reached GitHub.
+   */
+  async function cancelMergeAll() {
+    if (!transport) {
+      return;
+    }
+    const q = currentQueue();
+    const lane = Array.isArray(q.merge_queue) ? q.merge_queue : [];
+    const active = (q.merge_queue_state || {}).active || null;
+    for (const entry of lane) {
+      if (!entry || typeof entry.bead_id !== 'string') {
+        continue;
+      }
+      if (entry.bead_id === active) {
+        continue;
+      }
+      await sendMergeQueue('worker-merge-queue-remove', {
+        bead_id: entry.bead_id
+      });
+    }
   }
 
   /**
@@ -1226,7 +1346,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -1559,6 +1679,20 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {Set<string>} */
     const active_bead_ids = new Set(running.map((r) => r.bead_id));
 
+    // The sequential merge queue (UI-5v7d): membership and ORDER are durable,
+    // the active item and the skip reasons are the driver's live memory.
+    const merge_queue = Array.isArray(q.merge_queue) ? q.merge_queue : [];
+    /** @type {Map<string, number>} */
+    const merge_positions = new Map();
+    merge_queue.forEach((/** @type {any} */ e, /** @type {number} */ i) => {
+      if (e && typeof e.bead_id === 'string') {
+        merge_positions.set(e.bead_id, i + 1);
+      }
+    });
+    const merge_state = q.merge_queue_state || { active: null, failures: {} };
+    /** @type {Record<string, string>} */
+    const merge_failures = merge_state.failures || {};
+
     // The running list carries leaf-paused attempts too, so the PR 대기 card
     // needs both sets apart: only a live session gets the breathing badge, while
     // both states keep [머지]/[폐기] quiet (UI-dxgz §1).
@@ -1657,9 +1791,16 @@ export function createWorkerView(mount_element, options = {}) {
               : null),
           conflict_sessions.get(e.bead_id) || null,
           // Overlaid by the server (UI-7agi §2) — absent on every durable row.
-          e.external === true
+          e.external === true,
+          {
+            position: merge_positions.get(e.bead_id) || 0,
+            active: merge_state.active === e.bead_id,
+            failure: merge_failures[e.bead_id] || null
+          }
         )
       ),
+      merge_queue_length: merge_queue.length,
+      merge_queue_running: merge_queue.length > 0,
       done: done_rows,
       token_total,
       cleanup_failures
@@ -1780,6 +1921,7 @@ export function createWorkerView(mount_element, options = {}) {
         <span class="worker-now__count"
           >${m.running.length + m.pr_wait.length}</span
         >
+        ${mergeAllTemplate(m)}
       </header>
       ${m.running.length > 0
         ? runningGridTemplate(m.running, Date.now(), selected_attempt)
@@ -1855,6 +1997,41 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The PR 대기 lane header's bulk control (UI-5v7d §4). One button with two
+   * states, never both: while the queue is empty it fills it, and while the
+   * queue runs it empties the WAITING part. Two side-by-side buttons would ask
+   * the reader to tell start from stop at a glance, which is exactly the misread
+   * that costs a merge.
+   *
+   * @param {ReturnType<typeof buildModel>} m
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function mergeAllTemplate(m) {
+    if (m.merge_queue_running) {
+      return html`<button
+        type="button"
+        class="worker-merge-all worker-merge-all--stop"
+        title="대기 중인 항목을 모두 뺍니다 (진행 중인 항목은 끝까지 수행)"
+      >
+        일괄 머지 중단 ${m.merge_queue_length}
+      </button>`;
+    }
+    const count = m.pr_wait.filter(
+      (/** @type {any} */ r) => r.merge_action && r.merge_enabled
+    ).length;
+    if (count === 0) {
+      return '';
+    }
+    return html`<button
+      type="button"
+      class="worker-merge-all"
+      title="머지 가능한 행을 모두 큐에 넣어 순서대로 머지합니다"
+    >
+      일괄 머지 ${count}
+    </button>`;
+  }
+
+  /**
    * @param {ReturnType<typeof buildModel>} m
    * @returns {import('lit-html').TemplateResult}
    */
@@ -1920,7 +2097,8 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'pr_wait',
         title: 'PR 대기',
         items: m.pr_wait,
-        empty: 'PR 대기 없음'
+        empty: 'PR 대기 없음',
+        header_control: mergeAllTemplate(m)
       })}
       ${paneTemplate({
         id: 'worker-pane-done',
@@ -2337,6 +2515,19 @@ export function createWorkerView(mount_element, options = {}) {
       void setAutoAdvance(!currentQueue().auto_advance);
       return;
     }
+    // The lane header's bulk merge control (UI-5v7d §4). It sits INSIDE a pane
+    // header, so it has to be read before the header's own accordion toggle.
+    const mergeAllBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-merge-all')
+    );
+    if (mergeAllBtn) {
+      if (mergeAllBtn.classList.contains('worker-merge-all--stop')) {
+        void cancelMergeAll();
+      } else {
+        void queueMergeAll();
+      }
+      return;
+    }
     // 접힌 레인 스트립 ↔ 펼침 (UI-58y2 §모바일 3/5).
     const lane_toggle = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-pane__hd--toggle')
@@ -2381,7 +2572,14 @@ export function createWorkerView(mount_element, options = {}) {
       target?.closest?.('.worker-mini__merge')
     );
     if (mergeBtn) {
-      void mergePr(mergeBtn.dataset.beadId || '');
+      void queueMerge(mergeBtn.dataset.beadId || '');
+      return;
+    }
+    const mergeCancelBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__merge-cancel')
+    );
+    if (mergeCancelBtn) {
+      void cancelMerge(mergeCancelBtn.dataset.beadId || '');
       return;
     }
     const discardBtn = /** @type {HTMLElement|null} */ (

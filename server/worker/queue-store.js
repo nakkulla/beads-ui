@@ -169,11 +169,29 @@
  * in bd metadata because the bd contract surface is owned by dotfiles
  * (`docs/contracts/workflow.md`) and beads-ui only consumes it; this is
  * server-owned queue state about a lane member, exactly like {@link admission}.
+ * @property {MergeQueueEntry[]} merge_queue - The sequential merge queue
+ * (UI-5v7d §1), FIFO. DURABLE because a `pr_wait` merge deploys, and a beads-ui
+ * deploy restarts this very server: a queue that lived in memory would be lost
+ * exactly when it is half-done. `resolution_rounds` is durable for the same
+ * reason — the per-item conflict-resolution cap has to hold ACROSS that
+ * restart, not just within one process life. Everything else the driver knows
+ * (which item is active, why one failed, the waiting clocks) stays in memory
+ * like {@link Queue.admission}'s live siblings: after a restart nothing is in
+ * flight.
  * @property {LastDeploy|null} last_deploy - The workspace's most recent
  * post-merge deployment (worker-deploy-hook §3). ONE record, overwritten each
  * time — the question it answers is "is the running service the merged code?",
  * which only the latest deploy can answer. Null on a workspace that has never
  * deployed (no `[worker.deploy]` section, or none run yet).
+ */
+/**
+ * One member of the sequential merge queue (UI-5v7d §1).
+ *
+ * @typedef {Object} MergeQueueEntry
+ * @property {string} bead_id - The `pr_wait` bead awaiting its merge turn.
+ * @property {number} resolution_rounds - How many conflict-resolution rounds
+ * this item has already consumed. Persisted so the 2-round cap survives the
+ * deploy restart a merge can trigger.
  */
 /**
  * @typedef {Object} LastDeploy
@@ -267,8 +285,46 @@ function emptyQueue() {
     attempts: {},
     admission: {},
     cleanup_failed: {},
+    merge_queue: [],
     last_deploy: null
   };
+}
+
+/**
+ * Normalize the durable merge queue: entry order is the FIFO order, a bead may
+ * appear once, and a missing/unusable `resolution_rounds` reads as 0 (which is
+ * what "no round consumed yet" means, and is the safe direction — it can only
+ * grant rounds the cap would otherwise have to guess about).
+ *
+ * @param {unknown} arr
+ * @returns {MergeQueueEntry[]}
+ */
+function normalizeMergeQueue(arr) {
+  if (!Array.isArray(arr)) {
+    return [];
+  }
+  /** @type {MergeQueueEntry[]} */
+  const out = [];
+  const seen = new Set();
+  for (const raw of arr) {
+    if (!isRecord(raw) || typeof raw.bead_id !== 'string' || !raw.bead_id) {
+      continue;
+    }
+    if (seen.has(raw.bead_id)) {
+      continue;
+    }
+    seen.add(raw.bead_id);
+    out.push({
+      bead_id: raw.bead_id,
+      resolution_rounds:
+        typeof raw.resolution_rounds === 'number' &&
+        Number.isFinite(raw.resolution_rounds) &&
+        raw.resolution_rounds > 0
+          ? Math.floor(raw.resolution_rounds)
+          : 0
+    });
+  }
+  return out;
 }
 
 /**
@@ -494,6 +550,9 @@ function normalizeQueue(raw) {
       }
     }
   }
+  // A queue.json written before UI-5v7d has no key → empty queue, which reads
+  // as "nothing is waiting to merge" — the state a restart should resume into.
+  q.merge_queue = normalizeMergeQueue(raw.merge_queue);
   // A queue.json written before the deploy hook simply has no key → null, which
   // reads as "this workspace has never deployed" (worker-deploy-hook §3). A
   // record carrying an outcome outside the vocabulary is dropped the same way:
@@ -554,6 +613,11 @@ function clampIndex(index, length) {
 /**
  * Remove a bead from every lane (used for two-way moves + dedupe).
  *
+ * The merge queue goes with them (UI-5v7d §1): a merge turn only means anything
+ * while the bead is in `pr_wait`, so a bead that left the lane — merged and
+ * cleaned, discarded, dragged back to 대기 — must not keep a place in line. The
+ * driver reads the same disappearance and moves on to the next item.
+ *
  * @param {Queue} q
  * @param {string} bead_id
  */
@@ -561,6 +625,7 @@ function removeFromLanes(q, bead_id) {
   q.queue = q.queue.filter((e) => e.bead_id !== bead_id);
   q.pr_wait = q.pr_wait.filter((e) => e.bead_id !== bead_id);
   q.done = q.done.filter((e) => e.bead_id !== bead_id);
+  q.merge_queue = q.merge_queue.filter((e) => e.bead_id !== bead_id);
 }
 
 /**
@@ -1297,6 +1362,120 @@ export function createQueueStore(options = {}) {
     setAutoAdvance(workspace, on) {
       return applyUnconditional(workspace, (next) => {
         next.auto_advance = !!on;
+        return true;
+      });
+    },
+
+    /**
+     * Queue one or more `pr_wait` beads for the sequential merge driver
+     * (UI-5v7d §1). CAS-guarded: both the single [머지] click and the lane's
+     * [일괄 머지] land here, and both start from a snapshot the user saw.
+     *
+     * Add-all is ONE call with many entries rather than a call per bead,
+     * because each write bumps the revision — a per-bead loop would make every
+     * bead after the first fail its own CAS.
+     *
+     * Membership: a bead must be in the durable `pr_wait` lane, OR the caller
+     * must declare it an EXTERNAL pr_wait row (`external: true`). External rows
+     * are synthesized on the wire from bd (UI-7agi §2) and never live in
+     * `queue.json`, so the store cannot see them; the ws layer that owns that
+     * overlay is what vouches for them here.
+     *
+     * Duplicate queuing is a NO-OP for that bead, not a rejection: a whole
+     * add-all whose rows are already queued still reports `ok` when it queued
+     * at least one, and rejects only when it queued nothing at all.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, entries: Array<{ bead_id: string, external?: boolean }> }} input
+     * @returns {QueueOpResult}
+     */
+    enqueueMerge(workspace, input) {
+      const { expected_revision, entries } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        if (!Array.isArray(entries) || entries.length === 0) {
+          return false;
+        }
+        let added = 0;
+        for (const entry of entries) {
+          const bead_id = entry && entry.bead_id;
+          if (typeof bead_id !== 'string' || bead_id.length === 0) {
+            continue;
+          }
+          const member =
+            entry.external === true ||
+            next.pr_wait.some((e) => e.bead_id === bead_id);
+          if (!member) {
+            continue;
+          }
+          if (next.merge_queue.some((e) => e.bead_id === bead_id)) {
+            continue;
+          }
+          next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+          added += 1;
+        }
+        return added > 0;
+      });
+    },
+
+    /**
+     * Drop a bead from the merge queue — the DRIVER's own dequeue after it
+     * finished (or gave up on) an item. Driver-owned, so no CAS, exactly like
+     * the scheduler's lane transitions.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {QueueOpResult}
+     */
+    dequeueMerge(workspace, bead_id) {
+      return applyUnconditional(workspace, (next) => {
+        if (!next.merge_queue.some((e) => e.bead_id === bead_id)) {
+          return false;
+        }
+        next.merge_queue = next.merge_queue.filter(
+          (e) => e.bead_id !== bead_id
+        );
+        return true;
+      });
+    },
+
+    /**
+     * Cancel a WAITING merge-queue item — the [취소] click. CAS-guarded like
+     * every other client mutation; whether the item is the active one is the
+     * driver's judgment, checked before this is reached.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    cancelMerge(workspace, input) {
+      const { expected_revision, bead_id } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        if (!next.merge_queue.some((e) => e.bead_id === bead_id)) {
+          return false;
+        }
+        next.merge_queue = next.merge_queue.filter(
+          (e) => e.bead_id !== bead_id
+        );
+        return true;
+      });
+    },
+
+    /**
+     * Count one consumed conflict-resolution round against a queued item
+     * (UI-5v7d §2 step 3). Driver-owned (no CAS) and durable: the cap it feeds
+     * has to hold across the restart a deploy causes.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {QueueOpResult}
+     */
+    bumpResolutionRound(workspace, bead_id) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find((e) => e.bead_id === bead_id);
+        if (!entry) {
+          return false;
+        }
+        entry.resolution_rounds += 1;
         return true;
       });
     },

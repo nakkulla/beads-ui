@@ -9,6 +9,7 @@ import {
   applyCandidateFilter,
   applyCandidateSort,
   createWorkerView,
+  mergeFailureText,
   mergeStepView
 } from './index.js';
 
@@ -3189,17 +3190,17 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       mount.querySelector('.worker-mini__merge')
     );
     expect(btn.disabled).toBe(false);
-    expect(btn.getAttribute('title')).toContain('머지하지 않음');
+    expect(btn.getAttribute('title')).toContain('해소 세션');
   });
 
-  test('sends worker-pr-merge with the current revision on click', () => {
+  test('sends worker-merge-queue-add with the current revision on click', () => {
     const { mount, transport } = mountWith(queueWithGate(GREEN));
 
     /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-mini__merge')
     ).click();
 
-    expect(transport).toHaveBeenCalledWith('worker-pr-merge', {
+    expect(transport).toHaveBeenCalledWith('worker-merge-queue-add', {
       bead_id: 'RD-1',
       expected_revision: 1
     });
@@ -4729,7 +4730,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     const transport = vi.fn(
       (/** @type {string} */ type) =>
         new Promise((resolve) => {
-          if (type === 'worker-pr-merge') {
+          if (type === 'worker-merge-queue-add') {
             release = resolve;
           } else {
             resolve({ applied: true, conflict: false });
@@ -4747,7 +4748,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     );
     expect(row.querySelector('.merge-step')?.textContent).toContain('머지 중');
 
-    release({ ok: true, action: 'merged', conflict: false });
+    release({ applied: true, conflict: false, queued: 1 });
     await flush();
     expect(
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .merge-step')
@@ -5933,5 +5934,281 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     );
     expect(btn.disabled).toBe(false);
     expect(btn.textContent?.trim()).toBe('충돌 해소');
+  });
+});
+
+describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  const GREEN_GATE = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '최신',
+    reason: null
+  };
+
+  /**
+   * @param {string[]} bead_ids
+   * @param {Record<string, any>} [over]
+   */
+  function laneOf(bead_ids, over = {}) {
+    /** @type {Record<string, any>} */
+    const pr_observations = {};
+    for (const bead_id of bead_ids) {
+      pr_observations[bead_id] = {
+        pr: {
+          number: 1,
+          url: 'https://github.com/o/r/pull/1',
+          state: 'OPEN',
+          head_sha: 'a'.repeat(40)
+        },
+        ci: null,
+        verify: null,
+        error: null,
+        observed_at: 1,
+        gate: GREEN_GATE
+      };
+    }
+    return queueOf({
+      pr_wait: bead_ids.map((bead_id) => ({ bead_id, added_at: 1 })),
+      pr_observations,
+      ...over
+    });
+  }
+
+  /**
+   * @param {any} queue
+   */
+  function mountLane(queue) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    const transport = vi.fn(async () => ({
+      applied: true,
+      conflict: false,
+      queued: 1
+    }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    return { mount, transport };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} bead_id
+   */
+  function rowOf(mount, bead_id) {
+    return /** @type {HTMLElement} */ (
+      mount.querySelector(`.worker-mini[data-bead-id="${bead_id}"]`)
+    );
+  }
+
+  test('renders the waiting position badge and swaps 머지 for 취소', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1', 'RD-2'], {
+        merge_queue: [
+          { bead_id: 'RD-1', resolution_rounds: 0 },
+          { bead_id: 'RD-2', resolution_rounds: 0 }
+        ],
+        merge_queue_state: { active: 'RD-1', failures: {} }
+      })
+    );
+
+    const waiting = rowOf(mount, 'RD-2');
+    expect(
+      Array.from(waiting.querySelectorAll('.worker-mini__badge')).map(
+        (b) => b.textContent
+      )
+    ).toContain('머지 대기 #2');
+    expect(waiting.querySelector('.worker-mini__merge')).toBe(null);
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        waiting.querySelector('.worker-mini__merge-cancel')
+      ).disabled
+    ).toBe(false);
+  });
+
+  test('the active item shows no position badge and cannot be cancelled', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: { active: 'RD-1', failures: {} }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+    expect(
+      Array.from(row.querySelectorAll('.worker-mini__badge')).map(
+        (b) => b.textContent
+      )
+    ).not.toContain('머지 대기 #1');
+    const cancel = /** @type {HTMLButtonElement} */ (
+      row.querySelector('.worker-mini__merge-cancel')
+    );
+    expect(cancel.disabled).toBe(true);
+    expect(cancel.getAttribute('title')).toContain('취소할 수 없습니다');
+  });
+
+  test('a skipped item carries its reason and restores 머지', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [],
+        merge_queue_state: {
+          active: null,
+          failures: { 'RD-1': 'resolution_round_cap' }
+        }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+    expect(
+      Array.from(row.querySelectorAll('.worker-mini__badge')).map(
+        (b) => b.textContent
+      )
+    ).toContain('일괄 머지 실패: 충돌 해소 2회 초과');
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        row.querySelector('.worker-mini__merge')
+      ).disabled
+    ).toBe(false);
+  });
+
+  test('a conflict session outranks the restored 머지 button', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'running',
+            conflict_resolution: true,
+            started_at: 1
+          }
+        },
+        merge_queue: [],
+        merge_queue_state: {
+          active: null,
+          failures: { 'RD-1': 'resolution_timeout' }
+        }
+      })
+    );
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        rowOf(mount, 'RD-1').querySelector('.worker-mini__merge')
+      ).disabled
+    ).toBe(true);
+  });
+
+  test('the lane header offers 일괄 머지 with the mergeable count', () => {
+    const { mount, transport } = mountLane(laneOf(['RD-1', 'RD-2']));
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+    );
+    expect(btn.textContent?.trim()).toBe('일괄 머지 2');
+
+    btn.click();
+
+    expect(transport).toHaveBeenCalledWith('worker-merge-queue-add-all', {
+      expected_revision: 1
+    });
+  });
+
+  test('a running queue turns the header button into 일괄 머지 중단', async () => {
+    const { mount, transport } = mountLane(
+      laneOf(['RD-1', 'RD-2'], {
+        merge_queue: [
+          { bead_id: 'RD-1', resolution_rounds: 0 },
+          { bead_id: 'RD-2', resolution_rounds: 0 }
+        ],
+        merge_queue_state: { active: 'RD-1', failures: {} }
+      })
+    );
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+    );
+    expect(btn.textContent?.trim()).toBe('일괄 머지 중단 2');
+
+    btn.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The ACTIVE item is left alone; only the waiting one is removed.
+    expect(transport).toHaveBeenCalledWith('worker-merge-queue-remove', {
+      bead_id: 'RD-2',
+      expected_revision: 1
+    });
+    expect(transport).not.toHaveBeenCalledWith('worker-merge-queue-remove', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+  });
+
+  test('no header button when nothing is mergeable', () => {
+    const { mount } = mountLane(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {}
+      })
+    );
+
+    expect(mount.querySelector('#worker-pane-pr-wait .worker-merge-all')).toBe(
+      null
+    );
+  });
+
+  test('[취소] sends the remove message for that row', () => {
+    const { mount, transport } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: { active: null, failures: {} }
+      })
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge-cancel')
+    ).click();
+
+    expect(transport).toHaveBeenCalledWith('worker-merge-queue-remove', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+  });
+
+  test('a queued row cannot be discarded out from under the driver', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: { active: null, failures: {} }
+      })
+    );
+
+    const discard = /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__discard')
+    );
+    expect(discard.disabled).toBe(true);
+    expect(discard.getAttribute('title')).toContain('[취소]');
+  });
+});
+
+describe('mergeFailureText (UI-5v7d §4)', () => {
+  test('translates the driver vocabulary', () => {
+    expect(mergeFailureText('resolution_round_cap')).toBe('충돌 해소 2회 초과');
+    expect(mergeFailureText('merge_unconfirmed_timeout')).toBe(
+      '머지 확인 시간 초과'
+    );
+  });
+
+  test('passes an unknown reason through instead of blanking the badge', () => {
+    expect(mergeFailureText('brand_new_reason')).toBe('brand_new_reason');
   });
 });

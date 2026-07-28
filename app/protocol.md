@@ -141,15 +141,29 @@ Nothing merges without a human `[머지]` click.
   it stops reading as an unhandled failure. Reply
   `{ attempt_id, dismissed, conflict, reason, queue }`; `reason` is
   `attempt_not_found` / `not_dismissable` / `already_dismissed`.
-- `worker-pr-merge` payload: `{ bead_id, expected_revision }` — the
-  authoritative `[머지]` click. The badges in the snapshot are ADVISORY; the
-  click re-reads `gh` server-side and re-evaluates the merge gate against the
-  head SHA it just observed (a stale green never passes). Reply:
-  `{ bead_id, ok, conflict, action, reason, cleanup_step, attempt_id }`, where
-  `action` is `merged` / `updated_and_merged` / `already_merged` /
-  `merge_unconfirmed` (the merge command succeeded but the PR is not observed
-  MERGED — e.g. a merge queue took it) / `conflict_resolution` (a DIRTY PR
-  dispatched a resolution session and merged nothing) / `refused`.
+- `worker-merge-queue-add` payload: `{ bead_id, expected_revision }` — the
+  `[머지]` click (UI-5v7d §3). It QUEUES rather than merges: the durable
+  `merge_queue` is FIFO and one server-side driver merges its head, so two
+  clicks never merge at once. Everything the direct click used to derive stays
+  in the driver's `merge()` call — click-time `gh` re-read, gate re-evaluation
+  against the observed head SHA, BEHIND update-branch, DIRTY resolution dispatch
+  — so the snapshot badges remain ADVISORY. Reply:
+  `{ bead_id, applied, conflict, queued, queue }`; queuing a bead that is
+  already queued is a no-op (`applied:false`).
+- `worker-merge-queue-add-all` payload: `{ expected_revision }` — the lane
+  header's `[일괄 머지]`: the SERVER picks every currently mergeable `pr_wait`
+  row (the same disjuncts the row's `merge_enabled` uses, external rows
+  included) and queues them in lane order in one CAS write. Reply
+  `{ applied, conflict, queued, queue }` where `queued` is how many rows were
+  actually added.
+- `worker-merge-queue-remove` payload: `{ bead_id, expected_revision }` —
+  `[취소]` on a WAITING item (also how `[일괄 머지 중단]` empties the queue).
+  The ACTIVE item refuses with `reason:'merge_active'`: its merge is already
+  running against GitHub. Reply `{ bead_id, applied, conflict, reason, queue }`.
+- The `worker-queue-snapshot` carries the queue as `merge_queue`
+  (`[{ bead_id, resolution_rounds }]`, durable order) plus a non-persisted
+  `merge_queue_state` = `{ active, failures }` — which item the driver is on and
+  why each skipped one failed.
 - `worker-pr-discard` payload: `{ bead_id, expected_revision }` — `[폐기]`:
   re-read the PR state authoritatively, close it when it is still OPEN (`MERGED`
   refuses with `pr_already_merged`, an unreadable state fails closed), put bd

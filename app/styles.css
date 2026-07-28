@@ -3875,6 +3875,49 @@ html[data-theme='dark'] {
   cursor: not-allowed;
 }
 
+/* [취소] — 큐에서 자리를 빼는 것뿐이라(다시 [머지]로 넣을 수 있다) [머지]와
+   같은 무게로 그리지 않는다. [폐기]와 달리 파괴적이지 않으므로 경고색도 쓰지
+   않는다 (UI-5v7d §4). */
+.worker-mini__merge-cancel {
+  padding: 1px var(--sp-6);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.worker-mini__merge-cancel:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.worker-mini__merge-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 레인 헤더 [일괄 머지] / [일괄 머지 중단] (UI-5v7d §4). 한 자리에서 상태만
+   바뀌는 단일 버튼이라 위치가 고정되어야 오조작이 없다 — 헤더 오른쪽 끝. */
+.worker-merge-all {
+  margin-left: auto;
+  padding: 1px var(--sp-6);
+  border: 1px solid var(--border-tile-run);
+  border-radius: var(--r-6);
+  background: var(--bg-tile-run);
+  color: var(--accent-success);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.worker-merge-all--stop {
+  border-color: var(--accent-warn);
+  background: transparent;
+  color: var(--accent-warn);
+}
+
 /* [폐기] — deliberately SUBORDINATE: a misclick here throws a PR away, so it
    is drawn as quiet text rather than a peer of [머지] (§6). */
 .worker-mini__discard {

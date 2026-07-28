@@ -59,8 +59,10 @@ import {
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
+  handleWorkerMergeQueueAdd,
+  handleWorkerMergeQueueAddAll,
+  handleWorkerMergeQueueRemove,
   handleWorkerPrDiscard,
-  handleWorkerPrMerge,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
@@ -463,8 +465,14 @@ export async function handleMessage(ws, data) {
     case 'worker-attempt-dismiss':
       handleWorkerAttemptDismiss(ws, req);
       return;
-    case 'worker-pr-merge':
-      await handleWorkerPrMerge(ws, req);
+    case 'worker-merge-queue-add':
+      handleWorkerMergeQueueAdd(ws, req);
+      return;
+    case 'worker-merge-queue-add-all':
+      handleWorkerMergeQueueAddAll(ws, req);
+      return;
+    case 'worker-merge-queue-remove':
+      handleWorkerMergeQueueRemove(ws, req);
       return;
     case 'worker-pr-discard':
       await handleWorkerPrDiscard(ws, req);

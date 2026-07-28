@@ -9,7 +9,7 @@
  * - Server can also send unsolicited events (e.g., subscription `snapshot`).
  */
 
-/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'dep-add'|'dep-remove'|'update-assignee'|'update-exec-settings'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-queue-set-slots'|'worker-queue-set-exec-default'|'worker-queue-remove'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-attempt-dismiss'|'worker-pr-merge'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-ui-order'|'unsubscribe-ui-order'|'ui-order-set'|'ui-order-snapshot'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'dep-add'|'dep-remove'|'update-assignee'|'update-exec-settings'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-queue-set-slots'|'worker-queue-set-exec-default'|'worker-queue-remove'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-attempt-dismiss'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-queue-remove'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-ui-order'|'unsubscribe-ui-order'|'ui-order-set'|'ui-order-snapshot'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'} MessageType */
 
 /**
  * @typedef {Object} RequestEnvelope
@@ -87,9 +87,12 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'worker-attempt-resume',
   // Failure-banner ✕: stamp `dismissed_at` so the failure reads as handled
   'worker-attempt-dismiss',
-  // The human merge click: click-time re-query → CLEAN / BEHIND / DIRTY
-  // (worker-phase2 §6). Merging is never automatic.
-  'worker-pr-merge',
+  // Sequential merge queue (UI-5v7d): the [머지] click QUEUES, [일괄 머지]
+  // queues every mergeable row at once, and remove cancels a waiting item. The
+  // server-side driver is the only thing that merges, one item at a time.
+  'worker-merge-queue-add',
+  'worker-merge-queue-add-all',
+  'worker-merge-queue-remove',
   // [폐기]: close the PR and discard the worktree/branch; no re-queue
   'worker-pr-discard',
   // REVISE-parking disposition clicks (UI-hs11): finding acceptance dispatches
