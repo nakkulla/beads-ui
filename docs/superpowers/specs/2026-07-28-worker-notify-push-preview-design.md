@@ -79,12 +79,12 @@ Discord 푸시 알림은 message `content`만 미리보기로 사용하고 embed
 명령: <command>
 
 📬 beads worker · PR 제출 — UI-vb0t 워커 Discord 알림 개선
-리포: beads-ui
 https://github.com/nakkulla/beads-ui/pull/64
+리포: beads-ui
 
 ✅ beads worker · 머지 완료 — UI-vb0t 워커 Discord 알림 개선
-리포: beads-ui
 https://github.com/nakkulla/beads-ui/pull/64
+리포: beads-ui
 ```
 
 규칙:
@@ -93,8 +93,9 @@ https://github.com/nakkulla/beads-ui/pull/64
   쓰고 구분자 없이 끝낸다(fail-quiet).
 - bead 제목은 60자를 넘으면 60자에서 자르고 `…`를 붙인다. 첫 줄이 미리보기
   예산을 독점하는 것을 막는다.
-- 둘째 줄 이하는 기존 필드 순서를 유지한다. 실패는 `사유` → `리포` →
-  `가드`/`명령`, PR 계열은 `리포` → PR URL. 값이 없는 필드는 생략한다.
+- 둘째 줄 이하는 기존 필드 순서를 그대로 유지한다. 실패는 `사유` → `리포` →
+  `가드`/`명령`, PR 계열은 PR URL → `리포`(`prBody`, `notify.js:170`의 현재
+  순서). 값이 없는 필드는 생략한다.
 - `kindLabel`(`notify.js:187`)의 `[재개]`/`[충돌 해결]` 접두는 전이 문구로
   흡수한다: `🚀 beads worker · 재개`, `🚀 beads worker · 충돌 해결`. 기본
   dispatch는 `🚀 beads worker · 시작` 그대로다.
@@ -138,18 +139,60 @@ async ensureTitle(workspace, bead_id) { ... }
 
 `notify.js`는 새 선택적 의존성 `resolveTitle?: (bead_id: string) =>
 Promise<string|null>`을 받는다. `attach.js`가 이미 보유한 `runtime`
-(`attach.js:320`)과 `workspace_root`로 워크스페이스를 바인딩해 주입한다
-(`attach.js:401`). 같은 notifier 인스턴스가 scheduler(`attach.js:437`)와
-prActions(`attach.js:582`) 양쪽에 주입되므로 주입 지점은 한 곳이다.
+(`attach.js:322`)과 `workspace_root`로 워크스페이스를 바인딩해 주입한다
+(`attach.js:403`). 같은 notifier 인스턴스가 scheduler(`attach.js:439`)와
+prActions(`attach.js:591`) 양쪽에 주입되므로 주입 지점은 한 곳이다.
 
-각 알림 메서드는 지금처럼 `void`를 반환한다. 내부에서 제목 조회를 await한 뒤
-전송하며, 조회 실패·부재는 제목 없는 메시지로 전송한다. `attemptStarted`는
-호출자가 준 `title`이 있으면 조회를 건너뛴다. `resolveTitle`이 주입되지 않은
-구성(기존 테스트, notifier 단독 생성)은 제목 없이 동작한다.
+각 알림 메서드는 내부에서 제목 조회를 await한 뒤 전송하므로, 반환형이
+`void`에서 **항상 resolve되는 `Promise<void>`**로 바뀐다(no-throw 계약은 조회
+실패까지 흡수해 그대로 유지). 호출자는 이 Promise를 무시해도 되고 — scheduler의
+`notifyLifecycle`(`scheduler.js:312`)은 지금처럼 무시한다 — 전송 완료를 보장해야
+하는 호출자만 await한다(§3.4). 조회 실패·부재는 제목 없는 메시지로 전송한다.
+`attemptStarted`는 호출자가 준 `title`이 있으면 조회를 건너뛴다. `resolveTitle`이
+주입되지 않은 구성(기존 테스트, notifier 단독 생성)은 제목 없이 동작한다.
 
 **부수 효과**: 캐시 미스 시 알림이 `bd show` 한 번(수백 ms)만큼 늦고, 이론상
 근접한 두 전이의 도착 순서가 뒤바뀔 수 있다. 실제 전이 간격은 초~분 단위이므로
-수용한다.
+수용한다. 단 머지 완료 경로에서는 이 지연이 알림 유실로 이어지므로 §3.4가
+별도로 처리한다.
+
+### 3.4 머지 완료 — deploy 재시작 경합
+
+`runCleanup`은 `announceMerged`(`pr-actions.js:1192`)를 detached deploy 기동
+직전에 호출한다. 그 위치는 우연이 아니라 방어다 — 코드 주석이 이유를 명시한다:
+
+```js
+// Announced BEFORE the launch, for the same reason the durable write is:
+// the detached deploy may restart this process, and a notification that
+// never got sent is a merge nobody heard about.
+```
+
+deploy 훅은 실제로 서버를 재시작한다(UI-97qo 스펙이 같은 경로를 기록). 현재
+`mergeCompleted`는 동기적으로 `spawn`까지 끝내므로 이 방어가 성립하지만, §3.3의
+비동기 제목 조회를 그대로 얹으면 `announceMerged`가 조회 중에 즉시 반환하고
+`launchDetachedDeploy`가 먼저 실행된다. 재시작이 조회보다 빠르면 `discord`
+프로세스는 spawn되기 전에 사라지고, **머지 완료 푸시가 유실된다** — 이 설계가
+가장 중요하게 여기는 알림이 정확히 그 지점에서 사라지는 셈이다.
+
+따라서 머지 완료 경로만 전송 완료를 기다린다:
+
+- `announceMerged`를 `async`로 바꾸고 `notify.mergeCompleted(...)`를 await한다.
+- `runCleanup`의 두 호출 지점(`pr-actions.js:1171` deploy 없음, `:1192` deploy
+  있음) 모두 `await announceMerged(...)`로 바꾼다. deploy 있는 경로는
+  `launchDetachedDeploy` **앞에서** await가 끝나야 한다.
+- 기다리는 대상은 `discord` 자식의 **spawn 완료까지**이며 종료 코드가 아니다.
+  자식은 여전히 detached + unref이므로, spawn 이후에 서버가 죽어도 자식은
+  살아남는다.
+- `announceMerged`는 계속 no-throw다. `mergeCompleted`가 항상 resolve하므로
+  await가 cleanup을 실패시킬 수 없고, `notify`가 없으면 즉시 반환한다.
+- `deps.notify`의 JSDoc(`pr-actions.js:187`)을 `mergeCompleted: (input) =>
+  Promise<void>`로 갱신한다.
+
+scheduler 쪽 세 전이는 이런 경합이 없으므로 fire-and-forget 그대로 둔다.
+
+순차 머지 큐(`merge-queue.js`, UI-5v7d)도 `prActions.merge()`를 경유해 같은
+`runCleanup`으로 수렴하므로, 이 보호는 [머지] 클릭·poller·배치 머지 세 트리거
+모두에 자동으로 적용된다. 구현상 추가 배선은 없다.
 
 ## 4. 변경 범위
 
@@ -158,12 +201,17 @@ prActions(`attach.js:582`) 양쪽에 주입되므로 주입 지점은 한 곳이
 - `server/worker/title-cache.js` — `ensureTitle` 추가, `in_flight`를 Map으로
   교체. 기존 `titlesFor`/`clear`/`setOnFilled`의 외부 동작은 불변.
 - `server/worker/attach.js` — `createNotifier`에 `resolveTitle` 주입 (1개소).
+- `server/worker/pr-actions.js` — `announceMerged`를 `async`로, 두 호출 지점을
+  `await`로, `deps.notify` JSDoc 갱신 (§3.4).
 - `server/worker/notify.test.js` — 전송 인자에서 `-t`/`-c`/`-q` 부재 검증, 네
   전이의 첫 줄 포맷, 제목 부재·절단, `resolveTitle` 실패 시 무해성.
 - `server/worker/title-cache.test.js` — `ensureTitle` 히트/미스/실패/negative
   TTL/`in_flight` 중복 억제.
+- `server/worker/pr-actions.test.js` — 머지 완료 알림 spawn이 deploy 기동보다
+  먼저 완료되는 순서 검증.
 
-`scheduler.js`와 `pr-actions.js`는 호출 인자를 바꾸지 않는다.
+`scheduler.js`는 바뀌지 않는다. `pr-actions.js`도 `mergeCompleted`에 넘기는
+인자는 그대로이며, 바뀌는 것은 호출의 await 여부뿐이다.
 
 ## 5. 검증
 
@@ -180,6 +228,11 @@ prActions(`attach.js:582`) 양쪽에 주입되므로 주입 지점은 한 곳이
   `-q`로 되돌리는 것이 최소 복구 경로다.
 - **색상 구분 상실**: 채널을 눈으로 훑을 때 embed 막대가 사라진다. 이모지가
   대신하지만 동등하지는 않다.
+- **deploy 기동 지연**: §3.4의 await 때문에 캐시 미스 시 deploy 기동이 `bd show`
+  한 번만큼 늦어진다. cleanup의 durable 쓰기는 이미 그 앞에서 끝나 있으므로
+  일관성 위험은 없고, 지연은 수백 ms 규모다. 순차 머지 큐가 여러 건을 연속
+  처리하면 건당으로 누적되지만, 두 번째 건부터는 캐시가 데워져 있을 가능성이
+  높다.
 - **CLI 결합**: 이 설계는 `~/bin/discord`가 "제목 없으면 평문 content" 경로를
   유지한다는 데 의존한다. CLI가 바뀌면 포맷이 깨진다. 계약을 문서로만 고정하고
   코드로 강제하지는 않는다.
