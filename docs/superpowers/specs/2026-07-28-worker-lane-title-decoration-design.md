@@ -71,8 +71,13 @@ title 조회가 실패하고 `bead_id`로 fallback 한다
   재조회 억제, in-flight 중복 합침 (bd mock).
 - worker-handlers: 스냅샷에 `bead_titles` 포함, 캐시 미스 레인은 빈/부분
   map으로도 스냅샷 정상 전달.
-- 클라: pr_wait 카드가 `bead_titles` 제목을 렌더하고, 필드 부재 시 기존
-  id fallback 유지.
+- worker-handlers 통합(콜백→fanout 배선): 구독 상태에서 캐시 미스를
+  만들고 mock `bd show` 충전 완료 후 두 번째 스냅샷 push에 해당 제목이
+  포함되는지 검증 — 배선 누락 시 실패해야 한다 (수용 기준 1의 검증).
+- 클라: pr_wait 카드와 done 카드가 각각 `bead_titles` 제목을 렌더하고,
+  필드 부재 시 기존 id fallback 유지.
+- 클라 우선순위: 같은 id에 `bead_titles` 제목과 Ready/Blocked 라이브
+  제목이 다르게 주어지면 Ready/Blocked 제목이 이긴다.
 
 ## 비범위
 
