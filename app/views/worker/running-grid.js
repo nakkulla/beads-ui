@@ -67,6 +67,15 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  */
 
 /**
+ * @typedef {Object} ShipFailure
+ * @property {string} bead_id - The merged bead whose capability ship stopped.
+ * @property {string} reason - Machine-readable cause (`ship_failed:<cap>` etc.).
+ * @property {string|null} [detail] - The remaining work, as
+ * `pending=<cap,…> [unread=<id,…>]`.
+ * @property {string|null} [pr_url] - The PR that was merged.
+ */
+
+/**
  * How much of a diagnostic string a banner shows before eliding it.
  *
  * @type {number}
@@ -157,9 +166,70 @@ function formatElapsed(ms) {
 }
 
 /**
+ * The workspace-level capability-ship failure banner (UI-4ii4).
+ *
+ * It exists separately from the cleanup banner because it must outlive the row
+ * it is about: the ship step runs after the parent close, and an external PR row
+ * disappears the moment its bead stops being `resolved`. So this banner carries
+ * no `[정리]` retry — there is nothing left to click — and names the manual
+ * recovery instead. The merge itself succeeded; what is missing is the
+ * `provides:` label that unblocks whatever depends on the capability.
+ *
+ * @param {ShipFailure|null|undefined} ship
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+function shipFailureBanner(ship) {
+  if (!ship || !ship.reason) {
+    return '';
+  }
+  // The recovery is NOT one command for every reason. `export_removal_failed`
+  // is a canceled/out-of-scope descendant whose `export:` label would not come
+  // off — telling a human to `bd ship` it would publish exactly the capability
+  // the disposition filter exists to withhold.
+  const removal_failed = ship.reason.startsWith('export_removal_failed:');
+  return html`<div
+    class="worker-banner worker-banner--ship"
+    role="alert"
+    data-bead-id=${ship.bead_id || ''}
+  >
+    ⚠ ${ship.bead_id || '(bead 미상)'} 머지 완료 — capability 발행이
+    실패했습니다 (${ship.reason}). bead는 closed지만
+    ${removal_failed
+      ? html`취소 처분된 자손의 <code>export:</code> 라벨이 남아 있어 다음
+          스윕이 이를 다시 발행 대상으로 읽습니다.`
+      : html`<code>provides:</code> 라벨이 없어 이 capability에 걸린 external
+          의존은 계속 막혀 있습니다.`}
+    ${ship.detail
+      ? html`<div class="worker-banner__detail">
+          남은 작업: <code>${truncateDetail(ship.detail)}</code>
+        </div>`
+      : ''}
+    <div class="worker-banner__detail">
+      ${removal_failed
+        ? html`수동 복구:
+            <code
+              >bd -C &lt;워크스페이스&gt; label remove &lt;id&gt;
+              export:&lt;capability&gt;</code
+            >
+            실행 후 <code>bd show &lt;id&gt; --json</code>으로 라벨이 사라졌는지
+            확인하세요 — 이 자손은 ship하지 마세요.`
+        : html`수동 복구:
+            <code>bd -C &lt;워크스페이스&gt; ship &lt;capability&gt;</code> 실행
+            후 <code>bd show &lt;id&gt; --json</code>으로
+            <code>provides:</code> 라벨을 확인하세요.`}
+    </div>
+    ${ship.pr_url
+      ? html`<div class="worker-banner__detail">
+          <code>${ship.pr_url}</code>
+        </div>`
+      : ''}
+  </div>`;
+}
+
+/**
  * Banners area above the running grid.
  *
- * @param {{ failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[] }} state
+ * @param {{ failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[], shipFailure?: ShipFailure|null }} state
  * @returns {import('lit-html').TemplateResult}
  */
 export function bannersTemplate(state) {
@@ -206,8 +276,14 @@ export function bannersTemplate(state) {
           data-bead-id=${c.bead_id}
         >
           ⚠ ${c.bead_id} 머지 완료 — 머지 후 정리가 <b>${c.step}</b> 단계에서
-          멈췄습니다 (${c.reason}). bead는 resolved로 남아 있고 자동 재시도는
-          하지 않습니다 — 정리를 사람이 마무리하세요.
+          멈췄습니다 (${c.reason}).
+          <!-- capability 발행은 close 뒤에 오는 유일한 단계라 실패해도 close를
+               롤백하지 않는다 (UI-4ii4). "resolved로 남아 있다"는 다른 모든
+               단계에만 참이므로 여기서만 문안을 바꾼다. -->
+          ${c.step === 'ship_exported_capabilities'
+            ? 'bead는 closed로 남아 있고(close는 롤백하지 않습니다)'
+            : 'bead는 resolved로 남아 있고'}
+          자동 재시도는 하지 않습니다 — 정리를 사람이 마무리하세요.
           ${c.detail
             ? html`<div class="worker-banner__detail">
                 <code>${truncateDetail(c.detail)}</code>
@@ -216,6 +292,7 @@ export function bannersTemplate(state) {
           ${logPathLine(c.log_path)} ${outputTailBlock(c.output_tail)}
         </div>`
     )}
+    ${shipFailureBanner(state.shipFailure)}
   </div>`;
 }
 

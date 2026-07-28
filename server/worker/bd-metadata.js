@@ -10,6 +10,8 @@
  *   external → `bd list --json --all --limit 0` filtered to resolved + pr_url
  *   combined → `bd update <id> [--set-metadata k=v ...] [--unset-metadata k ...]
  *              [--status <s>] [--append-notes <text>]` (one atomic write)
+ *   ship   → `bd ship <capability> --json`
+ *   label  → `bd label remove <id> <label>`
  *
  * The status pair exists for the worker's `resolved` back-fill on the PR
  * observation verdict (worker-phase2 §1) — the same contract vocabulary the
@@ -36,7 +38,9 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  *   readIssue: (bead_id: string) => Promise<Record<string, any>>,
  *   updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>,
  *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
- *   listResolvedPrBeads: () => Promise<{ bead_id: string, pr_url: string }[]>
+ *   listResolvedPrBeads: () => Promise<{ bead_id: string, pr_url: string }[]>,
+ *   ship: (capability: string) => Promise<{ status: string, issue_id: string|null }>,
+ *   removeLabel: (bead_id: string, label: string) => Promise<void>
  * }}
  */
 export function createBdMetadata(deps = {}) {
@@ -353,6 +357,57 @@ export function createBdMetadata(deps = {}) {
         out.push({ bead_id: row.id, pr_url });
       }
       return out;
+    },
+
+    /**
+     * Publish a capability: `bd ship` finds the issue carrying
+     * `export:<capability>`, checks it is closed, and adds
+     * `provides:<capability>` (ship-close choreography).
+     *
+     * Fail-closed like every other mutator here — a non-zero exit (the "no
+     * `export:` issue" case among them) and an unreadable payload both THROW.
+     * The caller treats a ship it cannot confirm as a cleanup stop, so a
+     * swallowed failure would close a bead and leave its dependants blocked
+     * with nothing recorded.
+     *
+     * @param {string} capability
+     * @returns {Promise<{ status: string, issue_id: string|null }>}
+     */
+    async ship(capability) {
+      const r = await runJson(['ship', capability, '--json'], opts);
+      if (r && typeof r.code === 'number' && r.code !== 0) {
+        throw new Error(
+          `bd ship ${capability} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
+      const payload = r && r.stdoutJson;
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        throw new Error(`bd ship ${capability} returned an unreadable payload`);
+      }
+      const record = /** @type {Record<string, unknown>} */ (payload);
+      return {
+        status: typeof record.status === 'string' ? record.status : '',
+        issue_id: typeof record.issue_id === 'string' ? record.issue_id : null
+      };
+    },
+
+    /**
+     * Remove one label from one issue. Used to strip the `export:` label off a
+     * child closed with a canceling disposition, so a later sweep cannot mistake
+     * it for a capability still waiting to be published.
+     *
+     * @param {string} bead_id
+     * @param {string} label
+     */
+    async removeLabel(bead_id, label) {
+      const r = await run(['label', 'remove', bead_id, label], opts);
+      if (r.code !== 0) {
+        throw new Error(
+          `bd label remove ${label} failed (${r.code}): ${(
+            r.stderr || ''
+          ).trim()}`
+        );
+      }
     }
   };
 }
