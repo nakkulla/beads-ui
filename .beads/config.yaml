@@ -47,6 +47,11 @@
 backup:
   enabled: false
 
+# Query-time external dependency gating: project -> central Dolt DB name
+# (repo-db-registry.yaml 권위, bd 1.1.0+ external_databases 해석)
+external_databases:
+  dotfiles: dotfiles
+
 # Integration settings (access with 'bd config get/set')
 # These are stored in the database, not in this file:
 # - jira.url
