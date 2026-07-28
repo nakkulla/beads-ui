@@ -1571,3 +1571,280 @@ describe('worker/queue-store attempt dismissal (UI-dcw7)', () => {
     expect(snap.attempts['att-1'].dismissed_at).toBe(null);
   });
 });
+
+describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
+  /**
+   * @param {string[]} bead_ids
+   */
+  function storeWithPrWait(bead_ids) {
+    const store = createQueueStore();
+    for (const bead_id of bead_ids) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: { attempt_id: `att-${bead_id}`, bead_id }
+      });
+      store.moveToPrWait(WS, {
+        bead_id,
+        attempt_id: `att-${bead_id}`,
+        patch: { status: 'done', finished_at: 1 }
+      });
+    }
+    return store;
+  }
+
+  test('enqueues a pr_wait bead at zero consumed rounds', () => {
+    const store = storeWithPrWait(['UI-1']);
+
+    const r = store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.merge_queue).toEqual([
+      { bead_id: 'UI-1', resolution_rounds: 0 }
+    ]);
+  });
+
+  test('rejects a bead that is not in pr_wait', () => {
+    const store = createQueueStore();
+
+    const r = store.enqueueMerge(WS, {
+      expected_revision: 0,
+      entries: [{ bead_id: 'UI-9' }]
+    });
+
+    expect(r).toMatchObject({ ok: false, conflict: false });
+    expect(r.queue.merge_queue).toEqual([]);
+  });
+
+  test('accepts an EXTERNAL row the caller vouches for', () => {
+    const store = createQueueStore();
+
+    const r = store.enqueueMerge(WS, {
+      expected_revision: 0,
+      entries: [{ bead_id: 'UI-9', external: true }]
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-9']);
+  });
+
+  test('duplicate queuing is a no-op, not a second place in line', () => {
+    const store = storeWithPrWait(['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    const r = store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.queue.merge_queue.length).toBe(1);
+  });
+
+  test('add-all queues the new rows in one write and skips the queued ones', () => {
+    const store = storeWithPrWait(['UI-1', 'UI-2']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    const r = store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-1', 'UI-2']);
+  });
+
+  test('rejects a stale expected_revision as a conflict without queuing', () => {
+    const store = storeWithPrWait(['UI-1']);
+
+    const r = store.enqueueMerge(WS, {
+      expected_revision: 0,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    expect(r).toMatchObject({ ok: false, conflict: true });
+    expect(r.queue.merge_queue).toEqual([]);
+  });
+
+  test('cancelMerge is CAS-guarded; dequeueMerge (driver-owned) is not', () => {
+    const store = storeWithPrWait(['UI-1', 'UI-2']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
+    });
+
+    const stale = store.cancelMerge(WS, {
+      expected_revision: 0,
+      bead_id: 'UI-1'
+    });
+    const dequeued = store.dequeueMerge(WS, 'UI-1');
+
+    expect(stale).toMatchObject({ ok: false, conflict: true });
+    expect(dequeued.ok).toBe(true);
+    expect(dequeued.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-2']);
+  });
+
+  test('bumpResolutionRound counts one round and round-trips a cold reload', () => {
+    const store = storeWithPrWait(['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    store.bumpResolutionRound(WS, 'UI-1');
+
+    expect(createQueueStore().snapshot(WS).merge_queue).toEqual([
+      { bead_id: 'UI-1', resolution_rounds: 1 }
+    ]);
+  });
+
+  test('leaving pr_wait drops the bead from the merge queue', () => {
+    const store = storeWithPrWait(['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    store.removeFromPrWait(WS, { bead_id: 'UI-1' });
+
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('a queue.json written before the merge queue existed loads as empty', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ revision: 3, pr_wait: [{ bead_id: 'UI-1' }] })
+    );
+
+    expect(createQueueStore().snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('drops an unusable persisted entry and floors a bad round count', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        merge_queue: [
+          { bead_id: 'UI-1', resolution_rounds: -2 },
+          { resolution_rounds: 1 },
+          { bead_id: 'UI-1', resolution_rounds: 5 }
+        ]
+      })
+    );
+
+    expect(createQueueStore().snapshot(WS).merge_queue).toEqual([
+      { bead_id: 'UI-1', resolution_rounds: 0 }
+    ]);
+  });
+});
+
+describe('worker/queue-store — merge queue lane coupling (UI-5v7d)', () => {
+  test('re-entering pr_wait keeps the queue entry and its consumed rounds', () => {
+    // The scheduler's `moveToPrWait` is how a finished conflict-resolution
+    // attempt lands, and the driver is waiting on exactly that item — its lane
+    // dedupe must not cancel the pending re-merge.
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      patch: { status: 'done' }
+    });
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    store.bumpResolutionRound(WS, 'UI-1');
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        conflict_resolution: true
+      }
+    });
+
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      patch: { status: 'done' }
+    });
+
+    expect(store.snapshot(WS).merge_queue).toEqual([
+      { bead_id: 'UI-1', resolution_rounds: 1 }
+    ]);
+  });
+
+  test('a re-entering item keeps its position instead of jumping the queue', () => {
+    const store = createQueueStore();
+    for (const bead_id of ['UI-1', 'UI-2']) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: { attempt_id: `att-${bead_id}`, bead_id }
+      });
+      store.moveToPrWait(WS, {
+        bead_id,
+        attempt_id: `att-${bead_id}`,
+        patch: { status: 'done' }
+      });
+    }
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
+    });
+
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-2',
+      attempt_id: 'att-UI-2',
+      patch: { status: 'done' }
+    });
+
+    expect(store.snapshot(WS).merge_queue.map((e) => e.bead_id)).toEqual([
+      'UI-1',
+      'UI-2'
+    ]);
+  });
+
+  test('bulk cancel drops every waiting item but the kept one, in one write', () => {
+    const store = createQueueStore();
+    for (const bead_id of ['UI-1', 'UI-2', 'UI-3']) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: { attempt_id: `att-${bead_id}`, bead_id }
+      });
+      store.moveToPrWait(WS, {
+        bead_id,
+        attempt_id: `att-${bead_id}`,
+        patch: { status: 'done' }
+      });
+    }
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }, { bead_id: 'UI-3' }]
+    });
+    const rev = store.snapshot(WS).revision;
+
+    const r = store.cancelMerge(WS, {
+      expected_revision: rev,
+      all: true,
+      keep: 'UI-1'
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(rev + 1);
+    expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+});

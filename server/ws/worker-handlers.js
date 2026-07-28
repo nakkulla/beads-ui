@@ -32,7 +32,7 @@ import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
   discardWorkerPr,
-  mergeWorkerPr,
+  kickWorkerMergeQueue,
   pauseWorkerAttempt,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
@@ -40,6 +40,7 @@ import {
   reviseFixWorkerBead,
   stopWorkerAttempt,
   tickWorkerQueue,
+  workerMergeQueueState,
   workerSlots
 } from '../worker/attach.js';
 import { evaluateMergeGate } from '../worker/merge-gate.js';
@@ -240,6 +241,135 @@ function prActivityFor(workspace_key, queue) {
     if (record) {
       out[bead_id] = record;
     }
+  }
+  return out;
+}
+
+/**
+ * Whether a bead has a conflict-resolution session of its own in flight
+ * (running or paused). The lane row's [머지] is quiet in exactly that state
+ * (UI-dxgz §1), so [일괄 머지] must not queue it either — there is nothing to
+ * dispatch until the session settles.
+ *
+ * @param {Record<string, unknown>} queue
+ * @param {string} bead_id
+ * @returns {boolean}
+ */
+function hasConflictSession(queue, bead_id) {
+  const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
+  const values = Object.values(attempts);
+  // A paused attempt that was already RESUMED is spent history — its child is
+  // the live one. Counting it forever would keep a row out of [일괄 머지] long
+  // after the row's own badge said the session was over, which is the exact
+  // leaf/supersession rule the client's running list applies (§1.1).
+  const resumed_from = new Set(
+    values
+      .map((a) => a && a.resumed_from)
+      .filter((id) => typeof id === 'string')
+  );
+  /**
+   * `conflict_resolution` is INHERITED through `resumed_from`, exactly as the
+   * client inherits it: resuming a paused resolution mints a child that does
+   * not re-declare the flag.
+   *
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function isResolution(attempt) {
+    let cur = attempt;
+    const seen = new Set();
+    while (cur && !seen.has(cur.attempt_id)) {
+      if (cur.conflict_resolution === true) {
+        return true;
+      }
+      seen.add(cur.attempt_id);
+      cur =
+        typeof cur.resumed_from === 'string'
+          ? attempts[cur.resumed_from]
+          : null;
+    }
+    return false;
+  }
+  for (const attempt of values) {
+    if (!attempt || attempt.bead_id !== bead_id) {
+      continue;
+    }
+    const live =
+      attempt.status === 'running' ||
+      (attempt.status === 'paused' && !resumed_from.has(attempt.attempt_id));
+    if (live && isResolution(attempt)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The rows [일괄 머지] queues, in lane display order (UI-5v7d §3).
+ *
+ * This is the SERVER's copy of the row's `merge_enabled` judgment, deliberately
+ * expressed as the same four disjuncts the client uses: a passing gate, a
+ * conflicting non-external row (whose click dispatches a resolution — a
+ * first-class queue path, §2 step 3), a cleanup retry, and an external merged
+ * row's [정리]. It has to live here because add-all has no per-row click to
+ * carry the client's own verdict, and the queue must not be filled with rows
+ * the driver would only refuse.
+ *
+ * Advisory exactly like the badge it mirrors: the driver re-gates every item at
+ * its turn, so a row that goes stale between this call and its merge is refused
+ * there, not merged wrongly.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue - The OVERLAID snapshot (external rows
+ * included), i.e. what the lane actually renders.
+ * @param {boolean} verify_cmd_present
+ * @returns {Array<{ bead_id: string, external: boolean }>}
+ */
+export function mergeQueueCandidates(workspace_key, queue, verify_cmd_present) {
+  const lane = Array.isArray(queue.pr_wait)
+    ? /** @type {any[]} */ (queue.pr_wait)
+    : [];
+  /** @type {Record<string, any>} */
+  let observed = {};
+  try {
+    observed = getWorkerRuntime().prObservations.snapshot(workspace_key);
+  } catch {
+    observed = {};
+  }
+  const cleanup_failed = /** @type {Record<string, any>} */ (
+    queue.cleanup_failed || {}
+  );
+  /** @type {Array<{ bead_id: string, external: boolean }>} */
+  const out = [];
+  for (const entry of lane) {
+    const bead_id = entry && entry.bead_id;
+    if (typeof bead_id !== 'string' || bead_id.length === 0) {
+      continue;
+    }
+    if (hasConflictSession(queue, bead_id)) {
+      continue;
+    }
+    const external = entry.external === true;
+    const gate = evaluateMergeGate(observed[bead_id] || null, {
+      verify_cmd_present
+    });
+    const conflicting = gate.base_badge === '충돌';
+    const merged_tier = gate.tier === 'merged';
+    // An EXTERNAL conflict vetoes even a green gate, exactly as the row does
+    // (UI-7agi §5): the click-time branch order puts DIRTY before the gate, so
+    // `merge()` refuses it whatever its CI says.
+    if (external && conflicting) {
+      continue;
+    }
+    const eligible =
+      gate.enabled === true ||
+      (conflicting && !external) ||
+      (!!cleanup_failed[bead_id] && merged_tier) ||
+      (external && merged_tier);
+    if (!eligible) {
+      continue;
+    }
+    out.push({ bead_id, external });
   }
   return out;
 }
@@ -476,7 +606,15 @@ function decorateQueue(workspace_key, raw_queue) {
     bead_titles: beadTitlesFor(workspace_key, queue),
     // Which waiting beads are parked awaiting a REVISE disposition (UI-hs11
     // §3.1). Non-persisted, partial and advisory — see the projection.
-    revise_parked: reviseParkedFor(workspace_key, queue)
+    revise_parked: reviseParkedFor(workspace_key, queue),
+    // The merge driver's live view (UI-5v7d §3): which queued item it is on and
+    // why each skipped one failed. The ORDER and membership travel in the
+    // durable `merge_queue` spread above; only this half is non-persisted, so a
+    // restart shows the resumed queue with no stale failure text.
+    merge_queue_state: workerMergeQueueState(workspace_key) || {
+      active: null,
+      failures: {}
+    }
   };
 }
 
@@ -1152,22 +1290,55 @@ export function handleWorkerAttemptDismiss(ws, req) {
 }
 
 /**
- * Handle `worker-pr-merge`. Payload: `{ bead_id, expected_revision }`.
+ * Reply to a merge-queue mutation and, on success, start the driver.
  *
- * The human merge click (worker-phase2 §6). Under the same CAS discipline as
- * `worker-attempt-resume`: a stale revision replies `conflict:true` WITHOUT
- * acting, because the snapshot the user clicked from may predate the transition
- * that moved this very bead. Everything else about the decision is re-derived
- * server-side at click time — the badges in that snapshot are advisory only.
+ * The kick is fire-and-forget and its promise settles only when the WHOLE queue
+ * drains, so awaiting it here would hold the reply for every merge in line. The
+ * driver fans its own progress out through queue-changed.
  *
- * The reply distinguishes what actually happened (`action`), since a click can
- * legitimately merge nothing: a DIRTY PR dispatches a conflict-resolution
- * session instead, and a refused gate merges nothing at all.
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {string} workspace_key
+ * @param {import('../worker/queue-store.js').QueueOpResult} result
+ * @param {Record<string, unknown>} [extra] - Extra reply fields (queued count).
+ */
+function replyMergeQueue(ws, req, workspace_key, result, extra = {}) {
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        ...extra,
+        applied: result.ok,
+        conflict: result.conflict,
+        queue: decorateQueue(workspace_key, /** @type {any} */ (result.queue))
+      })
+    )
+  );
+  if (!result.ok) {
+    return;
+  }
+  fanout(workspace_key, /** @type {any} */ (result.queue));
+  Promise.resolve(kickWorkerMergeQueue(workspace_key)).catch((err) => {
+    log('merge queue kick failed for %s: %o', workspace_key, err);
+  });
+}
+
+/**
+ * Handle `worker-merge-queue-add`. Payload: `{ bead_id, expected_revision }`.
+ *
+ * The [머지] click, which no longer merges (UI-5v7d §3): it puts the bead in the
+ * sequential queue and the driver merges when its turn comes. Everything the old
+ * direct click derived server-side — the re-gate, the BEHIND update, the DIRTY
+ * arm — still happens, just inside the driver's `merge()` call, so the badges in
+ * the clicked snapshot stay advisory exactly as before.
+ *
+ * Same CAS discipline as every other mutation: a stale revision replies
+ * `conflict:true` without queuing, because that snapshot may predate the
+ * transition that moved this very bead out of the lane.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export async function handleWorkerPrMerge(ws, req) {
+export function handleWorkerMergeQueueAdd(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
     ws.send(
@@ -1178,45 +1349,187 @@ export async function handleWorkerPrMerge(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
+  // An EXTERNAL row is a wire-only synthesis (UI-7agi §2), so the store cannot
+  // check its lane membership — the overlay that created it vouches for it here.
+  const overlaid = withExternalPrWait(
+    key,
+    /** @type {any} */ (queueStore().snapshot(key))
+  );
+  const lane = Array.isArray(overlaid.pr_wait)
+    ? /** @type {any[]} */ (overlaid.pr_wait)
+    : [];
+  const row = lane.find((e) => e && e.bead_id === p.bead_id) || null;
+  const result = queueStore().enqueueMerge(key, {
+    expected_revision: revisionOf(p),
+    entries: [{ bead_id: p.bead_id, external: !!row && row.external === true }]
+  });
+  replyMergeQueue(ws, req, key, result, {
+    bead_id: p.bead_id,
+    queued: result.ok ? 1 : 0
+  });
+}
+
+/**
+ * Handle `worker-merge-queue-add-all`. Payload: `{ expected_revision }`.
+ *
+ * [일괄 머지] (UI-5v7d §3): queue every currently mergeable `pr_wait` row in
+ * lane order, in ONE CAS write — a write per row would make every row after the
+ * first fail its own revision check.
+ *
+ * The eligibility judgment is the server's own ({@link mergeQueueCandidates}),
+ * not a client-supplied list: a list would let a stale tab queue rows whose gate
+ * has since closed, and the queue's whole value is that its members are the ones
+ * worth merging right now.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerMergeQueueAddAll(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  const key = workspaceKeyOf(ws);
   const current = /** @type {any} */ (queueStore().snapshot(key));
   if (revisionOf(p) !== current.revision) {
     ws.send(
       JSON.stringify(
         makeOk(req, {
-          bead_id: p.bead_id,
-          ok: false,
+          applied: false,
           conflict: true,
-          action: null,
-          reason: null,
+          queued: 0,
           queue: decorateQueue(key, current)
         })
       )
     );
     return;
   }
-  /** @type {any} */
-  let result = { ok: false, action: 'refused', reason: 'no_attachment' };
+  /** @type {import('../worker/verify-cmd.js').ResolvedVerifyCmd|null} */
+  let verify_cmd = null;
   try {
-    result = await mergeWorkerPr(key, p.bead_id);
-  } catch (err) {
-    log('worker-pr-merge failed for %s/%s: %o', key, p.bead_id, err);
-    result = { ok: false, action: 'refused', reason: 'error' };
+    verify_cmd = resolveVerifyCmd(key, getConfig().worker_verify);
+  } catch {
+    verify_cmd = null;
   }
+  const entries = mergeQueueCandidates(
+    key,
+    withExternalPrWait(key, current),
+    !!verify_cmd
+  );
+  if (entries.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: false,
+          conflict: false,
+          queued: 0,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  const before = Array.isArray(current.merge_queue)
+    ? current.merge_queue.length
+    : 0;
+  const result = queueStore().enqueueMerge(key, {
+    expected_revision: revisionOf(p),
+    entries
+  });
+  const after =
+    result.ok && Array.isArray(result.queue.merge_queue)
+      ? result.queue.merge_queue.length
+      : before;
+  replyMergeQueue(ws, req, key, result, { queued: after - before });
+}
+
+/**
+ * Handle `worker-merge-queue-remove`. Payload:
+ * `{ bead_id, expected_revision }`, or `{ all: true, expected_revision }`.
+ *
+ * [취소] on a WAITING item, and — with `all` — the lane header's
+ * [일괄 머지 중단]. The bulk form is ONE server-side write on purpose: removing
+ * item by item lets the active one finish between requests, which promotes the
+ * next waiter to active and makes its own removal refuse, leaving an item
+ * queued after a click that said "stop everything".
+ *
+ * The ACTIVE item is never removable: its merge is already running against
+ * GitHub, and dropping the record would only hide it (UI-5v7d §3).
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerMergeQueueRemove(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  const bulk = p.all === true;
+  if (!bulk && (typeof p.bead_id !== 'string' || p.bead_id.length === 0)) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id: string } or { all: true }'
+        )
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const state = workerMergeQueueState(key);
+  if (bulk) {
+    const result = queueStore().cancelMerge(key, {
+      expected_revision: revisionOf(p),
+      all: true,
+      keep: state ? state.active : null
+    });
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: null,
+          applied: result.ok,
+          conflict: result.conflict,
+          reason: null,
+          queue: decorateQueue(key, /** @type {any} */ (result.queue))
+        })
+      )
+    );
+    if (result.ok) {
+      fanout(key, /** @type {any} */ (result.queue));
+    }
+    return;
+  }
+  if (state && state.active === p.bead_id) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          applied: false,
+          conflict: false,
+          reason: 'merge_active',
+          queue: decorateQueue(
+            key,
+            /** @type {any} */ (queueStore().snapshot(key))
+          )
+        })
+      )
+    );
+    return;
+  }
+  const result = queueStore().cancelMerge(key, {
+    expected_revision: revisionOf(p),
+    bead_id: p.bead_id
+  });
   ws.send(
     JSON.stringify(
       makeOk(req, {
         bead_id: p.bead_id,
-        ok: !!result.ok,
-        conflict: false,
-        action: result.action || null,
-        reason: result.reason || null,
-        cleanup_step: result.cleanup_step || null,
-        attempt_id: result.attempt_id || null
+        applied: result.ok,
+        conflict: result.conflict,
+        reason: null,
+        queue: decorateQueue(key, /** @type {any} */ (result.queue))
       })
     )
   );
-  // Even a refusal re-observed the PR, so the badges moved — always fan out.
-  fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+  if (result.ok) {
+    fanout(key, /** @type {any} */ (result.queue));
+  }
 }
 
 /**
