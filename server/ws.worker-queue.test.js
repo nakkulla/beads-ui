@@ -770,6 +770,7 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
         mergeable: 'MERGEABLE',
         merge_state_status: 'CLEAN',
         head_ref: 'UI-9',
+        base_ref: 'main',
         head_sha: SHA,
         ...pr
       },
@@ -847,6 +848,64 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
     expect(queueSnapshots(sock).at(-1).pr_observations).toEqual({});
+  });
+
+  /**
+   * Seed the external registry the way a bd scan would (UI-7agi §1).
+   *
+   * @param {string} bead_id
+   */
+  function registerExternal(bead_id) {
+    getWorkerRuntime().externalPrs.replace('', [
+      {
+        bead_id,
+        pr_url: 'https://github.com/o/r/pull/777',
+        pr_number: 777
+      }
+    ]);
+  }
+
+  test('overlays an external PR row onto pr_wait without touching queue.json', () => {
+    registerExternal('UI-ext');
+
+    const persisted = getWorkerRuntime().queueStore.snapshot('');
+
+    expect(persisted.pr_wait).toEqual([]);
+  });
+
+  test('the snapshot carries the external row flagged as external', async () => {
+    registerExternal('UI-ext');
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).pr_wait).toEqual([
+      { bead_id: 'UI-ext', added_at: expect.any(Number), external: true }
+    ]);
+  });
+
+  test('an external row gets the same observation/gate decoration as a worker row', async () => {
+    registerExternal('UI-9');
+    observe();
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(
+      queueSnapshots(sock).at(-1).pr_observations['UI-9'].gate
+    ).toMatchObject({ enabled: true, gate_badge: 'CI ✓' });
+  });
+
+  test('a bead already in the durable lane is not duplicated by the overlay', async () => {
+    parkInPrWait('UI-9');
+    registerExternal('UI-9');
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    const lane = queueSnapshots(sock).at(-1).pr_wait;
+    expect(lane.map((/** @type {any} */ e) => e.bead_id)).toEqual(['UI-9']);
+    expect(lane[0].external).toBe(undefined);
   });
 });
 

@@ -34,6 +34,7 @@ import {
   discardWorkerPr,
   mergeWorkerPr,
   pauseWorkerAttempt,
+  refreshWorkerExternalPrs,
   resumeWorkerAttempt,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
@@ -106,6 +107,52 @@ function subscribersFor(key) {
 export function workerQueueSubscriberCount(workspace_key) {
   const set = SUBSCRIBERS.get(workspace_key);
   return set ? set.size : 0;
+}
+
+/**
+ * Overlay the EXTERNAL PR rows onto a queue snapshot's `pr_wait` (UI-7agi §2).
+ *
+ * A bead a normal session delivered a PR for is `resolved` with a
+ * `metadata.pr_url` and no attempt at all, so the durable lane never held it.
+ * Synthesizing the row HERE — on the wire, never in `queue.json` — is what lets
+ * the existing observation/activity/title decorations and the whole client-side
+ * lane render it with no second code path. A synthetic attempt in the durable
+ * queue would have been the alternative, and it would have made the worker's own
+ * records claim it ran something it never ran.
+ *
+ * A bead the worker itself put in `pr_wait` is left alone: the durable attempt
+ * is the more specific record, so the overlay yields to it.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, unknown>}
+ */
+function withExternalPrWait(workspace_key, queue) {
+  /** @type {import('../worker/external-pr.js').ExternalPrRow[]} */
+  let rows = [];
+  try {
+    rows = getWorkerRuntime().externalPrs.list(workspace_key);
+  } catch {
+    rows = [];
+  }
+  if (rows.length === 0) {
+    return queue;
+  }
+  const lane = Array.isArray(queue.pr_wait)
+    ? /** @type {any[]} */ (queue.pr_wait)
+    : [];
+  const durable = new Set(lane.map((e) => e && e.bead_id));
+  const overlay = rows
+    .filter((row) => !durable.has(row.bead_id))
+    .map((row) => ({
+      bead_id: row.bead_id,
+      added_at: row.added_at,
+      external: true
+    }));
+  if (overlay.length === 0) {
+    return queue;
+  }
+  return { ...queue, pr_wait: [...lane, ...overlay] };
 }
 
 /**
@@ -362,6 +409,8 @@ function attemptsWithUsage(queue, workspace_key) {
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
  *     flag live sessions exceeding the cap after a manual resume
  *     (worker-phase1 §2.3, worker-phase2 §3),
+ *   - the EXTERNAL PR rows overlaid onto `pr_wait` (UI-7agi §2) — beads a normal
+ *     session delivered a PR for, which no attempt ever placed in the lane,
  *   - `pr_observations`: what the PR poller has SEEN for each `pr_wait` bead
  *     plus its merge-gate verdict (worker-phase2 §4/§5) — a pure cache read,
  *   - `bead_titles`: display titles for the queue/pr_wait/done beads (UI-12k6),
@@ -373,10 +422,13 @@ function attemptsWithUsage(queue, workspace_key) {
  *     are defined in `config.toml` only, which is the security boundary.
  *
  * @param {string} workspace_key
- * @param {Record<string, unknown>} queue
+ * @param {Record<string, unknown>} raw_queue
  * @returns {Record<string, unknown>}
  */
-function decorateQueue(workspace_key, queue) {
+function decorateQueue(workspace_key, raw_queue) {
+  // Overlaid FIRST so every decoration below — observations, activity, titles —
+  // sees the external rows without knowing they exist (UI-7agi §2).
+  const queue = withExternalPrWait(workspace_key, raw_queue);
   /** @type {{ cmd: string[], timeout_ms: number, source: 'config'|'detected' } | null} */
   let verify_cmd = null;
   try {
@@ -626,6 +678,19 @@ export function handleSubscribeWorkerQueue(ws, req) {
     key,
     decorateQueue(key, queueStore().snapshot(key))
   );
+  // The snapshot above is sent SYNCHRONOUSLY with whatever the registry already
+  // holds; the scan is the "on subscribe" refresh trigger (UI-7agi §1) and its
+  // result reaches the client through the ordinary fanout. Deliberately not
+  // awaited — a slow `bd list` must not delay the first paint.
+  void refreshWorkerExternalPrs(key)
+    .then((scanned) => {
+      if (scanned) {
+        fanout(key, queueStore().snapshot(key));
+      }
+    })
+    .catch((err) => {
+      log('external PR refresh failed for %s: %o', key, err);
+    });
 }
 
 /**

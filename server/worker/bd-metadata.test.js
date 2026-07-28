@@ -219,6 +219,71 @@ describe('worker/bd-metadata fail-closed writes (implementation review 2026-07-2
   });
 });
 
+describe('worker/bd-metadata listResolvedPrBeads (UI-7agi §1)', () => {
+  const ROWS = [
+    {
+      id: 'UI-1',
+      status: 'resolved',
+      metadata: { pr_url: 'https://github.com/o/r/pull/7' }
+    },
+    { id: 'UI-2', status: 'resolved', metadata: {} },
+    {
+      id: 'UI-3',
+      status: 'open',
+      metadata: { pr_url: 'https://github.com/o/r/pull/9' }
+    },
+    {
+      id: 'UI-4',
+      status: 'closed',
+      metadata: { pr_url: 'https://github.com/o/r/pull/11' }
+    }
+  ];
+
+  test('scans the WHOLE bd list, not the default 50-row page', async () => {
+    const runJson = vi.fn(async () => ({ code: 0, stdoutJson: [] }));
+
+    await createBdMetadata({ runJson, cwd: '/repo' }).listResolvedPrBeads();
+
+    expect(runJson).toHaveBeenCalledWith(
+      ['list', '--json', '--all', '--limit', '0'],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('keeps only resolved beads carrying a pr_url', async () => {
+    const runJson = vi.fn(async () => ({ code: 0, stdoutJson: ROWS }));
+
+    const rows = await createBdMetadata({ runJson }).listResolvedPrBeads();
+
+    expect(rows).toEqual([
+      { bead_id: 'UI-1', pr_url: 'https://github.com/o/r/pull/7' }
+    ]);
+  });
+
+  test('throws on a non-zero exit instead of reading as "no external PRs"', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 1,
+      stdoutJson: null,
+      stderr: 'bd down'
+    }));
+
+    await expect(
+      createBdMetadata({ runJson }).listResolvedPrBeads()
+    ).rejects.toThrow(/bd list --all failed \(1\)/);
+  });
+
+  test('throws on a non-array payload', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: { id: 'UI-1' }
+    }));
+
+    await expect(
+      createBdMetadata({ runJson }).listResolvedPrBeads()
+    ).rejects.toThrow(/non-array payload/);
+  });
+});
+
 describe('worker/bd-metadata one-write disposition update (UI-hs11)', () => {
   test('composes set, unset, status and notes into a single bd update', async () => {
     /** @type {string[][]} */

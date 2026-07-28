@@ -24,6 +24,7 @@ function detailOf(pr = {}) {
     mergeable: 'MERGEABLE',
     merge_state_status: 'CLEAN',
     head_ref: 'UI-1',
+    base_ref: 'main',
     head_sha: SHA,
     ...pr
   };
@@ -74,7 +75,9 @@ function queueOf(input = {}) {
  *   observations?: any,
  *   activity?: any,
  *   resolveVerify?: any,
- *   runVerify?: any
+ *   runVerify?: any,
+ *   onMerged?: any,
+ *   external?: any
  * }} [input]
  */
 function makePoller(input = {}) {
@@ -98,12 +101,33 @@ function makePoller(input = {}) {
     getSubscriberCount: () => input.subscribers ?? 1,
     resolveVerify: input.resolveVerify ?? (() => null),
     runVerify: input.runVerify,
+    onMerged: input.onMerged,
+    external: input.external,
     notifyChanged,
     intervalSeconds: 0,
     sleep: async () => {},
     now: () => 5000
   });
   return { poller, prDetail, prChecks, observations, activity, notifyChanged };
+}
+
+/**
+ * An external registry stub: the rows a bd scan would have produced.
+ *
+ * @param {Array<{ bead_id: string, pr_url?: string, pr_number?: number|null }>} rows
+ */
+function externalOf(rows) {
+  const refresh = vi.fn(async () => {});
+  return {
+    refresh,
+    list: () =>
+      rows.map((r, i) => ({
+        bead_id: r.bead_id,
+        pr_url: r.pr_url ?? PR_URL,
+        pr_number: r.pr_number === undefined ? 304 : r.pr_number,
+        added_at: i + 1
+      }))
+  };
 }
 
 describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
@@ -538,5 +562,178 @@ describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
     await poller.tick();
 
     expect(activity.get('/ws', 'UI-GONE')).toBe(null);
+  });
+});
+
+describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
+  test('resolvePrRef falls back to the registry row when no attempt exists', () => {
+    const queue = /** @type {any} */ (queueOf({ pr_wait: [] }));
+
+    const ref = resolvePrRef(queue, 'UI-ext', {
+      pr_url: 'https://github.com/o/r/pull/777',
+      pr_number: 777
+    });
+
+    expect(ref).toEqual({
+      number: 777,
+      url: 'https://github.com/o/r/pull/777'
+    });
+  });
+
+  test('resolvePrRef parses the number out of the url when the row carries none', () => {
+    const ref = resolvePrRef(
+      /** @type {any} */ (queueOf({ pr_wait: [] })),
+      'UI-ext',
+      {
+        pr_url: 'https://github.com/o/r/pull/777',
+        pr_number: null
+      }
+    );
+
+    expect(ref?.number).toBe(777);
+  });
+
+  test('resolvePrRef prefers the attempt over the registry row', () => {
+    const ref = resolvePrRef(/** @type {any} */ (queueOf()), 'UI-1', {
+      pr_url: 'https://github.com/o/r/pull/777',
+      pr_number: 777
+    });
+
+    expect(ref?.number).toBe(304);
+  });
+
+  test('observes an external row the durable pr_wait never held', async () => {
+    const { poller, prDetail, observations } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([{ bead_id: 'UI-ext', pr_number: 777 }])
+    });
+
+    await poller.tick();
+
+    expect(prDetail).toHaveBeenCalledWith('/repo', 777);
+    expect(observations.get('/ws', 'UI-ext')?.error).toBe(null);
+  });
+
+  test('re-scans the registry before every pass', async () => {
+    const external = externalOf([{ bead_id: 'UI-ext' }]);
+    const { poller } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external
+    });
+
+    await poller.tick();
+
+    expect(external.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  test('makes no gh call when neither the lane nor the registry has a row', async () => {
+    const { poller, prDetail } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([])
+    });
+
+    await poller.tick();
+
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test('lets the worker row win when both sources name the same bead', async () => {
+    const { poller, prDetail } = makePoller({
+      external: externalOf([{ bead_id: 'UI-1', pr_number: 777 }])
+    });
+
+    await poller.tick();
+
+    expect(prDetail).toHaveBeenCalledTimes(1);
+    expect(prDetail).toHaveBeenCalledWith('/repo', 304);
+  });
+
+  test('records an external MERGED observation WITHOUT running cleanup', async () => {
+    const onMerged = vi.fn(async () => {});
+    const { poller, observations } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([{ bead_id: 'UI-ext' }]),
+      detail: { state: 'ok', data: detailOf({ state: 'MERGED' }) },
+      onMerged
+    });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'UI-ext')?.pr?.state).toBe('MERGED');
+    expect(onMerged).not.toHaveBeenCalled();
+  });
+
+  test('still hands a WORKER row MERGED to the cleanup', async () => {
+    const onMerged = vi.fn(async () => {});
+    const { poller } = makePoller({
+      detail: { state: 'ok', data: detailOf({ state: 'MERGED' }) },
+      onMerged
+    });
+
+    await poller.tick();
+
+    expect(onMerged).toHaveBeenCalledWith('UI-1');
+  });
+
+  test('keeps the previous rows when the scan throws', async () => {
+    const external = externalOf([{ bead_id: 'UI-ext' }]);
+    external.refresh = vi.fn(async () => {
+      throw new Error('bd down');
+    });
+    const { poller, prDetail } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external
+    });
+
+    await poller.tick();
+
+    expect(prDetail).toHaveBeenCalledTimes(1);
+  });
+
+  test('fans out once when the last external row disappears', async () => {
+    /** @type {any[]} */
+    let rows = [{ bead_id: 'UI-ext' }];
+    const observations = createPrObservationStore();
+    const { poller, notifyChanged } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      observations,
+      external: {
+        refresh: vi.fn(async () => {}),
+        list: () =>
+          rows.map((r) => ({
+            bead_id: r.bead_id,
+            pr_url: PR_URL,
+            pr_number: 304,
+            added_at: 1
+          }))
+      }
+    });
+    await poller.tick();
+    notifyChanged.mockClear();
+
+    rows = [];
+    await poller.tick();
+
+    expect(notifyChanged).toHaveBeenCalledTimes(1);
+    expect(observations.get('/ws', 'UI-ext')).toBe(null);
+
+    notifyChanged.mockClear();
+    await poller.tick();
+
+    expect(notifyChanged).not.toHaveBeenCalled();
+  });
+
+  test('records pr_ref_unknown for an external row whose url is unparseable', async () => {
+    const { poller, observations, prDetail } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([
+        { bead_id: 'UI-ext', pr_url: 'nope', pr_number: null }
+      ])
+    });
+
+    await poller.tick();
+
+    expect(prDetail).not.toHaveBeenCalled();
+    expect(observations.get('/ws', 'UI-ext')?.error).toBe('pr_ref_unknown');
   });
 });

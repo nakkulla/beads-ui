@@ -6,6 +6,7 @@ const PR = {
   url: 'https://github.com/o/r/pull/7',
   headRefName: 'UI-1',
   headRefOid: 'a'.repeat(40),
+  baseRefName: 'main',
   state: 'OPEN'
 };
 
@@ -52,6 +53,7 @@ describe('worker/gh — openPrForBranch', () => {
         number: 7,
         url: PR.url,
         head_ref: 'UI-1',
+        base_ref: 'main',
         head_sha: PR.headRefOid,
         state: 'OPEN'
       }
@@ -72,7 +74,7 @@ describe('worker/gh — openPrForBranch', () => {
         '--state',
         'open',
         '--json',
-        'number,url,headRefName,headRefOid,state',
+        'number,url,headRefName,headRefOid,baseRefName,state',
         '--repo',
         'o/r'
       ],
@@ -213,7 +215,8 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
     mergeable: 'MERGEABLE',
     mergeStateStatus: 'CLEAN',
     headRefName: 'UI-1',
-    headRefOid: 'b'.repeat(40)
+    headRefOid: 'b'.repeat(40),
+    baseRefName: 'main'
   };
 
   test('returns ok with the PR detail normalized', async () => {
@@ -230,6 +233,7 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
         mergeable: 'MERGEABLE',
         merge_state_status: 'CLEAN',
         head_ref: 'UI-1',
+        base_ref: 'main',
         head_sha: DETAIL.headRefOid
       }
     });
@@ -246,7 +250,7 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
         'view',
         '304',
         '--json',
-        'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid',
+        'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName',
         '--repo',
         'o/r'
       ],
