@@ -1,11 +1,12 @@
 /**
- * Worker attempt lifecycle → Discord push (UI-2yoq).
+ * Worker attempt lifecycle → Discord push (UI-2yoq, UI-9rrk).
  *
  * The worker had exactly one outward signal — the `emitQueueChanged` websocket
  * stream — so a queue nobody was looking at was a queue nobody heard from. This
- * module adds the three transitions worth interrupting a human for: an attempt
- * STARTS, an attempt FAILS (with its cause), and an attempt reaches `pr_wait`
- * (the point where the queue is waiting on a human's [머지] click).
+ * module adds the transitions worth interrupting a human for: an attempt
+ * STARTS, an attempt FAILS (with its cause), an attempt reaches `pr_wait` (the
+ * point where the queue is waiting on a human's [머지] click), and the merge
+ * that CLOSES the bead (UI-9rrk).
  *
  * Two properties are load-bearing:
  *
@@ -24,6 +25,18 @@ import path from 'node:path';
 import { debug } from '../logging.js';
 
 const default_log = debug('worker:notify');
+
+/**
+ * Embed titles. One operator watches many sources, so every push says the same
+ * thing about WHO ran it — "beads worker" — and differs only in the transition
+ * (UI-9rrk).
+ */
+const TITLE = {
+  started: '🚀 beads worker · 시작',
+  failed: '❌ beads worker · 실패',
+  pr_wait: '📬 beads worker · PR 제출',
+  merged: '✅ beads worker · 머지 완료'
+};
 
 /**
  * @typedef {Object} NotifierDeps
@@ -65,13 +78,14 @@ function text(value) {
 
 /**
  * Build the attempt-lifecycle notifier the scheduler fires on dispatch, on
- * failure, and on `pr_wait` entry.
+ * failure, and on `pr_wait` entry, and the PR actions fire on merge cleanup.
  *
  * @param {NotifierDeps} deps
  * @returns {{
  *   attemptStarted: (input: { bead_id: string, title?: string|null, model?: string|null, effort?: string|null, repo?: string|null, kind?: string|null }) => void,
  *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => void,
- *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => void
+ *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => void,
+ *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => void
  * }}
  */
 export function createNotifier(deps) {
@@ -147,6 +161,26 @@ export function createNotifier(deps) {
   }
 
   /**
+   * The body the two PR-side notifications share: bead id, the PR url when one
+   * was observed, and the repo label. Everything but the id is dropped when
+   * absent rather than printed empty.
+   *
+   * @param {{ bead_id: string, pr_url?: string|null, repo?: string|null }} input
+   */
+  function prBody(input) {
+    const lines = [String(input.bead_id)];
+    const pr_url = text(input.pr_url);
+    if (pr_url) {
+      lines.push(pr_url);
+    }
+    const repo = repoLabel(input.repo);
+    if (repo) {
+      lines.push(`리포: ${repo}`);
+    }
+    return lines.join('\n');
+  }
+
+  /**
    * @param {string} kind
    * @returns {string|null}
    */
@@ -181,7 +215,7 @@ export function createNotifier(deps) {
         }
         // Informational: no mention (`-q`). Only the two transitions a human
         // must act on carry one.
-        send(['-q', '-t', '워커 시작'], lines.join('\n'));
+        send(['-q', '-t', TITLE.started], lines.join('\n'));
       } catch (err) {
         log('attemptStarted failed: %o', err);
       }
@@ -209,26 +243,31 @@ export function createNotifier(deps) {
             lines.push(`명령: ${command}`);
           }
         }
-        send(['-c', 'red', '-t', '워커 실패'], lines.join('\n'));
+        send(['-c', 'red', '-t', TITLE.failed], lines.join('\n'));
       } catch (err) {
         log('attemptFailed failed: %o', err);
       }
     },
 
+    // Blue, not green: green now belongs to the terminal transition (머지 완료)
+    // and PR 제출 is the one that is still waiting on a human (UI-9rrk).
     prWaitEntered(input) {
       try {
-        const lines = [String(input.bead_id)];
-        const pr_url = text(input.pr_url);
-        if (pr_url) {
-          lines.push(pr_url);
-        }
-        const repo = repoLabel(input.repo);
-        if (repo) {
-          lines.push(`리포: ${repo}`);
-        }
-        send(['-c', 'green', '-t', 'PR 대기'], lines.join('\n'));
+        send(['-c', 'blue', '-t', TITLE.pr_wait], prBody(input));
       } catch (err) {
         log('prWaitEntered failed: %o', err);
+      }
+    },
+
+    // The bead is closed and its branches are gone — informational, so `-q`.
+    // Deploy state is deliberately NOT reported: `runCleanup` returns success
+    // with the deploy absent, done synchronously, or merely launched, and no
+    // single one of those can be read off the success path (UI-9rrk spec).
+    mergeCompleted(input) {
+      try {
+        send(['-q', '-c', 'green', '-t', TITLE.merged], prBody(input));
+      } catch (err) {
+        log('mergeCompleted failed: %o', err);
       }
     }
   };

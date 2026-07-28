@@ -575,7 +575,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     runVerify: (/** @type {any} */ input) =>
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
     resolveDeploy,
-    notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+    notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
+    // The SAME notifier the scheduler pushes attempt transitions through, so
+    // the merge that closes a bead lands in the same channel as its start and
+    // its PR (UI-9rrk).
+    notify
   });
 
   // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
