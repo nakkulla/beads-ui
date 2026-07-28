@@ -36,6 +36,8 @@ import {
   pauseWorkerAttempt,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
+  reviseApproveWorkerBead,
+  reviseFixWorkerBead,
   stopWorkerAttempt,
   tickWorkerQueue,
   workerSlots
@@ -243,6 +245,59 @@ function prActivityFor(workspace_key, queue) {
 }
 
 /**
+ * Runtimes whose REVISE-parking store already has its fill callback wired.
+ * Same lazily-built-singleton problem the title cache has: wiring at module
+ * load would bind to an instance a test later throws away.
+ *
+ * @type {WeakSet<object>}
+ */
+const REVISE_FILL_WIRED = new WeakSet();
+
+/**
+ * Project which waiting-lane beads are parked at
+ * `blocked_reason=spec_review_stale:revise` (UI-hs11 §3.1), so the row can
+ * offer the two disposition buttons.
+ *
+ * ADVISORY, and PARTIAL like {@link beadTitlesFor}: the third condition of the
+ * judgment is a `bd show`, which cannot run inside this synchronous
+ * decoration, so only cached observations travel and a miss is delivered by
+ * the fanout the fill callback triggers. Every click re-runs the WHOLE
+ * judgment server-side before acting.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, unknown>}
+ */
+function reviseParkedFor(workspace_key, queue) {
+  /** @type {ReturnType<typeof import('../worker/revise-parked.js').createReviseParkedStore>|null} */
+  let store = null;
+  try {
+    store = getWorkerRuntime().reviseParked;
+  } catch {
+    store = null;
+  }
+  if (!store) {
+    return {};
+  }
+  if (!REVISE_FILL_WIRED.has(store)) {
+    REVISE_FILL_WIRED.add(store);
+    store.setOnFilled((workspace) => {
+      try {
+        fanout(workspace, queueStore().snapshot(workspace));
+      } catch (err) {
+        log('revise-parked fill fanout failed for %s: %o', workspace, err);
+      }
+    });
+  }
+  try {
+    return store.observeFor(workspace_key, queue);
+  } catch (err) {
+    log('revise-parked observation failed for %s: %o', workspace_key, err);
+    return {};
+  }
+}
+
+/**
  * Worker runtimes whose title cache already has its fill callback wired. The
  * runtime is a lazily-built singleton that tests reset, so the wiring cannot
  * happen at module load — it would bind to an instance that is later thrown
@@ -419,7 +474,10 @@ function decorateQueue(workspace_key, raw_queue) {
     pr_activity: prActivityFor(workspace_key, queue),
     // Titles for the queue/pr_wait/done beads (UI-12k6) — non-persisted and
     // partial (cache hits only); the client falls back to the id without it.
-    bead_titles: beadTitlesFor(workspace_key, queue)
+    bead_titles: beadTitlesFor(workspace_key, queue),
+    // Which waiting beads are parked awaiting a REVISE disposition (UI-hs11
+    // §3.1). Non-persisted, partial and advisory — see the projection.
+    revise_parked: reviseParkedFor(workspace_key, queue)
   };
 }
 
@@ -590,6 +648,8 @@ export function __resetWorkerQueueForTest() {
   getWorkerRuntime().prObservations.clear();
   // Same for cached bead titles (UI-12k6).
   getWorkerRuntime().titleCache.clear();
+  // ...and for cached REVISE-parking observations (UI-hs11).
+  getWorkerRuntime().reviseParked.clear();
 }
 
 /**
@@ -1219,6 +1279,101 @@ export async function handleWorkerPrDiscard(ws, req) {
   if (result.ok) {
     fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
   }
+}
+
+/**
+ * Shared body of the two REVISE-disposition clicks (UI-hs11 §3.2). Both follow
+ * the merge click's discipline exactly: validate the payload, refuse a stale
+ * CAS revision WITHOUT acting (the snapshot the user clicked from may predate
+ * the transition that unparked this very bead), run the action, collapse any
+ * throw into `reason:'error'`, and fan out regardless of the outcome — a
+ * refusal still re-observed bd, so the badge may have moved either way.
+ *
+ * The parked badge in that snapshot is advisory: the action itself re-runs the
+ * whole parking judgment server-side before it touches anything.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {(workspace_key: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, sha?: string }>} run
+ */
+async function handleReviseDisposition(ws, req, run) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          ok: false,
+          conflict: true,
+          reason: null,
+          attempt_id: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, sha?: string }} */
+  let result = { ok: false, reason: 'no_attachment' };
+  try {
+    result = await run(key, p.bead_id);
+  } catch (err) {
+    log('revise disposition failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        ok: !!result.ok,
+        conflict: false,
+        reason: result.ok ? null : result.reason || null,
+        attempt_id: result.attempt_id || null,
+        sha: result.sha || null
+      })
+    )
+  );
+  fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+}
+
+/**
+ * Handle `worker-revise-fix`. Payload: `{ bead_id, expected_revision }`.
+ *
+ * [finding 수용·수정] (UI-hs11 §3.3): dispatch the disposition session that
+ * applies the parked findings to the spec, publishes on the resolved
+ * `target_base` checkout, refreshes the receipt and unblocks the bead. The
+ * click IS explicit user approval for that spec edit — the authority semantics
+ * belong to the workflow contract, this handler only carries the trigger.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerReviseFix(ws, req) {
+  await handleReviseDisposition(ws, req, reviseFixWorkerBead);
+}
+
+/**
+ * Handle `worker-revise-approve`. Payload: `{ bead_id, expected_revision }`.
+ *
+ * [승인하고 진행] (UI-hs11 §3.4): no session at all — the server refreshes the
+ * receipt to `skipped@<target_base tip>` with the notes lineage and the unblock
+ * in one bd write, read back.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerReviseApprove(ws, req) {
+  await handleReviseDisposition(ws, req, reviseApproveWorkerBead);
 }
 
 /**

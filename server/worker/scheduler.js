@@ -51,9 +51,12 @@ const log = debug('worker:scheduler');
  * the same number). `ps -o lstart=` resolves to whole seconds, so the tolerance
  * has to absorb that coarseness.
  *
+ * Exported because the detached session monitor re-verifies the same way before
+ * every signal (UI-o2yt §3.3) — two tolerances would be two contracts.
+ *
  * @type {number}
  */
-const PID_START_TOLERANCE_MS = 2000;
+export const PID_START_TOLERANCE_MS = 2000;
 
 /**
  * Upper bound on the matched command persisted with a blocker failure. The
@@ -151,7 +154,21 @@ function staleDispatchPrompt(bead_id, stale) {
  * ADMITTED result may still carry `stale` (UI-dlim §3.1) — a non-blocking
  * observation that the spec moved after the receipt, which flags the badge and
  * the attempt and is injected into the session prompt.
- * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void }} sessionLog
+ * @property {{ complete: (input: { workspace: string, attempt_id: string, bead_id: string, kind: string, prior_receipt?: string|null, target_base?: string|null }) => Promise<{ ok: boolean, reason?: string }>, release?: (bead_id: string) => void }} [disposition]
+ * Completion verdict for a DISPOSITION attempt (UI-hs11 §3.3). A disposition
+ * session opens no PR, so the PR-existence check every implementation attempt
+ * ends with would fail it as `no_pr`; this dep judges the disposition's own
+ * durable result instead. Absent wiring simply means no disposition can be
+ * dispatched (the entry point refuses).
+ * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, pathFor?: (workspace: string, attempt_id: string) => string, stderrPathFor?: (workspace: string, attempt_id: string) => string }} sessionLog
+ * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
+ * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
+ * leaves the engine on its stdout-pipe fallback, which is what fixture-driven
+ * tests want.
+ * @property {{ stop: (workspace: string, attempt_id: string) => boolean }} [sessionMonitors]
+ * Detached-session monitors (UI-o2yt §3.3). Present in the live wiring only: a
+ * dead attempt's monitor is stopped — draining its log to EOF — before the
+ * disposition reads the guard evidence and lifts the terminal usage tally.
  * @property {ReturnType<typeof import('./usage-store.js').createUsageStore>} [usage]
  * Live token-usage tally for running attempts (UI-raqh §1). Absent wiring
  * (older tests) simply means no usage is tallied or persisted.
@@ -185,6 +202,7 @@ function staleDispatchPrompt(bead_id, stale) {
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   resume: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   runningCount: () => number,
  *   runningBeads: () => string[],
@@ -675,6 +693,24 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The guard-kill evidence a detached monitor recorded for an attempt, read
+   * off the durable record (UI-o2yt §3.3). Null when no monitor stopped it.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {{ reason: string, command: string|null }|null}
+   */
+  function guardKillOf(workspace, attempt_id) {
+    try {
+      const a = deps.store.snapshot(workspace).attempts[attempt_id];
+      const gk = a && a.guard_kill;
+      return gk && typeof gk.reason === 'string' ? gk : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Beads holding a LEAF paused attempt (worker-phase1 §1.1). Resume mints a
    * child attempt and leaves the ancestor `paused` forever, so "is this bead
    * paused?" must ask about the leaf — an attempt nothing was resumed from.
@@ -792,6 +828,12 @@ export function createScheduler(deps) {
       // finalizing write and would otherwise strand a live tally forever.
       if (stopped.has(attempt_id)) {
         stopped.delete(attempt_id);
+        // A ⏸/■ of a disposition session ends that disposition: the guard and
+        // the repo lease it holds must come back, or the bead and every later
+        // fix in this repo stay fenced (UI-hs11 §3.3).
+        if (dispositionKindOf(workspace, attempt_id)) {
+          releaseDisposition(bead_id);
+        }
         const patch = usagePatch(workspace, attempt_id);
         if (patch.usage) {
           deps.store.updateAttempt(workspace, { attempt_id, patch });
@@ -804,6 +846,22 @@ export function createScheduler(deps) {
         attempt_id,
         patch: { exit: verdict.exit, ...usagePatch(workspace, attempt_id) }
       });
+
+      // A DISPOSITION attempt takes its own completion path (UI-hs11 §3.3):
+      // it opens no PR, so the observation below would fail every successful
+      // repair as `no_pr`.
+      const kind = dispositionKindOf(workspace, attempt_id);
+      if (kind) {
+        await onDispositionDone(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          verdict,
+          kind
+        );
+        return;
+      }
 
       if (!verdict.success) {
         await failAttempt(
@@ -896,6 +954,255 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The disposition kind recorded on an attempt at dispatch, or null for an
+   * ordinary implementation attempt.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {string|null}
+   */
+  function dispositionKindOf(workspace, attempt_id) {
+    const a = deps.store.snapshot(workspace).attempts[attempt_id];
+    return a && typeof a.disposition === 'string' && a.disposition.length > 0
+      ? a.disposition
+      : null;
+  }
+
+  /**
+   * Terminate a DISPOSITION attempt (UI-hs11 §3.3). The PR-existence verdict is
+   * bypassed entirely; the disposition dep judges its own durable result
+   * (receipt refreshed + park left + receipt commit published) instead.
+   *
+   * On success the transient dispatch metadata is restored exactly as a normal
+   * completion restores it, the bead's claim is given back, the attempt is
+   * closed `done`, and `auto_advance` is resumed by the disposition dep — the
+   * bead stays in the WAITING lane so the ordinary lane re-dispatches the
+   * implementation against the fresh receipt. On failure the standard failure
+   * path runs, which is what raises the existing failure banner.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} prior
+   * @param {RunnerVerdict} verdict
+   * @param {string} kind
+   */
+  async function onDispositionDone(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    verdict,
+    kind
+  ) {
+    const record = deps.store.snapshot(workspace).attempts[attempt_id] || {};
+    if (!verdict.success) {
+      // A `--resume` launch whose transcript turned out to be gone fails before
+      // it can do anything; the spec's fallback is a substitute session
+      // carrying the same prompt (its lineage lives in the bead notes). Bounded
+      // to ONE retry by the flag the retry itself clears.
+      //
+      // A BLOCKED verdict is never retried: a guard violation is a property of
+      // what the session did, not of a transcript that could not be found, and
+      // relaunching it would just run into the same guard.
+      if (record.disposition_resume === true && !verdict.blocked) {
+        const retried = await retryDispositionFresh(
+          workspace,
+          attempt_id,
+          bead_id,
+          record,
+          verdict
+        );
+        if (retried) {
+          return;
+        }
+      }
+      releaseDisposition(bead_id);
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        verdict.blocked
+          ? 'loud_fail_blocker'
+          : `session_failed:${verdict.reason}`,
+        verdict.blocked ? blockerCauseDetail(verdict.blocked_detail) : undefined
+      );
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
+    /** @type {{ ok: boolean, reason?: string }} */
+    let result = { ok: false, reason: 'no_disposition_dep' };
+    if (deps.disposition && typeof deps.disposition.complete === 'function') {
+      try {
+        result = await deps.disposition.complete({
+          workspace,
+          attempt_id,
+          bead_id,
+          kind,
+          // Read off the DURABLE record so the verdict is the same after a
+          // restart, where the disposition module holds nothing in memory.
+          prior_receipt: record.disposition_receipt ?? null,
+          target_base:
+            typeof record.target_base === 'string' ? record.target_base : 'main'
+        });
+      } catch (err) {
+        log('disposition completion threw for %s: %o', attempt_id, err);
+        result = { ok: false, reason: 'error' };
+      }
+    }
+    if (!result.ok) {
+      releaseDisposition(bead_id);
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        `disposition_failed:${result.reason || 'unknown'}`
+      );
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
+    // FAIL-CLOSED, exactly like the normal completion path: a stray
+    // `fast_track` left on the bead would switch a later manual session to
+    // unattended, so a failed revert blocks the success.
+    let reverted = true;
+    try {
+      await revertWorkflowMode(bead_id, prior);
+    } catch (err) {
+      log('workflow_mode revert failed after disposition %s: %o', bead_id, err);
+      reverted = false;
+    }
+    if (!reverted) {
+      releaseDisposition(bead_id);
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        'workflow_mode_revert_failed'
+      );
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
+    await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
+    // The disposition writes `open` itself; this only covers a session that
+    // claimed the bead `in_progress` and ended without giving it back.
+    await releaseBeadClaim(bead_id);
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { status: 'done', finished_at: now() }
+    });
+    // Resuming the queue is the LAST step, after the metadata is restored: the
+    // acceptance criterion is that the ordinary lane re-dispatches this bead,
+    // and it must not do so against a half-restored bead. A persist failure
+    // here means the disposition did not achieve its point, so it fails.
+    let resumed = true;
+    try {
+      deps.store.setAutoAdvance(workspace, true);
+    } catch (err) {
+      log('auto_advance resume failed after disposition %s: %o', bead_id, err);
+      resumed = false;
+    }
+    if (!resumed) {
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        'disposition_failed:auto_advance_resume_failed'
+      );
+    }
+    notifyChanged(workspace);
+    await tick(workspace);
+  }
+
+  /**
+   * Give a disposition's per-Bead guard and per-repo lease back (UI-hs11
+   * §3.3). Every termination that does not reach the completion verdict must
+   * call this, or the bead — and the repo's whole fix lane — stays fenced for
+   * the life of the process.
+   *
+   * @param {string} bead_id
+   */
+  function releaseDisposition(bead_id) {
+    if (!deps.disposition || typeof deps.disposition.release !== 'function') {
+      return;
+    }
+    try {
+      deps.disposition.release(bead_id);
+    } catch (err) {
+      log('disposition release failed for %s: %o', bead_id, err);
+    }
+  }
+
+  /**
+   * Relaunch a failed `--resume` disposition as a FRESH substitute session
+   * (UI-hs11 §3.3 fallback). The worktree and the session id can both still be
+   * present while the transcript itself is gone, in which case the resume dies
+   * without doing anything — indistinguishable from a session that ran and
+   * failed, so the retry is attempted once for both and the flag on the child
+   * (`disposition_resume:false`) is what stops a second one.
+   *
+   * The failed ancestor is recorded terminally first, because the relaunch
+   * links to it through `resumed_from` and the guards read that chain.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {any} record - The failed attempt.
+   * @param {RunnerVerdict} verdict
+   * @returns {Promise<boolean>} Whether a substitute session was launched.
+   */
+  async function retryDispositionFresh(
+    workspace,
+    attempt_id,
+    bead_id,
+    record,
+    verdict
+  ) {
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        status: 'failed',
+        cause: `disposition_resume_failed:${verdict.reason}`,
+        finished_at: now()
+      }
+    });
+    /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
+    let relaunched;
+    try {
+      relaunched = await dispatchReviseFix(workspace, {
+        bead_id,
+        attempt_id,
+        prompt:
+          typeof record.disposition_prompt === 'string' &&
+          record.disposition_prompt.length > 0
+            ? record.disposition_prompt
+            : defaultTaskPrompt(bead_id),
+        prior_receipt: record.disposition_receipt ?? null,
+        resume: false
+      });
+    } catch (err) {
+      log('disposition substitute launch threw for %s: %o', bead_id, err);
+      relaunched = { ok: false, reason: 'error' };
+    }
+    if (!relaunched.ok) {
+      log(
+        'disposition substitute launch refused for %s: %s',
+        bead_id,
+        relaunched.reason
+      );
+      return false;
+    }
+    notifyChanged(workspace);
+    return true;
+  }
+
+  /**
    * Is a persisted `running` attempt's process gone? The judgment is
    * attempt_id + PID + START TIME, never mere PID existence: a recycled PID
    * (same number, unrelated process) must read as dead, or a dead session would
@@ -957,6 +1264,67 @@ export function createScheduler(deps) {
     const bead_id = attempt.bead_id;
     const prior = attempt.workflow_mode_prior ?? null;
     const repo = typeof attempt.repo === 'string' ? attempt.repo : '';
+    // A DISPOSITION session that outlived a restart is judged by its own
+    // verdict, never by the PR observation (UI-hs11 §3.3): it opens no PR, so
+    // the branch below would fail every successful repair as `pr_missing`.
+    const kind =
+      typeof attempt.disposition === 'string' && attempt.disposition.length > 0
+        ? attempt.disposition
+        : null;
+    // FIRST, before any observation and for BOTH attempt kinds: retire this
+    // attempt's detached monitor. The stop drains its session log to EOF, which
+    // is what completes the usage tally lifted below AND settles any guard
+    // evidence still in the tail (UI-o2yt §3.3).
+    if (deps.sessionMonitors) {
+      try {
+        deps.sessionMonitors.stop(workspace, attempt_id);
+      } catch (err) {
+        log('session monitor stop failed for %s: %o', attempt_id, err);
+      }
+    }
+    // Re-read AFTER the drain: the evidence may have been written by it.
+    const guard_kill = guardKillOf(workspace, attempt_id);
+    if (kind) {
+      // No claim is taken here, unlike the branch below: the disposition path
+      // owns its own relaunch (which takes the claim itself), and a claim
+      // released around it would drop the NEW session's fence. Nothing can
+      // re-dispatch this bead meanwhile either — the park left `auto_advance`
+      // off, and turning it back on is the last step of a successful verdict.
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: usagePatch(workspace, attempt_id)
+      });
+      // Guard evidence OUTRANKS the disposition's own readback for the same
+      // reason it outranks the `gh` observation: a monitor-killed session must
+      // fail however far its writes got.
+      await onDispositionDone(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        /** @type {any} */ (
+          guard_kill
+            ? {
+                success: false,
+                reason: 'guard_kill',
+                exit: null,
+                blocked: true,
+                blocked_detail: {
+                  reason: guard_kill.reason,
+                  command: guard_kill.command ?? null
+                }
+              }
+            : {
+                success: true,
+                reason: 'reconciled',
+                exit: null,
+                blocked: false
+              }
+        ),
+        kind
+      );
+      return;
+    }
     claimed.add(bead_id);
     try {
       /** @type {{ ok: boolean, reason: string, pr_url?: string|null }} */
@@ -984,7 +1352,23 @@ export function createScheduler(deps) {
         patch: { verify_result: vr, ...usagePatch(workspace, attempt_id) }
       });
 
-      if (vr.ok) {
+      if (guard_kill) {
+        // Blocker evidence OUTRANKS the `gh` observation (UI-o2yt §3.3). An
+        // engine-run session that trips a guard fails no matter what it pushed;
+        // a monitor-killed one must fail the same way, or a PR opened before the
+        // violation would launder the kill into a success.
+        await failAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          'loud_fail_blocker',
+          blockerCauseDetail({
+            reason: guard_kill.reason,
+            command: guard_kill.command ?? null
+          })
+        );
+      } else if (vr.ok) {
         // A failed revert BLOCKS the lane move (fail-closed): a stray
         // `fast_track` left on the bead would switch a later manual session to
         // unattended.
@@ -1422,10 +1806,15 @@ export function createScheduler(deps) {
    *   wt_path: string,
    *   spawnBead: any,
    *   title?: string|null,
-   *   launch_kind?: 'dispatch'|'resume'|'conflict',
+   *   launch_kind?: 'dispatch'|'resume'|'conflict'|'disposition',
    *   resume_session_id?: string|null,
-   *   conflict_resolution?: boolean
+   *   conflict_resolution?: boolean,
+   *   disposition?: string|null
    * }} input
+   * @returns {Promise<{ ok: boolean, reason?: string }>} Whether the session
+   * actually started. A spawn abort is REPORTED rather than swallowed: the
+   * relaunch callers hand their verdict to a click that would otherwise be told
+   * a session is running when none is.
    */
   async function launchSession(input) {
     const {
@@ -1453,12 +1842,29 @@ export function createScheduler(deps) {
       model: model ?? undefined,
       effort: effort ?? undefined,
       fast_track: true,
-      conflict_resolution: input.conflict_resolution === true
+      conflict_resolution: input.conflict_resolution === true,
+      // A disposition session repairs a spec on the base and opens no PR, so
+      // the always-on PR-submit directive would instruct it to do the one
+      // thing its own prompt forbids (UI-hs11 §3.3).
+      disposition: input.disposition ?? null
     };
     // Resume argv branch (spec §1.4): the adapter reads this to continue the
     // prior claude session id / codex thread id.
     if (resume_session_id) {
       settings.resume_session_id = resume_session_id;
+    }
+    // The output files the child inherits as stdout/stderr (UI-o2yt §3.1). The
+    // session log is keyed by the WORKSPACE, not the worktree the session runs
+    // in, so the path is resolved here and handed down rather than derived
+    // inside the engine.
+    if (typeof deps.sessionLog.pathFor === 'function') {
+      settings.log_path = deps.sessionLog.pathFor(workspace, attempt_id);
+      if (typeof deps.sessionLog.stderrPathFor === 'function') {
+        settings.stderr_path = deps.sessionLog.stderrPathFor(
+          workspace,
+          attempt_id
+        );
+      }
     }
 
     /** @type {RunnerHandle} */
@@ -1484,7 +1890,7 @@ export function createScheduler(deps) {
       }
       claimed.delete(bead_id);
       notifyChanged(workspace);
-      return;
+      return { ok: false, reason: 'spawn_failed' };
     }
 
     // Fill the runtime snapshot now that the process exists (spec §5.2). The
@@ -1556,6 +1962,7 @@ export function createScheduler(deps) {
     handle.done.then((verdict) =>
       onSessionDone(workspace, attempt_id, bead_id, doneSnap, prior_wf, verdict)
     );
+    return { ok: true };
   }
 
   /**
@@ -1761,9 +2168,15 @@ export function createScheduler(deps) {
    * launch tail with the adapter's `--resume` argv. Every refusal here is a
    * recorded FAILED child attempt with the stamps rolled back.
    *
+   * `disposition` marks the child as a REVISE-disposition attempt (UI-hs11
+   * §3.3), which changes three things: the record carries the kind (so the
+   * termination path takes the disposition verdict), the session runs WITHOUT
+   * the PR-submit directive, and `cwd`/`resume` may point it at the shared
+   * target_base checkout instead of the bead worktree.
+   *
    * @param {string} workspace
    * @param {any} prior - The source attempt record (guards already passed).
-   * @param {{ prompt: string, conflict_resolution: boolean }} options
+   * @param {{ prompt: string, conflict_resolution: boolean, disposition?: string|null, disposition_receipt?: string|null, cwd?: string|null, resume?: boolean }} options
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function relaunchFromAttempt(workspace, prior, options) {
@@ -1814,6 +2227,12 @@ export function createScheduler(deps) {
         exec_values: stamped_keys.length > 0 ? exec_values : null,
         resumed_from: attempt_id,
         conflict_resolution: options.conflict_resolution,
+        disposition: options.disposition ?? null,
+        disposition_receipt: options.disposition_receipt ?? null,
+        disposition_resume: options.disposition
+          ? options.resume !== false
+          : false,
+        disposition_prompt: options.disposition ? options.prompt : null,
         status: 'running',
         pid: null
       }
@@ -1901,11 +2320,16 @@ export function createScheduler(deps) {
     }
 
     // Reuse the existing worktree — no worktree.add / admission re-check (§1.3).
+    // A disposition may override the cwd: its edits belong to the shared
+    // target_base checkout, not to this bead's branch worktree.
     const wt_path =
-      typeof deps.worktree.pathFor === 'function'
+      options.cwd ||
+      (typeof deps.worktree.pathFor === 'function'
         ? deps.worktree.pathFor(repo, bead_id)
-        : '';
-    await launchSession({
+        : '');
+    const resume_session_id =
+      options.resume === false ? null : prior.session_id;
+    const launched = await launchSession({
       workspace,
       attempt_id: new_attempt_id,
       bead_id,
@@ -1918,16 +2342,97 @@ export function createScheduler(deps) {
       prior_wf,
       stamped_keys,
       wt_path,
-      launch_kind: options.conflict_resolution ? 'conflict' : 'resume',
+      launch_kind: options.disposition
+        ? 'disposition'
+        : options.conflict_resolution
+          ? 'conflict'
+          : 'resume',
       spawnBead: {
         id: bead_id,
         prompt: options.prompt
       },
-      resume_session_id: prior.session_id,
-      conflict_resolution: options.conflict_resolution
+      resume_session_id,
+      conflict_resolution: options.conflict_resolution,
+      disposition: options.disposition ?? null
     });
+    if (!launched.ok) {
+      return { ok: false, reason: launched.reason || 'spawn_failed' };
+    }
 
     return { ok: true, attempt_id: new_attempt_id };
+  }
+
+  /**
+   * Dispatch the REVISE-disposition (finding acceptance) session for a parked
+   * bead (UI-hs11 §3.3). It reuses the relaunch machinery — a child attempt
+   * carrying `resumed_from`, the prior snapshot inherited verbatim, the same
+   * re-stamped metadata — and differs in exactly three ways: the record carries
+   * `disposition`, the session runs in the SHARED target_base checkout (its
+   * edits land on the base, not on a bead branch), and the runner is told to
+   * open no PR.
+   *
+   * The `--resume` argv is used only when the bead's worktree still exists:
+   * the runner's session store is keyed by the directory the session ran in, so
+   * resuming from a different cwd could not find the transcript. Without it the
+   * fallback is a fresh session carrying the same prompt, whose lineage the
+   * bead's own notes supply.
+   *
+   * Cap-exempt like every other human-click dispatch.
+   *
+   * @param {string} workspace
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean }} input
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+   */
+  async function dispatchReviseFix(workspace, input) {
+    const { bead_id, attempt_id, prompt } = input;
+    const q = deps.store.snapshot(workspace);
+    const prior = q.attempts ? q.attempts[attempt_id] : null;
+    if (!prior || prior.bead_id !== bead_id) {
+      return { ok: false, reason: 'attempt_not_found' };
+    }
+    if (claimed.has(bead_id)) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    for (const a of Object.values(q.attempts || {})) {
+      if (a && a.bead_id === bead_id && a.status === 'running') {
+        return { ok: false, reason: 'bead_running' };
+      }
+    }
+    for (const a of Object.values(q.attempts || {})) {
+      if (a && a.resumed_from === attempt_id) {
+        return { ok: false, reason: 'already_resumed' };
+      }
+    }
+    const repo = typeof prior.repo === 'string' ? prior.repo : '';
+    if (repo.length === 0) {
+      return { ok: false, reason: 'repo_unknown' };
+    }
+    const wt_present =
+      typeof deps.worktree.exists === 'function'
+        ? deps.worktree.exists(repo, bead_id)
+        : false;
+    const has_session =
+      typeof prior.session_id === 'string' && prior.session_id.length > 0;
+    // `input.resume === false` is the substitute-session retry: the first
+    // launch's `--resume` found no transcript, so this one starts fresh.
+    const resume = input.resume !== false && wt_present && has_session;
+    return relaunchFromAttempt(workspace, prior, {
+      prompt,
+      conflict_resolution: false,
+      disposition: 'revise_fix',
+      disposition_receipt:
+        input.prior_receipt !== undefined
+          ? input.prior_receipt
+          : (prior.disposition_receipt ?? null),
+      // Resuming needs the ORIGINAL cwd; a fresh session goes straight to the
+      // shared checkout the repair is committed on.
+      cwd: resume
+        ? typeof deps.worktree.pathFor === 'function'
+          ? deps.worktree.pathFor(repo, bead_id)
+          : repo
+        : repo,
+      resume
+    });
   }
 
   /**
@@ -2232,6 +2737,7 @@ export function createScheduler(deps) {
     pause,
     resume,
     resolveConflict,
+    dispatchReviseFix,
     reconcile,
     runningCount() {
       return running.size;

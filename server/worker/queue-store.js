@@ -94,11 +94,35 @@
  * relaxes the session-side base-into-branch `git merge` guard, so it is
  * recorded durably: a reconcile pass or a restart must be able to see what kind
  * of attempt this was. Defaults false — a missing value fails closed.
+ * @property {{ reason: string, command: string|null, at: number }|null} guard_kill -
+ * The fail-closed evidence a DETACHED session monitor recorded before killing an
+ * orphan session (UI-o2yt §3.3). A killed session leaves no verdict behind, so
+ * the reconcile pass would judge it by `gh` alone and read an already-pushed PR
+ * as success; this record is what makes that disposition fail closed instead.
+ * Written before the signal, so it survives even when the kill itself does not
+ * happen (a pid that turned out to be dead or recycled). Null on every attempt
+ * no monitor ever stopped.
  * @property {boolean} spec_review_stale - Whether this attempt was dispatched
  * with a stale spec_review receipt (UI-dlim §3.2), i.e. the session was asked
  * to run the contract's in-session re-review lane before implementing. Recorded
  * durably so the activity log and the UI can tell a plain attempt from one that
  * spent its opening on a receipt refresh. Defaults false.
+ * @property {string|null} disposition - Which REVISE-parking disposition this
+ * attempt is (UI-hs11 §3.3), or null for an ordinary implementation attempt.
+ * Recorded durably because it is what routes the termination away from the
+ * PR-existence verdict — a session that opens no PR must not be judged by one,
+ * and a restart has to be able to tell the two kinds apart.
+ * @property {string|null} disposition_receipt - The `spec_review` value the
+ * disposition is replacing. Durable for the same reason: after a restart the
+ * completion verdict has no in-memory record of what the receipt used to be,
+ * and "the receipt changed" is the whole judgment.
+ * @property {boolean} disposition_resume - Whether this disposition attempt was
+ * launched with the `--resume` argv. A resume whose transcript turned out to be
+ * gone is retried ONCE as a fresh substitute session, and this flag is what
+ * bounds that retry to one.
+ * @property {string|null} disposition_prompt - The task prompt this disposition
+ * was launched with. Durable so the substitute session can be launched with the
+ * identical instruction without re-deriving it — and so a restart can too.
  */
 /**
  * @typedef {Object} Queue
@@ -344,7 +368,14 @@ export function makeAttempt(fields) {
         : null,
     resumed_from: fields.resumed_from ?? null,
     conflict_resolution: fields.conflict_resolution === true,
-    spec_review_stale: fields.spec_review_stale === true
+    guard_kill: isRecord(fields.guard_kill)
+      ? /** @type {Attempt['guard_kill']} */ (fields.guard_kill)
+      : null,
+    spec_review_stale: fields.spec_review_stale === true,
+    disposition: fields.disposition ?? null,
+    disposition_receipt: fields.disposition_receipt ?? null,
+    disposition_resume: fields.disposition_resume === true,
+    disposition_prompt: fields.disposition_prompt ?? null
   };
 }
 

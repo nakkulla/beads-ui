@@ -217,23 +217,21 @@ function makeActions(options = {}) {
       calls.push(`bd:listChildren:${id}`);
       return children[id] || [];
     }),
-    readStatusAndMetadata: vi.fn(
-      async (/** @type {string} */ id, /** @type {string} */ k) => {
-        calls.push(`bd:readStatusAndMetadata:${id}:${k}`);
-        if (options.bdFail && options.bdFail('readStatusAndMetadata', id)) {
-          throw new Error('bd down');
-        }
-        return {
-          // The CLICK-TIME guard answer, kept apart from `bd_status` (which
-          // models the cleanup's own close/restore readbacks).
-          status: (options.bdStatus || {})[id] ?? bd_status.get(id) ?? 'closed',
-          value:
-            k === 'pr_url' && Object.hasOwn(options, 'bdPrUrl')
-              ? (options.bdPrUrl ?? null)
-              : null
-        };
+    readIssue: vi.fn(async (/** @type {string} */ id) => {
+      calls.push(`bd:readIssue:${id}`);
+      if (options.bdFail && options.bdFail('readIssue', id)) {
+        throw new Error('bd down');
       }
-    )
+      return {
+        id,
+        // The CLICK-TIME guard answer, kept apart from `bd_status` (which
+        // models the cleanup's own close/restore readbacks).
+        status: (options.bdStatus || {})[id] ?? bd_status.get(id) ?? 'closed',
+        metadata: Object.hasOwn(options, 'bdPrUrl')
+          ? { pr_url: options.bdPrUrl ?? undefined }
+          : {}
+      };
+    })
   };
   /** @type {Map<string, string>} */
   const bd_status = new Map();
@@ -1744,8 +1742,7 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
   test('refuses when the click-time bd re-read fails', async () => {
     const env = makeActions(
       externalOptions({
-        bdFail: (/** @type {string} */ method) =>
-          method === 'readStatusAndMetadata'
+        bdFail: (/** @type {string} */ method) => method === 'readIssue'
       })
     );
 
@@ -1842,7 +1839,7 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     const r = await env.actions.merge(BEAD);
 
     expect(r.action).toBe('merged');
-    expect(env.calls).not.toContain(`bd:readStatusAndMetadata:${BEAD}:pr_url`);
+    expect(env.calls).not.toContain(`bd:readIssue:${BEAD}`);
   });
 });
 
@@ -1936,13 +1933,13 @@ describe('worker/pr-actions — external rows write no durable lane state (impl 
 
     await env.actions.merge(EXTERNAL_BEAD);
 
-    expect(env.bd.readStatusAndMetadata).toHaveBeenCalledTimes(1);
+    expect(env.bd.readIssue).toHaveBeenCalledTimes(1);
   });
 
   test('refuses when the bd adapter cannot answer atomically', async () => {
     const env = makeActions(externalOptions());
     // @ts-expect-error - modelling a legacy adapter without the atomic read.
-    delete env.bd.readStatusAndMetadata;
+    delete env.bd.readIssue;
 
     const r = await env.actions.merge(EXTERNAL_BEAD);
 

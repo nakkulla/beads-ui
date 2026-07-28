@@ -166,7 +166,7 @@ function isConflicting(pr) {
  *     readStatus: (bead_id: string) => Promise<string|null>,
  *     unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *     readMetadata: (bead_id: string, key: string) => Promise<string|null>,
- *     readStatusAndMetadata?: (bead_id: string, key: string) => Promise<{ status: string|null, value: string|null }>,
+ *     readIssue?: (bead_id: string) => Promise<Record<string, any>>,
  *     listChildren?: (bead_id: string) => Promise<{ id: string, status: string }[]>
  *   },
  *   external?: {
@@ -288,12 +288,13 @@ export function createPrActions(deps) {
    * click and a bead that was closed, discarded, or re-opened since the snapshot
    * the user clicked on was rendered.
    *
-   * It is ONE `bd show`, not a status read plus a metadata read (implementation
-   * review 2026-07-28). The guard's whole claim is that both facts hold at the
-   * SAME instant; a bead closing between two queries keeps its `pr_url`, so the
-   * pair would report `resolved` + a live url for a bead that is already closed.
-   * Fail-closed — an unreadable bd throws and the click is refused, and an
-   * adapter that cannot answer atomically is refused rather than downgraded.
+   * It reads ONE `bd show` through `readIssue`, not a status read plus a
+   * metadata read (implementation review 2026-07-28). The guard's whole claim is
+   * that both facts hold at the SAME instant; a bead closing between two queries
+   * keeps its `pr_url`, so the pair would report `resolved` + a live url for a
+   * bead that is already closed. Fail-closed — an unreadable bd throws and the
+   * click is refused, and an adapter that cannot answer atomically is refused
+   * rather than downgraded.
    *
    * @param {Queue} q
    * @param {string} bead_id
@@ -306,21 +307,25 @@ export function createPrActions(deps) {
     if (!external || !external.get(workspace, bead_id)) {
       return { ok: false, reason: 'not_in_pr_wait' };
     }
-    if (typeof deps.bd.readStatusAndMetadata !== 'function') {
+    if (typeof deps.bd.readIssue !== 'function') {
       return { ok: false, reason: 'bd_read_unsupported' };
     }
-    /** @type {{ status: string|null, value: string|null }} */
-    let snapshot;
+    /** @type {Record<string, any>} */
+    let issue;
     try {
-      snapshot = await deps.bd.readStatusAndMetadata(bead_id, 'pr_url');
+      issue = await deps.bd.readIssue(bead_id);
     } catch (err) {
       log('external lane re-read failed for %s: %o', bead_id, err);
       return { ok: false, reason: 'bd_read_failed' };
     }
-    if (snapshot.status !== 'resolved') {
+    if (issue.status !== 'resolved') {
       return { ok: false, reason: 'not_resolved' };
     }
-    const pr_url = snapshot.value;
+    const md = issue.metadata;
+    const pr_url =
+      md && typeof md === 'object'
+        ? /** @type {Record<string, unknown>} */ (md).pr_url
+        : null;
     if (typeof pr_url !== 'string' || pr_url.length === 0) {
       return { ok: false, reason: 'pr_url_missing' };
     }

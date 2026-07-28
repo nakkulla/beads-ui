@@ -909,6 +909,164 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
   });
 });
 
+describe('ws worker REVISE disposition (UI-hs11 §3.2)', () => {
+  /**
+   * @param {{ fix?: any, approve?: any }} actions
+   */
+  function registerDisposition(actions) {
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: { merge: vi.fn(), discard: vi.fn() },
+        reviseDisposition: {
+          fix: actions.fix || vi.fn(),
+          approve: actions.approve || vi.fn()
+        }
+      })
+    );
+  }
+
+  test('worker-revise-fix reaches the action and reports the dispatched attempt', async () => {
+    const fix = vi.fn(async () => ({ ok: true, attempt_id: 'a2' }));
+    registerDisposition({ fix });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-revise-fix', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(fix).toHaveBeenCalledWith('UI-1');
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      bead_id: 'UI-1',
+      ok: true,
+      conflict: false,
+      attempt_id: 'a2'
+    });
+  });
+
+  test('worker-revise-approve reaches the action and reports the new receipt sha', async () => {
+    const approve = vi.fn(async () => ({ ok: true, sha: 'f'.repeat(40) }));
+    registerDisposition({ approve });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-revise-approve', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(approve).toHaveBeenCalledWith('UI-1');
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      ok: true,
+      sha: 'f'.repeat(40)
+    });
+  });
+
+  test('a stale revision refuses the disposition without acting', async () => {
+    const fix = vi.fn();
+    registerDisposition({ fix });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-revise-fix', {
+      bead_id: 'UI-1',
+      expected_revision: 99
+    });
+
+    expect(fix).not.toHaveBeenCalled();
+    expect(replyFor(sock, 'm1').payload.conflict).toBe(true);
+  });
+
+  test('a bead the action does not find parked is refused with its reason', async () => {
+    registerDisposition({
+      approve: async () => ({ ok: false, reason: 'not_parked' })
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-revise-approve', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      ok: false,
+      conflict: false,
+      reason: 'not_parked'
+    });
+  });
+
+  test('an action throw collapses to reason error, never an unhandled rejection', async () => {
+    registerDisposition({
+      fix: async () => {
+        throw new Error('boom');
+      }
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-revise-fix', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      ok: false,
+      reason: 'error'
+    });
+  });
+
+  test('is inert without a registered attachment', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-revise-fix', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      ok: false,
+      reason: 'no_attachment'
+    });
+  });
+
+  test('rejects a payload without a bead_id', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'm1', 'worker-revise-approve', { expected_revision: 0 });
+
+    expect(replyFor(sock, 'm1').ok).toBe(false);
+  });
+
+  test('fans a fresh snapshot out even when the disposition was refused', async () => {
+    registerDisposition({
+      fix: async () => ({ ok: false, reason: 'not_parked' })
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'm1', 'worker-revise-fix', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(queueSnapshots(sock).length).toBe(1);
+  });
+
+  test('a queue with nothing parked carries an empty observation map', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).revise_parked).toEqual({});
+  });
+});
+
 describe('ws worker PR actions (worker-phase2 §6)', () => {
   test('worker-pr-merge reaches the action and reports what it actually did', async () => {
     const merge = vi.fn(async () => ({

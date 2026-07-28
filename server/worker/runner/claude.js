@@ -301,7 +301,13 @@ export function claudeSpec(options = {}) {
         args.push('--effort', String(s.effort));
       }
       args.push('--permission-mode', 'bypassPermissions');
-      args.push(applyPreamble(promptFor(bead), { fast_track: !!s.fast_track }));
+      args.push(
+        applyPreamble(promptFor(bead), {
+          fast_track: !!s.fast_track,
+          // A disposition session opens no PR (UI-hs11 §3.3).
+          pr_submit: !s.disposition
+        })
+      );
       return { command: 'claude', args, env: routing_env };
     },
     normalize,

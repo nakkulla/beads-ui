@@ -66,7 +66,9 @@ import {
   handleWorkerQueueReorder,
   handleWorkerQueueSetExecDefault,
   handleWorkerQueueSetSlots,
-  handleWorkerQueueToggle
+  handleWorkerQueueToggle,
+  handleWorkerReviseApprove,
+  handleWorkerReviseFix
 } from './worker-handlers.js';
 import {
   handleGetWorkspace,
@@ -466,6 +468,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-pr-discard':
       await handleWorkerPrDiscard(ws, req);
+      return;
+    case 'worker-revise-fix':
+      await handleWorkerReviseFix(ws, req);
+      return;
+    case 'worker-revise-approve':
+      await handleWorkerReviseApprove(ws, req);
       return;
     case 'subscribe-ui-order':
       handleSubscribeUiOrder(ws, req);

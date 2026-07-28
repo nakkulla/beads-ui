@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { getWorkerRuntime } from './worker/runtime.js';
+import { sessionLogPath } from './worker/state-paths.js';
 import {
   __resetRegistriesForTest,
   __resetWorkerQueueForTest,
@@ -13,6 +14,20 @@ import {
 
 /** @type {string} */
 let tmp_state;
+
+/**
+ * Write a raw line the way the RUNNER now does — straight to the session-log
+ * file through its own fd (UI-o2yt §3.1). The snapshot path reads that file.
+ *
+ * @param {string} ws_key
+ * @param {string} attempt_id
+ * @param {unknown} event
+ */
+function writeRunnerLine(ws_key, attempt_id, event) {
+  const file = sessionLogPath(ws_key, attempt_id);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, `${JSON.stringify(event)}\n`);
+}
 
 /**
  * A minimal fake socket that records everything the server sends.
@@ -91,12 +106,11 @@ afterEach(() => {
 describe('ws session-log (transcript) channel', () => {
   test('subscribe emits a snapshot of the persisted raw stream', async () => {
     const ws_key = process.cwd();
-    const runtime = getWorkerRuntime();
-    runtime.sessionLog.append(ws_key, 'att-done', {
+    writeRunnerLine(ws_key, 'att-done', {
       type: 'assistant',
       message: { content: [{ type: 'text', text: 'hello' }] }
     });
-    runtime.sessionLog.append(ws_key, 'att-done', {
+    writeRunnerLine(ws_key, 'att-done', {
       type: 'result',
       subtype: 'success',
       is_error: false,
@@ -132,8 +146,8 @@ describe('ws session-log (transcript) channel', () => {
     );
     sock.sent = [];
 
-    // A live attempt appends a new event → it is pushed as an append.
-    runtime.sessionLog.append(ws_key, 'att-live', {
+    // A live attempt's reader re-broadcasts a new event → pushed as an append.
+    runtime.sessionLog.publish(ws_key, 'att-live', {
       type: 'assistant',
       message: { content: [{ type: 'text', text: 'streaming…' }] }
     });
@@ -153,10 +167,10 @@ describe('ws session-log (transcript) channel', () => {
     });
     sock.sent = [];
 
-    runtime.sessionLog.append(ws_key, 'att-b', { type: 'turn.started' });
+    runtime.sessionLog.publish(ws_key, 'att-b', { type: 'turn.started' });
     expect(pushesOfType(sock, 'session-log-append')).toHaveLength(0);
 
-    runtime.sessionLog.append(ws_key, 'att-a', { type: 'turn.started' });
+    runtime.sessionLog.publish(ws_key, 'att-a', { type: 'turn.started' });
     expect(pushesOfType(sock, 'session-log-append')).toHaveLength(1);
   });
 
@@ -174,7 +188,7 @@ describe('ws session-log (transcript) channel', () => {
     expect(replyFor(sock, 'u1').payload.unsubscribed).toBe(true);
     sock.sent = [];
 
-    runtime.sessionLog.append(ws_key, 'att-x', { type: 'turn.started' });
+    runtime.sessionLog.publish(ws_key, 'att-x', { type: 'turn.started' });
     expect(pushesOfType(sock, 'session-log-append')).toHaveLength(0);
   });
 

@@ -284,54 +284,69 @@ describe('worker/bd-metadata listResolvedPrBeads (UI-7agi §1)', () => {
   });
 });
 
-describe('worker/bd-metadata readStatusAndMetadata (impl review 2026-07-28)', () => {
-  test('reads status and one metadata key from a single bd show', async () => {
-    const runJson = vi.fn(async () => ({
-      code: 0,
-      stdoutJson: [
-        {
-          id: 'UI-1',
-          status: 'resolved',
-          metadata: { pr_url: 'https://github.com/o/r/pull/7' }
-        }
-      ]
-    }));
-
-    const r = await createBdMetadata({ runJson }).readStatusAndMetadata(
-      'UI-1',
-      'pr_url'
-    );
-
-    expect(r).toEqual({
-      status: 'resolved',
-      value: 'https://github.com/o/r/pull/7'
+describe('worker/bd-metadata one-write disposition update (UI-hs11)', () => {
+  test('composes set, unset, status and notes into a single bd update', async () => {
+    /** @type {string[][]} */
+    const argv = [];
+    const run = vi.fn(async (/** @type {string[]} */ args) => {
+      argv.push(args);
+      return { code: 0, stdout: '', stderr: '' };
     });
-    expect(runJson).toHaveBeenCalledTimes(1);
+
+    await createBdMetadata({ run, cwd: '/repo' }).updateFields('UI-1', {
+      set: { spec_review: 'skipped@' + 'a'.repeat(40) },
+      unset: ['blocked_reason'],
+      status: 'open',
+      append_notes: '처분 계보'
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(argv[0]).toEqual([
+      'update',
+      'UI-1',
+      '--set-metadata',
+      'spec_review=skipped@' + 'a'.repeat(40),
+      '--unset-metadata',
+      'blocked_reason',
+      '--status',
+      'open',
+      '--append-notes',
+      '처분 계보'
+    ]);
   });
 
-  test('reports an absent key as null without failing the read', async () => {
-    const runJson = vi.fn(async () => ({
-      code: 0,
-      stdoutJson: { id: 'UI-1', status: 'open', metadata: {} }
-    }));
+  test('runs nothing when the input carries no field', async () => {
+    const run = vi.fn();
 
-    expect(
-      await createBdMetadata({ runJson }).readStatusAndMetadata(
-        'UI-1',
-        'pr_url'
-      )
-    ).toEqual({ status: 'open', value: null });
+    await createBdMetadata({ run }).updateFields('UI-1', {});
+
+    expect(run).not.toHaveBeenCalled();
   });
 
-  test('throws on a non-zero exit rather than reporting a null pair', async () => {
-    const runJson = vi.fn(async () => ({
-      code: 1,
-      stdoutJson: null,
-      stderr: 'bd down'
-    }));
+  test('a non-zero exit THROWS so a half-applied disposition cannot read as done', async () => {
+    const run = vi.fn(async () => ({ code: 1, stdout: '', stderr: 'boom' }));
 
     await expect(
-      createBdMetadata({ runJson }).readStatusAndMetadata('UI-1', 'pr_url')
-    ).rejects.toThrow(/bd show UI-1 failed \(1\)/);
+      createBdMetadata({ run }).updateFields('UI-1', { status: 'open' })
+    ).rejects.toThrow(/bd update UI-1 failed \(1\)/);
+  });
+
+  test('readIssue returns the whole issue and throws on an unreadable payload', async () => {
+    const ok = createBdMetadata({
+      runJson: async () => ({
+        code: 0,
+        stdoutJson: { id: 'UI-1', status: 'blocked' }
+      })
+    });
+    const broken = createBdMetadata({
+      runJson: async () => ({ code: 0, stdoutJson: 'nope' })
+    });
+
+    await expect(ok.readIssue('UI-1')).resolves.toMatchObject({
+      status: 'blocked'
+    });
+    await expect(broken.readIssue('UI-1')).rejects.toThrow(
+      /unreadable payload/
+    );
   });
 });

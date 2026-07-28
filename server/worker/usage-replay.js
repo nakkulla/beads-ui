@@ -29,15 +29,22 @@ import { liftUsage } from './runner/claude.js';
  *   session_log: ReturnType<typeof createSessionLog>,
  *   usage_store: ReturnType<typeof createUsageStore>,
  *   workspace: string,
- *   attempt_id: string
- * }} input
+ *   attempt_id: string,
+ *   end_offset?: number
+ * }} input - `end_offset` bounds the replay at the handoff boundary a
+ * reattached monitor continues from (UI-o2yt §3.3); omitted, the whole log is
+ * replayed, which is what a dead attempt's recovery wants.
  * @returns {boolean}
  */
 export function replayUsage(input) {
-  const { session_log, usage_store, workspace, attempt_id } = input;
+  const { session_log, usage_store, workspace, attempt_id, end_offset } = input;
   try {
     let recorded = 0;
-    for (const raw of session_log.read(workspace, attempt_id)) {
+    const lines =
+      typeof end_offset === 'number'
+        ? session_log.read(workspace, attempt_id, { end_offset })
+        : session_log.read(workspace, attempt_id);
+    for (const raw of lines) {
       const lifted = liftUsage(raw);
       if (!lifted) {
         continue;
