@@ -24,7 +24,12 @@ async function statusFor(route, init) {
     frontend_mode: 'static'
   });
   const server = createServer(app);
-  await new Promise((resolve) => server.listen(0, () => resolve(undefined)));
+  // Bind the loopback address the fetch below targets: a wildcard bind can be
+  // handed an ephemeral port another process already holds on 127.0.0.1, and
+  // the more specific bind wins the connection.
+  await new Promise((resolve) =>
+    server.listen(0, '127.0.0.1', () => resolve(undefined))
+  );
   const address = server.address();
   if (!address || typeof address === 'string') {
     throw new Error('no address');
