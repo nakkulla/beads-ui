@@ -693,6 +693,16 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {Set<string>}
    */
   const merge_pending = new Set();
+  /**
+   * Beads whose REVISE-disposition click is in flight (UI-hs11 §3.5). It covers
+   * the same gap `merge_pending` covers — the window between the click and the
+   * reply — so a second click cannot be issued while the first is still being
+   * decided. The server's per-Bead in-flight guard is the authority; this is
+   * only what keeps the row from inviting the doomed second click.
+   *
+   * @type {Set<string>}
+   */
+  const revise_pending = new Set();
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -1078,6 +1088,63 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The REVISE-parking disposition clicks (UI-hs11 §3.5). Both follow the merge
+   * click's discipline: send the current revision, adopt the authoritative
+   * queue a conflict reply carries, retry ONCE against the fresh revision, and
+   * report the outcome as a toast. The `revise_pending` cover keeps the row's
+   * buttons quiet for the whole round trip — a fix click dispatches a session,
+   * and a second one landing mid-dispatch is exactly what the server's per-Bead
+   * guard would have to refuse anyway.
+   *
+   * @param {'worker-revise-fix'|'worker-revise-approve'} type
+   * @param {string} bead_id
+   */
+  async function reviseDisposition(type, bead_id) {
+    if (!transport || !bead_id || revise_pending.has(bead_id)) {
+      return;
+    }
+    revise_pending.add(bead_id);
+    doRender();
+    /** @type {any} */
+    let res;
+    try {
+      res = /** @type {any} */ (
+        await transport(type, {
+          bead_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+      if (res && res.conflict) {
+        res = /** @type {any} */ (
+          await transport(type, {
+            bead_id,
+            expected_revision: currentRevision()
+          })
+        );
+        adopt(res);
+      }
+    } finally {
+      revise_pending.delete(bead_id);
+      doRender();
+    }
+    if (!res || res.conflict) {
+      return;
+    }
+    if (res.ok) {
+      showToast(
+        type === 'worker-revise-fix'
+          ? '처분 세션을 띄웠습니다 — 수리 후 구현이 재디스패치됩니다'
+          : '델타 승인 완료 — 영수증 갱신 + 파킹 해제',
+        'success',
+        2800
+      );
+      return;
+    }
+    showToast(`처분 거부: ${res.reason || ''}`, 'error', 3000);
+  }
+
+  /**
    * @param {boolean} on
    */
   async function setAutoAdvance(on) {
@@ -1281,24 +1348,45 @@ export function createWorkerView(mount_element, options = {}) {
     const filtered = applyCandidateFilter(candidate_rows, candidate_filter);
     const candidates = filtered.visible;
 
+    // REVISE 파킹 관측 (UI-hs11 §3.1). 서버가 못 보내는 구버전에서는 빈
+    // 객체이므로 처분 카드가 그냥 렌더되지 않는다 (fail-quiet).
+    /** @type {Record<string, any>} */
+    const revise_parked = q.revise_parked || {};
+
     /**
      * @param {any[]} entries
      * @param {'queue'|'done'} lane
      * @returns {any[]}
      */
     const toRows = (entries, lane) =>
-      entries.map((/** @type {any} */ e) => ({
-        id: e.bead_id,
-        title: idToTitle.get(e.bead_id) || e.bead_id,
-        reason: lane === 'done' ? '' : admissionBadge(e.bead_id),
-        draggable: lane !== 'done',
-        done: lane === 'done',
-        lane,
-        // 완료 행은 마지막 attempt의 토큰 사용량을 함께 보여준다 (UI-raqh §1);
-        // 대기 행은 아직 실행 전이라 붙일 것이 없다.
-        usage:
-          lane === 'done' ? lastAttemptUsage(q.attempts || {}, e.bead_id) : null
-      }));
+      entries.map((/** @type {any} */ e) => {
+        const parked = lane === 'queue' ? revise_parked[e.bead_id] : null;
+        return {
+          id: e.bead_id,
+          title: idToTitle.get(e.bead_id) || e.bead_id,
+          reason: lane === 'done' ? '' : admissionBadge(e.bead_id),
+          draggable: lane !== 'done',
+          done: lane === 'done',
+          lane,
+          // 파킹 행은 처분 대기 카드다 (§3.5): 뱃지 + 버튼 2개. 뱃지는 사람의
+          // 결정을 기다리는 상태이므로 alert 색을 쓴다.
+          badges: parked ? ['⏸ REVISE 파킹'] : [],
+          alert: !!parked,
+          revise_action: !!parked,
+          revise_enabled: !!parked && !revise_pending.has(e.bead_id),
+          revise_title: parked
+            ? parked.notes_tail
+              ? `REVISE findings (자세히는 카드 클릭 → 이슈 상세):\n${parked.notes_tail}`
+              : 'notes의 REVISE finding을 스펙에 반영하는 처분 세션을 띄웁니다'
+            : '',
+          // 완료 행은 마지막 attempt의 토큰 사용량을 함께 보여준다 (UI-raqh §1);
+          // 대기 행은 아직 실행 전이라 붙일 것이 없다.
+          usage:
+            lane === 'done'
+              ? lastAttemptUsage(q.attempts || {}, e.bead_id)
+              : null
+        };
+      });
 
     const attempts = q.attempts ? Object.values(q.attempts) : [];
     // A resumed_from carried by any attempt marks its ancestor as spent, so an
@@ -2261,6 +2349,27 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (discardBtn) {
       void discardPr(discardBtn.dataset.beadId || '');
+      return;
+    }
+    // REVISE 파킹 처분도 같은 이유로 행 기본 동작보다 먼저 처리한다.
+    const reviseFixBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__revise-fix')
+    );
+    if (reviseFixBtn) {
+      void reviseDisposition(
+        'worker-revise-fix',
+        reviseFixBtn.dataset.beadId || ''
+      );
+      return;
+    }
+    const reviseApproveBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__revise-approve')
+    );
+    if (reviseApproveBtn) {
+      void reviseDisposition(
+        'worker-revise-approve',
+        reviseApproveBtn.dataset.beadId || ''
+      );
       return;
     }
     // The PR link is a link — let the browser open it, never treat it as a row

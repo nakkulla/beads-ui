@@ -99,6 +99,11 @@
  * to run the contract's in-session re-review lane before implementing. Recorded
  * durably so the activity log and the UI can tell a plain attempt from one that
  * spent its opening on a receipt refresh. Defaults false.
+ * @property {string|null} disposition - Which REVISE-parking disposition this
+ * attempt is (UI-hs11 §3.3), or null for an ordinary implementation attempt.
+ * Recorded durably because it is what routes the termination away from the
+ * PR-existence verdict — a session that opens no PR must not be judged by one,
+ * and a restart has to be able to tell the two kinds apart.
  */
 /**
  * @typedef {Object} Queue
@@ -344,7 +349,8 @@ export function makeAttempt(fields) {
         : null,
     resumed_from: fields.resumed_from ?? null,
     conflict_resolution: fields.conflict_resolution === true,
-    spec_review_stale: fields.spec_review_stale === true
+    spec_review_stale: fields.spec_review_stale === true,
+    disposition: fields.disposition ?? null
   };
 }
 

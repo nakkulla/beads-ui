@@ -2837,6 +2837,152 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
   });
 });
 
+describe('worker view — REVISE 파킹 처분 카드 (UI-hs11 §3.5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {Record<string, any>} [over]
+   */
+  function parkedQueue(over = {}) {
+    return queueOf({
+      queue: [{ bead_id: 'RD-1', added_at: 1 }],
+      revise_parked: {
+        'RD-1': {
+          attempt_id: 'p1',
+          repo: '/repo',
+          target_base: 'main',
+          session_id: 'sid',
+          receipt: 'codex@' + 'a'.repeat(40),
+          notes_tail: 'findings: 스펙 §3 누락',
+          at: 1
+        }
+      },
+      ...over
+    });
+  }
+
+  /**
+   * @param {any} queue
+   * @param {any} [transport]
+   */
+  function mountWith(queue, transport = vi.fn(async () => ({ ok: true }))) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    return { mount, transport };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLElement}
+   */
+  function rowOf(mount) {
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+  }
+
+  test('renders the parking badge and both disposition buttons', () => {
+    const { mount } = mountWith(parkedQueue());
+
+    const row = rowOf(mount);
+    expect(
+      /** @type {HTMLElement} */ (row.querySelector('.worker-mini__badge'))
+        .textContent
+    ).toBe('⏸ REVISE 파킹');
+    expect(row.querySelector('.worker-mini__revise-fix')).not.toBe(null);
+    expect(row.querySelector('.worker-mini__revise-approve')).not.toBe(null);
+  });
+
+  test('carries the findings summary as the fix button tooltip', () => {
+    const { mount } = mountWith(parkedQueue());
+
+    const btn = /** @type {HTMLElement} */ (
+      rowOf(mount).querySelector('.worker-mini__revise-fix')
+    );
+    expect(btn.getAttribute('title')).toContain('스펙 §3 누락');
+  });
+
+  test('renders no disposition card for an unparked queued bead', () => {
+    const { mount } = mountWith(
+      queueOf({ queue: [{ bead_id: 'RD-1', added_at: 1 }] })
+    );
+
+    const row = rowOf(mount);
+    expect(row.querySelector('.worker-mini__revise-fix')).toBe(null);
+    expect(row.querySelector('.worker-mini__badge')).toBe(null);
+  });
+
+  test('renders nothing extra when the server sends no observation at all', () => {
+    const { mount } = mountWith(
+      queueOf({
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        revise_parked: null
+      })
+    );
+
+    expect(rowOf(mount).querySelector('.worker-mini__revise-approve')).toBe(
+      null
+    );
+  });
+
+  test('the fix button sends worker-revise-fix with the current revision', async () => {
+    const transport = vi.fn(async () => ({ ok: true, attempt_id: 'a2' }));
+    const { mount } = mountWith(parkedQueue(), transport);
+
+    /** @type {HTMLElement} */ (
+      rowOf(mount).querySelector('.worker-mini__revise-fix')
+    ).click();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('worker-revise-fix', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+  });
+
+  test('the approve button sends worker-revise-approve', async () => {
+    const transport = vi.fn(async () => ({ ok: true, sha: 'b'.repeat(40) }));
+    const { mount } = mountWith(parkedQueue(), transport);
+
+    /** @type {HTMLElement} */ (
+      rowOf(mount).querySelector('.worker-mini__revise-approve')
+    ).click();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('worker-revise-approve', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+  });
+
+  test('retries once against the fresh revision on a CAS conflict', async () => {
+    const transport = vi.fn(async () => ({
+      conflict: true,
+      queue: { ...parkedQueue(), revision: 7 }
+    }));
+    const { mount } = mountWith(parkedQueue(), transport);
+
+    /** @type {HTMLElement} */ (
+      rowOf(mount).querySelector('.worker-mini__revise-approve')
+    ).click();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+
+    expect(transport.mock.calls[1]).toEqual([
+      'worker-revise-approve',
+      { bead_id: 'RD-1', expected_revision: 7 }
+    ]);
+  });
+});
+
 describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';

@@ -366,3 +366,28 @@ describe('runner/claude resume argv (spec §1.4)', () => {
     expect(spawn_impl.captured.calls[0].args).not.toContain('--resume');
   });
 });
+
+describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
+  test('omits the PR-submit directive for a disposition session', () => {
+    const spec = claudeSpec();
+
+    const { args } = spec.buildArgv(
+      { id: 'UI-1', prompt: '처분하라' },
+      '/repo',
+      { fast_track: true, disposition: 'revise_fix' }
+    );
+
+    expect(args.at(-1)).not.toContain('PR 제출까지 수행하고');
+    expect(args.at(-1)).toContain('처분하라');
+  });
+
+  test('keeps it for an ordinary dispatch', () => {
+    const spec = claudeSpec();
+
+    const { args } = spec.buildArgv({ id: 'UI-1' }, '/repo', {
+      fast_track: true
+    });
+
+    expect(args.at(-1)).toContain('PR 제출까지 수행하고');
+  });
+});

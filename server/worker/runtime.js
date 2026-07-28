@@ -18,6 +18,7 @@ import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createQueueStore } from './queue-store.js';
+import { createReviseParkedStore } from './revise-parked.js';
 import { createSessionLog } from './session-log.js';
 import { createTitleCache } from './title-cache.js';
 import { createUsageStore } from './usage-store.js';
@@ -31,6 +32,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createUsageStore>} usageStore
  * @property {ReturnType<typeof createActivityStore>} activityStore
  * @property {ReturnType<typeof createTitleCache>} titleCache
+ * @property {ReturnType<typeof createReviseParkedStore>} reviseParked
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number }} status
@@ -65,6 +67,11 @@ export function createWorkerRuntime() {
   // READS it and its own async `bd show` fill WRITES it. Non-persistent, and
   // display-only — see the module for why staleness is accepted here.
   const titleCache = createTitleCache();
+  // Process-wide REVISE-parking observation cache (UI-hs11 §3.1): the ws
+  // queue-snapshot decoration READS it, its own async `bd show` fill WRITES it,
+  // and the two disposition handlers re-verify through the same instance so a
+  // click and a badge can never disagree about which bead is parked.
+  const reviseParked = createReviseParkedStore();
   // Shared session-log broker: the scheduler's `attach` persists the raw stream
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
@@ -80,6 +87,7 @@ export function createWorkerRuntime() {
     usageStore,
     activityStore,
     titleCache,
+    reviseParked,
     sessionLog,
     /**
      * @param {() => number} fn
