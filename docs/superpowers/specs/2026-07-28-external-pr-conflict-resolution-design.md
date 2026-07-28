@@ -40,22 +40,28 @@ UI-7agi가 도입한 pr_wait 외부 행(일반 세션이 배달한 PR)은 충돌
 
 ### §1 서버 — `dispatchExternalConflict` (server/worker/scheduler.js)
 
-`dispatchExternalConflict(workspace, bead_id)`를 신설한다.
+`dispatchExternalConflict(workspace, bead_id, target_base)`를 신설한다.
 
 - 가드(즉시 거부, 실패 attempt 기록 없음):
   - claimed 또는 running attempt 존재 → `bead_running`.
   - external 레지스트리(`externalPrs.get`)에 행 없음 → `not_external`.
   - `worktree.exists(repo, bead_id)` 실패 → `worktree_missing`.
-- `repo`는 workspace의 대상 저장소, `target_base`는 클릭 시점 gh 관측의
-  `base_ref`(pr-actions가 전달)로 하고 없으면 `main`.
+- `repo`는 workspace의 대상 저장소, `target_base`는 pr-actions가 클릭 시점 gh
+  관측의 `base_ref`로 채워 인자로 전달하고, 비어 있으면 `main`.
 - exec 4키는 큐 디스패치와 동일하게 `resolveExecSettings`(bead metadata >
-  workspace `exec_defaults` > 하드코드 fallback)로 해석한다.
+  workspace `exec_defaults` > 하드코드 fallback)로 해석하고, 큐 디스패치와
+  동일하게 `stamped_keys`/`exec_values`를 attempt에 기록하며 bead-absent 키를
+  set + readback으로 스탬프하고 종료·실패 시 revert한다(`review_model`·
+  `impl_model`은 metadata 스탬프로만 세션에 전달되므로 스탬프 생략 시 해석이
+  무효가 된다). 스탬프 실패는 기존 계약대로 failed
+  attempt(`exec_stamp_failed`)를 기록하고 이미 쓴 스탬프를 되돌린다.
 - `workflow_mode=fast_track` 스탬프 + readback + 종료 시 revert 계약을 기존
   dispatch/relaunch와 동일하게 따른다. 스탬프 실패는 기존 계약대로 failed
-  attempt(`workflow_mode_record_failed` 등)를 기록한다.
+  attempt(`workflow_mode_record_failed`)를 기록한다.
 - attempt 레코드: 신규 `attempt_id`, `resumed_from` 없음,
-  `conflict_resolution: true`, `base_oid: null`(admission 없음),
-  runner/model/effort는 exec 해석 결과.
+  `conflict_resolution: true`, **`external_conflict: true`(durable
+  식별자)**, `base_oid: null`(admission 없음), runner/model/effort는 exec 해석
+  결과.
 - `launchSession` 호출: `wt_path = worktree.pathFor(repo, bead_id)`,
   `resume_session_id: null`, `launch_kind: 'conflict'`, 프롬프트는 기존
   `conflictPrompt(bead_id, target_base)` 재사용. command-guard의
@@ -64,9 +70,15 @@ UI-7agi가 도입한 pr_wait 외부 행(일반 세션이 배달한 PR)은 충돌
 - 기록 정직성: 이 attempt는 워커가 실제로 실행하는 세션의 기록이므로
   external-pr.js의 "합성 attempt 금지" 원칙과 충돌하지 않는다. 단
   **queue.json 레인 멤버십은 계속 external overlay 소유**다 — attempt가
-  기록되어도 bead는 durable 레인(items/pr_wait)에 들어가지 않고, attempt
-  종결(성공·실패·폐기) 시에도 레인 이동·dequeue가 없어야 한다(§5 회귀
-  테스트).
+  기록되어도 bead는 durable 레인(items/pr_wait)에 들어가지 않는다.
+- 종결 분기: 현행 `onSessionDone()`(live 종료)과 `disposeDeadAttempt()`(재시작
+  복구)는 성공 시 무조건 `verifyPrSubmitted` → `moveToPrWait`를 타므로, 외부
+  해소 attempt가 그대로 흐르면 durable `pr_wait` 레인에 bead가 주입된다. 두
+  종결 경로 모두 attempt의 `external_conflict`(durable 식별자 — 재시작 후에도
+  판별 가능)를 보고 분기해, 성공 시 attempt만 `done`으로 종결하고
+  workflow_mode/exec 스탬프를 revert하며 `moveToPrWait`·`prWaitEntered`를
+  호출하지 않는다. 실패는 기존 `failAttempt` 경로를 그대로 쓰되 레인
+  삽입·재큐잉이 없어야 한다(§5 회귀 테스트: live 종료·재시작 복구 각각).
 - cap-exempt: 사람 클릭 기원 디스패치이므로 기존 resolveConflict와 동일하게
   슬롯 cap을 기다리지 않는다.
 
@@ -81,9 +93,13 @@ update-branch 후 재확인)의 `refuse('external_conflict_needs_session')`을
 ### §3 서버 — 스냅샷 데코레이션 (server/ws/worker-handlers.js)
 
 `withExternalPrWait` overlay 행에 `wt_present: boolean`을 추가한다
-(`worktree.exists` 동기 확인). 그 외 변경 없음 — 해소 attempt가 running
-목록에 실리면 클라이언트 `conflict_sessions` 맵, "충돌 해소 중" 배지, 머지
-잠금은 기존 로직이 자동 동작한다.
+(`worktree.exists` 동기 확인). 워크트리 매니저는 현재 attachment 내부에만
+있고 `getWorkerRuntime()` 표면에 없으므로, 핸들러가 attachment의 동일 워크트리
+매니저를 조회할 read-only accessor를 런타임/attachment 표면에 신설한다 —
+attachment 부재 시 `false`를 반환한다(fail-quiet: 버튼 비활성 + 사유 툴팁).
+그 외 변경 없음 — 해소 attempt가 running 목록에 실리면 클라이언트
+`conflict_sessions` 맵, "충돌 해소 중" 배지, 머지 잠금은 기존 로직이 자동
+동작한다.
 
 ### §4 프론트 (app/views/worker/index.js, lanes.js, CSS)
 
@@ -102,12 +118,15 @@ update-branch 후 재확인)의 `refuse('external_conflict_needs_session')`을
 ### §5 테스트
 
 - scheduler 단위: 가드 3종(`bead_running`/`not_external`/`worktree_missing`),
-  attempt 필드(`resumed_from` 없음·`conflict_resolution`·`base_oid: null`),
-  fast_track 스탬프/revert, cap-exempt.
-- attempt 종결 시 durable 레인 불이동·dequeue 없음 회귀.
+  attempt 필드(`resumed_from` 없음·`conflict_resolution`·`external_conflict`·
+  `base_oid: null`), fast_track 스탬프/revert, exec `stamped_keys` 스탬프 +
+  `exec_stamp_failed` 시 복원, cap-exempt.
+- 종결 회귀 2종: live 종료(`onSessionDone`)와 재시작 복구
+  (`disposeDeadAttempt`) 각각에서 외부 해소 attempt가 durable 레인
+  불이동·dequeue 없음 + 스탬프 revert.
 - pr-actions: 두 분기 교체(첫 게이트·BEHIND 후), `in_flight` 보호, `base_ref`
-  전달.
-- worker-handlers: overlay `wt_present` 존재/부재.
+  전달(`target_base` 인자).
+- worker-handlers: overlay `wt_present` 존재/부재, attachment 부재 시 `false`.
 - 프론트 `prWaitRow`: 활성/비활성/툴팁/수식 클래스, 해소 세션 중 잠금.
 
 ### §6 스펙 정합 개정 (본 유닛 diff에 포함)
@@ -118,7 +137,11 @@ update-branch 후 재확인)의 `refuse('external_conflict_needs_session')`을
 - `2026-07-28-pr-wait-merge-queue-design.md`(UI-5v7d, 미구현): "충돌 해소가
   불가능한 외부 행은 드라이버의 거부→skip 경로" 조항을 개정 — 외부 행도 동일
   자동 해소 대상이며, `worktree_missing` 거부만 skip으로 남는다.
-- 두 문서의 receipt 델타는 본 유닛 spec 게이트 리뷰가 커버한다.
+- receipt 재발급 의무: 두 문서는 각자의 owning Bead가 `spec_review` 영수증을
+  현재 SHA에 바인딩해 갖고 있으므로, 본 유닛 spec 게이트가 그 델타를 커버할
+  수 없다. 두 문서를 수정·커밋한 뒤 각 owning Bead의 `spec_review`를 델타
+  리뷰 또는 명시적 사용자 승인으로 새 SHA에 재발급하는 것까지가 본 유닛
+  구현의 전달 범위다.
 
 ## 오류 처리
 
