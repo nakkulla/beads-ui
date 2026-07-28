@@ -27,18 +27,19 @@
 ### 3. 실행 타일 클릭 = 이슈 상세, 라이브 세션은 전용 버튼 (`app/views/worker/running-grid.js`, `app/views/worker/index.js`)
 
 - `.rtile` 기본 클릭 → `gotoIssue(bead_id)` (다른 레인과 동일 규칙으로 통일)
-- ⓘ(`rtile__info`, 상세 보기) 버튼은 제거하고 그 자리에 **세션 버튼**(`rtile__session`, 라벨 `▤ 세션`, title "라이브 세션 열기")을 두어 `openDrawerForAttempt(attempt_id)`를 호출
+- ⓘ(`rtile__info`, 상세 보기) 버튼은 제거하고 그 자리에 **세션 버튼**(`rtile__session`, 라벨 `▤ 세션`, title "라이브 세션 열기")을 두어 `openDrawerForAttempt(attempt_id)`를 호출. `app/styles.css`의 기존 `.rtile__info`/`.rtile__info:hover` 규칙을 `.rtile__session`으로 교체(이관)해 조용한 버튼 스타일을 유지한다
 - 드로어가 열린 attempt의 `.rtile--sel` 링, ⏸/▶/■ 버튼 동작은 그대로
 - `index.js` onClick 분기: `.rtile__session` 분기를 타일 기본 분기보다 먼저 처리, 기존 `.rtile__info` 분기 제거, `.rtile` 기본 분기를 `gotoIssue`로 교체
 
 ### 4. 클릭 어포던스 정리 (`app/styles.css`)
 
-클릭 = 상세보기인 표면(`.worker-mini`(non-static), `.worker-card`, `.rtile`)에 hover 시 `border-color`를 한 단계 밝히는 절제된 공통 피드백을 추가한다. 기존 토큰만 사용, 새 색·모션 없음.
+클릭 = 상세보기인 표면 전체(`.worker-mini`, `.worker-card`, `.rtile`)에 hover 시 `border-color`를 한 단계 밝히는 절제된 공통 피드백을 추가한다. 기준은 드래그 가능 여부(`--static`)가 아니라 상세 클릭 여부다 — pr_wait 행은 `draggable: false`라 `--static`이지만 클릭하면 상세를 열므로 hover 피드백 대상이고, `cursor: pointer`도 함께 부여한다. 기존 토큰만 사용, 새 색·모션 없음.
 
 ## 검증
 
 - `npm run tsc` · `npm test` · `npm run lint` · `npm run prettier:write` · `npm run build`(번들 커밋 포함)
 - `app/views/worker/index.test.js`: 타일 기본 클릭 → `gotoIssue` 호출, `rtile__session` 클릭 → 드로어 열림으로 기존 단언 갱신
+- **시각 검증**: 로컬 라이브 서버(`BDUI_FRONTEND_MODE=live`, 별도 포트)에서 긴 제목·뱃지·버튼을 모두 가진 pr_wait 카드를 ① 데스크톱 PR 대기 레인, ② 모바일 폭(≤640px) 「지금」 패널에서 확인 — 제목 전체 표시·꼬리행 버튼 정렬·머지 진행 시각화 유지. 후보·대기·실행·완료 레인에서도 긴 제목이 잘리지 않고 레이아웃이 깨지지 않는지 확인
 
 ## 범위 제외
 
