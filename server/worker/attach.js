@@ -596,6 +596,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       store: runtime.queueStore,
       merge: (/** @type {string} */ bead_id) => prActions.merge(bead_id),
       observePr: (/** @type {string} */ bead_id) => prActions.prState(bead_id),
+      // Re-derive the EXTERNAL rows once before the resumed queue's first item
+      // (UI-5v7d §2): at boot the registry is empty until something scans bd,
+      // and a restored external head would otherwise be refused as a non-member.
+      prepare: refreshExternalPrs,
       subscribeQueueChanged: onQueueChanged,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       log

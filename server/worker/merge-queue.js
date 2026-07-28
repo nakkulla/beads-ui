@@ -92,6 +92,7 @@ const RESOLUTION_POLL_MS = 30 * 1000;
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
  *   merge: (bead_id: string) => Promise<MergeClickResult>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
+ *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
  *   notifyChanged?: (workspace: string) => void,
  *   now?: () => number,
@@ -128,6 +129,11 @@ export function createMergeQueue(deps) {
   let started = false;
   let stopped = false;
   let draining = false;
+  // Set when a durable write the loop DEPENDS ON did not stick. It ends the
+  // current drain instead of retrying in place; the queue is durable, so the
+  // next kick or restart resumes it.
+  let halted = false;
+  let prepared = false;
   /** @type {string|null} */
   let active = null;
   /** @type {Map<string, string>} */
@@ -205,9 +211,18 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * Whether the bead's resolution session is still in flight.
+   *
+   * `paused` counts as in flight, not as ended. A user who pauses a resolution
+   * session has not finished resolving anything, and calling `merge()` there
+   * would find the PR still DIRTY and dispatch a SECOND session from the paused
+   * one — restarting by itself the session a human deliberately stopped. Waiting
+   * it out (and timing out) is what leaves that decision with the human.
+   *
    * @param {string} bead_id
    * @param {string|null} attempt_id - Null watches ANY resolution attempt of
    * the bead (the boot-resume case, where the driver did not dispatch it).
+   * @returns {boolean}
    */
   function resolutionStillRunning(bead_id, attempt_id) {
     if (!attempt_id) {
@@ -215,7 +230,23 @@ export function createMergeQueue(deps) {
     }
     const q = snapshot();
     const rec = q && q.attempts ? q.attempts[attempt_id] : null;
-    return !!rec && rec.status === 'running';
+    if (!rec) {
+      return false;
+    }
+    if (rec.status === 'running') {
+      return true;
+    }
+    if (rec.status !== 'paused') {
+      return false;
+    }
+    // A paused attempt the user already RESUMED is spent history — its child is
+    // the live one, so the wait follows the child instead of stalling here.
+    const child = Object.values(q.attempts || {}).find(
+      (/** @type {any} */ a) => a && a.resumed_from === attempt_id
+    );
+    return child
+      ? resolutionStillRunning(bead_id, /** @type {any} */ (child).attempt_id)
+      : true;
   }
 
   /**
@@ -261,19 +292,54 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * Drop the item from the durable queue. Returns whether it actually left.
+   *
+   * A persist that throws (a full or unwritable state dir) leaves the item AT
+   * THE HEAD, so a caller that ignored the failure would loop straight back
+   * into `merge()` on the same bead — a hot loop against GitHub. Every caller
+   * treats `false` as "stop this drain"; the queue is durable, so the next
+   * kick or restart picks it up once the disk is writable again.
+   *
    * @param {string} bead_id
+   * @returns {boolean}
    */
   function dequeue(bead_id) {
+    let ok = false;
     try {
-      deps.store.dequeueMerge(workspace, bead_id);
+      ok = deps.store.dequeueMerge(workspace, bead_id).ok;
     } catch (err) {
       log('merge queue dequeue failed for %s: %o', bead_id, err);
+      ok = false;
+    }
+    if (!ok && queuedEntry(bead_id)) {
+      log(
+        'merge queue: %s could not be dequeued — halting this drain',
+        bead_id
+      );
+      halted = true;
     }
     // The store mutation alone fans nothing out, and both halves of what just
     // changed — the remaining order and this item's skip reason — are what the
     // lane draws. Safe here because it is outside every wait, so the event
     // cannot wake the loop it belongs to.
     notify();
+    return ok;
+  }
+
+  /**
+   * Count one consumed resolution round, failing CLOSED: a bump that did not
+   * persist would let the item re-merge on a budget the cap already spent.
+   *
+   * @param {string} bead_id
+   * @returns {boolean}
+   */
+  function bumpRound(bead_id) {
+    try {
+      return deps.store.bumpResolutionRound(workspace, bead_id).ok;
+    } catch (err) {
+      log('merge queue round bump failed for %s: %o', bead_id, err);
+      return false;
+    }
   }
 
   /**
@@ -382,6 +448,14 @@ export function createMergeQueue(deps) {
     // restored as the step-3 wait rather than judged a failure.
     const restored = runningResolutionAttempt(bead_id);
     if (restored) {
+      const entry = queuedEntry(bead_id);
+      if (entry && entry.resolution_rounds >= round_cap) {
+        // The cap is spent, so this item gets no more rounds — including this
+        // restored one. The session is left running, as everywhere else.
+        fail(bead_id, 'resolution_round_cap');
+        dequeue(bead_id);
+        return;
+      }
       const outcome = await waitForResolution(bead_id, restored);
       if (outcome === 'stopped' || outcome === 'gone') {
         return;
@@ -391,14 +465,15 @@ export function createMergeQueue(deps) {
         dequeue(bead_id);
         return;
       }
-      try {
-        deps.store.bumpResolutionRound(workspace, bead_id);
-      } catch (err) {
-        log('merge queue round bump failed for %s: %o', bead_id, err);
+      if (!bumpRound(bead_id)) {
+        // The round did not persist, so re-merging would spend a budget the
+        // count cannot prove. Leave the item queued and stop this drain.
+        halted = true;
+        return;
       }
     }
 
-    while (!stopped) {
+    while (!stopped && !halted) {
       if (!queuedEntry(bead_id)) {
         return;
       }
@@ -451,10 +526,9 @@ export function createMergeQueue(deps) {
           dequeue(bead_id);
           return;
         }
-        try {
-          deps.store.bumpResolutionRound(workspace, bead_id);
-        } catch (err) {
-          log('merge queue round bump failed for %s: %o', bead_id, err);
+        if (!bumpRound(bead_id)) {
+          halted = true;
+          return;
         }
         continue;
       }
@@ -494,8 +568,22 @@ export function createMergeQueue(deps) {
       return;
     }
     draining = true;
+    halted = false;
     try {
-      while (!stopped) {
+      // A queue resumed after a restart can hold EXTERNAL rows, and those exist
+      // only in the in-memory registry the ws overlay reads — empty until
+      // something scans bd. Without this, a restored external head would be
+      // refused as `not_in_pr_wait` and dropped, which is exactly the resume the
+      // durable queue exists to guarantee (UI-5v7d §2 / UI-7agi 정합).
+      if (!prepared && typeof deps.prepare === 'function') {
+        prepared = true;
+        try {
+          await deps.prepare();
+        } catch (err) {
+          log('merge queue prepare failed: %o', err);
+        }
+      }
+      while (!stopped && !halted) {
         const head = headEntry();
         if (!head) {
           break;

@@ -1172,23 +1172,10 @@ export function createWorkerView(mount_element, options = {}) {
    * active one runs to completion — its merge already reached GitHub.
    */
   async function cancelMergeAll() {
-    if (!transport) {
-      return;
-    }
-    const q = currentQueue();
-    const lane = Array.isArray(q.merge_queue) ? q.merge_queue : [];
-    const active = (q.merge_queue_state || {}).active || null;
-    for (const entry of lane) {
-      if (!entry || typeof entry.bead_id !== 'string') {
-        continue;
-      }
-      if (entry.bead_id === active) {
-        continue;
-      }
-      await sendMergeQueue('worker-merge-queue-remove', {
-        bead_id: entry.bead_id
-      });
-    }
+    // ONE request, not one per row: between per-row requests the active item can
+    // finish and promote the next waiter to active, whose own removal the server
+    // then refuses — leaving an item queued after a click that said "stop".
+    await sendMergeQueue('worker-merge-queue-remove', { all: true });
   }
 
   /**

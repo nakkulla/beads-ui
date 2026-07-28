@@ -6142,13 +6142,12 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    // The ACTIVE item is left alone; only the waiting one is removed.
+    // ONE bulk request: the server drops every waiting item and keeps the
+    // active one, atomically. Per-row removal would race the active item's
+    // completion (codex implementation review 2026-07-28 finding 7).
+    expect(transport).toHaveBeenCalledTimes(1);
     expect(transport).toHaveBeenCalledWith('worker-merge-queue-remove', {
-      bead_id: 'RD-2',
-      expected_revision: 1
-    });
-    expect(transport).not.toHaveBeenCalledWith('worker-merge-queue-remove', {
-      bead_id: 'RD-1',
+      all: true,
       expected_revision: 1
     });
   });

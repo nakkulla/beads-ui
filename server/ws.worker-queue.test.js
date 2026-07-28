@@ -1301,6 +1301,123 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     expect(store.snapshot('').merge_queue.length).toBe(1);
   });
 
+  test('add-all leaves out an EXTERNAL conflicting row even on a green gate', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1', {
+      mergeable: 'CONFLICTING',
+      merge_state_status: 'DIRTY'
+    });
+    getWorkerRuntime().externalPrs.replace('', [
+      {
+        bead_id: 'UI-EXT',
+        pr_url: 'https://github.com/o/r/pull/9',
+        pr_number: 9
+      }
+    ]);
+    observeGreen('UI-EXT', {
+      mergeable: 'CONFLICTING',
+      merge_state_status: 'DIRTY'
+    });
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    // The durable conflicting row IS queued (its click dispatches a resolution);
+    // the external one cannot dispatch anything, so it is left out.
+    expect(
+      getWorkerRuntime()
+        .queueStore.snapshot('')
+        .merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1']);
+  });
+
+  test('add-all ignores a paused resolution attempt that was already resumed', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt('', {
+      expected_revision: store.snapshot('').revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        status: 'paused',
+        conflict_resolution: true
+      }
+    });
+    store.appendAttempt('', {
+      expected_revision: store.snapshot('').revision,
+      attempt: {
+        attempt_id: 'res-2',
+        bead_id: 'UI-1',
+        status: 'done',
+        resumed_from: 'res-1'
+      }
+    });
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: store.snapshot('').revision
+    });
+
+    // The paused ancestor is spent history — its child ended, so the row is
+    // mergeable exactly as the lane draws it.
+    expect(store.snapshot('').merge_queue.length).toBe(1);
+  });
+
+  test('add-all leaves out a row whose LEAF resolution session is paused', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt('', {
+      expected_revision: store.snapshot('').revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        status: 'paused',
+        conflict_resolution: true
+      }
+    });
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(store.snapshot('').merge_queue).toEqual([]);
+  });
+
+  test('bulk remove drops every waiting item and keeps the active one', async () => {
+    parkInPrWait('UI-1');
+    parkInPrWait('UI-2');
+    parkInPrWait('UI-3');
+    registerDriver({ active: 'UI-1' });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    store.enqueueMerge('', {
+      expected_revision: store.snapshot('').revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }, { bead_id: 'UI-3' }]
+    });
+
+    await send(sock, 'm1', 'worker-merge-queue-remove', {
+      all: true,
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm1').payload.applied).toBe(true);
+    expect(
+      store.snapshot('').merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1']);
+  });
+
   test('rejects a queue-add payload without a bead_id', async () => {
     const sock = fakeSocket();
 

@@ -156,10 +156,14 @@ Nothing merges without a human `[머지]` click.
   included) and queues them in lane order in one CAS write. Reply
   `{ applied, conflict, queued, queue }` where `queued` is how many rows were
   actually added.
-- `worker-merge-queue-remove` payload: `{ bead_id, expected_revision }` —
-  `[취소]` on a WAITING item (also how `[일괄 머지 중단]` empties the queue).
-  The ACTIVE item refuses with `reason:'merge_active'`: its merge is already
-  running against GitHub. Reply `{ bead_id, applied, conflict, reason, queue }`.
+- `worker-merge-queue-remove` payload: `{ bead_id, expected_revision }`, or
+  `{ all: true, expected_revision }` — `[취소]` on a WAITING item, and with
+  `all` the header's `[일괄 머지 중단]`, which drops every waiting item in ONE
+  server-side write (per-row removal would let the active item finish in between
+  and promote a waiter whose own removal then refuses). The ACTIVE item is never
+  removed; asking for it by id refuses with `reason:'merge_active'`, since its
+  merge is already running against GitHub. Reply
+  `{ bead_id, applied, conflict, reason, queue }`.
 - The `worker-queue-snapshot` carries the queue as `merge_queue`
   (`[{ bead_id, resolution_rounds }]`, durable order) plus a non-persisted
   `merge_queue_state` = `{ active, failures }` — which item the driver is on and

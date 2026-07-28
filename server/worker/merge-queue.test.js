@@ -28,7 +28,12 @@ afterEach(() => {
  * scheduled delay — so a deadline is reached deterministically instead of by
  * real waiting.
  */
-function fakeClock() {
+/**
+ * @param {(() => void)|null} [on_tick] - Ran on every scheduled wait, before the
+ * clock advances: the seam a test uses to make the world change WHILE the
+ * driver waits (a session ending, a lane moving).
+ */
+function fakeClock(on_tick = null) {
   let t = 0;
   return {
     now: () => t,
@@ -37,6 +42,9 @@ function fakeClock() {
      * @param {number} ms
      */
     setTimer: (fn, ms) => {
+      if (on_tick) {
+        on_tick();
+      }
       t += ms;
       void Promise.resolve().then(fn);
       return 1;
@@ -74,9 +82,10 @@ function seed(bead_ids) {
 /**
  * @param {any} queue_store
  * @param {any} deps
+ * @param {(() => void)|null} [on_tick]
  */
-function driver(queue_store, deps) {
-  const clock = fakeClock();
+function driver(queue_store, deps, on_tick = null) {
+  const clock = fakeClock(on_tick);
   return createMergeQueue({
     workspace: WS,
     store: queue_store,
@@ -214,32 +223,33 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     let calls = 0;
     /** @type {(() => void)|null} */
     let end_session = null;
-    const mq = driver(store, {
-      merge: async (/** @type {string} */ bead_id) => {
-        calls += 1;
-        if (calls === 1) {
-          end_session = dispatchResolution(store, bead_id, 'res-1');
-          return {
-            ok: true,
-            action: 'conflict_resolution',
-            reason: null,
-            attempt_id: 'res-1'
-          };
+    const mq = driver(
+      store,
+      {
+        merge: async (/** @type {string} */ bead_id) => {
+          calls += 1;
+          if (calls === 1) {
+            end_session = dispatchResolution(store, bead_id, 'res-1');
+            return {
+              ok: true,
+              action: 'conflict_resolution',
+              reason: null,
+              attempt_id: 'res-1'
+            };
+          }
+          landMerge(store, bead_id);
+          return { ok: true, action: 'merged', reason: null };
         }
-        landMerge(store, bead_id);
-        return { ok: true, action: 'merged', reason: null };
       },
       // The wait polls; ending the session on the first wake is what the
       // scheduler's own transition does in production.
-      setTimer: (/** @type {() => void} */ fn) => {
+      () => {
         if (end_session) {
           end_session();
           end_session = null;
         }
-        void Promise.resolve().then(fn);
-        return 1;
       }
-    });
+    );
 
     await mq.kick();
 
@@ -312,6 +322,118 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     ]);
   });
 
+  test('survives the scheduler moving the bead back into pr_wait mid-round', async () => {
+    // The real completion path for a resolution attempt is `moveToPrWait`,
+    // which re-enters the lane the bead never left. Its lane dedupe must not
+    // drop the queue entry — that would silently cancel the automatic re-merge
+    // (codex implementation review 2026-07-28 finding 1).
+    const store = seed(['UI-1']);
+    let calls = 0;
+    /** @type {(() => void)|null} */
+    let finish_session = null;
+    const mq = driver(
+      store,
+      {
+        merge: async (/** @type {string} */ bead_id) => {
+          calls += 1;
+          if (calls === 1) {
+            store.appendAttempt(WS, {
+              expected_revision: store.snapshot(WS).revision,
+              attempt: {
+                attempt_id: 'res-1',
+                bead_id,
+                status: 'running',
+                conflict_resolution: true
+              }
+            });
+            finish_session = () =>
+              store.moveToPrWait(WS, {
+                bead_id,
+                attempt_id: 'res-1',
+                patch: { status: 'done', finished_at: 2 }
+              });
+            return {
+              ok: true,
+              action: 'conflict_resolution',
+              reason: null,
+              attempt_id: 'res-1'
+            };
+          }
+          landMerge(store, bead_id);
+          return { ok: true, action: 'merged', reason: null };
+        }
+      },
+      () => {
+        if (finish_session) {
+          finish_session();
+          finish_session = null;
+        }
+      }
+    );
+
+    await mq.kick();
+
+    expect(calls).toBe(2);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('a PAUSED resolution session is still in flight, never a re-dispatch', async () => {
+    const store = seed(['UI-1']);
+    let calls = 0;
+    /** @type {(() => void)|null} */
+    let pause_session = null;
+    const mq = driver(
+      store,
+      {
+        merge: async (/** @type {string} */ bead_id) => {
+          calls += 1;
+          dispatchResolution(store, bead_id, `res-${calls}`);
+          pause_session = () =>
+            store.updateAttempt(WS, {
+              attempt_id: `res-${calls}`,
+              patch: { status: 'paused' }
+            });
+          return {
+            ok: true,
+            action: 'conflict_resolution',
+            reason: null,
+            attempt_id: `res-${calls}`
+          };
+        }
+      },
+      () => {
+        if (pause_session) {
+          pause_session();
+          pause_session = null;
+        }
+      }
+    );
+
+    await mq.kick();
+
+    // merge() ran ONCE: the pause is waited out and times out, rather than
+    // restarting the session the user stopped.
+    expect(calls).toBe(1);
+    expect(mq.state().failures['UI-1']).toBe('resolution_timeout');
+    expect(store.snapshot(WS).attempts['res-1'].status).toBe('paused');
+  });
+
+  test('a boot restore at the round cap skips instead of granting a third round', async () => {
+    const store = seed(['UI-1']);
+    store.bumpResolutionRound(WS, 'UI-1');
+    store.bumpResolutionRound(WS, 'UI-1');
+    dispatchResolution(store, 'UI-1', 'res-boot');
+    const merge = vi.fn();
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    expect(merge).not.toHaveBeenCalled();
+    expect(mq.state().failures['UI-1']).toBe('resolution_round_cap');
+    expect(store.snapshot(WS).attempts['res-boot'].status).toBe('running');
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
   test('a refused resolution dispatch is a skip', async () => {
     const store = seed(['UI-1', 'UI-2']);
     const mq = driver(store, {
@@ -338,18 +460,17 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     const store = seed(['UI-1']);
     const end = dispatchResolution(store, 'UI-1', 'res-boot');
     let calls = 0;
-    const mq = driver(store, {
-      merge: async (/** @type {string} */ bead_id) => {
-        calls += 1;
-        landMerge(store, bead_id);
-        return { ok: true, action: 'merged', reason: null };
+    const mq = driver(
+      store,
+      {
+        merge: async (/** @type {string} */ bead_id) => {
+          calls += 1;
+          landMerge(store, bead_id);
+          return { ok: true, action: 'merged', reason: null };
+        }
       },
-      setTimer: (/** @type {() => void} */ fn) => {
-        end();
-        void Promise.resolve().then(fn);
-        return 1;
-      }
-    });
+      () => end()
+    );
 
     await mq.kick();
 
@@ -496,6 +617,51 @@ describe('worker/merge-queue — lifecycle', () => {
 
     expect(active_during).toBe('UI-1');
     expect(mq.state().active).toBe(null);
+  });
+
+  test('a dequeue that does not persist halts the drain instead of re-merging', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    const merge = vi.fn(async () => ({
+      ok: false,
+      action: 'refused',
+      reason: 'ci_failed'
+    }));
+    const mq = driver(
+      {
+        ...store,
+        // Simulates an unwritable state dir: the item stays at the head.
+        dequeueMerge: () => ({ ok: false, conflict: false, queue: null })
+      },
+      { merge }
+    );
+
+    await mq.kick();
+
+    // ONE attempt, not a hot loop against the same head.
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(
+      store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1', 'UI-2']);
+  });
+
+  test('the resumed queue re-derives external rows before its first item', async () => {
+    const store = seed(['UI-1']);
+    /** @type {string[]} */
+    const order = [];
+    const mq = driver(store, {
+      prepare: async () => {
+        order.push('prepare');
+      },
+      merge: async (/** @type {string} */ bead_id) => {
+        order.push('merge');
+        landMerge(store, bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      }
+    });
+
+    await mq.kick();
+
+    expect(order).toEqual(['prepare', 'merge']);
   });
 
   test('an empty queue drains without calling merge', async () => {

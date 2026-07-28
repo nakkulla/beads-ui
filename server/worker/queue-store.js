@@ -1026,7 +1026,23 @@ export function createQueueStore(options = {}) {
             bead_id: cur.bead_id
           })
         );
+        // A bead RE-entering `pr_wait` keeps its place in the merge queue and
+        // its consumed rounds (UI-5v7d §2): this transition is exactly what a
+        // finished conflict-resolution attempt performs, and the driver is
+        // sitting on that item waiting to re-merge it. Letting the lane-dedupe
+        // drop the entry here would read to the driver as "the item is gone"
+        // and silently cancel the automatic re-merge the whole feature exists
+        // for. Every OTHER lane exit still drops it — see `removeFromLanes`.
+        const queued_at = next.merge_queue.findIndex(
+          (e) => e.bead_id === bead_id
+        );
+        const queued = queued_at >= 0 ? next.merge_queue[queued_at] : null;
         removeFromLanes(next, bead_id);
+        if (queued) {
+          // Its ORIGINAL position, not the head: a waiting item whose own
+          // session finished must not overtake the queue.
+          next.merge_queue.splice(queued_at, 0, queued);
+        }
         next.pr_wait.push({ bead_id, added_at: now() });
         return true;
       });
@@ -1439,22 +1455,35 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Cancel a WAITING merge-queue item — the [취소] click. CAS-guarded like
-     * every other client mutation; whether the item is the active one is the
-     * driver's judgment, checked before this is reached.
+     * Cancel WAITING merge-queue items — one [취소] click, or the lane's
+     * [일괄 머지 중단] emptying everything but the item being merged. Both are
+     * ONE CAS-guarded write: cancelling item by item would let the active item
+     * finish between requests, promote the next waiter to active, and leave
+     * that one queued after a click that said "stop all".
+     *
+     * `keep` names the item the caller must NOT remove (the active one);
+     * whether an item is active is the driver's judgment, made before this.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, bead_id: string }} input
+     * @param {{ expected_revision: number, bead_id?: string, all?: boolean, keep?: string|null }} input
      * @returns {QueueOpResult}
      */
     cancelMerge(workspace, input) {
-      const { expected_revision, bead_id } = input;
+      const { expected_revision, bead_id, all, keep } = input;
       return applyMutation(workspace, expected_revision, (next) => {
-        if (!next.merge_queue.some((e) => e.bead_id === bead_id)) {
+        const doomed = all
+          ? next.merge_queue
+              .map((e) => e.bead_id)
+              .filter((id) => id !== (keep || null))
+          : [bead_id];
+        const removed = next.merge_queue.filter((e) =>
+          doomed.includes(e.bead_id)
+        );
+        if (removed.length === 0) {
           return false;
         }
         next.merge_queue = next.merge_queue.filter(
-          (e) => e.bead_id !== bead_id
+          (e) => !doomed.includes(e.bead_id)
         );
         return true;
       });

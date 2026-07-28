@@ -257,13 +257,47 @@ function prActivityFor(workspace_key, queue) {
  */
 function hasConflictSession(queue, bead_id) {
   const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
-  for (const attempt of Object.values(attempts)) {
-    if (
-      attempt &&
-      attempt.bead_id === bead_id &&
-      attempt.conflict_resolution === true &&
-      (attempt.status === 'running' || attempt.status === 'paused')
-    ) {
+  const values = Object.values(attempts);
+  // A paused attempt that was already RESUMED is spent history — its child is
+  // the live one. Counting it forever would keep a row out of [일괄 머지] long
+  // after the row's own badge said the session was over, which is the exact
+  // leaf/supersession rule the client's running list applies (§1.1).
+  const resumed_from = new Set(
+    values
+      .map((a) => a && a.resumed_from)
+      .filter((id) => typeof id === 'string')
+  );
+  /**
+   * `conflict_resolution` is INHERITED through `resumed_from`, exactly as the
+   * client inherits it: resuming a paused resolution mints a child that does
+   * not re-declare the flag.
+   *
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function isResolution(attempt) {
+    let cur = attempt;
+    const seen = new Set();
+    while (cur && !seen.has(cur.attempt_id)) {
+      if (cur.conflict_resolution === true) {
+        return true;
+      }
+      seen.add(cur.attempt_id);
+      cur =
+        typeof cur.resumed_from === 'string'
+          ? attempts[cur.resumed_from]
+          : null;
+    }
+    return false;
+  }
+  for (const attempt of values) {
+    if (!attempt || attempt.bead_id !== bead_id) {
+      continue;
+    }
+    const live =
+      attempt.status === 'running' ||
+      (attempt.status === 'paused' && !resumed_from.has(attempt.attempt_id));
+    if (live && isResolution(attempt)) {
       return true;
     }
   }
@@ -321,6 +355,12 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_present) {
     });
     const conflicting = gate.base_badge === '충돌';
     const merged_tier = gate.tier === 'merged';
+    // An EXTERNAL conflict vetoes even a green gate, exactly as the row does
+    // (UI-7agi §5): the click-time branch order puts DIRTY before the gate, so
+    // `merge()` refuses it whatever its CI says.
+    if (external && conflicting) {
+      continue;
+    }
     const eligible =
       gate.enabled === true ||
       (conflicting && !external) ||
@@ -1401,10 +1441,16 @@ export function handleWorkerMergeQueueAddAll(ws, req) {
 }
 
 /**
- * Handle `worker-merge-queue-remove`. Payload: `{ bead_id, expected_revision }`.
+ * Handle `worker-merge-queue-remove`. Payload:
+ * `{ bead_id, expected_revision }`, or `{ all: true, expected_revision }`.
  *
- * [취소] on a WAITING item, and the lane header's [일괄 머지 중단] one row at a
- * time. The ACTIVE item is not removable: its merge is already running against
+ * [취소] on a WAITING item, and — with `all` — the lane header's
+ * [일괄 머지 중단]. The bulk form is ONE server-side write on purpose: removing
+ * item by item lets the active one finish between requests, which promotes the
+ * next waiter to active and makes its own removal refuse, leaving an item
+ * queued after a click that said "stop everything".
+ *
+ * The ACTIVE item is never removable: its merge is already running against
  * GitHub, and dropping the record would only hide it (UI-5v7d §3).
  *
  * @param {WebSocket} ws
@@ -1412,16 +1458,43 @@ export function handleWorkerMergeQueueAddAll(ws, req) {
  */
 export function handleWorkerMergeQueueRemove(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+  const bulk = p.all === true;
+  if (!bulk && (typeof p.bead_id !== 'string' || p.bead_id.length === 0)) {
     ws.send(
       JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id: string } or { all: true }'
+        )
       )
     );
     return;
   }
   const key = workspaceKeyOf(ws);
   const state = workerMergeQueueState(key);
+  if (bulk) {
+    const result = queueStore().cancelMerge(key, {
+      expected_revision: revisionOf(p),
+      all: true,
+      keep: state ? state.active : null
+    });
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: null,
+          applied: result.ok,
+          conflict: result.conflict,
+          reason: null,
+          queue: decorateQueue(key, /** @type {any} */ (result.queue))
+        })
+      )
+    );
+    if (result.ok) {
+      fanout(key, /** @type {any} */ (result.queue));
+    }
+    return;
+  }
   if (state && state.active === p.bead_id) {
     ws.send(
       JSON.stringify(
