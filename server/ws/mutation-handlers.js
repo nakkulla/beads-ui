@@ -193,15 +193,13 @@ export async function handleUpdateExecSettings(ws, req) {
  * empty value removes the key (absence = derived/default at read time).
  */
 const WORKFLOW_META_ENUMS = {
-  route: ['spec_backed', 'full_plan'],
-  merge_policy: ['auto_merge', 'pr_stop'],
-  drift_policy: ['auto_rereview', 'halt']
+  route: ['spec_backed', 'full_plan']
 };
 
 /**
- * Set or unset one of the workflow metadata enum keys (route / merge_policy /
- * drift_policy) via `bd update --set-metadata` / `--unset-metadata`, replying
- * with the fresh `bd show` readback (worker-autorun-policy §6).
+ * Set or unset one of the workflow metadata enum keys (route) via
+ * `bd update --set-metadata` / `--unset-metadata`, replying with the fresh
+ * `bd show` readback (worker-autorun-policy §6).
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req

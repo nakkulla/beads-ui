@@ -45,7 +45,7 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'update-assignee',
   // Execution-preference metadata (5 keys + workflow_mode)
   'update-exec-settings',
-  // Workflow metadata enum edits (route / merge_policy / drift_policy)
+  // Workflow metadata enum edits (route)
   'update-workflow-meta',
   'label-add',
   'label-remove',
