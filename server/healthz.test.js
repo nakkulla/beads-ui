@@ -20,7 +20,11 @@ async function getHealthz(probes) {
     }
   });
   const server = createServer(app);
-  await new Promise((resolve) => server.listen(0, () => resolve(undefined)));
+  // Bind the loopback address the fetch below targets (see
+  // app.merge-lock-removed.test.js for why a wildcard bind is unsafe here).
+  await new Promise((resolve) =>
+    server.listen(0, '127.0.0.1', () => resolve(undefined))
+  );
   const address = server.address();
   if (!address || typeof address === 'string') {
     throw new Error('no address');
