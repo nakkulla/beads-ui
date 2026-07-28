@@ -6,6 +6,7 @@ export default defineConfig({
       {
         test: {
           name: 'node',
+          setupFiles: ['test/setup-node.js'],
           include: ['**/*.test.js'],
           exclude: ['app/**/*.test.js', 'node_modules/**', '.worktrees/**'],
           environment: 'node',
