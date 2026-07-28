@@ -746,6 +746,30 @@ describe('views/detail-panel', () => {
 
     panel.destroy();
   });
+
+  test('renders a read-only notes section when the issue carries notes', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      { ...baseIssue, notes: 'spec 게이트: REVISE\nfinding 1: §3 누락' },
+      vi.fn()
+    );
+
+    const notes = mount.querySelector('.detail-overlay__notes');
+    expect(notes?.textContent).toContain('finding 1: §3 누락');
+    expect(mount.textContent).toContain('노트');
+
+    panel.destroy();
+  });
+
+  test('renders no notes section when the issue has none', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(mount, baseIssue, vi.fn());
+
+    expect(mount.querySelector('.detail-overlay__notes')).toBe(null);
+
+    panel.destroy();
+  });
 });
 
 describe('views/detail-panel created/updated rows (UX v3 spec §1)', () => {

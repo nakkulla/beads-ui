@@ -906,6 +906,26 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
+   * Read-only notes block (UI-yp64 §4). notes is where the gate receipt
+   * lineage and REVISE findings live, so a parked bead's card click has to end
+   * somewhere that actually shows them. Read-only on purpose: `bd`'s `--notes`
+   * replaces rather than appends, so an editor here is an overwrite accident.
+   * Absent/blank notes render nothing at all (fail-quiet).
+   *
+   * @param {any} data
+   */
+  function notesTemplate(data) {
+    const notes = typeof data.notes === 'string' ? data.notes : '';
+    if (notes.trim().length === 0) {
+      return html``;
+    }
+    return html`
+      <div class="detail-overlay__section-label">노트</div>
+      <div class="detail-overlay__notes">${notes}</div>
+    `;
+  }
+
+  /**
    * @param {any} data
    */
   function labelsTemplate(data) {
@@ -988,7 +1008,7 @@ export function createDetailPanel(mount_element, options) {
           </button>
           ${titleTemplate(title)} ${propsTemplate(status, priority_val)}
           ${timesTemplate(data)} ${descTemplate(description)}
-          ${labelsTemplate(data)} ${depsTemplate(data)}
+          ${notesTemplate(data)} ${labelsTemplate(data)} ${depsTemplate(data)}
           ${workflowTemplate(data)} ${workflowMetaTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
           ${execSettingsTemplate(effective, exec_handlers, execDefaults())}
