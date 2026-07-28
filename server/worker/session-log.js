@@ -1,14 +1,20 @@
 /**
  * Per-attempt session log (spec §5.2, feeds the Phase 11 transcript viewer).
  *
- * The raw runner event stream (untransformed jsonl lines) is appended to a
+ * The raw runner event stream (untransformed jsonl lines) lives in a
  * per-attempt file under the XDG state dir so a session's transcript survives
- * worktree churn and a beads-ui restart. This module only PERSISTS + reads the
- * stream; rendering is Phase 11.
+ * worktree churn and a beads-ui restart.
+ *
+ * WRITER RETIREMENT (UI-o2yt §3.2): the runner itself now writes that file
+ * through an fd it inherited at spawn, so this module no longer persists
+ * anything — a server-side write would only duplicate what the kernel already
+ * appended. What remains is the READ side (snapshot) plus the in-process append
+ * BROKER: the engine's tail reader (and, after a restart, the detached session
+ * monitor) re-broadcast each parsed line here, which is what keeps the ws
+ * drawer's live follow working unchanged.
  */
 import { EventEmitter } from 'node:events';
 import nodeFs from 'node:fs';
-import path from 'node:path';
 import { sessionLogPath } from './state-paths.js';
 
 /**
@@ -20,18 +26,28 @@ import { sessionLogPath } from './state-paths.js';
  */
 
 /**
- * Create a session-log writer/reader with an in-process append pub/sub.
+ * The stderr sidecar of a session log: same directory, same attempt, `.stderr.log`
+ * instead of `.jsonl` (UI-o2yt §3.1). Spawn/CLI faults land there instead of
+ * polluting the jsonl — and instead of filling an unread pipe.
  *
- * The raw stream is persisted to disk (so a Done/Failed session re-opens from
- * the file) AND emitted on an in-process EventEmitter (so a LIVE attempt's
- * drawer follows appends). One shared instance lives on the Worker runtime, so
- * the scheduler's `attach` writes and the ws subscription's `subscribe` reads
- * flow through the same broker.
+ * @param {string} log_path
+ * @returns {string}
+ */
+export function stderrPathOf(log_path) {
+  return `${String(log_path).replace(/\.jsonl$/, '')}.stderr.log`;
+}
+
+/**
+ * Create a session-log reader with an in-process append pub/sub.
+ *
+ * One shared instance lives on the Worker runtime, so the line readers'
+ * `publish` and the ws subscription's `subscribe` flow through the same broker.
  *
  * @param {{ fs?: typeof import('node:fs'), pathFor?: (workspace: string, attempt_id: string) => string }} [options]
  * @returns {{
  *   pathFor: (workspace: string, attempt_id: string) => string,
- *   append: (workspace: string, attempt_id: string, event: unknown) => void,
+ *   stderrPathFor: (workspace: string, attempt_id: string) => string,
+ *   publish: (workspace: string, attempt_id: string, event: unknown) => void,
  *   attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void,
  *   read: (workspace: string, attempt_id: string) => unknown[],
  *   subscribe: (fn: (a: SessionLogAppend) => void) => (() => void)
@@ -48,22 +64,27 @@ export function createSessionLog(options = {}) {
     pathFor,
 
     /**
-     * Append one raw event as a jsonl line (creates the dir on first write),
-     * then notify live subscribers.
+     * @param {string} workspace
+     * @param {string} attempt_id
+     */
+    stderrPathFor(workspace, attempt_id) {
+      return stderrPathOf(pathFor(workspace, attempt_id));
+    },
+
+    /**
+     * Broadcast one raw event to the live subscribers. The event is ALREADY on
+     * disk (the runner wrote it); this is the in-process notification only.
      *
      * @param {string} workspace
      * @param {string} attempt_id
      * @param {unknown} event
      */
-    append(workspace, attempt_id, event) {
-      const file = pathFor(workspace, attempt_id);
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.appendFileSync(file, `${JSON.stringify(event)}\n`);
+    publish(workspace, attempt_id, event) {
       emitter.emit('append', { workspace, attempt_id, event });
     },
 
     /**
-     * Subscribe to a runner handle's raw stream, persisting each event.
+     * Re-broadcast a runner handle's raw stream to the live subscribers.
      *
      * @param {string} workspace
      * @param {string} attempt_id
@@ -72,9 +93,9 @@ export function createSessionLog(options = {}) {
     attach(workspace, attempt_id, events) {
       events.on('raw', (obj) => {
         try {
-          this.append(workspace, attempt_id, obj);
+          this.publish(workspace, attempt_id, obj);
         } catch {
-          // A log-append failure must never crash the session.
+          // A broken subscriber must never crash the session.
         }
       });
     },

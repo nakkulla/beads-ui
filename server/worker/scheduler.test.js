@@ -260,7 +260,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notify?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notify?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -294,7 +294,7 @@ function setup(opts) {
       `/wt/${bead_id}`,
     exists: vi.fn(() => true)
   };
-  const sessionLog = { attach: vi.fn() };
+  const sessionLog = opts.sessionLog || { attach: vi.fn() };
   const usage = opts.usage === null ? undefined : createUsageStore();
   const scheduler = createScheduler({
     store,
@@ -307,6 +307,7 @@ function setup(opts) {
     admission: opts.admission,
     notify: opts.notify,
     probePid: opts.probePid,
+    sessionMonitors: opts.sessionMonitors,
     notifyQueueChanged: opts.notifyQueueChanged,
     now: () => 1000
   });
@@ -3022,6 +3023,97 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
     expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(
       'verify_failed:gh_observation_failed'
+    );
+  });
+
+  test('fails a monitor-killed attempt even when its PR is observed open (UI-o2yt §3.3)', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store, {
+      guard_kill: {
+        reason: 'merge_to_base_blocked',
+        command: 'git merge main',
+        at: 900
+      }
+    });
+    env.store.setAutoAdvance(WS, true);
+
+    await env.scheduler.reconcile(WS);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts['att-1'].status).toBe('failed');
+    expect(snap.attempts['att-1'].cause).toBe('loud_fail_blocker');
+    expect(snap.attempts['att-1'].cause_detail).toEqual({
+      reason: 'merge_to_base_blocked',
+      command: 'git merge main'
+    });
+    expect(snap.pr_wait).toEqual([]);
+    expect(snap.auto_advance).toBe(false);
+  });
+
+  test('stops the attempt monitor before lifting its terminal usage patch', async () => {
+    /** @type {string[]} */
+    const order = [];
+    /** @type {any} */
+    let env_ref = null;
+    const sessionMonitors = {
+      stop: vi.fn((/** @type {string} */ ws, /** @type {string} */ id) => {
+        order.push('monitor_stop');
+        // The drain a real stop performs: the tail's last lines reach the usage
+        // store, which is what the disposition's patch then persists.
+        env_ref.usage.record(ws, id, {
+          message_id: 'm1',
+          input_tokens: 12,
+          output_tokens: 3
+        });
+        return true;
+      })
+    };
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      sessionMonitors,
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => {
+          order.push('verify');
+          return { ok: true, reason: 'ok', pr_url: 'https://x/pull/1' };
+        })
+      }
+    });
+    env_ref = env;
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(order).toEqual(['monitor_stop', 'verify']);
+    expect(sessionMonitors.stop).toHaveBeenCalledWith(WS, 'att-1');
+    expect(env.store.snapshot(WS).attempts['att-1'].usage).toMatchObject({
+      input_tokens: 12,
+      output_tokens: 3
+    });
+  });
+
+  test('reads the guard evidence the monitor writes during its final drain', async () => {
+    /** @type {any} */
+    let env_ref = null;
+    const sessionMonitors = {
+      stop: vi.fn((/** @type {string} */ ws, /** @type {string} */ id) => {
+        env_ref.store.updateAttempt(ws, {
+          attempt_id: id,
+          patch: {
+            guard_kill: { reason: 'question_blocked', command: null, at: 900 }
+          }
+        });
+        return true;
+      })
+    };
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      sessionMonitors
+    });
+    env_ref = env;
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(
+      'loud_fail_blocker'
     );
   });
 

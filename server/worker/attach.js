@@ -40,6 +40,7 @@ import { emitQueueChanged } from './queue-events.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
+import { createSessionMonitors } from './session-monitor.js';
 import { replayUsage } from './usage-replay.js';
 import { resolveVerifyCmd, runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
@@ -305,6 +306,7 @@ export function defaultProbePid(pid) {
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
+ *   sessionMonitors?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
  *   notify?: any,
@@ -395,6 +397,23 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // takes effect without a restart.
   const notify = options.notify || createNotifier({ getConfig });
 
+  const probePid = options.probePid || defaultProbePid;
+
+  // Detached-session monitors (UI-o2yt §3.3). Built here, started by
+  // `initWorkerRuntime` for the sessions that outlived the previous process:
+  // constructing one reaches nothing, so a test that only builds an attachment
+  // still tails no file and signals no process.
+  const sessionMonitors =
+    options.sessionMonitors ||
+    createSessionMonitors({
+      store: runtime.queueStore,
+      sessionLog: runtime.sessionLog,
+      usage: runtime.usageStore,
+      probePid,
+      kill_impl: options.kill_impl,
+      notifyChanged: (ws_key) => emitQueueChanged(ws_key)
+    });
+
   const scheduler = createScheduler({
     store: runtime.queueStore,
     makeRunner,
@@ -405,7 +424,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     usage: runtime.usageStore,
     admission,
     notify,
-    probePid: options.probePid || defaultProbePid,
+    probePid,
+    sessionMonitors,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
 
@@ -509,6 +529,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reconciler,
     prPoller,
     prActions,
+    sessionMonitors,
     bd,
     admission,
     repo,
@@ -570,6 +591,33 @@ function replayRunningUsage(att, key) {
 }
 
 /**
+ * Reattach a detached-session monitor to every persisted `running` attempt whose
+ * process is still alive (UI-o2yt §3.3). STARTUP path only, for the same reason
+ * the usage replay is: a session live in THIS process has its own engine reading
+ * the log, and a second reader would double-broadcast it.
+ *
+ * Runs AFTER the usage replay so the replay's whole-file pass owns the past and
+ * the monitor owns only what is appended from its EOF seed onward.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key - Resolved workspace root.
+ */
+function startSessionMonitors(att, key) {
+  try {
+    const q = att.runtime.queueStore.snapshot(key);
+    for (const attempt of Object.values(q.attempts || {})) {
+      const a = /** @type {any} */ (attempt);
+      if (!a || a.status !== 'running') {
+        continue;
+      }
+      att.sessionMonitors.start(key, a);
+    }
+  } catch (err) {
+    log('session monitor start failed for %s: %o', key, err);
+  }
+}
+
+/**
  * Create + register attachments for each active workspace, then reconcile the
  * `running` attempts persisted from a prior run and arm the periodic reconcile
  * timer (worker-detached-session-reconcile §2). Idempotent per workspace.
@@ -614,6 +662,9 @@ export function initWorkerRuntime(input) {
     // Before the startup pass judges those attempts, rebuild what their tally
     // was — the disposition below is the write that persists it (UI-ediw).
     replayRunningUsage(att, key);
+    // Then re-arm the live half for the ones still running: drawer follow, merge
+    // guard, and continued usage (UI-o2yt §3.3).
+    startSessionMonitors(att, key);
     // Startup pass: a session that died WITH the old server may already have
     // pushed its PR, so the same routine that handles a later death decides
     // this one too. Fire-and-forget — a slow `gh` must not hold up startup.
@@ -792,6 +843,11 @@ export function __resetWorkerAttachmentsForTest() {
     }
     try {
       att.reconciler?.stop();
+    } catch {
+      /* ignore */
+    }
+    try {
+      att.sessionMonitors?.stopAll();
     } catch {
       /* ignore */
     }

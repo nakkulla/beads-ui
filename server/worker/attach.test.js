@@ -15,8 +15,21 @@ import {
 import { createQueueStore } from './queue-store.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createWorkerRuntime } from './runtime.js';
+import { sessionLogPath } from './state-paths.js';
 
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
+/**
+ * Write a raw line the way the RUNNER now does — straight to the session-log
+ * file through its own fd (UI-o2yt §3.1), with no server-side writer.
+ *
+ * @param {string} attempt_id
+ * @param {unknown} event
+ */
+function writeRunnerLine(attempt_id, event) {
+  const file = sessionLogPath(WS, attempt_id);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, `${JSON.stringify(event)}\n`);
+}
 
 /** @type {string} */
 let tmp_state;
@@ -277,7 +290,7 @@ describe('worker/attach construction + live loop (F1)', () => {
     const runtime = createWorkerRuntime();
     seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
     // The raw stream the PRIOR server persisted before it died.
-    runtime.sessionLog.append(WS, 'att-1', {
+    writeRunnerLine('att-1', {
       type: 'assistant',
       message: {
         id: 'm1',
@@ -311,7 +324,7 @@ describe('worker/attach construction + live loop (F1)', () => {
   test('initWorkerRuntime leaves a live tally alone instead of replaying over it', async () => {
     const runtime = createWorkerRuntime();
     seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
-    runtime.sessionLog.append(WS, 'att-1', {
+    writeRunnerLine('att-1', {
       type: 'assistant',
       message: {
         id: 'm1',

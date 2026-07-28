@@ -4,10 +4,19 @@
  * Both the claude and codex adapters differ only in argv construction, event
  * normalization, question/approval detection, and the terminal success verdict.
  * This module owns everything else — spawning the CLI as a detached process so a
- * process GROUP exists, streaming its stdout jsonl line-by-line, emitting a
- * normalized event stream, persisting the raw stream for the transcript viewer,
- * failing closed (blocker + process-group kill) on any interactive request, and
- * resolving a final verdict when the process closes.
+ * process GROUP exists, reading its jsonl stream line-by-line, emitting a
+ * normalized event stream, failing closed (blocker + process-group kill) on any
+ * interactive request, and resolving a final verdict when the process closes.
+ *
+ * TRANSPORT (UI-o2yt §3.1): when a `log_path` is supplied the child's stdout is
+ * an fd on the session-log FILE, opened here before the spawn and inherited by
+ * the detached child — the kernel writes it, so the log keeps growing across a
+ * server restart and no output is lost to a dead pipe. The server then READS
+ * that file with a tail reader instead of owning the transport. stderr goes to
+ * its own file so the jsonl stays pure and a full stderr pipe can no longer
+ * block the child. Without a `log_path` the engine falls back to reading the
+ * child's stdout pipe, which is the line source unit tests inject fixtures
+ * through.
  *
  * Testability: the actual `child_process.spawn` and `process.kill` are injected
  * (`spawn_impl` / `kill_impl`) so unit tests replay a jsonl fixture through a
@@ -16,7 +25,10 @@
  * @import { ChildProcessLike } from './fixture-spawn.js'
  */
 import { EventEmitter } from 'node:events';
+import nodeFs from 'node:fs';
+import path from 'node:path';
 import { findMergeViolation } from './command-guard.js';
+import { createTailReader } from './tail-reader.js';
 
 /**
  * A normalized runner event. `raw` carries the original parsed jsonl object so
@@ -86,9 +98,25 @@ import { findMergeViolation } from './command-guard.js';
  */
 
 /**
+ * A line source: whatever delivers the session's jsonl lines to the engine.
+ * `drain` is called once at close — read whatever is left, flush a trailing
+ * partial line — and `stop` releases the source's resources.
+ *
+ * @typedef {Object} LineSource
+ * @property {() => void} start
+ * @property {() => void} drain
+ * @property {() => void} stop
+ */
+
+/**
  * @typedef {Object} EngineDeps
  * @property {(command: string, args: string[], options: any) => ChildProcessLike} [spawn_impl]
  * @property {(pid: number, signal?: NodeJS.Signals|number) => void} [kill_impl]
+ * @property {typeof import('node:fs')} [fs]
+ * @property {(input: { child: ChildProcessLike, log_path: string|null, fs: typeof import('node:fs'), onLine: (line: string) => void }) => LineSource} [makeLineSource] -
+ * Line-source seam (UI-o2yt §5). Production leaves it unset: a `log_path` picks
+ * the file tail reader and its absence picks the stdout reader. Tests inject
+ * their own source to drive the engine without a file or a real child.
  */
 
 /**
@@ -101,6 +129,92 @@ function splitLines(buffer) {
   const parts = buffer.split(/\r?\n/);
   const remainder = parts.pop() ?? '';
   return [parts, remainder];
+}
+
+/**
+ * Read lines off the child's stdout PIPE. The pre-UI-o2yt transport, kept as the
+ * fallback for a spawn with no session-log path (every fixture-driven test).
+ *
+ * @param {{ child: ChildProcessLike, onLine: (line: string) => void }} input
+ * @returns {LineSource}
+ */
+function createStdoutSource(input) {
+  let buffer = '';
+  return {
+    start() {
+      const stdout = input.child.stdout;
+      if (!stdout) {
+        return;
+      }
+      stdout.setEncoding?.('utf8');
+      stdout.on('data', (chunk) => {
+        buffer += String(chunk);
+        const [lines, remainder] = splitLines(buffer);
+        buffer = remainder;
+        for (const line of lines) {
+          input.onLine(line);
+        }
+      });
+    },
+    drain() {
+      if (buffer.length > 0) {
+        const rest = buffer;
+        buffer = '';
+        input.onLine(rest);
+      }
+    },
+    stop() {}
+  };
+}
+
+/**
+ * Read lines off the session-log FILE the child writes through its inherited fd
+ * (UI-o2yt §3.1).
+ *
+ * @param {{ file: string, fs: typeof import('node:fs'), onLine: (line: string) => void }} input
+ * @returns {LineSource}
+ */
+function createFileSource(input) {
+  const reader = createTailReader({
+    file: input.file,
+    fs: input.fs,
+    onLine: input.onLine
+  });
+  return {
+    start: () => reader.start(),
+    drain: () => reader.drain(),
+    stop: () => reader.stop()
+  };
+}
+
+/**
+ * Open the session-log + stderr files the child will inherit as its stdout and
+ * stderr. Both are append-mode so a resumed/relaunched write never truncates a
+ * transcript. A failure to open EITHER closes whatever was opened and throws —
+ * the caller's spawn-failure path (fail-visible dispatch failure, §4).
+ *
+ * @param {typeof import('node:fs')} fs
+ * @param {string} log_path
+ * @param {string|null} stderr_path
+ * @returns {{ out_fd: number, err_fd: number|null }}
+ */
+function openOutputFds(fs, log_path, stderr_path) {
+  fs.mkdirSync(path.dirname(log_path), { recursive: true });
+  const out_fd = fs.openSync(log_path, 'a');
+  if (!stderr_path) {
+    return { out_fd, err_fd: null };
+  }
+  try {
+    fs.mkdirSync(path.dirname(stderr_path), { recursive: true });
+    return { out_fd, err_fd: fs.openSync(stderr_path, 'a') };
+  } catch (err) {
+    try {
+      fs.closeSync(out_fd);
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
 }
 
 /**
@@ -131,19 +245,55 @@ export function runSession(spec, bead, workspace, settings, deps) {
   // dispatching a resolution session.
   const conflict_resolution = settings?.conflict_resolution === true;
 
+  const fs = deps.fs || nodeFs;
+  // The session-log file the child writes DIRECTLY (UI-o2yt §3.1). Absent ⇒ the
+  // legacy stdout-pipe transport, which is what fixture-driven tests use.
+  const log_path =
+    typeof settings?.log_path === 'string' && settings.log_path.length > 0
+      ? settings.log_path
+      : null;
+  const stderr_path =
+    typeof settings?.stderr_path === 'string' && settings.stderr_path.length > 0
+      ? settings.stderr_path
+      : null;
+
   const { command, args, env } = spec.buildArgv(bead, workspace, settings);
-  const child = spawn_impl(command, args, {
-    cwd: workspace,
-    // Detached so the child leads its own process group; a group kill via
-    // process.kill(-pid) then reaps the whole session tree (spec §5.4).
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    // Inherit the parent environment (PATH etc.) so the spawned CLI resolves its
-    // binary and toolchain; then layer the per-session settings env (the worker
-    // token) and finally the adapter routing env, which WINS on any key collision
-    // (e.g. ccx's ANTHROPIC_BASE_URL overriding an inherited value) (spec §5.4).
-    env: { ...process.env, ...(settings?.env || {}), ...(env || {}) }
-  });
+  // Opened BEFORE the spawn so the fds exist to be inherited; an open failure
+  // throws out of runSession, which the dispatcher records as a spawn failure.
+  const fds = log_path ? openOutputFds(fs, log_path, stderr_path) : null;
+  /** @type {ChildProcessLike} */
+  let child;
+  try {
+    child = spawn_impl(command, args, {
+      cwd: workspace,
+      // Detached so the child leads its own process group; a group kill via
+      // process.kill(-pid) then reaps the whole session tree (spec §5.4).
+      detached: true,
+      stdio: fds
+        ? ['ignore', fds.out_fd, fds.err_fd ?? 'ignore']
+        : ['ignore', 'pipe', 'pipe'],
+      // Inherit the parent environment (PATH etc.) so the spawned CLI resolves its
+      // binary and toolchain; then layer the per-session settings env (the worker
+      // token) and finally the adapter routing env, which WINS on any key collision
+      // (e.g. ccx's ANTHROPIC_BASE_URL overriding an inherited value) (spec §5.4).
+      env: { ...process.env, ...(settings?.env || {}), ...(env || {}) }
+    });
+  } finally {
+    // The child owns its own copies now; leaving the server's open would leak
+    // one fd per session and hold the file open long past the session.
+    if (fds) {
+      for (const fd of [fds.out_fd, fds.err_fd]) {
+        if (fd == null) {
+          continue;
+        }
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
 
   const pid = typeof child.pid === 'number' ? child.pid : null;
   let blocked = false;
@@ -271,22 +421,22 @@ export function runSession(spec, bead, workspace, settings, deps) {
     }
   }
 
+  const makeLineSource =
+    deps.makeLineSource ||
+    ((input) =>
+      input.log_path
+        ? createFileSource({
+            file: input.log_path,
+            fs: input.fs,
+            onLine: input.onLine
+          })
+        : createStdoutSource({ child: input.child, onLine: input.onLine }));
+  const source = makeLineSource({ child, log_path, fs, onLine });
+
   const done = new Promise((resolve) => {
-    let buffer = '';
     let settled = false;
 
-    const stdout = child.stdout;
-    if (stdout) {
-      stdout.setEncoding?.('utf8');
-      stdout.on('data', (chunk) => {
-        buffer += String(chunk);
-        const [lines, remainder] = splitLines(buffer);
-        buffer = remainder;
-        for (const line of lines) {
-          onLine(line);
-        }
-      });
-    }
+    source.start();
 
     /**
      * @param {number|null} exit
@@ -296,10 +446,17 @@ export function runSession(spec, bead, workspace, settings, deps) {
         return;
       }
       settled = true;
-      // Flush any trailing partial line.
-      if (buffer.length > 0) {
-        onLine(buffer);
-        buffer = '';
+      // Read to EOF and flush any trailing partial line before the verdict: the
+      // last lines of a file-backed session land after the process is gone.
+      try {
+        source.drain();
+      } catch {
+        // A drain fault must not swallow the verdict.
+      }
+      try {
+        source.stop();
+      } catch {
+        /* ignore */
       }
       const { success, reason } = spec.verdict({
         raw: raw_events,
