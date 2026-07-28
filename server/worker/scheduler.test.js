@@ -2373,6 +2373,72 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
       key: 'workflow_mode'
     });
   });
+
+  test('a resumed external resolution inherits the external_conflict identifier', async () => {
+    const env = extEnv();
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'ext-1', bead_id: 'X1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'ext-1',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-ext',
+        workflow_mode_prior: null,
+        conflict_resolution: true,
+        external_conflict: true
+      }
+    });
+
+    const res = await env.scheduler.resume(WS, 'ext-1');
+
+    expect(res.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
+        .external_conflict
+    ).toBe(true);
+  });
+
+  test('a resumed external resolution still closes without a durable lane move', async () => {
+    const notify = {
+      attemptStarted: vi.fn(),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn()
+    };
+    const env = extEnv({ notify });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'ext-1', bead_id: 'X1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'ext-1',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-ext',
+        workflow_mode_prior: null,
+        conflict_resolution: true,
+        external_conflict: true
+      }
+    });
+    const res = await env.scheduler.resume(WS, 'ext-1');
+
+    env.runner.finish('X1', { success: true, reason: 'ok' });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts[/** @type {string} */ (res.attempt_id)].status).toBe(
+      'done'
+    );
+    expect(q.pr_wait).toEqual([]);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(notify.prWaitEntered).not.toHaveBeenCalled();
+  });
 });
 
 describe('scheduler REVISE disposition dispatch (UI-hs11 §3.3)', () => {

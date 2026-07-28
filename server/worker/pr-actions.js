@@ -340,11 +340,18 @@ export function createPrActions(deps) {
    * The bead's merge target base, from the attempt that produced the PR. A bead
    * whose attempts predate the field falls back to `main`, exactly like resume.
    *
-   * An EXTERNAL bead has no attempt at all, so the ordering continues into
-   * GitHub's own `baseRefName` (UI-7agi §3) — passed in as `hint` from the
-   * click-time gate, else read from the observation cache. `main` stays the last
-   * resort, but reaching it for a PR that targeted another branch would sync,
-   * verify and deploy the WRONG branch, which is why the hint exists at all.
+   * An EXTERNAL bead has no attempt that PRODUCED its PR, so the ordering
+   * continues into GitHub's own `baseRefName` (UI-7agi §3) — passed in as
+   * `hint` from the click-time gate, else read from the observation cache.
+   * `main` stays the last resort, but reaching it for a PR that targeted
+   * another branch would sync, verify and deploy the WRONG branch, which is why
+   * the hint exists at all.
+   *
+   * An external CONFLICT-RESOLUTION attempt is skipped for exactly that reason
+   * (UI-w0hi §1): it records the base the resolution CLICK observed, not the
+   * base the PR was opened against, and it is not the record that produced the
+   * PR. Letting it win would silently outrank the fresher click-time hint the
+   * moment the PR's base moved — the one case the hint exists to cover.
    *
    * @param {Queue} q
    * @param {string} bead_id
@@ -357,6 +364,9 @@ export function createPrActions(deps) {
     let best = null;
     for (const a of attempts) {
       if (!a || a.bead_id !== bead_id || typeof a.target_base !== 'string') {
+        continue;
+      }
+      if (a.external_conflict === true) {
         continue;
       }
       const at = typeof a.finished_at === 'number' ? a.finished_at : 0;

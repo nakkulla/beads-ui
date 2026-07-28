@@ -2618,6 +2618,13 @@ export function createScheduler(deps) {
         exec_values: stamped_keys.length > 0 ? exec_values : null,
         resumed_from: attempt_id,
         conflict_resolution: options.conflict_resolution,
+        // INHERITED, never re-derived (UI-w0hi §1): a child of an external
+        // resolution is still working an external bead, and losing the flag
+        // would send its successful termination down the ordinary arm — which
+        // injects the bead into the durable `pr_wait` lane the external overlay
+        // owns. The identifier has to survive every relaunch, not just a
+        // restart.
+        external_conflict: prior.external_conflict === true,
         disposition: options.disposition ?? null,
         disposition_receipt: options.disposition_receipt ?? null,
         disposition_resume: options.disposition

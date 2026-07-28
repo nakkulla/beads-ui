@@ -1970,6 +1970,42 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     ]);
   });
 
+  test('ignores a prior resolution attempt when resolving the cleanup base', async () => {
+    const env = makeActions(
+      externalOptions({
+        details: [prOf({ state: 'MERGED', base_ref: 'develop' })]
+      })
+    );
+    // A resolution session ran against the base the CLICK saw back then; the
+    // PR has moved to `develop` since. That attempt is not the record that
+    // produced the PR, so it must not outrank this click's observation
+    // (UI-w0hi, implementation review 2026-07-28).
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'ext-conf-1', bead_id: EXTERNAL_BEAD }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'ext-conf-1',
+      patch: {
+        status: 'done',
+        finished_at: 9999,
+        repo: REPO,
+        target_base: 'main',
+        conflict_resolution: true,
+        external_conflict: true
+      }
+    });
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.git_argv).toContainEqual([
+      'fetch',
+      '--no-tags',
+      'origin',
+      'develop'
+    ]);
+  });
+
   test('deletes the head branch gh names when it differs from the bead id', async () => {
     const env = makeActions(
       externalOptions({
