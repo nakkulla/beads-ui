@@ -58,9 +58,21 @@ unknown type으로 깨진다.
 - `an empty value unsets the key (--unset-metadata)` (93-106행): `merge_policy`를
   `route`로 교체한다. unset 규약은 살아 있는 동작이다.
 - `rejects a non-enum value and an unknown key without touching bd` (108-125행):
-  `{ key: 'merge_policy', value: 'yolo' }` 케이스를
-  `{ key: 'merge_policy', value: 'pr_stop' }`로 바꾼다. 한때 유효했던 값이 이제
-  unknown key로 거부된다는 사실이 폐기의 회귀 증거가 된다.
+  `{ key: 'merge_policy', value: 'yolo' }` 케이스를 제거하고, 폐기 회귀는 아래
+  전용 테스트가 맡는다.
+- **신규** — 폐기 키 거부 회귀 테스트: 두 폐기 키 각각에 대해 **한때 유효했던
+  값의 set**과 **빈 값의 unset** 요청을 보내, 네 조합 모두 `bad_request`로
+  거부되고 `runBdInWorkspace`가 호출되지 않음을 검증한다.
+
+  | key | value | 기대 |
+  | --- | --- | --- |
+  | `merge_policy` | `'pr_stop'` | `bad_request`, bd 미호출 |
+  | `merge_policy` | `''` | `bad_request`, bd 미호출 |
+  | `drift_policy` | `'halt'` | `bad_request`, bd 미호출 |
+  | `drift_policy` | `''` | `bad_request`, bd 미호출 |
+
+  한 키만, 혹은 set 경로만 덮으면 나머지 키가 살아남거나 unset 경로가 뚫려도
+  테스트가 통과한다 — 네 조합을 전부 고정해야 폐기가 실제로 관측된다.
 
 ## 비목표
 
@@ -76,10 +88,14 @@ unknown type으로 깨진다.
 
 1. `WORKFLOW_META_ENUMS`에 `route`만 남는다.
 2. `update-workflow-meta`로 `merge_policy`/`drift_policy`를 set 또는 unset하려는
-   요청이 `bad_request`로 거부되고, 그것을 확인하는 회귀 테스트가 존재한다.
+   요청이 `bad_request`로 거부되고 bd를 호출하지 않는다. 두 키 × set/unset 네
+   조합을 모두 고정하는 회귀 테스트가 존재한다.
 3. `route`의 set/unset 동작과 WS 메시지 타입 `update-workflow-meta`는 무변화다.
 4. 두 폐기 키를 언급하는 주석이 편집 표면(`mutation-handlers.js`, `protocol.js`)에
    남지 않는다.
 5. `npm run all` green.
-6. `npm run build` green. 프론트 소스를 건드리지 않으므로 `app/main.bundle.js`는
-   무변화가 기대되며, 변화가 있으면 원인을 확인한 뒤 커밋에 포함한다.
+6. `npm run build` green. `app/protocol.js`는 프론트 소스이지만 변경이 주석 한
+   줄이므로 `app/main.bundle.js`는 무변화가 기대되고, 소스맵이 원본 바이트를
+   담는 만큼 `app/main.bundle.js.map`은 변경될 수 있다. AGENTS.md
+   Pre-Handoff Validation에 따라 재생성된 산출물은 실제 diff를 확인한 뒤 커밋에
+   포함한다.
