@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createSessionLogStore } from '../../data/session-log-store.js';
 import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
@@ -4554,5 +4554,914 @@ describe('merge progress — view (UI-raqh §4)', () => {
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .merge-step')
         ?.textContent
     ).toContain('자식 정리');
+  });
+});
+
+/**
+ * Install a `matchMedia` that reports the mobile breakpoint. jsdom ships none
+ * at all, so every other test in this file renders the desktop composition and
+ * only these opt in (UI-58y2).
+ *
+ * @param {boolean} matches
+ */
+function stubMatchMedia(matches) {
+  /** @type {Array<(ev: any) => void>} */
+  const listeners = [];
+  const mql = {
+    matches,
+    media: '(max-width: 640px)',
+    /**
+     * @param {string} _type
+     * @param {(ev: any) => void} fn
+     */
+    addEventListener(_type, fn) {
+      listeners.push(fn);
+    },
+    removeEventListener() {},
+    /** @param {boolean} next */
+    emit(next) {
+      mql.matches = next;
+      for (const fn of listeners.slice()) {
+        fn({ matches: next });
+      }
+    }
+  };
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: () => mql
+  });
+  return mql;
+}
+
+function clearMatchMedia() {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: undefined
+  });
+}
+
+describe('candidate queue button — [대기로 ↴] (UI-58y2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} transport
+   * @returns {HTMLElement} A view over seedCandidates() with blocked shown, so
+   * the blocked-with-spec candidate BL-1 is on screen too.
+   */
+  function mountWithBlocked(transport) {
+    window.localStorage.setItem(
+      'beads-ui.worker.candidate-filter',
+      JSON.stringify({ show_blocked: true, spec: 'all' })
+    );
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ queue: [{ bead_id: 'QQ-1', added_at: 1 }] }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} bead_id
+   * @returns {HTMLButtonElement}
+   */
+  const placeBtn = (mount, bead_id) =>
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        `.worker-card[data-bead-id="${bead_id}"] .worker-card__place`
+      )
+    );
+
+  test('places the candidate at the tail of the waiting queue', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountWithBlocked(transport);
+
+    placeBtn(mount, 'RD-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place', {
+      bead_id: 'RD-1',
+      index: 1,
+      expected_revision: 1
+    });
+  });
+
+  test('disables the button on a spec-less candidate', () => {
+    const mount = mountWithBlocked(vi.fn());
+
+    expect(placeBtn(mount, 'RD-2').disabled).toBe(true);
+  });
+
+  test('keeps the button enabled on a blocked candidate that has a spec', () => {
+    const mount = mountWithBlocked(vi.fn());
+
+    expect(placeBtn(mount, 'BL-1').disabled).toBe(false);
+  });
+
+  test('sends nothing when a spec-less candidate button is clicked', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountWithBlocked(transport);
+
+    placeBtn(mount, 'RD-2').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await flush();
+
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('does not open the detail panel on a place click', async () => {
+    const gotoIssue = vi.fn();
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn().mockResolvedValue({ ok: true }),
+      gotoIssue
+    });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="RD-1"] .worker-card__place'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(gotoIssue).not.toHaveBeenCalled();
+  });
+});
+
+describe('mobile control-first layout (UI-58y2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+    stubMatchMedia(true);
+  });
+
+  afterEach(() => {
+    clearMatchMedia();
+  });
+
+  const RUNNING_ATTEMPT = {
+    a1: {
+      attempt_id: 'a1',
+      bead_id: 'RD-1',
+      status: 'running',
+      runner: 'claude',
+      model: 'opus',
+      started_at: 1,
+      session_id: 's1'
+    }
+  };
+
+  /**
+   * @param {any} [over] - Queue snapshot overrides.
+   * @param {any} [transport]
+   * @returns {HTMLElement}
+   */
+  function mountMobile(over, transport) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf(over || {}));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: transport || vi.fn()
+    });
+    return mount;
+  }
+
+  test('orders the lanes 지금 → 대기 → 후보 → 완료', () => {
+    const mount = mountMobile({ attempts: RUNNING_ATTEMPT });
+
+    const ids = Array.from(
+      mount.querySelectorAll('.worker-lanes--mobile > section')
+    ).map((el) => el.id);
+
+    expect(ids).toEqual([
+      'worker-now',
+      'worker-pane-queue',
+      'worker-pane-candidate',
+      'worker-pane-done'
+    ]);
+  });
+
+  test('renders no 지금 panel when nothing runs and no PR waits', () => {
+    const mount = mountMobile();
+
+    expect(mount.querySelector('#worker-now')).toBe(null);
+  });
+
+  test('puts the running tile inside the 지금 panel', () => {
+    const mount = mountMobile({ attempts: RUNNING_ATTEMPT });
+
+    expect(
+      mount.querySelector('#worker-now .rtile[data-bead-id="RD-1"]')
+    ).not.toBe(null);
+    expect(mount.querySelector('#worker-pane-running')).toBe(null);
+  });
+
+  test('puts a pr_wait row inside the 지금 panel', () => {
+    const mount = mountMobile({
+      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
+    });
+
+    expect(
+      mount.querySelector('#worker-now .worker-mini[data-bead-id="RD-2"]')
+    ).not.toBe(null);
+  });
+
+  test('collapses 대기 and 완료 to strips on a first visit', () => {
+    const mount = mountMobile();
+
+    const queue_pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-queue')
+    );
+    expect(queue_pane.classList.contains('worker-pane--collapsed')).toBe(true);
+    expect(queue_pane.querySelector('.worker-pane__body')).toBe(null);
+    expect(queue_pane.dataset.lane).toBe('queue');
+  });
+
+  test('expands a strip when its header is tapped', () => {
+    const mount = mountMobile({ queue: [{ bead_id: 'RD-1', added_at: 1 }] });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-queue .worker-pane__hd--toggle')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const queue_pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-queue')
+    );
+    expect(queue_pane.classList.contains('worker-pane--collapsed')).toBe(false);
+    expect(
+      queue_pane.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    ).not.toBe(null);
+  });
+
+  test('stores the collapse state on every toggle', () => {
+    const mount = mountMobile();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-done .worker-pane__hd--toggle')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.worker.lane-collapsed') || '{}'
+      )
+    ).toEqual({ queue: true, done: false });
+  });
+
+  test('restores a stored collapse state on mount', () => {
+    window.localStorage.setItem(
+      'beads-ui.worker.lane-collapsed',
+      JSON.stringify({ queue: false, done: true })
+    );
+
+    const mount = mountMobile();
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('#worker-pane-queue')
+      ).classList.contains('worker-pane--collapsed')
+    ).toBe(false);
+  });
+
+  test('falls back to the defaults on a malformed stored collapse state', () => {
+    window.localStorage.setItem('beads-ui.worker.lane-collapsed', '{oops');
+
+    const mount = mountMobile();
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('#worker-pane-done')
+      ).classList.contains('worker-pane--collapsed')
+    ).toBe(true);
+  });
+
+  test('previews the first waiting row on the collapsed strip', () => {
+    const mount = mountMobile({ queue: [{ bead_id: 'RD-1', added_at: 1 }] });
+
+    expect(
+      mount.querySelector('#worker-pane-queue .worker-pane__preview')
+        ?.textContent
+    ).toContain('ready with spec');
+  });
+
+  test('appends to the queue when a candidate is dropped on a collapsed strip', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountMobile(
+      { queue: [{ bead_id: 'QQ-1', added_at: 1 }] },
+      transport
+    );
+
+    drag(mount, 'RD-1', 'worker-pane-queue');
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place', {
+      bead_id: 'RD-1',
+      index: 1,
+      expected_revision: 1
+    });
+  });
+
+  test('switches back to the five-pane row when the viewport widens', () => {
+    const mql = stubMatchMedia(true);
+    const mount = mountMobile({ attempts: RUNNING_ATTEMPT });
+
+    mql.emit(false);
+
+    expect(mount.querySelector('.worker-lanes--mobile')).toBe(null);
+    expect(mount.querySelector('#worker-pane-running')).not.toBe(null);
+  });
+});
+
+describe('worker toolbar KPI chips (UI-58y2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} over
+   * @returns {HTMLElement}
+   */
+  function mountKpi(over) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf(over));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('counts 실행 · PR 대기 · 오늘 완료 in the toolbar', () => {
+    const mount = mountKpi({
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'running',
+          started_at: 1,
+          session_id: 's1'
+        }
+      },
+      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }],
+      done: [{ bead_id: 'BL-1', added_at: 1 }]
+    });
+
+    const chips = Array.from(mount.querySelectorAll('.worker-kpi__chip')).map(
+      (el) => (el.textContent || '').replace(/\s+/g, ' ').trim()
+    );
+
+    expect(chips).toEqual(['실행 1', 'PR 대기 1', '오늘 완료 1']);
+  });
+
+  test('sums the completed sessions token usage into one chip', () => {
+    const mount = mountKpi({
+      done: [
+        { bead_id: 'RD-1', added_at: 1 },
+        { bead_id: 'RD-2', added_at: 2 }
+      ],
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'succeeded',
+          usage: { input_tokens: 1000, output_tokens: 200 }
+        },
+        a2: {
+          attempt_id: 'a2',
+          bead_id: 'RD-2',
+          status: 'succeeded',
+          usage: { input_tokens: 800, output_tokens: 0 }
+        }
+      }
+    });
+
+    expect(mount.querySelector('.worker-kpi__chip--tokens')?.textContent).toBe(
+      'τ 2.0k'
+    );
+  });
+
+  test('renders no token chip when no completed session reported usage', () => {
+    const mount = mountKpi({ done: [{ bead_id: 'RD-1', added_at: 1 }] });
+
+    expect(mount.querySelector('.worker-kpi__chip--tokens')).toBe(null);
+  });
+});
+
+describe('running tile stage accent (UI-58y2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {'running'|'paused'} status
+   * @returns {HTMLElement}
+   */
+  function mountTile(status) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status,
+            started_at: 1,
+            session_id: 's1'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('draws the liveness accent on a running tile', () => {
+    const mount = mountTile('running');
+
+    expect(mount.querySelector('.rtile .rtile__accent')).not.toBe(null);
+  });
+
+  test('draws no accent on a paused tile', () => {
+    const mount = mountTile('paused');
+
+    expect(mount.querySelector('.rtile .rtile__accent')).toBe(null);
+  });
+
+  test('gives the running lane header a live dot', () => {
+    const mount = mountTile('running');
+
+    const pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-running')
+    );
+    expect(pane.classList.contains('worker-pane--live')).toBe(true);
+    expect(pane.querySelector('.worker-pane__dot--running')).not.toBe(null);
+  });
+
+  test('leaves the running lane header still when only a paused tile is there', () => {
+    const mount = mountTile('paused');
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('#worker-pane-running')
+      ).classList.contains('worker-pane--live')
+    ).toBe(false);
+  });
+});
+
+describe('mobile sticky ribbon (UI-58y2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+    stubMatchMedia(true);
+  });
+
+  afterEach(() => {
+    clearMatchMedia();
+  });
+
+  /**
+   * @param {any} [over]
+   * @returns {HTMLElement}
+   */
+  function mountRibbon(over) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf(over || {}));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('carries the auto-advance toggle and the three counts', () => {
+    const mount = mountRibbon({
+      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }],
+      done: [{ bead_id: 'BL-1', added_at: 1 }]
+    });
+
+    const ribbon = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-ribbon')
+    );
+    expect(ribbon.querySelector('.worker-play')).not.toBe(null);
+    expect(
+      Array.from(ribbon.querySelectorAll('.worker-kpi__chip')).map((el) =>
+        (el.textContent || '').replace(/\s+/g, ' ').trim()
+      )
+    ).toEqual(['실행 0', 'PR 대기 1', '오늘 완료 1']);
+  });
+
+  test('keeps the slot stepper and settings out of the ribbon', () => {
+    const mount = mountRibbon();
+
+    const ribbon = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-ribbon')
+    );
+    expect(ribbon.querySelector('.worker-slots__input')).toBe(null);
+    expect(ribbon.querySelector('.worker-exec-defaults-btn')).toBe(null);
+    expect(mount.querySelector('.worker-slots__input')).not.toBe(null);
+    expect(mount.querySelector('.worker-exec-defaults-btn')).not.toBe(null);
+  });
+
+  test('leaves the failure banner outside the ribbon', () => {
+    const mount = mountRibbon({
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'failed',
+          repo: 'r',
+          cause: 'boom'
+        }
+      }
+    });
+
+    expect(mount.querySelector('.worker-banner--failure')).not.toBe(null);
+    expect(mount.querySelector('.worker-ribbon .worker-banner--failure')).toBe(
+      null
+    );
+  });
+
+  test('publishes the measured header height as the ribbon sticky offset', () => {
+    document.body.innerHTML =
+      '<header class="app-header"></header><div id="m"></div>';
+    const header = /** @type {HTMLElement} */ (
+      document.querySelector('.app-header')
+    );
+    header.getBoundingClientRect = () =>
+      /** @type {any} */ ({ height: 96, width: 0, top: 0, left: 0 });
+
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.worker-console')
+      ).style.getPropertyValue('--worker-ribbon-top')
+    ).toBe('96px');
+  });
+});
+
+describe('token KPI zero handling (UI-58y2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  test('shows an explicit zero rather than hiding the chip', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'succeeded',
+            usage: { input_tokens: 0, output_tokens: 0 }
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(mount.querySelector('.worker-kpi__chip--tokens')?.textContent).toBe(
+      'τ 0'
+    );
+  });
+});
+
+describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /** CI is green but the branch conflicts with base — the UI-2yoq case. */
+  const CONFLICTING = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '충돌',
+    reason: null
+  };
+  const CLEAN = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '최신',
+    reason: null
+  };
+  const UNOBSERVED = {
+    enabled: false,
+    tier: 'unobserved',
+    gate_badge: '관측 대기',
+    base_badge: '충돌',
+    reason: 'not_observed'
+  };
+
+  /**
+   * @param {{ gate?: any, attempts?: Record<string, any>, activity?: any }} [over]
+   * @returns {HTMLElement}
+   */
+  function mountBoard(over = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 304,
+              url: 'https://github.com/o/r/pull/304',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            ci: null,
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate: over.gate || CONFLICTING
+          }
+        },
+        pr_activity: over.activity ? { 'RD-1': over.activity } : {},
+        attempts: over.attempts || {}
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  /**
+   * @param {Partial<any>} [over]
+   * @returns {Record<string, any>}
+   */
+  function resolutionAttempt(over = {}) {
+    return {
+      c1: {
+        attempt_id: 'c1',
+        bead_id: 'RD-1',
+        status: 'running',
+        runner: 'claude',
+        model: 'opus',
+        session_id: 'sid-1',
+        started_at: Date.now() - 3000,
+        conflict_resolution: true,
+        ...over
+      }
+    };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLElement}
+   */
+  function card(mount) {
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} selector
+   * @returns {HTMLButtonElement}
+   */
+  function button(mount, selector) {
+    return /** @type {HTMLButtonElement} */ (
+      card(mount).querySelector(selector)
+    );
+  }
+
+  test('marks a running resolution tile 충돌 해소', () => {
+    const mount = mountBoard({ attempts: resolutionAttempt() });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="c1"]')
+    );
+    expect(tile.querySelector('.worker-mini__badge')?.textContent).toBe(
+      '충돌 해소'
+    );
+  });
+
+  test('marks a leaf-paused resolution tile 충돌 해소 일시정지', () => {
+    const mount = mountBoard({
+      attempts: resolutionAttempt({ status: 'paused' })
+    });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="c1"]')
+    );
+    expect(tile.classList.contains('rtile--paused')).toBe(true);
+    expect(tile.querySelector('.worker-mini__badge')?.textContent).toBe(
+      '충돌 해소 일시정지'
+    );
+  });
+
+  test('leaves an ordinary running tile unbadged', () => {
+    const mount = mountBoard({
+      attempts: resolutionAttempt({ conflict_resolution: false })
+    });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="c1"]')
+    );
+    expect(tile.querySelector('.worker-mini__badge')).toBe(null);
+  });
+
+  test('shows 충돌 해소 중 as the live badge on the pr_wait card', () => {
+    const mount = mountBoard({ attempts: resolutionAttempt() });
+
+    const badge = /** @type {HTMLElement} */ (
+      card(mount).querySelector('.worker-mini__badge--activity')
+    );
+    expect(badge.textContent?.trim()).toBe('충돌 해소 중');
+    expect(badge.querySelector('.act-dot')).not.toBe(null);
+  });
+
+  test('disables both actions while a resolution session runs', () => {
+    const mount = mountBoard({ attempts: resolutionAttempt() });
+
+    expect(button(mount, '.worker-mini__merge').disabled).toBe(true);
+    expect(button(mount, '.worker-mini__merge').getAttribute('title')).toBe(
+      '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
+    );
+    expect(button(mount, '.worker-mini__discard').disabled).toBe(true);
+    expect(button(mount, '.worker-mini__discard').getAttribute('title')).toBe(
+      '충돌 해소 세션 있음 — 폐기하려면 먼저 세션을 정리하세요'
+    );
+  });
+
+  test('keeps the actions disabled while the session is paused, without a live dot', () => {
+    const mount = mountBoard({
+      attempts: resolutionAttempt({ status: 'paused' })
+    });
+
+    expect(card(mount).textContent).toContain('충돌 해소 일시정지');
+    expect(card(mount).querySelector('.worker-mini__badge--activity')).toBe(
+      null
+    );
+    expect(button(mount, '.worker-mini__merge').disabled).toBe(true);
+    expect(button(mount, '.worker-mini__merge').getAttribute('title')).toBe(
+      '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
+    );
+    expect(button(mount, '.worker-mini__discard').disabled).toBe(true);
+  });
+
+  test('suppresses the poller activity badge while a resolution session runs', () => {
+    const mount = mountBoard({
+      gate: UNOBSERVED,
+      activity: { activity: 'checking', merge_progress: null },
+      attempts: resolutionAttempt()
+    });
+
+    expect(
+      card(mount)
+        .querySelector('.worker-mini__badge--activity')
+        ?.textContent?.trim()
+    ).toBe('충돌 해소 중');
+    expect(card(mount).textContent).not.toContain('확인중');
+    expect(card(mount).textContent).toContain('관측 대기');
+  });
+
+  test('reads the action button as 충돌 해소 on a conflicting gate', () => {
+    const mount = mountBoard();
+
+    expect(button(mount, '.worker-mini__merge').textContent?.trim()).toBe(
+      '충돌 해소'
+    );
+    expect(button(mount, '.worker-mini__merge').disabled).toBe(false);
+  });
+
+  test('keeps 머지 on a clean gate', () => {
+    const mount = mountBoard({ gate: CLEAN });
+
+    expect(button(mount, '.worker-mini__merge').textContent?.trim()).toBe(
+      '머지'
+    );
+  });
+
+  test('keeps the merge-in-flight discard tooltip on the merge path', () => {
+    const mount = mountBoard({
+      gate: CLEAN,
+      activity: { activity: null, merge_progress: { step: 'base_sync' } }
+    });
+
+    expect(button(mount, '.worker-mini__discard').getAttribute('title')).toBe(
+      '머지 진행 중 — 폐기할 수 없습니다'
+    );
+    expect(button(mount, '.worker-mini__merge').textContent?.trim()).toBe(
+      '머지'
+    );
+  });
+
+  test('keeps the marking on a resumed resolution child, which carries no flag of its own', () => {
+    const mount = mountBoard({
+      attempts: {
+        ...resolutionAttempt({ status: 'paused' }),
+        c2: {
+          attempt_id: 'c2',
+          bead_id: 'RD-1',
+          status: 'running',
+          runner: 'claude',
+          model: 'opus',
+          session_id: 'sid-1',
+          started_at: Date.now() - 1000,
+          resumed_from: 'c1',
+          conflict_resolution: false
+        }
+      }
+    });
+
+    // The spent ancestor is history; only the resumed child renders.
+    expect(mount.querySelector('.rtile[data-attempt-id="c1"]')).toBe(null);
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="c2"]')
+    );
+    expect(tile.querySelector('.worker-mini__badge')?.textContent).toBe(
+      '충돌 해소'
+    );
+    expect(
+      card(mount)
+        .querySelector('.worker-mini__badge--activity')
+        ?.textContent?.trim()
+    ).toBe('충돌 해소 중');
+    expect(button(mount, '.worker-mini__merge').disabled).toBe(true);
+    expect(button(mount, '.worker-mini__discard').disabled).toBe(true);
+  });
+
+  test('does not inherit the flag onto an unrelated later attempt', () => {
+    const mount = mountBoard({
+      attempts: {
+        ...resolutionAttempt({ status: 'done' }),
+        c3: {
+          attempt_id: 'c3',
+          bead_id: 'RD-1',
+          status: 'running',
+          runner: 'claude',
+          model: 'opus',
+          started_at: Date.now() - 1000,
+          conflict_resolution: false
+        }
+      }
+    });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="c3"]')
+    );
+    expect(tile.querySelector('.worker-mini__badge')).toBe(null);
+    expect(button(mount, '.worker-mini__merge').disabled).toBe(false);
+  });
+
+  test('restores the card once the resolution session ends', () => {
+    const mount = mountBoard({
+      attempts: resolutionAttempt({ status: 'done' })
+    });
+
+    expect(card(mount).textContent).not.toContain('충돌 해소 중');
+    expect(button(mount, '.worker-mini__merge').disabled).toBe(false);
+    expect(button(mount, '.worker-mini__discard').disabled).toBe(false);
+    expect(button(mount, '.worker-mini__merge').textContent?.trim()).toBe(
+      '충돌 해소'
+    );
   });
 });

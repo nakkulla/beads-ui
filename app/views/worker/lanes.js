@@ -38,7 +38,13 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  * button while [폐기] must not be offered there at all (discard spec §2).
  * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
  * @property {boolean} [discard_enabled] - Whether [폐기] may be clicked; false
- * only while a merge is in flight (UI-raqh §4).
+ * while a merge is in flight (UI-raqh §4) or a conflict-resolution session owns
+ * the bead (UI-dxgz §1).
+ * @property {string} [discard_title] - Tooltip for a refused [폐기]; absent
+ * keeps the merge-in-flight wording (UI-dxgz §1).
+ * @property {string} [merge_label] - Text of the [머지] button; absent renders
+ * 머지. A conflicting gate dispatches a resolution session instead of merging,
+ * so its button says so (UI-dxgz §2).
  * @property {{ label: string, index: number, total: number, percent: number }|null} [merge_step] -
  * The merge's current step, when one is running (UI-raqh §4).
  * @property {string} [merge_title] - Tooltip: what the click is based on, or
@@ -128,7 +134,7 @@ export function miniRow(item) {
           ?disabled=${item.merge_enabled === false}
           title=${item.merge_title || ''}
         >
-          머지
+          ${item.merge_label || '머지'}
         </button>`
       : ''}
     ${item.discard_action
@@ -138,7 +144,7 @@ export function miniRow(item) {
           data-bead-id=${item.id}
           ?disabled=${item.discard_enabled === false}
           title=${item.discard_enabled === false
-            ? '머지 진행 중 — 폐기할 수 없습니다'
+            ? item.discard_title || '머지 진행 중 — 폐기할 수 없습니다'
             : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음). 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요'}
         >
           폐기
@@ -188,16 +194,35 @@ export function candidateCard(item) {
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow ? stepperTemplate(workflow, item.status) : ''}
-    ${item.reason
-      ? html`<div class="worker-card__foot">
-          <span
+    <div
+      class="worker-card__foot${item.reason
+        ? ''
+        : ' worker-card__foot--actions-only'}"
+    >
+      ${item.reason
+        ? html`<span
             class="worker-card__reason${danger
               ? ' worker-card__reason--danger'
               : ''}"
             >${item.reason}</span
-          >
-        </div>`
-      : ''}
+          >`
+        : ''}
+      <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 드래그의 보완재이지 대체재가
+           아니므로 자격 조건은 드래그와 완전히 같다 — spec 없는 후보만 막고,
+           blocked-with-spec은 드래그와 마찬가지로 적재할 수 있다. 표시 조건
+           (coarse pointer / 좁은 화면)은 CSS가 소유한다. -->
+      <button
+        type="button"
+        class="worker-card__place"
+        data-bead-id=${item.id}
+        ?disabled=${!draggable}
+        title=${draggable
+          ? '대기 큐 맨 뒤에 추가'
+          : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
+      >
+        대기로 ↴
+      </button>
+    </div>
   </div>`;
 }
 
@@ -209,29 +234,62 @@ export function candidateCard(item) {
  * optional trailing element INSIDE it (the candidate sort select, UI-raqh §2) —
  * a pane that passes neither renders exactly as before.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult }} pane
+ * `collapsible` turns the header into the accordion toggle used by the mobile
+ * layout (UI-58y2): a collapsed pane renders no body but keeps its `data-lane`,
+ * so 후보→대기 still drops onto the strip. `live` marks the lane whose work is
+ * actually running, which is the only lane whose header dot breathes.
+ *
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
+  const collapsed = !!pane.collapsible && !!pane.collapsed;
+  const head_inner = html`<span
+      class="worker-pane__dot worker-pane__dot--${pane.lane}"
+      aria-hidden="true"
+    ></span>
+    <span class="worker-pane__title">${pane.title}</span>
+    ${collapsed && pane.preview
+      ? html`<span class="worker-pane__preview">${pane.preview}</span>`
+      : ''}
+    <span class="worker-pane__count">${pane.items.length}</span>`;
   return html`<section
-    class="worker-pane${pane.src ? ' worker-pane--src' : ''}"
+    class="worker-pane worker-pane--lane-${pane.lane}${pane.src
+      ? ' worker-pane--src'
+      : ''}${pane.live ? ' worker-pane--live' : ''}${pane.collapsible
+      ? ' worker-pane--collapsible'
+      : ''}${collapsed ? ' worker-pane--collapsed' : ''}"
     id=${pane.id}
     data-lane=${pane.lane}
   >
-    <header class="worker-pane__hd">
-      <span class="worker-pane__title">${pane.title}</span>
-      <span class="worker-pane__count">${pane.items.length}</span>
-      ${pane.header_control ? pane.header_control : ''}
-    </header>
-    ${pane.controls ? pane.controls : ''}
-    <div class="worker-pane__body">
-      ${pane.body
-        ? pane.body
-        : pane.items.length === 0
-          ? html`<div class="worker-pane__empty">${pane.empty || ''}</div>`
-          : pane.items.map((it) =>
-              pane.lane === 'candidate' ? candidateCard(it) : miniRow(it)
-            )}
-    </div>
+    ${pane.collapsible
+      ? html`<button
+          type="button"
+          class="worker-pane__hd worker-pane__hd--toggle"
+          data-lane=${pane.lane}
+          aria-expanded=${collapsed ? 'false' : 'true'}
+        >
+          ${head_inner}
+          <span class="worker-pane__caret" aria-hidden="true"
+            >${collapsed ? '▸' : '▾'}</span
+          >
+        </button>`
+      : html`<header class="worker-pane__hd">
+          ${head_inner}${pane.header_control ? pane.header_control : ''}
+        </header>`}
+    ${collapsed
+      ? ''
+      : html`${pane.controls ? pane.controls : ''}
+          <div class="worker-pane__body">
+            ${pane.body
+              ? pane.body
+              : pane.items.length === 0
+                ? html`<div class="worker-pane__empty">
+                    ${pane.empty || ''}
+                  </div>`
+                : pane.items.map((it) =>
+                    pane.lane === 'candidate' ? candidateCard(it) : miniRow(it)
+                  )}
+          </div>`}
   </section>`;
 }
