@@ -3353,6 +3353,52 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(btn.getAttribute('title')).toContain('남은 정리를');
   });
 
+  test('renders a workspace ship failure banner with the manual recovery command', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          ship_failure: {
+            bead_id: 'RD-9',
+            reason: 'ship_failed:cap-a',
+            detail: 'pending=cap-a,cap-b',
+            pr_url: 'https://github.com/o/r/pull/909',
+            at: 1
+          }
+        }
+      )
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--ship')
+    );
+    const text = (banner.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain('ship_failed:cap-a');
+    expect(text).toContain('pending=cap-a,cap-b');
+    expect(text).toContain('ship <capability>');
+    expect(banner.getAttribute('data-bead-id')).toBe('RD-9');
+  });
+
+  test('renders no ship banner when the workspace carries no record', () => {
+    const { mount } = mountWith(
+      queueWithGate({
+        enabled: false,
+        tier: 'merged',
+        gate_badge: '머지됨',
+        base_badge: '머지됨',
+        reason: null
+      })
+    );
+
+    expect(mount.querySelector('.worker-banner--ship')).toBe(null);
+  });
+
   test('shows the cleanup failure detail line when the record carries one', () => {
     const { mount } = mountWith(
       queueWithGate(
@@ -4599,21 +4645,29 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
 });
 
 describe('merge progress — projection (UI-raqh §4)', () => {
-  test('labels the first step as 1 of 7', () => {
+  test('labels the first step as 1 of 8', () => {
     expect(mergeStepView('merging')).toEqual({
       label: '머지 중',
       index: 1,
-      total: 7,
-      percent: 14
+      total: 8,
+      percent: 13
     });
   });
 
-  test('labels the last step as 7 of 7', () => {
+  test('labels the last step as 8 of 8', () => {
+    expect(mergeStepView('ship_exported_capabilities')).toMatchObject({
+      label: 'capability 발행',
+      index: 8,
+      total: 8,
+      percent: 100
+    });
+  });
+
+  test('keeps the parent close directly before the capability ship', () => {
     expect(mergeStepView('parent_close')).toMatchObject({
       label: '부모 close',
       index: 7,
-      total: 7,
-      percent: 100
+      total: 8
     });
   });
 
@@ -4623,7 +4677,9 @@ describe('merge progress — projection (UI-raqh §4)', () => {
       'post_merge_verify',
       'deploy',
       'child_sweep',
-      'branch_cleanup'
+      'branch_cleanup',
+      'parent_close',
+      'ship_exported_capabilities'
     ].map((s) => mergeStepView(s)?.label);
 
     expect(labels).toEqual([
@@ -4631,7 +4687,9 @@ describe('merge progress — projection (UI-raqh §4)', () => {
       '머지 후 검증',
       '배포',
       '자식 정리',
-      '브랜치 정리'
+      '브랜치 정리',
+      '부모 close',
+      'capability 발행'
     ]);
   });
 
@@ -4707,7 +4765,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     const step = /** @type {HTMLElement} */ (
       mount.querySelector('.merge-step')
     );
-    expect(step.textContent?.replace(/\s+/g, '')).toBe('배포4/7');
+    expect(step.textContent?.replace(/\s+/g, '')).toBe('배포4/8');
   });
 
   test('marks the row and its progress width', () => {
@@ -4720,7 +4778,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
     expect(row.classList.contains('worker-mini--merging')).toBe(true);
-    expect(row.getAttribute('style')).toContain('--progress: 57%');
+    expect(row.getAttribute('style')).toContain('--progress: 50%');
   });
 
   test('disables both actions while merging', () => {

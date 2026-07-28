@@ -1320,6 +1320,101 @@ describe('worker/queue-store — last_deploy record (worker-deploy-hook §3)', (
   });
 });
 
+describe('worker/queue-store — ship_failure record (UI-4ii4)', () => {
+  test('starts null on a fresh queue', () => {
+    const store = createQueueStore();
+
+    expect(store.snapshot(WS).ship_failure).toBeNull();
+  });
+
+  test('records a ship failure durably at workspace level', () => {
+    const store = createQueueStore();
+
+    store.recordShipFailure(WS, {
+      bead_id: 'UI-1',
+      reason: 'ship_failed:cap-a',
+      detail: 'pending=cap-a',
+      pr_url: 'https://example.test/pr/1'
+    });
+
+    expect(createQueueStore().load(WS).ship_failure).toMatchObject({
+      bead_id: 'UI-1',
+      reason: 'ship_failed:cap-a',
+      detail: 'pending=cap-a',
+      pr_url: 'https://example.test/pr/1'
+    });
+  });
+
+  test('survives the bead leaving every lane', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'a1',
+      patch: { status: 'done' }
+    });
+    store.recordShipFailure(WS, {
+      bead_id: 'UI-1',
+      reason: 'ship_failed:cap-a'
+    });
+
+    store.removeFromPrWait(WS, { bead_id: 'UI-1' });
+
+    expect(store.snapshot(WS).ship_failure).toMatchObject({
+      reason: 'ship_failed:cap-a'
+    });
+  });
+
+  test('overwrites the previous record instead of accumulating', () => {
+    const store = createQueueStore();
+    store.recordShipFailure(WS, { bead_id: 'UI-1', reason: 'ship_failed:a' });
+
+    store.recordShipFailure(WS, { bead_id: 'UI-2', reason: 'ship_failed:b' });
+
+    expect(store.snapshot(WS).ship_failure).toMatchObject({
+      bead_id: 'UI-2',
+      reason: 'ship_failed:b'
+    });
+  });
+
+  test('rejects a record without a reason without a write', () => {
+    const store = createQueueStore();
+    const before = store.snapshot(WS).revision;
+
+    const r = store.recordShipFailure(WS, {
+      bead_id: 'UI-1',
+      reason: /** @type {any} */ ('')
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('clears the record and no-ops when there is none', () => {
+    const store = createQueueStore();
+    store.recordShipFailure(WS, { bead_id: 'UI-1', reason: 'ship_failed:a' });
+
+    expect(store.clearShipFailure(WS).ok).toBe(true);
+    expect(store.snapshot(WS).ship_failure).toBeNull();
+    const after = store.snapshot(WS).revision;
+    expect(store.clearShipFailure(WS).ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(after);
+  });
+
+  test('a legacy queue.json without the key loads with a null record', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.ship_failure;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    expect(createQueueStore().load(WS).ship_failure).toBeNull();
+  });
+});
+
 describe('worker/queue-store skip-reason recording', () => {
   test('records a first reason and reports it as applied', () => {
     const store = createQueueStore();

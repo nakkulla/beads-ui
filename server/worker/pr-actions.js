@@ -30,7 +30,8 @@
  *
  *   base 동기화 → repo-required post-merge 검증 → 배포(install) → linked Beads
  *   스윕 (child leaves-first, readback) → 워크트리·원격/로컬 브랜치 정리 →
- *   parent bd close → bead `done(merged)`
+ *   parent bd close → export: capability ship (provides: readback) →
+ *   bead `done(merged)`
  *
  * It is deliberately NOT an unconditional immediate `bd close`. A step that
  * fails STOPS the sequence, leaves the bead `resolved` in `pr_wait`, records a
@@ -55,6 +56,7 @@ import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { evaluateMergeGate } from './merge-gate.js';
 import { resolvePrRef, rollupConclusion } from './pr-poller.js';
+import { shipExportedCapabilities } from './ship-capabilities.js';
 import { runVerifyCmd } from './verify-cmd.js';
 import { branchForBead } from './worktree.js';
 
@@ -77,11 +79,14 @@ export const DEFAULT_CLICK_REQUERY_DELAY_MS = 2000;
  * private copies of it.
  *
  * Aligned with the contract's sweep order: install (= `deploy`) sits directly
- * after sync + verify, and the parent close comes LAST — after the branch and
- * worktree cleanup, not before it. Putting the close last is what collapses the
- * old `restoreResolved` question: no step can fail after it, so only the close
- * itself can leave a bead `closed` that the failure contract says must be
- * `resolved`.
+ * after sync + verify, and the parent close comes AFTER the branch and worktree
+ * cleanup, not before it (the old `parent_close → branch_cleanup` inversion).
+ *
+ * `ship_exported_capabilities` is the ONE step after the close, and it has to be
+ * (ship-close choreography: `bd ship` refuses an open issue without `--force`).
+ * That makes it the one step whose failure leaves bd `closed` while the cleanup
+ * stopped — see {@link failCleanup} for why that is deliberate and not rolled
+ * back.
  *
  * @type {string[]}
  */
@@ -91,7 +96,8 @@ export const CLEANUP_STEPS = [
   'deploy',
   'child_sweep',
   'branch_cleanup',
-  'parent_close'
+  'parent_close',
+  'ship_exported_capabilities'
 ];
 
 /**
@@ -167,7 +173,9 @@ function isConflicting(pr) {
  *     unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *     readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *     readIssue?: (bead_id: string) => Promise<Record<string, any>>,
- *     listChildren?: (bead_id: string) => Promise<{ id: string, status: string }[]>
+ *     listChildren?: (bead_id: string) => Promise<{ id: string, status: string }[]>,
+ *     ship?: (capability: string) => Promise<{ status: string, issue_id: string|null }>,
+ *     removeLabel?: (bead_id: string, label: string) => Promise<void>
  *   },
  *   external?: {
  *     get: (workspace: string, bead_id: string) => import('./external-pr.js').ExternalPrRow|null
@@ -870,8 +878,15 @@ export function createPrActions(deps) {
    * STOP, never an empty sweep: "this bead has no children" and "bd would not
    * tell us" must not produce the same act.
    *
+   * `closed_ids` is the walk's whole `seen` set — the parent plus every
+   * descendant it reached — and by the time it is returned every one of them is
+   * `closed` (already closed on arrival, or closed here). Step 7 enumerates
+   * exactly that set, which is deliberately WIDER than "what this sweep closed":
+   * a `[정리]` retry finds parent and children already closed, so a narrow list
+   * would be empty and would drop the descendants' `export:` labels forever.
+   *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
+   * @returns {Promise<{ ok: true, closed_ids: string[] }|{ ok: false, reason: string }>}
    */
   async function sweepChildren(bead_id) {
     if (typeof deps.bd.listChildren !== 'function') {
@@ -921,7 +936,7 @@ export function createPrActions(deps) {
         return { ok: false, reason: `child_close_failed:${id}` };
       }
     }
-    return { ok: true };
+    return { ok: true, closed_ids: [...seen] };
   }
 
   /**
@@ -1137,8 +1152,9 @@ export function createPrActions(deps) {
     if (!branches.ok) {
       return failCleanup(bead_id, 'branch_cleanup', branches.reason, base_sync);
     }
-    // The parent close is LAST, so this is the only step after which bd needs
-    // restoring — everything before it left the bead `resolved` untouched (§6).
+    // The parent close is the last step that may need bd RESTORING —
+    // everything before it left the bead `resolved` untouched (§6), and the
+    // one step after it deliberately does not roll the close back.
     markStep(bead_id, 'parent_close');
     const closed = await closeBead(bead_id);
     if (!closed.ok) {
@@ -1152,6 +1168,22 @@ export function createPrActions(deps) {
         closed.wrote
       );
     }
+
+    // Step 7 — publish the capabilities the now-closed beads exported. It runs
+    // AFTER the close because `bd ship` refuses an open issue, and a `--force`
+    // ship before the close could leave `provides:` on a bead whose close then
+    // failed: a capability that claims delivery it never made.
+    markStep(bead_id, 'ship_exported_capabilities');
+    const shipped = await shipExportedCapabilities({
+      bd: deps.bd,
+      bead_ids: swept.closed_ids
+    });
+    if (!shipped.ok) {
+      return failShip(bead_id, shipped, base_sync, durable, pr_url);
+    }
+    // A successful ship — including the one inside a `[정리]` retry — is what
+    // retires the workspace record the external path leaves behind.
+    deps.store.clearShipFailure(workspace);
 
     if (!pending_deploy) {
       if (durable) {
@@ -1204,13 +1236,21 @@ export function createPrActions(deps) {
    * in `pr_wait`, bd is left `resolved`, the banner renders off the record, and
    * NOTHING retries on its own.
    *
-   * When the stop happened AT the parent close (the last step), the bead is
-   * FIRST put back to `resolved` (with a readback) — otherwise "bd stays
-   * `resolved`" would
+   * When the stop happened AT the parent close, the bead is FIRST put back to
+   * `resolved` (with a readback) — otherwise "bd stays `resolved`" would
    * be a claim the record makes and the database contradicts. A restore that
    * itself fails is written into the record as `restore_failed` rather than
    * left silent: a human needs to know the status is wrong, not merely that a
    * cleanup stopped.
+   *
+   * THE ONE EXCEPTION (UI-4ii4): a `ship_exported_capabilities` failure calls
+   * this WITHOUT `restore_bd`, so bd stays `closed` while the cleanup is
+   * recorded as stopped. That is deliberate. The ship step runs after the
+   * children were already closed, so rolling only the parent back to `resolved`
+   * would manufacture a half state — a `resolved` parent over `closed` children
+   * — which is worse than an honest "everything closed, one capability still
+   * unpublished". The retry is idempotent (`bd ship` returns
+   * `already_shipped`), so the recorded stop is fully recoverable by a re-click.
    *
    * @param {string} bead_id
    * @param {string} step
@@ -1269,6 +1309,49 @@ export function createPrActions(deps) {
     }
     notifyChanged(workspace);
     return { ok: false, step, reason, base_sync };
+  }
+
+  /**
+   * Record a `ship_exported_capabilities` stop (UI-4ii4).
+   *
+   * Two records, for two different readers, because this step is the first one
+   * that can fail after the parent is `closed`:
+   *
+   *   - The lane-member `cleanup_failed` record + banner + `[정리]` retry, via
+   *     {@link failCleanup} — with NO `restore_bd`, so the close stands.
+   *   - A WORKSPACE-level ship-failure record, for the external PR row. That row
+   *     lives only while its bead is `resolved` + `pr_url` (UI-7agi), so the
+   *     close that just landed makes it vanish from the next scan, and
+   *     `failCleanup`'s `inPrWait` guard writes nothing for it. Without this
+   *     record the external path would be exactly the silent hole this whole
+   *     step exists to close: merged, closed, capability unpublished, nothing on
+   *     screen. It carries no retry button — the row is gone — so its banner
+   *     names the manual `bd ship` instead.
+   *
+   * @param {string} bead_id
+   * @param {{ reason: string, detail?: string }} failure
+   * @param {BaseSyncOutcome|null} base_sync
+   * @param {boolean} durable - Whether the lane actually holds this bead.
+   * @param {string|null} pr_url
+   */
+  async function failShip(bead_id, failure, base_sync, durable, pr_url) {
+    if (!durable) {
+      deps.store.recordShipFailure(workspace, {
+        bead_id,
+        reason: failure.reason,
+        detail: failure.detail || null,
+        pr_url
+      });
+    }
+    return failCleanup(
+      bead_id,
+      'ship_exported_capabilities',
+      failure.reason,
+      base_sync,
+      // The close is NOT rolled back — see failCleanup's exception note.
+      undefined,
+      failure.detail
+    );
   }
 
   // -------------------------------------------------------------------------

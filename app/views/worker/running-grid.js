@@ -67,6 +67,15 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  */
 
 /**
+ * @typedef {Object} ShipFailure
+ * @property {string} bead_id - The merged bead whose capability ship stopped.
+ * @property {string} reason - Machine-readable cause (`ship_failed:<cap>` etc.).
+ * @property {string|null} [detail] - The remaining work, as
+ * `pending=<cap,…> [unread=<id,…>]`.
+ * @property {string|null} [pr_url] - The PR that was merged.
+ */
+
+/**
  * How much of a diagnostic string a banner shows before eliding it.
  *
  * @type {number}
@@ -157,9 +166,54 @@ function formatElapsed(ms) {
 }
 
 /**
+ * The workspace-level capability-ship failure banner (UI-4ii4).
+ *
+ * It exists separately from the cleanup banner because it must outlive the row
+ * it is about: the ship step runs after the parent close, and an external PR row
+ * disappears the moment its bead stops being `resolved`. So this banner carries
+ * no `[정리]` retry — there is nothing left to click — and names the manual
+ * recovery instead. The merge itself succeeded; what is missing is the
+ * `provides:` label that unblocks whatever depends on the capability.
+ *
+ * @param {ShipFailure|null|undefined} ship
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+function shipFailureBanner(ship) {
+  if (!ship || !ship.reason) {
+    return '';
+  }
+  return html`<div
+    class="worker-banner worker-banner--ship"
+    role="alert"
+    data-bead-id=${ship.bead_id || ''}
+  >
+    ⚠ ${ship.bead_id || '(bead 미상)'} 머지 완료 — capability 발행이
+    실패했습니다 (${ship.reason}). bead는 closed지만
+    <code>provides:</code> 라벨이 없어 이 capability에 걸린 external 의존은 계속
+    막혀 있습니다.
+    ${ship.detail
+      ? html`<div class="worker-banner__detail">
+          남은 작업: <code>${truncateDetail(ship.detail)}</code>
+        </div>`
+      : ''}
+    <div class="worker-banner__detail">
+      수동 복구:
+      <code>bd -C &lt;워크스페이스&gt; ship &lt;capability&gt;</code> 실행 후
+      <code>bd show &lt;id&gt; --json</code>으로 <code>provides:</code> 라벨을
+      확인하세요.
+    </div>
+    ${ship.pr_url
+      ? html`<div class="worker-banner__detail">
+          <code>${ship.pr_url}</code>
+        </div>`
+      : ''}
+  </div>`;
+}
+
+/**
  * Banners area above the running grid.
  *
- * @param {{ failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[] }} state
+ * @param {{ failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[], shipFailure?: ShipFailure|null }} state
  * @returns {import('lit-html').TemplateResult}
  */
 export function bannersTemplate(state) {
@@ -216,6 +270,7 @@ export function bannersTemplate(state) {
           ${logPathLine(c.log_path)} ${outputTailBlock(c.output_tail)}
         </div>`
     )}
+    ${shipFailureBanner(state.shipFailure)}
   </div>`;
 }
 
