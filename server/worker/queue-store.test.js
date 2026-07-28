@@ -2122,6 +2122,33 @@ describe('worker/queue-store — 자동 머지 durable 상태 (UI-yk55 §2/§3)'
     expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
+  test('turning the toggle OFF empties the waiting queue in the same write', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1', 'UI-2']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
+    });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const rev = store.snapshot(WS).revision;
+
+    const r = store.toggleAutoMerge(WS, {
+      expected_revision: rev,
+      on: false,
+      clear_waiting: true,
+      keep: 'UI-1'
+    });
+
+    // Two writes would leave a restart in between with the flag off and the
+    // queue full — the boot driver would merge what a stop click just cancelled.
+    expect(r.queue.revision).toBe(rev + 1);
+    expect(r.queue.auto_merge).toBe(false);
+    expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
   test('auto enrolment passes over a row excluded at the SAME head', () => {
     const store = createQueueStore();
     park(store, ['UI-1']);

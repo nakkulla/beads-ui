@@ -1699,14 +1699,26 @@ export function createQueueStore(options = {}) {
      * {@link toggleAutoAdvance} — the click starts an irreversible chain of
      * merges, so it must not apply against a snapshot the user never saw.
      *
+     * `clear_waiting` empties the waiting merge queue in the SAME mutation
+     * (UI-yk55 §5.2). It has to be one write: a flag persisted without the
+     * queue leaves a process that restarts in between with `auto_merge = false`
+     * and a full queue, and the boot-resume driver would merge every item a user
+     * had just pressed stop on. `keep` names the item being merged right now,
+     * which is never removable — its merge already reached GitHub.
+     *
      * @param {string} workspace
-     * @param {{ expected_revision: number, on: boolean }} input
+     * @param {{ expected_revision: number, on: boolean, clear_waiting?: boolean, keep?: string|null }} input
      * @returns {QueueOpResult}
      */
     toggleAutoMerge(workspace, input) {
-      const { expected_revision, on } = input;
+      const { expected_revision, on, clear_waiting, keep } = input;
       return applyMutation(workspace, expected_revision, (next) => {
         next.auto_merge = !!on;
+        if (clear_waiting) {
+          next.merge_queue = next.merge_queue.filter(
+            (e) => e.bead_id === (keep || null)
+          );
+        }
         return true;
       });
     },

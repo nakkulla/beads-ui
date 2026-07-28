@@ -1336,6 +1336,48 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     ]);
   });
 
+  test('an OFF click during the ON observation cancels the enrolment', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    /** @type {() => void} */
+    let release = () => {};
+    const observing = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: { merge: vi.fn(), discard: vi.fn() },
+        mergeQueue: {
+          kick: vi.fn(async () => {}),
+          state: () => ({ active: null, failures: {} })
+        },
+        // The gh round-trip §5.3 runs before enrolling — held open here so the
+        // OFF click lands inside it.
+        prPoller: { tick: () => observing }
+      })
+    );
+    const store = getWorkerRuntime().queueStore;
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-auto-toggle', {
+      on: true,
+      expected_revision: store.snapshot('').revision
+    });
+    await send(sock, 'm2', 'worker-merge-auto-toggle', {
+      on: false,
+      expected_revision: store.snapshot('').revision
+    });
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Enrolling on the flag the first request SAW would merge after a stop.
+    expect(store.snapshot('').auto_merge).toBe(false);
+    expect(store.snapshot('').merge_queue).toEqual([]);
+  });
+
   test('a stale revision refuses the auto-merge toggle without acting', async () => {
     parkInPrWait('UI-1');
     observeGreen('UI-1');

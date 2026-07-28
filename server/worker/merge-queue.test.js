@@ -771,6 +771,46 @@ describe('worker/merge-queue — 자동 머지 제외 기록 (UI-yk55 §3)', () 
     expect(store.snapshot(WS).auto_merge_skips).toEqual({});
   });
 
+  test('an arriving observation resumes a drain halted on an unreadable head', async () => {
+    const store = seed(['UI-1']);
+    /** @type {Array<(ws: string) => void>} */
+    const listeners = [];
+    /** @type {string|null} */
+    let head = null;
+    const merge = vi.fn(async () => ({
+      ok: false,
+      action: 'refused',
+      reason: 'ci_failed'
+    }));
+    const mq = driver(store, {
+      merge,
+      headSha: () => head,
+      subscribeQueueChanged: (/** @type {any} */ fn) => {
+        listeners.push(fn);
+        return () => {};
+      }
+    });
+    mq.start();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(store.snapshot(WS).merge_queue.length).toBe(1);
+
+    // The observation arrives. `queue-changed` only WAKES a sleeping wait, so
+    // without an explicit resume the item would stay halted with a readable
+    // head forever.
+    head = 'a'.repeat(40);
+    for (const fn of listeners) {
+      fn(WS);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).auto_merge_skips['UI-1'].head_sha).toBe(
+      'a'.repeat(40)
+    );
+    mq.stop();
+  });
+
   test('a boot resume drops an excluded head without merging it', async () => {
     const store = seed(['UI-1', 'UI-2']);
     store.recordMergeSkip(WS, {

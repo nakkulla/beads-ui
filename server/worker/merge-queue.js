@@ -143,6 +143,19 @@ export function createMergeQueue(deps) {
   // current drain instead of retrying in place; the queue is durable, so the
   // next kick or restart resumes it.
   let halted = false;
+  /**
+   * The bead whose UNREADABLE head SHA ended the last drain (UI-yk55 §3.2).
+   *
+   * That halt has a specific recovery signal — an observation arriving — and
+   * nothing else would deliver it: `queue-changed` only WAKES a sleeping wait,
+   * and an enroller pass that changes nothing kicks nobody. Without this the
+   * queue would sit halted forever with a perfectly mergeable head. The other
+   * halt causes (a persist that did not stick) keep the pre-existing contract:
+   * the next kick or restart resumes them.
+   *
+   * @type {string|null}
+   */
+  let halted_on_head = null;
   let prepared = false;
   /** @type {string|null} */
   let active = null;
@@ -344,6 +357,7 @@ export function createMergeQueue(deps) {
         bead_id
       );
       halted = true;
+      halted_on_head = bead_id;
       notify();
       return;
     }
@@ -537,6 +551,7 @@ export function createMergeQueue(deps) {
           bead_id
         );
         halted = true;
+        halted_on_head = bead_id;
         return;
       }
       if (head_sha === skip.head_sha) {
@@ -671,6 +686,7 @@ export function createMergeQueue(deps) {
     }
     draining = true;
     halted = false;
+    halted_on_head = null;
     try {
       // A queue resumed after a restart can hold EXTERNAL rows, and those exist
       // only in the in-memory registry the ws overlay reads — empty until
@@ -716,8 +732,22 @@ export function createMergeQueue(deps) {
       stopped = false;
       if (typeof deps.subscribeQueueChanged === 'function') {
         unsubscribe = deps.subscribeQueueChanged((ws_key) => {
-          if (ws_key === workspace) {
-            wake();
+          if (ws_key !== workspace) {
+            return;
+          }
+          wake();
+          // The PR poller emits this on every observation pass, so it is also
+          // the arrival signal for the head SHA a halt was waiting on. Only a
+          // head that is now READABLE resumes — an event that changes nothing
+          // must not re-enter `merge()` on the same unreadable state.
+          if (
+            !draining &&
+            halted_on_head &&
+            headSha(halted_on_head) &&
+            queuedEntry(halted_on_head)
+          ) {
+            halted_on_head = null;
+            void drain();
           }
         });
       }

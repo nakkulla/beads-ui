@@ -6443,6 +6443,48 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
   });
 
+  test('leaves an auto-excluded row out of the ▶ 자동 머지 count', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        auto_merge_skips: {
+          'RD-1': {
+            head_sha: 'a'.repeat(40),
+            reason: 'ci_failed',
+            at: 1
+          }
+        }
+      })
+    );
+
+    // N은 "켜면 들어갈 수"다 (UI-yk55 §5.1): 같은 head로 제외된 행을 세면 실제
+    // 편입은 0건인데 양수를 보이게 된다.
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+      ).textContent?.trim()
+    ).toBe('▶ 자동 머지');
+  });
+
+  test('still counts a row whose exclusion was pinned to an older head', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        auto_merge_skips: {
+          'RD-1': {
+            head_sha: '9'.repeat(40),
+            reason: 'ci_failed',
+            at: 1
+          }
+        }
+      })
+    );
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+      ).textContent?.trim()
+    ).toBe('▶ 자동 머지 1');
+  });
+
   test('says nothing about an exclusion while auto mode is OFF', () => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {

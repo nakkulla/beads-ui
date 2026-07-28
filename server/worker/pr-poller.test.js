@@ -164,6 +164,35 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prDetail).not.toHaveBeenCalled();
   });
 
+  test('keeps a merge-queue member observed after its row leaves the lane', async () => {
+    const observations = createPrObservationStore();
+    observations.record('/ws', 'UI-9', { error: null, pr: detailOf() });
+    const { poller } = makePoller({
+      observations,
+      queue: {
+        ...queueOf(),
+        merge_queue: [{ bead_id: 'UI-9', resolution_rounds: 0 }]
+      }
+    });
+
+    await poller.tick();
+
+    // The driver disposes of a queued item by reading its head SHA from here
+    // (UI-yk55 §3.2). Pruning it would leave the driver unable to record an
+    // exclusion, so it would hold the item and halt the whole queue.
+    expect(observations.get('/ws', 'UI-9')).not.toBe(null);
+  });
+
+  test('still prunes a bead that is in neither the lane nor the merge queue', async () => {
+    const observations = createPrObservationStore();
+    observations.record('/ws', 'GONE-1', { error: null, pr: detailOf() });
+    const { poller } = makePoller({ observations });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'GONE-1')).toBe(null);
+  });
+
   test('makes no gh call when pr_wait is empty', async () => {
     const { poller, prDetail, prChecks } = makePoller({
       queue: queueOf({ pr_wait: [] })

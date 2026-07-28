@@ -1417,7 +1417,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, verify_cmd_present: boolean, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, ship_failure: { bead_id: string, reason: string, detail: string|null, pr_url: string|null }|null }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, ship_failure: { bead_id: string, reason: string, detail: string|null, pr_url: string|null }|null }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -1816,6 +1816,23 @@ export function createWorkerView(mount_element, options = {}) {
     // 읽고 뱃지를 생략한다 (fail-quiet).
     /** @type {Record<string, { head_sha: string, reason: string, at: number }>} */
     const auto_merge_skips = q.auto_merge_skips || {};
+    /**
+     * Whether a row's exclusion still holds: only when the recorded head is the
+     * one now observed (UI-yk55 §3.2). head가 움직였으면 다음 스캔이 기록을
+     * 지우고 다시 후보로 삼으므로, 그 행은 제외로 세어서는 안 된다.
+     *
+     * @param {string} bead_id
+     * @returns {string|null} 제외 사유, 아니면 null.
+     */
+    const autoSkipReason = (bead_id) => {
+      const skip = auto_merge_skips[bead_id];
+      if (!skip) {
+        return null;
+      }
+      const obs = pr_obs[bead_id];
+      const head = obs && obs.pr ? obs.pr.head_sha : null;
+      return head && head === skip.head_sha ? skip.reason || '' : null;
+    };
 
     // The running list carries leaf-paused attempts too, so the PR 대기 card
     // needs both sets apart: only a live session gets the breathing badge, while
@@ -1948,14 +1965,18 @@ export function createWorkerView(mount_element, options = {}) {
             // 자동 모드가 꺼져 있으면 제외 기록은 이 행이 서 있는 이유가 아니다
             // (UI-yk55 §3.4) — 기록이 지워지는 시점도 자동 스캔이므로, 꺼진
             // 상태의 잔여 기록을 뱃지로 보이면 사실이 아닌 설명이 된다.
-            q.auto_merge === true && auto_merge_skips[e.bead_id]
-              ? auto_merge_skips[e.bead_id].reason || ''
-              : null
+            q.auto_merge === true ? autoSkipReason(e.bead_id) : null
           )
         )
         .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),
       merge_queue_length: merge_queue.length,
       merge_queue_running: merge_queue.length > 0,
+      // 자동 편입이 지금 건너뛸 행 (UI-yk55 §3.2). 버튼의 N은 "켜면 들어갈 수"를
+      // 말하므로, 같은 head로 제외된 행을 세면 실제로는 0건이 편입되는데도
+      // 양수를 보이게 된다.
+      auto_excluded: pr_wait_entries
+        .map((/** @type {any} */ e) => e.bead_id)
+        .filter((/** @type {string} */ id) => autoSkipReason(id) !== null),
       // 자동 머지 경고 문구의 근거 (UI-yk55 §6): 검증 신호가 없는 워크스페이스는
       // 게이트 Tier 3이라 클릭 없이 머지된다는 사실을 버튼이 말해야 한다.
       verify_cmd_present: !!(q.workspace_info || {}).verify_cmd,
@@ -2226,8 +2247,10 @@ export function createWorkerView(mount_element, options = {}) {
         ⏸ 자동 머지
       </button>`;
     }
+    const excluded = new Set(m.auto_excluded);
     const count = m.pr_wait.filter(
-      (/** @type {any} */ r) => r.merge_action && r.merge_enabled
+      (/** @type {any} */ r) =>
+        r.merge_action && r.merge_enabled && !excluded.has(r.id)
     ).length;
     return html`<button
       type="button"

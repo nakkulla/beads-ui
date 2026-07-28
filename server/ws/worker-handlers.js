@@ -1385,9 +1385,15 @@ export function handleWorkerMergeAutoToggle(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
+  const state = p.on === false ? workerMergeQueueState(key) : null;
   const result = queueStore().toggleAutoMerge(key, {
     expected_revision: revisionOf(p),
-    on: p.on
+    on: p.on,
+    // OFF flips the flag and empties the waiting queue in ONE write: a restart
+    // between two writes would leave "stopped" with a full queue for the
+    // boot-resume driver to merge (§5.2).
+    clear_waiting: p.on === false,
+    keep: state ? state.active : null
   });
   if (!result.ok) {
     ws.send(
@@ -1403,26 +1409,17 @@ export function handleWorkerMergeAutoToggle(ws, req) {
     return;
   }
   if (p.on === false) {
-    const state = workerMergeQueueState(key);
-    const cleared = queueStore().cancelMerge(key, {
-      expected_revision: result.queue.revision,
-      all: true,
-      keep: state ? state.active : null
-    });
-    const queue = /** @type {any} */ (
-      cleared.ok ? cleared.queue : result.queue
-    );
     ws.send(
       JSON.stringify(
         makeOk(req, {
           applied: true,
           conflict: false,
           queued: 0,
-          queue: decorateQueue(key, queue)
+          queue: decorateQueue(key, /** @type {any} */ (result.queue))
         })
       )
     );
-    fanout(key, queue);
+    fanout(key, /** @type {any} */ (result.queue));
     return;
   }
   ws.send(
@@ -1443,6 +1440,13 @@ export function handleWorkerMergeAutoToggle(ws, req) {
       log('auto-merge toggle observation failed for %s: %o', key, err);
     })
     .then(() => {
+      // The observation is a `gh` round-trip, and the user can turn the mode
+      // back OFF while it is in flight. Enrolling on the strength of the flag
+      // this request SAW would merge after a stop click — so the flag is read
+      // again, now.
+      if (queueStore().snapshot(key).auto_merge !== true) {
+        return;
+      }
       enrollWorkerMergeCandidates(key);
     })
     .catch((err) => {

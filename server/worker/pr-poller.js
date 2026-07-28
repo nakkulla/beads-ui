@@ -522,11 +522,20 @@ export function createPrPoller(deps) {
         }))
       ];
       const lane_ids = entries.map((e) => e.bead_id);
+      // A MERGE QUEUE member keeps its observation even after it drops out of
+      // the lane (UI-yk55 §3.2). An external row vanishes from the overlay with
+      // no lane mutation behind it, and the driver still has to dispose of the
+      // item — which it can only do by reading the head SHA this cache holds.
+      // Pruning it there would leave the driver unable to record an exclusion,
+      // so it would hold the item and halt, blocking every item behind it.
+      const queued_ids = Array.isArray(queue.merge_queue)
+        ? queue.merge_queue.map((/** @type {any} */ e) => e.bead_id)
+        : [];
       // Whether anything was being observed BEFORE this pass pruned. It decides
       // the empty-lane fanout below.
       const had_observations =
         Object.keys(deps.observations.snapshot(workspace)).length > 0;
-      deps.observations.prune(workspace, lane_ids);
+      deps.observations.prune(workspace, [...lane_ids, ...queued_ids]);
       // The activity cache describes the same lane, so it is pruned with it —
       // a bead that merged or was discarded must not keep a stale badge.
       if (activity) {
