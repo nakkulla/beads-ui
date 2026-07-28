@@ -400,7 +400,17 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // The outward attempt-lifecycle push (UI-2yoq). Config is read per call, so a
   // machine that never opted into `[worker.notify]` pushes nothing and a toggle
   // takes effect without a restart.
-  const notify = options.notify || createNotifier({ getConfig });
+  const notify =
+    options.notify ||
+    createNotifier({
+      getConfig,
+      // The snapshot title cache doubles as the push's title source (UI-vb0t
+      // §3.3): a notification naming only a bead id is one the notification
+      // centre cannot place, and the cache already knows how to read — and not
+      // re-read — a title.
+      resolveTitle: (bead_id) =>
+        runtime.titleCache.ensureTitle(workspace_root, bead_id)
+    });
 
   // The disposition actions need the scheduler and the scheduler needs their
   // completion verdict, so the dep is a late-bound indirection rather than a

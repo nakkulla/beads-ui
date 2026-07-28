@@ -15,7 +15,15 @@
  *     CLI (ENOENT) surfaces as an async `error` event, which is logged and
  *     dropped.
  *   - NO-THROW. Every method is wrapped end to end, so no input and no
- *     environment can turn a notification into a queue-transition failure.
+ *     environment can turn a notification into a queue-transition failure. The
+ *     methods are `async`, and the returned promise ALWAYS resolves.
+ *
+ * The payload is PLAIN CONTENT, not an embed (UI-vb0t). Discord's push preview
+ * carries a message's `content` and nothing else, so an embed — which is what
+ * the CLI builds whenever a title flag is passed — reaches the notification
+ * centre as the mention alone. Everything worth reading therefore goes in the
+ * message body, starting with the transition and the bead on line one, and the
+ * embed's colour bar is given up for it.
  *
  * Config is read per call (`worker.notify`), matching `worker.verify` /
  * `worker.deploy`: toggling notifications does not need a server restart.
@@ -27,22 +35,33 @@ import { debug } from '../logging.js';
 const default_log = debug('worker:notify');
 
 /**
- * Embed titles. One operator watches many sources, so every push says the same
- * thing about WHO ran it — "beads worker" — and differs only in the transition
- * (UI-9rrk).
+ * Headline prefixes. One operator watches many sources, so every push says the
+ * same thing about WHO ran it — "beads worker" — and differs only in the
+ * transition (UI-9rrk). The leading emoji is what distinguishes a transition at
+ * a glance now that the embed colour is gone (UI-vb0t §3.1).
  */
 const TITLE = {
   started: '🚀 beads worker · 시작',
+  resume: '🚀 beads worker · 재개',
+  conflict: '🚀 beads worker · 충돌 해결',
   failed: '❌ beads worker · 실패',
   pr_wait: '📬 beads worker · PR 제출',
   merged: '✅ beads worker · 머지 완료'
 };
 
 /**
+ * How much of a bead title the headline may spend. The first line is the whole
+ * push preview budget, so a long title would push the transition and the id out
+ * of view on a narrow notification.
+ */
+const TITLE_MAX = 60;
+
+/**
  * @typedef {Object} NotifierDeps
  * @property {() => any} getConfig - Runtime config accessor (server/config.js).
  * @property {(command: string, args: string[], options: any) => any} [spawnImpl]
  * @property {(...args: any[]) => void} [log]
+ * @property {(bead_id: string) => Promise<string|null>} [resolveTitle] - Bead title source for the headline. Optional: a notifier built without one sends id-only headlines rather than failing.
  */
 
 /**
@@ -77,15 +96,40 @@ function text(value) {
 }
 
 /**
+ * The push preview's first line: the transition, then the bead it is about.
+ * Without the id and title here a notification says only that SOMETHING moved,
+ * which is the whole failure this format exists to fix (UI-vb0t §3.2).
+ *
+ * @param {string} transition
+ * @param {unknown} bead_id
+ * @param {string|null} bead_title
+ * @returns {string}
+ */
+function headline(transition, bead_id, bead_title) {
+  const id = String(bead_id);
+  if (!bead_title) {
+    return `${transition} — ${id}`;
+  }
+  // Counted in code POINTS, not UTF-16 units: slicing a title mid-surrogate
+  // would put a broken character in the preview.
+  const chars = Array.from(bead_title);
+  const title =
+    chars.length > TITLE_MAX
+      ? `${chars.slice(0, TITLE_MAX).join('')}…`
+      : bead_title;
+  return `${transition} — ${id} ${title}`;
+}
+
+/**
  * Build the attempt-lifecycle notifier the scheduler fires on dispatch, on
  * failure, and on `pr_wait` entry, and the PR actions fire on merge cleanup.
  *
  * @param {NotifierDeps} deps
  * @returns {{
- *   attemptStarted: (input: { bead_id: string, title?: string|null, model?: string|null, effort?: string|null, repo?: string|null, kind?: string|null }) => void,
- *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => void,
- *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => void,
- *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => void
+ *   attemptStarted: (input: { bead_id: string, title?: string|null, model?: string|null, effort?: string|null, repo?: string|null, kind?: string|null }) => Promise<void>,
+ *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => Promise<void>,
+ *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
+ *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>
  * }}
  */
 export function createNotifier(deps) {
@@ -133,16 +177,21 @@ export function createNotifier(deps) {
   /**
    * Spawn the notification command without a shell and forget it.
    *
-   * @param {string[]} flags - CLI flags ahead of the message argument.
+   * The message is the ONLY argument: no title flag (which would make the CLI
+   * build an embed the push preview drops), no colour flag (embed-only), and no
+   * quiet flag — a message with no mention does not reach the notification
+   * centre at all under a mention-only channel setting (UI-vb0t §3.1).
+   *
+   * The argv is passed IN, not resolved here: the caller has to know whether
+   * notifications are on before it does any work, so it reads the config first
+   * and hands the result down.
+   *
+   * @param {string[]} cmd
    * @param {string} message
    */
-  function send(flags, message) {
-    const cmd = resolveCmd();
-    if (!cmd) {
-      return;
-    }
+  function send(cmd, message) {
     try {
-      const child = spawnImpl(cmd[0], [...cmd.slice(1), ...flags, message], {
+      const child = spawnImpl(cmd[0], [...cmd.slice(1), message], {
         stdio: 'ignore',
         detached: true
       });
@@ -161,14 +210,36 @@ export function createNotifier(deps) {
   }
 
   /**
-   * The body the two PR-side notifications share: bead id, the PR url when one
-   * was observed, and the repo label. Everything but the id is dropped when
-   * absent rather than printed empty.
+   * The bead title for a headline, or null. A lookup that is absent, fails, or
+   * answers nothing is fail-quiet: the push goes out with the id alone rather
+   * than waiting on or failing over a decoration.
    *
-   * @param {{ bead_id: string, pr_url?: string|null, repo?: string|null }} input
+   * @param {unknown} bead_id
+   * @returns {Promise<string|null>}
    */
-  function prBody(input) {
-    const lines = [String(input.bead_id)];
+  async function lookupTitle(bead_id) {
+    if (typeof deps.resolveTitle !== 'function') {
+      return null;
+    }
+    try {
+      return text(await deps.resolveTitle(String(bead_id)));
+    } catch (err) {
+      log('title lookup failed: %o', err);
+      return null;
+    }
+  }
+
+  /**
+   * The body the two PR-side notifications share: the headline, the PR url when
+   * one was observed, and the repo label. Everything but the headline is
+   * dropped when absent rather than printed empty.
+   *
+   * @param {string} transition
+   * @param {{ bead_id: string, pr_url?: string|null, repo?: string|null }} input
+   * @param {string|null} bead_title
+   */
+  function prBody(transition, input, bead_title) {
+    const lines = [headline(transition, input.bead_id, bead_title)];
     const pr_url = text(input.pr_url);
     if (pr_url) {
       lines.push(pr_url);
@@ -181,28 +252,42 @@ export function createNotifier(deps) {
   }
 
   /**
+   * The launch kinds are transitions of their own, not a prefix on a shared
+   * one, so that the first thing read is what actually happened (UI-vb0t §3.2).
+   *
    * @param {string} kind
-   * @returns {string|null}
+   * @returns {string}
    */
-  function kindLabel(kind) {
+  function startedTitle(kind) {
     if (kind === 'resume') {
-      return '재개';
+      return TITLE.resume;
     }
     if (kind === 'conflict') {
-      return '충돌 해결';
+      return TITLE.conflict;
     }
-    return null;
+    return TITLE.started;
   }
 
   return {
-    attemptStarted(input) {
+    async attemptStarted(input) {
       try {
-        const title = text(input.title);
-        const label = kindLabel(String(input.kind ?? ''));
-        const head = `${label ? `[${label}] ` : ''}${input.bead_id}${
-          title ? ` — ${title}` : ''
-        }`;
-        const lines = [head];
+        // Config FIRST, before any lookup: notifications being off has to stay
+        // a pure no-op, not a `bd show` whose result is thrown away.
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        // The dispatch snapshot already carries the title; only the resumed and
+        // conflict launches have to go and read it.
+        const bead_title =
+          text(input.title) ?? (await lookupTitle(input.bead_id));
+        const lines = [
+          headline(
+            startedTitle(String(input.kind ?? '')),
+            input.bead_id,
+            bead_title
+          )
+        ];
         const repo = repoLabel(input.repo);
         if (repo) {
           lines.push(`리포: ${repo}`);
@@ -213,17 +298,20 @@ export function createNotifier(deps) {
         if (exec.length > 0) {
           lines.push(`실행: ${exec}`);
         }
-        // Informational: no mention (`-q`). Only the two transitions a human
-        // must act on carry one.
-        send(['-q', '-t', TITLE.started], lines.join('\n'));
+        send(cmd, lines.join('\n'));
       } catch (err) {
         log('attemptStarted failed: %o', err);
       }
     },
 
-    attemptFailed(input) {
+    async attemptFailed(input) {
       try {
-        const lines = [String(input.bead_id)];
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title = await lookupTitle(input.bead_id);
+        const lines = [headline(TITLE.failed, input.bead_id, bead_title)];
         const cause = text(input.cause);
         lines.push(`사유: ${cause ?? 'unknown'}`);
         const repo = repoLabel(input.repo);
@@ -243,29 +331,41 @@ export function createNotifier(deps) {
             lines.push(`명령: ${command}`);
           }
         }
-        send(['-c', 'red', '-t', TITLE.failed], lines.join('\n'));
+        send(cmd, lines.join('\n'));
       } catch (err) {
         log('attemptFailed failed: %o', err);
       }
     },
 
-    // Blue, not green: green now belongs to the terminal transition (머지 완료)
-    // and PR 제출 is the one that is still waiting on a human (UI-9rrk).
-    prWaitEntered(input) {
+    async prWaitEntered(input) {
       try {
-        send(['-c', 'blue', '-t', TITLE.pr_wait], prBody(input));
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title = await lookupTitle(input.bead_id);
+        send(cmd, prBody(TITLE.pr_wait, input, bead_title));
       } catch (err) {
         log('prWaitEntered failed: %o', err);
       }
     },
 
-    // The bead is closed and its branches are gone — informational, so `-q`.
     // Deploy state is deliberately NOT reported: `runCleanup` returns success
     // with the deploy absent, done synchronously, or merely launched, and no
     // single one of those can be read off the success path (UI-9rrk spec).
-    mergeCompleted(input) {
+    //
+    // The caller AWAITS this one — the detached deploy may restart the process,
+    // and the spawn has to have happened by then (UI-vb0t §3.4).
+    async mergeCompleted(input) {
       try {
-        send(['-q', '-c', 'green', '-t', TITLE.merged], prBody(input));
+        // Config first here above all: this is the one path a caller awaits, so
+        // a disabled notifier must not make the cleanup wait on a `bd show`.
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title = await lookupTitle(input.bead_id);
+        send(cmd, prBody(TITLE.merged, input, bead_title));
       } catch (err) {
         log('mergeCompleted failed: %o', err);
       }

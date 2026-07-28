@@ -296,9 +296,15 @@ function makeActions(options = {}) {
   /** @type {any[]} */
   const merge_notices = [];
   const notify = {
-    mergeCompleted: vi.fn((/** @type {any} */ input) => {
+    mergeCompleted: vi.fn(async (/** @type {any} */ input) => {
       calls.push('notify:mergeCompleted');
       merge_notices.push(input);
+      // The real notifier reads the bead title before it spawns, so the send
+      // finishes a few ticks after the call. `notify:spawned` is that finish —
+      // what the cleanup must not run past (UI-vb0t §3.4).
+      await Promise.resolve();
+      await Promise.resolve();
+      calls.push('notify:spawned');
     })
   };
 
@@ -2198,6 +2204,25 @@ describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
     const launched_at = h.calls.indexOf('spawn:bdui-shared:detached');
     expect(announced_at).toBeGreaterThanOrEqual(0);
     expect(launched_at).toBeGreaterThan(announced_at);
+  });
+
+  test('waits for the merge send to finish before launching the deploy', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      deploySpawn: 'ok',
+      ...ON_BASE
+    });
+
+    await h.actions.merge(BEAD);
+
+    // Calling the notifier first is not enough: an asynchronous send that has
+    // not spawned yet when the deploy restarts this process is a merge nobody
+    // hears about (UI-vb0t §3.4).
+    const spawned_at = h.calls.indexOf('notify:spawned');
+    const launched_at = h.calls.indexOf('spawn:bdui-shared:detached');
+    expect(spawned_at).toBeGreaterThanOrEqual(0);
+    expect(launched_at).toBeGreaterThan(spawned_at);
   });
 
   test('announces the externally-observed merge through the same hook', async () => {

@@ -184,7 +184,7 @@ function isConflicting(pr) {
  *   resolveDeploy?: () => ResolvedDeployCmd|null,
  *   spawnImpl?: typeof spawn,
  *   notifyChanged?: (workspace: string) => void,
- *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => void },
+ *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void> },
  *   requeryDelayMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
  *   now?: () => number
@@ -1058,16 +1058,26 @@ export function createPrActions(deps) {
    * Announce the merge that CLOSED the bead (UI-9rrk). One hook covers both
    * triggers because both converge on `runCleanup`. The notifier is optional
    * and no-throw by its own contract, so this can never turn a finished cleanup
-   * into a failed one.
+   * into a failed one — the guard below keeps that true for an injected fake
+   * that breaks the contract.
+   *
+   * AWAITED by the caller (UI-vb0t §3.4): reading the bead title made the send
+   * asynchronous, and the deploy launched right after may restart this process.
+   * What is awaited is the child's SPAWN, not its exit — it is detached and
+   * unref'd, so it outlives the restart once it exists.
    *
    * @param {string} bead_id
    * @param {string|null} pr_url
    */
-  function announceMerged(bead_id, pr_url) {
+  async function announceMerged(bead_id, pr_url) {
     if (!notify) {
       return;
     }
-    notify.mergeCompleted({ bead_id, pr_url, repo });
+    try {
+      await notify.mergeCompleted({ bead_id, pr_url, repo });
+    } catch (err) {
+      log('merge notify failed: %o', err);
+    }
   }
 
   /**
@@ -1168,7 +1178,7 @@ export function createPrActions(deps) {
         deps.store.moveToDone(workspace, { bead_id });
       }
       notifyChanged(workspace);
-      announceMerged(bead_id, pr_url);
+      await announceMerged(bead_id, pr_url);
       return { ok: true, step: null, reason: null, base_sync };
     }
 
@@ -1188,8 +1198,9 @@ export function createPrActions(deps) {
     notifyChanged(workspace);
     // Announced BEFORE the launch, for the same reason the durable write is:
     // the detached deploy may restart this process, and a notification that
-    // never got sent is a merge nobody heard about.
-    announceMerged(bead_id, pr_url);
+    // never got sent is a merge nobody heard about. AWAITED, so "before" means
+    // the child exists, not merely that the call was made (UI-vb0t §3.4).
+    await announceMerged(bead_id, pr_url);
     // A spawn that never started — a synchronous throw or Node's asynchronous
     // `error` event — means we are still alive, so the intent was wrong and can
     // be corrected. The cleanup itself still succeeded — the bead really is
