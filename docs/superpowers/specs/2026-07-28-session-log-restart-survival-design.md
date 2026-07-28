@@ -36,8 +36,10 @@ worker runner 세션은 detached로 스폰되어 서버 재시작을 넘겨 살�
 
 - 세션 로그 캡/회전(현행과 동일하게 없음 — 필요 시 UI-0x54의 10MB 캡·회전
   관례를 후속으로).
-- 고아 세션 종료 시 verdict 판정 변경 — pid 사망은 기존 60s reconcile
-  pid probe + `gh` 관측 경로가 그대로 수습한다.
+- 고아 세션의 정상 종료 판정 변경 없음 — pid 사망은 기존 60s reconcile
+  pid probe + `gh` 관측 경로가 수습한다. 단 monitor의 guard-kill은
+  예외로, blocker 증거가 `gh` 성공 관측보다 우선한다(§3.3 — 엔진 세션의
+  blocked-무효화 계약을 monitor 경로에 보존하는 fail-closed 요구).
 - 프론트엔드·ws 프로토콜 변경 없음(드로어·`subscribe-session-log` 무변경).
 - 로그 파일 경로·포맷 변경 없음(`$XDG_STATE_HOME/bdui/<slug>/sessions/
   <attempt_id>.jsonl`, raw jsonl) — UI-ediw 재생·기존 로그와 호환.
@@ -85,22 +87,39 @@ startup reconcile(`attach.js` `initWorkerRuntime` 경로)에서, persisted
 시작한다. monitor는 엔진과 같은 tail 소비자를 child 핸들 없이 구동하는
 경량 핸들이다:
 
-- **tail 시작점**: 현재 파일 EOF. 과거분은 드로어 스냅샷 `read()`와
-  UI-ediw usage 재생이 파일 전체에서 복원하므로 monitor는 라이브 증분만
-  공급한다.
+- **tail 시작점**: 파일 EOF 직전의 **마지막 newline 경계**. EOF가 작성
+  중인 줄 중간일 수 있으므로, 그 경계 이후의 trailing bytes를 tail
+  리더의 초기 부분-줄 버퍼로 seed하고 줄이 완성된 뒤에만 처리한다 —
+  mid-line 재접속에서 guard/question 한 줄도 잃지 않는다. 과거분은
+  드로어 스냅샷 `read()`와 UI-ediw usage 재생이 파일 전체에서 복원한다.
 - **드로어**: monitor의 tail이 `sessionLog` 브로커로 `'raw'` append를
   흘려 라이브 팔로우가 재개된다.
 - **merge guard·question 감지**: tail 라인을 기존 guard 파이프라인에
-  통과시키고, 위반 시 attempt 레코드의 pid로 그룹 킬(`kill(-pid)`) —
-  재시작 후에도 fail-closed 계약이 유지된다.
+  통과시킨다. 위반 시 (1) 먼저 attempt 레코드에 blocker 증거를 durable
+  기록하고(`cause_detail: {reason, command}` + guard-kill 표지 patch),
+  (2) **kill 직전 pid 재검증** — `defaultProbePid`로 생존과 persisted
+  `started_at` 일치를 확인하고, 불일치(사망·PID 재사용)면 signal을 보내지
+  않고 reconcile 처분에 맡긴다 — 통과 시에만 그룹 킬(`kill(-pid)`).
+  monitor 시작 시에도 같은 재검증을 수행한다.
+- **guard-kill의 fail-closed 종결**: `disposeDeadAttempt`(reconcile의
+  사망 처분)는 attempt에 기록된 guard-kill blocker 증거를 `gh` 관측
+  성공보다 **우선**한다 — 증거가 있으면 PR 존재 여부와 무관하게
+  `loud_fail_blocker`/`cause_detail`로 실패 종료한다. 엔진 세션의
+  blocked verdict가 성공을 무효화하는 현행 계약을 monitor 경로에도
+  보존하는 것.
 - **usage**: 라인의 usage 리프트를 기존 usage-store 경로로 계속 집계한다
-  (UI-ediw 재생이 과거분을 복원하고 monitor가 이후를 이어감).
+  (UI-ediw 재생이 과거분을 복원하고 monitor가 이후를 이어감). pid 사망
+  처분 시에는 monitor tail을 **EOF까지 드레인한 뒤 `usagePatch()`를 1회
+  적용**해 성공·실패 어느 terminal 전환에서도 usage가 attempt에
+  영속화되고 tally가 정리되게 한다 — 현행 `disposeDeadAttempt`에는
+  usage 영속화 경로가 없어 monitor가 복구한 집계가 메모리에서 유실된다.
 - **session_id**: attempt 레코드에 이미 persist되어 있으므로 재추출은
   불필요(있으면 무해).
 - **수명**: monitor는 verdict를 내지 않는다. reconcile pid probe가 사망을
-  관측하면 monitor를 정리(tail 종료)하고 기존 `gh` 관측 경로가 결과를
-  수습한다. 드로어 구독자 유무와 무관하게 monitor는 running 동안
-  상시 구동한다(guard·usage가 구독자와 무관한 소비자이므로).
+  관측하면 monitor를 정리(EOF 드레인 → usage 영속화 → tail 종료)하고
+  기존 `gh` 관측 경로가 결과를 수습한다(위 blocker 증거 우선 규칙 적용).
+  드로어 구독자 유무와 무관하게 monitor는 running 동안 상시 구동한다
+  (guard·usage가 구독자와 무관한 소비자이므로).
 
 ### 3.4 적용 범위
 
@@ -131,6 +150,14 @@ startup reconcile(`attach.js` `initWorkerRuntime` 경로)에서, persisted
 - 재시작 통합: 파일에 이어 쓰는 fake child + 새 프로세스 컨텍스트에서
   monitor가 (a) 드로어 append 재개 (b) guard 위반 시 기록된 pid 그룹 킬
   (c) usage 틱 계속을 수행하는지.
+- mid-line 재접속: EOF가 줄 중간인 파일에 monitor를 붙였을 때 trailing
+  bytes가 seed되어 완성된 줄이 정확히 1회 처리되는지.
+- guard-kill fail-closed: monitor가 kill한 attempt를 `disposeDeadAttempt`
+  가 처분할 때 PR이 존재해도 blocker 증거가 우선해 실패 종료하는지.
+- 사망 처분 usage 영속화: pid 사망 시 EOF 드레인 후 `usagePatch()` 1회로
+  terminal attempt에 usage가 저장되고 tally가 정리되는지.
+- pid 재검증: 생존 불일치(`started_at` 불일치 포함)에서 signal을 보내지
+  않고 reconcile 처분으로 넘기는지.
 
 ## 6. 순서 제약
 
