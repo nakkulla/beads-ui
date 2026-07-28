@@ -270,7 +270,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notify?: any, disposition?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notify?: any, disposition?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -304,7 +304,7 @@ function setup(opts) {
       `/wt/${bead_id}`,
     exists: vi.fn(() => true)
   };
-  const sessionLog = { attach: vi.fn() };
+  const sessionLog = opts.sessionLog || { attach: vi.fn() };
   const usage = opts.usage === null ? undefined : createUsageStore();
   const scheduler = createScheduler({
     store,
@@ -318,6 +318,7 @@ function setup(opts) {
     notify: opts.notify,
     disposition: opts.disposition,
     probePid: opts.probePid,
+    sessionMonitors: opts.sessionMonitors,
     notifyQueueChanged: opts.notifyQueueChanged,
     now: () => 1000
   });
@@ -2423,6 +2424,56 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     expect(release).toHaveBeenCalledWith('B1');
   });
 
+  test('guard-kill evidence outranks a restart-surviving disposition’s readback', async () => {
+    const complete = vi.fn(async () => ({ ok: true }));
+    const release = vi.fn();
+    const stop = vi.fn(() => true);
+    const env = setup({
+      config: {},
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null }),
+      sessionMonitors: { stop },
+      disposition: { complete, release }
+    });
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.place(WS, { expected_revision: rev, bead_id: 'B1' }).queue
+      .revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'd1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'd1',
+      patch: {
+        bead_id: 'B1',
+        status: 'running',
+        pid: 4242,
+        repo: '/repo',
+        target_base: 'main',
+        disposition: 'revise_fix',
+        disposition_resume: true,
+        guard_kill: { reason: 'merge_guard', command: 'git merge', at: 5 }
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+    await flush();
+
+    // The monitor is drained for a disposition too, the verdict is refused
+    // without consulting the disposition dep, and a blocked verdict is never
+    // retried as a substitute session.
+    expect(stop).toHaveBeenCalledWith(WS, 'd1');
+    expect(complete).not.toHaveBeenCalled();
+    const q = env.store.snapshot(WS);
+    expect(q.attempts.d1.cause).toBe('loud_fail_blocker');
+    expect(
+      Object.values(q.attempts).some(
+        (/** @type {any} */ a) => a.resumed_from === 'd1'
+      )
+    ).toBe(false);
+    expect(release).toHaveBeenCalledWith('B1');
+  });
+
   test('judges a restart-surviving disposition by its own verdict, not by a PR', async () => {
     const complete = vi.fn(async () => ({ ok: true }));
     const env = setup({
@@ -3519,6 +3570,97 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
     expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(
       'verify_failed:gh_observation_failed'
+    );
+  });
+
+  test('fails a monitor-killed attempt even when its PR is observed open (UI-o2yt §3.3)', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store, {
+      guard_kill: {
+        reason: 'merge_to_base_blocked',
+        command: 'git merge main',
+        at: 900
+      }
+    });
+    env.store.setAutoAdvance(WS, true);
+
+    await env.scheduler.reconcile(WS);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts['att-1'].status).toBe('failed');
+    expect(snap.attempts['att-1'].cause).toBe('loud_fail_blocker');
+    expect(snap.attempts['att-1'].cause_detail).toEqual({
+      reason: 'merge_to_base_blocked',
+      command: 'git merge main'
+    });
+    expect(snap.pr_wait).toEqual([]);
+    expect(snap.auto_advance).toBe(false);
+  });
+
+  test('stops the attempt monitor before lifting its terminal usage patch', async () => {
+    /** @type {string[]} */
+    const order = [];
+    /** @type {any} */
+    let env_ref = null;
+    const sessionMonitors = {
+      stop: vi.fn((/** @type {string} */ ws, /** @type {string} */ id) => {
+        order.push('monitor_stop');
+        // The drain a real stop performs: the tail's last lines reach the usage
+        // store, which is what the disposition's patch then persists.
+        env_ref.usage.record(ws, id, {
+          message_id: 'm1',
+          input_tokens: 12,
+          output_tokens: 3
+        });
+        return true;
+      })
+    };
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      sessionMonitors,
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => {
+          order.push('verify');
+          return { ok: true, reason: 'ok', pr_url: 'https://x/pull/1' };
+        })
+      }
+    });
+    env_ref = env;
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(order).toEqual(['monitor_stop', 'verify']);
+    expect(sessionMonitors.stop).toHaveBeenCalledWith(WS, 'att-1');
+    expect(env.store.snapshot(WS).attempts['att-1'].usage).toMatchObject({
+      input_tokens: 12,
+      output_tokens: 3
+    });
+  });
+
+  test('reads the guard evidence the monitor writes during its final drain', async () => {
+    /** @type {any} */
+    let env_ref = null;
+    const sessionMonitors = {
+      stop: vi.fn((/** @type {string} */ ws, /** @type {string} */ id) => {
+        env_ref.store.updateAttempt(ws, {
+          attempt_id: id,
+          patch: {
+            guard_kill: { reason: 'question_blocked', command: null, at: 900 }
+          }
+        });
+        return true;
+      })
+    };
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      sessionMonitors
+    });
+    env_ref = env;
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(
+      'loud_fail_blocker'
     );
   });
 

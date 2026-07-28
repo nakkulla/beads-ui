@@ -51,9 +51,12 @@ const log = debug('worker:scheduler');
  * the same number). `ps -o lstart=` resolves to whole seconds, so the tolerance
  * has to absorb that coarseness.
  *
+ * Exported because the detached session monitor re-verifies the same way before
+ * every signal (UI-o2yt §3.3) — two tolerances would be two contracts.
+ *
  * @type {number}
  */
-const PID_START_TOLERANCE_MS = 2000;
+export const PID_START_TOLERANCE_MS = 2000;
 
 /**
  * Upper bound on the matched command persisted with a blocker failure. The
@@ -157,7 +160,15 @@ function staleDispatchPrompt(bead_id, stale) {
  * ends with would fail it as `no_pr`; this dep judges the disposition's own
  * durable result instead. Absent wiring simply means no disposition can be
  * dispatched (the entry point refuses).
- * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void }} sessionLog
+ * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, pathFor?: (workspace: string, attempt_id: string) => string, stderrPathFor?: (workspace: string, attempt_id: string) => string }} sessionLog
+ * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
+ * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
+ * leaves the engine on its stdout-pipe fallback, which is what fixture-driven
+ * tests want.
+ * @property {{ stop: (workspace: string, attempt_id: string) => boolean }} [sessionMonitors]
+ * Detached-session monitors (UI-o2yt §3.3). Present in the live wiring only: a
+ * dead attempt's monitor is stopped — draining its log to EOF — before the
+ * disposition reads the guard evidence and lifts the terminal usage tally.
  * @property {ReturnType<typeof import('./usage-store.js').createUsageStore>} [usage]
  * Live token-usage tally for running attempts (UI-raqh §1). Absent wiring
  * (older tests) simply means no usage is tallied or persisted.
@@ -682,6 +693,24 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The guard-kill evidence a detached monitor recorded for an attempt, read
+   * off the durable record (UI-o2yt §3.3). Null when no monitor stopped it.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {{ reason: string, command: string|null }|null}
+   */
+  function guardKillOf(workspace, attempt_id) {
+    try {
+      const a = deps.store.snapshot(workspace).attempts[attempt_id];
+      const gk = a && a.guard_kill;
+      return gk && typeof gk.reason === 'string' ? gk : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Beads holding a LEAF paused attempt (worker-phase1 §1.1). Resume mints a
    * child attempt and leaves the ancestor `paused` forever, so "is this bead
    * paused?" must ask about the leaf — an attempt nothing was resumed from.
@@ -972,7 +1001,11 @@ export function createScheduler(deps) {
       // it can do anything; the spec's fallback is a substitute session
       // carrying the same prompt (its lineage lives in the bead notes). Bounded
       // to ONE retry by the flag the retry itself clears.
-      if (record.disposition_resume === true) {
+      //
+      // A BLOCKED verdict is never retried: a guard violation is a property of
+      // what the session did, not of a transcript that could not be found, and
+      // relaunching it would just run into the same guard.
+      if (record.disposition_resume === true && !verdict.blocked) {
         const retried = await retryDispositionFresh(
           workspace,
           attempt_id,
@@ -1238,23 +1271,56 @@ export function createScheduler(deps) {
       typeof attempt.disposition === 'string' && attempt.disposition.length > 0
         ? attempt.disposition
         : null;
+    // FIRST, before any observation and for BOTH attempt kinds: retire this
+    // attempt's detached monitor. The stop drains its session log to EOF, which
+    // is what completes the usage tally lifted below AND settles any guard
+    // evidence still in the tail (UI-o2yt §3.3).
+    if (deps.sessionMonitors) {
+      try {
+        deps.sessionMonitors.stop(workspace, attempt_id);
+      } catch (err) {
+        log('session monitor stop failed for %s: %o', attempt_id, err);
+      }
+    }
+    // Re-read AFTER the drain: the evidence may have been written by it.
+    const guard_kill = guardKillOf(workspace, attempt_id);
     if (kind) {
       // No claim is taken here, unlike the branch below: the disposition path
       // owns its own relaunch (which takes the claim itself), and a claim
       // released around it would drop the NEW session's fence. Nothing can
       // re-dispatch this bead meanwhile either — the park left `auto_advance`
       // off, and turning it back on is the last step of a successful verdict.
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: usagePatch(workspace, attempt_id)
+      });
+      // Guard evidence OUTRANKS the disposition's own readback for the same
+      // reason it outranks the `gh` observation: a monitor-killed session must
+      // fail however far its writes got.
       await onDispositionDone(
         workspace,
         attempt_id,
         bead_id,
         prior,
-        /** @type {any} */ ({
-          success: true,
-          reason: 'reconciled',
-          exit: null,
-          blocked: false
-        }),
+        /** @type {any} */ (
+          guard_kill
+            ? {
+                success: false,
+                reason: 'guard_kill',
+                exit: null,
+                blocked: true,
+                blocked_detail: {
+                  reason: guard_kill.reason,
+                  command: guard_kill.command ?? null
+                }
+              }
+            : {
+                success: true,
+                reason: 'reconciled',
+                exit: null,
+                blocked: false
+              }
+        ),
         kind
       );
       return;
@@ -1286,7 +1352,23 @@ export function createScheduler(deps) {
         patch: { verify_result: vr, ...usagePatch(workspace, attempt_id) }
       });
 
-      if (vr.ok) {
+      if (guard_kill) {
+        // Blocker evidence OUTRANKS the `gh` observation (UI-o2yt §3.3). An
+        // engine-run session that trips a guard fails no matter what it pushed;
+        // a monitor-killed one must fail the same way, or a PR opened before the
+        // violation would launder the kill into a success.
+        await failAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          'loud_fail_blocker',
+          blockerCauseDetail({
+            reason: guard_kill.reason,
+            command: guard_kill.command ?? null
+          })
+        );
+      } else if (vr.ok) {
         // A failed revert BLOCKS the lane move (fail-closed): a stray
         // `fast_track` left on the bead would switch a later manual session to
         // unattended.
@@ -1770,6 +1852,19 @@ export function createScheduler(deps) {
     // prior claude session id / codex thread id.
     if (resume_session_id) {
       settings.resume_session_id = resume_session_id;
+    }
+    // The output files the child inherits as stdout/stderr (UI-o2yt §3.1). The
+    // session log is keyed by the WORKSPACE, not the worktree the session runs
+    // in, so the path is resolved here and handed down rather than derived
+    // inside the engine.
+    if (typeof deps.sessionLog.pathFor === 'function') {
+      settings.log_path = deps.sessionLog.pathFor(workspace, attempt_id);
+      if (typeof deps.sessionLog.stderrPathFor === 'function') {
+        settings.stderr_path = deps.sessionLog.stderrPathFor(
+          workspace,
+          attempt_id
+        );
+      }
     }
 
     /** @type {RunnerHandle} */
