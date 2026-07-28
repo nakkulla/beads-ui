@@ -45,6 +45,11 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
  * @property {string} [merge_label] - Text of the [머지] button; absent renders
  * 머지. A conflicting gate dispatches a resolution session instead of merging,
  * so its button says so (UI-dxgz §2).
+ * @property {boolean} [revise_action] - Render the REVISE-disposition actions
+ * (`queue` rows parked at `spec_review_stale:revise`, UI-hs11 §3.5).
+ * @property {boolean} [revise_enabled] - Whether the two disposition buttons
+ * may be clicked; false while a disposition click of this row is in flight.
+ * @property {string} [revise_title] - Tooltip carrying the findings summary.
  * @property {{ label: string, index: number, total: number, percent: number }|null} [merge_step] -
  * The merge's current step, when one is running (UI-raqh §4).
  * @property {string} [merge_title] - Tooltip: what the click is based on, or
@@ -151,6 +156,30 @@ export function miniRow(item) {
         폐기
       </button>`
     : '';
+  // 파킹 처분 두 버튼 (UI-hs11 §3.5). 대기 레인 행에만 붙고, 머지/폐기와 같은
+  // 클릭 위임·CAS 재시도 계약을 쓴다. findings 상세는 카드 클릭 → 이슈 상세로
+  // 가고 여기서는 툴팁 요약만 싣는다.
+  const revise_els = item.revise_action
+    ? html`<button
+          type="button"
+          class="worker-mini__revise-fix"
+          data-bead-id=${item.id}
+          ?disabled=${item.revise_enabled === false}
+          title=${item.revise_title ||
+          'notes의 REVISE finding을 스펙에 반영하는 처분 세션을 띄웁니다'}
+        >
+          finding 수용·수정
+        </button>
+        <button
+          type="button"
+          class="worker-mini__revise-approve"
+          data-bead-id=${item.id}
+          ?disabled=${item.revise_enabled === false}
+          title="델타를 사용자 권한으로 승인해 영수증을 갱신하고 파킹을 해제합니다 (세션 없음)"
+        >
+          승인하고 진행
+        </button>`
+    : '';
   const has_foot = !!(
     usage_label ||
     merging ||
@@ -181,7 +210,7 @@ export function miniRow(item) {
                 >
               </div>`
             : ''}`
-      : html`${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${discard_el}`}
+      : html`${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${discard_el}${revise_els}`}
   </div>`;
 }
 

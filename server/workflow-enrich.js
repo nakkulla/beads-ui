@@ -274,10 +274,15 @@ function deriveRoute(md) {
 /**
  * Extract the numeric PR number from a pr_url, or null.
  *
+ * Exported for the worker's external PR registry (UI-7agi §1), which resolves a
+ * `metadata.pr_url` into the same PR number the board already derives — one
+ * parser, so a url the board renders as `#N` can never resolve to a different
+ * PR in the merge lane.
+ *
  * @param {unknown} pr_url
  * @returns {number | null}
  */
-function parsePrNumber(pr_url) {
+export function parsePrNumber(pr_url) {
   if (typeof pr_url !== 'string') {
     return null;
   }

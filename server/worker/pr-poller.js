@@ -85,11 +85,17 @@ function prNumberFromUrl(url) {
  * survives a restart: the attempts are persisted even though the observation
  * cache is not.
  *
+ * A bead with NO attempt at all — a PR a normal session delivered (UI-7agi §3)
+ * — falls back to `external`, the row the registry derived from bd's own
+ * `metadata.pr_url`. Attempts still win: when both exist the worker's own
+ * record is the more specific one.
+ *
  * @param {Queue} queue
  * @param {string} bead_id
+ * @param {{ pr_url: string, pr_number: number|null }|null} [external]
  * @returns {{ number: number, url: string }|null}
  */
-export function resolvePrRef(queue, bead_id) {
+export function resolvePrRef(queue, bead_id, external = null) {
   const attempts = queue && queue.attempts ? Object.values(queue.attempts) : [];
   /** @type {{ number: number, url: string, at: number }|null} */
   let best = null;
@@ -112,7 +118,19 @@ export function resolvePrRef(queue, bead_id) {
       best = { number, url, at };
     }
   }
-  return best ? { number: best.number, url: best.url } : null;
+  if (best) {
+    return { number: best.number, url: best.url };
+  }
+  if (!external) {
+    return null;
+  }
+  const url = typeof external.pr_url === 'string' ? external.pr_url : '';
+  const number =
+    typeof external.pr_number === 'number' &&
+    Number.isFinite(external.pr_number)
+      ? external.pr_number
+      : prNumberFromUrl(url);
+  return number === null ? null : { number, url };
 }
 
 /**
@@ -155,6 +173,10 @@ export function rollupConclusion(checks) {
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
  *   onMerged?: (bead_id: string) => Promise<unknown>,
+ *   external?: {
+ *     refresh: () => Promise<unknown>,
+ *     list: () => import('./external-pr.js').ExternalPrRow[]
+ *   },
  *   notifyChanged?: (workspace: string) => void,
  *   intervalSeconds?: number,
  *   requeryDelayMs?: number,
@@ -185,6 +207,7 @@ export function createPrPoller(deps) {
       }));
 
   const activity = deps.activity || null;
+  const external = deps.external || null;
 
   /**
    * Mark an activity transition and publish it (UI-raqh §3). The fanout is what
@@ -225,10 +248,12 @@ export function createPrPoller(deps) {
    *
    * @param {Queue} queue
    * @param {string} bead_id
+   * @param {import('./external-pr.js').ExternalPrRow|null} [external_row] - The
+   * registry row when this bead is an EXTERNAL lane member (UI-7agi §1).
    * @returns {Promise<{ verify: Promise<void>|null }>}
    */
-  async function observeBead(queue, bead_id) {
-    const ref = resolvePrRef(queue, bead_id);
+  async function observeBead(queue, bead_id, external_row = null) {
+    const ref = resolvePrRef(queue, bead_id, external_row);
     if (!ref) {
       // No durable PR reference: the bead is in `pr_wait` but nothing records
       // WHICH pr. Fail closed (undecidable gate) rather than guessing.
@@ -277,7 +302,17 @@ export function createPrPoller(deps) {
     // bead simply stays where it is awaiting a human decision (§4).
     if (pr.state !== 'OPEN') {
       deps.observations.record(workspace, bead_id, { error: null, pr });
-      if (pr.state === 'MERGED' && typeof deps.onMerged === 'function') {
+      // An EXTERNAL row records the MERGED observation and STOPS (UI-7agi §1):
+      // its cleanup runs the full choreography including `deploy`, and nothing
+      // the user did not click may deploy. The lane shows `머지됨 · 정리` and the
+      // [정리] click is the single trigger — the worker row's automatic hand-off
+      // stays exactly as it was, because there the merge itself came from a
+      // click on this server.
+      if (
+        pr.state === 'MERGED' &&
+        !external_row &&
+        typeof deps.onMerged === 'function'
+      ) {
         return { verify: cleanupMerged(bead_id) };
       }
       return { verify: null };
@@ -404,7 +439,10 @@ export function createPrPoller(deps) {
 
   /**
    * One observation pass. Subscriber-gated and lane-gated: with no subscribers,
-   * or with an empty `pr_wait`, NOT ONE `gh` call is made.
+   * or with an empty lane, NOT ONE `gh` call is made. The lane is the UNION of
+   * the durable `pr_wait` and the external PR registry (UI-7agi §1) — without
+   * the union an overlaid external row would render forever as 관측 대기,
+   * because nothing would ever observe it.
    *
    * The returned promise settles only after any verification this pass started,
    * so a test can await deterministic completion — but the overlap guard is
@@ -420,13 +458,46 @@ export function createPrPoller(deps) {
     if (observing) {
       return;
     }
+    // The external registry is re-derived from bd on the SAME cadence, inside
+    // the same subscriber gate, so an idle server scans nothing (UI-7agi §1).
+    // A failed scan keeps the previous rows rather than emptying the lane.
+    if (external) {
+      try {
+        await external.refresh();
+      } catch (err) {
+        log('external PR scan failed for %s: %o', workspace, err);
+      }
+    }
     observing = true;
     /** @type {Promise<void>[]} */
     const pending = [];
     try {
       const queue = deps.store.snapshot(workspace);
-      const entries = Array.isArray(queue.pr_wait) ? queue.pr_wait : [];
+      const durable = Array.isArray(queue.pr_wait) ? queue.pr_wait : [];
+      const durable_ids = new Set(durable.map((e) => e.bead_id));
+      /** @type {Map<string, import('./external-pr.js').ExternalPrRow>} */
+      const external_rows = new Map();
+      if (external) {
+        for (const row of external.list()) {
+          // A bead the worker itself put in `pr_wait` is a WORKER row: the
+          // durable attempt is the better record, so the overlay yields.
+          if (!durable_ids.has(row.bead_id)) {
+            external_rows.set(row.bead_id, row);
+          }
+        }
+      }
+      const entries = [
+        ...durable,
+        ...[...external_rows.values()].map((row) => ({
+          bead_id: row.bead_id,
+          added_at: row.added_at
+        }))
+      ];
       const lane_ids = entries.map((e) => e.bead_id);
+      // Whether anything was being observed BEFORE this pass pruned. It decides
+      // the empty-lane fanout below.
+      const had_observations =
+        Object.keys(deps.observations.snapshot(workspace)).length > 0;
       deps.observations.prune(workspace, lane_ids);
       // The activity cache describes the same lane, so it is pruned with it —
       // a bead that merged or was discarded must not keep a stale badge.
@@ -434,6 +505,15 @@ export function createPrPoller(deps) {
         activity.prune(workspace, lane_ids);
       }
       if (entries.length === 0) {
+        // The lane just emptied. For a durable row the queue mutation that
+        // emptied it already fanned out; a registry-only row has NO other
+        // emitter (implementation review 2026-07-28), so without this the
+        // client would keep rendering a row whose bead is gone — and every
+        // later pass returns here too, so it would never self-correct. Gated on
+        // there having been something to drop, which makes it fire once.
+        if (had_observations) {
+          notifyChanged(workspace);
+        }
         return;
       }
       for (const entry of entries) {
@@ -442,7 +522,11 @@ export function createPrPoller(deps) {
         // local verification's badge is never touched.
         markActivity('beginChecking', entry.bead_id);
         try {
-          const r = await observeBead(queue, entry.bead_id);
+          const r = await observeBead(
+            queue,
+            entry.bead_id,
+            external_rows.get(entry.bead_id) || null
+          );
           if (r.verify) {
             pending.push(r.verify);
           }
@@ -499,9 +583,14 @@ export function createPrPoller(deps) {
         try {
           const queue = deps.store.snapshot(workspace);
           const entries = Array.isArray(queue.pr_wait) ? queue.pr_wait : [];
-          unobserved = entries.some(
-            (e) => !deps.observations.get(workspace, e.bead_id)
-          );
+          /** @type {string[]} */
+          const ids = entries.map((e) => e.bead_id);
+          if (external) {
+            for (const row of external.list()) {
+              ids.push(row.bead_id);
+            }
+          }
+          unobserved = ids.some((id) => !deps.observations.get(workspace, id));
         } catch {
           unobserved = false;
         }

@@ -500,6 +500,12 @@ export function mergeStepView(step) {
  * What the server is doing to this bead right now (UI-raqh §3/§4).
  * @param {'running'|'paused'|null} [conflict_session] - State of this bead's own
  * conflict-resolution attempt, when one exists (UI-dxgz §1).
+ * @param {boolean} [external] - Whether this row is an EXTERNAL PR — one a
+ * normal session delivered, with no worker attempt behind it (UI-7agi §5).
+ * Three affordances change: [폐기] disappears (the server's discard needs the
+ * durable lane membership an external row does not have), 충돌 해소 goes away
+ * (it needs the attempt's `session_id`), and a MERGED row becomes a [정리]
+ * button because nothing auto-cleans it.
  * @returns {any}
  */
 function prWaitRow(
@@ -509,20 +515,26 @@ function prWaitRow(
   cleanup_failed,
   usage = null,
   active = null,
-  conflict_session = null
+  conflict_session = null,
+  external = false
 ) {
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
   /** @type {string[]} */
   const badges = [];
+  if (external) {
+    badges.push('세션');
+  }
   const conflict_badge = conflict_session
     ? conflict_session === 'running'
       ? '충돌 해소 중'
       : '충돌 해소 일시정지'
     : null;
   const substituted = activityBadge(
-    (gate && gate.gate_badge) || '',
+    external && gate && gate.tier === 'closed_unmerged'
+      ? '닫힘'
+      : (gate && gate.gate_badge) || '',
     // A resolution session outranks poller activity (UI-dxgz §1): the row has
     // one live slot, and "what is being done about the conflict" is the state a
     // reader has to act on, not that a gh round-trip is in flight.
@@ -551,6 +563,13 @@ function prWaitRow(
   // from the top. Nothing retries automatically (§6), so this button is the
   // human's way back in once they have fixed whatever stopped it.
   const cleanup_retry = !!cleanup_failed && !!gate && gate.tier === 'merged';
+  // An external MERGED row is never auto-cleaned (UI-7agi §1), so the button IS
+  // the cleanup trigger — with or without a recorded failure.
+  const external_cleanup = external && !!gate && gate.tier === 'merged';
+  // An external conflict cannot be dispatched anywhere: `resolveConflict()`
+  // needs the attempt's session_id and worker worktree, so the button would
+  // refuse every time. The badge reports it; the user resolves it in a session.
+  const external_conflict = external && conflicting;
   return {
     id: bead_id,
     title,
@@ -580,7 +599,8 @@ function prWaitRow(
     // `cleanup_failed` is DURABLE merged evidence — right after a restart the
     // observation cache is empty, so the gate tier alone would re-offer [폐기]
     // on a tile whose merge already landed (discard spec §2).
-    discard_action: !cleanup_failed && !(gate && gate.tier === 'merged'),
+    discard_action:
+      !external && !cleanup_failed && !(gate && gate.tier === 'merged'),
     merge_step,
     discard_enabled: !merge_step && !conflict_session,
     // Not a guard — the scheduler already refuses a second dispatch for a
@@ -592,32 +612,46 @@ function prWaitRow(
     // A conflicting PR keeps [머지] clickable on purpose: that click is what
     // dispatches the resolution session (§6), and it merges nothing. Once that
     // session exists, there is nothing left to dispatch until it settles.
+    // `external_conflict` vetoes even a GREEN gate: the click-time branch order
+    // puts DIRTY before the gate, so the server refuses a conflicting external
+    // PR whatever its CI says (UI-7agi §5).
     merge_enabled:
       !merge_step &&
       !conflict_session &&
-      (enabled || conflicting || cleanup_retry),
+      !external_conflict &&
+      (enabled ||
+        (conflicting && !external) ||
+        cleanup_retry ||
+        external_cleanup),
     // The label says what the click DOES: on a conflicting gate it dispatches a
     // resolution session, and a button reading 머지 there is the misread that
     // put this bead here (UI-dxgz §2).
-    merge_label:
-      conflicting && !merge_step && !cleanup_retry ? '충돌 해소' : undefined,
+    merge_label: external_cleanup
+      ? '정리'
+      : conflicting && !external && !merge_step && !cleanup_retry
+        ? '충돌 해소'
+        : undefined,
     merge_title: merge_step
       ? `머지 진행 중 — ${merge_step.label}`
-      : conflict_session === 'running'
-        ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
-        : conflict_session === 'paused'
-          ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
-          : cleanup_retry
-            ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
-            : conflicting
-              ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
-              : enabled
-                ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
-                : gate && gate.tier === 'merged'
-                  ? // Already merged with no cleanup failure recorded: the cleanup
-                    // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                    '머지됨 — 머지 후 정리 진행 중'
-                  : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+      : external_cleanup
+        ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
+        : external_conflict
+          ? '외부 PR 충돌 — 세션에서 직접 해소하세요 (여기서는 해소 세션을 띄울 수 없습니다)'
+          : conflict_session === 'running'
+            ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
+            : conflict_session === 'paused'
+              ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
+              : cleanup_retry
+                ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+                : conflicting
+                  ? '충돌 — 클릭하면 충돌 해소 세션을 띄웁니다 (머지하지 않음)'
+                  : enabled
+                    ? `머지 (${gate.gate_badge}) — 클릭 시점에 다시 확인합니다`
+                    : gate && gate.tier === 'merged'
+                      ? // Already merged with no cleanup failure recorded: the cleanup
+                        // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                        '머지됨 — 머지 후 정리 진행 중'
+                      : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -693,6 +727,16 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {Set<string>}
    */
   const merge_pending = new Set();
+  /**
+   * Beads whose REVISE-disposition click is in flight (UI-hs11 §3.5). It covers
+   * the same gap `merge_pending` covers — the window between the click and the
+   * reply — so a second click cannot be issued while the first is still being
+   * decided. The server's per-Bead in-flight guard is the authority; this is
+   * only what keeps the row from inviting the doomed second click.
+   *
+   * @type {Set<string>}
+   */
+  const revise_pending = new Set();
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -1078,6 +1122,63 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The REVISE-parking disposition clicks (UI-hs11 §3.5). Both follow the merge
+   * click's discipline: send the current revision, adopt the authoritative
+   * queue a conflict reply carries, retry ONCE against the fresh revision, and
+   * report the outcome as a toast. The `revise_pending` cover keeps the row's
+   * buttons quiet for the whole round trip — a fix click dispatches a session,
+   * and a second one landing mid-dispatch is exactly what the server's per-Bead
+   * guard would have to refuse anyway.
+   *
+   * @param {'worker-revise-fix'|'worker-revise-approve'} type
+   * @param {string} bead_id
+   */
+  async function reviseDisposition(type, bead_id) {
+    if (!transport || !bead_id || revise_pending.has(bead_id)) {
+      return;
+    }
+    revise_pending.add(bead_id);
+    doRender();
+    /** @type {any} */
+    let res;
+    try {
+      res = /** @type {any} */ (
+        await transport(type, {
+          bead_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+      if (res && res.conflict) {
+        res = /** @type {any} */ (
+          await transport(type, {
+            bead_id,
+            expected_revision: currentRevision()
+          })
+        );
+        adopt(res);
+      }
+    } finally {
+      revise_pending.delete(bead_id);
+      doRender();
+    }
+    if (!res || res.conflict) {
+      return;
+    }
+    if (res.ok) {
+      showToast(
+        type === 'worker-revise-fix'
+          ? '처분 세션을 띄웠습니다 — 수리 후 구현이 재디스패치됩니다'
+          : '델타 승인 완료 — 영수증 갱신 + 파킹 해제',
+        'success',
+        2800
+      );
+      return;
+    }
+    showToast(`처분 거부: ${res.reason || ''}`, 'error', 3000);
+  }
+
+  /**
    * @param {boolean} on
    */
   async function setAutoAdvance(on) {
@@ -1285,24 +1386,45 @@ export function createWorkerView(mount_element, options = {}) {
     const filtered = applyCandidateFilter(candidate_rows, candidate_filter);
     const candidates = filtered.visible;
 
+    // REVISE 파킹 관측 (UI-hs11 §3.1). 서버가 못 보내는 구버전에서는 빈
+    // 객체이므로 처분 카드가 그냥 렌더되지 않는다 (fail-quiet).
+    /** @type {Record<string, any>} */
+    const revise_parked = q.revise_parked || {};
+
     /**
      * @param {any[]} entries
      * @param {'queue'|'done'} lane
      * @returns {any[]}
      */
     const toRows = (entries, lane) =>
-      entries.map((/** @type {any} */ e) => ({
-        id: e.bead_id,
-        title: idToTitle.get(e.bead_id) || e.bead_id,
-        reason: lane === 'done' ? '' : admissionBadge(e.bead_id),
-        draggable: lane !== 'done',
-        done: lane === 'done',
-        lane,
-        // 완료 행은 마지막 attempt의 토큰 사용량을 함께 보여준다 (UI-raqh §1);
-        // 대기 행은 아직 실행 전이라 붙일 것이 없다.
-        usage:
-          lane === 'done' ? lastAttemptUsage(q.attempts || {}, e.bead_id) : null
-      }));
+      entries.map((/** @type {any} */ e) => {
+        const parked = lane === 'queue' ? revise_parked[e.bead_id] : null;
+        return {
+          id: e.bead_id,
+          title: idToTitle.get(e.bead_id) || e.bead_id,
+          reason: lane === 'done' ? '' : admissionBadge(e.bead_id),
+          draggable: lane !== 'done',
+          done: lane === 'done',
+          lane,
+          // 파킹 행은 처분 대기 카드다 (§3.5): 뱃지 + 버튼 2개. 뱃지는 사람의
+          // 결정을 기다리는 상태이므로 alert 색을 쓴다.
+          badges: parked ? ['⏸ REVISE 파킹'] : [],
+          alert: !!parked,
+          revise_action: !!parked,
+          revise_enabled: !!parked && !revise_pending.has(e.bead_id),
+          revise_title: parked
+            ? parked.notes_tail
+              ? `REVISE findings (자세히는 카드 클릭 → 이슈 상세):\n${parked.notes_tail}`
+              : 'notes의 REVISE finding을 스펙에 반영하는 처분 세션을 띄웁니다'
+            : '',
+          // 완료 행은 마지막 attempt의 토큰 사용량을 함께 보여준다 (UI-raqh §1);
+          // 대기 행은 아직 실행 전이라 붙일 것이 없다.
+          usage:
+            lane === 'done'
+              ? lastAttemptUsage(q.attempts || {}, e.bead_id)
+              : null
+        };
+      });
 
     const attempts = q.attempts ? Object.values(q.attempts) : [];
     // A resumed_from carried by any attempt marks its ancestor as spent, so an
@@ -1533,7 +1655,9 @@ export function createWorkerView(mount_element, options = {}) {
             (merge_pending.has(e.bead_id)
               ? { activity: null, merge_progress: { step: 'merging' } }
               : null),
-          conflict_sessions.get(e.bead_id) || null
+          conflict_sessions.get(e.bead_id) || null,
+          // Overlaid by the server (UI-7agi §2) — absent on every durable row.
+          e.external === true
         )
       ),
       done: done_rows,
@@ -2265,6 +2389,27 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (discardBtn) {
       void discardPr(discardBtn.dataset.beadId || '');
+      return;
+    }
+    // REVISE 파킹 처분도 같은 이유로 행 기본 동작보다 먼저 처리한다.
+    const reviseFixBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__revise-fix')
+    );
+    if (reviseFixBtn) {
+      void reviseDisposition(
+        'worker-revise-fix',
+        reviseFixBtn.dataset.beadId || ''
+      );
+      return;
+    }
+    const reviseApproveBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__revise-approve')
+    );
+    if (reviseApproveBtn) {
+      void reviseDisposition(
+        'worker-revise-approve',
+        reviseApproveBtn.dataset.beadId || ''
+      );
       return;
     }
     // The PR link is a link — let the browser open it, never treat it as a row

@@ -3897,6 +3897,34 @@ html[data-theme='dark'] {
   color: var(--accent-warn);
 }
 
+/* REVISE 파킹 처분 (UI-hs11 §3.5). 대기 레인 행에 붙는 두 버튼이라 한 줄
+   행에서 밀려나지 않도록 줄바꿈을 허용하고, 둘 중 어느 쪽도 기본값이 아니므로
+   [머지]처럼 solid로 강조하지 않는다 — 사람이 findings를 읽고 고르는
+   선택지다. */
+.worker-mini__revise-fix,
+.worker-mini__revise-approve {
+  padding: 1px var(--sp-6);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.worker-mini__revise-fix:hover:not(:disabled),
+.worker-mini__revise-approve:hover:not(:disabled) {
+  border-color: var(--accent-warn);
+  color: var(--accent-warn);
+}
+
+.worker-mini__revise-fix:disabled,
+.worker-mini__revise-approve:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Candidate card (spec §2, 변형 B): route chip + Board stepper. Reuses the
    global `.ctl-chip--route` and `.stp` rules from styles/base.css. */
 .worker-card {

@@ -34,7 +34,10 @@ import {
   discardWorkerPr,
   mergeWorkerPr,
   pauseWorkerAttempt,
+  refreshWorkerExternalPrs,
   resumeWorkerAttempt,
+  reviseApproveWorkerBead,
+  reviseFixWorkerBead,
   stopWorkerAttempt,
   tickWorkerQueue,
   workerSlots
@@ -104,6 +107,52 @@ function subscribersFor(key) {
 export function workerQueueSubscriberCount(workspace_key) {
   const set = SUBSCRIBERS.get(workspace_key);
   return set ? set.size : 0;
+}
+
+/**
+ * Overlay the EXTERNAL PR rows onto a queue snapshot's `pr_wait` (UI-7agi §2).
+ *
+ * A bead a normal session delivered a PR for is `resolved` with a
+ * `metadata.pr_url` and no attempt at all, so the durable lane never held it.
+ * Synthesizing the row HERE — on the wire, never in `queue.json` — is what lets
+ * the existing observation/activity/title decorations and the whole client-side
+ * lane render it with no second code path. A synthetic attempt in the durable
+ * queue would have been the alternative, and it would have made the worker's own
+ * records claim it ran something it never ran.
+ *
+ * A bead the worker itself put in `pr_wait` is left alone: the durable attempt
+ * is the more specific record, so the overlay yields to it.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, unknown>}
+ */
+function withExternalPrWait(workspace_key, queue) {
+  /** @type {import('../worker/external-pr.js').ExternalPrRow[]} */
+  let rows = [];
+  try {
+    rows = getWorkerRuntime().externalPrs.list(workspace_key);
+  } catch {
+    rows = [];
+  }
+  if (rows.length === 0) {
+    return queue;
+  }
+  const lane = Array.isArray(queue.pr_wait)
+    ? /** @type {any[]} */ (queue.pr_wait)
+    : [];
+  const durable = new Set(lane.map((e) => e && e.bead_id));
+  const overlay = rows
+    .filter((row) => !durable.has(row.bead_id))
+    .map((row) => ({
+      bead_id: row.bead_id,
+      added_at: row.added_at,
+      external: true
+    }));
+  if (overlay.length === 0) {
+    return queue;
+  }
+  return { ...queue, pr_wait: [...lane, ...overlay] };
 }
 
 /**
@@ -193,6 +242,59 @@ function prActivityFor(workspace_key, queue) {
     }
   }
   return out;
+}
+
+/**
+ * Runtimes whose REVISE-parking store already has its fill callback wired.
+ * Same lazily-built-singleton problem the title cache has: wiring at module
+ * load would bind to an instance a test later throws away.
+ *
+ * @type {WeakSet<object>}
+ */
+const REVISE_FILL_WIRED = new WeakSet();
+
+/**
+ * Project which waiting-lane beads are parked at
+ * `blocked_reason=spec_review_stale:revise` (UI-hs11 §3.1), so the row can
+ * offer the two disposition buttons.
+ *
+ * ADVISORY, and PARTIAL like {@link beadTitlesFor}: the third condition of the
+ * judgment is a `bd show`, which cannot run inside this synchronous
+ * decoration, so only cached observations travel and a miss is delivered by
+ * the fanout the fill callback triggers. Every click re-runs the WHOLE
+ * judgment server-side before acting.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, unknown>}
+ */
+function reviseParkedFor(workspace_key, queue) {
+  /** @type {ReturnType<typeof import('../worker/revise-parked.js').createReviseParkedStore>|null} */
+  let store = null;
+  try {
+    store = getWorkerRuntime().reviseParked;
+  } catch {
+    store = null;
+  }
+  if (!store) {
+    return {};
+  }
+  if (!REVISE_FILL_WIRED.has(store)) {
+    REVISE_FILL_WIRED.add(store);
+    store.setOnFilled((workspace) => {
+      try {
+        fanout(workspace, queueStore().snapshot(workspace));
+      } catch (err) {
+        log('revise-parked fill fanout failed for %s: %o', workspace, err);
+      }
+    });
+  }
+  try {
+    return store.observeFor(workspace_key, queue);
+  } catch (err) {
+    log('revise-parked observation failed for %s: %o', workspace_key, err);
+    return {};
+  }
 }
 
 /**
@@ -307,6 +409,8 @@ function attemptsWithUsage(queue, workspace_key) {
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
  *     flag live sessions exceeding the cap after a manual resume
  *     (worker-phase1 §2.3, worker-phase2 §3),
+ *   - the EXTERNAL PR rows overlaid onto `pr_wait` (UI-7agi §2) — beads a normal
+ *     session delivered a PR for, which no attempt ever placed in the lane,
  *   - `pr_observations`: what the PR poller has SEEN for each `pr_wait` bead
  *     plus its merge-gate verdict (worker-phase2 §4/§5) — a pure cache read,
  *   - `bead_titles`: display titles for the queue/pr_wait/done beads (UI-12k6),
@@ -318,10 +422,13 @@ function attemptsWithUsage(queue, workspace_key) {
  *     are defined in `config.toml` only, which is the security boundary.
  *
  * @param {string} workspace_key
- * @param {Record<string, unknown>} queue
+ * @param {Record<string, unknown>} raw_queue
  * @returns {Record<string, unknown>}
  */
-function decorateQueue(workspace_key, queue) {
+function decorateQueue(workspace_key, raw_queue) {
+  // Overlaid FIRST so every decoration below — observations, activity, titles —
+  // sees the external rows without knowing they exist (UI-7agi §2).
+  const queue = withExternalPrWait(workspace_key, raw_queue);
   /** @type {{ cmd: string[], timeout_ms: number, source: 'config'|'detected' } | null} */
   let verify_cmd = null;
   try {
@@ -367,7 +474,10 @@ function decorateQueue(workspace_key, queue) {
     pr_activity: prActivityFor(workspace_key, queue),
     // Titles for the queue/pr_wait/done beads (UI-12k6) — non-persisted and
     // partial (cache hits only); the client falls back to the id without it.
-    bead_titles: beadTitlesFor(workspace_key, queue)
+    bead_titles: beadTitlesFor(workspace_key, queue),
+    // Which waiting beads are parked awaiting a REVISE disposition (UI-hs11
+    // §3.1). Non-persisted, partial and advisory — see the projection.
+    revise_parked: reviseParkedFor(workspace_key, queue)
   };
 }
 
@@ -538,6 +648,8 @@ export function __resetWorkerQueueForTest() {
   getWorkerRuntime().prObservations.clear();
   // Same for cached bead titles (UI-12k6).
   getWorkerRuntime().titleCache.clear();
+  // ...and for cached REVISE-parking observations (UI-hs11).
+  getWorkerRuntime().reviseParked.clear();
 }
 
 /**
@@ -566,6 +678,19 @@ export function handleSubscribeWorkerQueue(ws, req) {
     key,
     decorateQueue(key, queueStore().snapshot(key))
   );
+  // The snapshot above is sent SYNCHRONOUSLY with whatever the registry already
+  // holds; the scan is the "on subscribe" refresh trigger (UI-7agi §1) and its
+  // result reaches the client through the ordinary fanout. Deliberately not
+  // awaited — a slow `bd list` must not delay the first paint.
+  void refreshWorkerExternalPrs(key)
+    .then((scanned) => {
+      if (scanned) {
+        fanout(key, queueStore().snapshot(key));
+      }
+    })
+    .catch((err) => {
+      log('external PR refresh failed for %s: %o', key, err);
+    });
 }
 
 /**
@@ -1154,6 +1279,101 @@ export async function handleWorkerPrDiscard(ws, req) {
   if (result.ok) {
     fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
   }
+}
+
+/**
+ * Shared body of the two REVISE-disposition clicks (UI-hs11 §3.2). Both follow
+ * the merge click's discipline exactly: validate the payload, refuse a stale
+ * CAS revision WITHOUT acting (the snapshot the user clicked from may predate
+ * the transition that unparked this very bead), run the action, collapse any
+ * throw into `reason:'error'`, and fan out regardless of the outcome — a
+ * refusal still re-observed bd, so the badge may have moved either way.
+ *
+ * The parked badge in that snapshot is advisory: the action itself re-runs the
+ * whole parking judgment server-side before it touches anything.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {(workspace_key: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, sha?: string }>} run
+ */
+async function handleReviseDisposition(ws, req, run) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          ok: false,
+          conflict: true,
+          reason: null,
+          attempt_id: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, sha?: string }} */
+  let result = { ok: false, reason: 'no_attachment' };
+  try {
+    result = await run(key, p.bead_id);
+  } catch (err) {
+    log('revise disposition failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        ok: !!result.ok,
+        conflict: false,
+        reason: result.ok ? null : result.reason || null,
+        attempt_id: result.attempt_id || null,
+        sha: result.sha || null
+      })
+    )
+  );
+  fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+}
+
+/**
+ * Handle `worker-revise-fix`. Payload: `{ bead_id, expected_revision }`.
+ *
+ * [finding 수용·수정] (UI-hs11 §3.3): dispatch the disposition session that
+ * applies the parked findings to the spec, publishes on the resolved
+ * `target_base` checkout, refreshes the receipt and unblocks the bead. The
+ * click IS explicit user approval for that spec edit — the authority semantics
+ * belong to the workflow contract, this handler only carries the trigger.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerReviseFix(ws, req) {
+  await handleReviseDisposition(ws, req, reviseFixWorkerBead);
+}
+
+/**
+ * Handle `worker-revise-approve`. Payload: `{ bead_id, expected_revision }`.
+ *
+ * [승인하고 진행] (UI-hs11 §3.4): no session at all — the server refreshes the
+ * receipt to `skipped@<target_base tip>` with the notes lineage and the unblock
+ * in one bd write, read back.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerReviseApprove(ws, req) {
+  await handleReviseDisposition(ws, req, reviseApproveWorkerBead);
 }
 
 /**

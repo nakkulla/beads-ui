@@ -15,6 +15,7 @@ function prOf(pr = {}) {
     mergeable: 'MERGEABLE',
     merge_state_status: 'CLEAN',
     head_ref: 'UI-1',
+    base_ref: 'main',
     head_sha: SHA,
     ...pr
   };

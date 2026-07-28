@@ -61,6 +61,7 @@ function prOf(over = {}) {
     mergeable: 'MERGEABLE',
     merge_state_status: 'CLEAN',
     head_ref: BEAD,
+    base_ref: 'main',
     head_sha: 'sha-aaa',
     ...over
   };
@@ -131,7 +132,10 @@ function seedStore(options = {}) {
  *   afterMerge?: any,
  *   worktreeExists?: boolean,
  *   resolveConflictResult?: any,
- *   activity?: any
+ *   activity?: any,
+ *   external?: Record<string, { bead_id: string, pr_url: string, pr_number: number|null, added_at: number }>,
+ *   bdStatus?: Record<string, string>,
+ *   bdPrUrl?: string|null
  * }} [options]
  */
 function makeActions(options = {}) {
@@ -194,6 +198,9 @@ function makeActions(options = {}) {
     }),
     readStatus: vi.fn(async (/** @type {string} */ id) => {
       calls.push(`bd:readStatus:${id}`);
+      if (options.bdFail && options.bdFail('readStatus', id)) {
+        throw new Error('bd down');
+      }
       return bd_status.get(id) ?? 'closed';
     }),
     unsetMetadata: vi.fn(async (/** @type {string} */ id, k) => {
@@ -201,11 +208,29 @@ function makeActions(options = {}) {
     }),
     readMetadata: vi.fn(async (/** @type {string} */ id, k) => {
       calls.push(`bd:readMetadata:${id}:${k}`);
+      if (k === 'pr_url' && Object.hasOwn(options, 'bdPrUrl')) {
+        return options.bdPrUrl ?? null;
+      }
       return null;
     }),
     listChildren: vi.fn(async (/** @type {string} */ id) => {
       calls.push(`bd:listChildren:${id}`);
       return children[id] || [];
+    }),
+    readIssue: vi.fn(async (/** @type {string} */ id) => {
+      calls.push(`bd:readIssue:${id}`);
+      if (options.bdFail && options.bdFail('readIssue', id)) {
+        throw new Error('bd down');
+      }
+      return {
+        id,
+        // The CLICK-TIME guard answer, kept apart from `bd_status` (which
+        // models the cleanup's own close/restore readbacks).
+        status: (options.bdStatus || {})[id] ?? bd_status.get(id) ?? 'closed',
+        metadata: Object.hasOwn(options, 'bdPrUrl')
+          ? { pr_url: options.bdPrUrl ?? undefined }
+          : {}
+      };
     })
   };
   /** @type {Map<string, string>} */
@@ -238,7 +263,10 @@ function makeActions(options = {}) {
   const git_status = options.gitStatus ?? '';
   const git_head = options.gitHead ?? 'base-sha-1';
 
+  /** @type {string[][]} */
+  const git_argv = [];
   const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+    git_argv.push(args);
     calls.push(`git:${args.slice(0, 2).join(' ')}`);
     if (options.gitFail && options.gitFail(args)) {
       return { code: 1, stdout: '', stderr: 'boom' };
@@ -341,6 +369,10 @@ function makeActions(options = {}) {
       }
     },
     bd,
+    external: {
+      get: (/** @type {string} */ _ws, /** @type {string} */ bead_id) =>
+        (options.external || {})[bead_id] || null
+    },
     worktree,
     gitRun,
     scheduler,
@@ -365,6 +397,7 @@ function makeActions(options = {}) {
     bd_status,
     worktree,
     gitRun,
+    git_argv,
     scheduler,
     runVerify,
     spawnImpl
@@ -1666,5 +1699,312 @@ describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
 
     expect(env.steps[0]).toBe('base_sync');
     expect(env.steps[env.steps.length - 1]).toBe('(cleared)');
+  });
+});
+
+describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
+  const EXTERNAL_BEAD = 'UI-ext';
+  const EXTERNAL_URL = 'https://github.com/o/r/pull/777';
+
+  /**
+   * A registry row for a bead the durable lane never held, plus the bd answers
+   * the click-time re-read expects. `bdStatus` defaults to `resolved` because
+   * that is what makes the row exist at all.
+   *
+   * @param {Record<string, any>} [over]
+   */
+  function externalOptions(over = {}) {
+    return {
+      store: createQueueStore(),
+      external: {
+        [EXTERNAL_BEAD]: {
+          bead_id: EXTERNAL_BEAD,
+          pr_url: EXTERNAL_URL,
+          pr_number: 777,
+          added_at: 1
+        }
+      },
+      bdStatus: { [EXTERNAL_BEAD]: 'resolved' },
+      bdPrUrl: EXTERNAL_URL,
+      ...over
+    };
+  }
+
+  test('merges an external row the durable pr_wait never held', async () => {
+    const env = makeActions(externalOptions());
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r.action).toBe('merged');
+    expect(env.gh.mergeSquash).toHaveBeenCalled();
+  });
+
+  test('resolves the PR number from the registry when no attempt exists', async () => {
+    const env = makeActions(externalOptions());
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.gh.prDetail).toHaveBeenCalledWith(REPO, 777);
+  });
+
+  test('refuses when bd no longer reports the bead resolved', async () => {
+    const env = makeActions(
+      externalOptions({ bdStatus: { [EXTERNAL_BEAD]: 'closed' } })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r).toEqual({ ok: false, action: 'refused', reason: 'not_resolved' });
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses when pr_url was removed between render and click', async () => {
+    const env = makeActions(externalOptions({ bdPrUrl: null }));
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r).toEqual({
+      ok: false,
+      action: 'refused',
+      reason: 'pr_url_missing'
+    });
+  });
+
+  test('refuses a bead in neither the lane nor the registry', async () => {
+    const env = makeActions(externalOptions({ external: {} }));
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r).toEqual({
+      ok: false,
+      action: 'refused',
+      reason: 'not_in_pr_wait'
+    });
+  });
+
+  test('refuses when the click-time bd re-read fails', async () => {
+    const env = makeActions(
+      externalOptions({
+        bdFail: (/** @type {string} */ method) => method === 'readIssue'
+      })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r).toEqual({
+      ok: false,
+      action: 'refused',
+      reason: 'bd_read_failed'
+    });
+  });
+
+  test('runs cleanup only for an external MERGED row, never a second merge', async () => {
+    const env = makeActions(
+      externalOptions({ details: [prOf({ state: 'MERGED' })] })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r.action).toBe('already_merged');
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+    expect(env.calls).toContain('git:fetch --no-tags');
+  });
+
+  test('refuses an external CLOSED PR', async () => {
+    const env = makeActions(
+      externalOptions({ details: [prOf({ state: 'CLOSED' })] })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r.reason).toBe('pr_closed_unmerged');
+  });
+
+  test('refuses an external conflict instead of dispatching a resolution session', async () => {
+    const env = makeActions(
+      externalOptions({
+        details: [
+          prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })
+        ]
+      })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r.reason).toBe('external_conflict_needs_session');
+    expect(env.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('syncs the base branch gh reports rather than falling back to main', async () => {
+    const env = makeActions(
+      externalOptions({
+        details: [prOf({ state: 'MERGED', base_ref: 'develop' })]
+      })
+    );
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.git_argv).toContainEqual([
+      'fetch',
+      '--no-tags',
+      'origin',
+      'develop'
+    ]);
+  });
+
+  test('deletes the head branch gh names when it differs from the bead id', async () => {
+    const env = makeActions(
+      externalOptions({
+        details: [prOf({ state: 'MERGED', head_ref: 'feature/from-session' })]
+      })
+    );
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.git_argv).toContainEqual([
+      'branch',
+      '-D',
+      'feature/from-session'
+    ]);
+  });
+
+  test('refuses [폐기] on an external row — it has no durable lane membership', async () => {
+    const env = makeActions(externalOptions());
+
+    const r = await env.actions.discard(EXTERNAL_BEAD);
+
+    expect(r).toEqual({ ok: false, reason: 'not_in_pr_wait' });
+  });
+
+  test('a durable pr_wait row still merges without any bd re-read', async () => {
+    const env = makeActions();
+
+    const r = await env.actions.merge(BEAD);
+
+    expect(r.action).toBe('merged');
+    expect(env.calls).not.toContain(`bd:readIssue:${BEAD}`);
+  });
+});
+
+describe('worker/pr-actions — external rows write no durable lane state (impl review 2026-07-28)', () => {
+  const EXTERNAL_BEAD = 'UI-ext';
+  const EXTERNAL_URL = 'https://github.com/o/r/pull/777';
+
+  /**
+   * @param {Record<string, any>} [over]
+   */
+  function externalOptions(over = {}) {
+    return {
+      store: createQueueStore(),
+      external: {
+        [EXTERNAL_BEAD]: {
+          bead_id: EXTERNAL_BEAD,
+          pr_url: EXTERNAL_URL,
+          pr_number: 777,
+          added_at: 1
+        }
+      },
+      bdStatus: { [EXTERNAL_BEAD]: 'resolved' },
+      bdPrUrl: EXTERNAL_URL,
+      ...over
+    };
+  }
+
+  test('a completed external cleanup does not push the bead into done', async () => {
+    const env = makeActions(externalOptions());
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.store.snapshot(WS).done).toEqual([]);
+  });
+
+  test('a completed WORKER cleanup still pushes the bead into done', async () => {
+    const env = makeActions();
+
+    await env.actions.merge(BEAD);
+
+    expect(
+      env.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+
+  test('a failed external cleanup records no durable cleanup_failed', async () => {
+    const env = makeActions(
+      externalOptions({
+        gitFail: (/** @type {string[]} */ args) => args[0] === 'fetch'
+      })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r.ok).toBe(false);
+    expect(env.store.snapshot(WS).cleanup_failed).toEqual({});
+  });
+
+  test('a failed WORKER cleanup still records cleanup_failed', async () => {
+    const env = makeActions({
+      gitFail: (/** @type {string[]} */ args) => args[0] === 'fetch'
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'base_sync'
+    });
+  });
+
+  test('a detached deploy for an external row still records the launch durably', async () => {
+    const env = makeActions(
+      externalOptions({
+        verify: VERIFY_CFG,
+        deploy: DEPLOY_DETACHED,
+        ...ON_BASE
+      })
+    );
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'launched',
+      bead_id: EXTERNAL_BEAD
+    });
+    expect(env.store.snapshot(WS).done).toEqual([]);
+  });
+
+  test('reads status and pr_url in ONE bd show so they cannot disagree', async () => {
+    const env = makeActions(externalOptions());
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.bd.readIssue).toHaveBeenCalledTimes(1);
+  });
+
+  test('refuses when the bd adapter cannot answer atomically', async () => {
+    const env = makeActions(externalOptions());
+    // @ts-expect-error - modelling a legacy adapter without the atomic read.
+    delete env.bd.readIssue;
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r).toEqual({
+      ok: false,
+      action: 'refused',
+      reason: 'bd_read_unsupported'
+    });
+  });
+
+  test('takes the PR number from the click-time url, not the cached row', async () => {
+    const env = makeActions(
+      externalOptions({
+        // The registry row is one scan stale: the bead has since been
+        // re-delivered against PR 778.
+        bdPrUrl: 'https://github.com/o/r/pull/778'
+      })
+    );
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.gh.prDetail).toHaveBeenCalledWith(REPO, 778);
+    expect(env.gh.prDetail).not.toHaveBeenCalledWith(REPO, 777);
   });
 });

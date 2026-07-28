@@ -2837,6 +2837,152 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
   });
 });
 
+describe('worker view — REVISE 파킹 처분 카드 (UI-hs11 §3.5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {Record<string, any>} [over]
+   */
+  function parkedQueue(over = {}) {
+    return queueOf({
+      queue: [{ bead_id: 'RD-1', added_at: 1 }],
+      revise_parked: {
+        'RD-1': {
+          attempt_id: 'p1',
+          repo: '/repo',
+          target_base: 'main',
+          session_id: 'sid',
+          receipt: 'codex@' + 'a'.repeat(40),
+          notes_tail: 'findings: 스펙 §3 누락',
+          at: 1
+        }
+      },
+      ...over
+    });
+  }
+
+  /**
+   * @param {any} queue
+   * @param {any} [transport]
+   */
+  function mountWith(queue, transport = vi.fn(async () => ({ ok: true }))) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    return { mount, transport };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLElement}
+   */
+  function rowOf(mount) {
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+  }
+
+  test('renders the parking badge and both disposition buttons', () => {
+    const { mount } = mountWith(parkedQueue());
+
+    const row = rowOf(mount);
+    expect(
+      /** @type {HTMLElement} */ (row.querySelector('.worker-mini__badge'))
+        .textContent
+    ).toBe('⏸ REVISE 파킹');
+    expect(row.querySelector('.worker-mini__revise-fix')).not.toBe(null);
+    expect(row.querySelector('.worker-mini__revise-approve')).not.toBe(null);
+  });
+
+  test('carries the findings summary as the fix button tooltip', () => {
+    const { mount } = mountWith(parkedQueue());
+
+    const btn = /** @type {HTMLElement} */ (
+      rowOf(mount).querySelector('.worker-mini__revise-fix')
+    );
+    expect(btn.getAttribute('title')).toContain('스펙 §3 누락');
+  });
+
+  test('renders no disposition card for an unparked queued bead', () => {
+    const { mount } = mountWith(
+      queueOf({ queue: [{ bead_id: 'RD-1', added_at: 1 }] })
+    );
+
+    const row = rowOf(mount);
+    expect(row.querySelector('.worker-mini__revise-fix')).toBe(null);
+    expect(row.querySelector('.worker-mini__badge')).toBe(null);
+  });
+
+  test('renders nothing extra when the server sends no observation at all', () => {
+    const { mount } = mountWith(
+      queueOf({
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        revise_parked: null
+      })
+    );
+
+    expect(rowOf(mount).querySelector('.worker-mini__revise-approve')).toBe(
+      null
+    );
+  });
+
+  test('the fix button sends worker-revise-fix with the current revision', async () => {
+    const transport = vi.fn(async () => ({ ok: true, attempt_id: 'a2' }));
+    const { mount } = mountWith(parkedQueue(), transport);
+
+    /** @type {HTMLElement} */ (
+      rowOf(mount).querySelector('.worker-mini__revise-fix')
+    ).click();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('worker-revise-fix', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+  });
+
+  test('the approve button sends worker-revise-approve', async () => {
+    const transport = vi.fn(async () => ({ ok: true, sha: 'b'.repeat(40) }));
+    const { mount } = mountWith(parkedQueue(), transport);
+
+    /** @type {HTMLElement} */ (
+      rowOf(mount).querySelector('.worker-mini__revise-approve')
+    ).click();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('worker-revise-approve', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+  });
+
+  test('retries once against the fresh revision on a CAS conflict', async () => {
+    const transport = vi.fn(async () => ({
+      conflict: true,
+      queue: { ...parkedQueue(), revision: 7 }
+    }));
+    const { mount } = mountWith(parkedQueue(), transport);
+
+    /** @type {HTMLElement} */ (
+      rowOf(mount).querySelector('.worker-mini__revise-approve')
+    ).click();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+
+    expect(transport.mock.calls[1]).toEqual([
+      'worker-revise-approve',
+      { bead_id: 'RD-1', expected_revision: 7 }
+    ]);
+  });
+});
+
 describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
@@ -5657,5 +5803,170 @@ describe('worker view — server-decorated bead titles (UI-12k6)', () => {
 
     expect(titleOf(mount, 'RD-1')).toBe('ready with spec');
     expect(titleOf(mount, 'BL-1')).toBe('blocked with spec');
+  });
+});
+
+describe('외부 세션 PR 행 (UI-7agi §5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  const OPEN_GREEN = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '최신',
+    reason: null
+  };
+  const CONFLICTING = {
+    enabled: true,
+    tier: 'ci',
+    gate_badge: 'CI ✓',
+    base_badge: '충돌',
+    reason: null
+  };
+  const MERGED = {
+    enabled: false,
+    tier: 'merged',
+    gate_badge: '머지됨',
+    base_badge: '머지됨',
+    reason: null
+  };
+  const CLOSED = {
+    enabled: false,
+    tier: 'closed_unmerged',
+    gate_badge: 'PR closed',
+    base_badge: 'PR closed',
+    reason: 'pr_closed_unmerged'
+  };
+
+  /**
+   * @param {any} gate
+   * @param {{ external?: boolean }} [over]
+   * @returns {HTMLElement}
+   */
+  function mountRow(gate, over = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [
+          {
+            bead_id: 'RD-1',
+            added_at: 1,
+            ...(over.external === false ? {} : { external: true })
+          }
+        ],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 777,
+              url: 'https://github.com/o/r/pull/777',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            ci: null,
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function badgesOf(mount) {
+    return Array.from(mount.querySelectorAll('.worker-mini__badge')).map(
+      (b) => b.textContent?.trim() || ''
+    );
+  }
+
+  test('marks an external row with a 세션 badge', () => {
+    const mount = mountRow(OPEN_GREEN);
+
+    expect(badgesOf(mount)).toContain('세션');
+  });
+
+  test('leaves a worker row without the 세션 badge', () => {
+    const mount = mountRow(OPEN_GREEN, { external: false });
+
+    expect(badgesOf(mount)).not.toContain('세션');
+  });
+
+  test('hides 폐기 on an external row', () => {
+    const mount = mountRow(OPEN_GREEN);
+
+    expect(mount.querySelector('.worker-mini__discard')).toBe(null);
+  });
+
+  test('still merges an external row whose gate passes', () => {
+    const mount = mountRow(OPEN_GREEN);
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(false);
+  });
+
+  test('offers 정리 on a merged external row — nothing auto-cleans it', () => {
+    const mount = mountRow(MERGED);
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.textContent?.trim()).toBe('정리');
+    expect(btn.disabled).toBe(false);
+  });
+
+  test('keeps a merged WORKER row quiet — its cleanup runs on its own', () => {
+    const mount = mountRow(MERGED, { external: false });
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(true);
+  });
+
+  test('disables the button on a closed external PR and says 닫힘', () => {
+    const mount = mountRow(CLOSED);
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(true);
+    expect(badgesOf(mount)).toContain('닫힘');
+  });
+
+  test('disables 충돌 해소 on an external row and explains why', () => {
+    const mount = mountRow(CONFLICTING);
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent?.trim()).not.toBe('충돌 해소');
+    expect(btn.getAttribute('title')).toContain('세션에서 직접 해소');
+  });
+
+  test('keeps 충돌 해소 clickable on a worker row', () => {
+    const mount = mountRow(CONFLICTING, { external: false });
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent?.trim()).toBe('충돌 해소');
   });
 });

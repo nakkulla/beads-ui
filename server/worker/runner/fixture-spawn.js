@@ -7,7 +7,7 @@
  * `.captured.calls` so tests can assert argv construction and env routing.
  */
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
 
 /**
@@ -59,10 +59,35 @@ export function makeFixtureSpawn(options = {}) {
   const spawn = (command, args, spawn_options) => {
     captured.calls.push({ command, args, options: spawn_options });
     const child = new EventEmitter();
-    const stdout = new PassThrough();
     /** @type {any} */ (child).pid = pid;
-    /** @type {any} */ (child).stdout = stdout;
     /** @type {any} */ (child).kill = () => {};
+
+    // FD transport (UI-o2yt §3.1): when the engine hands stdout an fd on the
+    // session-log file, a real child writes THERE and has no stdout pipe. The
+    // write happens synchronously, while the engine's copy of the fd is still
+    // open — it closes that copy the moment spawn returns, exactly as it may,
+    // because a real child holds its own duplicate.
+    const stdio = spawn_options && spawn_options.stdio;
+    const out_fd = Array.isArray(stdio) ? stdio[1] : null;
+    if (typeof out_fd === 'number') {
+      /** @type {any} */ (child).stdout = null;
+      for (const line of source) {
+        if (String(line).length > 0) {
+          writeSync(out_fd, `${line}\n`);
+        }
+      }
+      setImmediate(() => {
+        if (emit_error) {
+          child.emit('error', new Error('spawn failure'));
+        } else {
+          child.emit('close', exit);
+        }
+      });
+      return /** @type {any} */ (child);
+    }
+
+    const stdout = new PassThrough();
+    /** @type {any} */ (child).stdout = stdout;
 
     stdout.on('end', () => {
       if (emit_error) {

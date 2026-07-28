@@ -31,15 +31,18 @@ import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
+import { parsePrNumber } from '../workflow-enrich.js';
 import { validateAdmission } from './admission.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { emitQueueChanged } from './queue-events.js';
+import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
+import { createSessionMonitors } from './session-monitor.js';
 import { replayUsage } from './usage-replay.js';
 import { resolveVerifyCmd, runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
@@ -305,9 +308,11 @@ export function defaultProbePid(pid) {
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
+ *   sessionMonitors?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
  *   notify?: any,
+ *   reviseDisposition?: any,
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -395,6 +400,31 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // takes effect without a restart.
   const notify = options.notify || createNotifier({ getConfig });
 
+  // The disposition actions need the scheduler and the scheduler needs their
+  // completion verdict, so the dep is a late-bound indirection rather than a
+  // constructor argument. Before the binding lands (it does, one statement
+  // later) the verdict fails closed, which is also what an attachment built
+  // without disposition wiring reports.
+  /** @type {ReturnType<typeof createReviseDisposition>|null} */
+  let reviseDisposition = null;
+
+  const probePid = options.probePid || defaultProbePid;
+
+  // Detached-session monitors (UI-o2yt §3.3). Built here, started by
+  // `initWorkerRuntime` for the sessions that outlived the previous process:
+  // constructing one reaches nothing, so a test that only builds an attachment
+  // still tails no file and signals no process.
+  const sessionMonitors =
+    options.sessionMonitors ||
+    createSessionMonitors({
+      store: runtime.queueStore,
+      sessionLog: runtime.sessionLog,
+      usage: runtime.usageStore,
+      probePid,
+      kill_impl: options.kill_impl,
+      notifyChanged: (ws_key) => emitQueueChanged(ws_key)
+    });
+
   const scheduler = createScheduler({
     store: runtime.queueStore,
     makeRunner,
@@ -405,9 +435,45 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     usage: runtime.usageStore,
     admission,
     notify,
-    probePid: options.probePid || defaultProbePid,
+    disposition: {
+      /**
+       * @param {{ workspace: string, attempt_id: string, bead_id: string, kind: string, prior_receipt?: string|null, target_base?: string|null }} input
+       */
+      complete(input) {
+        return reviseDisposition
+          ? reviseDisposition.complete(input)
+          : Promise.resolve({ ok: false, reason: 'no_disposition_dep' });
+      },
+      /**
+       * @param {string} bead_id
+       */
+      release(bead_id) {
+        reviseDisposition?.release(bead_id);
+      }
+    },
+    probePid,
+    sessionMonitors,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
+
+  // REVISE-parking disposition (UI-hs11 §3.2–§3.4): the two human clicks that
+  // dispose of a bead parked at `blocked_reason=spec_review_stale:revise`.
+  // Wired with the SAME queue store, parking-observation cache, lock manager
+  // and scheduler the decoration and dispatch use, so a click can never act on
+  // a different view of the world than the badge it followed.
+  reviseDisposition =
+    options.reviseDisposition ||
+    createReviseDisposition({
+      workspace: keyFor(workspace_root),
+      repo,
+      store: runtime.queueStore,
+      bd: createBdMetadata({ cwd: workspace_root }),
+      parked: runtime.reviseParked,
+      scheduler,
+      locks: runtime.locks,
+      gitRun,
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+    });
 
   // The periodic reconcile pass. `createPoller` is reused for the unref'd
   // interval and its double-start guard, but its gate is a SUBSCRIBER gate and
@@ -458,6 +524,32 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     }
   };
 
+  /**
+   * Re-derive the workspace's EXTERNAL PR rows from bd (UI-7agi §1): every
+   * `resolved` bead still carrying a `metadata.pr_url`. Memory only — nothing
+   * is written into `queue.json`, because none of these beads ran here.
+   *
+   * A bd that cannot be read THROWS out of `listResolvedPrBeads`; the caller
+   * (the poller pass) logs and keeps the previous rows, so a transient bd
+   * failure does not blank the lane.
+   *
+   * @returns {Promise<void>}
+   */
+  async function refreshExternalPrs() {
+    if (typeof bd.listResolvedPrBeads !== 'function') {
+      return;
+    }
+    const rows = await bd.listResolvedPrBeads();
+    runtime.externalPrs.replace(
+      keyFor(workspace_root),
+      rows.map((/** @type {{ bead_id: string, pr_url: string }} */ row) => ({
+        bead_id: row.bead_id,
+        pr_url: row.pr_url,
+        pr_number: parsePrNumber(row.pr_url)
+      }))
+    );
+  }
+
   // The PR-wait actions (worker-phase2 §6): the authoritative [머지] click, the
   // single post-merge cleanup, and [폐기]. Built with the SAME gh adapter,
   // observation cache, worktree manager and scheduler the poller and dispatch
@@ -471,6 +563,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     observations: runtime.prObservations,
     activity: runtime.activityStore,
     bd,
+    // The external row lookup the relaxed `pr_wait` guard stands on (UI-7agi §4).
+    external: {
+      get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
+        runtime.externalPrs.get(ws_key, bead_id)
+    },
     worktree,
     gitRun,
     scheduler,
@@ -500,6 +597,13 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // The externally-observed MERGED trigger routes into the SAME cleanup the
     // button runs — one implementation, two triggers (worker-phase2 §6).
     onMerged: (bead_id) => prActions.cleanupObservedMerge(bead_id),
+    // The external registry rides the poller's own subscriber gate and cadence
+    // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:
+    // never.
+    external: {
+      refresh: refreshExternalPrs,
+      list: () => runtime.externalPrs.list(keyFor(workspace_root))
+    },
     notifyChanged: (ws_key) => emitQueueChanged(ws_key)
   });
 
@@ -509,6 +613,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reconciler,
     prPoller,
     prActions,
+    refreshExternalPrs,
+    reviseDisposition,
+    sessionMonitors,
     bd,
     admission,
     repo,
@@ -534,38 +641,54 @@ function keyFor(workspace_root) {
 }
 
 /**
- * Rebuild the token tally of every persisted `running` attempt from its session
- * log (UI-ediw). Runs on the STARTUP path only, never on the periodic reconcile
- * pass: at startup this process owns no session, so every `running` record is a
- * prior run's whose in-memory tally died with it, while a session live in THIS
- * process records straight off its stream and re-reading its log per pass would
- * buy nothing. An attempt that already has a tally is skipped for the same
- * reason — a live tally is always the better one.
+ * Recover every persisted `running` attempt this process does not own: rebuild
+ * its token tally from the session log (UI-ediw) and reattach a detached-session
+ * monitor to it (UI-o2yt §3.3).
+ *
+ * Both halves are STARTUP-only and share ONE observation of the log — the line
+ * boundary. The replay owns `[0, boundary)` and the monitor continues at
+ * `boundary`, so the two readers cover the file exactly once between them:
+ * computing a boundary per reader would leave the lines appended in between
+ * counted twice or by nobody, and the usage and guard evidence in that window
+ * are precisely what this recovery exists to preserve.
+ *
+ * An attempt the SCHEDULER is running is skipped entirely: its own engine
+ * already reads the log, so a monitor would double-broadcast it and a replay
+ * would fight a live tally. That guard is what keeps a repeat
+ * `initWorkerRuntime` call harmless.
  *
  * @param {ReturnType<typeof createWorkerAttachment>} att
  * @param {string} key - Resolved workspace root.
  */
-function replayRunningUsage(att, key) {
+function recoverRunningAttempts(att, key) {
   try {
     const q = att.runtime.queueStore.snapshot(key);
     const usage_store = att.runtime.usageStore;
+    const session_log = att.runtime.sessionLog;
     for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
       const a = /** @type {any} */ (attempt);
       if (!a || a.status !== 'running') {
         continue;
       }
-      if (usage_store.get(key, attempt_id)) {
+      if (att.scheduler.isRunning(a.bead_id)) {
         continue;
       }
-      replayUsage({
-        session_log: att.runtime.sessionLog,
-        usage_store,
-        workspace: key,
-        attempt_id
+      const boundary = session_log.lineBoundaryOf(key, attempt_id);
+      if (!usage_store.get(key, attempt_id)) {
+        replayUsage({
+          session_log,
+          usage_store,
+          workspace: key,
+          attempt_id,
+          ...(boundary == null ? {} : { end_offset: boundary })
+        });
+      }
+      att.sessionMonitors.start(key, a, {
+        start_offset: boundary ?? 0
       });
     }
   } catch (err) {
-    log('usage replay failed for %s: %o', key, err);
+    log('running-attempt recovery failed for %s: %o', key, err);
   }
 }
 
@@ -611,9 +734,11 @@ export function initWorkerRuntime(input) {
     } catch (err) {
       log('reconcile timer start failed for %s: %o', key, err);
     }
-    // Before the startup pass judges those attempts, rebuild what their tally
-    // was — the disposition below is the write that persists it (UI-ediw).
-    replayRunningUsage(att, key);
+    // Before the startup pass judges those attempts: rebuild what their tally
+    // was (the disposition below is the write that persists it — UI-ediw) and
+    // re-arm the live half for the ones still running — drawer follow, merge
+    // guard, continued usage (UI-o2yt §3.3).
+    recoverRunningAttempts(att, key);
     // Startup pass: a session that died WITH the old server may already have
     // pushed its PR, so the same routine that handles a later death decides
     // this one too. Fire-and-forget — a slow `gh` must not hold up startup.
@@ -752,6 +877,26 @@ export async function mergeWorkerPr(workspace_root, bead_id) {
 }
 
 /**
+ * Re-scan a workspace's external PR rows (UI-7agi §1), IF an attachment is
+ * registered. Inert without one — an unattached workspace renders no lane.
+ *
+ * Called on `subscribe-worker-queue` so the first snapshot a client receives
+ * already carries the external rows instead of waiting up to a poll interval
+ * for them.
+ *
+ * @param {string} workspace_root
+ * @returns {Promise<boolean>} Whether a scan actually ran.
+ */
+export async function refreshWorkerExternalPrs(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || typeof att.refreshExternalPrs !== 'function') {
+    return false;
+  }
+  await att.refreshExternalPrs();
+  return true;
+}
+
+/**
  * Discard a `pr_wait` bead's PR, worktree and branch ([폐기], discard spec §1),
  * IF an attachment is registered. Inert without one.
  *
@@ -765,6 +910,40 @@ export async function discardWorkerPr(workspace_root, bead_id) {
     return { ok: false, reason: 'no_attachment' };
   }
   return att.prActions.discard(bead_id);
+}
+
+/**
+ * Run the [finding 수용·수정] disposition click for a parked bead (UI-hs11
+ * §3.3), IF an attachment is registered. Inert without one — a ws-handler test
+ * never reaches bd or a spawn, and an unattached workspace could not have
+ * dispatched the parking session in the first place.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+ */
+export async function reviseFixWorkerBead(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.reviseDisposition) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.reviseDisposition.fix(bead_id);
+}
+
+/**
+ * Run the [승인하고 진행] disposition click for a parked bead (UI-hs11 §3.4),
+ * IF an attachment is registered. Inert without one.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<{ ok: boolean, reason?: string, sha?: string }>}
+ */
+export async function reviseApproveWorkerBead(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.reviseDisposition) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.reviseDisposition.approve(bead_id);
 }
 
 /**
@@ -792,6 +971,11 @@ export function __resetWorkerAttachmentsForTest() {
     }
     try {
       att.reconciler?.stop();
+    } catch {
+      /* ignore */
+    }
+    try {
+      att.sessionMonitors?.stopAll();
     } catch {
       /* ignore */
     }

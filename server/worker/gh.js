@@ -90,6 +90,7 @@ import { runShell } from '../bd.js';
  * @property {string} url - PR URL (non-empty; an empty url is an error state).
  * @property {string} head_ref - Head branch name as GitHub reports it.
  * @property {string} head_sha - Head commit sha (Phase 4 binds gates to this).
+ * @property {string} base_ref - Base branch name as GitHub reports it.
  * @property {string} state - GitHub PR state (OPEN for this query).
  */
 
@@ -107,6 +108,10 @@ import { runShell } from '../bd.js';
  * @property {string} merge_state_status - CLEAN|BEHIND|BLOCKED|DIRTY|UNKNOWN…
  * @property {string} head_ref - Head branch name.
  * @property {string} head_sha - Head commit sha; every gate verdict binds here.
+ * @property {string} base_ref - Base branch name. The ONLY base signal an
+ * external PR has (UI-7agi §3): with no attempt to read `target_base` from, the
+ * post-merge cleanup would otherwise sync, verify and deploy `main` for a PR
+ * that targeted something else.
  */
 
 /**
@@ -156,7 +161,7 @@ const ORIGIN_TTL_MS = 60_000;
  *
  * @type {string}
  */
-const PR_JSON_FIELDS = 'number,url,headRefName,headRefOid,state';
+const PR_JSON_FIELDS = 'number,url,headRefName,headRefOid,baseRefName,state';
 
 /**
  * `gh pr view --json` field set for the mergeability detail (worker-phase2 §4).
@@ -164,7 +169,7 @@ const PR_JSON_FIELDS = 'number,url,headRefName,headRefOid,state';
  * @type {string}
  */
 const PR_DETAIL_FIELDS =
-  'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid';
+  'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName';
 
 /**
  * `gh pr view --json` field set for the checks observation. See the module
@@ -466,6 +471,8 @@ export function createGh(deps = {}) {
             typeof first.headRefName === 'string' ? first.headRefName : '',
           head_sha:
             typeof first.headRefOid === 'string' ? first.headRefOid : '',
+          base_ref:
+            typeof first.baseRefName === 'string' ? first.baseRefName : '',
           state: typeof first.state === 'string' ? first.state : ''
         }
       };
@@ -531,6 +538,7 @@ export function createGh(deps = {}) {
               ? rec.mergeStateStatus
               : '',
           head_ref: typeof rec.headRefName === 'string' ? rec.headRefName : '',
+          base_ref: typeof rec.baseRefName === 'string' ? rec.baseRefName : '',
           head_sha
         }
       };
