@@ -1293,7 +1293,7 @@ describe('views/worker', () => {
     });
   });
 
-  test('clicking a running tile opens the transcript drawer for its attempt', () => {
+  test('clicking a running tile [▤ 세션] opens the transcript drawer for its attempt', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -1328,13 +1328,13 @@ describe('views/worker', () => {
       transport
     });
 
-    // No drawer until a tile is clicked.
+    // No drawer until [▤ 세션] is clicked.
     expect(mount.querySelector('.sv')).toBeNull();
 
-    const tile = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-attempt-id="a1"]')
+    const session = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="a1"] .rtile__session')
     );
-    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    session.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     // Drawer subscribes to the session log and renders.
     expect(transport).toHaveBeenCalledWith('subscribe-session-log', {
@@ -1385,10 +1385,10 @@ describe('views/worker', () => {
       transport: vi.fn().mockResolvedValue({ ok: true })
     });
 
-    const tile = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-attempt-id="a1"]')
+    const session = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="a1"] .rtile__session')
     );
-    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    session.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     const sid = /** @type {HTMLElement} */ (
       mount.querySelector('.sv__session')
@@ -1431,10 +1431,10 @@ describe('views/worker', () => {
     });
 
     // Drawer opened BEFORE the session id lands.
-    const tile = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-attempt-id="a1"]')
+    const session = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="a1"] .rtile__session')
     );
-    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    session.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(mount.querySelector('.sv__session')).toBeNull();
 
     // A fresh queue snapshot arrives with session_id filled → drawer meta updated.
@@ -1540,7 +1540,7 @@ describe('views/worker', () => {
     expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
   });
 
-  test('clicking the ⓘ opens the detail (gotoIssue), not the transcript drawer', () => {
+  test('clicking the tile body opens the detail (gotoIssue), not the transcript drawer', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -1567,12 +1567,13 @@ describe('views/worker', () => {
       gotoIssue
     });
 
-    const info = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__info')
+    const title = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__title')
     );
-    info.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    title.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
-    // ⓘ routes to the shared detail panel and never opens the transcript.
+    // The tile default routes to the shared detail panel, like every other
+    // lane surface, and never opens the transcript (UI-k59y §3).
     expect(gotoIssue).toHaveBeenCalledWith('S1');
     expect(transport).not.toHaveBeenCalledWith(
       'subscribe-session-log',
@@ -1581,7 +1582,7 @@ describe('views/worker', () => {
     expect(mount.querySelector('.sv')).toBeNull();
   });
 
-  test('clicking the tile body (not the ⓘ) still opens the transcript drawer', () => {
+  test('clicking [▤ 세션] opens the transcript drawer, not the detail', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -1616,10 +1617,10 @@ describe('views/worker', () => {
       gotoIssue
     });
 
-    const title = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__title')
+    const session = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__session')
     );
-    title.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    session.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(transport).toHaveBeenCalledWith('subscribe-session-log', {
       id: 'session-log:a1',
@@ -1631,7 +1632,7 @@ describe('views/worker', () => {
 
   /**
    * Mount a worker view with one running attempt and open its transcript
-   * drawer by clicking the tile body (UI-89q5 modal overlay tests).
+   * drawer by clicking the tile's [▤ 세션] (UI-89q5 modal overlay tests).
    *
    * @param {HTMLElement} mount
    * @returns {{ get: () => any, set: (q: any) => void, clear: () => void, subscribe: (fn: () => void) => () => void }}
@@ -1667,10 +1668,10 @@ describe('views/worker', () => {
       gotoIssue: vi.fn()
     });
 
-    const title = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__title')
+    const session = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__session')
     );
-    title.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    session.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     return queueStore;
   }

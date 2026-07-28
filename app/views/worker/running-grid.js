@@ -200,8 +200,10 @@ export function bannersTemplate(state) {
 }
 
 /**
- * One running-session tile. A click opens the transcript drawer (spec §5.6);
- * the selected tile gets a `.rtile--sel` ring.
+ * One running-session tile. A click opens the bead detail like every other lane
+ * surface (UI-k59y §3) — the live transcript is the tile's own [▤ 세션] button,
+ * so the tile is not the one place on this board where the default click means
+ * something else. The drawer's tile keeps its `.rtile--sel` ring.
  *
  * @param {RunningTile} tile
  * @param {number} now
@@ -243,11 +245,11 @@ function runningTile(tile, now, selected_attempt = null) {
       <span class="rtile__elapsed">${elapsed}</span>
       <button
         type="button"
-        class="rtile__info"
-        title="상세 보기"
-        aria-label="상세 보기"
+        class="rtile__session"
+        title="라이브 세션 열기"
+        aria-label="라이브 세션 열기"
       >
-        ⓘ
+        ▤ 세션
       </button>
       ${paused
         ? html`<button

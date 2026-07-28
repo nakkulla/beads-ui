@@ -58,6 +58,12 @@ import { formatUsageTotal, usageTooltip } from './usage.js';
 /**
  * One `.mini` row.
  *
+ * PR 대기 레인만 다단 카드로 그린다 (UI-k59y §1): 한 줄에 ID·제목·PR·뱃지·
+ * reason·usage·[머지]/[폐기]를 전부 실으면 제목이 몇 글자만 남기 때문이다.
+ * 부속 요소가 적은 대기/완료 레인은 한 줄 그대로 둔다 — 거기서는 카드화가
+ * 과하다. 두 변형 모두 같은 `.worker-mini` 껍데기를 쓰므로 드래그 계약
+ * (`data-bead-id`/`data-lane`)과 머지 진행 시각화는 변형과 무관하게 유지된다.
+ *
  * @param {MiniItem} item
  * @returns {import('lit-html').TemplateResult}
  */
@@ -66,21 +72,16 @@ export function miniRow(item) {
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const usage_label = formatUsageTotal(item.usage);
   const merging = item.merge_step || null;
-  return html`<div
-    class="worker-mini${draggable ? '' : ' worker-mini--static'}${item.done
-      ? ' worker-mini--done'
-      : ''}${merging ? ' worker-mini--merging' : ''}"
-    style=${merging ? `--progress: ${merging.percent}%` : ''}
-    draggable=${draggable ? 'true' : 'false'}
-    data-bead-id=${item.id}
-    data-lane=${item.lane}
-  >
-    ${draggable
-      ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
-      : ''}
-    <span class="worker-mini__id" title="클릭하면 ID 복사">${item.id}</span>
-    <span class="worker-mini__title">${item.title}</span>
-    ${item.pr_url && item.pr_number
+  const card = item.lane === 'pr_wait';
+  const grip = draggable
+    ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
+    : '';
+  const id_el = html`<span class="worker-mini__id" title="클릭하면 ID 복사"
+    >${item.id}</span
+  >`;
+  const title_el = html`<span class="worker-mini__title">${item.title}</span>`;
+  const pr_el =
+    item.pr_url && item.pr_number
       ? html`<a
           class="worker-mini__pr"
           href=${item.pr_url}
@@ -89,67 +90,98 @@ export function miniRow(item) {
           title="PR 열기"
           >#${item.pr_number} ↗</a
         >`
-      : ''}
-    ${badges.map((b) =>
-      b === item.live_badge
-        ? // Live server activity (UI-raqh §3): neutral, never the warn colour —
-          // nothing here asks the reader to act, it only says work is running.
-          // The breathing dot carries the aliveness a colour would overstate.
-          html`<span
-            class="worker-mini__badge worker-mini__badge--activity"
-            title="서버가 이 PR을 처리하는 중입니다"
-            ><span class="act-dot" aria-hidden="true"></span>${b}</span
-          >`
-        : html`<span
-            class="worker-mini__badge${item.alert
-              ? ' worker-mini__badge--alert'
-              : ''}"
-            >${b}</span
-          >`
-    )}
-    ${item.reason
-      ? html`<span class="worker-mini__reason">${item.reason}</span>`
-      : ''}
-    ${usage_label
-      ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
-          >${usage_label}</span
+      : '';
+  const badge_els = badges.map((b) =>
+    b === item.live_badge
+      ? // Live server activity (UI-raqh §3): neutral, never the warn colour —
+        // nothing here asks the reader to act, it only says work is running.
+        // The breathing dot carries the aliveness a colour would overstate.
+        html`<span
+          class="worker-mini__badge worker-mini__badge--activity"
+          title="서버가 이 PR을 처리하는 중입니다"
+          ><span class="act-dot" aria-hidden="true"></span>${b}</span
         >`
-      : ''}
-    ${merging
-      ? // The one place this board raises its voice (UI-raqh §4): a merge is
-        // irreversible and minutes long, so the row itself becomes the gauge —
-        // side rail, bottom progress line, step name and n/7. No spinner: the
-        // counter says more than a spinner can.
-        html`<span class="merge-step"
-          >${merging.label}<span class="merge-step__n"
-            >${merging.index}/${merging.total}</span
-          ></span
+      : html`<span
+          class="worker-mini__badge${item.alert
+            ? ' worker-mini__badge--alert'
+            : ''}"
+          >${b}</span
         >`
-      : ''}
-    ${item.merge_action
-      ? html`<button
-          type="button"
-          class="worker-mini__merge"
-          data-bead-id=${item.id}
-          ?disabled=${item.merge_enabled === false}
-          title=${item.merge_title || ''}
-        >
-          ${item.merge_label || '머지'}
-        </button>`
-      : ''}
-    ${item.discard_action
-      ? html`<button
-          type="button"
-          class="worker-mini__discard"
-          data-bead-id=${item.id}
-          ?disabled=${item.discard_enabled === false}
-          title=${item.discard_enabled === false
-            ? item.discard_title || '머지 진행 중 — 폐기할 수 없습니다'
-            : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음). 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요'}
-        >
-          폐기
-        </button>`
-      : ''}
+  );
+  const reason_el = item.reason
+    ? html`<span class="worker-mini__reason">${item.reason}</span>`
+    : '';
+  const usage_el = usage_label
+    ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
+        >${usage_label}</span
+      >`
+    : '';
+  const merge_step_el = merging
+    ? // The one place this board raises its voice (UI-raqh §4): a merge is
+      // irreversible and minutes long, so the row itself becomes the gauge —
+      // side rail, bottom progress line, step name and n/7. No spinner: the
+      // counter says more than a spinner can.
+      html`<span class="merge-step"
+        >${merging.label}<span class="merge-step__n"
+          >${merging.index}/${merging.total}</span
+        ></span
+      >`
+    : '';
+  const merge_el = item.merge_action
+    ? html`<button
+        type="button"
+        class="worker-mini__merge"
+        data-bead-id=${item.id}
+        ?disabled=${item.merge_enabled === false}
+        title=${item.merge_title || ''}
+      >
+        ${item.merge_label || '머지'}
+      </button>`
+    : '';
+  const discard_el = item.discard_action
+    ? html`<button
+        type="button"
+        class="worker-mini__discard"
+        data-bead-id=${item.id}
+        ?disabled=${item.discard_enabled === false}
+        title=${item.discard_enabled === false
+          ? item.discard_title || '머지 진행 중 — 폐기할 수 없습니다'
+          : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음). 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요'}
+      >
+        폐기
+      </button>`
+    : '';
+  const has_foot = !!(
+    usage_label ||
+    merging ||
+    item.merge_action ||
+    item.discard_action
+  );
+  return html`<div
+    class="worker-mini${card ? ' worker-mini--card' : ''}${draggable
+      ? ''
+      : ' worker-mini--static'}${item.done ? ' worker-mini--done' : ''}${merging
+      ? ' worker-mini--merging'
+      : ''}"
+    style=${merging ? `--progress: ${merging.percent}%` : ''}
+    draggable=${draggable ? 'true' : 'false'}
+    data-bead-id=${item.id}
+    data-lane=${item.lane}
+  >
+    ${card
+      ? html`<div class="worker-mini__head">
+            ${grip}${id_el}${pr_el}${badge_els}${reason_el}
+          </div>
+          <div class="worker-mini__body">${title_el}</div>
+          ${has_foot
+            ? html`<div class="worker-mini__foot">
+                ${usage_el}${merge_step_el}
+                <span class="worker-mini__actions"
+                  >${merge_el}${discard_el}</span
+                >
+              </div>`
+            : ''}`
+      : html`${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${discard_el}`}
   </div>`;
 }
 
