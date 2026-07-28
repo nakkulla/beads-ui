@@ -118,7 +118,7 @@ function seedStore(options = {}) {
  *   details?: any[],
  *   checks?: any,
  *   store?: any,
- *   verify?: { cmd: string[], timeout_ms: number, source: 'config' }|null,
+ *   verify?: { cmd: string[], timeout_ms: number }|null,
  *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string }>,
  *   deploy?: { cmd: string[], timeout_ms: number, detached: boolean }|null,
  *   deploySpawn?: 'ok'|'fail'|'hang'|'error'|'throw',
@@ -421,8 +421,7 @@ const DEPLOY_DETACHED = {
 /** A verify command, which the deploy step REQUIRES to be resolvable. */
 const VERIFY_CFG = {
   cmd: ['npm', 'test'],
-  timeout_ms: 1000,
-  source: /** @type {const} */ ('config')
+  timeout_ms: 1000
 };
 
 /**
@@ -576,8 +575,7 @@ describe('merge click — a zero exit is not a merge (§6)', () => {
 describe('merge click — click-time SHA re-evaluation (§5/§6)', () => {
   const VERIFY = {
     cmd: ['npm', 'test'],
-    timeout_ms: 1000,
-    source: /** @type {const} */ ('config')
+    timeout_ms: 1000
   };
 
   test('re-runs local verification when the head SHA moved past a cached green', async () => {
@@ -722,8 +720,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     const h = makeActions({
       verify: {
         cmd: ['npm', 'test'],
-        timeout_ms: 1000,
-        source: /** @type {const} */ ('config')
+        timeout_ms: 1000
       },
       // 1st run = the pre-merge gate (green), 2nd = the post-merge run (red).
       verifyResults: [
@@ -756,8 +753,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     const h = makeActions({
       verify: {
         cmd: ['npm', 'test'],
-        timeout_ms: 1000,
-        source: /** @type {const} */ ('config')
+        timeout_ms: 1000
       },
       verifyResults: [
         { ok: true, reason: 'ok' },
@@ -777,8 +773,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     const h = makeActions({
       verify: {
         cmd: ['npm', 'test'],
-        timeout_ms: 1000,
-        source: /** @type {const} */ ('config')
+        timeout_ms: 1000
       },
       verifyResults: [
         { ok: true, reason: 'ok' },
@@ -804,8 +799,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     const h = makeActions({
       verify: {
         cmd: ['npm', 'test'],
-        timeout_ms: 1000,
-        source: /** @type {const} */ ('config')
+        timeout_ms: 1000
       },
       verifyResults: [
         { ok: true, reason: 'ok' },
@@ -829,8 +823,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     const h = makeActions({
       verify: {
         cmd: ['npm', 'test'],
-        timeout_ms: 1000,
-        source: /** @type {const} */ ('config')
+        timeout_ms: 1000
       },
       verifyResults: [
         { ok: true, reason: 'ok' },
@@ -854,8 +847,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     const h = makeActions({
       verify: {
         cmd: ['npm', 'test'],
-        timeout_ms: 1000,
-        source: /** @type {const} */ ('config')
+        timeout_ms: 1000
       },
       verifyResults: [
         { ok: true, reason: 'ok' },
@@ -872,8 +864,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     const h = makeActions({
       verify: {
         cmd: ['npm', 'test'],
-        timeout_ms: 1000,
-        source: /** @type {const} */ ('config')
+        timeout_ms: 1000
       },
       verifyResults: [
         { ok: true, reason: 'ok' },

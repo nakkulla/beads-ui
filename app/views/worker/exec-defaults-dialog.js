@@ -251,8 +251,9 @@ export function createExecDefaultsDialog(mount_element, options) {
   }
 
   /**
-   * The verify row: what the merge gate runs before merging, and whether that
-   * command came from config or from auto-detection.
+   * The verify row: what the merge gate runs before merging. Symmetric with
+   * deploy since UI-uk6d — the command can only come from config, so unset it
+   * names the section a user has to write.
    *
    * @param {any} verify_cmd
    * @returns {import('lit-html').TemplateResult}
@@ -260,15 +261,14 @@ export function createExecDefaultsDialog(mount_element, options) {
   function verifyGroup(verify_cmd) {
     const cmd_text = verify_cmd ? formatCmd(verify_cmd.cmd) : '';
     const timeout_text = verify_cmd ? formatTimeout(verify_cmd.timeout_ms) : '';
-    const detected = Boolean(verify_cmd) && verify_cmd.source === 'detected';
+    const workspace_path =
+      (getWorkspacePath && getWorkspacePath()) || '<workspace 경로>';
     return html`<div class="exec-defaults__vd-group" data-vd="verify">
       <div class="exec-defaults__vd-label">머지 전 검증 (verify)</div>
       ${cmd_text
         ? html`<div class="exec-defaults__vd-line">
             <span class="exec-defaults__vd-cmd">${cmd_text}</span>
-            ${detected
-              ? badge('detected', '자동감지')
-              : badge('config', 'config')}
+            ${badge('config', 'config')}
             ${timeout_text
               ? html`<span class="exec-defaults__vd-meta"
                   >timeout ${timeout_text}</span
@@ -276,7 +276,11 @@ export function createExecDefaultsDialog(mount_element, options) {
               : ''}
           </div>`
         : html`<div class="exec-defaults__vd-line exec-defaults__vd-absent">
-            검증 없음
+            검증 없음 —
+            <span class="exec-defaults__vd-cmd"
+              >[worker.verify."${workspace_path}"]</span
+            >
+            섹션으로 정의
           </div>`}
     </div>`;
   }

@@ -287,7 +287,7 @@ describe('worker/pr-poller — observation errors fail closed', () => {
 });
 
 describe('worker/pr-poller — local verification binding (§5)', () => {
-  const RESOLVED = { cmd: ['npm', 'test'], timeout_ms: 1000, source: 'config' };
+  const RESOLVED = { cmd: ['npm', 'test'], timeout_ms: 1000 };
 
   test('runs the verification pinned to the observed head sha', async () => {
     const runVerify = vi.fn(async () => ({

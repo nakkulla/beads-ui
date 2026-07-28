@@ -402,10 +402,9 @@ function attemptsWithUsage(queue, workspace_key) {
 
 /**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
- *   - the resolved verify_cmd (explicit config > auto-detection > none) with its
- *     `source`, so the ctrl bar can flag a detected command (read-only display —
- *     no UI edit surface; worker-autorun-policy §4/§6, worker-attempt-resume-
- *     verify-autodetect §2),
+ *   - the resolved verify_cmd, which comes from an explicit `[worker.verify]`
+ *     config section or not at all (UI-uk6d) — read-only display, no UI edit
+ *     surface (worker-autorun-policy §4/§6),
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
  *     flag live sessions exceeding the cap after a manual resume
  *     (worker-phase1 §2.3, worker-phase2 §3),
@@ -429,7 +428,7 @@ function decorateQueue(workspace_key, raw_queue) {
   // Overlaid FIRST so every decoration below — observations, activity, titles —
   // sees the external rows without knowing they exist (UI-7agi §2).
   const queue = withExternalPrWait(workspace_key, raw_queue);
-  /** @type {{ cmd: string[], timeout_ms: number, source: 'config'|'detected' } | null} */
+  /** @type {{ cmd: string[], timeout_ms: number } | null} */
   let verify_cmd = null;
   try {
     verify_cmd = resolveVerifyCmd(workspace_key, getConfig().worker_verify);

@@ -31,9 +31,9 @@ import { verifyLogDir } from './state-paths.js';
 const log = debug('worker:verify-cmd');
 
 /**
- * Default verify_cmd timeout for an AUTO-DETECTED command (worker-attempt-
- * resume-verify-autodetect §2.2). Mirrors config.js's DEFAULT_VERIFY_TIMEOUT_MS
- * so a detected command runs on the same 10-minute budget as a configured one.
+ * Last-resort verify_cmd timeout, mirroring config.js's own
+ * DEFAULT_VERIFY_TIMEOUT_MS. Normalization belongs to `normalizeWorkerVerify`
+ * in config.js; this only guards a map injected past that contract.
  *
  * @type {number}
  */
@@ -43,74 +43,28 @@ const DEFAULT_VERIFY_TIMEOUT_MS = 600000;
  * @typedef {Object} ResolvedVerifyCmd
  * @property {string[]} cmd - The verify argv (spawned WITHOUT a shell).
  * @property {number} timeout_ms - Deadline in ms.
- * @property {'config'|'detected'} source - Where the command came from:
- * `config` = an explicit `[worker.verify."<abs>"]` section, `detected` = the
- * conservative repo-root toolchain probe below.
  */
 
 /**
- * Conservatively auto-detect a repo's verify command from marker files at the
- * repo root (worker-attempt-resume-verify-autodetect §2.2). This is a FILE
- * existence/content probe only — nothing is executed. The order is fixed:
+ * Resolve a repo's verify command from the ONE place it can be defined: an
+ * explicit `[worker.verify."<abs>"]` section in `config.toml` (UI-uk6d). The
+ * repo-root toolchain probe of worker-attempt-resume-verify-autodetect §2.2 is
+ * retired — a guessed command is not the repo's canonical verification
+ * (`External/beads` had to override the probe's `go test ./...`, which fails on
+ * the ICU cgo build, with `make test`), and a wrong guess buys either false
+ * trust when green or a false block when red.
  *
- *   - `package.json` with a non-empty `scripts.test` → `["npm", "test"]`
- *   - `Cargo.toml`                                   → `["cargo", "test"]`
- *   - `go.mod`                                       → `["go", "test", "./..."]`
- *   - anything else (python etc., ambiguous toolchain/venv) → null (no detection;
- *     an explicit config section is required).
- *
- * @param {string} repo - Absolute (or resolvable) target repo root.
- * @param {{ fs?: typeof import('node:fs') }} [deps]
- * @returns {string[]|null}
- */
-export function detectVerifyCmd(repo, deps = {}) {
-  const fs = deps.fs || nodeFs;
-  const root = path.resolve(String(repo || ''));
-  const pkg_path = path.join(root, 'package.json');
-  try {
-    if (fs.existsSync(pkg_path)) {
-      const pkg = JSON.parse(fs.readFileSync(pkg_path, 'utf8'));
-      const test_script =
-        pkg && pkg.scripts && typeof pkg.scripts === 'object'
-          ? pkg.scripts.test
-          : undefined;
-      if (typeof test_script === 'string' && test_script.length > 0) {
-        return ['npm', 'test'];
-      }
-    }
-  } catch {
-    // A malformed package.json is not a detection — fall through.
-  }
-  try {
-    if (fs.existsSync(path.join(root, 'Cargo.toml'))) {
-      return ['cargo', 'test'];
-    }
-    if (fs.existsSync(path.join(root, 'go.mod'))) {
-      return ['go', 'test', './...'];
-    }
-  } catch {
-    // Probe error → no detection.
-  }
-  return null;
-}
-
-/**
- * Resolve a repo's verify command with the fixed precedence
- * (worker-attempt-resume-verify-autodetect §2.1): an explicit config section
- * ALWAYS wins, then auto-detection, then none. The return carries `source` so
- * the queue `workspace_info` + the ctrl bar can flag a detected command
- * (`(자동 감지)`). A null return means the workspace has no local verification
- * signal, which drops the merge gate to its third tier ("검증 신호 없음") when
- * the repo also reports no CI (worker-phase2 §5) — the retired auto_merge
- * demotion is gone with the merge axis.
+ * A null return means the workspace has no local verification signal, which
+ * drops the merge gate to its third tier ("검증 신호 없음") when the repo also
+ * reports no CI (worker-phase2 §5) — an intended outcome, since the merge click
+ * is then the human judgement.
  *
  * @param {string} repo - Absolute (or resolvable) target repo root.
  * @param {Record<string, { cmd: string[], timeout_ms: number }>|null|undefined} config_map
  * The normalized `[worker.verify]` config sections keyed by resolved path.
- * @param {{ fs?: typeof import('node:fs') }} [deps]
  * @returns {ResolvedVerifyCmd|null}
  */
-export function resolveVerifyCmd(repo, config_map, deps = {}) {
+export function resolveVerifyCmd(repo, config_map) {
   const key = path.resolve(String(repo || ''));
   const configured = config_map ? config_map[key] : null;
   if (
@@ -123,16 +77,7 @@ export function resolveVerifyCmd(repo, config_map, deps = {}) {
       timeout_ms:
         typeof configured.timeout_ms === 'number' && configured.timeout_ms > 0
           ? configured.timeout_ms
-          : DEFAULT_VERIFY_TIMEOUT_MS,
-      source: 'config'
-    };
-  }
-  const detected = detectVerifyCmd(repo, deps);
-  if (detected) {
-    return {
-      cmd: detected,
-      timeout_ms: DEFAULT_VERIFY_TIMEOUT_MS,
-      source: 'detected'
+          : DEFAULT_VERIFY_TIMEOUT_MS
     };
   }
   return null;
