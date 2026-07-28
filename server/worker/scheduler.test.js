@@ -450,6 +450,88 @@ describe('scheduler slot policy (single scan, worker-phase2 §3)', () => {
     expect(env.scheduler.isRunning('S1')).toBe(false);
     expect(env.scheduler.isRunning('S2')).toBe(true);
   });
+
+  /**
+   * Persist a `running` attempt the way a PRIOR server process left it: the
+   * durable record survives the restart, the in-memory Sets do not. A fresh
+   * scheduler over this store IS the post-restart state.
+   *
+   * @param {any} store
+   * @param {string} bead_id
+   * @param {Partial<import('./queue-store.js').Attempt>} [patch]
+   */
+  function seedSurvivingAttempt(store, bead_id, patch = {}) {
+    const attempt_id = `att-${bead_id}`;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id }
+    });
+    store.updateAttempt(WS, {
+      attempt_id,
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        workflow_mode_prior: null,
+        ...patch
+      }
+    });
+  }
+
+  test('counts a restart-surviving session against the cap (UI-97qo)', async () => {
+    const env = setup({
+      config: { S1: {}, S2: {} },
+      slots: 2,
+      probePid: () => ({ alive: true, started_at: 1000 })
+    });
+    seedSurvivingAttempt(env.store, 'UI-1');
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(1);
+    expect(env.scheduler.runningBeads()).toEqual(['S1']);
+  });
+
+  test('frees the slot of a surviving attempt whose process is gone', async () => {
+    const env = setup({
+      config: { S1: {}, S2: {} },
+      slots: 2,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    seedSurvivingAttempt(env.store, 'UI-1');
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(2);
+  });
+
+  test('frees the slot of a paused attempt', async () => {
+    const env = setup({
+      config: { S1: {}, S2: {} },
+      slots: 2,
+      probePid: () => ({ alive: true, started_at: 1000 })
+    });
+    seedSurvivingAttempt(env.store, 'UI-1', { status: 'paused' });
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(2);
+  });
+
+  test('probes no pid when this process owns every running attempt', async () => {
+    const probePid = vi.fn(() => ({ alive: true, started_at: 1000 }));
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 2, probePid });
+    seedQueue(env.store, ['S1', 'S2']);
+    await env.scheduler.tick(WS);
+
+    await env.scheduler.tick(WS);
+
+    expect(probePid).not.toHaveBeenCalled();
+  });
 });
 
 describe('scheduler stop (■ tile)', () => {
