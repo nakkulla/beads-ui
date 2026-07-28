@@ -186,13 +186,13 @@ function isConflicting(pr) {
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
+ *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
  *   resolveVerify?: () => ResolvedVerifyCmd|null,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
  *   resolveDeploy?: () => ResolvedDeployCmd|null,
  *   spawnImpl?: typeof spawn,
  *   notifyChanged?: (workspace: string) => void,
- *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => void },
+ *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void> },
  *   requeryDelayMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
  *   now?: () => number
@@ -348,11 +348,18 @@ export function createPrActions(deps) {
    * The bead's merge target base, from the attempt that produced the PR. A bead
    * whose attempts predate the field falls back to `main`, exactly like resume.
    *
-   * An EXTERNAL bead has no attempt at all, so the ordering continues into
-   * GitHub's own `baseRefName` (UI-7agi §3) — passed in as `hint` from the
-   * click-time gate, else read from the observation cache. `main` stays the last
-   * resort, but reaching it for a PR that targeted another branch would sync,
-   * verify and deploy the WRONG branch, which is why the hint exists at all.
+   * An EXTERNAL bead has no attempt that PRODUCED its PR, so the ordering
+   * continues into GitHub's own `baseRefName` (UI-7agi §3) — passed in as
+   * `hint` from the click-time gate, else read from the observation cache.
+   * `main` stays the last resort, but reaching it for a PR that targeted
+   * another branch would sync, verify and deploy the WRONG branch, which is why
+   * the hint exists at all.
+   *
+   * An external CONFLICT-RESOLUTION attempt is skipped for exactly that reason
+   * (UI-w0hi §1): it records the base the resolution CLICK observed, not the
+   * base the PR was opened against, and it is not the record that produced the
+   * PR. Letting it win would silently outrank the fresher click-time hint the
+   * moment the PR's base moved — the one case the hint exists to cover.
    *
    * @param {Queue} q
    * @param {string} bead_id
@@ -365,6 +372,9 @@ export function createPrActions(deps) {
     let best = null;
     for (const a of attempts) {
       if (!a || a.bead_id !== bead_id || typeof a.target_base !== 'string') {
+        continue;
+      }
+      if (a.external_conflict === true) {
         continue;
       }
       const at = typeof a.finished_at === 'number' ? a.finished_at : 0;
@@ -1063,16 +1073,26 @@ export function createPrActions(deps) {
    * Announce the merge that CLOSED the bead (UI-9rrk). One hook covers both
    * triggers because both converge on `runCleanup`. The notifier is optional
    * and no-throw by its own contract, so this can never turn a finished cleanup
-   * into a failed one.
+   * into a failed one — the guard below keeps that true for an injected fake
+   * that breaks the contract.
+   *
+   * AWAITED by the caller (UI-vb0t §3.4): reading the bead title made the send
+   * asynchronous, and the deploy launched right after may restart this process.
+   * What is awaited is the child's SPAWN, not its exit — it is detached and
+   * unref'd, so it outlives the restart once it exists.
    *
    * @param {string} bead_id
    * @param {string|null} pr_url
    */
-  function announceMerged(bead_id, pr_url) {
+  async function announceMerged(bead_id, pr_url) {
     if (!notify) {
       return;
     }
-    notify.mergeCompleted({ bead_id, pr_url, repo });
+    try {
+      await notify.mergeCompleted({ bead_id, pr_url, repo });
+    } catch (err) {
+      log('merge notify failed: %o', err);
+    }
   }
 
   /**
@@ -1199,7 +1219,7 @@ export function createPrActions(deps) {
         deps.store.moveToDone(workspace, { bead_id });
       }
       notifyChanged(workspace);
-      announceMerged(bead_id, pr_url);
+      await announceMerged(bead_id, pr_url);
       return { ok: true, step: null, reason: null, base_sync };
     }
 
@@ -1219,8 +1239,9 @@ export function createPrActions(deps) {
     notifyChanged(workspace);
     // Announced BEFORE the launch, for the same reason the durable write is:
     // the detached deploy may restart this process, and a notification that
-    // never got sent is a merge nobody heard about.
-    announceMerged(bead_id, pr_url);
+    // never got sent is a merge nobody heard about. AWAITED, so "before" means
+    // the child exists, not merely that the call was made (UI-vb0t §3.4).
+    await announceMerged(bead_id, pr_url);
     // A spawn that never started — a synchronous throw or Node's asynchronous
     // `error` event — means we are still alive, so the intent was wrong and can
     // be corrected. The cleanup itself still succeeded — the bead really is
@@ -1446,13 +1467,17 @@ export function createPrActions(deps) {
       // DIRTY comes BEFORE the gate: a conflicting PR needs resolving whatever
       // its CI says, and resolving is not merging.
       if (isConflicting(first.pr)) {
-        // An EXTERNAL row has no attempt, so it has no `session_id` and no
-        // worker worktree — `scheduler.resolveConflict()` would refuse with
-        // `no_session_id` every time (UI-7agi §5). Refusing here says so
-        // honestly instead of dispatching something that cannot run; the user
-        // resolves an external PR's conflict in their own session.
+        // An EXTERNAL row has no attempt to relaunch from, so it takes the
+        // attempt-less dispatch instead (UI-w0hi §2). The base is the one THIS
+        // click observed, not a stored one: an external row has no attempt
+        // recording a `target_base`, and the prompt names the branch the
+        // session must merge.
         if (is_external) {
-          return refuse('external_conflict_needs_session');
+          return dispatchExternalResolution(
+            bead_id,
+            first.pr.head_sha,
+            first.pr.base_ref || ''
+          );
         }
         return dispatchResolution(bead_id, first.pr.head_sha);
       }
@@ -1500,7 +1525,11 @@ export function createPrActions(deps) {
       }
       if (isConflicting(second.pr)) {
         if (is_external) {
-          return refuse('external_conflict_needs_session');
+          return dispatchExternalResolution(
+            bead_id,
+            second.pr.head_sha,
+            second.pr.base_ref || ''
+          );
         }
         return dispatchResolution(bead_id, second.pr.head_sha);
       }
@@ -1622,6 +1651,34 @@ export function createPrActions(deps) {
     // merge that is not happening.
     clearStep(bead_id);
     const r = await deps.scheduler.resolveConflict(workspace, bead_id);
+    notifyChanged(workspace);
+    return {
+      ok: !!r.ok,
+      action: 'conflict_resolution',
+      reason: r.ok ? null : r.reason || 'resolution_refused',
+      attempt_id: r.attempt_id || null,
+      head_sha
+    };
+  }
+
+  /**
+   * DIRTY arm for an EXTERNAL row (UI-w0hi §2): the same hand-off, minus the
+   * attempt to relaunch from. The scheduler mints a fresh session in the
+   * worktree the delivering session left behind, and refuses visibly
+   * (`worktree_missing`) when there is none.
+   *
+   * @param {string} bead_id
+   * @param {string} head_sha
+   * @param {string} base_ref - The base branch this click OBSERVED on the PR.
+   * @returns {Promise<MergeClickResult>}
+   */
+  async function dispatchExternalResolution(bead_id, head_sha, base_ref) {
+    clearStep(bead_id);
+    const r = await deps.scheduler.dispatchExternalConflict(
+      workspace,
+      bead_id,
+      base_ref
+    );
     notifyChanged(workspace);
     return {
       ok: !!r.ok,

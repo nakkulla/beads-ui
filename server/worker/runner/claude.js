@@ -308,7 +308,15 @@ export function claudeSpec(options = {}) {
           pr_submit: !s.disposition
         })
       );
-      return { command: 'claude', args, env: routing_env };
+      // Worker sessions inherit the user's `~/.claude/settings.json` hooks, so a
+      // headless run would fire the Stop hook's "응답 완료" Discord notice on top
+      // of the worker lane's own. `CLAUDE_HOOK_SUPPRESS` is the dotfiles-side
+      // blanket switch; `routing_env` still wins if it names the same key.
+      return {
+        command: 'claude',
+        args,
+        env: { CLAUDE_HOOK_SUPPRESS: '1', ...routing_env }
+      };
     },
     normalize,
     detectQuestion,

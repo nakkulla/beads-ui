@@ -342,6 +342,33 @@ describe('runner/claude routing env', () => {
   });
 });
 
+describe('runner/claude hook suppression (UI-ljcu)', () => {
+  test('spawns with CLAUDE_HOOK_SUPPRESS=1 so the user Stop hook stays silent', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+
+    await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
+
+    expect(spawn_impl.captured.calls[0].options.env.CLAUDE_HOOK_SUPPRESS).toBe(
+      '1'
+    );
+  });
+
+  test('a routing env overriding the same key wins', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+
+    await spawnClaude(
+      BEAD,
+      WS,
+      {},
+      { spawn_impl, routing_env: { CLAUDE_HOOK_SUPPRESS: '0' } }
+    ).done;
+
+    expect(spawn_impl.captured.calls[0].options.env.CLAUDE_HOOK_SUPPRESS).toBe(
+      '0'
+    );
+  });
+});
+
 describe('runner/claude resume argv (spec §1.4)', () => {
   test('resume_session_id adds --resume <id> ahead of the permission mode', async () => {
     const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
