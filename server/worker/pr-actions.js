@@ -52,6 +52,7 @@
  */
 import { spawn } from 'node:child_process';
 import { debug } from '../logging.js';
+import { parsePrNumber } from '../workflow-enrich.js';
 import { evaluateMergeGate } from './merge-gate.js';
 import { resolvePrRef, rollupConclusion } from './pr-poller.js';
 import { runVerifyCmd } from './verify-cmd.js';
@@ -165,6 +166,7 @@ function isConflicting(pr) {
  *     readStatus: (bead_id: string) => Promise<string|null>,
  *     unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *     readMetadata: (bead_id: string, key: string) => Promise<string|null>,
+ *     readStatusAndMetadata?: (bead_id: string, key: string) => Promise<{ status: string|null, value: string|null }>,
  *     listChildren?: (bead_id: string) => Promise<{ id: string, status: string }[]>
  *   },
  *   external?: {
@@ -284,8 +286,14 @@ export function createPrActions(deps) {
    * still present. That re-read is not a convenience: an external row is not a
    * queue-revision CAS target, so this is the only thing standing between the
    * click and a bead that was closed, discarded, or re-opened since the snapshot
-   * the user clicked on was rendered. Fail-closed — an unreadable bd throws out
-   * of `readStatus`/`readMetadata` and the click is refused.
+   * the user clicked on was rendered.
+   *
+   * It is ONE `bd show`, not a status read plus a metadata read (implementation
+   * review 2026-07-28). The guard's whole claim is that both facts hold at the
+   * SAME instant; a bead closing between two queries keeps its `pr_url`, so the
+   * pair would report `resolved` + a live url for a bead that is already closed.
+   * Fail-closed — an unreadable bd throws and the click is refused, and an
+   * adapter that cannot answer atomically is refused rather than downgraded.
    *
    * @param {Queue} q
    * @param {string} bead_id
@@ -298,20 +306,21 @@ export function createPrActions(deps) {
     if (!external || !external.get(workspace, bead_id)) {
       return { ok: false, reason: 'not_in_pr_wait' };
     }
-    /** @type {string|null} */
-    let status;
-    /** @type {string|null} */
-    let pr_url;
+    if (typeof deps.bd.readStatusAndMetadata !== 'function') {
+      return { ok: false, reason: 'bd_read_unsupported' };
+    }
+    /** @type {{ status: string|null, value: string|null }} */
+    let snapshot;
     try {
-      status = await deps.bd.readStatus(bead_id);
-      pr_url = await deps.bd.readMetadata(bead_id, 'pr_url');
+      snapshot = await deps.bd.readStatusAndMetadata(bead_id, 'pr_url');
     } catch (err) {
       log('external lane re-read failed for %s: %o', bead_id, err);
       return { ok: false, reason: 'bd_read_failed' };
     }
-    if (status !== 'resolved') {
+    if (snapshot.status !== 'resolved') {
       return { ok: false, reason: 'not_resolved' };
     }
+    const pr_url = snapshot.value;
     if (typeof pr_url !== 'string' || pr_url.length === 0) {
       return { ok: false, reason: 'pr_url_missing' };
     }
@@ -1039,6 +1048,13 @@ export function createPrActions(deps) {
   async function runCleanup(bead_id, refs = {}) {
     const q = deps.store.snapshot(workspace);
     const target_base = targetBaseFor(q, bead_id, refs.base_ref || null);
+    // Lane bookkeeping belongs to beads the LANE actually holds. An external row
+    // exists only in memory (UI-7agi §1/§2), so pushing it into the durable
+    // `done` lane would make `queue.json` record a run that never happened here
+    // — and §6's "the row disappears on the next scan" is how it actually
+    // leaves. The deploy record is workspace-level and stays either way: a
+    // deploy that really ran is a real fact about this repo.
+    const durable = inPrWait(q, bead_id);
 
     markStep(bead_id, 'base_sync');
     const synced = await syncBase(target_base);
@@ -1098,7 +1114,9 @@ export function createPrActions(deps) {
     }
 
     if (!pending_deploy) {
-      deps.store.moveToDone(workspace, { bead_id });
+      if (durable) {
+        deps.store.moveToDone(workspace, { bead_id });
+      }
       notifyChanged(workspace);
       return { ok: true, step: null, reason: null, base_sync };
     }
@@ -1107,10 +1125,15 @@ export function createPrActions(deps) {
     // written FIRST, in one mutation, because the next line may kill this
     // process: a `launched` record that only exists in memory when the server
     // restarts itself is a record that never existed.
-    deps.store.moveToDoneWithDeploy(workspace, {
-      bead_id,
-      deploy: deployRecord('launched', null, bead_id, synced.sha)
-    });
+    const launch_record = deployRecord('launched', null, bead_id, synced.sha);
+    if (durable) {
+      deps.store.moveToDoneWithDeploy(workspace, {
+        bead_id,
+        deploy: launch_record
+      });
+    } else {
+      deps.store.recordLastDeploy(workspace, launch_record);
+    }
     notifyChanged(workspace);
     // A spawn that never started — a synchronous throw or Node's asynchronous
     // `error` event — means we are still alive, so the intent was wrong and can
@@ -1180,14 +1203,20 @@ export function createPrActions(deps) {
       bd_restore,
       detail
     );
-    deps.store.recordCleanupFailure(workspace, {
-      bead_id,
-      step,
-      reason,
-      bd_restore,
-      detail,
-      output_tail
-    });
+    // Same rule as the success path: `cleanup_failed` is durable lane state, so
+    // it is written only for a bead the lane holds. An external row's failure
+    // stays in the log and in its unchanged 머지됨 · 정리 affordance — the [정리]
+    // click IS the retry, and nothing automatic ever touches it.
+    if (inPrWait(deps.store.snapshot(workspace), bead_id)) {
+      deps.store.recordCleanupFailure(workspace, {
+        bead_id,
+        step,
+        reason,
+        bd_restore,
+        detail,
+        output_tail
+      });
+    }
     notifyChanged(workspace);
     return { ok: false, step, reason, base_sync };
   }
@@ -1222,11 +1251,12 @@ export function createPrActions(deps) {
         bead_id,
         is_external
           ? {
+              // Both fields come from the SAME click-time read (implementation
+              // review 2026-07-28). Pairing this fresh url with the registry's
+              // cached number would merge the PREVIOUS pr whenever the bead's
+              // `pr_url` moved since the last scan.
               pr_url: member.pr_url,
-              pr_number:
-                (external &&
-                  (external.get(workspace, bead_id) || {}).pr_number) ??
-                null
+              pr_number: parsePrNumber(member.pr_url)
             }
           : null
       );

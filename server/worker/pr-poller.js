@@ -494,6 +494,10 @@ export function createPrPoller(deps) {
         }))
       ];
       const lane_ids = entries.map((e) => e.bead_id);
+      // Whether anything was being observed BEFORE this pass pruned. It decides
+      // the empty-lane fanout below.
+      const had_observations =
+        Object.keys(deps.observations.snapshot(workspace)).length > 0;
       deps.observations.prune(workspace, lane_ids);
       // The activity cache describes the same lane, so it is pruned with it —
       // a bead that merged or was discarded must not keep a stale badge.
@@ -501,6 +505,15 @@ export function createPrPoller(deps) {
         activity.prune(workspace, lane_ids);
       }
       if (entries.length === 0) {
+        // The lane just emptied. For a durable row the queue mutation that
+        // emptied it already fanned out; a registry-only row has NO other
+        // emitter (implementation review 2026-07-28), so without this the
+        // client would keep rendering a row whose bead is gone — and every
+        // later pass returns here too, so it would never self-correct. Gated on
+        // there having been something to drop, which makes it fire once.
+        if (had_observations) {
+          notifyChanged(workspace);
+        }
         return;
       }
       for (const entry of entries) {

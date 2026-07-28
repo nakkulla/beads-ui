@@ -32,7 +32,8 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
  *   readStatus: (bead_id: string) => Promise<string|null>,
  *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
- *   listResolvedPrBeads: () => Promise<{ bead_id: string, pr_url: string }[]>
+ *   listResolvedPrBeads: () => Promise<{ bead_id: string, pr_url: string }[]>,
+ *   readStatusAndMetadata: (bead_id: string, key: string) => Promise<{ status: string|null, value: string|null }>
  * }}
  */
 export function createBdMetadata(deps = {}) {
@@ -225,6 +226,45 @@ export function createBdMetadata(deps = {}) {
         }
       }
       return [...merged.values()];
+    },
+
+    /**
+     * Status AND one metadata key from ONE `bd show` (implementation review
+     * 2026-07-28, UI-7agi §4).
+     *
+     * Reading them through {@link readStatus} + {@link readMetadata} is TWO
+     * queries, and the external merge guard stands on both being true AT THE
+     * SAME INSTANT: a bead that closes between the two reads still carries its
+     * `pr_url`, so the pair would report `resolved` + a live url for a bead that
+     * is already closed and let the click merge it. One query, one snapshot.
+     *
+     * Fail-closed on the same rule as its two halves: a non-zero exit or an
+     * unreadable payload THROWS.
+     *
+     * @param {string} bead_id
+     * @param {string} key
+     * @returns {Promise<{ status: string|null, value: string|null }>}
+     */
+    async readStatusAndMetadata(bead_id, key) {
+      const r = await runJson(['show', bead_id, '--json'], opts);
+      if (r && typeof r.code === 'number' && r.code !== 0) {
+        throw new Error(
+          `bd show ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
+      const issue = unwrapShowJson(r && r.stdoutJson);
+      if (!issue || typeof issue !== 'object') {
+        throw new Error(`bd show ${bead_id} returned an unreadable payload`);
+      }
+      const md = issue.metadata;
+      const v =
+        md && typeof md === 'object'
+          ? /** @type {Record<string, unknown>} */ (md)[key]
+          : undefined;
+      return {
+        status: typeof issue.status === 'string' ? issue.status : null,
+        value: v == null ? null : String(v)
+      };
     },
 
     /**

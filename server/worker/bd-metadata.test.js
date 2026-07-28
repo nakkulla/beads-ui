@@ -283,3 +283,55 @@ describe('worker/bd-metadata listResolvedPrBeads (UI-7agi §1)', () => {
     ).rejects.toThrow(/non-array payload/);
   });
 });
+
+describe('worker/bd-metadata readStatusAndMetadata (impl review 2026-07-28)', () => {
+  test('reads status and one metadata key from a single bd show', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [
+        {
+          id: 'UI-1',
+          status: 'resolved',
+          metadata: { pr_url: 'https://github.com/o/r/pull/7' }
+        }
+      ]
+    }));
+
+    const r = await createBdMetadata({ runJson }).readStatusAndMetadata(
+      'UI-1',
+      'pr_url'
+    );
+
+    expect(r).toEqual({
+      status: 'resolved',
+      value: 'https://github.com/o/r/pull/7'
+    });
+    expect(runJson).toHaveBeenCalledTimes(1);
+  });
+
+  test('reports an absent key as null without failing the read', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: { id: 'UI-1', status: 'open', metadata: {} }
+    }));
+
+    expect(
+      await createBdMetadata({ runJson }).readStatusAndMetadata(
+        'UI-1',
+        'pr_url'
+      )
+    ).toEqual({ status: 'open', value: null });
+  });
+
+  test('throws on a non-zero exit rather than reporting a null pair', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 1,
+      stdoutJson: null,
+      stderr: 'bd down'
+    }));
+
+    await expect(
+      createBdMetadata({ runJson }).readStatusAndMetadata('UI-1', 'pr_url')
+    ).rejects.toThrow(/bd show UI-1 failed \(1\)/);
+  });
+});

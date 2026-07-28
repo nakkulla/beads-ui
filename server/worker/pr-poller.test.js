@@ -690,6 +690,39 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     expect(prDetail).toHaveBeenCalledTimes(1);
   });
 
+  test('fans out once when the last external row disappears', async () => {
+    /** @type {any[]} */
+    let rows = [{ bead_id: 'UI-ext' }];
+    const observations = createPrObservationStore();
+    const { poller, notifyChanged } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      observations,
+      external: {
+        refresh: vi.fn(async () => {}),
+        list: () =>
+          rows.map((r) => ({
+            bead_id: r.bead_id,
+            pr_url: PR_URL,
+            pr_number: 304,
+            added_at: 1
+          }))
+      }
+    });
+    await poller.tick();
+    notifyChanged.mockClear();
+
+    rows = [];
+    await poller.tick();
+
+    expect(notifyChanged).toHaveBeenCalledTimes(1);
+    expect(observations.get('/ws', 'UI-ext')).toBe(null);
+
+    notifyChanged.mockClear();
+    await poller.tick();
+
+    expect(notifyChanged).not.toHaveBeenCalled();
+  });
+
   test('records pr_ref_unknown for an external row whose url is unparseable', async () => {
     const { poller, observations, prDetail } = makePoller({
       queue: queueOf({ pr_wait: [] }),
