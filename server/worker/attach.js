@@ -37,6 +37,7 @@ import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { emitQueueChanged } from './queue-events.js';
+import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
@@ -310,6 +311,7 @@ export function defaultProbePid(pid) {
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
  *   notify?: any,
+ *   reviseDisposition?: any,
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -397,6 +399,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // takes effect without a restart.
   const notify = options.notify || createNotifier({ getConfig });
 
+  // The disposition actions need the scheduler and the scheduler needs their
+  // completion verdict, so the dep is a late-bound indirection rather than a
+  // constructor argument. Before the binding lands (it does, one statement
+  // later) the verdict fails closed, which is also what an attachment built
+  // without disposition wiring reports.
+  /** @type {ReturnType<typeof createReviseDisposition>|null} */
+  let reviseDisposition = null;
+
   const probePid = options.probePid || defaultProbePid;
 
   // Detached-session monitors (UI-o2yt §3.3). Built here, started by
@@ -424,10 +434,45 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     usage: runtime.usageStore,
     admission,
     notify,
+    disposition: {
+      /**
+       * @param {{ workspace: string, attempt_id: string, bead_id: string, kind: string, prior_receipt?: string|null, target_base?: string|null }} input
+       */
+      complete(input) {
+        return reviseDisposition
+          ? reviseDisposition.complete(input)
+          : Promise.resolve({ ok: false, reason: 'no_disposition_dep' });
+      },
+      /**
+       * @param {string} bead_id
+       */
+      release(bead_id) {
+        reviseDisposition?.release(bead_id);
+      }
+    },
     probePid,
     sessionMonitors,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
+
+  // REVISE-parking disposition (UI-hs11 §3.2–§3.4): the two human clicks that
+  // dispose of a bead parked at `blocked_reason=spec_review_stale:revise`.
+  // Wired with the SAME queue store, parking-observation cache, lock manager
+  // and scheduler the decoration and dispatch use, so a click can never act on
+  // a different view of the world than the badge it followed.
+  reviseDisposition =
+    options.reviseDisposition ||
+    createReviseDisposition({
+      workspace: keyFor(workspace_root),
+      repo,
+      store: runtime.queueStore,
+      bd: createBdMetadata({ cwd: workspace_root }),
+      parked: runtime.reviseParked,
+      scheduler,
+      locks: runtime.locks,
+      gitRun,
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+    });
 
   // The periodic reconcile pass. `createPoller` is reused for the unref'd
   // interval and its double-start guard, but its gate is a SUBSCRIBER gate and
@@ -529,6 +574,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reconciler,
     prPoller,
     prActions,
+    reviseDisposition,
     sessionMonitors,
     bd,
     admission,
@@ -804,6 +850,40 @@ export async function discardWorkerPr(workspace_root, bead_id) {
     return { ok: false, reason: 'no_attachment' };
   }
   return att.prActions.discard(bead_id);
+}
+
+/**
+ * Run the [finding 수용·수정] disposition click for a parked bead (UI-hs11
+ * §3.3), IF an attachment is registered. Inert without one — a ws-handler test
+ * never reaches bd or a spawn, and an unattached workspace could not have
+ * dispatched the parking session in the first place.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+ */
+export async function reviseFixWorkerBead(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.reviseDisposition) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.reviseDisposition.fix(bead_id);
+}
+
+/**
+ * Run the [승인하고 진행] disposition click for a parked bead (UI-hs11 §3.4),
+ * IF an attachment is registered. Inert without one.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<{ ok: boolean, reason?: string, sha?: string }>}
+ */
+export async function reviseApproveWorkerBead(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.reviseDisposition) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.reviseDisposition.approve(bead_id);
 }
 
 /**

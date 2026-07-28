@@ -218,3 +218,70 @@ describe('worker/bd-metadata fail-closed writes (implementation review 2026-07-2
     );
   });
 });
+
+describe('worker/bd-metadata one-write disposition update (UI-hs11)', () => {
+  test('composes set, unset, status and notes into a single bd update', async () => {
+    /** @type {string[][]} */
+    const argv = [];
+    const run = vi.fn(async (/** @type {string[]} */ args) => {
+      argv.push(args);
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    await createBdMetadata({ run, cwd: '/repo' }).updateFields('UI-1', {
+      set: { spec_review: 'skipped@' + 'a'.repeat(40) },
+      unset: ['blocked_reason'],
+      status: 'open',
+      append_notes: '처분 계보'
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(argv[0]).toEqual([
+      'update',
+      'UI-1',
+      '--set-metadata',
+      'spec_review=skipped@' + 'a'.repeat(40),
+      '--unset-metadata',
+      'blocked_reason',
+      '--status',
+      'open',
+      '--append-notes',
+      '처분 계보'
+    ]);
+  });
+
+  test('runs nothing when the input carries no field', async () => {
+    const run = vi.fn();
+
+    await createBdMetadata({ run }).updateFields('UI-1', {});
+
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('a non-zero exit THROWS so a half-applied disposition cannot read as done', async () => {
+    const run = vi.fn(async () => ({ code: 1, stdout: '', stderr: 'boom' }));
+
+    await expect(
+      createBdMetadata({ run }).updateFields('UI-1', { status: 'open' })
+    ).rejects.toThrow(/bd update UI-1 failed \(1\)/);
+  });
+
+  test('readIssue returns the whole issue and throws on an unreadable payload', async () => {
+    const ok = createBdMetadata({
+      runJson: async () => ({
+        code: 0,
+        stdoutJson: { id: 'UI-1', status: 'blocked' }
+      })
+    });
+    const broken = createBdMetadata({
+      runJson: async () => ({ code: 0, stdoutJson: 'nope' })
+    });
+
+    await expect(ok.readIssue('UI-1')).resolves.toMatchObject({
+      status: 'blocked'
+    });
+    await expect(broken.readIssue('UI-1')).rejects.toThrow(
+      /unreadable payload/
+    );
+  });
+});

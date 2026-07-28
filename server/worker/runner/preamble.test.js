@@ -111,3 +111,17 @@ describe('runner/preamble merge axis removal (worker-phase2 §2)', () => {
     expect(with_retired).toBe(plain);
   });
 });
+
+describe('runner/preamble disposition sessions (UI-hs11 §3.3)', () => {
+  test('drops the PR-submit directive when the session opens no PR', () => {
+    const out = applyPreamble('처분하라', { pr_submit: false });
+
+    expect(out).not.toContain('PR 제출까지 수행하고');
+    expect(out).toContain('무인 모드');
+    expect(out).toContain('가드 계약 고지');
+  });
+
+  test('keeps the PR-submit directive by default', () => {
+    expect(applyPreamble('작업하라')).toContain('PR 제출까지 수행하고');
+  });
+});

@@ -77,11 +77,16 @@ export function defaultTaskPrompt(bead_id) {
 
 /**
  * Compose the full prompt sent to a runner: the unattended preamble, an optional
- * fast_track directive, the always-on PR-submit and guard-contract directives,
- * then the caller's base prompt.
+ * fast_track directive, the PR-submit and guard-contract directives, then the
+ * caller's base prompt.
+ *
+ * `pr_submit: false` drops the PR-submit directive — the ONE session shape that
+ * must not open a PR is the REVISE-disposition repair (UI-hs11 §3.3), which
+ * commits a spec fix on the shared target_base checkout and ends. Leaving the
+ * directive in would order it to do exactly what its own task prompt forbids.
  *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ fast_track?: boolean }} [options]
+ * @param {{ fast_track?: boolean, pr_submit?: boolean }} [options]
  * @returns {string} The preamble-wrapped prompt.
  */
 export function applyPreamble(base_prompt, options = {}) {
@@ -89,7 +94,9 @@ export function applyPreamble(base_prompt, options = {}) {
   if (options.fast_track) {
     parts.push(FAST_TRACK_DIRECTIVE);
   }
-  parts.push(PR_SUBMIT_DIRECTIVE);
+  if (options.pr_submit !== false) {
+    parts.push(PR_SUBMIT_DIRECTIVE);
+  }
   parts.push(GUARD_CONTRACT_DIRECTIVE);
   parts.push(String(base_prompt ?? ''));
   return parts.join('\n\n');

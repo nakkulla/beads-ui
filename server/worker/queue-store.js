@@ -107,6 +107,22 @@
  * to run the contract's in-session re-review lane before implementing. Recorded
  * durably so the activity log and the UI can tell a plain attempt from one that
  * spent its opening on a receipt refresh. Defaults false.
+ * @property {string|null} disposition - Which REVISE-parking disposition this
+ * attempt is (UI-hs11 §3.3), or null for an ordinary implementation attempt.
+ * Recorded durably because it is what routes the termination away from the
+ * PR-existence verdict — a session that opens no PR must not be judged by one,
+ * and a restart has to be able to tell the two kinds apart.
+ * @property {string|null} disposition_receipt - The `spec_review` value the
+ * disposition is replacing. Durable for the same reason: after a restart the
+ * completion verdict has no in-memory record of what the receipt used to be,
+ * and "the receipt changed" is the whole judgment.
+ * @property {boolean} disposition_resume - Whether this disposition attempt was
+ * launched with the `--resume` argv. A resume whose transcript turned out to be
+ * gone is retried ONCE as a fresh substitute session, and this flag is what
+ * bounds that retry to one.
+ * @property {string|null} disposition_prompt - The task prompt this disposition
+ * was launched with. Durable so the substitute session can be launched with the
+ * identical instruction without re-deriving it — and so a restart can too.
  */
 /**
  * @typedef {Object} Queue
@@ -355,7 +371,11 @@ export function makeAttempt(fields) {
     guard_kill: isRecord(fields.guard_kill)
       ? /** @type {Attempt['guard_kill']} */ (fields.guard_kill)
       : null,
-    spec_review_stale: fields.spec_review_stale === true
+    spec_review_stale: fields.spec_review_stale === true,
+    disposition: fields.disposition ?? null,
+    disposition_receipt: fields.disposition_receipt ?? null,
+    disposition_resume: fields.disposition_resume === true,
+    disposition_prompt: fields.disposition_prompt ?? null
   };
 }
 
