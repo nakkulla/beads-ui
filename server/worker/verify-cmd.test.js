@@ -725,6 +725,65 @@ describe('worker/verify-cmd — full output log (UI-0x54)', () => {
     expect(written.startsWith('FIRST LINE\n')).toBe(true);
   });
 
+  test('keeps a truncated file within the 10MB cap, marker included', async () => {
+    const r = await runFake((child) => {
+      for (let i = 0; i < 11; i += 1) {
+        child.stdout.emit('data', 'y'.repeat(1024 * 1024));
+      }
+      child.emit('close', 1);
+    });
+
+    expect(fs.statSync(String(r.log_path)).size).toBeLessThanOrEqual(
+      10 * 1024 * 1024
+    );
+  });
+
+  test('writes the whole chunk when writeSync only writes part of it', async () => {
+    const fs_impl = /** @type {any} */ ({
+      ...fs,
+      writeSync: (
+        /** @type {number} */ fd,
+        /** @type {Buffer} */ buf,
+        /** @type {number} */ offset,
+        /** @type {number} */ length
+      ) => fs.writeSync(fd, buf, offset, Math.min(length, 5))
+    });
+
+    const r = await runFake(
+      (child) => {
+        child.stdout.emit(
+          'data',
+          'a long line the kernel only takes in bits\n'
+        );
+        child.emit('close', 1);
+      },
+      { fs_impl }
+    );
+
+    expect(fs.readFileSync(String(r.log_path), 'utf8')).toBe(
+      'a long line the kernel only takes in bits\n'
+    );
+  });
+
+  test('keeps the verdict and omits log_path when a write makes no progress', async () => {
+    const fs_impl = /** @type {any} */ ({ ...fs, writeSync: () => 0 });
+
+    const r = await runFake(
+      (child) => {
+        child.stdout.emit('data', 'never lands\n');
+        child.emit('close', 3);
+      },
+      { fs_impl }
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'verify_cmd_failed',
+      exit: 3
+    });
+    expect(r.log_path).toBeUndefined();
+  });
+
   test('prunes the log directory to 20 files', async () => {
     const dir = verifyLogDir(WS);
     fs.mkdirSync(dir, { recursive: true });

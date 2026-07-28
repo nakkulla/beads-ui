@@ -216,6 +216,17 @@ const LOG_KEEP = 20;
 const LOG_TRUNCATED_MARKER = `\n[bdui] output truncated at ${LOG_MAX_BYTES} bytes — the rest of this run's output was dropped.\n`;
 
 /**
+ * How much of {@link LOG_MAX_BYTES} the command's OWN output may use. The
+ * marker's room is reserved up front so the cap holds for the finished FILE —
+ * appending the marker on top of a full budget would push every truncated log
+ * past the bound it advertises.
+ *
+ * @type {number}
+ */
+const LOG_DATA_MAX_BYTES =
+  LOG_MAX_BYTES - Buffer.byteLength(LOG_TRUNCATED_MARKER, 'utf8');
+
+/**
  * Where a verify run's full output is preserved (UI-0x54). Explicit because
  * `runVerifyCmd`'s `cwd` is a throwaway detached worktree that cannot name a
  * stable state directory; a caller that omits this — the shared deploy path —
@@ -275,6 +286,29 @@ function rotateVerifyLogs(fs, dir) {
 }
 
 /**
+ * Write a whole buffer, however many syscalls that takes.
+ *
+ * `writeSync` is allowed to write FEWER bytes than it was given and report the
+ * count; taking the call's return for granted would silently drop the middle of
+ * a log while still reporting a complete file. A call that makes no progress at
+ * all is a failure — retrying it forever would hang the verify run.
+ *
+ * @param {typeof import('node:fs')} fs
+ * @param {number} fd
+ * @param {Buffer} buf
+ */
+function writeFully(fs, fd, buf) {
+  let offset = 0;
+  while (offset < buf.length) {
+    const n = fs.writeSync(fd, buf, offset, buf.length - offset);
+    if (!(n > 0)) {
+      throw new Error(`short write: no progress at offset ${offset}`);
+    }
+    offset += n;
+  }
+}
+
+/**
  * Open the full-output log for one verify run.
  *
  * Fail-quiet by construction: a null return (the open failed) means the run
@@ -319,7 +353,7 @@ function openVerifyLog(log_context, fs) {
         return;
       }
       const buf = Buffer.from(chunk, 'utf8');
-      const room = LOG_MAX_BYTES - written;
+      const room = LOG_DATA_MAX_BYTES - written;
       if (buf.length > room) {
         truncated = true;
       }
@@ -328,7 +362,7 @@ function openVerifyLog(log_context, fs) {
       }
       const slice = buf.length > room ? buf.subarray(0, room) : buf;
       try {
-        fs.writeSync(fd, slice);
+        writeFully(fs, fd, slice);
         written += slice.length;
       } catch (err) {
         failed = true;
@@ -349,7 +383,7 @@ function openVerifyLog(log_context, fs) {
       closed = true;
       if (truncated && !failed) {
         try {
-          fs.writeSync(fd, Buffer.from(LOG_TRUNCATED_MARKER, 'utf8'));
+          writeFully(fs, fd, Buffer.from(LOG_TRUNCATED_MARKER, 'utf8'));
         } catch (err) {
           failed = true;
           log('verify log write failed for %s: %s', file, errorDetail(err));
