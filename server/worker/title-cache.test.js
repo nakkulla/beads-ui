@@ -262,6 +262,38 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
     expect(bd.runJson).toHaveBeenCalledTimes(1);
   });
 
+  test('fans out once when it joins a snapshot lookup already in flight', async () => {
+    const bd = fakeBd({ 'UI-1': '한 번만' }, { deferred: true });
+    const cache = createTitleCache({ runJson: bd.runJson });
+    const onFilled = vi.fn();
+    cache.setOnFilled(onFilled);
+
+    cache.titlesFor('/ws', ['UI-1']);
+    const pending = cache.ensureTitle('/ws', 'UI-1');
+    bd.release();
+    await pending;
+    await bd.settled();
+
+    expect(onFilled).toHaveBeenCalledTimes(1);
+  });
+
+  test('fans out once for concurrent ensureTitle callers', async () => {
+    const bd = fakeBd({ 'UI-1': '한 번만' }, { deferred: true });
+    const cache = createTitleCache({ runJson: bd.runJson });
+    const onFilled = vi.fn();
+    cache.setOnFilled(onFilled);
+
+    const both = Promise.all([
+      cache.ensureTitle('/ws', 'UI-1'),
+      cache.ensureTitle('/ws', 'UI-1')
+    ]);
+    await vi.waitFor(() => expect(bd.runJson).toHaveBeenCalledTimes(1));
+    bd.release();
+    await both;
+
+    expect(onFilled).toHaveBeenCalledTimes(1);
+  });
+
   test('feeds a title it warmed to the snapshot fanout', async () => {
     const bd = fakeBd({ 'UI-1': '첫 제목' });
     const cache = createTitleCache({ runJson: bd.runJson });

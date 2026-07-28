@@ -110,9 +110,12 @@ function headline(transition, bead_id, bead_title) {
   if (!bead_title) {
     return `${transition} — ${id}`;
   }
+  // Counted in code POINTS, not UTF-16 units: slicing a title mid-surrogate
+  // would put a broken character in the preview.
+  const chars = Array.from(bead_title);
   const title =
-    bead_title.length > TITLE_MAX
-      ? `${bead_title.slice(0, TITLE_MAX)}…`
+    chars.length > TITLE_MAX
+      ? `${chars.slice(0, TITLE_MAX).join('')}…`
       : bead_title;
   return `${transition} — ${id} ${title}`;
 }
@@ -179,13 +182,14 @@ export function createNotifier(deps) {
    * quiet flag — a message with no mention does not reach the notification
    * centre at all under a mention-only channel setting (UI-vb0t §3.1).
    *
+   * The argv is passed IN, not resolved here: the caller has to know whether
+   * notifications are on before it does any work, so it reads the config first
+   * and hands the result down.
+   *
+   * @param {string[]} cmd
    * @param {string} message
    */
-  function send(message) {
-    const cmd = resolveCmd();
-    if (!cmd) {
-      return;
-    }
+  function send(cmd, message) {
     try {
       const child = spawnImpl(cmd[0], [...cmd.slice(1), message], {
         stdio: 'ignore',
@@ -267,6 +271,12 @@ export function createNotifier(deps) {
   return {
     async attemptStarted(input) {
       try {
+        // Config FIRST, before any lookup: notifications being off has to stay
+        // a pure no-op, not a `bd show` whose result is thrown away.
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
         // The dispatch snapshot already carries the title; only the resumed and
         // conflict launches have to go and read it.
         const bead_title =
@@ -288,7 +298,7 @@ export function createNotifier(deps) {
         if (exec.length > 0) {
           lines.push(`실행: ${exec}`);
         }
-        send(lines.join('\n'));
+        send(cmd, lines.join('\n'));
       } catch (err) {
         log('attemptStarted failed: %o', err);
       }
@@ -296,6 +306,10 @@ export function createNotifier(deps) {
 
     async attemptFailed(input) {
       try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
         const bead_title = await lookupTitle(input.bead_id);
         const lines = [headline(TITLE.failed, input.bead_id, bead_title)];
         const cause = text(input.cause);
@@ -317,7 +331,7 @@ export function createNotifier(deps) {
             lines.push(`명령: ${command}`);
           }
         }
-        send(lines.join('\n'));
+        send(cmd, lines.join('\n'));
       } catch (err) {
         log('attemptFailed failed: %o', err);
       }
@@ -325,8 +339,12 @@ export function createNotifier(deps) {
 
     async prWaitEntered(input) {
       try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
         const bead_title = await lookupTitle(input.bead_id);
-        send(prBody(TITLE.pr_wait, input, bead_title));
+        send(cmd, prBody(TITLE.pr_wait, input, bead_title));
       } catch (err) {
         log('prWaitEntered failed: %o', err);
       }
@@ -340,8 +358,14 @@ export function createNotifier(deps) {
     // and the spawn has to have happened by then (UI-vb0t §3.4).
     async mergeCompleted(input) {
       try {
+        // Config first here above all: this is the one path a caller awaits, so
+        // a disabled notifier must not make the cleanup wait on a `bd show`.
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
         const bead_title = await lookupTitle(input.bead_id);
-        send(prBody(TITLE.merged, input, bead_title));
+        send(cmd, prBody(TITLE.merged, input, bead_title));
       } catch (err) {
         log('mergeCompleted failed: %o', err);
       }

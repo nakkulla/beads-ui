@@ -140,6 +140,28 @@ describe('worker/notify argv assembly', () => {
     );
   });
 
+  test('truncates on code points so a surrogate pair is never split', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.attemptStarted({ bead_id: 'UI-1', title: '🚀'.repeat(61) });
+
+    expect(messageOf(spawn.last())).toBe(
+      `🚀 beads worker · 시작 — UI-1 ${'🚀'.repeat(60)}…`
+    );
+  });
+
+  test('keeps an emoji title within the limit untouched', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.attemptStarted({ bead_id: 'UI-1', title: '🚀'.repeat(60) });
+
+    expect(messageOf(spawn.last())).toBe(
+      `🚀 beads worker · 시작 — UI-1 ${'🚀'.repeat(60)}`
+    );
+  });
+
   test('keeps a bead title exactly at the limit intact', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
@@ -351,6 +373,25 @@ describe('worker/notify bead title lookup (UI-vb0t)', () => {
 
     expect(messageOf(spawn.last())).toBe('✅ beads worker · 머지 완료 — UI-1');
     expect(log).toHaveBeenCalled();
+  });
+
+  test('reads no title when notifications are off', async () => {
+    const spawn = makeFakeSpawn();
+    const resolveTitle = vi.fn(async () => '조회된 제목');
+    const notifier = makeNotifier(
+      { enabled: false, cmd: ['discord'] },
+      { spawnImpl: spawn.spawnImpl, resolveTitle }
+    );
+
+    await notifier.attemptStarted({ bead_id: 'UI-1', kind: 'resume' });
+    await notifier.attemptFailed({ bead_id: 'UI-1', cause: 'verify_failed' });
+    await notifier.prWaitEntered({ bead_id: 'UI-1' });
+    await notifier.mergeCompleted({ bead_id: 'UI-1' });
+
+    // A disabled notifier is a pure no-op: it must not spend a `bd show` — nor,
+    // on the awaited merge path, make the cleanup wait for one.
+    expect(resolveTitle).not.toHaveBeenCalled();
+    expect(spawn.calls).toHaveLength(0);
   });
 
   test('sends without a title when no lookup was injected', async () => {

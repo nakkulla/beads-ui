@@ -269,14 +269,17 @@ export function createTitleCache(options = {}) {
           }
           failed.delete(bead_id);
         }
+        if (in_flight.has(flightKey(workspace, bead_id))) {
+          // Someone else's run already covers this id and will fan out when it
+          // lands; joining it here would only duplicate that fanout.
+          continue;
+        }
         missing.push(bead_id);
       }
       if (missing.length > 0) {
         // Fire-and-forget: the decoration must stay synchronous, and `fill`
         // swallows everything it can fail on. The runs are CHAINED, so the
-        // batch still costs one `bd` at a time, and each is registered
-        // in-flight before the next id is considered — an id already running
-        // (from this or an earlier caller) yields that same run.
+        // batch still costs one `bd` at a time.
         /** @type {Promise<string|null>[]} */
         const runs = [];
         /** @type {Promise<unknown>|undefined} */
@@ -321,8 +324,11 @@ export function createTitleCache(options = {}) {
         }
         failed.delete(id);
       }
+      // Only the caller that STARTS a run announces its result — a joiner would
+      // just repeat the fanout the starter already owes.
+      const started = !in_flight.has(flightKey(workspace, id));
       const title = await lookup(workspace, id);
-      if (title) {
+      if (title && started) {
         // A title this path warmed is a title the next queue snapshot can
         // render, so the fanout is fired here too.
         announceFilled(workspace);
