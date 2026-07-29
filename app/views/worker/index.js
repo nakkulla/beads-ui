@@ -1662,6 +1662,25 @@ export function createWorkerView(mount_element, options = {}) {
         };
       });
 
+    // When a bead entered the done lane, by bead id. Every moveToDone call site
+    // runs AFTER termination is already settled (bd closed / merged PR), so a
+    // done entry is the durable snapshot of "this bead's work actually
+    // finished" — the fact the banner verdict below was missing (UI-a9ys).
+    // Raw `q.done`, not the period-filtered `done_entries`: the toolbar period
+    // is a display range for the done lane, and a bead pushed out of it is no
+    // less finished.
+    /** @type {Map<string, number>} */
+    const done_at_by_bead = new Map();
+    for (const e of /** @type {any[]} */ (q.done)) {
+      if (
+        e &&
+        typeof e.bead_id === 'string' &&
+        typeof e.added_at === 'number'
+      ) {
+        done_at_by_bead.set(e.bead_id, e.added_at);
+      }
+    }
+
     const attempts = q.attempts ? Object.values(q.attempts) : [];
     // A resumed_from carried by any attempt marks its ancestor as spent, so an
     // ancestor is never offered as a resume target (spec §1).
@@ -1755,9 +1774,27 @@ export function createWorkerView(mount_element, options = {}) {
         // Only a real failure surfaces the banner — a user pause/discard is not
         // a failure and never renders one (worker-phase1 §1) — and only an
         // UNHANDLED one: a later attempt for the same bead (↻ child, redispatch,
-        // whatever its outcome) supersedes it, and a ✕ dismisses it.
+        // whatever its outcome) supersedes it, a ✕ dismisses it, and entering
+        // the done lane AFTER the failure resolves it (UI-a9ys).
         const superseded = last_attempt_by_bead.get(a.bead_id) !== a.attempt_id;
-        if (!superseded && typeof a.dismissed_at !== 'number') {
+        // Only a done entry stamped at or after this failure resolves it.
+        // Membership alone is not enough: ↻ resume never clears lanes
+        // (scheduler `resume`/`relaunchFromAttempt`), so a stale done entry
+        // would hide the resumed child's NEW failure. Values that cannot be
+        // compared do not resolve — a legacy attempt's null finished_at, and a
+        // legacy pr_stop done entry normalized to added_at 0, which meant "PR
+        // delivered", not "closed".
+        const done_at = done_at_by_bead.get(a.bead_id);
+        const resolved_by_done =
+          typeof done_at === 'number' &&
+          done_at > 0 &&
+          typeof a.finished_at === 'number' &&
+          done_at >= a.finished_at;
+        if (
+          !superseded &&
+          !resolved_by_done &&
+          typeof a.dismissed_at !== 'number'
+        ) {
           latest_failed = a;
         }
       }
