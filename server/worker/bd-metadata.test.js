@@ -219,7 +219,7 @@ describe('worker/bd-metadata fail-closed writes (implementation review 2026-07-2
   });
 });
 
-describe('worker/bd-metadata listResolvedPrBeads (UI-7agi §1)', () => {
+describe('worker/bd-metadata scanBeads (UI-7agi §1, UI-m6bg)', () => {
   const ROWS = [
     {
       id: 'UI-1',
@@ -242,7 +242,7 @@ describe('worker/bd-metadata listResolvedPrBeads (UI-7agi §1)', () => {
   test('scans the WHOLE bd list, not the default 50-row page', async () => {
     const runJson = vi.fn(async () => ({ code: 0, stdoutJson: [] }));
 
-    await createBdMetadata({ runJson, cwd: '/repo' }).listResolvedPrBeads();
+    await createBdMetadata({ runJson, cwd: '/repo' }).scanBeads();
 
     expect(runJson).toHaveBeenCalledWith(
       ['list', '--json', '--all', '--limit', '0'],
@@ -250,14 +250,50 @@ describe('worker/bd-metadata listResolvedPrBeads (UI-7agi §1)', () => {
     );
   });
 
+  test('serves both consumers from exactly one bd process', async () => {
+    const runJson = vi.fn(async () => ({ code: 0, stdoutJson: ROWS }));
+
+    const { pr_rows, statuses } = await createBdMetadata({
+      runJson
+    }).scanBeads();
+
+    expect(runJson).toHaveBeenCalledTimes(1);
+    expect(pr_rows.length).toBe(1);
+    expect(Object.keys(statuses).length).toBe(4);
+  });
+
   test('keeps only resolved beads carrying a pr_url', async () => {
     const runJson = vi.fn(async () => ({ code: 0, stdoutJson: ROWS }));
 
-    const rows = await createBdMetadata({ runJson }).listResolvedPrBeads();
+    const { pr_rows } = await createBdMetadata({ runJson }).scanBeads();
 
-    expect(rows).toEqual([
+    expect(pr_rows).toEqual([
       { bead_id: 'UI-1', pr_url: 'https://github.com/o/r/pull/7' }
     ]);
+  });
+
+  test('maps every row status, including the non-resolved ones', async () => {
+    const runJson = vi.fn(async () => ({ code: 0, stdoutJson: ROWS }));
+
+    const { statuses } = await createBdMetadata({ runJson }).scanBeads();
+
+    expect(statuses).toEqual({
+      'UI-1': 'resolved',
+      'UI-2': 'resolved',
+      'UI-3': 'open',
+      'UI-4': 'closed'
+    });
+  });
+
+  test('omits a row with no readable status from the status map', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [{ id: 'UI-9' }, { id: 'UI-8', status: '' }]
+    }));
+
+    const { statuses } = await createBdMetadata({ runJson }).scanBeads();
+
+    expect(statuses).toEqual({});
   });
 
   test('throws on a non-zero exit instead of reading as "no external PRs"', async () => {
@@ -267,9 +303,9 @@ describe('worker/bd-metadata listResolvedPrBeads (UI-7agi §1)', () => {
       stderr: 'bd down'
     }));
 
-    await expect(
-      createBdMetadata({ runJson }).listResolvedPrBeads()
-    ).rejects.toThrow(/bd list --all failed \(1\)/);
+    await expect(createBdMetadata({ runJson }).scanBeads()).rejects.toThrow(
+      /bd list --all failed \(1\)/
+    );
   });
 
   test('throws on a non-array payload', async () => {
@@ -278,9 +314,9 @@ describe('worker/bd-metadata listResolvedPrBeads (UI-7agi §1)', () => {
       stdoutJson: { id: 'UI-1' }
     }));
 
-    await expect(
-      createBdMetadata({ runJson }).listResolvedPrBeads()
-    ).rejects.toThrow(/non-array payload/);
+    await expect(createBdMetadata({ runJson }).scanBeads()).rejects.toThrow(
+      /non-array payload/
+    );
   });
 });
 

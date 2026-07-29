@@ -3779,7 +3779,7 @@ describe('scheduler stop residue cleanup', () => {
 });
 
 describe('scheduler terminal-status dequeue', () => {
-  test('drops a closed bead from the queue instead of badging it', async () => {
+  test('moves a closed queue member into the done lane instead of badging it', async () => {
     const env = setup({
       config: { S1: { ready: false, status: 'closed' } },
       slots: 1
@@ -3790,6 +3790,7 @@ describe('scheduler terminal-status dequeue', () => {
 
     const snap = env.store.snapshot(WS);
     expect(snap.queue.map((e) => e.bead_id)).toEqual([]);
+    expect(snap.done.map((e) => e.bead_id)).toEqual(['S1']);
     expect(snap.admission.S1).toBeUndefined();
   });
 
@@ -3807,7 +3808,7 @@ describe('scheduler terminal-status dequeue', () => {
     expect(notify).toHaveBeenCalledWith(WS);
   });
 
-  test('drops a bead that closed between the scan and the dispatch re-read', async () => {
+  test('completes a bead that closed between the scan and the dispatch re-read', async () => {
     const env = setup({
       config: { S1: { notReadyAt: 2, status: 'closed' } },
       slots: 1
@@ -3817,6 +3818,7 @@ describe('scheduler terminal-status dequeue', () => {
     await env.scheduler.tick(WS);
 
     expect(env.store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual([]);
+    expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toEqual(['S1']);
     expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
     expect(env.scheduler.isRunning('S1')).toBe(false);
   });
@@ -3859,6 +3861,200 @@ describe('scheduler terminal-status dequeue', () => {
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.isRunning('S2')).toBe(true);
+  });
+});
+
+describe('scheduler closed-queue sweep (UI-m6bg)', () => {
+  /**
+   * Record one attempt for a bead WITHOUT moving it out of the waiting lane —
+   * the shape the sweep's active judgment reads.
+   *
+   * @param {any} store
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @param {Record<string, any>} patch
+   */
+  function seedAttempt(store, bead_id, attempt_id, patch) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id }
+    });
+    store.updateAttempt(WS, { attempt_id, patch });
+  }
+
+  test('moves a closed queue row into the done lane', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual([]);
+    expect(snap.done.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('keeps a resolved queue row in the queue', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'resolved' });
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(snap.done).toEqual([]);
+  });
+
+  test('keeps an open queue row in the queue', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'open' });
+
+    expect(env.store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('keeps an in_progress queue row in the queue', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'in_progress' });
+
+    expect(env.store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('writes nothing for a bead the status read did not return', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    const revision = env.store.snapshot(WS).revision;
+
+    env.scheduler.sweepClosedQueue(WS, { S2: 'closed' });
+
+    expect(env.store.snapshot(WS).revision).toBe(revision);
+    expect(env.store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('writes nothing when handed a non-object status map', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    const revision = env.store.snapshot(WS).revision;
+
+    env.scheduler.sweepClosedQueue(WS, /** @type {any} */ (null));
+
+    expect(env.store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('leaves a closed bead sitting in pr_wait and the merge queue alone', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    seedAttempt(env.store, 'S1', 'att-1', { status: 'done' });
+    env.store.moveToPrWait(WS, {
+      bead_id: 'S1',
+      attempt_id: 'att-1',
+      patch: { status: 'done' }
+    });
+    env.store.enqueueMerge(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      entries: [{ bead_id: 'S1' }]
+    });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.pr_wait.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(snap.merge_queue.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(snap.done).toEqual([]);
+  });
+
+  test('keeps a closed bead the dispatch already claimed in the queue', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    // Hang the worktree creation: the claim is taken and no attempt is recorded
+    // yet, which is the pre-attempt window `active_bead_ids` cannot see.
+    env.worktree.add.mockImplementation(() => new Promise(() => {}));
+    seedQueue(env.store, ['S1']);
+    const dispatching = env.scheduler.tick(WS);
+    await flush();
+    await flush();
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    expect(env.store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['S1']);
+    dispatching.catch(() => {});
+  });
+
+  test('keeps a closed bead holding a leaf paused attempt in the queue', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    seedAttempt(env.store, 'S1', 'att-1', { status: 'paused' });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    expect(env.store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('keeps a closed bead holding an unfinished attempt in the queue', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    seedAttempt(env.store, 'S1', 'att-1', { status: 'running' });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    expect(env.store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('moves a closed row whose only attempt already finished', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    seedAttempt(env.store, 'S1', 'att-1', { status: 'failed' });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('cleans up with auto_advance off, where no tick pass ever runs', async () => {
+    const env = setup({
+      config: { S1: { ready: false, status: 'closed' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    env.store.setAutoAdvance(WS, false);
+    await env.scheduler.tick(WS);
+    expect(env.store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['S1']);
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('fans out one snapshot push for the whole sweep', () => {
+    const notify = vi.fn();
+    const env = setup({
+      config: { S1: {}, S2: {} },
+      slots: 1,
+      notifyQueueChanged: notify
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+    notify.mockClear();
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed', S2: 'closed' });
+
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  test('pushes no snapshot when the sweep moved nothing', () => {
+    const notify = vi.fn();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      notifyQueueChanged: notify
+    });
+    seedQueue(env.store, ['S1']);
+    notify.mockClear();
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'open' });
+
+    expect(notify).not.toHaveBeenCalled();
   });
 });
 
