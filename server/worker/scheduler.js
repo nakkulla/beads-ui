@@ -67,6 +67,25 @@ export const PID_START_TOLERANCE_MS = 2000;
 const CAUSE_DETAIL_COMMAND_MAX = 512;
 
 /**
+ * Attempt statuses that mean the attempt is over. The lifecycle vocabulary is
+ * `running`/`done`/`failed`/`orphaned`/`paused`/`stopped` (queue-store's
+ * `Attempt.status`); `orphaned` belongs here with `failed` — the record is
+ * resumable by a human click, but nothing is running. `paused` is the one
+ * non-terminal status that can still be history-only, so it is judged by leaf
+ * (see `sweepClosedQueue`) rather than by this set. Anything OUTSIDE the set
+ * (including a missing status) reads as still-active wherever the safe default
+ * is to leave a bead alone.
+ *
+ * @type {Set<string>}
+ */
+const TERMINAL_ATTEMPT_STATUSES = new Set([
+  'done',
+  'failed',
+  'orphaned',
+  'stopped'
+]);
+
+/**
  * Project a session's `blocked_detail` onto the attempt's durable
  * `cause_detail` (UI-2o4z §2). Undefined when the session left nothing to
  * record, so the patch keeps the field null instead of inventing one.
@@ -211,6 +230,7 @@ function staleDispatchPrompt(bead_id, stale) {
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   reconcile: (workspace: string) => Promise<void>,
+ *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
  *   runningCount: () => number,
  *   runningBeads: () => string[],
  *   isRunning: (bead_id: string) => boolean
@@ -489,11 +509,21 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Drop a bead whose bd status is terminal out of the queue instead of badging
-   * it. A bead closed outside the worker (a manual PR merge) can never become
+   * Dispose of a bead whose bd status is terminal instead of badging it. A bead
+   * closed outside the worker (a manual PR merge) can never become
    * dispatchable, so the badge would repeat on every tick forever. Only `closed`
    * qualifies — `resolved`/`in_progress` are states work can still move out of,
    * and their badge is the information.
+   *
+   * A queue-lane member goes to DONE, not out of the lanes (UI-m6bg §결함 1):
+   * the candidate lane is synthesized as `ready − (queue ∪ pr_wait ∪ done)`, so
+   * a dropped `closed` bead — never `ready` — simply vanished from the screen
+   * instead of reading as finished work. A member of any other lane (`pr_wait`)
+   * keeps the old drop disposition; that is out of this spec's scope.
+   *
+   * `moveToDone` does NOT clear the `admission` record `dropFromQueue` deleted.
+   * The spec accepts the residue: a bead sent to done has its admission
+   * re-evaluated on the next queue placement.
    *
    * @param {string} workspace
    * @param {string} bead_id
@@ -504,11 +534,111 @@ export function createScheduler(deps) {
     if (snap.status !== 'closed') {
       return false;
     }
-    const result = deps.store.dropFromQueue(workspace, { bead_id });
+    const in_queue = deps.store
+      .snapshot(workspace)
+      .queue.some(
+        (/** @type {{ bead_id: string }} */ e) => e.bead_id === bead_id
+      );
+    const result = in_queue
+      ? deps.store.moveToDone(workspace, { bead_id })
+      : deps.store.dropFromQueue(workspace, { bead_id });
     if (result && result.ok) {
       notifyChanged(workspace);
     }
     return true;
+  }
+
+  /**
+   * Move every queue-lane bead bd has already closed into the Done lane
+   * (UI-m6bg §확정 트리거). {@link dequeueIfClosed} only ever runs inside a
+   * scheduler tick, and a tick returns immediately when `auto_advance` is off —
+   * which is exactly the workspace where a bead finished in a normal session
+   * sits in the waiting lane forever. This sweep is the `auto_advance`-
+   * independent trigger for the same disposition.
+   *
+   * `statuses` is the CALLER's authoritative read (the poller's `bd list` pass
+   * hands its own response in), so this sweep spawns no `bd` process of its own
+   * and never substitutes a cached or guessed status: a bead absent from the map
+   * is skipped silently, and the next pass judges it again.
+   *
+   * SYNCHRONOUS on purpose — there is no `await` anywhere in the body. That is
+   * what makes the window between the active judgment and the mutation empty, so
+   * a dispatch cannot interleave between them; the spec's "변이 직전에 활성
+   * 여부를 재확인한다" is satisfied structurally instead of by a redundant second
+   * read.
+   *
+   * @param {string} workspace
+   * @param {Record<string, string>} statuses - Bead id → bd status, from THIS pass.
+   */
+  function sweepClosedQueue(workspace, statuses) {
+    if (!statuses || typeof statuses !== 'object') {
+      return;
+    }
+    const q = deps.store.snapshot(workspace);
+    const paused_beads = leafPausedBeads(q);
+    // Active is the SCHEDULER-owned union, not the client's `active_bead_ids`:
+    // that one omits the pre-attempt dispatch claim, so a bead already picked
+    // for launch would read as idle here.
+    //
+    // A `paused` attempt that was already resumed is HISTORY, not a live pause —
+    // counting it would fence its bead out of the sweep forever, which is the
+    // opposite of the leaf judgment {@link leafPausedBeads} makes for the queue
+    // scan. `paused_beads` above already carries the live ones.
+    const attempts = Object.values(q.attempts || {});
+    const resumed_from = new Set(
+      attempts
+        .map((a) => a && /** @type {any} */ (a).resumed_from)
+        .filter(Boolean)
+    );
+    /** @type {Set<string>} */
+    const attempt_active = new Set();
+    for (const attempt of attempts) {
+      const a = /** @type {any} */ (attempt);
+      if (!a || typeof a.bead_id !== 'string') {
+        continue;
+      }
+      if (TERMINAL_ATTEMPT_STATUSES.has(a.status)) {
+        continue;
+      }
+      if (a.status === 'paused' && resumed_from.has(a.attempt_id)) {
+        continue;
+      }
+      attempt_active.add(a.bead_id);
+    }
+    let moved = false;
+    try {
+      for (const entry of q.queue) {
+        const bead_id = entry && entry.bead_id;
+        if (typeof bead_id !== 'string' || bead_id.length === 0) {
+          continue;
+        }
+        // `resolved` is deliberately NOT swept: PR Delivery is done but the
+        // merge is not, and the external overlay is drawing that bead in the
+        // PR-wait lane. Same judgment {@link dequeueIfClosed} makes.
+        if (statuses[bead_id] !== 'closed') {
+          continue;
+        }
+        if (
+          claimed.has(bead_id) ||
+          dispatch_refused.has(bead_id) ||
+          paused_beads.has(bead_id) ||
+          attempt_active.has(bead_id)
+        ) {
+          continue;
+        }
+        const result = deps.store.moveToDone(workspace, { bead_id });
+        if (result && result.ok) {
+          moved = true;
+        }
+      }
+    } finally {
+      // A persist that throws mid-sweep leaves the EARLIER moves durable. The
+      // caller swallows the error, so without the finally those rows would sit
+      // in `done` on disk while every subscriber still renders them as waiting.
+      if (moved) {
+        notifyChanged(workspace);
+      }
+    }
   }
 
   /**
@@ -2951,10 +3081,24 @@ export function createScheduler(deps) {
     }
 
     // Claim synchronously, then dispatch (dispatch re-reads authoritatively).
-    for (const d of to_dispatch) {
+    //
+    // The lane is re-read HERE, in the same synchronous block as the claim: the
+    // scan above spans awaits (bd snapshot, admission), and the closed-queue
+    // sweep runs on the poller cadence inside one of those windows. A bead the
+    // sweep completed into `done` while this pass was awaiting is no longer a
+    // queue member, and launching it would both run finished work and delete
+    // the `done` row the sweep just wrote. Nothing can move a bead between this
+    // read and the claim, so the check is not merely advisory.
+    const live_queue = new Set(
+      deps.store
+        .snapshot(workspace)
+        .queue.map((/** @type {{ bead_id: string }} */ e) => e.bead_id)
+    );
+    const to_launch = to_dispatch.filter((d) => live_queue.has(d.bead_id));
+    for (const d of to_launch) {
       claimed.add(d.bead_id);
     }
-    await Promise.all(to_dispatch.map((d) => dispatch(workspace, d.bead_id)));
+    await Promise.all(to_launch.map((d) => dispatch(workspace, d.bead_id)));
   }
 
   /**
@@ -3166,6 +3310,7 @@ export function createScheduler(deps) {
     dispatchExternalConflict,
     dispatchReviseFix,
     reconcile,
+    sweepClosedQueue,
     runningCount() {
       return running.size;
     },

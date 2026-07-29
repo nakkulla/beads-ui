@@ -818,3 +818,124 @@ describe('worker/attach createLiveBd fail-visible snapshots', () => {
     expect(snap.ready).toBe(false);
   });
 });
+
+describe('worker/attach closed-queue sweep trigger (UI-m6bg)', () => {
+  /**
+   * An attachment whose only bd surface is the whole-list scan the poller pass
+   * already makes — the seam the sweep rides.
+   *
+   * @param {any} runtime
+   * @param {() => Promise<any>} scanBeads
+   */
+  function attachWithScan(runtime, scanBeads) {
+    return createWorkerAttachment(WS, {
+      runtime,
+      bd: { ...fakeBd(), scanBeads },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+  }
+
+  test('one scan moves a closed queue row into the done lane', async () => {
+    const runtime = createWorkerRuntime();
+    const scanBeads = vi.fn(async () => ({
+      pr_rows: [],
+      statuses: { S1: 'closed' }
+    }));
+    const att = attachWithScan(runtime, scanBeads);
+    seedQueue(runtime.queueStore, 'S1');
+
+    await att.refreshExternalPrs();
+
+    const snap = runtime.queueStore.snapshot(WS);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual([]);
+    expect(snap.done.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(scanBeads).toHaveBeenCalledTimes(1);
+  });
+
+  test('cleans up with auto_advance off, where no tick pass ever runs', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachWithScan(runtime, async () => ({
+      pr_rows: [],
+      statuses: { S1: 'closed' }
+    }));
+    seedQueue(runtime.queueStore, 'S1');
+    runtime.queueStore.setAutoAdvance(WS, false);
+    await tickWorkerQueue(WS);
+    expect(runtime.queueStore.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(
+      ['S1']
+    );
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.queueStore.snapshot(WS).done.map((e) => e.bead_id)).toEqual([
+      'S1'
+    ]);
+  });
+
+  test('spends no bd process per queued bead — the scan IS the read', async () => {
+    const runtime = createWorkerRuntime();
+    const scanBeads = vi.fn(async () => ({
+      pr_rows: [],
+      statuses: { S1: 'closed', S2: 'closed', S3: 'closed' }
+    }));
+    const att = attachWithScan(runtime, scanBeads);
+    for (const id of ['S1', 'S2', 'S3']) {
+      seedQueue(runtime.queueStore, id);
+    }
+
+    await att.refreshExternalPrs();
+
+    expect(scanBeads).toHaveBeenCalledTimes(1);
+    expect(runtime.queueStore.snapshot(WS).done.map((e) => e.bead_id)).toEqual([
+      'S1',
+      'S2',
+      'S3'
+    ]);
+  });
+
+  test('a failed scan mutates nothing', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachWithScan(runtime, async () => {
+      throw new Error('bd down');
+    });
+    seedQueue(runtime.queueStore, 'S1');
+    const revision = runtime.queueStore.snapshot(WS).revision;
+
+    await expect(att.refreshExternalPrs()).rejects.toThrow(/bd down/);
+
+    expect(runtime.queueStore.snapshot(WS).revision).toBe(revision);
+    expect(runtime.queueStore.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(
+      ['S1']
+    );
+  });
+
+  test('an older scan settling last never applies its stale status', async () => {
+    const runtime = createWorkerRuntime();
+    /** @type {((value: any) => void)[]} */
+    const gate = [];
+    const att = attachWithScan(
+      runtime,
+      () =>
+        new Promise((resolve) => {
+          gate.push(resolve);
+        })
+    );
+    seedQueue(runtime.queueStore, 'S1');
+
+    const stale = att.refreshExternalPrs();
+    const fresh = att.refreshExternalPrs();
+    await waitFor(() => gate.length === 2);
+    // Newest first: the reopened reading wins and the older `closed` one, which
+    // settles after it, must not move the row.
+    gate[1]({ pr_rows: [], statuses: { S1: 'open' } });
+    await fresh;
+    gate[0]({ pr_rows: [], statuses: { S1: 'closed' } });
+    await stale;
+
+    const snap = runtime.queueStore.snapshot(WS);
+    expect(snap.queue.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(snap.done).toEqual([]);
+  });
+});

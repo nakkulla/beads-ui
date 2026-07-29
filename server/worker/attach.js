@@ -547,29 +547,66 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   };
 
   /**
+   * Monotonic counter ordering overlapping {@link refreshExternalPrs} calls:
+   * only the newest scan in flight may apply its result.
+   */
+  let external_scan_generation = 0;
+
+  /**
    * Re-derive the workspace's EXTERNAL PR rows from bd (UI-7agi §1): every
    * `resolved` bead still carrying a `metadata.pr_url`. Memory only — nothing
    * is written into `queue.json`, because none of these beads ran here.
    *
-   * A bd that cannot be read THROWS out of `listResolvedPrBeads`; the caller
-   * (the poller pass) logs and keeps the previous rows, so a transient bd
-   * failure does not blank the lane.
+   * A bd that cannot be read THROWS out of `scanBeads`; the caller (the poller
+   * pass) logs and keeps the previous rows, so a transient bd failure does not
+   * blank the lane.
+   *
+   * The same scan also carries every bead's status, which this pass hands to
+   * the scheduler's closed-queue sweep (UI-m6bg §확정 트리거). That is the
+   * `auto_advance`-independent cleanup trigger: it rides the poller's existing
+   * subscriber gate and cadence and spends no `bd` process of its own, so an
+   * idle server sweeps exactly as often as it scans bd — never.
+   *
+   * The sweep is fenced in its own try/catch. The registry has already been
+   * replaced successfully by then, and a sweep failure escaping here would read
+   * to the poller's catch as an external-scan failure it should keep stale rows
+   * for.
+   *
+   * Overlapping calls are ordered by generation, not by completion. The poller
+   * releases its own re-entrancy fence only AFTER this await, and the manual
+   * refresh paths (`prepare`, {@link refreshWorkspaceExternalPrs}) are outside
+   * it entirely, so an older scan can settle last. Applying its result would
+   * publish stale rows — and, now that the sweep rides the same response, would
+   * move a REOPENED bead to `done` off a `closed` reading a newer scan already
+   * superseded. `done` is not draggable back, so that mistake is not recoverable
+   * from the UI. A superseded `prepare` therefore returns with the registry one
+   * generation behind its own scan; the worst that costs is a conflict dispatch
+   * refused as a non-member, which is the fail-closed side.
    *
    * @returns {Promise<void>}
    */
   async function refreshExternalPrs() {
-    if (typeof bd.listResolvedPrBeads !== 'function') {
+    if (typeof bd.scanBeads !== 'function') {
       return;
     }
-    const rows = await bd.listResolvedPrBeads();
+    const generation = ++external_scan_generation;
+    const { pr_rows, statuses } = await bd.scanBeads();
+    if (generation !== external_scan_generation) {
+      return;
+    }
     runtime.externalPrs.replace(
       keyFor(workspace_root),
-      rows.map((/** @type {{ bead_id: string, pr_url: string }} */ row) => ({
+      pr_rows.map((/** @type {{ bead_id: string, pr_url: string }} */ row) => ({
         bead_id: row.bead_id,
         pr_url: row.pr_url,
         pr_number: parsePrNumber(row.pr_url)
       }))
     );
+    try {
+      scheduler.sweepClosedQueue(keyFor(workspace_root), statuses);
+    } catch (err) {
+      log('closed-queue sweep failed for %s: %o', keyFor(workspace_root), err);
+    }
   }
 
   // The PR-wait actions (worker-phase2 §6): the authoritative [머지] click, the

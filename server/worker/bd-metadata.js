@@ -7,7 +7,7 @@
  *   read   → `bd show <id> --json` then read `.metadata[key]`
  *   status → `bd update <id> --status <status>` / `bd show <id> --json .status`
  *   children → `bd list --json --all --metadata-field parent=<id>`
- *   external → `bd list --json --all --limit 0` filtered to resolved + pr_url
+ *   scan   → `bd list --json --all --limit 0` → external PR rows + status map
  *   combined → `bd update <id> [--set-metadata k=v ...] [--unset-metadata k ...]
  *              [--status <s>] [--append-notes <text>]` (one atomic write)
  *   ship   → `bd ship <capability> --json`
@@ -38,7 +38,7 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  *   readIssue: (bead_id: string) => Promise<Record<string, any>>,
  *   updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>,
  *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
- *   listResolvedPrBeads: () => Promise<{ bead_id: string, pr_url: string }[]>,
+ *   scanBeads: () => Promise<{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string> }>,
  *   ship: (capability: string) => Promise<{ status: string, issue_id: string|null }>,
  *   removeLabel: (bead_id: string, label: string) => Promise<void>
  * }}
@@ -304,22 +304,30 @@ export function createBdMetadata(deps = {}) {
     },
 
     /**
-     * Every bead that a normal session already delivered a PR for: `resolved`
-     * with a `metadata.pr_url` (UI-7agi §1). The source of the external PR
-     * registry.
+     * ONE whole-list scan serving both consumers of it:
+     *   - `pr_rows` — every bead a normal session already delivered a PR for:
+     *     `resolved` with a `metadata.pr_url` (UI-7agi §1). The source of the
+     *     external PR registry.
+     *   - `statuses` — every row's `id → status`, unfiltered. The queue sweep
+     *     (UI-m6bg) needs an authoritative status per queued bead, and riding
+     *     the response this call already makes is what satisfies its "no extra
+     *     `bd` process per bead" requirement; a per-bead `bd show` would spawn
+     *     one process for each waiting row on every poller pass.
      *
      * `--limit 0` is REQUIRED: bd's default listing stops at 50 rows, and a
      * silently truncated scan would make an external PR invisible in the lane
      * for no reason a reader could see. `--all` is required for the same class
-     * of reason — the filter is done here, not by bd's default status view.
+     * of reason — the filter is done here, not by bd's default status view, and
+     * the sweep's `closed` rows are exactly what the default view hides.
      *
      * Fail-closed like {@link listChildren}: a non-zero exit or a non-array
      * payload THROWS rather than reading as "no external PRs", which would
-     * silently empty the lane every time bd is unavailable.
+     * silently empty the lane every time bd is unavailable. The sweep depends on
+     * the same throw — an unread status must move nothing.
      *
-     * @returns {Promise<{ bead_id: string, pr_url: string }[]>}
+     * @returns {Promise<{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string> }>}
      */
-    async listResolvedPrBeads() {
+    async scanBeads() {
       const r = await runJson(
         ['list', '--json', '--all', '--limit', '0'],
         opts
@@ -334,7 +342,9 @@ export function createBdMetadata(deps = {}) {
         throw new Error('bd list --all returned a non-array payload');
       }
       /** @type {{ bead_id: string, pr_url: string }[]} */
-      const out = [];
+      const pr_rows = [];
+      /** @type {Record<string, string>} */
+      const statuses = {};
       for (const raw of rows) {
         if (!raw || typeof raw !== 'object') {
           continue;
@@ -342,6 +352,9 @@ export function createBdMetadata(deps = {}) {
         const row = /** @type {Record<string, unknown>} */ (raw);
         if (typeof row.id !== 'string' || row.id.length === 0) {
           continue;
+        }
+        if (typeof row.status === 'string' && row.status.length > 0) {
+          statuses[row.id] = row.status;
         }
         if (row.status !== 'resolved') {
           continue;
@@ -354,9 +367,9 @@ export function createBdMetadata(deps = {}) {
         if (typeof pr_url !== 'string' || pr_url.length === 0) {
           continue;
         }
-        out.push({ bead_id: row.id, pr_url });
+        pr_rows.push({ bead_id: row.id, pr_url });
       }
-      return out;
+      return { pr_rows, statuses };
     },
 
     /**

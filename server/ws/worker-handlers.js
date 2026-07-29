@@ -125,7 +125,10 @@ export function workerQueueSubscriberCount(workspace_key) {
  * records claim it ran something it never ran.
  *
  * A bead the worker itself put in `pr_wait` is left alone: the durable attempt
- * is the more specific record, so the overlay yields to it.
+ * is the more specific record, so the overlay yields to it. A bead the durable
+ * `done` lane holds is excluded for the same reason (UI-m6bg §overlay): the
+ * registry is only as fresh as the last scan, and in that window a bead just
+ * moved to done would otherwise be drawn in the PR-wait lane at the same time.
  *
  * Each overlay row also carries `wt_present` (UI-w0hi §3): whether the
  * delivering session's worktree is still there, which decides whether the
@@ -136,7 +139,7 @@ export function workerQueueSubscriberCount(workspace_key) {
  * @param {Record<string, unknown>} queue
  * @returns {Record<string, unknown>}
  */
-function withExternalPrWait(workspace_key, queue) {
+export function withExternalPrWait(workspace_key, queue) {
   /** @type {import('../worker/external-pr.js').ExternalPrRow[]} */
   let rows = [];
   try {
@@ -150,7 +153,10 @@ function withExternalPrWait(workspace_key, queue) {
   const lane = Array.isArray(queue.pr_wait)
     ? /** @type {any[]} */ (queue.pr_wait)
     : [];
-  const durable = new Set(lane.map((e) => e && e.bead_id));
+  const done_lane = Array.isArray(queue.done)
+    ? /** @type {any[]} */ (queue.done)
+    : [];
+  const durable = new Set([...lane, ...done_lane].map((e) => e && e.bead_id));
   const overlay = rows
     .filter((row) => !durable.has(row.bead_id))
     .map((row) => {
