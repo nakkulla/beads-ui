@@ -747,3 +747,52 @@ describe('worker/gh — explicit --repo from origin', () => {
     );
   });
 });
+
+describe('worker/gh — repoSlug (UI-b8n8)', () => {
+  test('returns the same --repo value the PR operations pass', async () => {
+    const run = makeRun();
+    const gh = makeGh(run, makeGitRun('git@github.com:nakkulla/beads-ui.git'));
+
+    const slug = await gh.repoSlug('/repo');
+
+    expect(slug).toBe('nakkulla/beads-ui');
+  });
+
+  test('keeps the host prefix for a non-github.com origin', async () => {
+    const gh = makeGh(
+      makeRun(),
+      makeGitRun('git@ghe.example.com:org/tool.git')
+    );
+
+    const slug = await gh.repoSlug('/repo');
+
+    expect(slug).toBe('ghe.example.com/org/tool');
+  });
+
+  test('returns null when origin is unresolvable', async () => {
+    const gh = makeGh(makeRun(), makeGitRun('not a url'));
+
+    const slug = await gh.repoSlug('/repo');
+
+    expect(slug).toBeNull();
+  });
+
+  test('shares the memoized resolution with the PR operations', async () => {
+    const run = makeRun();
+    const git_run = makeGitRun();
+    const gh = makeGh(run, git_run);
+
+    await gh.closePr('/repo', 1);
+    await gh.repoSlug('/repo');
+
+    expect(git_run).toHaveBeenCalledTimes(1);
+  });
+
+  test('spawns no gh process of its own', async () => {
+    const run = makeRun();
+
+    await makeGh(run).repoSlug('/repo');
+
+    expect(run).not.toHaveBeenCalled();
+  });
+});

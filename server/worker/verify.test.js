@@ -91,6 +91,85 @@ function okObservation(pr = {}) {
   };
 }
 
+/**
+ * A verifier whose branch query always answers `empty`, so every call exercises
+ * the `pr_url` fallback (UI-b8n8 §접근 B).
+ *
+ * @param {{
+ *   recorded?: string|null,
+ *   readThrows?: boolean,
+ *   slug?: string|null,
+ *   detail?: any,
+ *   status?: string,
+ *   bd?: any
+ * }} [opts]
+ */
+function makeFallback(opts = {}) {
+  const bd = opts.bd || makeBd();
+  if (typeof opts.recorded === 'string') {
+    bd.metadata.pr_url = opts.recorded;
+  }
+  if (typeof opts.status === 'string') {
+    bd.status.value = opts.status;
+  }
+  if (opts.readThrows) {
+    bd.readMetadata = async () => {
+      throw new Error('bd show failed');
+    };
+  }
+  const repoSlug = vi.fn(async () =>
+    opts.slug === undefined ? 'o/r' : opts.slug
+  );
+  const prDetail = vi.fn(async () =>
+    opts.detail === undefined
+      ? {
+          state: /** @type {const} */ ('ok'),
+          data: {
+            number: 7,
+            url: PR_URL,
+            state: 'OPEN',
+            mergeable: 'MERGEABLE',
+            merge_state_status: 'CLEAN',
+            head_ref: 'UI-1-r2',
+            base_ref: 'main',
+            head_sha: 'a'.repeat(40)
+          }
+        }
+      : opts.detail
+  );
+  const verifier = createVerifier({
+    gh: {
+      openPrForBranch: async () => ({ state: /** @type {const} */ ('empty') }),
+      repoSlug,
+      prDetail
+    },
+    bd,
+    sleep: async () => {}
+  });
+  return { verifier, bd, repoSlug, prDetail };
+}
+
+/**
+ * @param {string} state
+ * @param {Partial<import('./gh.js').PrDetail>} [over]
+ */
+function detailOf(state, over = {}) {
+  return {
+    state: /** @type {const} */ ('ok'),
+    data: {
+      number: 7,
+      url: PR_URL,
+      state,
+      mergeable: 'MERGEABLE',
+      merge_state_status: 'CLEAN',
+      head_ref: 'UI-1-r2',
+      base_ref: 'main',
+      head_sha: 'a'.repeat(40),
+      ...over
+    }
+  };
+}
+
 describe('worker/verify — three-state PR observation', () => {
   test('passes when an open PR is observed for the bead branch', async () => {
     const openPrForBranch = vi.fn(async () => okObservation());
@@ -271,5 +350,182 @@ describe('worker/verify — worker bd back-fill', () => {
     await verifier.verifyPrSubmitted(INPUT);
 
     expect(bd.calls).toEqual([]);
+  });
+});
+
+describe('worker/verify — pr_url fallback (UI-b8n8)', () => {
+  test('reports pr_missing when bd holds no pr_url to fall back to', async () => {
+    const { verifier, prDetail } = makeFallback({ recorded: null });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.reason).toBe('pr_missing');
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test('reports bd_read_failed — NOT pr_missing — when the bd query throws', async () => {
+    const { verifier, prDetail } = makeFallback({ readThrows: true });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('bd_read_failed');
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test('accepts an OPEN PR on a ref the branch query cannot see', async () => {
+    const { verifier, prDetail } = makeFallback({ recorded: PR_URL });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.ok).toBe(true);
+    expect(v.reason).toBe('ok');
+    expect(v.pr_state).toBe('OPEN');
+    expect(prDetail).toHaveBeenCalledWith('/repo', 7);
+  });
+
+  test('accepts a MERGED PR as completion evidence', async () => {
+    const { verifier } = makeFallback({
+      recorded: PR_URL,
+      detail: detailOf('MERGED')
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.ok).toBe(true);
+    expect(v.pr_state).toBe('MERGED');
+    expect(v.pr_url).toBe(PR_URL);
+  });
+
+  test('reports pr_missing for a CLOSED-unmerged PR', async () => {
+    const { verifier, bd } = makeFallback({
+      recorded: PR_URL,
+      detail: detailOf('CLOSED')
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.reason).toBe('pr_missing');
+    expect(bd.calls).toEqual([]);
+  });
+
+  test('reports gh_observation_failed when the detail query errors', async () => {
+    const { verifier } = makeFallback({
+      recorded: PR_URL,
+      detail: { state: 'error', reason: 'gh_failed' }
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.reason).toBe('gh_observation_failed');
+    expect(v.gh_reason).toBe('gh_failed');
+  });
+
+  test('reports gh_observation_failed when origin is unresolvable', async () => {
+    const { verifier, prDetail } = makeFallback({
+      recorded: PR_URL,
+      slug: null
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.reason).toBe('gh_observation_failed');
+    expect(v.gh_reason).toBe('origin_unresolvable');
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test('refuses a PR whose returned url is not the recorded one', async () => {
+    const { verifier } = makeFallback({
+      recorded: PR_URL,
+      detail: detailOf('MERGED', { url: 'https://github.com/o/r/pull/8' })
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.reason).toBe('pr_missing');
+  });
+
+  test('refuses a pr_url pointing at another repository', async () => {
+    const { verifier, prDetail } = makeFallback({
+      recorded: 'https://github.com/other/repo/pull/7'
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.reason).toBe('pr_missing');
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['an issue link', 'https://github.com/o/r/issues/7'],
+    ['a bare hash ref', '#7'],
+    ['a trailing number on a non-PR path', 'https://github.com/o/r/commits/7'],
+    ['a PR path with extra segments', 'https://github.com/o/r/pull/7/files'],
+    ['a non-numeric PR ref', 'https://github.com/o/r/pull/seven'],
+    ['a plain http url', 'http://github.com/o/r/pull/7'],
+    ['a merge-request path', 'https://gitlab.com/o/r/merge_requests/7']
+  ])('refuses %s as a fallback target', async (_label, recorded) => {
+    const { verifier, prDetail } = makeFallback({ recorded });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.reason).toBe('pr_missing');
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test('back-fills bd normally for an OPEN fallback PR', async () => {
+    const { verifier, bd } = makeFallback({ recorded: PR_URL });
+
+    await verifier.verifyPrSubmitted(INPUT);
+
+    expect(bd.calls).toEqual([
+      { method: 'setMetadata', bead_id: 'UI-1', key: 'pr_url', value: PR_URL },
+      { method: 'setStatus', bead_id: 'UI-1', value: 'resolved' }
+    ]);
+  });
+
+  test('never reopens a bead bd already holds as closed', async () => {
+    const { verifier, bd } = makeFallback({
+      recorded: PR_URL,
+      status: 'closed',
+      detail: detailOf('MERGED')
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.ok).toBe(true);
+    expect(v.already_finished).toBe(true);
+    expect(bd.calls).toEqual([]);
+    expect(bd.status.value).toBe('closed');
+  });
+
+  test('does not flag already_finished for a merged PR on an open bead', async () => {
+    const { verifier, bd } = makeFallback({
+      recorded: PR_URL,
+      status: 'in_progress',
+      detail: detailOf('MERGED')
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.already_finished).toBe(false);
+    expect(bd.status.value).toBe('resolved');
+  });
+
+  test('reports bd_record_failed when the merged-path status read throws', async () => {
+    const bd = makeBd();
+    bd.readStatus = async () => {
+      throw new Error('bd down');
+    };
+    const { verifier } = makeFallback({
+      recorded: PR_URL,
+      detail: detailOf('MERGED'),
+      bd
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('bd_record_failed');
   });
 });

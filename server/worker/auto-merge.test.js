@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createAutoMerge } from './auto-merge.js';
 import { createQueueStore } from './queue-store.js';
+import { getWorkerRuntime } from './runtime.js';
 
 /** @type {string} */
 let tmp_state;
@@ -181,6 +182,67 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
     expect(r.applied).toBe(false);
     expect(notifyChanged).not.toHaveBeenCalled();
     expect(kick).not.toHaveBeenCalled();
+  });
+});
+
+describe('worker/auto-merge — 워커 소유 Bead 비후보 (UI-b8n8 §접근 A)', () => {
+  /**
+   * The enroller wired to the REAL lane + candidate judgment, which reads the
+   * process-wide external registry — the surface the exclusion acts on.
+   *
+   * @param {any} store
+   */
+  function realEnroller(store) {
+    return createAutoMerge({
+      workspace: WS,
+      store,
+      verifyCmdPresent: () => false,
+      headSha: () => HEAD,
+      notifyChanged: vi.fn(),
+      kick: vi.fn(async () => {})
+    });
+  }
+
+  test('takes no candidate for a bead the external scan excluded', () => {
+    const runtime = getWorkerRuntime();
+    runtime.externalPrs.clear();
+    // What §접근 A produces: a running bead is simply absent from the registry,
+    // and the merge lane has no other way to learn about it.
+    runtime.externalPrs.replace(WS, []);
+    const store = createQueueStore();
+
+    const r = realEnroller(store).enroll();
+
+    expect(r.queued).toBe(0);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('still takes a registered external row whose PR is merged', () => {
+    const runtime = getWorkerRuntime();
+    runtime.externalPrs.clear();
+    runtime.externalPrs.replace(WS, [
+      { bead_id: 'X1', pr_url: 'https://github.com/o/r/pull/9', pr_number: 9 }
+    ]);
+    runtime.prObservations.record(WS, 'X1', {
+      pr: {
+        number: 9,
+        url: 'https://github.com/o/r/pull/9',
+        state: 'MERGED',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'X1',
+        base_ref: 'main',
+        head_sha: HEAD
+      }
+    });
+    const store = createQueueStore();
+
+    const r = realEnroller(store).enroll();
+
+    expect(
+      store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['X1']);
+    expect(r.queued).toBe(1);
   });
 });
 

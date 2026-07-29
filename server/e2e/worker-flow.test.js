@@ -226,7 +226,12 @@ function buildSystem(opts) {
                 state: 'OPEN'
               }
             }
-          : { state: 'empty' }
+          : { state: 'empty' },
+      // The `pr_url` fallback's seam. This suite drives the branch lane only, so
+      // the fallback must never grant completion behind its back: an origin it
+      // cannot resolve stops the strict parse before any PR is looked up.
+      repoSlug: async () => null,
+      prDetail: async () => ({ state: 'error', reason: 'gh_failed' })
     },
     bd: {
       setMetadata: async (

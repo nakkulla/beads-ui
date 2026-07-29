@@ -819,6 +819,125 @@ describe('worker/attach createLiveBd fail-visible snapshots', () => {
   });
 });
 
+describe('worker/attach external scan excludes worker-owned beads (UI-b8n8)', () => {
+  const PR_URL = 'https://github.com/o/r/pull/9';
+
+  /**
+   * @param {any} runtime
+   * @param {string[]} bead_ids
+   */
+  function attachScanning(runtime, bead_ids) {
+    return createWorkerAttachment(WS, {
+      runtime,
+      bd: {
+        ...fakeBd(),
+        scanBeads: async () => ({
+          pr_rows: bead_ids.map((bead_id) => ({ bead_id, pr_url: PR_URL })),
+          statuses: Object.fromEntries(bead_ids.map((id) => [id, 'resolved']))
+        })
+      },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+  }
+
+  /**
+   * Record a live (non-terminal) attempt — the durable shape a session in PR
+   * Delivery leaves behind while it is still running.
+   *
+   * @param {any} store
+   * @param {string} bead_id
+   * @param {string} status
+   */
+  function seedAttempt(store, bead_id, status) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: `att-${bead_id}`, bead_id }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: `att-${bead_id}`,
+      patch: { status, repo: '/repo' }
+    });
+  }
+
+  test('skips a bead whose attempt is still live', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachScanning(runtime, ['S1']);
+    seedAttempt(runtime.queueStore, 'S1', 'running');
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.externalPrs.list(WS)).toEqual([]);
+  });
+
+  test('registers the bead once its attempt is terminal', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachScanning(runtime, ['S1']);
+    seedAttempt(runtime.queueStore, 'S1', 'done');
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.externalPrs.list(WS).map((r) => r.bead_id)).toEqual(['S1']);
+  });
+
+  test('keeps registering the beads the worker does not own', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachScanning(runtime, ['S1', 'X1']);
+    seedAttempt(runtime.queueStore, 'S1', 'running');
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.externalPrs.list(WS).map((r) => r.bead_id)).toEqual(['X1']);
+  });
+
+  test('keeps the previous rows when the protection set cannot be read', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachScanning(runtime, ['X1']);
+    await att.refreshExternalPrs();
+    expect(runtime.externalPrs.list(WS).map((r) => r.bead_id)).toEqual(['X1']);
+    vi.spyOn(att.scheduler, 'externalProtectedBeadIds').mockImplementation(
+      () => {
+        throw new Error('snapshot unreadable');
+      }
+    );
+
+    await att.refreshExternalPrs();
+
+    // Fail-closed: registering the whole scan is the unsafe side, so the stale
+    // rows stay for one pass rather than being replaced blind.
+    expect(runtime.externalPrs.list(WS).map((r) => r.bead_id)).toEqual(['X1']);
+  });
+
+  test('still sweeps the closed queue when the protection set is unreadable', async () => {
+    const runtime = createWorkerRuntime();
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: {
+        ...fakeBd(),
+        scanBeads: async () => ({ pr_rows: [], statuses: { S1: 'closed' } })
+      },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    seedQueue(runtime.queueStore, 'S1');
+    vi.spyOn(att.scheduler, 'externalProtectedBeadIds').mockImplementation(
+      () => {
+        throw new Error('snapshot unreadable');
+      }
+    );
+
+    await att.refreshExternalPrs();
+
+    // The sweep reads the caller's own `statuses`; it does not depend on the
+    // registry the exclusion guards.
+    expect(runtime.queueStore.snapshot(WS).done.map((e) => e.bead_id)).toEqual([
+      'S1'
+    ]);
+  });
+});
+
 describe('worker/attach closed-queue sweep trigger (UI-m6bg)', () => {
   /**
    * An attachment whose only bd surface is the whole-list scan the poller pass
@@ -909,6 +1028,18 @@ describe('worker/attach closed-queue sweep trigger (UI-m6bg)', () => {
     expect(runtime.queueStore.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(
       ['S1']
     );
+  });
+
+  test('registers an external row for a bead the worker never ran', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachWithScan(runtime, async () => ({
+      pr_rows: [{ bead_id: 'X1', pr_url: 'https://github.com/o/r/pull/9' }],
+      statuses: { X1: 'resolved' }
+    }));
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.externalPrs.list(WS).map((r) => r.bead_id)).toEqual(['X1']);
   });
 
   test('an older scan settling last never applies its stale status', async () => {
