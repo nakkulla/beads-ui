@@ -4056,6 +4056,59 @@ describe('scheduler closed-queue sweep (UI-m6bg)', () => {
 
     expect(notify).not.toHaveBeenCalled();
   });
+
+  test('moves a closed row whose attempt was orphaned', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    seedAttempt(env.store, 'S1', 'att-1', { status: 'orphaned' });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('moves a closed row whose paused attempt was already resumed', () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    seedAttempt(env.store, 'S1', 'att-1', { status: 'paused' });
+    seedAttempt(env.store, 'S1', 'att-2', {
+      status: 'done',
+      resumed_from: 'att-1'
+    });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('a sweep during the scan does not resurrect the row as a dispatch', async () => {
+    /** @type {(value: any) => void} */
+    let release = () => {};
+    // Hold the pass inside its admission await — the exact window the poller's
+    // sweep runs in, and the one the claim happens AFTER.
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      admission: {
+        validate: () =>
+          new Promise((resolve) => {
+            release = resolve;
+          })
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    const ticking = env.scheduler.tick(WS);
+    await flush();
+    await flush();
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    release({ ok: true });
+    await ticking;
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.done.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+  });
 });
 
 describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
