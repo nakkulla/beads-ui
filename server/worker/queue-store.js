@@ -1194,15 +1194,39 @@ export function createQueueStore(options = {}) {
      * splitting that into a second write would leave the banner up after a
      * successful retry.
      *
+     * `attempt_id` + `patch` are OPTIONAL, and carrying them makes this the
+     * `moveToPrWait` twin for the already-finished verdict (UI-b8n8 §접근 B): a
+     * verify that observed a MERGED PR on a bead bd already holds as `closed`
+     * terminates its attempt and lands the bead in `done` in ONE persist, so a
+     * crash between the two cannot leave a done attempt on a queued bead.
+     * Omitted, the mutation is exactly the lane move the cleanup path performs.
+     *
      * @param {string} workspace
-     * @param {{ bead_id: string }} input
+     * @param {{ bead_id: string, attempt_id?: string, patch?: Partial<Attempt> }} input
      * @returns {QueueOpResult}
      */
     moveToDone(workspace, input) {
-      const { bead_id } = input;
+      const { bead_id, attempt_id, patch } = input;
       return applyUnconditional(workspace, (next) => {
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
+        }
+        if (typeof attempt_id === 'string' && attempt_id.length > 0) {
+          const cur = next.attempts[attempt_id];
+          // An unknown attempt refuses the WHOLE mutation, exactly as
+          // `moveToPrWait` does: the caller asked for one transition, and a lane
+          // move without its attempt record is not that transition.
+          if (!cur) {
+            return false;
+          }
+          next.attempts[attempt_id] = makeAttempt(
+            /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ ({
+              ...cur,
+              ...(patch || {}),
+              attempt_id,
+              bead_id: cur.bead_id
+            })
+          );
         }
         removeFromLanes(next, bead_id);
         delete next.cleanup_failed[bead_id];

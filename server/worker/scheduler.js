@@ -163,7 +163,7 @@ function staleDispatchPrompt(bead_id, stale) {
  *   readStatus: (bead_id: string) => Promise<string|null>
  * }} bd
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
- * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null }> }} verify
+ * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
  * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha: string, delta_shas: string[] } }> }} [admission]
@@ -231,6 +231,8 @@ function staleDispatchPrompt(bead_id, stale) {
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
+ *   activeBeadIds: (workspace: string) => Set<string>,
+ *   externalProtectedBeadIds: (workspace: string) => Set<string>,
  *   runningCount: () => number,
  *   runningBeads: () => string[],
  *   isRunning: (bead_id: string) => boolean
@@ -549,6 +551,96 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The SCHEDULER-owned "this workspace is working on it" union, over a queue
+   * snapshot the caller already holds. Deliberately wider than the client's
+   * `active_bead_ids`: that one omits the pre-attempt dispatch claim, so a bead
+   * already picked for launch would read as idle.
+   *
+   * Members:
+   *   - `claimed` — the dispatch claim, taken BEFORE any attempt record exists.
+   *   - `dispatch_refused` — refused within the current tick cascade, retried
+   *     on the next externally-initiated tick.
+   *   - leaf `paused` attempts ({@link leafPausedBeads}) — a resumed ancestor is
+   *     history, not a live pause, and counting it would fence its bead out
+   *     forever.
+   *   - any non-terminal attempt.
+   *
+   * @param {{ attempts?: Record<string, any> }} q - Queue snapshot.
+   * @returns {Set<string>}
+   */
+  function activeBeadIdsFrom(q) {
+    /** @type {Set<string>} */
+    const out = new Set(claimed);
+    for (const bead_id of dispatch_refused) {
+      out.add(bead_id);
+    }
+    for (const bead_id of leafPausedBeads(q)) {
+      out.add(bead_id);
+    }
+    const attempts = Object.values(q.attempts || {});
+    const resumed_from = new Set(
+      attempts
+        .map((a) => a && /** @type {any} */ (a).resumed_from)
+        .filter(Boolean)
+    );
+    for (const attempt of attempts) {
+      const a = /** @type {any} */ (attempt);
+      if (!a || typeof a.bead_id !== 'string') {
+        continue;
+      }
+      if (TERMINAL_ATTEMPT_STATUSES.has(a.status)) {
+        continue;
+      }
+      if (a.status === 'paused' && resumed_from.has(a.attempt_id)) {
+        continue;
+      }
+      out.add(a.bead_id);
+    }
+    return out;
+  }
+
+  /**
+   * The active union over a FRESH snapshot ({@link activeBeadIdsFrom}) — the
+   * public spelling for callers outside the scheduler.
+   *
+   * @param {string} workspace
+   * @returns {Set<string>}
+   */
+  function activeBeadIds(workspace) {
+    return activeBeadIdsFrom(deps.store.snapshot(workspace));
+  }
+
+  /**
+   * Beads the EXTERNAL PR registry must not adopt (UI-b8n8 §접근 A). A strict
+   * SUPERSET of {@link activeBeadIds}:
+   *
+   *   externalProtectedBeadIds = activeBeadIds ∪ cleanup_pending
+   *
+   * `cleanup_pending` is load-bearing, not defensive. {@link stop} marks the
+   * attempt `stopped` (terminal) and releases the claim BEFORE the killed
+   * process is gone, hanging the residue check on the process's own `done`
+   * promise — so in that window `activeBeadIds` is already empty for the bead
+   * while its worktree is still live. A bead sitting at `resolved` + `pr_url`
+   * would be registered as external there, become an auto-merge candidate, and
+   * have the post-merge `branch_cleanup` delete the worktree of a process that
+   * has not finished dying. The fence is the only thing covering that window.
+   *
+   * {@link sweepClosedQueue} deliberately does NOT use this set: adding
+   * `cleanup_pending` there would only delay a terminating bead's move to
+   * `done`, buying nothing.
+   *
+   * @param {string} workspace
+   * @returns {Set<string>}
+   */
+  function externalProtectedBeadIds(workspace) {
+    const out = activeBeadIds(workspace);
+    for (const bead_id of cleanup_pending) {
+      out.add(bead_id);
+    }
+    return out;
+  }
+
+  /**
    * Move every queue-lane bead bd has already closed into the Done lane
    * (UI-m6bg §확정 트리거). {@link dequeueIfClosed} only ever runs inside a
    * scheduler tick, and a tick returns immediately when `auto_advance` is off —
@@ -575,36 +667,9 @@ export function createScheduler(deps) {
       return;
     }
     const q = deps.store.snapshot(workspace);
-    const paused_beads = leafPausedBeads(q);
-    // Active is the SCHEDULER-owned union, not the client's `active_bead_ids`:
-    // that one omits the pre-attempt dispatch claim, so a bead already picked
-    // for launch would read as idle here.
-    //
-    // A `paused` attempt that was already resumed is HISTORY, not a live pause —
-    // counting it would fence its bead out of the sweep forever, which is the
-    // opposite of the leaf judgment {@link leafPausedBeads} makes for the queue
-    // scan. `paused_beads` above already carries the live ones.
-    const attempts = Object.values(q.attempts || {});
-    const resumed_from = new Set(
-      attempts
-        .map((a) => a && /** @type {any} */ (a).resumed_from)
-        .filter(Boolean)
-    );
-    /** @type {Set<string>} */
-    const attempt_active = new Set();
-    for (const attempt of attempts) {
-      const a = /** @type {any} */ (attempt);
-      if (!a || typeof a.bead_id !== 'string') {
-        continue;
-      }
-      if (TERMINAL_ATTEMPT_STATUSES.has(a.status)) {
-        continue;
-      }
-      if (a.status === 'paused' && resumed_from.has(a.attempt_id)) {
-        continue;
-      }
-      attempt_active.add(a.bead_id);
-    }
+    // The same union {@link externalProtectedBeadIds} builds on, WITHOUT the
+    // `cleanup_pending` fence — see that function for why the two differ.
+    const active = activeBeadIdsFrom(q);
     let moved = false;
     try {
       for (const entry of q.queue) {
@@ -618,12 +683,7 @@ export function createScheduler(deps) {
         if (statuses[bead_id] !== 'closed') {
           continue;
         }
-        if (
-          claimed.has(bead_id) ||
-          dispatch_refused.has(bead_id) ||
-          paused_beads.has(bead_id) ||
-          attempt_active.has(bead_id)
-        ) {
+        if (active.has(bead_id)) {
           continue;
         }
         const result = deps.store.moveToDone(workspace, { bead_id });
@@ -1103,18 +1163,32 @@ export function createScheduler(deps) {
           bead_id,
           execStampedKeysOf(workspace, attempt_id)
         );
-        // Attempt done + bead into `pr_wait` in ONE persist (§4): a split write
-        // could leave the bead queued for re-dispatch with its PR already open.
-        deps.store.moveToPrWait(workspace, {
-          bead_id,
-          attempt_id,
-          patch: { status: 'done', finished_at: now() }
-        });
-        notifyLifecycle('prWaitEntered', {
-          bead_id,
-          pr_url: vr.pr_url ?? null,
-          repo: snap.repo
-        });
+        if (vr.already_finished) {
+          // The PR was observed MERGED and bd already held the bead `closed`
+          // (UI-b8n8 §접근 B): the whole post-merge choreography — cleanup,
+          // deploy, bd close — has already run. Routing it through `pr_wait`
+          // would queue that finished work for a second run, so the attempt
+          // terminates straight into `done`, in ONE persist like the lane move
+          // below. No `prWaitEntered` push: the bead never enters the lane.
+          deps.store.moveToDone(workspace, {
+            bead_id,
+            attempt_id,
+            patch: { status: 'done', finished_at: now() }
+          });
+        } else {
+          // Attempt done + bead into `pr_wait` in ONE persist (§4): a split write
+          // could leave the bead queued for re-dispatch with its PR already open.
+          deps.store.moveToPrWait(workspace, {
+            bead_id,
+            attempt_id,
+            patch: { status: 'done', finished_at: now() }
+          });
+          notifyLifecycle('prWaitEntered', {
+            bead_id,
+            pr_url: vr.pr_url ?? null,
+            repo: snap.repo
+          });
+        }
       } else {
         await failAttempt(
           workspace,
@@ -1602,7 +1676,7 @@ export function createScheduler(deps) {
     }
     claimed.add(bead_id);
     try {
-      /** @type {{ ok: boolean, reason: string, pr_url?: string|null }} */
+      /** @type {{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean }} */
       let vr;
       if (repo.length === 0) {
         vr = { ok: false, reason: 'gh_observation_failed' };
@@ -1665,16 +1739,28 @@ export function createScheduler(deps) {
           );
           // A recovered normal completion must NOT stop the queue:
           // `auto_advance` is deliberately untouched on this branch.
-          deps.store.moveToPrWait(workspace, {
-            bead_id,
-            attempt_id,
-            patch: { status: 'done', finished_at: now() }
-          });
-          notifyLifecycle('prWaitEntered', {
-            bead_id,
-            pr_url: vr.pr_url ?? null,
-            repo
-          });
+          //
+          // The already-finished verdict routes to `done` here for the same
+          // reason it does in `onSessionDone` (UI-b8n8 §접근 B): a bead bd holds
+          // as `closed` has had its whole post-merge choreography run.
+          if (vr.already_finished) {
+            deps.store.moveToDone(workspace, {
+              bead_id,
+              attempt_id,
+              patch: { status: 'done', finished_at: now() }
+            });
+          } else {
+            deps.store.moveToPrWait(workspace, {
+              bead_id,
+              attempt_id,
+              patch: { status: 'done', finished_at: now() }
+            });
+            notifyLifecycle('prWaitEntered', {
+              bead_id,
+              pr_url: vr.pr_url ?? null,
+              repo
+            });
+          }
         } else {
           await failAttempt(
             workspace,
@@ -3311,6 +3397,8 @@ export function createScheduler(deps) {
     dispatchReviseFix,
     reconcile,
     sweepClosedQueue,
+    activeBeadIds,
+    externalProtectedBeadIds,
     runningCount() {
       return running.size;
     },

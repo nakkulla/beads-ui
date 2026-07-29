@@ -572,6 +572,19 @@ export function createWorkerAttachment(workspace_root, options = {}) {
    * to the poller's catch as an external-scan failure it should keep stale rows
    * for.
    *
+   * The scan's `resolved` + `pr_url` condition matches a bead THIS worker is
+   * still running: a session writes both keys at PR Delivery, while its process
+   * is alive and its attempt unfinished. Registering it would put a live bead in
+   * the merge lane — auto-merge takes it, post-merge `branch_cleanup` deletes a
+   * worktree the session is still using, and the session's own verify then finds
+   * no OPEN PR and records the finished work as `pr_missing` (UI-b8n8 §접근 A).
+   * So worker-owned beads are filtered out before the registry is replaced; the
+   * protected set is the scheduler's, including the stop-teardown fence.
+   *
+   * The judgment is a SYNCHRONOUS read of the queue snapshot, for the same
+   * reason `sweepClosedQueue` is synchronous: nothing can dispatch between the
+   * exclusion and the registration.
+   *
    * Overlapping calls are ordered by generation, not by completion. The poller
    * releases its own re-entrancy fence only AFTER this await, and the manual
    * refresh paths (`prepare`, {@link refreshWorkspaceExternalPrs}) are outside
@@ -594,14 +607,57 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     if (generation !== external_scan_generation) {
       return;
     }
-    runtime.externalPrs.replace(
-      keyFor(workspace_root),
-      pr_rows.map((/** @type {{ bead_id: string, pr_url: string }} */ row) => ({
-        bead_id: row.bead_id,
-        pr_url: row.pr_url,
-        pr_number: parsePrNumber(row.pr_url)
-      }))
-    );
+    /** @type {Set<string>|null} */
+    let protected_ids = null;
+    try {
+      protected_ids = scheduler.externalProtectedBeadIds(
+        keyFor(workspace_root)
+      );
+    } catch (err) {
+      log(
+        'external protection set unreadable for %s: %o',
+        keyFor(workspace_root),
+        err
+      );
+    }
+    if (protected_ids === null) {
+      // Fail-closed: with no protection set the exclusion cannot be decided, and
+      // registering the whole scan is exactly the unsafe side. The previous rows
+      // stay for one pass. The sweep below is independent of the registry and
+      // still runs — it is the caller's own `statuses` read.
+      log(
+        'external registry left stale for %s (no protection set)',
+        keyFor(workspace_root)
+      );
+    } else {
+      /** @type {string[]} */
+      const excluded = [];
+      /** @type {{ bead_id: string, pr_url: string, pr_number: number|null }[]} */
+      const rows = [];
+      for (const row of /** @type {{ bead_id: string, pr_url: string }[]} */ (
+        pr_rows
+      )) {
+        if (protected_ids.has(row.bead_id)) {
+          excluded.push(row.bead_id);
+          continue;
+        }
+        rows.push({
+          bead_id: row.bead_id,
+          pr_url: row.pr_url,
+          pr_number: parsePrNumber(row.pr_url)
+        });
+      }
+      if (excluded.length > 0) {
+        // Normal operation, not an anomaly — logged only so the lane's absence
+        // is explainable.
+        log(
+          'external scan skipped worker-owned beads for %s: %s',
+          keyFor(workspace_root),
+          excluded.join(', ')
+        );
+      }
+      runtime.externalPrs.replace(keyFor(workspace_root), rows);
+    }
     try {
       scheduler.sweepClosedQueue(keyFor(workspace_root), statuses);
     } catch (err) {

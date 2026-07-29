@@ -1117,6 +1117,51 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     expect(q.done.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
+  test('terminates the attempt and moves the bead in one revision (UI-b8n8)', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-1'
+    });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.moveToDone(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'a1',
+      patch: { status: 'done', finished_at: 7 }
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(before + 1);
+    expect(r.queue.attempts.a1.status).toBe('done');
+    expect(r.queue.attempts.a1.finished_at).toBe(7);
+    expect(r.queue.queue).toEqual([]);
+    expect(r.queue.done.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('refuses the whole move when the named attempt is unknown (UI-b8n8)', () => {
+    const store = createQueueStore();
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-1'
+    });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.moveToDone(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'nope',
+      patch: { status: 'done' }
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+    expect(store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
   test('removes a pr_wait bead from every lane in one revision', () => {
     const store = createQueueStore();
     seedPrWait(store);

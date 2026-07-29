@@ -406,6 +406,24 @@ export function createGh(deps = {}) {
 
   return {
     /**
+     * The `--repo` value this adapter resolves for a repo dir — the same
+     * memoized origin parse every PR query passes (UI-b8n8 §접근 B).
+     *
+     * Exposed because verify's `pr_url` fallback has to PROVE the recorded PR
+     * belongs to the repository the sessions push to before it may accept that
+     * PR as completion evidence. Re-deriving origin there would fork the parse
+     * this module exists to own (see the `--repo` rationale above).
+     *
+     * @param {string} repo_dir
+     * @returns {Promise<string|null>} null when origin is absent, unparseable
+     * or the lookup failed — the caller decides what an unresolvable origin
+     * means for its own verdict.
+     */
+    async repoSlug(repo_dir) {
+      return resolveRepo(repo_dir);
+    },
+
+    /**
      * Observe the OPEN pull request for a branch (§1's only success signal).
      * An empty result array is a semantic empty (no open PR); an unusable
      * payload (bad JSON, no url) is an ERROR, never an empty — a malformed

@@ -4111,6 +4111,198 @@ describe('scheduler closed-queue sweep (UI-m6bg)', () => {
   });
 });
 
+describe('scheduler protected bead sets (UI-b8n8 §접근 A)', () => {
+  test('reports a dispatch-claimed bead as active before any attempt exists', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.add.mockImplementation(() => new Promise(() => {}));
+    seedQueue(env.store, ['S1']);
+    const dispatching = env.scheduler.tick(WS);
+    await flush();
+    await flush();
+
+    expect([...env.scheduler.activeBeadIds(WS)]).toEqual(['S1']);
+    dispatching.catch(() => {});
+  });
+
+  test('reports a running bead as active', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(true);
+  });
+
+  test('drops a bead whose attempt reached a terminal status', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1, verifyOk: true });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(false);
+  });
+
+  test('protects a stopped bead whose teardown has not finished', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    await env.scheduler.stop(WS, attempt_id);
+
+    // The attempt is already `stopped` (terminal) and the claim is released, so
+    // the active union alone no longer covers the bead — the cleanup fence is
+    // the only thing holding the live worktree out of the external registry.
+    expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(false);
+    expect(env.scheduler.externalProtectedBeadIds(WS).has('S1')).toBe(true);
+  });
+
+  test('releases the protection once the killed session exits', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.stop(WS, attempt_id);
+
+    env.runner.finish('S1', { success: false, reason: 'killed', exit: null });
+    await flush();
+    await flush();
+
+    expect(env.scheduler.externalProtectedBeadIds(WS).has('S1')).toBe(false);
+  });
+
+  test('leaves the closed-queue sweep on the narrower active set', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.stop(WS, attempt_id);
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'S1'
+    });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    // `cleanup_pending` in the sweep would only delay a terminating bead's move
+    // to `done` — the sweep is deliberately NOT the protected superset.
+    expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+});
+
+describe('scheduler already-finished verify verdict (UI-b8n8 §접근 B)', () => {
+  /**
+   * @param {{ already_finished: boolean }} vr
+   */
+  function verifyWith(vr) {
+    return {
+      verifyPrSubmitted: vi.fn(async () => ({
+        ok: true,
+        reason: 'ok',
+        pr_url: 'https://github.com/o/r/pull/1',
+        pr_state: vr.already_finished ? 'MERGED' : 'OPEN',
+        already_finished: vr.already_finished
+      }))
+    };
+  }
+
+  test('routes an already-finished bead to done instead of pr_wait', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: verifyWith({ already_finished: true })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.done.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(snap.pr_wait).toEqual([]);
+  });
+
+  test('terminates the attempt on the same write as the done move', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: verifyWith({ already_finished: true })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.status).toBe('done');
+    expect(attempt.finished_at).toBe(1000);
+  });
+
+  test('pushes no prWaitEntered notification for a lane it never enters', async () => {
+    const notify = {
+      attemptStarted: vi.fn(),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn()
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      notify,
+      verify: verifyWith({ already_finished: true })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(notify.prWaitEntered).not.toHaveBeenCalled();
+  });
+
+  test('still routes an ordinary success to pr_wait', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: verifyWith({ already_finished: false })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.pr_wait.map((e) => e.bead_id)).toEqual(['S1']);
+    expect(snap.done).toEqual([]);
+  });
+
+  test('records the verify_result carrying pr_state on the attempt', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: verifyWith({ already_finished: true })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(/** @type {any} */ (attempt.verify_result).pr_state).toBe('MERGED');
+  });
+});
+
 describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
   /**
    * Persist a `running` attempt exactly as a PRIOR process left it: the durable
