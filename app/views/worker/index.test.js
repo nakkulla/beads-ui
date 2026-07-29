@@ -3963,6 +3963,177 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
     expect(btn.disabled).toBe(true);
     expect(btn.title).toContain('session_id 없는');
   });
+
+  /**
+   * Mount over a snapshot carrying raw `done` entries next to `attempts`.
+   * `queueOf` rebases small `added_at` values onto today so fixture done rows
+   * survive the period filter; these tests compare `added_at` against
+   * `finished_at` directly, so the stamps must reach the view unrewritten.
+   *
+   * @param {Record<string, any>} attempts
+   * @param {any[]} done
+   * @returns {HTMLElement}
+   */
+  function mountWithDone(attempts, done) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const q = queueOf({ attempts });
+    q.done = done;
+    queueStore.set(q);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  const FAILED_AT = startOfToday() + 1000;
+
+  test('renders no banner for a failure the bead finished after (UI-a9ys)', () => {
+    const mount = mountWithDone(
+      {
+        f1: {
+          attempt_id: 'f1',
+          bead_id: 'B1',
+          status: 'failed',
+          repo: '/repo',
+          cause: 'verify_failed:pr_missing',
+          finished_at: FAILED_AT
+        }
+      },
+      [{ bead_id: 'B1', added_at: FAILED_AT + 60_000 }]
+    );
+
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+  });
+
+  test('renders the banner for a failure whose bead is not in the done lane', () => {
+    const mount = mountWithDone(
+      {
+        f1: {
+          attempt_id: 'f1',
+          bead_id: 'B1',
+          status: 'failed',
+          repo: '/repo',
+          cause: 'verify_failed:pr_missing',
+          finished_at: FAILED_AT
+        }
+      },
+      [{ bead_id: 'B2', added_at: FAILED_AT + 60_000 }]
+    );
+
+    expect(mount.querySelector('.worker-banner--failure')).not.toBeNull();
+  });
+
+  test('renders the banner when the failure came after the done entry', () => {
+    const mount = mountWithDone(
+      {
+        f1: {
+          attempt_id: 'f1',
+          bead_id: 'B1',
+          status: 'failed',
+          repo: '/repo',
+          cause: 'session_failed:resumed',
+          finished_at: FAILED_AT
+        }
+      },
+      [{ bead_id: 'B1', added_at: FAILED_AT - 60_000 }]
+    );
+
+    expect(mount.querySelector('.worker-banner--failure')).not.toBeNull();
+  });
+
+  test('falls through to another bead unhandled failure once one is resolved', () => {
+    const mount = mountWithDone(
+      // The resolved one is LAST in insertion order, so it is what the
+      // unfixed verdict would have picked as `latest_failed`.
+      {
+        open: {
+          attempt_id: 'open',
+          bead_id: 'B2',
+          status: 'failed',
+          repo: '/repo',
+          cause: 'session_failed:new',
+          finished_at: FAILED_AT,
+          session_id: 'sid-2'
+        },
+        resolved: {
+          attempt_id: 'resolved',
+          bead_id: 'B1',
+          status: 'failed',
+          repo: '/repo',
+          cause: 'verify_failed:pr_missing',
+          finished_at: FAILED_AT + 1000,
+          session_id: 'sid-1'
+        }
+      },
+      [{ bead_id: 'B1', added_at: FAILED_AT + 60_000 }]
+    );
+
+    expect(
+      /** @type {HTMLElement} */ (mount.querySelector('.worker-banner__resume'))
+        .dataset.attemptId
+    ).toBe('open');
+  });
+
+  test('keeps the resolution when the done period filter hides the row', () => {
+    const old_finished = startOfToday() - 3 * 86_400_000;
+    const mount = mountWithDone(
+      {
+        f1: {
+          attempt_id: 'f1',
+          bead_id: 'B1',
+          status: 'failed',
+          repo: '/repo',
+          cause: 'verify_failed:pr_missing',
+          finished_at: old_finished
+        }
+      },
+      [{ bead_id: 'B1', added_at: old_finished + 60_000 }]
+    );
+
+    expect(
+      mount.querySelectorAll('#worker-pane-done .worker-mini').length
+    ).toBe(0);
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+  });
+
+  test('renders the banner for a legacy attempt carrying no finished_at', () => {
+    const mount = mountWithDone(
+      {
+        f1: {
+          attempt_id: 'f1',
+          bead_id: 'B1',
+          status: 'failed',
+          repo: '/repo',
+          cause: 'verify_failed:pr_missing',
+          finished_at: null
+        }
+      },
+      [{ bead_id: 'B1', added_at: FAILED_AT + 60_000 }]
+    );
+
+    expect(mount.querySelector('.worker-banner--failure')).not.toBeNull();
+  });
+
+  test('renders the banner for a legacy done entry normalized to added_at 0', () => {
+    const mount = mountWithDone(
+      {
+        f1: {
+          attempt_id: 'f1',
+          bead_id: 'B1',
+          status: 'failed',
+          repo: '/repo',
+          cause: 'verify_failed:pr_missing',
+          finished_at: FAILED_AT
+        }
+      },
+      [{ bead_id: 'B1', added_at: 0 }]
+    );
+
+    expect(mount.querySelector('.worker-banner--failure')).not.toBeNull();
+  });
 });
 
 describe('candidate display filter — projection (UI-ki09)', () => {
