@@ -512,11 +512,25 @@ describe('worker/verify — pr_url fallback (UI-b8n8)', () => {
     expect(bd.status.value).toBe('resolved');
   });
 
-  test('reports bd_record_failed when the merged-path status read throws', async () => {
+  test('reports bd_read_failed when the merged-path status read throws', async () => {
     const bd = makeBd();
     bd.readStatus = async () => {
       throw new Error('bd down');
     };
+    const { verifier } = makeFallback({
+      recorded: PR_URL,
+      detail: detailOf('MERGED'),
+      bd
+    });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('bd_read_failed');
+  });
+
+  test('still reports bd_record_failed when the merged-path back-fill fails', async () => {
+    const bd = makeBd({ failOn: 'setStatus' });
     const { verifier } = makeFallback({
       recorded: PR_URL,
       detail: detailOf('MERGED'),

@@ -228,9 +228,13 @@ export function createVerifier(deps) {
    * earlier cleanup) must not be pushed back to `resolved` — that reopens it
    * into `pr_wait` and re-runs a cleanup and deploy that already ran.
    *
+   * The status read is a QUERY, not a write, so its failure is `bd_read_failed`
+   * like the fallback's `readMetadata` — `bd_record_failed` is reserved for a
+   * back-fill that did not stick.
+   *
    * @param {string} bead_id
    * @param {string} pr_url
-   * @returns {Promise<{ ok: boolean, already_finished: boolean }>}
+   * @returns {Promise<{ ok: boolean, already_finished: boolean, reason: 'ok'|'bd_read_failed'|'bd_record_failed' }>}
    */
   async function recordMergedToBd(bead_id, pr_url) {
     /** @type {string|null} */
@@ -238,12 +242,17 @@ export function createVerifier(deps) {
     try {
       status = await deps.bd.readStatus(bead_id);
     } catch {
-      return { ok: false, already_finished: false };
+      return { ok: false, already_finished: false, reason: 'bd_read_failed' };
     }
     if (status === 'closed') {
-      return { ok: true, already_finished: true };
+      return { ok: true, already_finished: true, reason: 'ok' };
     }
-    return { ok: await recordToBd(bead_id, pr_url), already_finished: false };
+    const ok = await recordToBd(bead_id, pr_url);
+    return {
+      ok,
+      already_finished: false,
+      reason: ok ? 'ok' : 'bd_record_failed'
+    };
   }
 
   /**
@@ -326,13 +335,21 @@ export function createVerifier(deps) {
     if (pr.state !== 'OPEN' && pr.state !== 'MERGED') {
       return missing;
     }
-    const record =
-      pr.state === 'MERGED'
-        ? await recordMergedToBd(bead_id, pr.url)
-        : { ok: await recordToBd(bead_id, pr.url), already_finished: false };
+    /** @type {{ ok: boolean, already_finished: boolean, reason: 'ok'|'bd_read_failed'|'bd_record_failed' }} */
+    let record;
+    if (pr.state === 'MERGED') {
+      record = await recordMergedToBd(bead_id, pr.url);
+    } else {
+      const ok = await recordToBd(bead_id, pr.url);
+      record = {
+        ok,
+        already_finished: false,
+        reason: ok ? 'ok' : 'bd_record_failed'
+      };
+    }
     return {
       ok: record.ok,
-      reason: record.ok ? 'ok' : 'bd_record_failed',
+      reason: record.reason,
       pr_url: pr.url,
       pr_number: pr.number,
       gh_reason: null,
