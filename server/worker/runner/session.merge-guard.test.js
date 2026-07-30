@@ -6,6 +6,8 @@
  *   - `git merge origin/main`      → killed on a normal attempt, ALLOWED on a
  *                                    conflict-resolution attempt.
  */
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 import { claudeSpec } from './claude.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
@@ -32,7 +34,8 @@ function bashToolLine(command) {
  * Replay one shell command through a session and return the verdict + kill spy.
  *
  * @param {string} command
- * @param {{ conflict_resolution?: boolean }} [settings]
+ * @param {{ conflict_resolution?: boolean, repo?: string,
+ * target_base?: string }} [settings]
  */
 async function runCommand(command, settings = {}) {
   const spawn_impl = makeFixtureSpawn({
@@ -291,6 +294,55 @@ describe('runner/session merge guards see through wrappers and interpreters', ()
 
   test('kills an unbalanced-quote command by the regex fallback', async () => {
     const { kill_impl } = await runCommand('echo "gh pr merge');
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+  });
+});
+
+describe('runner/session base-landing guard reads its subject from settings', () => {
+  // The scheduler puts the attempt's repo and its repo-declared base on the
+  // launch settings (worker-base-scope-alignment §3); these pin that the values
+  // actually reach the guard's judgment rather than stopping at the signature.
+  const REPO = path.join(os.homedir(), 'Documents/GitHub/beads-ui');
+  const ON_DEV = { repo: REPO, target_base: 'ilsun/dev' };
+  const ON_MAIN = { repo: REPO, target_base: 'main' };
+
+  test('does not kill a push to main when the declared base is ilsun/dev', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git push origin main',
+      ON_DEV
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+  });
+
+  test('kills a push to the declared base ilsun/dev', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git push origin ilsun/dev',
+      ON_DEV
+    );
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(
+      verdict.events.some((e) => e.reason === 'merge_to_base_blocked')
+    ).toBe(true);
+  });
+
+  // The 2026-07-30 incident, verbatim: a publication to ANOTHER repository's
+  // main, which killed this session twice before §6.
+  test('does not kill a cross-repo publication that leaves the attempt repo', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'cd ~/GitHub/thalamus && git push origin main',
+      ON_MAIN
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+  });
+
+  test('still kills a base push from the attempt repo itself', async () => {
+    const { kill_impl } = await runCommand('git push origin main', ON_MAIN);
 
     expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
   });
