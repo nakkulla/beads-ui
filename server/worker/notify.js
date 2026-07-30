@@ -35,18 +35,19 @@ import { debug } from '../logging.js';
 const default_log = debug('worker:notify');
 
 /**
- * Headline prefixes. One operator watches many sources, so every push says the
- * same thing about WHO ran it — "beads worker" — and differs only in the
- * transition (UI-9rrk). The leading emoji is what distinguishes a transition at
- * a glance now that the embed colour is gone (UI-vb0t §3.1).
+ * Headline prefixes. The transition alone — WHO ran it is carried by the
+ * destination, a dedicated worker channel, so spending the first characters of
+ * every push preview on a constant "beads worker" only pushed the bead out of
+ * view. The leading emoji is what distinguishes a transition at a glance now
+ * that the embed colour is gone (UI-vb0t §3.1).
  */
 const TITLE = {
-  started: '🚀 beads worker · 시작',
-  resume: '🚀 beads worker · 재개',
-  conflict: '🚀 beads worker · 충돌 해결',
-  failed: '❌ beads worker · 실패',
-  pr_wait: '📬 beads worker · PR 제출',
-  merged: '✅ beads worker · 머지 완료'
+  started: '🚀 시작',
+  resume: '🚀 재개',
+  conflict: '🚀 충돌 해결',
+  failed: '❌ 실패',
+  pr_wait: '📬 PR 제출',
+  merged: '✅ 머지 완료'
 };
 
 /**
