@@ -956,42 +956,66 @@ function cdTargetToken(argv) {
 }
 
 /**
- * The literal assignments visible to a `cd`: whole assignment-only commands
- * earlier in the SAME scope.
+ * Operators after which the following command runs whatever the previous one
+ * returned. `&&`/`||` are conditional and therefore absent: a command behind one
+ * of them may be SKIPPED, and an assignment that may not have run proves
+ * nothing about where a later `cd` goes.
  *
- * The `cd`'s OWN assignment prefix is deliberately not one of them. POSIX
- * 2.9.1 expands a simple command's words BEFORE it performs that command's
- * variable assignments, so `H=/elsewhere cd "$H"` runs `cd ""` — which stays put
- * and would push from the repo after all. Reading it as a resolved move would be
- * a false proof, i.e. a bypass, so it stays unresolvable and fails closed.
+ * @type {Set<string|null>}
+ */
+const UNCONDITIONAL_OPS = new Set([null, ';', '\n']);
+
+/**
+ * The ONE literal assignment a `cd` may be resolved through: the assignment-only
+ * command IMMEDIATELY preceding it in the same scope, reached unconditionally.
+ *
+ * Three restrictions, each closing a false proof:
+ *
+ *   - The `cd`'s OWN assignment prefix is not one. POSIX 2.9.1 expands a simple
+ *     command's words BEFORE performing that command's assignments, so
+ *     `H=/elsewhere cd "$H"` runs `cd ""` — it stays put and pushes from the repo
+ *     after all.
+ *   - The assignment must be reached UNCONDITIONALLY. In
+ *     `true || H=/foreign; cd "$H" && git push origin main` the assignment is
+ *     skipped, so `$H` keeps whatever it already held — possibly the repo itself.
+ *     Reading the skipped `/foreign` as the destination exempts a real base
+ *     landing (spec-delta review 2026-07-30).
+ *   - It must be the IMMEDIATE predecessor. Anything in between can rebind the
+ *     variable in a way no static read can see (`eval`, `read`, `export`,
+ *     a sourced file), and an intervening rebind makes the visible assignment a
+ *     stale premise.
  *
  * @param {SimpleCommand[]} commands
  * @param {number} cd_idx
- * @returns {{ name: string, value: string }[]}
+ * @returns {{ name: string, value: string }|null}
  */
-function collectAssignments(commands, cd_idx) {
-  /** @type {{ name: string, value: string }[]} */
-  const out = [];
+function precedingAssignment(commands, cd_idx) {
   const scope = commands[cd_idx].scope;
-  for (let i = 0; i < cd_idx; i += 1) {
-    const c = commands[i];
-    if (c.scope !== scope || c.words.length === 0) {
-      continue;
-    }
-    if (!c.words.every((w) => ASSIGNMENT_RE.test(w))) {
-      continue;
-    }
-    for (const w of c.words) {
-      out.push(splitAssignment(w));
+  let prev = -1;
+  for (let i = cd_idx - 1; i >= 0; i -= 1) {
+    if (commands[i].scope === scope) {
+      prev = i;
+      break;
     }
   }
-  return out;
+  if (prev < 0) {
+    return null;
+  }
+  const c = commands[prev];
+  if (!UNCONDITIONAL_OPS.has(c.op)) {
+    return null;
+  }
+  if (c.words.length !== 1 || !ASSIGNMENT_RE.test(c.words[0])) {
+    return null;
+  }
+  return splitAssignment(c.words[0]);
 }
 
 /**
  * Resolve where a `cd` goes, or null when it is not decidable. Variable
- * expansion is ONE stage off a SINGLE literal assignment: two or more
- * assignments are ambiguous and refuse, which keeps the allowlist an allowlist.
+ * expansion is ONE stage off the single unconditional assignment immediately
+ * ahead of the move ({@link precedingAssignment}); anything else refuses, which
+ * is what keeps the allowlist an allowlist.
  *
  * @param {SimpleCommand[]} commands
  * @param {number} cd_idx
@@ -1015,11 +1039,11 @@ function resolveCdTarget(commands, cd_idx) {
     return null;
   }
   const var_name = ref[1] ?? ref[2];
-  const assignments = collectAssignments(commands, cd_idx);
-  if (assignments.length !== 1 || assignments[0].name !== var_name) {
+  const assignment = precedingAssignment(commands, cd_idx);
+  if (!assignment || assignment.name !== var_name) {
     return null;
   }
-  return expandDeterministic(assignments[0].value);
+  return expandDeterministic(assignment.value);
 }
 
 /**
@@ -1067,7 +1091,9 @@ function isCdCommand(cmd) {
  *      the push is joined by `&&`, so the push cannot run on a failed move. The
  *      move's OWN operator is not judged: a literal assignment ahead of it
  *      (`H="…"; cd "$H" && git push …`) always runs and breaks nothing;
- *   3. static resolution of the move target ({@link resolveCdTarget});
+ *   3. static resolution of the move target ({@link resolveCdTarget}) — one
+ *      stage off the single unconditional assignment immediately ahead of it, so
+ *      a skipped or rebindable assignment never becomes a proof;
  *   4. the resolved path lies outside the attempt repo.
  *
  * The LAST move before the push decides, so `cd /foreign && cd "$repo" && push`

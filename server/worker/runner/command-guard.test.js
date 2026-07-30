@@ -453,6 +453,39 @@ describe('command-guard cross-repo push allowlist (violations)', () => {
     expect(violation?.reason).toBe('merge_to_base_blocked');
   });
 
+  // The assignment sits behind `||` after a command that SUCCEEDS, so it never
+  // runs and `$H` keeps whatever it already held — possibly the repo itself.
+  // Reading the skipped `/foreign` as the destination would exempt a real base
+  // landing (spec-delta review 2026-07-30).
+  test('blocks a move through an assignment that may never have run', () => {
+    const violation = findMergeViolation(
+      'true || H=/foreign; cd "$H" && git push origin main',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
+  test('blocks a move whose assignment sits behind && too', () => {
+    const violation = findMergeViolation(
+      'test -d /x && H=/foreign; cd "$H" && git push origin main',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
+  // Anything between the assignment and the move can rebind the variable in a
+  // way no static read can see, so the visible assignment is a stale premise.
+  test('blocks a move whose assignment is not the immediate predecessor', () => {
+    const violation = findMergeViolation(
+      'H=/foreign; eval \'H=/somewhere\'; cd "$H" && git push origin main',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
   test('blocks a move through a command substitution', () => {
     const violation = findMergeViolation(
       'cd "$(git rev-parse --show-toplevel)" && git push origin main',
