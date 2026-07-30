@@ -18,6 +18,40 @@ import { createWorkerRuntime } from './runtime.js';
 import { sessionLogPath } from './state-paths.js';
 
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
+
+/**
+ * A resolved-base stub for `createLiveBd` (worker-base-scope-alignment §1): the
+ * resolver is the ONLY source of a snapshot's base now, so every snapshot test
+ * injects one instead of pinning a plain string.
+ *
+ * @param {string} base
+ * @param {string} [base_oid]
+ */
+function okBase(base, base_oid = 'a'.repeat(40)) {
+  return async () => ({
+    ok: /** @type {const} */ (true),
+    base,
+    declared: base !== 'main',
+    remote: 'origin',
+    remote_ref: `refs/remotes/origin/${base}`,
+    base_oid,
+    local_only: false
+  });
+}
+
+/**
+ * An UNRESOLVED base stub: a declaration whose step failed.
+ *
+ * @param {'declaration'|'format'|'remote_prefix'|'remote'|'fetch'|'ref'|'git_error'} step
+ */
+function failBase(step) {
+  return async () => ({
+    ok: /** @type {const} */ (false),
+    step,
+    base: 'ilsun/dv',
+    detail: 'test'
+  });
+}
 /**
  * Write a raw line the way the RUNNER now does — straight to the session-log
  * file through its own fd (UI-o2yt §3.1), with no server-side writer.
@@ -216,6 +250,9 @@ describe('worker/attach construction + live loop (F1)', () => {
       verify: okVerify,
       // This test probes the spawn/preamble wiring, not the admission gate.
       admission: { validate: async () => ({ ok: true }) },
+      // …nor the base declaration: the temp workspace is not a git repo, so the
+      // real resolver would refuse the dispatch before it reaches spawn.
+      resolveBase: okBase('main'),
       spawn_impl
     });
     __registerWorkerAttachmentForTest(WS, att);
@@ -485,7 +522,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const bd = createLiveBd({
       cwd: '/ws',
       repo: '/repo',
-      target_base: 'main',
+      resolveBase: okBase('main'),
       runJson
     });
     const snap = await bd.snapshotBead('UI-1');
@@ -510,7 +547,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const bd = createLiveBd({
       cwd: '/ws',
       repo: '/repo',
-      target_base: 'main',
+      resolveBase: okBase('main'),
       runJson
     });
 
@@ -532,7 +569,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const bd = createLiveBd({
       cwd: '/ws',
       repo: '/repo',
-      target_base: 'main',
+      resolveBase: okBase('main'),
       runJson
     });
 
@@ -560,7 +597,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const bd = createLiveBd({
       cwd: '/ws',
       repo: '/repo',
-      target_base: 'main',
+      resolveBase: okBase('main'),
       runJson
     });
     const snap = await bd.snapshotBead('UI-1');
@@ -581,7 +618,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const bd = createLiveBd({
       cwd: '/ws',
       repo: '/repo',
-      target_base: 'main',
+      resolveBase: okBase('main'),
       runJson
     });
     const snap = await bd.snapshotBead('UI-3');
@@ -606,7 +643,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const bd = createLiveBd({
       cwd: '/ws',
       repo: '/repo',
-      target_base: 'main',
+      resolveBase: okBase('main'),
       runJson
     });
     const snap = await bd.snapshotBead('UI-2');
@@ -614,7 +651,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.blocked).toBe(true);
   });
 
-  test('snapshotBead keeps a bead target_base ahead of the attachment base', async () => {
+  test('snapshotBead ignores a bead target_base and uses the repo declaration', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {
         return {
@@ -633,16 +670,16 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const bd = createLiveBd({
       cwd: '/ws',
       repo: '/repo',
-      target_base: 'ilsun/dev',
+      resolveBase: okBase('ilsun/dev'),
       runJson
     });
 
     const snap = await bd.snapshotBead('UI-3');
 
-    expect(snap.target_base).toBe('bead/base');
+    expect(snap.target_base).toBe('ilsun/dev');
   });
 
-  test('snapshotBead falls back to the attachment base when the bead pins none', async () => {
+  test('snapshotBead carries the resolved base_oid for the cut and the pin', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {
         return {
@@ -655,33 +692,85 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const bd = createLiveBd({
       cwd: '/ws',
       repo: '/repo',
-      target_base: 'ilsun/dev',
+      resolveBase: okBase('ilsun/dev', 'c'.repeat(40)),
       runJson
     });
 
     const snap = await bd.snapshotBead('UI-4');
 
-    expect(snap.target_base).toBe('ilsun/dev');
+    expect(snap.base_oid).toBe('c'.repeat(40));
+    expect(snap.base_unresolved).toBe(null);
+  });
+
+  test('snapshotBead reports an unresolved base instead of throwing', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [{ id: 'UI-5', status: 'open', metadata: {} }]
+        };
+      }
+      return { code: 0, stdoutJson: [] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: failBase('ref'),
+      runJson
+    });
+
+    const snap = await bd.snapshotBead('UI-5');
+
+    expect(snap.target_base).toBe('');
+    expect(snap.base_unresolved).toBe('base_unresolved:ref');
+  });
+
+  test('snapshotBead re-reads the declaration on every snapshot', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [{ id: 'UI-6', status: 'open', metadata: {} }]
+        };
+      }
+      return { code: 0, stdoutJson: [] };
+    });
+    let calls = 0;
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: async () => {
+        calls += 1;
+        return {
+          ok: /** @type {const} */ (true),
+          base: calls === 1 ? 'main' : 'ilsun/dev',
+          declared: calls !== 1,
+          remote: 'origin',
+          remote_ref: 'refs/remotes/origin/x',
+          base_oid: 'd'.repeat(40),
+          local_only: false
+        };
+      },
+      runJson
+    });
+
+    const first = await bd.snapshotBead('UI-6');
+    const second = await bd.snapshotBead('UI-6');
+
+    expect([first.target_base, second.target_base]).toEqual([
+      'main',
+      'ilsun/dev'
+    ]);
   });
 });
 
-describe('worker/attach target_base resolution (worker-target-base §1)', () => {
-  /**
-   * @param {string} content
-   */
-  function writeConfig(content) {
-    const file_path = path.join(tmp_state, 'config.toml');
-    fs.writeFileSync(file_path, content);
-    process.env.BDUI_CONFIG_PATH = file_path;
-  }
-
+describe('worker/attach target base resolution wiring (worker-base-scope-alignment §1)', () => {
   /**
    * @param {Record<string, any>} [options]
    */
   function attach(options = {}) {
     return createWorkerAttachment(WS, {
       runtime: createWorkerRuntime(),
-      bd: fakeBd(),
       worktree: fakeWorktree,
       verify: okVerify,
       spawn_impl: makeFixtureSpawn({ lines: [] }),
@@ -689,42 +778,113 @@ describe('worker/attach target_base resolution (worker-target-base §1)', () => 
     });
   }
 
-  test('resolves the repo config base when no option pins one', () => {
-    writeConfig(`[worker.target_base]\n"${WS}" = "ilsun/dev"\n`);
+  test('reads the target repo declaration rather than the global config', async () => {
+    const declaration = path.join(WS, 'docs', 'agents', 'repo-ops.toml');
+    fs.mkdirSync(path.dirname(declaration), { recursive: true });
+    fs.writeFileSync(declaration, 'base = "ilsun/dev"\n');
+    const file_path = path.join(tmp_state, 'config.toml');
+    fs.writeFileSync(file_path, '[worker.target_base]\n"/other" = "nope"\n');
+    process.env.BDUI_CONFIG_PATH = file_path;
+    const att = attach({
+      bd: fakeBd(),
+      gitRun: async (/** @type {string[]} */ args) => {
+        if (args[0] === 'remote') {
+          return { code: 0, stdout: 'origin\n', stderr: '' };
+        }
+        if (args[0] === 'config') {
+          return { code: 1, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'rev-parse') {
+          return { code: 0, stdout: 'e'.repeat(40), stderr: '' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      }
+    });
 
-    expect(attach().target_base).toBe('ilsun/dev');
+    const resolved = await att.resolveBase();
+
+    expect(resolved).toMatchObject({ ok: true, base: 'ilsun/dev' });
   });
 
-  test('falls back to main when no config entry matches the workspace', () => {
-    writeConfig(`[worker.target_base]\n"/other/repo" = "ilsun/dev"\n`);
+  test('memoizes the scan resolution but re-resolves on force', async () => {
+    let calls = 0;
+    const att = attach({
+      bd: fakeBd(),
+      gitRun: async (/** @type {string[]} */ args) => {
+        if (args[0] === 'fetch') {
+          calls += 1;
+        }
+        if (args[0] === 'remote') {
+          return { code: 0, stdout: 'origin\n', stearr: '', stderr: '' };
+        }
+        if (args[0] === 'config') {
+          return { code: 1, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'rev-parse') {
+          return { code: 0, stdout: 'f'.repeat(40), stderr: '' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      }
+    });
 
-    expect(attach().target_base).toBe('main');
+    await att.resolveBase();
+    await att.resolveBase();
+    await att.resolveBase({ force: true });
+
+    expect(calls).toBe(2);
   });
 
-  test('falls back to main when the config entry is invalid', () => {
-    writeConfig(`[worker.target_base]\n"relative/repo" = "ilsun/dev"\n`);
+  test('refuses admission with the failing step when the base is unresolved', async () => {
+    const att = attach({
+      bd: fakeBd(),
+      gh: { checkAvailability: async () => ({ state: 'ok' }) }
+    });
 
-    expect(attach().target_base).toBe('main');
-  });
-
-  test('falls back to main when the config file is missing', () => {
-    process.env.BDUI_CONFIG_PATH = path.join(tmp_state, 'absent.toml');
-
-    expect(attach().target_base).toBe('main');
-  });
-
-  test('keeps an injected target_base ahead of the repo config', () => {
-    writeConfig(`[worker.target_base]\n"${WS}" = "ilsun/dev"\n`);
-
-    expect(attach({ target_base: 'injected/base' }).target_base).toBe(
-      'injected/base'
+    const result = await att.admission.validate(
+      /** @type {any} */ ({
+        repo: '/repo',
+        target_base: '',
+        base_oid: null,
+        base_unresolved: 'base_unresolved:format',
+        route: 'full_plan',
+        spec_id: 'docs/spec.md',
+        spec_review: `codex@${'a'.repeat(40)}`
+      })
     );
+
+    expect(result).toEqual({ ok: false, reason: 'base_unresolved:format' });
   });
 
-  test('preserves an injected empty target_base instead of substituting a base', () => {
-    writeConfig(`[worker.target_base]\n"${WS}" = "ilsun/dev"\n`);
+  test('asks git about the fetched remote tip, not the branch name', async () => {
+    /** @type {string[][]} */
+    const git_calls = [];
+    const att = attach({
+      bd: fakeBd(),
+      gh: { checkAvailability: async () => ({ state: 'ok' }) },
+      gitRun: async (/** @type {string[]} */ args) => {
+        git_calls.push(args);
+        return { code: 0, stdout: '', stderr: '' };
+      }
+    });
 
-    expect(attach({ target_base: '' }).target_base).toBe('');
+    await att.admission.validate(
+      /** @type {any} */ ({
+        repo: '/repo',
+        target_base: 'ilsun/dev',
+        base_oid: 'a'.repeat(40),
+        base_unresolved: null,
+        route: 'full_plan',
+        spec_id: 'docs/spec.md',
+        spec_review: `codex@${'b'.repeat(40)}`
+      })
+    );
+
+    expect(git_calls[0]).toEqual([
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      `${'a'.repeat(40)}^{commit}`
+    ]);
   });
 });
 
@@ -743,7 +903,7 @@ describe('worker/attach createLiveBd fail-visible snapshots', () => {
     return createLiveBd({
       cwd: '/ws',
       repo: '/repo',
-      target_base: 'main',
+      resolveBase: okBase('main'),
       runJson
     });
   }

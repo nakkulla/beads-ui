@@ -46,21 +46,13 @@ import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
 import { createSessionMonitors } from './session-monitor.js';
+import { baseUnresolvedReason, resolveTargetBase } from './target-base.js';
 import { replayUsage } from './usage-replay.js';
 import { resolveVerifyCmd, runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
 const log = debug('worker:attach');
-
-/**
- * The last-resort merge target base: used when neither the bead's `target_base`
- * metadata nor the repo's `[worker.target_base]` config pins one. Worker
- * dispatch lands work on this branch of the repo.
- *
- * @type {string}
- */
-const DEFAULT_TARGET_BASE = 'main';
 
 /**
  * Cadence of the per-attachment reconcile pass
@@ -78,25 +70,18 @@ const DEFAULT_TARGET_BASE = 'main';
 export const RECONCILE_INTERVAL_SECONDS = 60;
 
 /**
- * The workspace's configured merge target base from `[worker.target_base]`
- * (worker-target-base §1), or null when the repo pins none.
+ * How long one target-base resolution stays good for the SCAN path
+ * (worker-base-scope-alignment §1).
  *
- * Read at construction time, like the rest of the attachment's wiring. Any
- * config read failure yields null so a broken config degrades to the default
- * instead of blocking attachment construction.
+ * Resolution ends in `git fetch`, and the tick scan resolves once per queued
+ * bead, so an unmemoized resolver would fetch once per bead per tick. The
+ * dispatch path re-resolves with `{ force: true }` immediately before the
+ * worktree cut, so the memo only ever shortens the SCAN's view — never the one
+ * a cut or an admission pin is taken from.
  *
- * @param {string} workspace_root
- * @returns {string|null}
+ * @type {number}
  */
-function configTargetBase(workspace_root) {
-  try {
-    const map = getConfig().worker_target_base;
-    const base = map ? map[path.resolve(String(workspace_root || ''))] : null;
-    return typeof base === 'string' && base.length > 0 ? base : null;
-  } catch {
-    return null;
-  }
-}
+const BASE_RESOLUTION_TTL_MS = 20_000;
 
 /**
  * The issue rows of a `bd ready --json` payload, tolerating either an array of
@@ -154,7 +139,14 @@ function readyIdSet(arr) {
  * catch — but a swallowed failure used to reach the queue as a plain
  * not-ready bead, so a bd outage was indistinguishable from a dependency block.
  *
- * @param {{ cwd: string, repo: string, target_base: string, runJson?: (args: string[], options?: any) => Promise<{ code: number, stdoutJson?: any, stderr?: string }>, run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }> }} config
+ * The base is NOT a bead-level fact (worker-base-scope-alignment §2): it comes
+ * from `resolveBase`, the one repo-declaration resolver, re-read on every
+ * snapshot so a dispatch reads the CURRENT declaration rather than one captured
+ * at attachment construction. An unresolved base is carried as
+ * `base_unresolved` instead of thrown, so the refusal names the failing
+ * declaration step rather than an incidental `bd_snapshot_failed`.
+ *
+ * @param {{ cwd: string, repo: string, resolveBase: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, runJson?: (args: string[], options?: any) => Promise<{ code: number, stdoutJson?: any, stderr?: string }>, run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }> }} config
  */
 export function createLiveBd(config) {
   const cwd = config.cwd;
@@ -224,14 +216,15 @@ export function createLiveBd(config) {
         ? md.spec_review
         : undefined;
 
+      const resolved = await config.resolveBase();
+
       return {
         ready,
         blocked,
         repo: config.repo,
-        target_base:
-          typeof md.target_base === 'string' && md.target_base.length > 0
-            ? md.target_base
-            : config.target_base,
+        target_base: resolved.ok ? resolved.base : '',
+        base_oid: resolved.ok ? resolved.base_oid : null,
+        base_unresolved: resolved.ok ? null : baseUnresolvedReason(resolved),
         model:
           typeof md.orchestration_model === 'string'
             ? md.orchestration_model
@@ -302,7 +295,7 @@ export function defaultProbePid(pid) {
  * @param {{
  *   runtime?: ReturnType<typeof getWorkerRuntime>,
  *   repo?: string,
- *   target_base?: string,
+ *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   bd?: any,
  *   worktree?: any,
  *   verify?: any,
@@ -324,25 +317,49 @@ export function defaultProbePid(pid) {
 export function createWorkerAttachment(workspace_root, options = {}) {
   const runtime = options.runtime || getWorkerRuntime();
   const repo = options.repo || workspace_root;
-  // Resolution order (worker-target-base §1): bead metadata (applied per-bead in
-  // createLiveBd.snapshotBead) > repo config > 'main'. `options.target_base`
-  // stays the test-injection seam ahead of both.
-  const target_base =
-    options.target_base ??
-    configTargetBase(workspace_root) ??
-    DEFAULT_TARGET_BASE;
-
-  const bd =
-    options.bd || createLiveBd({ cwd: workspace_root, repo, target_base });
-
-  // Workspace-scoped admission accessor (worker-autorun-policy §1): the
-  // scheduler validates candidates/dispatches through `validate` (base
-  // defaults to the CURRENT base ref tip; dispatch pins the worktree
-  // base_oid), and the ws place handler pre-checks through `check`.
   const gitRun =
     options.gitRun ||
     ((/** @type {string[]} */ args, /** @type {any} */ opts) =>
       runShell('git', args, opts));
+
+  // The ONE base resolution seam (worker-base-scope-alignment §1/§2). The base
+  // has exactly one source — the target repo's `docs/agents/repo-ops.toml`
+  // declaration — and every consumer here (snapshot, admission, worktree cut,
+  // preamble, merge gate) reads it through this function. The memo bounds the
+  // scan path's fetch cost; `{ force: true }` is the dispatch path's fresh read.
+  /** @type {{ at: number, result: import('./target-base.js').TargetBaseResult }|null} */
+  let base_cache = null;
+  const resolveBase =
+    options.resolveBase ||
+    (async (/** @type {{ force?: boolean }} */ opts = {}) => {
+      const at = Date.now();
+      if (
+        !opts.force &&
+        base_cache &&
+        at - base_cache.at < BASE_RESOLUTION_TTL_MS
+      ) {
+        return base_cache.result;
+      }
+      const result = await resolveTargetBase({ repo, gitRun });
+      base_cache = { at, result };
+      if (!result.ok) {
+        log(
+          'target base unresolved for %s: %s/%s',
+          repo,
+          result.step,
+          result.detail
+        );
+      }
+      return result;
+    });
+
+  const bd =
+    options.bd || createLiveBd({ cwd: workspace_root, repo, resolveBase });
+
+  // Workspace-scoped admission accessor (worker-autorun-policy §1): the
+  // scheduler validates candidates/dispatches through `validate` (base
+  // defaults to the snapshot's resolved base_oid; dispatch pins the worktree
+  // base_oid), and the ws place handler pre-checks through `check`.
   // The PR observation adapter (worker-phase2 §1). Shared with admission's
   // fail-closed `gh_unavailable` check: a workspace whose `gh` cannot observe a
   // PR can never produce a success verdict, so it must not dispatch at all.
@@ -354,11 +371,23 @@ export function createWorkerAttachment(workspace_root, options = {}) {
      * @param {string} [base]
      */
     validate(snap, base) {
+      // An unresolvable declaration is refused BEFORE any git probe: the base is
+      // what every later check is asked about, so there is nothing to ask
+      // (worker-base-scope-alignment §1 — no fallback).
+      if (snap.base_unresolved) {
+        return Promise.resolve({
+          ok: false,
+          reason: /** @type {any} */ (snap.base_unresolved)
+        });
+      }
       return validateAdmission({
         gitRun,
         ghAvailable,
         repo: snap.repo,
-        base: base || snap.target_base,
+        // The FETCHED remote tip, not the local branch name: a local `<base>`
+        // that is stale would otherwise pass admission against a commit the
+        // remote left behind.
+        base: base || snap.base_oid || snap.target_base,
         // Refusals name the attempt's BRANCH even when the check runs against a
         // pinned base_oid — a SHA cannot tell the operator the base is wrong.
         base_label: snap.target_base,
@@ -449,6 +478,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     sessionLog: runtime.sessionLog,
     usage: runtime.usageStore,
     admission,
+    // Dispatch-time re-resolution (worker-base-scope-alignment §1): the cut and
+    // the admission pin are taken from a base read HERE, not one captured at
+    // attachment construction.
+    resolveBase,
     notify,
     // The external-row evidence the attempt-less conflict dispatch stands on
     // (UI-w0hi §1) — the SAME registry the poller refreshes and the merge click
@@ -686,6 +719,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     worktree,
     gitRun,
     scheduler,
+    // The merge gate's EXPECTED base (worker-base-scope-alignment §5). The gate
+    // compares an expectation against GitHub's observed `baseRefName`, so the
+    // expectation may never be derived from an observation.
+    resolveBase,
     resolveVerify,
     runVerify: (/** @type {any} */ input) =>
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
@@ -793,7 +830,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     worktree,
     admission,
     repo,
-    target_base,
+    resolveBase,
     workspace: workspace_root
   };
 }

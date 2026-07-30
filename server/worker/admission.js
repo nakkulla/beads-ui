@@ -52,7 +52,12 @@ const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
  * the persisted `Queue.admission[bead_id].reason` stays a plain string and needs
  * no schema change or normalize migration.
  *
- * @typedef {'gh_unavailable'|'invalid_route'|'spec_missing'|`spec_missing_at_base:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
+ * `base_unresolved:<step>` is produced by the CALLER (the live wiring's
+ * `validate`, and the dispatch path) rather than in here: with no resolvable
+ * base there is nothing for this validator to ask git about
+ * (worker-base-scope-alignment §1).
+ *
+ * @typedef {'gh_unavailable'|'invalid_route'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
  */
 
 /**

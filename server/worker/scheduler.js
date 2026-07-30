@@ -134,7 +134,16 @@ function staleDispatchPrompt(bead_id, stale) {
  * @property {boolean} ready - Runnable now.
  * @property {boolean} blocked - Blocked by unmet dependencies.
  * @property {string} repo - Target repo root.
- * @property {string} target_base - Merge target base (branch/ref).
+ * @property {string} target_base - Merge target base (branch name). Empty when
+ * the repo's declaration could not be resolved — `base_unresolved` says why.
+ * @property {string|null} [base_oid] - The FETCHED remote tip of `target_base`
+ * (worker-base-scope-alignment §1). What the worktree is cut from and what
+ * admission is pinned to; a bare branch name would cut from a possibly-stale
+ * local ref.
+ * @property {string|null} [base_unresolved] - `base_unresolved:<step>` when the
+ * repo's base declaration failed to resolve, else null. Present-and-set means
+ * NOTHING may dispatch: there is no base to cut from, admit against, or compare
+ * a PR to.
  * @property {string} [model] - orchestration_model.
  * @property {string} [effort] - orchestration_effort.
  * @property {string} [review_model] - review_model (per-bead exec setting).
@@ -166,6 +175,12 @@ function staleDispatchPrompt(bead_id, stale) {
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
+ * @property {(options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>} [resolveBase]
+ * The repo's base declaration resolver (worker-base-scope-alignment §1). Called
+ * with `{ force: true }` at dispatch, immediately before the worktree cut, so
+ * the cut and the attempt's recorded `target_base` come from a base read at
+ * dispatch time rather than one captured earlier. Absent wiring falls back to
+ * the snapshot's own resolution.
  * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha: string, delta_shas: string[] } }> }} [admission]
  * Auto-run admission validator (worker-autorun-policy §1). When present, the
  * tick candidate scan AND the dispatch re-check (against the pinned worktree
@@ -1889,6 +1904,42 @@ export function createScheduler(deps) {
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
 
+    // Base RE-RESOLUTION at dispatch (worker-base-scope-alignment §1). The scan
+    // may have read a memoized resolution; the cut below and the attempt record
+    // must come from a base read now. An unresolved declaration refuses HERE,
+    // before any worktree is touched: there is nothing to cut from, and the
+    // dispatch order puts the cut ahead of the admission re-check.
+    if (typeof deps.resolveBase === 'function') {
+      /** @type {import('./target-base.js').TargetBaseResult} */
+      let resolved;
+      try {
+        resolved = await deps.resolveBase({ force: true });
+      } catch {
+        await refuseDispatch(workspace, bead_id, 'base_unresolved:git_error');
+        return;
+      }
+      if (!resolved.ok) {
+        await refuseDispatch(
+          workspace,
+          bead_id,
+          `base_unresolved:${resolved.step}`
+        );
+        return;
+      }
+      snap = {
+        ...snap,
+        target_base: resolved.base,
+        base_oid: resolved.base_oid,
+        base_unresolved: null
+      };
+    } else if (snap.base_unresolved) {
+      await refuseDispatch(workspace, bead_id, snap.base_unresolved);
+      return;
+    }
+    // The cut source: the FETCHED remote tip when the resolver produced one, so
+    // a stale local `<base>` cannot silently become the worktree's parent.
+    const cut_base = snap.base_oid || snap.target_base;
+
     // PRE-FLIGHT (spec §2): a leftover worktree/branch from an earlier ■ makes
     // `add` fail outright, and — once the worktree alone is gone — makes its
     // `-B` silently reset a branch that may still hold the only copy of its
@@ -1900,7 +1951,7 @@ export function createScheduler(deps) {
         residue = await deps.worktree.removeIfDiscardable({
           repo: snap.repo,
           bead_id,
-          base: snap.target_base
+          base: cut_base
         });
       } catch {
         await refuseDispatch(workspace, bead_id, 'git_error');
@@ -1917,7 +1968,7 @@ export function createScheduler(deps) {
       wt = await deps.worktree.add({
         repo: snap.repo,
         bead_id,
-        base: snap.target_base
+        base: cut_base
       });
     } catch {
       // Fail-VISIBLE: this used to abort with no badge, no log and no attempt,
