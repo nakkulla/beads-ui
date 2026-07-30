@@ -213,61 +213,30 @@ poll_interval_seconds = -10
   });
 });
 
-describe('[worker.target_base] section', () => {
-  test('reads a per-repo target base keyed by absolute path', () => {
-    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
-[worker.target_base]
-"/repo-a" = "ilsun/dev"
-"/repo-b" = "main"
-`);
-
-    const config = getConfig();
-
-    expect(config.worker_target_base).toEqual({
-      '/repo-a': 'ilsun/dev',
-      '/repo-b': 'main'
-    });
-  });
-
-  test('ignores a non-absolute key', () => {
-    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
-[worker.target_base]
-"relative/repo" = "ilsun/dev"
-`);
-
-    const config = getConfig();
-
-    expect(config.worker_target_base).toEqual({});
-  });
-
-  test('ignores an empty or non-string base value', () => {
-    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
-[worker.target_base]
-"/repo-a" = "   "
-"/repo-b" = 7
-`);
-
-    const config = getConfig();
-
-    expect(config.worker_target_base).toEqual({});
-  });
-
-  test('returns an empty map when the section is absent', () => {
+describe('[worker.target_base] retirement (worker-base-scope-alignment §3)', () => {
+  test('exposes no worker_target_base key at all', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
 workspaces = ["/repo-a"]
 `);
 
     const config = getConfig();
 
-    expect(config.worker_target_base).toEqual({});
+    expect('worker_target_base' in config).toBe(false);
   });
 
-  test('returns an empty map when the config file is missing', () => {
-    process.env.BDUI_CONFIG_PATH = missingConfigPath();
+  test('ignores a legacy section instead of reading it', () => {
+    // The base is a property of the REPO now, declared in its own
+    // `docs/agents/repo-ops.toml`. A machine that still carries the retired
+    // section must not have it silently honoured — nor must it break startup.
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.target_base]
+"/repo-a" = "ilsun/dev"
+`);
 
     const config = getConfig();
 
-    expect(config.worker_target_base).toEqual({});
+    expect('worker_target_base' in config).toBe(false);
+    expect(config.workspace_config).toBeDefined();
   });
 });
 
