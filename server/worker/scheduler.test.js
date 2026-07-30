@@ -5457,3 +5457,63 @@ describe('scheduler dispatch-time base resolution (worker-base-scope-alignment �
     expect(worktree.add).not.toHaveBeenCalled();
   });
 });
+
+describe('scheduler→runner base wiring (worker-base-scope-alignment §3)', () => {
+  test('the settings a real dispatch spawns with carry repo, target_base and base_oid', async () => {
+    const { store, runner, scheduler } = setup({
+      config: { 'UI-1': { repo: '/repo', target_base: 'ilsun/dev' } },
+      admission: { validate: async () => ({ ok: true }) },
+      resolveBase: async () => ({
+        ok: true,
+        base: 'ilsun/dev',
+        declared: true,
+        remote: 'origin',
+        remote_ref: 'refs/remotes/origin/ilsun/dev',
+        base_oid: 'a'.repeat(40),
+        local_only: false
+      })
+    });
+    seedQueue(store, ['UI-1']);
+
+    await scheduler.tick(WS);
+
+    // `base_oid` is what the worktree actually resolved after the cut — the
+    // attempt's own pin, which the admission re-check is also taken against.
+    expect(runner.settingsFor('UI-1')).toMatchObject({
+      repo: '/repo',
+      target_base: 'ilsun/dev',
+      base_oid: 'base-UI-1'
+    });
+  });
+
+  test('a resume launch carries the same three fields', async () => {
+    const { store, runner, scheduler } = setup({
+      config: { 'UI-1': { repo: '/repo', target_base: 'main' } },
+      admission: { validate: async () => ({ ok: true }) }
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: {
+        repo: '/repo',
+        target_base: 'ilsun/dev',
+        base_oid: 'b'.repeat(40),
+        session_id: 'sess-1',
+        status: 'failed',
+        cause: 'blocked',
+        finished_at: 10
+      }
+    });
+
+    await scheduler.resume(WS, 'a1');
+
+    expect(runner.settingsFor('UI-1')).toMatchObject({
+      repo: '/repo',
+      target_base: 'ilsun/dev',
+      base_oid: 'b'.repeat(40)
+    });
+  });
+});

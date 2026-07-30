@@ -144,6 +144,8 @@ function seedStore(options = {}) {
  *   dispositions?: Record<string, string>,
  *   shipFail?: (capability: string) => boolean,
  *   shipSilent?: string[],
+ *   declaredBase?: string,
+ *   resolveBase?: () => Promise<any>,
  *   noNotify?: boolean
  * }} [options]
  */
@@ -477,6 +479,20 @@ function makeActions(options = {}) {
     worktree,
     gitRun,
     scheduler,
+    // The repo declaration resolver (worker-base-scope-alignment §5). Default:
+    // an undeclared repo, i.e. `main` — the same base every fixture PR here is
+    // opened against. A test that needs a mismatch overrides it.
+    resolveBase:
+      options.resolveBase ||
+      (async () => ({
+        ok: /** @type {const} */ (true),
+        base: options.declaredBase || 'main',
+        declared: !!options.declaredBase,
+        remote: 'origin',
+        remote_ref: `refs/remotes/origin/${options.declaredBase || 'main'}`,
+        base_oid: 'a'.repeat(40),
+        local_only: false
+      })),
     resolveVerify: () => options.verify ?? null,
     runVerify,
     resolveDeploy: () => options.deploy ?? null,
@@ -2268,6 +2284,10 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
   test('forwards the base_ref this click observed as the resolution target_base', async () => {
     const env = makeActions(
       externalOptions({
+        // The base gate (worker-base-scope-alignment §5) runs first, so the
+        // declaration must agree with the observation for the click to get as
+        // far as the conflict dispatch.
+        declaredBase: 'develop',
         details: [
           prOf({
             mergeable: 'CONFLICTING',
@@ -2290,8 +2310,9 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
   test('dispatches after the BEHIND update-branch re-observes a conflict', async () => {
     const env = makeActions(
       externalOptions({
+        declaredBase: 'release',
         details: [
-          prOf({ merge_state_status: 'BEHIND' }),
+          prOf({ merge_state_status: 'BEHIND', base_ref: 'release' }),
           prOf({
             mergeable: 'CONFLICTING',
             merge_state_status: 'DIRTY',
@@ -2364,9 +2385,10 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     expect(env.scheduler.dispatchExternalConflict).toHaveBeenCalledTimes(1);
   });
 
-  test('syncs the base branch gh reports rather than falling back to main', async () => {
+  test('syncs the DECLARED base, never the one gh reports', async () => {
     const env = makeActions(
       externalOptions({
+        declaredBase: 'develop',
         details: [prOf({ state: 'MERGED', base_ref: 'develop' })]
       })
     );
@@ -2381,16 +2403,88 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     ]);
   });
 
+  test('refuses fail-closed when the observed base differs from the declared one', async () => {
+    const env = makeActions(
+      externalOptions({
+        // An external PR opened with no `--base` lands on the GitHub default;
+        // the repo declares something else. This is the bug §5 exists for.
+        declaredBase: 'ilsun/dev',
+        details: [prOf({ state: 'OPEN', base_ref: 'main' })]
+      })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_mismatch:ilsun/dev!=main'
+    });
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+    expect(env.git_argv).toEqual([]);
+  });
+
+  test('never auto-retargets a mismatched PR', async () => {
+    const env = makeActions(
+      externalOptions({
+        declaredBase: 'ilsun/dev',
+        details: [prOf({ state: 'OPEN', base_ref: 'main' })]
+      })
+    );
+
+    await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(env.calls.filter((c) => c.includes('edit'))).toEqual([]);
+  });
+
+  test('refuses an already-merged PR whose base was wrong instead of cleaning up', async () => {
+    const env = makeActions(
+      externalOptions({
+        declaredBase: 'ilsun/dev',
+        details: [prOf({ state: 'MERGED', base_ref: 'main' })]
+      })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_mismatch:ilsun/dev!=main'
+    });
+    // No sync, no verify, no deploy, no bead close — the landing is REPORTED,
+    // not papered over.
+    expect(env.git_argv).toEqual([]);
+  });
+
+  test('refuses when the declaration itself cannot be resolved', async () => {
+    const env = makeActions(
+      externalOptions({
+        resolveBase: async () => ({
+          ok: false,
+          step: 'ref',
+          base: 'ilsun/dv',
+          detail: 'refs/remotes/origin/ilsun/dv'
+        }),
+        details: [prOf({ state: 'OPEN', base_ref: 'main' })]
+      })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r).toMatchObject({ ok: false, reason: 'base_unresolved:ref' });
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
   test('ignores a prior resolution attempt when resolving the cleanup base', async () => {
     const env = makeActions(
       externalOptions({
+        declaredBase: 'develop',
         details: [prOf({ state: 'MERGED', base_ref: 'develop' })]
       })
     );
-    // A resolution session ran against the base the CLICK saw back then; the
-    // PR has moved to `develop` since. That attempt is not the record that
-    // produced the PR, so it must not outrank this click's observation
-    // (UI-w0hi, implementation review 2026-07-28).
+    // A resolution session ran against the base the CLICK saw back then, and it
+    // is not the record that produced the PR (UI-w0hi). It must not outrank the
+    // repo DECLARATION either — the expected base has exactly two sources and an
+    // external-conflict attempt is neither (worker-base-scope-alignment §5).
     env.store.appendAttempt(WS, {
       expected_revision: env.store.snapshot(WS).revision,
       attempt: { attempt_id: 'ext-conf-1', bead_id: EXTERNAL_BEAD }
@@ -2898,5 +2992,124 @@ describe('worker/pr-actions — ship failure records exactly one place (impl rev
       bead_id: BEAD,
       reason: 'ship_failed:cap-a'
     });
+  });
+});
+
+describe('worker/pr-actions — base gate operand separation (worker-base-scope-alignment §5)', () => {
+  /**
+   * A worker attempt PR: the attempt that PRODUCED the PR recorded the base its
+   * branch was cut from.
+   *
+   * @param {string|null} target_base - null models a legacy attempt.
+   */
+  function attemptStore(target_base) {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: BEAD }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: {
+        repo: REPO,
+        ...(target_base === null ? {} : { target_base }),
+        session_id: 'sess-1',
+        finished_at: 10,
+        verify_result: /** @type {any} */ ({
+          ok: true,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304
+        })
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: BEAD,
+      attempt_id: 'a1',
+      patch: { status: 'done' }
+    });
+    return store;
+  }
+
+  test('a worker attempt base outranks the declaration', async () => {
+    const env = makeActions({
+      store: attemptStore('main'),
+      declaredBase: 'ilsun/dev',
+      details: [prOf({ base_ref: 'main' })]
+    });
+
+    const r = await env.actions.merge(BEAD);
+
+    expect(r.action).toBe('merged');
+  });
+
+  test('a worker attempt base is compared against the observation, not derived from it', async () => {
+    const env = makeActions({
+      store: attemptStore('ilsun/dev'),
+      details: [prOf({ base_ref: 'main' })]
+    });
+
+    const r = await env.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_mismatch:ilsun/dev!=main'
+    });
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('a legacy attempt with no target_base falls to the declaration, never to main', async () => {
+    const env = makeActions({
+      store: attemptStore(null),
+      declaredBase: 'ilsun/dev',
+      details: [prOf({ base_ref: 'main' })]
+    });
+
+    const r = await env.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_mismatch:ilsun/dev!=main'
+    });
+  });
+
+  test('a legacy attempt on an undeclared repo still merges into main (no regression)', async () => {
+    const env = makeActions({
+      store: attemptStore(null),
+      details: [prOf({ base_ref: 'main' })]
+    });
+
+    const r = await env.actions.merge(BEAD);
+
+    expect(r.action).toBe('merged');
+  });
+
+  test('refuses when GitHub reported no base at all', async () => {
+    const env = makeActions({
+      store: attemptStore('main'),
+      details: [prOf({ base_ref: '' })]
+    });
+
+    const r = await env.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: false, reason: 'base_ref_unobserved' });
+  });
+
+  test('re-compares the base after the BEHIND update-branch', async () => {
+    const env = makeActions({
+      store: attemptStore('main'),
+      details: [
+        prOf({ merge_state_status: 'BEHIND', base_ref: 'main' }),
+        prOf({ base_ref: 'ilsun/dev' })
+      ]
+    });
+
+    const r = await env.actions.merge(BEAD);
+
+    expect(env.gh.updateBranch).toHaveBeenCalled();
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_mismatch:main!=ilsun/dev'
+    });
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
   });
 });

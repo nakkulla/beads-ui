@@ -346,28 +346,32 @@ export function createPrActions(deps) {
   }
 
   /**
-   * The bead's merge target base, from the attempt that produced the PR. A bead
-   * whose attempts predate the field falls back to `main`, exactly like resume.
+   * The bead's EXPECTED merge target base (worker-base-scope-alignment §5).
    *
-   * An EXTERNAL bead has no attempt that PRODUCED its PR, so the ordering
-   * continues into GitHub's own `baseRefName` (UI-7agi §3) — passed in as
-   * `hint` from the click-time gate, else read from the observation cache.
-   * `main` stays the last resort, but reaching it for a PR that targeted
-   * another branch would sync, verify and deploy the WRONG branch, which is why
-   * the hint exists at all.
+   * The two operands of the pre-merge comparison must come from different
+   * sides, so this function has exactly TWO sources and neither is an
+   * observation:
    *
-   * An external CONFLICT-RESOLUTION attempt is skipped for exactly that reason
-   * (UI-w0hi §1): it records the base the resolution CLICK observed, not the
-   * base the PR was opened against, and it is not the record that produced the
-   * PR. Letting it win would silently outrank the fresher click-time hint the
-   * moment the PR's base moved — the one case the hint exists to cover.
+   *   1. a valid worker attempt's `target_base` — the base the branch was
+   *      actually cut from, and
+   *   2. `resolveTargetBase(repo)` — the repo's own declaration.
+   *
+   * What was REMOVED is as load-bearing as what stayed. The old chain continued
+   * into `hint` and then the observation cache's `base_ref`, but `hint` IS an
+   * observation (its own doc said `base_ref as the click-time gate observed it`)
+   * — so an external PR, which has no attempt, fell through to comparing the
+   * observed base against itself. The hardcoded `'main'` terminus is gone too:
+   * resolution failure is fail-closed, not a fallback.
+   *
+   * An external CONFLICT-RESOLUTION attempt is still skipped (UI-w0hi §1): it
+   * records the base the resolution CLICK observed, not the base the PR was
+   * opened against, so it is an observation wearing an attempt's clothes.
    *
    * @param {Queue} q
    * @param {string} bead_id
-   * @param {string|null} [hint] - `base_ref` as the click-time gate observed it.
-   * @returns {string}
+   * @returns {Promise<{ ok: true, base: string, source: 'attempt'|'declaration' }|{ ok: false, reason: string }>}
    */
-  function targetBaseFor(q, bead_id, hint = null) {
+  async function expectedBaseFor(q, bead_id) {
     const attempts = q && q.attempts ? Object.values(q.attempts) : [];
     /** @type {{ base: string, at: number }|null} */
     let best = null;
@@ -384,16 +388,58 @@ export function createPrActions(deps) {
       }
     }
     if (best && best.base.length > 0) {
-      return best.base;
+      return { ok: true, base: best.base, source: 'attempt' };
     }
-    if (typeof hint === 'string' && hint.length > 0) {
-      return hint;
+    if (typeof deps.resolveBase !== 'function') {
+      return { ok: false, reason: 'base_unresolved:no_resolver' };
     }
-    const observed = deps.observations.get(workspace, bead_id);
-    const base_ref = observed && observed.pr ? observed.pr.base_ref : '';
-    return typeof base_ref === 'string' && base_ref.length > 0
-      ? base_ref
-      : 'main';
+    /** @type {import('./target-base.js').TargetBaseResult} */
+    let resolved;
+    try {
+      resolved = await deps.resolveBase();
+    } catch {
+      return { ok: false, reason: 'base_unresolved:git_error' };
+    }
+    if (!resolved.ok) {
+      return { ok: false, reason: `base_unresolved:${resolved.step}` };
+    }
+    return { ok: true, base: resolved.base, source: 'declaration' };
+  }
+
+  /**
+   * The pre-merge base comparison (worker-base-scope-alignment §5): the PR's
+   * OBSERVED `baseRefName` against the EXPECTED base above. A mismatch is
+   * fail-closed and NEVER auto-retargeted — changing a PR's base changes its
+   * diff and what was reviewed, so it is a human decision.
+   *
+   * Applied to external PRs too, and deliberately BEFORE every other branch of
+   * the click (already-merged cleanup, conflict dispatch, merge): an external PR
+   * opened with no `--base` is precisely where the wrong base comes from, and
+   * syncing/verifying/deploying the expected base for a PR that landed somewhere
+   * else would hide the landing rather than report it.
+   *
+   * @param {Queue} q
+   * @param {string} bead_id
+   * @param {string|null|undefined} observed_base_ref
+   * @returns {Promise<{ ok: true, base: string }|{ ok: false, reason: string }>}
+   */
+  async function baseGate(q, bead_id, observed_base_ref) {
+    const expected = await expectedBaseFor(q, bead_id);
+    if (!expected.ok) {
+      return expected;
+    }
+    const observed =
+      typeof observed_base_ref === 'string' ? observed_base_ref.trim() : '';
+    if (observed.length === 0) {
+      return { ok: false, reason: 'base_ref_unobserved' };
+    }
+    if (observed !== expected.base) {
+      return {
+        ok: false,
+        reason: `base_mismatch:${expected.base}!=${observed}`
+      };
+    }
+    return { ok: true, base: expected.base };
   }
 
   /**
@@ -1180,7 +1226,14 @@ export function createPrActions(deps) {
    */
   async function runCleanup(bead_id, refs = {}) {
     const q = deps.store.snapshot(workspace);
-    const target_base = targetBaseFor(q, bead_id, refs.base_ref || null);
+    // The EXPECTED base, never the observed one (§5): this is the branch that
+    // gets synced, verified and deployed, so deriving it from the PR's own
+    // metadata would let a wrongly-based PR pick its own post-merge target.
+    const expected = await expectedBaseFor(q, bead_id);
+    if (!expected.ok) {
+      return failCleanup(bead_id, 'base_sync', expected.reason, null);
+    }
+    const target_base = expected.base;
     // The merge notification's url (UI-9rrk). The CLICK's own resolution wins:
     // an external row's registry entry can be one scan stale, and naming the
     // previous PR would be worse than naming none. Without a click (the
@@ -1523,6 +1576,12 @@ export function createPrActions(deps) {
       if ('error' in first) {
         return refuse(first.error);
       }
+      // Base comparison BEFORE every branch below (§5) — fail-closed, external
+      // PRs included, no auto-retarget.
+      const base_ok = await baseGate(q, bead_id, first.pr.base_ref);
+      if (!base_ok.ok) {
+        return refuse(base_ok.reason);
+      }
       const refs = {
         base_ref: first.pr.base_ref || null,
         head_ref: first.pr.head_ref || null,
@@ -1600,6 +1659,13 @@ export function createPrActions(deps) {
       const second = await gateNow(bead_id, ref.number);
       if ('error' in second) {
         return refuse(second.error);
+      }
+      // `update-branch` produced a new head; re-compare the base too — the whole
+      // gate is re-derived against the new observation, and the base is part of
+      // it (§5).
+      const second_base_ok = await baseGate(q, bead_id, second.pr.base_ref);
+      if (!second_base_ok.ok) {
+        return refuse(second_base_ok.reason);
       }
       if (second.pr.state !== 'OPEN') {
         return refuse(

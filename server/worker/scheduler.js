@@ -2254,6 +2254,15 @@ export function createScheduler(deps) {
       model: model ?? undefined,
       effort: effort ?? undefined,
       fast_track: true,
+      // The base wiring (worker-base-scope-alignment §3): `launchSession`
+      // already destructured `repo`/`target_base`/`base_oid`, but the settings
+      // object did not carry them, so neither `applyPreamble` (the PR base
+      // directive, §4) nor `findMergeViolation` (the guard's subject, §6) could
+      // ever see them. Widening the signatures alone passes the unit tests and
+      // still delivers nothing to a real session — this is the missing link.
+      repo,
+      target_base,
+      base_oid: base_oid ?? null,
       conflict_resolution: input.conflict_resolution === true,
       // A disposition session repairs a spec on the base and opens no PR, so
       // the always-on PR-submit directive would instruct it to do the one

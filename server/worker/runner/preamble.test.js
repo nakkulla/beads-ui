@@ -5,7 +5,8 @@ import {
   GUARD_CONTRACT_DIRECTIVE,
   PR_SUBMIT_DIRECTIVE,
   UNATTENDED_PREAMBLE,
-  applyPreamble
+  applyPreamble,
+  prBaseDirective
 } from './preamble.js';
 
 describe('runner/preamble', () => {
@@ -123,5 +124,71 @@ describe('runner/preamble disposition sessions (UI-hs11 §3.3)', () => {
 
   test('keeps the PR-submit directive by default', () => {
     expect(applyPreamble('작업하라')).toContain('PR 제출까지 수행하고');
+  });
+});
+
+describe('runner/preamble PR base directive (worker-base-scope-alignment §4)', () => {
+  test('names the resolved base and the --base flag', () => {
+    const out = applyPreamble('작업하라', { target_base: 'ilsun/dev' });
+
+    expect(out).toContain('gh pr create --base ilsun/dev');
+    expect(out).toContain('target_base 는 `ilsun/dev`');
+  });
+
+  test('warns that omitting --base opens against the GitHub default branch', () => {
+    expect(prBaseDirective('main')).toContain('GitHub 기본 브랜치');
+  });
+
+  test('announces the pre-merge comparison so the session is not surprised by it', () => {
+    expect(prBaseDirective('main')).toContain('baseRefName');
+    expect(prBaseDirective('main')).toContain('fail-closed');
+  });
+
+  test('injects nothing when no base was resolved', () => {
+    expect(applyPreamble('작업하라')).not.toContain('PR base 고지');
+    expect(applyPreamble('작업하라', { target_base: null })).not.toContain(
+      'PR base 고지'
+    );
+    expect(applyPreamble('작업하라', { target_base: '  ' })).not.toContain(
+      'PR base 고지'
+    );
+  });
+
+  test('drops the base directive with the PR-submit directive it belongs to', () => {
+    const out = applyPreamble('처분하라', {
+      pr_submit: false,
+      target_base: 'ilsun/dev'
+    });
+
+    expect(out).not.toContain('PR base 고지');
+  });
+
+  test('orders PR-submit → PR base → guard contract → prompt', () => {
+    const out = applyPreamble('작업하라', {
+      fast_track: true,
+      target_base: 'ilsun/dev'
+    });
+    const idx = (/** @type {string} */ part) => out.indexOf(part);
+
+    expect(idx(PR_SUBMIT_DIRECTIVE)).toBeLessThan(idx('PR base 고지'));
+    expect(idx('PR base 고지')).toBeLessThan(idx(GUARD_CONTRACT_DIRECTIVE));
+    expect(idx(GUARD_CONTRACT_DIRECTIVE)).toBeLessThan(idx('작업하라'));
+  });
+});
+
+describe('runner/preamble base push guard notice (worker-base-scope-alignment §8)', () => {
+  test('announces the base-landing guard the session would otherwise trip blind', () => {
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('base 브랜치 직접 랜딩 금지');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('gh pr merge');
+  });
+
+  test('states that a push to ANOTHER repo base is allowed but must be provable', () => {
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('다른 저장소의 base');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('증명');
+  });
+
+  test('keeps the two directives it already carried', () => {
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('git merge` 절대 금지');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('턴을 끝내지 말 것');
   });
 });
