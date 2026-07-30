@@ -57,7 +57,7 @@ function totalTemplate(total) {
       : '';
   return html`<span
       class="detail-usage-total"
-      title="이 이슈의 모든 attempt 토큰 합계 (입력+출력)"
+      title="이 이슈의 모든 attempt 토큰 합계 (입력+출력+캐시)"
       >${label.replace(/^τ /, 'τ 총 ')}${cost}</span
     >${total.replayed
       ? html`<span class="detail-usage-partial" title=${REPLAYED_NOTE}

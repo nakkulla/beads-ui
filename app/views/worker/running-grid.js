@@ -12,7 +12,10 @@
  * (`worker-final.html`); one column on mobile.
  */
 import { html } from 'lit-html';
-import { formatUsageTotal, usageTooltip } from '../../utils/token-usage.js';
+import {
+  formatUsageTotalWithCost,
+  usageTooltip
+} from '../../utils/token-usage.js';
 import { timesMeta } from './lanes.js';
 
 /**
@@ -318,7 +321,7 @@ function runningTile(tile, now, selected_attempt = null) {
       ? formatElapsed(now - tile.started_at)
       : '—';
   const meta = [tile.runner, tile.model].filter(Boolean).join(' · ');
-  const usage_label = formatUsageTotal(tile.usage);
+  const usage_label = formatUsageTotalWithCost(tile.usage);
   // Same badge style the lane rows use — a resolution session is a different
   // KIND of run, not a louder one.
   const conflict_badge = tile.conflict_resolution

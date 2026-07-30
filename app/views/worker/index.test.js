@@ -4645,8 +4645,109 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
       mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
     );
     expect(el.getAttribute('title')).toBe(
-      '입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800 · $0.42'
+      '총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800 · $0.42'
     );
+  });
+
+  test('counts the cache fields in a running tile badge (UI-tq13 §1)', () => {
+    const mount = renderQueue(
+      queueOf({
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'running',
+            started_at: 1,
+            usage: {
+              input_tokens: 267,
+              output_tokens: 2407,
+              cache_read_input_tokens: 13_655_022,
+              cache_creation_input_tokens: 446_503
+            }
+          }
+        }
+      })
+    );
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(tile.textContent?.trim()).toBe('τ 14.1M');
+  });
+
+  test('puts the cost beside the tokens on a done row (UI-tq13 §6)', () => {
+    const mount = renderQueue(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: {
+              input_tokens: 9700,
+              output_tokens: 4120,
+              total_cost_usd: 12.339
+            }
+          }
+        }
+      })
+    );
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(el.textContent?.trim()).toBe('τ 13.8k · $12.34');
+  });
+
+  test('omits the cost from a done row that reported none', () => {
+    const mount = renderQueue(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: { input_tokens: 9700, output_tokens: 4120 }
+          }
+        }
+      })
+    );
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(el.textContent?.trim()).toBe('τ 13.8k');
+  });
+
+  test('omits the cost when only some summed attempts reported one (UI-tq13 §7)', () => {
+    const mount = renderQueue(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'done',
+            usage: { input_tokens: 100, output_tokens: 50, total_cost_usd: 1.5 }
+          },
+          a2: {
+            attempt_id: 'a2',
+            bead_id: 'RD-1',
+            status: 'running',
+            started_at: 1,
+            usage: { input_tokens: 21600, output_tokens: 9340 }
+          }
+        }
+      })
+    );
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+    );
+    expect(el.textContent?.trim()).toBe('τ 31.1k');
   });
 
   test('sums every attempt usage on a pr_wait row (UI-d7pw §1)', () => {
@@ -5668,6 +5769,73 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
     const mount = mountKpi({ done: [{ bead_id: 'RD-1', added_at: 1 }] });
 
     expect(mount.querySelector('.worker-kpi__chip--tokens')).toBe(null);
+  });
+
+  test('accumulates the cache fields into the chip too (UI-tq13 §5)', () => {
+    const mount = mountKpi({
+      done: [
+        { bead_id: 'RD-1', added_at: 1 },
+        { bead_id: 'RD-2', added_at: 2 }
+      ],
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'succeeded',
+          usage: {
+            input_tokens: 1000,
+            output_tokens: 200,
+            cache_read_input_tokens: 4_000_000,
+            cache_creation_input_tokens: 200_000
+          }
+        },
+        a2: {
+          attempt_id: 'a2',
+          bead_id: 'RD-2',
+          status: 'succeeded',
+          usage: {
+            input_tokens: 800,
+            output_tokens: 0,
+            cache_read_input_tokens: 1_000_000,
+            cache_creation_input_tokens: 100_000
+          }
+        }
+      }
+    });
+
+    expect(
+      mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
+    ).toBe('오늘 완료 · 누적 τ 5.3M');
+  });
+
+  test('chip matches the row badge for the same issue (UI-tq13 §5)', () => {
+    const queue = {
+      done: [{ bead_id: 'RD-1', added_at: 1 }],
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'succeeded',
+          usage: {
+            input_tokens: 267,
+            output_tokens: 2407,
+            cache_read_input_tokens: 13_655_022,
+            cache_creation_input_tokens: 446_503
+          }
+        }
+      }
+    };
+    const mount = mountKpi(queue);
+
+    const chip = mount
+      .querySelector('.worker-kpi__chip--tokens')
+      ?.textContent?.trim();
+    const badge = mount
+      .querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+      ?.textContent?.trim();
+
+    expect(chip).toBe('오늘 완료 · 누적 τ 14.1M');
+    expect(badge).toBe('τ 14.1M');
   });
 });
 

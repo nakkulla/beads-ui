@@ -44,7 +44,11 @@ import {
 } from '../../data/sort.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { showToast } from '../../utils/toast.js';
-import { formatUsageTotal, sumAttemptUsage } from '../../utils/token-usage.js';
+import {
+  SUM_FIELDS,
+  formatUsageTotal,
+  sumAttemptUsage
+} from '../../utils/token-usage.js';
 import { createReorderController } from '../reorder.js';
 import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
 import { miniRow, paneTemplate } from './lanes.js';
@@ -1924,30 +1928,28 @@ export function createWorkerView(mount_element, options = {}) {
     // usage를 합산할 뿐이라 새 데이터 소스가 없다. 행의 usage가 bead의 전체
     // attempt 합계이므로(UI-d7pw §1) 이 KPI는 "선택된 기간에 완료된 이슈들이
     // 생애 전체에 쓴 토큰" — 코호트 합계다. 기간 내 소모량이 아니다 (§3.5).
-    let token_in = 0;
-    let token_out = 0;
+    // 4필드 전부 누적한다 (UI-tq13 §5). 행 배지와 같은 산식을 써야 같은 이슈에
+    // 대해 툴바와 행이 같은 숫자를 말한다.
+    /** @type {Record<string, number>} */
+    const token_sum = {};
+    for (const field of SUM_FIELDS) {
+      token_sum[field] = 0;
+    }
     // 보고된 0과 아예 보고되지 않은 usage는 다른 사실이다 — 행 배지가 그 둘을
     // 가르는 방식(`formatUsageTotal`의 토큰 필드 존재 검사)을 합계도 따른다.
     let token_reported = false;
     for (const row of done_rows) {
       const u = row.usage;
       if (u && typeof u === 'object') {
-        if (Number.isFinite(u.input_tokens)) {
-          token_in += u.input_tokens;
-          token_reported = true;
-        }
-        if (Number.isFinite(u.output_tokens)) {
-          token_out += u.output_tokens;
-          token_reported = true;
+        for (const field of SUM_FIELDS) {
+          if (Number.isFinite(u[field])) {
+            token_sum[field] += u[field];
+            token_reported = true;
+          }
         }
       }
     }
-    const token_total = token_reported
-      ? formatUsageTotal({
-          input_tokens: token_in,
-          output_tokens: token_out
-        })
-      : null;
+    const token_total = token_reported ? formatUsageTotal(token_sum) : null;
 
     return {
       queue: q,

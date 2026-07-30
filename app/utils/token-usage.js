@@ -2,9 +2,13 @@
  * Token-usage projection shared by the Worker console and the issue detail
  * panel (UI-raqh §1, UI-d7pw §1).
  *
- * The headline is deliberately ONE number — input + output, cache excluded —
- * because the question a badge answers at a glance is "how much did this cost",
- * not "how is it distributed". The distribution lives in the hover tooltip,
+ * The headline is deliberately ONE number — input + output + cache read + cache
+ * creation — because the question a badge answers at a glance is "how much did
+ * this cost", not "how is it distributed". Cache belongs INSIDE that sum
+ * (UI-tq13): a Claude session runs almost all of its context through cache
+ * hits, so an input+output headline showed 2,674 of a measured 14,104,199
+ * tokens — 0.02% of what the session actually consumed, which answers the
+ * headline's own question wrongly. The distribution lives in the hover tooltip,
  * which is where a reader who wants the cache ratio or the cost goes looking. A
  * row with no usage renders nothing at all: absent usage is an old attempt or a
  * runner that reported none, never a zero.
@@ -36,8 +40,37 @@ function numeric(value) {
 }
 
 /**
+ * The summable token fields, in tally order — and the definition of the
+ * headline total, which every surface that shows a τ number has to share. Cost
+ * is deliberately outside: it is summed separately because a missing cost must
+ * not become a reported zero.
+ *
+ * @type {Array<'input_tokens'|'output_tokens'|'cache_read_input_tokens'|'cache_creation_input_tokens'>}
+ */
+export const SUM_FIELDS = [
+  'input_tokens',
+  'output_tokens',
+  'cache_read_input_tokens',
+  'cache_creation_input_tokens'
+];
+
+/**
+ * @param {UsageRecord|null|undefined} usage
+ * @returns {number}
+ */
+function sumTokens(usage) {
+  let total = 0;
+  for (const field of SUM_FIELDS) {
+    total += numeric(usage?.[field]);
+  }
+  return total;
+}
+
+/**
  * Whether a record carries at least one token count. A record with only a cost
- * says nothing about consumption, so it renders no badge.
+ * says nothing about consumption, so it renders no badge. The test spans every
+ * field the headline sums, so a record reporting only cache counts is usage —
+ * anything the total can see, this predicate can see (UI-tq13 §2).
  *
  * @param {UsageRecord|null|undefined} usage
  * @returns {boolean}
@@ -46,10 +79,7 @@ function hasTokens(usage) {
   if (!usage || typeof usage !== 'object') {
     return false;
   }
-  return (
-    typeof usage.input_tokens === 'number' ||
-    typeof usage.output_tokens === 'number'
-  );
+  return SUM_FIELDS.some((field) => Number.isFinite(usage[field]));
 }
 
 /**
@@ -78,8 +108,26 @@ export function formatUsageTotal(usage) {
   if (!hasTokens(usage)) {
     return null;
   }
-  const total = numeric(usage?.input_tokens) + numeric(usage?.output_tokens);
-  return `τ ${abbreviate(total)}`;
+  return `τ ${abbreviate(sumTokens(usage))}`;
+}
+
+/**
+ * The lane/tile badge: the headline total, with the cost appended when one is
+ * known. Cost never REPLACES the token count (UI-tq13 §6) — a column whose
+ * number changes scale with the row's state cannot be compared down the column.
+ *
+ * @param {UsageRecord|null|undefined} usage
+ * @returns {string|null}
+ */
+export function formatUsageTotalWithCost(usage) {
+  const label = formatUsageTotal(usage);
+  if (!label) {
+    return null;
+  }
+  const cost = usage?.total_cost_usd;
+  return typeof cost === 'number' && Number.isFinite(cost)
+    ? `${label} · $${cost.toFixed(2)}`
+    : label;
 }
 
 /**
@@ -104,22 +152,18 @@ export function usageTooltip(usage) {
   ) {
     parts.push(`$${usage.total_cost_usd.toFixed(2)}`);
   }
-  const line = parts.join(' · ');
-  return usage.replayed ? `${line}\n${REPLAYED_NOTE}` : line;
+  // The headline first, then the breakdown that explains it (UI-tq13 §3): the
+  // badge shows an abbreviated `14.1M`, and the reader who hovers is the one who
+  // wants the exact number the abbreviation came from.
+  const lines = [
+    `총 ${sumTokens(usage).toLocaleString('en-US')}`,
+    parts.join(' · ')
+  ];
+  if (usage.replayed) {
+    lines.push(REPLAYED_NOTE);
+  }
+  return lines.join('\n');
 }
-
-/**
- * The summable token fields, in tally order. Cost is deliberately outside: it
- * is summed separately because a missing cost must not become a reported zero.
- *
- * @type {Array<'input_tokens'|'output_tokens'|'cache_read_input_tokens'|'cache_creation_input_tokens'>}
- */
-const SUM_FIELDS = [
-  'input_tokens',
-  'output_tokens',
-  'cache_read_input_tokens',
-  'cache_creation_input_tokens'
-];
 
 /**
  * The usage of EVERY attempt recorded for a bead, summed (UI-d7pw §1).
@@ -136,9 +180,16 @@ const SUM_FIELDS = [
  * nothing, which is not the same fact as reporting zero. A bead whose attempts
  * all reported nothing yields null, so the caller renders no badge at all.
  *
- * `total_cost_usd` is summed only over the attempts that reported one, and is
- * omitted entirely when none did. `replayed` propagates if ANY summed attempt
- * carried it — a sum containing a restart-recovered partial is itself a floor.
+ * `total_cost_usd` is summed only when EVERY summed attempt reported one, and
+ * omitted otherwise (UI-tq13 §7). A partial cost would split the populations
+ * inside a single badge — tokens from three attempts beside money from two — and
+ * a reader has no way to see that split. In practice this means money appears
+ * only on a finished issue, since a running attempt has no `result` event to
+ * carry a cost; an attempt that died before emitting one also suppresses it,
+ * which is the honest rendering of a cost nobody knows.
+ *
+ * `replayed` propagates if ANY summed attempt carried it — a sum containing a
+ * restart-recovered partial is itself a floor.
  *
  * @param {Record<string, any>} attempts
  * @param {string} bead_id
@@ -152,9 +203,9 @@ export function sumAttemptUsage(attempts, bead_id) {
     cache_read_input_tokens: 0,
     cache_creation_input_tokens: 0
   };
-  let any_tokens = false;
+  let summed = 0;
   let cost = 0;
-  let any_cost = false;
+  let cost_reported = 0;
   let replayed = false;
   for (const attempt of Object.values(attempts || {})) {
     if (!attempt || attempt.bead_id !== bead_id) {
@@ -164,7 +215,7 @@ export function sumAttemptUsage(attempts, bead_id) {
     if (!hasTokens(usage)) {
       continue;
     }
-    any_tokens = true;
+    summed += 1;
     for (const field of SUM_FIELDS) {
       total[field] = numeric(total[field]) + numeric(usage[field]);
     }
@@ -173,16 +224,16 @@ export function sumAttemptUsage(attempts, bead_id) {
       Number.isFinite(usage.total_cost_usd)
     ) {
       cost += usage.total_cost_usd;
-      any_cost = true;
+      cost_reported += 1;
     }
     if (usage.replayed === true) {
       replayed = true;
     }
   }
-  if (!any_tokens) {
+  if (summed === 0) {
     return null;
   }
-  if (any_cost) {
+  if (cost_reported === summed) {
     total.total_cost_usd = cost;
   }
   if (replayed) {
