@@ -634,3 +634,154 @@ describe('command-guard fallback is never more permissive than argv', () => {
     ).toBe(true);
   });
 });
+
+describe('command-guard allowlist proof gaps closed by the implementation gate', () => {
+  test('blocks a move skipped by a short-circuiting ||', () => {
+    // `true` succeeds, so `cd` never runs and the `&&` still reaches the push —
+    // the operator between move and push says nothing about the move happening.
+    const violation = findMergeViolation(
+      'true || cd /foreign && git push origin main',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
+  test('blocks a NEGATED move, which runs the push when the move failed', () => {
+    const violation = findMergeViolation(
+      '! cd /missing && git push origin main',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
+  test('blocks an intervening eval that can move the shell back', () => {
+    const violation = findMergeViolation(
+      `cd /tmp && eval 'cd ${REPO}' && git push origin main`,
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
+  test('blocks an intervening source', () => {
+    const violation = findMergeViolation(
+      'cd /tmp && source /x.sh && git push origin main',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
+  test('blocks an intervening pushd', () => {
+    const violation = findMergeViolation(
+      'cd /tmp && pushd /elsewhere && git push origin main',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
+  test('still allows intervening commands that cannot move the shell', () => {
+    const violation = findMergeViolation(
+      'cd /opt/other-repo && git status && git push origin main',
+      ON_MAIN
+    );
+
+    expect(violation).toBeNull();
+  });
+
+  test('allows an interpreter in between — a child cannot move its parent', () => {
+    const violation = findMergeViolation(
+      "cd /opt/other-repo && bash -c 'ls' && git push origin main",
+      ON_MAIN
+    );
+
+    expect(violation).toBeNull();
+  });
+
+  test('blocks a move through a rebound HOME', () => {
+    const violation = findMergeViolation(
+      `HOME=${REPO}; cd "$HOME" && git push origin main`,
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
+  test('blocks a single-quoted $HOME, which the shell never expands', () => {
+    const violation = findMergeViolation(
+      "cd '$HOME/GitHub/thalamus' && git push origin main",
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
+  test('blocks a quoted ~, which the shell never expands either', () => {
+    const violation = findMergeViolation(
+      'cd "~/GitHub/thalamus" && git push origin main',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('merge_to_base_blocked');
+  });
+
+  test('keeps a plain literal move resolvable even when HOME was rebound', () => {
+    const violation = findMergeViolation(
+      'HOME=/somewhere; cd /opt/other-repo && git push origin main',
+      ON_MAIN
+    );
+
+    expect(violation).toBeNull();
+  });
+});
+
+describe('command-guard destination matching is exact', () => {
+  test('passes a branch that merely ends with the declared base name', () => {
+    expect(
+      findMergeViolation('git push origin HEAD:feature/main', ON_MAIN)
+    ).toBeNull();
+    expect(
+      findMergeViolation('git push origin HEAD:feature/ilsun/dev', ON_DEV)
+    ).toBeNull();
+  });
+
+  test('blocks the fully-qualified ref forms of the declared base', () => {
+    expect(
+      findMergeViolation('git push origin HEAD:refs/heads/main', ON_MAIN)
+        ?.reason
+    ).toBe('merge_to_base_blocked');
+    expect(
+      findMergeViolation('git push origin HEAD:heads/main', ON_MAIN)?.reason
+    ).toBe('merge_to_base_blocked');
+  });
+});
+
+describe('baseLandingRegex boundaries', () => {
+  test('matches a base that ends in a non-word character', () => {
+    expect(baseLandingRegex('foo-').test('git push origin foo-')).toBe(true);
+  });
+
+  test('still matches the base inside a full ref', () => {
+    expect(
+      baseLandingRegex('main').test('git push origin HEAD:refs/heads/main')
+    ).toBe(true);
+  });
+
+  test('does not match a longer branch that starts with the base', () => {
+    expect(baseLandingRegex('ilsun').test('git push origin ilsun/dev')).toBe(
+      false
+    );
+  });
+
+  test('blocks an unparseable push to a non-word-ending base', () => {
+    const cmd = 'f(){ :; }; git push origin foo-';
+
+    expect(tokenize(cmd)).toBeNull();
+    expect(
+      findMergeViolation(cmd, { repo: REPO, target_base: 'foo-' })?.reason
+    ).toBe('merge_to_base_blocked');
+  });
+});

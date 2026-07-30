@@ -163,6 +163,16 @@ export async function resolveTargetBase(input) {
   const base = declaration.base ?? UNDECLARED_BASE;
   const declared = declaration.base != null;
 
+  // Shell-metacharacter guard, ahead of step 2. `check-ref-format` accepts
+  // plenty of characters a shell reads as syntax (`;`, `$`, backtick, `&`, `|`,
+  // `(`, `)`, `<`, `>`, quotes, `!`, `#`, `{`, `}`), and the resolved base is
+  // interpolated into a `gh pr create --base <base>` directive the session runs
+  // (implementation review 2026-07-30). This is a fail-closed ADDITION to the
+  // contract's five steps — it never accepts anything they reject.
+  if (/[^A-Za-z0-9._/-]/.test(base)) {
+    return { ok: false, step: 'format', base, detail: 'shell_unsafe' };
+  }
+
   try {
     // Step 2 — format.
     const format = await git(['check-ref-format', '--branch', base]);
@@ -197,11 +207,28 @@ export async function resolveTargetBase(input) {
     // Step 4 — the remote: the base branch's configured upstream, else the
     // repo's single remote. Zero remotes is the recorded local-only exception;
     // two or more with no upstream cannot be decided here.
+    //
+    // `git config --get` exits 1 for "not set" and something else for a real
+    // failure, and the two must not be conflated: a CONFIGURED upstream that no
+    // longer exists is a broken declaration, and quietly substituting the
+    // repo's single remote would swallow the step-4 failure the no-fallback rule
+    // exists to surface (implementation review 2026-07-30).
     const configured = await git(['config', '--get', `branch.${base}.remote`]);
+    if (configured.code !== 0 && configured.code !== 1) {
+      return { ok: false, step: 'git_error', base, detail: 'config_get' };
+    }
     const upstream = configured.code === 0 ? configured.stdout.trim() : '';
+    if (upstream.length > 0 && !remotes.includes(upstream)) {
+      return {
+        ok: false,
+        step: 'remote',
+        base,
+        detail: `upstream_missing:${upstream}`
+      };
+    }
     /** @type {string} */
     let remote;
-    if (upstream.length > 0 && remotes.includes(upstream)) {
+    if (upstream.length > 0) {
       remote = upstream;
     } else if (remotes.length === 1) {
       remote = remotes[0];

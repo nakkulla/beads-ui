@@ -396,7 +396,11 @@ export function createPrActions(deps) {
     /** @type {import('./target-base.js').TargetBaseResult} */
     let resolved;
     try {
-      resolved = await deps.resolveBase();
+      // `force`: the merge is IRREVERSIBLE, so its expected base may not come
+      // from the scan path's short-lived memo. A declaration that changed since
+      // the last scan would otherwise be compared against a stale expectation
+      // (implementation review 2026-07-30).
+      resolved = await deps.resolveBase({ force: true });
     } catch {
       return { ok: false, reason: 'base_unresolved:git_error' };
     }

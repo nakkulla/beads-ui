@@ -292,3 +292,72 @@ describe('baseUnresolvedReason', () => {
     expect(reason).toBe('base_unresolved:remote_prefix');
   });
 });
+
+describe('resolveTargetBase gate findings (implementation review 2026-07-30)', () => {
+  test('fails when the configured upstream no longer exists', async () => {
+    writeDeclaration('base = "ilsun/dev"\n');
+    const git = gitRunner({
+      ...HEALTHY,
+      remote: { code: 0, stdout: 'origin\n' },
+      config: { code: 0, stdout: 'gone\n' }
+    });
+
+    const result = await resolveTargetBase({ repo, gitRun: git.run });
+
+    expect(result).toMatchObject({
+      ok: false,
+      step: 'remote',
+      detail: 'upstream_missing:gone'
+    });
+  });
+
+  test('fails on a git config error rather than substituting a remote', async () => {
+    writeDeclaration('base = "ilsun/dev"\n');
+    const git = gitRunner({
+      ...HEALTHY,
+      remote: { code: 0, stdout: 'origin\n' },
+      config: { code: 128 }
+    });
+
+    const result = await resolveTargetBase({ repo, gitRun: git.run });
+
+    expect(result).toMatchObject({ ok: false, step: 'git_error' });
+  });
+
+  test('still treats exit 1 as "no upstream configured"', async () => {
+    writeDeclaration('base = "ilsun/dev"\n');
+    const git = gitRunner(HEALTHY);
+
+    const result = await resolveTargetBase({ repo, gitRun: git.run });
+
+    expect(result).toMatchObject({ ok: true, remote: 'origin' });
+  });
+
+  test('refuses a base carrying shell metacharacters', async () => {
+    writeDeclaration('base = "main;rm -rf /"\n');
+    const git = gitRunner(HEALTHY);
+
+    const result = await resolveTargetBase({ repo, gitRun: git.run });
+
+    expect(result).toMatchObject({ ok: false, step: 'format' });
+    expect(result).toMatchObject({ detail: 'shell_unsafe' });
+  });
+
+  test('refuses a base carrying a command substitution', async () => {
+    writeDeclaration('base = "main$(id)"\n');
+    const git = gitRunner(HEALTHY);
+
+    const result = await resolveTargetBase({ repo, gitRun: git.run });
+
+    expect(result).toMatchObject({ ok: false, detail: 'shell_unsafe' });
+  });
+
+  test('keeps ordinary branch names with slashes, dots and dashes', async () => {
+    writeDeclaration('base = "ilsun/dev-2.0_x"\n');
+    const git = gitRunner(HEALTHY);
+
+    const result = await resolveTargetBase({ repo, gitRun: git.run });
+
+    expect(result).toMatchObject({ ok: true, base: 'ilsun/dev-2.0_x' });
+  });
+});

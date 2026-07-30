@@ -145,7 +145,7 @@ function seedStore(options = {}) {
  *   shipFail?: (capability: string) => boolean,
  *   shipSilent?: string[],
  *   declaredBase?: string,
- *   resolveBase?: () => Promise<any>,
+ *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
  *   noNotify?: boolean
  * }} [options]
  */
@@ -3111,5 +3111,58 @@ describe('worker/pr-actions — base gate operand separation (worker-base-scope-
       reason: 'base_mismatch:main!=ilsun/dev'
     });
     expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+});
+
+describe('worker/pr-actions base gate freshness (implementation review 2026-07-30)', () => {
+  test('re-resolves the declaration with force before an irreversible merge', async () => {
+    /** @type {Array<{ force?: boolean }|undefined>} */
+    const calls = [];
+    const env = makeActions({
+      details: [prOf({ base_ref: 'main' })],
+      resolveBase: async (/** @type {any} */ options) => {
+        calls.push(options);
+        return {
+          ok: true,
+          base: 'main',
+          declared: false,
+          remote: 'origin',
+          remote_ref: 'refs/remotes/origin/main',
+          base_oid: 'a'.repeat(40),
+          local_only: false
+        };
+      },
+      store: (() => {
+        const store = createQueueStore();
+        store.appendAttempt(WS, {
+          expected_revision: store.snapshot(WS).revision,
+          attempt: { attempt_id: 'a1', bead_id: BEAD }
+        });
+        store.updateAttempt(WS, {
+          attempt_id: 'a1',
+          patch: {
+            repo: REPO,
+            session_id: 'sess-1',
+            finished_at: 10,
+            verify_result: /** @type {any} */ ({
+              ok: true,
+              pr_url: 'https://github.com/o/r/pull/304',
+              pr_number: 304
+            })
+          }
+        });
+        store.moveToPrWait(WS, {
+          bead_id: BEAD,
+          attempt_id: 'a1',
+          patch: { status: 'done' }
+        });
+        return store;
+      })()
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((c) => c && c.force === true)).toBe(true);
   });
 });

@@ -58,8 +58,13 @@ export function baseLandingRegex(target_base) {
     return BASE_LANDING_RE;
   }
   const escaped = target_base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Explicit boundaries instead of `\b`: a base may legally end in a non-word
+  // character (`foo-`), where a trailing `\b` never matches and the fallback
+  // would silently pass (implementation review 2026-07-30). `/` is allowed BEFORE
+  // the name so `refs/heads/<base>` still matches, and forbidden AFTER it so a
+  // base of `ilsun` does not match the branch `ilsun/dev`.
   return new RegExp(
-    `gh\\s+pr\\s+merge\\b|git\\s+push\\b[\\s\\S]*?:?\\b(${escaped})\\b`,
+    `gh\\s+pr\\s+merge\\b|git\\s+push\\b[\\s\\S]*?(?<![\\w.-])(${escaped})(?![\\w/.-])`,
     'i'
   );
 }
@@ -102,6 +107,11 @@ export const BASE_INTO_BRANCH_RE = /git\s+merge(?!-(?:base|tree|file)\b)/i;
  *
  * @typedef {Object} SimpleCommand
  * @property {string[]} words
+ * @property {{ sq: boolean, q: boolean }[]} word_flags - Per-word quote
+ * provenance, positionally parallel to {@link words}: `sq` = some part came from
+ * single quotes, `q` = some part was quoted or escaped at all. A shell expands
+ * `~` only in a wholly unquoted word and `$HOME` only outside single quotes, so
+ * an expansion decided without these flags can be one the shell never performs.
  * @property {HeredocSpec[]} heredocs
  * @property {string} text - The original source slice, for the blocker message.
  * @property {'&&'|'||'|';'|'|'|'&'|'\n'|null} op - The operator that PRECEDES
@@ -461,6 +471,14 @@ export function tokenize(src) {
   let heredocs = [];
   let cur = '';
   let has_cur = false;
+  // Quote provenance per word (implementation review 2026-07-30). A shell does
+  // NOT expand `~` inside any quotes, and does not expand `$HOME` inside single
+  // quotes; the tokenizer strips quoting, so without these flags an expansion
+  // the shell never performs would be read as a resolved destination.
+  let cur_single_quoted = false;
+  let cur_quoted = false;
+  /** @type {{ sq: boolean, q: boolean }[]} */
+  let word_flags = [];
   let start = -1;
   let end = 0;
   let i = 0;
@@ -488,8 +506,11 @@ export function tokenize(src) {
   function pushWord() {
     if (has_cur) {
       words.push(cur);
+      word_flags.push({ sq: cur_single_quoted, q: cur_quoted });
       cur = '';
       has_cur = false;
+      cur_single_quoted = false;
+      cur_quoted = false;
     }
   }
 
@@ -499,6 +520,7 @@ export function tokenize(src) {
       const frame = scope_stack[scope_stack.length - 1];
       commands.push({
         words,
+        word_flags,
         heredocs,
         text: start >= 0 ? src.slice(start, end).trim() : '',
         op: frame.emitted ? pending_op : null,
@@ -508,6 +530,7 @@ export function tokenize(src) {
       pending_op = null;
     }
     words = [];
+    word_flags = [];
     heredocs = [];
     start = -1;
   }
@@ -545,6 +568,7 @@ export function tokenize(src) {
         continue;
       }
       beginToken(i);
+      cur_quoted = true;
       cur += src[i + 1];
       i += 2;
       end = i;
@@ -557,6 +581,8 @@ export function tokenize(src) {
         return null;
       }
       beginToken(i);
+      cur_single_quoted = true;
+      cur_quoted = true;
       cur += src.slice(i + 1, close);
       i = close + 1;
       end = i;
@@ -565,6 +591,7 @@ export function tokenize(src) {
 
     if (ch === '"') {
       beginToken(i);
+      cur_quoted = true;
       i += 1;
       let closed = false;
       while (i < n) {
@@ -827,7 +854,15 @@ function normalizeArgv(words) {
  */
 function landsOnBaseRef(dest, target_base) {
   if (typeof target_base === 'string' && target_base.length > 0) {
-    return dest === target_base || dest.endsWith(`/${target_base}`);
+    // EXACT forms only: a refspec destination is either a branch name or a full
+    // ref. `endsWith('/' + base)` also matched a distinct branch that merely ends
+    // in the base's name (`feature/ilsun/dev` under base `ilsun/dev`), which is
+    // an over-block, not a safety margin (implementation review 2026-07-30).
+    return (
+      dest === target_base ||
+      dest === `refs/heads/${target_base}` ||
+      dest === `heads/${target_base}`
+    );
   }
   return BASE_REF_RE.test(dest);
 }
@@ -900,31 +935,83 @@ const SINGLE_VAR_RE =
  * `$(…)`, multi-stage expansion) is NOT resolved — the tokenizer leaves the raw
  * source slice of a substitution inside the word, so this check catches it.
  *
+ * A shell performs neither expansion inside single quotes, and performs no `~`
+ * expansion inside ANY quotes, so the word's quote provenance gates them: a
+ * `~`/`$HOME` the shell would leave literal must not be read as a resolved path
+ * (implementation review 2026-07-30).
+ *
  * @param {string} word
+ * @param {{ sq: boolean, q: boolean }} [flags] - Quote provenance. Absent is
+ * treated as fully quoted, i.e. no expansion — the fail-closed default.
  * @returns {string|null} The expanded path, or null when undecidable.
  */
-function expandDeterministic(word) {
+function expandDeterministic(word, flags) {
   if (word.length === 0) {
     return null;
   }
+  const single_quoted = flags ? flags.sq : true;
+  const quoted = flags ? flags.q : true;
+  const tilde_ok = !quoted;
+  const home_ok = !single_quoted;
   let out = word;
-  if (out === '~' || out === '$HOME' || out === '${HOME}') {
-    return os.homedir();
+  if (out === '~') {
+    return tilde_ok ? os.homedir() : null;
+  }
+  if (out === '$HOME' || out === '${HOME}') {
+    return home_ok ? os.homedir() : null;
   }
   if (out.startsWith('~/')) {
+    if (!tilde_ok) {
+      return null;
+    }
     out = os.homedir() + out.slice(1);
   } else if (out.startsWith('~')) {
     // `~user` needs the passwd database; not decidable here.
     return null;
   } else if (out.startsWith('$HOME/')) {
+    if (!home_ok) {
+      return null;
+    }
     out = os.homedir() + out.slice('$HOME'.length);
   } else if (out.startsWith('${HOME}/')) {
+    if (!home_ok) {
+      return null;
+    }
     out = os.homedir() + out.slice('${HOME}'.length);
   }
   if (out.includes('$') || out.includes('`')) {
     return null;
   }
   return out;
+}
+
+/**
+ * Does any same-scope command ahead of `cd_idx` rebind `HOME`?
+ *
+ * `$HOME` and `~` are read off the WORKER's environment, which is only valid
+ * while the session has not reassigned `HOME` — `HOME=<repo>; cd "$HOME" && git
+ * push origin main` would otherwise resolve to the worker's home, look like a
+ * move out of the repo, and exempt a real base landing (implementation review
+ * 2026-07-30). Any sighting of a `HOME` rebind refuses the expansion outright.
+ *
+ * @param {SimpleCommand[]} commands
+ * @param {number} cd_idx
+ * @returns {boolean}
+ */
+function homeRebound(commands, cd_idx) {
+  const scope = commands[cd_idx].scope;
+  for (let i = 0; i < cd_idx; i += 1) {
+    const c = commands[i];
+    if (c.scope !== scope) {
+      continue;
+    }
+    for (const w of c.words) {
+      if (w === 'HOME' || w.startsWith('HOME=')) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -953,6 +1040,34 @@ function cdTargetToken(argv) {
     return { resolvable: true, token };
   }
   return { resolvable: true, token: null };
+}
+
+/**
+ * The quote provenance of a word, looked up by its VALUE in the raw word list —
+ * `normalizeArgv` drops leading tokens, so the argv index and the `word_flags`
+ * index are not the same. A value appearing more than once resolves to the most
+ * conservative (most-quoted) sighting.
+ *
+ * @param {SimpleCommand} cmd
+ * @param {string} value
+ * @returns {{ sq: boolean, q: boolean }|undefined}
+ */
+function flagsForWord(cmd, value) {
+  /** @type {{ sq: boolean, q: boolean }|undefined} */
+  let found;
+  for (let i = 0; i < cmd.words.length; i += 1) {
+    if (cmd.words[i] !== value) {
+      continue;
+    }
+    const f = cmd.word_flags ? cmd.word_flags[i] : undefined;
+    if (!f) {
+      return undefined;
+    }
+    found = found
+      ? { sq: found.sq || f.sq, q: found.q || f.q }
+      : { sq: f.sq, q: f.q };
+  }
+  return found;
 }
 
 /**
@@ -987,7 +1102,7 @@ const UNCONDITIONAL_OPS = new Set([null, ';', '\n']);
  *
  * @param {SimpleCommand[]} commands
  * @param {number} cd_idx
- * @returns {{ name: string, value: string }|null}
+ * @returns {{ name: string, value: string, flags: { sq: boolean, q: boolean }|undefined }|null}
  */
 function precedingAssignment(commands, cd_idx) {
   const scope = commands[cd_idx].scope;
@@ -1008,7 +1123,26 @@ function precedingAssignment(commands, cd_idx) {
   if (c.words.length !== 1 || !ASSIGNMENT_RE.test(c.words[0])) {
     return null;
   }
-  return splitAssignment(c.words[0]);
+  return { ...splitAssignment(c.words[0]), flags: c.word_flags[0] };
+}
+
+/**
+ * A word that resolves with NO expansion at all — used when `HOME` was rebound,
+ * so `~`/`$HOME` are no longer knowable but a plain literal still is.
+ *
+ * @param {string} word
+ * @param {{ sq: boolean, q: boolean }} [flags]
+ * @returns {string|null}
+ */
+function literalOnly(word, flags) {
+  if (word.length === 0) {
+    return null;
+  }
+  if (word.startsWith('~') || word.includes('$') || word.includes('`')) {
+    return null;
+  }
+  void flags;
+  return word;
 }
 
 /**
@@ -1022,17 +1156,27 @@ function precedingAssignment(commands, cd_idx) {
  * @returns {string|null}
  */
 function resolveCdTarget(commands, cd_idx) {
-  const argv = normalizeArgv(commands[cd_idx].words);
+  const cmd = commands[cd_idx];
+  const argv = normalizeArgv(cmd.words);
   const picked = cdTargetToken(argv);
   if (!picked.resolvable) {
     return null;
   }
+  const home_ok = !homeRebound(commands, cd_idx);
   if (picked.token == null) {
-    return os.homedir();
+    // Bare `cd` goes to `$HOME`, so a rebound HOME makes even that undecidable.
+    return home_ok ? os.homedir() : null;
   }
-  const direct = expandDeterministic(picked.token);
+  const token_flags = flagsForWord(cmd, picked.token);
+  const direct = home_ok
+    ? expandDeterministic(picked.token, token_flags)
+    : literalOnly(picked.token, token_flags);
   if (direct != null) {
     return direct;
+  }
+  // A single-quoted `$H` is a literal filename, not a variable reference.
+  if (token_flags && token_flags.sq) {
+    return null;
   }
   const ref = SINGLE_VAR_RE.exec(picked.token);
   if (!ref) {
@@ -1043,7 +1187,9 @@ function resolveCdTarget(commands, cd_idx) {
   if (!assignment || assignment.name !== var_name) {
     return null;
   }
-  return expandDeterministic(assignment.value);
+  return home_ok
+    ? expandDeterministic(assignment.value, assignment.flags)
+    : literalOnly(assignment.value, assignment.flags);
 }
 
 /**
@@ -1067,12 +1213,32 @@ function resolvesOutsideRepo(target, repo) {
 }
 
 /**
+ * Builtins that change the CURRENT shell's working directory, or can run a
+ * command that does so in the current shell. A child process cannot move its
+ * parent, which is why the interpreters are absent.
+ *
+ * @type {Set<string>}
+ */
+const CWD_MUTATORS = new Set(['cd', 'pushd', 'popd', 'eval', 'source', '.']);
+
+/**
+ * The command word of a simple command, after the wrapper/assignment/reserved
+ * prefixes are dropped. Empty string when there is none.
+ *
+ * @param {SimpleCommand} cmd
+ * @returns {string}
+ */
+function commandName(cmd) {
+  const argv = normalizeArgv(cmd.words);
+  return argv.length > 0 ? basename(argv[0]).toLowerCase() : '';
+}
+
+/**
  * @param {SimpleCommand} cmd
  * @returns {boolean}
  */
 function isCdCommand(cmd) {
-  const argv = normalizeArgv(cmd.words);
-  return argv.length > 0 && basename(argv[0]).toLowerCase() === 'cd';
+  return commandName(cmd) === 'cd';
 }
 
 /**
@@ -1087,10 +1253,11 @@ function isCdCommand(cmd) {
  *
  *   1. same shell scope — an identical scope id, so a move inside a subshell or
  *      in a SIBLING subshell does not count;
- *   2. domination — every same-scope command from the move up to and including
- *      the push is joined by `&&`, so the push cannot run on a failed move. The
- *      move's OWN operator is not judged: a literal assignment ahead of it
- *      (`H="…"; cd "$H" && git push …`) always runs and breaks nothing;
+ *   2. domination — the move itself is reached unconditionally (its own operator
+ *      is `;`, a newline, or the scope start, so an assignment ahead of it is
+ *      fine but `true || cd /foreign` is not), it is not negated, and every
+ *      same-scope command from the move up to and including the push is joined by
+ *      `&&` and cannot itself move the shell;
  *   3. static resolution of the move target ({@link resolveCdTarget}) — one
  *      stage off the single unconditional assignment immediately ahead of it, so
  *      a skipped or rebindable assignment never becomes a proof;
@@ -1122,11 +1289,32 @@ function isExemptCrossRepoPush(commands, push_idx, ctx) {
   if (cd_idx < 0) {
     return false;
   }
+  const move = commands[cd_idx];
+  // The MOVE must itself run unconditionally. `true || cd /foreign && git push
+  // origin main` skips the move (the `||` short-circuits) and then runs the push
+  // from the repo — the `&&` between move and push says nothing about whether the
+  // move happened (implementation review 2026-07-30).
+  if (!UNCONDITIONAL_OPS.has(move.op)) {
+    return false;
+  }
+  // A NEGATED move inverts its status, so `! cd /missing && git push origin main`
+  // runs the push precisely when the move FAILED.
+  if (move.words[0] === '!') {
+    return false;
+  }
   for (let i = cd_idx + 1; i <= push_idx; i += 1) {
     if (commands[i].scope !== scope) {
       continue;
     }
     if (commands[i].op !== '&&') {
+      return false;
+    }
+    // Anything between the move and the push that can change the CURRENT shell's
+    // cwd invalidates the move as a proof. Only builtins can: a child process
+    // cannot move its parent, so an interpreter (`bash -c 'cd …'`) is harmless
+    // while `eval`/`source`/`.`/`pushd`/`popd` are not. A shell FUNCTION could
+    // too, but its definition makes the tokenizer refuse the whole input.
+    if (i < push_idx && CWD_MUTATORS.has(commandName(commands[i]))) {
       return false;
     }
   }
