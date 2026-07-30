@@ -134,7 +134,7 @@ fallback 정규식(`:27`)도 같은 allowlist 를 쓰되, 파싱 불가 입력�
 | 파일 내용 | 최상위 `base = "ilsun/dev"` 와 주석뿐. `[verify]` 테이블은 **넣지 않는다**(아래) |
 | 검증 묶음 | ① `python3 -c "import tomllib,sys; d=tomllib.load(open('docs/agents/repo-ops.toml','rb')); assert d['base']=='ilsun/dev'"` — TOML 파싱과 값 ② `git check-ref-format --branch ilsun/dev` 종료코드 0 ③ `git remote` 목록의 어느 이름으로도 시작하지 않음 ④ `git fetch --no-tags <remote> ilsun/dev && git rev-parse --verify refs/remotes/<remote>/ilsun/dev^{commit}` 성공. 넷 다 실패 시 non-zero |
 | 착지 커밋 범위 | `305ea827880417722340b24569cffc2ecb2e2686..aa52b731809ca4407f38f5da3f87940b52af7649` (실측, 2026-07-30 착지·발행). 단일 커밋 `aa52b731` — `docs/agents/repo-ops.toml` 1파일 13줄 추가 |
-| split 하지 않은 이유 | 파일 1개·2줄로 quick_fix 5 hard criteria 를 전부 통과한다. 별도 Bead·spec·PR·verify 를 세우는 비용이 작업 자체보다 크다 |
+| split 하지 않은 이유 | 파일 1개, 실질 내용은 최상위 `base` 선언 한 줄과 출처 주석뿐이라 quick_fix 5 hard criteria 를 전부 통과한다. 별도 Bead·spec·PR·verify 를 세우는 비용이 작업 자체보다 크다 |
 
 **검증에 `dotfiles` 의 `scripts/repo_ops_check.py` 를 쓰지 않는다.** 실측으로 그 도구는 이 용도에 맞지 않는다 — `:330` 이 `return 0  # warn-only` 로 위반에도 항상 0 을 돌려주어 게이트가 될 수 없고, `parse_declaration` 이 `[verify]` 테이블을 **필수로 요구**한다(`:150-152` `SchemaError("[verify] 테이블이 없다")`). 그 스크립트는 이름 그대로 *verify 선언 드리프트* 체커이지 base 선언 검증기가 아니다.
 
