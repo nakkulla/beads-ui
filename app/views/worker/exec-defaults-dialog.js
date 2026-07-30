@@ -84,9 +84,33 @@ function formatCmd(cmd) {
  */
 const DEPLOY_OUTCOME_BADGES = {
   deployed: { modifier: 'ok', label: '성공' },
-  launched: { modifier: 'launched', label: '발사됨' },
+  // `launched` is an INTENT, never a confirmation — a self-restarting deploy
+  // kills the only process that could have observed its exit. The label says so
+  // rather than letting an unobserved run read as a success (UI-l53x §5).
+  launched: { modifier: 'launched', label: '발사됨 · 결과 미관측' },
   failed: { modifier: 'fail', label: '실패' }
 };
+
+/**
+ * How much of a preserved diagnostic string the dialog shows before eliding it —
+ * the same value the worker banner uses (`running-grid.js`'s
+ * `BANNER_DETAIL_MAX`). Deliberately duplicated rather than shared: the two are
+ * separate modules with no existing common util, and one 160 is not worth a new
+ * one (UI-l53x §5, 비범위).
+ *
+ * @type {number}
+ */
+const DETAIL_MAX = 160;
+
+/**
+ * Keep a diagnostic string to one dialog line.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function truncateDetail(text) {
+  return text.length > DETAIL_MAX ? `${text.slice(0, DETAIL_MAX)}…` : text;
+}
 
 /** The 4 workspace-global exec keys, in display order (workflow_mode excluded). */
 const EXEC_ROWS = [
@@ -325,6 +349,12 @@ export function createExecDefaultsDialog(mount_element, options) {
    * deployed (or recorded an outcome outside the vocabulary) — the row is
    * omitted rather than rendered empty.
    *
+   * `detail` and `log_path` are rendered when present and silently skipped when
+   * not (UI-l53x §5): they only exist for the failures that could produce them,
+   * and fail-quiet is what keeps every other record unchanged. Both are TEXT
+   * bindings — command output and error messages are untrusted input, so
+   * lit-html's escaping is what handles them.
+   *
    * @param {any} last_deploy
    * @returns {import('lit-html').TemplateResult|string}
    */
@@ -349,12 +379,32 @@ export function createExecDefaultsDialog(mount_element, options) {
     ]
       .filter((part) => part.length > 0)
       .join(' · ');
+    const detail =
+      typeof last_deploy.detail === 'string' && last_deploy.detail.length > 0
+        ? truncateDetail(last_deploy.detail)
+        : '';
+    const log_path =
+      typeof last_deploy.log_path === 'string' &&
+      last_deploy.log_path.length > 0
+        ? last_deploy.log_path
+        : '';
     return html`<div class="exec-defaults__vd-group" data-vd="last-deploy">
       <div class="exec-defaults__vd-label">마지막 배포</div>
       <div class="exec-defaults__vd-line">
         ${badge(spec.modifier, label)}
         ${meta ? html`<span class="exec-defaults__vd-meta">${meta}</span>` : ''}
       </div>
+      ${detail
+        ? html`<div class="exec-defaults__vd-line" data-vd-part="detail">
+            <code class="exec-defaults__vd-cmd">${detail}</code>
+          </div>`
+        : ''}
+      ${log_path
+        ? html`<div class="exec-defaults__vd-line" data-vd-part="log-path">
+            전체 로그:
+            <code class="exec-defaults__vd-cmd">${log_path}</code>
+          </div>`
+        : ''}
     </div>`;
   }
 

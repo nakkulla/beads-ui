@@ -25,6 +25,7 @@ import { CLEANUP_STEPS, createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller } from './pr-poller.js';
 import { createQueueStore } from './queue-store.js';
+import { deployLogDir } from './state-paths.js';
 
 const WS = '/tmp/example-workspace/project-p5';
 const REPO = '/tmp/example-workspace/project-p5';
@@ -122,6 +123,8 @@ function seedStore(options = {}) {
  *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string }>,
  *   deploy?: { cmd: string[], timeout_ms: number, detached: boolean }|null,
  *   deploySpawn?: 'ok'|'fail'|'hang'|'error'|'throw',
+ *   deployOutput?: string[],
+ *   repo?: string,
  *   gitFail?: (args: string[]) => boolean,
  *   gitBranch?: string,
  *   gitStatus?: string,
@@ -386,8 +389,11 @@ function makeActions(options = {}) {
   });
 
   // The deploy process, faked at the spawn boundary — nothing here ever starts
-  // a real process, in either the synchronous or the detached mode.
+  // a real process, in either the synchronous or the detached mode. The child
+  // carries real stdout/stderr emitters so the synchronous mode's tail + log
+  // capture (UI-l53x §2) runs against scripted output.
   const deploy_spawn_mode = options.deploySpawn || 'ok';
+  const deploy_output = options.deployOutput || [];
   const spawnImpl = vi.fn(
     (
       /** @type {string} */ cmd,
@@ -401,27 +407,45 @@ function makeActions(options = {}) {
         throw new Error('spawn ENOENT');
       }
       const child = /** @type {any} */ (new EventEmitter());
+      child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+      child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
       child.kill = () => {
         child.emit('close', null);
       };
       child.unref = () => {
         calls.push('spawn:unref');
       };
+      const emitOutput = () => {
+        for (const chunk of deploy_output) {
+          child.stdout.emit('data', chunk);
+        }
+      };
       if (deploy_spawn_mode === 'ok') {
-        setTimeout(() => child.emit('close', 0), 0);
+        setTimeout(() => {
+          emitOutput();
+          child.emit('close', 0);
+        }, 0);
       } else if (deploy_spawn_mode === 'fail') {
-        setTimeout(() => child.emit('close', 1), 0);
+        setTimeout(() => {
+          emitOutput();
+          child.emit('close', 1);
+        }, 0);
       } else if (deploy_spawn_mode === 'error') {
         setTimeout(() => child.emit('error', new Error('nope')), 0);
+      } else {
+        // 'hang' prints but never ends — the deadline is what ends it.
+        setTimeout(emitOutput, 0);
       }
-      // 'hang' emits nothing — the deadline is what ends it.
       return child;
     }
   );
 
   const actions = createPrActions({
     workspace: WS,
-    repo: REPO,
+    // Distinct from `workspace` only where a test needs to prove which of the two
+    // a path is keyed on (attach.js resolves `options.repo || workspace_root`, so
+    // they really can differ).
+    repo: options.repo || REPO,
     store,
     gh,
     observations,
@@ -1448,6 +1472,331 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
       bead_id: BEAD
     });
   });
+});
+
+describe('post-merge cleanup — the deploy failure keeps its output (UI-l53x)', () => {
+  /**
+   * The synchronous deploy options, with the checkout in the state the
+   * re-validation demands so the command actually runs.
+   *
+   * @param {Record<string, any>} [over]
+   */
+  function syncDeploy(over = {}) {
+    return {
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      ...ON_BASE,
+      ...over
+    };
+  }
+
+  test('records the deploy output tail and log path on cleanup_failed', async () => {
+    const h = makeActions(
+      syncDeploy({
+        deploySpawn: 'fail',
+        deployOutput: ['render failed: codex config.toml\n']
+      })
+    );
+
+    await h.actions.merge(BEAD);
+
+    const c = h.store.snapshot(WS).cleanup_failed[BEAD];
+    expect(c).toMatchObject({
+      step: 'deploy',
+      reason: 'deploy_failed',
+      output_tail: 'render failed: codex config.toml'
+    });
+    expect(String(c.log_path).startsWith(deployLogDir(REPO))).toBe(true);
+  });
+
+  test('preserves the whole deploy output in the log file, tail cap included', async () => {
+    const h = makeActions(
+      syncDeploy({
+        deploySpawn: 'fail',
+        deployOutput: ['FIRST: the real cause\n', `${'x'.repeat(40000)}\n`]
+      })
+    );
+
+    await h.actions.merge(BEAD);
+
+    const c = h.store.snapshot(WS).cleanup_failed[BEAD];
+    expect(c.output_tail).not.toContain('FIRST: the real cause');
+    expect(fs.readFileSync(String(c.log_path), 'utf8')).toContain(
+      'FIRST: the real cause'
+    );
+  });
+
+  test('records the tail and log path for a deploy that timed out too', async () => {
+    const h = makeActions(
+      syncDeploy({
+        deploy: {
+          cmd: ['bdui-shared', 'restart'],
+          timeout_ms: 5,
+          detached: false
+        },
+        deploySpawn: 'hang',
+        deployOutput: ['step 2/4 installing…\n']
+      })
+    );
+
+    await h.actions.merge(BEAD);
+
+    const c = h.store.snapshot(WS).cleanup_failed[BEAD];
+    expect(c).toMatchObject({
+      reason: 'deploy_timeout',
+      output_tail: 'step 2/4 installing…'
+    });
+    expect(c.log_path).toBeTruthy();
+  });
+
+  test('records the log path on a SUCCESSFUL last_deploy — the next failure needs a baseline', async () => {
+    const h = makeActions(
+      syncDeploy({ deploySpawn: 'ok', deployOutput: ['restarted\n'] })
+    );
+
+    await h.actions.merge(BEAD);
+
+    const d = h.store.snapshot(WS).last_deploy;
+    expect(d.outcome).toBe('deployed');
+    expect(fs.readFileSync(String(d.log_path), 'utf8')).toBe('restarted\n');
+  });
+
+  test('records the log path on a FAILED last_deploy', async () => {
+    const h = makeActions(
+      syncDeploy({ deploySpawn: 'fail', deployOutput: ['boom\n'] })
+    );
+
+    await h.actions.merge(BEAD);
+
+    const d = h.store.snapshot(WS).last_deploy;
+    expect(d).toMatchObject({ outcome: 'failed', reason: 'deploy_failed' });
+    expect(fs.readFileSync(String(d.log_path), 'utf8')).toBe('boom\n');
+  });
+
+  test('keys the deploy log on `repo`, not on `workspace`', async () => {
+    const other_repo = '/tmp/example-workspace/other-repo-p5';
+    const h = makeActions(
+      syncDeploy({ repo: other_repo, deploySpawn: 'fail' })
+    );
+
+    await h.actions.merge(BEAD);
+
+    const log_path = String(h.store.snapshot(WS).last_deploy.log_path);
+    expect(log_path.startsWith(deployLogDir(other_repo))).toBe(true);
+    expect(log_path.startsWith(deployLogDir(WS))).toBe(false);
+  });
+
+  test.each([
+    ['checkout_not_on_base', { gitBranch: 'feature' }],
+    ['checkout_dirty', { gitStatus: ' M app/main.js\n' }],
+    ['head_not_base_sha', { gitHead: 'some-other-sha' }]
+  ])(
+    'names the %s guard as the base_not_synced detail',
+    async (reason, over) => {
+      const h = makeActions(syncDeploy(over));
+
+      await h.actions.merge(BEAD);
+
+      expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+        reason: 'deploy_base_not_synced',
+        detail: reason
+      });
+      expect(h.store.snapshot(WS).last_deploy).toMatchObject({
+        outcome: 'failed',
+        reason: 'deploy_base_not_synced',
+        detail: reason
+      });
+    }
+  );
+
+  test('preserves a SYNCHRONOUS deploy spawn throw as detail, with no log file', async () => {
+    const h = makeActions(syncDeploy({ deploySpawn: 'throw' }));
+
+    await h.actions.merge(BEAD);
+
+    const q = h.store.snapshot(WS);
+    expect(q.cleanup_failed[BEAD]).toMatchObject({
+      reason: 'deploy_spawn_error',
+      detail: 'spawn ENOENT'
+    });
+    expect(q.cleanup_failed[BEAD].log_path).toBeUndefined();
+    expect(q.last_deploy).toMatchObject({
+      reason: 'deploy_spawn_error',
+      detail: 'spawn ENOENT'
+    });
+    expect(q.last_deploy.log_path).toBeUndefined();
+  });
+
+  test('preserves an ASYNCHRONOUS deploy error event as detail, with the empty log it opened', async () => {
+    const h = makeActions(syncDeploy({ deploySpawn: 'error' }));
+
+    await h.actions.merge(BEAD);
+
+    const q = h.store.snapshot(WS);
+    expect(q.cleanup_failed[BEAD]).toMatchObject({
+      reason: 'deploy_spawn_error',
+      detail: 'nope'
+    });
+    // The log was already open when the event fired, so the path is a real —
+    // empty — file. The reason already says nothing ran.
+    expect(fs.readFileSync(String(q.last_deploy.log_path), 'utf8')).toBe('');
+  });
+
+  test('adds no detail when the deploy argv itself is unusable', async () => {
+    const h = makeActions(
+      syncDeploy({ deploy: { cmd: [], timeout_ms: 1000, detached: false } })
+    );
+
+    await h.actions.merge(BEAD);
+
+    const q = h.store.snapshot(WS);
+    expect(q.cleanup_failed[BEAD]).toMatchObject({
+      reason: 'deploy_spawn_error'
+    });
+    expect(q.cleanup_failed[BEAD].detail).toBeNull();
+    expect(q.last_deploy.detail).toBeUndefined();
+  });
+
+  test('preserves a DETACHED deploy spawn throw as detail', async () => {
+    const h = makeActions(
+      syncDeploy({ deploy: DEPLOY_DETACHED, deploySpawn: 'throw' })
+    );
+
+    await h.actions.merge(BEAD);
+
+    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_spawn_error',
+      detail: 'spawn ENOENT'
+    });
+  });
+
+  test("preserves a DETACHED deploy's asynchronous error event as detail", async () => {
+    const h = makeActions(
+      syncDeploy({ deploy: DEPLOY_DETACHED, deploySpawn: 'error' })
+    );
+
+    await h.actions.merge(BEAD);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_spawn_error',
+      detail: 'nope'
+    });
+  });
+});
+
+describe('post-merge cleanup — a REFUSED deploy still records last_deploy (UI-l53x §2)', () => {
+  /**
+   * A prior success, so a test can prove the refusal OVERWRITES it rather than
+   * leaving `last_deploy` answering "is the running service the merged code?"
+   * with a stale yes.
+   *
+   * @param {any} store
+   */
+  function seedSuccess(store) {
+    store.recordLastDeploy(WS, {
+      outcome: 'deployed',
+      reason: null,
+      bead_id: 'UI-old',
+      base_sha: 'older-sha'
+    });
+  }
+
+  test('deploy_verify_missing overwrites the previous success record', async () => {
+    const store = seedStore();
+    seedSuccess(store);
+    const h = makeActions({
+      store,
+      verify: null,
+      deploy: DEPLOY_SYNC,
+      ...ON_BASE
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_verify_missing',
+      bead_id: BEAD
+    });
+  });
+
+  test('deploy_base_not_synced overwrites the previous success record', async () => {
+    const store = seedStore();
+    seedSuccess(store);
+    const h = makeActions({
+      store,
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      ...ON_BASE,
+      gitBranch: 'feature'
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_base_not_synced',
+      bead_id: BEAD
+    });
+  });
+
+  test('an unconfigured deploy still records nothing — silence is not a refusal', async () => {
+    const store = seedStore();
+    seedSuccess(store);
+    const h = makeActions({ store, verify: VERIFY_CFG, deploy: null });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'deployed',
+      bead_id: 'UI-old'
+    });
+  });
+
+  test.each([
+    ['deploy_verify_missing', { verify: null, deploy: DEPLOY_SYNC }],
+    [
+      'deploy_base_not_synced',
+      { verify: VERIFY_CFG, deploy: DEPLOY_SYNC, gitBranch: 'feature' }
+    ]
+  ])(
+    'an EXTERNAL row records %s in last_deploy only — cleanup_failed is lane state',
+    async (reason, over) => {
+      const external_bead = 'UI-ext-deploy';
+      const store = createQueueStore();
+      seedSuccess(store);
+      const h = makeActions({
+        store,
+        external: {
+          [external_bead]: {
+            bead_id: external_bead,
+            pr_url: 'https://github.com/o/r/pull/777',
+            pr_number: 777,
+            added_at: 1
+          }
+        },
+        bdStatus: { [external_bead]: 'resolved' },
+        bdPrUrl: 'https://github.com/o/r/pull/777',
+        ...ON_BASE,
+        ...over
+      });
+
+      await h.actions.merge(external_bead);
+
+      const q = h.store.snapshot(WS);
+      expect(q.cleanup_failed).toEqual({});
+      // With no lane membership this record is the ONLY durable trace the
+      // refusal leaves anywhere.
+      expect(q.last_deploy).toMatchObject({
+        outcome: 'failed',
+        reason,
+        bead_id: external_bead
+      });
+    }
+  );
 });
 
 describe('post-merge cleanup — ref operations hold the topology lock (§8)', () => {

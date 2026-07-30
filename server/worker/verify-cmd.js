@@ -26,7 +26,7 @@ import { spawn } from 'node:child_process';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { debug } from '../logging.js';
-import { verifyLogDir } from './state-paths.js';
+import { deployLogDir, verifyLogDir } from './state-paths.js';
 
 const log = debug('worker:verify-cmd');
 
@@ -92,12 +92,14 @@ export function resolveVerifyCmd(repo, config_map) {
 const DETAIL_MAX = 512;
 
 /**
- * Reduce a thrown value to the diagnostic text worth persisting.
+ * Reduce a thrown value to the diagnostic text worth persisting. Exported so the
+ * deploy path caps its own preserved errors with the SAME bound (UI-l53x §2) —
+ * the cap belongs to the producer, not to the record.
  *
  * @param {unknown} err
  * @returns {string}
  */
-function errorDetail(err) {
+export function errorDetail(err) {
   const text =
     err instanceof Error
       ? err.message
@@ -134,7 +136,7 @@ const TAIL_MAX_LINES = 100;
 const TAIL_MAX_CHARS = 8192;
 
 /**
- * Hard per-file cap on a preserved verify log (UI-0x54). Output past it is
+ * Hard per-file cap on a preserved run log (UI-0x54). Output past it is
  * dropped rather than truncating the FRONT: the tail already survives in
  * `queue.json`, so what the log file exists to keep is the beginning — the
  * failure summary a long runner prints before the rest of its output.
@@ -144,8 +146,8 @@ const TAIL_MAX_CHARS = 8192;
 const LOG_MAX_BYTES = 10 * 1024 * 1024;
 
 /**
- * How many verify logs a workspace keeps. Every run writes one (a passing run
- * is the comparison baseline for the next failure), so rotation — not
+ * How many run logs a workspace keeps PER KIND. Every run writes one (a passing
+ * run is the comparison baseline for the next failure), so rotation — not
  * selective writing — is what bounds the directory.
  *
  * @type {number}
@@ -172,12 +174,15 @@ const LOG_DATA_MAX_BYTES =
   LOG_MAX_BYTES - Buffer.byteLength(LOG_TRUNCATED_MARKER, 'utf8');
 
 /**
- * Where a verify run's full output is preserved (UI-0x54). Explicit because
- * `runVerifyCmd`'s `cwd` is a throwaway detached worktree that cannot name a
- * stable state directory; a caller that omits this — the shared deploy path —
- * writes no log at all.
+ * Where a run's full output is preserved (UI-0x54). Explicit because
+ * `runVerifyCmd`'s `cwd` may be a throwaway detached worktree that cannot name a
+ * stable state directory; a caller that omits this writes no log at all.
  *
  * @typedef {Object} VerifyLogContext
+ * @property {'verify'|'deploy'} kind - Which RUN this is, which picks the log
+ * directory and the filename prefix (UI-l53x §1). REQUIRED with no default on
+ * purpose: an implicit fallback would let a new caller write into the wrong
+ * kind's rotation budget without saying so.
  * @property {string} workspace_root - The REPO root the log dir is keyed on
  * (never the detached worktree `cwd`).
  * @property {string} bead_id
@@ -187,15 +192,27 @@ const LOG_DATA_MAX_BYTES =
  */
 
 /**
+ * `kind` → where its logs live and what their filenames start with. Owned HERE
+ * so callers pass an intent and know nothing about naming or rotation policy.
+ *
+ * @type {Record<string, { dir: (workspace_root: string) => string, prefix: string }>}
+ */
+const RUN_LOG_KINDS = {
+  verify: { dir: verifyLogDir, prefix: 'verify' },
+  deploy: { dir: deployLogDir, prefix: 'deploy' }
+};
+
+/**
  * Delete the oldest logs so the directory holds at most {@link LOG_KEEP} files
- * once the run about to start has added its own. Best-effort throughout: a
- * directory that cannot be listed or a file that cannot be removed only means
- * this run skips the pruning.
+ * of this prefix once the run about to start has added its own. Best-effort
+ * throughout: a directory that cannot be listed or a file that cannot be removed
+ * only means this run skips the pruning.
  *
  * @param {typeof import('node:fs')} fs
  * @param {string} dir
+ * @param {string} prefix
  */
-function rotateVerifyLogs(fs, dir) {
+function rotateRunLogs(fs, dir, prefix) {
   /** @type {{ file: string, mtime_ms: number }[]} */
   const entries = [];
   /** @type {string[]} */
@@ -206,7 +223,7 @@ function rotateVerifyLogs(fs, dir) {
     return;
   }
   for (const name of names) {
-    if (!name.startsWith('verify-') || !name.endsWith('.log')) {
+    if (!name.startsWith(`${prefix}-`) || !name.endsWith('.log')) {
       continue;
     }
     const file = path.join(dir, name);
@@ -254,18 +271,23 @@ function writeFully(fs, fd, buf) {
 }
 
 /**
- * Open the full-output log for one verify run.
+ * Open the full-output log for one verify or deploy run.
  *
- * Fail-quiet by construction: a null return (the open failed) means the run
- * simply goes unlogged, and a failure at any later stage clears the path so the
- * result never points at a file that may be incomplete.
+ * Fail-quiet by construction: a null return (an unknown `kind`, or a failed
+ * open) means the run simply goes unlogged, and a failure at any later stage
+ * clears the path so the result never points at a file that may be incomplete.
  *
  * @param {VerifyLogContext} log_context
  * @param {typeof import('node:fs')} fs
  * @returns {{ write: (chunk: string) => void, finish: () => string|null }|null}
  */
-function openVerifyLog(log_context, fs) {
-  const dir = verifyLogDir(log_context.workspace_root);
+function openRunLog(log_context, fs) {
+  const spec = RUN_LOG_KINDS[String(log_context.kind)];
+  if (!spec) {
+    log('run log skipped for unknown kind %o', log_context.kind);
+    return null;
+  }
+  const dir = spec.dir(log_context.workspace_root);
   const safe_bead = String(log_context.bead_id || 'bead').replace(
     /[^A-Za-z0-9._-]/g,
     '_'
@@ -273,16 +295,16 @@ function openVerifyLog(log_context, fs) {
   const sha7 = String(log_context.sha || '').slice(0, 7);
   const file = path.join(
     dir,
-    `verify-${safe_bead}-${sha7}-${log_context.started_at_ms}.log`
+    `${spec.prefix}-${safe_bead}-${sha7}-${log_context.started_at_ms}.log`
   );
   /** @type {number} */
   let fd;
   try {
     fs.mkdirSync(dir, { recursive: true });
-    rotateVerifyLogs(fs, dir);
+    rotateRunLogs(fs, dir, spec.prefix);
     fd = fs.openSync(file, 'w');
   } catch (err) {
-    log('verify log open failed for %s: %s', file, errorDetail(err));
+    log('run log open failed for %s: %s', file, errorDetail(err));
     return null;
   }
   let written = 0;
@@ -311,7 +333,7 @@ function openVerifyLog(log_context, fs) {
         written += slice.length;
       } catch (err) {
         failed = true;
-        log('verify log write failed for %s: %s', file, errorDetail(err));
+        log('run log write failed for %s: %s', file, errorDetail(err));
       }
     },
 
@@ -331,14 +353,14 @@ function openVerifyLog(log_context, fs) {
           writeFully(fs, fd, Buffer.from(LOG_TRUNCATED_MARKER, 'utf8'));
         } catch (err) {
           failed = true;
-          log('verify log write failed for %s: %s', file, errorDetail(err));
+          log('run log write failed for %s: %s', file, errorDetail(err));
         }
       }
       try {
         fs.closeSync(fd);
       } catch (err) {
         failed = true;
-        log('verify log close failed for %s: %s', file, errorDetail(err));
+        log('run log close failed for %s: %s', file, errorDetail(err));
       }
       return failed ? null : file;
     }
@@ -351,8 +373,11 @@ function openVerifyLog(log_context, fs) {
  * @property {'ok'|'verify_cmd_failed'|'verify_cmd_timeout'|'verify_cmd_spawn_error'|'verify_sha_unavailable'|'verify_worktree_failed'} reason
  * @property {number|null} exit - Exit code when the process ran to completion.
  * @property {string} [detail] - Diagnostic text for a failure whose reason
- * alone cannot be acted on (today: the git stderr behind
- * `verify_worktree_failed`, UI-2o4z §3). Absent when there is nothing to add.
+ * alone cannot be acted on: the git stderr behind `verify_worktree_failed`
+ * (UI-2o4z §3), and the thrown/emitted error behind a `verify_cmd_spawn_error`
+ * that Node reported — ENOENT and EACCES are the same reason word otherwise
+ * (UI-l53x §1). Absent when there is nothing to add, which includes the argv
+ * validation failure below: nothing was thrown there.
  * @property {string} [output_tail] - The tail of the command's own stdout+stderr
  * (UI-qult §1), interleaved in ARRIVAL order because that is the order a human
  * reading a terminal would have seen. Present only on `verify_cmd_failed` /
@@ -363,6 +388,24 @@ function openVerifyLog(log_context, fs) {
  * stage — open, writes, close — succeeded; a path to a possibly incomplete file
  * is worse than none.
  */
+
+/**
+ * The `verify_cmd_spawn_error` result, carrying whatever Node reported as
+ * `detail` (UI-l53x §1). Both spawn-failure paths — the synchronous throw and
+ * the asynchronous `error` event — used to drop it, which left the shared deploy
+ * path unable to tell a missing binary from an unexecutable one.
+ *
+ * @param {unknown} err
+ * @returns {VerifyCmdResult}
+ */
+function spawnErrorResult(err) {
+  /** @type {VerifyCmdResult} */
+  const result = { ok: false, reason: 'verify_cmd_spawn_error', exit: null };
+  if (err === null || err === undefined) {
+    return result;
+  }
+  return { ...result, detail: errorDetail(err) };
+}
 
 /**
  * Run a verify_cmd argv to completion.
@@ -404,16 +447,19 @@ export function runVerifyCmd(input) {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true
       });
-    } catch {
-      resolve({ ok: false, reason: 'verify_cmd_spawn_error', exit: null });
+    } catch (err) {
+      // Resolved BEFORE the log is opened below, so this branch never has a
+      // file — the reason already says nothing ran, and `detail` is the only
+      // thing that can name WHY (UI-l53x §1/§2).
+      resolve(spawnErrorResult(err));
       return;
     }
 
     // The full-output log runs ALONGSIDE the rolling tail window (UI-0x54):
     // the window keeps the end for `queue.json`, the file keeps everything for
-    // a human. Absent `log_context` (the shared deploy path) there is no file.
+    // a human. Absent `log_context` there is no file.
     const log_writer = input.log_context
-      ? openVerifyLog(input.log_context, input.fs_impl || nodeFs)
+      ? openRunLog(input.log_context, input.fs_impl || nodeFs)
       : null;
 
     // ONE shared buffer for both streams: a verify failure is read as a
@@ -503,8 +549,12 @@ export function runVerifyCmd(input) {
       resolve(log_path ? { ...result, log_path } : result);
     };
 
-    child.on('error', () => {
-      finish({ ok: false, reason: 'verify_cmd_spawn_error', exit: null });
+    // Unlike the synchronous throw above, this fires AFTER the log was opened,
+    // so `finish` attaches the path of an EMPTY file. Left as is deliberately:
+    // the reason already says nothing ran, so an empty log does not contradict
+    // it, and suppressing it here would change verify's own behaviour.
+    child.on('error', (/** @type {unknown} */ err) => {
+      finish(spawnErrorResult(err));
     });
     child.on('close', (code) => {
       if (timed_out) {
@@ -715,6 +765,7 @@ export async function runVerifyAtSha(input) {
         // `cwd` is the detached worktree, which is deleted in the `finally`
         // below — the log has to be keyed on the REPO instead (UI-0x54).
         log_context: {
+          kind: 'verify',
           workspace_root: input.repo,
           bead_id: input.bead_id,
           sha: input.sha,
