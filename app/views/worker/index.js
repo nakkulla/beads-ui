@@ -2102,7 +2102,7 @@ export function createWorkerView(mount_element, options = {}) {
           ${m.token_total
             ? html`<span
                 class="worker-kpi__chip worker-kpi__chip--tokens"
-                title=${`${doneRangeLabel()} 완료된 이슈들이 생애 전체에 쓴 토큰 누적 (입력+출력). 이 기간에 소모된 양이 아니다`}
+                title=${`${doneRangeLabel()} 완료된 이슈들이 생애 전체에 쓴 토큰 누적 (입력+출력+캐시). 이 기간에 소모된 양이 아니다`}
                 >${doneRangeLabel()} 완료 · 누적 ${m.token_total}</span
               >`
             : ''}

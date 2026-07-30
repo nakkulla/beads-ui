@@ -5806,6 +5806,9 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
     expect(
       mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
     ).toBe('오늘 완료 · 누적 τ 5.3M');
+    expect(
+      mount.querySelector('.worker-kpi__chip--tokens')?.getAttribute('title')
+    ).toContain('(입력+출력+캐시)');
   });
 
   test('chip matches the row badge for the same issue (UI-tq13 §5)', () => {
