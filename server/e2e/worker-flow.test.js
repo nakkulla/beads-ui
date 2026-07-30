@@ -465,6 +465,9 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
             state: pr_state,
             mergeable: 'MERGEABLE',
             merge_state_status: 'CLEAN',
+            // Real `gh` always reports a base; the pre-merge base comparison
+            // (worker-base-scope-alignment §5) reads it.
+            base_ref: 'main',
             head_ref: 'M1',
             head_sha: HEAD_SHA
           }
@@ -597,6 +600,9 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
             state: pr_state,
             mergeable: 'MERGEABLE',
             merge_state_status: 'CLEAN',
+            // Real `gh` always reports a base; the pre-merge base comparison
+            // (worker-base-scope-alignment §5) reads it.
+            base_ref: 'main',
             head_ref: 'M2',
             head_sha: 'b'.repeat(40)
           }

@@ -305,7 +305,10 @@ export function claudeSpec(options = {}) {
         applyPreamble(promptFor(bead), {
           fast_track: !!s.fast_track,
           // A disposition session opens no PR (UI-hs11 §3.3).
-          pr_submit: !s.disposition
+          pr_submit: !s.disposition,
+          // The base the session must open its PR against
+          // (worker-base-scope-alignment §4).
+          target_base: typeof s.target_base === 'string' ? s.target_base : null
         })
       );
       // Worker sessions inherit the user's `~/.claude/settings.json` hooks, so a

@@ -217,50 +217,6 @@ function normalizeWorkerDeploy(parsed) {
 }
 
 /**
- * Normalize the `[worker.target_base]` section (worker-target-base §1) into
- * `{ <resolved path>: <branch> }`.
- *
- * The merge target base is a property of the REPO's workflow, not of a bead —
- * every bead in a repo lands on the same branch. Repos whose integration branch
- * is not `main` pin it once here instead of repeating it in each bead's
- * `target_base` metadata (a bead that does pin one still wins):
- *
- *   [worker.target_base]
- *   "/Users/me/GitHub/TRACE-ICI" = "ilsun/dev"
- *
- * A flat path→branch map, keyed like `[worker.verify]`. Entries with a
- * non-absolute key or a non-string / empty value are ignored (one log line).
- *
- * @param {any} parsed
- * @returns {Record<string, string>}
- */
-function normalizeWorkerTargetBase(parsed) {
-  /** @type {Record<string, string>} */
-  const out = {};
-  const section = parsed?.worker?.target_base;
-  if (!section || typeof section !== 'object' || Array.isArray(section)) {
-    return out;
-  }
-  for (const [key, value] of Object.entries(section)) {
-    const workspace = normalizeWorkspacePath(key);
-    if (!workspace) {
-      log('worker.target_base %s ignored: key must be an absolute path', key);
-      continue;
-    }
-    const base = typeof value === 'string' ? value.trim() : '';
-    if (base.length === 0) {
-      log(
-        'worker.target_base %s ignored: value must be a non-empty branch name',
-        key
-      );
-      continue;
-    }
-    out[workspace] = base;
-  }
-  return out;
-}
-
-/**
  * Normalize the `[worker.notify]` section (UI-2yoq) into
  * `{ enabled, cmd }`.
  *
@@ -334,7 +290,6 @@ function normalizePollIntervalSeconds(value) {
  *   poll_interval_seconds: number,
  *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
  *   worker_deploy: Record<string, { cmd: string[], timeout_ms: number, detached: boolean }>,
- *   worker_target_base: Record<string, string>,
  *   worker_notify: { enabled: boolean, cmd: string[] }
  * }}
  */
@@ -372,7 +327,6 @@ function readRuntimeConfig(config_path) {
       ),
       worker_verify: normalizeWorkerVerify(parsed),
       worker_deploy: normalizeWorkerDeploy(parsed),
-      worker_target_base: normalizeWorkerTargetBase(parsed),
       worker_notify: normalizeWorkerNotify(parsed)
     };
   } catch (error) {
@@ -395,7 +349,6 @@ function readRuntimeConfig(config_path) {
       poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
       worker_verify: {},
       worker_deploy: {},
-      worker_target_base: {},
       worker_notify: { enabled: false, cmd: DEFAULT_NOTIFY_CMD.slice() }
     };
   }
@@ -427,7 +380,6 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *   poll_interval_seconds: number,
  *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
  *   worker_deploy: Record<string, { cmd: string[], timeout_ms: number, detached: boolean }>,
- *   worker_target_base: Record<string, string>,
  *   worker_notify: { enabled: boolean, cmd: string[] }
  * }}
  */

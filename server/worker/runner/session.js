@@ -244,6 +244,18 @@ export function runSession(spec, bead, workspace, settings, deps) {
   // to plumb it fails closed (worker-phase2 §1/§6). Phase 5 sets it true when
   // dispatching a resolution session.
   const conflict_resolution = settings?.conflict_resolution === true;
+  // The base-landing guard's SUBJECT (worker-base-scope-alignment §6): the repo
+  // this attempt owns and the base that repo DECLARES. Absent either one the
+  // guard keeps its legacy `main|master` name match and applies no cross-repo
+  // allowlist, so a caller that plumbs neither gets the pre-§6 verdict.
+  const guard_repo =
+    typeof settings?.repo === 'string' && settings.repo.length > 0
+      ? settings.repo
+      : null;
+  const guard_target_base =
+    typeof settings?.target_base === 'string' && settings.target_base.length > 0
+      ? settings.target_base
+      : null;
 
   const fs = deps.fs || nodeFs;
   // The session-log file the child writes DIRECTLY (UI-o2yt §3.1). Absent ⇒ the
@@ -383,7 +395,11 @@ export function runSession(spec, bead, workspace, settings, deps) {
     if (typeof spec.extractShellCommand === 'function') {
       const cmd = spec.extractShellCommand(obj);
       const violation = cmd
-        ? findMergeViolation(cmd, { conflict_resolution })
+        ? findMergeViolation(cmd, {
+            conflict_resolution,
+            repo: guard_repo,
+            target_base: guard_target_base
+          })
         : null;
       if (violation) {
         blocked = true;

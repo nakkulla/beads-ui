@@ -270,7 +270,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -315,6 +315,7 @@ function setup(opts) {
     sessionLog,
     usage,
     admission: opts.admission,
+    resolveBase: opts.resolveBase,
     notify: opts.notify,
     disposition: opts.disposition,
     // Absent by default: the external registry is a live-wiring dep, and a
@@ -5361,5 +5362,158 @@ describe('scheduler usage after a pause or a stop (UI-raqh §1)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('scheduler dispatch-time base resolution (worker-base-scope-alignment §1)', () => {
+  test('cuts the worktree from the resolved base_oid, not the branch name', async () => {
+    const { store, worktree, scheduler } = setup({
+      config: { 'UI-1': { repo: '/repo', target_base: 'ilsun/dev' } },
+      admission: { validate: async () => ({ ok: true }) },
+      resolveBase: async () => ({
+        ok: true,
+        base: 'ilsun/dev',
+        declared: true,
+        remote: 'origin',
+        remote_ref: 'refs/remotes/origin/ilsun/dev',
+        base_oid: 'a'.repeat(40),
+        local_only: false
+      })
+    });
+    seedQueue(store, ['UI-1']);
+
+    await scheduler.tick(WS);
+
+    expect(worktree.add).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'UI-1',
+      base: 'a'.repeat(40)
+    });
+  });
+
+  test('re-resolves the base at dispatch with force', async () => {
+    /** @type {Array<{ force?: boolean }|undefined>} */
+    const calls = [];
+    const { store, scheduler } = setup({
+      config: { 'UI-1': { repo: '/repo', target_base: 'main' } },
+      admission: { validate: async () => ({ ok: true }) },
+      resolveBase: async (/** @type {any} */ options) => {
+        calls.push(options);
+        return {
+          ok: true,
+          base: 'main',
+          declared: false,
+          remote: 'origin',
+          remote_ref: 'refs/remotes/origin/main',
+          base_oid: 'b'.repeat(40),
+          local_only: false
+        };
+      }
+    });
+    seedQueue(store, ['UI-1']);
+
+    await scheduler.tick(WS);
+
+    expect(calls).toContainEqual({ force: true });
+  });
+
+  test('refuses the dispatch with the failing step and touches no worktree', async () => {
+    const { store, worktree, scheduler } = setup({
+      config: { 'UI-1': { repo: '/repo', target_base: 'ilsun/dv' } },
+      admission: { validate: async () => ({ ok: true }) },
+      resolveBase: async () => ({
+        ok: false,
+        step: 'ref',
+        base: 'ilsun/dv',
+        detail: 'refs/remotes/origin/ilsun/dv'
+      })
+    });
+    seedQueue(store, ['UI-1']);
+
+    await scheduler.tick(WS);
+
+    expect(store.snapshot(WS).admission['UI-1'].reason).toBe(
+      'base_unresolved:ref'
+    );
+    expect(worktree.add).not.toHaveBeenCalled();
+    expect(worktree.removeIfDiscardable).not.toHaveBeenCalled();
+  });
+
+  test('refuses when the resolver throws instead of dispatching on a fallback', async () => {
+    const { store, worktree, scheduler } = setup({
+      config: { 'UI-1': { repo: '/repo', target_base: 'main' } },
+      admission: { validate: async () => ({ ok: true }) },
+      resolveBase: async () => {
+        throw new Error('git gone');
+      }
+    });
+    seedQueue(store, ['UI-1']);
+
+    await scheduler.tick(WS);
+
+    expect(store.snapshot(WS).admission['UI-1'].reason).toBe(
+      'base_unresolved:git_error'
+    );
+    expect(worktree.add).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduler→runner base wiring (worker-base-scope-alignment §3)', () => {
+  test('the settings a real dispatch spawns with carry repo, target_base and base_oid', async () => {
+    const { store, runner, scheduler } = setup({
+      config: { 'UI-1': { repo: '/repo', target_base: 'ilsun/dev' } },
+      admission: { validate: async () => ({ ok: true }) },
+      resolveBase: async () => ({
+        ok: true,
+        base: 'ilsun/dev',
+        declared: true,
+        remote: 'origin',
+        remote_ref: 'refs/remotes/origin/ilsun/dev',
+        base_oid: 'a'.repeat(40),
+        local_only: false
+      })
+    });
+    seedQueue(store, ['UI-1']);
+
+    await scheduler.tick(WS);
+
+    // `base_oid` is what the worktree actually resolved after the cut — the
+    // attempt's own pin, which the admission re-check is also taken against.
+    expect(runner.settingsFor('UI-1')).toMatchObject({
+      repo: '/repo',
+      target_base: 'ilsun/dev',
+      base_oid: 'base-UI-1'
+    });
+  });
+
+  test('a resume launch carries the same three fields', async () => {
+    const { store, runner, scheduler } = setup({
+      config: { 'UI-1': { repo: '/repo', target_base: 'main' } },
+      admission: { validate: async () => ({ ok: true }) }
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: {
+        repo: '/repo',
+        target_base: 'ilsun/dev',
+        base_oid: 'b'.repeat(40),
+        session_id: 'sess-1',
+        status: 'failed',
+        cause: 'blocked',
+        finished_at: 10
+      }
+    });
+
+    await scheduler.resume(WS, 'a1');
+
+    expect(runner.settingsFor('UI-1')).toMatchObject({
+      repo: '/repo',
+      target_base: 'ilsun/dev',
+      base_oid: 'b'.repeat(40)
+    });
   });
 });

@@ -418,3 +418,39 @@ describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
     expect(args.at(-1)).toContain('PR 제출까지 수행하고');
   });
 });
+
+describe('runner/claude PR base wiring (worker-base-scope-alignment §3/§4)', () => {
+  test('carries the settings target_base into the prompt', () => {
+    const spec = claudeSpec();
+
+    const { args } = spec.buildArgv({ id: 'UI-1' }, '/wt/UI-1', {
+      fast_track: true,
+      repo: '/repo',
+      target_base: 'ilsun/dev'
+    });
+
+    expect(args.at(-1)).toContain('gh pr create --base ilsun/dev');
+  });
+
+  test('injects no base directive when the settings carry none', () => {
+    const spec = claudeSpec();
+
+    const { args } = spec.buildArgv({ id: 'UI-1' }, '/wt/UI-1', {
+      fast_track: true
+    });
+
+    expect(args.at(-1)).not.toContain('PR base 고지');
+  });
+
+  test('omits the base directive for a disposition session with a base', () => {
+    const spec = claudeSpec();
+
+    const { args } = spec.buildArgv({ id: 'UI-1' }, '/wt/UI-1', {
+      fast_track: true,
+      disposition: 'revise_fix',
+      target_base: 'ilsun/dev'
+    });
+
+    expect(args.at(-1)).not.toContain('PR base 고지');
+  });
+});
