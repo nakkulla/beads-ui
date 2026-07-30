@@ -31,8 +31,14 @@ last_deploy    = { outcome: "failed", reason: "deploy_failed" }
 3. `deploy_base_not_synced`가 `revalidateBaseCheckout`의 구체 사유
    (`checkout_not_on_base` / `checkout_dirty` / `head_not_base_sha`)를 debug
    로그로만 남기고 레코드에는 싣지 않는다(`:800-806`).
-4. 동기 throw(`:821-824`)와 detached spawn error(`:869-873`)가 err를 버린다.
-   `deploy_spawn_error`만으로는 ENOENT인지 EACCES인지 알 수 없다.
+4. spawn 실패의 err가 버려진다. `deploy_spawn_error`만으로는 ENOENT인지
+   EACCES인지 알 수 없다. **실제 소실 지점은 `runVerifyCmd` 안이다** —
+   `verify-cmd.js:407`이 `catch {`로 바인딩 없이 삼키고, `:506`의
+   `child.on('error', () => ...)`은 err 파라미터를 받지 않는다. 따라서
+   `pr-actions.js:821`의 catch는 `runVerifyCmd`가 자기 try 밖에서 throw할 때만
+   도달하는 사실상 불가 경로이며, 거기서만 err를 보존해도 일반적인 ENOENT
+   경로는 그대로 사각으로 남는다. detached 경로는 별개로 `:869-873`이 err를
+   버린다.
 5. `deploy_verify_missing`(`:795-797`)과 `deploy_base_not_synced`(`:798-807`)는
    `recordLastDeploy` **이전에** return하므로 `last_deploy`를 갱신하지 않는다.
    `cleanup_failed`는 `inPrWait` 가드(`:1329`)에 막히므로 external PR 행에서는
@@ -71,6 +77,15 @@ last_deploy    = { outcome: "failed", reason: "deploy_failed" }
   공유하면 진단이 필요한 deploy 로그가 후속 verify 실행에 밀려 사라진다.
 - fail-quiet 규칙은 불변: open/write/close 어느 단계가 실패해도 deploy 판정은 바뀌지
   않고 `log_path`만 생략된다(불완전할 수 있는 파일을 가리키는 경로를 남기지 않음).
+- **spawn 실패의 err를 결과에 보존한다.** `verify_cmd_spawn_error`를 만드는 두
+  지점이 err를 버리고 있으므로 둘 다 `detail: errorDetail(err)`를 실어 반환하게
+  바꾼다 — `:407`의 `catch`는 err를 바인딩하고, `:506`의 `child.on('error', ...)`은
+  err 파라미터를 받는다. `VerifyCmdResult.detail`은 이미 있는 필드이고 그 JSDoc의
+  `"today: the git stderr behind verify_worktree_failed"`라는 표현이 확장을
+  전제하므로 신규 계약이 아니다. verify 경로도 함께 이득을 본다 —
+  `postMergeVerify`가 이미 `r.detail`을 전달한다(`pr-actions.js:689`).
+  argv 검증 실패로 인한 조기 return(`:387-391`)은 throw된 err가 없으므로
+  `detail`을 싣지 않는다.
 
 ### 2. 동기 deploy 경로 — `pr-actions.js runDeploy`
 
@@ -93,14 +108,27 @@ last_deploy    = { outcome: "failed", reason: "deploy_failed" }
   계산되어 있으므로 신규 플럼빙 없이 되살아나고, 새로 배선되는 것은 로그 파일뿐이다.
 - 실패 반환 타입을 `{ ok: false, reason, detail?, output_tail?, log_path? }`로
   확장한다.
-  - 동기 throw의 err를 `detail`로 보존한다. `errorDetail`(512자 캡)을
-    verify-cmd.js에서 export해 재사용한다.
+  - §1이 `runVerifyCmd`에 실어주는 `r.detail`을 그대로 전달한다 — 이것이 동기
+    deploy의 spawn 실패 진단이 실제로 흐르는 경로다.
   - `deploy_base_not_synced`는 `revalidated.reason` 3종을 `detail`로 싣는다.
+  - `:821`의 outer catch도 `errorDetail(err)`를 `detail`로 싣는다 — 도달 불가에
+    가까운 방어 경로이므로 이것만으로는 finding을 닫지 못하고, §1의 수정이 본
+    수정이다. `errorDetail`(512자 캡)을 verify-cmd.js에서 export해 여기와 §3에서
+    재사용한다.
 - 명령이 실제로 실행된 경우 — 성공(`deployed`)과 `deploy_failed`/`deploy_timeout` —
   양쪽 `recordLastDeploy`에 `log_path`를 전달한다. 성공 로그도 남기는 것은 verify와
-  같은 "다음 실패의 비교 기준" 논리이고, 회전이 총량을 통제한다. 명령이 실행되지 않은
-  사유(`deploy_verify_missing` / `deploy_base_not_synced`, 그리고 spawn 자체가 실패한
-  `deploy_spawn_error`)는 남길 출력이 없으므로 `log_path` 없이 `detail`만 싣는다.
+  같은 "다음 실패의 비교 기준" 논리이고, 회전이 총량을 통제한다.
+- 명령이 실행되지 않은 사유의 `log_path`는 다음과 같이 갈린다 — 구현자가 잘못된
+  단정을 테스트로 굳히지 않도록 명시한다.
+  - `deploy_verify_missing` / `deploy_base_not_synced`: `runVerifyCmd`에 도달하기
+    전에 return하므로 로그 파일이 없다. `detail`만 싣는다.
+  - `deploy_spawn_error` (동기 throw): `runVerifyCmd`가 로그를 여는 `:415` **이전**
+    `:407-409`에서 resolve하므로 파일이 없다. `detail`만 싣는다.
+  - `deploy_spawn_error` (비동기 `error` 이벤트): 로그는 이미 열린 뒤이고 `:506`이
+    `finish()`(`:502`)를 거치므로 **빈 파일의 `log_path`가 붙는다.** 이는 verify
+    경로의 기존 동작과 동일하며 바꾸지 않는다 — `reason`이 이미 "실행되지 않았다"를
+    말하므로 빈 로그는 그와 모순되지 않고, `finish()`의 억제 규칙을 손대면 이 Bead가
+    요구하지 않은 verify 동작 변경이 된다.
 - `deploy_verify_missing`과 `deploy_base_not_synced`의 조기 return 앞에
   `recordLastDeploy(deployRecord('failed', reason, bead_id, base_sha))`를 detail과
   함께 추가한다. `failed`의 정의가 이미 `"it ran and did not succeed, or never
@@ -172,6 +200,10 @@ last_deploy    = { outcome: "failed", reason: "deploy_failed" }
 - `runVerifyAtSha` 경로가 `kind: 'verify'`로 여전히 `verify-logs/`에 쓴다 (회귀).
 - 로그 open 실패와 중간 write/close 실패 각각에서 deploy 판정이 변하지 않고
   `log_path`가 생략된다.
+- 로그 키가 `repo`다: 서로 **다른** `workspace`와 `repo`로 동기 deploy를 실행해
+  `log_path`가 `deployLogDir(repo)` 아래이고 `deployLogDir(workspace)` 아래가
+  아님을 검증한다. 기존 `pr-actions.test.js` fixture는 두 값이 같아서 잘못
+  `workspace`를 써도 통과하므로, 이 테스트 없이는 키 선택이 검증되지 않는다.
 
 레코드:
 
@@ -179,11 +211,22 @@ last_deploy    = { outcome: "failed", reason: "deploy_failed" }
 - `deploy_timeout`에서도 tail·log_path가 남는다.
 - `last_deploy`에 `log_path`가 기록된다 (성공/실패 각각).
 - `deploy_base_not_synced`의 세 사유가 각각 `detail`로 남는다.
-- 동기 spawn throw의 err가 `cleanup_failed.detail`과 `last_deploy.detail`에 남는다.
+- 동기 deploy의 spawn 실패 err가 `cleanup_failed.detail`과 `last_deploy.detail`에
+  남는다 — `spawn_impl`의 **동기 throw**와 자식의 **비동기 `error` 이벤트**를 각각
+  별개로 테스트한다(둘이 `runVerifyCmd`의 서로 다른 코드 경로다). argv 검증 실패는
+  `detail` 없이 `deploy_spawn_error`만 남는다. `log_path`는 §2의 갈림에 따라
+  동기 throw에서는 부재, 비동기 `error`에서는 빈 파일 경로로 존재한다.
+- **기존 verify 테스트 갱신**: §1이 `verify_cmd_spawn_error`에 `detail`을 붙이므로
+  verify 경로의 spawn 실패에서 `cleanup_failed.detail`이 `null`임을 단정하는 기존
+  테스트가 있으면 함께 갱신한다.
 - detached spawn error의 err가 `last_deploy.detail`에 남는다 (동기 throw / 비동기
   `error` 이벤트 각각).
 - `deploy_verify_missing`과 `deploy_base_not_synced`가 각각 `last_deploy`에
   기록되고, 거부가 이전 성공 레코드를 덮어쓴다.
+- **external PR 행(`inPrWait` false)**에서 `deploy_verify_missing`과
+  `deploy_base_not_synced`를 각각 발생시켜, `cleanup_failed`는 기록되지 않고
+  이전 성공 `last_deploy`가 실패 레코드로 덮이는 것을 검증한다. 이 경로에서는
+  `last_deploy`가 유일한 durable 보장이므로 lane 행 테스트로 대체되지 않는다.
 - 배포 미설정(`resolveDeploy() == null`)은 `last_deploy`를 만들지 않는다.
 - 구버전 `queue.json`(새 키 부재) 로드가 무영향이다.
 
