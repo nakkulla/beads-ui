@@ -65,6 +65,29 @@ describe('session-history token usage (UI-d7pw §2.2)', () => {
     );
   });
 
+  test('counts the cache fields in the issue total (UI-tq13 §1)', () => {
+    const attempts = [{ attempt_id: 'a1', status: 'done' }];
+
+    const host = mount(
+      sessionHistoryTemplate(
+        attempts,
+        {},
+        {
+          total: {
+            input_tokens: 267,
+            output_tokens: 2407,
+            cache_read_input_tokens: 13_655_022,
+            cache_creation_input_tokens: 446_503
+          }
+        }
+      )
+    );
+
+    expect(host.querySelector('.detail-usage-total')?.textContent).toBe(
+      'τ 총 14.1M'
+    );
+  });
+
   test('appends the cost to the total when one was reported', () => {
     const attempts = [{ attempt_id: 'a1', status: 'done' }];
 

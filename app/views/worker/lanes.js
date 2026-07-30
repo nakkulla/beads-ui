@@ -16,7 +16,10 @@ import {
   formatRelativeTime,
   formatTimestampLocal
 } from '../../utils/relative-time.js';
-import { formatUsageTotal, usageTooltip } from '../../utils/token-usage.js';
+import {
+  formatUsageTotalWithCost,
+  usageTooltip
+} from '../../utils/token-usage.js';
 import { stepperTemplate } from '../board/stepper.js';
 
 /**
@@ -122,7 +125,7 @@ export function timesMeta(item) {
 export function miniRow(item) {
   const draggable = item.draggable && !item.done;
   const badges = Array.isArray(item.badges) ? item.badges : [];
-  const usage_label = formatUsageTotal(item.usage);
+  const usage_label = formatUsageTotalWithCost(item.usage);
   const merging = item.merge_step || null;
   const card = item.lane === 'pr_wait' || !!item.revise_action;
   const grip = draggable
