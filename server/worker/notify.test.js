@@ -59,7 +59,7 @@ describe('worker/notify argv assembly', () => {
     const call = spawn.last();
     expect(call.command).toBe('discord');
     expect(call.args).toEqual([
-      '🚀 시작 — UI-1 워커 알림\n리포: beads-ui\n실행: opus / high'
+      '🤖 🚀 시작 — UI-1 워커 알림\n리포: beads-ui\n실행: opus / high'
     ]);
   });
 
@@ -92,7 +92,7 @@ describe('worker/notify argv assembly', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '🚀 재개 — UI-1 워커 알림\n리포: proj'
+      '🤖 🚀 재개 — UI-1 워커 알림\n리포: proj'
     );
   });
 
@@ -108,7 +108,7 @@ describe('worker/notify argv assembly', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '🚀 충돌 해결 — UI-1 워커 알림\n리포: proj'
+      '🤖 🚀 충돌 해결 — UI-1 워커 알림\n리포: proj'
     );
   });
 
@@ -124,7 +124,7 @@ describe('worker/notify argv assembly', () => {
       repo: '/r/proj'
     });
 
-    expect(messageOf(spawn.last())).toBe('🚀 시작 — UI-1\n리포: proj');
+    expect(messageOf(spawn.last())).toBe('🤖 🚀 시작 — UI-1\n리포: proj');
   });
 
   test('truncates a bead title that would eat the preview budget', async () => {
@@ -133,7 +133,9 @@ describe('worker/notify argv assembly', () => {
 
     await notifier.attemptStarted({ bead_id: 'UI-1', title: '가'.repeat(61) });
 
-    expect(messageOf(spawn.last())).toBe(`🚀 시작 — UI-1 ${'가'.repeat(60)}…`);
+    expect(messageOf(spawn.last())).toBe(
+      `🤖 🚀 시작 — UI-1 ${'가'.repeat(60)}…`
+    );
   });
 
   test('truncates on code points so a surrogate pair is never split', async () => {
@@ -142,7 +144,9 @@ describe('worker/notify argv assembly', () => {
 
     await notifier.attemptStarted({ bead_id: 'UI-1', title: '🚀'.repeat(61) });
 
-    expect(messageOf(spawn.last())).toBe(`🚀 시작 — UI-1 ${'🚀'.repeat(60)}…`);
+    expect(messageOf(spawn.last())).toBe(
+      `🤖 🚀 시작 — UI-1 ${'🚀'.repeat(60)}…`
+    );
   });
 
   test('keeps an emoji title within the limit untouched', async () => {
@@ -151,7 +155,9 @@ describe('worker/notify argv assembly', () => {
 
     await notifier.attemptStarted({ bead_id: 'UI-1', title: '🚀'.repeat(60) });
 
-    expect(messageOf(spawn.last())).toBe(`🚀 시작 — UI-1 ${'🚀'.repeat(60)}`);
+    expect(messageOf(spawn.last())).toBe(
+      `🤖 🚀 시작 — UI-1 ${'🚀'.repeat(60)}`
+    );
   });
 
   test('keeps a bead title exactly at the limit intact', async () => {
@@ -160,7 +166,9 @@ describe('worker/notify argv assembly', () => {
 
     await notifier.attemptStarted({ bead_id: 'UI-1', title: '가'.repeat(60) });
 
-    expect(messageOf(spawn.last())).toBe(`🚀 시작 — UI-1 ${'가'.repeat(60)}`);
+    expect(messageOf(spawn.last())).toBe(
+      `🤖 🚀 시작 — UI-1 ${'가'.repeat(60)}`
+    );
   });
 
   test('sends the failure event with the cause', async () => {
@@ -177,7 +185,7 @@ describe('worker/notify argv assembly', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '❌ 실패 — UI-1 워커 알림\n사유: session_failed:result_count\n리포: proj'
+      '🤖 ❌ 실패 — UI-1 워커 알림\n사유: session_failed:result_count\n리포: proj'
     );
   });
 
@@ -193,7 +201,7 @@ describe('worker/notify argv assembly', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '❌ 실패 — UI-1\n사유: loud_fail_blocker\n리포: proj\n가드: git_merge_guard\n명령: git merge main'
+      '🤖 ❌ 실패 — UI-1\n사유: loud_fail_blocker\n리포: proj\n가드: git_merge_guard\n명령: git merge main'
     );
   });
 
@@ -209,7 +217,7 @@ describe('worker/notify argv assembly', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '❌ 실패 — UI-1\n사유: loud_fail_blocker\n리포: proj\n가드: git_merge_guard'
+      '🤖 ❌ 실패 — UI-1\n사유: loud_fail_blocker\n리포: proj\n가드: git_merge_guard'
     );
   });
 
@@ -227,7 +235,7 @@ describe('worker/notify argv assembly', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '📬 PR 제출 — UI-1 워커 알림\nhttps://github.com/o/r/pull/7\n리포: proj'
+      '🤖 📬 PR 제출 — UI-1 워커 알림\nhttps://github.com/o/r/pull/7\n리포: proj'
     );
   });
 
@@ -241,7 +249,7 @@ describe('worker/notify argv assembly', () => {
       repo: '/r/proj'
     });
 
-    expect(messageOf(spawn.last())).toBe('📬 PR 제출 — UI-1\n리포: proj');
+    expect(messageOf(spawn.last())).toBe('🤖 📬 PR 제출 — UI-1\n리포: proj');
   });
 
   test('sends the merge event with the PR url', async () => {
@@ -258,7 +266,7 @@ describe('worker/notify argv assembly', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '✅ 머지 완료 — UI-1 워커 알림\nhttps://github.com/o/r/pull/7\n리포: proj'
+      '🤖 ✅ 머지 완료 — UI-1 워커 알림\nhttps://github.com/o/r/pull/7\n리포: proj'
     );
   });
 
@@ -272,7 +280,7 @@ describe('worker/notify argv assembly', () => {
       repo: null
     });
 
-    expect(messageOf(spawn.last())).toBe('✅ 머지 완료 — UI-1');
+    expect(messageOf(spawn.last())).toBe('🤖 ✅ 머지 완료 — UI-1');
   });
 
   test('spawns the configured command argv without a shell', async () => {
@@ -313,7 +321,7 @@ describe('worker/notify bead title lookup (UI-vb0t)', () => {
     await notifier.attemptStarted({ bead_id: 'UI-1', kind: 'resume' });
 
     expect(resolveTitle).toHaveBeenCalledWith('UI-1');
-    expect(messageOf(spawn.last())).toBe('🚀 재개 — UI-1 조회된 제목');
+    expect(messageOf(spawn.last())).toBe('🤖 🚀 재개 — UI-1 조회된 제목');
   });
 
   test('skips the lookup when the caller already supplied a title', async () => {
@@ -327,7 +335,7 @@ describe('worker/notify bead title lookup (UI-vb0t)', () => {
     await notifier.attemptStarted({ bead_id: 'UI-1', title: '주어진 제목' });
 
     expect(resolveTitle).not.toHaveBeenCalled();
-    expect(messageOf(spawn.last())).toBe('🚀 시작 — UI-1 주어진 제목');
+    expect(messageOf(spawn.last())).toBe('🤖 🚀 시작 — UI-1 주어진 제목');
   });
 
   test('sends an id-only headline when the lookup finds nothing', async () => {
@@ -339,7 +347,7 @@ describe('worker/notify bead title lookup (UI-vb0t)', () => {
 
     await notifier.mergeCompleted({ bead_id: 'UI-1' });
 
-    expect(messageOf(spawn.last())).toBe('✅ 머지 완료 — UI-1');
+    expect(messageOf(spawn.last())).toBe('🤖 ✅ 머지 완료 — UI-1');
   });
 
   test('still sends when the lookup rejects', async () => {
@@ -355,7 +363,7 @@ describe('worker/notify bead title lookup (UI-vb0t)', () => {
 
     await notifier.mergeCompleted({ bead_id: 'UI-1' });
 
-    expect(messageOf(spawn.last())).toBe('✅ 머지 완료 — UI-1');
+    expect(messageOf(spawn.last())).toBe('🤖 ✅ 머지 완료 — UI-1');
     expect(log).toHaveBeenCalled();
   });
 
@@ -384,7 +392,7 @@ describe('worker/notify bead title lookup (UI-vb0t)', () => {
 
     await notifier.prWaitEntered({ bead_id: 'UI-1' });
 
-    expect(messageOf(spawn.last())).toBe('📬 PR 제출 — UI-1');
+    expect(messageOf(spawn.last())).toBe('🤖 📬 PR 제출 — UI-1');
   });
 });
 
