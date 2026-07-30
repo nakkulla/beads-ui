@@ -1,0 +1,145 @@
+# 워커 base 적용 범위 정합 — 선언 읽기·PR base 주입·머지 게이트 검증·가드 주어 교정
+
+- Bead: `UI-lhwp`
+- route: `spec_backed`
+- 선행: dotfiles `dotfiles-28dy` (closed, PR #331) — 선언 스키마와 `## Target base` 해석 규칙이 거기서 확정됐다. `external:dotfiles:repo-base-declaration` 엣지 해소 확인.
+
+## 왜
+
+`target_base` 가 워크트리 cut base 와 admission 기준만 지배하고 **PR 생성·머지는 지배하지 않는다.** beads-ui 에는 `gh pr create` 가 없고(`server/worker/gh.js` 는 list·view·checks·merge·update-branch·close 만 수행) PR 은 워커 세션이 만드는데, 프리앰블(`runner/preamble.js`)에는 base 정보가 한 글자도 없다. 머지는 GitHub 이 보고한 `base_ref` 를 그대로 따른다.
+
+결과: 세션이 `--base` 없이 PR 을 열면 GitHub 기본 브랜치로 열리고, 머지 클릭이 그대로 그쪽에 스쿼시 머지한다. base 가 `main` 이 아닌 repo(TRACE-ICI = `ilsun/dev`)에서 브랜치는 `ilsun/dev` 에서 잘렸는데 PR base 는 `main` 이 되어, 머지하면 커밋 전체가 `main` 에 들어간다.
+
+그리고 base 판정 주어가 세 곳에서 어긋나 있다.
+
+- `attach.js:91` `configTargetBase()` 는 repo 선언이 아니라 전역 `~/.config/bdui/config.toml` 의 `[worker.target_base]` 맵을 읽는다.
+- `attach.js:230-234` 는 bead `metadata.target_base` 를 그 위에 우선 적용한다 — 설계 스펙도 사용처도 없는 층이다.
+- `runner/command-guard.js:158` `BASE_REF_RE = /(^|\/)(main|master)$/` 는 push refspec 의 **목적지 이름만** 판정하고 어느 저장소인지는 보지 않는다.
+
+마지막 항목은 실측 사고다. `Cortex-j3v` 워커 세션이 2일 연속 2회 같은 지점에서 죽었다.
+
+| 시각 (UTC) | 명령 | 결과 |
+| --- | --- | --- |
+| 2026-07-29 07:15:30 | `H="$HOME/…/Hippocampus"; cd "$H" && git push origin main` | `merge_to_base_blocked` → 세션 종료 |
+| 2026-07-30 03:36:40 | `cd ~/GitHub/thalamus && git push origin main` | 동일 |
+
+세션 `dcf29e1d-d2e9-4fec-9afd-1f1a60860d75` 전사. 둘 다 Cortex Bead 가 다른 저장소로 하는 **정상 발행**이었다.
+
+## 무엇을
+
+### §1 선언 읽기
+
+`attach.js` 의 `configTargetBase(workspace_root)` 를 대상 repo 의 `docs/agents/repo-ops.toml` 최상위 `base` 키 읽기로 교체한다. 해석 우선순위는 **repo 선언 > `main`** 이며 그 사이에 아무것도 두지 않는다.
+
+파서는 신규 도입이 아니다 — `smol-toml` 이 이미 `package.json:41` 의 의존성이고 `server/config.js:5` 가 `parse as parseToml` 로 쓰고 있다. 같은 것을 재사용한다.
+
+**검증 범위 (5단계 중 어디까지)** — dotfiles 계약 `## Target base` 는 해석을 5단계로 고정하고, 2~3단계는 정적 검사이며 4~5단계는 repo 상태가 필요해 사용 시점에 속한다고 규정한다. 워커는 다음만 구현한다.
+
+| 단계 | 워커 구현 | 근거 |
+| --- | --- | --- |
+| 1 대상 repo | ○ | 액션이 착지하는 repo 의 선언을 읽는다 |
+| 2 형식 | ○ `git check-ref-format --branch` 상당의 정적 검사 | git 호출 없이 가능 |
+| 2b remote 접두어 | ○ repo 의 `git remote` 목록과 대조, 접두어 일치 시 거부 | `check-ref-format` 은 슬래시를 합법으로 보므로 `origin/main` 이 통과한다 |
+| 4 remote 결정 | △ 기존 경로가 이미 remote 를 정한다 | 중복 구현하지 않는다 |
+| 5 ref 존재 | △ 워크트리 cut 시점의 fetch 가 이미 실패시킨다 | 없는 ref 로는 워크트리가 만들어지지 않는다 |
+
+**파싱 실패·형식 위반·remote 접두어는 폴백 없는 실패로 처리한다.** 선언 없음(파일 부재 또는 키 부재)만 `main` 이고, 오타를 `main` 으로 삼키면 이 작업이 고치려는 사고가 그대로 재발한다.
+
+### §2 bead 단위 층 제거
+
+`attach.js:230-234` 의 `metadata.target_base` 우선 처리를 삭제한다. 설계 스펙이 없고 사용처도 없으며, 같은 값을 쓸 수 있는 곳을 둘로 만들어 SoT 를 중복시킨다. 삭제 후 base 의 출처는 repo 선언 하나다.
+
+### §3 `[worker.target_base]` 은퇴
+
+`server/config.js` 의 `normalizeWorkerTargetBase` 경로와 `~/.config/bdui/config.toml` 의 해당 항목을 제거한다.
+
+**선행이 있다 — §7 의 enclosed 단위가 먼저 착지해야 한다.** 현재 TRACE-ICI 워커 admission 을 뚫어주는 유일한 수단이 이 임시 항목이고(실측: TRACE-ICI 에 `docs/agents/repo-ops.toml` 없음, 체크아웃 브랜치 `ilsun/dev`), 선언보다 먼저 은퇴시키면 base 가 `main` 으로 폴백해 `spec_missing_at_base:main` 거부가 되돌아온다.
+
+### §4 PR base 주입
+
+`applyPreamble`(`runner/preamble.js`)에 해석된 base 를 실어, 세션이 `gh pr create --base <target_base>` 로 열게 한다. 프롬프트는 계약 고지이고 강제는 별도 층이라는 이 repo 의 기존 구조(`preamble.js:7-9`)를 따른다 — 강제는 §5 가 맡는다.
+
+### §5 머지 게이트 검증
+
+머지 직전에 PR 의 `baseRefName` 을 해석된 `target_base` 와 대조하고, 불일치면 **fail-closed** 로 멈춘다. 자동 재타겟은 하지 않는다 — base 변경은 diff 범위와 리뷰 대상을 바꾸므로 사람 판단이다.
+
+**external PR 에도 적용한다.** 이것이 이 스펙에서 확정하는 범위 결정이며, 근거는 실패 모드의 분포다.
+
+- 워커 attempt PR 은 브랜치를 이미 pin 된 base 에서 잘랐으므로 불일치가 드물다.
+- **external PR(`external-pr.js` — 일반 세션이 워커 스케줄러를 거치지 않고 만든 PR)이 바로 원래 버그가 사는 곳이다.** 인터랙티브 세션이 `--base` 없이 `gh pr create` 를 하면 GitHub 기본 브랜치로 열린다. external 을 제외하면 주된 실패 모드가 그대로 열려 있다.
+
+`pr-actions.js:378-395` 의 base 결정 체인은 `attempt.target_base > hint > 관측된 PR 의 base_ref > 'main'` 이다. external PR 은 attempt 가 없어 결국 GitHub 이 보고한 값 자신이나 하드코딩 `'main'` 에 도달하므로, 그대로 두면 대조가 **공허하다**(자기 자신과 비교). 체인의 마지막 두 항을 §1 의 repo 선언 해석으로 교체해 대조가 의미를 갖게 한다.
+
+회귀 위험은 낮다: 선언이 없는 repo 는 `main` 으로 해석되어 오늘과 동일하게 동작한다.
+
+### §6 가드 주어 교정
+
+`runner/command-guard.js` 의 base-landing 판정 주어를 **"이 attempt 가 맡은 저장소의 base"** 로 바꾼다. 두 층을 함께 고친다 — argv 스캔 경로(`:758`)와 파싱 실패 시 쓰이는 fallback 정규식(`:27` `BASE_LANDING_RE`) 둘 다이며, 한쪽만 고치면 다른 쪽이 그대로 죽인다.
+
+**판정 규칙: 같은 명령 안에서 디렉터리 이동이 `git push` 에 선행하면 이 가드의 대상이 아니다.** 이동으로 세는 것은 `cd`·`pushd`·`git -C`·서브셸 `( cd … && … )` 이며, 이 열거가 규칙이다. 그러면 **세션 자기 워크트리 cwd 에서 발행된 push 만** 판정 대상이 된다. fallback 정규식도 같은 예외를 갖는다 — 한쪽만 적용하면 파싱 불가 형태의 cross-repo push 가 여전히 죽는다.
+
+이 형태를 고른 이유는 cwd 를 텍스트로 확정할 수 없기 때문이다. `findMergeViolation(cmd, options)`(`:889`)이 받는 것은 명령 문자열과 `conflict_resolution` 불린뿐이고(`session.js:386`), repo·cwd·base 가 없다. 사고 명령 하나는 `H="$HOME/…"; cd "$H"` 형태여서 정적 확장으로도 해석되지 않는다. 셸을 시뮬레이션하지 않는 한 "이 push 가 어느 저장소를 향하는가"는 이 층에서 결정 불가다.
+
+이 규칙의 효과:
+
+- 실측 사고 2건 모두 통과한다(둘 다 `cd` 가 선행).
+- 워크트리 cwd 에서의 `git push origin main`(진짜 자기 base 랜딩)은 여전히 잡힌다. 워크트리 HEAD 는 bead 브랜치이므로 이 형태가 자기 base 를 미는 정상적 방법이다.
+- attempt 가 맡은 repo 와 그 repo 의 해석된 base 를 `findMergeViolation` 에 주입해, `main|master` 이름 매칭이 아니라 **선언된 base 와의 일치**로 판정한다. TRACE-ICI 에서 진짜 base 인 `ilsun/dev` push 를 잡고, base 가 아닌 `main` push 는 잡지 않는다.
+
+**남는 구멍은 `UI-8mvc` 소유다** — 세션이 명시적으로 자기 repo 루트로 `cd` 한 뒤 base 에 push 하는 경로. 기존 미탐 2건(`INTERPRETERS = {bash,sh,zsh}` 한정, fallback 정규식이 python subprocess 형태를 놓침)과 같은 층위이며 pre-push hook 예방이 닫는다. 2026-07-30 에 그 Bead 노트에 기록했다. **후속 Bead 를 새로 만들지 않는다 — 소유자가 이미 있다.**
+
+### §7 TRACE-ICI 선언 — enclosed 단위
+
+`docs/agents/repo-ops.toml` 에 `base = "ilsun/dev"` 를 TRACE-ICI 에 신설한다. dotfiles `dotfiles-iymy` 가 신설하는 **enclosed 처분**(같은 Bead 안에서 다른 repository 의 해석된 base 에 PR·Bead·워크트리 없이 직접 착지)의 선언이다.
+
+| 항목 | 값 |
+| --- | --- |
+| 대상 repo | `/Users/isy_macstudio/Documents/GitHub/TRACE-ICI` |
+| 해석된 `target_base` | `ilsun/dev` — 그 repo 의 상주 브랜치이자 현재 체크아웃 브랜치(실측). 선언 신설 전이므로 이 커밋 자체가 그 선언이 된다 |
+| 소유 경로 | `docs/agents/repo-ops.toml` (신규 1파일) |
+| 검증 묶음 | 커밋 후 `dotfiles` 의 `scripts/repo_ops_check.py` 로 파싱·형식·remote 접두어 정적 검사 통과, 그리고 TRACE-ICI 에서 `git rev-parse --verify refs/remotes/<remote>/ilsun/dev^{commit}` 성공 |
+| 착지 커밋 범위 | 구현 시 기록(`<base-tip>..<landed-tip>`) |
+| split 하지 않은 이유 | 파일 1개·2줄로 quick_fix 5 hard criteria 를 전부 통과한다. 별도 Bead·spec·PR·verify 를 세우는 비용이 작업 자체보다 크다 |
+
+**커밋돼야 한다 — ignore 는 성립하지 않는다.** `git worktree add` 는 ignored 파일을 복사하지 않으므로, gitignore 된 선언은 워커 워크트리에 도달하지 않는다. TRACE-ICI 는 동료와 공유하는 GitHub repo 이며 이 커밋이 상대에게 보이는 것은 사용자 승인 사항이다(2026-07-30).
+
+**배포 통지 대상 아님**: TRACE-ICI 에 repo-root `deploy.json` 이 없다.
+
+**실행 순서**: §7 착지 → 발행(fetch → ff-only → push → `ahead == 0`) → 그 다음에 §3 은퇴.
+
+§3 은 두 개의 서로 다른 시점을 갖는다. **코드 제거(`normalizeWorkerTargetBase` 경로)는 구현 시점**이지만, **`~/.config/bdui/config.toml` 항목 제거는 새 코드가 배포된 뒤**다 — 구 코드가 아직 도는 동안 항목을 지우면 TRACE-ICI base 가 `main` 으로 폴백해 지금 막고 있는 거부가 되돌아온다. 순서는 §7 착지 → 코드 변경 머지 → 서비스 배포·재시작 → config 항목 제거다.
+
+### §8 프리앰블 base push 가드 고지
+
+`GUARD_CONTRACT_DIRECTIVE`(`runner/preamble.js:61`)가 `git merge` 금지만 고지하고 base push 가드는 고지하지 않는다. 세션이 자기가 밟을 지뢰를 모르는 상태다 — 2026-07-29 attempt 가 그 상태에서 죽었다. §4 가 이미 같은 파일에서 base 를 주입하므로 함께 처리한다. (원래 `UI-8mvc` 항목이었고 선행이 필요 없어 이 Bead 로 이동됐다)
+
+## 완료 조건
+
+| # | 조건 | 확인 방법 |
+| --- | --- | --- |
+| 1 | 선언 있는 repo 의 base 가 선언대로 해석된다 | TRACE-ICI 선언 착지 후 워커 attach 경로가 `ilsun/dev` 를 반환하는 것을 단위 테스트로 고정 |
+| 2 | 선언 없는 repo 는 `main` 으로 동작한다(무회귀) | dotfiles·beads-ui 로 기존 동작 유지 확인 |
+| 3 | 잘못된 선언이 폴백 없이 실패한다 | 워커가 실제로 판정하는 3케이스 — 형식 위반(예: `ilsun..dev`)·remote 접두어(`origin/main`)·TOML 파싱 실패 — 가 각각 실패로 판정되는 테스트. 형식은 맞지만 존재하지 않는 브랜치(`ilsun/dv`)는 §1 표대로 워커의 판정 대상이 아니며 워크트리 cut 의 fetch 에서 실패한다 — 이 구분을 테스트 주석에 남긴다 |
+| 4 | bead `metadata.target_base` 층이 사라졌다 | `rg -n 'metadata\.target_base\|md\.target_base' server/` 0건 |
+| 5 | `[worker.target_base]` 가 사라졌다 | `rg -n 'worker_target_base\|worker\.target_base' server/` 0건, `~/.config/bdui/config.toml` 에서 항목 제거 |
+| 6 | 프리앰블이 base 와 push 가드를 고지한다 | 생성된 프리앰블 문자열에 `--base <target_base>` 와 가드 고지가 포함되는 테스트 |
+| 7 | 머지 게이트가 `baseRefName` 불일치를 fail-closed 로 막는다 | worker attempt PR·external PR 각각에 대한 테스트 |
+| 8 | 가드가 실측 사고 명령 2건을 통과시킨다 | `command-guard.test.js` 에 두 명령을 그대로 케이스로 추가 |
+| 9 | 가드가 자기 base 랜딩을 여전히 잡는다 | 워크트리 cwd 에서의 `git push origin <base>` 가 여전히 violation |
+| 10 | argv 경로와 fallback 정규식이 같은 판정을 한다 | 파싱 불가 형태(따옴표 불균형)로 만든 동일 명령이 같은 결과 |
+| 11 | TRACE-ICI 선언이 착지·발행됐다 | TRACE-ICI 에서 `git log -1 -- docs/agents/repo-ops.toml`, `ahead == 0` |
+| 12 | 기존 테스트 전체 green | `npm test` |
+
+## 비목표
+
+- **가드 강제층을 옮기지 않는다.** pre-push hook 예방과 `base_oid` 사후 ref 불변식, 텍스트 가드 kill→경고 강등은 `UI-8mvc` 소유다. 이 Bead 는 기존 텍스트 층의 **주어만** 고친다.
+- **beads-ui 를 multi-repo 로 만들지 않는다.** `(repo, bead_id)` 워크트리 단수 전제와 `verify.js` 의 동일 `--repo` strict-parse 는 그대로 둔다.
+- **`gh pr create` 를 beads-ui 에 도입하지 않는다.** PR 생성은 세션이 계속 맡고, 이 Bead 는 base 를 프리앰블로 전달할 뿐이다.
+- **자동 재타겟 없음.** `baseRefName` 불일치는 보고하고 멈춘다.
+- **TRACE-ICI 의 다른 무엇도 건드리지 않는다.** enclosed 소유 경로는 `docs/agents/repo-ops.toml` 하나다.
+
+## 잔여
+
+- **`UI-8mvc` 로 넘어가는 구멍**: 자기 repo 루트로 명시적 `cd` 후의 base push. 후속 Bead 를 새로 만들지 않으며 그 Bead 노트에 기록됐다.
+- **`UI-8mvc` 전제 정정**: dotfiles `dotfiles-iymy` 는 cross-repo push 를 없애지 않는다 — enclosed 처분이 그것을 허용된 레인으로 만들므로 오탐 동기는 유효하고 상시화된다. 2026-07-30 에 그 Bead 노트에 기록됐다.
+- **`UI-8mvc` 는 이 Bead 에 `blocks` 로 연결돼 있고 같은 파일(`command-guard.js`·`preamble.js`)을 건드린다.** 병렬 실행 금지.
