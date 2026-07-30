@@ -264,6 +264,15 @@
  * @property {string} bead_id - The merge whose cleanup ran this deploy.
  * @property {string} base_sha - The base commit that was deployed.
  * @property {number} at - Epoch ms of the record.
+ * @property {string} [detail] - The failure's own diagnostic text (UI-l53x §4):
+ * the guard behind `deploy_base_not_synced`, or the spawn error behind
+ * `deploy_spawn_error`. ABSENT — not null — on a record that has none, the same
+ * rule `cleanup_failed.output_tail`/`log_path` follow. The 512-char cap lives on
+ * the producer (`errorDetail`), not here.
+ * @property {string} [log_path] - Absolute path to the deploy command's FULL
+ * preserved output (UI-l53x §1). Present only for a SYNCHRONOUS deploy that
+ * reached the runner and whose log file completed; a detached deploy has no
+ * observable output at all, and a pre-run refusal never opened a file.
  */
 /**
  * @typedef {Object} QueueOpResult
@@ -705,13 +714,23 @@ function normalizeLastDeploy(value) {
   ) {
     return null;
   }
-  return {
+  /** @type {LastDeploy} */
+  const record = {
     outcome: /** @type {'deployed'|'launched'|'failed'} */ (value.outcome),
     reason: typeof value.reason === 'string' ? value.reason : null,
     bead_id: typeof value.bead_id === 'string' ? value.bead_id : '',
     base_sha: typeof value.base_sha === 'string' ? value.base_sha : '',
     at: typeof value.at === 'number' ? value.at : 0
   };
+  // Carried only when there is something to carry, so an older `queue.json` and
+  // a record with no diagnostics both load as an ABSENT key.
+  if (typeof value.detail === 'string' && value.detail.length > 0) {
+    record.detail = value.detail;
+  }
+  if (typeof value.log_path === 'string' && value.log_path.length > 0) {
+    record.log_path = value.log_path;
+  }
+  return record;
 }
 
 /**
@@ -1242,7 +1261,7 @@ export function createQueueStore(options = {}) {
      * caller bug cannot replace a real record with an unrenderable one.
      *
      * @param {string} workspace
-     * @param {{ outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string }} input
+     * @param {{ outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string, detail?: string, log_path?: string }} input
      * @returns {QueueOpResult}
      */
     recordLastDeploy(workspace, input) {
@@ -1311,7 +1330,7 @@ export function createQueueStore(options = {}) {
      * neither — never a bead in `done` whose deploy left no trace.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, deploy: { outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string } }} input
+     * @param {{ bead_id: string, deploy: { outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string, detail?: string, log_path?: string } }} input
      * @returns {QueueOpResult}
      */
     moveToDoneWithDeploy(workspace, input) {

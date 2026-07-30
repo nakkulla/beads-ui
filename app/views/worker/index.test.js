@@ -2367,7 +2367,7 @@ describe('views/worker', () => {
     );
   });
 
-  test('renders the last deploy as a 발사됨 badge with time, bead id and short sha', () => {
+  test('renders the last deploy as an unobserved-result badge with time, bead id and short sha', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const dialog = openWithWorkspaceInfo(mount, {
@@ -2388,9 +2388,11 @@ describe('views/worker', () => {
     });
 
     const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'last-deploy'));
+    // A self-restarting deploy kills its own observer, so `launched` says the
+    // result was never observed rather than letting it read as a success.
     expect(
       group.querySelector('.exec-defaults__vd-badge--launched')?.textContent
-    ).toBe('발사됨');
+    ).toBe('발사됨 · 결과 미관측');
     const meta = /** @type {string} */ (
       group.querySelector('.exec-defaults__vd-meta')?.textContent
     );
@@ -2441,6 +2443,109 @@ describe('views/worker', () => {
     expect(
       group.querySelector('.exec-defaults__vd-badge--fail')?.textContent
     ).toBe('실패 · deploy_base_not_synced');
+  });
+
+  test('renders the failed deploy detail and full log path (UI-l53x §5)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: null,
+      deploy_cmd: null,
+      last_deploy: {
+        outcome: 'failed',
+        reason: 'deploy_spawn_error',
+        bead_id: 'UI-l53x',
+        base_sha: '9c21b44ffff',
+        at: Date.UTC(2026, 6, 30, 4, 10),
+        detail: 'spawn EACCES',
+        log_path: '/state/bdui/ws-abc/deploy-logs/deploy-UI-l53x-9c21b44-17.log'
+      },
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'last-deploy'));
+    expect(
+      group.querySelector('[data-vd-part="detail"]')?.textContent
+    ).toContain('spawn EACCES');
+    const log_line = /** @type {HTMLElement} */ (
+      group.querySelector('[data-vd-part="log-path"]')
+    );
+    expect(log_line.textContent).toContain('전체 로그:');
+    expect(log_line.textContent).toContain(
+      '/state/bdui/ws-abc/deploy-logs/deploy-UI-l53x-9c21b44-17.log'
+    );
+  });
+
+  test('omits the detail and log path lines when the record carries neither', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: null,
+      deploy_cmd: null,
+      last_deploy: {
+        outcome: 'failed',
+        reason: 'deploy_verify_missing',
+        bead_id: 'UI-l53x',
+        base_sha: '9c21b44ffff',
+        at: Date.UTC(2026, 6, 30, 4, 10)
+      },
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'last-deploy'));
+    expect(group.querySelector('[data-vd-part="detail"]')).toBeNull();
+    expect(group.querySelector('[data-vd-part="log-path"]')).toBeNull();
+  });
+
+  test('elides a deploy detail past 160 characters', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: null,
+      deploy_cmd: null,
+      last_deploy: {
+        outcome: 'failed',
+        reason: 'deploy_spawn_error',
+        bead_id: 'UI-l53x',
+        base_sha: '9c21b44ffff',
+        at: Date.UTC(2026, 6, 30, 4, 10),
+        detail: 'e'.repeat(400)
+      },
+      slots: 2
+    });
+
+    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'last-deploy'));
+    const text = /** @type {string} */ (
+      group.querySelector('[data-vd-part="detail"] code')?.textContent
+    );
+    expect(text).toHaveLength(161);
+    expect(text.endsWith('…')).toBe(true);
+  });
+
+  test('escapes markup in a deploy detail — command output is untrusted', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const dialog = openWithWorkspaceInfo(mount, {
+      verify_cmd: null,
+      deploy_cmd: null,
+      last_deploy: {
+        outcome: 'failed',
+        reason: 'deploy_failed',
+        bead_id: 'UI-l53x',
+        base_sha: '9c21b44ffff',
+        at: Date.UTC(2026, 6, 30, 4, 10),
+        detail: '<img src=x onerror="boom()">'
+      },
+      slots: 2
+    });
+
+    const code = /** @type {HTMLElement} */ (
+      vdGroup(dialog, 'last-deploy')?.querySelector(
+        '[data-vd-part="detail"] code'
+      )
+    );
+    expect(code.querySelector('img')).toBeNull();
+    expect(code.textContent).toContain('<img src=x onerror="boom()">');
   });
 
   test('omits the last-deploy row entirely when there is no record', () => {
@@ -3683,6 +3788,47 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(
       mount.querySelector('.worker-banner--cleanup .worker-banner__log-path')
     ).toBeNull();
+  });
+
+  test('renders a DEPLOY step tail and log path with no banner change (UI-l53x §5)', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'deploy',
+              reason: 'deploy_failed',
+              at: 1,
+              detail: 'spawn EACCES',
+              output_tail: 'render failed: codex config.toml',
+              log_path:
+                '/state/bdui/ws-abc/deploy-logs/deploy-RD-1-abc1234-17.log'
+            }
+          }
+        }
+      )
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--cleanup')
+    );
+
+    expect(
+      banner.querySelector('.worker-banner__log-path')?.textContent
+    ).toContain('deploy-logs/deploy-RD-1-abc1234-17.log');
+    expect(banner.querySelector('.worker-banner__tail pre')?.textContent).toBe(
+      'render failed: codex config.toml'
+    );
+    expect(
+      banner.querySelector('.worker-banner__detail')?.textContent
+    ).toContain('spawn EACCES');
   });
 });
 

@@ -57,7 +57,7 @@ import { parsePrNumber } from '../workflow-enrich.js';
 import { evaluateMergeGate } from './merge-gate.js';
 import { resolvePrRef, rollupConclusion } from './pr-poller.js';
 import { shipExportedCapabilities } from './ship-capabilities.js';
-import { runVerifyCmd } from './verify-cmd.js';
+import { errorDetail, runVerifyCmd } from './verify-cmd.js';
 import { branchForBead } from './worktree.js';
 
 const log = debug('worker:pr-actions');
@@ -759,10 +759,13 @@ export function createPrActions(deps) {
    * @param {string|null} reason
    * @param {string} bead_id
    * @param {string} base_sha
-   * @returns {{ outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string }}
+   * @param {{ detail?: string, log_path?: string }} [extra] - The run's own
+   * diagnostics (UI-l53x §2/§4). The store drops any key that is not a non-empty
+   * string, so an absent diagnostic stays an ABSENT key rather than a null.
+   * @returns {{ outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string, detail?: string, log_path?: string }}
    */
-  function deployRecord(outcome, reason, bead_id, base_sha) {
-    return { outcome, reason, bead_id, base_sha };
+  function deployRecord(outcome, reason, bead_id, base_sha, extra) {
+    return { outcome, reason, bead_id, base_sha, ...extra };
   }
 
   /**
@@ -782,10 +785,20 @@ export function createPrActions(deps) {
    * durably recorded. A `bdui-shared restart` deploy kills this process, and
    * the remaining cleanup steps must not die with it.
    *
+   * Every failure here preserves what it can (UI-l53x §2): the full command
+   * output goes to the workspace's own `deploy-logs/` directory, the tail and the
+   * log path ride the returned record into `cleanup_failed` + `last_deploy`, and
+   * the two refusals that return BEFORE the command runs now write a `failed`
+   * `last_deploy` of their own — `failed` already means "it ran and did not
+   * succeed, OR never started", and leaving a stale success record in place made
+   * `last_deploy` answer "is the running service the merged code?" with a yes it
+   * had no basis for. Only "this repo has no deployment" still writes nothing:
+   * having nothing to say is not the same as a refusal.
+   *
    * @param {string} bead_id
    * @param {string} base_sha
    * @param {string} target_base
-   * @returns {Promise<{ ok: true, pending: ResolvedDeployCmd|null }|{ ok: false, reason: string }>}
+   * @returns {Promise<{ ok: true, pending: ResolvedDeployCmd|null }|{ ok: false, reason: string, detail?: string, output_tail?: string, log_path?: string }>}
    */
   async function runDeploy(bead_id, base_sha, target_base) {
     const deploy = resolveDeploy();
@@ -793,6 +806,10 @@ export function createPrActions(deps) {
       return { ok: true, pending: null };
     }
     if (!resolveVerify()) {
+      deps.store.recordLastDeploy(
+        workspace,
+        deployRecord('failed', 'deploy_verify_missing', bead_id, base_sha)
+      );
       return { ok: false, reason: 'deploy_verify_missing' };
     }
     const revalidated = await revalidateBaseCheckout(target_base, base_sha);
@@ -803,38 +820,85 @@ export function createPrActions(deps) {
         revalidated.reason,
         base_sha
       );
-      return { ok: false, reason: 'deploy_base_not_synced' };
+      // The concrete guard — `checkout_not_on_base` / `checkout_dirty` /
+      // `head_not_base_sha` — used to live only in the debug log, which left the
+      // record saying "not synced" without saying HOW.
+      const detail = revalidated.reason;
+      deps.store.recordLastDeploy(
+        workspace,
+        deployRecord('failed', 'deploy_base_not_synced', bead_id, base_sha, {
+          detail
+        })
+      );
+      return { ok: false, reason: 'deploy_base_not_synced', detail };
     }
     if (deploy.detached) {
       return { ok: true, pending: deploy };
     }
 
-    /** @type {{ ok: boolean, reason: string }} */
+    /**
+     * @type {{
+     *   ok: boolean,
+     *   reason: string,
+     *   detail?: string,
+     *   output_tail?: string,
+     *   log_path?: string
+     * }}
+     */
     let r;
     try {
       r = await runVerifyCmd({
         cwd: repo,
         cmd: deploy.cmd,
         timeout_ms: deploy.timeout_ms,
-        spawn_impl: spawnImpl
+        spawn_impl: spawnImpl,
+        // Keyed on `repo`, the same key `runVerifyAtSha` uses — `deps.repo` may
+        // differ from `deps.workspace` (attach.js resolves `options.repo ||
+        // workspace_root`), and the logs belong to the repo the command ran in.
+        log_context: {
+          kind: 'deploy',
+          workspace_root: repo,
+          bead_id,
+          sha: base_sha,
+          started_at_ms: Date.now()
+        }
       });
     } catch (err) {
+      // Near-unreachable: `runVerifyCmd` resolves its own spawn failures rather
+      // than throwing, so this only catches a throw from outside its try.
       log('deploy threw for %s: %o', bead_id, err);
-      r = { ok: false, reason: 'verify_cmd_spawn_error' };
+      r = {
+        ok: false,
+        reason: 'verify_cmd_spawn_error',
+        detail: errorDetail(err)
+      };
     }
     if (r.ok) {
       deps.store.recordLastDeploy(
         workspace,
-        deployRecord('deployed', null, bead_id, base_sha)
+        // A successful deploy's log is the comparison baseline for the next
+        // failure — the same reason verify keeps its passing runs.
+        deployRecord('deployed', null, bead_id, base_sha, {
+          log_path: r.log_path
+        })
       );
       return { ok: true, pending: null };
     }
     const reason = deployReasonFor(r.reason);
     deps.store.recordLastDeploy(
       workspace,
-      deployRecord('failed', reason, bead_id, base_sha)
+      deployRecord('failed', reason, bead_id, base_sha, {
+        detail: r.detail,
+        log_path: r.log_path
+      })
     );
-    return { ok: false, reason };
+    return {
+      ok: false,
+      reason,
+      detail: r.detail,
+      output_tail: r.output_tail,
+      log_path: r.log_path
+    };
   }
 
   /**
@@ -851,10 +915,17 @@ export function createPrActions(deps) {
    * is exactly the "spawn never happened" case, so it feeds the same
    * `on_spawn_error` repair as a synchronous throw.
    *
+   * OUTPUT is not preserved here and cannot be (UI-l53x §3): `stdio` is ignored
+   * because there is no survivor to read it. The one observable failure — the
+   * spawn itself — does carry its error text out, as the return value for a
+   * synchronous throw and as the callback's argument for the asynchronous event.
+   *
    * @param {ResolvedDeployCmd} deploy
-   * @param {() => void} on_spawn_error - Overwrites the `launched` record; may
-   * fire asynchronously, but only ever for a process that never started.
-   * @returns {boolean} Whether the spawn call itself succeeded.
+   * @param {(detail?: string) => void} on_spawn_error - Overwrites the `launched`
+   * record; may fire asynchronously, but only ever for a process that never
+   * started.
+   * @returns {{ ok: boolean, detail?: string }} Whether the spawn call itself
+   * succeeded, with the thrown error's text when it did not.
    */
   function launchDetachedDeploy(deploy, on_spawn_error) {
     try {
@@ -868,16 +939,16 @@ export function createPrActions(deps) {
       if (child && typeof child.once === 'function') {
         child.once('error', (/** @type {unknown} */ err) => {
           log('detached deploy spawn failed: %o', err);
-          on_spawn_error();
+          on_spawn_error(errorDetail(err));
         });
       }
       if (child && typeof child.unref === 'function') {
         child.unref();
       }
-      return true;
+      return { ok: true };
     } catch (err) {
       log('detached deploy spawn failed: %o', err);
-      return false;
+      return { ok: false, detail: errorDetail(err) };
     }
   }
 
@@ -1159,7 +1230,16 @@ export function createPrActions(deps) {
     markStep(bead_id, 'deploy');
     const deployed = await runDeploy(bead_id, synced.sha, target_base);
     if (!deployed.ok) {
-      return failCleanup(bead_id, 'deploy', deployed.reason, base_sync);
+      return failCleanup(
+        bead_id,
+        'deploy',
+        deployed.reason,
+        base_sync,
+        undefined,
+        deployed.detail,
+        deployed.output_tail,
+        deployed.log_path
+      );
     }
     const pending_deploy = deployed.pending;
     markStep(bead_id, 'child_sweep');
@@ -1248,15 +1328,18 @@ export function createPrActions(deps) {
     // done and its branches really are gone — so this surfaces as a failed
     // DEPLOY record rather than a cleanup stop that would ask a human to redo
     // finished work.
-    const record_spawn_failure = () => {
+    const record_spawn_failure = (/** @type {string|undefined} */ detail) => {
       deps.store.recordLastDeploy(
         workspace,
-        deployRecord('failed', 'deploy_spawn_error', bead_id, synced.sha)
+        deployRecord('failed', 'deploy_spawn_error', bead_id, synced.sha, {
+          detail
+        })
       );
       notifyChanged(workspace);
     };
-    if (!launchDetachedDeploy(pending_deploy, record_spawn_failure)) {
-      record_spawn_failure();
+    const launched = launchDetachedDeploy(pending_deploy, record_spawn_failure);
+    if (!launched.ok) {
+      record_spawn_failure(launched.detail);
     }
     return { ok: true, step: null, reason: null, base_sync };
   }
@@ -1290,7 +1373,8 @@ export function createPrActions(deps) {
    * @param {string} [detail] - The step's own diagnostic text, when it has one
    * (UI-2o4z §3); the reason alone cannot always identify the failure.
    * @param {string} [output_tail] - The failing command's own output tail, when
-   * the step ran one (UI-qult §1). Today only `post_merge_verify` has one.
+   * the step ran one (UI-qult §1) — `post_merge_verify` and, since UI-l53x §2,
+   * the synchronous `deploy`.
    * @param {string} [log_path] - Absolute path to that command's FULL preserved
    * output (UI-0x54), when the run produced a complete log file. A cleanup
    * retry overwrites it with its own run's log.

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { verifyLogDir } from './state-paths.js';
+import { deployLogDir, verifyLogDir } from './state-paths.js';
 import {
   resolveVerifyCmd,
   runVerifyAtSha,
@@ -577,7 +577,7 @@ describe('worker/verify-cmd — full output log (UI-0x54)', () => {
 
   /**
    * @param {(child: any) => void} run
-   * @param {{ log?: boolean, fs_impl?: any }} [options]
+   * @param {{ log?: boolean, fs_impl?: any, kind?: 'verify'|'deploy', started_at_ms?: number }} [options]
    */
   function runFake(run, options = {}) {
     return runVerifyCmd({
@@ -589,10 +589,11 @@ describe('worker/verify-cmd — full output log (UI-0x54)', () => {
         options.log === false
           ? null
           : {
+              kind: options.kind || 'verify',
               workspace_root: WS,
               bead_id: 'UI-1',
               sha: SHA,
-              started_at_ms: 1700000000000
+              started_at_ms: options.started_at_ms ?? 1700000000000
             },
       fs_impl: options.fs_impl
     });
@@ -757,7 +758,7 @@ describe('worker/verify-cmd — full output log (UI-0x54)', () => {
     expect(kept[0]).toBe('verify-UI-old-abc1234-1006.log');
   });
 
-  test('writes no log file without a log_context (the deploy path)', async () => {
+  test('writes no log file without a log_context', async () => {
     const r = await runFake(
       (child) => {
         child.stdout.emit('data', 'deploying\n');
@@ -869,5 +870,314 @@ describe('worker/verify-cmd — full output log (UI-0x54)', () => {
     expect(fs.readFileSync(String(r.log_path), 'utf8')).toContain(
       'hello from verify'
     );
+  });
+
+  test('runVerifyAtSha still writes under verify-logs, not the deploy dir', async () => {
+    const git = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const worktree = {
+      addDetached: vi.fn(async () => ({ path: process.cwd() })),
+      removeDetached: vi.fn(async () => ({ code: 0, stderr: '' })),
+      withTopologyLock: vi.fn(
+        async (/** @type {string} */ _repo, /** @type {any} */ fn) => fn()
+      )
+    };
+
+    const r = await runVerifyAtSha({
+      repo: WS,
+      bead_id: 'UI-9',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'console.log("still verify")'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(path.basename(String(r.log_path)).startsWith('verify-')).toBe(true);
+    expect(fs.existsSync(deployLogDir(WS))).toBe(false);
+  });
+});
+
+describe('worker/verify-cmd — the deploy log kind (UI-l53x §1)', () => {
+  const WS = '/tmp/example-workspace/project-deploy-log';
+  const SHA = 'c'.repeat(40);
+
+  /**
+   * @param {(child: any) => void} run
+   * @returns {any}
+   */
+  function fakeSpawn(run) {
+    return () => {
+      const child = /** @type {any} */ (new EventEmitter());
+      child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+      child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+      child.kill = () => {
+        child.emit('close', null);
+      };
+      setTimeout(() => run(child), 0);
+      return child;
+    };
+  }
+
+  /**
+   * @param {(child: any) => void} run
+   * @param {{ kind?: 'verify'|'deploy', started_at_ms?: number, fs_impl?: any }} [options]
+   */
+  function runFake(run, options = {}) {
+    return runVerifyCmd({
+      cwd: '/repo',
+      cmd: ['bdui-shared', 'restart'],
+      timeout_ms: 10000,
+      spawn_impl: fakeSpawn(run),
+      log_context: {
+        kind: options.kind || 'deploy',
+        workspace_root: WS,
+        bead_id: 'UI-l53x',
+        sha: SHA,
+        started_at_ms: options.started_at_ms ?? 1700000000000
+      },
+      fs_impl: options.fs_impl
+    });
+  }
+
+  test("names the file after the kind's own prefix and directory", async () => {
+    const r = await runFake((child) => {
+      child.emit('close', 1);
+    });
+
+    expect(r.log_path).toBe(
+      path.join(
+        deployLogDir(WS),
+        `deploy-UI-l53x-${SHA.slice(0, 7)}-1700000000000.log`
+      )
+    );
+  });
+
+  test('preserves deploy output the tail cap dropped', async () => {
+    const r = await runFake((child) => {
+      child.stdout.emit('data', 'render failed: codex config.toml\n');
+      child.stdout.emit('data', `${'x'.repeat(40000)}\n`);
+      child.emit('close', 1);
+    });
+
+    expect(r.output_tail).not.toContain('render failed');
+    expect(fs.readFileSync(String(r.log_path), 'utf8')).toContain(
+      'render failed: codex config.toml'
+    );
+  });
+
+  test('rotates deploy logs independently of the verify budget', async () => {
+    const deploy = await runFake((child) => {
+      child.stdout.emit('data', 'the deploy under diagnosis\n');
+      child.emit('close', 1);
+    });
+    for (let i = 0; i < 21; i += 1) {
+      await runFake(
+        (child) => {
+          child.emit('close', 0);
+        },
+        { kind: 'verify', started_at_ms: 1700000001000 + i }
+      );
+    }
+
+    expect(fs.readFileSync(String(deploy.log_path), 'utf8')).toContain(
+      'the deploy under diagnosis'
+    );
+  });
+
+  test('prunes the OLDEST deploy log once its own 20 are full', async () => {
+    /** @type {(string|undefined)[]} */
+    const paths = [];
+    for (let i = 0; i < 21; i += 1) {
+      const r = await runFake(
+        (child) => {
+          child.emit('close', 0);
+        },
+        { started_at_ms: 1700000000000 + i }
+      );
+      paths.push(r.log_path);
+    }
+
+    expect(fs.existsSync(String(paths[0]))).toBe(false);
+    expect(fs.existsSync(String(paths[20]))).toBe(true);
+    expect(fs.readdirSync(deployLogDir(WS))).toHaveLength(20);
+  });
+
+  test('keeps the verdict and omits log_path when the deploy log cannot be opened', async () => {
+    const fs_impl = /** @type {any} */ ({
+      ...fs,
+      openSync: () => {
+        throw new Error('EACCES: permission denied');
+      }
+    });
+
+    const r = await runFake(
+      (child) => {
+        child.stdout.emit('data', 'deploy output\n');
+        child.emit('close', 1);
+      },
+      { fs_impl }
+    );
+
+    expect(r).toMatchObject({ ok: false, reason: 'verify_cmd_failed' });
+    expect(r.log_path).toBeUndefined();
+  });
+
+  test('keeps the verdict and omits log_path when a deploy log write fails mid-run', async () => {
+    let writes = 0;
+    const fs_impl = /** @type {any} */ ({
+      ...fs,
+      writeSync: (/** @type {any[]} */ ...args) => {
+        writes += 1;
+        if (writes === 2) {
+          throw new Error('ENOSPC: no space left on device');
+        }
+        return /** @type {any} */ (fs.writeSync)(...args);
+      }
+    });
+
+    const r = await runFake(
+      (child) => {
+        child.stdout.emit('data', 'chunk one\n');
+        child.stdout.emit('data', 'chunk two\n');
+        child.emit('close', 1);
+      },
+      { fs_impl }
+    );
+
+    expect(r).toMatchObject({ ok: false, reason: 'verify_cmd_failed' });
+    expect(r.log_path).toBeUndefined();
+  });
+
+  test('keeps the verdict and omits log_path when the deploy log close fails', async () => {
+    const fs_impl = /** @type {any} */ ({
+      ...fs,
+      closeSync: () => {
+        throw new Error('EIO');
+      }
+    });
+
+    const r = await runFake(
+      (child) => {
+        child.emit('close', 0);
+      },
+      { fs_impl }
+    );
+
+    expect(r).toMatchObject({ ok: true, reason: 'ok' });
+    expect(r.log_path).toBeUndefined();
+  });
+});
+
+describe('worker/verify-cmd — spawn failures keep their error (UI-l53x §1)', () => {
+  test('preserves a SYNCHRONOUS spawn throw as detail', async () => {
+    const r = await runVerifyCmd({
+      cwd: process.cwd(),
+      cmd: ['bdui-shared', 'restart'],
+      timeout_ms: 10000,
+      spawn_impl: /** @type {any} */ (
+        () => {
+          throw new Error('spawn EACCES');
+        }
+      )
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'verify_cmd_spawn_error',
+      detail: 'spawn EACCES'
+    });
+  });
+
+  test("preserves the child's ASYNCHRONOUS error event as detail", async () => {
+    const r = await runVerifyCmd({
+      cwd: process.cwd(),
+      cmd: ['bdui-definitely-not-a-binary-xyz'],
+      timeout_ms: 10000
+    });
+
+    expect(r.reason).toBe('verify_cmd_spawn_error');
+    expect(String(r.detail)).toContain('ENOENT');
+  });
+
+  test('caps an oversized spawn error detail at 512 characters', async () => {
+    const r = await runVerifyCmd({
+      cwd: process.cwd(),
+      cmd: ['x'],
+      timeout_ms: 10000,
+      spawn_impl: /** @type {any} */ (
+        () => {
+          throw new Error('e'.repeat(900));
+        }
+      )
+    });
+
+    expect(String(r.detail)).toHaveLength(512);
+  });
+
+  test('adds NO detail to an argv validation failure — nothing was thrown', async () => {
+    const r = await runVerifyCmd({
+      cwd: process.cwd(),
+      cmd: [],
+      timeout_ms: 10000
+    });
+
+    expect(r.reason).toBe('verify_cmd_spawn_error');
+    expect(r.detail).toBeUndefined();
+  });
+
+  test('a synchronous throw leaves no log file — it resolves before the open', async () => {
+    const r = await runVerifyCmd({
+      cwd: process.cwd(),
+      cmd: ['bdui-shared', 'restart'],
+      timeout_ms: 10000,
+      spawn_impl: /** @type {any} */ (
+        () => {
+          throw new Error('spawn ENOENT');
+        }
+      ),
+      log_context: {
+        kind: 'deploy',
+        workspace_root: '/tmp/example-workspace/project-spawn',
+        bead_id: 'UI-l53x',
+        sha: 'd'.repeat(40),
+        started_at_ms: 1700000000000
+      }
+    });
+
+    expect(r.log_path).toBeUndefined();
+    expect(
+      fs.existsSync(deployLogDir('/tmp/example-workspace/project-spawn'))
+    ).toBe(false);
+  });
+
+  test('an asynchronous error event DOES carry the empty log file it opened', async () => {
+    const ws = '/tmp/example-workspace/project-spawn-async';
+    const child = /** @type {any} */ (new EventEmitter());
+    child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+    child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+    child.kill = () => {};
+
+    const promise = runVerifyCmd({
+      cwd: '/repo',
+      cmd: ['bdui-shared', 'restart'],
+      timeout_ms: 10000,
+      spawn_impl: /** @type {any} */ (() => child),
+      log_context: {
+        kind: 'deploy',
+        workspace_root: ws,
+        bead_id: 'UI-l53x',
+        sha: 'e'.repeat(40),
+        started_at_ms: 1700000000000
+      }
+    });
+    child.emit('error', new Error('nope'));
+    const r = await promise;
+
+    expect(r).toMatchObject({
+      reason: 'verify_cmd_spawn_error',
+      detail: 'nope'
+    });
+    expect(fs.readFileSync(String(r.log_path), 'utf8')).toBe('');
   });
 });

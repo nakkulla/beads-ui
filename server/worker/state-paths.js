@@ -120,6 +120,20 @@ export function verifyLogDir(workspace_root) {
 }
 
 /**
+ * Absolute directory that holds a workspace's full DEPLOY-run output logs
+ * (UI-l53x §1). Separate from {@link verifyLogDir} on purpose: the two runs share
+ * the per-file cap and the keep count, but rotation is per directory, and a
+ * shared budget would let subsequent verify runs — one per PR head — evict the
+ * deploy log a human is still diagnosing (a deploy happens once per merge).
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/deploy-logs`.
+ */
+export function deployLogDir(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'deploy-logs');
+}
+
+/**
  * Absolute path to a per-attempt session-log jsonl file (spec §5.2 / §5.6).
  * The raw runner event stream is persisted here for the transcript viewer.
  *

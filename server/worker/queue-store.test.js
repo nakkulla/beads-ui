@@ -4,7 +4,9 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { createQueueStore } from './queue-store.js';
 import {
+  deployLogDir,
   queueFilePath,
+  verifyLogDir,
   workspaceSlug,
   workspaceStateDir
 } from './state-paths.js';
@@ -41,6 +43,13 @@ describe('worker/state-paths', () => {
     );
     // Filesystem-safe slug.
     expect(workspaceSlug(WS)).toMatch(/^[A-Za-z0-9._-]+$/);
+  });
+
+  test('gives deploy logs their own directory beside the verify logs (UI-l53x §1)', () => {
+    const dir = workspaceStateDir(WS);
+
+    expect(deployLogDir(WS)).toBe(path.join(dir, 'deploy-logs'));
+    expect(deployLogDir(WS)).not.toBe(verifyLogDir(WS));
   });
 });
 
@@ -1382,6 +1391,82 @@ describe('worker/queue-store — last_deploy record (worker-deploy-hook §3)', (
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
 
     expect(createQueueStore().load(WS).last_deploy).toBeNull();
+  });
+
+  test('carries the deploy detail and log path through a reload (UI-l53x §4)', () => {
+    const store = createQueueStore();
+
+    store.recordLastDeploy(WS, {
+      outcome: 'failed',
+      reason: 'deploy_spawn_error',
+      bead_id: 'UI-1',
+      base_sha: 'base-sha-1',
+      detail: 'spawn EACCES',
+      log_path: '/state/bdui/ws/deploy-logs/deploy-UI-1-abc1234-9.log'
+    });
+
+    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
+      detail: 'spawn EACCES',
+      log_path: '/state/bdui/ws/deploy-logs/deploy-UI-1-abc1234-9.log'
+    });
+  });
+
+  test('leaves detail and log_path as ABSENT keys when the record has none', () => {
+    const store = createQueueStore();
+
+    store.recordLastDeploy(WS, {
+      outcome: 'deployed',
+      reason: null,
+      bead_id: 'UI-1',
+      base_sha: 'base-sha-1'
+    });
+
+    const record = createQueueStore().load(WS).last_deploy;
+    expect(Object.hasOwn(/** @type {object} */ (record), 'detail')).toBe(false);
+    expect(Object.hasOwn(/** @type {object} */ (record), 'log_path')).toBe(
+      false
+    );
+  });
+
+  test('drops an EMPTY detail or log_path rather than storing a blank key', () => {
+    const store = createQueueStore();
+
+    store.recordLastDeploy(WS, {
+      outcome: 'failed',
+      reason: 'deploy_failed',
+      bead_id: 'UI-1',
+      base_sha: 'base-sha-1',
+      detail: '',
+      log_path: ''
+    });
+
+    const record = createQueueStore().load(WS).last_deploy;
+    expect(Object.hasOwn(/** @type {object} */ (record), 'detail')).toBe(false);
+    expect(Object.hasOwn(/** @type {object} */ (record), 'log_path')).toBe(
+      false
+    );
+  });
+
+  test('a legacy record WITHOUT the new keys still loads intact', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.last_deploy = {
+      outcome: 'deployed',
+      reason: null,
+      bead_id: 'UI-old',
+      base_sha: 'older-sha',
+      at: 5
+    };
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    expect(createQueueStore().load(WS).last_deploy).toEqual({
+      outcome: 'deployed',
+      reason: null,
+      bead_id: 'UI-old',
+      base_sha: 'older-sha',
+      at: 5
+    });
   });
 });
 
