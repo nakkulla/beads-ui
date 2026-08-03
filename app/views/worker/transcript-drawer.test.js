@@ -330,6 +330,60 @@ describe('transcript drawer', () => {
     expect(mount.querySelector('.sv__now')).toBeFalsy();
   });
 
+  test('pins nothing once the attempt stops being live', () => {
+    store.set('att-stop', [TEXT_EVENT, toolUse('t9', 'Bash')]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+    drawer.open({ attempt_id: 'att-stop', meta: { status: 'running' } });
+    expect(mount.querySelector('.sv__now')).toBeTruthy();
+
+    // The attempt finished (or was paused) while its last tool never reported.
+    drawer.updateMeta({ status: 'done' });
+
+    expect(mount.querySelector('.sv__now')).toBeFalsy();
+    drawer.destroy();
+  });
+
+  test('treats an empty tool output as finished, not pending', () => {
+    store.set('att-empty', [
+      toolUse('t1', 'Bash'),
+      {
+        type: 'user',
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: 't1', content: '' }]
+        }
+      }
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-empty', meta: { status: 'running' } });
+
+    expect(mount.querySelector('.sv__now')).toBeFalsy();
+    drawer.destroy();
+  });
+
+  test('finds the still-open tool when a later one finished first', () => {
+    store.set('att-par', [
+      toolUse('slow', 'Bash'),
+      toolUse('fast', 'Grep'),
+      toolResult('fast')
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-par', meta: { status: 'running' } });
+
+    expect(mount.querySelector('.sv__now')?.textContent).toContain('Bash');
+    drawer.destroy();
+  });
+
   test('folds a run of 5+ same-tool lines into one group', () => {
     /** @type {unknown[]} */
     const lines = [];

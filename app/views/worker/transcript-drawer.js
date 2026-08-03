@@ -175,6 +175,11 @@ export function createTranscriptDrawer(mount_element, options = {}) {
    * never got its result back. A finished session (a `result` line landed)
    * has none by definition.
    *
+   * Completion is the PRESENCE of `result`, not its truthiness — a tool that
+   * finished with empty output would otherwise look pending forever. And tools
+   * do not always finish in order (one turn can open several), so a completed
+   * tail tool means keep looking, not stop.
+   *
    * @param {import('./transcript-render.js').DisplayLine[]} lines
    * @returns {import('./transcript-render.js').DisplayLine | null}
    */
@@ -184,8 +189,8 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       if (line.kind === 'result' || line.kind === 'error') {
         return null;
       }
-      if (line.kind === 'tool') {
-        return line.result ? null : line;
+      if (line.kind === 'tool' && !Object.hasOwn(line, 'result')) {
+        return line;
       }
     }
     return null;
@@ -285,7 +290,9 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     const follow_label = `라이브 따라가기 ${follow ? 'ON' : 'OFF'}`;
     const live = isLive();
     const ago = live ? formatAgo(lastEventAt(), Date.now()) : '';
-    const pending = pendingTool(lines);
+    // Only a live attempt has a "지금" — a paused or finished session's dangling
+    // tool line is history, and pinning it would claim work that is not running.
+    const pending = live ? pendingTool(lines) : null;
     return html`<div class="sv" data-attempt-id=${attempt_id}>
       <div class="sv__bar">
         <span class="sv__id">${attempt_id}</span>
