@@ -4401,6 +4401,32 @@ html[data-theme='dark'] {
   font-variant-numeric: tabular-nums;
 }
 
+/* 전 레포 토큰·비용 합계 칩 (§7) — Worker 탭 `.worker-kpi__chip--tokens`와 같은
+   톤(모노스페이스, 낮은 채도)이다. */
+.mon-kpi__chip--tokens {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+/* 완료 기간 select (§7·§8) — Worker 탭 `.worker-sort`와 같은 톤이되, 상단 바
+   flex(`.mon-kpi`)는 그 자리에 `margin-left: auto`를 이미 쓰고 있으므로 여기서는
+   쓰지 않는다. */
+.mon-done-range {
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-chip);
+  cursor: pointer;
+}
+
+.mon-done-range:hover {
+  border-color: var(--border-chip);
+  color: var(--text-primary);
+}
+
 /* 좁은 창 방어: 페인 최소 폭 합이 창을 넘으면 레인 영역만 가로 스크롤한다
    (Worker 레인 호스트와 같은 어휘). */
 .mon-lanes {

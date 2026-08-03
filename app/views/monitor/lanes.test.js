@@ -60,6 +60,25 @@ function state(patch = {}) {
 }
 
 /**
+ * A full `monitorTopBarTemplate()` model with §7's period/token fields
+ * defaulted to their inert values, so tests unrelated to §7 don't have to
+ * restate them.
+ *
+ * @param {Partial<Parameters<typeof monitorTopBarTemplate>[0]>} [patch]
+ * @returns {Parameters<typeof monitorTopBarTemplate>[0]}
+ */
+function topBarModel(patch = {}) {
+  return {
+    automation: { total: 0, both_on: 0 },
+    counts: { running: 0, queue: 0, pr_wait: 0 },
+    done_range: 'today',
+    token_total: null,
+    token_tooltip: '',
+    ...patch
+  };
+}
+
+/**
  * @param {Record<string, any>[]} items
  * @returns {string[]}
  */
@@ -307,10 +326,12 @@ describe('monitor top bar (UI-qrfo §6)', () => {
 
   test('renders the partial state as a fraction', () => {
     render(
-      monitorTopBarTemplate({
-        automation: { total: 4, both_on: 3 },
-        counts: { running: 1, queue: 2, pr_wait: 3 }
-      }),
+      monitorTopBarTemplate(
+        topBarModel({
+          automation: { total: 4, both_on: 3 },
+          counts: { running: 1, queue: 2, pr_wait: 3 }
+        })
+      ),
       mount
     );
 
@@ -324,10 +345,12 @@ describe('monitor top bar (UI-qrfo §6)', () => {
 
   test('renders the all-on state as the stop label', () => {
     render(
-      monitorTopBarTemplate({
-        automation: { total: 4, both_on: 4 },
-        counts: { running: 0, queue: 0, pr_wait: 0 }
-      }),
+      monitorTopBarTemplate(
+        topBarModel({
+          automation: { total: 4, both_on: 4 },
+          counts: { running: 0, queue: 0, pr_wait: 0 }
+        })
+      ),
       mount
     );
 
@@ -341,10 +364,12 @@ describe('monitor top bar (UI-qrfo §6)', () => {
 
   test('renders the overall counts', () => {
     render(
-      monitorTopBarTemplate({
-        automation: { total: 1, both_on: 0 },
-        counts: { running: 5, queue: 6, pr_wait: 7 }
-      }),
+      monitorTopBarTemplate(
+        topBarModel({
+          automation: { total: 1, both_on: 0 },
+          counts: { running: 5, queue: 6, pr_wait: 7 }
+        })
+      ),
       mount
     );
 
@@ -353,6 +378,39 @@ describe('monitor top bar (UI-qrfo §6)', () => {
         (el) => el.textContent
       )
     ).toEqual(['5', '6', '7']);
+  });
+
+  test('selects the current done-range option in the period select', () => {
+    render(monitorTopBarTemplate(topBarModel({ done_range: '7d' })), mount);
+
+    const selected = /** @type {HTMLOptionElement|null} */ (
+      mount.querySelector('.mon-done-range option[selected]')
+    );
+    expect(selected?.getAttribute('value')).toBe('7d');
+  });
+
+  test('renders no token chip when the total is null', () => {
+    render(monitorTopBarTemplate(topBarModel()), mount);
+
+    expect(mount.querySelector('.mon-kpi__chip--tokens')).toBe(null);
+  });
+
+  test('renders the token chip with its tooltip when a total is given', () => {
+    render(
+      monitorTopBarTemplate(
+        topBarModel({
+          token_total: 'τ 2.0k',
+          token_tooltip: '오늘 완료된 이슈들이 생애 전체에 쓴 토큰 누적'
+        })
+      ),
+      mount
+    );
+
+    const chip = mount.querySelector('.mon-kpi__chip--tokens');
+    expect(chip?.textContent?.trim()).toBe('오늘 완료 · 누적 τ 2.0k');
+    expect(chip?.getAttribute('title')).toBe(
+      '오늘 완료된 이슈들이 생애 전체에 쓴 토큰 누적'
+    );
   });
 });
 
@@ -549,7 +607,7 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
     expect(lanes.done[0].done_at).toBe(NOW - 1_000);
   });
 
-  test('renders the full done history with no period filter', () => {
+  test('renders the full done history when no period filter is given', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -612,6 +670,64 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
     );
 
     expect(lanes.runnable[0].reason).toBe('⛔ spec_missing (docs/x.md)');
+  });
+});
+
+describe('monitor 완료 레인 기간 필터 (UI-qrfo §7)', () => {
+  test('excludes a done entry completed before the period lower bound', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [
+            { bead_id: 'A-old', added_at: NOW - 10 * 86_400_000 },
+            { bead_id: 'A-new', added_at: NOW - 1_000 }
+          ]
+        })
+      ],
+      [],
+      { done_since: NOW - 86_400_000 }
+    );
+
+    expect(ids(lanes.done)).toEqual(['A-new']);
+  });
+
+  test('keeps a done entry completed exactly at the period lower bound', () => {
+    const lanes = buildLanes(
+      [workspace({ done: [{ bead_id: 'A-boundary', added_at: NOW }] })],
+      [],
+      { done_since: NOW }
+    );
+
+    expect(ids(lanes.done)).toEqual(['A-boundary']);
+  });
+
+  // Worker 탭과 같은 규약(§10) — 판정할 수 없는 엔트리를 지우는 쪽이 더 나쁜
+  // 오답이므로, 기간이 아무리 좁아도 이 엔트리는 항상 남는다.
+  test('keeps a done entry with no added_at regardless of the selected period', () => {
+    const lanes = buildLanes(
+      [workspace({ done: [{ bead_id: 'A-legacy' }] })],
+      [],
+      { done_since: NOW }
+    );
+
+    expect(ids(lanes.done)).toEqual(['A-legacy']);
+  });
+
+  test('does not filter across repos when one repo has no matching entry', () => {
+    const lanes = buildLanes(
+      [
+        workspace({ done: [{ bead_id: 'A-old', added_at: NOW - 100_000 }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          done: [{ bead_id: 'B-new', added_at: NOW - 1_000 }]
+        })
+      ],
+      [],
+      { done_since: NOW - 50_000 }
+    );
+
+    expect(ids(lanes.done)).toEqual(['B-new']);
   });
 });
 

@@ -14,6 +14,12 @@
  * 1회 재시도한다 (응답이 실어 온 최신 revision으로).
  */
 import { html, render } from 'lit-html';
+import {
+  CLOSED_RANGE_OPTIONS,
+  DEFAULT_CLOSED_RANGE,
+  closedRangeSince,
+  isClosedRange
+} from '../../data/closed-range.js';
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
 import { createExecDefaultsDialog } from '../worker/exec-defaults-dialog.js';
@@ -25,10 +31,45 @@ import {
   monitorLiveTemplate,
   monitorTopBarTemplate
 } from './lanes.js';
+import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
 /**
  * @import { MonitorItem, MonitorLanes } from './lanes.js'
  */
+
+/**
+ * Persisted period range for the 완료 lane (UI-qrfo §7). Deliberately its OWN
+ * localStorage key, separate from the Worker tab's `bdui.worker.done-range` —
+ * the two tabs can show different periods at once. The vocabulary itself
+ * (`CLOSED_RANGE_OPTIONS`/`closedRangeSince()`) is reused as-is; only the
+ * persisted value is per-tab.
+ *
+ * @type {string}
+ */
+const DONE_RANGE_KEY = 'bdui.monitor.done-range';
+
+/**
+ * @returns {import('../../data/closed-range.js').ClosedRange}
+ */
+function loadDoneRange() {
+  try {
+    const raw = window.localStorage.getItem(DONE_RANGE_KEY);
+    return isClosedRange(raw) ? raw : DEFAULT_CLOSED_RANGE;
+  } catch {
+    return DEFAULT_CLOSED_RANGE;
+  }
+}
+
+/**
+ * @param {import('../../data/closed-range.js').ClosedRange} range
+ */
+function saveDoneRange(range) {
+  try {
+    window.localStorage.setItem(DONE_RANGE_KEY, range);
+  } catch {
+    /* ignore — a private-mode storage denial must not break the select */
+  }
+}
 
 /** Client id of the monitor tab's aggregated pipeline subscription. */
 export const MONITOR_PIPELINE_KEY = 'tab:monitor:pipeline';
@@ -199,6 +240,22 @@ export function createMonitorView(mount_element, options) {
     options.confirm ||
     ((/** @type {string} */ message) =>
       typeof globalThis.confirm !== 'function' || globalThis.confirm(message));
+
+  /**
+   * 완료 레인 + 토큰 KPI를 함께 지배하는 기간 (§7). `bdui.monitor.done-range`에
+   * 지속되며, 생성 시점에 한 번 읽는다 — Worker 탭과 같은 규약.
+   *
+   * @type {import('../../data/closed-range.js').ClosedRange}
+   */
+  let done_range = loadDoneRange();
+
+  /**
+   * @returns {string}
+   */
+  function doneRangeLabel() {
+    const opt = CLOSED_RANGE_OPTIONS.find((o) => o.value === done_range);
+    return opt ? opt.label : '';
+  }
 
   // lit-html은 렌더 호스트의 자식을 통째로 소유하므로, 실행 기본값 다이얼로그는
   // 렌더 대상 바깥(마운트 직속)에 둔다.
@@ -413,7 +470,10 @@ export function createMonitorView(mount_element, options) {
           running: lanes.running.length,
           queue: lanes.queue.length,
           pr_wait: lanes.pr_wait.length
-        }
+        },
+        done_range,
+        token_total: crossRepoTokenTotal(lanes.done),
+        token_tooltip: tokenTotalTooltip(doneRangeLabel())
       })}
       <div class="worker-lanes mon-lanes">
         ${MONITOR_LANES.map((meta) => {
@@ -442,7 +502,10 @@ export function createMonitorView(mount_element, options) {
           return paneTemplate({
             id: `monitor-${meta.lane}`,
             lane: meta.pane,
-            title: meta.title,
+            // 완료 레인 제목은 그 레인을 지배하는 기간을 말한다 (§7·§8):
+            // `완료·오늘` / `완료·최근 7일` / `완료·최근 30일` / `완료·전체`.
+            title:
+              meta.lane === 'done' ? `완료·${doneRangeLabel()}` : meta.title,
             items,
             empty: meta.empty,
             body,
@@ -469,8 +532,11 @@ export function createMonitorView(mount_element, options) {
       pipelineStore && pipelineStore.getWorkspacesState
         ? pipelineStore.getWorkspacesState()
         : [];
-    lanes = buildLanes(workspaces, workspaces_state);
-    render(monitorTemplate(nowFn()), console_el);
+    const now = nowFn();
+    lanes = buildLanes(workspaces, workspaces_state, {
+      done_since: closedRangeSince(done_range, now)
+    });
+    render(monitorTemplate(now), console_el);
   }
 
   /**
@@ -695,6 +761,19 @@ export function createMonitorView(mount_element, options) {
   function onChange(ev) {
     const target = /** @type {HTMLElement|null} */ (ev.target);
     if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+    const range_select = /** @type {HTMLSelectElement|null} */ (
+      target.closest('.mon-done-range')
+    );
+    if (range_select) {
+      // 완료 레인과 토큰 KPI를 함께 지배하는 기간이므로, 바뀌면 둘 다 한 번의
+      // 재렌더로 같이 움직인다 (§7).
+      done_range = isClosedRange(range_select.value)
+        ? range_select.value
+        : DEFAULT_CLOSED_RANGE;
+      saveDoneRange(done_range);
+      doRender();
       return;
     }
     const input = /** @type {HTMLInputElement|null} */ (

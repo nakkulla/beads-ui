@@ -301,6 +301,68 @@ describe('monitor tab direct entry (UI-nprg)', () => {
   });
 });
 
+describe('monitor 완료 기간 select (UI-qrfo §7)', () => {
+  test("persists a period change to the monitor's own localStorage key", async () => {
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+    bootstrap(root);
+    await Promise.resolve();
+
+    const monitor_root = /** @type {HTMLElement} */ (
+      document.getElementById('monitor-root')
+    );
+    const select = /** @type {HTMLSelectElement} */ (
+      monitor_root.querySelector('.mon-done-range')
+    );
+
+    select.value = '7d';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(window.localStorage.getItem('bdui.monitor.done-range')).toBe('7d');
+    // Worker 탭의 기간 키와는 분리되어 있다 — 이 변경이 그쪽 값을 건드리면 안
+    // 된다 (§7).
+    expect(window.localStorage.getItem('bdui.worker.done-range')).toBe(null);
+  });
+
+  test('restores the persisted period on a fresh mount', async () => {
+    window.localStorage.setItem('bdui.monitor.done-range', '30d');
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+    bootstrap(root);
+    await Promise.resolve();
+
+    const monitor_root = /** @type {HTMLElement} */ (
+      document.getElementById('monitor-root')
+    );
+    const select = /** @type {HTMLSelectElement} */ (
+      monitor_root.querySelector('.mon-done-range')
+    );
+
+    expect(select.value).toBe('30d');
+  });
+
+  test('names the selected period in the 완료 lane title', async () => {
+    window.localStorage.setItem('bdui.monitor.done-range', '30d');
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+    bootstrap(root);
+    await Promise.resolve();
+
+    const monitor_root = /** @type {HTMLElement} */ (
+      document.getElementById('monitor-root')
+    );
+
+    expect(
+      monitor_root
+        .querySelector('#monitor-done .worker-pane__title')
+        ?.textContent?.trim()
+    ).toContain('완료·최근 30일');
+  });
+});
+
 describe('subscription lifecycle after a reconnect', () => {
   // 재접속하면 이전 socket의 unsub 클로저는 죽는다. 그 map을 그대로 두면
   // `ensure*Subscriptions`가 "이미 구독됨"으로 읽고 건너뛰어, 활성 탭이 데이터

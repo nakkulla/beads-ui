@@ -19,6 +19,7 @@
  * 상태를 풀어야 하는 레포다 (§6).
  */
 import { html } from 'lit-html';
+import { CLOSED_RANGE_OPTIONS } from '../../data/closed-range.js';
 import {
   formatRelativeTime,
   formatTimestampLocal
@@ -288,11 +289,19 @@ function objectOf(value) {
  * 있는 레포만 실린 heavy array.
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state] - 모든
  * visible 레포의 제어 상태 (파이프라인이 빈 레포 포함).
+ * @param {{ done_since?: number }} [options] - `done_since`는 Worker 탭과 같은
+ * `closedRangeSince()` 하한이다 (§7). 생략하면 필터 없음 — 기존 호출부와
+ * 호환된다. `added_at`이 없는 완료 엔트리는 기간으로 판정할 수 없으므로 필터를
+ * 적용하지 않고 항상 남긴다 (Worker 탭과 같은 규약, §10).
  * @returns {MonitorLanes}
  */
-export function buildLanes(workspaces, workspaces_state) {
+export function buildLanes(workspaces, workspaces_state, options) {
   const list = Array.isArray(workspaces) ? workspaces : [];
   const states = Array.isArray(workspaces_state) ? workspaces_state : [];
+  const done_since =
+    options && typeof options.done_since === 'number'
+      ? options.done_since
+      : undefined;
 
   /** @type {Map<string, Record<string, any>>} */
   const state_by_root = new Map();
@@ -504,6 +513,17 @@ export function buildLanes(workspaces, workspaces_state) {
         continue;
       }
       claimed.add(bead_id);
+      // 기간 필터: `added_at`이 숫자로 있고 하한보다 이른 것만 뺀다.
+      // `added_at`이 없는 엔트리는 기간을 판정할 수 없으므로 필터를 걸지 않고
+      // 항상 남긴다 — 타임스탬프가 없다는 이유로 실제로 끝낸 일을 화면에서
+      // 지우는 쪽이 더 나쁜 오답이다 (Worker 탭과 같은 규약, §10).
+      if (
+        done_since !== undefined &&
+        typeof entry.added_at === 'number' &&
+        entry.added_at < done_since
+      ) {
+        continue;
+      }
       const terminal = latestTerminalAttempt(attempts, bead_id);
       done.push({
         ...base(bead_id),
@@ -730,7 +750,8 @@ export function monitorGroupHeaderTemplate(group) {
 }
 
 /**
- * The monitor's top bar: 마스터 자동화 토글 + 전체 카운트.
+ * The monitor's top bar: 마스터 자동화 토글 · 전체 카운트 · 완료 기간 select ·
+ * 전 레포 토큰·비용 합계 (§8).
  *
  * 분자는 두 축(`auto_advance` && `auto_merge`)이 모두 켜진 레포 수, 분모는 visible
  * 레포 수다. 전부 켜져 있으면 `⏹ 전체 자동화` — Worker 탭의 `⏵⏵`/`⏹` 표기와 같다.
@@ -738,12 +759,24 @@ export function monitorGroupHeaderTemplate(group) {
  * 뱃지가 레포를 말하므로, 필터는 같은 구분을 세 번째 방식으로 다시 하는 것이 된다
  * (§8).
  *
- * @param {{ automation: { total: number, both_on: number }, counts: { running: number, queue: number, pr_wait: number } }} model
+ * 완료 기간이 이 바에 있는 이유는 그 기간이 완료 레인과 토큰 KPI **둘 다**를
+ * 지배하기 때문이다 (§7) — Worker 탭은 완료 pane의 `controls` 스트립에 두지만
+ * 거기엔 토큰 KPI가 없다.
+ *
+ * @param {{
+ *   automation: { total: number, both_on: number },
+ *   counts: { running: number, queue: number, pr_wait: number },
+ *   done_range: import('../../data/closed-range.js').ClosedRange,
+ *   token_total: string|null,
+ *   token_tooltip: string
+ * }} model
  * @returns {import('lit-html').TemplateResult}
  */
 export function monitorTopBarTemplate(model) {
   const { total, both_on } = model.automation;
   const all_on = total > 0 && both_on === total;
+  const done_label =
+    CLOSED_RANGE_OPTIONS.find((o) => o.value === model.done_range)?.label || '';
   return html`<div class="mon-top">
     <button
       type="button"
@@ -767,6 +800,29 @@ export function monitorTopBarTemplate(model) {
       <span class="mon-kpi__chip mon-kpi__chip--pr"
         >PR <b>${model.counts.pr_wait}</b></span
       >
+      <select
+        class="mon-done-range"
+        aria-label="완료 기간"
+        title="완료 기간"
+        .value=${model.done_range}
+      >
+        ${CLOSED_RANGE_OPTIONS.map(
+          (o) =>
+            html`<option
+              value=${o.value}
+              ?selected=${model.done_range === o.value}
+            >
+              ${o.label}
+            </option>`
+        )}
+      </select>
+      ${model.token_total
+        ? html`<span
+            class="mon-kpi__chip mon-kpi__chip--tokens"
+            title=${model.token_tooltip}
+            >${done_label} 완료 · 누적 ${model.token_total}</span
+          >`
+        : ''}
     </div>
   </div>`;
 }
