@@ -109,7 +109,21 @@
   (`monitorPipelineSubscriberCount()`).
 - 구독 시작 시 전 visible workspace에 대해 1회 즉시 fill.
 - 큐 mutation이 성공한 workspace는 즉시 무효화한다 — 적재된 이슈가 `runnable`에
-  30초 동안 남아 있으면 같은 이슈가 두 레인에 동시에 보인다.
+  30초 동안 남아 있으면 같은 이슈가 두 레인에 동시에 보인다. 무효화는
+  `monitor-handlers.js`가 **두 신호**를 함께 구독해 건다. 어느 하나로는 실제 큐
+  변경을 전부 보지 못한다 (구현 게이트 리뷰 반영).
+  1. `server/worker/queue-events.js`의 `onQueueChanged` — 스케줄러의 자율 전이
+     (디스패치 · admission 거부 · 세션 종료)를 덮는다. 이 전이들은 ws 핸들러를
+     지나지 않으므로 달리 관측할 방법이 없다.
+  2. `onWorkerSnapshotRefresh` — ws mutation 핸들러들을 덮는다. 이들은 `fanout()`만
+     하고 `emitQueueChanged()`는 부르지 않으므로(그 이벤트는 스케줄러 전용이다),
+     ①만으로는 **모니터에서 적재한 버드가 TTL 내내 실행가능 레인에 남는다**.
+     다만 이 리스너는 제목·REVISE 파킹 fill의 re-push에도 발화하므로, 그
+     workspace의 CAS `revision`이 실제로 움직였을 때만 무효화한다 — 이벤트 출처가
+     아니라 revision으로 판정하는 것이 fill 한 번마다 `bd list`가 다시 도는 것을
+     막는다.
+  mutation 핸들러 17곳에 무효화를 흩지 않는 이유는 그대로다 — 지점이 흩어지면
+  새 mutation이 추가될 때마다 빠뜨릴 자리가 하나씩 늘어난다.
 
 ### 갱신 driver
 
@@ -127,18 +141,25 @@ push가 없고 → 캐시 조회가 없고 → fill이 걸리지 않는다. 다�
 ### 집계 payload 구조
 
 payload에 workspace 배열 외에 `workspaces_state` 배열을 함께 싣는다. 각 항목은
-`{ root_dir, name, auto_advance, auto_merge, slots }` — **모든 visible workspace**를,
-파이프라인이 비어 있든 아니든 예외 없이 싣는다.
+`{ root_dir, name, auto_advance, auto_merge, slots, revision, exec_defaults }` —
+**모든 visible workspace**를, 파이프라인이 비어 있든 아니든 예외 없이 싣는다.
 
-두 가지가 이것을 요구한다.
+세 가지가 이것을 요구한다.
 
 1. **마스터 토글의 분모.** `⏵⏵ 전체 자동화 3/4`의 `4`는 visible workspace 수이고
    `3`은 두 축이 모두 켜진 수다. 파이프라인이 있는 레포만 실어서는 계산할 수 없다.
 2. **빈 큐 레포의 그룹 헤더**(§6). 큐가 빈 레포의 자동화·슬롯을 조작하려면 그
    레포의 현재 상태가 payload에 있어야 한다.
+3. **빈 레포의 CAS 제어.** 파이프라인이 빈 workspace는 무거운 배열에 없으므로
+   그 레포의 그룹 헤더가 CAS 제어 넷(자동 진행 · 자동 머지 · 슬롯 · 실행 기본값)을
+   보내려면 **그 workspace의 현재 `revision`**이 있어야 하고, 실행 기본값
+   다이얼로그는 현재 `exec_defaults` 값을 그려야 한다. 이 둘이 없으면 빈 레포
+   제어가 성립하지 않는다. 두 값은 `queue-store.js`의 `Queue`에 이미 있으므로
+   (`revision: number`, `exec_defaults: Record<string, string>`) 새 상태를 만드는
+   것이 아니라 이미 있는 것을 싣는 것이다.
 
 무거운 필드(`attempts`/`queue`/`done`)는 `workspaces_state`에 싣지 않는다 — 상태
-줄에 필요한 것은 위 다섯 필드뿐이다.
+줄과 그룹 헤더 제어에 필요한 것은 위 일곱 필드뿐이다.
 
 `hasPipeline()`(파이프라인이 빈 workspace를 무거운 배열에서 빼는 판정)에는
 **`runnable`을 포함한다.** 포함하지 않으면 실행 대기 후보만 있고 큐·PR·완료가 없는
@@ -337,15 +358,30 @@ attempt는 `pr_wait` 소속 버드에서도 돌기 때문에 배타 없이 그�
 | 실행가능 | 대기 큐 적재 | `worker-queue-place` |
 | 대기 | 그룹 안에서 순서 변경, 제거, REVISE 처분 | `worker-queue-reorder` · `worker-queue-remove` · `worker-revise-fix` · `worker-revise-approve` |
 | 실행중 | 일시정지, 중단, 재개, 실패 attempt 정리 | `worker-attempt-pause` · `worker-attempt-stop` · `worker-attempt-resume` · `worker-attempt-dismiss` |
-| PR 대기 | 머지, 취소, 폐기 | `worker-merge-queue-add` · `worker-merge-queue-remove` · `worker-pr-discard` |
-| 완료 | cleanup 재시도 머지만 (폐기는 제공하지 않는다) | `worker-merge-queue-add` |
+| PR 대기 | 머지(=cleanup 재시도 포함), 취소, 폐기 | `worker-merge-queue-add` · `worker-merge-queue-remove` · `worker-pr-discard` |
+| 완료 | 조작 없음 (아래 정정) | — |
 | 대기 그룹 헤더 | 자동 진행, 자동 머지, 슬롯, 실행 기본값 | `worker-queue-toggle` · `worker-merge-auto-toggle` · `worker-queue-set-slots` · `worker-queue-set-exec-default` |
 
 §5가 열거한 17개 mutation 액션이 이 표에서 모두 도달 가능해야 한다 — 도달 경로가
 없는 액션이 남으면 "Worker 탭 전 기능"이라는 범위 결정이 지켜지지 않은 것이다.
-`worker-merge-queue-add-all`은 PR 대기 레인 헤더의 일괄 버튼이 쓴다. 완료 레인의
-머지 버튼은 Worker 탭과 같은 의미다 — 이미 머지된 항목의 **cleanup 재시도**이며,
-같은 자리에 폐기를 함께 두지 않는다 (`lanes.js` `miniRow`의 done 변형 규약).
+`worker-merge-queue-add-all`은 PR 대기 레인 헤더의 일괄 버튼이 쓴다.
+
+**정정 (구현 게이트 리뷰 반영).** 이 절의 초안은 완료 레인에 "cleanup 재시도
+머지"를 두라고 적었으나 그것은 Worker 탭을 잘못 읽은 것이다. 두 가지가 어긋난다.
+
+1. Worker 탭의 완료 행에는 조작 버튼이 없다(`toRows(…, 'done')`). cleanup 재시도는
+   **PR 대기** 레인의 affordance다 — 머지 후 정리가 실패한 버드는 `done`이 아니라
+   `pr_wait`에 `cleanup_failed`와 함께 남고, 그 행의 [머지]가 정리를 다시 돌린다.
+2. 큐 스토어의 `enqueueMember`가 레인 배타성(UI-wwby §2)에 따라 `done` 소속 버드의
+   머지 큐 적재를 **항상 거부**한다. 완료 레인에 버튼을 두면 누를 때마다 거부로만
+   돌아온다.
+
+따라서 완료 레인은 조작 없이 그리고, `worker-merge-queue-add`의 도달 경로는 PR
+대기 레인이 소유한다(17개 액션 도달성은 그대로 유지된다).
+
+PR 대기 카드의 [머지]/[폐기] 활성 조건도 Worker 탭 `prWaitRow`와 **같은 값**을
+써야 한다 — 게이트가 닫혔거나 이미 머지됐거나 외부 세션이 배달한 PR에 서버가
+거부할 조작을 내밀면, 클릭이 실패로만 돌아오고 그 이유는 카드에 없다.
 
 실행가능 카드의 실행 버튼은 적재만 한다. 별도의 "즉시 실행" 경로는 만들지 않는다 —
 `handleWorkerQueuePlace`가 적재 성공 후 이미 `tickWorkerQueue()`를 부르므로, 자동
@@ -363,7 +399,10 @@ attempt는 `pr_wait` 소속 버드에서도 돌기 때문에 배타 없이 그�
 | `server/ws/monitor-handlers.js` | 집계에 `runnable`·`workspaces_state` 포함, `hasPipeline()`에 `runnable` 반영, `done` 오늘 필터 제거, `startOfLocalDay()` 제거, 구독 중 주기 refill driver(`createPoller`), `monitor-auto-toggle` 핸들러 |
 | `server/ws/worker-handlers.js` | mutation 핸들러의 workspace 해석 교체 |
 | `server/ws/connection.js` | `monitor-auto-toggle` 라우팅 |
+| `server/ws/context.js` | `emitMonitorPipelineSnapshot()` envelope에 `workspaces_state` 직렬화 |
 | `app/protocol.js` | `MessageType`에 `monitor-auto-toggle` 추가 |
+| `app/main.js` | `monitor-pipeline-snapshot` 핸들러가 `workspaces_state`를 store로 전달 |
+| `app/data/monitor-pipeline-store.js` | `workspaces_state` 보관 |
 | `app/views/monitor/index.js` | 레인 구조로 재작성, 기간 상태 + 토큰 합계 |
 | `app/views/monitor/lanes.js` | 신규 — 레인 빌더 + 레포 그룹 헤더(4개 제어) + 상단 바 |
 | `app/views/worker/exec-defaults-dialog.js` | 그룹 헤더에서 여는 진입점 재사용 (다이얼로그 자체는 그대로) |

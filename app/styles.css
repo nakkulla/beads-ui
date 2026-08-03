@@ -4333,37 +4333,132 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
-/* --- 모니터 탭 (UI-53es §1, UI-nprg) --- */
+/* --- 모니터 탭 (UI-qrfo §8) --- */
 
-.route.monitor {
-  padding: var(--sp-10);
-  background: var(--bg-app);
-  min-height: 100%;
-}
-
-/* 단계별 섹션이 위에서 아래로 파이프라인 순서를 그린다 — 실행중이 맨 위에 오는
-   것 자체가 "지금 봐야 할 것"의 순서다. */
-.mon-pipeline {
+/* 모니터는 Worker 콘솔과 같은 레인 레이아웃을 쓰므로 같은 flex 사슬이 필요하다:
+   여기서 height/min-height를 끊으면 레인 본문의 overflow-y가 영영 걸리지 않는다. */
+#monitor-root.route.monitor {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-12);
+  height: 100%;
+  min-height: 0;
+  padding: var(--sp-10);
+  overflow: hidden;
+  background: var(--bg-app);
 }
 
+.mon {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-height: 0;
+}
+
+/* 상단 바: 좌 마스터 자동화 토글 / 우 전체 카운트. 레포 필터는 두지 않는다 —
+   대기 레인이 이미 레포별 그룹이고 나머지 레인은 카드 뱃지가 레포를 말한다. */
+.mon-top {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+}
+
+.mon-auto-all {
+  padding: var(--sp-4) var(--sp-10);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-7);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: var(--fs-chip-lg);
+  cursor: pointer;
+}
+
+.mon-auto-all:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 켜짐은 상태이지 경고가 아니다 — 성공 색 테두리 한 단계만 밝힌다. */
+.mon-auto-all.is-active {
+  border-color: var(--accent-success);
+  color: var(--accent-success);
+}
+
+.mon-kpi {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.mon-kpi__chip {
+  padding: 1px var(--sp-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 전 레포 토큰·비용 합계 칩 (§7) — Worker 탭 `.worker-kpi__chip--tokens`와 같은
+   톤(모노스페이스, 낮은 채도)이다. */
+.mon-kpi__chip--tokens {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+/* 완료 기간 select (§7·§8) — Worker 탭 `.worker-sort`와 같은 톤이되, 상단 바
+   flex(`.mon-kpi`)는 그 자리에 `margin-left: auto`를 이미 쓰고 있으므로 여기서는
+   쓰지 않는다. */
+.mon-done-range {
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-chip);
+  cursor: pointer;
+}
+
+.mon-done-range:hover {
+  border-color: var(--border-chip);
+  color: var(--text-primary);
+}
+
+/* 좁은 창 방어: 페인 최소 폭 합이 창을 넘으면 레인 영역만 가로 스크롤한다
+   (Worker 레인 호스트와 같은 어휘). */
+.mon-lanes {
+  overflow-x: auto;
+}
+
+/* 대기 레인의 레포 그룹 (§6·§8). 큐가 빈 레포에도 헤더가 렌더되므로 그룹은
+   "카드 묶음"이 아니라 "그 레포의 제어 줄"이 먼저다. */
 .mon-group {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
+  padding-bottom: var(--sp-6);
+}
+
+.mon-group + .mon-group {
+  border-top: 1px solid var(--border-card);
+  padding-top: var(--sp-8);
 }
 
 .mon-group__hd {
   display: flex;
   align-items: center;
   gap: var(--sp-6);
-  margin-bottom: var(--sp-6);
   color: var(--text-muted);
   font-size: var(--fs-chip);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+}
+
+.mon-group__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mon-group__count {
@@ -4371,10 +4466,39 @@ html[data-theme='dark'] {
   font-variant-numeric: tabular-nums;
 }
 
-.mon-group__empty {
-  padding: var(--sp-16);
-  color: var(--text-dim);
-  font-size: var(--fs-body-sm);
+.mon-group__ops {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.mon-ctl {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.mon-ctl.is-active {
+  border-color: var(--accent-success);
+  color: var(--accent-success);
+}
+
+.mon-slots__input {
+  width: 3.5ch;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   text-align: center;
 }
 
@@ -4384,50 +4508,113 @@ html[data-theme='dark'] {
   gap: var(--sp-3);
 }
 
-/* 관제 테이블의 한 줄: 밀도가 정보다. 카드가 아니라 행이므로 패딩은 최소로
-   두고, 진행 스테이지 색 스파인만 왼쪽에서 상태를 말한다. */
-.mon-row {
+/* 카드 껍데기: Worker 템플릿(mini/candidate) 위에 이 탭의 좌표(레포·revision)와
+   모니터 전용 조작 줄을 얹는다. */
+.mon-card {
   display: flex;
-  align-items: center;
-  gap: var(--sp-8);
-  padding: var(--sp-5) var(--sp-9);
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-7);
-  background: var(--bg-card);
+  flex-direction: column;
+  gap: var(--sp-3);
   min-width: 0;
   cursor: pointer;
 }
 
-/* 스파인 색이 곧 단계다: 구현 → PR → 대기 → 머지. 새 색은 만들지 않고 기존
-   스테이지 토큰만 쓴다. */
-.mon-row__spine {
-  flex: 0 0 auto;
-  width: 3px;
-  align-self: stretch;
-  border-radius: 2px;
-  background: var(--stage-impl-on);
-  opacity: 0.85;
+/* 모니터에는 드래그 컨트롤러가 없다 — 순서 변경은 카드의 ↑/↓가 한다. 실행가능
+   카드의 `draggable`은 [대기로 ↴]의 자격 플래그를 겸해 켜져 있으므로, 잡을 수
+   있어 보이는 그립만 여기서 지운다. */
+.mon-card .worker-card__grip,
+.mon-card .worker-mini__grip {
+  display: none;
 }
 
-.mon-row--pr_wait .mon-row__spine {
-  background: var(--stage-pr-on);
+.mon-card__ops {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  justify-content: flex-end;
 }
 
-.mon-row--queue .mon-row__spine {
-  background: var(--stage-plan-dim);
+.mon-op {
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  line-height: 1.6;
+  cursor: pointer;
 }
 
-.mon-row--done .mon-row__spine {
-  background: var(--stage-merge-on);
+.mon-op:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
-.mon-row--done {
-  opacity: 0.72;
+.mon-lane-op {
+  padding: 0 var(--sp-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  cursor: pointer;
 }
 
-/* 어느 레포의 행인지가 ID보다 먼저 읽혀야 한다 — 전체 레포를 한 화면에 섞는
-   순간, 레포는 부가 정보가 아니라 좌표다. */
-.mon-row__repo {
+/* 라이브 지표는 시계가 지나가는 것만으로 값이 바뀌는 유일한 자리다. */
+.mon-live {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  font-size: var(--fs-chip);
+  color: var(--text-dim);
+}
+
+.mon-live__elapsed,
+.mon-live__pos {
+  font-variant-numeric: tabular-nums;
+}
+
+.mon-live__pos {
+  font-family: var(--font-mono);
+}
+
+.mon-live__model {
+  color: var(--text-muted);
+}
+
+.mon-live__kind--ok {
+  color: var(--accent-success);
+}
+
+/* 모르는 완료 종류도 여기로 온다 — 정상으로 칠하지 않는 쪽이 안전하다. */
+.mon-live__kind--warn {
+  color: var(--accent-warn);
+}
+
+.mon-beat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+/* 흐린 점 = 로그가 끊긴 지 오래됨. 값 자체가 없으면 점을 아예 그리지 않는다
+   (fail-quiet) — 없는 하트비트를 흐리게라도 그리면 "죽어가는 중"이라는 없는
+   사실을 만든다. */
+.mon-beat__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.mon-beat--live .mon-beat__dot {
+  background: var(--accent-success);
+  box-shadow: var(--glow-dot);
+}
+
+/* 레포 뱃지 (Worker 템플릿 안, 값이 있을 때만): 전체 레포를 한 화면에 섞는
+   순간 레포는 부가 정보가 아니라 좌표다. */
+.worker-mini__repo,
+.worker-card__repo {
   flex: 0 0 auto;
   max-width: 12ch;
   padding: 1px var(--sp-5);
@@ -4440,108 +4627,13 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
-.mon-row__id {
-  flex: 0 0 auto;
-  padding: 0;
-  border: none;
-  background: transparent;
-  font-family: var(--font-mono);
-  font-size: var(--fs-chip-lg);
-  color: var(--text-id-mono);
-  cursor: pointer;
-}
-
-.mon-row__title {
-  font-size: var(--fs-body-sm);
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mon-row__child {
-  font-size: var(--fs-chip-lg);
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 라이브 지표는 항상 오른쪽 끝 같은 자리에서 읽힌다. */
-.mon-row__live {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-8);
-  flex: 0 0 auto;
-  font-size: var(--fs-chip-lg);
-  color: var(--text-dim);
-}
-
-.mon-row__elapsed,
-.mon-row__since,
-.mon-row__pr,
-.mon-row__pos,
-.mon-row__done-at {
-  font-variant-numeric: tabular-nums;
-}
-
-.mon-row__pr,
-.mon-row__pos {
-  font-family: var(--font-mono);
-}
-
-.mon-row__model {
-  color: var(--text-muted);
-}
-
-.mon-row__chip {
-  padding: 1px var(--sp-5);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  color: var(--text-muted);
-  font-size: var(--fs-chip);
-}
-
-.mon-row__kind--ok {
-  color: var(--accent-success);
-}
-
-/* 모르는 완료 종류도 여기로 온다 — 정상으로 칠하지 않는 쪽이 안전하다. */
-.mon-row__kind--warn {
-  color: var(--accent-warn);
-}
-
-.mon-row__beat {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-4);
-}
-
-/* 흐린 점 = 로그가 끊긴 지 오래됨. 값 자체가 없으면 점을 아예 그리지 않는다
-   (fail-quiet) — 없는 하트비트를 흐리게라도 그리면 "죽어가는 중"이라는 없는
-   사실을 만든다. */
-.mon-row__beat-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-dim);
-}
-
-.mon-row__beat--live .mon-row__beat-dot {
-  background: var(--accent-success);
-  box-shadow: var(--glow-dot);
-}
-
 @media (max-width: 640px) {
-  .mon-row {
-    flex-wrap: wrap;
+  .mon-lanes {
+    flex-direction: column;
   }
 
-  .mon-row__live {
-    width: 100%;
-    margin-left: 0;
-    justify-content: flex-end;
+  .mon-group__ops {
+    flex-wrap: wrap;
   }
 }
 

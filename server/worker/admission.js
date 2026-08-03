@@ -40,8 +40,14 @@
  * missing spec path (spawn failures surface as code 127 → git_error).
  */
 
-/** Admission receipt: any reviewer token + EXACTLY 40 hex. */
-const ADMISSION_RECEIPT_RE = /^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{40}$/;
+/**
+ * Admission receipt: any reviewer token + EXACTLY 40 hex.
+ *
+ * EXPORTED because the monitor's `runnable` pre-filter (UI-qrfo §4) judges the
+ * same receipt: a second copy of this pattern would let 표시 and 실행 disagree
+ * about which beads are eligible, so both read this one symbol.
+ */
+export const ADMISSION_RECEIPT_RE = /^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{40}$/;
 
 /** @type {ReadonlyArray<'spec_backed'|'full_plan'>} */
 const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];

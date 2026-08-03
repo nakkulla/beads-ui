@@ -59,7 +59,15 @@ export function timesMeta(item) {
  * @property {string} title - Bead title (falls back to id).
  * @property {string} [reason] - Candidate reason chip (spec 없음 / 🔒 target).
  * @property {boolean} draggable - Whether this row can be dragged.
- * @property {'candidate'|'queue'|'pr_wait'|'done'} lane - Owning lane.
+ * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'} lane -
+ * Owning lane. `running`/`runnable` exist only for the monitor tab, which mixes
+ * every repo into five lanes (UI-qrfo §8); the Worker console never sets them.
+ * @property {string} [workspace_name] - Owning workspace name. Present only on
+ * the monitor tab, where a card's repo is a coordinate rather than context
+ * (UI-qrfo §8) — absent, no badge is drawn and the Worker console renders
+ * exactly as before.
+ * @property {string} [root_dir] - Owning workspace root; the repo badge's
+ * tooltip.
  * @property {boolean} [done] - Rendered dimmed with no grip.
  * @property {boolean} [external] - PR 대기 행이 외부 세션이 배달한 PR인지
  * (UI-w0hi §4). 좌측 액센트 보더 + 미세 배경 틴트로 구분만 하고 행동은 바꾸지
@@ -135,6 +143,13 @@ export function miniRow(item) {
   const done_at_label = two_line ? formatRelativeTime(item.done_at) : '';
   const grip = draggable
     ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
+    : '';
+  // 레포 뱃지는 값이 있을 때만 그린다 (UI-qrfo §8) — Worker 탭 행은 이 필드를
+  // 싣지 않으므로 렌더가 그대로다.
+  const repo_el = item.workspace_name
+    ? html`<span class="worker-mini__repo" title=${item.root_dir || ''}
+        >${item.workspace_name}</span
+      >`
     : '';
   const id_el = html`<span class="worker-mini__id" title="클릭하면 ID 복사"
     >${item.id}</span
@@ -269,7 +284,7 @@ export function miniRow(item) {
     data-lane=${item.lane}
   >
     ${two_line
-      ? html`<div class="worker-mini__row1">${id_el}${title_el}</div>
+      ? html`<div class="worker-mini__row1">${repo_el}${id_el}${title_el}</div>
           <div class="worker-mini__row2">
             ${usage_el}${done_at_label
               ? html`<span
@@ -285,7 +300,7 @@ export function miniRow(item) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${id_el}${pr_el}${badge_els}${reason_el}
+              ${grip}${repo_el}${id_el}${pr_el}${badge_els}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}</div>
             ${has_foot
@@ -301,7 +316,7 @@ export function miniRow(item) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
+              ${grip}${repo_el}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
             </div>
             ${timesMeta(item)}`}
   </div>`;
@@ -336,6 +351,11 @@ export function candidateCard(item) {
     <div class="worker-card__head">
       ${draggable
         ? html`<span class="worker-card__grip" aria-hidden="true">⠿</span>`
+        : ''}
+      ${item.workspace_name
+        ? html`<span class="worker-card__repo" title=${item.root_dir || ''}
+            >${item.workspace_name}</span
+          >`
         : ''}
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span>
       ${workflow && route

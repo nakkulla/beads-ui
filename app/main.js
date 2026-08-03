@@ -238,7 +238,11 @@ export function bootstrap(root_element) {
         return;
       }
       try {
-        monitor_pipeline_store.set(p.workspaces);
+        // `workspaces_state` (UI-qrfo §4) covers every visible repo including
+        // the ones with an empty pipeline, so it is kept ALONGSIDE the heavy
+        // array rather than derived from it. A server that omits it leaves the
+        // store's empty default in place.
+        monitor_pipeline_store.set(p.workspaces, p.workspaces_state);
       } catch {
         // ignore
       }
@@ -1304,10 +1308,13 @@ export function bootstrap(root_element) {
       getWorkspacePath: () => store.getState().workspace.current?.path
     });
 
-    // Monitor tab (third tab): the worker pipeline of EVERY visible workspace,
-    // grouped by stage (UI-nprg). A row from another repo switches the
+    // Monitor tab (third tab): the worker pipeline of EVERY visible workspace as
+    // five lanes (UI-qrfo). It is the Worker console's cross-repo superset, so
+    // it takes the same `transport` — every mutation carries the `root_dir` of
+    // the workspace its card belongs to. A card from another repo switches the
     // workspace through the picker's own path before opening the issue.
     const monitor_view = createMonitorView(monitor_root, {
+      transport,
       pipelineStore: monitor_pipeline_store,
       gotoIssue: (id) => router.gotoIssue(id),
       getWorkspacePath: () => store.getState().workspace.current?.path,

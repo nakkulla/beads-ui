@@ -16,10 +16,17 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import path from 'node:path';
-import { makeOk } from '../../app/protocol.js';
+import { makeError, makeOk } from '../../app/protocol.js';
+import { getConfig } from '../config.js';
+import { createPoller } from '../poller.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
-import { refreshWorkerExternalPrs } from '../worker/attach.js';
+import {
+  refreshWorkerExternalPrs,
+  tickWorkerQueue,
+  workerMergeQueueState
+} from '../worker/attach.js';
+import { onQueueChanged } from '../worker/queue-events.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { emitMonitorPipelineSnapshot, log } from './context.js';
 import {
@@ -50,35 +57,34 @@ let push_timer = null;
 /** @type {(() => void) | null} */
 let refresh_unsubscribe = null;
 
+/** @type {(() => void) | null} */
+let queue_changed_unsubscribe = null;
+
+/** @type {{ start: () => void, stop: () => void } | null} */
+let refresh_driver = null;
+
 /**
- * Local midnight of the day `now` falls in — the retention boundary the `done`
- * lane is filtered on.
+ * Last queue `revision` observed per workspace, for {@link queueRevisionMoved}.
+ * Process-local bookkeeping only — never persisted, and cleared with the rest of
+ * the channel's wiring.
  *
- * The lane itself keeps its full history (the Worker tab filters client-side
- * over a chosen period), so "완료·오늘" is an AGGREGATION-time filter here and
- * `queue.json` is untouched.
- *
- * @param {number} now
- * @returns {number}
+ * @type {Map<string, number>}
  */
-export function startOfLocalDay(now) {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
+const last_seen_revision = new Map();
 
 /**
  * Whether a workspace still has anything worth a monitor row.
  *
- * Evaluated AFTER the `done` filter, so a workspace whose only history is
- * yesterday's completions drops out entirely instead of rendering an empty
- * repo badge.
+ * `runnable` counts (UI-qrfo §4): a repo whose only content is a spec-reviewed
+ * candidate — i.e. exactly the repo the user is about to dispatch — has empty
+ * queue/PR/done lanes and no running attempt, so leaving it out here would drop
+ * it from the aggregation entirely and the 실행가능 lane could never show it.
  *
- * @param {Record<string, any>} snapshot - Decorated snapshot with the filtered `done`.
+ * @param {Record<string, any>} snapshot - Decorated snapshot plus `runnable`.
  * @returns {boolean}
  */
 function hasPipeline(snapshot) {
-  const lanes = ['queue', 'pr_wait', 'done'];
+  const lanes = ['queue', 'pr_wait', 'done', 'runnable'];
   for (const lane of lanes) {
     if (Array.isArray(snapshot[lane]) && snapshot[lane].length > 0) {
       return true;
@@ -94,64 +100,64 @@ function hasPipeline(snapshot) {
 }
 
 /**
+ * The bead ids a workspace already has in a lane — the `runnable` exclusion set
+ * (UI-qrfo §4). A bead sitting in `queue`/`pr_wait`/`done` is past the "실행할 수
+ * 있다" question, and drawing it in two lanes at once is precisely what the
+ * exclusive lane priority exists to prevent.
+ *
+ * @param {Record<string, any>} snapshot
+ * @returns {Set<string>}
+ */
+function lanedBeadIds(snapshot) {
+  /** @type {Set<string>} */
+  const ids = new Set();
+  for (const lane of ['queue', 'pr_wait', 'done']) {
+    const entries = snapshot[lane];
+    if (!Array.isArray(entries)) {
+      continue;
+    }
+    for (const entry of entries) {
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id === 'string' && bead_id.length > 0) {
+        ids.add(bead_id);
+      }
+    }
+  }
+  return ids;
+}
+
+/**
  * Build the cross-workspace pipeline payload.
  *
- * Fail-quiet per workspace (UI-nprg §에러 처리): one repo whose snapshot or
- * decoration throws is dropped with a log line, never propagated — a single
- * broken checkout must not blank the whole monitor.
+ * Fail-quiet per workspace (UI-nprg §에러 처리): one repo whose snapshot,
+ * decoration or runnable lookup throws is dropped with a log line, never
+ * propagated — a single broken checkout must not blank the whole monitor.
+ *
+ * The `done` lane ships in FULL (UI-qrfo §7): the period selector moved to the
+ * client, and a client can only narrow a period it was given data for.
  *
  * @param {{
  *   listWorkspaces?: () => Array<{ path: string }>,
  *   listHidden?: () => string[],
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
- *   now?: () => number
+ *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
  */
 export function buildMonitorPipeline(options = {}) {
-  const listWorkspaces = options.listWorkspaces || getAvailableWorkspaces;
-  const listHidden =
-    options.listHidden || (() => sharedVisibleWorkspacesStore().listHidden());
   const snapshotFor =
     options.snapshotFor ||
     ((/** @type {string} */ key) =>
       decorateQueue(key, getWorkerRuntime().queueStore.snapshot(key)));
-  const nowFn = options.now || (() => Date.now());
+  const runnableFor =
+    options.runnableFor ||
+    ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
+      getWorkerRuntime().runnableCache.runnableFor(key, exclude_ids));
 
-  /** @type {Set<string>} */
-  let hidden = new Set();
-  try {
-    hidden = new Set(listHidden().map((p) => path.resolve(p)));
-  } catch (err) {
-    log('monitor: hidden set unreadable: %o', err);
-    hidden = new Set();
-  }
-
-  /** @type {Array<{ path: string }>} */
-  let workspaces = [];
-  try {
-    workspaces = listWorkspaces();
-  } catch (err) {
-    log('monitor: workspace list unreadable: %o', err);
-    return [];
-  }
-
-  const day_start = startOfLocalDay(nowFn());
   /** @type {Array<Record<string, unknown>>} */
   const out = [];
-  /** @type {Set<string>} */
-  const seen = new Set();
 
-  for (const workspace of workspaces) {
-    const raw = String(workspace?.path || '');
-    if (raw.length === 0) {
-      continue;
-    }
-    const root_dir = path.resolve(raw);
-    if (hidden.has(root_dir) || seen.has(root_dir)) {
-      continue;
-    }
-    seen.add(root_dir);
+  for (const root_dir of visibleWorkspaceRoots(options)) {
     /** @type {Record<string, any>} */
     let decorated;
     try {
@@ -163,15 +169,18 @@ export function buildMonitorPipeline(options = {}) {
     if (!decorated) {
       continue;
     }
-    const done = Array.isArray(decorated.done)
-      ? decorated.done.filter(
-          (/** @type {any} */ entry) =>
-            entry &&
-            typeof entry.added_at === 'number' &&
-            entry.added_at >= day_start
-        )
-      : [];
+    const done = Array.isArray(decorated.done) ? decorated.done : [];
+    /** @type {Record<string, any>} */
     const projected = { ...decorated, done };
+    /** @type {Array<Record<string, unknown>>} */
+    let runnable = [];
+    try {
+      runnable = runnableFor(root_dir, lanedBeadIds(projected)) || [];
+    } catch (err) {
+      log('monitor: runnable lookup failed for %s: %o', root_dir, err);
+      runnable = [];
+    }
+    projected.runnable = runnable;
     if (!hasPipeline(projected)) {
       continue;
     }
@@ -179,6 +188,63 @@ export function buildMonitorPipeline(options = {}) {
       ...projected,
       root_dir,
       name: path.basename(root_dir)
+    });
+  }
+  return out;
+}
+
+/**
+ * Build the per-workspace CONTROL state that rides beside the heavy pipeline
+ * array (UI-qrfo §4 집계 payload 구조).
+ *
+ * Covers EVERY visible workspace, pipeline-empty ones included, because three
+ * things need a repo that has nothing in flight: the master automation toggle's
+ * denominator, the waiting lane's group header for an empty queue, and that
+ * header's CAS controls — which cannot send `expected_revision` for a workspace
+ * the payload never mentions. `exec_defaults` rides along for the same reason:
+ * the 실행 기본값 dialog has to draw the current values.
+ *
+ * Reads the RAW queue snapshot, not the decorated one: the seven fields here are
+ * all plain `Queue` state, and the decoration is the expensive part.
+ *
+ * @param {{
+ *   listWorkspaces?: () => Array<{ path: string }>,
+ *   listHidden?: () => string[],
+ *   snapshotFor?: (workspace_key: string) => Record<string, unknown>
+ * }} [options] - Test seams; each defaults to the live server source.
+ * @returns {Array<Record<string, unknown>>}
+ */
+export function buildMonitorWorkspacesState(options = {}) {
+  const snapshotFor =
+    options.snapshotFor ||
+    ((/** @type {string} */ key) =>
+      getWorkerRuntime().queueStore.snapshot(key));
+
+  /** @type {Array<Record<string, unknown>>} */
+  const out = [];
+  for (const root_dir of visibleWorkspaceRoots(options)) {
+    /** @type {Record<string, any>} */
+    let queue;
+    try {
+      queue = /** @type {Record<string, any>} */ (snapshotFor(root_dir));
+    } catch (err) {
+      log('monitor: workspace state unreadable for %s: %o', root_dir, err);
+      continue;
+    }
+    if (!queue) {
+      continue;
+    }
+    out.push({
+      root_dir,
+      name: path.basename(root_dir),
+      auto_advance: queue.auto_advance === true,
+      auto_merge: queue.auto_merge === true,
+      slots: typeof queue.slots === 'number' ? queue.slots : 1,
+      revision: typeof queue.revision === 'number' ? queue.revision : 0,
+      exec_defaults:
+        queue.exec_defaults && typeof queue.exec_defaults === 'object'
+          ? { ...queue.exec_defaults }
+          : {}
     });
   }
   return out;
@@ -198,8 +264,30 @@ function pushNow() {
     log('monitor: pipeline build failed: %o', err);
     return;
   }
+  const workspaces_state = safeWorkspacesState();
   for (const sub of SUBSCRIBERS) {
-    emitMonitorPipelineSnapshot(sub.ws, sub.client_id, workspaces);
+    emitMonitorPipelineSnapshot(
+      sub.ws,
+      sub.client_id,
+      workspaces,
+      workspaces_state
+    );
+  }
+}
+
+/**
+ * The control-state array, or an empty one. Fail-quiet on its own: the heavy
+ * pipeline array is the payload's reason to exist, so a control-state build that
+ * throws must degrade the group headers, not suppress the whole push.
+ *
+ * @returns {Array<Record<string, unknown>>}
+ */
+function safeWorkspacesState() {
+  try {
+    return buildMonitorWorkspacesState();
+  } catch (err) {
+    log('monitor: workspace state build failed: %o', err);
+    return [];
   }
 }
 
@@ -221,14 +309,107 @@ function schedulePush() {
 }
 
 /**
+ * The runnable cache this channel drives. Read through the runtime on every
+ * use, never captured, so a test-time runtime reset cannot leave the channel
+ * holding a dead instance.
+ *
+ * @returns {ReturnType<typeof getWorkerRuntime>['runnableCache']}
+ */
+function runnableCache() {
+  return getWorkerRuntime().runnableCache;
+}
+
+/**
+ * Drop one workspace's cached candidates, fail-quiet.
+ *
+ * @param {string} workspace
+ */
+function invalidateRunnable(workspace) {
+  try {
+    runnableCache().invalidate(workspace);
+  } catch (err) {
+    log('monitor: runnable invalidation failed for %s: %o', workspace, err);
+  }
+}
+
+/**
+ * Whether this workspace's queue has actually changed since the last snapshot
+ * refresh we observed for it.
+ *
+ * The CAS `revision` is the queue store's own "something was written" counter,
+ * so it separates a real mutation from a re-push caused by an async decoration
+ * fill. An unreadable snapshot answers `true`: re-scanning one workspace costs
+ * one `bd list`, while wrongly deciding "nothing changed" leaves a placed bead
+ * in the 실행가능 lane.
+ *
+ * @param {string} workspace
+ * @returns {boolean}
+ */
+function queueRevisionMoved(workspace) {
+  const key = path.resolve(String(workspace || ''));
+  let revision = null;
+  try {
+    const snapshot = /** @type {any} */ (
+      getWorkerRuntime().queueStore.snapshot(key)
+    );
+    revision =
+      typeof snapshot?.revision === 'number' ? snapshot.revision : null;
+  } catch (err) {
+    log('monitor: revision probe failed for %s: %o', key, err);
+    return true;
+  }
+  if (revision === null) {
+    return true;
+  }
+  const seen = last_seen_revision.get(key);
+  last_seen_revision.set(key, revision);
+  return seen !== revision;
+}
+
+/**
  * Attach the queue-refresh observer exactly once, and only while somebody is
  * watching: with no monitor subscriber the aggregation has nothing to feed.
+ *
+ * The runnable cache is wired here too (UI-qrfo §4), on TWO signals, because
+ * neither one alone sees every real queue change:
+ *
+ * - `onQueueChanged` covers the SCHEDULER's autonomous transitions (dispatch,
+ *   admission refusal, session done/fail). Those never pass through a ws
+ *   handler, so nothing else observes them.
+ * - `onWorkerSnapshotRefresh` covers the ws MUTATION handlers, which fan a fresh
+ *   snapshot out without emitting a queue-change event — a placement made from
+ *   the monitor itself would otherwise leave the placed bead in the cached
+ *   candidate list for a whole TTL. That listener also fires on the async
+ *   title / REVISE-parking fills, which change no queue, so it invalidates only
+ *   when the workspace's CAS `revision` actually moved. Judging by revision
+ *   rather than by event source is what keeps this from re-scanning `bd` on
+ *   every fill.
+ * - the fill callback schedules a push, which is the whole delivery path for a
+ *   candidate list that missed the snapshot that asked for it.
+ * - the subscriber count gates the cache's `bd` spawning on somebody watching.
  */
 function ensureRefreshWired() {
+  if (!queue_changed_unsubscribe) {
+    queue_changed_unsubscribe = onQueueChanged((workspace) => {
+      invalidateRunnable(workspace);
+      schedulePush();
+    });
+    try {
+      runnableCache().setOnFilled(() => {
+        schedulePush();
+      });
+      runnableCache().setSubscriberCount(monitorPipelineSubscriberCount);
+    } catch (err) {
+      log('monitor: runnable cache wiring failed: %o', err);
+    }
+  }
   if (refresh_unsubscribe) {
     return;
   }
-  refresh_unsubscribe = onWorkerSnapshotRefresh(() => {
+  refresh_unsubscribe = onWorkerSnapshotRefresh((workspace) => {
+    if (queueRevisionMoved(workspace)) {
+      invalidateRunnable(workspace);
+    }
     schedulePush();
   });
 }
@@ -236,17 +417,21 @@ function ensureRefreshWired() {
 /**
  * The visible workspace roots, straight from the registry minus the hidden set.
  *
+ * The ONE place the monitor decides what "visible" means — both payload arrays
+ * and every driver walk read it, so a repo can never be in one and out of the
+ * other.
+ *
+ * @param {{ listWorkspaces?: () => Array<{ path: string }>, listHidden?: () => string[] }} [options]
  * @returns {string[]}
  */
-function visibleWorkspaceRoots() {
+function visibleWorkspaceRoots(options = {}) {
+  const listWorkspaces = options.listWorkspaces || getAvailableWorkspaces;
+  const listHidden =
+    options.listHidden || (() => sharedVisibleWorkspacesStore().listHidden());
   /** @type {Set<string>} */
   let hidden = new Set();
   try {
-    hidden = new Set(
-      sharedVisibleWorkspacesStore()
-        .listHidden()
-        .map((p) => path.resolve(p))
-    );
+    hidden = new Set(listHidden().map((p) => path.resolve(p)));
   } catch (err) {
     log('monitor: hidden set unreadable: %o', err);
   }
@@ -255,7 +440,7 @@ function visibleWorkspaceRoots() {
   /** @type {Set<string>} */
   const seen = new Set();
   try {
-    for (const workspace of getAvailableWorkspaces()) {
+    for (const workspace of listWorkspaces()) {
       // Resolved AFTER the empty check on purpose: `path.resolve('')` is the
       // server's cwd, so resolving first would turn a blank registry entry into
       // a workspace nobody registered.
@@ -299,6 +484,118 @@ function refreshExternalPrsForVisible() {
         log('monitor: external PR refresh failed for %s: %o', root_dir, err);
       });
   }
+}
+
+/**
+ * Refill every visible workspace's runnable candidates.
+ *
+ * Driven by the RAW visible list for the same reason the external-PR seeding is
+ * (see above): a repo whose only content is an unfetched candidate has an empty
+ * aggregate, so seeding from the aggregate would skip exactly the repos that
+ * need the scan.
+ *
+ * @param {(root_dir: string) => void} [refresh] - Test seam.
+ * @param {() => string[]} [listRoots] - Test seam.
+ */
+function refillRunnableForVisible(refresh, listRoots) {
+  const refreshOne =
+    refresh || ((root_dir) => runnableCache().refresh(root_dir));
+  const roots = listRoots || (() => visibleWorkspaceRoots());
+  for (const root_dir of roots()) {
+    try {
+      refreshOne(root_dir);
+    } catch (err) {
+      log('monitor: runnable refresh failed for %s: %o', root_dir, err);
+    }
+  }
+}
+
+/**
+ * The configured poll cadence, in seconds. Read lazily and memoized: `getConfig`
+ * touches the filesystem, and this module is imported long before any subscriber
+ * exists.
+ *
+ * A configured `0` disables polling, exactly as it does for the server's own
+ * list poller — the setting means "do not poll", and the monitor honouring it
+ * differently would make one knob mean two things.
+ *
+ * @type {number|null}
+ */
+let poll_interval_seconds = null;
+
+/**
+ * @returns {number}
+ */
+function pollIntervalSeconds() {
+  if (poll_interval_seconds === null) {
+    try {
+      poll_interval_seconds = getConfig().poll_interval_seconds;
+    } catch (err) {
+      log('monitor: poll interval unreadable, falling back to 30s: %o', err);
+      poll_interval_seconds = 30;
+    }
+  }
+  return poll_interval_seconds;
+}
+
+/**
+ * The periodic runnable-refresh driver (UI-qrfo §4 갱신 driver).
+ *
+ * TTL alone is not enough. The aggregation only pushes on a queue/snapshot
+ * refresh event, so while the queues are quiet there is no push → no cache read
+ * → no fill, and a `spec_review` another session pinned would never appear.
+ * This ticks the refill itself.
+ *
+ * Built on `createPoller`, which already owns the two properties this needs —
+ * `unref()` so it never holds the process open, and "tick only while somebody is
+ * connected", here bound to the MONITOR subscriber count so an unwatched
+ * dashboard spawns no `bd`.
+ *
+ * @param {{
+ *   intervalSeconds?: number,
+ *   subscriberCount?: () => number,
+ *   listRoots?: () => string[],
+ *   refresh?: (root_dir: string) => void,
+ *   onRefreshed?: () => void
+ * }} [options] - Test seams; each defaults to the live server source.
+ * @returns {{ start: () => void, stop: () => void }}
+ */
+export function createRunnableRefreshDriver(options = {}) {
+  const onRefreshed = options.onRefreshed || schedulePush;
+  return createPoller({
+    intervalSeconds:
+      typeof options.intervalSeconds === 'number'
+        ? options.intervalSeconds
+        : pollIntervalSeconds(),
+    getClientCount: options.subscriberCount || monitorPipelineSubscriberCount,
+    onTick() {
+      refillRunnableForVisible(options.refresh, options.listRoots);
+      onRefreshed();
+    }
+  });
+}
+
+/**
+ * Arm the refresh driver on the first subscriber.
+ */
+function ensureDriverStarted() {
+  if (refresh_driver) {
+    return;
+  }
+  refresh_driver = createRunnableRefreshDriver();
+  refresh_driver.start();
+}
+
+/**
+ * Disarm the refresh driver once the last subscriber leaves — nobody is looking,
+ * so there is no reason to keep spawning `bd` across every repo.
+ */
+function stopDriverIfIdle() {
+  if (SUBSCRIBERS.size > 0 || !refresh_driver) {
+    return;
+  }
+  refresh_driver.stop();
+  refresh_driver = null;
 }
 
 /**
@@ -398,6 +695,7 @@ export function handleSubscribeMonitorPipeline(ws, req) {
   }
   SUBSCRIBERS.add({ ws, client_id });
   ensureRefreshWired();
+  ensureDriverStarted();
   log('subscribe-monitor-pipeline %s', client_id);
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
 
@@ -407,8 +705,12 @@ export function handleSubscribeMonitorPipeline(ws, req) {
   } catch (err) {
     log('monitor: initial pipeline build failed: %o', err);
   }
-  emitMonitorPipelineSnapshot(ws, client_id, workspaces);
+  emitMonitorPipelineSnapshot(ws, client_id, workspaces, safeWorkspacesState());
   refreshExternalPrsForVisible();
+  // One immediate fill per visible workspace (spec §4): the first tick is a
+  // whole poll interval away, and a dashboard that opens empty for 30 seconds
+  // reads as "nothing is runnable".
+  refillRunnableForVisible();
 }
 
 /**
@@ -427,9 +729,136 @@ export function handleUnsubscribeMonitorPipeline(ws, req) {
       removed = true;
     }
   }
+  stopDriverIfIdle();
   ws.send(
     JSON.stringify(makeOk(req, { id: client_id, unsubscribed: removed }))
   );
+}
+
+/**
+ * Handle `monitor-auto-toggle`. Payload: `{ on: boolean }` (UI-qrfo §6).
+ *
+ * The master automation switch. It takes NO `root_dir`: the target is always
+ * every VISIBLE workspace, which is also the master button's denominator.
+ *
+ * Both axes go through the USER mutation path — `toggleAutoAdvance` and
+ * `toggleAutoMerge`, the same store methods the two single-workspace handlers
+ * call — rather than the scheduler's unconditional `setAutoAdvance`, which
+ * exists for "stop on failure" and would blur the two meanings if a user command
+ * borrowed it. What this removes is the CLIENT's CAS precondition, not CAS: the
+ * server reads each workspace's own current revision, because `expected_revision`
+ * differs per repo and no client can know twenty of them.
+ *
+ * The two side effects of the single-workspace handlers are reproduced exactly:
+ * ON kicks that workspace's dispatch loop, OFF empties the waiting merge queue
+ * in the SAME write that clears the flag (a restart between two writes would
+ * leave "stopped" with a full queue for the boot-resume driver).
+ *
+ * Partial failure PROCEEDS (§10): one unreadable repo must not veto the other
+ * nineteen, so the reply names the ones that failed instead.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {{
+ *   queueStore?: () => ReturnType<typeof getWorkerRuntime>['queueStore'],
+ *   listWorkspaces?: () => Array<{ path: string }>,
+ *   listHidden?: () => string[],
+ *   listRoots?: () => string[],
+ *   tick?: (workspace_key: string) => unknown,
+ *   mergeQueueState?: (workspace_key: string) => { active: string|null } | null,
+ *   onApplied?: () => void
+ * }} [options] - Test seams; each defaults to the live server source.
+ */
+export function handleMonitorAutoToggle(ws, req, options = {}) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.on !== 'boolean') {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { on: boolean }')
+      )
+    );
+    return;
+  }
+  const on = /** @type {boolean} */ (p.on);
+  const storeOf = options.queueStore || (() => getWorkerRuntime().queueStore);
+  const listRoots = options.listRoots || (() => visibleWorkspaceRoots(options));
+  const kick = options.tick || tickWorkerQueue;
+  const mergeStateOf = options.mergeQueueState || workerMergeQueueState;
+  const onApplied = options.onApplied || schedulePush;
+
+  let applied = 0;
+  /** @type {Array<{ root_dir: string, reason: string }>} */
+  const failed = [];
+  /** @type {string[]} */
+  let roots = [];
+  try {
+    roots = listRoots();
+  } catch (err) {
+    log('monitor: master toggle could not list workspaces: %o', err);
+    roots = [];
+  }
+
+  for (const root_dir of roots) {
+    try {
+      const store = storeOf();
+      const advance = store.toggleAutoAdvance(root_dir, {
+        expected_revision: /** @type {any} */ (store.snapshot(root_dir))
+          .revision,
+        on
+      });
+      if (!advance.ok) {
+        failed.push({ root_dir, reason: reasonOf(advance) });
+        continue;
+      }
+      // The revision the FIRST toggle produced, never the one read above: that
+      // write bumped it, so re-sending the original value would make this second
+      // call a guaranteed CAS conflict on every workspace.
+      const state = on === false ? mergeStateOf(root_dir) : null;
+      const merge = store.toggleAutoMerge(root_dir, {
+        expected_revision: /** @type {any} */ (advance.queue).revision,
+        on,
+        clear_waiting: on === false,
+        keep: state ? state.active : null
+      });
+      if (!merge.ok) {
+        failed.push({ root_dir, reason: reasonOf(merge) });
+        continue;
+      }
+      applied += 1;
+      if (on === true) {
+        // Fire-and-forget, exactly as `worker-queue-toggle` does it: a dispatch
+        // that has to spawn a session must not hold this reply.
+        Promise.resolve(kick(root_dir)).catch((err) => {
+          log(
+            'monitor: tick after master toggle failed for %s: %o',
+            root_dir,
+            err
+          );
+        });
+      }
+    } catch (err) {
+      log('monitor: master toggle failed for %s: %o', root_dir, err);
+      failed.push({ root_dir, reason: 'error' });
+    }
+  }
+
+  ws.send(JSON.stringify(makeOk(req, { on, applied, failed })));
+  // ONE push for the whole sweep — `schedulePush` coalesces, so the per-workspace
+  // queue-changed events and this land as a single rebuild.
+  onApplied();
+}
+
+/**
+ * Why a queue mutation did not apply, in the master toggle's vocabulary.
+ *
+ * @param {import('../worker/queue-store.js').QueueOpResult} result
+ * @returns {string}
+ */
+function reasonOf(result) {
+  if (result.conflict) {
+    return 'conflict';
+  }
+  return result.reason || 'rejected';
 }
 
 /**
@@ -443,10 +872,12 @@ export function detachMonitorPipeline(ws) {
       SUBSCRIBERS.delete(sub);
     }
   }
+  stopDriverIfIdle();
 }
 
 /**
- * Test-only: drop subscribers and any pending push.
+ * Test-only: drop subscribers, any pending push, and every piece of wiring the
+ * channel arms on its first subscriber.
  */
 export function __resetMonitorPipelineForTest() {
   SUBSCRIBERS.clear();
@@ -458,4 +889,14 @@ export function __resetMonitorPipelineForTest() {
     refresh_unsubscribe();
     refresh_unsubscribe = null;
   }
+  if (queue_changed_unsubscribe) {
+    queue_changed_unsubscribe();
+    queue_changed_unsubscribe = null;
+  }
+  if (refresh_driver) {
+    refresh_driver.stop();
+    refresh_driver = null;
+  }
+  last_seen_revision.clear();
+  poll_interval_seconds = null;
 }

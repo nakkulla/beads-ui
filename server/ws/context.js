@@ -367,11 +367,24 @@ export function emitWorkerQueueSnapshot(ws, client_id, root_dir, queue) {
  * entry names its own repo, so there is nothing connection-scoped to address it
  * against.
  *
+ * `workspaces_state` rides the SAME envelope rather than a second event
+ * (UI-qrfo §4): it is the control-state half of one snapshot — every visible
+ * repo's automation flags, slots, CAS `revision` and exec defaults, including
+ * the repos whose pipeline is empty and therefore absent from `workspaces`.
+ * Splitting them would let a group header render against a revision from a
+ * different push.
+ *
  * @param {WebSocket} ws
  * @param {string} client_id
  * @param {Array<Record<string, unknown>>} workspaces
+ * @param {Array<Record<string, unknown>>} [workspaces_state]
  */
-export function emitMonitorPipelineSnapshot(ws, client_id, workspaces) {
+export function emitMonitorPipelineSnapshot(
+  ws,
+  client_id,
+  workspaces,
+  workspaces_state = []
+) {
   const msg = JSON.stringify({
     id: `evt-${Date.now()}`,
     ok: true,
@@ -379,7 +392,8 @@ export function emitMonitorPipelineSnapshot(ws, client_id, workspaces) {
     payload: {
       type: 'monitor-pipeline-snapshot',
       id: client_id,
-      workspaces
+      workspaces,
+      workspaces_state
     }
   });
   try {
