@@ -30,18 +30,37 @@ Board와 Worker는 색 토큰(`app/styles/tokens.css`)은 공유하지만 컴포
   클래스와 DOM 구조는 그대로 둔다. 변경은 스타일 계층에 한정.
 - 적용 어휘:
   - 컬럼 헤더: 스테이지색 스파인 + 카운트(Worker 레인 헤더·KPI와 호응).
-    컬럼-스테이지 색 매핑은 기존 스테퍼/워커 레인의 스테이지 색 의미를 따른다.
+    컬럼→토큰 매핑은 다음 표로 고정한다(Worker 5단계 색과 Board 6컬럼은
+    일대일이 아니므로 명시 매핑):
+
+    | 컬럼        | 스파인 토큰        |
+    | ----------- | ------------------ |
+    | Blocked     | `--accent-warn`    |
+    | Ready       | `--stage-plan-on`  |
+    | In progress | `--stage-impl-on`  |
+    | Resolved    | `--stage-merge-on` |
+    | Deferred    | `--text-dim`       |
+    | Closed      | `--stage-merge-dim`|
   - 카드: Worker 타일과 같은 서페이스/보더/호버 문법, 칩·타이포·간격 통일.
   - In progress 컬럼은 실행중 타일 서페이스(`--bg-tile-run` 계열)로 활성감 부여.
 - 픽셀 수준 결정(간격·크기·호버 디테일)은 구현 시 `frontend-design` 스킬로
   잡는다. 스펙은 "Worker 어휘로 통일"이라는 방향과 구조 불변 제약만 고정.
-- 가드: worker-theme 테스트와 같은 방식의 토큰 전용(raw hex 금지) 가드 테스트를
-  base.css의 board 스타일 블록에도 추가한다.
+- 가드: base.css board 블록의 토큰 전용(raw hex 금지) 검사는 **회귀 가드**로
+  추가한다(현재도 통과하는 상태 유지 가드임을 명시). 변경 전 실패하는 RED
+  assertion은 새 CSS 계약 쪽에 둔다 — 컬럼 헤더 스파인 존재와 위 표의 스테이지
+  토큰 사용, In progress 컬럼의 `--bg-tile-run` 계열 서페이스 등.
 
 ### 2. 세션 드로어 진행 가시성
 
 - 상단 바(`.sv__bar`): 라이브 하트비트 점 + 마지막 이벤트 경과시간(예: "3초
   전"). 라이브 attempt가 아니면(스냅샷 전용) 표시 생략.
+- `last_event_at` 원천: 세션 로그 payload에는 이벤트 시각이 보장되지 않으므로
+  세션 로그 스토어(`app/data/session-log-store.js`)에 `last_event_at`을
+  도입한다 — snapshot 수신 시 서버가 로그 파일 mtime을 함께 실어 보내고,
+  append는 클라이언트 수신 시각으로 갱신한다.
+- 드로어는 열려 있는 attempt를 추적해 큐 스냅샷 갱신마다 라이브 여부 메타를
+  갱신한다 — 실행 중에 연 세션이 완료(running→done)되면 하트비트가 사라져야
+  한다(현재 drawer open 시점 status만 전달되는 구조를 교정).
 - phase/gate 라인을 구분선 수준의 시각 계층으로 승격(현재는 일반 라인과 구분
   약함).
 - 진행 중인 tool 라인(마지막 미완료 tool)을 드로어 하단에 sticky로 고정 —
@@ -51,19 +70,23 @@ Board와 Worker는 색 토큰(`app/styles/tokens.css`)은 공유하지만 컴포
 
 ### 3. Worker 완료 레인 2줄 행
 
-- 완료 레인 행을 2줄 레이아웃으로:
-  - 1줄: Bead id + 제목(가로 전체 사용, 말줄임 최소화)
-  - 2줄: τ·비용·완료 시각·액션 버튼 등 메타
+- 완료 레인 행을 2줄 레이아웃으로, 줄별 내용 계약을 고정한다(현재도 조건부로
+  두 줄이 렌더되므로 "2줄 존재"가 아니라 내용 배치가 계약):
+  - 1줄: Bead id + 제목만(가로 전체 사용, usage 배지 금지)
+  - 2줄: τ·비용, `added_at` 기반 완료 시각, 액션 버튼 등 메타
 - 행 높이 증가로 렌더 개수가 부담되면 기존 표시 상한 정책을 따른다(새 상한
   도입 없음).
 
 ## Test scope
 
-- board 토큰 전용 가드 테스트 신설(raw hex 검출 시 실패).
+- board CSS: 새 계약 RED assertion(컬럼 스파인 토큰 매핑 표·In progress
+  서페이스) + 토큰 전용(raw hex 금지) 회귀 가드.
 - 기존 테마 전환 테스트(`app/main.theme.test.js`)·워커 테마 가드 회귀 통과.
-- 드로어: 하트비트 표시/생략(라이브·스냅샷), sticky 현재 tool 라인 고정/해제,
-  연속 tool 접기 단위 테스트.
-- 완료 레인 행: 2줄 구성 요소 렌더 단위 테스트.
+- 드로어: 하트비트 표시/생략(라이브·스냅샷), snapshot mtime/append 수신 시각
+  기반 `last_event_at` 갱신(fake timer), running→done 전환 시 하트비트 제거,
+  sticky 현재 tool 라인 고정/해제, 연속 tool 접기 단위 테스트.
+- 완료 레인 행: 1줄에 usage 부재·2줄에 메타 배치를 검증하는 단위 테스트
+  (vacuous "2줄 존재" 검사 금지).
 
 ## 비범위
 
