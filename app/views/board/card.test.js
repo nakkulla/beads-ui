@@ -54,11 +54,11 @@ describe('views/board/card', () => {
         workflow: {
           route: 'full_plan',
           stages: {
-            spec: { state: 'reviewed' },
-            plan: { state: 'on' },
-            impl: { state: 'dim' },
-            pr: { state: 'empty' },
-            merge: { state: 'empty' }
+            spec: { fill: 'full', glyph: 'review', stale: false },
+            plan: { fill: 'full', glyph: null, stale: false },
+            impl: { fill: 'dim', glyph: null, stale: false },
+            pr: { fill: 'none', glyph: null, stale: false },
+            merge: { fill: 'none', glyph: null, stale: false }
           },
           chips: {
             route: 'full_plan',
@@ -89,10 +89,10 @@ describe('views/board/card', () => {
         workflow: {
           route: 'spec_backed',
           stages: {
-            spec: { state: 'dim' },
-            impl: { state: 'empty' },
-            pr: { state: 'empty' },
-            merge: { state: 'empty' }
+            spec: { fill: 'dim', glyph: null, stale: false },
+            impl: { fill: 'none', glyph: null, stale: false },
+            pr: { fill: 'none', glyph: null, stale: false },
+            merge: { fill: 'none', glyph: null, stale: false }
           },
           chips: {
             route: 'spec_backed',
@@ -119,10 +119,10 @@ describe('views/board/card', () => {
         workflow: {
           route: 'spec_backed',
           stages: {
-            spec: { state: 'dim' },
-            impl: { state: 'empty' },
-            pr: { state: 'empty' },
-            merge: { state: 'empty' }
+            spec: { fill: 'dim', glyph: null, stale: false },
+            impl: { fill: 'none', glyph: null, stale: false },
+            pr: { fill: 'none', glyph: null, stale: false },
+            merge: { fill: 'none', glyph: null, stale: false }
           },
           chips: {
             route: 'spec_backed',
@@ -150,10 +150,10 @@ describe('views/board/card', () => {
         workflow: {
           route: 'spec_backed',
           stages: {
-            spec: { state: 'dim' },
-            impl: { state: 'empty' },
-            pr: { state: 'empty' },
-            merge: { state: 'empty' }
+            spec: { fill: 'dim', glyph: null, stale: false },
+            impl: { fill: 'none', glyph: null, stale: false },
+            pr: { fill: 'none', glyph: null, stale: false },
+            merge: { fill: 'none', glyph: null, stale: false }
           },
           chips: { route: 'spec_backed', fast_track: false, pr: null }
         }

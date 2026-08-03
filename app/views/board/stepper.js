@@ -6,9 +6,10 @@ import { html } from 'lit-html';
 
 /**
  * @typedef {Object} WorkflowStage
- * @property {'empty'|'dim'|'on'|'reviewed'|'skip'|'stale'} state
- * @property {string | null} [receipt]
+ * @property {'none'|'dim'|'full'} [fill]
+ * @property {'review'|'skip'|null} [glyph]
  * @property {boolean} [stale]
+ * @property {string | null} [receipt]
  */
 
 /**
@@ -41,28 +42,40 @@ const ROUTE_ORDER = {
   full_plan: ['spec', 'plan', 'impl', 'pr', 'merge']
 };
 
-/** State → cell glyph. `stale` keeps ✓ but renders greyed via `.stale`. */
-const GLYPH = { reviewed: '✓', skip: '⊘', stale: '✓' };
+/** Server `glyph` axis → cell character. The contract owns this split. */
+const GLYPH = { review: '✓', skip: '⊘' };
+
+/** Stage field combination → accessible-name phrase (spec §8). */
+const STATE_TEXT = {
+  none: '미도달',
+  dim: '진행 중',
+  stale: '재검토 필요',
+  review: '검토 완료',
+  skip: '검토 생략',
+  done: '완료'
+};
 
 /**
- * Derive the "current in-progress" cell that receives the glow. Deterministic
- * rule (documented, matches board-card-final.html): glow appears only while the
- * issue is actively progressing (status in_progress|resolved), and lands on the
- * first route-ordered stage whose state is `dim` (artifact present, no receipt
- * yet). A card that is open/closed shows no glow.
+ * Derive the "current" cell — the one that blinks. Deterministic rule: it
+ * appears only while the issue is actively progressing (status
+ * in_progress|resolved), and lands on the first route-ordered stage that is
+ * `dim` AND fresh. A stale cell is `dim` too, but it means "needs action", not
+ * "in progress", so it is skipped (spec §6). A card that is open/closed marks
+ * nothing.
  *
  * @param {string[]} order
  * @param {Record<string, WorkflowStage>} stages
  * @param {string} status
  * @returns {string | null}
  */
-function glowStageKey(order, stages, status) {
+function currentStageKey(order, stages, status) {
   const active = status === 'in_progress' || status === 'resolved';
   if (!active) {
     return null;
   }
   for (const key of order) {
-    if (stages[key] && stages[key].state === 'dim') {
+    const stage = stages[key];
+    if (stage && stage.fill === 'dim' && stage.stale !== true) {
       return key;
     }
   }
@@ -70,33 +83,66 @@ function glowStageKey(order, stages, status) {
 }
 
 /**
- * Render one stepper segment (bar + label). The server already computed the
- * per-stage `state` (incl. stale); this only maps state → classes/glyph and
- * pairs the glow cell with an inline stage-on color so `currentColor` resolves
- * to the bright hue for the box-shadow.
+ * Accessible phrase for one stage, from the three server fields (spec §8). The
+ * `fill === 'dim'` rows never collide: the server guarantees a stale cell is
+ * downgraded to `dim`, so `stale` is checked first.
+ *
+ * @param {WorkflowStage} stage
+ * @returns {string}
+ */
+function stageStateText(stage) {
+  const fill = (stage && stage.fill) || 'none';
+  if (fill === 'none') {
+    return STATE_TEXT.none;
+  }
+  if (stage && stage.stale === true) {
+    return STATE_TEXT.stale;
+  }
+  if (fill === 'dim') {
+    return STATE_TEXT.dim;
+  }
+  if (stage && stage.glyph === 'review') {
+    return STATE_TEXT.review;
+  }
+  if (stage && stage.glyph === 'skip') {
+    return STATE_TEXT.skip;
+  }
+  return STATE_TEXT.done;
+}
+
+/**
+ * Render one stepper segment (bar + label). The server already resolved the
+ * three axes; this only maps them onto classes and the glyph character, and
+ * pairs the current cell with an inline stage-on color so `currentColor`
+ * resolves to the bright hue for the reduced-motion glow fallback.
  *
  * @param {string} key
  * @param {WorkflowStage} stage
- * @param {boolean} glow
+ * @param {boolean} current
  * @returns {TemplateResult}
  */
-function segTemplate(key, stage, glow) {
+function segTemplate(key, stage, current) {
   const c = /** @type {Record<string, string>} */ (STAGE_CLASS)[key] || key;
-  const state = (stage && stage.state) || 'empty';
-  const glyph = /** @type {Record<string, string>} */ (GLYPH)[state] || '';
+  const fill = (stage && stage.fill) || 'none';
+  const stale = !!stage && stage.stale === true;
+  const glyph =
+    /** @type {Record<string, string>} */ (GLYPH)[
+      (stage && stage.glyph) || ''
+    ] || '';
   let bar_class = 'bar';
-  if (state === 'dim') {
+  if (fill === 'dim') {
     bar_class += ` b-${c} dim`;
-  } else if (state === 'on' || state === 'reviewed' || state === 'skip') {
-    bar_class += ` b-${c} on`;
-  } else if (state === 'stale') {
-    bar_class += ` b-${c} stale`;
+  } else if (fill === 'full') {
+    bar_class += ` b-${c} full`;
   }
-  if (glow) {
-    bar_class += ' glow';
+  if (stale) {
+    bar_class += ' stale';
   }
-  const lbl_class = state === 'empty' ? 'lbl' : `lbl l-${c} on`;
-  const style = glow ? `color: var(--stage-${c}-on)` : '';
+  if (current) {
+    bar_class += ' cur';
+  }
+  const lbl_class = fill === 'none' ? 'lbl' : `lbl l-${c} on`;
+  const style = current ? `color: var(--stage-${c}-on)` : '';
   return html`
     <div class="seg">
       <div class=${bar_class} style=${style}>${glyph}</div>
@@ -122,11 +168,20 @@ export function stepperTemplate(workflow, status) {
   const route = workflow.route === 'full_plan' ? 'full_plan' : 'spec_backed';
   const order = ROUTE_ORDER[route];
   const stages = workflow.stages;
-  const glow_key = glowStageKey(order, stages, String(status || 'open'));
+  const current_key = currentStageKey(order, stages, String(status || 'open'));
+  // `role="img"` replaces child content in the a11y tree, so per-segment labels
+  // would never surface — the whole progress state goes in one container label
+  // (spec §8).
+  const aria_label = `워크플로우 진행: ${order
+    .map(
+      (key) =>
+        `${/** @type {Record<string, string>} */ (STAGE_LABEL)[key] || key} ${stageStateText(stages[key] || {})}`
+    )
+    .join(' · ')}`;
   return html`
-    <div class="stp" role="img" aria-label="워크플로우 진행 스테퍼">
+    <div class="stp" role="img" aria-label=${aria_label}>
       ${order.map((key) =>
-        segTemplate(key, stages[key] || { state: 'empty' }, key === glow_key)
+        segTemplate(key, stages[key] || {}, key === current_key)
       )}
     </div>
   `;

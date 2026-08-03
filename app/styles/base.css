@@ -657,7 +657,7 @@ body {
 .stp .b-spec.dim {
   background: var(--stage-spec-dim);
 }
-.stp .b-spec.on {
+.stp .b-spec.full {
   background: var(--stage-spec-on);
 }
 .stp .l-spec.on {
@@ -666,7 +666,7 @@ body {
 .stp .b-plan.dim {
   background: var(--stage-plan-dim);
 }
-.stp .b-plan.on {
+.stp .b-plan.full {
   background: var(--stage-plan-on);
 }
 .stp .l-plan.on {
@@ -675,7 +675,7 @@ body {
 .stp .b-impl.dim {
   background: var(--stage-impl-dim);
 }
-.stp .b-impl.on {
+.stp .b-impl.full {
   background: var(--stage-impl-on);
 }
 .stp .l-impl.on {
@@ -684,7 +684,7 @@ body {
 .stp .b-pr.dim {
   background: var(--stage-pr-dim);
 }
-.stp .b-pr.on {
+.stp .b-pr.full {
   background: var(--stage-pr-on);
 }
 .stp .l-pr.on {
@@ -693,22 +693,44 @@ body {
 .stp .b-mrg.dim {
   background: var(--stage-merge-dim);
 }
-.stp .b-mrg.on {
+.stp .b-mrg.full {
   background: var(--stage-merge-on);
 }
 .stp .l-mrg.on {
   color: var(--stage-merge-on);
 }
 
-/* stale: reviewed ✓ downgraded to grey */
+/* stale: server already downgraded the fill to `dim`, so the cell keeps its
+   faded stage color; the amber underline is the freshness axis. No background
+   here — a grey one is what made stale indistinguishable from empty. */
 .stp .bar.stale {
-  background: var(--border-empty-fill);
-  color: var(--text-dim);
+  color: var(--text-title);
+  box-shadow: inset 0 -3px 0 var(--accent-warn);
 }
 
-/* glow: current in-progress cell — inline color makes currentColor bright */
-.stp .glow {
-  box-shadow: var(--glow-current);
+/* cur: current in-progress cell — blinks (opacity only, so the stage color is
+   untouched). Inline color makes currentColor bright for the fallback below. */
+@keyframes stp-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.42;
+  }
+}
+
+.stp .cur {
+  animation: stp-blink 1.4s ease-in-out infinite;
+}
+
+/* Stopping the animation alone would erase the only marker of the current
+   cell, so reduced motion falls back to the previous static glow. */
+@media (prefers-reduced-motion: reduce) {
+  .stp .cur {
+    animation: none;
+    box-shadow: var(--glow-current);
+  }
 }
 
 /* --- board card: child rollup + elapsed footer --- */
