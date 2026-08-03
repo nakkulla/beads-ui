@@ -459,6 +459,8 @@ body {
   grid-template-columns: repeat(5, minmax(220px, 1fr)) auto;
 }
 
+/* Worker 관제탑 어휘 이식 (UI-rkly §1): 레인 페인과 같은 서페이스·보더·반경.
+   컬럼 상단 2px 스파인은 컬럼별 규칙이 덮어쓰므로 여기서는 자리만 만든다. */
 .board-column {
   display: flex;
   flex-direction: column;
@@ -466,7 +468,8 @@ body {
   max-height: calc(100vh - 200px);
   background: var(--bg-panel);
   border: 1px solid var(--border-panel);
-  border-radius: var(--r-10);
+  border-top: 2px solid var(--text-dim);
+  border-radius: var(--r-8);
 }
 
 .board-column__header {
@@ -486,7 +489,7 @@ body {
 
 .board-column__title-text {
   font-size: var(--fs-chip);
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -500,30 +503,68 @@ body {
   font-size: var(--fs-label-tiny);
   color: var(--text-dim);
 }
-#blocked-col .board-column__title-text::before {
-  color: var(--accent-danger);
+
+/* 컬럼→토큰 매핑 (UI-rkly §1 표). Worker 5단계 색과 Board 6컬럼은 일대일이
+   아니라서 표가 계약이다: 스파인·헤더 점·카운트가 컬럼당 한 색을 공유한다. */
+#blocked-col {
+  border-top: 2px solid var(--accent-warn);
 }
-#ready-col .board-column__title-text::before {
+#blocked-col .board-column__title-text::before,
+#blocked-col .board-column__count {
+  color: var(--accent-warn);
+}
+
+#ready-col {
+  border-top: 2px solid var(--stage-plan-on);
+}
+#ready-col .board-column__title-text::before,
+#ready-col .board-column__count {
   color: var(--stage-plan-on);
 }
-#in-progress-col .board-column__title-text::before {
-  color: var(--accent-child);
+
+/* 실행 중 컬럼만 서페이스로 목소리를 높인다 — 관제 화면에서 시선이 가야 할
+   곳은 한 군데뿐이다 (Worker 실행 타일과 같은 `--bg-tile-run`). */
+#in-progress-col {
+  border-top: 2px solid var(--stage-impl-on);
+  background: var(--bg-tile-run);
 }
-#resolved-col .board-column__title-text::before {
-  color: var(--accent-success);
+#in-progress-col .board-column__title-text::before,
+#in-progress-col .board-column__count {
+  color: var(--stage-impl-on);
 }
-#deferred-col .board-column__title-text::before {
-  color: var(--accent-warn);
+
+#resolved-col {
+  border-top: 2px solid var(--stage-merge-on);
+}
+#resolved-col .board-column__title-text::before,
+#resolved-col .board-column__count {
+  color: var(--stage-merge-on);
+}
+
+#deferred-col {
+  border-top: 2px solid var(--text-dim);
+}
+#deferred-col .board-column__title-text::before,
+#deferred-col .board-column__count {
+  color: var(--text-dim);
+}
+
+#closed-col {
+  border-top: 2px solid var(--stage-merge-dim);
+}
+#closed-col .board-column__title-text::before,
+#closed-col .board-column__count {
+  color: var(--stage-merge-dim);
 }
 
 .board-column__count {
   min-width: 18px;
-  padding: 0 var(--sp-5);
-  border-radius: var(--r-9);
-  background: var(--bg-card);
-  border: 1px solid var(--border-card);
+  padding: 0 var(--sp-6);
+  border-radius: var(--r-10);
+  background: var(--bg-app);
   color: var(--text-dim);
   font-size: var(--fs-chip);
+  font-variant-numeric: tabular-nums;
   text-align: center;
 }
 
@@ -559,12 +600,12 @@ body {
   cursor: pointer;
 }
 
-/* --- board card v1 --- */
+/* --- board card v1 (Worker 타일 문법과 통일: UI-rkly §1) --- */
 .board-card {
   background: var(--bg-card);
   border: 1px solid var(--border-card);
-  border-radius: var(--r-8);
-  padding: var(--sp-10);
+  border-radius: var(--r-7);
+  padding: var(--sp-8) var(--sp-9);
   cursor: pointer;
   transition:
     border-color 120ms ease,
