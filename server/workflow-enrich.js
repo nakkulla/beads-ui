@@ -8,10 +8,15 @@
  * sha, or missing path yields `stale=false` (undetermined — never crash, never
  * mark stale spuriously).
  *
- * Stale rules (spec §4):
+ * Stale rules (spec §5):
  *  - spec_review stale  iff `git log <sha>..HEAD -- <spec_id path>` is non-empty
  *    (only spec-doc follow-up commits cause stale; unrelated commits don't).
- *  - impl_review stale  iff current HEAD != receipt sha.
+ *  - impl_review stale  iff the Bead's own branch tip moved past the receipt sha
+ *    ({@link implFreshness}) — the impl gate is issued on a worktree branch tip
+ *    that squash-merge keeps out of base history, so a HEAD comparison is
+ *    permanently true and cannot be used.
+ * A `skipped@` receipt is NOT exempt from either probe: the contract defines a
+ * refresh procedure for skip-origin receipts, so skip can go stale too.
  *
  * Receipt format: `<reviewer>@<40hexsha>` or `skipped@<40hexsha>`.
  */
@@ -23,8 +28,28 @@ const log = debug('workflow-enrich');
 /** `<reviewer>@<sha>` — reviewer is a token, sha is 7-40 hex chars. */
 const RECEIPT_RE = /^([A-Za-z0-9_.:-]+)@([0-9a-fA-F]{7,40})$/;
 
-/** Strict plan-receipt: reviewer EXACTLY `user`, sha EXACTLY 40 hex. */
-const PLAN_RECEIPT_RE = /^user@([0-9a-fA-F]{40})$/;
+/**
+ * Strict plan-receipt: reviewer EXACTLY `user`/`triage`/`codex`, sha EXACTLY
+ * 40 hex. `user@` is the normal approval; `triage@`/`codex@` are the worker
+ * autorun stale-lane refresh tokens (`docs/contracts/workflow.md`).
+ */
+const PLAN_RECEIPT_RE = /^(user|triage|codex)@([0-9a-fA-F]{40})$/;
+
+/**
+ * Reviewer tokens the workflow contract enumerates as review evidence
+ * (`docs/contracts/workflow.md:115`). beads-ui consumes that enumeration rather
+ * than inferring it: a token outside this set and outside `skipped` earns no
+ * glyph at all (fail-quiet), so `user@` and typos never pose as review evidence.
+ *
+ * @type {Set<string>}
+ */
+const REVIEW_REVIEWER_TOKENS = new Set([
+  'codex',
+  'opus',
+  'fable',
+  'self',
+  'triage'
+]);
 
 /**
  * Cache of `git log` staleness probes keyed by `<head>\0<sha>\0<path>`.
@@ -62,21 +87,42 @@ export function parseReceipt(value) {
 }
 
 /**
- * Strict plan-receipt validation (spec §변경 1). The general {@link parseReceipt}
+ * Strict plan-receipt validation (spec §5.3). The general {@link parseReceipt}
  * accepts any reviewer token and a 7-40 hex sha, so it would let `codex@<short>`
  * earn authorization. A plan approval is valid ONLY when the reviewer is exactly
- * `user` AND the sha is exactly 40 hex — plan has no skip path, so `skipped@...`,
- * any other reviewer, a short sha, and a parse failure are all invalid.
+ * `user`/`triage`/`codex` AND the sha is exactly 40 hex — plan has no skip path,
+ * so `skipped@...`, any other reviewer, a short sha, and a parse failure are all
+ * invalid.
  *
  * @param {unknown} value
- * @returns {{ sha: string } | null}
+ * @returns {ParsedReceipt | null}
  */
 export function parsePlanReceipt(value) {
   if (typeof value !== 'string') {
     return null;
   }
   const m = PLAN_RECEIPT_RE.exec(value.trim());
-  return m ? { sha: m[1] } : null;
+  return m ? { reviewer: m[1], sha: m[2], is_skip: false } : null;
+}
+
+/**
+ * Map a parsed receipt to its card glyph (spec §2), following the contract's
+ * split exactly: enumerated reviewer tokens are review evidence (`✓`), only
+ * `skipped@` is authority without review (`⊘`), and anything else — absent
+ * receipt, `user@`, a typo — gets no glyph. Stage-agnostic by construction; the
+ * caller decides which receipts are valid enough to classify at all.
+ *
+ * @param {ParsedReceipt | null | undefined} receipt
+ * @returns {'review' | 'skip' | null}
+ */
+export function classifyGlyph(receipt) {
+  if (!receipt || typeof receipt.reviewer !== 'string') {
+    return null;
+  }
+  if (receipt.is_skip) {
+    return 'skip';
+  }
+  return REVIEW_REVIEWER_TOKENS.has(receipt.reviewer) ? 'review' : null;
 }
 
 /**
@@ -216,24 +262,74 @@ export function planFreshness(workspace_root, head, sha, plan_path) {
 }
 
 /**
+ * Impl-review freshness (spec §5.1) — 3-state, keyed on the Bead's OWN branch.
+ * The impl gate is issued at the worktree branch tip, and this repo squash-
+ * merges, so that sha can never enter base history: the old `HEAD !== sha`
+ * comparison was permanently true. The branch name is fixed by the workflow
+ * contract (worktree basename == branch == Bead ID).
+ *
+ *   branch tip == receipt sha            → `fresh`
+ *   receipt sha is an ancestor of tip    → `stale` (post-review commits landed)
+ *   no branch / missing input / git error → `unknown`
+ *
+ * Deliberately NOT `git branch --points-at`/`--contains`: a global search
+ * misjudges both ways — an unrelated branch parked on the receipt sha reads
+ * fresh while the real impl branch has advanced, and a surviving descendant
+ * branch reads stale after the impl branch is deleted.
+ *
+ * Deliberately NOT cached: `stale_cache` is HEAD-keyed, and committing in a
+ * worktree never moves the shared checkout's HEAD, so a cache could not see a
+ * branch tip move (same reason `pathDirty` bypasses it).
+ *
+ * @param {string | undefined | null} workspace_root
+ * @param {string} receipt_sha
+ * @param {string | undefined | null} bead_id
+ * @returns {'fresh' | 'stale' | 'unknown'}
+ */
+export function implFreshness(workspace_root, receipt_sha, bead_id) {
+  if (!workspace_root || !receipt_sha || !bead_id) {
+    return 'unknown';
+  }
+  const out = runGit(workspace_root, [
+    'rev-parse',
+    '--verify',
+    '--quiet',
+    `refs/heads/${bead_id}`
+  ]);
+  const tip = out ? out.trim() : '';
+  if (!tip) {
+    return 'unknown';
+  }
+  if (tip === receipt_sha) {
+    return 'fresh';
+  }
+  // Exit 0 = ancestor; exit 1 (and any error) is caught by runGit as null.
+  const ancestor = runGit(workspace_root, [
+    'merge-base',
+    '--is-ancestor',
+    receipt_sha,
+    tip
+  ]);
+  return ancestor === null ? 'unknown' : 'stale';
+}
+
+/**
  * @param {Record<string, any>} md - issue metadata
  * @param {string | undefined | null} workspace_root
  * @param {string | null} head - precomputed HEAD (avoids re-shelling per issue)
+ * @param {string | undefined | null} bead_id - issue id (impl branch name)
  * @returns {{ spec_stale: boolean, impl_stale: boolean, spec_receipt: ParsedReceipt | null, impl_receipt: ParsedReceipt | null }}
  */
-function computeStaleWithHead(md, workspace_root, head) {
+function computeStaleWithHead(md, workspace_root, head, bead_id) {
   const spec_receipt = parseReceipt(md.spec_review);
   const impl_receipt = parseReceipt(md.impl_review);
   const spec_stale =
     !!spec_receipt &&
-    !spec_receipt.is_skip &&
     typeof md.spec_id === 'string' &&
     pathChangedSince(workspace_root, head, spec_receipt.sha, md.spec_id);
   const impl_stale =
     !!impl_receipt &&
-    !impl_receipt.is_skip &&
-    !!head &&
-    head !== impl_receipt.sha;
+    implFreshness(workspace_root, impl_receipt.sha, bead_id) === 'stale';
   return { spec_stale, impl_stale, spec_receipt, impl_receipt };
 }
 
@@ -242,15 +338,17 @@ function computeStaleWithHead(md, workspace_root, head) {
  *
  * @param {Record<string, any> | null | undefined} metadata
  * @param {string | undefined | null} workspace_root
+ * @param {string | undefined | null} [bead_id] - issue id (impl branch name)
  * @returns {{ spec_stale: boolean, impl_stale: boolean }}
  */
-export function computeStale(metadata, workspace_root) {
+export function computeStale(metadata, workspace_root, bead_id = null) {
   const md = metadata || {};
   const head = gitHead(workspace_root);
   const { spec_stale, impl_stale } = computeStaleWithHead(
     md,
     workspace_root,
-    head
+    head,
+    bead_id
   );
   return { spec_stale, impl_stale };
 }
@@ -299,14 +397,33 @@ export function parsePrNumber(pr_url) {
 }
 
 /**
+ * One stepper cell on three independent axes (spec §3): the glyph is the
+ * contract's (review evidence vs skip), the fill and freshness are beads-ui's.
+ *
  * @typedef {Object} WorkflowStage
- * @property {'empty'|'dim'|'on'|'reviewed'|'skip'|'stale'} state
- * @property {string | null} receipt - Raw receipt string (spec/impl only).
+ * @property {'none'|'dim'|'full'} fill
+ * @property {'review'|'skip'|null} glyph
  * @property {boolean} stale
+ * @property {string | null} receipt - Raw receipt string (spec/plan/impl only).
  */
 
 /**
- * Compute the SPEC stage state.
+ * Assemble a stage, applying the one cross-axis rule: `stale` downgrades the
+ * fill to `dim` (spec §3.1). Holds the invariant every consumer relies on — a
+ * `dim` cell either has no glyph or is a downgraded one.
+ *
+ * @param {'none'|'dim'|'full'} fill
+ * @param {'review'|'skip'|null} glyph
+ * @param {boolean} stale
+ * @param {string | null} receipt
+ * @returns {WorkflowStage}
+ */
+function makeStage(fill, glyph, stale, receipt) {
+  return { fill: stale ? 'dim' : fill, glyph, stale, receipt };
+}
+
+/**
+ * Compute the SPEC stage (spec §4).
  *
  * @param {Record<string, any>} md
  * @param {ParsedReceipt | null} receipt
@@ -316,25 +433,26 @@ export function parsePrNumber(pr_url) {
 function specStage(md, receipt, stale) {
   const raw = typeof md.spec_review === 'string' ? md.spec_review : null;
   if (!md.spec_id) {
-    return { state: 'empty', receipt: raw, stale: false };
+    return makeStage('none', null, false, raw);
   }
-  if (receipt) {
-    if (receipt.is_skip) {
-      return { state: 'skip', receipt: raw, stale: false };
-    }
-    return { state: stale ? 'stale' : 'reviewed', receipt: raw, stale };
+  if (!receipt) {
+    return makeStage('dim', null, false, raw);
   }
-  return { state: 'dim', receipt: raw, stale: false };
+  return makeStage('full', classifyGlyph(receipt), stale, raw);
 }
 
 /**
- * Compute the PLAN stage state (full_plan route only, spec §변경 4). Symmetric
- * to {@link specStage}, but plan approval has NO skip path: only a strict
- * `user@<40hex>` receipt is an approval, its freshness is 3-state, and — fail-
- * quiet like the rest of this module — only `stale` downgrades (`unknown` stays
- * reviewed). A present-but-invalid receipt is NOT an approval (shown pending,
- * raw receipt exposed); an absent receipt on a resolved/closed bead is a legacy
- * approval.
+ * Compute the PLAN stage (full_plan route only, spec §4/§5.3). Symmetric to
+ * {@link specStage}, but plan approval has NO skip path: only a strict
+ * `user|triage|codex@<40hex>` receipt is an approval, its freshness is 3-state,
+ * and — fail-quiet like the rest of this module — only `stale` downgrades
+ * (`unknown` stays approved). A present-but-invalid receipt is NOT an approval
+ * (shown pending, raw receipt exposed); an absent receipt on a resolved/closed
+ * bead is a legacy approval.
+ *
+ * Only a receipt this stage accepts is handed to {@link classifyGlyph} (spec
+ * §3.1). Otherwise `plan_review = skipped@...` would render a `⊘` on a `dim`
+ * cell — "in progress, review skipped" — and enter the blink candidacy.
  *
  * @param {Record<string, any>} md
  * @param {string} status
@@ -345,7 +463,7 @@ function specStage(md, receipt, stale) {
 function planStage(md, status, workspace_root, head) {
   const raw = typeof md.plan_review === 'string' ? md.plan_review : null;
   if (!md.plan_path) {
-    return { state: 'empty', receipt: raw, stale: false };
+    return makeStage('none', null, false, raw);
   }
   if (Object.hasOwn(md, 'plan_review')) {
     // Presence via hasOwn: a present non-string/null value is an INVALID
@@ -353,21 +471,23 @@ function planStage(md, status, workspace_root, head) {
     // the legacy branch below.
     const receipt = parsePlanReceipt(md.plan_review);
     if (!receipt) {
-      return { state: 'dim', receipt: raw, stale: false };
+      return makeStage('dim', null, false, raw);
     }
     const stale =
       planFreshness(workspace_root, head, receipt.sha, md.plan_path) ===
       'stale';
-    return { state: stale ? 'stale' : 'reviewed', receipt: raw, stale };
+    return makeStage('full', classifyGlyph(receipt), stale, raw);
   }
   if (status === 'resolved' || status === 'closed') {
-    return { state: 'on', receipt: null, stale: false };
+    return makeStage('full', null, false, null);
   }
-  return { state: 'dim', receipt: null, stale: false };
+  return makeStage('dim', null, false, null);
 }
 
 /**
- * Compute the IMPL stage state.
+ * Compute the IMPL stage (spec §4/§4.1). A receipt-less `resolved`/`closed`
+ * bead fills too: `resolved` is itself the fact that impl finished. It carries
+ * no glyph, so it stays distinguishable from a reviewed impl (`✓`).
  *
  * @param {Record<string, any>} md
  * @param {string} status
@@ -378,21 +498,17 @@ function planStage(md, status, workspace_root, head) {
 function implStage(md, status, receipt, stale) {
   const raw = typeof md.impl_review === 'string' ? md.impl_review : null;
   if (receipt) {
-    if (receipt.is_skip) {
-      return { state: 'skip', receipt: raw, stale: false };
-    }
-    return { state: stale ? 'stale' : 'reviewed', receipt: raw, stale };
+    return makeStage('full', classifyGlyph(receipt), stale, raw);
   }
-  const started =
-    status === 'in_progress' ||
-    status === 'resolved' ||
-    status === 'closed' ||
-    !!md.pr_url;
-  return { state: started ? 'dim' : 'empty', receipt: raw, stale: false };
+  if (status === 'resolved' || status === 'closed') {
+    return makeStage('full', null, false, raw);
+  }
+  const started = status === 'in_progress' || !!md.pr_url;
+  return makeStage(started ? 'dim' : 'none', null, false, raw);
 }
 
 /**
- * Compute the MERGE stage state.
+ * Compute the MERGE stage (spec §4).
  *
  * @param {Record<string, any>} md
  * @param {string} status
@@ -400,12 +516,12 @@ function implStage(md, status, receipt, stale) {
  */
 function mergeStage(md, status) {
   if (status === 'closed') {
-    return { state: 'on', receipt: null, stale: false };
+    return makeStage('full', null, false, null);
   }
   if (md.pr_url && status === 'resolved') {
-    return { state: 'dim', receipt: null, stale: false };
+    return makeStage('dim', null, false, null);
   }
-  return { state: 'empty', receipt: null, stale: false };
+  return makeStage('none', null, false, null);
 }
 
 /**
@@ -421,7 +537,7 @@ function mergeStage(md, status) {
 /**
  * Build the compact `workflow` summary for one issue.
  *
- * @param {{ status?: string, metadata?: Record<string, any> }} issue
+ * @param {{ id?: string, status?: string, metadata?: Record<string, any> }} issue
  * @param {string | undefined | null} workspace_root
  * @param {string | null} [head] - Optional precomputed HEAD.
  * @returns {WorkflowSummary}
@@ -429,9 +545,10 @@ function mergeStage(md, status) {
 export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
   const md = (issue && issue.metadata) || {};
   const status = String((issue && issue.status) || 'open');
+  const bead_id = (issue && issue.id) || null;
   const resolved_head = head === undefined ? gitHead(workspace_root) : head;
   const { spec_stale, impl_stale, spec_receipt, impl_receipt } =
-    computeStaleWithHead(md, workspace_root, resolved_head);
+    computeStaleWithHead(md, workspace_root, resolved_head, bead_id);
 
   const route = deriveRoute(md);
   // Explicit only when the metadata pin itself is a valid enum value — any
@@ -445,11 +562,9 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
   const stages = {
     spec: specStage(md, spec_receipt, spec_stale),
     impl: implStage(md, status, impl_receipt, impl_stale),
-    pr: {
-      state: md.pr_url ? 'on' : 'empty',
-      receipt: null,
-      stale: false
-    },
+    // pr is a binary fact; the wait-for-merge state lives in merge's `dim`
+    // (spec §4.2), so this stage never uses `dim`.
+    pr: makeStage(md.pr_url ? 'full' : 'none', null, false, null),
     merge: mergeStage(md, status)
   };
   if (route === 'full_plan') {

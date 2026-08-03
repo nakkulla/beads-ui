@@ -1840,10 +1840,10 @@ describe('views/worker', () => {
           route: 'spec_backed',
           route_source: 'derived',
           stages: {
-            spec: { state: 'reviewed' },
-            impl: { state: 'dim' },
-            pr: { state: 'empty' },
-            merge: { state: 'empty' }
+            spec: { fill: 'full', glyph: 'review', stale: false },
+            impl: { fill: 'dim', glyph: null, stale: false },
+            pr: { fill: 'none', glyph: null, stale: false },
+            merge: { fill: 'none', glyph: null, stale: false }
           }
         }
       }
@@ -1867,7 +1867,9 @@ describe('views/worker', () => {
 
     // spec_backed → 4 stepper cells (spec/impl/pr/merge).
     expect(card.querySelectorAll('.stp .seg').length).toBe(4);
-    const spec = /** @type {HTMLElement} */ (card.querySelector('.b-spec.on'));
+    const spec = /** @type {HTMLElement} */ (
+      card.querySelector('.b-spec.full')
+    );
     expect(spec.textContent?.trim()).toBe('✓');
   });
 
@@ -1884,11 +1886,11 @@ describe('views/worker', () => {
           route: 'full_plan',
           route_source: 'explicit',
           stages: {
-            spec: { state: 'reviewed' },
-            plan: { state: 'skip' },
-            impl: { state: 'stale' },
-            pr: { state: 'empty' },
-            merge: { state: 'empty' }
+            spec: { fill: 'full', glyph: 'review', stale: false },
+            plan: { fill: 'full', glyph: 'skip', stale: false },
+            impl: { fill: 'dim', glyph: 'review', stale: true },
+            pr: { fill: 'none', glyph: null, stale: false },
+            merge: { fill: 'none', glyph: null, stale: false }
           }
         }
       }
@@ -1910,10 +1912,10 @@ describe('views/worker', () => {
     expect(
       card.querySelector('.ctl-chip--route')?.classList.contains('is-derived')
     ).toBe(false);
-    // reviewed → ✓, skip → ⊘, stale → greyed ✓ via `.stale`.
-    expect(card.querySelector('.b-spec.on')?.textContent?.trim()).toBe('✓');
-    expect(card.querySelector('.b-plan.on')?.textContent?.trim()).toBe('⊘');
-    expect(card.querySelector('.b-impl.stale')).not.toBeNull();
+    // review → ✓, skip → ⊘, stale → dim fill + `.stale` underline.
+    expect(card.querySelector('.b-spec.full')?.textContent?.trim()).toBe('✓');
+    expect(card.querySelector('.b-plan.full')?.textContent?.trim()).toBe('⊘');
+    expect(card.querySelector('.b-impl.dim.stale')).not.toBeNull();
   });
 
   test('a candidate without workflow renders no chip/stepper and does not throw', () => {

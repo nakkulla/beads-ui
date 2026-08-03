@@ -5,8 +5,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   _clearStaleCache,
+  classifyGlyph,
   computeStale,
   enrichIssueWorkflow,
+  parsePlanReceipt,
   parseReceipt
 } from './workflow-enrich.js';
 
@@ -126,7 +128,7 @@ describe('computeStale — spec_review', () => {
     expect(spec_stale).toBe(false);
   });
 
-  test('a skip spec receipt is never stale', () => {
+  test('a skip spec receipt is stale like any other (no exemption)', () => {
     const dir = makeRepo();
     writeFile(dir, 'docs/spec.md', '# spec v1\n');
     const sha = commitAll(dir, 'add spec');
@@ -137,29 +139,140 @@ describe('computeStale — spec_review', () => {
       { spec_id: 'docs/spec.md', spec_review: 'skipped@' + sha },
       dir
     );
-    expect(spec_stale).toBe(false);
+    expect(spec_stale).toBe(true);
   });
 });
 
-describe('computeStale — impl_review', () => {
-  test('impl_stale is true when HEAD != receipt sha', () => {
+describe('computeStale — impl_review (Bead branch tip)', () => {
+  test('branch tip == receipt sha → fresh', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'a.txt', '1\n');
+    const sha = commitAll(dir, 'first');
+    git(dir, ['branch', 'UI-1']);
+
+    const { impl_stale } = computeStale(
+      { impl_review: 'opus@' + sha },
+      dir,
+      'UI-1'
+    );
+    expect(impl_stale).toBe(false);
+  });
+
+  test('commits landed on the Bead branch after the receipt → stale', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'a.txt', '1\n');
+    const sha = commitAll(dir, 'first');
+    git(dir, ['checkout', '-q', '-b', 'UI-1']);
+    writeFile(dir, 'a.txt', '2\n');
+    commitAll(dir, 'REVISE batch fix');
+
+    const { impl_stale } = computeStale(
+      { impl_review: 'opus@' + sha },
+      dir,
+      'UI-1'
+    );
+    expect(impl_stale).toBe(true);
+  });
+
+  test('no Bead branch (merged and deleted) → fresh', () => {
     const dir = makeRepo();
     writeFile(dir, 'a.txt', '1\n');
     const sha = commitAll(dir, 'first');
     writeFile(dir, 'a.txt', '2\n');
-    commitAll(dir, 'second'); // HEAD advances past sha
+    commitAll(dir, 'squash-merged work');
 
-    const { impl_stale } = computeStale({ impl_review: 'opus@' + sha }, dir);
-    expect(impl_stale).toBe(true);
+    const { impl_stale } = computeStale(
+      { impl_review: 'opus@' + sha },
+      dir,
+      'UI-1'
+    );
+    expect(impl_stale).toBe(false);
   });
 
-  test('impl_stale is false when HEAD == receipt sha', () => {
+  test('missing bead_id → fresh (rule does not apply)', () => {
     const dir = makeRepo();
     writeFile(dir, 'a.txt', '1\n');
     const sha = commitAll(dir, 'first');
+    writeFile(dir, 'a.txt', '2\n');
+    commitAll(dir, 'second');
 
     const { impl_stale } = computeStale({ impl_review: 'opus@' + sha }, dir);
     expect(impl_stale).toBe(false);
+  });
+
+  test('a distractor branch parked on the receipt sha does not fake freshness', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'a.txt', '1\n');
+    const sha = commitAll(dir, 'first');
+    // Unrelated branch stays at the receipt sha; the Bead branch advances.
+    git(dir, ['branch', 'unrelated']);
+    git(dir, ['checkout', '-q', '-b', 'UI-1']);
+    writeFile(dir, 'a.txt', '2\n');
+    commitAll(dir, 'post-review commit');
+
+    const { impl_stale } = computeStale(
+      { impl_review: 'opus@' + sha },
+      dir,
+      'UI-1'
+    );
+    expect(impl_stale).toBe(true);
+  });
+
+  test('a skip impl receipt is stale like any other (no exemption)', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'a.txt', '1\n');
+    const sha = commitAll(dir, 'first');
+    git(dir, ['checkout', '-q', '-b', 'UI-1']);
+    writeFile(dir, 'a.txt', '2\n');
+    commitAll(dir, 'post-review commit');
+
+    const { impl_stale } = computeStale(
+      { impl_review: 'skipped@' + sha },
+      dir,
+      'UI-1'
+    );
+    expect(impl_stale).toBe(true);
+  });
+});
+
+describe('classifyGlyph', () => {
+  test('maps every contract reviewer token to review evidence', () => {
+    for (const reviewer of ['codex', 'opus', 'fable', 'self', 'triage']) {
+      expect(classifyGlyph(parseReceipt(reviewer + '@' + 'a'.repeat(40)))).toBe(
+        'review'
+      );
+    }
+  });
+
+  test('maps skipped to skip', () => {
+    expect(classifyGlyph(parseReceipt('skipped@' + 'a'.repeat(40)))).toBe(
+      'skip'
+    );
+  });
+
+  test('returns null for a token outside the contract enumeration', () => {
+    expect(classifyGlyph(parseReceipt('user@' + 'a'.repeat(40)))).toBeNull();
+    expect(classifyGlyph(parseReceipt('codx@' + 'a'.repeat(40)))).toBeNull();
+    expect(classifyGlyph(null)).toBeNull();
+  });
+});
+
+describe('parsePlanReceipt', () => {
+  test('accepts user, triage and codex with a full 40-hex sha', () => {
+    for (const reviewer of ['user', 'triage', 'codex']) {
+      expect(parsePlanReceipt(reviewer + '@' + 'a'.repeat(40))).toEqual({
+        reviewer,
+        sha: 'a'.repeat(40),
+        is_skip: false
+      });
+    }
+  });
+
+  test('rejects skipped, other reviewers and short shas', () => {
+    expect(parsePlanReceipt('skipped@' + 'a'.repeat(40))).toBeNull();
+    expect(parsePlanReceipt('opus@' + 'a'.repeat(40))).toBeNull();
+    expect(parsePlanReceipt('user@' + 'a'.repeat(12))).toBeNull();
+    expect(parsePlanReceipt(undefined)).toBeNull();
   });
 });
 
@@ -209,7 +322,8 @@ describe('enrichIssueWorkflow', () => {
       },
       dir
     );
-    expect(wf.stages.spec.state).toBe('stale');
+    expect(wf.stages.spec.fill).toBe('dim');
+    expect(wf.stages.spec.glyph).toBe('review');
     expect(wf.stages.spec.stale).toBe(true);
     expect(wf.route).toBe('spec_backed');
     expect(wf.stages.plan).toBeUndefined();
@@ -232,9 +346,10 @@ describe('enrichIssueWorkflow', () => {
       dir
     );
     expect(wf.route).toBe('full_plan');
-    expect(wf.stages.plan?.state).toBe('on');
-    expect(wf.stages.pr.state).toBe('on');
-    expect(wf.stages.merge.state).toBe('dim');
+    expect(wf.stages.plan?.fill).toBe('full');
+    expect(wf.stages.plan?.glyph).toBeNull();
+    expect(wf.stages.pr.fill).toBe('full');
+    expect(wf.stages.merge.fill).toBe('dim');
     expect(wf.chips.fast_track).toBe(true);
     expect(wf.chips.pr).toEqual({ number: 42 });
   });
@@ -268,6 +383,77 @@ describe('enrichIssueWorkflow', () => {
   });
 });
 
+describe('implStage', () => {
+  test('a receipt-less resolved bead fills impl with no glyph (§4.1)', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+
+    for (const status of ['resolved', 'closed']) {
+      const wf = enrichIssueWorkflow(
+        { id: 'UI-1', status, metadata: { route: 'spec_backed' } },
+        dir
+      );
+      expect(wf.stages.impl.fill).toBe('full');
+      expect(wf.stages.impl.glyph).toBeNull();
+    }
+  });
+
+  test('in_progress and pr_url stay dim', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+
+    const running = enrichIssueWorkflow(
+      { id: 'UI-1', status: 'in_progress', metadata: {} },
+      dir
+    );
+    const with_pr = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        status: 'open',
+        metadata: { pr_url: 'https://github.com/o/r/pull/1' }
+      },
+      dir
+    );
+
+    expect(running.stages.impl.fill).toBe('dim');
+    expect(with_pr.stages.impl.fill).toBe('dim');
+  });
+
+  test('an untouched open bead leaves impl empty', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+
+    const wf = enrichIssueWorkflow(
+      { id: 'UI-1', status: 'open', metadata: {} },
+      dir
+    );
+
+    expect(wf.stages.impl.fill).toBe('none');
+  });
+
+  test('a receipt outside the contract enumeration fills without a glyph', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    const sha = commitAll(dir, 'init');
+    git(dir, ['branch', 'UI-1']);
+
+    const wf = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        status: 'in_progress',
+        metadata: { impl_review: 'user@' + sha }
+      },
+      dir
+    );
+
+    expect(wf.stages.impl.fill).toBe('full');
+    expect(wf.stages.impl.glyph).toBeNull();
+  });
+});
+
 describe('planStage (full_plan)', () => {
   test('no plan_path → empty', () => {
     const dir = makeRepo();
@@ -277,7 +463,7 @@ describe('planStage (full_plan)', () => {
       { status: 'in_progress', metadata: { route: 'full_plan' } },
       dir
     );
-    expect(wf.stages.plan?.state).toBe('empty');
+    expect(wf.stages.plan?.fill).toBe('none');
   });
 
   test('valid user receipt, fresh → reviewed', () => {
@@ -295,7 +481,8 @@ describe('planStage (full_plan)', () => {
       },
       dir
     );
-    expect(wf.stages.plan?.state).toBe('reviewed');
+    expect(wf.stages.plan?.fill).toBe('full');
+    expect(wf.stages.plan?.glyph).toBeNull();
     expect(wf.stages.plan?.stale).toBe(false);
   });
 
@@ -316,7 +503,7 @@ describe('planStage (full_plan)', () => {
       },
       dir
     );
-    expect(wf.stages.plan?.state).toBe('stale');
+    expect(wf.stages.plan?.fill).toBe('dim');
     expect(wf.stages.plan?.stale).toBe(true);
   });
 
@@ -336,7 +523,8 @@ describe('planStage (full_plan)', () => {
       },
       dir
     );
-    expect(wf.stages.plan?.state).toBe('dim');
+    expect(wf.stages.plan?.fill).toBe('dim');
+    expect(wf.stages.plan?.glyph).toBeNull();
     expect(wf.stages.plan?.receipt).toBe(raw);
   });
 
@@ -358,7 +546,7 @@ describe('planStage (full_plan)', () => {
         },
         dir
       );
-      expect(wf.stages.plan?.state).toBe('dim');
+      expect(wf.stages.plan?.fill).toBe('dim');
     }
   });
 
@@ -373,7 +561,7 @@ describe('planStage (full_plan)', () => {
       },
       dir
     );
-    expect(wf.stages.plan?.state).toBe('on');
+    expect(wf.stages.plan?.fill).toBe('full');
   });
 
   test('no plan_review key + in_progress → dim (draft pending)', () => {
@@ -387,7 +575,7 @@ describe('planStage (full_plan)', () => {
       },
       dir
     );
-    expect(wf.stages.plan?.state).toBe('dim');
+    expect(wf.stages.plan?.fill).toBe('dim');
     expect(wf.stages.plan?.receipt).toBeNull();
   });
 
@@ -408,7 +596,8 @@ describe('planStage (full_plan)', () => {
       },
       dir
     );
-    expect(wf.stages.plan?.state).toBe('stale');
+    expect(wf.stages.plan?.fill).toBe('dim');
+    expect(wf.stages.plan?.stale).toBe(true);
   });
 
   test('worktree-dirty check bypasses the stale_cache', () => {
@@ -426,7 +615,7 @@ describe('planStage (full_plan)', () => {
       { status: 'in_progress', metadata: md },
       dir
     );
-    expect(first.stages.plan?.state).toBe('reviewed');
+    expect(first.stages.plan?.fill).toBe('full');
     // Dirty the plan WITHOUT advancing HEAD — the git-log cache still says
     // "unchanged", so only a cache-bypassing dirty probe can flip it to stale.
     writeFile(dir, 'docs/plan.md', '# plan\ndirtied\n');
@@ -434,6 +623,6 @@ describe('planStage (full_plan)', () => {
       { status: 'in_progress', metadata: md },
       dir
     );
-    expect(second.stages.plan?.state).toBe('stale');
+    expect(second.stages.plan?.stale).toBe(true);
   });
 });
