@@ -80,16 +80,18 @@ const member = (entry.external === true || in_pr_wait) && !in_other_lane;
 
 external 우회는 유지하되 `queue`/`done` 소속이면 거부한다. 스토어가 배타성의 최종 수문이 되어, overlay 밖의 새 경로가 생겨도 durable 상태는 오염되지 않는다. 두 메서드에 동일 규칙을 적용하는 이유는, 수동 [머지] 클릭 경로(`enqueueMerge`)도 같은 계약 아래 있어야 UI 밖에서 들어오는 요청이 우회로가 되지 않기 때문이다.
 
-### 3. halt 의 종료 보장 — `merge-queue.js`
+### 3. halt 의 종료 보장 — `merge-queue.js`, `attach.js`
 
-`failAndDequeue` 가 head SHA 를 읽지 못할 때 무조건 halt 하는 대신, 그 bead 의 durable 레인 소속으로 갈라진다.
+`failAndDequeue` 가 head SHA 를 읽지 못할 때 무조건 halt 하는 대신 갈라지되, 그 분기 기준은 **"PR 폴러가 이 bead 를 관측하는가"** 다. halt 의 재개 신호가 오직 관측 도착이기 때문이다(`merge-queue.js:733-741`). 폴러의 관측 대상은 `pr_wait` + 현재 external registry 행이다(`pr-poller.js:503-523`).
 
-- **어느 durable 레인에도 없음** → 배제 기록 없이 즉시 `dequeue`. 변경 2 이후 인롤러도 수동 클릭도 그 bead 를 다시 넣을 수 없으므로, 배제 기록의 목적(재등록 차단)이 성립하지 않는다. 기록을 남길 자리도 없다 — `removeFromLanes` 가 레인 이탈 시 `auto_merge_skips` 를 이미 지운다(`queue-store.js:795-796`).
-- **레인 멤버인데 head SHA 만 없음** → 기존 halt 유지(`halted_on_head` 설정). 레인 멤버는 폴러의 관측 대상이므로 재개 신호가 반드시 도착한다.
+- **`pr_wait` 멤버이거나 현재 external registry 멤버** → 기존 halt 유지(`halted_on_head` 설정). 관측이 반드시 도착하므로 재개가 보장된다.
+- **그 외 전부** → 배제 기록 없이 즉시 `dequeue`. 여기에는 `queue`/`done` 멤버와 어느 곳에도 없는 bead 가 모두 포함된다. 전자는 변경 2 가 재등록을 막고, 후자는 `pr_wait` 에도 registry 에도 없어 external 우회로도 재등록될 수 없다. 배제 기록을 남길 자리도 없다 — `removeFromLanes` 가 레인 이탈 시 `auto_merge_skips` 를 이미 지운다(`queue-store.js:795-796`).
 
-`processItem` 앞쪽의 배제 필터 halt(`merge-queue.js:542-556`)에도 같은 갈래를 적용한다. 그 경로는 `skipRecord` 가 있는 경우에만 도달하므로 레인 비멤버에게는 현재도 도달 불가하지만, 두 halt 지점이 서로 다른 규칙을 갖지 않게 맞춘다.
+분기 기준을 "durable 레인 소속"으로 잡으면 안 된다. 이번 사고의 오염 상태가 정확히 `done` + `merge_queue` 이므로 그 기준에서는 오염된 head 가 "레인 멤버"로 분류되어 halt 쪽에 남고, 폴러는 `done` 을 관측하지 않으므로 재개 신호가 영원히 오지 않는다 — 고치려는 고착이 그대로 재현된다. 반대 방향의 오류도 있다: 정상 external 행은 durable 레인 어디에도 없지만 registry 멤버인 동안 external 우회로 재등록될 수 있으므로, "레인 비멤버는 재등록 불가"는 참이 아니다.
 
-레인 조회는 드라이버가 이미 쓰는 `snapshot()` 한 번으로 끝나며 새 의존성을 만들지 않는다.
+이 판정에는 external registry 멤버십 조회가 필요하고 드라이버에는 그 경로가 없으므로, `createMergeQueue` 에 dep 을 하나 추가한다 — `isExternalRow: (bead_id) => boolean`, `attach.js` 에서 `runtime.externalPrs.get(ws_key, bead_id)` 로 배선한다. 조회가 던지면 `false` 로 취급해 **배출** 쪽으로 보낸다. 이 방향이 안전한 쪽이다: 잘못 배출된 항목이 실제로 관측 대상이었다면 인롤러가 자격을 다시 판정해 큐에 되돌리므로 손실이 없는 반면, 잘못된 halt 는 큐 전체를 세우고 그 재개 조건이 바로 판정 불가능했던 그 관측이라 영구 정지가 된다 — 이 스펙이 고치려는 실패 모드가 정확히 그것이다. `pr_wait` 멤버십은 드라이버가 이미 쓰는 `snapshot()` 으로 읽는다.
+
+`processItem` 앞쪽의 배제 필터 halt(`merge-queue.js:542-556`)에도 같은 갈래를 적용해, 두 halt 지점이 서로 다른 규칙을 갖지 않게 맞춘다.
 
 ## 영향받는 기존 경로
 
@@ -101,17 +103,17 @@ external 우회는 유지하되 `queue`/`done` 소속이면 거부한다. 스토
 
 워커로 완료된 bead 를 사람이 나중에 직접 새 PR 로 올리고 bd 를 `resolved` 로 되돌리면, 그 bead 는 `done` 에 남은 채 정당한 external 행이 된다. 변경 2 는 그 행을 external 자격에서 배제하므로 자동 [정리] 대상에서 빠진다.
 
-이 경우 해소 경로는 남아 있다 — 그 bead 를 워커 레인으로 다시 넣으면(`moveToPrWait` 이 `removeFromLanes` 를 부르므로) `done` 에서 빠져 정상 처리된다.
+**해소 경로는 UI 에 없다.** `done` 행은 드래그 불가이고(`app/views/worker/index.js:1748`) 레인에서 빼는 액션도 없다. `moveToPrWait` 의 호출자는 scheduler 내부 두 곳뿐이며(`scheduler.js:1366`·`1973`) attempt 레코드를 요구하므로 사람이 직접 부를 수 있는 경로가 아니다. 남는 실질 경로는 하나 — 그 bead 로 워커 작업을 다시 돌리는 것이다. 워커가 `queue` → running → `pr_wait` 으로 옮기면서 `removeFromLanes` 가 `done` 에서 빼므로 그 뒤로는 정상 처리된다. 사람이 워커 밖에서 만든 PR 을 자동 정리하고 싶다면 그 방법뿐이고, 그 전까지는 수동 [머지]/[정리] 클릭도 이 bead 에 대해서는 스토어에서 거부된다.
 
-이 대가를 받는 대신 durable 레인 배타성이 조건 없이 성립한다. 판별을 정교하게 하려면 `done` 엔트리에 PR URL 스냅샷을 넣어 동일성을 비교해야 하는데(`attempt` 에 `pr_url` 은 durable 필드가 아니다), durable 스키마를 늘리는 것은 이 버그의 표면인 "레인 간 상태 중복"을 오히려 키운다.
+이것이 이 변경이 받는 회귀 비용이다. 그 대가로 durable 레인 배타성이 조건 없이 성립한다. 판별을 정교하게 하려면 `done` 엔트리에 PR URL 스냅샷을 넣어 동일성을 비교해야 하는데(`attempt` 에 `pr_url` 은 durable 필드가 아니다), durable 스키마를 늘리는 것은 이 버그의 표면인 "레인 간 상태 중복"을 오히려 키운다.
 
 ## 수용 기준
 
 1. `done`/`queue` 레인 멤버는 `external: true` 엔트리로도 `merge_queue` 에 들어가지 않는다.
 2. `overlaidPrWait` 이 `queue`/`done` 멤버를 external 행으로 얹지 않는다.
 3. cleanup 성공 직후 그 bead 는 external registry 에서 사라진다.
-4. 어느 durable 레인에도 없는 head 는 head SHA 관측 없이 큐에서 배출되고, 드라이버가 다음 항목으로 진행한다.
-5. durable 레인 멤버인 head 는 head SHA 가 없을 때 기존대로 halt 하고, 관측이 도착하면 재개한다.
+4. 폴러가 관측하지 않는 head — `queue`/`done` 멤버이거나 `pr_wait` 에도 external registry 에도 없는 bead — 는 head SHA 관측 없이 큐에서 배출되고, 드라이버가 다음 항목으로 진행한다. 이번 사고의 오염 상태(`done` + `merge_queue`)가 이 갈래에 속한다.
+5. 폴러가 관측하는 head — `pr_wait` 멤버이거나 현재 external registry 멤버 — 는 head SHA 가 없을 때 기존대로 halt 하고, 관측이 도착하면 재개한다.
 6. 정상 external 행(`durable === false`, 어느 레인에도 없음)의 머지·[정리] 경로에 회귀가 없다.
 7. 기존 `server/worker/` 테스트 전량이 통과한다.
 
@@ -120,15 +122,20 @@ external 우회는 유지하되 `queue`/`done` 소속이면 거부한다. 스토
 | # | seam | 파일 | RED 조건 |
 | --- | --- | --- | --- |
 | 1 | `enqueueMergeAuto` 가 `done` 멤버의 external 엔트리를 거부 | `queue-store.test.js` | 현재 코드에서 `merge_queue` 에 들어감 |
-| 2 | `enqueueMerge` 가 `done`/`queue` 멤버의 external 엔트리를 거부 | `queue-store.test.js` | 현재 코드에서 `merge_queue` 에 들어감 |
-| 3 | `overlaidPrWait` 이 `queue`/`done` 멤버에게 양보 | `merge-candidates.test.js` (신규) | 현재 코드에서 external 행으로 얹힘 |
-| 4 | `externalPrStore.drop` 이 행을 제거하고 `list` 에서 사라짐 | `external-pr.test.js` | `drop` 부재 |
-| 5 | `failAndDequeue` 가 레인 비멤버를 head SHA 없이 dequeue | `merge-queue.test.js` | 현재 코드에서 halt 하고 큐에 남음 |
-| 6 | `failAndDequeue` 가 레인 멤버는 halt 유지 | `merge-queue.test.js` | 변경 3 도입 시 회귀 방지 |
+| 2 | `enqueueMergeAuto` 가 `queue` 멤버의 external 엔트리를 거부 | `queue-store.test.js` | 현재 코드에서 `merge_queue` 에 들어감 |
+| 3 | `enqueueMerge` 가 `done`/`queue` 멤버의 external 엔트리를 거부 | `queue-store.test.js` | 현재 코드에서 `merge_queue` 에 들어감 |
+| 4 | `overlaidPrWait` 이 `queue`/`done` 멤버에게 양보 | `merge-candidates.test.js` (신규) | 현재 코드에서 external 행으로 얹힘 |
+| 5 | `externalPrStore.drop` 이 행을 제거하고 `list` 에서 사라짐 | `external-pr.test.js` | `drop` 부재 |
+| 6 | cleanup 성공이 그 bead 를 external registry 에서 내림 | `pr-actions.test.js` | 호출 부재 — `drop` 만 있고 배선이 없으면 통과하지 못함 |
+| 7 | `done` + `merge_queue` 오염 head 가 배출되고 드라이버가 다음 항목으로 진행 | `merge-queue.test.js` | 현재 코드에서 halt 하고 큐에 남아 뒤 항목이 정지 |
+| 8 | `pr_wait` 멤버 head 는 head SHA 가 없을 때 halt 유지 | `merge-queue.test.js` | 변경 3 도입 시 회귀 방지 |
+| 9 | external registry 멤버 head 는 halt 유지하고 관측 도착 시 재개 | `merge-queue.test.js` | 변경 3 도입 시 회귀 방지 |
 
-seam 1·2·3·4·5 가 red-first 대상이다. seam 6 은 변경 3 이 기존 halt 를 과잉 제거하지 않음을 고정하는 회귀 방지용이므로 변경 전에도 통과할 수 있다.
+seam 1-7 이 red-first 대상이다. seam 8·9 는 변경 3 이 기존 halt 를 과잉 제거하지 않음을 고정하는 회귀 방지용이므로 변경 전에도 통과할 수 있다.
 
-seam 1 은 이번 재현 스크립트(`moveToDone` → `enqueueMergeAuto`)를 그대로 정식 테스트로 옮긴다. seam 3 은 `getWorkerRuntime().externalPrs` 싱글턴에 행을 넣어야 하므로, 기존 테스트가 쓰는 주입 방식을 따르되 없으면 registry 를 직접 `replace` 한 뒤 검사한다.
+seam 6 과 7 이 이 스펙의 핵심 배선을 증명한다. seam 5 는 `drop` 이라는 단위 기능만 보므로 `pr-actions` 에서 호출을 빠뜨려도 통과한다 — 그래서 cleanup 경로가 실제로 registry 를 내리는지 보는 seam 6 이 따로 필요하다. 마찬가지로 seam 7 은 "레인 비멤버"라는 추상 조건이 아니라 **이번 사고의 실제 오염 상태**(`done` 멤버이면서 `merge_queue` head)를 그대로 세팅하고, 그 head 가 배출된 뒤 두 번째 항목이 처리되는 데까지를 단언한다.
+
+seam 1 은 이번 재현 스크립트(`moveToDone` → `enqueueMergeAuto`)를 그대로 정식 테스트로 옮긴다. seam 4 는 `getWorkerRuntime().externalPrs` 싱글턴에 행을 넣어야 하므로, 기존 테스트가 쓰는 주입 방식을 따르되 없으면 registry 를 직접 `replace` 한 뒤 검사한다. seam 9 는 새 `isExternalRow` dep 에 `true` 를 주입해 halt 를 만든 뒤, 관측 도착(`queue-changed` + 판독 가능한 head SHA)으로 재개되는지를 본다.
 
 ## Non-goals
 
@@ -152,4 +159,4 @@ seam 1 은 이번 재현 스크립트(`moveToDone` → `enqueueMergeAuto`)를 �
 2. 런타임 설정 정합 확인 — `~/.config/bdui/config.toml` 이 이 변경으로 바뀐 키를 쓰지 않음을 확인한다(이 스펙은 설정 스키마를 바꾸지 않으므로 변경 없음이 기대값이다).
 3. `bdui-shared restart` 로 공유 서버를 재시작한다.
 4. 재시작 검증 — 프로세스 실행 경로가 머지된 체크아웃(`<repo>/server/index.js`)인지, listening port 가 기대값인지, HTTP 응답이 정상인지 세 가지를 모두 확인한다. 하나라도 어긋나면 완료로 보고하지 않는다.
-5. 머지 큐 상태 확인 — 재시작 후 해당 워크스페이스의 `merge_queue` 가 비어 있거나, 남아 있다면 그 항목이 실제 `pr_wait` 멤버인지 확인한다. 이 변경의 대상이 정확히 그 정합성이기 때문이다.
+5. 머지 큐 정합성 확인 — 재시작 후 해당 워크스페이스의 `merge_queue` 항목이 하나도 없거나, 있다면 각 항목이 (a) `pr_wait` 멤버이거나 현재 external registry 행이고 (b) `queue`/`done` 과 겹치지 않는지 확인한다. 정상 external 항목은 설계상 `pr_wait` 멤버가 아니므로 `pr_wait` 멤버십만 요구하면 정상 상태를 실패로 판정하게 된다. 이 변경의 대상이 정확히 이 정합성이다.
