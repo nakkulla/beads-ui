@@ -28,6 +28,16 @@ import { monitorGroupTemplate } from './row.js';
 export const MONITOR_IN_PROGRESS_KEY = 'tab:monitor:in-progress';
 
 /**
+ * Live-metric redraw cadence while the tab is visible.
+ *
+ * Push alone is not enough here: 경과시간과 하트비트는 시계가 지나가는 것만으로
+ * 값이 바뀌는데, 세션이 조용해지면 fanout도 같이 멈춘다 — 그러면 마지막
+ * 이벤트가 10분 전이어도 점이 계속 "활성"으로 남아, 죽은 세션을 살아 있다고
+ * 말하게 된다. 초 단위로 표시하므로 주기도 1초다.
+ */
+const TICK_MS = 1_000;
+
+/**
  * @typedef {Object} MonitorViewOptions
  * @property {(id: string) => void} gotoIssue
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
@@ -69,6 +79,8 @@ export function createMonitorView(mount_element, options) {
   let unsubscribe_issues = null;
   /** @type {null | (() => void)} */
   let unsubscribe_queue = null;
+  /** @type {any} */
+  let tick_timer = null;
 
   /**
    * The subscribed in_progress issues, newest-updated first.
@@ -206,15 +218,37 @@ export function createMonitorView(mount_element, options) {
     });
   }
 
+  function stopTick() {
+    if (tick_timer !== null) {
+      clearInterval(tick_timer);
+      tick_timer = null;
+    }
+  }
+
   return {
-    // 라이브 지표는 자체 타이머가 아니라 push로 갱신된다: 세션 로그 publish가
-    // 3초 coalesce 큐 fanout을 예약하므로(UI-53es §1) 실행 중인 행은 그 주기로
-    // 다시 그려지고, 이슈 변경은 이슈 스토어 구독이 끌어온다.
+    // 데이터 갱신은 push가 끌어온다 (세션 로그 publish가 3초 coalesce 큐
+    // fanout을 예약하고, 이슈 변경은 이슈 스토어 구독이 밀어준다). 시계만
+    // 지나가도 값이 바뀌는 경과·하트비트를 위해 탭이 보이는 동안만 tick을 돈다.
     load() {
       log('load');
       doRender();
+      if (tick_timer === null) {
+        tick_timer = setInterval(() => {
+          try {
+            doRender();
+          } catch {
+            // ignore
+          }
+        }, TICK_MS);
+      }
+    },
+    // 탭을 떠나면 화면은 그대로 두되 시계는 멈춘다 — 보이지 않는 뷰를 초당
+    // 다시 그릴 이유가 없다.
+    pause() {
+      stopTick();
     },
     clear() {
+      stopTick();
       if (unsubscribe_issues) {
         unsubscribe_issues();
         unsubscribe_issues = null;

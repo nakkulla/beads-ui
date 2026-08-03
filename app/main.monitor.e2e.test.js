@@ -13,6 +13,8 @@ import { createWsClient } from './ws.js';
 vi.mock('./ws.js', () => {
   /** @type {Record<string, (p: any) => void>} */
   const handlers = {};
+  /** @type {Set<(s: 'connecting'|'open'|'closed'|'reconnecting') => void>} */
+  const conn_handlers = new Set();
   /** @type {Array<{ type: string, payload: any }>} */
   const sent = [];
   const singleton = {
@@ -51,12 +53,28 @@ vi.mock('./ws.js', () => {
     },
     _reset() {
       sent.length = 0;
+      conn_handlers.clear();
       for (const key of Object.keys(handlers)) {
         delete handlers[key];
       }
     },
-    onConnection() {
-      return () => {};
+    _clearSent() {
+      sent.length = 0;
+    },
+    /**
+     * @param {(s: 'connecting'|'open'|'closed'|'reconnecting') => void} fn
+     */
+    onConnection(fn) {
+      conn_handlers.add(fn);
+      return () => conn_handlers.delete(fn);
+    },
+    /**
+     * @param {'connecting'|'open'|'closed'|'reconnecting'} state
+     */
+    _emitConn(state) {
+      for (const fn of Array.from(conn_handlers)) {
+        fn(state);
+      }
     },
     close() {},
     getState() {
@@ -67,6 +85,18 @@ vi.mock('./ws.js', () => {
 });
 
 const NOW = 1_700_000_000_000;
+
+/**
+ * Let every queued microtask (and the macrotask boundary behind it) settle —
+ * `subscribeList` resolves through several of them before its `finally` clears
+ * the pending guard, so a fixed number of `Promise.resolve()` hops is not a
+ * reliable "subscriptions are settled" point.
+ *
+ * @returns {Promise<void>}
+ */
+function flush() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 /**
  * The `subscribe-list` client ids the app asked for.
@@ -184,6 +214,89 @@ describe('monitor tab direct entry (UI-53es)', () => {
         ?.querySelector('.mon-row__beat')
         ?.classList.contains('mon-row__beat--live')
     ).toBe(true);
+  });
+});
+
+describe('subscription lifecycle after a reconnect', () => {
+  // 재접속하면 이전 socket의 unsub 클로저는 죽는다. 그 map을 그대로 두면
+  // `ensure*Subscriptions`가 "이미 구독됨"으로 읽고 건너뛰어, 활성 탭이 데이터
+  // 없이 얼어붙는다.
+  test('re-sends the active tab list subscription on the new socket', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+
+    expect(subscribedListIds(client)).toContain('tab:monitor:in-progress');
+
+    // 재접속 이후에 나간 메시지만 센다.
+    client._clearSent();
+    client._emitConn('reconnecting');
+    client._emitConn('open');
+    await flush();
+
+    expect(subscribedListIds(client)).toContain('tab:monitor:in-progress');
+  });
+
+  test('re-sends the Board column subscriptions too', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/board';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+
+    expect(subscribedListIds(client)).toContain('tab:board:in-progress');
+
+    client._clearSent();
+    client._emitConn('reconnecting');
+    client._emitConn('open');
+    await flush();
+
+    expect(subscribedListIds(client)).toContain('tab:board:in-progress');
+  });
+
+  // 구독 요청이 도는 중에 탭을 떠나면 그 결과는 이미 주인이 없다. 저장해 버리면
+  // 재진입이 "구독 있음"으로 착각해 영구히 건너뛴다.
+  test('re-subscribes after leaving and re-entering a tab mid-request', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    // 구독 요청은 나갔지만 아직 resolve되지 않은 시점에 탭을 떠난다.
+    window.location.hash = '#/board';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    window.location.hash = '#/monitor';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await flush();
+
+    client._trigger('snapshot', {
+      type: 'snapshot',
+      id: 'tab:monitor:in-progress',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-back',
+          title: '재진입',
+          status: 'in_progress',
+          updated_at: Date.now()
+        }
+      ]
+    });
+    await Promise.resolve();
+
+    expect(
+      document.querySelector('#monitor-root [data-issue-id="UI-back"]')
+    ).not.toBe(null);
   });
 });
 

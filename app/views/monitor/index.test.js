@@ -1,10 +1,10 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MONITOR_IN_PROGRESS_KEY, createMonitorView } from './index.js';
 
 const NOW = 1_700_000_000_000;
 
 /**
- * @param {{ issues?: any[], queue?: any }} [input]
+ * @param {{ issues?: any[], queue?: any, now?: () => number }} [input]
  */
 function setup(input = {}) {
   document.body.innerHTML = '<div id="m"></div>';
@@ -31,7 +31,7 @@ function setup(input = {}) {
     gotoIssue,
     issueStores: /** @type {any} */ (issueStores),
     queueStore: /** @type {any} */ (queueStore),
-    now: () => NOW
+    now: input.now || (() => NOW)
   });
   return { mount, view, gotoIssue };
 }
@@ -163,6 +163,104 @@ describe('views/monitor', () => {
     view.load();
 
     view.clear();
+
+    expect(mount.querySelectorAll('.mon-row').length).toBe(0);
+  });
+});
+
+describe('views/monitor live clock', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // 세션이 조용해지면 push fanout도 멈춘다 — 그때 하트비트가 활성으로 굳으면
+  // 죽은 세션이 살아 있다고 말하게 된다.
+  test('lets a heartbeat go stale with no further push', () => {
+    let now = NOW;
+    const { mount, view } = setup({
+      now: () => now,
+      issues: [{ id: 'UI-1', title: '실행중', updated_at: NOW }],
+      queue: {
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'UI-1',
+            status: 'running',
+            started_at: NOW - 10_000,
+            last_event_at: NOW - 5_000
+          }
+        }
+      }
+    });
+    view.load();
+
+    expect(
+      mount
+        .querySelector('.mon-row__beat')
+        ?.classList.contains('mon-row__beat--live')
+    ).toBe(true);
+
+    now = NOW + 120_000;
+    vi.advanceTimersByTime(1_000);
+
+    expect(
+      mount
+        .querySelector('.mon-row__beat')
+        ?.classList.contains('mon-row__beat--live')
+    ).toBe(false);
+    expect(mount.querySelector('.mon-row__beat-age')?.textContent).toContain(
+      '2분 전'
+    );
+  });
+
+  test('pause stops the clock and load restarts it', () => {
+    let now = NOW;
+    const { mount, view } = setup({
+      now: () => now,
+      issues: [{ id: 'UI-1', title: '실행중', updated_at: NOW }],
+      queue: {
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'UI-1',
+            status: 'running',
+            started_at: NOW - 1_000,
+            last_event_at: NOW
+          }
+        }
+      }
+    });
+    view.load();
+
+    view.pause();
+    now = NOW + 120_000;
+    vi.advanceTimersByTime(5_000);
+    expect(
+      mount
+        .querySelector('.mon-row__beat')
+        ?.classList.contains('mon-row__beat--live')
+    ).toBe(true);
+
+    view.load();
+    expect(
+      mount
+        .querySelector('.mon-row__beat')
+        ?.classList.contains('mon-row__beat--live')
+    ).toBe(false);
+  });
+
+  test('clear stops the clock', () => {
+    const { mount, view } = setup({
+      issues: [{ id: 'UI-1', title: 'a', updated_at: NOW }]
+    });
+    view.load();
+
+    view.clear();
+    vi.advanceTimersByTime(5_000);
 
     expect(mount.querySelectorAll('.mon-row').length).toBe(0);
   });

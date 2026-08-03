@@ -415,6 +415,52 @@ export function bootstrap(root_element) {
     /** @type {Set<string>} */
     const pending_subscriptions = new Set();
 
+    /**
+     * Per-lane subscription generation. A `subscribe-list` is asynchronous, so
+     * its result can land AFTER the tab that asked for it was torn down; storing
+     * that unsub would make the next `ensure*` read "already subscribed" and skip
+     * forever, leaving the lane silently dataless. Each teardown bumps its lane's
+     * counter, and a completion whose captured generation no longer matches is
+     * released instead of stored.
+     *
+     * @type {{ board: number, worker: number, monitor: number }}
+     */
+    const sub_generation = { board: 0, worker: 0, monitor: 0 };
+
+    /**
+     * Store a completed subscription, or release it when its lane moved on.
+     *
+     * @param {Map<string, () => Promise<void>>} unsubs
+     * @param {'board'|'worker'|'monitor'} lane
+     * @param {number} generation
+     * @param {string} client_id
+     * @param {() => Promise<void>} unsub
+     * @returns {boolean} Whether it was kept.
+     */
+    function keepOrRelease(unsubs, lane, generation, client_id, unsub) {
+      if (generation !== sub_generation[lane]) {
+        void unsub().catch(() => {});
+        return false;
+      }
+      unsubs.set(client_id, unsub);
+      return true;
+    }
+
+    /**
+     * Bring every lane's subscriptions in line with the view on screen right
+     * now. Idempotent — each `ensure*` skips what it already holds — so it is
+     * safe to call from a subscription completion that arrived too late to be
+     * kept: releasing that one leaves the lane empty, and nothing else would
+     * ask again (the re-entry that raced it was skipped by the pending guard).
+     */
+    function syncSubscriptionsToView() {
+      const view = store.getState().view;
+      ensureBoardSubscriptions(view === 'board');
+      ensureWorkerSubscriptions(view === 'worker');
+      ensureMonitorSubscriptions(view === 'monitor');
+      ensureWorkerQueueChannel(view === 'worker' || view === 'monitor');
+    }
+
     // Closed column period (spec §3.2): the closed-issues subscription carries a
     // `params.since` bound derived from this range, applied on the FIRST
     // subscription and every re-subscription (workspace switch included).
@@ -464,10 +510,18 @@ export function bootstrap(root_element) {
             log('register %s store failed: %o', client_id, err);
           }
           pending_subscriptions.add(client_id);
+          const generation = sub_generation.board;
+          let released = false;
           void subscriptions
             .subscribeList(client_id, spec)
             .then((unsub) => {
-              board_unsubs.set(client_id, unsub);
+              released = !keepOrRelease(
+                board_unsubs,
+                'board',
+                generation,
+                client_id,
+                unsub
+              );
             })
             .catch((err) => {
               log('subscribe %s failed: %o', client_id, err);
@@ -475,6 +529,9 @@ export function bootstrap(root_element) {
             })
             .finally(() => {
               pending_subscriptions.delete(client_id);
+              if (released) {
+                syncSubscriptionsToView();
+              }
             });
         }
       } else {
@@ -527,6 +584,7 @@ export function bootstrap(root_element) {
     }
 
     function clearBoardSubscriptions() {
+      sub_generation.board += 1;
       for (const [client_id] of BOARD_SUBS) {
         const unsub = board_unsubs.get(client_id);
         if (unsub) {
@@ -568,10 +626,18 @@ export function bootstrap(root_element) {
           log('register %s store failed: %o', client_id, err);
         }
         pending_subscriptions.add(client_id);
+        const generation = sub_generation.worker;
+        let released = false;
         void subscriptions
           .subscribeList(client_id, { type })
           .then((unsub) => {
-            worker_unsubs.set(client_id, unsub);
+            released = !keepOrRelease(
+              worker_unsubs,
+              'worker',
+              generation,
+              client_id,
+              unsub
+            );
           })
           .catch((err) => {
             log('subscribe %s failed: %o', client_id, err);
@@ -579,11 +645,15 @@ export function bootstrap(root_element) {
           })
           .finally(() => {
             pending_subscriptions.delete(client_id);
+            if (released) {
+              syncSubscriptionsToView();
+            }
           });
       }
     }
 
     function clearWorkerSubscriptions() {
+      sub_generation.worker += 1;
       for (const [client_id] of WORKER_SUBS) {
         const unsub = worker_unsubs.get(client_id);
         if (unsub) {
@@ -658,10 +728,18 @@ export function bootstrap(root_element) {
           log('register %s store failed: %o', client_id, err);
         }
         pending_subscriptions.add(client_id);
+        const generation = sub_generation.monitor;
+        let released = false;
         void subscriptions
           .subscribeList(client_id, { type })
           .then((unsub) => {
-            monitor_unsubs.set(client_id, unsub);
+            released = !keepOrRelease(
+              monitor_unsubs,
+              'monitor',
+              generation,
+              client_id,
+              unsub
+            );
           })
           .catch((err) => {
             log('subscribe %s failed: %o', client_id, err);
@@ -669,11 +747,15 @@ export function bootstrap(root_element) {
           })
           .finally(() => {
             pending_subscriptions.delete(client_id);
+            if (released) {
+              syncSubscriptionsToView();
+            }
           });
       }
     }
 
     function clearMonitorSubscriptions() {
+      sub_generation.monitor += 1;
       for (const [client_id] of MONITOR_SUBS) {
         const unsub = monitor_unsubs.get(client_id);
         if (unsub) {
@@ -770,12 +852,22 @@ export function bootstrap(root_element) {
      */
     async function resubscribeAfterReconnect() {
       // The old socket is gone, so there is nothing to unsubscribe from — only
-      // the singleton guards and the now-unowned cached policy to release.
-      // Without clearing the worker-queue guard the new socket would never get a
-      // `subscribe-worker-queue` and the Worker view would sit frozen.
+      // the guards and the now-unowned cached policy to release. Dropping the
+      // per-lane unsub maps is what makes the list channels come back: their
+      // entries close over the DEAD socket, and `ensure*Subscriptions` reads a
+      // populated map as "already subscribed", so leaving them would freeze the
+      // active tab's data until a workspace switch. Bumping the generations with
+      // them keeps an in-flight pre-reconnect subscribe from re-populating the
+      // maps behind the fresh ones.
       display_policy_unsub = null;
       display_policy_store.clear();
       worker_queue_unsub = null;
+      board_unsubs.clear();
+      worker_unsubs.clear();
+      monitor_unsubs.clear();
+      sub_generation.board += 1;
+      sub_generation.worker += 1;
+      sub_generation.monitor += 1;
       const selected = store.getState().workspace.current?.path;
       if (selected) {
         try {
@@ -787,6 +879,7 @@ export function bootstrap(root_element) {
       }
       subscribeDisplayPolicy();
       const view = store.getState().view;
+      ensureBoardSubscriptions(view === 'board');
       ensureWorkerSubscriptions(view === 'worker');
       ensureMonitorSubscriptions(view === 'monitor');
       ensureWorkerQueueChannel(view === 'worker' || view === 'monitor');
@@ -1306,6 +1399,8 @@ export function bootstrap(root_element) {
       }
       if (s.view === 'monitor') {
         monitor_view.load();
+      } else {
+        monitor_view.pause();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };
