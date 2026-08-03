@@ -9,7 +9,7 @@
  * - Server can also send unsolicited events (e.g., subscription `snapshot`).
  */
 
-/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'dep-add'|'dep-remove'|'update-assignee'|'update-exec-settings'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-queue-set-slots'|'worker-queue-set-exec-default'|'worker-queue-remove'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-attempt-dismiss'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-ui-order'|'unsubscribe-ui-order'|'ui-order-set'|'ui-order-snapshot'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'dep-add'|'dep-remove'|'update-assignee'|'update-exec-settings'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-queue-set-slots'|'worker-queue-set-exec-default'|'worker-queue-remove'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-attempt-dismiss'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-ui-order'|'unsubscribe-ui-order'|'ui-order-set'|'ui-order-snapshot'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-auto-toggle'} MessageType */
 
 /**
  * @typedef {Object} RequestEnvelope
@@ -122,7 +122,11 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   // current workspace — the monitor tab is a cross-repo dashboard.
   'subscribe-monitor-pipeline',
   'unsubscribe-monitor-pipeline',
-  'monitor-pipeline-snapshot'
+  'monitor-pipeline-snapshot',
+  // Master automation switch (UI-qrfo §6): turns `auto_advance` + `auto_merge`
+  // on/off across EVERY visible workspace at once. No `root_dir` — the target
+  // is the whole visible set, which is also the button's denominator.
+  'monitor-auto-toggle'
 ]);
 
 /**

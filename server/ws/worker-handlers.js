@@ -58,6 +58,7 @@ import {
   getConnWorkspace,
   log
 } from './context.js';
+import { targetWorkspaceOf } from './workspace-target.js';
 
 /**
  * Server-wide single queue store (from the shared Worker runtime) so all
@@ -81,11 +82,44 @@ function queueStore() {
 const SUBSCRIBERS = new Map();
 
 /**
+ * The connection's own workspace. Still the answer for the SUBSCRIPTION
+ * handlers: a `worker-queue` / `session-log` subscription is connection-scoped
+ * by design (UI-qrfo §5 「구독 채널은 건드리지 않는다」), and the monitor reads a
+ * separate server-global aggregation rather than opening one per repo.
+ *
  * @param {WebSocket} ws
  * @returns {string}
  */
 function workspaceKeyOf(ws) {
   return getConnWorkspace(ws)?.root_dir || '';
+}
+
+/**
+ * The workspace a MUTATION targets (UI-qrfo §5): the optional `payload.root_dir`
+ * when the request names one, this connection's workspace otherwise.
+ *
+ * Replies `bad_request` and returns `null` when the named directory is not in
+ * the registry allow list — path injection must not be able to reach a repo
+ * nobody registered (§10).
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @returns {string|null}
+ */
+function mutationWorkspaceOf(ws, req) {
+  const key = targetWorkspaceOf(ws, req.payload);
+  if (key === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload.root_dir must be an absolute path in the available workspace list'
+        )
+      )
+    );
+  }
+  return key;
 }
 
 /**
@@ -911,7 +945,10 @@ export async function handleWorkerQueuePlace(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   /** @type {import('../worker/admission.js').AdmissionResult | null} */
   let admission = null;
   try {
@@ -996,7 +1033,10 @@ export function handleWorkerQueueReorder(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const result = queueStore().reorder(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
@@ -1025,7 +1065,10 @@ export function handleWorkerQueueToggle(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const result = queueStore().toggleAutoAdvance(key, {
     expected_revision: revisionOf(p),
     on: p.on
@@ -1058,7 +1101,10 @@ export function handleWorkerQueueSetSlots(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const result = queueStore().setSlots(key, {
     expected_revision: revisionOf(p),
     slots: p.slots
@@ -1090,7 +1136,10 @@ export function handleWorkerQueueSetExecDefault(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const result = queueStore().setExecDefault(key, {
     expected_revision: revisionOf(p),
     key: p.key,
@@ -1119,7 +1168,10 @@ export async function handleWorkerAttemptPause(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   /** @type {{ ok: boolean, reason?: string }} */
   let result = { ok: false, reason: 'no_attachment' };
   try {
@@ -1162,7 +1214,10 @@ export async function handleWorkerAttemptStop(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   let stopped = false;
   try {
     stopped = await stopWorkerAttempt(key, p.attempt_id);
@@ -1200,7 +1255,10 @@ export async function handleWorkerAttemptResume(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const current = /** @type {any} */ (queueStore().snapshot(key));
   if (revisionOf(p) !== current.revision) {
     ws.send(
@@ -1264,7 +1322,10 @@ export function handleWorkerAttemptDismiss(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const result = queueStore().dismissAttempt(key, {
     attempt_id: p.attempt_id,
     expected_revision: revisionOf(p)
@@ -1345,7 +1406,10 @@ export function handleWorkerMergeQueueAdd(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   // An EXTERNAL row is a wire-only synthesis (UI-7agi §2), so the store cannot
   // check its lane membership — the overlay that created it vouches for it here.
   const overlaid = withExternalPrWait(
@@ -1397,7 +1461,10 @@ export function handleWorkerMergeQueueAdd(ws, req) {
  */
 export function handleWorkerMergeQueueAddAll(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const result = enrollWorkerMergeCandidates(key, {
     expected_revision: revisionOf(p)
   });
@@ -1461,7 +1528,10 @@ export function handleWorkerMergeAutoToggle(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const state = p.on === false ? workerMergeQueueState(key) : null;
   const result = queueStore().toggleAutoMerge(key, {
     expected_revision: revisionOf(p),
@@ -1562,7 +1632,10 @@ export function handleWorkerMergeQueueRemove(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const state = workerMergeQueueState(key);
   if (bulk) {
     const result = queueStore().cancelMerge(key, {
@@ -1645,7 +1718,10 @@ export async function handleWorkerPrDiscard(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const current = /** @type {any} */ (queueStore().snapshot(key));
   if (revisionOf(p) !== current.revision) {
     ws.send(
@@ -1709,7 +1785,10 @@ async function handleReviseDisposition(ws, req, run) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const current = /** @type {any} */ (queueStore().snapshot(key));
   if (revisionOf(p) !== current.revision) {
     ws.send(
@@ -1795,7 +1874,10 @@ export function handleWorkerQueueRemove(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
   const result = queueStore().remove(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id
