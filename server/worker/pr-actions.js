@@ -178,7 +178,8 @@ function isConflicting(pr) {
  *     removeLabel?: (bead_id: string, label: string) => Promise<void>
  *   },
  *   external?: {
- *     get: (workspace: string, bead_id: string) => import('./external-pr.js').ExternalPrRow|null
+ *     get: (workspace: string, bead_id: string) => import('./external-pr.js').ExternalPrRow|null,
+ *     drop?: (workspace: string, bead_id: string) => boolean
  *   },
  *   worktree: {
  *     remove: (input: { repo: string, bead_id: string }) => Promise<unknown>,
@@ -1351,6 +1352,21 @@ export function createPrActions(deps) {
     // A successful ship — including the one inside a `[정리]` retry — is what
     // retires the workspace record the external path leaves behind.
     deps.store.clearShipFailure(workspace);
+
+    // Retire the external row NOW rather than at the next bd scan (UI-wwby §1).
+    // Placed before the durable branch because the conclusion is the same for
+    // both: a bead whose cleanup succeeded is `closed`, so the next scan would
+    // drop it anyway. Closing that window is what stops a merged bead from
+    // being resurrected as an external merge candidate. Memory-only, and a
+    // failure changes nothing the scan would not fix, so it never breaks
+    // cleanup.
+    if (external && typeof external.drop === 'function') {
+      try {
+        external.drop(workspace, bead_id);
+      } catch (err) {
+        log('external row drop failed for %s: %o', bead_id, err);
+      }
+    }
 
     if (!pending_deploy) {
       if (durable) {

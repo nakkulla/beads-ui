@@ -894,3 +894,181 @@ describe('worker/merge-queue — 자동 머지 제외 기록 (UI-yk55 §3)', () 
     );
   });
 });
+
+describe('worker/merge-queue — halt only where an observation can arrive (UI-wwby §3)', () => {
+  const HEAD = 'a'.repeat(40);
+
+  /**
+   * The exact corruption the incident produced: a bead in `done` that is ALSO
+   * the merge queue's head. No API can write that pair — `moveToDone` clears
+   * the queue — so it goes straight to `queue.json`, the same way the boot
+   * resume test stages its crash window.
+   *
+   * @param {any} queue_store
+   * @param {string} bead_id
+   */
+  function contaminate(queue_store, bead_id) {
+    queue_store.moveToDone(WS, { bead_id, attempt_id: `att-${bead_id}` });
+    const file = queueFilePath(WS);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.merge_queue.unshift({ bead_id, resolution_rounds: 0 });
+    fs.writeFileSync(file, JSON.stringify(raw));
+    queue_store.__clearCacheForTest();
+  }
+
+  test('dequeues a done+merge_queue head and drives the next item', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    contaminate(store, 'UI-1');
+    expect(
+      store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1', 'UI-2']);
+
+    /** @type {string[]} */
+    const attempted = [];
+    const mq = driver(store, {
+      // What `prActions.merge()` really answers for a bead in no lane the
+      // driver can vouch for.
+      merge: async (/** @type {string} */ bead_id) => {
+        attempted.push(bead_id);
+        if (bead_id === 'UI-1') {
+          return { ok: false, action: 'refused', reason: 'not_in_pr_wait' };
+        }
+        landMerge(store, bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      },
+      // The restart that emptied the observation cache — the trigger that made
+      // this permanent rather than transient.
+      headSha: () => null
+    });
+
+    await mq.kick();
+
+    expect(attempted).toEqual(['UI-1', 'UI-2']);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    // Nowhere to pin an exclusion for a bead that left every lane, and nothing
+    // to protect against: the store now refuses to re-enrol it.
+    expect(store.snapshot(WS).auto_merge_skips).toEqual({});
+  });
+
+  test('still halts on a pr_wait head whose SHA is unreadable', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    const merge = vi.fn(async () => ({
+      ok: false,
+      action: 'refused',
+      reason: 'ci_failed'
+    }));
+
+    const mq = driver(store, { merge, headSha: () => null });
+    await mq.kick();
+
+    // The poller watches `pr_wait`, so the observation this halt waits on is
+    // guaranteed to arrive — the halt terminates and must be kept.
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(
+      store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-1', 'UI-2']);
+  });
+
+  test('halts on an external registry head and resumes when its SHA arrives', async () => {
+    const store = createQueueStore();
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-ext', external: true }]
+    });
+    /** @type {Array<(ws: string) => void>} */
+    const listeners = [];
+    /** @type {string|null} */
+    let head = null;
+    const merge = vi.fn(async () => ({
+      ok: false,
+      action: 'refused',
+      reason: 'ci_failed'
+    }));
+    const mq = driver(store, {
+      merge,
+      headSha: () => head,
+      // A live registry row: the poller DOES observe it even though no durable
+      // lane holds it, so the halt has an end.
+      isExternalRow: () => true,
+      subscribeQueueChanged: (/** @type {any} */ fn) => {
+        listeners.push(fn);
+        return () => {};
+      }
+    });
+    mq.start();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(store.snapshot(WS).merge_queue.length).toBe(1);
+
+    head = HEAD;
+    for (const fn of listeners) {
+      fn(WS);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).auto_merge_skips['UI-ext'].head_sha).toBe(HEAD);
+    mq.stop();
+  });
+
+  test('dequeues rather than halts when the registry lookup throws', async () => {
+    const store = createQueueStore();
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-ext', external: true }]
+    });
+    const mq = driver(store, {
+      merge: async () => ({
+        ok: false,
+        action: 'refused',
+        reason: 'ci_failed'
+      }),
+      headSha: () => null,
+      isExternalRow: () => {
+        throw new Error('registry down');
+      }
+    });
+
+    await mq.kick();
+
+    // Fail toward EMPTYING the queue: a wrong dequeue is undone by the next
+    // enrolment pass, a wrong halt waits forever on the observation that was
+    // undecidable in the first place.
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('applies the same rule at the exclusion filter halt', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    // Staged in this order because both `moveToDone` and `recordMergeSkip`
+    // clear what the other writes — the pair only exists on disk.
+    store.moveToDone(WS, { bead_id: 'UI-1', attempt_id: 'att-UI-1' });
+    store.recordMergeSkip(WS, {
+      bead_id: 'UI-1',
+      head_sha: HEAD,
+      reason: 'resolution_round_cap'
+    });
+    const file = queueFilePath(WS);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.merge_queue.unshift({ bead_id: 'UI-1', resolution_rounds: 0 });
+    fs.writeFileSync(file, JSON.stringify(raw));
+    store.__clearCacheForTest();
+
+    /** @type {string[]} */
+    const attempted = [];
+    const mq = driver(store, {
+      merge: async (/** @type {string} */ bead_id) => {
+        attempted.push(bead_id);
+        landMerge(store, bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      },
+      headSha: () => null
+    });
+
+    await mq.kick();
+
+    // Excluded AND unobservable: it leaves without being merged, and the two
+    // halt sites agree about when halting is allowed.
+    expect(attempted).toEqual(['UI-2']);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+});

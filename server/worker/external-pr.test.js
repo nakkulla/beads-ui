@@ -86,6 +86,28 @@ describe('worker/external-pr', () => {
     expect(store.list(WS)).toEqual([]);
   });
 
+  test('drop retires one row ahead of the next scan (UI-wwby §1)', () => {
+    const store = createExternalPrStore();
+    store.replace(WS, [
+      { bead_id: 'UI-1', pr_url: 'u1', pr_number: 1 },
+      { bead_id: 'UI-2', pr_url: 'u2', pr_number: 2 }
+    ]);
+
+    const dropped = store.drop(WS, 'UI-1');
+
+    expect(dropped).toBe(true);
+    expect(store.get(WS, 'UI-1')).toBe(null);
+    expect(store.list(WS).map((r) => r.bead_id)).toEqual(['UI-2']);
+  });
+
+  test('drop reports false for a bead with no row', () => {
+    const store = createExternalPrStore();
+    store.replace(WS, [{ bead_id: 'UI-1', pr_url: 'u1', pr_number: 1 }]);
+
+    expect(store.drop(WS, 'UI-9')).toBe(false);
+    expect(store.list(WS).map((r) => r.bead_id)).toEqual(['UI-1']);
+  });
+
   test('clear drops every workspace', () => {
     const store = createExternalPrStore();
     store.replace(WS, [{ bead_id: 'UI-1', pr_url: 'u', pr_number: 1 }]);

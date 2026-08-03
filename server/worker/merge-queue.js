@@ -99,6 +99,7 @@ const RESOLUTION_POLL_MS = 30 * 1000;
  *   merge: (bead_id: string) => Promise<MergeClickResult>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
+ *   isExternalRow?: (bead_id: string) => boolean,
  *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
  *   notifyChanged?: (workspace: string) => void,
@@ -194,6 +195,43 @@ export function createMergeQueue(deps) {
     const q = snapshot();
     const lane = q && Array.isArray(q.merge_queue) ? q.merge_queue : [];
     return lane.length > 0 ? lane[0] : null;
+  }
+
+  /**
+   * Whether the PR poller OBSERVES this bead — the only question that decides
+   * whether halting on it can ever end (UI-wwby §3).
+   *
+   * A halt resumes on exactly one signal: an observation arriving with a
+   * readable head SHA. The poller's subjects are the `pr_wait` lane plus the
+   * current external registry rows and nothing else, so halting on a bead
+   * outside both is halting forever — which is how a `done` bead that had been
+   * resurrected into `merge_queue` froze the whole queue behind it.
+   *
+   * The branch is deliberately NOT "does it belong to a durable lane": the
+   * corrupted head in that incident was a `done` member, and `done` is not
+   * observed. A lookup that throws counts as NOT observed, i.e. it sends the
+   * item out of the queue. That is the safe direction — an item wrongly
+   * dequeued is re-judged by the enroller and comes back, while a wrong halt
+   * stops every PR behind it and waits on an observation that was already
+   * undecidable.
+   *
+   * @param {string} bead_id
+   */
+  function pollerObserves(bead_id) {
+    const q = snapshot();
+    const lane = q && Array.isArray(q.pr_wait) ? q.pr_wait : [];
+    if (lane.some((/** @type {any} */ e) => e.bead_id === bead_id)) {
+      return true;
+    }
+    if (typeof deps.isExternalRow !== 'function') {
+      return false;
+    }
+    try {
+      return deps.isExternalRow(bead_id) === true;
+    } catch (err) {
+      log('merge queue: external row lookup failed for %s: %o', bead_id, err);
+      return false;
+    }
   }
 
   /**
@@ -352,6 +390,21 @@ export function createMergeQueue(deps) {
     }
     const head_sha = headSha(bead_id);
     if (!head_sha) {
+      if (!pollerObserves(bead_id)) {
+        // No observation will ever arrive for this bead, so a halt here has no
+        // end (UI-wwby §3). Drop it WITHOUT an exclusion record: there is
+        // nowhere to pin one — `removeFromLanes` already cleared its skip when
+        // it left the lane — and the record's job (stopping a re-enrolment
+        // loop) is now done by the store's lane-exclusivity gate instead.
+        // `dequeue` keeps its own persist-failure halt, which is a different
+        // halt with a different (unchanged) recovery contract.
+        log(
+          'merge queue: %s head SHA unreadable and unobserved — dequeued without an exclusion',
+          bead_id
+        );
+        dequeue(bead_id);
+        return;
+      }
       log(
         'merge queue: %s head SHA unreadable — not dequeued, halting this drain',
         bead_id
@@ -543,6 +596,19 @@ export function createMergeQueue(deps) {
     if (skip) {
       const head_sha = headSha(bead_id);
       if (!head_sha) {
+        if (!pollerObserves(bead_id)) {
+          // Same terminating rule as `failAndDequeue` (UI-wwby §3) — the two
+          // halt sites must not disagree about when a halt can end. Unobserved
+          // means the deciding observation is never coming, so the item leaves
+          // instead of freezing the queue; it is not merged, which is what the
+          // exclusion actually guards.
+          log(
+            'merge queue: %s excluded, head SHA unreadable and unobserved — dequeued',
+            bead_id
+          );
+          dequeue(bead_id);
+          return;
+        }
         // Cannot tell whether the branch moved since it failed. Merging on that
         // guess is the one thing the record exists to prevent, so the item stays
         // queued and the drain ends — the next observation decides it.
