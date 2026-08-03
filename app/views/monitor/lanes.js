@@ -346,6 +346,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const admission = objectOf(workspace.admission);
     const revise_parked = objectOf(workspace.revise_parked);
     const merge_state = objectOf(workspace.merge_queue_state);
+    const cleanup_failed = objectOf(workspace.cleanup_failed);
     const merge_queue = Array.isArray(workspace.merge_queue)
       ? workspace.merge_queue
       : [];
@@ -420,23 +421,61 @@ export function buildLanes(workspaces, workspaces_state, options) {
       claimed.add(bead_id);
       const observed = objectOf(observations[bead_id]);
       const pr = objectOf(observed.pr);
+      const gate = observed.gate ? objectOf(observed.gate) : null;
       const queued = merge_queued.has(bead_id);
       const active = merge_state.active === bead_id;
+      const external = entry.external === true;
+      const cleanup = cleanup_failed[bead_id] || null;
+      // 아래 네 판정은 Worker 탭 `prWaitRow`와 같은 값이어야 한다 — 모니터가
+      // 서버가 거부할 조작을 제시하면 클릭이 실패로만 돌아온다.
+      const conflicting = !!gate && gate.base_badge === '충돌';
+      const cleanup_retry = !!cleanup && !!gate && gate.tier === 'merged';
+      const external_cleanup = external && !!gate && gate.tier === 'merged';
       pr_wait.push({
         ...base(bead_id),
         lane: 'pr_wait',
         pr_number: typeof pr.number === 'number' ? pr.number : null,
         pr_url: typeof pr.url === 'string' ? pr.url : undefined,
-        external: entry.external === true,
+        external,
         usage: sumAttemptUsage(attempts, bead_id),
+        badges: cleanup ? ['정리 실패'] : [],
+        alert: !!cleanup,
+        reason: cleanup ? '머지됨 · 정리 미완' : 'PR 대기',
         // 머지 큐에 이미 서 있으면 남은 조작은 자리를 포기하는 것뿐이다
         // (Worker 탭 [취소]와 같은 규약).
         merge_action: !queued,
-        merge_enabled: true,
+        // 게이트가 열렸거나(enabled), 충돌 해소 세션을 띄우는 클릭이거나,
+        // 머지된 뒤의 정리 재시도일 때만 누를 수 있다.
+        merge_enabled:
+          gate?.enabled === true ||
+          conflicting ||
+          cleanup_retry ||
+          external_cleanup,
+        merge_label: external_cleanup
+          ? '정리'
+          : conflicting && !cleanup_retry
+            ? '충돌 해소 후 머지'
+            : undefined,
+        merge_title: external_cleanup
+          ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
+          : cleanup_retry
+            ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+            : conflicting
+              ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
+              : gate?.enabled === true
+                ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다`
+                : `머지 불가: ${gate?.reason || '관측 대기'}`,
         cancel_action: queued,
         cancel_enabled: !active,
-        discard_action: true,
-        discard_enabled: !active
+        // 이미 머지된 PR에 폐기를 다시 내밀지 않는다 (`cleanup_failed`는 관측
+        // 캐시가 빈 재시작 직후에도 남는 durable 머지 증거다), 외부 세션이
+        // 배달한 PR도 이 탭이 폐기할 대상이 아니다 — Worker 탭과 같은 규약.
+        discard_action:
+          !external && !cleanup && !(gate && gate.tier === 'merged'),
+        discard_enabled: !active && !queued,
+        discard_title: queued
+          ? '머지 큐에 있음 — 폐기하려면 먼저 [취소]하세요'
+          : undefined
       });
     }
 
@@ -535,11 +574,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
         done_kind:
           terminal && typeof terminal.done_kind === 'string'
             ? terminal.done_kind
-            : null,
-        // 완료 레인의 머지 버튼은 이미 머지된 항목의 cleanup 재시도다 — 같은
-        // 자리에 폐기를 두지 않는다 (`miniRow`의 done 변형 규약, §8).
-        merge_action: true,
-        merge_enabled: true
+            : null
+        // 완료 레인에는 조작 버튼을 두지 않는다 — Worker 탭의 완료 행과 같다.
+        // 스펙 §8은 이 레인에 `worker-merge-queue-add` cleanup 재시도를 두라고
+        // 적었지만, 그 재시도는 실제로는 PR 대기 레인의 affordance다(머지 후
+        // 정리가 실패한 버드는 `done`이 아니라 `pr_wait`에 남는다). 게다가
+        // 큐 스토어의 `enqueueMember`가 레인 배타성(UI-wwby §2)에 따라 `done`
+        // 소속 버드의 적재를 항상 거부하므로, 여기 버튼을 두면 누를 때마다
+        // 거부로만 돌아온다.
       });
     }
   }

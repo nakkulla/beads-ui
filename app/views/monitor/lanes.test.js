@@ -554,6 +554,89 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
     expect(lanes.pr_wait[0].pr_url).toBe('https://x/91');
   });
 
+  // 아래 네 판정은 Worker 탭 `prWaitRow`와 같은 값이어야 한다 — 서버가 거부할
+  // 조작을 모니터가 제시하면 클릭이 실패로만 돌아온다.
+  test('keeps merge disabled while the gate is closed', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          pr_observations: {
+            'A-pr': { gate: { enabled: false, tier: 'ci_pending' } }
+          }
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].merge_action).toBe(true);
+    expect(lanes.pr_wait[0].merge_enabled).toBe(false);
+  });
+
+  test('enables merge on a conflicting gate so the click dispatches resolution', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          pr_observations: {
+            'A-pr': { gate: { enabled: false, base_badge: '충돌' } }
+          }
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].merge_enabled).toBe(true);
+    expect(lanes.pr_wait[0].merge_label).toBe('충돌 해소 후 머지');
+  });
+
+  test('enables merge as a cleanup retry on a merged gate with a recorded failure', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          pr_observations: {
+            'A-pr': { gate: { enabled: false, tier: 'merged' } }
+          },
+          cleanup_failed: { 'A-pr': { step: 'verify', reason: 'x' } }
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].merge_enabled).toBe(true);
+    expect(lanes.pr_wait[0].badges).toContain('정리 실패');
+  });
+
+  test('hides discard on an already merged row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          pr_observations: {
+            'A-pr': { gate: { enabled: true, tier: 'merged' } }
+          }
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].discard_action).toBe(false);
+  });
+
+  test('hides discard on an external PR row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW, external: true }]
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].discard_action).toBe(false);
+  });
+
   test('marks an external PR row and renders it with no number', () => {
     const lanes = buildLanes(
       [

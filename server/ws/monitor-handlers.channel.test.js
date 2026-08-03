@@ -14,6 +14,8 @@ let worker_sub_count = 0;
 let refresh_listener = null;
 /** @type {string[]} */
 let external_refreshes = [];
+/** @type {string[]} */
+let invalidations = [];
 
 // The channel is isolated from the worker runtime: what is under test is the
 // aggregation's own subscriber/push/demand behaviour, not the decoration it
@@ -64,7 +66,10 @@ vi.mock('../worker/runtime.js', () => ({
     runnableCache: {
       runnableFor: () => [],
       refresh: () => {},
-      invalidate: () => {},
+      /** @param {string} workspace */
+      invalidate: (workspace) => {
+        invalidations.push(workspace);
+      },
       setOnFilled: () => {},
       setSubscriberCount: () => {}
     }
@@ -115,6 +120,7 @@ beforeEach(() => {
   worker_sub_count = 0;
   refresh_listener = null;
   external_refreshes = [];
+  invalidations = [];
   __resetMonitorPipelineForTest();
 });
 
@@ -156,6 +162,36 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
 
     // Two events inside one window coalesce into a single extra push.
     expect(ws.snapshots()).toHaveLength(2);
+  });
+
+  // ws mutation 핸들러들은 `emitQueueChanged()`를 부르지 않고 `fanout()`만 하므로
+  // (그 이벤트는 스케줄러 전용이다), 모니터에서 적재한 버드가 실행가능 캐시에
+  // TTL 내내 남지 않으려면 이 경로가 무효화를 걸어야 한다.
+  test('invalidates the runnable cache when a snapshot refresh moved the revision', () => {
+    const ws = fakeWs();
+    snapshots[WS_A] = { queue: [], pr_wait: [], done: [], revision: 3 };
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    refresh_listener?.(WS_A);
+    invalidations = [];
+
+    snapshots[WS_A] = { queue: [], pr_wait: [], done: [], revision: 4 };
+    refresh_listener?.(WS_A);
+
+    expect(invalidations).toEqual([WS_A]);
+  });
+
+  // 제목·REVISE 파킹 fill도 같은 리스너로 re-push한다 — 큐를 바꾸지 않은 그
+  // 재발화까지 무효화하면 fill 한 번마다 레포별 `bd list`가 다시 돈다.
+  test('leaves the runnable cache alone when the revision did not move', () => {
+    const ws = fakeWs();
+    snapshots[WS_A] = { queue: [], pr_wait: [], done: [], revision: 3 };
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    refresh_listener?.(WS_A);
+    invalidations = [];
+
+    refresh_listener?.(WS_A);
+
+    expect(invalidations).toEqual([]);
   });
 
   test('stops pushing after unsubscribe', () => {

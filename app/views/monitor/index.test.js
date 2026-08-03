@@ -415,9 +415,10 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     ]);
   });
 
-  // 완료 레인의 머지는 이미 머지된 항목의 cleanup 재시도다 — 같은 자리에 폐기를
-  // 두지 않는다 (§8).
-  test('offers merge but never discard in the done lane', () => {
+  // 완료 레인에는 조작 버튼이 없다 — Worker 탭의 완료 행과 같다. 큐 스토어의
+  // 레인 배타성(UI-wwby §2)이 `done` 소속 버드의 머지 큐 적재를 항상 거부하므로,
+  // 여기 머지 버튼을 두면 누를 때마다 거부로만 돌아온다.
+  test('offers neither merge nor discard in the done lane', () => {
     const { mount, view } = setup({
       workspaces: [workspace({ done: [{ bead_id: 'A-done', added_at: NOW }] })],
       workspaces_state: [state()]
@@ -425,9 +426,10 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
 
     view.load();
 
-    expect(mount.querySelector('#monitor-done .worker-mini__merge')).not.toBe(
-      null
-    );
+    expect(
+      mount.querySelector('#monitor-done [data-issue-id="A-done"]')
+    ).not.toBe(null);
+    expect(mount.querySelector('#monitor-done .worker-mini__merge')).toBe(null);
     expect(mount.querySelector('#monitor-done .worker-mini__discard')).toBe(
       null
     );

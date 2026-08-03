@@ -64,6 +64,15 @@ let queue_changed_unsubscribe = null;
 let refresh_driver = null;
 
 /**
+ * Last queue `revision` observed per workspace, for {@link queueRevisionMoved}.
+ * Process-local bookkeeping only — never persisted, and cleared with the rest of
+ * the channel's wiring.
+ *
+ * @type {Map<string, number>}
+ */
+const last_seen_revision = new Map();
+
+/**
  * Whether a workspace still has anything worth a monitor row.
  *
  * `runnable` counts (UI-qrfo §4): a repo whose only content is a spec-reviewed
@@ -311,14 +320,70 @@ function runnableCache() {
 }
 
 /**
+ * Drop one workspace's cached candidates, fail-quiet.
+ *
+ * @param {string} workspace
+ */
+function invalidateRunnable(workspace) {
+  try {
+    runnableCache().invalidate(workspace);
+  } catch (err) {
+    log('monitor: runnable invalidation failed for %s: %o', workspace, err);
+  }
+}
+
+/**
+ * Whether this workspace's queue has actually changed since the last snapshot
+ * refresh we observed for it.
+ *
+ * The CAS `revision` is the queue store's own "something was written" counter,
+ * so it separates a real mutation from a re-push caused by an async decoration
+ * fill. An unreadable snapshot answers `true`: re-scanning one workspace costs
+ * one `bd list`, while wrongly deciding "nothing changed" leaves a placed bead
+ * in the 실행가능 lane.
+ *
+ * @param {string} workspace
+ * @returns {boolean}
+ */
+function queueRevisionMoved(workspace) {
+  const key = path.resolve(String(workspace || ''));
+  let revision = null;
+  try {
+    const snapshot = /** @type {any} */ (
+      getWorkerRuntime().queueStore.snapshot(key)
+    );
+    revision =
+      typeof snapshot?.revision === 'number' ? snapshot.revision : null;
+  } catch (err) {
+    log('monitor: revision probe failed for %s: %o', key, err);
+    return true;
+  }
+  if (revision === null) {
+    return true;
+  }
+  const seen = last_seen_revision.get(key);
+  last_seen_revision.set(key, revision);
+  return seen !== revision;
+}
+
+/**
  * Attach the queue-refresh observer exactly once, and only while somebody is
  * watching: with no monitor subscriber the aggregation has nothing to feed.
  *
- * The runnable cache is wired here too (UI-qrfo §4):
+ * The runnable cache is wired here too (UI-qrfo §4), on TWO signals, because
+ * neither one alone sees every real queue change:
  *
- * - `onQueueChanged` INVALIDATES that workspace's candidates. Deliberately not
- *   hung off the 17 mutation handlers: this event fires on real queue changes
- *   only, so one subscription covers every one of them without over-invalidating.
+ * - `onQueueChanged` covers the SCHEDULER's autonomous transitions (dispatch,
+ *   admission refusal, session done/fail). Those never pass through a ws
+ *   handler, so nothing else observes them.
+ * - `onWorkerSnapshotRefresh` covers the ws MUTATION handlers, which fan a fresh
+ *   snapshot out without emitting a queue-change event — a placement made from
+ *   the monitor itself would otherwise leave the placed bead in the cached
+ *   candidate list for a whole TTL. That listener also fires on the async
+ *   title / REVISE-parking fills, which change no queue, so it invalidates only
+ *   when the workspace's CAS `revision` actually moved. Judging by revision
+ *   rather than by event source is what keeps this from re-scanning `bd` on
+ *   every fill.
  * - the fill callback schedules a push, which is the whole delivery path for a
  *   candidate list that missed the snapshot that asked for it.
  * - the subscriber count gates the cache's `bd` spawning on somebody watching.
@@ -326,11 +391,7 @@ function runnableCache() {
 function ensureRefreshWired() {
   if (!queue_changed_unsubscribe) {
     queue_changed_unsubscribe = onQueueChanged((workspace) => {
-      try {
-        runnableCache().invalidate(workspace);
-      } catch (err) {
-        log('monitor: runnable invalidation failed for %s: %o', workspace, err);
-      }
+      invalidateRunnable(workspace);
       schedulePush();
     });
     try {
@@ -345,7 +406,10 @@ function ensureRefreshWired() {
   if (refresh_unsubscribe) {
     return;
   }
-  refresh_unsubscribe = onWorkerSnapshotRefresh(() => {
+  refresh_unsubscribe = onWorkerSnapshotRefresh((workspace) => {
+    if (queueRevisionMoved(workspace)) {
+      invalidateRunnable(workspace);
+    }
     schedulePush();
   });
 }
@@ -833,5 +897,6 @@ export function __resetMonitorPipelineForTest() {
     refresh_driver.stop();
     refresh_driver = null;
   }
+  last_seen_revision.clear();
   poll_interval_seconds = null;
 }
