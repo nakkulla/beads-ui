@@ -1,12 +1,17 @@
 import { describe, expect, test } from 'vitest';
-import { buildMonitorPipeline, startOfLocalDay } from './monitor-handlers.js';
+import { emitMonitorPipelineSnapshot } from './context.js';
+import {
+  buildMonitorPipeline,
+  buildMonitorWorkspacesState
+} from './monitor-handlers.js';
 
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
 /** 2026-08-03 14:00 local. */
 const NOW = new Date(2026, 7, 3, 14, 0, 0).getTime();
-const DAY_START = startOfLocalDay(NOW);
+/** Comfortably more than one day back — the old aggregation truncated this. */
+const YESTERDAY = NOW - 26 * 60 * 60 * 1000;
 
 /**
  * A decorated snapshot shaped like the worker channel's, with the decorations
@@ -30,7 +35,31 @@ function snapshot(patch = {}) {
 }
 
 /**
- * @param {{ workspaces?: string[], hidden?: string[], snapshots?: Record<string, any>, fail?: string[] }} input
+ * A runnable candidate as the cache projects it.
+ *
+ * @param {string} bead_id
+ * @returns {Record<string, any>}
+ */
+function candidate(bead_id) {
+  return {
+    bead_id,
+    title: `${bead_id} 제목`,
+    route: 'spec_backed',
+    spec_id: 'docs/specs/thing.md',
+    created_at: null,
+    updated_at: null
+  };
+}
+
+/**
+ * @param {{
+ *   workspaces?: string[],
+ *   hidden?: string[],
+ *   snapshots?: Record<string, any>,
+ *   runnable?: Record<string, Array<Record<string, any>>>,
+ *   fail?: string[],
+ *   runnableFails?: string[]
+ * }} input
  */
 function build(input) {
   return buildMonitorPipeline({
@@ -42,7 +71,24 @@ function build(input) {
       }
       return (input.snapshots || {})[key] || snapshot();
     },
-    now: () => NOW
+    runnableFor: (key, exclude_ids) => {
+      if ((input.runnableFails || []).includes(key)) {
+        throw new Error('runnable boom');
+      }
+      const items = (input.runnable || {})[key] || [];
+      return items.filter((item) => !exclude_ids.has(item.bead_id));
+    }
+  });
+}
+
+/**
+ * @param {{ workspaces?: string[], hidden?: string[], queues?: Record<string, any> }} input
+ */
+function buildState(input) {
+  return buildMonitorWorkspacesState({
+    listWorkspaces: () => (input.workspaces || []).map((path) => ({ path })),
+    listHidden: () => input.hidden || [],
+    snapshotFor: (key) => (input.queues || {})[key] || snapshot()
   });
 }
 
@@ -84,36 +130,34 @@ describe('buildMonitorPipeline visibility (UI-nprg)', () => {
   });
 });
 
-describe('buildMonitorPipeline done-lane day filter (UI-nprg)', () => {
-  test('keeps a done entry added after local midnight', () => {
+describe('buildMonitorPipeline done lane (UI-qrfo §7)', () => {
+  // 기간 선택이 클라이언트로 갔으므로 서버가 오늘로 자르면 클라이언트는 더 넓은
+  // 기간을 그릴 데이터 자체를 못 받는다.
+  test('carries a done entry from an earlier day', () => {
     const out = build({
       workspaces: [WS_A],
       snapshots: {
-        [WS_A]: snapshot({ done: [{ bead_id: 'A-1', added_at: DAY_START }] })
+        [WS_A]: snapshot({ done: [{ bead_id: 'A-1', added_at: YESTERDAY }] })
       }
     });
 
-    expect(out[0].done).toEqual([{ bead_id: 'A-1', added_at: DAY_START }]);
+    expect(out[0].done).toEqual([{ bead_id: 'A-1', added_at: YESTERDAY }]);
   });
 
-  test('drops a done entry added just before local midnight', () => {
+  test('keeps a workspace whose only history is an earlier day', () => {
     const out = build({
       workspaces: [WS_A],
       snapshots: {
-        [WS_A]: snapshot({
-          queue: [{ bead_id: 'A-2', added_at: NOW }],
-          done: [{ bead_id: 'A-1', added_at: DAY_START - 1 }]
-        })
+        [WS_A]: snapshot({ done: [{ bead_id: 'A-1', added_at: YESTERDAY }] })
       }
     });
 
-    expect(out[0].done).toEqual([]);
+    expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
   });
 
   test('leaves the source snapshot lane untouched', () => {
     const source = snapshot({
-      queue: [{ bead_id: 'A-2', added_at: NOW }],
-      done: [{ bead_id: 'A-1', added_at: DAY_START - 1 }]
+      done: [{ bead_id: 'A-1', added_at: YESTERDAY }]
     });
 
     build({ workspaces: [WS_A], snapshots: { [WS_A]: source } });
@@ -122,22 +166,62 @@ describe('buildMonitorPipeline done-lane day filter (UI-nprg)', () => {
   });
 });
 
-describe('buildMonitorPipeline empty-workspace omission (UI-nprg)', () => {
-  test('omits a workspace whose lanes are all empty', () => {
-    const out = build({ workspaces: [WS_A], snapshots: {} });
+describe('buildMonitorPipeline runnable lane (UI-qrfo §4)', () => {
+  test('carries the runnable candidates of each workspace', () => {
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-1', added_at: NOW }] }),
+        [WS_B]: snapshot({ queue: [{ bead_id: 'B-1', added_at: NOW }] })
+      },
+      runnable: { [WS_A]: [candidate('A-9')], [WS_B]: [candidate('B-9')] }
+    });
 
-    expect(out).toEqual([]);
+    expect(out.map((w) => w.runnable)).toEqual([
+      [candidate('A-9')],
+      [candidate('B-9')]
+    ]);
   });
 
-  test('omits a workspace holding only past done entries', () => {
+  // hasPipeline()에서 runnable이 빠지면 "지금 막 실행하려는 바로 그 레포"가 집계에서
+  // 통째로 사라진다.
+  test('keeps a workspace whose only content is a runnable candidate', () => {
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [candidate('A-9')] }
+    });
+
+    expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
+  });
+
+  test('excludes a candidate that already sits in a lane', () => {
     const out = build({
       workspaces: [WS_A],
       snapshots: {
-        [WS_A]: snapshot({
-          done: [{ bead_id: 'A-1', added_at: DAY_START - 1 }]
-        })
-      }
+        [WS_A]: snapshot({ done: [{ bead_id: 'A-9', added_at: YESTERDAY }] })
+      },
+      runnable: { [WS_A]: [candidate('A-9'), candidate('A-8')] }
     });
+
+    expect(out[0].runnable).toEqual([candidate('A-8')]);
+  });
+
+  test('keeps the rest of a workspace when its runnable lookup throws', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-1', added_at: NOW }] })
+      },
+      runnableFails: [WS_A]
+    });
+
+    expect(out[0].runnable).toEqual([]);
+  });
+});
+
+describe('buildMonitorPipeline empty-workspace omission (UI-nprg)', () => {
+  test('omits a workspace whose lanes are all empty', () => {
+    const out = build({ workspaces: [WS_A], snapshots: {} });
 
     expect(out).toEqual([]);
   });
@@ -177,7 +261,7 @@ describe('buildMonitorPipeline fail-quiet (UI-nprg §에러 처리)', () => {
       listHidden: () => [],
       snapshotFor: () =>
         snapshot({ queue: [{ bead_id: 'X-1', added_at: NOW }] }),
-      now: () => NOW
+      runnableFor: () => []
     });
 
     expect(out).toEqual([]);
@@ -189,7 +273,7 @@ describe('buildMonitorPipeline fail-quiet (UI-nprg §에러 처리)', () => {
         throw new Error('registry boom');
       },
       listHidden: () => [],
-      now: () => NOW
+      runnableFor: () => []
     });
 
     expect(out).toEqual([]);
@@ -217,5 +301,103 @@ describe('buildMonitorPipeline decorated contract (UI-nprg)', () => {
       'A-1': { created_at: 1, updated_at: 2 }
     });
     expect(out[0].workspace_info).toEqual({ slots: 2 });
+  });
+});
+
+describe('buildMonitorWorkspacesState (UI-qrfo §4)', () => {
+  // 파이프라인이 빈 레포가 바로 자동 진행이 꺼져 있는 레포다 — 그 상태를 풀 제어가
+  // payload에 없으면 모니터에서 손댈 방법이 사라진다.
+  test('includes a workspace whose pipeline is empty', () => {
+    const out = buildState({ workspaces: [WS_A, WS_B] });
+
+    expect(out.map((w) => w.root_dir)).toEqual([WS_A, WS_B]);
+  });
+
+  test('carries the CAS revision and exec defaults of each workspace', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          revision: 7,
+          exec_defaults: { orchestration_model: 'opus' }
+        })
+      }
+    });
+
+    expect(out[0].revision).toBe(7);
+    expect(out[0].exec_defaults).toEqual({ orchestration_model: 'opus' });
+  });
+
+  test('carries the automation flags and slot count', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({ auto_advance: true, auto_merge: true, slots: 3 })
+      }
+    });
+
+    expect(out[0]).toMatchObject({
+      name: 'repo-a',
+      auto_advance: true,
+      auto_merge: true,
+      slots: 3
+    });
+  });
+
+  test('excludes a hidden workspace', () => {
+    const out = buildState({ workspaces: [WS_A, WS_B], hidden: [WS_B] });
+
+    expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
+  });
+
+  test('keeps the other workspaces when one queue is unreadable', () => {
+    const out = buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }, { path: WS_B }],
+      listHidden: () => [],
+      snapshotFor: (key) => {
+        if (key === WS_A) {
+          throw new Error('queue boom');
+        }
+        return snapshot();
+      }
+    });
+
+    expect(out.map((w) => w.root_dir)).toEqual([WS_B]);
+  });
+
+  test('defaults a workspace that reports no exec defaults to an empty map', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: { [WS_A]: snapshot({ exec_defaults: undefined }) }
+    });
+
+    expect(out[0].exec_defaults).toEqual({});
+  });
+});
+
+describe('monitor pipeline envelope (UI-qrfo §4)', () => {
+  test('serializes workspaces_state alongside the pipeline array', () => {
+    /** @type {any[]} */
+    const frames = [];
+    const ws = {
+      send: (/** @type {string} */ raw) => frames.push(JSON.parse(raw))
+    };
+    const state = [{ root_dir: WS_A, name: 'repo-a', revision: 7 }];
+
+    emitMonitorPipelineSnapshot(/** @type {any} */ (ws), 'm1', [], state);
+
+    expect(frames[0].payload.workspaces_state).toEqual(state);
+  });
+
+  test('sends an empty workspaces_state when the caller omits it', () => {
+    /** @type {any[]} */
+    const frames = [];
+    const ws = {
+      send: (/** @type {string} */ raw) => frames.push(JSON.parse(raw))
+    };
+
+    emitMonitorPipelineSnapshot(/** @type {any} */ (ws), 'm1', []);
+
+    expect(frames[0].payload.workspaces_state).toEqual([]);
   });
 });

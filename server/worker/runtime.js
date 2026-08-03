@@ -20,6 +20,7 @@ import { createLockManager } from './locks.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createQueueStore } from './queue-store.js';
 import { createReviseParkedStore } from './revise-parked.js';
+import { createRunnableCache } from './runnable-cache.js';
 import { createSessionLog } from './session-log.js';
 import { createTitleCache } from './title-cache.js';
 import { createUsageStore } from './usage-store.js';
@@ -34,6 +35,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createUsageStore>} usageStore
  * @property {ReturnType<typeof createActivityStore>} activityStore
  * @property {ReturnType<typeof createTitleCache>} titleCache
+ * @property {ReturnType<typeof createRunnableCache>} runnableCache
  * @property {ReturnType<typeof createReviseParkedStore>} reviseParked
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {(fn: () => number) => void} setRunningCountProvider
@@ -73,6 +75,13 @@ export function createWorkerRuntime() {
   // READS it and its own async `bd show` fill WRITES it. Non-persistent, and
   // display-only — see the module for why staleness is accepted here.
   const titleCache = createTitleCache();
+  // Process-wide monitor runnable-candidate cache (UI-qrfo §4): the monitor
+  // aggregation READS it and its own async `bd list` fill WRITES it. Also
+  // non-persistent, and — like the title cache — display-only: the binding
+  // eligibility verdict stays with `validateAdmission()` at placement time. The
+  // ws monitor channel wires its subscriber count and push callback on the first
+  // subscribe; an unwired cache is simply never asked.
+  const runnableCache = createRunnableCache();
   // Process-wide REVISE-parking observation cache (UI-hs11 §3.1): the ws
   // queue-snapshot decoration READS it, its own async `bd show` fill WRITES it,
   // and the two disposition handlers re-verify through the same instance so a
@@ -94,6 +103,7 @@ export function createWorkerRuntime() {
     usageStore,
     activityStore,
     titleCache,
+    runnableCache,
     reviseParked,
     sessionLog,
     /**

@@ -57,6 +57,16 @@ vi.mock('../worker/runtime.js', () => ({
     queueStore: {
       /** @param {string} key */
       snapshot: (key) => snapshots[key] || { queue: [], pr_wait: [], done: [] }
+    },
+    // Inert runnable cache (UI-qrfo §4): this file is about the channel's
+    // subscriber/push/demand behaviour, and a real cache would put a `bd list`
+    // per repo behind every subscribe.
+    runnableCache: {
+      runnableFor: () => [],
+      refresh: () => {},
+      invalidate: () => {},
+      setOnFilled: () => {},
+      setSubscriberCount: () => {}
     }
   })
 }));

@@ -84,6 +84,25 @@ vi.mock('./ws.js', () => {
   return { createWsClient: () => singleton };
 });
 
+/**
+ * The REAL pipeline store, with a handle on the instance `bootstrap` built.
+ * `main.js` keeps it private, so this is the only way to assert what the push
+ * handler actually forwarded — mocking the store's behaviour instead would test
+ * the mock, not the wiring (UI-qrfo §4 전송 경로).
+ */
+vi.mock('./data/monitor-pipeline-store.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  /** @type {any} */
+  let instance = null;
+  return {
+    createMonitorPipelineStore: () => {
+      instance = actual.createMonitorPipelineStore();
+      return instance;
+    },
+    __currentMonitorPipelineStore: () => instance
+  };
+});
+
 const NOW = 1_700_000_000_000;
 
 /**
@@ -199,6 +218,71 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     expect(
       monitor_root.querySelector('#monitor-queue [data-issue-id="UI-wait"]')
     ).not.toBe(null);
+  });
+
+  // 서버가 만든 workspaces_state가 store까지 도달하지 않으면 파이프라인이 빈
+  // 레포의 그룹 헤더는 revision도 exec_defaults도 없이 렌더된다.
+  test('keeps the pushed workspaces_state in the pipeline store', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+    bootstrap(root);
+    await Promise.resolve();
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [],
+      workspaces_state: [
+        {
+          root_dir: '/tmp/ws-idle',
+          name: 'ws-idle',
+          auto_advance: false,
+          auto_merge: false,
+          slots: 2,
+          revision: 7,
+          exec_defaults: { orchestration_model: 'opus' }
+        }
+      ]
+    });
+    await Promise.resolve();
+
+    const store = /** @type {any} */ (
+      await import('./data/monitor-pipeline-store.js')
+    ).__currentMonitorPipelineStore();
+    expect(store.getWorkspacesState()).toEqual([
+      {
+        root_dir: '/tmp/ws-idle',
+        name: 'ws-idle',
+        auto_advance: false,
+        auto_merge: false,
+        slots: 2,
+        revision: 7,
+        exec_defaults: { orchestration_model: 'opus' }
+      }
+    ]);
+  });
+
+  test('leaves the workspaces_state empty when the server omits it', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+    bootstrap(root);
+    await Promise.resolve();
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: []
+    });
+    await Promise.resolve();
+
+    const store = /** @type {any} */ (
+      await import('./data/monitor-pipeline-store.js')
+    ).__currentMonitorPipelineStore();
+    expect(store.getWorkspacesState()).toEqual([]);
   });
 
   test('unsubscribes the pipeline when the tab is left', async () => {

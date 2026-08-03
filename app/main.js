@@ -238,7 +238,11 @@ export function bootstrap(root_element) {
         return;
       }
       try {
-        monitor_pipeline_store.set(p.workspaces);
+        // `workspaces_state` (UI-qrfo §4) covers every visible repo including
+        // the ones with an empty pipeline, so it is kept ALONGSIDE the heavy
+        // array rather than derived from it. A server that omits it leaves the
+        // store's empty default in place.
+        monitor_pipeline_store.set(p.workspaces, p.workspaces_state);
       } catch {
         // ignore
       }
