@@ -49,6 +49,7 @@ import {
 import { evaluateMergeGate } from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
+import { readDeclaredBase } from '../worker/target-base.js';
 import { resolveVerifyCmd } from '../worker/verify-cmd.js';
 import {
   emitSessionLogAppend,
@@ -464,6 +465,10 @@ function attemptsWithUsage(queue, workspace_key) {
  *     plus its merge-gate verdict (worker-phase2 §4/§5) — a pure cache read,
  *   - `bead_times`: 생성·수정 시각 for those same beads (UI-d7pw §4.3), on the
  *     same partiality contract as `bead_titles`.
+ *   - `declared_base`: the workspace's DECLARED target base (UI-j6wa §3), read
+ *     from the declaration only — never the fetching five-step resolve, which
+ *     belongs to the dispatch path. Null when the declaration exists but cannot
+ *     be read as one, so the chip can say `base ?` instead of claiming `main`,
  *   - `bead_titles`: display titles for the queue/pr_wait/done beads (UI-12k6),
  *     which are in no subscribed issue column and would otherwise render as
  *     bare ids,
@@ -511,8 +516,18 @@ function decorateQueue(workspace_key, raw_queue) {
   if (slots === null && typeof queue.slots === 'number') {
     slots = queue.slots;
   }
+  /** @type {string|null} */
+  let declared_base = null;
+  try {
+    declared_base = readDeclaredBase(String(workspace_key || ''));
+  } catch {
+    declared_base = null;
+  }
   return {
     ...queue,
+    // The workspace's declared base (UI-j6wa §3), non-persisted like every
+    // other decoration here. Display only — nothing dispatches on it.
+    declared_base,
     // Attempts carry the LIVE usage tally while they run (UI-raqh §1); the
     // persisted `Attempt.usage` stands on its own once they end.
     attempts: attemptsWithUsage(queue, workspace_key),

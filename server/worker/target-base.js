@@ -45,6 +45,17 @@ export const DECLARATION_PATH = path.join('docs', 'agents', 'repo-ops.toml');
 export const UNDECLARED_BASE = 'main';
 
 /**
+ * Characters `git check-ref-format` accepts but a shell reads as syntax. The
+ * resolved base is interpolated into a `gh pr create --base <base>` directive
+ * the session runs, so this fail-closed guard sits ahead of the contract's own
+ * steps (implementation review 2026-07-30). It is a pure string test, which is
+ * what lets the display-only projection below share it without running git.
+ *
+ * @type {RegExp}
+ */
+const SHELL_UNSAFE = /[^A-Za-z0-9._/-]/;
+
+/**
  * A successfully resolved base.
  *
  * @typedef {Object} ResolvedBase
@@ -133,6 +144,31 @@ function readDeclaration(repo, fs) {
 }
 
 /**
+ * What the repo DECLARES as its base, for display only (UI-j6wa §3). The
+ * toolbar chip has to say something on every render, and the five-step resolver
+ * fetches — a network round-trip per snapshot decoration is not what a chip is
+ * worth. So this reads the declaration and stops there; dispatch keeps using
+ * {@link resolveTargetBase}, and the chip never claims the base was verified.
+ *
+ * A declaration that cannot be read is NOT `main`: the undeclared fallback
+ * belongs to a repo that declared nothing, and showing `main` for a broken
+ * declaration is the same silent-typo failure the no-fallback rule exists to
+ * stop. Those return null and the chip says `base ?`.
+ *
+ * @param {string} repo
+ * @param {typeof import('node:fs')} [fs]
+ * @returns {string|null}
+ */
+export function readDeclaredBase(repo, fs = nodeFs) {
+  const declaration = readDeclaration(String(repo || ''), fs);
+  if (!declaration.ok) {
+    return null;
+  }
+  const base = declaration.base ?? UNDECLARED_BASE;
+  return SHELL_UNSAFE.test(base) ? null : base;
+}
+
+/**
  * Resolve the target base of `repo`, running every contract step.
  *
  * @param {{
@@ -169,7 +205,7 @@ export async function resolveTargetBase(input) {
   // interpolated into a `gh pr create --base <base>` directive the session runs
   // (implementation review 2026-07-30). This is a fail-closed ADDITION to the
   // contract's five steps — it never accepts anything they reject.
-  if (/[^A-Za-z0-9._/-]/.test(base)) {
+  if (SHELL_UNSAFE.test(base)) {
     return { ok: false, step: 'format', base, detail: 'shell_unsafe' };
   }
 

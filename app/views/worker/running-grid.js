@@ -39,6 +39,9 @@ import { timesMeta } from './lanes.js';
  * @property {boolean} [conflict_resolution] - Attempt dispatched to resolve a
  * PR conflict (worker-phase2 §6) rather than to do the bead's work; the tile
  * says so, because the two look identical otherwise (UI-dxgz §1).
+ * @property {string|null} [base_exception] - `→ <target_base>` when this
+ * attempt targets a base other than the workspace's declared one (UI-j6wa §3);
+ * null on a match and on either side being unknown.
  */
 
 /**
@@ -329,6 +332,9 @@ function runningTile(tile, now, selected_attempt = null) {
       ? '충돌 해소 일시정지'
       : '충돌 해소'
     : null;
+  // 이 세션이 선언 base가 아닌 곳을 향해 일하고 있다 (UI-j6wa §3). 툴바 칩이
+  // 워크스페이스의 base를 상시 말하므로, 타일은 그와 다를 때만 입을 연다.
+  const base_badge = tile.base_exception || null;
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused ? ' rtile--paused' : ''}"
@@ -379,10 +385,17 @@ function runningTile(tile, now, selected_attempt = null) {
       </button>
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${meta || usage_label || conflict_badge
+    ${meta || usage_label || conflict_badge || base_badge
       ? html`<div class="rtile__meta">
           ${conflict_badge
             ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
+            : ''}
+          ${base_badge
+            ? html`<span
+                class="worker-mini__badge"
+                title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
+                >${base_badge}</span
+              >`
             : ''}
           ${meta ? html`<span class="rtile__runner">${meta}</span>` : ''}
           ${usage_label
