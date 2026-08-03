@@ -3718,6 +3718,43 @@ html[data-theme='dark'] {
   gap: var(--sp-2);
 }
 
+/* 완료 레인 2줄 행 (UI-rkly §3). 1줄은 제목에 가로를 다 내주고, 2줄이 나머지
+   사실을 전부 받는다 — 완료된 일의 제목이 잘리는 것이 여기서 가장 비싼 손실이다. */
+.worker-mini:has(> .worker-mini__row1) {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-3);
+}
+
+.worker-mini__row1 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.worker-mini__row1 .worker-mini__title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.worker-mini__row2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.worker-mini__done-at {
+  white-space: nowrap;
+}
+
+.worker-mini__row2 .worker-mini__meta {
+  margin-left: auto;
+}
+
 .worker-mini__meta {
   display: flex;
   flex-wrap: wrap;

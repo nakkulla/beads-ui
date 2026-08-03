@@ -1662,6 +1662,12 @@ export function createWorkerView(mount_element, options = {}) {
             lane === 'done'
               ? sumAttemptUsage(q.attempts || {}, e.bead_id)
               : null,
+          // 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3). 2줄 행의 둘째 줄이
+          // 이것을 싣는다; 구버전 queue.json 엔트리는 값이 없어 생략된다.
+          done_at:
+            lane === 'done' && typeof e.added_at === 'number'
+              ? e.added_at
+              : undefined,
           ...timesOf(e.bead_id)
         };
       });

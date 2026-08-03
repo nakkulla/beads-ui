@@ -7345,21 +7345,42 @@ describe('레인 행 생성·수정 시각 (UI-d7pw §4)', () => {
     expect(meta?.textContent).not.toContain('생성');
   });
 
+  // 완료 행은 UI-rkly §3에서 2줄 계약으로 바뀌었으므로, 한 줄 변형이 남아 있는
+  // 대기 행으로 이 구조를 검증한다 (완료 2줄은 `lanes.test.js`가 덮는다).
   test('wraps the single-line row body so the meta line is a sibling', () => {
     const now = Date.now();
 
     const mount = renderTimes(
       queueOf({
-        done: [{ bead_id: 'DN-1', added_at: 1 }],
-        bead_times: { 'DN-1': { created_at: now, updated_at: now } }
+        queue: [{ bead_id: 'QN-1', added_at: 1 }],
+        bead_times: { 'QN-1': { created_at: now, updated_at: now } }
       })
     );
 
     expect(
       mount.querySelector(
-        '.worker-mini[data-bead-id="DN-1"] > .worker-mini__line'
+        '.worker-mini[data-bead-id="QN-1"] > .worker-mini__line'
       )
     ).not.toBe(null);
+  });
+
+  test('renders a done row as two lines carrying the completion time', () => {
+    const now = Date.now();
+
+    const mount = renderTimes(
+      queueOf({
+        done: [{ bead_id: 'DN-1', added_at: now - 7_200_000 }],
+        bead_times: { 'DN-1': { created_at: now, updated_at: now } }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="DN-1"]')
+    );
+    expect(row.querySelector('.worker-mini__row1 .worker-usage')).toBe(null);
+    expect(
+      row.querySelector('.worker-mini__row2 .worker-mini__done-at')?.textContent
+    ).toContain('2시간 전');
   });
 
   test('keeps the drag contract on the row shell', () => {
