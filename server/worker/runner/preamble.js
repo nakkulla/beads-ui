@@ -55,11 +55,19 @@ export const PR_SUBMIT_DIRECTIVE =
  * that ends its turn "to wait" for such a task silently loses the result
  * instead of actually waiting for it (worker-phase2 §1, UI-2wa9 attempt
  * `1785076768091-1`).
+ * (c) base landing: the enforcement layer moved (UI-8mvc §4). A push at the
+ * attempt's own base is refused by the per-attempt pre-push hook, which reads
+ * the destination ref git itself computed — so the session survives it and a
+ * push into ANOTHER repository is not judged at all. What still ends the
+ * session is what argv alone decides: `gh pr merge`, and any attempt to disable
+ * the hook. Naming the two effects separately is the point — a session told
+ * "your base push kills you" cannot tell that from "your base push is refused",
+ * and only the second is true now.
  *
  * @type {string}
  */
 export const GUARD_CONTRACT_DIRECTIVE =
-  '가드 계약 고지 — (1) `git merge` 절대 금지: 충돌 해소 attempt를 제외하고 세션 엔진이 `git merge` 실행 즉시 세션을 종료한다. (2) 백그라운드 태스크를 대기 상태로 둔 채 턴을 끝내지 말 것: headless 프로세스가 턴 종료와 동시에 종료되며 대기 중이던 태스크가 함께 kill되어 결과(예: 리뷰 결과)가 유실된다. (3) base 브랜치 직접 랜딩 금지: 이 attempt 가 맡은 저장소의 base 로 향하는 `git push` 와 `gh pr merge` 는 세션 엔진이 즉시 종료한다. 다른 저장소의 base 로 향하는 push 는 허용되지만, 이동이 push 를 지배함을 정적으로 증명할 수 있어야 한다 — 증명되지 않으면 자기 base 랜딩으로 판정된다.';
+  '가드 계약 고지 — (1) `git merge` 절대 금지: 충돌 해소 attempt를 제외하고 세션 엔진이 `git merge` 실행 즉시 세션을 종료한다. (2) 백그라운드 태스크를 대기 상태로 둔 채 턴을 끝내지 말 것: headless 프로세스가 턴 종료와 동시에 종료되며 대기 중이던 태스크가 함께 kill되어 결과(예: 리뷰 결과)가 유실된다. (3) base 브랜치 직접 랜딩 금지: 이 attempt 가 맡은 저장소의 base 로 향하는 `git push` 는 attempt 전용 pre-push hook 이 거부한다 — 세션은 종료되지 않고 push 만 실패한다. 다른 저장소의 base 로 향하는 push 는 hook 의 판정 대상이 아니다(통과). (4) 즉시 종료되는 것은 `gh pr merge` 와 hook 무력화 시도다 — `git push --no-verify`, `git -c core.hooksPath=…`, `git config … core.hooksPath`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` 재정의. 사후에도 원격 base 이동이 이 attempt 의 커밋으로 설명되면 attempt 가 `base_landing_detected` 로 실패 처리된다.';
 
 /**
  * The PR base directive (worker-base-scope-alignment §4).
