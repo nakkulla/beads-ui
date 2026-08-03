@@ -285,25 +285,25 @@ export function miniRow(item) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-            ${grip}${id_el}${pr_el}${badge_els}${reason_el}
-          </div>
-          <div class="worker-mini__body">${title_el}</div>
-          ${has_foot
-            ? html`<div class="worker-mini__foot">
-                ${usage_el}${merge_step_el}
-                <span class="worker-mini__actions"
-                  >${merge_el}${cancel_el}${discard_el}${revise_els}</span
-                >
-              </div>`
-            : ''}
-          ${timesMeta(item)}`
-      : // 한 줄 변형은 본문을 `__line`으로 감싸고 메타 줄을 형제로 붙인다
-        // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
-        // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
-        html`<div class="worker-mini__line">
-            ${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
-          </div>
-          ${timesMeta(item)}`}
+              ${grip}${id_el}${pr_el}${badge_els}${reason_el}
+            </div>
+            <div class="worker-mini__body">${title_el}</div>
+            ${has_foot
+              ? html`<div class="worker-mini__foot">
+                  ${usage_el}${merge_step_el}
+                  <span class="worker-mini__actions"
+                    >${merge_el}${cancel_el}${discard_el}${revise_els}</span
+                  >
+                </div>`
+              : ''}
+            ${timesMeta(item)}`
+        : // 한 줄 변형은 본문을 `__line`으로 감싸고 메타 줄을 형제로 붙인다
+          // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
+          // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
+          html`<div class="worker-mini__line">
+              ${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
+            </div>
+            ${timesMeta(item)}`}
   </div>`;
 }
 

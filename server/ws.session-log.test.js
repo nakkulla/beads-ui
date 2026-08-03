@@ -131,6 +131,35 @@ describe('ws session-log (transcript) channel', () => {
     expect(snaps[0].payload.lines[1].result).toBe('DONE');
   });
 
+  test('the snapshot carries the log file mtime as last_event_at', async () => {
+    const ws_key = process.cwd();
+    writeRunnerLine(ws_key, 'att-mtime', { type: 'system' });
+
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-session-log', {
+      id: 'session-log:att-mtime',
+      attempt_id: 'att-mtime'
+    });
+
+    const snap = pushesOfType(sock, 'session-log-snapshot')[0];
+    expect(snap.payload.last_event_at).toBe(
+      getWorkerRuntime().sessionLog.lastEventAtOf(ws_key, 'att-mtime')
+    );
+    expect(typeof snap.payload.last_event_at).toBe('number');
+  });
+
+  test('an absent log snapshots with a null last_event_at', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-session-log', {
+      id: 'session-log:att-absent',
+      attempt_id: 'att-absent'
+    });
+
+    expect(
+      pushesOfType(sock, 'session-log-snapshot')[0].payload.last_event_at
+    ).toBe(null);
+  });
+
   test('live appends push session-log-append after subscribe', async () => {
     const ws_key = process.cwd();
     const runtime = getWorkerRuntime();

@@ -61,9 +61,9 @@ describe('done lane row', () => {
       row.querySelector('.worker-mini__row2')
     );
     expect(second.querySelector('.worker-usage')).not.toBeNull();
-    expect(second.querySelector('.worker-mini__done-at')?.textContent).toContain(
-      '1시간 전'
-    );
+    expect(
+      second.querySelector('.worker-mini__done-at')?.textContent
+    ).toContain('1시간 전');
   });
 
   test('omits the completion time when the entry carries none', () => {

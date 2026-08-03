@@ -344,7 +344,9 @@ describe('transcript drawer', () => {
 
     drawer.open({ attempt_id: 'att-fold' });
 
-    const group = /** @type {HTMLElement} */ (mount.querySelector('.sv__group'));
+    const group = /** @type {HTMLElement} */ (
+      mount.querySelector('.sv__group')
+    );
     expect(group?.textContent).toContain('Read');
     expect(group?.textContent).toContain('6');
     expect(mount.querySelectorAll('.sv__tool')).toHaveLength(0);

@@ -54,7 +54,7 @@ function formatAgo(at, now_ms) {
  * @param {HTMLElement} mount_element
  * @param {{
  *   transport?: (type: string, payload?: unknown) => Promise<any>,
- *   sessionLogStore?: { get: (id: string) => { lines: unknown[] } | null, subscribe: (fn: () => void) => () => void },
+ *   sessionLogStore?: { get: (id: string) => { lines: unknown[], last_event_at?: number|null } | null, subscribe: (fn: () => void) => () => void },
  *   onClose?: () => void
  * }} [options]
  * @returns {{ open: (input: { attempt_id: string, meta?: DrawerMeta }) => void, updateMeta: (meta: DrawerMeta) => void, close: () => void, isOpen: () => boolean, destroy: () => void }}
@@ -294,8 +294,9 @@ export function createTranscriptDrawer(mount_element, options = {}) {
               class="sv__live"
               title="세션이 진행 중입니다"
               aria-label=${ago ? `진행 중 · 마지막 이벤트 ${ago}` : '진행 중'}
-              ><span class="sv__live-dot" aria-hidden="true"></span
-              >${ago ? html`<span class="sv__live-ago">${ago}</span>` : ''}</span
+              ><span class="sv__live-dot" aria-hidden="true"></span>${ago
+                ? html`<span class="sv__live-ago">${ago}</span>`
+                : ''}</span
             >`
           : ''}
         ${session_id
