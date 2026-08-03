@@ -647,3 +647,186 @@ describe('planStage (full_plan)', () => {
     expect(second.stages.plan?.stale).toBe(true);
   });
 });
+
+describe('closed beads skip the staleness probes', () => {
+  /**
+   * Fixture where the spec doc moved after the receipt — `pathChangedSince`
+   * reports changed, so `resolved` still reads stale.
+   *
+   * @param {string} dir
+   * @returns {string} receipt sha
+   */
+  function specMovedAfterReceipt(dir) {
+    writeFile(dir, 'docs/spec.md', '# spec\n');
+    const sha = commitAll(dir, 'add spec');
+    writeFile(dir, 'docs/spec.md', '# spec\nrevised\n');
+    commitAll(dir, 'revise spec');
+    return sha;
+  }
+
+  /**
+   * Fixture where the Bead branch survives and advanced past the receipt —
+   * the branch must stay alive, since a deleted one already reads `unknown`.
+   *
+   * @param {string} dir
+   * @returns {string} receipt sha
+   */
+  function beadBranchAdvanced(dir) {
+    writeFile(dir, 'a.txt', '1\n');
+    const sha = commitAll(dir, 'first');
+    git(dir, ['checkout', '-q', '-b', 'UI-1']);
+    writeFile(dir, 'a.txt', '2\n');
+    commitAll(dir, 'post-review commit');
+    return sha;
+  }
+
+  /**
+   * Fixture where the plan doc moved after the receipt.
+   *
+   * @param {string} dir
+   * @returns {string} receipt sha
+   */
+  function planMovedAfterReceipt(dir) {
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const sha = commitAll(dir, 'add plan');
+    writeFile(dir, 'docs/plan.md', '# plan\nrevised\n');
+    commitAll(dir, 'revise plan');
+    return sha;
+  }
+
+  test('keeps spec fresh on a closed bead whose spec doc moved', () => {
+    const dir = makeRepo();
+    const sha = specMovedAfterReceipt(dir);
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'closed',
+        metadata: {
+          route: 'spec_backed',
+          spec_id: 'docs/spec.md',
+          spec_review: 'codex@' + sha
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.spec.stale).toBe(false);
+  });
+
+  test('keeps impl fresh on a closed bead whose branch advanced', () => {
+    const dir = makeRepo();
+    const sha = beadBranchAdvanced(dir);
+
+    const wf = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        status: 'closed',
+        metadata: { route: 'spec_backed', impl_review: 'codex@' + sha }
+      },
+      dir
+    );
+
+    expect(wf.stages.impl.stale).toBe(false);
+  });
+
+  test('keeps plan fresh on a closed bead whose plan doc moved', () => {
+    const dir = makeRepo();
+    const sha = planMovedAfterReceipt(dir);
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'closed',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'user@' + sha
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan?.stale).toBe(false);
+  });
+
+  test('leaves a resolved bead staleness untouched on all three probes', () => {
+    const spec_dir = makeRepo();
+    const spec_sha = specMovedAfterReceipt(spec_dir);
+    const impl_dir = makeRepo();
+    const impl_sha = beadBranchAdvanced(impl_dir);
+    const plan_dir = makeRepo();
+    const plan_sha = planMovedAfterReceipt(plan_dir);
+
+    const spec_wf = enrichIssueWorkflow(
+      {
+        status: 'resolved',
+        metadata: {
+          route: 'spec_backed',
+          spec_id: 'docs/spec.md',
+          spec_review: 'codex@' + spec_sha
+        }
+      },
+      spec_dir
+    );
+    const impl_wf = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        status: 'resolved',
+        metadata: { route: 'spec_backed', impl_review: 'codex@' + impl_sha }
+      },
+      impl_dir
+    );
+    const plan_wf = enrichIssueWorkflow(
+      {
+        status: 'resolved',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'user@' + plan_sha
+        }
+      },
+      plan_dir
+    );
+
+    expect(spec_wf.stages.spec.stale).toBe(true);
+    expect(impl_wf.stages.impl.stale).toBe(true);
+    expect(plan_wf.stages.plan?.stale).toBe(true);
+  });
+
+  test('preserves glyphs and chips on a closed bead', () => {
+    const dir = makeRepo();
+    const sha = specMovedAfterReceipt(dir);
+
+    const wf = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        status: 'closed',
+        metadata: {
+          route: 'spec_backed',
+          spec_id: 'docs/spec.md',
+          spec_review: 'codex@' + sha,
+          impl_review: 'skipped@' + sha,
+          pr_url: 'https://github.com/o/r/pull/42'
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.spec.glyph).toBe('review');
+    expect(wf.stages.spec.fill).toBe('full');
+    expect(wf.stages.impl.glyph).toBe('skip');
+    expect(wf.chips.route).toBe('spec_backed');
+    expect(wf.chips.pr).toEqual({ number: 42 });
+  });
+
+  test('leaves the status-less computeStale contract unchanged', () => {
+    const dir = makeRepo();
+    const sha = specMovedAfterReceipt(dir);
+
+    const { spec_stale } = computeStale(
+      { spec_id: 'docs/spec.md', spec_review: 'codex@' + sha },
+      dir
+    );
+
+    expect(spec_stale).toBe(true);
+  });
+});

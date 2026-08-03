@@ -46,6 +46,9 @@ export function mapSubscriptionToBdArgs(spec) {
       return ['list', '--json', '--tree=false', '--status', 'in_progress'];
     }
     case 'closed-issues': {
+      // `--limit 0` = unlimited. A cap here truncates in bd's arbitrary
+      // (non-`closed_at`) order, so the all-time range dropped rows without
+      // saying which — and lifting it costs ~20ms at 1493 issues.
       const args = [
         'list',
         '--json',
@@ -53,7 +56,7 @@ export function mapSubscriptionToBdArgs(spec) {
         '--status',
         'closed',
         '--limit',
-        '1000'
+        '0'
       ];
       const since = closedIssuesSince(spec);
       if (since !== null) {

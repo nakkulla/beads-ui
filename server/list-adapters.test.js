@@ -59,7 +59,7 @@ describe('list adapters for subscription types', () => {
       '--status',
       'closed',
       '--limit',
-      '1000'
+      '0'
     ]);
   });
 
@@ -78,7 +78,7 @@ describe('list adapters for subscription types', () => {
       '--status',
       'closed',
       '--limit',
-      '1000',
+      '0',
       '--closed-after',
       new Date(since - 1000).toISOString()
     ]);
@@ -97,7 +97,7 @@ describe('list adapters for subscription types', () => {
       '--status',
       'closed',
       '--limit',
-      '1000'
+      '0'
     ]);
   });
 
