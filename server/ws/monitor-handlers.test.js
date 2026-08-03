@@ -171,6 +171,18 @@ describe('buildMonitorPipeline fail-quiet (UI-nprg §에러 처리)', () => {
     expect(out.map((w) => w.root_dir)).toEqual([WS_B]);
   });
 
+  test('skips a registry entry with a blank path', () => {
+    const out = buildMonitorPipeline({
+      listWorkspaces: () => [{ path: '' }],
+      listHidden: () => [],
+      snapshotFor: () =>
+        snapshot({ queue: [{ bead_id: 'X-1', added_at: NOW }] }),
+      now: () => NOW
+    });
+
+    expect(out).toEqual([]);
+  });
+
   test('returns an empty payload when the workspace list is unreadable', () => {
     const out = buildMonitorPipeline({
       listWorkspaces: () => {

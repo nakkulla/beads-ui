@@ -124,14 +124,15 @@ describe('ws monitor-pipeline channel (UI-nprg)', () => {
     });
   });
 
-  test('rejects a subscribe with no client id', async () => {
+  // 승인된 프로토콜의 구독 요청은 payload가 없다.
+  test('accepts a payload-less subscribe', async () => {
     const sock = fakeSocket();
 
-    await send(sock, 's1', 'subscribe-monitor-pipeline', {});
+    await send(sock, 's1', 'subscribe-monitor-pipeline');
 
-    const reply = replyFor(sock, 's1');
-    expect(reply.ok).toBe(false);
-    expect(reply.error.code).toBe('bad_request');
-    expect(pipelineSnapshots(sock)).toHaveLength(0);
+    expect(replyFor(sock, 's1').ok).toBe(true);
+    const snaps = pipelineSnapshots(sock);
+    expect(snaps).toHaveLength(1);
+    expect(snaps[0].id).toBe('monitor:pipeline');
   });
 });

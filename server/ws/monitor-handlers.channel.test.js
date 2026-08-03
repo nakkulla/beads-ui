@@ -12,6 +12,8 @@ let snapshots = {};
 let worker_sub_count = 0;
 /** @type {((workspace_key: string) => void)|null} */
 let refresh_listener = null;
+/** @type {string[]} */
+let external_refreshes = [];
 
 // The channel is isolated from the worker runtime: what is under test is the
 // aggregation's own subscriber/push/demand behaviour, not the decoration it
@@ -43,7 +45,11 @@ vi.mock('../visible-workspaces-store.js', () => ({
 }));
 
 vi.mock('../worker/attach.js', () => ({
-  refreshWorkerExternalPrs: async () => false
+  /** @param {string} root_dir */
+  refreshWorkerExternalPrs: async (root_dir) => {
+    external_refreshes.push(root_dir);
+    return false;
+  }
 }));
 
 vi.mock('../worker/runtime.js', () => ({
@@ -98,6 +104,7 @@ beforeEach(() => {
   };
   worker_sub_count = 0;
   refresh_listener = null;
+  external_refreshes = [];
   __resetMonitorPipelineForTest();
 });
 
@@ -166,17 +173,63 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
     expect(monitorPipelineSubscriberCount()).toBe(0);
   });
 
-  test('rejects a subscribe with no client id', () => {
+  // 프로토콜상 구독 요청은 payload가 없다 — 서버 전역 구독이라 실어 보낼
+  // workspace 자체가 없다.
+  test('accepts a payload-less subscribe', () => {
     const ws = fakeWs();
 
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), {
       id: 'req-1',
-      type: 'subscribe-monitor-pipeline',
-      payload: {}
+      type: 'subscribe-monitor-pipeline'
+    });
+
+    expect(monitorPipelineSubscriberCount()).toBe(1);
+    expect(ws.snapshots()).toHaveLength(1);
+  });
+
+  test('unsubscribes a payload-less subscription', () => {
+    const ws = fakeWs();
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), {
+      id: 'req-1',
+      type: 'subscribe-monitor-pipeline'
+    });
+
+    handleUnsubscribeMonitorPipeline(/** @type {any} */ (ws), {
+      id: 'req-2',
+      type: 'unsubscribe-monitor-pipeline'
     });
 
     expect(monitorPipelineSubscriberCount()).toBe(0);
-    expect(ws.snapshots()).toHaveLength(0);
+  });
+});
+
+describe('monitor external PR seeding (UI-nprg)', () => {
+  // 아직 아무도 스캔하지 않은 external PR만 가진 레포는 집계 자체가 비어 있다 —
+  // 집계 결과로 스캔 대상을 정하면 정확히 그 레포가 영구히 스캔되지 않는다.
+  test('scans a visible workspace whose pipeline is still empty', () => {
+    workspaces = [WS_A, WS_B];
+    snapshots = {
+      [WS_A]: {
+        queue: [{ bead_id: 'A-1', added_at: 1 }],
+        pr_wait: [],
+        done: []
+      }
+    };
+    const ws = fakeWs();
+
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+
+    expect(external_refreshes).toEqual([WS_A, WS_B]);
+  });
+
+  test('leaves a hidden workspace unscanned', () => {
+    workspaces = [WS_A, WS_B];
+    hidden = [WS_B];
+    const ws = fakeWs();
+
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+
+    expect(external_refreshes).toEqual([WS_A]);
   });
 });
 

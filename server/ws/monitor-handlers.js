@@ -16,7 +16,7 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import path from 'node:path';
-import { makeError, makeOk } from '../../app/protocol.js';
+import { makeOk } from '../../app/protocol.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import { refreshWorkerExternalPrs } from '../worker/attach.js';
@@ -143,8 +143,12 @@ export function buildMonitorPipeline(options = {}) {
   const seen = new Set();
 
   for (const workspace of workspaces) {
-    const root_dir = path.resolve(String(workspace?.path || ''));
-    if (root_dir.length === 0 || hidden.has(root_dir) || seen.has(root_dir)) {
+    const raw = String(workspace?.path || '');
+    if (raw.length === 0) {
+      continue;
+    }
+    const root_dir = path.resolve(raw);
+    if (hidden.has(root_dir) || seen.has(root_dir)) {
       continue;
     }
     seen.add(root_dir);
@@ -230,29 +234,61 @@ function ensureRefreshWired() {
 }
 
 /**
+ * The visible workspace roots, straight from the registry minus the hidden set.
+ *
+ * @returns {string[]}
+ */
+function visibleWorkspaceRoots() {
+  /** @type {Set<string>} */
+  let hidden = new Set();
+  try {
+    hidden = new Set(
+      sharedVisibleWorkspacesStore()
+        .listHidden()
+        .map((p) => path.resolve(p))
+    );
+  } catch (err) {
+    log('monitor: hidden set unreadable: %o', err);
+  }
+  /** @type {string[]} */
+  const out = [];
+  /** @type {Set<string>} */
+  const seen = new Set();
+  try {
+    for (const workspace of getAvailableWorkspaces()) {
+      // Resolved AFTER the empty check on purpose: `path.resolve('')` is the
+      // server's cwd, so resolving first would turn a blank registry entry into
+      // a workspace nobody registered.
+      const raw = String(workspace?.path || '');
+      if (raw.length === 0) {
+        continue;
+      }
+      const root_dir = path.resolve(raw);
+      if (hidden.has(root_dir) || seen.has(root_dir)) {
+        continue;
+      }
+      seen.add(root_dir);
+      out.push(root_dir);
+    }
+  } catch (err) {
+    log('monitor: workspace list unreadable: %o', err);
+    return [];
+  }
+  return out;
+}
+
+/**
  * Kick the external-PR registry for every visible workspace and push once the
  * scans land.
  *
- * The registry is only as fresh as the last scan, and the poller has never
- * looked at a workspace nobody had the Worker tab open on — without this a
- * newly subscribed monitor would silently miss the PR-wait rows of every other
- * repo. Deliberately not awaited: a slow `bd list` must not delay the first
- * snapshot.
+ * Driven by the RAW visible list, never by the aggregation's own output: a
+ * workspace whose only pipeline content is an external PR nobody has scanned yet
+ * has an empty aggregate, so seeding the scan from the aggregate would omit
+ * exactly the repos that need the scan — permanently. Deliberately not awaited:
+ * a slow `bd list` must not delay the first snapshot.
  */
 function refreshExternalPrsForVisible() {
-  /** @type {Array<Record<string, unknown>>} */
-  let workspaces = [];
-  try {
-    workspaces = buildMonitorPipeline();
-  } catch (err) {
-    log('monitor: external refresh skipped: %o', err);
-    return;
-  }
-  for (const workspace of workspaces) {
-    const root_dir = String(workspace.root_dir || '');
-    if (root_dir.length === 0) {
-      continue;
-    }
+  for (const root_dir of visibleWorkspaceRoots()) {
     void refreshWorkerExternalPrs(root_dir)
       .then((scanned) => {
         if (scanned) {
@@ -327,21 +363,33 @@ export function notifyMonitorVisibilityChanged() {
 }
 
 /**
- * Handle `subscribe-monitor-pipeline`. Payload: `{ id: client_id }`.
+ * The addressing id a monitor subscription answers to when the request carries
+ * none. The channel is one-per-connection, so the id exists only to keep the
+ * push envelope's `payload.id` shape uniform with every other channel — a
+ * payload-less subscribe (the protocol's own shape) is the normal case.
+ */
+const DEFAULT_MONITOR_CLIENT_ID = 'monitor:pipeline';
+
+/**
+ * @param {RequestEnvelope} req
+ * @returns {string}
+ */
+function clientIdOf(req) {
+  const raw = /** @type {any} */ (req.payload)?.id;
+  return typeof raw === 'string' && raw.length > 0
+    ? raw
+    : DEFAULT_MONITOR_CLIENT_ID;
+}
+
+/**
+ * Handle `subscribe-monitor-pipeline`. Payload is optional (`{ id }` addresses
+ * the pushes; absent means the default id).
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export function handleSubscribeMonitorPipeline(ws, req) {
-  const client_id = /** @type {any} */ (req.payload)?.id;
-  if (typeof client_id !== 'string' || client_id.length === 0) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload.id must be a non-empty string')
-      )
-    );
-    return;
-  }
+  const client_id = clientIdOf(req);
   // Re-subscribing the same (ws, client_id) is idempotent.
   for (const sub of SUBSCRIBERS) {
     if (sub.ws === ws && sub.client_id === client_id) {
@@ -364,13 +412,14 @@ export function handleSubscribeMonitorPipeline(ws, req) {
 }
 
 /**
- * Handle `unsubscribe-monitor-pipeline`. Payload: `{ id: client_id }`.
+ * Handle `unsubscribe-monitor-pipeline`. Payload is optional, mirroring
+ * subscribe.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export function handleUnsubscribeMonitorPipeline(ws, req) {
-  const client_id = /** @type {any} */ (req.payload)?.id;
+  const client_id = clientIdOf(req);
   let removed = false;
   for (const sub of SUBSCRIBERS) {
     if (sub.ws === ws && sub.client_id === client_id) {
