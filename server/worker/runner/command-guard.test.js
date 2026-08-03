@@ -1020,6 +1020,89 @@ describe('command-guard keeps `gh pr merge` kill on every shape', () => {
 
     expect(guardEffect(violation)).toBe('kill');
   });
+
+  // gh takes its flags interspersed: both forms below are accepted by gh 2.x
+  // and both merge, so a fixed argv[1]/argv[2] test would let a real merge run.
+  test('kills a merge whose repo override sits BEFORE the subcommand', () => {
+    const violation = findMergeViolation(
+      'gh pr --repo nakkulla/other merge 12',
+      ON_MAIN
+    );
+
+    expect(violation?.kind).toBe('gh_pr_merge');
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  test('kills a merge whose `-R` override sits ahead of `pr`', () => {
+    const violation = findMergeViolation(
+      'gh -R nakkulla/other pr merge 12',
+      ON_MAIN
+    );
+
+    expect(violation?.kind).toBe('gh_pr_merge');
+  });
+
+  test('kills a merge with an attached `--repo=` override', () => {
+    expect(
+      findMergeViolation('gh pr --repo=nakkulla/other merge 12', ON_MAIN)?.kind
+    ).toBe('gh_pr_merge');
+  });
+
+  test('passes a gh command whose ARGUMENT merely reads `pr merge`', () => {
+    expect(
+      findMergeViolation("gh pr create --title 'pr merge' --body x", ON_MAIN)
+    ).toBeNull();
+    expect(findMergeViolation('gh issue list --repo a/b', ON_MAIN)).toBeNull();
+  });
+});
+
+describe('command-guard fallback catches a hook bypass the tokenizer refused', () => {
+  // A function definition makes the tokenizer refuse the whole input, which is
+  // the fallback's entire purpose — and the fallback must never be MORE
+  // permissive than the argv path, so a bypass there stays a kill instead of
+  // being demoted to the base-push warning.
+  test('kills `--no-verify` hidden behind a function definition', () => {
+    const violation = findMergeViolation(
+      'f() { :; }; git push --no-verify origin HEAD:main',
+      ON_MAIN
+    );
+
+    expect(violation?.kind).toBe('hook_bypass');
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  test('kills a relocated hooks path behind a function definition', () => {
+    expect(
+      findMergeViolation(
+        'f() { :; }; git -c core.hooksPath=/tmp/x push origin UI-1',
+        ON_MAIN
+      )?.kind
+    ).toBe('hook_bypass');
+    expect(
+      findMergeViolation(
+        'f() { :; }; git config core.hooksPath /tmp/x',
+        ON_MAIN
+      )?.kind
+    ).toBe('hook_bypass');
+  });
+
+  test('kills a GIT_CONFIG_* redefinition behind a function definition', () => {
+    expect(
+      findMergeViolation(
+        'f() { :; }; GIT_CONFIG_COUNT=0 git push origin UI-1',
+        ON_MAIN
+      )?.kind
+    ).toBe('hook_bypass');
+  });
+
+  test('leaves a disposition session alone on the same input', () => {
+    expect(
+      findMergeViolation('f() { :; }; git push --no-verify origin UI-1', {
+        ...ON_MAIN,
+        disposition: true
+      })
+    ).toBeNull();
+  });
 });
 
 describe('command-guard demotes the base-landing judgment to a warning', () => {

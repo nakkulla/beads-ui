@@ -3687,6 +3687,27 @@ export function createScheduler(deps) {
     // that promise is still held, the discard owes the same wait a live stop
     // does — otherwise the residue check races a process that is still writing.
     const pending_done = paused_done.get(attempt_id);
+    // The ⏸/■ settlement for the one record that reaches no other observer
+    // (UI-8mvc §3, implementation review 2026-08-03): a `paused` attempt whose
+    // `onSessionDone` died with the previous server is not `running`, so
+    // reconcile never disposes of it, and this discard would clear its branch —
+    // the detection layer's only evidence — unobserved. Guarded on the ABSENT
+    // handle on purpose: while `pending_done` is held the process may still be
+    // writing, and that case settles through its own `done`.
+    if (!pending_done && (await settleBaseDrift(workspace, attempt_id))) {
+      await failAttempt(
+        workspace,
+        attempt_id,
+        rec.bead_id,
+        rec.workflow_mode_prior ?? null,
+        'base_landing_detected',
+        { reason: 'base_landing_detected', command: null }
+      );
+      removeGuardHook(workspace, attempt_id);
+      notifyChanged(workspace);
+      await tick(workspace);
+      return true;
+    }
     paused_done.delete(attempt_id);
     const repo = typeof rec.repo === 'string' ? rec.repo : '';
     const base = attemptBase(workspace, attempt_id);

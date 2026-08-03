@@ -6226,6 +6226,81 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
     expect(q.attempts['S1-1000-1'].base_drift).toBeNull();
   });
 
+  test('observes the base of a restart-restored paused attempt discarded by ■', async () => {
+    const gh = ghFor();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor({
+        'base-S1..refs/heads/UI-7': `${LANDED}\n`,
+        [`base-S1..${MOVED}`]: `${LANDED}\n`
+      }),
+      gh
+    });
+    // A `paused` record whose server restarted: it is not `running`, so
+    // reconcile never disposes of it, and its `onSessionDone` died with the
+    // previous process — this discard is its only observer.
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-paused', bead_id: 'UI-7' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-paused',
+      patch: {
+        status: 'paused',
+        pid: null,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        workflow_mode_prior: null
+      }
+    });
+
+    const discarded = await env.scheduler.stop(WS, 'att-paused');
+
+    expect(discarded).toBe(true);
+    const attempt = env.store.snapshot(WS).attempts['att-paused'];
+    expect(attempt.cause).toBe('base_landing_detected');
+    expect(attempt.base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      shas: [LANDED]
+    });
+    expect(env.store.snapshot(WS).auto_advance).toBe(false);
+  });
+
+  test('discards a restart-restored paused attempt normally when nothing landed', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase('base-S1'),
+      gitRun: gitFor({}),
+      gh: ghFor()
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-paused', bead_id: 'UI-7' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-paused',
+      patch: {
+        status: 'paused',
+        pid: null,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.stop(WS, 'att-paused');
+
+    const attempt = env.store.snapshot(WS).attempts['att-paused'];
+    expect(attempt.status).toBe('stopped');
+    expect(attempt.base_drift).toBeNull();
+  });
+
   test('observes the base of a restart-surviving attempt disposed by reconcile', async () => {
     const gh = ghFor();
     const env = setup({

@@ -89,6 +89,20 @@ export function basePushRegex(target_base) {
 }
 
 /**
+ * A hook-disabling attempt in an UNPARSEABLE command. The argv judgment
+ * ({@link isHookBypass}) is the primary one; this exists because a tokenizer
+ * refusal must not be an escape hatch — without it a function definition ahead
+ * of `git push --no-verify` demotes a kill to the base-push warning, which is
+ * the fallback being MORE permissive than the argv path.
+ *
+ * FALLBACK ONLY — deliberately over-eager, like the two regexes above.
+ *
+ * @type {RegExp}
+ */
+export const HOOK_BYPASS_RE =
+  /git\s+push\b[\s\S]*?--no-verify\b|-c\s*core\.hookspath|core\.hookspath\s*=|git\s+config\b[\s\S]*?core\.hookspath|\bGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)\s*=/i;
+
+/**
  * Merging the base INTO the session's own branch (`git merge origin/main`).
  * Blocked by default, but ALLOWED for a conflict-resolution attempt — that is
  * exactly the operation such an attempt exists to perform (worker-phase2 §6).
@@ -1411,6 +1425,43 @@ function isHookBypass(argv, prefix) {
 }
 
 /**
+ * `gh`'s repo-override options, which consume the NEXT token when written
+ * separately. `--repo=X` needs no entry: it is one token.
+ *
+ * @type {Set<string>}
+ */
+const GH_VALUE_OPTIONS = new Set(['-R', '--repo']);
+
+/**
+ * Is this `gh pr merge`, wherever the options sit? gh accepts its flags
+ * interspersed — `gh pr --repo owner/name merge` and `gh -R owner/name pr merge`
+ * are both valid and both merge (measured with gh 2.x), so a fixed
+ * `argv[1]`/`argv[2]` test lets a real merge through (implementation review
+ * 2026-08-03). The subcommand path is therefore the first two NON-OPTION words.
+ *
+ * @param {string[]} argv - {@link normalizeArgv} output.
+ * @returns {boolean}
+ */
+function isGhPrMerge(argv) {
+  if (basename(argv[0]).toLowerCase() !== 'gh') {
+    return false;
+  }
+  /** @type {string[]} */
+  const words = [];
+  for (let i = 1; i < argv.length && words.length < 2; i += 1) {
+    const token = argv[i];
+    if (token.startsWith('-') && token.length > 1) {
+      if (GH_VALUE_OPTIONS.has(token)) {
+        i += 1;
+      }
+      continue;
+    }
+    words.push(token);
+  }
+  return words[0] === 'pr' && words[1] === 'merge';
+}
+
+/**
  * The narrow allowlist for a push that only LOOKS like a base landing because
  * the argv names the attempt repo's base — the 2026-07-29/07-30 incidents,
  * where a Cortex bead published another repository's `main` and the guard killed
@@ -1498,6 +1549,15 @@ function isExemptCrossRepoPush(commands, push_idx, ctx) {
  * @returns {MergeViolation|null}
  */
 function fallbackViolation(src, ctx) {
+  // Strictest first: an unparseable command that disables the hook must not be
+  // demoted to the base-push warning by matching that shape instead.
+  if (!ctx.disposition && HOOK_BYPASS_RE.test(src)) {
+    return {
+      kind: 'hook_bypass',
+      reason: 'hook_bypass_blocked',
+      command: src
+    };
+  }
   // The two landing shapes are tested SEPARATELY so each carries its own kind:
   // one alternation would hand the same verdict to a kill and to a warning.
   // `gh pr merge` is tested first, so an unparseable command holding both gets
@@ -1557,7 +1617,7 @@ function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
   }
   const name = basename(argv[0]).toLowerCase();
 
-  if (name === 'gh' && argv[1] === 'pr' && argv[2] === 'merge') {
+  if (isGhPrMerge(argv)) {
     return {
       kind: 'gh_pr_merge',
       reason: 'merge_to_base_blocked',
