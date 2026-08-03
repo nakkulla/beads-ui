@@ -15,8 +15,29 @@
  */
 import { html, render } from 'lit-html';
 import { copyToClipboard } from '../../utils/clipboard.js';
+import { formatRelativeTime } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import { parseTranscript } from './transcript-render.js';
+
+/** A run of this many identical tool lines collapses into one group. */
+const FOLD_AT = 5;
+
+/**
+ * How long ago the session last moved, in the drawer's second-level register
+ * (UI-rkly §2). `formatRelativeTime` floors everything under a minute to
+ * "방금", which is exactly the resolution a heartbeat needs to show.
+ *
+ * @param {number|null|undefined} at - Epoch ms.
+ * @param {number} now_ms
+ * @returns {string}
+ */
+function formatAgo(at, now_ms) {
+  if (typeof at !== 'number') {
+    return '';
+  }
+  const seconds = Math.max(0, Math.floor((now_ms - at) / 1000));
+  return seconds < 60 ? `${seconds}초 전` : formatRelativeTime(at, now_ms);
+}
 
 /**
  * @typedef {Object} DrawerMeta
@@ -48,8 +69,12 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   let follow = true;
   /** @type {Set<number>} */
   const expanded = new Set();
+  /** @type {Set<number>} */
+  const unfolded = new Set();
   /** @type {null | (() => void)} */
   let storeOff = null;
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let heartbeat = null;
 
   /**
    * @returns {import('./transcript-render.js').DisplayLine[]}
@@ -60,6 +85,110 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     }
     const rec = sessionLogStore.get(attempt_id);
     return parseTranscript(rec ? rec.lines : []);
+  }
+
+  /**
+   * When the session last moved (epoch ms), or null for a log with no known
+   * time (an old snapshot, or a store without the field).
+   *
+   * @returns {number|null}
+   */
+  function lastEventAt() {
+    if (!attempt_id || !sessionLogStore) {
+      return null;
+    }
+    const rec = sessionLogStore.get(attempt_id);
+    const at = rec ? rec.last_event_at : null;
+    return typeof at === 'number' ? at : null;
+  }
+
+  function isLive() {
+    return meta.status === 'running';
+  }
+
+  /**
+   * The heartbeat's elapsed label has to move on its own — a session can go
+   * minutes without emitting an event, and a frozen "3초 전" reads as a dead
+   * drawer. Only a live attempt gets the ticker, and it stops the moment the
+   * attempt stops being live (or the drawer closes).
+   */
+  function syncHeartbeat() {
+    if (isLive() && attempt_id) {
+      if (!heartbeat) {
+        heartbeat = setInterval(() => doRender(), 1000);
+      }
+      return;
+    }
+    stopHeartbeat();
+  }
+
+  function stopHeartbeat() {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  }
+
+  /**
+   * Group consecutive same-tool lines so a 30-file read sweep does not bury the
+   * one line that says what the session is doing. Anything shorter than
+   * {@link FOLD_AT} renders as before — folding two lines hides more than it
+   * saves.
+   *
+   * @param {import('./transcript-render.js').DisplayLine[]} lines
+   * @returns {Array<{ kind: 'line', idx: number, line: import('./transcript-render.js').DisplayLine } | { kind: 'group', idx: number, tool: string, lines: Array<{ idx: number, line: import('./transcript-render.js').DisplayLine }> }>}
+   */
+  function segmentsOf(lines) {
+    /** @type {any[]} */
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (line.kind === 'tool') {
+        let j = i;
+        while (
+          j < lines.length &&
+          lines[j].kind === 'tool' &&
+          lines[j].tool === line.tool
+        ) {
+          j += 1;
+        }
+        if (j - i >= FOLD_AT && !unfolded.has(i)) {
+          out.push({
+            kind: 'group',
+            idx: i,
+            tool: line.tool || '',
+            lines: lines.slice(i, j).map((l, k) => ({ idx: i + k, line: l }))
+          });
+          i = j;
+          continue;
+        }
+      }
+      out.push({ kind: 'line', idx: i, line });
+      i += 1;
+    }
+    return out;
+  }
+
+  /**
+   * The tool line the session is inside right now: the last tool line that
+   * never got its result back. A finished session (a `result` line landed)
+   * has none by definition.
+   *
+   * @param {import('./transcript-render.js').DisplayLine[]} lines
+   * @returns {import('./transcript-render.js').DisplayLine | null}
+   */
+  function pendingTool(lines) {
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const line = lines[i];
+      if (line.kind === 'result' || line.kind === 'error') {
+        return null;
+      }
+      if (line.kind === 'tool') {
+        return line.result ? null : line;
+      }
+    }
+    return null;
   }
 
   /**
@@ -154,9 +283,21 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       .join(' · ');
     const session_id = meta.session_id || '';
     const follow_label = `라이브 따라가기 ${follow ? 'ON' : 'OFF'}`;
+    const live = isLive();
+    const ago = live ? formatAgo(lastEventAt(), Date.now()) : '';
+    const pending = pendingTool(lines);
     return html`<div class="sv" data-attempt-id=${attempt_id}>
       <div class="sv__bar">
         <span class="sv__id">${attempt_id}</span>
+        ${live
+          ? html`<span
+              class="sv__live"
+              title="세션이 진행 중입니다"
+              aria-label=${ago ? `진행 중 · 마지막 이벤트 ${ago}` : '진행 중'}
+              ><span class="sv__live-dot" aria-hidden="true"></span
+              >${ago ? html`<span class="sv__live-ago">${ago}</span>` : ''}</span
+            >`
+          : ''}
         ${session_id
           ? html`<button
               type="button"
@@ -196,13 +337,56 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       <div class="sv__body">
         ${lines.length === 0
           ? html`<div class="sv__empty">세션 로그 없음</div>`
-          : lines.map((l, i) => lineTemplate(i, l))}
+          : segmentsOf(lines).map((seg) =>
+              seg.kind === 'group'
+                ? groupTemplate(seg)
+                : lineTemplate(seg.idx, seg.line)
+            )}
       </div>
+      ${pending
+        ? html`<div class="sv__now">
+            <span class="sv__now-label">지금</span>
+            <span class="sv__now-icon">${pending.icon}</span>
+            <span class="sv__now-name">${pending.tool}</span>
+            <span class="sv__now-detail"
+              >${pending.tool === 'Bash'
+                ? pending.command
+                : pending.path || pending.command || ''}</span
+            >
+          </div>`
+        : ''}
     </div>`;
+  }
+
+  /**
+   * @param {{ idx: number, tool: string, lines: Array<{ idx: number, line: import('./transcript-render.js').DisplayLine }> }} seg
+   */
+  function groupTemplate(seg) {
+    return html`<div
+      class="sv__group"
+      role="button"
+      tabindex="0"
+      title="펼치기"
+      @click=${() => unfoldGroup(seg.idx)}
+    >
+      <span class="sv__group-icon">${seg.lines[0].line.icon}</span>
+      <span class="sv__group-name">${seg.tool}</span>
+      <span class="sv__group-count">${seg.lines.length}</span>
+      <span class="sv__group-caret" aria-hidden="true">▸</span>
+    </div>`;
+  }
+
+  /**
+   * @param {number} idx
+   */
+  function unfoldGroup(idx) {
+    unfolded.add(idx);
+    doRender();
   }
 
   function doRender() {
     render(template(), mount_element);
+    syncHeartbeat();
     if (follow) {
       scrollToTail();
     }
@@ -296,6 +480,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     meta = input.meta || {};
     follow = true;
     expanded.clear();
+    unfolded.clear();
     if (!storeOff && sessionLogStore) {
       storeOff = sessionLogStore.subscribe(doRender);
     }
@@ -314,6 +499,8 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     const id = attempt_id;
     attempt_id = null;
     expanded.clear();
+    unfolded.clear();
+    stopHeartbeat();
     if (transport && id) {
       void Promise.resolve(
         transport('unsubscribe-session-log', { id: `session-log:${id}` })
@@ -333,6 +520,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       return attempt_id !== null;
     },
     destroy() {
+      stopHeartbeat();
       if (storeOff) {
         storeOff();
         storeOff = null;

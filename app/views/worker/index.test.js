@@ -1381,6 +1381,56 @@ describe('views/worker', () => {
     ).toBe(true);
   });
 
+  test('a queue snapshot turning running→done drops the open drawer heartbeat', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    /**
+     * @param {string} status
+     */
+    const snapshotWith = (status) =>
+      queueOf({
+        auto_advance: true,
+        queue: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status,
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now() - 3000
+          }
+        }
+      });
+    queueStore.set(snapshotWith('running'));
+    const sessionLogStore = createSessionLogStore();
+    sessionLogStore.set(
+      'a1',
+      [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'go' }] }
+        }
+      ],
+      Date.now()
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      sessionLogStore,
+      transport: vi.fn().mockResolvedValue({ ok: true })
+    });
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="a1"] .rtile__session')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(mount.querySelector('.sv__live-dot')).not.toBeNull();
+
+    // The attempt finishes — the same queue push the view already listens to.
+    queueStore.set(snapshotWith('done'));
+
+    expect(mount.querySelector('.sv__live-dot')).toBeNull();
+  });
+
   test('opening a running tile passes the session id into the drawer bar (§2)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
