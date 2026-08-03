@@ -109,7 +109,11 @@
   (`monitorPipelineSubscriberCount()`).
 - 구독 시작 시 전 visible workspace에 대해 1회 즉시 fill.
 - 큐 mutation이 성공한 workspace는 즉시 무효화한다 — 적재된 이슈가 `runnable`에
-  30초 동안 남아 있으면 같은 이슈가 두 레인에 동시에 보인다.
+  30초 동안 남아 있으면 같은 이슈가 두 레인에 동시에 보인다. 무효화는
+  `server/worker/queue-events.js`의 `onQueueChanged`를 `monitor-handlers.js`가
+  직접 구독해 건다. mutation 핸들러(`worker-handlers.js`) 쪽에 거는 것이
+  자연스러워 보이지만, `onQueueChanged`는 **실제 큐 변경에만** 발화하므로 무효화
+  지점을 17곳에 흩지 않고 한 곳으로 모을 수 있고, 과도 무효화도 없다.
 
 ### 갱신 driver
 
@@ -127,18 +131,25 @@ push가 없고 → 캐시 조회가 없고 → fill이 걸리지 않는다. 다�
 ### 집계 payload 구조
 
 payload에 workspace 배열 외에 `workspaces_state` 배열을 함께 싣는다. 각 항목은
-`{ root_dir, name, auto_advance, auto_merge, slots }` — **모든 visible workspace**를,
-파이프라인이 비어 있든 아니든 예외 없이 싣는다.
+`{ root_dir, name, auto_advance, auto_merge, slots, revision, exec_defaults }` —
+**모든 visible workspace**를, 파이프라인이 비어 있든 아니든 예외 없이 싣는다.
 
-두 가지가 이것을 요구한다.
+세 가지가 이것을 요구한다.
 
 1. **마스터 토글의 분모.** `⏵⏵ 전체 자동화 3/4`의 `4`는 visible workspace 수이고
    `3`은 두 축이 모두 켜진 수다. 파이프라인이 있는 레포만 실어서는 계산할 수 없다.
 2. **빈 큐 레포의 그룹 헤더**(§6). 큐가 빈 레포의 자동화·슬롯을 조작하려면 그
    레포의 현재 상태가 payload에 있어야 한다.
+3. **빈 레포의 CAS 제어.** 파이프라인이 빈 workspace는 무거운 배열에 없으므로
+   그 레포의 그룹 헤더가 CAS 제어 넷(자동 진행 · 자동 머지 · 슬롯 · 실행 기본값)을
+   보내려면 **그 workspace의 현재 `revision`**이 있어야 하고, 실행 기본값
+   다이얼로그는 현재 `exec_defaults` 값을 그려야 한다. 이 둘이 없으면 빈 레포
+   제어가 성립하지 않는다. 두 값은 `queue-store.js`의 `Queue`에 이미 있으므로
+   (`revision: number`, `exec_defaults: Record<string, string>`) 새 상태를 만드는
+   것이 아니라 이미 있는 것을 싣는 것이다.
 
 무거운 필드(`attempts`/`queue`/`done`)는 `workspaces_state`에 싣지 않는다 — 상태
-줄에 필요한 것은 위 다섯 필드뿐이다.
+줄과 그룹 헤더 제어에 필요한 것은 위 일곱 필드뿐이다.
 
 `hasPipeline()`(파이프라인이 빈 workspace를 무거운 배열에서 빼는 판정)에는
 **`runnable`을 포함한다.** 포함하지 않으면 실행 대기 후보만 있고 큐·PR·완료가 없는
@@ -363,7 +374,10 @@ attempt는 `pr_wait` 소속 버드에서도 돌기 때문에 배타 없이 그�
 | `server/ws/monitor-handlers.js` | 집계에 `runnable`·`workspaces_state` 포함, `hasPipeline()`에 `runnable` 반영, `done` 오늘 필터 제거, `startOfLocalDay()` 제거, 구독 중 주기 refill driver(`createPoller`), `monitor-auto-toggle` 핸들러 |
 | `server/ws/worker-handlers.js` | mutation 핸들러의 workspace 해석 교체 |
 | `server/ws/connection.js` | `monitor-auto-toggle` 라우팅 |
+| `server/ws/context.js` | `emitMonitorPipelineSnapshot()` envelope에 `workspaces_state` 직렬화 |
 | `app/protocol.js` | `MessageType`에 `monitor-auto-toggle` 추가 |
+| `app/main.js` | `monitor-pipeline-snapshot` 핸들러가 `workspaces_state`를 store로 전달 |
+| `app/data/monitor-pipeline-store.js` | `workspaces_state` 보관 |
 | `app/views/monitor/index.js` | 레인 구조로 재작성, 기간 상태 + 토큰 합계 |
 | `app/views/monitor/lanes.js` | 신규 — 레인 빌더 + 레포 그룹 헤더(4개 제어) + 상단 바 |
 | `app/views/worker/exec-defaults-dialog.js` | 그룹 헤더에서 여는 진입점 재사용 (다이얼로그 자체는 그대로) |
