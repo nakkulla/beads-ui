@@ -319,6 +319,21 @@ export function createScheduler(deps) {
    */
   const dispatch_refused = new Set();
   /**
+   * The in-flight dispatch drain, or `null` when no pass is running. Overlapping
+   * passes are what let two sessions take the same bead: the scan spans awaits
+   * (bd snapshot, admission), and a pass that starts inside that window sees a
+   * claim-free state the first pass has not written yet. One drain at a time
+   * removes the window; `rescan` is how a request that arrives mid-drain is
+   * carried into the next round instead of nesting.
+   *
+   * Instance-scoped like `claimed`/`running`: `createScheduler` is built per
+   * workspace (`attach.js`), so there is no workspace key to hold here.
+   *
+   * @type {Promise<void>|null}
+   */
+  let draining = null;
+  let rescan = false;
+  /**
    * Beads whose ■ stop cleanup has not finished yet. A live stop's residue
    * check waits for the killed process to actually exit, and re-dispatching in
    * that window would run against a worktree that is still being torn down.
@@ -535,18 +550,21 @@ export function createScheduler(deps) {
   /**
    * Refuse a dispatch that already took the claim: record the reason as a badge,
    * give the claim back, fence the bead for the rest of THIS tick cascade, and
-   * re-enter the pass so the slot it was holding still goes to another bead.
-   * The fence is what keeps the re-entry from retrying the same bead forever.
+   * request another round so the slot it was holding still goes to another bead.
+   * The fence is what keeps the re-request from retrying the same bead forever.
+   *
+   * The request is not awaited — this runs inside the drain it would be waiting
+   * on ({@link requestRescan}).
    *
    * @param {string} workspace
    * @param {string} bead_id
    * @param {string} reason
    */
-  async function refuseDispatch(workspace, bead_id, reason) {
+  function refuseDispatch(workspace, bead_id, reason) {
     recordSkipReason(workspace, bead_id, reason);
     claimed.delete(bead_id);
     dispatch_refused.add(bead_id);
-    await tickPass(workspace);
+    requestRescan();
   }
 
   /**
@@ -2102,15 +2120,11 @@ export function createScheduler(deps) {
       try {
         resolved = await deps.resolveBase({ force: true });
       } catch {
-        await refuseDispatch(workspace, bead_id, 'base_unresolved:git_error');
+        refuseDispatch(workspace, bead_id, 'base_unresolved:git_error');
         return;
       }
       if (!resolved.ok) {
-        await refuseDispatch(
-          workspace,
-          bead_id,
-          `base_unresolved:${resolved.step}`
-        );
+        refuseDispatch(workspace, bead_id, `base_unresolved:${resolved.step}`);
         return;
       }
       snap = {
@@ -2120,7 +2134,7 @@ export function createScheduler(deps) {
         base_unresolved: null
       };
     } else if (snap.base_unresolved) {
-      await refuseDispatch(workspace, bead_id, snap.base_unresolved);
+      refuseDispatch(workspace, bead_id, snap.base_unresolved);
       return;
     }
     // The cut source: the FETCHED remote tip when the resolver produced one, so
@@ -2141,7 +2155,7 @@ export function createScheduler(deps) {
         target_base: snap.target_base
       })
     ) {
-      await refuseDispatch(workspace, bead_id, 'guard_hook_install_failed');
+      refuseDispatch(workspace, bead_id, 'guard_hook_install_failed');
       return;
     }
 
@@ -2160,12 +2174,12 @@ export function createScheduler(deps) {
         });
       } catch {
         removeGuardHook(workspace, attempt_id);
-        await refuseDispatch(workspace, bead_id, 'git_error');
+        refuseDispatch(workspace, bead_id, 'git_error');
         return;
       }
       if (!residue.ok) {
         removeGuardHook(workspace, attempt_id);
-        await refuseDispatch(workspace, bead_id, 'worktree_stale_work');
+        refuseDispatch(workspace, bead_id, 'worktree_stale_work');
         return;
       }
     }
@@ -2181,7 +2195,7 @@ export function createScheduler(deps) {
       // Fail-VISIBLE: this used to abort with no badge, no log and no attempt,
       // leaving a re-queued bead permanently stuck with nothing to see.
       removeGuardHook(workspace, attempt_id);
-      await refuseDispatch(workspace, bead_id, 'worktree_add_failed');
+      refuseDispatch(workspace, bead_id, 'worktree_add_failed');
       return;
     }
 
@@ -2205,7 +2219,9 @@ export function createScheduler(deps) {
       }
       claimed.delete(bead_id);
       dispatch_refused.add(bead_id);
-      await tickPass(workspace);
+      // Not awaited: this runs inside the drain it would wait on
+      // ({@link requestRescan}).
+      requestRescan();
       return;
     }
 
@@ -3397,6 +3413,49 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Mark that another round is needed WITHOUT awaiting the drain. The dispatch
+   * refusal paths call this from inside the drain's own `Promise.all`, so
+   * awaiting {@link tickPass} there would be a self-wait: the pass would block
+   * on its own completion. Only entries from outside the drain may await.
+   */
+  function requestRescan() {
+    rescan = true;
+  }
+
+  /**
+   * The coalesced dispatch drain — the entry every pass goes through.
+   *
+   * A caller awaits this as "slots refilled" (the stop/pause/cleanup paths
+   * return `{ ok: true }` right after `await tick(...)`), so an overlapping call
+   * cannot return early: it marks a rescan and returns the SAME drain promise,
+   * which resolves only once the round it joined has run. Overlap therefore
+   * costs the caller nothing but the serialization it needs.
+   *
+   * `finally` clears the flag on the failure path too — a pass that throws must
+   * not leave the guard permanently occupied.
+   *
+   * @param {string} workspace
+   * @returns {Promise<void>}
+   */
+  function tickPass(workspace) {
+    if (draining) {
+      rescan = true;
+      return draining;
+    }
+    draining = (async () => {
+      try {
+        do {
+          rescan = false;
+          await runPass(workspace);
+        } while (rescan);
+      } finally {
+        draining = null;
+      }
+    })();
+    return draining;
+  }
+
+  /**
    * One dispatch pass (worker-phase2 §3): ONE ordered scan of the single
    * waiting lane, filling the free slots of the store-owned cap.
    *
@@ -3414,7 +3473,7 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @returns {Promise<void>}
    */
-  async function tickPass(workspace) {
+  async function runPass(workspace) {
     const q = deps.store.snapshot(workspace);
     if (!q.auto_advance) {
       return;
@@ -3515,7 +3574,12 @@ export function createScheduler(deps) {
         .snapshot(workspace)
         .queue.map((/** @type {{ bead_id: string }} */ e) => e.bead_id)
     );
-    const to_launch = to_dispatch.filter((d) => live_queue.has(d.bead_id));
+    // `claimed` is re-read here too: the coalescing guard already removes the
+    // overlap that let two passes claim one bead, and this is the thin line
+    // behind it — a bead claimed since this pass's scan never launches twice.
+    const to_launch = to_dispatch.filter(
+      (d) => live_queue.has(d.bead_id) && !claimed.has(d.bead_id)
+    );
     for (const d of to_launch) {
       claimed.add(d.bead_id);
     }

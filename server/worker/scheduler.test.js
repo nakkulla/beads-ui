@@ -1185,6 +1185,123 @@ describe('scheduler admission gate (worker-autorun-policy §1)', () => {
   });
 });
 
+describe('scheduler tick coalescing (UI-2hc5)', () => {
+  /**
+   * Hold the first `n` bd snapshot reads open so a second `tick` enters while a
+   * pass is still scanning — the overlap the incident showed, made
+   * deterministic with promise control instead of a timer.
+   *
+   * @param {any} bd
+   * @param {number} n
+   */
+  function holdSnapshots(bd, n) {
+    /** @type {(v?: any) => void} */
+    let release = () => {};
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    const orig = bd.snapshotBead.bind(bd);
+    let held = 0;
+    bd.snapshotBead = async (/** @type {string} */ bead_id) => {
+      held += 1;
+      if (held <= n) {
+        await gate;
+      }
+      return orig(bead_id);
+    };
+    return { release: () => release() };
+  }
+
+  test('dispatches a bead once when two ticks overlap', async () => {
+    const env = setup({ config: { S1: {} }, slots: 2 });
+    seedQueue(env.store, ['S1']);
+    const gate = holdSnapshots(env.bd, 2);
+
+    const first = env.scheduler.tick(WS);
+    await flush();
+    const second = env.scheduler.tick(WS);
+    await flush();
+    gate.release();
+    await Promise.all([first, second]);
+
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+  });
+
+  test('stays within the slot cap when two ticks overlap', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
+    seedQueue(env.store, ['S1', 'S2']);
+    const gate = holdSnapshots(env.bd, 2);
+
+    const first = env.scheduler.tick(WS);
+    await flush();
+    const second = env.scheduler.tick(WS);
+    await flush();
+    gate.release();
+    await Promise.all([first, second]);
+
+    expect(env.scheduler.runningCount()).toBe(1);
+  });
+
+  test('picks up a bead queued during the scan in the same cycle', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
+    seedQueue(env.store, ['S1']);
+    const gate = holdSnapshots(env.bd, 1);
+
+    const first = env.scheduler.tick(WS);
+    await flush();
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'S2'
+    });
+    const second = env.scheduler.tick(WS);
+    await flush();
+    gate.release();
+    await Promise.all([first, second]);
+
+    expect(env.runner.spawnOrder).toEqual(['S1', 'S2']);
+  });
+
+  test('resolves the overlapped tick only after its piggybacked rescan', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
+    seedQueue(env.store, ['S1']);
+    const gate = holdSnapshots(env.bd, 1);
+
+    const first = env.scheduler.tick(WS);
+    await flush();
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'S2'
+    });
+    const second = env.scheduler.tick(WS);
+    await flush();
+    gate.release();
+    await second;
+
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+    await first;
+  });
+
+  test('advances to the next candidate after a dispatch refusal', async () => {
+    const admission = {
+      // Admits at the scan (no base pinned), refuses S1 once dispatch pins its
+      // worktree base_oid — the refuse path that re-enters the pass.
+      validate: vi.fn(
+        async (/** @type {any} */ _snap, /** @type {any} */ base) =>
+          base === 'base-S1'
+            ? { ok: false, reason: 'receipt_unreachable' }
+            : { ok: true }
+      )
+    };
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 1, admission });
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+  });
+});
+
 describe('scheduler stale spec_review lane (UI-dlim §3.2)', () => {
   const RECEIPT_SHA = 'a'.repeat(40);
   const DELTA_SHA = 'b'.repeat(40);
