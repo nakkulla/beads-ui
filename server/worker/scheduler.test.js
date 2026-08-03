@@ -3134,10 +3134,79 @@ describe('conflict resolution reaches the session guard end-to-end (§1/§6)', (
     expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
   });
 
-  test('still kills the SAME resolution attempt for a push to the base', async () => {
+  // The base-push judgment survives the trip but no longer kills: the effect is
+  // the violation's kind (guard-enforcement-layer-replacement §4), and this one
+  // infers a cwd the guard cannot see.
+  test('only warns the SAME resolution attempt about a push to the base', async () => {
     const { kill_impl } = await resolveAndRun('git push origin HEAD:main');
 
+    expect(kill_impl).not.toHaveBeenCalled();
+  });
+
+  test('kills the SAME resolution attempt for a hook bypass', async () => {
+    const { kill_impl } = await resolveAndRun(
+      'git push --no-verify origin HEAD:B1'
+    );
+
     expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
+  });
+
+  // Publishing the base IS the disposition's job. The scheduler carries the
+  // disposition KIND (a string) on the settings, so this pins the real value
+  // reaching the guard rather than a hand-written boolean.
+  test('raises nothing when a DISPOSITION session publishes the base', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      // The second line is what makes this discriminating: a base push only
+      // warns for anyone, but a hook bypass kills every non-disposition session.
+      lines: [
+        bashToolLine('git push origin main'),
+        bashToolLine('git push --no-verify origin main')
+      ],
+      pid: 7200,
+      exit: 0
+    });
+    const kill_impl = vi.fn();
+    const env = setup({
+      config: {},
+      slots: 1,
+      disposition: { complete: async () => ({ ok: true }) },
+      makeRunner: (/** @type {string} */ name) =>
+        createRunner(name, { spawn_impl, kill_impl })
+    });
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.place(WS, { expected_revision: rev, bead_id: 'B1' }).queue
+      .revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'p1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'p1',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        spec_review_stale: true,
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-park',
+        finished_at: 50
+      }
+    });
+
+    const res = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+    await flush();
+    await flush();
+
+    expect(res.ok).toBe(true);
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
+        .cause_detail
+    ).toBeNull();
   });
 });
 

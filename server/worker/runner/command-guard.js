@@ -22,27 +22,46 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * Landing work on the base itself — `gh pr merge`, or a `git push` aimed at
- * main/master. NEVER permitted, on any attempt: unattended merging is gone
- * (worker-phase2 §1/§13), so a session that reaches for the base is killed
- * fail-closed regardless of what it is trying to accomplish.
+ * `gh pr merge` — landing a PR on the base through the GitHub API.
  *
  * FALLBACK ONLY: the argv scan below is the primary judgment. This regex is
  * what an UNPARSEABLE command is judged by, so "cannot decide" keeps the old
  * (over-eager) verdict instead of silently passing.
  *
- * This is the NO-DECLARED-BASE shape. {@link baseLandingRegex} builds the
- * declared-base variant; this one stays exported and unchanged because it is
- * the verdict a caller without a resolved base still gets.
+ * Split out of {@link BASE_LANDING_RE} because the two shapes no longer share
+ * an EFFECT (guard-enforcement-layer-replacement §4): this one is still a kill,
+ * a base push is only a warning, and one alternation cannot say which matched.
  *
  * @type {RegExp}
  */
-export const BASE_LANDING_RE =
-  /gh\s+pr\s+merge\b|git\s+push\b[\s\S]*?:?\b(main|master)\b/i;
+export const GH_PR_MERGE_RE = /gh\s+pr\s+merge\b/i;
 
 /**
- * The fallback landing regex for a KNOWN declared base. Same shape as
- * {@link BASE_LANDING_RE} with the `main|master` alternation replaced by the
+ * A `git push` aimed at main/master — the NO-DECLARED-BASE shape.
+ * {@link basePushRegex} builds the declared-base variant.
+ *
+ * FALLBACK ONLY — same role as {@link GH_PR_MERGE_RE}.
+ *
+ * @type {RegExp}
+ */
+export const BASE_PUSH_RE = /git\s+push\b[\s\S]*?:?\b(main|master)\b/i;
+
+/**
+ * The historical union of the two shapes above, kept exported so the split can
+ * be pinned against exactly what the single alternation used to cover. Nothing
+ * judges by it any more — the fallback tests the two halves separately so each
+ * carries its own `kind`.
+ *
+ * @type {RegExp}
+ */
+export const BASE_LANDING_RE = new RegExp(
+  `${GH_PR_MERGE_RE.source}|${BASE_PUSH_RE.source}`,
+  'i'
+);
+
+/**
+ * The fallback base-push regex for a KNOWN declared base. Same shape as
+ * {@link BASE_PUSH_RE} with the `main|master` alternation replaced by the
  * declared base name.
  *
  * The fallback path judges input the tokenizer refused, where none of the
@@ -50,12 +69,12 @@ export const BASE_LANDING_RE =
  * fail-closed. The invariant between the two layers is not "same verdict" but
  * "the fallback is never more permissive than the argv path".
  *
- * @param {string|null} [target_base] - Absent ⇒ {@link BASE_LANDING_RE}.
+ * @param {string|null} [target_base] - Absent ⇒ {@link BASE_PUSH_RE}.
  * @returns {RegExp}
  */
-export function baseLandingRegex(target_base) {
+export function basePushRegex(target_base) {
   if (typeof target_base !== 'string' || target_base.length === 0) {
-    return BASE_LANDING_RE;
+    return BASE_PUSH_RE;
   }
   const escaped = target_base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // Explicit boundaries instead of `\b`: a base may legally end in a non-word
@@ -64,7 +83,7 @@ export function baseLandingRegex(target_base) {
   // the name so `refs/heads/<base>` still matches, and forbidden AFTER it so a
   // base of `ilsun` does not match the branch `ilsun/dev`.
   return new RegExp(
-    `gh\\s+pr\\s+merge\\b|git\\s+push\\b[\\s\\S]*?(?<![\\w.-])(${escaped})(?![\\w/.-])`,
+    `git\\s+push\\b[\\s\\S]*?(?<![\\w.-])(${escaped})(?![\\w/.-])`,
     'i'
   );
 }
@@ -131,8 +150,19 @@ export const BASE_INTO_BRANCH_RE = /git\s+merge(?!-(?:base|tree|file)\b)/i;
  */
 
 /**
+ * What KIND of violation this is. The kind — not the reason — decides the
+ * effect (guard-enforcement-layer-replacement §4), because `gh pr merge` and a
+ * base push share one `reason` and no longer share one effect.
+ *
+ * @typedef {'git_push_base'|'gh_pr_merge'|'hook_bypass'|'base_merge'} MergeViolationKind
+ */
+
+/**
  * @typedef {Object} MergeViolation
- * @property {'merge_to_base_blocked'|'base_merge_blocked'} reason
+ * @property {MergeViolationKind} kind - What matched; decides the effect.
+ * @property {'merge_to_base_blocked'|'base_merge_blocked'|'hook_bypass_blocked'} reason -
+ * The legacy machine-readable reason, kept for the attempt record and the
+ * failure banner. NOT the effect's input.
  * @property {string} command - The simple command that matched.
  */
 
@@ -141,12 +171,46 @@ export const BASE_INTO_BRANCH_RE = /git\s+merge(?!-(?:base|tree|file)\b)/i;
  *
  * @typedef {Object} GuardContext
  * @property {boolean} conflict_resolution
+ * @property {boolean} disposition - A REVISE-disposition session, whose JOB is
+ * publishing the resolved base (`revise-disposition.js`). Neither the base-push
+ * judgment nor the hook-bypass one applies to it; `gh pr merge` and `git merge`
+ * still do.
  * @property {string|null} repo - The attempt's repo root. Null ⇒ condition 4 of
  * the allowlist is unprovable, so the allowlist never fires.
  * @property {string|null} target_base - The repo's declared base. Null ⇒ the
  * legacy `main|master` name match stands (fail-closed, and no regression for a
  * caller that plumbs no base).
  */
+
+/**
+ * The effect table. `git_push_base` is the ONLY warning: that judgment infers a
+ * cwd from a command string and its misfire cost was a whole session
+ * (measured 21min/$11), while the pre-push hook now judges the same push from
+ * the destination ref git itself computed. The other three are decided by the
+ * command's own argv, where there is nothing to infer.
+ *
+ * @type {Record<MergeViolationKind, 'warn'|'kill'>}
+ */
+const GUARD_EFFECTS = {
+  git_push_base: 'warn',
+  gh_pr_merge: 'kill',
+  hook_bypass: 'kill',
+  base_merge: 'kill'
+};
+
+/**
+ * What a violation does to the session. Shared by the live runner
+ * (`session.js`) and the restart monitor (`session-monitor.js`) so a server
+ * restart cannot change a verdict's consequence.
+ *
+ * @param {MergeViolation|null} violation
+ * @returns {'warn'|'kill'} `'kill'` for anything unrecognized (fail-closed).
+ */
+export function guardEffect(violation) {
+  return violation && GUARD_EFFECTS[violation.kind] === 'warn'
+    ? 'warn'
+    : 'kill';
+}
 
 /**
  * Shell reserved words that may precede a command word (`if true; then gh …`).
@@ -216,6 +280,37 @@ const PUSH_VALUE_OPTIONS = new Set([
  * @type {RegExp}
  */
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * `git`'s own options (before the subcommand) that consume the NEXT token.
+ *
+ * @type {Set<string>}
+ */
+const GIT_VALUE_OPTIONS = new Set([
+  '-c',
+  '-C',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--exec-path',
+  '--config-env'
+]);
+
+/**
+ * The config key that relocates the hooks — case-insensitive, as git compares
+ * section and key names.
+ *
+ * @type {RegExp}
+ */
+const HOOKS_PATH_RE = /^core\.hookspath$/i;
+
+/**
+ * The environment names that carry a whole config assignment into EVERY
+ * repository the process touches, hooks path included (spec §2 measurement).
+ *
+ * @type {RegExp}
+ */
+const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/;
 
 /**
  * A refspec destination that lands on the base branch.
@@ -1242,6 +1337,80 @@ function isCdCommand(cmd) {
 }
 
 /**
+ * The config key of a `key=value` token (or the whole token when there is no
+ * value), which is what `git -c` and `git config` name their setting with.
+ *
+ * @param {string} token
+ * @returns {string}
+ */
+function configKeyOf(token) {
+  const eq = token.indexOf('=');
+  return eq >= 0 ? token.slice(0, eq) : token;
+}
+
+/**
+ * Does this command DISABLE the pre-push hook the attempt installed? Four
+ * shapes, all decided by argv POSITION (spec §4):
+ *
+ *   1. `git push --no-verify` — measured to move the remote base with the hook
+ *      never running;
+ *   2. `git -c core.hooksPath=…` — relocates the hooks for this one command;
+ *   3. `git config … core.hooksPath …` — relocates them persistently. A READ of
+ *      the same key is caught too: telling read from write needs the argument
+ *      count, and this guard stays fail-closed on a key nothing else names;
+ *   4. a `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` assignment ahead of the command —
+ *      the very channel the hook is wired through, so redefining it is how the
+ *      wiring is undone (and it applies to every repo the process touches).
+ *
+ * `git push -n` is `--dry-run`, not `--no-verify`: it pushes nothing.
+ *
+ * @param {string[]} argv - {@link normalizeArgv} output.
+ * @param {string[]} prefix - The tokens `normalizeArgv` dropped ahead of it.
+ * @returns {boolean}
+ */
+function isHookBypass(argv, prefix) {
+  for (const word of prefix) {
+    if (
+      ASSIGNMENT_RE.test(word) &&
+      GIT_CONFIG_ENV_RE.test(splitAssignment(word).name)
+    ) {
+      return true;
+    }
+  }
+  if (argv.length === 0 || basename(argv[0]).toLowerCase() !== 'git') {
+    return false;
+  }
+  const rest = argv.slice(1);
+  let i = 0;
+  while (i < rest.length && rest[i].startsWith('-')) {
+    const token = rest[i];
+    const attached = token.startsWith('-c') && token.length > 2;
+    const separate = token === '-c' && i + 1 < rest.length;
+    if (
+      (attached && HOOKS_PATH_RE.test(configKeyOf(token.slice(2)))) ||
+      (separate && HOOKS_PATH_RE.test(configKeyOf(rest[i + 1])))
+    ) {
+      return true;
+    }
+    i += GIT_VALUE_OPTIONS.has(token) ? 2 : 1;
+  }
+  const subcommand = i < rest.length ? rest[i] : '';
+  const args = rest.slice(i + 1);
+  if (subcommand === 'push') {
+    // Everything after `--` is a refspec, not an option.
+    const options = args.slice(
+      0,
+      args.indexOf('--') >= 0 ? args.indexOf('--') : args.length
+    );
+    return options.includes('--no-verify');
+  }
+  if (subcommand === 'config') {
+    return args.some((token) => HOOKS_PATH_RE.test(configKeyOf(token)));
+  }
+  return false;
+}
+
+/**
  * The narrow allowlist for a push that only LOOKS like a base landing because
  * the argv names the attempt repo's base — the 2026-07-29/07-30 incidents,
  * where a Cortex bead published another repository's `main` and the guard killed
@@ -1329,11 +1498,26 @@ function isExemptCrossRepoPush(commands, push_idx, ctx) {
  * @returns {MergeViolation|null}
  */
 function fallbackViolation(src, ctx) {
-  if (baseLandingRegex(ctx.target_base).test(src)) {
-    return { reason: 'merge_to_base_blocked', command: src };
+  // The two landing shapes are tested SEPARATELY so each carries its own kind:
+  // one alternation would hand the same verdict to a kill and to a warning.
+  // `gh pr merge` is tested first, so an unparseable command holding both gets
+  // the stricter effect.
+  if (GH_PR_MERGE_RE.test(src)) {
+    return {
+      kind: 'gh_pr_merge',
+      reason: 'merge_to_base_blocked',
+      command: src
+    };
+  }
+  if (!ctx.disposition && basePushRegex(ctx.target_base).test(src)) {
+    return {
+      kind: 'git_push_base',
+      reason: 'merge_to_base_blocked',
+      command: src
+    };
   }
   if (!ctx.conflict_resolution && BASE_INTO_BRANCH_RE.test(src)) {
-    return { reason: 'base_merge_blocked', command: src };
+    return { kind: 'base_merge', reason: 'base_merge_blocked', command: src };
   }
   return null;
 }
@@ -1353,22 +1537,46 @@ function fallbackViolation(src, ctx) {
  */
 function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
   const argv = normalizeArgv(cmd.words);
+  // The tokens normalizeArgv dropped — where an assignment prefix lives. Taken
+  // as a difference so the wrapper rules are not restated here.
+  const prefix = cmd.words.slice(0, cmd.words.length - argv.length);
+
+  // Checked FIRST, and before the empty-argv exit: a bare `GIT_CONFIG_COUNT=0`
+  // is a whole simple command with no argv at all, and a bypass that also lands
+  // on the base must take the stricter of the two effects.
+  if (!ctx.disposition && isHookBypass(argv, prefix)) {
+    return {
+      kind: 'hook_bypass',
+      reason: 'hook_bypass_blocked',
+      command: cmd.text
+    };
+  }
+
   if (argv.length === 0) {
     return null;
   }
   const name = basename(argv[0]).toLowerCase();
 
   if (name === 'gh' && argv[1] === 'pr' && argv[2] === 'merge') {
-    return { reason: 'merge_to_base_blocked', command: cmd.text };
+    return {
+      kind: 'gh_pr_merge',
+      reason: 'merge_to_base_blocked',
+      command: cmd.text
+    };
   }
 
   if (
+    !ctx.disposition &&
     name === 'git' &&
     argv[1] === 'push' &&
     pushLandsOnBase(argv.slice(2), ctx.target_base) &&
     !isExemptCrossRepoPush(siblings, index, ctx)
   ) {
-    return { reason: 'merge_to_base_blocked', command: cmd.text };
+    return {
+      kind: 'git_push_base',
+      reason: 'merge_to_base_blocked',
+      command: cmd.text
+    };
   }
 
   if (
@@ -1378,7 +1586,11 @@ function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
     !['merge-base', 'merge-tree', 'merge-file'].includes(argv[1]) &&
     !ctx.conflict_resolution
   ) {
-    return { reason: 'base_merge_blocked', command: cmd.text };
+    return {
+      kind: 'base_merge',
+      reason: 'base_merge_blocked',
+      command: cmd.text
+    };
   }
 
   if (name === 'eval' && argv.length > 1) {
@@ -1455,19 +1667,22 @@ function scanCommand(src, ctx, depth) {
  * Judge a session's shell command against the two merge guards.
  *
  * @param {string} cmd - The command the session asked to run.
- * @param {{ conflict_resolution?: boolean, repo?: string|null,
- * target_base?: string|null }} [options] - `conflict_resolution` true relaxes
- * the base-into-branch guard ONLY (worker-phase2 §6); absent or non-true fails
- * closed. `repo`/`target_base` are the attempt's subject
- * (worker-base-scope-alignment §6): absent `target_base` keeps the legacy
- * `main|master` match, absent `repo` disables the cross-repo allowlist. Either
- * absence therefore reproduces today's verdict exactly.
+ * @param {{ conflict_resolution?: boolean, disposition?: boolean,
+ * repo?: string|null, target_base?: string|null }} [options] - The attempt's
+ * judgment subject. `conflict_resolution` true relaxes the base-into-branch ONLY
+ * (worker-phase2 §6); absent or non-true fails closed. `disposition` true drops
+ * the base-push and hook-bypass judgments, whose subject that session IS
+ * (guard-enforcement-layer-replacement §4). `repo`/`target_base` are the
+ * attempt's subject (worker-base-scope-alignment §6): absent `target_base`
+ * keeps the legacy `main|master` match, absent `repo` disables the cross-repo
+ * allowlist. Every absence reproduces today's verdict exactly.
  * @returns {MergeViolation|null} The first violation found, else null.
  */
 export function findMergeViolation(cmd, options) {
   /** @type {GuardContext} */
   const ctx = {
     conflict_resolution: options?.conflict_resolution === true,
+    disposition: options?.disposition === true,
     repo:
       typeof options?.repo === 'string' && options.repo.length > 0
         ? options.repo

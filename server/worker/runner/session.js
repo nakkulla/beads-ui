@@ -27,7 +27,7 @@
 import { EventEmitter } from 'node:events';
 import nodeFs from 'node:fs';
 import path from 'node:path';
-import { findMergeViolation } from './command-guard.js';
+import { findMergeViolation, guardEffect } from './command-guard.js';
 import { createTailReader } from './tail-reader.js';
 
 /**
@@ -39,8 +39,9 @@ import { createTailReader } from './tail-reader.js';
  * @property {string} [text] - Assistant text (kind='text').
  * @property {string} [name] - Tool name (kind='tool').
  * @property {unknown} [input] - Tool input (kind='tool').
- * @property {string} [message] - Error/blocker message.
- * @property {string} [reason] - Fail-closed reason (kind='blocker').
+ * @property {string} [message] - Error/blocker/guard-warning message.
+ * @property {string} [reason] - Fail-closed reason (kind='blocker'), or the
+ * guard reason of a warning the session survived (kind='error').
  * @property {{ message_id?: string, input_tokens?: number, output_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number, total_cost_usd?: number }} [usage] -
  * Token usage the adapter lifted off this line (UI-raqh §1). Absent whenever
  * the runner reported none — the consumer's fail-quiet contract. `message_id`
@@ -256,6 +257,14 @@ export function runSession(spec, bead, workspace, settings, deps) {
     typeof settings?.target_base === 'string' && settings.target_base.length > 0
       ? settings.target_base
       : null;
+  // A REVISE-disposition session publishes the resolved base as its JOB
+  // (`revise-disposition.js`), so the base-push and hook-bypass judgments do not
+  // apply to it. The scheduler carries the disposition KIND here (the string
+  // `'revise_fix'`), not a boolean, and null for every other attempt.
+  const disposition =
+    typeof settings?.disposition === 'string'
+      ? settings.disposition.length > 0
+      : settings?.disposition === true;
 
   const fs = deps.fs || nodeFs;
   // The session-log file the child writes DIRECTLY (UI-o2yt §3.1). Absent ⇒ the
@@ -387,21 +396,38 @@ export function runSession(spec, bead, workspace, settings, deps) {
       return;
     }
 
-    // Fail-closed merge guards → blocker + process-group kill (the same path as
-    // a question). Two independent guards, gated on the ATTEMPT rather than on
-    // any lock (worker-phase2 §1). The judgment is argv-position based
-    // (command-guard.js); an unparseable command falls back to the old regexes
-    // there rather than passing.
+    // Merge guards, gated on the ATTEMPT rather than on any lock (worker-phase2
+    // §1). The judgment is argv-position based (command-guard.js); an
+    // unparseable command falls back to the old regexes there rather than
+    // passing. What a violation COSTS is the violation's kind
+    // (guard-enforcement-layer-replacement §4): a base push is judged from a
+    // command string with no cwd in it, so it only warns and the session runs
+    // on; the kinds decided by argv alone still fail closed.
     if (typeof spec.extractShellCommand === 'function') {
       const cmd = spec.extractShellCommand(obj);
       const violation = cmd
         ? findMergeViolation(cmd, {
             conflict_resolution,
+            disposition,
             repo: guard_repo,
             target_base: guard_target_base
           })
         : null;
-      if (violation) {
+      if (violation && guardEffect(violation) === 'warn') {
+        // `error` is the only enum member that carries a message without
+        // claiming the session stopped (`blocker` means fail-closed), and
+        // `reason` is what tells a consumer which guard spoke.
+        /** @type {RunnerEvent} */
+        const guard_warning = {
+          kind: 'error',
+          reason: violation.reason,
+          message: `base landing suspected, session continues (the pre-push hook is the enforcement layer): ${violation.command}`,
+          raw: obj
+        };
+        norm_events.push(guard_warning);
+        events.emit('event', guard_warning);
+        // No `return`: the line is normalized like any other.
+      } else if (violation) {
         blocked = true;
         blocked_detail = {
           reason: violation.reason,
@@ -410,7 +436,9 @@ export function runSession(spec, bead, workspace, settings, deps) {
         const message =
           violation.reason === 'merge_to_base_blocked'
             ? `landing on the base branch is never permitted: ${violation.command}`
-            : `merging into the branch is permitted only for a conflict-resolution attempt: ${violation.command}`;
+            : violation.reason === 'hook_bypass_blocked'
+              ? `disabling the git hooks is never permitted: ${violation.command}`
+              : `merging into the branch is permitted only for a conflict-resolution attempt: ${violation.command}`;
         /** @type {RunnerEvent} */
         const merge_blocker = {
           kind: 'blocker',
