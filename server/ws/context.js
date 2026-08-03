@@ -6,6 +6,10 @@ import { getGitUserName, runBd, runBdJson } from '../bd.js';
 import { debug } from '../logging.js';
 import { SubscriptionRegistry } from '../subscriptions.js';
 
+// Re-exported so the existing `ws/context.js` import path keeps working for the
+// diff/emit callers and their tests; the filter itself lives in a leaf module.
+export { applyClosedIssuesFilter } from '../closed-issues-filter.js';
+
 export const log = debug('ws');
 
 /**
@@ -496,30 +500,4 @@ export function setCachedSnapshot(root_dir, key, items) {
     return;
   }
   entry.cachedSnapshot = items.filter((it) => it && typeof it.id === 'string');
-}
-
-/**
- * Apply pre-diff filtering for closed-issues lists based on spec.params.since (epoch ms).
- *
- * @param {{ type: string, params?: Record<string, string|number|boolean> }} spec
- * @param {Array<{ id: string, updated_at: number, closed_at: number | null } & Record<string, unknown>>} items
- */
-export function applyClosedIssuesFilter(spec, items) {
-  if (String(spec.type) !== 'closed-issues') {
-    return items;
-  }
-  const p = spec.params || {};
-  const since = typeof p.since === 'number' ? p.since : 0;
-  if (!Number.isFinite(since) || since <= 0) {
-    return items;
-  }
-  /** @type {typeof items} */
-  const out = [];
-  for (const it of items) {
-    const ca = it.closed_at;
-    if (typeof ca === 'number' && Number.isFinite(ca) && ca >= since) {
-      out.push(it);
-    }
-  }
-  return out;
 }

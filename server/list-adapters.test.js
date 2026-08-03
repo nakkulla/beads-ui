@@ -4,8 +4,12 @@ import {
   fetchListForSubscription,
   mapSubscriptionToBdArgs
 } from './list-adapters.js';
+import { enrichIssuesWorkflow } from './workflow-enrich.js';
 
 vi.mock('./bd.js', () => ({ runBdJson: vi.fn() }));
+vi.mock('./workflow-enrich.js', () => ({
+  enrichIssuesWorkflow: vi.fn((items) => items)
+}));
 
 describe('list adapters for subscription types', () => {
   beforeEach(() => {
@@ -48,6 +52,44 @@ describe('list adapters for subscription types', () => {
 
   test('mapSubscriptionToBdArgs returns args for closed-issues', () => {
     const args = mapSubscriptionToBdArgs({ type: 'closed-issues' });
+    expect(args).toEqual([
+      'list',
+      '--json',
+      '--tree=false',
+      '--status',
+      'closed',
+      '--limit',
+      '1000'
+    ]);
+  });
+
+  test('mapSubscriptionToBdArgs pushes a since range down as --closed-after', () => {
+    const since = Date.parse('2026-08-03T00:00:00.000Z');
+
+    const args = mapSubscriptionToBdArgs({
+      type: 'closed-issues',
+      params: { since }
+    });
+
+    expect(args).toEqual([
+      'list',
+      '--json',
+      '--tree=false',
+      '--status',
+      'closed',
+      '--limit',
+      '1000',
+      '--closed-after',
+      new Date(since - 1000).toISOString()
+    ]);
+  });
+
+  test('mapSubscriptionToBdArgs ignores a non-positive since', () => {
+    const args = mapSubscriptionToBdArgs({
+      type: 'closed-issues',
+      params: { since: 0 }
+    });
+
     expect(args).toEqual([
       'list',
       '--json',
@@ -350,6 +392,75 @@ describe('blocked-issues blocked_info derivation', () => {
     const res = await fetchListForSubscription({ type: 'blocked-issues' });
 
     expect(blockedInfoOf(res, 'S-1').reason).toBeNull();
+  });
+});
+
+describe('closed-issues range filtering before enrichment', () => {
+  const SINCE = Date.parse('2026-08-03T00:00:00.000Z');
+
+  beforeEach(() => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+    /** @type {import('vitest').Mock} */ (enrichIssuesWorkflow).mockClear();
+  });
+
+  /**
+   * Two closed issues, one inside the `since` range and one outside it.
+   */
+  function mockClosedListThenDeps() {
+    /** @type {import('vitest').Mock} */ (runBdJson)
+      .mockResolvedValueOnce({
+        code: 0,
+        stdoutJson: [
+          { id: 'C-1', closed_at: '2026-08-03T01:00:00.000Z' },
+          { id: 'C-2', closed_at: '2026-08-01T01:00:00.000Z' }
+        ]
+      })
+      .mockResolvedValueOnce({ code: 0, stdoutJson: [] });
+  }
+
+  test('keeps out-of-range issues out of workflow enrichment', async () => {
+    mockClosedListThenDeps();
+
+    await fetchListForSubscription({
+      type: 'closed-issues',
+      params: { since: SINCE }
+    });
+
+    const enriched = /** @type {import('vitest').Mock} */ (enrichIssuesWorkflow)
+      .mock.calls[0][0];
+    expect(enriched.map((/** @type {any} */ it) => it.id)).toEqual(['C-1']);
+  });
+
+  test('keeps out-of-range issues out of the provenance dep list', async () => {
+    mockClosedListThenDeps();
+
+    await fetchListForSubscription({
+      type: 'closed-issues',
+      params: { since: SINCE }
+    });
+
+    expect(
+      /** @type {import('vitest').Mock} */ (runBdJson).mock.calls[1][0]
+    ).toEqual(['dep', 'list', 'C-1', '--json']);
+  });
+
+  test('returns only the in-range issues', async () => {
+    mockClosedListThenDeps();
+
+    const res = await fetchListForSubscription({
+      type: 'closed-issues',
+      params: { since: SINCE }
+    });
+
+    expect(res.ok && res.items.map((it) => it.id)).toEqual(['C-1']);
+  });
+
+  test('leaves other subscription types unfiltered', async () => {
+    mockClosedListThenDeps();
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok && res.items.map((it) => it.id)).toEqual(['C-1', 'C-2']);
   });
 });
 

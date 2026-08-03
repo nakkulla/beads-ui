@@ -1,4 +1,8 @@
 import { runBdJson } from './bd.js';
+import {
+  applyClosedIssuesFilter,
+  closedIssuesSince
+} from './closed-issues-filter.js';
 import { debug } from './logging.js';
 import { enrichIssuesWorkflow } from './workflow-enrich.js';
 
@@ -42,7 +46,7 @@ export function mapSubscriptionToBdArgs(spec) {
       return ['list', '--json', '--tree=false', '--status', 'in_progress'];
     }
     case 'closed-issues': {
-      return [
+      const args = [
         'list',
         '--json',
         '--tree=false',
@@ -51,6 +55,15 @@ export function mapSubscriptionToBdArgs(spec) {
         '--limit',
         '1000'
       ];
+      const since = closedIssuesSince(spec);
+      if (since !== null) {
+        // `--closed-after` is EXCLUSIVE while the board filter is inclusive
+        // (`closed_at >= since`), so the bound is nudged back one second —
+        // `closed_at` has second precision, and the exact boundary call stays
+        // with `applyClosedIssuesFilter`.
+        args.push('--closed-after', new Date(since - 1000).toISOString());
+      }
+      return args;
     }
     case 'resolved-issues': {
       return [
@@ -160,6 +173,9 @@ export function normalizeIssueList(value) {
 export async function fetchListForSubscription(spec, options = {}) {
   const result = await fetchListForSubscriptionRaw(spec, options);
   if (result.ok) {
+    // Filter BEFORE enrichment: a range view keeps a handful of the closed
+    // issues bd returns, and enrich + provenance both cost per issue.
+    result.items = applyClosedIssuesFilter(spec, result.items);
     result.items = enrichIssuesWorkflow(
       /** @type {any} */ (result.items),
       options.cwd
