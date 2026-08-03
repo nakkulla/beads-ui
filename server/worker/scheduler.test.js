@@ -6046,6 +6046,11 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
   const LANDED = 'c'.repeat(40);
   const FOREIGN = 'e'.repeat(40);
   const BRANCH_HEAD = 'f'.repeat(40);
+  // A SHA no walk stub answers, so `<pinned>..<it>` is empty: the reflog
+  // anchor that stops an acquisition-time walk.
+  const REFLOG_ANCHOR = '0'.repeat(40);
+  const BASE_T = 200;
+  const BRANCH_T = 100;
 
   /**
    * The forced base re-resolution seam, answering with a tip that is NOT the
@@ -6072,9 +6077,18 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
    * distinct from the observed tip and `--is-ancestor` answering "no" (exit 1).
    * Every case below is a real landing, so none of them is a rebase.
    *
+   * The `reflog show` answers put each ref in the BRANCH-FIRST posture
+   * (UI-zcoi), which is what keeps these landings violations: two entries per
+   * ref, its tip and then an anchor SHA no walk stub answers, so
+   * `<pinned>..<anchor>` comes back empty and ends the walk. The branch tip
+   * entry's walk is aliased to whichever `refs/heads/` range the case declared.
+   *
    * @param {Record<string, string>} by_range
    */
   function gitFor(by_range) {
+    const branch_key = Object.keys(by_range).find((range) =>
+      range.includes('..refs/heads/')
+    );
     return vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'rev-parse') {
         return { code: 0, stdout: `${BRANCH_HEAD}\n`, stderr: '' };
@@ -6082,7 +6096,22 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       if (args[0] === 'merge-base') {
         return { code: 1, stdout: '', stderr: '' };
       }
-      return { code: 0, stdout: by_range[args[1]] ?? '', stderr: '' };
+      if (args[0] === 'reflog') {
+        const ref = args[2];
+        const on_branch = ref.startsWith('refs/heads/');
+        const tip = on_branch ? BRANCH_HEAD : MOVED;
+        const t = on_branch ? BRANCH_T : BASE_T;
+        return {
+          code: 0,
+          stdout: `${tip} ${ref}@{${t}}\n${REFLOG_ANCHOR} ${ref}@{0}\n`,
+          stderr: ''
+        };
+      }
+      const range =
+        args[1].endsWith(`..${BRANCH_HEAD}`) && branch_key !== undefined
+          ? branch_key
+          : args[1];
+      return { code: 0, stdout: by_range[range] ?? '', stderr: '' };
     });
   }
 
@@ -6134,7 +6163,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       observed: MOVED,
       landed: true,
       via: 'direct_push',
-      shas: [LANDED]
+      shas: [LANDED],
+      inherited: []
     });
     // The queue stops and the PR verdict is never reached: a landing is not
     // laundered into a success by an open PR.
@@ -6214,7 +6244,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       observed: MOVED,
       landed: true,
       via: 'direct_push',
-      shas: [LANDED]
+      shas: [LANDED],
+      inherited: []
     });
     expect(q.attempts['S1-1000-1'].cause).toBe('base_landing_detected');
     expect(q.auto_advance).toBe(false);
@@ -6281,7 +6312,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       observed: MOVED,
       landed: true,
       via: 'direct_push',
-      shas: [LANDED]
+      shas: [LANDED],
+      inherited: []
     });
     expect(env.store.snapshot(WS).auto_advance).toBe(false);
   });
@@ -6354,7 +6386,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       observed: MOVED,
       landed: true,
       via: 'direct_push',
-      shas: [LANDED]
+      shas: [LANDED],
+      inherited: []
     });
     expect(gh.mergedPrForBranch).toHaveBeenCalledWith('/repo', 'UI-9');
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();

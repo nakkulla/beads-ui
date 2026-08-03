@@ -40,11 +40,13 @@
  * @property {string|null} effort - Effort snapshot.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
- * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], skipped?: string, error?: string }|null} base_drift -
+ * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
  * The POST-HOC base observation (UI-8mvc §3), written at every termination
  * path: the pinned `base_oid`, the remote tip re-resolved after the session
  * ended, whether this attempt's commits reached it and how, plus the
- * intersection SHAs that are a violation's whole evidence. `skipped` records an
+ * intersection SHAs that are a violation's whole evidence. `inherited` holds the
+ * shared commits the precedence stage excluded as base-first (present as `[]`
+ * when that stage completed and excluded none). `skipped` records an
  * attempt the invariant does not apply to (a disposition, or an
  * external-conflict dispatch with no pinned base) and `error` the observation
  * step that could not be completed — a failed observation is deliberately NOT a
