@@ -6045,6 +6045,7 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
   const MOVED = 'b'.repeat(40);
   const LANDED = 'c'.repeat(40);
   const FOREIGN = 'e'.repeat(40);
+  const BRANCH_HEAD = 'f'.repeat(40);
 
   /**
    * The forced base re-resolution seam, answering with a tip that is NOT the
@@ -6066,23 +6067,37 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
   }
 
   /**
-   * A `git` runner answering the two `rev-list` walks by range.
+   * A `git` runner answering the two `rev-list` walks by range, plus the
+   * containment probe in the NOT-contained posture (UI-43bh): a branch head
+   * distinct from the observed tip and `--is-ancestor` answering "no" (exit 1).
+   * Every case below is a real landing, so none of them is a rebase.
    *
    * @param {Record<string, string>} by_range
    */
   function gitFor(by_range) {
-    return vi.fn(async (/** @type {string[]} */ args) => ({
-      code: 0,
-      stdout: by_range[args[1]] ?? '',
-      stderr: ''
-    }));
+    return vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stdout: `${BRANCH_HEAD}\n`, stderr: '' };
+      }
+      if (args[0] === 'merge-base') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: by_range[args[1]] ?? '', stderr: '' };
+    });
   }
 
   /**
+   * The PR adapter seam. `mergedPrsForCommit` answers `empty` — no other
+   * unit's merged PR explains the shared commit — because that is what leaves
+   * these landings violations.
+   *
    * @param {{ state: string, data?: unknown, reason?: string }} [result]
    */
   function ghFor(result = { state: 'empty' }) {
-    return { mergedPrForBranch: vi.fn(async () => result) };
+    return {
+      mergedPrForBranch: vi.fn(async () => result),
+      mergedPrsForCommit: vi.fn(async () => ({ state: 'empty' }))
+    };
   }
 
   /** The walks of an attempt whose commit IS on the moved base. */
@@ -6430,7 +6445,17 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
-      gitRun: vi.fn(async () => ({ code: 128, stdout: '', stderr: 'boom' })),
+      // The containment probe answers; the WALK is what cannot run.
+      gitRun: vi.fn(async (/** @type {string[]} */ args) => {
+        if (args[0] === 'rev-list') {
+          return { code: 128, stdout: '', stderr: 'boom' };
+        }
+        return {
+          code: args[0] === 'merge-base' ? 1 : 0,
+          stdout: `${BRANCH_HEAD}\n`,
+          stderr: ''
+        };
+      }),
       gh: ghFor()
     });
     seedQueue(env.store, ['S1']);

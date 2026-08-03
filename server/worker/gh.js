@@ -115,6 +115,19 @@ import { runShell } from '../bd.js';
  */
 
 /**
+ * One merged pull request that a COMMIT belongs to, as observed by
+ * `mergedPrsForCommit` (UI-43bh §per-SHA PR 프로버넌스).
+ *
+ * @typedef {Object} CommitPrObservation
+ * @property {number|null} number - PR number (null when GitHub omitted it).
+ * @property {string} url - PR html url.
+ * @property {string} base_ref - The branch the PR merged INTO. Only a PR whose
+ * base is the attempt's target base explains a commit's presence on that base.
+ * @property {string} merged_at - Merge timestamp; non-empty by construction,
+ * since it is what made this item a match.
+ */
+
+/**
  * One normalized CI check from the PR's status-check rollup.
  *
  * @typedef {Object} CheckObservation
@@ -529,6 +542,125 @@ export function createGh(deps = {}) {
      */
     async mergedPrForBranch(repo_dir, branch) {
       return prForBranch(repo_dir, branch, 'merged');
+    },
+
+    /**
+     * Observe the MERGED pull requests one COMMIT belongs to — the per-SHA
+     * provenance the detection layer needs to tell "another unit's merge that
+     * this attempt inherited by rebasing" from "this attempt pushed to base"
+     * (UI-43bh). `mergedPrForBranch` cannot answer that: it asks about THIS
+     * branch, and the commit under suspicion belongs to someone else's.
+     *
+     * The endpoint is the REST `repos/{slug}/commits/{sha}/pulls`, addressed
+     * through {@link resolveRepo}'s origin slug rather than gh's `{owner}/{repo}`
+     * placeholder — the placeholder resolves from cwd's default repository,
+     * which in a fork checkout is the upstream (see the module docblock's
+     * `--repo` rationale). Measured 2026-08-03 on nakkulla/beads-ui: the
+     * endpoint DOES return PR #81 for its squash `merge_commit_sha`, which is
+     * the only shape this observation cares about.
+     *
+     * `--paginate` because the endpoint pages at 30: reading only the first
+     * page and answering `empty` would turn an incomplete observation into
+     * evidence of guilt. A pagination that cannot be completed exits non-zero
+     * and lands in `error`.
+     *
+     * ONE `JSON.parse` of the whole stdout is correct here, measured on gh
+     * 2.89.0: `--paginate` MERGES an array-returning endpoint's pages into a
+     * single flat array rather than concatenating one JSON document per page
+     * (`gh api --paginate 'repos/nakkulla/beads-ui/labels?per_page=1'` → 9
+     * pages, parsed by one `json.loads` as a 9-element list). Were a future gh
+     * to emit per-page documents instead, the parse fails and this collapses to
+     * `error` — the fail-open direction, never a false `empty`.
+     *
+     * The 3-state split runs the same direction as `mergedPrForBranch`:
+     *
+     *   ok    — a PR with `merged_at` set AND `base.ref === target_base`.
+     *   empty — the query ran and nothing matched (no PR, none merged, or all
+     *           merged into some other branch). The only answer that permits a
+     *           violation verdict.
+     *   error — unresolvable origin, failed query, or a payload we cannot read.
+     *           NEVER used as evidence.
+     *
+     * Merge state is read from `merged_at`, never from `state`: the REST
+     * payload has no `MERGED` value — a merged PR reports `state: 'closed'`,
+     * exactly like an abandoned one.
+     *
+     * @param {string} repo_dir - Repo root the query runs in (`cwd`).
+     * @param {string} sha - The commit whose provenance is in question.
+     * @param {string} target_base - The attempt's re-resolved base branch name.
+     * Required: without it `ok` and `empty` cannot be told apart.
+     * @returns {Promise<GhResult<CommitPrObservation>>}
+     */
+    async mergedPrsForCommit(repo_dir, sha, target_base) {
+      if (typeof target_base !== 'string' || target_base.length === 0) {
+        return { state: 'error', reason: 'target_base_required' };
+      }
+      const repo = await resolveRepo(repo_dir);
+      if (repo === null) {
+        return { state: 'error', reason: 'origin_unresolvable' };
+      }
+      const r = await runJson(
+        ['api', '--paginate', `repos/${repo}/commits/${sha}/pulls`],
+        repo_dir
+      );
+      if (r.state === 'error') {
+        return r;
+      }
+      if (!Array.isArray(r.data)) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      // The WHOLE payload is validated before ANY item is judged. Judging as we
+      // go would let a malformed item later in the array be answered as `empty`
+      // the moment an earlier item matched — and `empty` is the one answer that
+      // permits a violation verdict, so a payload we cannot fully read must not
+      // reach it.
+      /** @type {{ number: number|null, url: string, base_ref: string, merged_at: string|null }[]} */
+      const items = [];
+      for (const raw of r.data) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        const item = /** @type {Record<string, unknown>} */ (raw);
+        const merged_at = item.merged_at;
+        // An EMPTY `merged_at` is malformed, not "unmerged": the API writes
+        // null for an unmerged PR, so a blank string is a shape we cannot read
+        // and must never be read as the innocent answer.
+        if (
+          merged_at !== null &&
+          (typeof merged_at !== 'string' || merged_at.length === 0)
+        ) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        const base = item.base;
+        if (!base || typeof base !== 'object' || Array.isArray(base)) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        const base_ref = /** @type {Record<string, unknown>} */ (base).ref;
+        if (typeof base_ref !== 'string' || base_ref.length === 0) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        items.push({
+          number: typeof item.number === 'number' ? item.number : null,
+          url: typeof item.html_url === 'string' ? item.html_url : '',
+          base_ref,
+          merged_at
+        });
+      }
+      for (const item of items) {
+        if (item.merged_at === null || item.base_ref !== target_base) {
+          continue;
+        }
+        return {
+          state: 'ok',
+          data: {
+            number: item.number,
+            url: item.url,
+            base_ref: item.base_ref,
+            merged_at: item.merged_at
+          }
+        };
+      }
+      return { state: 'empty' };
     },
 
     /**

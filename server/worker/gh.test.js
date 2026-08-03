@@ -223,6 +223,168 @@ describe('worker/gh — mergedPrForBranch', () => {
   });
 });
 
+describe('worker/gh — mergedPrsForCommit', () => {
+  const SHA = 'c'.repeat(40);
+
+  /**
+   * One item of the `repos/{slug}/commits/{sha}/pulls` REST payload. The REST
+   * shape has no `MERGED` state — `merged_at` is the only merge signal.
+   *
+   * @param {Partial<Record<string, unknown>>} [over]
+   */
+  function commitPr(over = {}) {
+    return {
+      number: 81,
+      html_url: 'https://github.com/o/r/pull/81',
+      state: 'closed',
+      merged_at: '2026-08-03T02:56:25Z',
+      base: { ref: 'main' },
+      ...over
+    };
+  }
+
+  test('queries the origin slug commit-pulls endpoint with pagination', async () => {
+    const run = makeRun({ stdout: '[]' });
+
+    await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(run).toHaveBeenCalledWith(
+      ['api', '--paginate', `repos/o/r/commits/${SHA}/pulls`],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('returns ok with the merged PR that targeted the base', async () => {
+    const run = makeRun({ stdout: JSON.stringify([commitPr()]) });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({
+      state: 'ok',
+      data: {
+        number: 81,
+        url: 'https://github.com/o/r/pull/81',
+        base_ref: 'main',
+        merged_at: '2026-08-03T02:56:25Z'
+      }
+    });
+  });
+
+  test('returns empty when the commit only has an open PR', async () => {
+    const run = makeRun({
+      stdout: JSON.stringify([commitPr({ merged_at: null, state: 'open' })])
+    });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({ state: 'empty' });
+  });
+
+  test('returns empty when the merged PR targeted another base', async () => {
+    const run = makeRun({
+      stdout: JSON.stringify([commitPr({ base: { ref: 'release' } })])
+    });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({ state: 'empty' });
+  });
+
+  test('finds a match on a later page of the flattened pagination', async () => {
+    const run = makeRun({
+      stdout: JSON.stringify([
+        commitPr({ number: 79, merged_at: null }),
+        commitPr({ number: 81 })
+      ])
+    });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({
+      state: 'ok',
+      data: {
+        number: 81,
+        url: 'https://github.com/o/r/pull/81',
+        base_ref: 'main',
+        merged_at: '2026-08-03T02:56:25Z'
+      }
+    });
+  });
+
+  test('returns error (not empty) on a malformed payload', async () => {
+    const run = makeRun({ stdout: JSON.stringify([{ number: 81 }]) });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
+  test('returns error (not empty) on a blank merged_at', async () => {
+    // Blank is not "unmerged" — the API writes null for that — so reading it as
+    // a non-match would hand `empty` back, and `empty` permits a violation.
+    const run = makeRun({
+      stdout: JSON.stringify([commitPr({ merged_at: '' })])
+    });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
+  test('returns error (not empty) on a blank base ref', async () => {
+    const run = makeRun({
+      stdout: JSON.stringify([commitPr({ base: { ref: '' } })])
+    });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
+  test('returns error when a LATER item is malformed even though an earlier one matched', async () => {
+    // The whole payload is validated before any item is judged: a match found
+    // before an unreadable item must not answer for a payload we cannot read.
+    const run = makeRun({
+      stdout: JSON.stringify([commitPr(), { number: 82 }])
+    });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
+  test('returns error (not empty) when the payload is not an array', async () => {
+    const run = makeRun({ stdout: JSON.stringify({ message: 'Not Found' }) });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
+  test('returns error when origin cannot be resolved', async () => {
+    const run = makeRun({ stdout: '[]' });
+    const git_run = vi.fn(async () => ({ code: 1, stdout: '', stderr: '' }));
+
+    const r = await createGh({ run, git_run }).mergedPrsForCommit(
+      '/repo',
+      SHA,
+      'main'
+    );
+
+    expect(r).toEqual({ state: 'error', reason: 'origin_unresolvable' });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('returns error when the target base is missing', async () => {
+    const run = makeRun({ stdout: '[]' });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, '');
+
+    expect(r).toEqual({ state: 'error', reason: 'target_base_required' });
+    expect(run).not.toHaveBeenCalled();
+  });
+});
+
 describe('worker/gh — checkAvailability', () => {
   test('returns ok when gh auth status exits zero', async () => {
     const run = makeRun();

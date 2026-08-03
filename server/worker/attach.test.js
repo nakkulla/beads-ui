@@ -507,13 +507,21 @@ describe('worker/attach construction + live loop (F1)', () => {
     // scheduler, nothing below is reached and no `base_drift` is written.
     // Both walks hold the attempt's commit: it is on the branch AND on the
     // remote tip the base moved to.
-    const gitRun = vi.fn(async () => ({
-      code: 0,
-      stdout: `${LANDED}\n`,
-      stderr: ''
-    }));
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+      // The containment probe in the NOT-contained posture (UI-43bh): a branch
+      // head of its own, and `--is-ancestor` answering "no" (exit 1), so this
+      // landing is still judged rather than excluded as a rebase.
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' };
+      }
+      if (args[0] === 'merge-base') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: `${LANDED}\n`, stderr: '' };
+    });
     const gh = {
       mergedPrForBranch: vi.fn(async () => ({ state: 'empty' })),
+      mergedPrsForCommit: vi.fn(async () => ({ state: 'empty' })),
       checkAvailability: vi.fn(async () => ({ state: 'ok', data: true }))
     };
     const att = createWorkerAttachment(WS, {
