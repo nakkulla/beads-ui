@@ -404,4 +404,46 @@ describe('readDeclaredBase (display-only projection, UI-j6wa §3)', () => {
 
     expect(readDeclaredBase(repo)).toBeNull();
   });
+
+  test('returns null for a base carrying a double dot', () => {
+    writeDeclaration('base = "foo..bar"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base starting with a dash', () => {
+    writeDeclaration('base = "-oops"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base with an empty path component', () => {
+    writeDeclaration('base = "foo//bar"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base component starting with a dot', () => {
+    writeDeclaration('base = "foo/.bar"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base component ending in .lock', () => {
+    writeDeclaration('base = "foo/bar.lock"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base ending in a dot', () => {
+    writeDeclaration('base = "foo."\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('keeps an ordinary branch name with slashes, dots and dashes', () => {
+    writeDeclaration('base = "ilsun/dev-2.0_x"\n');
+
+    expect(readDeclaredBase(repo)).toBe('ilsun/dev-2.0_x');
+  });
 });

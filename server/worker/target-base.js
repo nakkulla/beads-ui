@@ -165,7 +165,35 @@ export function readDeclaredBase(repo, fs = nodeFs) {
     return null;
   }
   const base = declaration.base ?? UNDECLARED_BASE;
-  return SHELL_UNSAFE.test(base) ? null : base;
+  return SHELL_UNSAFE.test(base) || !wellFormedBranch(base) ? null : base;
+}
+
+/**
+ * Whether `base` is a legal branch name, decided by string inspection alone.
+ *
+ * `git check-ref-format --branch` is the authority the dispatch path uses, but
+ * it is a process spawn and this projection runs once per snapshot decoration.
+ * The characters it rejects outright are already gone — {@link SHELL_UNSAFE}
+ * admits only `[A-Za-z0-9._/-]` — so what is left are the POSITIONAL rules,
+ * and those are pure string facts (implementation review 2026-08-03): a
+ * malformed declaration that slipped through here would be shown as a normal
+ * base, which is the mislabelling the null case exists to prevent.
+ *
+ * @param {string} base
+ * @returns {boolean}
+ */
+function wellFormedBranch(base) {
+  if (base.startsWith('-') || base.endsWith('.') || base.includes('..')) {
+    return false;
+  }
+  return base
+    .split('/')
+    .every(
+      (component) =>
+        component.length > 0 &&
+        !component.startsWith('.') &&
+        !component.endsWith('.lock')
+    );
 }
 
 /**
