@@ -27,11 +27,14 @@ Worker 화면에는 자동 진행(auto_advance, 재시작 시 항상 꺼짐으�
   부근) 옆. 스타일은 기존 `.worker-play`/`.worker-merge-all` 버튼과 같은 계열.
 - 상태 모델: 자체 서버 상태 없음. 버튼의 켜짐 표시는
   `auto_advance && auto_merge` 파생값.
-- 클릭 동작: 둘 다 켜져 있으면 둘 다 끄고, 그 외에는 둘 다 켠다. 기존 WS 메시지
-  `worker-queue-toggle`(auto_advance)과 `worker-merge-auto-toggle`(auto_merge)
-  두 개를 그대로 전송한다. 새 프로토콜 메시지·새 서버 상태 키 없음.
-- 두 메시지 중 하나만 반영되는 부분 실패는 별도 롤백 없이 서버 스냅샷 파생
-  표시로 수렴한다(다음 클릭이 나머지를 마저 켠다/끈다).
+- 클릭 동작: 둘 다 켜져 있으면 둘 다 끈다. 그 외(둘 다 꺼짐 또는 혼합)에는 둘
+  다 켠다 — **혼합 상태의 다음 클릭은 항상 둘 다 ON으로 정규화**된다. 기존 WS
+  메시지 `worker-queue-toggle`(auto_advance)과
+  `worker-merge-auto-toggle`(auto_merge) 두 개를 그대로 전송한다. 새 프로토콜
+  메시지·새 서버 상태 키 없음.
+- 두 메시지 중 하나만 반영되는 부분 실패는 혼합 상태가 되어 버튼이 꺼짐으로
+  표시되고, 다음 클릭이 둘 다 ON으로 정규화한다. 별도 롤백 없음. 혼합 상태에서
+  개별 토글을 끄고 싶으면 기존 개별 버튼을 쓴다.
 - auto_advance의 재시작 시 강제 꺼짐 정책(`server/worker/queue-store.js`
   `load()`)은 그대로 유지 — 이 버튼은 영속 자동화 모드가 아니다.
 
@@ -48,14 +51,22 @@ Worker 화면에는 자동 진행(auto_advance, 재시작 시 항상 꺼짐으�
 ### 3. target base 툴바 칩 + 예외 배지
 
 - 서버: Worker 큐 스냅샷(워크스페이스 단위)에 `declared_base` 필드를 추가한다.
-  값은 해당 리포 워킹트리 `docs/agents/repo-ops.toml`의 최상위 `base` 키(없으면
-  `main`). 표시용이므로 선언 파일 읽기만 하고, 리졸버의 5단계 검증(fetch 포함)은
-  디스패치 경로 전용으로 유지한다. 선언 읽기는
-  `server/worker/target-base.js`의 선언 파싱 로직을 재사용해 노출한다.
-- 툴바: `base <declared_base>` 칩을 상시 표시.
-- 카드: 실행중/PR 대기 attempt 카드에 그 attempt의 `target_base`(큐 레코드에
-  이미 영속)가 `declared_base`와 다를 때만 배지(`→ <target_base>`)를 표시.
-  `target_base`가 없는 레거시 attempt는 배지 없음(fail-quiet).
+  값 규칙: 선언 파일(`docs/agents/repo-ops.toml`)이 없거나 최상위 `base` 키가
+  없으면 `main`(기존 폴백과 동일); 파일은 있으나 읽기/파싱 실패 또는 `base`
+  값이 유효하지 않은 형식이면 `null`. 표시용이므로 선언 파일 읽기만 하고,
+  리졸버의 5단계 검증(fetch 포함)은 디스패치 경로 전용으로 유지한다. 선언
+  읽기는 `server/worker/target-base.js`의 선언 파싱 로직을 재사용해 노출한다.
+- 툴바: `declared_base`가 문자열이면 `base <declared_base>` 칩을 상시 표시,
+  `null`이면 `base ?`(확인 불가) 칩을 표시한다 — 상시 표시 계약은 유지하되
+  실패를 `main`으로 오표시하지 않는다.
+- 카드: attempt의 `target_base`(큐 레코드에 이미 영속)가 `declared_base`와 다를
+  때만 배지(`→ <target_base>`)를 표시. `declared_base`가 `null`이거나
+  `target_base`가 없는 레거시 attempt는 비교 자체를 생략하고 배지 없음
+  (fail-quiet).
+- 카드별 비교 대상 attempt 선택 규칙: 실행중 카드는 그 타일의 attempt. PR 대기
+  카드는 해당 Bead의 attempt 중 충돌 해소(conflict resolution) attempt를
+  제외하고 시작 시각이 가장 최신인 attempt의 `target_base`를 쓴다(재실행 포함
+  결정적 선택).
 - `app/protocol.md`에 `declared_base` 필드를 문서화한다.
 - Bead 메타데이터에는 base를 쓰지 않는다 — dotfiles workflow 계약 표면 변경
   없음.
@@ -63,12 +74,16 @@ Worker 화면에는 자동 진행(auto_advance, 재시작 시 항상 꺼짐으�
 ## Test scope
 
 - 전체 자동화 버튼: 파생 켜짐 판정(`auto_advance`/`auto_merge` 4조합), 클릭 시
-  전송 메시지 쌍(둘 다 켜기 / 둘 다 끄기) 단위 테스트.
+  전송 메시지 쌍 단위 테스트 — 둘 다 ON→둘 다 끄기, 둘 다 OFF→둘 다 켜기,
+  혼합 2조합→둘 다 켜기(ON 정규화) 각각 검증.
 - 완료 칩: 전 attempt cost 보고 시 `· $` 부착, 일부 누락 시 토큰만 표시 단위
   테스트.
-- `declared_base`: repo-ops.toml `base` 존재/부재 시 스냅샷 필드 값 서버 단위
-  테스트, 툴바 칩 렌더와 attempt 배지 표시/비표시(같음·다름·부재) 프론트 단위
-  테스트.
+- `declared_base`: 서버 단위 테스트 4분기 — `base` 존재(그 값)/파일 또는 키
+  부재(`main`)/파일 있으나 파싱 실패(`null`)/`base` 값 형식 불량(`null`). 툴바
+  칩 렌더(문자열·`null`→`base ?`)와 attempt 배지
+  표시/비표시(같음·다름·`declared_base` null·`target_base` 부재) 프론트 단위
+  테스트. PR 대기 카드의 attempt 선택: 복수 attempt + 충돌 해소 attempt 혼재
+  시 최신 일반 attempt 선택 단위 테스트.
 
 ## 비범위
 
