@@ -163,7 +163,7 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     expect(sentTypes(client)).not.toContain('subscribe-worker-queue');
   });
 
-  test('renders a stage section per lane from the pushed snapshot', async () => {
+  test('renders a lane pane per stage from the pushed snapshot', async () => {
     const client = /** @type {any} */ (createWsClient());
     window.location.hash = '#/monitor';
     document.body.innerHTML = '<main id="app"></main>';
@@ -206,14 +206,12 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     const running = monitor_root.querySelector(
       '#monitor-running [data-issue-id="UI-run"]'
     );
-    expect(running?.querySelector('.mon-row__repo')?.textContent).toContain(
+    expect(running?.querySelector('.worker-mini__repo')?.textContent).toContain(
       'ws-a'
     );
-    expect(running?.querySelector('.mon-row__elapsed')).not.toBe(null);
+    expect(running?.querySelector('.mon-live__elapsed')).not.toBe(null);
     expect(
-      running
-        ?.querySelector('.mon-row__beat')
-        ?.classList.contains('mon-row__beat--live')
+      running?.querySelector('.mon-beat')?.classList.contains('mon-beat--live')
     ).toBe(true);
     expect(
       monitor_root.querySelector('#monitor-queue [data-issue-id="UI-wait"]')

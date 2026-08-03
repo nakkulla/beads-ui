@@ -1,21 +1,33 @@
 /**
- * Monitor tab (UI-nprg) — worker 탭에 올린 이슈들이 **전체 활성 레포**에서 어떻게
- * 진행되고 있는가를 한 화면에서 보는 파이프라인 관제.
+ * Monitor tab (UI-qrfo) — Worker 콘솔의 **크로스 레포 상위집합**. 모든 visible
+ * 레포의 워커 파이프라인을 한 화면의 다섯 레인으로 모으고, Worker 탭이 한 레포에
+ * 대해 하는 조작을 여기서 레포를 바꾸지 않고 전부 한다.
  *
- * 데이터 원천은 서버의 `monitor-pipeline` 집계 구독 하나다: 모든 visible
- * workspace의 워커 스냅샷이 decorated 계약 그대로 실려 오고, 이 뷰는 그것을
- * 단계별 섹션(실행중 → PR 대기 → 대기 → 완료·오늘)으로 병합해 그린다. 레인
- * 판정은 **버드당 한 섹션**이다 — 실행중인 버드는 `queue` 레인에 그대로 남아
- * 있고 conflict-resolution attempt는 `pr_wait` 소속 버드에서도 돌기 때문에,
- * 배타 우선순위 없이 그리면 같은 버드가 두 섹션에 동시에 나타난다.
+ * 데이터 원천은 서버의 `monitor-pipeline` 집계 구독 하나다. 무거운 배열
+ * (`workspaces`)은 파이프라인이 있는 레포만 싣고, 제어 상태(`workspaces_state`)는
+ * 파이프라인이 빈 레포까지 **모든** visible 레포를 싣는다 — 마스터 토글의 분모와
+ * 빈 큐 레포 그룹 헤더의 CAS 제어가 그것을 요구한다 (§4).
+ *
+ * mutation은 전부 카드/그룹이 속한 workspace의 `root_dir`과 **그 workspace의**
+ * revision을 실어 보낸다. `expected_revision`은 레포마다 다르므로, 한 레포의
+ * revision을 다른 레포에 쓰면 항상 충돌한다. 충돌은 Worker 탭과 같은 규약으로
+ * 1회 재시도한다 (응답이 실어 온 최신 revision으로).
  */
-import { render } from 'lit-html';
+import { html, render } from 'lit-html';
 import { debug } from '../../utils/logging.js';
-import { sumAttemptUsage } from '../../utils/token-usage.js';
-import { MONITOR_SECTIONS, monitorPipelineTemplate } from './row.js';
+import { showToast } from '../../utils/toast.js';
+import { createExecDefaultsDialog } from '../worker/exec-defaults-dialog.js';
+import { candidateCard, miniRow, paneTemplate } from '../worker/lanes.js';
+import {
+  MIN_SLOTS,
+  buildLanes,
+  monitorGroupHeaderTemplate,
+  monitorLiveTemplate,
+  monitorTopBarTemplate
+} from './lanes.js';
 
 /**
- * @typedef {import('./row.js').MonitorRowItem} MonitorRowItem
+ * @import { MonitorItem, MonitorLanes } from './lanes.js'
  */
 
 /** Client id of the monitor tab's aggregated pipeline subscription. */
@@ -34,199 +46,139 @@ const TICK_MS = 1_000;
 /**
  * @typedef {Object} MonitorViewOptions
  * @property {(id: string) => void} gotoIssue
- * @property {{ get: () => Array<Record<string, any>>|null, subscribe?: (fn: () => void) => () => void }} [pipelineStore]
+ * @property {{ get: () => Array<Record<string, any>>|null, getWorkspacesState?: () => Array<Record<string, any>>, subscribe?: (fn: () => void) => () => void }} [pipelineStore]
+ * @property {(type: string, payload?: unknown) => Promise<any>} [transport] -
+ * 워커 mutation 전송 경로 (Worker 뷰와 같은 시그니처).
  * @property {() => string|undefined} [getWorkspacePath] - 이 연결이 지금 보고 있는 repo의 root.
  * @property {(root_dir: string) => Promise<unknown>} [switchWorkspace] -
  * workspace picker와 동일한 `set-workspace` 전환 경로.
+ * @property {(message: string) => boolean} [confirm] - 되돌리기 어려운 명령의
+ * 확인 경로 (주입 가능 — 테스트가 실제 `window.confirm`을 필요로 하지 않는다).
  * @property {() => number} [now] - Test seam for the live clock.
  */
 
 /**
- * Pick the newest attempt of a bead that has already ENDED — 완료 종류는 여기서만
- * 파생되고, 짝이 되는 기록이 없으면 종류 표기를 생략한다 (fail-quiet).
+ * The five lanes in display order (§8). `pane` is the Worker pane vocabulary the
+ * lane borrows its spine/dot colour and card template from — 실행가능은 후보
+ * 레인의 카드(`candidateCard`)를 그대로 쓴다.
  *
- * @param {Record<string, any>} attempts
- * @param {string} bead_id
- * @returns {any|null}
+ * @type {ReadonlyArray<{ lane: 'runnable'|'queue'|'running'|'pr_wait'|'done', pane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, empty: string }>}
  */
-function latestTerminalAttempt(attempts, bead_id) {
-  /** @type {any|null} */
-  let best = null;
-  let best_at = -Infinity;
-  for (const attempt of Object.values(attempts)) {
-    if (
-      !attempt ||
-      attempt.bead_id !== bead_id ||
-      attempt.status === 'running'
-    ) {
-      continue;
-    }
-    const at =
-      typeof attempt.finished_at === 'number'
-        ? attempt.finished_at
-        : typeof attempt.started_at === 'number'
-          ? attempt.started_at
-          : 0;
-    if (at >= best_at) {
-      best_at = at;
-      best = attempt;
-    }
+const MONITOR_LANES = [
+  {
+    lane: 'runnable',
+    pane: 'candidate',
+    title: '실행가능',
+    empty: '실행 자격을 갖춘 이슈 없음'
+  },
+  { lane: 'queue', pane: 'queue', title: '대기', empty: '표시할 레포 없음' },
+  { lane: 'running', pane: 'running', title: '실행중', empty: '실행 중 없음' },
+  { lane: 'pr_wait', pane: 'pr_wait', title: 'PR 대기', empty: 'PR 없음' },
+  { lane: 'done', pane: 'done', title: '완료', empty: '완료 기록 없음' }
+];
+
+/**
+ * The monitor-only action strip a card carries beside its Worker template —
+ * 순서 변경·제거(대기)와 실행 제어(실행중)는 `miniRow`가 모르는 조작이다.
+ * 나머지 레인의 버튼(머지·취소·폐기·처분·적재)은 Worker 템플릿이 이미 싣는다.
+ *
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function cardOpsTemplate(item) {
+  if (item.lane === 'queue') {
+    const first = (item.queue_position ?? 1) <= 1;
+    const last = (item.queue_index ?? 0) >= (item.queue_length ?? 1) - 1;
+    return html`<div class="mon-card__ops">
+      <button
+        type="button"
+        class="mon-op mon-op--up"
+        ?disabled=${first}
+        title="한 칸 앞으로"
+      >
+        ↑
+      </button>
+      <button
+        type="button"
+        class="mon-op mon-op--down"
+        ?disabled=${last}
+        title="한 칸 뒤로"
+      >
+        ↓
+      </button>
+      <button
+        type="button"
+        class="mon-op mon-op--remove"
+        title="대기 큐에서 제거"
+      >
+        ✕
+      </button>
+    </div>`;
   }
-  return best;
+  if (item.lane === 'running') {
+    return html`<div class="mon-card__ops">
+      ${item.run_state === 'running'
+        ? html`<button
+            type="button"
+            class="mon-op mon-op--pause"
+            ?disabled=${item.can_pause === false}
+            title="일시정지 — 세션을 끊고 이어하기 가능 상태로 둡니다"
+          >
+            ⏸
+          </button>`
+        : html`<button
+            type="button"
+            class="mon-op mon-op--resume"
+            ?disabled=${item.can_resume === false}
+            title="이어하기"
+          >
+            ▶
+          </button>`}
+      <button
+        type="button"
+        class="mon-op mon-op--stop"
+        title="중단 — 세션을 죽이고 대기 큐에서 뺍니다"
+      >
+        ■
+      </button>
+      ${item.run_state === 'failed'
+        ? html`<button
+            type="button"
+            class="mon-op mon-op--dismiss"
+            title="실패 기록 닫기"
+          >
+            ✕
+          </button>`
+        : ''}
+    </div>`;
+  }
+  return '';
 }
 
 /**
- * Fold one repo's live sessions onto the beads they belong to — 같은 버드에 둘이
- * 붙어 있으면(일반 실행 + conflict-resolution) 더 최근에 시작한 쪽이 그 버드의
- * 라이브 지표가 된다.
+ * One monitor card: the Worker template plus this tab's own coordinates
+ * (`root_dir` · CAS revision · lane) and action strip. 좌표를 카드 껍데기에
+ * 두는 이유는 조작 위임이 "이 클릭이 어느 레포의 어느 revision을 향하는가"를
+ * 한 자리에서 읽을 수 있어야 하기 때문이다.
  *
- * @param {Record<string, any>} attempts
- * @returns {Map<string, { started_at: number|null, last_event_at: number|null, model: string|null, usage: any }>}
+ * @param {MonitorItem} item
+ * @param {number} now
+ * @returns {import('lit-html').TemplateResult}
  */
-function runningByBead(attempts) {
-  /** @type {Map<string, any>} */
-  const map = new Map();
-  for (const attempt of Object.values(attempts)) {
-    if (!attempt || attempt.status !== 'running') {
-      continue;
-    }
-    const bead_id = attempt.bead_id;
-    if (typeof bead_id !== 'string' || bead_id.length === 0) {
-      continue;
-    }
-    const started_at =
-      typeof attempt.started_at === 'number' ? attempt.started_at : null;
-    const prior = map.get(bead_id);
-    if (prior && (prior.started_at ?? 0) > (started_at ?? 0)) {
-      continue;
-    }
-    map.set(bead_id, {
-      started_at,
-      last_event_at:
-        typeof attempt.last_event_at === 'number'
-          ? attempt.last_event_at
-          : null,
-      model: typeof attempt.model === 'string' ? attempt.model : null,
-      usage: sumAttemptUsage(attempts, bead_id)
-    });
-  }
-  return map;
-}
-
-/**
- * Merge the aggregated snapshot into the four pipeline sections.
- *
- * @param {Array<Record<string, any>>|null} workspaces
- * @returns {Array<{ lane: string, title: string, items: MonitorRowItem[] }>}
- */
-export function buildSections(workspaces) {
-  /** @type {Record<string, MonitorRowItem[]>} */
-  const buckets = { running: [], pr_wait: [], queue: [], done: [] };
-  for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
-    if (!workspace || typeof workspace.root_dir !== 'string') {
-      continue;
-    }
-    const root_dir = workspace.root_dir;
-    const workspace_name = workspace.name || root_dir;
-    const attempts = /** @type {Record<string, any>} */ (
-      workspace.attempts || {}
-    );
-    const titles = /** @type {Record<string, string>} */ (
-      workspace.bead_titles || {}
-    );
-    const observations = /** @type {Record<string, any>} */ (
-      workspace.pr_observations || {}
-    );
-    /**
-     * @param {string} bead_id
-     * @returns {{ id: string, title: string, root_dir: string, workspace_name: string }}
-     */
-    const base = (bead_id) => ({
-      id: bead_id,
-      title: titles[bead_id] || bead_id,
-      root_dir,
-      workspace_name
-    });
-
-    // 배타 우선순위: 상위 섹션에 잡힌 버드는 하위 섹션에서 제외한다.
-    /** @type {Set<string>} */
-    const claimed = new Set();
-
-    for (const [bead_id, live] of runningByBead(attempts)) {
-      claimed.add(bead_id);
-      buckets.running.push({
-        ...base(bead_id),
-        lane: 'running',
-        started_at: live.started_at,
-        last_event_at: live.last_event_at,
-        model: live.model,
-        usage: live.usage
-      });
-    }
-
-    for (const entry of Array.isArray(workspace.pr_wait)
-      ? workspace.pr_wait
-      : []) {
-      const bead_id = entry && entry.bead_id;
-      if (typeof bead_id !== 'string' || claimed.has(bead_id)) {
-        continue;
-      }
-      claimed.add(bead_id);
-      const pr = observations[bead_id] && observations[bead_id].pr;
-      buckets.pr_wait.push({
-        ...base(bead_id),
-        lane: 'pr_wait',
-        pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
-        external: entry.external === true
-      });
-    }
-
-    const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
-    for (let i = 0; i < queue_lane.length; i++) {
-      const entry = queue_lane[i];
-      const bead_id = entry && entry.bead_id;
-      if (typeof bead_id !== 'string' || claimed.has(bead_id)) {
-        continue;
-      }
-      claimed.add(bead_id);
-      buckets.queue.push({
-        ...base(bead_id),
-        lane: 'queue',
-        // 순번은 레인에서의 디스패치 순서이므로, 실행중으로 빠진 버드를 건너뛴
-        // 뒤의 인덱스가 아니라 레인 자체의 자리를 쓴다.
-        queue_position: i + 1
-      });
-    }
-
-    for (const entry of Array.isArray(workspace.done) ? workspace.done : []) {
-      const bead_id = entry && entry.bead_id;
-      if (typeof bead_id !== 'string' || claimed.has(bead_id)) {
-        continue;
-      }
-      claimed.add(bead_id);
-      const terminal = latestTerminalAttempt(attempts, bead_id);
-      buckets.done.push({
-        ...base(bead_id),
-        lane: 'done',
-        done_at: typeof entry.added_at === 'number' ? entry.added_at : null,
-        done_kind:
-          terminal && typeof terminal.done_kind === 'string'
-            ? terminal.done_kind
-            : null
-      });
-    }
-  }
-
-  buckets.running.sort(
-    (a, b) => (b.last_event_at ?? 0) - (a.last_event_at ?? 0)
-  );
-  buckets.done.sort((a, b) => (b.done_at ?? 0) - (a.done_at ?? 0));
-
-  return MONITOR_SECTIONS.map((section) => ({
-    lane: section.lane,
-    title: section.title,
-    items: buckets[section.lane]
-  }));
+function cardTemplate(item, now) {
+  return html`<div
+    class="mon-card mon-card--${item.lane}"
+    data-issue-id=${item.id}
+    data-root-dir=${item.root_dir}
+    data-revision=${String(item.expected_revision)}
+    data-lane=${item.lane}
+    data-attempt-id=${item.attempt_id || ''}
+    data-place-index=${String(item.place_index ?? '')}
+    data-queue-index=${String(item.queue_index ?? '')}
+  >
+    ${item.lane === 'runnable' ? candidateCard(item) : miniRow(item)}
+    ${monitorLiveTemplate(item, now)}${cardOpsTemplate(item)}
+  </div>`;
 }
 
 /**
@@ -239,22 +191,286 @@ export function createMonitorView(mount_element, options) {
   const log = debug('views:monitor');
   const gotoIssue = options.gotoIssue;
   const pipelineStore = options.pipelineStore;
+  const transport = options.transport;
   const getWorkspacePath = options.getWorkspacePath;
   const switchWorkspace = options.switchWorkspace;
   const nowFn = options.now || (() => Date.now());
+  const confirmFn =
+    options.confirm ||
+    ((/** @type {string} */ message) =>
+      typeof globalThis.confirm !== 'function' || globalThis.confirm(message));
+
+  // lit-html은 렌더 호스트의 자식을 통째로 소유하므로, 실행 기본값 다이얼로그는
+  // 렌더 대상 바깥(마운트 직속)에 둔다.
+  const console_el = document.createElement('div');
+  console_el.className = 'mon';
+  mount_element.appendChild(console_el);
+
+  /** @type {MonitorLanes} */
+  let lanes = buildLanes(null, null);
+
+  /**
+   * 실행 기본값 다이얼로그가 지금 보고 있는 레포. 다이얼로그는 workspace 하나를
+   * 전제로 만들어졌으므로, 모니터는 대상만 바꿔 끼우고 어댑터 store가 그 레포의
+   * 값을 돌려준다.
+   *
+   * @type {string|null}
+   */
+  let exec_target = null;
+  /**
+   * mutation 응답이 실어 온 권위 있는 queue. 다음 집계 push가 오기 전까지 그
+   * 레포의 다이얼로그가 읽는 값이자, CAS 재시도가 쓰는 revision이다.
+   *
+   * @type {Map<string, any>}
+   */
+  const exec_adopted = new Map();
+  /** @type {Set<() => void>} */
+  const exec_listeners = new Set();
+
+  /**
+   * @param {string} root_dir
+   * @returns {any|null}
+   */
+  function groupOf(root_dir) {
+    return lanes.queue_groups.find((g) => g.root_dir === root_dir) || null;
+  }
+
+  const exec_store = {
+    get() {
+      if (!exec_target) {
+        return { revision: 0, exec_defaults: {} };
+      }
+      const adopted = exec_adopted.get(exec_target);
+      if (adopted) {
+        return adopted;
+      }
+      const group = groupOf(exec_target);
+      const workspaces =
+        pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
+      const workspace = (Array.isArray(workspaces) ? workspaces : []).find(
+        (w) => w && w.root_dir === exec_target
+      );
+      return {
+        revision: group ? group.revision : 0,
+        exec_defaults: group ? group.exec_defaults : {},
+        workspace_info: workspace ? workspace.workspace_info : undefined
+      };
+    },
+    /** @param {any} q */
+    set(q) {
+      if (exec_target) {
+        exec_adopted.set(exec_target, q);
+      }
+      for (const fn of Array.from(exec_listeners)) {
+        fn();
+      }
+    },
+    /** @param {() => void} fn */
+    subscribe(fn) {
+      exec_listeners.add(fn);
+      return () => exec_listeners.delete(fn);
+    }
+  };
+
+  const exec_defaults_dialog = createExecDefaultsDialog(mount_element, {
+    queueStore: exec_store,
+    // 다이얼로그는 workspace를 모른다 — 대상 레포는 전송 경로가 실어 준다.
+    transport: transport
+      ? (/** @type {any} */ type, /** @type {any} */ payload) =>
+          transport(type, {
+            .../** @type {Record<string, unknown>} */ (payload || {}),
+            root_dir: exec_target
+          })
+      : undefined,
+    getWorkspacePath: () => exec_target || undefined
+  });
 
   /** @type {null | (() => void)} */
   let unsubscribe_pipeline = null;
   /** @type {any} */
   let tick_timer = null;
 
+  /**
+   * Send one workspace-scoped mutation under the CAS discipline: 그 레포의
+   * `root_dir`과 revision을 싣고, 충돌하면 응답이 실어 온 최신 revision으로
+   * **1회** 재시도한다 (Worker 탭과 같은 규약).
+   *
+   * @param {string} type
+   * @param {Record<string, unknown>} payload
+   * @param {string} root_dir
+   * @param {number} revision
+   * @returns {Promise<any>}
+   */
+  async function sendCas(type, payload, root_dir, revision) {
+    if (!transport || !root_dir) {
+      return null;
+    }
+    let res = await transport(type, {
+      ...payload,
+      root_dir,
+      expected_revision: revision
+    });
+    if (res && res.conflict) {
+      const fresh =
+        res.queue && typeof res.queue.revision === 'number'
+          ? res.queue.revision
+          : revision;
+      res = await transport(type, {
+        ...payload,
+        root_dir,
+        expected_revision: fresh
+      });
+    }
+    if (res && res.queue && root_dir) {
+      exec_adopted.set(root_dir, res.queue);
+    }
+    return res;
+  }
+
+  /**
+   * Attempt 제어 중 CAS를 쓰지 않는 둘 (Worker 탭과 같다 — 서버가 attempt를
+   * 직접 찾아 죽이므로 큐 revision을 전제하지 않는다).
+   *
+   * @param {string} type
+   * @param {Record<string, unknown>} payload
+   * @param {string} root_dir
+   * @returns {Promise<any>}
+   */
+  async function send(type, payload, root_dir) {
+    if (!transport || !root_dir) {
+      return null;
+    }
+    return await transport(type, { ...payload, root_dir });
+  }
+
+  /**
+   * Flip every visible repo's automation at once (`monitor-auto-toggle`, §6).
+   *
+   * 끄기는 확인을 받는다: `auto_merge` OFF가 그 레포의 머지 대기열을 비우므로,
+   * 마스터 OFF는 그 부작용을 전 레포에 한 번에 적용한다. 켜기는 확인 없이 간다.
+   *
+   * @param {boolean} on
+   */
+  async function toggleMasterAuto(on) {
+    if (!transport) {
+      return;
+    }
+    if (
+      !on &&
+      !confirmFn(
+        '전 레포의 자동 진행·자동 머지를 끕니다. 각 레포의 머지 대기열도 함께 비워집니다. 계속할까요?'
+      )
+    ) {
+      return;
+    }
+    const res = await transport('monitor-auto-toggle', { on });
+    const failed = res && Array.isArray(res.failed) ? res.failed : [];
+    if (failed.length > 0) {
+      showToast(
+        `자동화 ${on ? '켜기' : '끄기'} 일부 실패: ${failed
+          .map((/** @type {any} */ f) => f.root_dir)
+          .join(', ')}`,
+        'error',
+        3200
+      );
+    }
+  }
+
+  /**
+   * The PR 대기 lane header's bulk button. 한 레포씩 순차로 보낸다 —
+   * `worker-merge-queue-add-all`은 workspace 단위 액션이고, revision도 레포마다
+   * 다르다.
+   */
+  async function mergeQueueAddAll() {
+    /** @type {Map<string, number>} */
+    const targets = new Map();
+    for (const item of lanes.pr_wait) {
+      if (!targets.has(item.root_dir)) {
+        targets.set(item.root_dir, item.expected_revision);
+      }
+    }
+    for (const [root_dir, revision] of targets) {
+      await sendCas('worker-merge-queue-add-all', {}, root_dir, revision);
+    }
+  }
+
+  /**
+   * @param {number} now
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function monitorTemplate(now) {
+    /** @type {Record<string, MonitorItem[]>} */
+    const by_lane = {
+      runnable: lanes.runnable,
+      queue: lanes.queue,
+      running: lanes.running,
+      pr_wait: lanes.pr_wait,
+      done: lanes.done
+    };
+    return html`${monitorTopBarTemplate({
+        automation: lanes.automation,
+        counts: {
+          running: lanes.running.length,
+          queue: lanes.queue.length,
+          pr_wait: lanes.pr_wait.length
+        }
+      })}
+      <div class="worker-lanes mon-lanes">
+        ${MONITOR_LANES.map((meta) => {
+          const items = by_lane[meta.lane];
+          // 대기 레인만 레포별 그룹이다 (§8): 대기 큐·슬롯·자동화가 레포마다
+          // 독립이고, 순번도 그 레포 큐 안에서만 뜻이 있다.
+          const body =
+            meta.lane === 'queue'
+              ? lanes.queue_groups.length > 0
+                ? html`${lanes.queue_groups.map(
+                    (group) =>
+                      html`<div
+                        class="mon-group"
+                        data-root-dir=${group.root_dir}
+                      >
+                        ${monitorGroupHeaderTemplate(group)}
+                        <div class="mon-group__list">
+                          ${group.items.map((item) => cardTemplate(item, now))}
+                        </div>
+                      </div>`
+                  )}`
+                : undefined
+              : items.length > 0
+                ? html`${items.map((item) => cardTemplate(item, now))}`
+                : undefined;
+          return paneTemplate({
+            id: `monitor-${meta.lane}`,
+            lane: meta.pane,
+            title: meta.title,
+            items,
+            empty: meta.empty,
+            body,
+            live: meta.lane === 'running' && items.length > 0,
+            header_control:
+              meta.lane === 'pr_wait' && items.length > 0
+                ? html`<button
+                    type="button"
+                    class="mon-lane-op mon-merge-all"
+                    title="자격이 생기는 PR을 각 레포의 머지 큐에 한 번에 넣습니다"
+                  >
+                    일괄 머지
+                  </button>`
+                : ''
+          });
+        })}
+      </div>`;
+  }
+
   function doRender() {
     const workspaces =
       pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
-    render(
-      monitorPipelineTemplate(buildSections(workspaces), nowFn()),
-      mount_element
-    );
+    const workspaces_state =
+      pipelineStore && pipelineStore.getWorkspacesState
+        ? pipelineStore.getWorkspacesState()
+        : [];
+    lanes = buildLanes(workspaces, workspaces_state);
+    render(monitorTemplate(nowFn()), console_el);
   }
 
   /**
@@ -281,27 +497,234 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * @param {HTMLElement} el
+   * @returns {{ root_dir: string, revision: number }}
+   */
+  function casOf(el) {
+    return {
+      root_dir: el.getAttribute('data-root-dir') || '',
+      revision: Number(el.getAttribute('data-revision') || 0) || 0
+    };
+  }
+
+  /**
+   * @param {HTMLElement} card
+   * @param {HTMLElement} button
+   */
+  function runCardAction(card, button) {
+    const { root_dir, revision } = casOf(card);
+    const bead_id = card.getAttribute('data-issue-id') || '';
+    const attempt_id = card.getAttribute('data-attempt-id') || '';
+    const cls = button.classList;
+    if (cls.contains('worker-card__place')) {
+      // 적재만 한다 — 서버가 적재 성공 후 이미 `tickWorkerQueue()`를 부르므로
+      // 별도의 "즉시 실행" 경로는 두지 않는다 (§8).
+      void sendCas(
+        'worker-queue-place',
+        {
+          bead_id,
+          index: Number(card.getAttribute('data-place-index') || 0) || 0
+        },
+        root_dir,
+        revision
+      );
+      return;
+    }
+    if (cls.contains('mon-op--up') || cls.contains('mon-op--down')) {
+      const index = Number(card.getAttribute('data-queue-index') || 0) || 0;
+      const to_index = cls.contains('mon-op--up') ? index - 1 : index + 1;
+      if (to_index < 0) {
+        return;
+      }
+      void sendCas(
+        'worker-queue-reorder',
+        { bead_id, to_index },
+        root_dir,
+        revision
+      );
+      return;
+    }
+    if (cls.contains('mon-op--remove')) {
+      void sendCas('worker-queue-remove', { bead_id }, root_dir, revision);
+      return;
+    }
+    if (cls.contains('mon-op--pause')) {
+      void send('worker-attempt-pause', { attempt_id }, root_dir);
+      return;
+    }
+    if (cls.contains('mon-op--stop')) {
+      void send('worker-attempt-stop', { attempt_id }, root_dir);
+      return;
+    }
+    if (cls.contains('mon-op--resume')) {
+      void sendCas('worker-attempt-resume', { attempt_id }, root_dir, revision);
+      return;
+    }
+    if (cls.contains('mon-op--dismiss')) {
+      void sendCas(
+        'worker-attempt-dismiss',
+        { attempt_id },
+        root_dir,
+        revision
+      );
+      return;
+    }
+    if (cls.contains('worker-mini__merge')) {
+      void sendCas('worker-merge-queue-add', { bead_id }, root_dir, revision);
+      return;
+    }
+    if (cls.contains('worker-mini__merge-cancel')) {
+      void sendCas(
+        'worker-merge-queue-remove',
+        { bead_id },
+        root_dir,
+        revision
+      );
+      return;
+    }
+    if (cls.contains('worker-mini__discard')) {
+      if (
+        !confirmFn(
+          `${bead_id}: PR을 닫고 워크트리/브랜치를 폐기합니다. 되돌릴 수 없습니다. 계속할까요?`
+        )
+      ) {
+        return;
+      }
+      void sendCas('worker-pr-discard', { bead_id }, root_dir, revision);
+      return;
+    }
+    if (cls.contains('worker-mini__revise-fix')) {
+      void sendCas('worker-revise-fix', { bead_id }, root_dir, revision);
+      return;
+    }
+    if (cls.contains('worker-mini__revise-approve')) {
+      void sendCas('worker-revise-approve', { bead_id }, root_dir, revision);
+    }
+  }
+
+  /**
    * @param {Event} ev
    */
   function onClick(ev) {
     const target = /** @type {HTMLElement|null} */ (ev.target);
-    const row = target && target.closest ? target.closest('.mon-row') : null;
-    if (!row) {
+    if (!target || typeof target.closest !== 'function') {
       return;
     }
-    const id = row.getAttribute('data-issue-id');
+    // 실행 기본값 다이얼로그는 자기 핸들러가 소유한다.
+    if (target.closest('dialog')) {
+      return;
+    }
+    // PR 링크는 그대로 열려야 한다 — 행 열기로 가로채지 않는다.
+    if (target.closest('a')) {
+      return;
+    }
+
+    const auto_all = /** @type {HTMLElement|null} */ (
+      target.closest('.mon-auto-all')
+    );
+    if (auto_all) {
+      ev.preventDefault();
+      void toggleMasterAuto(auto_all.getAttribute('data-on') === 'true');
+      return;
+    }
+    const merge_all = target.closest('.mon-merge-all');
+    if (merge_all) {
+      ev.preventDefault();
+      void mergeQueueAddAll();
+      return;
+    }
+    const advance = /** @type {HTMLElement|null} */ (
+      target.closest('.mon-ctl--advance')
+    );
+    if (advance) {
+      ev.preventDefault();
+      const { root_dir, revision } = casOf(advance);
+      void sendCas(
+        'worker-queue-toggle',
+        { on: advance.getAttribute('data-on') === 'true' },
+        root_dir,
+        revision
+      );
+      return;
+    }
+    const merge_auto = /** @type {HTMLElement|null} */ (
+      target.closest('.mon-ctl--merge-auto')
+    );
+    if (merge_auto) {
+      ev.preventDefault();
+      const { root_dir, revision } = casOf(merge_auto);
+      void sendCas(
+        'worker-merge-auto-toggle',
+        { on: merge_auto.getAttribute('data-on') === 'true' },
+        root_dir,
+        revision
+      );
+      return;
+    }
+    const exec = /** @type {HTMLElement|null} */ (
+      target.closest('.mon-ctl--exec')
+    );
+    if (exec) {
+      ev.preventDefault();
+      exec_target = exec.getAttribute('data-root-dir') || null;
+      exec_adopted.delete(exec_target || '');
+      exec_defaults_dialog.open();
+      return;
+    }
+
+    const card = /** @type {HTMLElement|null} */ (target.closest('.mon-card'));
+    if (!card) {
+      return;
+    }
+    const button = /** @type {HTMLElement|null} */ (target.closest('button'));
+    if (button) {
+      ev.preventDefault();
+      runCardAction(card, button);
+      return;
+    }
+    const id = card.getAttribute('data-issue-id');
     if (id) {
       ev.preventDefault();
-      openRow(id, row.getAttribute('data-root-dir') || '');
+      openRow(id, card.getAttribute('data-root-dir') || '');
     }
   }
 
+  /**
+   * @param {Event} ev
+   */
+  function onChange(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+    const input = /** @type {HTMLInputElement|null} */ (
+      target.closest('.mon-slots__input')
+    );
+    if (!input) {
+      return;
+    }
+    const { root_dir, revision } = casOf(input);
+    const raw = Number(input.value);
+    if (!Number.isFinite(raw)) {
+      return;
+    }
+    // 서버는 하한 밖 값을 clamp하지 않고 거부하므로 보내기 전에 맞춘다.
+    const slots = Math.max(MIN_SLOTS, Math.floor(raw));
+    void sendCas('worker-queue-set-slots', { slots }, root_dir, revision);
+  }
+
   mount_element.addEventListener('click', onClick);
+  mount_element.addEventListener('change', onChange);
 
   if (pipelineStore && typeof pipelineStore.subscribe === 'function') {
     unsubscribe_pipeline = pipelineStore.subscribe(() => {
       try {
+        // 새 스냅샷이 권위다 — mutation 응답으로 임시 채택했던 queue는 버린다.
+        exec_adopted.clear();
         doRender();
+        for (const fn of Array.from(exec_listeners)) {
+          fn();
+        }
       } catch {
         // ignore
       }
@@ -344,6 +767,9 @@ export function createMonitorView(mount_element, options) {
         unsubscribe_pipeline = null;
       }
       mount_element.removeEventListener('click', onClick);
+      mount_element.removeEventListener('change', onChange);
+      exec_defaults_dialog.destroy();
+      exec_listeners.clear();
       mount_element.replaceChildren();
     }
   };
