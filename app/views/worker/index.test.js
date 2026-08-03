@@ -5737,7 +5737,9 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
       (el) => (el.textContent || '').replace(/\s+/g, ' ').trim()
     );
 
-    expect(chips).toEqual(['실행 1', 'PR 대기 1', '오늘 완료 1']);
+    // base 칩은 UI-j6wa §3에서 상시 표시가 되었다 — 선언을 읽지 못한
+    // 픽스처에서는 `base ?`로 선다.
+    expect(chips).toEqual(['실행 1', 'PR 대기 1', '오늘 완료 1', 'base ?']);
   });
 
   test('sums the completed sessions token usage into one chip', () => {
@@ -5841,6 +5843,349 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
 
     expect(chip).toBe('오늘 완료 · 누적 τ 14.1M');
     expect(badge).toBe('τ 14.1M');
+  });
+
+  test('appends the cost when every summed attempt reported one (UI-j6wa §2)', () => {
+    const mount = mountKpi({
+      done: [
+        { bead_id: 'RD-1', added_at: 1 },
+        { bead_id: 'RD-2', added_at: 2 }
+      ],
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'succeeded',
+          usage: {
+            input_tokens: 1000,
+            output_tokens: 200,
+            total_cost_usd: 1.5
+          }
+        },
+        a2: {
+          attempt_id: 'a2',
+          bead_id: 'RD-2',
+          status: 'succeeded',
+          usage: {
+            input_tokens: 800,
+            output_tokens: 0,
+            total_cost_usd: 2.25
+          }
+        }
+      }
+    });
+
+    expect(
+      mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
+    ).toBe('오늘 완료 · 누적 τ 2.0k · $3.75');
+  });
+
+  test('omits the cost when one summed attempt reported none (UI-j6wa §2)', () => {
+    const mount = mountKpi({
+      done: [
+        { bead_id: 'RD-1', added_at: 1 },
+        { bead_id: 'RD-2', added_at: 2 }
+      ],
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'succeeded',
+          usage: {
+            input_tokens: 1000,
+            output_tokens: 200,
+            total_cost_usd: 1.5
+          }
+        },
+        a2: {
+          attempt_id: 'a2',
+          bead_id: 'RD-2',
+          status: 'succeeded',
+          usage: { input_tokens: 800, output_tokens: 0 }
+        }
+      }
+    });
+
+    expect(
+      mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
+    ).toBe('오늘 완료 · 누적 τ 2.0k');
+  });
+});
+
+describe('전체 자동화 버튼 (UI-j6wa §1)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {any} over
+   * @param {any} [transport]
+   */
+  function mountAuto(
+    over,
+    transport = vi.fn().mockResolvedValue(reply(queueOf(over)))
+  ) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf(over));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    return { mount, transport };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   */
+  function autoBtn(mount) {
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-auto-all'));
+  }
+
+  test('reads active only when both automations are on', () => {
+    const { mount } = mountAuto({ auto_advance: true, auto_merge: true });
+
+    expect(autoBtn(mount).classList.contains('is-active')).toBe(true);
+  });
+
+  test('reads inactive when only auto_advance is on', () => {
+    const { mount } = mountAuto({ auto_advance: true, auto_merge: false });
+
+    expect(autoBtn(mount).classList.contains('is-active')).toBe(false);
+  });
+
+  test('reads inactive when only auto_merge is on', () => {
+    const { mount } = mountAuto({ auto_advance: false, auto_merge: true });
+
+    expect(autoBtn(mount).classList.contains('is-active')).toBe(false);
+  });
+
+  test('reads inactive when neither automation is on', () => {
+    const { mount } = mountAuto({ auto_advance: false, auto_merge: false });
+
+    expect(autoBtn(mount).classList.contains('is-active')).toBe(false);
+  });
+
+  test('turns both on from the all-off state', async () => {
+    const { mount, transport } = mountAuto({
+      auto_advance: false,
+      auto_merge: false
+    });
+
+    autoBtn(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-toggle',
+      expect.objectContaining({ on: true })
+    );
+    expect(transport).toHaveBeenCalledWith(
+      'worker-merge-auto-toggle',
+      expect.objectContaining({ on: true })
+    );
+  });
+
+  test('turns both off from the all-on state', async () => {
+    const { mount, transport } = mountAuto({
+      auto_advance: true,
+      auto_merge: true
+    });
+
+    autoBtn(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-toggle',
+      expect.objectContaining({ on: false })
+    );
+    expect(transport).toHaveBeenCalledWith(
+      'worker-merge-auto-toggle',
+      expect.objectContaining({ on: false })
+    );
+  });
+
+  test('normalizes an auto_advance-only mixed state to both on', async () => {
+    const { mount, transport } = mountAuto({
+      auto_advance: true,
+      auto_merge: false
+    });
+
+    autoBtn(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-toggle',
+      expect.objectContaining({ on: true })
+    );
+    expect(transport).toHaveBeenCalledWith(
+      'worker-merge-auto-toggle',
+      expect.objectContaining({ on: true })
+    );
+  });
+
+  test('normalizes an auto_merge-only mixed state to both on', async () => {
+    const { mount, transport } = mountAuto({
+      auto_advance: false,
+      auto_merge: true
+    });
+
+    autoBtn(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-toggle',
+      expect.objectContaining({ on: true })
+    );
+    expect(transport).toHaveBeenCalledWith(
+      'worker-merge-auto-toggle',
+      expect.objectContaining({ on: true })
+    );
+  });
+});
+
+describe('target base 칩과 예외 배지 (UI-j6wa §3)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {any} over
+   */
+  function mountBase(over) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf(over));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('shows the declared base as a toolbar chip', () => {
+    const mount = mountBase({ declared_base: 'ilsun/dev' });
+
+    expect(
+      mount.querySelector('.worker-kpi__chip--base')?.textContent?.trim()
+    ).toBe('base ilsun/dev');
+  });
+
+  test('shows base ? when the declaration could not be read', () => {
+    const mount = mountBase({ declared_base: null });
+
+    expect(
+      mount.querySelector('.worker-kpi__chip--base')?.textContent?.trim()
+    ).toBe('base ?');
+  });
+
+  test('badges a running attempt whose base differs from the declared one', () => {
+    const mount = mountBase({
+      declared_base: 'main',
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'running',
+          started_at: 1,
+          target_base: 'ilsun/dev'
+        }
+      }
+    });
+
+    expect(mount.querySelector('.rtile .worker-mini__badge')?.textContent).toBe(
+      '→ ilsun/dev'
+    );
+  });
+
+  test('badges no running attempt whose base matches the declared one', () => {
+    const mount = mountBase({
+      declared_base: 'main',
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'running',
+          started_at: 1,
+          target_base: 'main'
+        }
+      }
+    });
+
+    expect(mount.querySelector('.rtile .worker-mini__badge')).toBe(null);
+  });
+
+  test('badges nothing when the declared base is unknown', () => {
+    const mount = mountBase({
+      declared_base: null,
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'running',
+          started_at: 1,
+          target_base: 'ilsun/dev'
+        }
+      }
+    });
+
+    expect(mount.querySelector('.rtile .worker-mini__badge')).toBe(null);
+  });
+
+  test('badges nothing for a legacy attempt carrying no target base', () => {
+    const mount = mountBase({
+      declared_base: 'main',
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'running',
+          started_at: 1
+        }
+      }
+    });
+
+    expect(mount.querySelector('.rtile .worker-mini__badge')).toBe(null);
+  });
+
+  test('picks the newest non-conflict attempt for a PR 대기 row', () => {
+    const mount = mountBase({
+      declared_base: 'main',
+      pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'RD-1',
+          status: 'succeeded',
+          started_at: 10,
+          target_base: 'stale/base'
+        },
+        a2: {
+          attempt_id: 'a2',
+          bead_id: 'RD-1',
+          status: 'succeeded',
+          started_at: 20,
+          target_base: 'ilsun/dev'
+        },
+        a3: {
+          attempt_id: 'a3',
+          bead_id: 'RD-1',
+          status: 'succeeded',
+          started_at: 30,
+          conflict_resolution: true,
+          target_base: 'conflict/base'
+        }
+      }
+    });
+
+    const badges = Array.from(
+      mount.querySelectorAll(
+        '.worker-mini[data-bead-id="RD-1"] .worker-mini__badge'
+      )
+    ).map((el) => (el.textContent || '').trim());
+
+    expect(badges).toContain('→ ilsun/dev');
   });
 });
 

@@ -2482,6 +2482,13 @@ html[data-theme='dark'] {
   font-family: var(--font-mono);
 }
 
+/* target base 칩 (UI-j6wa §3) — 카운트가 아니라 이 워크스페이스의 설정이므로
+   숫자 칩들과 같은 목소리를 내지 않는다. 브랜치 이름은 모노. */
+.worker-kpi__chip--base {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
 .worker-kpi__next {
   white-space: nowrap;
 }
@@ -2499,6 +2506,25 @@ html[data-theme='dark'] {
 
 .worker-play.is-active {
   box-shadow: var(--ring-selected);
+}
+
+/* 전체 자동화 (UI-j6wa §1). ▶ 자동 진행과 나란히 서지만 그 버튼의 강조를
+   반복하지는 않는다 — 두 토글을 대표하는 파생 버튼이지 더 센 버튼이 아니다.
+   켜졌을 때만 성공색 테두리로 상태를 말한다. */
+.worker-auto-all {
+  padding: 3px 10px;
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.worker-auto-all.is-active {
+  border-color: var(--accent-success);
+  color: var(--accent-success);
 }
 
 .worker-stat {
