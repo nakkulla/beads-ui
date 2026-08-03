@@ -3,8 +3,9 @@
 - Bead: UI-zcoi (discovered-from: UI-43bh)
 - 대체 관계: `2026-08-03-base-drift-false-positive-fix-design.md`(UI-43bh)의
   판정 파이프라인에 배제 단계 하나를 **추가**한다. 기존 단계(strict
-  containment, this-branch 머지 PR 예외, per-SHA PR 프로버넌스)는 전부 유지되며
-  이 스펙은 그 앞에 새 단계를 끼워 넣을 뿐이다. 다만 UI-43bh §"결정의 전제"가
+  containment, this-branch 머지 PR 예외, per-SHA PR 프로버넌스)의 정의는 그대로
+  유지되지만, 새 단계가 관측에 실패하면 그 뒤 단계는 실행되지 않고 파이프라인이
+  fail-open으로 종료한다(§ 판정 파이프라인). 다만 UI-43bh §"결정의 전제"가
   "잔여 셀은 위반으로 남긴다(사용자 결정, 2026-08-03)"고 적은 그 잔여 셀을 이
   스펙이 해소한다 — 그 결정은 이 스펙으로 갱신된다. 원 문서는 역사 기록으로
   수정하지 않는다.
@@ -87,21 +88,36 @@ fetch·push·리베이스가 모두 같은 `.git`에 획득 시각을 남기므�
 2. **strict containment** — 리베이스 자세 배제 → `excluded:
    'branch_contains_observed'`, 종료. *(기존)*
 3. **walk·교집합** — 교집합 없음 → `{ pinned, observed, landed: false }`. *(기존)*
-4. **선점 배제 [신규]** — 교집합의 각 SHA에 대해 base 쪽 ref와 브랜치 ref의 획득
-   시각을 구한다. 둘 다 확정되고 `base_t <= branch_t` 인 SHA는 **상속**으로 보고
-   교집합에서 제거한다. 제거된 집합은 record `inherited` 에 담는다.
+4. **선점 배제 [신규]** — base 쪽 ref와 브랜치 ref 각각에 대해 교집합 SHA들의 획득
+   시각을 구한다.
+   - **관측을 완료하지 못하면 종료한다** — 어느 ref든 reflog를 읽지 못했거나,
+     walk가 실패했거나, anchor를 찾기 전에 상한/reflog 끝에 도달했거나, 어떤 SHA의
+     시각이 한쪽에서라도 확정되지 않으면 `violation: false`, record
+     `{ pinned, observed, shas, error: 'precedence_observe:<reason>' }`.
+     관측 실패는 기록이지 위반이 아니다(§ 기존 철학) — 이 단계에만 예외를 둘 이유가
+     없다.
+   - 관측이 완료되면 `base_t < branch_t` 인 SHA를 **상속**으로 보고 교집합에서
+     제거한다. 제거 집합은 `inherited` 에 기록한다(비어 있어도 `[]` 로 기록한다 —
+     단계가 완료됐다는 뜻).
    - 교집합이 비면 → `violation: false`, record
      `{ pinned, observed, landed: false, inherited }`, **gh 호출 없이** 종료.
    - 남으면 남은 집합만 들고 5단계로 진행한다.
-   - 어느 한쪽이라도 미확정이면 그 SHA는 배제하지 않는다(폴백).
 5. **this-branch 머지 PR 예외** — 남은 집합 대상. *(기존)* `via: 'pr_merge'`.
 6. **per-SHA PR 프로버넌스** — 남은 집합 대상. *(기존)* 전부 설명됨 →
    `via: 'other_pr_merge'`.
 7. **위반** — 미설명 SHA 잔존 → `violation: true`, `via: 'direct_push'`,
    `shas` = 미설명 SHA. *(기존)*
 
-4단계는 **순수 추가**다. 실패·미확정은 전부 폴백이라 기존 판정을 약화시키지
-않고, 최악의 경우 현행 동작으로 수렴한다.
+4단계의 실패는 **폴백이 아니라 종료**다. 폴백(미확정을 그냥 흘려보내기)은 관측
+실패가 기존 경로를 거쳐 `direct_push` 위반과 큐 정지로 이어질 수 있어, 이 모듈이
+다른 모든 단계에서 지키는 fail-open 계약과 어긋난다. 대신 실패를 `error` 스텝으로
+남겨 "가드가 이 attempt에 대해 판단하지 못했다"는 사실이 record에 보이게 한다.
+
+그 대가로 **기존 판정이 무조건 보존되지는 않는다**: reflog를 읽을 수 없는 환경에서는
+위반도 함께 사라진다. reflog는 non-bare 저장소에서 기본 활성이고 remote-tracking
+ref에도 기록되므로 실무적으로는 관측이 성립하며, 성립하지 않는 경우는 `error`
+record로 드러난다. 이 교환은 "오탐은 큐 정지와 세션 킬을 부르지만 미탐은 record가
+남는 한 건의 미보고"라는 모듈의 기존 비용 비대칭과 같은 방향이다.
 
 ## 획득 시각 계산
 
@@ -110,40 +126,47 @@ SHA가 그 ref에 처음 들어온 시각을 구한다.
 
 ```
 lines = git reflog show <ref> --date=unix --format='%H %gd'
-  실패(code != 0) 또는 파싱 가능한 줄이 없음 → 미확정(null)
+  실패(code != 0) 또는 파싱 가능한 줄이 없음 → 미확정('reflog')
 파싱: "<40hex> <refname>@{<unix>}" → { commit, t }. 출력은 최신순.
 times = {}
 for entry in 최신→오래된 순:
-    검사 엔트리 수가 REFLOG_CAP(40)에 도달 → 미확정(null) 반환
-    contained = parseShas(git rev-list <pinned>..<entry.commit>) ∩ wanted
-      rev-list 실패 → 미확정(null) 반환
-    if contained 가 비면 → break        // 정상 종료
-    for sha in contained: times[sha] = entry.t      // 더 오래된 엔트리가 덮어씀
-return times      // wanted 중 키가 없는 SHA는 미확정
+    검사 엔트리 수가 REFLOG_CAP(200)에 도달 → 미확정('no_anchor')
+    added = parseShas(git rev-list <pinned>..<entry.commit>)
+      rev-list 실패 → 미확정('rev_list')
+    if added 가 비면 → return times          // anchor 도달, 정상 종료
+    for sha in (added ∩ wanted): times[sha] = entry.t   // 더 오래된 엔트리가 덮어씀
+reflog 끝까지 anchor 미발견 → 미확정('no_anchor')
 ```
 
 - 최신→오래된으로 훑고 더 오래된 엔트리의 시각으로 덮어쓰므로 최종값은 **가장
   오래된 포함 엔트리의 시각**, 즉 최초 획득 시각이다.
-- 정상 종료는 shared SHA를 하나도 담지 않는 엔트리를 만나는 것이다. 검사 엔트리
-  수는 "그 SHA들이 들어온 이후의 엔트리 수"로 자연히 제한된다(실측 사례는 각 ref
-  2개).
-- `REFLOG_CAP` 40 **도달은 부분 결과를 쓰지 않고 그 ref를 통째로 미확정으로
-  만든다**(폴백). 잘린 결과를 쓰면 획득 시각이 실제보다 늦게 잡히는데, 그것이
-  브랜치 쪽에서 일어나면 `base_t <= branch_t` 가 허위로 성립해 **진짜 위반을 배제**할
-  수 있다. 부분 결과를 버리면 이 방향의 위험이 사라지고 결과는 현행 동작으로
-  수렴한다.
-- 조기 종료의 전제는 reflog 상의 포함 관계가 단조라는 것이다. 커밋이 브랜치에서
-  빠졌다가 다시 들어오는 이력에서는 획득 시각이 실제보다 늦게 잡힐 수 있다. 이
-  잔여 위험은 미탐 방향이며, "오탐은 큐 정지와 세션 킬을 부르지만 미탐은 record가
-  남는 한 건의 미보고"라는 이 모듈의 기존 선호와 일치한다.
+- **정상 종료는 anchor 엔트리**다: `rev-list <pinned>..<C>` 가 비었다는 것은 `C` 가
+  `pinned` 의 조상이거나 `pinned` 자신이라는 뜻, 즉 pin 이전 상태다. 교집합 SHA는
+  전부 `pinned..observed` 안에 있어 pin 이전 상태에는 존재할 수 없으므로, anchor
+  보다 오래된 엔트리는 더 볼 필요가 없다. anchor 판정에 추가 명령이 필요 없다는
+  점(같은 `rev-list` 출력의 공백 여부)이 이 종료 조건을 고른 이유다.
+- **교집합을 담지 않은 엔트리에서 멈추지 않는다.** 커밋이 ref에서 빠졌다가 다시
+  들어오는 이력에서는 "교집합 없음"이 일시적 공백일 수 있고, 거기서 멈추면 획득
+  시각이 실제보다 늦게 잡힌다. 그것이 브랜치 쪽에서 일어나면 `base_t < branch_t` 가
+  허위로 성립해 **진짜 위반을 배제**한다. anchor까지 훑으면 attempt 창 전체를 보므로
+  이 위험이 사라진다.
+- 검사 엔트리 수는 anchor까지의 거리, 즉 attempt의 수명에 해당하는 엔트리 수로
+  제한된다(실측 사례는 각 ref 2개). `REFLOG_CAP` 200은 anchor를 찾지 못하는
+  병리적 이력에 대한 안전망이고, 도달 시 **부분 결과를 쓰지 않고** 미확정으로
+  종료한다 — 잘린 결과는 위와 같은 이유로 미탐을 만든다. 이 저장소의
+  `refs/remotes/origin/main` reflog는 248 엔트리지만 anchor 종료 덕분에 정상
+  경로에서는 몇 개만 읽는다.
 
 **ref 선택** — base 쪽은 `resolved.remote_ref`(예 `refs/remotes/origin/main`),
 `local_only` 로 `remote_ref` 가 null이면 `refs/heads/<resolved.base>`. 브랜치
 쪽은 `refs/heads/<bead_id>` (기존 walk와 동일한 ref).
 
-**비교 규칙** — `base_t` 와 `branch_t` 가 모두 확정이고 `base_t <= branch_t` 이면
-상속으로 배제한다. 동시각은 상속으로 본다(무죄 추정). 어느 한쪽이라도 미확정이면
-배제하지 않는다.
+**비교 규칙** — `base_t < branch_t` 이면 상속으로 배제한다. **동시각은 배제하지
+않는다**: reflog 시각은 초 단위이므로, 커밋 직후 같은 초에 `--no-verify` push한
+위반이 `base_t == branch_t` 로 관측될 수 있고, 그것을 상속으로 처리하면 이 가드가
+존재하는 이유인 defeat push를 놓친다. 동시각 SHA는 배제되지 않은 채 5~7단계로
+내려가 기존 PR 프로버넌스의 판단을 받는다. 어떤 SHA의 시각이 한쪽에서라도
+확정되지 않으면 그것은 관측 미완이므로 4단계에서 종료한다(위 파이프라인 참조).
 
 **미탐 경계 유지** — 세션이 커밋한 뒤 리베이스로 자기 커밋이 재작성돼 SHA가
 바뀌어도, 새 SHA의 브랜치 획득 시각은 리베이스 시각이고 base 획득은 그 이후
@@ -155,61 +178,84 @@ merge로 들여와 push하는 경로도 브랜치 획득 시각이 merge 시각�
 ## record 확장
 
 `BaseDriftRecord` 에 `inherited?: string[]` 를 추가한다 — 선점 배제로 제거된
-SHA들. 배제가 하나도 없으면 키를 넣지 않는다("없는 키는 거기까지 관측이 못 갔다"
-규약 유지).
+SHA들. **4단계 관측이 완료되면 배제가 0개여도 `[]` 를 기록한다**: "없는 키는
+거기까지 관측이 못 갔다"가 이 모듈의 규약이므로, 완료된 단계가 키를 생략하면
+관측 미완과 구분되지 않는다. 키가 없다는 것은 4단계에 도달하지 못했거나 관측이
+실패했다는 뜻이다.
 
 - 전부 배제 → `{ pinned, observed, landed: false, inherited }`. `landed: false`
   는 "이 attempt의 커밋이 base에 실리지 않았다"는 뜻이므로 정확하다.
 - 부분 배제 → 5~7단계의 기존 record 형태에 `inherited` 를 동반한다. `shas` 의
   의미(설명되지 않은 증거 집합)는 그대로다.
-
-`error` 스텝은 추가하지 않는다 — 4단계의 실패는 종료가 아니라 폴백이므로 관측이
-계속되고, 최종 record는 5~7단계가 결정한다.
+- 관측 실패 → `{ pinned, observed, shas, error: 'precedence_observe:<reason>' }`,
+  `inherited` 키 없음. `reason` 은 `reflog`(reflog를 읽지 못함) /
+  `rev_list`(엔트리 walk 실패) / `no_anchor`(상한 도달 또는 anchor 없이 reflog 끝).
+  `error` 값 열거에 이 세 스텝을 추가한다.
 
 ## 배선
 
-- `server/worker/base-drift.js` 한 파일만 변경한다. 주입된 `git` 만 더 쓰므로
-  `scheduler.js` 의 호출 지점 4곳과 주입 dep typedef, `gh.js` 는 변경 없다.
+- `server/worker/base-drift.js` — 판정 파이프라인과 `BaseDriftRecord` typedef.
+- `server/worker/queue-store.js` — 영속 `Attempt.base_drift` 인라인 typedef(`:43`
+  부근)에 `inherited?: string[]` 를 추가한다. `error` 는 이미 `string` 이라 새 스텝
+  값에 대한 변경이 필요 없다.
 - `resolveBase({ force: true })` 결과에서 `remote_ref`/`base` 를 읽는다 — 이미
   같은 함수 안에서 들고 있는 값이다.
+- `scheduler.js` 의 호출 지점 4곳과 주입 dep typedef, `gh.js` 는 변경 없다 —
+  주입된 `git` 만 더 쓴다.
 - `preamble.js` 의 가드 고지 문구는 수정 후에도 참이므로 손대지 않는다.
 
 ## Test scope
 
 seam은 기존 `server/worker/base-drift.test.js` 하나다(전 의존성 주입형이라 repo
-없이 단위 테스트한다). 기존 git stub은 `reflog` 를 모르므로 code 128을 돌려주며,
-그것이 곧 폴백 경로다 — 기존 54개 테스트는 stub 수정 없이 baseline GREEN으로
-유지되어야 한다.
+없이 단위 테스트한다).
+
+**stub 확장이 선행 조건이다.** 기존 `makeGit` 은 `reflog` 를 모르므로 code 128을
+돌려주는데, 4단계 실패가 종료가 된 이상 그 상태로는 기존 위반 테스트가 전부
+`violation: false` 로 바뀐다. 따라서 `makeGit` 에 reflog 기본 응답을 추가한다 —
+각 ref에 대해 `[현재 tip 엔트리, anchor 엔트리(commit = pinned)]` 2줄을 돌려주고,
+`<pinned>..<pinned>` 범위는 code 0 + 빈 출력(anchor)으로, 브랜치 tip SHA 범위는
+기존 브랜치 walk와 같은 SHA 목록으로 답한다. 기본 시각은 **브랜치 선점**(배제 0개)
+자세로 두어 기존 위반 판정이 그대로 유지되게 한다. UI-43bh가 `mergedPrsForCommit`
+결측을 기존 테스트에 empty stub으로 채워준 것과 같은 조치다.
 
 RED 구성 원칙은 UI-43bh와 같다: 최종 판정값이 현 구현에서도 같게 나오는 시드는
 **명령 경로 assertion으로 RED를 만든다**(현 구현은 `reflog` 를 호출하지 않는다).
 
-1. **오탐 재현 (핵심 RED, UI-nprg 재현)** — 교집합 1개, base reflog 획득 시각이
-   브랜치보다 이름 → `violation: false`, `landed: false`,
-   `inherited: [sha]`, gh 호출 0회. RED: 현 구현은 `via: 'direct_push'` 위반.
+1. **오탐 재현 (핵심 RED, UI-nprg 재현)** — 교집합 1개, base 획득 시각이 브랜치보다
+   이름 → `violation: false`, `landed: false`, `inherited: [sha]`, gh 호출 0회.
+   RED: 현 구현은 `via: 'direct_push'` 위반.
 2. **브랜치 선점 → 위반 유지 (미탐 경계 가드)** — 브랜치 획득이 더 이름, gh
-   `empty` → `violation: true`, `shas` = 그 SHA, `inherited` 키 없음. RED는 명령
+   `empty` → `violation: true`, `shas` = 그 SHA, `inherited: []`. RED는 명령
    경로로: 두 ref의 `reflog show` 가 **실행됐고** 이어서 gh 경로로 진행했음을
    assert한다.
 3. **리베이스 재작성 SHA → 위반 유지** — 브랜치 획득(리베이스 시각) < base 획득
    (push 시각) → `violation: true`. 명령 경로 RED는 시드 2와 동일 방식.
-4. **동시각 → 상속** — `base_t == branch_t` → 배제, `violation: false`.
-5. **reflog 읽기 실패 → 폴백** — base 또는 브랜치 `reflog show` 가 code 128 →
-   배제 미적용, 기존 판정(gh `empty` → `violation: true`) 유지. reflog를
-   시도했고 gh로 진행했음을 assert.
-6. **rev-list 실패 → 폴백** — 엔트리 커밋 walk 실패 → 미확정, 기존 판정 유지.
-7. **부분 배제** — 교집합 2개 중 1개만 base 선점 → gh는 **남은 1개에만** 호출되고,
+4. **동시각 → 배제 안 함** — `base_t == branch_t` → 5~7단계 진행, gh `empty` →
+   `violation: true`, `inherited: []`.
+5. **부분 배제** — 교집합 2개 중 1개만 base 선점 → gh는 **남은 1개에만** 호출되고,
    위반 record의 `shas` 는 남은 1개, `inherited` 는 배제된 1개.
-8. **엔트리 조기 종료** — shared SHA를 담지 않는 오래된 엔트리 이후는 훑지 않음:
-   `rev-list` 호출 수가 검사 엔트리 수로 제한됨을 assert.
-9. **`REFLOG_CAP` 도달 → 폴백** — 41개 엔트리가 모두 shared SHA를 담아 조기 종료가
-   걸리지 않는 브랜치 reflog → 부분 결과를 쓰지 않고 미확정 처리, 배제 없이 기존
-   판정(`violation: true`) 유지.
-10. **`local_only` base** — `remote_ref` 가 null이면 `refs/heads/<base>` 를
+6. **reflog 읽기 실패 → 종료** — base 또는 브랜치 `reflog show` 가 code 128 →
+   `violation: false`, `error: 'precedence_observe:reflog'`, `inherited` 키 없음,
+   gh 호출 0회.
+7. **rev-list 실패 → 종료** — 엔트리 커밋 walk 실패 →
+   `error: 'precedence_observe:rev_list'`, `violation: false`.
+8. **anchor 없이 reflog 끝 → 종료** — 모든 엔트리의 `rev-list` 가 비지 않음 →
+   `error: 'precedence_observe:no_anchor'`, `violation: false`.
+9. **`REFLOG_CAP` 도달 → 종료** — 201개 엔트리 모두 anchor 아님 → 부분 결과를 쓰지
+   않고 `error: 'precedence_observe:no_anchor'`, `rev-list` 호출이 상한 이하임을
+   assert.
+10. **anchor 조기 종료** — anchor보다 오래된 엔트리는 훑지 않음: `rev-list` 호출
+    수가 anchor까지의 엔트리 수와 같음을 assert.
+11. **일시적 공백 건너뛰기 (미탐 방지 핵심)** — 중간 엔트리가 교집합 SHA를 담지
+    않아도(그러나 anchor는 아님) 계속 훑어, 더 오래된 엔트리의 획득 시각을 채택한다.
+    브랜치 쪽에서 이 시각이 채택되어야 `base_t < branch_t` 가 허위 성립하지 않고
+    `violation: true` 가 유지된다.
+12. **`local_only` base** — `remote_ref` 가 null이면 `refs/heads/<base>` 를
     조회함을 argv로 assert.
-11. **기존 회귀 (baseline GREEN, RED 아님)** — `base-drift.test.js` ·
-    `scheduler.test.js` · `attach.test.js` 의 기존 판정 경로가 stub 수정 없이
-    유지된다.
+13. **기존 회귀** — `base-drift.test.js` 의 기존 54개 판정 경로는 위 stub 확장
+    적용 후 그대로 유지된다. `scheduler.test.js` · `attach.test.js` 는
+    `observeBaseDrift` 를 직접 주입하거나 base_drift record를 통째로 다루므로
+    영향을 받지 않아야 하며, 실행으로 확인한다.
 
 ## 비범위
 
