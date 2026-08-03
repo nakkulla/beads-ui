@@ -4,7 +4,9 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   DECLARATION_PATH,
+  UNDECLARED_BASE,
   baseUnresolvedReason,
+  readDeclaredBase,
   resolveTargetBase
 } from './target-base.js';
 
@@ -359,5 +361,89 @@ describe('resolveTargetBase gate findings (implementation review 2026-07-30)', (
     const result = await resolveTargetBase({ repo, gitRun: git.run });
 
     expect(result).toMatchObject({ ok: true, base: 'ilsun/dev-2.0_x' });
+  });
+});
+
+describe('readDeclaredBase (display-only projection, UI-j6wa §3)', () => {
+  test('returns the declared base when the repo declares one', () => {
+    writeDeclaration('base = "ilsun/dev"\n');
+
+    expect(readDeclaredBase(repo)).toBe('ilsun/dev');
+  });
+
+  test('returns main when the declaration file is absent', () => {
+    expect(readDeclaredBase(repo)).toBe(UNDECLARED_BASE);
+  });
+
+  test('returns main when the file declares no base key', () => {
+    writeDeclaration('[worker]\nslots = 2\n');
+
+    expect(readDeclaredBase(repo)).toBe(UNDECLARED_BASE);
+  });
+
+  test('returns null when the declaration fails to parse', () => {
+    writeDeclaration('base = "unterminated\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null when the base value is empty', () => {
+    writeDeclaration('base = ""\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null when the base value is not a string', () => {
+    writeDeclaration('base = 3\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null when the base value carries shell metacharacters', () => {
+    writeDeclaration('base = "main;rm -rf /"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base carrying a double dot', () => {
+    writeDeclaration('base = "foo..bar"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base starting with a dash', () => {
+    writeDeclaration('base = "-oops"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base with an empty path component', () => {
+    writeDeclaration('base = "foo//bar"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base component starting with a dot', () => {
+    writeDeclaration('base = "foo/.bar"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base component ending in .lock', () => {
+    writeDeclaration('base = "foo/bar.lock"\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('returns null for a base ending in a dot', () => {
+    writeDeclaration('base = "foo."\n');
+
+    expect(readDeclaredBase(repo)).toBeNull();
+  });
+
+  test('keeps an ordinary branch name with slashes, dots and dashes', () => {
+    writeDeclaration('base = "ilsun/dev-2.0_x"\n');
+
+    expect(readDeclaredBase(repo)).toBe('ilsun/dev-2.0_x');
   });
 });

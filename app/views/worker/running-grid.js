@@ -34,11 +34,17 @@ import { timesMeta } from './lanes.js';
  * button renders disabled until it lands (§2.1).
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4.1).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4.1).
+ * @property {string|null} [current_child] - 현재 진행중 child 이슈 제목
+ * (UI-53es §2) — 큐 스냅샷에 페이즈명이 없으므로 이것이 "지금 어느 단계인가"에
+ * 답하는 유일한 사실이다. 없으면 줄 자체를 생략한다 (fail-quiet).
  * @property {import('../../utils/token-usage.js').UsageRecord|null} [usage] - Live token usage
  * of this attempt (UI-raqh §1); absent/null renders nothing.
  * @property {boolean} [conflict_resolution] - Attempt dispatched to resolve a
  * PR conflict (worker-phase2 §6) rather than to do the bead's work; the tile
  * says so, because the two look identical otherwise (UI-dxgz §1).
+ * @property {string|null} [base_exception] - `→ <target_base>` when this
+ * attempt targets a base other than the workspace's declared one (UI-j6wa §3);
+ * null on a match and on either side being unknown.
  */
 
 /**
@@ -156,12 +162,14 @@ function logPathLine(log_path) {
 }
 
 /**
- * Format an elapsed duration (ms) as `MmSSs` / `SSs`.
+ * Format an elapsed duration (ms) as `MmSSs` / `SSs`. Exported so the monitor
+ * tab writes a running attempt's elapsed the same way this tile does (UI-53es
+ * §1) — the same fact must not read differently on two tabs.
  *
  * @param {number} ms
  * @returns {string}
  */
-function formatElapsed(ms) {
+export function formatElapsed(ms) {
   if (!Number.isFinite(ms) || ms < 0) {
     return '0s';
   }
@@ -329,6 +337,9 @@ function runningTile(tile, now, selected_attempt = null) {
       ? '충돌 해소 일시정지'
       : '충돌 해소'
     : null;
+  // 이 세션이 선언 base가 아닌 곳을 향해 일하고 있다 (UI-j6wa §3). 툴바 칩이
+  // 워크스페이스의 base를 상시 말하므로, 타일은 그와 다를 때만 입을 연다.
+  const base_badge = tile.base_exception || null;
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused ? ' rtile--paused' : ''}"
@@ -379,10 +390,22 @@ function runningTile(tile, now, selected_attempt = null) {
       </button>
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${meta || usage_label || conflict_badge
+    ${tile.current_child
+      ? html`<div class="rtile__child" title="현재 진행중 child">
+          └ ${tile.current_child}
+        </div>`
+      : ''}
+    ${meta || usage_label || conflict_badge || base_badge
       ? html`<div class="rtile__meta">
           ${conflict_badge
             ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
+            : ''}
+          ${base_badge
+            ? html`<span
+                class="worker-mini__badge"
+                title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
+                >${base_badge}</span
+              >`
             : ''}
           ${meta ? html`<span class="rtile__runner">${meta}</span>` : ''}
           ${usage_label

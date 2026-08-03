@@ -110,14 +110,32 @@ Nothing merges without a human `[머지]` click.
   from a subscription the server has not torn down yet; the rest is the full
   queue (`revision`, `auto_advance`, `slots`, `queue[]`, `pr_wait[]`, `done[]`,
   `attempts`, `admission`, `cleanup_failed`, `ship_failure`, `exec_defaults`)
-  plus three server-decorated, NON-persisted keys:
+  plus four server-decorated, NON-persisted keys:
   `workspace_info: { verify_cmd, slots }`, `pr_observations` (per-`pr_wait` PR
-  state + merge-gate verdict, memory cache only), and `bead_titles`
+  state + merge-gate verdict, memory cache only), `bead_titles`
   (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done` beads, memory cache
-  only). `bead_titles` is PARTIAL: only titles already cached travel, a miss
-  simply has no entry and arrives in a later snapshot once the server's async
-  lookup fills it. Consumers fail-quiet on the whole key being absent (older
-  server) and on a missing entry — both fall back to displaying the bead id.
+  only), and `declared_base`. `bead_titles` is PARTIAL: only titles already
+  cached travel, a miss simply has no entry and arrives in a later snapshot once
+  the server's async lookup fills it. Consumers fail-quiet on the whole key
+  being absent (older server) and on a missing entry — both fall back to
+  displaying the bead id.
+- A RUNNING attempt inside `attempts` additionally carries the non-persisted
+  `last_event_at` (epoch ms) — when the server last saw a session-log line for
+  that attempt (UI-53es §1). It is what the monitor row's live heartbeat reads;
+  because a log line is not a queue transition, every session-log publish (live
+  tail and post-restart re-attach alike) arms a 3-second COALESCED queue fanout,
+  so a burst costs one snapshot per window. Live-only: a server restart drops it
+  until the next line arrives, and consumers fail-quiet on its absence (no dot
+  rather than a stale one).
+- `declared_base: string|null` — what this workspace DECLARES as its target base
+  (`docs/agents/repo-ops.toml` top-level `base`), read from the declaration
+  only. An absent file or absent key travels as `'main'`, matching the
+  contract's undeclared fallback; an unreadable file, a parse failure, or a
+  `base` value that is empty / not a string / shell-unsafe travels as `null`, so
+  a client can say "unknown" instead of claiming `main`. The five-step resolve
+  (which fetches) stays on the dispatch path and never runs for this key, so a
+  `declared_base` string means "declared", never "verified". Consumers
+  fail-quiet on the key being absent (older server).
 - `worker-queue-place` payload: `{ bead_id, index?, expected_revision }` — a
   successful placement also kicks the live dispatch loop (`tick`), so an
   auto_advance-ON queue with a free slot starts the bead without waiting for

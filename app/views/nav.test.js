@@ -25,7 +25,7 @@ function setup() {
 }
 
 describe('views/nav', () => {
-  test('renders two tabs and routes between Board and Worker', async () => {
+  test('renders three tabs and routes between Board, Worker and Monitor', async () => {
     const { mount, store, router } = setup();
     createTopNav(
       mount,
@@ -33,10 +33,26 @@ describe('views/nav', () => {
       /** @type {any} */ (router)
     );
     const links = mount.querySelectorAll('a.ctl-tab');
-    expect(links.length).toBe(2);
+    expect(links.length).toBe(3);
     links[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(router.gotoView).toHaveBeenCalledWith('board');
     links[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(router.gotoView).toHaveBeenCalledWith('worker');
+    links[2].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(router.gotoView).toHaveBeenCalledWith('monitor');
+  });
+
+  test('marks the Monitor tab active on the monitor view', async () => {
+    const { mount, store, router } = setup();
+    store.set({ view: 'monitor' });
+
+    createTopNav(
+      mount,
+      /** @type {any} */ (store),
+      /** @type {any} */ (router)
+    );
+
+    const active = mount.querySelector('a.ctl-tab.is-active');
+    expect(active?.textContent?.trim()).toBe('Monitor');
   });
 });

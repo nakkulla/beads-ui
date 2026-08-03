@@ -49,6 +49,7 @@ import {
 import { evaluateMergeGate } from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
+import { readDeclaredBase } from '../worker/target-base.js';
 import { resolveVerifyCmd } from '../worker/verify-cmd.js';
 import {
   emitSessionLogAppend,
@@ -417,35 +418,52 @@ function beadDecorationFor(workspace_key, queue, method) {
 }
 
 /**
- * Project the attempts map with LIVE token usage folded in (UI-raqh §1): a
- * running attempt shows the in-memory tally, a terminated one keeps whatever
- * was persisted onto its record. A pure read of the shared store — the
- * scheduler is the only writer.
+ * Project the attempts map with the LIVE, non-persisted per-attempt values
+ * folded in: the token tally (UI-raqh §1) and `last_event_at`, the time of the
+ * attempt's last session-log line (UI-53es §1), which the monitor row turns
+ * into its heartbeat. Both apply to RUNNING attempts only — a terminated one
+ * keeps whatever was persisted onto its record. A pure read of the shared
+ * stores; the scheduler and the session-log broker are the only writers.
  *
  * @param {Record<string, unknown>} queue
  * @param {string} workspace_key
  * @returns {Record<string, unknown>}
  */
-function attemptsWithUsage(queue, workspace_key) {
+export function attemptsWithUsage(queue, workspace_key) {
   const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
   /** @type {ReturnType<typeof import('../worker/usage-store.js').createUsageStore>|null} */
   let store = null;
+  /** @type {ReturnType<typeof import('../worker/session-log.js').createSessionLog>|null} */
+  let session_log = null;
   try {
-    store = getWorkerRuntime().usageStore;
+    const runtime = getWorkerRuntime();
+    store = runtime.usageStore;
+    session_log = runtime.sessionLog;
   } catch {
     store = null;
+    session_log = null;
   }
-  if (!store) {
+  if (!store && !session_log) {
     return attempts;
   }
   /** @type {Record<string, unknown>} */
   const out = {};
   for (const [attempt_id, attempt] of Object.entries(attempts)) {
-    const live =
-      attempt && attempt.status === 'running'
-        ? store.get(workspace_key, attempt_id)
+    const running = Boolean(attempt) && attempt.status === 'running';
+    const live = running && store ? store.get(workspace_key, attempt_id) : null;
+    const last_event_at =
+      running && session_log && typeof session_log.lastEventAt === 'function'
+        ? session_log.lastEventAt(workspace_key, attempt_id)
         : null;
-    out[attempt_id] = live ? { ...attempt, usage: live } : attempt;
+    /** @type {any} */
+    let projected = attempt;
+    if (live) {
+      projected = { ...projected, usage: live };
+    }
+    if (typeof last_event_at === 'number') {
+      projected = { ...projected, last_event_at };
+    }
+    out[attempt_id] = projected;
   }
   return out;
 }
@@ -464,6 +482,10 @@ function attemptsWithUsage(queue, workspace_key) {
  *     plus its merge-gate verdict (worker-phase2 §4/§5) — a pure cache read,
  *   - `bead_times`: 생성·수정 시각 for those same beads (UI-d7pw §4.3), on the
  *     same partiality contract as `bead_titles`.
+ *   - `declared_base`: the workspace's DECLARED target base (UI-j6wa §3), read
+ *     from the declaration only — never the fetching five-step resolve, which
+ *     belongs to the dispatch path. Null when the declaration exists but cannot
+ *     be read as one, so the chip can say `base ?` instead of claiming `main`,
  *   - `bead_titles`: display titles for the queue/pr_wait/done beads (UI-12k6),
  *     which are in no subscribed issue column and would otherwise render as
  *     bare ids,
@@ -511,8 +533,18 @@ function decorateQueue(workspace_key, raw_queue) {
   if (slots === null && typeof queue.slots === 'number') {
     slots = queue.slots;
   }
+  /** @type {string|null} */
+  let declared_base = null;
+  try {
+    declared_base = readDeclaredBase(String(workspace_key || ''));
+  } catch {
+    declared_base = null;
+  }
   return {
     ...queue,
+    // The workspace's declared base (UI-j6wa §3), non-persisted like every
+    // other decoration here. Display only — nothing dispatches on it.
+    declared_base,
     // Attempts carry the LIVE usage tally while they run (UI-raqh §1); the
     // persisted `Attempt.usage` stands on its own once they end.
     attempts: attemptsWithUsage(queue, workspace_key),

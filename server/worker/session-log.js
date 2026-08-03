@@ -15,7 +15,16 @@
  */
 import { EventEmitter } from 'node:events';
 import nodeFs from 'node:fs';
+import { emitQueueChanged } from './queue-events.js';
 import { sessionLogPath } from './state-paths.js';
+
+/**
+ * Coalescing window for the `last_event_at` queue fanout (UI-53es §1). A log
+ * line is not a queue transition, so it rides the same throttle shape the usage
+ * ticks use: the first event in a window arms the timer and the rest of the
+ * burst rides it.
+ */
+export const LAST_EVENT_FANOUT_MS = 3_000;
 
 /**
  * A live-append notification, emitted for every appended raw event so the ws
@@ -43,7 +52,7 @@ export function stderrPathOf(log_path) {
  * One shared instance lives on the Worker runtime, so the line readers'
  * `publish` and the ws subscription's `subscribe` flow through the same broker.
  *
- * @param {{ fs?: typeof import('node:fs'), pathFor?: (workspace: string, attempt_id: string) => string }} [options]
+ * @param {{ fs?: typeof import('node:fs'), pathFor?: (workspace: string, attempt_id: string) => string, now?: () => number, emitChanged?: (workspace: string) => void, fanoutMs?: number }} [options]
  * @returns {{
  *   pathFor: (workspace: string, attempt_id: string) => string,
  *   stderrPathFor: (workspace: string, attempt_id: string) => string,
@@ -52,15 +61,66 @@ export function stderrPathOf(log_path) {
  *   read: (workspace: string, attempt_id: string, options?: { end_offset?: number }) => unknown[],
  *   lastEventAtOf: (workspace: string, attempt_id: string) => number|null,
  *   lineBoundaryOf: (workspace: string, attempt_id: string) => number|null,
+ *   lastEventAt: (workspace: string, attempt_id: string) => number|null,
  *   subscribe: (fn: (a: SessionLogAppend) => void) => (() => void)
  * }}
  */
 export function createSessionLog(options = {}) {
   const fs = options.fs || nodeFs;
   const pathFor = options.pathFor || sessionLogPath;
+  const now = options.now || Date.now;
+  const emitChanged = options.emitChanged || emitQueueChanged;
+  const fanout_ms =
+    typeof options.fanoutMs === 'number'
+      ? options.fanoutMs
+      : LAST_EVENT_FANOUT_MS;
   const emitter = new EventEmitter();
   // A live attempt may have many drawer subscribers; avoid the warning.
   emitter.setMaxListeners(0);
+
+  /**
+   * Last observed session-log event time per attempt (UI-53es §1). Live-only,
+   * like the usage tally: a restart loses it and the monitor row simply omits
+   * the heartbeat dot until the next line arrives.
+   *
+   * @type {Map<string, number>}
+   */
+  const last_event_at = new Map();
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const fanout_timers = new Map();
+
+  /**
+   * Arm the coalesced queue fanout for a workspace. The value is already
+   * recorded; this is only what tells the clients to come look at it.
+   *
+   * @param {string} workspace
+   */
+  function scheduleFanout(workspace) {
+    if (fanout_timers.has(workspace)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      fanout_timers.delete(workspace);
+      try {
+        emitChanged(workspace);
+      } catch {
+        // A broken fanout must never break the session.
+      }
+    }, fanout_ms);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    fanout_timers.set(workspace, timer);
+  }
+
+  /**
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {string}
+   */
+  function keyOf(workspace, attempt_id) {
+    return `${workspace}\u0000${attempt_id}`;
+  }
 
   return {
     pathFor,
@@ -77,11 +137,19 @@ export function createSessionLog(options = {}) {
      * Broadcast one raw event to the live subscribers. The event is ALREADY on
      * disk (the runner wrote it); this is the in-process notification only.
      *
+     * Every publish — live tail AND post-restart re-attach — also stamps
+     * `last_event_at` and arms the coalesced queue fanout (UI-53es §1). Without
+     * the fanout the stamp would never reach a client: the queue snapshot only
+     * goes out on a queue change or a usage tick, and a log line that carries no
+     * usage is neither.
+     *
      * @param {string} workspace
      * @param {string} attempt_id
      * @param {unknown} event
      */
     publish(workspace, attempt_id, event) {
+      last_event_at.set(keyOf(workspace, attempt_id), now());
+      scheduleFanout(workspace);
       emitter.emit('append', { workspace, attempt_id, event });
     },
 
@@ -149,6 +217,20 @@ export function createSessionLog(options = {}) {
       } catch {
         return null;
       }
+    },
+
+    /**
+     * When this attempt last produced a session-log event, or null when none
+     * has been observed in this process (UI-53es §1). The monitor row's live
+     * heartbeat reads it; absence renders no dot rather than a stale one.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     * @returns {number|null}
+     */
+    lastEventAt(workspace, attempt_id) {
+      const at = last_event_at.get(keyOf(workspace, attempt_id));
+      return typeof at === 'number' ? at : null;
     },
 
     /**

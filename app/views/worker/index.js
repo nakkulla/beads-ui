@@ -43,10 +43,11 @@ import {
   cmpEffectiveRank
 } from '../../data/sort.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
+import { selectCurrentChild } from '../../utils/current-child.js';
 import { showToast } from '../../utils/toast.js';
 import {
   SUM_FIELDS,
-  formatUsageTotal,
+  formatUsageTotalWithCost,
   sumAttemptUsage
 } from '../../utils/token-usage.js';
 import { createReorderController } from '../reorder.js';
@@ -57,6 +58,12 @@ import { createTranscriptDrawer } from './transcript-drawer.js';
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
+/**
+ * The Worker tab's own in_progress subscription (UI-53es §2). It exists for one
+ * reason: the running tile's 현재 단계 줄 needs the bead's in_progress CHILD,
+ * and a child is an in_progress issue like any other.
+ */
+const IN_PROGRESS_KEY = 'tab:worker:in-progress';
 
 /**
  * Lower bound on the concurrency cap, mirroring the server's `MIN_SLOTS`
@@ -414,6 +421,24 @@ function isPhaseChild(issue) {
 }
 
 /**
+ * The flattened `parent` edge (same field Board's `parentIdOf` reads), or ''
+ * for a top-level issue.
+ *
+ * @param {any} issue
+ * @returns {string}
+ */
+function parentIdOf(issue) {
+  const raw = issue && issue.parent;
+  if (typeof raw === 'string') {
+    return raw;
+  }
+  if (raw && raw.id) {
+    return String(raw.id);
+  }
+  return '';
+}
+
+/**
  * @param {any} issue
  * @returns {string} 🔒 + dependency target for a blocked candidate.
  */
@@ -550,6 +575,29 @@ export function mergeFailureText(reason) {
 }
 
 /**
+ * The base-exception badge text for one attempt, or null when there is no
+ * exception to report (UI-j6wa §3).
+ *
+ * Both unknowns are fail-quiet rather than alarming: a `declared_base` of null
+ * means the server could not read the declaration, and a legacy attempt carries
+ * no `target_base` at all. Comparing against either would badge on ignorance,
+ * and this badge only ever means "this attempt targets something else".
+ *
+ * @param {string|null|undefined} declared_base
+ * @param {string|null|undefined} target_base
+ * @returns {string|null}
+ */
+function baseException(declared_base, target_base) {
+  if (typeof declared_base !== 'string' || declared_base.length === 0) {
+    return null;
+  }
+  if (typeof target_base !== 'string' || target_base.length === 0) {
+    return null;
+  }
+  return target_base === declared_base ? null : `→ ${target_base}`;
+}
+
+/**
  * Project one `pr_wait` bead into a lane row, carrying whatever the server's PR
  * poller has observed (worker-phase2 §4/§5): the PR link, the gate/base badges,
  * and the two actions (§6).
@@ -594,6 +642,8 @@ export function mergeFailureText(reason) {
  * row over (UI-yk55 §3.4), or null when it is not. Only ever non-null while the
  * mode is ON: with it off the record is not the reason the row is standing
  * still, and a badge saying otherwise would be a lie.
+ * @param {string|null} [base_exception] - `→ <target_base>` when the attempt
+ * behind this row targets a base other than the declared one (UI-j6wa §3).
  * @returns {any}
  */
 function prWaitRow(
@@ -607,7 +657,8 @@ function prWaitRow(
   external = false,
   merge_queue = null,
   wt_present = true,
-  auto_skip = null
+  auto_skip = null,
+  base_exception = null
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const queue_active = !!merge_queue && merge_queue.active === true;
@@ -642,6 +693,12 @@ function prWaitRow(
   }
   if (gate && gate.base_badge && gate.base_badge !== gate.gate_badge) {
     badges.push(gate.base_badge);
+  }
+  // 이 행의 PR이 선언 base가 아닌 곳을 향하고 있다 (UI-j6wa §3). 게이트의
+  // base_badge(충돌/뒤처짐)와 다른 사실 — 저쪽은 "머지할 수 있는가", 이쪽은
+  // "어디로 머지되는가"다.
+  if (base_exception) {
+    badges.push(base_exception);
   }
   if (cleanup_failed) {
     badges.push('정리 실패');
@@ -1394,6 +1451,23 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Flip 자동 진행 and 자동 머지 together (UI-j6wa §1). 새 프로토콜 메시지는
+   * 만들지 않고 기존 두 토글을 그대로 보낸다 — 이 버튼은 서버 상태가 아니라
+   * 두 상태의 파생이므로, 서버에 세 번째 진실을 만들면 파생이 아니게 된다.
+   *
+   * 순차 전송이다: 두 핸들러 모두 CAS revision을 읽고 쓰므로, 동시에 보내면
+   * 둘 중 하나가 자기 자신의 충돌 재시도에 걸린다. 한쪽만 반영되는 부분 실패는
+   * 혼합 상태로 남고, 버튼은 그것을 꺼짐으로 표시한다 — 다음 클릭이 다시 둘 다
+   * ON으로 정규화하므로 별도 롤백은 두지 않는다.
+   *
+   * @param {boolean} on
+   */
+  async function setAutoAll(on) {
+    await setAutoAdvance(on);
+    await setAutoMerge(on);
+  }
+
+  /**
    * Set the concurrency cap (worker-phase2 §3), under the same CAS discipline
    * as the other mutations. The value is clamped to the lower bound before it
    * is sent — the server rejects (never clamps) an out-of-bound value.
@@ -1421,7 +1495,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, ship_failure: { bead_id: string, reason: string, detail: string|null, pr_url: string|null }|null }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, ship_failure: { bead_id: string, reason: string, detail: string|null, pr_url: string|null }|null }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -1431,6 +1505,35 @@ export function createWorkerView(mount_element, options = {}) {
     const blocked = selectors
       ? selectors.selectBoardColumn(BLOCKED_KEY, 'blocked')
       : [];
+    // 실행 타일의 현재 단계 줄이 읽는 자식 집합 (UI-53es §2). 후보 레인에는
+    // 쓰이지 않는다 — in_progress bead는 후보가 아니다.
+    const in_progress = selectors
+      ? selectors.selectBoardColumn(IN_PROGRESS_KEY, 'in_progress')
+      : [];
+    /** @type {Map<string, Array<{ id: string, title?: string, status?: string, updated_at?: number|string }>>} */
+    const children_by_parent = new Map();
+    for (const it of in_progress) {
+      const parent = parentIdOf(it);
+      if (!parent) {
+        continue;
+      }
+      const arr = children_by_parent.get(parent);
+      if (arr) {
+        arr.push(it);
+      } else {
+        children_by_parent.set(parent, [it]);
+      }
+    }
+    /**
+     * The current in_progress child's title, or null (fail-quiet).
+     *
+     * @param {string} bead_id
+     * @returns {string|null}
+     */
+    const currentChildTitleOf = (bead_id) => {
+      const child = selectCurrentChild(children_by_parent.get(bead_id) || []);
+      return child ? child.title || child.id : null;
+    };
 
     // Server-decorated titles for the queue/pr_wait/done beads (UI-12k6). Those
     // lanes hold resolved/closed beads that are in no subscribed column, so
@@ -1745,6 +1848,40 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return false;
     }
+    // 워크스페이스가 선언한 base (UI-j6wa §3). 서버 데코레이션이라 구버전
+    // 서버에서는 아예 없고, 선언을 읽지 못하면 null로 온다 — 둘 다 fail-quiet.
+    const declared_base =
+      typeof q.declared_base === 'string' ? q.declared_base : null;
+    /**
+     * PR 대기 행이 비교 대상으로 삼을 attempt의 base (UI-j6wa §3). 재실행으로
+     * attempt가 여러 개인 bead에서도 결정적이어야 하므로 규칙은 두 개뿐이다:
+     * 충돌 해소 세션은 제외하고(그 세션의 base는 PR이 향하는 곳이 아니라 고치는
+     * 중인 브랜치의 것이다), 남은 것 중 `started_at`이 가장 최신인 것을 쓴다.
+     * 동률과 `started_at` 부재는 attempts 맵의 삽입 순서로 갈린다 — 그 순서가
+     * 곧 시간이라는 것은 위 supersede 판정이 이미 쓰는 사실이다.
+     *
+     * @param {string} bead_id
+     * @returns {string|null}
+     */
+    function prWaitTargetBase(bead_id) {
+      /** @type {any|null} */
+      let picked = null;
+      for (const a of /** @type {any[]} */ (attempts)) {
+        if (!a || a.bead_id !== bead_id || resolvesConflict(a)) {
+          continue;
+        }
+        if (
+          picked === null ||
+          (typeof a.started_at === 'number' ? a.started_at : 0) >=
+            (typeof picked.started_at === 'number' ? picked.started_at : 0)
+        ) {
+          picked = a;
+        }
+      }
+      return picked && typeof picked.target_base === 'string'
+        ? picked.target_base
+        : null;
+    }
     /** @type {any[]} */
     const running = [];
     /** @type {any|null} */
@@ -1770,6 +1907,9 @@ export function createWorkerView(mount_element, options = {}) {
           // 알 수 없다 (UI-dxgz §1). 재개된 child는 자기 플래그가 false라
           // resumed_from 조상에서 상속한다.
           conflict_resolution: resolvesConflict(a),
+          // 실행 중 타일은 그 타일의 attempt를 그대로 본다 (UI-j6wa §3) — PR
+          // 대기 행과 달리 어느 attempt인지 고를 여지가 없다.
+          base_exception: baseException(declared_base, a.target_base),
           can_pause:
             typeof a.session_id === 'string' && a.session_id.length > 0,
           // 실행 중 타일도 bead의 전체 attempt 합계를 쓴다 (UI-d7pw §1.4).
@@ -1778,6 +1918,9 @@ export function createWorkerView(mount_element, options = {}) {
           // 스냅샷의 decorateQueue가 실행 중 attempt에 라이브 값을 실어
           // 보내므로 합계에 현재 진행분이 포함되고 계속 올라간다.
           usage: sumAttemptUsage(q.attempts || {}, a.bead_id),
+          // 큐 스냅샷에는 페이즈명이 없다 — 진행중 child 제목이 "지금 어디까지"
+          // 를 말하는 유일한 사실이다 (UI-53es §2).
+          current_child: currentChildTitleOf(a.bead_id),
           ...timesOf(a.bead_id)
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
@@ -1944,18 +2087,38 @@ export function createWorkerView(mount_element, options = {}) {
     // 보고된 0과 아예 보고되지 않은 usage는 다른 사실이다 — 행 배지가 그 둘을
     // 가르는 방식(`formatUsageTotal`의 토큰 필드 존재 검사)을 합계도 따른다.
     let token_reported = false;
+    // 비용은 합산 대상 전부가 보고했을 때만 붙인다 (UI-j6wa §2) — `sumAttemptUsage`가
+    // 행 배지에 쓰는 규칙 그대로다. 일부만 보고한 합계에 $를 붙이면 토큰과 돈이
+    // 서로 다른 모집단을 말하게 되고, 읽는 쪽에는 그 차이가 보이지 않는다.
+    let cost_sum = 0;
+    let summed_rows = 0;
+    let cost_rows = 0;
     for (const row of done_rows) {
       const u = row.usage;
       if (u && typeof u === 'object') {
+        let row_reported = false;
         for (const field of SUM_FIELDS) {
           if (Number.isFinite(u[field])) {
             token_sum[field] += u[field];
             token_reported = true;
+            row_reported = true;
+          }
+        }
+        if (row_reported) {
+          summed_rows += 1;
+          if (Number.isFinite(u.total_cost_usd)) {
+            cost_sum += u.total_cost_usd;
+            cost_rows += 1;
           }
         }
       }
     }
-    const token_total = token_reported ? formatUsageTotal(token_sum) : null;
+    if (summed_rows > 0 && cost_rows === summed_rows) {
+      token_sum.total_cost_usd = cost_sum;
+    }
+    const token_total = token_reported
+      ? formatUsageTotalWithCost(token_sum)
+      : null;
 
     return {
       queue: q,
@@ -2010,7 +2173,8 @@ export function createWorkerView(mount_element, options = {}) {
             // 자동 모드가 꺼져 있으면 제외 기록은 이 행이 서 있는 이유가 아니다
             // (UI-yk55 §3.4) — 기록이 지워지는 시점도 자동 스캔이므로, 꺼진
             // 상태의 잔여 기록을 뱃지로 보이면 사실이 아닌 설명이 된다.
-            q.auto_merge === true ? autoSkipReason(e.bead_id) : null
+            q.auto_merge === true ? autoSkipReason(e.bead_id) : null,
+            baseException(declared_base, prWaitTargetBase(e.bead_id))
           )
         )
         .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),
@@ -2025,6 +2189,7 @@ export function createWorkerView(mount_element, options = {}) {
       // 자동 머지 경고 문구의 근거 (UI-yk55 §6): 검증 신호가 없는 워크스페이스는
       // 게이트 Tier 3이라 클릭 없이 머지된다는 사실을 버튼이 말해야 한다.
       verify_cmd_present: !!(q.workspace_info || {}).verify_cmd,
+      declared_base,
       done: done_rows,
       token_total,
       cleanup_failures,
@@ -2044,6 +2209,22 @@ export function createWorkerView(mount_element, options = {}) {
     >
       ${m.queue.auto_advance ? '⏸ 일시정지' : '▶ 자동 진행'}
     </button>`;
+    // 전체 자동화 (UI-j6wa §1): 서버 상태를 새로 만들지 않고 기존 두 토글의
+    // 파생값만 보여준다. 그래서 혼합 상태는 "켜짐"이 아니고, 다음 클릭은 둘 다
+    // ON으로 정규화한다 — 한 버튼이 두 토글을 대표하는 이상, 그 표시가 참이
+    // 되는 방향은 하나뿐이다.
+    const auto_all_on =
+      m.queue.auto_advance === true && m.queue.auto_merge === true;
+    const auto_all = html`<button
+      type="button"
+      class="worker-auto-all${auto_all_on ? ' is-active' : ''}"
+      title=${auto_all_on
+        ? '자동 진행과 자동 머지를 함께 끕니다'
+        : '자동 진행과 자동 머지를 함께 켭니다'}
+      aria-pressed=${auto_all_on ? 'true' : 'false'}
+    >
+      ${auto_all_on ? '⏹ 전체 자동화' : '⏵⏵ 전체 자동화'}
+    </button>`;
     const overcap = m.over_cap
       ? html`<span
           class="worker-overcap"
@@ -2062,6 +2243,16 @@ export function createWorkerView(mount_element, options = {}) {
       <span class="worker-kpi__chip worker-kpi__chip--done"
         >${doneRangeLabel()} 완료 <b>${m.done.length}</b></span
       >`;
+    // 이 워크스페이스가 어디로 머지되는가 (UI-j6wa §3). 상시 표시 — base는 PR을
+    // 여는 순간 되돌리기 어려운 선택이라, 예외가 생겼을 때만 나타나는 표시로는
+    // 늦다. 읽지 못한 선언을 `main`으로 그리지는 않는다.
+    const base_chip = html`<span
+      class="worker-kpi__chip worker-kpi__chip--base"
+      title=${m.declared_base
+        ? '이 워크스페이스가 선언한 target base (docs/agents/repo-ops.toml). 디스패치 시점의 검증은 별도'
+        : '선언 파일을 읽지 못했습니다 — target base 확인 불가'}
+      >base ${m.declared_base || '?'}</span
+    >`;
     const settings = html`<label class="worker-tgl worker-slots"
         >동시 실행
         <input
@@ -2096,15 +2287,16 @@ export function createWorkerView(mount_element, options = {}) {
           <div class="worker-kpi worker-kpi--ribbon">${overcap}${counts}</div>
         </div>
         <div class="worker-ctrl worker-ctrl--mobile">
-          <div class="worker-ctrl__ops">${settings}</div>
+          <div class="worker-ctrl__ops">${auto_all}${settings}</div>
+          <div class="worker-kpi">${base_chip}</div>
         </div>
         ${banners}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
-        <div class="worker-ctrl__ops">${play}${settings}</div>
+        <div class="worker-ctrl__ops">${play}${auto_all}${settings}</div>
         <div class="worker-kpi">
-          ${overcap}${counts}
+          ${overcap}${counts}${base_chip}
           ${m.token_total
             ? html`<span
                 class="worker-kpi__chip worker-kpi__chip--tokens"
@@ -2813,6 +3005,13 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (target?.closest?.('.worker-play')) {
       void setAutoAdvance(!currentQueue().auto_advance);
+      return;
+    }
+    // 전체 자동화 (UI-j6wa §1): 둘 다 켜져 있을 때만 끄고, 나머지 세 조합은
+    // 전부 둘 다 켜기다 (혼합 상태 ON 정규화).
+    if (target?.closest?.('.worker-auto-all')) {
+      const q = currentQueue();
+      void setAutoAll(!(q.auto_advance === true && q.auto_merge === true));
       return;
     }
     // The lane header's bulk merge control (UI-5v7d §4). It sits INSIDE a pane

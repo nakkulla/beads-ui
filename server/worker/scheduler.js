@@ -241,9 +241,11 @@ function staleDispatchPrompt(bead_id, stale) {
  * the same git the base resolver does. Absent wiring makes every observation
  * record `no_observer_deps` — an attempt that could not be observed is recorded
  * as such, never judged.
- * @property {{ mergedPrForBranch: (repo_dir: string, branch: string) => Promise<{ state: string, data?: unknown, reason?: string }> }} [gh]
+ * @property {{ mergedPrForBranch: (repo_dir: string, branch: string) => Promise<{ state: string, data?: unknown, reason?: string }>, mergedPrsForCommit?: (repo_dir: string, sha: string, target_base: string) => Promise<{ state: string, data?: unknown, reason?: string }> }} [gh]
  * The PR adapter the detection layer excludes merge-landings with (UI-8mvc
- * §3-4). Same instance the verify/poller paths use. Absent wiring records
+ * §3-4, UI-43bh). Same instance the verify/poller paths use. `mergedPrForBranch`
+ * excludes THIS branch's merge; `mergedPrsForCommit` accounts for a shared
+ * commit by ANOTHER unit's merged PR. Absent wiring of either records
  * `pr_observe:no_gh` rather than reporting an unexcluded violation.
  * @property {(pid: number|null) => { alive: boolean, started_at: number|null }} [probePid]
  * Liveness + start-time probe for {@link createScheduler}'s `reconcile`. Absent
