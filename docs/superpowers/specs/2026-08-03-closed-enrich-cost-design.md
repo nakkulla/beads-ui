@@ -62,11 +62,11 @@ HEAD를 움직이지 않는다는 이유로 캐시를 의도적으로 우회하�
 `enrichIssueWorkflow`(`server/workflow-enrich.js:552`)에서 `status`가
 `'closed'`일 때 세 개의 git 프로브를 모두 생략한다:
 
-| 프로브 | 호출부 | 생략 시 값 |
-| --- | --- | --- |
-| `pathChangedSince` (spec) | `computeStaleWithHead:336` | `spec_stale = false` |
-| `implFreshness` (impl) | `computeStaleWithHead:339` | `impl_stale = false` |
-| `planFreshness` (plan) | `planStage:484` | `stale = false` |
+| 프로브 | 호출부 | 실제 git 명령 | 생략 시 값 |
+| --- | --- | --- | --- |
+| `pathChangedSince` (spec) | `computeStaleWithHead:336` | `git log <sha>..HEAD -- <spec_id>` | `spec_stale = false` |
+| `implFreshness` (impl) | `computeStaleWithHead:339` | `git rev-parse --verify --quiet refs/heads/<bead_id>` + `git merge-base --is-ancestor` | `impl_stale = false` |
+| `planFreshness` (plan) | `planStage:484` | `git status --porcelain -- <plan_path>` + `git log <sha>..HEAD -- <plan_path>` | `stale = false` |
 
 - **영수증 파싱은 유지한다.** `parseReceipt`/`parsePlanReceipt`는 문자열
   파싱이라 비용이 없고 `classifyGlyph`의 glyph 표시에 필요하다. `closed`
@@ -104,8 +104,12 @@ HEAD를 움직이지 않는다는 이유로 캐시를 의도적으로 우회하�
 
 ## 표시 결과 의미론
 
-- `closed` 카드에서 stale 마커가 사라진다. dotfiles 기준 closed 1000건 중
-  85건이 영향받는다.
+- `closed` 카드에서 stale 마커가 사라진다. dotfiles 기준 closed 1493건 중
+  영수증 보유 86건이 프로브 대상이지만, **실제로 stale 마커가 떠 있는 카드는
+  14건**(spec 13 · plan 1 · impl 0)이다. impl이 0인 이유는 머지 후 bead ID
+  브랜치가 삭제되어 `implFreshness`가 `unknown`(= stale false)을 반환하기
+  때문이다 — 즉 impl 프로브 비용은 판정값이 아니라 `git rev-parse` 프로세스
+  기동 자체다. 30초마다 약 930ms를 쓰는 대가로 얻는 표시가 14건이다.
 - '전체' 범위가 1493건 전부를 표시한다. 잔여 소요는 약 4.2초이며 그중
   3864ms는 provenance용 `bd dep list`(비동기, 다른 구독을 막지 않음)다.
   기본 범위가 `today`(263ms)이므로 첫 로딩 경로는 영향받지 않는다.
@@ -126,24 +130,34 @@ HEAD를 움직이지 않는다는 이유로 캐시를 의도적으로 우회하�
 
 ## Test scope
 
-RED → GREEN 시맨틱 seam:
+RED → GREEN 시맨틱 seam. 세 staleness seam 모두 **현재 구현에서 `stale ===
+true`가 관측되는 fixture**를 만든 뒤 가드로 `false`로 뒤집는 형태다 — 값이
+이미 `false`인 fixture(예: bead 브랜치가 삭제된 전형적 closed bead)로는 공허한
+RED가 되므로 쓰지 않는다. fixture는 기존 테스트가 쓰는 실제 임시 git repo
+헬퍼(`makeRepo`/`commitAll`/`git`)를 재사용한다.
 
-1. `enrichIssueWorkflow`(`workflow-enrich.test.js`) — `status: 'closed'` +
-   유효한 `impl_review` 영수증에서 `stages.impl.stale === false`이고
-   `git status`/`git log` 프로브가 호출되지 않는다. (현재 구현은 영수증이
-   있으면 status와 무관하게 프로브를 돌리므로 비공허 RED.)
-2. `enrichIssueWorkflow`(`workflow-enrich.test.js`) — `route: 'full_plan'` +
-   `status: 'closed'` + 유효한 `plan_review` 영수증에서 `stages.plan.stale
-   === false`이고 `planFreshness`가 호출되지 않는다. (동일 이유로 비공허
+1. **spec_stale** (`server/workflow-enrich.test.js`) — repo에 spec 파일을
+   커밋해 receipt SHA를 잡고, 같은 파일을 한 번 더 커밋한다.
+   `enrichIssueWorkflow({ status: 'closed', metadata: { spec_id, spec_review } })`
+   가 현재 `stages.spec.stale === true`, 변경 후 `false`.
+2. **impl_stale** (`server/workflow-enrich.test.js`) — 커밋 후 bead ID와 같은
+   이름의 브랜치(`UI-1`)를 만들고 그 위에 커밋을 하나 더 올린다.
+   `enrichIssueWorkflow({ id: 'UI-1', status: 'closed', metadata: { impl_review } })`
+   가 현재 `stages.impl.stale === true`, 변경 후 `false`. 브랜치를 살려 두는
+   fixture여야 하는 이유는 위 「표시 결과 의미론」에 적은 대로 브랜치가 없으면
+   현재 구현도 이미 `false`이기 때문이다.
+3. **plan stale** (`server/workflow-enrich.test.js`) — `route: 'full_plan'`
+   (`plan_path` + `plan_review`)로 plan 파일을 receipt 이후 커밋한다.
+   `stages.plan.stale`이 현재 `true`, 변경 후 `false`.
+4. **`--limit 0`** (`server/list-adapters.test.js`) —
+   `mapSubscriptionToBdArgs({ type: 'closed-issues' })`의 args에 `--limit 0`이
+   포함되고 `--limit 1000`이 없다. (현재 구현은 `1000`을 내보내므로 비공허
    RED.)
-3. `mapSubscriptionToBdArgs({ type: 'closed-issues' })`
-   (`list-adapters.test.js`) — args에 `--limit 0`이 포함되고 `--limit 1000`이
-   없다. (현재 구현은 `1000`을 내보내므로 비공허 RED.)
 
 회귀 가드 (RED 아님 — 불변 보증):
 
-- `status: 'resolved'` + 영수증 → staleness 계산이 그대로 수행되고 stale이
-  참일 수 있다.
+- seam 1~3과 동일한 fixture에서 `status: 'resolved'`로 바꾸면 세 stale이 모두
+  `true`로 유지된다 — 가드가 `closed`에만 걸렸음을 보증한다.
 - `closed` + 영수증 → glyph(`stages.impl.glyph`)와 route/PR 칩이 보존된다.
 - `mapSubscriptionToBdArgs({ type: 'closed-issues', params: { since } })` →
   `--limit 0`과 `--closed-after`가 공존하고 경계값이 `since - 1000ms`의
@@ -159,5 +173,14 @@ RED → GREEN 시맨틱 seam:
   한다. 변화가 있으면 프론트엔드 오염이므로 조사한다.
 - 실측 재확인(workspace=dotfiles): '전체' 범위 `fetchListForSubscription`이
   1493건을 반환하고, enrich 구간이 200ms 미만인지 확인한다.
-- 머지 후 `bdui-shared restart` → 프로세스 경로·포트·HTTP 응답 확인
-  (AGENTS.md Post-Merge Runtime Validation).
+
+머지 후 마감(AGENTS.md Post-Merge Runtime Validation, 순서 고정):
+
+1. `~/.config/bdui/config.toml` 런타임 설정 정합 확인.
+2. `bdui-shared restart`로 공유 서버 재시작.
+3. 실행 중인 프로세스 경로(머지된 체크아웃 소유인지)·리스닝 포트·HTTP 응답을
+   확인한 뒤에만 완료를 선언한다.
+
+각 단계는 다음 단계 전에 결과를 확인한다. 중간에 멈추면 이전 단계까지의 상태가
+그대로 유지되므로(설정 확인은 읽기 전용, 재시작은 멱등) 재개는 1번부터 다시
+밟으면 된다.
