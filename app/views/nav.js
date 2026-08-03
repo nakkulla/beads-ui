@@ -2,11 +2,11 @@ import { html, render } from 'lit-html';
 import { debug } from '../utils/logging.js';
 
 /**
- * Render the two-tab control-tower navigation (Board / Worker).
+ * Render the three-tab control-tower navigation (Board / Worker / Monitor).
  *
  * @param {HTMLElement} mount_element
  * @param {{ getState: () => any, subscribe: (fn: (s: any) => void) => () => void }} store
- * @param {{ gotoView: (v: 'board'|'worker') => void }} router
+ * @param {{ gotoView: (v: 'board'|'worker'|'monitor') => void }} router
  */
 export function createTopNav(mount_element, store, router) {
   const log = debug('views:nav');
@@ -14,7 +14,7 @@ export function createTopNav(mount_element, store, router) {
   let unsubscribe = null;
 
   /**
-   * @param {'board'|'worker'} view
+   * @param {'board'|'worker'|'monitor'} view
    * @returns {(ev: MouseEvent) => void}
    */
   function onClick(view) {
@@ -27,7 +27,8 @@ export function createTopNav(mount_element, store, router) {
 
   function template() {
     const s = store.getState();
-    const active = s.view === 'worker' ? 'worker' : 'board';
+    const active =
+      s.view === 'worker' || s.view === 'monitor' ? s.view : 'board';
     return html`
       <div class="ctl-tabs" aria-label="Primary">
         <a
@@ -41,6 +42,12 @@ export function createTopNav(mount_element, store, router) {
           class="ctl-tab ${active === 'worker' ? 'is-active' : ''}"
           @click=${onClick('worker')}
           >Worker</a
+        >
+        <a
+          href="#/monitor"
+          class="ctl-tab ${active === 'monitor' ? 'is-active' : ''}"
+          @click=${onClick('monitor')}
+          >Monitor</a
         >
       </div>
     `;

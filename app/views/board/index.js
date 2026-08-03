@@ -1,6 +1,7 @@
 import { html, render } from 'lit-html';
 import { DEFAULT_CLOSED_RANGE } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
+import { selectCurrentChild } from '../../utils/current-child.js';
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
 import { createReorderController } from '../reorder.js';
@@ -16,7 +17,7 @@ import { filterBarTemplate } from './filter-bar.js';
  * enough to render (title/status) and to order with `cmpChildOrder`
  * (metadata.task_order / title / created_at).
  *
- * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, unknown> | null, created_at?: number | string }} ChildRow
+ * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, unknown> | null, created_at?: number | string, updated_at?: number | string }} ChildRow
  */
 
 /**
@@ -429,13 +430,15 @@ export function createBoardView(mount_element, options) {
         map.set(parent, arr);
       }
       // Preserve the ordering keys (metadata.task_order / created_at) so the
-      // card can sort the compact rows with cmpChildOrder (spec §3.3).
+      // card can sort the compact rows with cmpChildOrder (spec §3.3), plus
+      // `updated_at` — the key `selectCurrentChild` orders on (UI-53es §2).
       arr.push({
         id: it.id,
         title: it.title,
         status: it.status,
         metadata: /** @type {any} */ (it).metadata,
-        created_at: it.created_at
+        created_at: it.created_at,
+        updated_at: it.updated_at
       });
     }
     children_by_parent = map;
@@ -451,16 +454,16 @@ export function createBoardView(mount_element, options) {
   function rollupFor(id) {
     const children = children_by_parent.get(id) || [];
     let count = 0;
-    /** @type {ChildRow | null} */
-    let current = null;
     for (const c of children) {
       if (c.status === 'resolved' || c.status === 'closed') {
         count += 1;
       }
-      if (!current && c.status === 'in_progress') {
-        current = c;
-      }
     }
+    // 어느 child가 "현재"인지는 Board·모니터·Worker 타일이 공유하는 계약이다
+    // (UI-53es §2) — 여기서 따로 고르면 세 화면의 답이 갈린다.
+    const current = /** @type {ChildRow | null} */ (
+      selectCurrentChild(children)
+    );
     return { total: children.length, count, current, children };
   }
 

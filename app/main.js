@@ -22,6 +22,10 @@ import { createBoardView } from './views/board/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
 import { createDisplaySettingsDialog } from './views/display-settings-dialog.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
+import {
+  MONITOR_IN_PROGRESS_KEY,
+  createMonitorView
+} from './views/monitor/index.js';
 import { createTopNav } from './views/nav.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
 import { createWorkerView } from './views/worker.js';
@@ -88,12 +92,27 @@ const BOARD_SUBS = [
  * the Board but under Worker-scoped client ids so the Worker tab keeps its
  * candidate stores independent of Board tab (de)registration.
  *
+ * `tab:worker:in-progress` is what makes the running tile's 현재 단계 줄 work
+ * (UI-53es §2): the child titles live in the in_progress issue set, which the
+ * Board owned alone — entering Worker directly used to subscribe ready/blocked
+ * only, so the line had no data to render.
+ *
  * @type {ReadonlyArray<[string, string]>}
  */
 const WORKER_SUBS = [
   ['tab:worker:ready', 'ready-issues'],
-  ['tab:worker:blocked', 'blocked-issues']
+  ['tab:worker:blocked', 'blocked-issues'],
+  ['tab:worker:in-progress', 'in-progress-issues']
 ];
+
+/**
+ * Monitor tab subscription keys (UI-53es §1): the monitor's 1차 범위 is the
+ * in_progress group, and the tab owns its own client id so it survives Board /
+ * Worker (de)registration.
+ *
+ * @type {ReadonlyArray<[string, string]>}
+ */
+const MONITOR_SUBS = [[MONITOR_IN_PROGRESS_KEY, 'in-progress-issues']];
 
 /** Client id for the singleton per-workspace worker-queue subscription. */
 const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
@@ -131,6 +150,7 @@ export function bootstrap(root_element) {
   const shell = html`
     <section id="board-root" class="route board"></section>
     <section id="worker-root" class="route worker" hidden></section>
+    <section id="monitor-root" class="route monitor" hidden></section>
     <section id="detail-panel" class="route detail" hidden></section>
   `;
   render(shell, root_element);
@@ -142,9 +162,11 @@ export function bootstrap(root_element) {
   /** @type {HTMLElement|null} */
   const worker_root = document.getElementById('worker-root');
   /** @type {HTMLElement|null} */
+  const monitor_root = document.getElementById('monitor-root');
+  /** @type {HTMLElement|null} */
   const detail_mount = document.getElementById('detail-panel');
 
-  if (board_root && worker_root && detail_mount) {
+  if (board_root && worker_root && monitor_root && detail_mount) {
     /** @type {HTMLElement|null} */
     const header_loading = document.getElementById('header-loading');
     const activity = createActivityIndicator(header_loading);
@@ -559,18 +581,6 @@ export function bootstrap(root_element) {
             pending_subscriptions.delete(client_id);
           });
       }
-      // Per-workspace worker-queue channel (reuses the authenticated ws).
-      if (!worker_queue_unsub) {
-        void tracked_send('subscribe-worker-queue', {
-          id: WORKER_QUEUE_CLIENT_ID
-        }).catch((err) => {
-          log('subscribe-worker-queue failed: %o', err);
-        });
-        worker_queue_unsub = () =>
-          tracked_send('unsubscribe-worker-queue', {
-            id: WORKER_QUEUE_CLIENT_ID
-          });
-      }
     }
 
     function clearWorkerSubscriptions() {
@@ -586,9 +596,95 @@ export function bootstrap(root_element) {
           log('unregister %s failed: %o', client_id, err);
         }
       }
+    }
+
+    /**
+     * The per-workspace worker-queue channel (reuses the authenticated ws).
+     * TWO tabs read it now — Worker for its lanes and Monitor for the live
+     * attempt metrics (UI-53es §1) — so it is driven by the UNION of their
+     * activity rather than by the Worker tab alone; tearing it down on a
+     * Worker→Monitor switch would blank the monitor's heartbeat.
+     *
+     * @param {boolean} active
+     */
+    function ensureWorkerQueueChannel(active) {
+      if (!active) {
+        clearWorkerQueueChannel();
+        return;
+      }
+      if (worker_queue_unsub) {
+        return;
+      }
+      void tracked_send('subscribe-worker-queue', {
+        id: WORKER_QUEUE_CLIENT_ID
+      }).catch((err) => {
+        log('subscribe-worker-queue failed: %o', err);
+      });
+      worker_queue_unsub = () =>
+        tracked_send('unsubscribe-worker-queue', {
+          id: WORKER_QUEUE_CLIENT_ID
+        });
+    }
+
+    function clearWorkerQueueChannel() {
       if (worker_queue_unsub) {
         void worker_queue_unsub().catch(() => {});
         worker_queue_unsub = null;
+      }
+    }
+
+    // --- Monitor subscription lifecycle (UI-53es §1) ---
+    /** @type {Map<string, () => Promise<void>>} */
+    const monitor_unsubs = new Map();
+
+    /**
+     * @param {boolean} active
+     */
+    function ensureMonitorSubscriptions(active) {
+      if (!active) {
+        clearMonitorSubscriptions();
+        return;
+      }
+      for (const [client_id, type] of MONITOR_SUBS) {
+        if (
+          monitor_unsubs.has(client_id) ||
+          pending_subscriptions.has(client_id)
+        ) {
+          continue;
+        }
+        try {
+          sub_issue_stores.register(client_id, { type });
+        } catch (err) {
+          log('register %s store failed: %o', client_id, err);
+        }
+        pending_subscriptions.add(client_id);
+        void subscriptions
+          .subscribeList(client_id, { type })
+          .then((unsub) => {
+            monitor_unsubs.set(client_id, unsub);
+          })
+          .catch((err) => {
+            log('subscribe %s failed: %o', client_id, err);
+            showFatalFromError(err, 'monitor');
+          })
+          .finally(() => {
+            pending_subscriptions.delete(client_id);
+          });
+      }
+    }
+
+    function clearMonitorSubscriptions() {
+      for (const [client_id] of MONITOR_SUBS) {
+        const unsub = monitor_unsubs.get(client_id);
+        if (unsub) {
+          void unsub().catch(() => {});
+          monitor_unsubs.delete(client_id);
+        }
+        try {
+          sub_issue_stores.unregister(client_id);
+        } catch (err) {
+          log('unregister %s failed: %o', client_id, err);
+        }
       }
     }
 
@@ -690,7 +786,10 @@ export function bootstrap(root_element) {
         }
       }
       subscribeDisplayPolicy();
-      ensureWorkerSubscriptions(store.getState().view === 'worker');
+      const view = store.getState().view;
+      ensureWorkerSubscriptions(view === 'worker');
+      ensureMonitorSubscriptions(view === 'monitor');
+      ensureWorkerQueueChannel(view === 'worker' || view === 'monitor');
     }
 
     // --- Workspace management ---
@@ -701,6 +800,8 @@ export function bootstrap(root_element) {
       log('clearing all subscriptions for workspace switch');
       clearBoardSubscriptions();
       clearWorkerSubscriptions();
+      clearMonitorSubscriptions();
+      clearWorkerQueueChannel();
       worker_queue_store.clear();
       // UI-order is a bootstrap singleton (not tab-scoped), but the order map is
       // per-workspace — clear + resubscribe so the new workspace's order loads.
@@ -722,6 +823,10 @@ export function bootstrap(root_element) {
       const current_state = store.getState();
       ensureBoardSubscriptions(current_state.view === 'board');
       ensureWorkerSubscriptions(current_state.view === 'worker');
+      ensureMonitorSubscriptions(current_state.view === 'monitor');
+      ensureWorkerQueueChannel(
+        current_state.view === 'worker' || current_state.view === 'monitor'
+      );
       if (current_state.selected_id) {
         scheduleDetailSubscription(current_state.selected_id);
       }
@@ -953,12 +1058,16 @@ export function bootstrap(root_element) {
       client.onConnection(onConn);
     }
 
-    // Load last-view from storage (board/worker only).
-    /** @type {'board'|'worker'} */
+    // Load last-view from storage (board/worker/monitor only).
+    /** @type {'board'|'worker'|'monitor'} */
     let last_view = 'board';
     try {
       const raw_view = window.localStorage.getItem('beads-ui.view');
-      if (raw_view === 'board' || raw_view === 'worker') {
+      if (
+        raw_view === 'board' ||
+        raw_view === 'worker' ||
+        raw_view === 'monitor'
+      ) {
         last_view = raw_view;
       }
     } catch (err) {
@@ -1115,6 +1224,14 @@ export function bootstrap(root_element) {
       getWorkspacePath: () => store.getState().workspace.current?.path
     });
 
+    // Monitor tab (third tab): every in_progress bead with its current child
+    // and — when a worker attempt is running — the live metrics (UI-53es §1).
+    const monitor_view = createMonitorView(monitor_root, {
+      issueStores: sub_issue_stores,
+      queueStore: worker_queue_store,
+      gotoIssue: (id) => router.gotoIssue(id)
+    });
+
     // Shared detail overlay.
     const detail_panel = createDetailPanel(detail_mount, {
       issueStores: sub_issue_stores,
@@ -1135,7 +1252,9 @@ export function bootstrap(root_element) {
         const s = store.getState();
         store.setState({ selected_id: null });
         try {
-          router.gotoView(s.view === 'worker' ? 'worker' : 'board');
+          router.gotoView(
+            s.view === 'worker' || s.view === 'monitor' ? s.view : 'board'
+          );
         } catch {
           // ignore
         }
@@ -1169,18 +1288,24 @@ export function bootstrap(root_element) {
     /**
      * Manage route visibility and board subscriptions per view.
      *
-     * @param {{ selected_id: string | null, view: 'board'|'worker' }} s
+     * @param {{ selected_id: string | null, view: 'board'|'worker'|'monitor' }} s
      */
     const onRouteChange = (s) => {
       board_root.hidden = s.view !== 'board';
       worker_root.hidden = s.view !== 'worker';
+      monitor_root.hidden = s.view !== 'monitor';
       ensureBoardSubscriptions(s.view === 'board');
       ensureWorkerSubscriptions(s.view === 'worker');
+      ensureMonitorSubscriptions(s.view === 'monitor');
+      ensureWorkerQueueChannel(s.view === 'worker' || s.view === 'monitor');
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
       }
       if (s.view === 'worker') {
         worker_view.load();
+      }
+      if (s.view === 'monitor') {
+        monitor_view.load();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };

@@ -4167,6 +4167,160 @@ html[data-theme='dark'] {
   margin-left: 0;
 }
 
+/* --- 실행 타일 현재 단계 줄 (UI-53es §2) --- */
+
+/* 제목 바로 아래, 제목보다 한 단계 낮은 명도 — 이 줄은 "무엇"이 아니라
+   "지금 어디까지"를 말한다. */
+.rtile__child {
+  font-size: var(--fs-chip-lg);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- 모니터 탭 (UI-53es §1) --- */
+
+.route.monitor {
+  padding: var(--sp-10);
+  background: var(--bg-app);
+  min-height: 100%;
+}
+
+.mon-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.mon-group__hd {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-6);
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mon-group__count {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.mon-group__empty {
+  padding: var(--sp-16);
+  color: var(--text-dim);
+  font-size: var(--fs-body-sm);
+  text-align: center;
+}
+
+.mon-group__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* 관제 테이블의 한 줄: 밀도가 정보다. 카드가 아니라 행이므로 패딩은 최소로
+   두고, 진행 스테이지 색 스파인만 왼쪽에서 상태를 말한다. */
+.mon-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-5) var(--sp-9);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-7);
+  background: var(--bg-card);
+  min-width: 0;
+  cursor: pointer;
+}
+
+.mon-row__spine {
+  flex: 0 0 auto;
+  width: 3px;
+  align-self: stretch;
+  border-radius: 2px;
+  background: var(--stage-impl-on);
+  opacity: 0.85;
+}
+
+.mon-row__id {
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-id-mono);
+  cursor: pointer;
+}
+
+.mon-row__title {
+  font-size: var(--fs-body-sm);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mon-row__child {
+  font-size: var(--fs-chip-lg);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 라이브 지표는 항상 오른쪽 끝 같은 자리에서 읽힌다. */
+.mon-row__live {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex: 0 0 auto;
+  font-size: var(--fs-chip-lg);
+  color: var(--text-dim);
+}
+
+.mon-row__elapsed,
+.mon-row__since {
+  font-variant-numeric: tabular-nums;
+}
+
+.mon-row__beat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+/* 흐린 점 = 로그가 끊긴 지 오래됨. 값 자체가 없으면 점을 아예 그리지 않는다
+   (fail-quiet) — 없는 하트비트를 흐리게라도 그리면 "죽어가는 중"이라는 없는
+   사실을 만든다. */
+.mon-row__beat-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.mon-row__beat--live .mon-row__beat-dot {
+  background: var(--accent-success);
+  box-shadow: var(--glow-dot);
+}
+
+@media (max-width: 640px) {
+  .mon-row {
+    flex-wrap: wrap;
+  }
+
+  .mon-row__live {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-end;
+  }
+}
+
 @media (any-pointer: coarse), (max-width: 640px) {
   .worker-card__foot--actions-only {
     display: flex;

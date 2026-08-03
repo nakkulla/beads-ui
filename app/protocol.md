@@ -119,6 +119,14 @@ Nothing merges without a human `[머지]` click.
   the server's async lookup fills it. Consumers fail-quiet on the whole key
   being absent (older server) and on a missing entry — both fall back to
   displaying the bead id.
+- A RUNNING attempt inside `attempts` additionally carries the non-persisted
+  `last_event_at` (epoch ms) — when the server last saw a session-log line for
+  that attempt (UI-53es §1). It is what the monitor row's live heartbeat reads;
+  because a log line is not a queue transition, every session-log publish (live
+  tail and post-restart re-attach alike) arms a 3-second COALESCED queue fanout,
+  so a burst costs one snapshot per window. Live-only: a server restart drops it
+  until the next line arrives, and consumers fail-quiet on its absence (no dot
+  rather than a stale one).
 - `declared_base: string|null` — what this workspace DECLARES as its target base
   (`docs/agents/repo-ops.toml` top-level `base`), read from the declaration
   only. An absent file or absent key travels as `'main'`, matching the
