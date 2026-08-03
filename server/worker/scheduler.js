@@ -39,6 +39,7 @@
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
 import { debug } from '../logging.js';
+import { observeBaseDrift } from './base-drift.js';
 import * as default_guard_hook from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
@@ -234,6 +235,16 @@ function staleDispatchPrompt(bead_id, stale) {
  * production wiring is the module itself and a test overrides it only to drive
  * an install failure. Every attempt EXCEPT a disposition gets one: a
  * REVISE-disposition session publishes the base as its job.
+ * @property {(args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>} [gitRun]
+ * The `git` runner the DETECTION layer walks its two `rev-list` ranges with
+ * (UI-8mvc §3). Wired from the attachment's one runner, so the observation runs
+ * the same git the base resolver does. Absent wiring makes every observation
+ * record `no_observer_deps` — an attempt that could not be observed is recorded
+ * as such, never judged.
+ * @property {{ mergedPrForBranch: (repo_dir: string, branch: string) => Promise<{ state: string, data?: unknown, reason?: string }> }} [gh]
+ * The PR adapter the detection layer excludes merge-landings with (UI-8mvc
+ * §3-4). Same instance the verify/poller paths use. Absent wiring records
+ * `pr_observe:no_gh` rather than reporting an unexcluded violation.
  * @property {(pid: number|null) => { alive: boolean, started_at: number|null }} [probePid]
  * Liveness + start-time probe for {@link createScheduler}'s `reconcile`. Absent
  * (legacy wiring / dispatch-only tests) makes every reconcile pass a no-op:
@@ -1065,6 +1076,50 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The common SETTLEMENT step of every termination (UI-8mvc §3): observe the
+   * remote base against the `base_oid` this attempt pinned and persist what was
+   * seen. Runs after the process is gone and BEFORE any branch cleanup, on all
+   * three paths — normal completion, a user ⏸/■, and the restart-side dead
+   * attempt disposal — because a session can push on any of them.
+   *
+   * Never throws and never fails an attempt by itself: the caller decides what
+   * a violation does, and everything else (an exclusion, an observation
+   * failure, an attempt outside the invariant's scope) is a record only.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<boolean>} Whether an UNEXCLUDED landing was detected.
+   */
+  async function settleBaseDrift(workspace, attempt_id) {
+    const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+    if (!attempt) {
+      return false;
+    }
+    /** @type {import('./base-drift.js').BaseDriftVerdict} */
+    let verdict;
+    try {
+      verdict = await observeBaseDrift({
+        attempt,
+        resolveBase: deps.resolveBase,
+        git: deps.gitRun,
+        gh: deps.gh
+      });
+    } catch (err) {
+      // The observer is internally fail-open; a throw is a defect, and letting
+      // it escape would abort a termination path over EVIDENCE collection.
+      log('base drift observation threw for %s: %o', attempt_id, err);
+      return false;
+    }
+    if (verdict.record) {
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: { base_drift: verdict.record }
+      });
+    }
+    return verdict.violation === true;
+  }
+
+  /**
    * Handle a finished session: SERVER-OBSERVED PR verdict → `pr_wait`, else the
    * failure path (auto_advance OFF + banner).
    *
@@ -1112,6 +1167,20 @@ export function createScheduler(deps) {
           deps.store.updateAttempt(workspace, { attempt_id, patch });
           notifyChanged(workspace);
         }
+        // The ⏸/■ path returns here, so the settlement step has to run on this
+        // side of the return (UI-8mvc §3): a session halted mid-flight may
+        // already have pushed, and a stop is not evidence that it did not.
+        if (await settleBaseDrift(workspace, attempt_id)) {
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            'base_landing_detected',
+            { reason: 'base_landing_detected', command: null }
+          );
+          notifyChanged(workspace);
+        }
         return;
       }
 
@@ -1119,6 +1188,26 @@ export function createScheduler(deps) {
         attempt_id,
         patch: { exit: verdict.exit, ...usagePatch(workspace, attempt_id) }
       });
+
+      // The settlement step, ahead of EVERY completion branch (UI-8mvc §3).
+      // Above the disposition split on purpose: that branch returns, so a call
+      // placed after it could not even record why a disposition was excluded.
+      // Independent of `verdict.success` for the same reason — a session that
+      // died on a blocker may still have pushed first, and in that case the
+      // landing is the honest cause.
+      if (await settleBaseDrift(workspace, attempt_id)) {
+        await failAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          'base_landing_detected',
+          { reason: 'base_landing_detected', command: null }
+        );
+        notifyChanged(workspace);
+        await tick(workspace);
+        return;
+      }
 
       // A DISPOSITION attempt takes its own completion path (UI-hs11 §3.3):
       // it opens no PR, so the observation below would fail every successful
@@ -1649,6 +1738,30 @@ export function createScheduler(deps) {
     }
     // Re-read AFTER the drain: the evidence may have been written by it.
     const guard_kill = guardKillOf(workspace, attempt_id);
+    // The restart-side settlement (UI-8mvc §3). Ahead of both special branches
+    // for the same reason it is in `onSessionDone`: they return, and the
+    // exclusion of a disposition / an unpinned external resolution has to be
+    // recorded rather than silently skipped. The claim is taken around the
+    // failure exactly as the ordinary arm takes it — `failAttempt` reopens the
+    // bead, and an unclaimed reopen races a tick into re-dispatching it.
+    if (await settleBaseDrift(workspace, attempt_id)) {
+      claimed.add(bead_id);
+      try {
+        await failAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          'base_landing_detected',
+          { reason: 'base_landing_detected', command: null }
+        );
+      } finally {
+        claimed.delete(bead_id);
+      }
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
     if (kind) {
       // No claim is taken here, unlike the branch below: the disposition path
       // owns its own relaunch (which takes the claim itself), and a claim

@@ -496,6 +496,60 @@ describe('worker/attach construction + live loop (F1)', () => {
       vi.useRealTimers();
     }
   });
+
+  test('wires the detection layer with the attachment git runner and gh adapter (UI-8mvc §3)', async () => {
+    const PINNED = 'a'.repeat(40);
+    const MOVED = 'b'.repeat(40);
+    const LANDED = 'c'.repeat(40);
+    const runtime = createWorkerRuntime();
+    // The two leaves the observation spends: the attachment's own git runner
+    // and its gh adapter. If `createWorkerAttachment` stops handing them to the
+    // scheduler, nothing below is reached and no `base_drift` is written.
+    // Both walks hold the attempt's commit: it is on the branch AND on the
+    // remote tip the base moved to.
+    const gitRun = vi.fn(async () => ({
+      code: 0,
+      stdout: `${LANDED}\n`,
+      stderr: ''
+    }));
+    const gh = {
+      mergedPrForBranch: vi.fn(async () => ({ state: 'empty' })),
+      checkAvailability: vi.fn(async () => ({ state: 'ok', data: true }))
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      probePid: () => ({ alive: false, started_at: null }),
+      resolveBase: okBase('main', MOVED),
+      gitRun,
+      gh: /** @type {any} */ (gh)
+    });
+    seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
+    runtime.queueStore.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { base_oid: PINNED }
+    });
+
+    await att.scheduler.reconcile(path.resolve(WS));
+
+    const attempt = runtime.queueStore.snapshot(WS).attempts['att-1'];
+    expect(gitRun).toHaveBeenCalledWith(
+      ['rev-list', `${PINNED}..refs/heads/UI-1`],
+      { cwd: '/repo' }
+    );
+    expect(gh.mergedPrForBranch).toHaveBeenCalledWith('/repo', 'UI-1');
+    expect(attempt.base_drift).toEqual({
+      pinned: PINNED,
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      shas: [LANDED]
+    });
+    expect(attempt.cause).toBe('base_landing_detected');
+  });
 });
 
 describe('worker/attach createLiveBd bd show parsing', () => {

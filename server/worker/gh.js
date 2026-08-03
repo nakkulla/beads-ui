@@ -404,6 +404,80 @@ export function createGh(deps = {}) {
     return { state: 'ok', data: true };
   }
 
+  /**
+   * `gh pr list --head <branch> --state <state>`, normalized to the 3-state
+   * contract. Shared by the OPEN query (§1's completion signal) and the MERGED
+   * one (UI-8mvc §3's false-positive exclusion) so the two can never disagree
+   * about what an unusable payload means: an empty ARRAY is a semantic empty,
+   * anything unreadable is an error.
+   *
+   * @param {string} repo_dir - Repo root the query runs in (`cwd`).
+   * @param {string} branch - Head branch name (the bead id).
+   * @param {'open'|'merged'} state - The `--state` filter.
+   * @returns {Promise<GhResult<PrObservation>>}
+   */
+  async function prForBranch(repo_dir, branch, state) {
+    const repo = await resolveRepo(repo_dir);
+    if (repo === null) {
+      return { state: 'error', reason: 'origin_unresolvable' };
+    }
+    /** @type {{ code: number, stdout: string, stderr: string }} */
+    let r;
+    try {
+      r = await run(
+        [
+          'pr',
+          'list',
+          '--head',
+          branch,
+          '--state',
+          state,
+          '--json',
+          PR_JSON_FIELDS,
+          '--repo',
+          repo
+        ],
+        { cwd: repo_dir }
+      );
+    } catch {
+      return { state: 'error', reason: 'gh_spawn_failed' };
+    }
+    if (r.code !== 0) {
+      return { state: 'error', reason: exitReason(r.code) };
+    }
+    /** @type {unknown} */
+    let parsed;
+    try {
+      parsed = JSON.parse(r.stdout);
+    } catch {
+      return { state: 'error', reason: 'gh_bad_json' };
+    }
+    if (!Array.isArray(parsed)) {
+      return { state: 'error', reason: 'gh_bad_json' };
+    }
+    if (parsed.length === 0) {
+      return { state: 'empty' };
+    }
+    const first = /** @type {Record<string, unknown>} */ (parsed[0]);
+    const url = typeof first.url === 'string' ? first.url : '';
+    if (url.length === 0) {
+      return { state: 'error', reason: 'gh_bad_json' };
+    }
+    return {
+      state: 'ok',
+      data: {
+        number: typeof first.number === 'number' ? first.number : null,
+        url,
+        head_ref:
+          typeof first.headRefName === 'string' ? first.headRefName : '',
+        head_sha: typeof first.headRefOid === 'string' ? first.headRefOid : '',
+        base_ref:
+          typeof first.baseRefName === 'string' ? first.baseRefName : '',
+        state: typeof first.state === 'string' ? first.state : ''
+      }
+    };
+  }
+
   return {
     /**
      * The `--repo` value this adapter resolves for a repo dir — the same
@@ -434,66 +508,27 @@ export function createGh(deps = {}) {
      * @returns {Promise<GhResult<PrObservation>>}
      */
     async openPrForBranch(repo_dir, branch) {
-      const repo = await resolveRepo(repo_dir);
-      if (repo === null) {
-        return { state: 'error', reason: 'origin_unresolvable' };
-      }
-      /** @type {{ code: number, stdout: string, stderr: string }} */
-      let r;
-      try {
-        r = await run(
-          [
-            'pr',
-            'list',
-            '--head',
-            branch,
-            '--state',
-            'open',
-            '--json',
-            PR_JSON_FIELDS,
-            '--repo',
-            repo
-          ],
-          { cwd: repo_dir }
-        );
-      } catch {
-        return { state: 'error', reason: 'gh_spawn_failed' };
-      }
-      if (r.code !== 0) {
-        return { state: 'error', reason: exitReason(r.code) };
-      }
-      /** @type {unknown} */
-      let parsed;
-      try {
-        parsed = JSON.parse(r.stdout);
-      } catch {
-        return { state: 'error', reason: 'gh_bad_json' };
-      }
-      if (!Array.isArray(parsed)) {
-        return { state: 'error', reason: 'gh_bad_json' };
-      }
-      if (parsed.length === 0) {
-        return { state: 'empty' };
-      }
-      const first = /** @type {Record<string, unknown>} */ (parsed[0]);
-      const url = typeof first.url === 'string' ? first.url : '';
-      if (url.length === 0) {
-        return { state: 'error', reason: 'gh_bad_json' };
-      }
-      return {
-        state: 'ok',
-        data: {
-          number: typeof first.number === 'number' ? first.number : null,
-          url,
-          head_ref:
-            typeof first.headRefName === 'string' ? first.headRefName : '',
-          head_sha:
-            typeof first.headRefOid === 'string' ? first.headRefOid : '',
-          base_ref:
-            typeof first.baseRefName === 'string' ? first.baseRefName : '',
-          state: typeof first.state === 'string' ? first.state : ''
-        }
-      };
+      return prForBranch(repo_dir, branch, 'open');
+    },
+
+    /**
+     * Observe a MERGED pull request for a branch — the detection layer's
+     * false-positive exclusion (UI-8mvc §3-4). A landing whose commits reached
+     * the base through a merged PR is not a session violation: GitHub's
+     * merge-commit strategy puts the branch's own SHAs on the base, and a human
+     * fast-forwarding the branch onto the base is an allowed act.
+     *
+     * The 3-state split carries its weight here too, in the opposite direction
+     * from `openPrForBranch`: `empty` (no merged PR) is what lets a landing be
+     * called a violation, while an `error` must NOT — an unobservable PR is
+     * recorded as an observation failure, never used as evidence of guilt.
+     *
+     * @param {string} repo_dir - Repo root the query runs in (`cwd`).
+     * @param {string} branch - Head branch name (the bead id).
+     * @returns {Promise<GhResult<PrObservation>>}
+     */
+    async mergedPrForBranch(repo_dir, branch) {
+      return prForBranch(repo_dir, branch, 'merged');
     },
 
     /**

@@ -40,6 +40,16 @@
  * @property {string|null} effort - Effort snapshot.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
+ * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], skipped?: string, error?: string }|null} base_drift -
+ * The POST-HOC base observation (UI-8mvc §3), written at every termination
+ * path: the pinned `base_oid`, the remote tip re-resolved after the session
+ * ended, whether this attempt's commits reached it and how, plus the
+ * intersection SHAs that are a violation's whole evidence. `skipped` records an
+ * attempt the invariant does not apply to (a disposition, or an
+ * external-conflict dispatch with no pinned base) and `error` the observation
+ * step that could not be completed — a failed observation is deliberately NOT a
+ * violation. Null on every attempt observed before the field existed and on one
+ * whose base never moved: there is nothing to say.
  * @property {string|null} repo - Target repo root (the reconcile's observation
  * scope: a dead attempt's PR is looked for in THIS repo).
  * @property {string|null} status - Attempt lifecycle: running/done/failed/
@@ -497,6 +507,9 @@ export function makeAttempt(fields) {
     effort: fields.effort ?? null,
     exit: fields.exit ?? null,
     verify_result: fields.verify_result ?? null,
+    base_drift: isRecord(fields.base_drift)
+      ? /** @type {Attempt['base_drift']} */ (fields.base_drift)
+      : null,
     repo: fields.repo ?? null,
     status: fields.status ?? null,
     workflow_mode_prior: fields.workflow_mode_prior ?? null,

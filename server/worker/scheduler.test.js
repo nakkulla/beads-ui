@@ -272,7 +272,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, gh?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -334,6 +334,11 @@ function setup(opts) {
     // XDG_STATE_HOME this file arms. An override is only how a test drives an
     // install failure (UI-8mvc §2).
     guardHook: opts.guardHook,
+    // The post-hoc base observation's two runners (UI-8mvc §3). Absent by
+    // default: a scheduler built without them records the observation as
+    // undone rather than judging an attempt it could not observe.
+    gitRun: opts.gitRun,
+    gh: opts.gh,
     notifyQueueChanged: opts.notifyQueueChanged,
     now: () => 1000
   });
@@ -6035,3 +6040,339 @@ function installGuardHookForTest(attempt_id) {
     target_base: 'main'
   }).ok;
 }
+
+describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
+  const MOVED = 'b'.repeat(40);
+  const LANDED = 'c'.repeat(40);
+  const FOREIGN = 'e'.repeat(40);
+
+  /**
+   * The forced base re-resolution seam, answering with a tip that is NOT the
+   * `base-<bead>` oid the worktree fake pins at dispatch — i.e. a base that
+   * moved while the session ran.
+   *
+   * @param {string} [tip]
+   */
+  function movedBase(tip = MOVED) {
+    return vi.fn(async () => ({
+      ok: /** @type {const} */ (true),
+      base: 'main',
+      declared: false,
+      remote: 'origin',
+      remote_ref: 'refs/remotes/origin/main',
+      base_oid: tip,
+      local_only: false
+    }));
+  }
+
+  /**
+   * A `git` runner answering the two `rev-list` walks by range.
+   *
+   * @param {Record<string, string>} by_range
+   */
+  function gitFor(by_range) {
+    return vi.fn(async (/** @type {string[]} */ args) => ({
+      code: 0,
+      stdout: by_range[args[1]] ?? '',
+      stderr: ''
+    }));
+  }
+
+  /**
+   * @param {{ state: string, data?: unknown, reason?: string }} [result]
+   */
+  function ghFor(result = { state: 'empty' }) {
+    return { mergedPrForBranch: vi.fn(async () => result) };
+  }
+
+  /** The walks of an attempt whose commit IS on the moved base. */
+  const LANDED_WALKS = {
+    'base-S1..refs/heads/S1': `${LANDED}\n`,
+    [`base-S1..${MOVED}`]: `${LANDED}\n${FOREIGN}\n`
+  };
+
+  test('fails the attempt when its commits are found on the moved remote base', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor(LANDED_WALKS),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    const attempt = q.attempts['S1-1000-1'];
+    expect(attempt.status).toBe('failed');
+    expect(attempt.cause).toBe('base_landing_detected');
+    expect(attempt.cause_detail).toEqual({
+      reason: 'base_landing_detected',
+      command: null
+    });
+    expect(attempt.base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      shas: [LANDED]
+    });
+    // The queue stops and the PR verdict is never reached: a landing is not
+    // laundered into a success by an open PR.
+    expect(q.auto_advance).toBe(false);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('records the observation and completes normally when someone else moved the base', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor({
+        'base-S1..refs/heads/S1': `${LANDED}\n`,
+        [`base-S1..${MOVED}`]: `${FOREIGN}\n`
+      }),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts['S1-1000-1'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: false
+    });
+    expect(q.attempts['S1-1000-1'].status).toBe('done');
+    expect(q.pr_wait.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('observes the base of a session that ended in failure', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor(LANDED_WALKS),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    // A SIGTERMed session may have pushed before it died: the landing is the
+    // honest cause, not the runner's own exit reason.
+    env.runner.finish('S1', { success: false, reason: 'exit_1' });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(
+      'base_landing_detected'
+    );
+  });
+
+  test('observes the base after a user stop and fails the attempt on a landing', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor(LANDED_WALKS),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    await env.scheduler.stop(WS, 'S1-1000-1');
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts['S1-1000-1'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      shas: [LANDED]
+    });
+    expect(q.attempts['S1-1000-1'].cause).toBe('base_landing_detected');
+    expect(q.auto_advance).toBe(false);
+  });
+
+  test('leaves a stopped attempt stopped when the base did not move', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase('base-S1'),
+      gitRun: gitFor({}),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    await env.scheduler.stop(WS, 'S1-1000-1');
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts['S1-1000-1'].status).toBe('stopped');
+    expect(q.attempts['S1-1000-1'].base_drift).toBeNull();
+  });
+
+  test('observes the base of a restart-surviving attempt disposed by reconcile', async () => {
+    const gh = ghFor();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null }),
+      resolveBase: movedBase(),
+      gitRun: gitFor({
+        'base-S1..refs/heads/UI-9': `${LANDED}\n`,
+        [`base-S1..${MOVED}`]: `${LANDED}\n`
+      }),
+      gh
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-dead', bead_id: 'UI-9' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-dead',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['att-dead'];
+    expect(attempt.cause).toBe('base_landing_detected');
+    expect(attempt.base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      shas: [LANDED]
+    });
+    expect(gh.mergedPrForBranch).toHaveBeenCalledWith('/repo', 'UI-9');
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('records the exclusion of an attempt dispatched without a pinned base', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null }),
+      resolveBase: movedBase(),
+      gitRun: gitFor(LANDED_WALKS),
+      gh: ghFor()
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-ext', bead_id: 'UI-9' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-ext',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        base_oid: null,
+        external_conflict: true,
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['att-ext'];
+    expect(attempt.base_drift).toEqual({ skipped: 'no_base_oid' });
+    expect(attempt.cause).toBeNull();
+  });
+
+  test('records the exclusion of a disposition attempt before its own verdict', async () => {
+    const gitRun = gitFor(LANDED_WALKS);
+    const env = setup({
+      config: {},
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun,
+      gh: ghFor(),
+      disposition: { complete: vi.fn(async () => ({ ok: true })) }
+    });
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.place(WS, { expected_revision: rev, bead_id: 'B1' }).queue
+      .revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'p1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'p1',
+      patch: {
+        status: 'failed',
+        cause: 'verify_failed:pr_missing',
+        spec_review_stale: true,
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'base-B1',
+        runner: 'claude',
+        session_id: 'sid-park',
+        workflow_mode_prior: null
+      }
+    });
+
+    const res = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    const child =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(child.base_drift).toEqual({ skipped: 'disposition' });
+    expect(gitRun).not.toHaveBeenCalled();
+  });
+
+  test('records an unobservable attempt without failing it', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: vi.fn(async () => ({ code: 128, stdout: '', stderr: 'boom' })),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts['S1-1000-1'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      error: 'rev_list_branch'
+    });
+    // Observation failure is evidence, not a verdict: the attempt finishes.
+    expect(q.attempts['S1-1000-1'].status).toBe('done');
+    expect(q.pr_wait.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+});
