@@ -507,15 +507,33 @@ describe('worker/attach construction + live loop (F1)', () => {
     // scheduler, nothing below is reached and no `base_drift` is written.
     // Both walks hold the attempt's commit: it is on the branch AND on the
     // remote tip the base moved to.
+    const BRANCH_TIP = 'f'.repeat(40);
+    const REFLOG_ANCHOR = '0'.repeat(40);
     const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
       // The containment probe in the NOT-contained posture (UI-43bh): a branch
       // head of its own, and `--is-ancestor` answering "no" (exit 1), so this
       // landing is still judged rather than excluded as a rebase.
       if (args[0] === 'rev-parse') {
-        return { code: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' };
+        return { code: 0, stdout: `${BRANCH_TIP}\n`, stderr: '' };
       }
       if (args[0] === 'merge-base') {
         return { code: 1, stdout: '', stderr: '' };
+      }
+      // The precedence stage (UI-zcoi) in the BRANCH-FIRST posture, so the
+      // landing is still a violation: each ref hands back its tip and then an
+      // anchor entry whose walk is empty.
+      if (args[0] === 'reflog') {
+        const ref = args[2];
+        const t = ref.startsWith('refs/heads/') ? 100 : 200;
+        const tip = ref.startsWith('refs/heads/') ? BRANCH_TIP : MOVED;
+        return {
+          code: 0,
+          stdout: `${tip} ${ref}@{${t}}\n${REFLOG_ANCHOR} ${ref}@{0}\n`,
+          stderr: ''
+        };
+      }
+      if (args[1] === `${PINNED}..${REFLOG_ANCHOR}`) {
+        return { code: 0, stdout: '', stderr: '' };
       }
       return { code: 0, stdout: `${LANDED}\n`, stderr: '' };
     });
@@ -554,7 +572,8 @@ describe('worker/attach construction + live loop (F1)', () => {
       observed: MOVED,
       landed: true,
       via: 'direct_push',
-      shas: [LANDED]
+      shas: [LANDED],
+      inherited: []
     });
     expect(attempt.cause).toBe('base_landing_detected');
   });
