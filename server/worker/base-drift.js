@@ -199,26 +199,46 @@ function parseReflog(stdout) {
  *
  * Entries are examined newest-first and each hit overwrites the previous time,
  * so the value left standing is the OLDEST entry that held the commit — its
- * first acquisition. Two properties of the walk carry the whole correctness
- * argument:
+ * first acquisition. It never stops at an entry that merely misses the wanted
+ * set: a commit can leave a ref and come back, and stopping in that gap dates
+ * the acquisition late.
  *
- *   - It stops at the ANCHOR, the first entry whose `<pinned>..<entry>` walk is
- *     empty, i.e. an entry at or below the pin. Every shared commit lives in
- *     `pinned..observed`, so nothing older than the anchor can hold one. The
- *     anchor test costs no extra command — it is the same `rev-list` output.
- *   - It does NOT stop at an entry that merely misses the wanted set. A commit
- *     can leave a ref and come back, and stopping in that gap would date the
- *     acquisition late; on the branch side that inflation makes `base_t <
- *     branch_t` true where it is not, excluding a real violation.
+ * `stop_at_anchor` chooses how the walk ends, and the two refs answer
+ * differently because their failure modes are not symmetric. The ANCHOR is the
+ * first entry whose `<pinned>..<entry>` walk is empty — an entry at or below
+ * the pin — and it is a GRAPH boundary, not a time one. A ref that returns to
+ * a pre-pin state mid-attempt (a branch `reset --hard` back onto its base)
+ * writes an anchor entry with acquisitions still older than it:
+ *
+ *   - BASE ref: anchored. An early stop dates the base LATE, so `base_t <
+ *     branch_t` fails and the commit goes on to the PR queries — the
+ *     conservative direction, and a remote base returning below the pin means
+ *     someone force-pushed it backwards. The anchor is what keeps this walk
+ *     off a reflog that grows without bound (`origin/main` here is already
+ *     past `REFLOG_CAP`), so dropping it would disable the stage outright.
+ *   - BRANCH ref: exhaustive. An early stop dates the branch LATE, which makes
+ *     `base_t < branch_t` true where it is false and EXCLUDES A REAL
+ *     VIOLATION — the one direction this module must not fail in. A branch
+ *     reflog is short by construction (the branch is cut at dispatch), so
+ *     running it to the end is affordable and running out of entries is a
+ *     complete answer rather than an undone one.
  *
  * @param {(args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>} git
  * @param {string} repo
  * @param {string} ref
  * @param {string} pinned
  * @param {Set<string>} wanted
+ * @param {boolean} stop_at_anchor
  * @returns {Promise<AcquisitionResult>}
  */
-async function acquisitionTimes(git, repo, ref, pinned, wanted) {
+async function acquisitionTimes(
+  git,
+  repo,
+  ref,
+  pinned,
+  wanted,
+  stop_at_anchor
+) {
   /** @type {{ code: number, stdout: string, stderr: string }} */
   let r;
   try {
@@ -247,7 +267,10 @@ async function acquisitionTimes(git, repo, ref, pinned, wanted) {
       return { ok: false, reason: 'rev_list' };
     }
     if (added.length === 0) {
-      return { ok: true, times };
+      if (stop_at_anchor) {
+        return { ok: true, times };
+      }
+      continue;
     }
     for (const sha of added) {
       if (wanted.has(sha)) {
@@ -255,7 +278,9 @@ async function acquisitionTimes(git, repo, ref, pinned, wanted) {
       }
     }
   }
-  return { ok: false, reason: 'no_anchor' };
+  return stop_at_anchor
+    ? { ok: false, reason: 'no_anchor' }
+    : { ok: true, times };
 }
 
 /**
@@ -440,7 +465,8 @@ export async function observeBaseDrift(input) {
     repo,
     base_ref,
     pinned,
-    wanted
+    wanted,
+    true
   );
   if (!base_times.ok) {
     return {
@@ -453,7 +479,14 @@ export async function observeBaseDrift(input) {
       }
     };
   }
-  const branch_times = await acquisitionTimes(git, repo, ref, pinned, wanted);
+  const branch_times = await acquisitionTimes(
+    git,
+    repo,
+    ref,
+    pinned,
+    wanted,
+    false
+  );
   if (!branch_times.ok) {
     return {
       violation: false,

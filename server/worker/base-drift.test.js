@@ -1214,6 +1214,48 @@ describe('worker/base-drift — observeBaseDrift', () => {
     });
   });
 
+  test('keeps the violation when the branch was reset to the pin between acquisitions', async () => {
+    // The branch made C1, pushed it to base, was reset back onto the pin, then
+    // took C1 back off the rebase. That reset entry is an ANCHOR by graph but
+    // not by time: stopping there dates the branch at 40 and reads the base
+    // (20) as first, excluding a violation that really happened.
+    const r = await observeBaseDrift({
+      attempt: makeAttemptRecord(),
+      resolveBase: makeResolveBase(MOVED),
+      git: makeGit(
+        {
+          [`${PINNED}..${BRANCH_REF}`]: { stdout: `${C1}\n` },
+          [`${PINNED}..${MOVED}`]: { stdout: `${C1}\n` },
+          [`${PINNED}..${BRANCH_OLD}`]: { stdout: `${C1}\n` }
+        },
+        {
+          reflog: {
+            [BASE_REF]: defaultEntries(MOVED, 20),
+            [BRANCH_REF]: [
+              [HEAD, 40],
+              [PINNED, 30],
+              [BRANCH_OLD, 10],
+              [PINNED, 0]
+            ]
+          }
+        }
+      ),
+      gh: makeGh({ state: 'empty' })
+    });
+
+    expect(r).toEqual({
+      violation: true,
+      record: {
+        pinned: PINNED,
+        observed: MOVED,
+        landed: true,
+        via: 'direct_push',
+        shas: [C1],
+        inherited: []
+      }
+    });
+  });
+
   test('reads the local base ref when the repo has no remote', async () => {
     const git = makeGit({
       [`${PINNED}..${BRANCH_REF}`]: { stdout: `${C1}\n` },
