@@ -59,9 +59,10 @@ merge-base/observed로 옮기는 수정은 불가능하다 — 공유된 커밋�
    `{ pinned, observed, landed: false }` ordinary record. (기존)
 4. **this-branch 머지 PR 예외** — 기존 그대로. `via: 'pr_merge'`.
 5. **per-SHA PR 프로버넌스 [신규]** — 교집합 각 SHA에 대해
-   `gh.mergedPrsForCommit(repo, sha)` 를 호출한다.
-   - 전부 설명됨(각 SHA에 MERGED이고 base ref가 resolved target base와 일치하는
-     연관 PR 존재) → `violation: false`, record
+   `gh.mergedPrsForCommit(repo, sha, resolved.base)` 를 호출한다(세 번째 인자는
+   `observeBaseDrift` 가 이미 들고 있는 강제 재해석 결과의 base 브랜치명).
+   - 전부 설명됨(각 SHA에 머지 완료이고 base ref가 target base와 일치하는
+     연관 PR 존재 — 판정 조건은 아래 gh 관측 절이 소유) → `violation: false`, record
      `{ pinned, observed, landed: true, via: 'other_pr_merge', shas: <교집합 전체> }`.
    - 질의 실패(어느 SHA든 error) → `violation: false`,
      `error: 'pr_observe:<reason>'` 기록 후 종료.
@@ -81,17 +82,28 @@ record 타입(`BaseDriftRecord`) 확장: `excluded?: 'branch_contains_observed'`
 
 `server/worker/gh.js` 에 커밋 연관 PR 관측을 추가한다:
 
-- 호출: `gh api repos/{owner}/{repo}/commits/{sha}/pulls` (커밋 연관 PR 목록).
-- 기존 3-state 패턴을 따른다: `ok`(MERGED + base ref 일치 PR 존재, data에 해당
-  PR), `empty`(연관 PR 없음 또는 조건 불일치 — 위반 판정을 허용하는 유일한 답),
-  `error`(질의/파싱 실패 — 유죄 증거로 쓰지 않는다).
-- base ref 비교 대상은 `resolveBase` 가 준 target base 브랜치명이다.
-  `observeBaseDrift` 는 이미 `resolveBase({ force: true })` 결과를 들고 있으므로
-  그 결과의 base 브랜치명을 판정에 넘긴다.
+- 서명: `mergedPrsForCommit(repo_dir, sha, target_base)`. `target_base` 는
+  호출자(`observeBaseDrift`)가 든 `resolveBase({ force: true })` 결과의 `base`
+  브랜치명이다 — 이 인자 없이는 `ok`/`empty` 를 결정할 수 없다.
+- 저장소 해석: 기존 `resolveRepo(repo_dir)` 로 origin push slug를 얻어
+  `repos/<slug>/commits/<sha>/pulls` 경로를 직접 구성한다. `{owner}/{repo}`
+  placeholder 추론은 cwd의 기본 저장소에 의존해 fork 환경에서 `upstream` 을
+  조회할 수 있으므로 쓰지 않는다(기존 gh.js가 이미 막아둔 실패 모드). 해석 실패
+  → `error: 'origin_unresolvable'`.
+- pagination: 이 endpoint는 기본 30건 페이지 응답이다. `--paginate` 로 전체
+  페이지를 평탄화해 관측하고, pagination을 완료하지 못하면 `error` 로
+  fail-open한다 — 첫 페이지만 보고 `empty` 를 답하면 "관측 미완은 유죄 증거가
+  아니다"를 위반한다.
+- 판정(3-state): 응답 항목 중 `merged_at != null && base.ref === target_base`
+  를 만족하는 PR 존재 → `ok`(data에 해당 PR). 만족 항목 없음(연관 PR 없음,
+  전부 미머지, 전부 base 불일치) → `empty` — 위반 판정을 허용하는 유일한 답.
+  질의/파싱/pagination 실패, malformed payload → `error` — 유죄 증거로 쓰지
+  않는다. REST 응답에는 `state: 'MERGED'` 표현이 없다 — 머지 여부는 반드시
+  `merged_at` 으로 판정한다.
 - **구현 리스크(실측 필수)**: squash 머지의 `merge_commit_sha` 에 대해 이
   endpoint가 해당 PR을 돌려주는지 구현 시점에 실측 검증한다. 돌려주지 않으면
   `gh pr list --state merged --search <sha>` 를 대체 경로로 쓴다. 어느 쪽이든
-  3-state 계약은 동일하다.
+  서명·3-state 계약은 동일하다.
 
 ## 배선
 
@@ -105,26 +117,41 @@ record 타입(`BaseDriftRecord`) 확장: `excluded?: 'branch_contains_observed'`
 
 ## Test scope
 
-RED→GREEN 시드. `observeBaseDrift` 는 전 의존성 주입형이므로 repo 없이 단위
-테스트한다.
+시드 1~8이 RED→GREEN 시드, 시드 9는 baseline GREEN 회귀 가드다.
+`observeBaseDrift` 시드(1~7)는 기존 `server/worker/base-drift.test.js` 에, gh
+시드(8)는 기존 `server/worker/gh.test.js` 에 추가한다 — 두 파일 모두 이미
+존재하며 전 의존성 주입형이라 repo 없이 단위 테스트한다. 최종 판정값이 현
+구현에서도 같게 나오는 자세(시드 2·3)는 **명령 경로 assertion으로 RED를
+만든다** — 판정값만 검사하면 현 구현에서 vacuous 통과한다.
 
 1. **리베이스 자세 배제 (핵심 회귀, UI-53es 재현)** — observed가 branch head의
    strict ancestor → `violation: false`, `excluded: 'branch_contains_observed'`.
-2. **push-tip 위반 자세 유지 (미탐 경계 가드)** — `observed == head` →
-   containment 미적용, PR 무설명이면 `violation: true` 유지.
-3. **`--is-ancestor` exit 1** — 부정 답변으로 3단계 진행(실패 기록이 아님);
-   exit >1 → `error: 'containment:merge_base'`, `violation: false`.
+   RED: 현 구현은 `via: 'direct_push'` 위반을 낸다.
+2. **push-tip 위반 자세 유지 (미탐 경계 가드)** — `observed == head`, PR
+   무설명 → `violation: true`. RED는 명령 경로로 만든다: 주입 git이
+   `rev-parse` 를 **실행했고** strict 조건 단락으로 `merge-base` 를 **실행하지
+   않은 채** walk로 진행했음을 assert한다(현 구현은 `rev-parse` 호출 자체가
+   없다).
+3. **`--is-ancestor` exit 1** — 부정 답변으로 walk 진행(실패 기록이 아님):
+   `merge-base` 가 **실행되었고** 이어서 walk `rev-list` 가 실행됐음을
+   assert한다(현 구현은 `merge-base` 호출 자체가 없다). exit >1 →
+   `error: 'containment:merge_base'`, `violation: false`.
 4. **per-SHA 전부 설명** — `violation: false`, `via: 'other_pr_merge'`,
    `shas` = 교집합 전체.
 5. **per-SHA 부분 설명** — `violation: true`, `shas` = 미설명 SHA만.
 6. **per-SHA 질의 실패** — `violation: false`, `error: 'pr_observe:<reason>'`.
 7. **sha_cap 초과** — 21개 교집합 → 질의 없이 `violation: false`,
    `error: 'pr_observe:sha_cap'`.
-8. **`gh.mergedPrsForCommit` 3-state** — runJson mock으로 ok/empty/error 각 1건,
-   base ref 불일치 MERGED PR은 `empty`.
-9. **기존 회귀** — `scheduler.test.js` / `attach.test.js` 의 기존 위반 경로
-   테스트는 not-contained 자세이므로 판정이 유지되어야 한다. gh stub에
-   `mergedPrsForCommit` 결측/empty 추가만 허용(결측이면 `pr_observe:no_gh` 로
+8. **`gh.mergedPrsForCommit`** (`gh.test.js`, runJson/실행 mock) — ① ok:
+   `merged_at != null && base.ref === target_base` 항목 존재 ② `merged_at:
+   null`(open) 만 → `empty` ③ base.ref 불일치 merged PR만 → `empty` ④
+   malformed payload → `error` ⑤ argv: `repos/<origin slug>/commits/<sha>/pulls`
+   경로와 `--paginate` 포함, slug 해석 실패 → `error: 'origin_unresolvable'`
+   ⑥ 다중 페이지 평탄화 응답에서 2페이지째 일치 PR을 찾는다.
+9. **기존 회귀 (baseline GREEN, RED 아님)** — `base-drift.test.js` ·
+   `scheduler.test.js` · `attach.test.js` 의 기존 위반/기록 경로 테스트는
+   not-contained 자세이므로 판정이 유지되어야 한다. gh stub에
+   `mergedPrsForCommit` empty 추가만 허용(결측이면 `pr_observe:no_gh` 로
    위반이 사라지므로, 위반 유지를 검증하는 기존 테스트는 empty stub을 준다).
 
 ## 비범위
