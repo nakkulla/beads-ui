@@ -13,7 +13,10 @@ import {
   resolveStartupWorkspace
 } from './workspace-discovery.js';
 import { attachWsServer } from './ws.js';
-import { workerQueueSubscriberCount } from './ws/worker-handlers.js';
+import {
+  notifyMonitorRegistryChanged,
+  pollDemandFor
+} from './ws/monitor-handlers.js';
 
 if (process.argv.includes('--debug') || process.argv.includes('-d')) {
   enableAllDebug();
@@ -96,6 +99,9 @@ createPoller({
 watchRegistry(
   (entries) => {
     log('registry changed: %d entries', entries.length);
+    // The monitor aggregates whatever the registry currently lists (UI-nprg),
+    // so a repo appearing or leaving changes its snapshot.
+    notifyMonitorRegistryChanged();
   },
   { debounce_ms: 500 }
 );
@@ -119,10 +125,11 @@ server.listen(config.port, config.host, () => {
   try {
     // The subscriber-count provider is what arms the PR pollers: they observe
     // `pr_wait` PRs only while a client is actually watching that workspace's
-    // queue (worker-phase2 §4).
+    // queue (worker-phase2 §4) — or, since UI-nprg, while a monitor subscriber
+    // is watching every visible workspace at once.
     initWorkerRuntime({
       workspaces: Array.from(worker_roots),
-      getSubscriberCount: workerQueueSubscriberCount
+      getSubscriberCount: pollDemandFor
     });
   } catch (err) {
     log('worker runtime init failed: %o', err);

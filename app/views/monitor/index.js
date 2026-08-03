@@ -1,31 +1,25 @@
 /**
- * Monitor tab (UI-53es §1) — 지금 무엇이 돌고 있는가를 한 화면에서 보는 관제
- * 리스트.
+ * Monitor tab (UI-nprg) — worker 탭에 올린 이슈들이 **전체 활성 레포**에서 어떻게
+ * 진행되고 있는가를 한 화면에서 보는 파이프라인 관제.
  *
- * Worker 실행중 레인은 워커가 디스패치한 attempt만 보여주므로 대화형 세션으로
- * 진행 중인 Bead가 잡히지 않는다. 이 뷰는 상태가 원천이다: 구독된 in_progress
- * 이슈 전부가 행이 되고, 워커 attempt·세션 로그 하트비트는 그 위에 bead_id로
- * 조인되는 부가 정보일 뿐이다. 새 REST API도 새 구독 타입도 없다.
- *
- * 1차 범위는 in_progress 그룹 하나, 정렬은 갱신 시각 내림차순.
+ * 데이터 원천은 서버의 `monitor-pipeline` 집계 구독 하나다: 모든 visible
+ * workspace의 워커 스냅샷이 decorated 계약 그대로 실려 오고, 이 뷰는 그것을
+ * 단계별 섹션(실행중 → PR 대기 → 대기 → 완료·오늘)으로 병합해 그린다. 레인
+ * 판정은 **버드당 한 섹션**이다 — 실행중인 버드는 `queue` 레인에 그대로 남아
+ * 있고 conflict-resolution attempt는 `pr_wait` 소속 버드에서도 돌기 때문에,
+ * 배타 우선순위 없이 그리면 같은 버드가 두 섹션에 동시에 나타난다.
  */
 import { render } from 'lit-html';
-import { selectCurrentChild } from '../../utils/current-child.js';
 import { debug } from '../../utils/logging.js';
-import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
-import { monitorGroupTemplate } from './row.js';
+import { MONITOR_SECTIONS, monitorPipelineTemplate } from './row.js';
 
 /**
  * @typedef {import('./row.js').MonitorRowItem} MonitorRowItem
  */
 
-/**
- * @typedef {{ id: string, title?: string, status?: string, updated_at?: number|string, parent?: string | { id?: string } }} MonitorIssue
- */
-
-/** Client id of the monitor tab's own in_progress subscription. */
-export const MONITOR_IN_PROGRESS_KEY = 'tab:monitor:in-progress';
+/** Client id of the monitor tab's aggregated pipeline subscription. */
+export const MONITOR_PIPELINE_KEY = 'tab:monitor:pipeline';
 
 /**
  * Live-metric redraw cadence while the tab is visible.
@@ -40,30 +34,203 @@ const TICK_MS = 1_000;
 /**
  * @typedef {Object} MonitorViewOptions
  * @property {(id: string) => void} gotoIssue
- * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
- * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [queueStore]
+ * @property {{ get: () => Array<Record<string, any>>|null, subscribe?: (fn: () => void) => () => void }} [pipelineStore]
+ * @property {() => string|undefined} [getWorkspacePath] - 이 연결이 지금 보고 있는 repo의 root.
+ * @property {(root_dir: string) => Promise<unknown>} [switchWorkspace] -
+ * workspace picker와 동일한 `set-workspace` 전환 경로.
  * @property {() => number} [now] - Test seam for the live clock.
  */
 
 /**
- * Read the parent id off an issue's flattened `parent` edge (bd JSON).
+ * Pick the newest attempt of a bead that has already ENDED — 완료 종류는 여기서만
+ * 파생되고, 짝이 되는 기록이 없으면 종류 표기를 생략한다 (fail-quiet).
  *
- * @param {MonitorIssue} issue
- * @returns {string}
+ * @param {Record<string, any>} attempts
+ * @param {string} bead_id
+ * @returns {any|null}
  */
-function parentIdOf(issue) {
-  const raw = issue && /** @type {any} */ (issue).parent;
-  if (typeof raw === 'string') {
-    return raw;
+function latestTerminalAttempt(attempts, bead_id) {
+  /** @type {any|null} */
+  let best = null;
+  let best_at = -Infinity;
+  for (const attempt of Object.values(attempts)) {
+    if (
+      !attempt ||
+      attempt.bead_id !== bead_id ||
+      attempt.status === 'running'
+    ) {
+      continue;
+    }
+    const at =
+      typeof attempt.finished_at === 'number'
+        ? attempt.finished_at
+        : typeof attempt.started_at === 'number'
+          ? attempt.started_at
+          : 0;
+    if (at >= best_at) {
+      best_at = at;
+      best = attempt;
+    }
   }
-  if (raw && raw.id) {
-    return String(raw.id);
-  }
-  return '';
+  return best;
 }
 
 /**
- * Mount the monitor tab and keep it in sync with the issue and queue stores.
+ * Fold one repo's live sessions onto the beads they belong to — 같은 버드에 둘이
+ * 붙어 있으면(일반 실행 + conflict-resolution) 더 최근에 시작한 쪽이 그 버드의
+ * 라이브 지표가 된다.
+ *
+ * @param {Record<string, any>} attempts
+ * @returns {Map<string, { started_at: number|null, last_event_at: number|null, model: string|null, usage: any }>}
+ */
+function runningByBead(attempts) {
+  /** @type {Map<string, any>} */
+  const map = new Map();
+  for (const attempt of Object.values(attempts)) {
+    if (!attempt || attempt.status !== 'running') {
+      continue;
+    }
+    const bead_id = attempt.bead_id;
+    if (typeof bead_id !== 'string' || bead_id.length === 0) {
+      continue;
+    }
+    const started_at =
+      typeof attempt.started_at === 'number' ? attempt.started_at : null;
+    const prior = map.get(bead_id);
+    if (prior && (prior.started_at ?? 0) > (started_at ?? 0)) {
+      continue;
+    }
+    map.set(bead_id, {
+      started_at,
+      last_event_at:
+        typeof attempt.last_event_at === 'number'
+          ? attempt.last_event_at
+          : null,
+      model: typeof attempt.model === 'string' ? attempt.model : null,
+      usage: sumAttemptUsage(attempts, bead_id)
+    });
+  }
+  return map;
+}
+
+/**
+ * Merge the aggregated snapshot into the four pipeline sections.
+ *
+ * @param {Array<Record<string, any>>|null} workspaces
+ * @returns {Array<{ lane: string, title: string, items: MonitorRowItem[] }>}
+ */
+export function buildSections(workspaces) {
+  /** @type {Record<string, MonitorRowItem[]>} */
+  const buckets = { running: [], pr_wait: [], queue: [], done: [] };
+  for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
+    if (!workspace || typeof workspace.root_dir !== 'string') {
+      continue;
+    }
+    const root_dir = workspace.root_dir;
+    const workspace_name = workspace.name || root_dir;
+    const attempts = /** @type {Record<string, any>} */ (
+      workspace.attempts || {}
+    );
+    const titles = /** @type {Record<string, string>} */ (
+      workspace.bead_titles || {}
+    );
+    const observations = /** @type {Record<string, any>} */ (
+      workspace.pr_observations || {}
+    );
+    /**
+     * @param {string} bead_id
+     * @returns {{ id: string, title: string, root_dir: string, workspace_name: string }}
+     */
+    const base = (bead_id) => ({
+      id: bead_id,
+      title: titles[bead_id] || bead_id,
+      root_dir,
+      workspace_name
+    });
+
+    // 배타 우선순위: 상위 섹션에 잡힌 버드는 하위 섹션에서 제외한다.
+    /** @type {Set<string>} */
+    const claimed = new Set();
+
+    for (const [bead_id, live] of runningByBead(attempts)) {
+      claimed.add(bead_id);
+      buckets.running.push({
+        ...base(bead_id),
+        lane: 'running',
+        started_at: live.started_at,
+        last_event_at: live.last_event_at,
+        model: live.model,
+        usage: live.usage
+      });
+    }
+
+    for (const entry of Array.isArray(workspace.pr_wait)
+      ? workspace.pr_wait
+      : []) {
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id !== 'string' || claimed.has(bead_id)) {
+        continue;
+      }
+      claimed.add(bead_id);
+      const pr = observations[bead_id] && observations[bead_id].pr;
+      buckets.pr_wait.push({
+        ...base(bead_id),
+        lane: 'pr_wait',
+        pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
+        external: entry.external === true
+      });
+    }
+
+    const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
+    for (let i = 0; i < queue_lane.length; i++) {
+      const entry = queue_lane[i];
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id !== 'string' || claimed.has(bead_id)) {
+        continue;
+      }
+      claimed.add(bead_id);
+      buckets.queue.push({
+        ...base(bead_id),
+        lane: 'queue',
+        // 순번은 레인에서의 디스패치 순서이므로, 실행중으로 빠진 버드를 건너뛴
+        // 뒤의 인덱스가 아니라 레인 자체의 자리를 쓴다.
+        queue_position: i + 1
+      });
+    }
+
+    for (const entry of Array.isArray(workspace.done) ? workspace.done : []) {
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id !== 'string' || claimed.has(bead_id)) {
+        continue;
+      }
+      claimed.add(bead_id);
+      const terminal = latestTerminalAttempt(attempts, bead_id);
+      buckets.done.push({
+        ...base(bead_id),
+        lane: 'done',
+        done_at: typeof entry.added_at === 'number' ? entry.added_at : null,
+        done_kind:
+          terminal && typeof terminal.done_kind === 'string'
+            ? terminal.done_kind
+            : null
+      });
+    }
+  }
+
+  buckets.running.sort(
+    (a, b) => (b.last_event_at ?? 0) - (a.last_event_at ?? 0)
+  );
+  buckets.done.sort((a, b) => (b.done_at ?? 0) - (a.done_at ?? 0));
+
+  return MONITOR_SECTIONS.map((section) => ({
+    lane: section.lane,
+    title: section.title,
+    items: buckets[section.lane]
+  }));
+}
+
+/**
+ * Mount the monitor tab and keep it in sync with the aggregated pipeline store.
  *
  * @param {HTMLElement} mount_element
  * @param {MonitorViewOptions} options
@@ -71,114 +238,46 @@ function parentIdOf(issue) {
 export function createMonitorView(mount_element, options) {
   const log = debug('views:monitor');
   const gotoIssue = options.gotoIssue;
-  const issueStores = options.issueStores;
-  const queueStore = options.queueStore;
+  const pipelineStore = options.pipelineStore;
+  const getWorkspacePath = options.getWorkspacePath;
+  const switchWorkspace = options.switchWorkspace;
   const nowFn = options.now || (() => Date.now());
 
   /** @type {null | (() => void)} */
-  let unsubscribe_issues = null;
-  /** @type {null | (() => void)} */
-  let unsubscribe_queue = null;
+  let unsubscribe_pipeline = null;
   /** @type {any} */
   let tick_timer = null;
 
-  /**
-   * The subscribed in_progress issues, newest-updated first.
-   *
-   * @returns {MonitorIssue[]}
-   */
-  function inProgressIssues() {
-    const raw =
-      issueStores && issueStores.snapshotFor
-        ? issueStores.snapshotFor(MONITOR_IN_PROGRESS_KEY) || []
-        : [];
-    return raw
-      .slice()
-      .sort(
-        (a, b) =>
-          (coerceTimestampMs(b && b.updated_at) ?? 0) -
-          (coerceTimestampMs(a && a.updated_at) ?? 0)
-      );
-  }
-
-  /**
-   * The running worker attempt per bead, if any, plus the bead's token total.
-   * Only RUNNING attempts count — a paused/finished one is not "지금 돌고 있는
-   * 것"이고, 그 위에 하트비트를 그리면 죽은 세션이 살아 있다고 말하게 된다.
-   *
-   * @returns {Map<string, { started_at: number|null, last_event_at: number|null, usage: any }>}
-   */
-  function runningAttemptsByBead() {
-    /** @type {Map<string, { started_at: number|null, last_event_at: number|null, usage: any }>} */
-    const map = new Map();
-    const queue = queueStore && queueStore.get ? queueStore.get() : null;
-    const attempts = /** @type {Record<string, any>} */ (
-      (queue && queue.attempts) || {}
-    );
-    for (const attempt of Object.values(attempts)) {
-      if (!attempt || attempt.status !== 'running') {
-        continue;
-      }
-      const bead_id = attempt.bead_id;
-      if (typeof bead_id !== 'string' || bead_id.length === 0) {
-        continue;
-      }
-      map.set(bead_id, {
-        started_at:
-          typeof attempt.started_at === 'number' ? attempt.started_at : null,
-        last_event_at:
-          typeof attempt.last_event_at === 'number'
-            ? attempt.last_event_at
-            : null,
-        usage: sumAttemptUsage(attempts, bead_id)
-      });
-    }
-    return map;
-  }
-
-  /**
-   * Compose the rows: every in_progress bead, with its current in_progress
-   * child and the live attempt metrics joined on bead_id.
-   *
-   * @returns {MonitorRowItem[]}
-   */
-  function buildRows() {
-    const issues = inProgressIssues();
-    /** @type {Map<string, MonitorIssue[]>} */
-    const children_by_parent = new Map();
-    for (const issue of issues) {
-      const parent = parentIdOf(issue);
-      if (!parent) {
-        continue;
-      }
-      const arr = children_by_parent.get(parent);
-      if (arr) {
-        arr.push(issue);
-      } else {
-        children_by_parent.set(parent, [issue]);
-      }
-    }
-    const attempts = runningAttemptsByBead();
-    return issues.map((issue) => {
-      const live = attempts.get(issue.id) || null;
-      const current = selectCurrentChild(
-        children_by_parent.get(issue.id) || []
-      );
-      return {
-        id: issue.id,
-        title: issue.title || issue.id,
-        current_child: current ? current.title || current.id : null,
-        started_at: live ? live.started_at : null,
-        last_event_at: live ? live.last_event_at : null,
-        updated_at: issue.updated_at,
-        usage: live ? live.usage : null,
-        has_attempt: Boolean(live)
-      };
-    });
-  }
-
   function doRender() {
-    render(monitorGroupTemplate(buildRows(), nowFn()), mount_element);
+    const workspaces =
+      pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
+    render(
+      monitorPipelineTemplate(buildSections(workspaces), nowFn()),
+      mount_element
+    );
+  }
+
+  /**
+   * Open an issue, switching repos through the picker's own path first when the
+   * row belongs to another one — 전환 없이 열면 지금 붙어 있는 DB에서 없는 id를
+   * 찾게 된다. 전환이 실패하면 이동하지 않고 조용히 멈춘다.
+   *
+   * @param {string} id
+   * @param {string} root_dir
+   */
+  function openRow(id, root_dir) {
+    const current = getWorkspacePath ? getWorkspacePath() : undefined;
+    if (!root_dir || !current || root_dir === current || !switchWorkspace) {
+      gotoIssue(id);
+      return;
+    }
+    void switchWorkspace(root_dir)
+      .then(() => {
+        gotoIssue(id);
+      })
+      .catch((err) => {
+        log('workspace switch for %s failed: %o', root_dir, err);
+      });
   }
 
   /**
@@ -193,23 +292,14 @@ export function createMonitorView(mount_element, options) {
     const id = row.getAttribute('data-issue-id');
     if (id) {
       ev.preventDefault();
-      gotoIssue(id);
+      openRow(id, row.getAttribute('data-root-dir') || '');
     }
   }
 
   mount_element.addEventListener('click', onClick);
 
-  if (issueStores && typeof issueStores.subscribe === 'function') {
-    unsubscribe_issues = issueStores.subscribe(() => {
-      try {
-        doRender();
-      } catch {
-        // ignore
-      }
-    });
-  }
-  if (queueStore && typeof queueStore.subscribe === 'function') {
-    unsubscribe_queue = queueStore.subscribe(() => {
+  if (pipelineStore && typeof pipelineStore.subscribe === 'function') {
+    unsubscribe_pipeline = pipelineStore.subscribe(() => {
       try {
         doRender();
       } catch {
@@ -226,9 +316,9 @@ export function createMonitorView(mount_element, options) {
   }
 
   return {
-    // 데이터 갱신은 push가 끌어온다 (세션 로그 publish가 3초 coalesce 큐
-    // fanout을 예약하고, 이슈 변경은 이슈 스토어 구독이 밀어준다). 시계만
-    // 지나가도 값이 바뀌는 경과·하트비트를 위해 탭이 보이는 동안만 tick을 돈다.
+    // 데이터 갱신은 push가 끌어온다 (집계 구독이 debounce 후 전체 스냅샷을
+    // 밀어준다). 시계만 지나가도 값이 바뀌는 경과·하트비트를 위해 탭이 보이는
+    // 동안만 tick을 돈다.
     load() {
       log('load');
       doRender();
@@ -249,13 +339,9 @@ export function createMonitorView(mount_element, options) {
     },
     clear() {
       stopTick();
-      if (unsubscribe_issues) {
-        unsubscribe_issues();
-        unsubscribe_issues = null;
-      }
-      if (unsubscribe_queue) {
-        unsubscribe_queue();
-        unsubscribe_queue = null;
+      if (unsubscribe_pipeline) {
+        unsubscribe_pipeline();
+        unsubscribe_pipeline = null;
       }
       mount_element.removeEventListener('click', onClick);
       mount_element.replaceChildren();

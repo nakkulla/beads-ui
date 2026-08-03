@@ -23,6 +23,11 @@ import {
   handleUnsubscribeDisplayPolicy
 } from './display-policy-handlers.js';
 import {
+  detachMonitorPipeline,
+  handleSubscribeMonitorPipeline,
+  handleUnsubscribeMonitorPipeline
+} from './monitor-handlers.js';
+import {
   handleAddComment,
   handleCreateIssue,
   handleDeleteIssue,
@@ -241,6 +246,7 @@ export function attachWsServer(http_server, options = {}) {
         // Detach this connection from every workspace registry.
         detachConnectionFromAllRegistries(ws);
         detachWorkerQueue(ws);
+        detachMonitorPipeline(ws);
         detachUiOrder(ws);
         detachDisplayPolicy(ws);
       } catch {
@@ -435,6 +441,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'unsubscribe-worker-queue':
       handleUnsubscribeWorkerQueue(ws, req);
+      return;
+    case 'subscribe-monitor-pipeline':
+      handleSubscribeMonitorPipeline(ws, req);
+      return;
+    case 'unsubscribe-monitor-pipeline':
+      handleUnsubscribeMonitorPipeline(ws, req);
       return;
     case 'worker-queue-place':
       await handleWorkerQueuePlace(ws, req);

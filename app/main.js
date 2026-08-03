@@ -8,6 +8,7 @@ import {
   isClosedRange
 } from './data/closed-range.js';
 import { createDisplayPolicyStore } from './data/display-policy-store.js';
+import { createMonitorPipelineStore } from './data/monitor-pipeline-store.js';
 import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
@@ -23,7 +24,7 @@ import { createDetailPanel } from './views/detail-panel/index.js';
 import { createDisplaySettingsDialog } from './views/display-settings-dialog.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
 import {
-  MONITOR_IN_PROGRESS_KEY,
+  MONITOR_PIPELINE_KEY,
   createMonitorView
 } from './views/monitor/index.js';
 import { createTopNav } from './views/nav.js';
@@ -106,13 +107,15 @@ const WORKER_SUBS = [
 ];
 
 /**
- * Monitor tab subscription keys (UI-53es §1): the monitor's 1차 범위 is the
- * in_progress group, and the tab owns its own client id so it survives Board /
- * Worker (de)registration.
+ * Client id of the monitor tab's aggregated pipeline subscription (UI-nprg).
  *
- * @type {ReadonlyArray<[string, string]>}
+ * The monitor no longer reads the connection's `in_progress` issue list nor its
+ * worker queue: it subscribes to ONE server-global aggregation covering every
+ * visible workspace, so manual (non-worker) in_progress beads no longer appear
+ * there — the tab answers "워커 파이프라인이 어디까지 갔는가", not "무엇이
+ * in_progress인가".
  */
-const MONITOR_SUBS = [[MONITOR_IN_PROGRESS_KEY, 'in-progress-issues']];
+const MONITOR_PIPELINE_CLIENT_ID = MONITOR_PIPELINE_KEY;
 
 /** Client id for the singleton per-workspace worker-queue subscription. */
 const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
@@ -220,9 +223,26 @@ export function bootstrap(root_element) {
     const subscriptions = createSubscriptionStore(tracked_send);
     const sub_issue_stores = createSubscriptionIssueStores();
     const worker_queue_store = createWorkerQueueStore();
+    const monitor_pipeline_store = createMonitorPipelineStore();
     const ui_order_store = createUiOrderStore();
     const display_policy_store = createDisplayPolicyStore();
     const session_log_store = createSessionLogStore();
+
+    // Route the aggregated monitor pipeline snapshot (UI-nprg) into its store.
+    // No workspace guard, unlike the worker queue: this payload is deliberately
+    // server-global and each entry names its own repo, so there is no "wrong
+    // workspace" to drop.
+    client.on('monitor-pipeline-snapshot', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (!p || !Array.isArray(p.workspaces)) {
+        return;
+      }
+      try {
+        monitor_pipeline_store.set(p.workspaces);
+      } catch {
+        // ignore
+      }
+    });
 
     // Route manual UI-order snapshots (same unified push protocol) into the
     // client-side order store shared by Board and Worker (spec §2).
@@ -424,15 +444,15 @@ export function bootstrap(root_element) {
      * counter, and a completion whose captured generation no longer matches is
      * released instead of stored.
      *
-     * @type {{ board: number, worker: number, monitor: number }}
+     * @type {{ board: number, worker: number }}
      */
-    const sub_generation = { board: 0, worker: 0, monitor: 0 };
+    const sub_generation = { board: 0, worker: 0 };
 
     /**
      * Store a completed subscription, or release it when its lane moved on.
      *
      * @param {Map<string, () => Promise<void>>} unsubs
-     * @param {'board'|'worker'|'monitor'} lane
+     * @param {'board'|'worker'} lane
      * @param {number} generation
      * @param {string} client_id
      * @param {() => Promise<void>} unsub
@@ -458,8 +478,8 @@ export function bootstrap(root_element) {
       const view = store.getState().view;
       ensureBoardSubscriptions(view === 'board');
       ensureWorkerSubscriptions(view === 'worker');
-      ensureMonitorSubscriptions(view === 'monitor');
-      ensureWorkerQueueChannel(view === 'worker' || view === 'monitor');
+      ensureMonitorPipelineChannel(view === 'monitor');
+      ensureWorkerQueueChannel(view === 'worker');
     }
 
     // Closed column period (spec §3.2): the closed-issues subscription carries a
@@ -671,10 +691,9 @@ export function bootstrap(root_element) {
 
     /**
      * The per-workspace worker-queue channel (reuses the authenticated ws).
-     * TWO tabs read it now — Worker for its lanes and Monitor for the live
-     * attempt metrics (UI-53es §1) — so it is driven by the UNION of their
-     * activity rather than by the Worker tab alone; tearing it down on a
-     * Worker→Monitor switch would blank the monitor's heartbeat.
+     * The Worker tab is its only reader again since UI-nprg: the Monitor moved
+     * to the server-global pipeline aggregation, which covers this workspace
+     * too.
      *
      * @param {boolean} active
      */
@@ -704,70 +723,41 @@ export function bootstrap(root_element) {
       }
     }
 
-    // --- Monitor subscription lifecycle (UI-53es §1) ---
-    /** @type {Map<string, () => Promise<void>>} */
-    const monitor_unsubs = new Map();
+    // --- Monitor pipeline channel lifecycle (UI-nprg) ---
+    /** @type {(() => Promise<unknown>) | null} */
+    let monitor_pipeline_unsub = null;
 
     /**
+     * The monitor's aggregated pipeline channel. Server-global: it is NOT
+     * cleared on a workspace switch, because the aggregation already spans
+     * every visible workspace — dropping it there would blank the tab and then
+     * re-fetch the identical payload.
+     *
      * @param {boolean} active
      */
-    function ensureMonitorSubscriptions(active) {
+    function ensureMonitorPipelineChannel(active) {
       if (!active) {
-        clearMonitorSubscriptions();
+        clearMonitorPipelineChannel();
         return;
       }
-      for (const [client_id, type] of MONITOR_SUBS) {
-        if (
-          monitor_unsubs.has(client_id) ||
-          pending_subscriptions.has(client_id)
-        ) {
-          continue;
-        }
-        try {
-          sub_issue_stores.register(client_id, { type });
-        } catch (err) {
-          log('register %s store failed: %o', client_id, err);
-        }
-        pending_subscriptions.add(client_id);
-        const generation = sub_generation.monitor;
-        let released = false;
-        void subscriptions
-          .subscribeList(client_id, { type })
-          .then((unsub) => {
-            released = !keepOrRelease(
-              monitor_unsubs,
-              'monitor',
-              generation,
-              client_id,
-              unsub
-            );
-          })
-          .catch((err) => {
-            log('subscribe %s failed: %o', client_id, err);
-            showFatalFromError(err, 'monitor');
-          })
-          .finally(() => {
-            pending_subscriptions.delete(client_id);
-            if (released) {
-              syncSubscriptionsToView();
-            }
-          });
+      if (monitor_pipeline_unsub) {
+        return;
       }
+      void tracked_send('subscribe-monitor-pipeline', {
+        id: MONITOR_PIPELINE_CLIENT_ID
+      }).catch((err) => {
+        log('subscribe-monitor-pipeline failed: %o', err);
+      });
+      monitor_pipeline_unsub = () =>
+        tracked_send('unsubscribe-monitor-pipeline', {
+          id: MONITOR_PIPELINE_CLIENT_ID
+        });
     }
 
-    function clearMonitorSubscriptions() {
-      sub_generation.monitor += 1;
-      for (const [client_id] of MONITOR_SUBS) {
-        const unsub = monitor_unsubs.get(client_id);
-        if (unsub) {
-          void unsub().catch(() => {});
-          monitor_unsubs.delete(client_id);
-        }
-        try {
-          sub_issue_stores.unregister(client_id);
-        } catch (err) {
-          log('unregister %s failed: %o', client_id, err);
-        }
+    function clearMonitorPipelineChannel() {
+      if (monitor_pipeline_unsub) {
+        void monitor_pipeline_unsub().catch(() => {});
+        monitor_pipeline_unsub = null;
       }
     }
 
@@ -863,12 +853,11 @@ export function bootstrap(root_element) {
       display_policy_unsub = null;
       display_policy_store.clear();
       worker_queue_unsub = null;
+      monitor_pipeline_unsub = null;
       board_unsubs.clear();
       worker_unsubs.clear();
-      monitor_unsubs.clear();
       sub_generation.board += 1;
       sub_generation.worker += 1;
-      sub_generation.monitor += 1;
       const selected = store.getState().workspace.current?.path;
       if (selected) {
         try {
@@ -882,8 +871,8 @@ export function bootstrap(root_element) {
       const view = store.getState().view;
       ensureBoardSubscriptions(view === 'board');
       ensureWorkerSubscriptions(view === 'worker');
-      ensureMonitorSubscriptions(view === 'monitor');
-      ensureWorkerQueueChannel(view === 'worker' || view === 'monitor');
+      ensureMonitorPipelineChannel(view === 'monitor');
+      ensureWorkerQueueChannel(view === 'worker');
     }
 
     // --- Workspace management ---
@@ -894,7 +883,6 @@ export function bootstrap(root_element) {
       log('clearing all subscriptions for workspace switch');
       clearBoardSubscriptions();
       clearWorkerSubscriptions();
-      clearMonitorSubscriptions();
       clearWorkerQueueChannel();
       worker_queue_store.clear();
       // UI-order is a bootstrap singleton (not tab-scoped), but the order map is
@@ -917,10 +905,8 @@ export function bootstrap(root_element) {
       const current_state = store.getState();
       ensureBoardSubscriptions(current_state.view === 'board');
       ensureWorkerSubscriptions(current_state.view === 'worker');
-      ensureMonitorSubscriptions(current_state.view === 'monitor');
-      ensureWorkerQueueChannel(
-        current_state.view === 'worker' || current_state.view === 'monitor'
-      );
+      ensureMonitorPipelineChannel(current_state.view === 'monitor');
+      ensureWorkerQueueChannel(current_state.view === 'worker');
       if (current_state.selected_id) {
         scheduleDetailSubscription(current_state.selected_id);
       }
@@ -1318,12 +1304,14 @@ export function bootstrap(root_element) {
       getWorkspacePath: () => store.getState().workspace.current?.path
     });
 
-    // Monitor tab (third tab): every in_progress bead with its current child
-    // and — when a worker attempt is running — the live metrics (UI-53es §1).
+    // Monitor tab (third tab): the worker pipeline of EVERY visible workspace,
+    // grouped by stage (UI-nprg). A row from another repo switches the
+    // workspace through the picker's own path before opening the issue.
     const monitor_view = createMonitorView(monitor_root, {
-      issueStores: sub_issue_stores,
-      queueStore: worker_queue_store,
-      gotoIssue: (id) => router.gotoIssue(id)
+      pipelineStore: monitor_pipeline_store,
+      gotoIssue: (id) => router.gotoIssue(id),
+      getWorkspacePath: () => store.getState().workspace.current?.path,
+      switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir)
     });
 
     // Shared detail overlay.
@@ -1390,8 +1378,8 @@ export function bootstrap(root_element) {
       monitor_root.hidden = s.view !== 'monitor';
       ensureBoardSubscriptions(s.view === 'board');
       ensureWorkerSubscriptions(s.view === 'worker');
-      ensureMonitorSubscriptions(s.view === 'monitor');
-      ensureWorkerQueueChannel(s.view === 'worker' || s.view === 'monitor');
+      ensureMonitorPipelineChannel(s.view === 'monitor');
+      ensureWorkerQueueChannel(s.view === 'worker');
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
       }

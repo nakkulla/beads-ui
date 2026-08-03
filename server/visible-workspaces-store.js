@@ -160,3 +160,25 @@ export function createVisibleWorkspacesStore(options = {}) {
     }
   };
 }
+
+/**
+ * The process-wide instance.
+ *
+ * @type {ReturnType<typeof createVisibleWorkspacesStore> | null}
+ */
+let SHARED_STORE = null;
+
+/**
+ * The ONE store every reader shares. The hidden set is server-global and each
+ * instance caches it independently, so a second instance would keep serving a
+ * pre-toggle hidden set to whoever holds it — the workspace picker and the
+ * monitor aggregation would then disagree about which repos are visible.
+ *
+ * @returns {ReturnType<typeof createVisibleWorkspacesStore>}
+ */
+export function sharedVisibleWorkspacesStore() {
+  if (!SHARED_STORE) {
+    SHARED_STORE = createVisibleWorkspacesStore();
+  }
+  return SHARED_STORE;
+}

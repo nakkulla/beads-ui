@@ -1,6 +1,10 @@
 import { render } from 'lit-html';
 import { describe, expect, test } from 'vitest';
-import { monitorGroupTemplate, monitorRowTemplate } from './row.js';
+import {
+  HEARTBEAT_FRESH_MS,
+  monitorPipelineTemplate,
+  monitorRowTemplate
+} from './row.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -15,182 +19,164 @@ function mount(tpl) {
   return el;
 }
 
-describe('views/monitor/row', () => {
-  test('renders id and title', () => {
-    const el = mount(
-      monitorRowTemplate({ id: 'UI-1', title: '모니터 탭' }, NOW)
-    );
+/**
+ * @param {Partial<import('./row.js').MonitorRowItem>} [patch]
+ * @returns {import('./row.js').MonitorRowItem}
+ */
+function item(patch = {}) {
+  return {
+    id: 'UI-1',
+    title: '제목',
+    root_dir: '/tmp/example/repo-a',
+    workspace_name: 'repo-a',
+    lane: 'queue',
+    ...patch
+  };
+}
 
+describe('views/monitor/row (UI-nprg)', () => {
+  test('renders the repo badge, id and title', () => {
+    const el = mount(monitorRowTemplate(item(), NOW));
+
+    expect(el.querySelector('.mon-row__repo')?.textContent?.trim()).toBe(
+      'repo-a'
+    );
     expect(el.querySelector('.mon-row__id')?.textContent?.trim()).toBe('UI-1');
     expect(el.querySelector('.mon-row__title')?.textContent?.trim()).toBe(
-      '모니터 탭'
+      '제목'
     );
   });
 
-  test('shows the current child title when there is one', () => {
-    const el = mount(
-      monitorRowTemplate(
-        { id: 'UI-1', title: '부모', current_child: 'T5: 통합 검증' },
-        NOW
-      )
-    );
+  test('carries the owning workspace on the row for the click path', () => {
+    const el = mount(monitorRowTemplate(item(), NOW));
 
-    expect(el.querySelector('.mon-row__child')?.textContent).toContain(
-      'T5: 통합 검증'
+    expect(el.querySelector('.mon-row')?.getAttribute('data-root-dir')).toBe(
+      '/tmp/example/repo-a'
     );
   });
 
-  test('omits the child element when there is no current child', () => {
-    const el = mount(
-      monitorRowTemplate(
-        { id: 'UI-1', title: '부모', current_child: null },
-        NOW
-      )
-    );
+  test('falls back to the bead id with no title', () => {
+    const el = mount(monitorRowTemplate(item({ title: '' }), NOW));
 
-    expect(el.querySelector('.mon-row__child')).toBe(null);
-  });
-
-  test('renders elapsed and no 마지막 갱신 for a row with an attempt', () => {
-    const el = mount(
-      monitorRowTemplate(
-        {
-          id: 'UI-1',
-          title: '실행중',
-          has_attempt: true,
-          started_at: NOW - 65_000,
-          updated_at: NOW - 600_000
-        },
-        NOW
-      )
-    );
-
-    expect(el.querySelector('.mon-row__elapsed')?.textContent?.trim()).toBe(
-      '1m 05s'
-    );
-    expect(el.querySelector('.mon-row__since')).toBe(null);
-  });
-
-  test('renders 마지막 갱신 후 경과 and no elapsed for a row with no attempt', () => {
-    const el = mount(
-      monitorRowTemplate(
-        {
-          id: 'UI-1',
-          title: '대화형',
-          has_attempt: false,
-          updated_at: NOW - 600_000
-        },
-        NOW
-      )
-    );
-
-    expect(el.querySelector('.mon-row__elapsed')).toBe(null);
-    expect(el.querySelector('.mon-row__since')?.textContent).toContain(
-      '10분 전'
+    expect(el.querySelector('.mon-row__title')?.textContent?.trim()).toBe(
+      'UI-1'
     );
   });
 
-  test('renders the token badge when usage is present', () => {
-    const el = mount(
-      monitorRowTemplate(
-        {
-          id: 'UI-1',
-          title: '실행중',
-          has_attempt: true,
-          started_at: NOW - 1_000,
-          usage: { input_tokens: 1_000, output_tokens: 2_000 }
-        },
-        NOW
-      )
-    );
+  test('marks the row with its lane', () => {
+    const el = mount(monitorRowTemplate(item({ lane: 'done' }), NOW));
 
-    expect(el.querySelector('.worker-usage')).not.toBe(null);
-  });
-});
-
-describe('views/monitor/row heartbeat', () => {
-  test('renders a live dot when the last event is within the window', () => {
-    const el = mount(
-      monitorRowTemplate(
-        {
-          id: 'UI-1',
-          title: '실행중',
-          has_attempt: true,
-          started_at: NOW - 10_000,
-          last_event_at: NOW - 5_000
-        },
-        NOW
-      )
-    );
-
-    const beat = el.querySelector('.mon-row__beat');
-    expect(beat?.classList.contains('mon-row__beat--live')).toBe(true);
-    expect(el.querySelector('.mon-row__beat-age')).toBe(null);
+    expect(
+      el.querySelector('.mon-row')?.classList.contains('mon-row--done')
+    ).toBe(true);
   });
 
-  test('renders a dim dot with the age when the last event is stale', () => {
+  test('renders the waiting position', () => {
     const el = mount(
-      monitorRowTemplate(
-        {
-          id: 'UI-1',
-          title: '실행중',
-          has_attempt: true,
-          started_at: NOW - 600_000,
-          last_event_at: NOW - 300_000
-        },
-        NOW
-      )
+      monitorRowTemplate(item({ lane: 'queue', queue_position: 3 }), NOW)
     );
 
-    const beat = el.querySelector('.mon-row__beat');
-    expect(beat?.classList.contains('mon-row__beat--live')).toBe(false);
-    expect(el.querySelector('.mon-row__beat-age')?.textContent).toContain(
-      '5분 전'
-    );
+    expect(el.querySelector('.mon-row__pos')?.textContent?.trim()).toBe('#3');
   });
 
-  test('renders no dot at all when last_event_at is absent', () => {
+  test('omits the heartbeat when no event time is known', () => {
     const el = mount(
       monitorRowTemplate(
-        {
-          id: 'UI-1',
-          title: '실행중',
-          has_attempt: true,
-          started_at: NOW - 10_000,
-          last_event_at: null
-        },
+        item({ lane: 'running', started_at: NOW - 1_000, last_event_at: null }),
         NOW
       )
     );
 
     expect(el.querySelector('.mon-row__beat')).toBe(null);
+    expect(el.querySelector('.mon-row__elapsed')).not.toBe(null);
+  });
+
+  test('dims the heartbeat once the log has been quiet too long', () => {
+    const el = mount(
+      monitorRowTemplate(
+        item({
+          lane: 'running',
+          started_at: NOW - 200_000,
+          last_event_at: NOW - HEARTBEAT_FRESH_MS - 1
+        }),
+        NOW
+      )
+    );
+
+    expect(
+      el
+        .querySelector('.mon-row__beat')
+        ?.classList.contains('mon-row__beat--live')
+    ).toBe(false);
+  });
+
+  test('renders an unknown completion kind verbatim with the warn tone', () => {
+    const el = mount(
+      monitorRowTemplate(
+        item({ lane: 'done', done_at: NOW - 1_000, done_kind: 'weird_kind' }),
+        NOW
+      )
+    );
+
+    const kind = el.querySelector('.mon-row__kind');
+    expect(kind?.textContent?.trim()).toBe('weird_kind');
+    expect(kind?.classList.contains('mon-row__kind--warn')).toBe(true);
   });
 });
 
-describe('views/monitor/row group', () => {
-  test('renders the empty message with no rows', () => {
-    const el = mount(monitorGroupTemplate([], NOW));
-
-    expect(el.querySelectorAll('.mon-row').length).toBe(0);
-    expect(el.querySelector('.mon-group__empty')?.textContent?.trim()).toBe(
-      '진행중 이슈 없음'
-    );
-  });
-
-  test('renders one row per item with the count', () => {
+describe('views/monitor/pipeline sections (UI-nprg)', () => {
+  test('renders only the non-empty sections, in pipeline order', () => {
     const el = mount(
-      monitorGroupTemplate(
+      monitorPipelineTemplate(
         [
-          { id: 'UI-1', title: 'a' },
-          { id: 'UI-2', title: 'b' }
+          {
+            lane: 'running',
+            title: '실행중',
+            items: [item({ lane: 'running' })]
+          },
+          { lane: 'pr_wait', title: 'PR 대기', items: [] },
+          { lane: 'queue', title: '대기', items: [item({ id: 'UI-2' })] },
+          { lane: 'done', title: '완료·오늘', items: [] }
         ],
         NOW
       )
     );
 
-    expect(el.querySelectorAll('.mon-row').length).toBe(2);
+    expect(
+      Array.from(el.querySelectorAll('.mon-group')).map((node) => node.id)
+    ).toEqual(['monitor-running', 'monitor-queue']);
+  });
+
+  test('counts the rows of each section', () => {
+    const el = mount(
+      monitorPipelineTemplate(
+        [
+          {
+            lane: 'queue',
+            title: '대기',
+            items: [item(), item({ id: 'UI-2' })]
+          }
+        ],
+        NOW
+      )
+    );
+
     expect(el.querySelector('.mon-group__count')?.textContent?.trim()).toBe(
       '2'
+    );
+  });
+
+  test('renders the empty state when every section is empty', () => {
+    const el = mount(
+      monitorPipelineTemplate(
+        [{ lane: 'queue', title: '대기', items: [] }],
+        NOW
+      )
+    );
+
+    expect(el.querySelector('.mon-group')).toBe(null);
+    expect(el.querySelector('.mon-group__empty')?.textContent).toContain(
+      '진행 중인 워커 작업 없음'
     );
   });
 });

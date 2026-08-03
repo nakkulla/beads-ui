@@ -4333,12 +4333,20 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
-/* --- 모니터 탭 (UI-53es §1) --- */
+/* --- 모니터 탭 (UI-53es §1, UI-nprg) --- */
 
 .route.monitor {
   padding: var(--sp-10);
   background: var(--bg-app);
   min-height: 100%;
+}
+
+/* 단계별 섹션이 위에서 아래로 파이프라인 순서를 그린다 — 실행중이 맨 위에 오는
+   것 자체가 "지금 봐야 할 것"의 순서다. */
+.mon-pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
 }
 
 .mon-group {
@@ -4390,6 +4398,8 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
+/* 스파인 색이 곧 단계다: 구현 → PR → 대기 → 머지. 새 색은 만들지 않고 기존
+   스테이지 토큰만 쓴다. */
 .mon-row__spine {
   flex: 0 0 auto;
   width: 3px;
@@ -4397,6 +4407,37 @@ html[data-theme='dark'] {
   border-radius: 2px;
   background: var(--stage-impl-on);
   opacity: 0.85;
+}
+
+.mon-row--pr_wait .mon-row__spine {
+  background: var(--stage-pr-on);
+}
+
+.mon-row--queue .mon-row__spine {
+  background: var(--stage-plan-dim);
+}
+
+.mon-row--done .mon-row__spine {
+  background: var(--stage-merge-on);
+}
+
+.mon-row--done {
+  opacity: 0.72;
+}
+
+/* 어느 레포의 행인지가 ID보다 먼저 읽혀야 한다 — 전체 레포를 한 화면에 섞는
+   순간, 레포는 부가 정보가 아니라 좌표다. */
+.mon-row__repo {
+  flex: 0 0 auto;
+  max-width: 12ch;
+  padding: 1px var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mon-row__id {
@@ -4438,8 +4479,37 @@ html[data-theme='dark'] {
 }
 
 .mon-row__elapsed,
-.mon-row__since {
+.mon-row__since,
+.mon-row__pr,
+.mon-row__pos,
+.mon-row__done-at {
   font-variant-numeric: tabular-nums;
+}
+
+.mon-row__pr,
+.mon-row__pos {
+  font-family: var(--font-mono);
+}
+
+.mon-row__model {
+  color: var(--text-muted);
+}
+
+.mon-row__chip {
+  padding: 1px var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+}
+
+.mon-row__kind--ok {
+  color: var(--accent-success);
+}
+
+/* 모르는 완료 종류도 여기로 온다 — 정상으로 칠하지 않는 쪽이 안전하다. */
+.mon-row__kind--warn {
+  color: var(--accent-warn);
 }
 
 .mon-row__beat {
