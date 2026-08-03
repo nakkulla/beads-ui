@@ -1913,15 +1913,21 @@ describe('post-merge cleanup — retiring the external row (UI-wwby §1)', () =>
 
   test('drops it before the lane move, so no scan window can outlive it', async () => {
     const h = makeActions();
+    /** @type {boolean|null} */
+    let in_done_at_drop = null;
+    h.external_drop.mockImplementation(() => {
+      in_done_at_drop = h.store
+        .snapshot(WS)
+        .done.some((/** @type {any} */ e) => e.bead_id === BEAD);
+      return true;
+    });
 
     await h.actions.merge(BEAD);
 
     // The registry is the stale surface: retiring it only AFTER the bead lands
-    // in `done` is the window this bug came through.
-    expect(h.calls.indexOf('external:drop')).toBeGreaterThanOrEqual(0);
-    expect(h.calls.indexOf('external:drop')).toBeLessThan(
-      h.calls.indexOf('notify:mergeCompleted')
-    );
+    // in `done` is the window this bug came through, so the drop is read
+    // against the lane state at the moment it happens.
+    expect(in_done_at_drop).toBe(false);
     expect(
       h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);

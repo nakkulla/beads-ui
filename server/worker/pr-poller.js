@@ -221,8 +221,16 @@ export function createPrPoller(deps) {
    * would silently do nothing. The observation cache is non-persistent, so a
    * restart lands in the same state.
    *
-   * With the toggle off the old rule stands exactly as it was: no subscribers,
-   * no `gh` traffic.
+   * A NON-EMPTY merge queue is demand for the same reason (UI-wwby §3): the
+   * driver halts on an unreadable head and resumes on exactly one signal — an
+   * observation arriving. With the toggle off and no tab open, a queue that
+   * survived a restart into an empty observation cache would wait on a poller
+   * that never runs, which is the permanent halt this Bead exists to remove.
+   * The `auto_merge` flag cannot stand in for it: a manual [머지] click fills
+   * the queue with the toggle off.
+   *
+   * With none of the three present the old rule stands exactly as it was: no
+   * subscribers, no `gh` traffic.
    *
    * @returns {boolean}
    */
@@ -231,7 +239,11 @@ export function createPrPoller(deps) {
       return true;
     }
     try {
-      return deps.store.snapshot(workspace).auto_merge === true;
+      const q = deps.store.snapshot(workspace);
+      return (
+        q.auto_merge === true ||
+        (Array.isArray(q.merge_queue) && q.merge_queue.length > 0)
+      );
     } catch {
       return false;
     }

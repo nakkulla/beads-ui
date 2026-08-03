@@ -1011,6 +1011,54 @@ describe('worker/merge-queue — halt only where an observation can arrive (UI-w
     mq.stop();
   });
 
+  test('resumes when the halted head stops being observed', async () => {
+    const store = createQueueStore();
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-ext' }, { bead_id: 'UI-2' }].map((e) => ({
+        ...e,
+        external: true
+      }))
+    });
+    /** @type {Array<(ws: string) => void>} */
+    const listeners = [];
+    let registered = true;
+    /** @type {string[]} */
+    const attempted = [];
+    const mq = driver(store, {
+      merge: async (/** @type {string} */ bead_id) => {
+        attempted.push(bead_id);
+        return { ok: false, action: 'refused', reason: 'ci_failed' };
+      },
+      headSha: () => null,
+      isExternalRow: () => registered,
+      subscribeQueueChanged: (/** @type {any} */ fn) => {
+        listeners.push(fn);
+        return () => {};
+      }
+    });
+    mq.start();
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Halted on an observed head, with UI-2 stuck behind it.
+    expect(
+      store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-ext', 'UI-2']);
+
+    // The registry row expires. The head SHA is STILL unreadable, so a resume
+    // keyed only on readability would leave the queue stalled forever — the
+    // halt's justification is gone, not merely unchanged.
+    registered = false;
+    for (const fn of listeners) {
+      fn(WS);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(attempted).toEqual(['UI-ext', 'UI-ext', 'UI-2']);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    mq.stop();
+  });
+
   test('dequeues rather than halts when the registry lookup throws', async () => {
     const store = createQueueStore();
     store.enqueueMerge(WS, {

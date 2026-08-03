@@ -803,17 +803,25 @@ export function createMergeQueue(deps) {
           }
           wake();
           // The PR poller emits this on every observation pass, so it is also
-          // the arrival signal for the head SHA a halt was waiting on. Only a
-          // head that is now READABLE resumes — an event that changes nothing
-          // must not re-enter `merge()` on the same unreadable state.
-          if (
-            !draining &&
-            halted_on_head &&
-            headSha(halted_on_head) &&
-            queuedEntry(halted_on_head)
-          ) {
-            halted_on_head = null;
-            void drain();
+          // the arrival signal for the head SHA a halt was waiting on. An event
+          // that changes nothing must not re-enter `merge()` on the same
+          // unreadable state — so the resume asks whether the state that
+          // JUSTIFIED the halt still holds, and there are three ways it can
+          // stop holding (UI-wwby §3):
+          //
+          // - the head is readable now: the original resume signal;
+          // - the head left the queue: whatever remains behind it is owed a
+          //   drain, and this callback is the only thing watching;
+          // - the head is no longer OBSERVED — its external registry row
+          //   expired: no observation is coming, so the halt would be
+          //   permanent. Resuming sends it down the unobserved branch, which
+          //   dequeues it.
+          if (!draining && halted_on_head) {
+            const head = halted_on_head;
+            if (!queuedEntry(head) || headSha(head) || !pollerObserves(head)) {
+              halted_on_head = null;
+              void drain();
+            }
           }
         });
       }

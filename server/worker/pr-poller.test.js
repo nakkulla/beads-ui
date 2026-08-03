@@ -164,6 +164,25 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prDetail).not.toHaveBeenCalled();
   });
 
+  test('observes for a WAITING merge queue with the toggle off (UI-wwby §3)', async () => {
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue: {
+        ...queueOf({ pr_wait: ['UI-9'] }),
+        auto_merge: false,
+        merge_queue: [{ bead_id: 'UI-9', resolution_rounds: 0 }]
+      }
+    });
+
+    await poller.tick();
+
+    // A manual [머지] click fills the queue with the toggle OFF, and the driver
+    // halts on an unreadable head until an observation arrives. Gating on the
+    // toggle alone leaves that halt waiting on a poller that never runs — the
+    // permanent stall this Bead exists to remove.
+    expect(prDetail).toHaveBeenCalled();
+  });
+
   test('keeps a merge-queue member observed after its row leaves the lane', async () => {
     const observations = createPrObservationStore();
     observations.record('/ws', 'UI-9', { error: null, pr: detailOf() });
