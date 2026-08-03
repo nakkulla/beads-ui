@@ -3464,6 +3464,10 @@ html[data-theme='dark'] {
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
+  /* 좁은 창 방어: 페인 최소 폭 합이 창을 넘으면 레인 영역만 가로 스크롤.
+     하한 없이는 641px~스택 전환 사이에서 CJK 텍스트가 글자 단위로 세로
+     줄바꿈된다 — Board 그리드의 minmax 하한과 같은 어휘. */
+  overflow-x: auto;
 }
 
 .worker-lanes {
@@ -3478,7 +3482,7 @@ html[data-theme='dark'] {
   display: flex;
   flex: 1;
   flex-direction: column;
-  min-width: 0;
+  min-width: 220px;
   min-height: 0;
   padding: var(--sp-8);
   border: 1px solid var(--border-panel);
