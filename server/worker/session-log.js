@@ -59,6 +59,7 @@ export function stderrPathOf(log_path) {
  *   publish: (workspace: string, attempt_id: string, event: unknown) => void,
  *   attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void,
  *   read: (workspace: string, attempt_id: string, options?: { end_offset?: number }) => unknown[],
+ *   lastEventAtOf: (workspace: string, attempt_id: string) => number|null,
  *   lineBoundaryOf: (workspace: string, attempt_id: string) => number|null,
  *   lastEventAt: (workspace: string, attempt_id: string) => number|null,
  *   subscribe: (fn: (a: SessionLogAppend) => void) => (() => void)
@@ -167,6 +168,29 @@ export function createSessionLog(options = {}) {
           // A broken subscriber must never crash the session.
         }
       });
+    },
+
+    /**
+     * When the attempt's log file was last written, in epoch ms (UI-rkly §2).
+     *
+     * The raw event payloads carry no timestamp of their own, so a snapshot
+     * has no other way to say how long ago the session last moved. The file's
+     * mtime is that answer for everything already on disk; the live appends
+     * after it are stamped client-side on receipt.
+     *
+     * Null when the file cannot be stat'd at all (absent yet, or unreadable) —
+     * same fail-quiet contract as `read`.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     * @returns {number|null}
+     */
+    lastEventAtOf(workspace, attempt_id) {
+      try {
+        return fs.statSync(pathFor(workspace, attempt_id)).mtimeMs;
+      } catch {
+        return null;
+      }
     },
 
     /**

@@ -425,8 +425,17 @@ export function emitDisplayPolicySnapshot(ws, client_id, policy) {
  * @param {string} client_id
  * @param {string} attempt_id
  * @param {unknown[]} lines - Raw parsed jsonl events (untransformed stream).
+ * @param {number|null} [last_event_at] - Log file mtime in epoch ms (UI-rkly
+ * §2): the raw events carry no timestamp, so this is the drawer's only source
+ * for "how long ago did this session last move". Null when unknown.
  */
-export function emitSessionLogSnapshot(ws, client_id, attempt_id, lines) {
+export function emitSessionLogSnapshot(
+  ws,
+  client_id,
+  attempt_id,
+  lines,
+  last_event_at = null
+) {
   const msg = JSON.stringify({
     id: `evt-${Date.now()}`,
     ok: true,
@@ -435,7 +444,8 @@ export function emitSessionLogSnapshot(ws, client_id, attempt_id, lines) {
       type: 'session-log-snapshot',
       id: client_id,
       attempt_id,
-      lines
+      lines,
+      last_event_at
     }
   });
   try {

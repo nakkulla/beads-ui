@@ -205,8 +205,11 @@ Streams a per-attempt raw runner event stream to the transcript viewer.
   `ok`, then pushes a `session-log-snapshot`; a live attempt then pushes
   `session-log-append` per new event. A Done/Failed attempt is snapshot-only.
 - `unsubscribe-session-log` payload: `{ id: client_id }`.
-- `session-log-snapshot` (push) payload: `{ id, attempt_id, lines:[…] }` — the
-  persisted raw jsonl events.
+- `session-log-snapshot` (push) payload:
+  `{ id, attempt_id, lines:[…], last_event_at }` — the persisted raw jsonl
+  events plus the log file's mtime in epoch ms (`null` when the file cannot be
+  stat'd). The raw events carry no timestamp, so this is where the drawer's
+  "얼마 전에 움직였나" starts; live appends are stamped client-side on receipt.
 - `session-log-append` (push) payload: `{ id, attempt_id, event }` — one raw
   event.
 

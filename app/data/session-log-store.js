@@ -8,19 +8,24 @@
  *
  * Total-state per attempt: a snapshot replaces the buffer wholesale; an append
  * pushes one event onto the tail.
+ *
+ * Each attempt also carries `last_event_at` (UI-rkly §2) — when the session
+ * last moved, in epoch ms. The raw events have no timestamp of their own, so
+ * the two directions get it from different places: a snapshot takes the
+ * server's log-file mtime, an append takes the client's receive time.
  */
 
 /**
  * @returns {{
- *   set: (attempt_id: string, lines: unknown[]) => void,
+ *   set: (attempt_id: string, lines: unknown[], last_event_at?: number|null) => void,
  *   append: (attempt_id: string, event: unknown) => void,
- *   get: (attempt_id: string) => { lines: unknown[] } | null,
+ *   get: (attempt_id: string) => { lines: unknown[], last_event_at: number|null } | null,
  *   clear: (attempt_id?: string) => void,
  *   subscribe: (fn: () => void) => () => void
  * }}
  */
 export function createSessionLogStore() {
-  /** @type {Map<string, { lines: unknown[] }>} */
+  /** @type {Map<string, { lines: unknown[], last_event_at: number|null }>} */
   const byAttempt = new Map();
   /** @type {Set<() => void>} */
   const listeners = new Set();
@@ -39,10 +44,12 @@ export function createSessionLogStore() {
     /**
      * @param {string} attempt_id
      * @param {unknown[]} lines
+     * @param {number|null} [last_event_at] - Server log-file mtime (epoch ms).
      */
-    set(attempt_id, lines) {
+    set(attempt_id, lines, last_event_at = null) {
       byAttempt.set(attempt_id, {
-        lines: Array.isArray(lines) ? [...lines] : []
+        lines: Array.isArray(lines) ? [...lines] : [],
+        last_event_at: typeof last_event_at === 'number' ? last_event_at : null
       });
       emit();
     },
@@ -51,14 +58,19 @@ export function createSessionLogStore() {
      * @param {unknown} event
      */
     append(attempt_id, event) {
-      const rec = byAttempt.get(attempt_id) || { lines: [] };
+      const rec = byAttempt.get(attempt_id) || {
+        lines: [],
+        last_event_at: null
+      };
       rec.lines = [...rec.lines, event];
+      // The event itself carries no time, so arrival IS the event time.
+      rec.last_event_at = Date.now();
       byAttempt.set(attempt_id, rec);
       emit();
     },
     /**
      * @param {string} attempt_id
-     * @returns {{ lines: unknown[] } | null}
+     * @returns {{ lines: unknown[], last_event_at: number|null } | null}
      */
     get(attempt_id) {
       return byAttempt.get(attempt_id) || null;

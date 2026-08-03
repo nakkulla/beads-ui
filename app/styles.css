@@ -3244,12 +3244,125 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip-lg);
 }
 
+/* phase 라인은 로그의 장 구분이다 (UI-rkly §2). 색만으로는 일반 라인과 구분이
+   약해서, 헤어라인 구분선으로 계층을 한 단 올린다. */
 .sv__phase {
-  margin: var(--sp-8) 0 var(--sp-4);
+  margin: var(--sp-12) 0 var(--sp-6);
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--border-panel);
   color: var(--chip-route);
   font-size: var(--fs-chip);
   letter-spacing: 0.07em;
   text-transform: uppercase;
+}
+
+/* 라이브 하트비트 (UI-rkly §2): 실행 타일 점과 같은 문법을 쓰되, 숨쉬는 것은
+   "지금 살아 있다"는 한 가지 사실만 말한다. 경과시간이 그 옆에서 얼마나
+   조용한지를 말해준다 — 점만 있으면 멈춘 세션도 살아 있어 보인다. */
+.sv__live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+  font-size: var(--fs-chip);
+  color: var(--text-muted);
+}
+
+.sv__live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-success);
+  box-shadow: var(--glow-dot);
+  animation: sv-live-breathe 2.4s ease-in-out infinite;
+}
+
+.sv__live-ago {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes sv-live-breathe {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sv__live-dot {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* 지금 무엇을 하는 중인지는 스크롤 위치와 무관해야 한다 — 미완료 tool 라인을
+   드로어 바닥에 고정한다. 완료되면 사라진다. */
+.sv__now {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-7) var(--sp-12);
+  border-top: 1px solid var(--border-tile-run);
+  background: var(--bg-tile-run);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-primary);
+}
+
+.sv__now-label {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-6);
+  border-radius: var(--r-8);
+  background: var(--bg-app);
+  color: var(--accent-success);
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sv__now-name {
+  color: var(--text-title);
+}
+
+.sv__now-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tool-mono);
+}
+
+/* 같은 도구가 줄줄이 이어지면 한 줄로 접는다 — 30개의 Read가 정작 읽어야 할
+   한 줄을 밀어내는 것이 이 로그의 가장 흔한 실패다. 클릭하면 펼친다. */
+.sv__group {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  margin: var(--sp-2) 0 var(--sp-2) var(--sp-2);
+  padding: var(--sp-3) var(--sp-12);
+  border-left: 2px solid var(--border-chip);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sv__group:hover {
+  color: var(--text-primary);
+}
+
+.sv__group-count {
+  padding: 0 var(--sp-6);
+  border-radius: var(--r-10);
+  background: var(--bg-app);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.sv__group-caret {
+  color: var(--text-dim);
 }
 
 .sv__tool {
@@ -3629,6 +3742,43 @@ html[data-theme='dark'] {
   flex-direction: column;
   align-items: stretch;
   gap: var(--sp-2);
+}
+
+/* 완료 레인 2줄 행 (UI-rkly §3). 1줄은 제목에 가로를 다 내주고, 2줄이 나머지
+   사실을 전부 받는다 — 완료된 일의 제목이 잘리는 것이 여기서 가장 비싼 손실이다. */
+.worker-mini:has(> .worker-mini__row1) {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-3);
+}
+
+.worker-mini__row1 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.worker-mini__row1 .worker-mini__title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.worker-mini__row2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.worker-mini__done-at {
+  white-space: nowrap;
+}
+
+.worker-mini__row2 .worker-mini__meta {
+  margin-left: auto;
 }
 
 .worker-mini__meta {

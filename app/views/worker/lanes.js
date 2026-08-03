@@ -107,6 +107,7 @@ export function timesMeta(item) {
  * summed across the bead's attempts (UI-d7pw §1); absent/null renders nothing.
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4).
+ * @property {number} [done_at] - 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3).
  */
 
 /**
@@ -128,6 +129,10 @@ export function miniRow(item) {
   const usage_label = formatUsageTotalWithCost(item.usage);
   const merging = item.merge_step || null;
   const card = item.lane === 'pr_wait' || !!item.revise_action;
+  // 완료 행은 2줄이다 (UI-rkly §3): 제목이 가로 전체를 쓰는 1줄과, 나머지 사실을
+  // 전부 받는 2줄. 한 줄에 usage까지 실으면 제목이 먼저 잘린다.
+  const two_line = item.lane === 'done' && !card;
+  const done_at_label = two_line ? formatRelativeTime(item.done_at) : '';
   const grip = draggable
     ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
     : '';
@@ -263,27 +268,42 @@ export function miniRow(item) {
     data-bead-id=${item.id}
     data-lane=${item.lane}
   >
-    ${card
-      ? html`<div class="worker-mini__head">
-            ${grip}${id_el}${pr_el}${badge_els}${reason_el}
-          </div>
-          <div class="worker-mini__body">${title_el}</div>
-          ${has_foot
-            ? html`<div class="worker-mini__foot">
-                ${usage_el}${merge_step_el}
-                <span class="worker-mini__actions"
-                  >${merge_el}${cancel_el}${discard_el}${revise_els}</span
-                >
-              </div>`
-            : ''}
-          ${timesMeta(item)}`
-      : // 한 줄 변형은 본문을 `__line`으로 감싸고 메타 줄을 형제로 붙인다
-        // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
-        // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
-        html`<div class="worker-mini__line">
-            ${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
-          </div>
-          ${timesMeta(item)}`}
+    ${two_line
+      ? html`<div class="worker-mini__row1">${id_el}${title_el}</div>
+          <div class="worker-mini__row2">
+            ${usage_el}${done_at_label
+              ? html`<span
+                  class="worker-mini__done-at"
+                  title=${`완료 ${formatTimestampLocal(item.done_at)}`}
+                  >완료 ${done_at_label}</span
+                >`
+              : ''}${badge_els}${merge_step_el}
+            <span class="worker-mini__actions"
+              >${merge_el}${cancel_el}${discard_el}</span
+            >
+            ${timesMeta(item)}
+          </div>`
+      : card
+        ? html`<div class="worker-mini__head">
+              ${grip}${id_el}${pr_el}${badge_els}${reason_el}
+            </div>
+            <div class="worker-mini__body">${title_el}</div>
+            ${has_foot
+              ? html`<div class="worker-mini__foot">
+                  ${usage_el}${merge_step_el}
+                  <span class="worker-mini__actions"
+                    >${merge_el}${cancel_el}${discard_el}${revise_els}</span
+                  >
+                </div>`
+              : ''}
+            ${timesMeta(item)}`
+        : // 한 줄 변형은 본문을 `__line`으로 감싸고 메타 줄을 형제로 붙인다
+          // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
+          // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
+          html`<div class="worker-mini__line">
+              ${grip}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
+            </div>
+            ${timesMeta(item)}`}
   </div>`;
 }
 
