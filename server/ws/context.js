@@ -360,6 +360,36 @@ export function emitWorkerQueueSnapshot(ws, client_id, root_dir, queue) {
 }
 
 /**
+ * Emit the aggregated monitor-pipeline snapshot (UI-nprg) to a client.
+ *
+ * Rides the same id/ok/type/payload push envelope as the queue snapshot, but
+ * carries NO `root_dir`: the payload spans every visible workspace and each
+ * entry names its own repo, so there is nothing connection-scoped to address it
+ * against.
+ *
+ * @param {WebSocket} ws
+ * @param {string} client_id
+ * @param {Array<Record<string, unknown>>} workspaces
+ */
+export function emitMonitorPipelineSnapshot(ws, client_id, workspaces) {
+  const msg = JSON.stringify({
+    id: `evt-${Date.now()}`,
+    ok: true,
+    type: /** @type {MessageType} */ ('monitor-pipeline-snapshot'),
+    payload: {
+      type: 'monitor-pipeline-snapshot',
+      id: client_id,
+      workspaces
+    }
+  });
+  try {
+    ws.send(msg);
+  } catch (err) {
+    log('emit monitor-pipeline snapshot send failed id=%s: %o', client_id, err);
+  }
+}
+
+/**
  * Emit a manual UI-order snapshot to a specific client id on a socket.
  *
  * Reuses the same id/ok/type/payload push envelope as the queue/issue snapshots

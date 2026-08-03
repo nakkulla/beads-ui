@@ -3,12 +3,12 @@ import { bootstrap } from './main.js';
 import { createWsClient } from './ws.js';
 
 /**
- * 모니터 탭·Worker 탭 단독 진입 배선 (UI-53es §2).
+ * 모니터 탭·Worker 탭 단독 진입 배선 (UI-53es §2, UI-nprg).
  *
- * 두 탭 모두 in_progress 이슈 스토어를 필요로 하는데, 그 구독은 원래 Board만
- * 들고 있었다 — Board를 한 번도 거치지 않고 `#/monitor`·`#/worker`로 바로
- * 들어오면 화면이 그릴 데이터 자체가 없다. 여기서 검증하는 것은 "구독이
- * 나갔는가"가 아니라 "그 구독으로 들어온 데이터가 실제로 렌더되는가"다.
+ * 모니터는 이제 서버 전역 `monitor-pipeline` 집계 구독 하나로 산다. Board를 한
+ * 번도 거치지 않고 `#/monitor`로 바로 들어와도 화면이 그려져야 하고, 탭을 떠나면
+ * 구독이 해제되어야 한다. 여기서 검증하는 것은 "구독이 나갔는가"만이 아니라 "그
+ * 구독으로 들어온 데이터가 실제로 렌더되는가"다.
  */
 vi.mock('./ws.js', () => {
   /** @type {Record<string, (p: any) => void>} */
@@ -117,8 +117,18 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
-describe('monitor tab direct entry (UI-53es)', () => {
-  test('subscribes in_progress issues and renders a row for a bead with no attempt', async () => {
+/**
+ * The message types the app sent.
+ *
+ * @param {any} client
+ * @returns {string[]}
+ */
+function sentTypes(client) {
+  return client._sent().map((/** @type {any} */ m) => m.type);
+}
+
+describe('monitor tab direct entry (UI-nprg)', () => {
+  test('subscribes the aggregated pipeline instead of the issue list', async () => {
     const client = /** @type {any} */ (createWsClient());
     window.location.hash = '#/monitor';
     document.body.innerHTML = '<main id="app"></main>';
@@ -127,93 +137,85 @@ describe('monitor tab direct entry (UI-53es)', () => {
     bootstrap(root);
     await Promise.resolve();
 
-    expect(subscribedListIds(client)).toContain('tab:monitor:in-progress');
+    expect(sentTypes(client)).toContain('subscribe-monitor-pipeline');
+    expect(subscribedListIds(client)).not.toContain('tab:monitor:in-progress');
+    // 모니터는 자신의 집계로 살아간다 — 연결 workspace의 worker 큐 구독은 Worker
+    // 탭만의 것이다.
+    expect(sentTypes(client)).not.toContain('subscribe-worker-queue');
+  });
+
+  test('renders a stage section per lane from the pushed snapshot', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await Promise.resolve();
 
     const monitor_root = /** @type {HTMLElement} */ (
       document.getElementById('monitor-root')
     );
     expect(monitor_root.hidden).toBe(false);
 
-    client._trigger('snapshot', {
-      type: 'snapshot',
-      id: 'tab:monitor:in-progress',
-      revision: 1,
-      issues: [
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [
         {
-          id: 'UI-alone',
-          title: '대화형 세션 진행중',
-          status: 'in_progress',
-          updated_at: NOW - 600_000
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          queue: [{ bead_id: 'UI-wait', added_at: NOW }],
+          pr_wait: [],
+          done: [],
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'UI-run',
+              status: 'running',
+              started_at: Date.now() - 30_000,
+              last_event_at: Date.now() - 2_000
+            }
+          },
+          bead_titles: { 'UI-run': '워커 실행중' },
+          pr_observations: {}
         }
       ]
     });
     await Promise.resolve();
 
-    const row = monitor_root.querySelector('[data-issue-id="UI-alone"]');
-    expect(row).not.toBe(null);
-    // 워커 attempt가 없는 행은 '마지막 갱신 후 경과'만 싣는다.
-    expect(row?.querySelector('.mon-row__since')).not.toBe(null);
-    expect(row?.querySelector('.mon-row__elapsed')).toBe(null);
+    const running = monitor_root.querySelector(
+      '#monitor-running [data-issue-id="UI-run"]'
+    );
+    expect(running?.querySelector('.mon-row__repo')?.textContent).toContain(
+      'ws-a'
+    );
+    expect(running?.querySelector('.mon-row__elapsed')).not.toBe(null);
+    expect(
+      running
+        ?.querySelector('.mon-row__beat')
+        ?.classList.contains('mon-row__beat--live')
+    ).toBe(true);
+    expect(
+      monitor_root.querySelector('#monitor-queue [data-issue-id="UI-wait"]')
+    ).not.toBe(null);
   });
 
-  test('joins the running attempt heartbeat onto the row', async () => {
+  test('unsubscribes the pipeline when the tab is left', async () => {
     const client = /** @type {any} */ (createWsClient());
     window.location.hash = '#/monitor';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
-    await Promise.resolve();
+    await flush();
+    client._clearSent();
 
-    expect(
-      client
-        ._sent()
-        .some((/** @type {any} */ m) => m.type === 'subscribe-worker-queue')
-    ).toBe(true);
+    window.location.hash = '#/board';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await flush();
 
-    client._trigger('snapshot', {
-      type: 'snapshot',
-      id: 'tab:monitor:in-progress',
-      revision: 1,
-      issues: [
-        {
-          id: 'UI-run',
-          title: '워커 실행중',
-          status: 'in_progress',
-          updated_at: Date.now()
-        }
-      ]
-    });
-    client._trigger('worker-queue-snapshot', {
-      type: 'worker-queue-snapshot',
-      id: 'worker:queue',
-      root_dir: '/tmp/ws',
-      queue: {
-        revision: 1,
-        queue: [],
-        done: [],
-        attempts: {
-          a1: {
-            attempt_id: 'a1',
-            bead_id: 'UI-run',
-            status: 'running',
-            started_at: Date.now() - 30_000,
-            last_event_at: Date.now() - 2_000
-          }
-        }
-      }
-    });
-    await Promise.resolve();
-
-    const row = document.querySelector(
-      '#monitor-root [data-issue-id="UI-run"]'
-    );
-    expect(row?.querySelector('.mon-row__elapsed')).not.toBe(null);
-    expect(
-      row
-        ?.querySelector('.mon-row__beat')
-        ?.classList.contains('mon-row__beat--live')
-    ).toBe(true);
+    expect(sentTypes(client)).toContain('unsubscribe-monitor-pipeline');
   });
 });
 
@@ -221,7 +223,7 @@ describe('subscription lifecycle after a reconnect', () => {
   // 재접속하면 이전 socket의 unsub 클로저는 죽는다. 그 map을 그대로 두면
   // `ensure*Subscriptions`가 "이미 구독됨"으로 읽고 건너뛰어, 활성 탭이 데이터
   // 없이 얼어붙는다.
-  test('re-sends the active tab list subscription on the new socket', async () => {
+  test('re-sends the monitor pipeline subscription on the new socket', async () => {
     const client = /** @type {any} */ (createWsClient());
     window.location.hash = '#/monitor';
     document.body.innerHTML = '<main id="app"></main>';
@@ -230,7 +232,7 @@ describe('subscription lifecycle after a reconnect', () => {
     bootstrap(root);
     await flush();
 
-    expect(subscribedListIds(client)).toContain('tab:monitor:in-progress');
+    expect(sentTypes(client)).toContain('subscribe-monitor-pipeline');
 
     // 재접속 이후에 나간 메시지만 센다.
     client._clearSent();
@@ -238,7 +240,7 @@ describe('subscription lifecycle after a reconnect', () => {
     client._emitConn('open');
     await flush();
 
-    expect(subscribedListIds(client)).toContain('tab:monitor:in-progress');
+    expect(sentTypes(client)).toContain('subscribe-monitor-pipeline');
   });
 
   test('re-sends the Board column subscriptions too', async () => {
@@ -264,24 +266,24 @@ describe('subscription lifecycle after a reconnect', () => {
   // 재진입이 "구독 있음"으로 착각해 영구히 건너뛴다.
   test('re-subscribes after leaving and re-entering a tab mid-request', async () => {
     const client = /** @type {any} */ (createWsClient());
-    window.location.hash = '#/monitor';
+    window.location.hash = '#/board';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
     // 구독 요청은 나갔지만 아직 resolve되지 않은 시점에 탭을 떠난다.
-    window.location.hash = '#/board';
+    window.location.hash = '#/worker';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     await Promise.resolve();
     await Promise.resolve();
 
-    window.location.hash = '#/monitor';
+    window.location.hash = '#/board';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     await flush();
 
     client._trigger('snapshot', {
       type: 'snapshot',
-      id: 'tab:monitor:in-progress',
+      id: 'tab:board:in-progress',
       revision: 1,
       issues: [
         {
@@ -292,10 +294,11 @@ describe('subscription lifecycle after a reconnect', () => {
         }
       ]
     });
-    await Promise.resolve();
+    await flush();
 
+    expect(subscribedListIds(client)).toContain('tab:board:in-progress');
     expect(
-      document.querySelector('#monitor-root [data-issue-id="UI-back"]')
+      document.querySelector('#board-root [data-issue-id="UI-back"]')
     ).not.toBe(null);
   });
 });

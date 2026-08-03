@@ -7,7 +7,7 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import { runShell, stderrTail } from '../bd.js';
 import { resolveWorkspaceDatabase } from '../db.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
-import { createVisibleWorkspacesStore } from '../visible-workspaces-store.js';
+import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import {
   ensureSubs,
   getConnWorkspace,
@@ -15,23 +15,17 @@ import {
   registryFor,
   setConnWorkspace
 } from './context.js';
+import { notifyMonitorVisibilityChanged } from './monitor-handlers.js';
 
 /**
  * Server-wide single visible-workspaces store (spec §6). The hidden set is
- * global, so one instance backs every connection's picker.
+ * global, so one instance backs every connection's picker — and, since UI-nprg,
+ * the monitor aggregation reads the SAME instance.
  *
- * @type {ReturnType<typeof createVisibleWorkspacesStore> | null}
- */
-let VISIBLE_STORE = null;
-
-/**
- * @returns {ReturnType<typeof createVisibleWorkspacesStore>}
+ * @returns {ReturnType<typeof import('../visible-workspaces-store.js').createVisibleWorkspacesStore>}
  */
 function visibleWorkspacesStore() {
-  if (!VISIBLE_STORE) {
-    VISIBLE_STORE = createVisibleWorkspacesStore();
-  }
-  return VISIBLE_STORE;
+  return sharedVisibleWorkspacesStore();
 }
 
 /**
@@ -179,6 +173,12 @@ export function handleSetWorkspaceVisibility(ws, req) {
       makeOk(req, { changed: result.changed, hidden: result.hidden })
     )
   );
+  // The monitor aggregates the VISIBLE set (UI-nprg §서버 설계), so a toggle
+  // changes which repos it must show — and, for a newly visible one, whether
+  // its external PRs are being polled at all.
+  if (result.changed) {
+    notifyMonitorVisibilityChanged();
+  }
 }
 
 /**

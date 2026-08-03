@@ -494,11 +494,15 @@ export function attemptsWithUsage(queue, workspace_key) {
  *     will run and what the last one did. Read-only on the wire: the commands
  *     are defined in `config.toml` only, which is the security boundary.
  *
+ * Exported since UI-nprg: the monitor's cross-workspace aggregation builds its
+ * per-workspace payload with THIS function rather than a second assembly path,
+ * so both channels ship the same decorated contract.
+ *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} raw_queue
  * @returns {Record<string, unknown>}
  */
-function decorateQueue(workspace_key, raw_queue) {
+export function decorateQueue(workspace_key, raw_queue) {
   // Overlaid FIRST so every decoration below — observations, activity, titles —
   // sees the external rows without knowing they exist (UI-7agi §2).
   const queue = withExternalPrWait(workspace_key, raw_queue);
@@ -577,6 +581,28 @@ function decorateQueue(workspace_key, raw_queue) {
 }
 
 /**
+ * Observers notified whenever a workspace's snapshot is re-pushed. The monitor
+ * aggregation (UI-nprg) rides this instead of `onQueueChanged` alone: the
+ * asynchronous title / REVISE-parking fills re-push through {@link fanout}
+ * WITHOUT emitting a queue-change event, so a monitor-only viewer would
+ * otherwise stay on bare bead ids until something mutated a queue.
+ *
+ * @type {Set<(workspace_key: string) => void>}
+ */
+const SNAPSHOT_REFRESH_LISTENERS = new Set();
+
+/**
+ * Register a snapshot-refresh observer.
+ *
+ * @param {(workspace_key: string) => void} listener
+ * @returns {() => void} Unregister.
+ */
+export function onWorkerSnapshotRefresh(listener) {
+  SNAPSHOT_REFRESH_LISTENERS.add(listener);
+  return () => SNAPSHOT_REFRESH_LISTENERS.delete(listener);
+}
+
+/**
  * Push the current queue snapshot to every subscriber of a workspace.
  *
  * @param {string} workspace_key
@@ -586,6 +612,13 @@ function fanout(workspace_key, queue) {
   const decorated = decorateQueue(workspace_key, queue);
   for (const sub of subscribersFor(workspace_key)) {
     emitWorkerQueueSnapshot(sub.ws, sub.client_id, workspace_key, decorated);
+  }
+  for (const listener of SNAPSHOT_REFRESH_LISTENERS) {
+    try {
+      listener(workspace_key);
+    } catch (err) {
+      log('snapshot refresh listener failed for %s: %o', workspace_key, err);
+    }
   }
 }
 
