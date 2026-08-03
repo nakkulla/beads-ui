@@ -3,10 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { install as guardHookInstall } from './guard-hook.js';
 import { createQueueStore } from './queue-store.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { createScheduler } from './scheduler.js';
+import { guardHookDir } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
 const WS = '/tmp/example-workspace/project-a';
@@ -270,7 +272,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -328,6 +330,10 @@ function setup(opts) {
       : undefined,
     probePid: opts.probePid,
     sessionMonitors: opts.sessionMonitors,
+    // Absent ⇒ the REAL guard-hook module, writing under the tmp
+    // XDG_STATE_HOME this file arms. An override is only how a test drives an
+    // install failure (UI-8mvc §2).
+    guardHook: opts.guardHook,
     notifyQueueChanged: opts.notifyQueueChanged,
     now: () => 1000
   });
@@ -1380,7 +1386,10 @@ describe('scheduler policy axis removal (worker-phase2 §2)', () => {
 
     await env.scheduler.tick(WS);
 
-    expect(env.runner.settingsFor('S1').env).toBe(undefined);
+    // `settings.env` is no longer empty — UI-8mvc §2 delivers the guard hook
+    // through it — so the retired token is asserted by key, not by the absence
+    // of the whole object.
+    expect(env.runner.settingsFor('S1').env.BDUI_WORKER_TOKEN).toBe(undefined);
   });
 
   test('conflict_resolution defaults to false on a normal dispatch (§6 seam)', async () => {
@@ -5586,3 +5595,443 @@ describe('scheduler→runner base wiring (worker-base-scope-alignment §3)', () 
     });
   });
 });
+
+describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
+  /** @type {string | undefined} */
+  let saved_count;
+
+  beforeEach(() => {
+    // The append rule is asserted explicitly below; every OTHER case wants a
+    // deterministic index 0, so the ambient value is cleared here.
+    saved_count = process.env.GIT_CONFIG_COUNT;
+    delete process.env.GIT_CONFIG_COUNT;
+  });
+
+  afterEach(() => {
+    if (saved_count === undefined) {
+      delete process.env.GIT_CONFIG_COUNT;
+    } else {
+      process.env.GIT_CONFIG_COUNT = saved_count;
+    }
+  });
+
+  /**
+   * Whether an attempt's executable hook is on disk.
+   *
+   * @param {string} attempt_id
+   * @returns {boolean}
+   */
+  function hookInstalled(attempt_id) {
+    return fs.existsSync(path.join(guardHookDir(WS, attempt_id), 'pre-push'));
+  }
+
+  /**
+   * A guardHook double whose install always fails, for the refusal path.
+   *
+   * @param {string} reason
+   */
+  function failingGuardHook(reason) {
+    return {
+      install: vi.fn(() => ({ ok: false, reason })),
+      envFor: vi.fn(() => ({})),
+      remove: vi.fn(() => true)
+    };
+  }
+
+  test('delivers the three GIT_CONFIG keys to the spawned session', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('S1').env).toEqual({
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: guardHookDir(WS, 'S1-1000-1')
+    });
+    expect(hookInstalled('S1-1000-1')).toBe(true);
+  });
+
+  test('the delivered keys reach the real spawn env', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          permission_denials: []
+        })
+      ],
+      exit: 0
+    });
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      makeRunner: (/** @type {string} */ name) =>
+        createRunner(name, { spawn_impl })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const spawned = spawn_impl.captured.calls[0].options.env;
+    expect(spawned.GIT_CONFIG_COUNT).toBe('1');
+    expect(spawned.GIT_CONFIG_KEY_0).toBe('core.hooksPath');
+    expect(spawned.GIT_CONFIG_VALUE_0).toBe(guardHookDir(WS, 'S1-1000-1'));
+    await flush();
+  });
+
+  test('appends to an inherited GIT_CONFIG_COUNT instead of overwriting it', async () => {
+    process.env.GIT_CONFIG_COUNT = '2';
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    // Writing COUNT=1 over an inherited COUNT=2 would drop the parent's
+    // KEY_1/VALUE_1 pair.
+    expect(env.runner.settingsFor('S1').env).toEqual({
+      GIT_CONFIG_COUNT: '3',
+      GIT_CONFIG_KEY_2: 'core.hooksPath',
+      GIT_CONFIG_VALUE_2: guardHookDir(WS, 'S1-1000-1')
+    });
+  });
+
+  test('installs and delivers on a manual resume', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'anc', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'anc',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'ilsun/dev',
+        session_id: 'sid-abc',
+        workflow_mode_prior: null
+      }
+    });
+
+    const res = await env.scheduler.resume(WS, 'anc');
+
+    expect(res.ok).toBe(true);
+    expect(hookInstalled(String(res.attempt_id))).toBe(true);
+    expect(env.runner.settingsFor('B1').env.GIT_CONFIG_VALUE_0).toBe(
+      guardHookDir(WS, String(res.attempt_id))
+    );
+  });
+
+  test('installs and delivers on an external-conflict dispatch', async () => {
+    const env = setup({
+      config: { X1: { repo: '/repo', status: 'resolved' } },
+      slots: 1,
+      externalPrs: { X1: { bead_id: 'X1', pr_url: 'u' } }
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res.ok).toBe(true);
+    expect(hookInstalled(String(res.attempt_id))).toBe(true);
+    expect(env.runner.settingsFor('X1').env.GIT_CONFIG_VALUE_0).toBe(
+      guardHookDir(WS, String(res.attempt_id))
+    );
+  });
+
+  test('installs NOTHING for a disposition attempt', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'p1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'p1',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-park',
+        workflow_mode_prior: null
+      }
+    });
+
+    const res = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+
+    // Publishing the resolved base IS this session's job.
+    expect(res.ok).toBe(true);
+    expect(hookInstalled(String(res.attempt_id))).toBe(false);
+    expect(env.runner.settingsFor('B1').env).toBe(undefined);
+  });
+
+  test('refuses the dispatch with guard_hook_install_failed and leaves zero residue', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      guardHook: failingGuardHook('guard_hook_mkdir_failed')
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'guard_hook_install_failed'
+    );
+    // Nothing downstream of the install point ever ran.
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.bd.calls.filter((c) => c.method !== 'snapshotBead')).toEqual([]);
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+  });
+
+  test('a PARTIAL install failure refuses and leaves no hook dir behind', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    // Only the HOOK write fails — the queue store shares this module.
+    const real_write = fs.writeFileSync;
+    const spy = vi
+      .spyOn(fs, 'writeFileSync')
+      .mockImplementation((file, data, options) => {
+        if (
+          String(file).endsWith(
+            path.join('guard-hooks', 'S1-1000-1', 'pre-push')
+          )
+        ) {
+          throw new Error('ENOSPC');
+        }
+        return real_write(file, data, options);
+      });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'guard_hook_install_failed'
+    );
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  test('refuses the resume with guard_hook_install_failed before spending the ancestor', async () => {
+    const env = setup({
+      config: {},
+      slots: 1,
+      guardHook: failingGuardHook('guard_hook_mkdir_failed')
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'anc', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'anc',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-abc',
+        workflow_mode_prior: null
+      }
+    });
+
+    const res = await env.scheduler.resume(WS, 'anc');
+
+    expect(res).toEqual({ ok: false, reason: 'guard_hook_install_failed' });
+    // No child attempt was minted, so the ancestor is still resumable.
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual(['anc']);
+    expect(env.scheduler.isRunning('B1')).toBe(false);
+  });
+
+  for (const early of [
+    {
+      name: 'the worktree pre-flight refuses (worktree_stale_work)',
+      arrange: (/** @type {any} */ env) => {
+        env.worktree.removeIfDiscardable = vi.fn(async () => ({
+          ok: false,
+          removed: false,
+          reason: 'dirty'
+        }));
+      }
+    },
+    {
+      name: 'the worktree pre-flight throws (git_error)',
+      arrange: (/** @type {any} */ env) => {
+        env.worktree.removeIfDiscardable = vi.fn(async () => {
+          throw new Error('git exploded');
+        });
+      }
+    },
+    {
+      name: 'worktree.add fails (worktree_add_failed)',
+      arrange: (/** @type {any} */ env) => {
+        env.worktree.add = vi.fn(async () => {
+          throw new Error('add failed');
+        });
+      }
+    }
+  ]) {
+    test(`removes the hook when ${early.name}`, async () => {
+      const env = setup({ config: { S1: {} }, slots: 1 });
+      early.arrange(env);
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.scheduler.isRunning('S1')).toBe(false);
+      expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+    });
+  }
+
+  test('removes the hook when the admission re-check refuses', async () => {
+    let nth = 0;
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      admission: {
+        validate: async () => {
+          nth += 1;
+          // Pass the scan, refuse the dispatch-time re-check.
+          return nth === 1 ? { ok: true } : { ok: false, reason: 'no_spec' };
+        }
+      }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook when the workflow_mode record fails', async () => {
+    const env = setup({ config: { S1: { throwOnSet: true } }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.cause).toBe('workflow_mode_record_failed');
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook when an exec stamp fails', async () => {
+    const env = setup({
+      config: { S1: { model: null, throwOnSetKey: 'orchestration_model' } },
+      slots: 1
+    });
+    seedExecDefaults(env.store, { orchestration_model: 'opus' });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.cause).toBe('exec_stamp_failed');
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook when the spawn throws', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      makeRunner: () => ({
+        name: 'claude',
+        spawn() {
+          throw new Error('spawn failed');
+        }
+      })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.cause).toBe('spawn_failed');
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook when the session terminates normally', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    expect(hookInstalled('S1-1000-1')).toBe(true);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook when the session fails', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'exit_1' });
+    await flush();
+    await flush();
+
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook of a restart-surviving attempt disposed by reconcile', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null }),
+      verifyOk: false
+    });
+    // A hook left by the PREVIOUS server process, whose attempt this one only
+    // ever sees as a durable `running` record.
+    const installed = installGuardHookForTest('att-dead');
+    expect(installed).toBe(true);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-dead', bead_id: 'UI-9' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-dead',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(fs.existsSync(guardHookDir(WS, 'att-dead'))).toBe(false);
+  });
+});
+
+/**
+ * Install a real hook for an attempt id the scheduler did not mint — the
+ * restart cases need one on disk before the scheduler ever sees the record.
+ *
+ * @param {string} attempt_id
+ * @returns {boolean}
+ */
+function installGuardHookForTest(attempt_id) {
+  return guardHookInstall({
+    workspace: WS,
+    attempt_id,
+    repo: '/repo',
+    target_base: 'main'
+  }).ok;
+}

@@ -149,3 +149,20 @@ export function sessionLogPath(workspace_root, attempt_id) {
     `${safe}.jsonl`
   );
 }
+
+/**
+ * Absolute directory holding a per-attempt `core.hooksPath` tree — the
+ * prevention layer's pre-push hook (UI-8mvc §2). Per ATTEMPT rather than per
+ * workspace because `(repo, target_base)` is baked into the script as a
+ * literal: two concurrent attempts protect two different bases, and a session
+ * that could redirect the judgment through an environment variable would not be
+ * judged at all.
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @param {string} attempt_id - Stable attempt id.
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/guard-hooks/<attempt_id>`.
+ */
+export function guardHookDir(workspace_root, attempt_id) {
+  const safe = String(attempt_id || 'attempt').replace(/[^A-Za-z0-9._-]/g, '_');
+  return path.join(workspaceStateDir(workspace_root), 'guard-hooks', safe);
+}

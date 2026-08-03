@@ -39,6 +39,7 @@
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
 import { debug } from '../logging.js';
+import * as default_guard_hook from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
@@ -224,6 +225,15 @@ function staleDispatchPrompt(bead_id, stale) {
  * Outward attempt-lifecycle push (UI-2yoq, notify.js). Optional: absent wiring
  * (every dispatch-only test) simply pushes nothing, exactly like a machine that
  * left `[worker.notify]` off.
+ * @property {{
+ *   install: (i: { workspace: string, attempt_id: string, repo: string, target_base: string }) => { ok: boolean, dir?: string, hook_path?: string, reason?: string },
+ *   envFor: (i: { workspace: string, attempt_id: string }) => Record<string, string>,
+ *   remove: (i: { workspace: string, attempt_id: string }) => boolean
+ * }} [guardHook]
+ * The prevention layer (UI-8mvc §2). Defaults to the real `guard-hook.js`, so
+ * production wiring is the module itself and a test overrides it only to drive
+ * an install failure. Every attempt EXCEPT a disposition gets one: a
+ * REVISE-disposition session publishes the base as its job.
  * @property {(pid: number|null) => { alive: boolean, started_at: number|null }} [probePid]
  * Liveness + start-time probe for {@link createScheduler}'s `reconcile`. Absent
  * (legacy wiring / dispatch-only tests) makes every reconcile pass a no-op:
@@ -255,6 +265,7 @@ function staleDispatchPrompt(bead_id, stale) {
  */
 export function createScheduler(deps) {
   const now = deps.now || (() => Date.now());
+  const guardHook = deps.guardHook || default_guard_hook;
   let attempt_seq = 0;
   const makeAttemptId =
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
@@ -523,6 +534,56 @@ export function createScheduler(deps) {
     claimed.delete(bead_id);
     dispatch_refused.add(bead_id);
     await tickPass(workspace);
+  }
+
+  /**
+   * Install this attempt's pre-push hook (UI-8mvc §2). Called BEFORE the launch
+   * path's first state change — no worktree, no attempt record, no metadata
+   * stamp — so a failure is a plain refusal with nothing to unwind.
+   *
+   * Reports rather than throws for the same reason the module does: the answer
+   * to a failed install is a visible refusal, and a throw out of the dispatch
+   * would abort with nothing on screen.
+   *
+   * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string }} input
+   * @returns {boolean} Whether the hook is in place.
+   */
+  function installGuardHook(input) {
+    /** @type {{ ok: boolean, reason?: string }} */
+    let result;
+    try {
+      result = guardHook.install(input);
+    } catch (err) {
+      log('guard hook install threw for %s: %o', input.attempt_id, err);
+      result = { ok: false, reason: 'threw' };
+    }
+    if (!result.ok) {
+      log(
+        'guard hook install failed for %s: %s',
+        input.attempt_id,
+        result.reason || 'unknown'
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Drop an attempt's hook assets. Idempotent and never throwing, so every
+   * early return between the install and the spawn — and every termination
+   * path — can call it unconditionally, including for the disposition attempts
+   * that never had one (spec §5, 완료조건 #17: the requirement is zero residue,
+   * not a badge).
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   */
+  function removeGuardHook(workspace, attempt_id) {
+    try {
+      guardHook.remove({ workspace, attempt_id });
+    } catch (err) {
+      log('guard hook remove threw for %s: %o', attempt_id, err);
+    }
   }
 
   /**
@@ -1217,6 +1278,12 @@ export function createScheduler(deps) {
       await tick(workspace);
     } finally {
       settling.delete(attempt_id);
+      // The single common exit of every LIVE termination — success, failure,
+      // guard kill, and the ⏸/■ early return (their `done` still resolves
+      // here, after the process is actually gone). Best-effort by contract: the
+      // next attempt writes under a new id, so a leftover tree cannot pollute a
+      // later judgment (UI-8mvc §5).
+      removeGuardHook(workspace, attempt_id);
     }
   }
 
@@ -1550,6 +1617,11 @@ export function createScheduler(deps) {
   async function disposeDeadAttempt(workspace, attempt_id, attempt) {
     const bead_id = attempt.bead_id;
     const prior = attempt.workflow_mode_prior ?? null;
+    // The restart-side counterpart of `onSessionDone`'s cleanup: this path is
+    // only reached for an attempt whose process the PID probe already found
+    // dead, so nothing can still push through its hook (UI-8mvc §5). Done at
+    // entry because the branches below all `return` on their own.
+    removeGuardHook(workspace, attempt_id);
     const repo = typeof attempt.repo === 'string' ? attempt.repo : '';
     // A DISPOSITION session that outlived a restart is judged by its own
     // verdict, never by the PR observation (UI-hs11 §3.3): it opens no PR, so
@@ -1940,6 +2012,24 @@ export function createScheduler(deps) {
     // a stale local `<base>` cannot silently become the worktree's parent.
     const cut_base = snap.base_oid || snap.target_base;
 
+    // PREVENTION LAYER (UI-8mvc §2): the pre-push hook goes in HERE — after the
+    // base re-resolution that supplies its subject, and before the first state
+    // change of the launch. At this point there is no worktree, no attempt
+    // record and no metadata stamp, so an install failure ends in a refusal
+    // with nothing left behind (완료조건 #17). Every early return BELOW this
+    // line removes it again.
+    if (
+      !installGuardHook({
+        workspace,
+        attempt_id,
+        repo: snap.repo,
+        target_base: snap.target_base
+      })
+    ) {
+      await refuseDispatch(workspace, bead_id, 'guard_hook_install_failed');
+      return;
+    }
+
     // PRE-FLIGHT (spec §2): a leftover worktree/branch from an earlier ■ makes
     // `add` fail outright, and — once the worktree alone is gone — makes its
     // `-B` silently reset a branch that may still hold the only copy of its
@@ -1954,10 +2044,12 @@ export function createScheduler(deps) {
           base: cut_base
         });
       } catch {
+        removeGuardHook(workspace, attempt_id);
         await refuseDispatch(workspace, bead_id, 'git_error');
         return;
       }
       if (!residue.ok) {
+        removeGuardHook(workspace, attempt_id);
         await refuseDispatch(workspace, bead_id, 'worktree_stale_work');
         return;
       }
@@ -1973,6 +2065,7 @@ export function createScheduler(deps) {
     } catch {
       // Fail-VISIBLE: this used to abort with no badge, no log and no attempt,
       // leaving a re-queued bead permanently stuck with nothing to see.
+      removeGuardHook(workspace, attempt_id);
       await refuseDispatch(workspace, bead_id, 'worktree_add_failed');
       return;
     }
@@ -1989,6 +2082,7 @@ export function createScheduler(deps) {
     }
     if (!adm.ok) {
       recordSkipReason(workspace, bead_id, adm.reason || 'git_error');
+      removeGuardHook(workspace, attempt_id);
       try {
         await deps.worktree.remove({ repo: snap.repo, bead_id });
       } catch {
@@ -2052,6 +2146,7 @@ export function createScheduler(deps) {
       } catch {
         // Best-effort: bd may be down; the failed record already reflects it.
       }
+      removeGuardHook(workspace, attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
       return;
@@ -2148,6 +2243,7 @@ export function createScheduler(deps) {
       } catch {
         // Best-effort: bd may be down; the failed record already reflects it.
       }
+      removeGuardHook(workspace, attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
       return;
@@ -2269,6 +2365,21 @@ export function createScheduler(deps) {
       // thing its own prompt forbids (UI-hs11 §3.3).
       disposition: input.disposition ?? null
     };
+    // Hand the session the hook that was installed BEFORE any state change
+    // (UI-8mvc §2). Delivery creates nothing, which is why it belongs here even
+    // though the install does not: `runner/session.js` spreads `settings.env`
+    // over the inherited environment, and `claude.js`'s routing env touches no
+    // `GIT_CONFIG_*` key, so there is no collision to lose.
+    //
+    // A DISPOSITION session is left alone in all three layers: publishing the
+    // resolved base IS its job (`revise-disposition.js`), so no hook was
+    // installed for it and none is announced.
+    if (!settings.disposition) {
+      settings.env = {
+        ...(settings.env || {}),
+        ...guardHook.envFor({ workspace, attempt_id })
+      };
+    }
     // Resume argv branch (spec §1.4): the adapter reads this to continue the
     // prior claude session id / codex thread id.
     if (resume_session_id) {
@@ -2293,6 +2404,9 @@ export function createScheduler(deps) {
     try {
       handle = runner.spawn(spawnBead, wt_path, settings);
     } catch {
+      // No process exists, so nothing will ever push through this hook — the
+      // last early return before the spawn owes the same cleanup as the rest.
+      removeGuardHook(workspace, attempt_id);
       await revertExecStamps(bead_id, stamped_keys);
       deps.store.updateAttempt(workspace, {
         attempt_id,
@@ -2662,6 +2776,27 @@ export function createScheduler(deps) {
     const runner_name = 'claude';
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
+
+    // An external-PR resolution is a CONFLICT session (spec §2 적용 범위: every
+    // session except a disposition), and its job — merge the base INTO the
+    // branch, verify, push the branch — never writes the base. It is exempt
+    // only from the DETECTION layer, and for an observation reason rather than
+    // a policy one: this dispatch pins no `base_oid`, so there is no reference
+    // point to compare against afterwards (§5 잔여 3). That makes prevention the
+    // only layer covering it, which is an argument for installing the hook, not
+    // against it. Installed here, before `claimed.add` and the durable
+    // pre-record — the same "before the first state change" rule.
+    if (
+      !installGuardHook({
+        workspace,
+        attempt_id,
+        repo,
+        target_base: base
+      })
+    ) {
+      return { ok: false, reason: 'guard_hook_install_failed' };
+    }
+
     const stamped_keys = exec.stamped_keys;
     /** @type {Record<string, string>} */
     const exec_values = {};
@@ -2737,6 +2872,7 @@ export function createScheduler(deps) {
       } catch {
         // Best-effort: bd may be down; the failed record already reflects it.
       }
+      removeGuardHook(workspace, attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
       return { ok: false, reason: 'workflow_mode_record_failed' };
@@ -2794,6 +2930,7 @@ export function createScheduler(deps) {
       } catch {
         // Best-effort: bd may be down; the failed record already reflects it.
       }
+      removeGuardHook(workspace, attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
       return { ok: false, reason: 'exec_stamp_failed' };
@@ -2852,14 +2989,35 @@ export function createScheduler(deps) {
     const attempt_id = prior.attempt_id;
     const runner_name = 'claude';
 
-    // The ancestor is spent from here on: nothing can discard it any more, so
-    // its parked `done` promise must not outlive the relaunch.
-    paused_done.delete(attempt_id);
-    claimed.add(bead_id);
-
     const new_attempt_id = makeAttemptId(bead_id);
     const target_base =
       typeof prior.target_base === 'string' ? prior.target_base : 'main';
+
+    // Same "before the first state change" rule as the queue dispatch (UI-8mvc
+    // §2): the resume/conflict relaunch installs the child attempt's hook while
+    // the ancestor is still intact and no claim has been taken, so a failure is
+    // a plain refusal. A DISPOSITION child gets no hook — publishing the base
+    // is its job.
+    if (
+      !options.disposition &&
+      !installGuardHook({
+        workspace,
+        attempt_id: new_attempt_id,
+        repo,
+        target_base
+      })
+    ) {
+      return { ok: false, reason: 'guard_hook_install_failed' };
+    }
+
+    // The ancestor is spent from here on: nothing can discard it any more, so
+    // its parked `done` promise must not outlive the relaunch — nor do its hook
+    // assets, which a restart-restored `paused` record would otherwise strand
+    // (its `onSessionDone` belongs to a process this one never spawned).
+    paused_done.delete(attempt_id);
+    removeGuardHook(workspace, attempt_id);
+    claimed.add(bead_id);
+
     const prior_wf =
       typeof prior.workflow_mode_prior === 'string'
         ? prior.workflow_mode_prior
@@ -2942,6 +3100,7 @@ export function createScheduler(deps) {
       } catch {
         // Best-effort: bd may be down; the failed record already reflects it.
       }
+      removeGuardHook(workspace, new_attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
       return { ok: false, reason: 'workflow_mode_record_failed' };
@@ -2988,6 +3147,7 @@ export function createScheduler(deps) {
       } catch {
         // Best-effort: bd may be down; the failed record already reflects it.
       }
+      removeGuardHook(workspace, new_attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
       return { ok: false, reason: 'exec_stamp_failed' };
@@ -3425,6 +3585,10 @@ export function createScheduler(deps) {
       bead_id: rec.bead_id,
       patch: { status: 'stopped', cause: null, finished_at: now() }
     });
+    // The one termination that reaches neither `onSessionDone` nor
+    // `disposeDeadAttempt`: a `paused` record discarded after a restart, whose
+    // process this server never held (UI-8mvc §5).
+    removeGuardHook(workspace, attempt_id);
     await releaseBeadClaim(rec.bead_id);
     if (pending_done) {
       // Detached exactly like the live path: stop() must answer its ws caller

@@ -1,0 +1,212 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { envFor, install, remove, renderHookScript } from './guard-hook.js';
+import { guardHookDir } from './state-paths.js';
+
+const WS = '/tmp/example-workspace/project-a';
+const ATTEMPT = 'UI-8mvc-1700000000-1';
+
+/** @type {string} */
+let tmp_state;
+
+beforeEach(() => {
+  tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-guard-hook-unit-'));
+  process.env.XDG_STATE_HOME = tmp_state;
+});
+
+afterEach(() => {
+  delete process.env.XDG_STATE_HOME;
+  try {
+    fs.rmSync(tmp_state, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+});
+
+describe('guard-hook install', () => {
+  test('writes an executable pre-push script into the attempt dir', () => {
+    const result = install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.dir).toBe(guardHookDir(WS, ATTEMPT));
+    expect(fs.statSync(String(result.hook_path)).mode & 0o111).toBe(0o111);
+  });
+
+  test('bakes repo and base into the script as shell literals', () => {
+    install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'ilsun/dev'
+    });
+
+    const script = fs.readFileSync(
+      path.join(guardHookDir(WS, ATTEMPT), 'pre-push'),
+      'utf8'
+    );
+
+    expect(script).toContain("guard_repo='/repo'");
+    expect(script).toContain("guard_ref='refs/heads/ilsun/dev'");
+  });
+
+  test('quotes a base carrying shell metacharacters', () => {
+    const script = renderHookScript({
+      repo: "/re'po",
+      target_base: "dev'; rm -rf /; echo '",
+      attempt_id: ATTEMPT
+    });
+
+    // Every interpolated value stays inside ONE single-quoted literal, so no
+    // metacharacter can become syntax.
+    expect(script).toContain(`guard_repo='/re'\\''po'`);
+    expect(script).toContain(
+      `guard_ref='refs/heads/dev'\\''; rm -rf /; echo '\\'''`
+    );
+  });
+
+  test('refuses to install without a repo subject', () => {
+    const result = install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '',
+      target_base: 'main'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'guard_hook_subject_missing' });
+  });
+
+  test('refuses to install without a base subject', () => {
+    const result = install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: ''
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'guard_hook_subject_missing' });
+  });
+
+  test('reports a mkdir failure instead of throwing', () => {
+    const fake_fs = /** @type {any} */ ({
+      mkdirSync: vi.fn(() => {
+        throw new Error('EACCES');
+      })
+    });
+
+    const result = install(
+      {
+        workspace: WS,
+        attempt_id: ATTEMPT,
+        repo: '/repo',
+        target_base: 'main'
+      },
+      { fs: fake_fs }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'guard_hook_mkdir_failed' });
+  });
+
+  test('leaves NO residue when the script write fails after the mkdir', () => {
+    const real_write = fs.writeFileSync;
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+      throw new Error('ENOSPC');
+    });
+
+    const result = install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'guard_hook_write_failed' });
+    // A hook dir with no `pre-push` in it would still be pointed at by
+    // core.hooksPath — disabling the repo's hooks while protecting nothing.
+    expect(fs.existsSync(guardHookDir(WS, ATTEMPT))).toBe(false);
+    spy.mockRestore();
+    expect(fs.writeFileSync).toBe(real_write);
+  });
+});
+
+describe('guard-hook envFor', () => {
+  test('returns the three GIT_CONFIG keys at index 0 with no inherited count', () => {
+    const env = envFor({ workspace: WS, attempt_id: ATTEMPT }, { env: {} });
+
+    expect(env).toEqual({
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: guardHookDir(WS, ATTEMPT)
+    });
+  });
+
+  test('appends at the next index when a count is inherited', () => {
+    const env = envFor(
+      { workspace: WS, attempt_id: ATTEMPT },
+      { inherited_count: '2' }
+    );
+
+    // Overwriting COUNT with `1` would silently drop the parent's KEY_1 pair.
+    expect(env.GIT_CONFIG_COUNT).toBe('3');
+    expect(env.GIT_CONFIG_KEY_2).toBe('core.hooksPath');
+    expect(env.GIT_CONFIG_VALUE_2).toBe(guardHookDir(WS, ATTEMPT));
+  });
+
+  test('reads the inherited count off the given environment', () => {
+    const env = envFor(
+      { workspace: WS, attempt_id: ATTEMPT },
+      { env: { GIT_CONFIG_COUNT: '4' } }
+    );
+
+    expect(env.GIT_CONFIG_COUNT).toBe('5');
+    expect(env.GIT_CONFIG_KEY_4).toBe('core.hooksPath');
+  });
+
+  test('treats an unparseable inherited count as absent', () => {
+    const env = envFor(
+      { workspace: WS, attempt_id: ATTEMPT },
+      { inherited_count: 'not-a-number' }
+    );
+
+    expect(env.GIT_CONFIG_COUNT).toBe('1');
+    expect(env.GIT_CONFIG_KEY_0).toBe('core.hooksPath');
+  });
+});
+
+describe('guard-hook remove', () => {
+  test('deletes the attempt hook tree', () => {
+    install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main'
+    });
+
+    const removed = remove({ workspace: WS, attempt_id: ATTEMPT });
+
+    expect(removed).toBe(true);
+    expect(fs.existsSync(guardHookDir(WS, ATTEMPT))).toBe(false);
+  });
+
+  test('is a no-op for an attempt that never installed one', () => {
+    expect(remove({ workspace: WS, attempt_id: 'never-installed' })).toBe(true);
+  });
+
+  test('reports a cleanup failure instead of throwing', () => {
+    const fake_fs = /** @type {any} */ ({
+      rmSync: vi.fn(() => {
+        throw new Error('EBUSY');
+      })
+    });
+
+    expect(
+      remove({ workspace: WS, attempt_id: ATTEMPT }, { fs: fake_fs })
+    ).toBe(false);
+  });
+});
