@@ -352,6 +352,13 @@ function makeActions(options = {}) {
 
   // The merge notification (UI-9rrk), recorded on the same ordered log so a
   // test can place it relative to the cleanup's other outward calls.
+  // The registry retirement the cleanup performs (UI-wwby §1). A spy rather
+  // than a real store: the assertion is that the CLEANUP calls it, which is the
+  // wiring `external-pr.test.js` cannot see.
+  const external_drop = vi.fn(() => {
+    calls.push('external:drop');
+    return true;
+  });
   /** @type {any[]} */
   const merge_notices = [];
   const notify = {
@@ -474,7 +481,8 @@ function makeActions(options = {}) {
     bd,
     external: {
       get: (/** @type {string} */ _ws, /** @type {string} */ bead_id) =>
-        (options.external || {})[bead_id] || null
+        (options.external || {})[bead_id] || null,
+      drop: external_drop
     },
     worktree,
     gitRun,
@@ -518,6 +526,7 @@ function makeActions(options = {}) {
     worktree,
     gitRun,
     git_argv,
+    external_drop,
     scheduler,
     runVerify,
     spawnImpl,
@@ -1890,6 +1899,75 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
 
     expect(r).toMatchObject({ ok: false, reason: 'merged_cleanup_failed' });
     expect(h.calls).toEqual([]);
+  });
+});
+
+describe('post-merge cleanup — retiring the external row (UI-wwby §1)', () => {
+  test('drops the bead from the external registry on a successful cleanup', async () => {
+    const h = makeActions();
+
+    await h.actions.merge(BEAD);
+
+    expect(h.external_drop).toHaveBeenCalledWith(WS, BEAD);
+  });
+
+  test('drops it before the lane move, so no scan window can outlive it', async () => {
+    const h = makeActions();
+    /** @type {boolean|null} */
+    let in_done_at_drop = null;
+    h.external_drop.mockImplementation(() => {
+      in_done_at_drop = h.store
+        .snapshot(WS)
+        .done.some((/** @type {any} */ e) => e.bead_id === BEAD);
+      return true;
+    });
+
+    await h.actions.merge(BEAD);
+
+    // The registry is the stale surface: retiring it only AFTER the bead lands
+    // in `done` is the window this bug came through, so the drop is read
+    // against the lane state at the moment it happens.
+    expect(in_done_at_drop).toBe(false);
+    expect(
+      h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+
+  test('drops the row on the EXTERNAL cleanup path too', async () => {
+    const h = makeActions({
+      store: createQueueStore(),
+      external: {
+        'UI-ext2': {
+          bead_id: 'UI-ext2',
+          pr_url: 'https://github.com/o/r/pull/778',
+          pr_number: 778,
+          added_at: 1
+        }
+      },
+      bdStatus: { 'UI-ext2': 'resolved' },
+      bdPrUrl: 'https://github.com/o/r/pull/778'
+    });
+
+    await h.actions.merge('UI-ext2');
+
+    // An external row never enters `done` (its path is non-durable), so the
+    // registry drop is the ONLY record that it is finished.
+    expect(h.external_drop).toHaveBeenCalledWith(WS, 'UI-ext2');
+    expect(h.store.snapshot(WS).done).toEqual([]);
+  });
+
+  test('does not drop the row when the cleanup fails before it', async () => {
+    // The drop sits behind `clearShipFailure`, i.e. behind every step that can
+    // stop the cleanup — a bead whose close failed is still `resolved` and must
+    // stay a registry row so the [정리] retry can find it.
+    const h = makeActions({
+      bdFail: (/** @type {string} */ method) => method === 'setStatus'
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: false, cleanup_step: 'parent_close' });
+    expect(h.external_drop).not.toHaveBeenCalled();
   });
 });
 

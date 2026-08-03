@@ -96,16 +96,39 @@ export function overlaidPrWait(workspace_key, queue) {
     : [];
   /** @type {Array<{ bead_id: string, external: boolean }>} */
   const out = [];
+  // What an external row YIELDS to (UI-wwby §2). It is seeded with the OTHER
+  // durable lanes before anything is emitted: the registry is a whole-set
+  // replace on a ~30s tick, so it stays stale for a while after a bead merges
+  // and leaves `pr_wait`. Yielding to `pr_wait` alone let that stale row
+  // resurrect a bead already sitting in `queue`/`done` as an external
+  // candidate — the head that stuck the merge queue. `out`'s composition rule
+  // is unchanged; only the yield set widened, which is why the `pr_wait`
+  // dedupe below keeps its own set.
+  /** @type {Set<string>} */
   const seen = new Set();
+  for (const lane_name of ['queue', 'done']) {
+    const rows = Array.isArray(queue[lane_name])
+      ? /** @type {any[]} */ (queue[lane_name])
+      : [];
+    for (const entry of rows) {
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id === 'string' && bead_id.length > 0) {
+        seen.add(bead_id);
+      }
+    }
+  }
+  /** @type {Set<string>} */
+  const emitted = new Set();
   for (const entry of lane) {
     const bead_id = entry && entry.bead_id;
     if (
       typeof bead_id !== 'string' ||
       bead_id.length === 0 ||
-      seen.has(bead_id)
+      emitted.has(bead_id)
     ) {
       continue;
     }
+    emitted.add(bead_id);
     seen.add(bead_id);
     out.push({ bead_id, external: entry.external === true });
   }

@@ -722,7 +722,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // The external row lookup the relaxed `pr_wait` guard stands on (UI-7agi §4).
     external: {
       get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
-        runtime.externalPrs.get(ws_key, bead_id)
+        runtime.externalPrs.get(ws_key, bead_id),
+      // Retiring the row at cleanup success (UI-wwby §1) closes the stale window
+      // in which a merged bead could be re-enrolled as an external candidate.
+      drop: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
+        runtime.externalPrs.drop(ws_key, bead_id)
     },
     worktree,
     gitRun,
@@ -758,6 +762,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // read only — `observePr` returns `{state, error}` and cannot serve it.
       headSha: (/** @type {string} */ bead_id) =>
         observedHeadSha(keyFor(workspace_root), bead_id),
+      // Whether the PR poller still OBSERVES this bead (UI-wwby §3). The driver
+      // has no other route to the registry, and without it a halt on a head the
+      // poller never looks at can never end.
+      isExternalRow: (/** @type {string} */ bead_id) =>
+        !!runtime.externalPrs.get(keyFor(workspace_root), bead_id),
       // Re-derive the EXTERNAL rows once before the resumed queue's first item
       // (UI-5v7d §2): at boot the registry is empty until something scans bd,
       // and a restored external head would otherwise be refused as a non-member.

@@ -1311,3 +1311,145 @@ describe('worker/attach closed-queue sweep trigger (UI-m6bg)', () => {
     expect(snap.done).toEqual([]);
   });
 });
+
+describe('worker/attach external registry wiring (UI-wwby)', () => {
+  const PR_URL = 'https://github.com/o/r/pull/9';
+
+  /**
+   * A real attachment whose bd scan registers ONE external row — so the driver
+   * and the cleanup both see the registry `attach.js` actually wired, not a
+   * stub the test handed them.
+   *
+   * @param {any} runtime
+   * @param {string} bead_id
+   */
+  function attachWithExternalRow(runtime, bead_id) {
+    return createWorkerAttachment(WS, {
+      runtime,
+      bd: {
+        ...fakeBd(),
+        scanBeads: async () => ({
+          pr_rows: [{ bead_id, pr_url: PR_URL }],
+          statuses: { [bead_id]: 'resolved' }
+        })
+      },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      gh: /** @type {any} */ ({
+        checkAvailability: async () => ({ state: 'ok', data: true })
+      })
+    });
+  }
+
+  test('gives the merge driver a registry-backed isExternalRow', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachWithExternalRow(runtime, 'X1');
+    runtime.queueStore.enqueueMerge(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      entries: [{ bead_id: 'X1', external: true }]
+    });
+
+    // The merge refuses (no real PR behind the fakes) and no observation exists,
+    // so the head SHA is unreadable — the branch `isExternalRow` decides.
+    await att.mergeQueue.kick();
+
+    // HALTED, not dequeued: the poller does observe a live registry row, so the
+    // halt has an end. Drop the dep in `attach.js` and this becomes a dequeue.
+    expect(
+      runtime.queueStore
+        .snapshot(WS)
+        .merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['X1']);
+  });
+
+  test('dequeues instead once the registry row is gone', async () => {
+    const runtime = createWorkerRuntime();
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: {
+        ...fakeBd(),
+        scanBeads: async () => ({ pr_rows: [], statuses: {} })
+      },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      gh: /** @type {any} */ ({
+        checkAvailability: async () => ({ state: 'ok', data: true })
+      })
+    });
+    runtime.queueStore.enqueueMerge(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      entries: [{ bead_id: 'X1', external: true }]
+    });
+
+    await att.mergeQueue.kick();
+
+    // Nothing observes it, so halting would be permanent — the head leaves.
+    expect(runtime.queueStore.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('gives the PR actions a registry-backed drop', async () => {
+    const runtime = createWorkerRuntime();
+    /** @type {Record<string, string>} */
+    const bd_status = { X1: 'resolved' };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: {
+        ...fakeBd(),
+        scanBeads: async () => ({
+          pr_rows: [{ bead_id: 'X1', pr_url: PR_URL }],
+          statuses: { X1: 'resolved' }
+        }),
+        listChildren: async () => [],
+        setStatus: async (
+          /** @type {string} */ id,
+          /** @type {string} */ status
+        ) => {
+          bd_status[id] = status;
+        },
+        readStatus: async (/** @type {string} */ id) => bd_status[id],
+        readIssue: async (/** @type {string} */ id) => ({
+          id,
+          labels: [],
+          metadata: { pr_url: PR_URL }
+        }),
+        ship: async () => ({ status: 'ok', issue_id: null }),
+        removeLabel: async () => {}
+      },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      gitRun: async (/** @type {string[]} */ args) => ({
+        code: 0,
+        stdout: args[0] === 'rev-parse' ? `${'b'.repeat(40)}\n` : '',
+        stderr: ''
+      }),
+      resolveBase: okBase('main'),
+      gh: /** @type {any} */ ({
+        checkAvailability: async () => ({ state: 'ok', data: true })
+      })
+    });
+    // The incident's own state: a bead the worker really owns in `pr_wait`,
+    // whose registry row the last scan also produced.
+    runtime.queueStore.appendAttempt(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-X1', bead_id: 'X1' }
+    });
+    runtime.queueStore.moveToPrWait(WS, {
+      bead_id: 'X1',
+      attempt_id: 'att-X1',
+      patch: { status: 'done', finished_at: 1, repo: '/repo' }
+    });
+    await att.refreshExternalPrs();
+    expect(runtime.externalPrs.list(WS).map((r) => r.bead_id)).toEqual(['X1']);
+
+    // The whole cleanup, through the attachment's own `prActions` — nothing
+    // about the registry is stubbed, so a missing `drop` in `attach.js` leaves
+    // the row behind for the next enroller pass to trip over.
+    const r = await att.prActions.cleanupObservedMerge('X1');
+
+    expect(r.ok).toBe(true);
+    expect(runtime.externalPrs.list(WS)).toEqual([]);
+  });
+});

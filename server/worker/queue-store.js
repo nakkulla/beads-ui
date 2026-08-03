@@ -798,6 +798,32 @@ function removeFromLanes(q, bead_id) {
 }
 
 /**
+ * Whether a bead may take a place in the merge queue (UI-wwby §2).
+ *
+ * The EXTERNAL bypass stays — an external row has no durable `pr_wait` entry to
+ * be a member of, which is the whole reason it exists (UI-7agi §4) — but it is
+ * now subordinate to lane exclusivity: a bead sitting in `queue` or `done` is
+ * refused whatever the caller claims about it. That makes the store the final
+ * gate rather than the overlay, so the exclusivity `removeFromLanes` just
+ * established cannot be undone a moment later by a stale registry row. Both
+ * enqueue paths share it deliberately: a manual [머지] click must not be a way
+ * around a rule the automatic enroller obeys.
+ *
+ * @param {Queue} q
+ * @param {string} bead_id
+ * @param {boolean} external
+ */
+function enqueueMember(q, bead_id, external) {
+  const in_other_lane =
+    q.queue.some((e) => e.bead_id === bead_id) ||
+    q.done.some((e) => e.bead_id === bead_id);
+  if (in_other_lane) {
+    return false;
+  }
+  return external || q.pr_wait.some((e) => e.bead_id === bead_id);
+}
+
+/**
  * Create a Worker queue store. A single instance is shared server-wide so all
  * connections (and thus all clients dragging concurrently) observe one coherent
  * in-memory revision, making the CAS authoritative in-process.
@@ -1655,10 +1681,7 @@ export function createQueueStore(options = {}) {
           if (typeof bead_id !== 'string' || bead_id.length === 0) {
             continue;
           }
-          const member =
-            entry.external === true ||
-            next.pr_wait.some((e) => e.bead_id === bead_id);
-          if (!member) {
+          if (!enqueueMember(next, bead_id, entry.external === true)) {
             continue;
           }
           // A human clicking [머지] on an auto-excluded row IS the retry the
@@ -1722,10 +1745,7 @@ export function createQueueStore(options = {}) {
           if (typeof bead_id !== 'string' || bead_id.length === 0) {
             continue;
           }
-          const member =
-            entry.external === true ||
-            next.pr_wait.some((e) => e.bead_id === bead_id);
-          if (!member) {
+          if (!enqueueMember(next, bead_id, entry.external === true)) {
             continue;
           }
           const skip = next.auto_merge_skips[bead_id];

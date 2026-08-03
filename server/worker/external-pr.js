@@ -120,6 +120,25 @@ export function createExternalPrStore(options = {}) {
     },
 
     /**
+     * Retire ONE row ahead of the next scan (UI-wwby §1).
+     *
+     * The registry is replaced wholesale every poller tick, so a bead whose
+     * cleanup just succeeded is already destined to disappear from it — this
+     * only brings that conclusion forward by up to one scan period. The stale
+     * window in between is what let a `done` bead come back as an external row.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {boolean} Whether a row was actually removed.
+     */
+    drop(workspace, bead_id) {
+      if (typeof bead_id !== 'string' || bead_id.length === 0) {
+        return false;
+      }
+      return laneFor(workspace).delete(bead_id);
+    },
+
+    /**
      * Drop everything (server restart semantics; test hook).
      */
     clear() {

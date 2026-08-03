@@ -2419,4 +2419,59 @@ describe('worker/queue-store — 자동 머지 durable 상태 (UI-yk55 §2/§3)'
 
     expect(r.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-9']);
   });
+
+  // UI-wwby §2 — the store is the LAST gate on lane exclusivity. The incident
+  // is exactly this shape: `moveToDone` empties the merge queue, a stale
+  // external registry row vouches for the same bead a moment later, and the
+  // done bead retakes the head it can never leave.
+  test('refuses an EXTERNAL entry for a bead already in done', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1']);
+    store.moveToDone(WS, { bead_id: 'UI-1' });
+
+    const r = store.enqueueMergeAuto(WS, {
+      entries: [{ bead_id: 'UI-1', external: true, head_sha: 'a'.repeat(40) }],
+      present_ids: ['UI-1']
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('refuses an EXTERNAL entry for a bead already in the waiting queue', () => {
+    const store = createQueueStore();
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-1'
+    });
+
+    const r = store.enqueueMergeAuto(WS, {
+      entries: [{ bead_id: 'UI-1', external: true, head_sha: 'a'.repeat(40) }],
+      present_ids: ['UI-1']
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('the manual [머지] path obeys the same lane exclusivity', () => {
+    const store = createQueueStore();
+    park(store, ['UI-1']);
+    store.moveToDone(WS, { bead_id: 'UI-1' });
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-2'
+    });
+
+    const r = store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', external: true },
+        { bead_id: 'UI-2', external: true }
+      ]
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
 });
