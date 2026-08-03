@@ -319,6 +319,40 @@ describe('worker/gh — mergedPrsForCommit', () => {
     expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
   });
 
+  test('returns error (not empty) on a blank merged_at', async () => {
+    // Blank is not "unmerged" — the API writes null for that — so reading it as
+    // a non-match would hand `empty` back, and `empty` permits a violation.
+    const run = makeRun({
+      stdout: JSON.stringify([commitPr({ merged_at: '' })])
+    });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
+  test('returns error (not empty) on a blank base ref', async () => {
+    const run = makeRun({
+      stdout: JSON.stringify([commitPr({ base: { ref: '' } })])
+    });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
+  test('returns error when a LATER item is malformed even though an earlier one matched', async () => {
+    // The whole payload is validated before any item is judged: a match found
+    // before an unreadable item must not answer for a payload we cannot read.
+    const run = makeRun({
+      stdout: JSON.stringify([commitPr(), { number: 82 }])
+    });
+
+    const r = await makeGh(run).mergedPrsForCommit('/repo', SHA, 'main');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
   test('returns error (not empty) when the payload is not an array', async () => {
     const run = makeRun({ stdout: JSON.stringify({ message: 'Not Found' }) });
 

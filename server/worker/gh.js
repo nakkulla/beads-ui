@@ -564,6 +564,14 @@ export function createGh(deps = {}) {
      * evidence of guilt. A pagination that cannot be completed exits non-zero
      * and lands in `error`.
      *
+     * ONE `JSON.parse` of the whole stdout is correct here, measured on gh
+     * 2.89.0: `--paginate` MERGES an array-returning endpoint's pages into a
+     * single flat array rather than concatenating one JSON document per page
+     * (`gh api --paginate 'repos/nakkulla/beads-ui/labels?per_page=1'` → 9
+     * pages, parsed by one `json.loads` as a 9-element list). Were a future gh
+     * to emit per-page documents instead, the parse fails and this collapses to
+     * `error` — the fail-open direction, never a false `empty`.
+     *
      * The 3-state split runs the same direction as `mergedPrForBranch`:
      *
      *   ok    — a PR with `merged_at` set AND `base.ref === target_base`.
@@ -601,13 +609,26 @@ export function createGh(deps = {}) {
       if (!Array.isArray(r.data)) {
         return { state: 'error', reason: 'gh_bad_json' };
       }
+      // The WHOLE payload is validated before ANY item is judged. Judging as we
+      // go would let a malformed item later in the array be answered as `empty`
+      // the moment an earlier item matched — and `empty` is the one answer that
+      // permits a violation verdict, so a payload we cannot fully read must not
+      // reach it.
+      /** @type {{ number: number|null, url: string, base_ref: string, merged_at: string|null }[]} */
+      const items = [];
       for (const raw of r.data) {
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
           return { state: 'error', reason: 'gh_bad_json' };
         }
         const item = /** @type {Record<string, unknown>} */ (raw);
         const merged_at = item.merged_at;
-        if (merged_at !== null && typeof merged_at !== 'string') {
+        // An EMPTY `merged_at` is malformed, not "unmerged": the API writes
+        // null for an unmerged PR, so a blank string is a shape we cannot read
+        // and must never be read as the innocent answer.
+        if (
+          merged_at !== null &&
+          (typeof merged_at !== 'string' || merged_at.length === 0)
+        ) {
           return { state: 'error', reason: 'gh_bad_json' };
         }
         const base = item.base;
@@ -615,23 +636,27 @@ export function createGh(deps = {}) {
           return { state: 'error', reason: 'gh_bad_json' };
         }
         const base_ref = /** @type {Record<string, unknown>} */ (base).ref;
-        if (typeof base_ref !== 'string') {
+        if (typeof base_ref !== 'string' || base_ref.length === 0) {
           return { state: 'error', reason: 'gh_bad_json' };
         }
-        if (
-          typeof merged_at !== 'string' ||
-          merged_at.length === 0 ||
-          base_ref !== target_base
-        ) {
+        items.push({
+          number: typeof item.number === 'number' ? item.number : null,
+          url: typeof item.html_url === 'string' ? item.html_url : '',
+          base_ref,
+          merged_at
+        });
+      }
+      for (const item of items) {
+        if (item.merged_at === null || item.base_ref !== target_base) {
           continue;
         }
         return {
           state: 'ok',
           data: {
-            number: typeof item.number === 'number' ? item.number : null,
-            url: typeof item.html_url === 'string' ? item.html_url : '',
-            base_ref,
-            merged_at
+            number: item.number,
+            url: item.url,
+            base_ref: item.base_ref,
+            merged_at: item.merged_at
           }
         };
       }
