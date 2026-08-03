@@ -158,6 +158,27 @@ describe('computeStale — impl_review (Bead branch tip)', () => {
     expect(impl_stale).toBe(false);
   });
 
+  test('an abbreviated or upper-case receipt sha at the tip stays fresh', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'a.txt', '1\n');
+    const sha = commitAll(dir, 'first');
+    git(dir, ['branch', 'UI-1']);
+
+    const short = computeStale(
+      { impl_review: 'opus@' + sha.slice(0, 12) },
+      dir,
+      'UI-1'
+    );
+    const upper = computeStale(
+      { impl_review: 'opus@' + sha.toUpperCase() },
+      dir,
+      'UI-1'
+    );
+
+    expect(short.impl_stale).toBe(false);
+    expect(upper.impl_stale).toBe(false);
+  });
+
   test('commits landed on the Bead branch after the receipt → stale', () => {
     const dir = makeRepo();
     writeFile(dir, 'a.txt', '1\n');

@@ -272,6 +272,12 @@ export function planFreshness(workspace_root, head, sha, plan_path) {
  *   receipt sha is an ancestor of tip    → `stale` (post-review commits landed)
  *   no branch / missing input / git error → `unknown`
  *
+ * The equality test normalizes case and accepts an abbreviated receipt sha as a
+ * prefix of the tip, because `parseReceipt` allows 7-40 hex in either case.
+ * Without that, a receipt written at the tip in short or upper-case form would
+ * miss equality and then reach `merge-base --is-ancestor`, which is reflexive —
+ * the unchanged tip would report `stale`.
+ *
  * Deliberately NOT `git branch --points-at`/`--contains`: a global search
  * misjudges both ways — an unrelated branch parked on the receipt sha reads
  * fresh while the real impl branch has advanced, and a surviving descendant
@@ -296,11 +302,12 @@ export function implFreshness(workspace_root, receipt_sha, bead_id) {
     '--quiet',
     `refs/heads/${bead_id}`
   ]);
-  const tip = out ? out.trim() : '';
+  const tip = out ? out.trim().toLowerCase() : '';
   if (!tip) {
     return 'unknown';
   }
-  if (tip === receipt_sha) {
+  const receipt = receipt_sha.toLowerCase();
+  if (tip === receipt || tip.startsWith(receipt)) {
     return 'fresh';
   }
   // Exit 0 = ancestor; exit 1 (and any error) is caught by runGit as null.
