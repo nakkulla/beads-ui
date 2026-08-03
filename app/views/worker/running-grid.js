@@ -34,6 +34,9 @@ import { timesMeta } from './lanes.js';
  * button renders disabled until it lands (§2.1).
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4.1).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4.1).
+ * @property {string|null} [current_child] - 현재 진행중 child 이슈 제목
+ * (UI-53es §2) — 큐 스냅샷에 페이즈명이 없으므로 이것이 "지금 어느 단계인가"에
+ * 답하는 유일한 사실이다. 없으면 줄 자체를 생략한다 (fail-quiet).
  * @property {import('../../utils/token-usage.js').UsageRecord|null} [usage] - Live token usage
  * of this attempt (UI-raqh §1); absent/null renders nothing.
  * @property {boolean} [conflict_resolution] - Attempt dispatched to resolve a
@@ -159,12 +162,14 @@ function logPathLine(log_path) {
 }
 
 /**
- * Format an elapsed duration (ms) as `MmSSs` / `SSs`.
+ * Format an elapsed duration (ms) as `MmSSs` / `SSs`. Exported so the monitor
+ * tab writes a running attempt's elapsed the same way this tile does (UI-53es
+ * §1) — the same fact must not read differently on two tabs.
  *
  * @param {number} ms
  * @returns {string}
  */
-function formatElapsed(ms) {
+export function formatElapsed(ms) {
   if (!Number.isFinite(ms) || ms < 0) {
     return '0s';
   }
@@ -385,6 +390,11 @@ function runningTile(tile, now, selected_attempt = null) {
       </button>
     </div>
     <div class="rtile__title">${tile.title}</div>
+    ${tile.current_child
+      ? html`<div class="rtile__child" title="현재 진행중 child">
+          └ ${tile.current_child}
+        </div>`
+      : ''}
     ${meta || usage_label || conflict_badge || base_badge
       ? html`<div class="rtile__meta">
           ${conflict_badge

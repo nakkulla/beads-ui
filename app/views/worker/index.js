@@ -43,6 +43,7 @@ import {
   cmpEffectiveRank
 } from '../../data/sort.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
+import { selectCurrentChild } from '../../utils/current-child.js';
 import { showToast } from '../../utils/toast.js';
 import {
   SUM_FIELDS,
@@ -57,6 +58,12 @@ import { createTranscriptDrawer } from './transcript-drawer.js';
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
+/**
+ * The Worker tab's own in_progress subscription (UI-53es §2). It exists for one
+ * reason: the running tile's 현재 단계 줄 needs the bead's in_progress CHILD,
+ * and a child is an in_progress issue like any other.
+ */
+const IN_PROGRESS_KEY = 'tab:worker:in-progress';
 
 /**
  * Lower bound on the concurrency cap, mirroring the server's `MIN_SLOTS`
@@ -411,6 +418,24 @@ function isPhaseChild(issue) {
   const has_parent =
     typeof raw === 'string' ? raw.length > 0 : !!(raw && raw.id);
   return has_parent || /\.\d+$/.test((issue && issue.id) || '');
+}
+
+/**
+ * The flattened `parent` edge (same field Board's `parentIdOf` reads), or ''
+ * for a top-level issue.
+ *
+ * @param {any} issue
+ * @returns {string}
+ */
+function parentIdOf(issue) {
+  const raw = issue && issue.parent;
+  if (typeof raw === 'string') {
+    return raw;
+  }
+  if (raw && raw.id) {
+    return String(raw.id);
+  }
+  return '';
 }
 
 /**
@@ -1480,6 +1505,35 @@ export function createWorkerView(mount_element, options = {}) {
     const blocked = selectors
       ? selectors.selectBoardColumn(BLOCKED_KEY, 'blocked')
       : [];
+    // 실행 타일의 현재 단계 줄이 읽는 자식 집합 (UI-53es §2). 후보 레인에는
+    // 쓰이지 않는다 — in_progress bead는 후보가 아니다.
+    const in_progress = selectors
+      ? selectors.selectBoardColumn(IN_PROGRESS_KEY, 'in_progress')
+      : [];
+    /** @type {Map<string, Array<{ id: string, title?: string, status?: string, updated_at?: number|string }>>} */
+    const children_by_parent = new Map();
+    for (const it of in_progress) {
+      const parent = parentIdOf(it);
+      if (!parent) {
+        continue;
+      }
+      const arr = children_by_parent.get(parent);
+      if (arr) {
+        arr.push(it);
+      } else {
+        children_by_parent.set(parent, [it]);
+      }
+    }
+    /**
+     * The current in_progress child's title, or null (fail-quiet).
+     *
+     * @param {string} bead_id
+     * @returns {string|null}
+     */
+    const currentChildTitleOf = (bead_id) => {
+      const child = selectCurrentChild(children_by_parent.get(bead_id) || []);
+      return child ? child.title || child.id : null;
+    };
 
     // Server-decorated titles for the queue/pr_wait/done beads (UI-12k6). Those
     // lanes hold resolved/closed beads that are in no subscribed column, so
@@ -1858,6 +1912,9 @@ export function createWorkerView(mount_element, options = {}) {
           // 스냅샷의 decorateQueue가 실행 중 attempt에 라이브 값을 실어
           // 보내므로 합계에 현재 진행분이 포함되고 계속 올라간다.
           usage: sumAttemptUsage(q.attempts || {}, a.bead_id),
+          // 큐 스냅샷에는 페이즈명이 없다 — 진행중 child 제목이 "지금 어디까지"
+          // 를 말하는 유일한 사실이다 (UI-53es §2).
+          current_child: currentChildTitleOf(a.bead_id),
           ...timesOf(a.bead_id)
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {

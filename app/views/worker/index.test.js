@@ -1570,6 +1570,81 @@ describe('views/worker', () => {
     expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
   });
 
+  test('running tile shows the current in_progress child title (UI-53es §2)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = seedCandidates();
+    const now = Date.now();
+    seed(stores, 'tab:worker:in-progress', [
+      {
+        id: 'S1.1',
+        title: 'T1: 스캐폴딩',
+        status: 'in_progress',
+        parent: 'S1',
+        updated_at: now - 60_000
+      },
+      {
+        id: 'S1.2',
+        title: 'T2: 서버 배선',
+        status: 'in_progress',
+        parent: 'S1',
+        updated_at: now - 1_000
+      }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            started_at: now - 3000
+          }
+        }
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__child')
+        ?.textContent
+    ).toContain('T2: 서버 배선');
+  });
+
+  test('running tile omits the child line when the bead has no in_progress child', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__child')
+    ).toBeNull();
+  });
+
   test('clicking the tile body opens the detail (gotoIssue), not the transcript drawer', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
