@@ -60,6 +60,9 @@
 | **Worker 탭에는 이미 완료 기간 select가 있고 툴바 KPI가 같은 기간을 따름** | `app/views/worker/index.js` `doneRangeTemplate()`, `token_total` |
 | 기간 어휘는 Board Closed 컬럼과 공유 | `app/data/closed-range.js` |
 | 전체 `queue.json`의 완료 엔트리 총합 | 실측 161개 (활성 레포 7곳 기준 ~83개) |
+| 집계 push는 `onWorkerSnapshotRefresh` 이벤트로만 발화 — 주기 driver 없음 | `schedulePush()` / `ensureRefreshWired()` |
+| 머지 후 배포·검증은 워커 sweep이 소유 (`deploy.json` 아님, 소비 코드 없음) | `server/worker/pr-actions.js` `postMergeVerify()` + deploy 단계 |
+| beads-ui의 verify/deploy 설정이 이미 등록되어 있음 | `~/.config/bdui/config.toml` `[worker.verify]`·`[worker.deploy]` (`detached = true`) |
 
 **Worker 탭은 목표 5가 요구하는 동작을 이미 갖고 있다.** 기간 select가 완료 레인
 카드와 토큰 KPI를 함께 움직인다. 따라서 이 작업에서 Worker 탭의 기간·KPI 동작은
@@ -107,6 +110,40 @@
 - 구독 시작 시 전 visible workspace에 대해 1회 즉시 fill.
 - 큐 mutation이 성공한 workspace는 즉시 무효화한다 — 적재된 이슈가 `runnable`에
   30초 동안 남아 있으면 같은 이슈가 두 레인에 동시에 보인다.
+
+### 갱신 driver
+
+TTL만으로는 부족하다. TTL은 "만료 후 조회가 오면 다시 읽는다"는 규칙일 뿐이고,
+집계 push는 `onWorkerSnapshotRefresh` 이벤트로만 발화한다. 큐가 조용한 동안에는
+push가 없고 → 캐시 조회가 없고 → fill이 걸리지 않는다. 다른 세션이 `spec_review`를
+핀해도 모니터에는 **영원히** 나타나지 않는다.
+
+따라서 모니터 구독자가 1명 이상인 동안 **주기 driver**를 돌린다: `poll_interval_seconds`
+(기본 30초) 간격으로 전 visible workspace의 `runnable`을 refill하고 집계 push를
+예약한다. 마지막 구독자가 떠나면 타이머를 멈춘다 — 아무도 보지 않는 동안 `bd`
+프로세스를 돌릴 이유가 없다. `server/poller.js` `createPoller()`가 이미 "클라이언트가
+있을 때만 틱한다 + `unref()`" 패턴을 갖고 있으므로 그것을 쓴다.
+
+### 집계 payload 구조
+
+payload에 workspace 배열 외에 `workspaces_state` 배열을 함께 싣는다. 각 항목은
+`{ root_dir, name, auto_advance, auto_merge, slots }` — **모든 visible workspace**를,
+파이프라인이 비어 있든 아니든 예외 없이 싣는다.
+
+두 가지가 이것을 요구한다.
+
+1. **마스터 토글의 분모.** `⏵⏵ 전체 자동화 3/4`의 `4`는 visible workspace 수이고
+   `3`은 두 축이 모두 켜진 수다. 파이프라인이 있는 레포만 실어서는 계산할 수 없다.
+2. **빈 큐 레포의 그룹 헤더**(§6). 큐가 빈 레포의 자동화·슬롯을 조작하려면 그
+   레포의 현재 상태가 payload에 있어야 한다.
+
+무거운 필드(`attempts`/`queue`/`done`)는 `workspaces_state`에 싣지 않는다 — 상태
+줄에 필요한 것은 위 다섯 필드뿐이다.
+
+`hasPipeline()`(파이프라인이 빈 workspace를 무거운 배열에서 빼는 판정)에는
+**`runnable`을 포함한다.** 포함하지 않으면 실행 대기 후보만 있고 큐·PR·완료가 없는
+레포 — 즉 지금 막 실행하려는 바로 그 레포 — 가 집계에서 통째로 빠져 실행가능
+레인에 나타나지 않는다. 목표 1을 정면으로 깨뜨리는 경로다.
 
 ## 5. mutation의 workspace 지정
 
@@ -187,11 +224,17 @@ workspace의 스냅샷 revision을 실어 보낸다. 충돌 시 재시도는 Wor
 수, 분모는 visible workspace 수. 전부 켜져 있으면 `⏹ 전체 자동화`로 바뀐다
 (Worker 탭 `⏵⏵`/`⏹` 표기와 같다).
 
-### 레포별 토글
+### 레포별 제어
 
-대기 레인의 각 레포 그룹 헤더에 `▶/⏸`(그 레포의 `auto_advance`)와 슬롯 수를 둔다.
-자동 머지는 레포별 토글을 두지 않는다 — PR 대기 레인의 개별 `머지` 버튼이 이미
-그 일을 하고, 그룹 헤더는 대기 큐를 지배하는 제어만 싣는다.
+대기 레인의 각 레포 그룹 헤더가 그 레포의 workspace 단위 제어를 전부 싣는다 —
+`▶/⏸`(`auto_advance`) · `🔀`(`auto_merge`) · 슬롯 수 · 실행 기본값 다이얼로그
+진입점(`worker-queue-set-exec-default`). 조작 범위가 "Worker 탭 전 기능"이므로
+workspace 단위 제어 중 어느 하나도 빠지지 않는다.
+
+**그룹은 대기 큐가 빈 레포에도 렌더한다.** 큐에 항목이 있는 레포만 그리면 그
+레포의 자동화·슬롯·실행 기본값을 조작할 방법이 사라진다 — 자동 진행이 꺼져 큐가
+빈 레포가 바로 그 상태를 풀어야 하는 레포다. 빈 그룹은 헤더만 그리고 아래에
+카드가 없다.
 
 ## 7. 완료 기간과 토큰·비용 합계
 
@@ -206,10 +249,11 @@ workspace의 스냅샷 revision을 실어 보낸다. 충돌 시 재시도는 Wor
 2. 비용이 미미하다. 집계는 이미 `attempts`를 통째로 싣고 있고, 완료 엔트리는 전
    레포를 합쳐 실측 161개다.
 
-`hasPipeline()`(빈 workspace를 집계에서 빼는 판정)은 필터 제거 후의 `done` 전체를
-기준으로 하게 되므로, 과거 완료 기록만 있는 레포도 집계에 남는다. 그 레포가
-화면에 뜰지는 클라이언트의 기간 필터가 정한다 — 선택 기간에 아무 카드도 없는
-레포는 대기 레인 그룹에서도 빠진다.
+`hasPipeline()`은 필터 제거 후의 `done` 전체를 기준으로 하게 되므로, 과거 완료
+기록만 있는 레포도 무거운 배열에 남는다. 그 레포의 완료 **카드**가 화면에 뜰지는
+클라이언트의 기간 필터가 정한다. 대기 레인의 레포 그룹 헤더는 이 판정과 무관하게
+`workspaces_state`(§4)가 그리므로, 완료 기록이 기간 밖이어도 그 레포의 자동화·
+슬롯 제어는 그대로 남는다.
 
 `startOfLocalDay()`는 더 이상 집계에서 쓰이지 않으므로 제거하고, 그 export에
 걸린 테스트도 함께 정리한다.
@@ -261,8 +305,9 @@ Worker 탭 `token_total`과 **같은 산식**을 쓴다. 다른 산식을 쓰면
 
 `실행가능` · `대기` · `실행중` · `PR 대기` · `완료`
 
-- **대기 레인만** 레포별 그룹으로 나눈다. 그룹 헤더 = 레포명 + `▶/⏸` + 슬롯 수.
-  순번(`#1`, `#2`)은 그 레포 큐 안에서의 자리이므로 그룹 안에서만 뜻이 있다.
+- **대기 레인만** 레포별 그룹으로 나눈다. 그룹 헤더는 §6 「레포별 제어」의 네
+  제어를 싣고, 큐가 빈 레포에도 렌더한다. 순번(`#1`, `#2`)은 그 레포 큐 안에서의
+  자리이므로 그룹 안에서만 뜻이 있다.
 - 나머지 네 레인은 레포를 섞고 카드마다 레포 뱃지를 단다.
 - `완료` 레인은 상단 바에서 고른 기간을 따른다. 레인 제목도 그 기간을 말한다
   (`완료·오늘` / `완료·최근 7일` / …).
@@ -287,15 +332,22 @@ attempt는 `pr_wait` 소속 버드에서도 돌기 때문에 배타 없이 그�
 
 ### 조작
 
-| 레인 | 행동 |
-| --- | --- |
-| 실행가능 | `⚡` 대기 큐 적재 (`worker-queue-place`) |
-| 대기 | 그룹 안에서 순서 변경, 제거, REVISE 처분 |
-| 실행중 | 일시정지, 중단 |
-| PR 대기 | 머지, 취소, 폐기 |
-| 완료 | 없음 (읽기 전용) |
+| 레인 | 행동 | 액션 |
+| --- | --- | --- |
+| 실행가능 | 대기 큐 적재 | `worker-queue-place` |
+| 대기 | 그룹 안에서 순서 변경, 제거, REVISE 처분 | `worker-queue-reorder` · `worker-queue-remove` · `worker-revise-fix` · `worker-revise-approve` |
+| 실행중 | 일시정지, 중단, 재개, 실패 attempt 정리 | `worker-attempt-pause` · `worker-attempt-stop` · `worker-attempt-resume` · `worker-attempt-dismiss` |
+| PR 대기 | 머지, 취소, 폐기 | `worker-merge-queue-add` · `worker-merge-queue-remove` · `worker-pr-discard` |
+| 완료 | cleanup 재시도 머지만 (폐기는 제공하지 않는다) | `worker-merge-queue-add` |
+| 대기 그룹 헤더 | 자동 진행, 자동 머지, 슬롯, 실행 기본값 | `worker-queue-toggle` · `worker-merge-auto-toggle` · `worker-queue-set-slots` · `worker-queue-set-exec-default` |
 
-`⚡`는 적재만 한다. 별도의 "즉시 실행" 경로는 만들지 않는다 —
+§5가 열거한 17개 mutation 액션이 이 표에서 모두 도달 가능해야 한다 — 도달 경로가
+없는 액션이 남으면 "Worker 탭 전 기능"이라는 범위 결정이 지켜지지 않은 것이다.
+`worker-merge-queue-add-all`은 PR 대기 레인 헤더의 일괄 버튼이 쓴다. 완료 레인의
+머지 버튼은 Worker 탭과 같은 의미다 — 이미 머지된 항목의 **cleanup 재시도**이며,
+같은 자리에 폐기를 함께 두지 않는다 (`lanes.js` `miniRow`의 done 변형 규약).
+
+실행가능 카드의 실행 버튼은 적재만 한다. 별도의 "즉시 실행" 경로는 만들지 않는다 —
 `handleWorkerQueuePlace`가 적재 성공 후 이미 `tickWorkerQueue()`를 부르므로, 자동
 진행이 켜진 레포에서는 적재만으로 슬롯이 비는 즉시 실행된다. 자동 진행이 꺼진
 레포에서는 대기 레인에 서 있고, 그 이유는 그룹 헤더의 `⏸` 표시가 말한다.
@@ -308,12 +360,13 @@ attempt는 `pr_wait` 소속 버드에서도 돌기 때문에 배타 없이 그�
 | --- | --- |
 | `server/worker/runnable-cache.js` | 신규 — TTL 캐시 + 비동기 fill |
 | `server/ws/workspace-target.js` | 신규 — `targetWorkspaceOf()` |
-| `server/ws/monitor-handlers.js` | 집계에 `runnable` 포함, `done` 오늘 필터 제거, `startOfLocalDay()` 제거, `monitor-auto-toggle` 핸들러 |
+| `server/ws/monitor-handlers.js` | 집계에 `runnable`·`workspaces_state` 포함, `hasPipeline()`에 `runnable` 반영, `done` 오늘 필터 제거, `startOfLocalDay()` 제거, 구독 중 주기 refill driver(`createPoller`), `monitor-auto-toggle` 핸들러 |
 | `server/ws/worker-handlers.js` | mutation 핸들러의 workspace 해석 교체 |
 | `server/ws/connection.js` | `monitor-auto-toggle` 라우팅 |
 | `app/protocol.js` | `MessageType`에 `monitor-auto-toggle` 추가 |
 | `app/views/monitor/index.js` | 레인 구조로 재작성, 기간 상태 + 토큰 합계 |
-| `app/views/monitor/lanes.js` | 신규 — 레인 빌더 + 레포 그룹 헤더 + 상단 바 |
+| `app/views/monitor/lanes.js` | 신규 — 레인 빌더 + 레포 그룹 헤더(4개 제어) + 상단 바 |
+| `app/views/worker/exec-defaults-dialog.js` | 그룹 헤더에서 여는 진입점 재사용 (다이얼로그 자체는 그대로) |
 | `app/views/monitor/row.js` | 제거 (템플릿을 `worker/lanes.js`로 대체) |
 | `app/views/worker/lanes.js` | `MiniItem`에 선택 필드 `workspace_name`/`root_dir` |
 | `app/styles.css` | 모니터 레인 · 그룹 헤더 · 상단 바 스타일 |
@@ -338,43 +391,105 @@ Worker 탭(`app/views/worker/index.js`)의 기간·KPI 동작은 바꾸지 않�
 
 RED → GREEN 시임:
 
-1. `server/worker/runnable-cache.test.js` — 판정 조건 필터 (route/spec_id/영수증
-   형식/phase child/이미 큐에 있는 버드 제외), TTL 만료, 실패 TTL, 무효화.
-2. `server/ws/workspace-target.test.js` — 허용 목록 밖 경로 거부, 상대 경로 거부,
-   `root_dir` 부재 시 연결 workspace로 폴백.
-3. `server/ws/monitor-handlers.test.js` (기존 파일 확장) — 집계 payload에
+1. `server/worker/runnable-cache.test.js` (신규) — 판정 조건 필터
+   (route/spec_id/영수증 형식/phase child/이미 큐에 있는 버드 제외), TTL 만료,
+   실패 TTL, 큐 mutation 후 무효화.
+2. `server/worker/runnable-cache.driver.test.js` (신규) — **주기 driver**: 큐
+   이벤트가 하나도 없는 상태에서 fake clock을 `poll_interval_seconds`만큼 진행하면
+   refill과 push가 일어나는지 (이것이 §4 "갱신 driver"가 없을 때 실패하는 RED),
+   마지막 구독자가 떠나면 타이머가 멈추는지, 구독자 0에서는 애초에 틱하지 않는지.
+3. `server/ws/workspace-target.test.js` (신규) — 허용 목록 밖 절대 경로 거부,
+   상대 경로 거부, `root_dir` 부재 시 연결 workspace로 폴백, 심볼릭/`..` 포함
+   경로가 resolve 후 대조되는지.
+4. `server/ws/monitor-handlers.test.js` (기존 파일 확장) — 집계 payload에
    `runnable`이 workspace별로 실리는지, `done`이 더 이상 오늘로 잘리지 않는지,
-   구독자 0일 때 fill을 걸지 않는지.
-4. `server/ws/monitor-auto-toggle.test.js` — 전 visible workspace에 적용,
-   일부 실패 시 나머지 진행 + 실패 목록 보고, hidden workspace 제외.
-5. `server/ws/worker-handlers.*.test.js` (기존 파일 확장) — `root_dir`을 실은
-   mutation이 그 workspace의 큐를 바꾸고 연결 workspace는 그대로인지.
-6. `app/views/monitor/lanes.test.js` — 레인 빌더의 배타 우선순위, 대기 레인의
-   레포 그룹 분할, 그룹별 순번, 기간별 완료 레인 필터, `added_at` 없는 엔트리
-   제외.
-7. `app/views/monitor/usage.test.js` — 전 레포 토큰 합계, 일부만 비용을 보고했을
-   때 `$` 미표시, 아무도 보고하지 않았을 때 합계 미표시, 기간 변경 시 합계 변경.
-8. `app/main.monitor.e2e.test.js` (기존 파일 확장) — `⚡` 클릭이 올바른
-   `root_dir`을 실어 보내는지, 마스터 토글 확인 다이얼로그, 기간 select 지속성.
+   구독자 0일 때 fill을 걸지 않는지, **`runnable`만 있고 큐·PR·완료가 모두 빈
+   workspace가 집계에 남는지**(`hasPipeline()`에 `runnable`이 빠졌을 때 실패하는
+   RED), **`workspaces_state`가 파이프라인이 빈 레포까지 포함해 모든 visible
+   workspace를 싣는지**, hidden workspace가 양쪽 모두에서 빠지는지.
+5. `server/ws/monitor-auto-toggle.test.js` (신규) — 전 visible workspace에 적용,
+   hidden workspace 제외, 일부 실패 시 나머지 진행 + 실패 목록 보고,
+   **ON이 각 workspace에 `tickWorkerQueue()`를 발화하는지**,
+   **OFF가 `clear_waiting` + `keep: <active>`로 머지 대기열을 정리하는지**
+   (§6이 명시한 두 부수효과 각각의 RED), CAS 없이 현재 revision으로 적용되는지.
+6. `server/ws/worker-handlers.workspace-target.test.js` (신규) — §5가 열거한 17개
+   mutation 액션을 **table-driven으로** 검증한다. 각 액션에 대해: `root_dir`을
+   실으면 그 workspace의 큐가 바뀌고 연결 workspace는 그대로인지, 허용 목록 밖
+   `root_dir`은 `bad_request`인지, `root_dir` 부재 시 기존 동작이 유지되는지.
+   단일 액션만 검증하면 나머지 16개의 `workspaceKeyOf` 잔존을 잡지 못한다.
+7. `app/views/monitor/lanes.test.js` (신규) — 레인 빌더의 배타 우선순위
+   (`running > pr_wait > queue > runnable > done`), 대기 레인의 레포 그룹 분할,
+   그룹별 순번, **대기 큐가 빈 레포도 그룹 헤더가 렌더되는지**, 기간별 완료 레인
+   필터, `added_at` 없는 엔트리 제외.
+8. `app/views/monitor/usage.test.js` (신규) — 전 레포 토큰 합계, 일부만 비용을
+   보고했을 때 `$` 미표시, 아무도 보고하지 않았을 때 합계 미표시, 기간 변경 시
+   합계 변경.
+9. `app/main.monitor.e2e.test.js` (기존 파일 확장) — 실행가능 카드 클릭이 올바른
+   `root_dir`을 실어 보내는지, 마스터 토글 OFF의 확인 다이얼로그, 기간 select
+   지속성, 그룹 헤더의 네 제어(자동 진행·자동 머지·슬롯·실행 기본값)가 각각
+   해당 액션을 그 레포의 `root_dir`로 보내는지.
 
 기존 `app/views/monitor/index.test.js`의 `buildSections` 테스트는 새 레인 빌더
 테스트로 교체된다. `row.test.js`는 제거된다.
 
-## 12. 적용 절차 (머지 후)
+## 12. 적용 절차
 
-이 저장소는 `deploy.json`을 두지 않으므로 머지 후 작업이 워커 자동화에 등록되어
-있지 않다. AGENTS.md `Post-Merge Runtime Validation`이 규정하는 수동 마감 절차를
-순서대로 따른다.
+### 머지 전 (이 유닛의 PR 안에서)
 
-1. `main`에 머지하고 머지된 체크아웃으로 이동한다.
-2. `npm run build` — 프론트엔드 변경이므로 `app/main.bundle.js`와 `.map`을 갱신해
-   커밋에 포함한다.
-3. `~/.config/bdui/config.toml` 런타임 설정 정합을 확인한다.
-4. `bdui-shared restart`
-5. 프로세스 실행 경로 · 리스닝 포트 · HTTP 응답을 확인한 뒤에만 완료를 선언한다.
+번들은 **PR 커밋에 들어간다**. 머지 후에 빌드해서 "커밋에 포함"하는 것은 불가능한
+순서다 — 이미 머지된 PR에는 그 산출물이 들어가지 않고, 중간에 멈추면 `main`이
+소스와 번들이 어긋난 상태로 남는다.
 
-**spec 게이트 리뷰 대상**: 이 저장소에 `deploy.json`이 없다는 사실과, 머지 후 필수
-작업의 처분(등록 / 분리 / `worker-ineligible` 라벨)을 리뷰에서 결정한다.
+1. 프론트엔드 소스 편집을 마친다.
+2. `npm run build` — `app/main.bundle.js`와 `app/main.bundle.js.map`을 갱신한다.
+3. 갱신된 번들을 소스와 **같은 PR에** 커밋한다.
+4. `npm run all`(tsc/lint/prettier/test)이 green인지 확인한다.
+
+### 머지 후 (워커 sweep이 소유한다)
+
+머지 후 절차는 수동 마감이 아니다. 이 저장소의 머지 후 작업은 **워커 머지 sweep의
+verify·deploy 단계**가 소유하며, 등록 위치는 `deploy.json`이 아니라 이 저장소
+워커 고유의 런타임 설정이다 (`server/` 어디에도 `deploy.json` 소비 코드가 없다).
+
+관측된 현재 설정 (`~/.config/bdui/config.toml`):
+
+- `[worker.verify."<beads-ui 절대경로>"] cmd = ["npm","run","all"]`
+- `[worker.deploy."<beads-ui 절대경로>"] cmd = ["bdui-shared","restart"], detached = true`
+
+sweep의 고정 순서와 각 단계의 실패 처리 (`server/worker/pr-actions.js`):
+
+1. **base sync** — 머지된 base로 로컬 체크아웃을 ff-only 동기화한다.
+2. **post-merge verify** — 머지된 base 커밋을 detached worktree에 펼치고
+   `npm run all`을 돌린다. 실패는 `cleanup_failed.step='verify'`로 기록된다.
+3. **deploy 재검증** — 로컬 체크아웃이 방금 검증된 base가 아니면
+   `deploy_base_not_synced`로 멈춘다. 배포 직전에 다시 확인하는 이유는, 배포는
+   특정 SHA가 아니라 **로컬 체크아웃 내용**에 대해 실행되기 때문이다. 검증한 것과
+   배포하는 것이 다른 상황이 배포하지 않는 것보다 나쁘다.
+4. **deploy** — `bdui-shared restart`. `detached = true`인 이유는 이 명령이 워커를
+   호스팅하는 프로세스 자신을 죽이기 때문이다. 발사 **전에** `last_deploy`를 atomic
+   기록하므로 프로세스가 죽어도 기록이 남는다.
+
+중단 안전성: 각 단계는 앞 단계의 결과를 재확인하고 진행하며, 실패는
+`cleanup_failed`(단계명 · 사유 · 로그 tail · 로그 경로)와 `last_deploy`에 남아 Worker
+탭 배지로 보인다. 어느 단계에서 멈춰도 `main`은 소스와 번들이 일치하는 상태이고
+(번들이 PR 안에 있으므로), 무엇이 멈췄는지가 기록에 남는다.
+
+### 머지 후 처분 (계약 요구)
+
+`bdui-shared restart`와 그 선행 검증은 **이미 등록되어 있다** — 등록 매체가
+`deploy.json`이 아니라 이 저장소 워커 자신의 `[worker.verify]`/`[worker.deploy]`
+설정일 뿐이고, 계약이 요구하는 성질("머지 후 필수 작업이 조용히 유실되지 않을 것")은
+충족된다. 실패는 `cleanup_failed`로, 실행 사실은 `last_deploy`로 가시화된다.
+
+`deploy.json`을 새로 만드는 것은 이 저장소에서 **아무 효과가 없다** — 읽는 코드가
+없으므로 등록처럼 보이는 장식이 될 뿐이다. 따라서 `deploy.json` 등록 · 분리 ·
+`worker-ineligible` 세 처분 중 어느 것도 추가로 필요하지 않다.
+
+남는 잔여는 하나다: `detached = true`이므로 워커는 재시작 **이후의 서빙 상태**
+(프로세스 경로 · 포트 · HTTP 응답 · 서빙 번들 해시)를 확인하지 않는다. 그래서
+`last_deploy`는 그 경우 `deployed`가 아니라 `launched`로 기록된다 — 근거 없는
+"배포됨"을 주장하지 않기 위해서다. 이 잔여 확인은 Worker 탭의 `last_deploy` 배지를
+보고 사람이 수행하며, 이 유닛이 새로 만드는 갭이 아니라 저장소의 기존 조건이다.
 
 ## 13. 검증
 
