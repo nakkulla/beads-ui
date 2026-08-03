@@ -37,10 +37,16 @@ closed-issues 구독 단독      = 7716ms
 변경:  bd 호출 → 필터 → enrichIssuesWorkflow → enrichIssuesProvenance
 ```
 
-- `applyClosedIssuesFilter`를 `server/ws/context.js`에서
-  `server/list-adapters.js`로 옮긴다. 의존 방향(`ws/` → `list-adapters`)상
-  순환이 생기지 않는 방향은 이쪽뿐이다. `context.js`는 re-export로 기존
-  import 경로를 보존한다.
+- `applyClosedIssuesFilter`를 `server/ws/context.js`에서 독립 leaf 모듈
+  `server/closed-issues-filter.js`로 추출한다. `list-adapters.js`와
+  `context.js`가 각각 이 leaf를 import하고, `context.js`는 re-export로 기존
+  import 경로(`refresh.js`, `subscription-handlers.js`, 테스트)를 보존한다.
+  list-adapters 경유 re-export를 쓰지 않는 이유: `./list-adapters.js`를 full
+  mock하는 테스트 6개(`ws.list-subscriptions`, `ws.list-refresh.coalesce`,
+  `ws.mutation-window`, `ws.snapshot-cache`, `ws.workspace-isolation`,
+  `ws.git-pull-workspace`)가 `fetchListForSubscription`만 제공하므로,
+  `context.js`가 list-adapters에서 re-export하면 mock 아래에서 필터가
+  undefined가 되어 전부 깨진다. leaf 분리는 이 mock들을 무수정으로 통과시킨다.
 - 호출자 2곳(`server/ws/refresh.js`, `server/ws/subscription-handlers.js`)의
   필터 호출은 그대로 둔다 — 필터는 멱등이므로 결과가 바뀌지 않고, 순서
   교정이 누락된 경로가 생겨도 잡아주는 안전망이 된다. 소비자는 이 2곳이
@@ -81,17 +87,23 @@ closed-issues 구독 단독      = 7716ms
 
 RED → GREEN 시맨틱 seam (`server/list-adapters.test.js`):
 
-1. `mapSubscriptionToBdArgs('closed-issues', { since })` — `--closed-after`
-   포함, 경계값이 `since - 1000ms`의 RFC3339, `--limit 1000` 유지.
-2. `mapSubscriptionToBdArgs('closed-issues')` (since 없음) — `--closed-after`
-   미포함(기존 args 불변).
-3. `fetchListForSubscription`(closed-issues, since 지정) — 범위 밖 이슈가
-   enrich/provenance에 도달하지 않고, 반환 items가 필터 적용 결과.
-4. `applyClosedIssuesFilter`가 `list-adapters.js`로 이동 후에도
-   `server/ws/context.js` 경유 import가 동작(기존
-   `ws.list-subscriptions.test.js` 회귀로 커버).
+1. `mapSubscriptionToBdArgs({ type: 'closed-issues', params: { since } })` —
+   `--closed-after` 포함, 경계값이 `since - 1000ms`의 RFC3339, `--limit 1000`
+   유지. (현재 구현은 params를 무시하므로 비공허 RED.)
+2. `fetchListForSubscription`(closed-issues, since 지정) — 범위 밖 이슈가
+   enrich/provenance에 도달하지 않고, 반환 items가 필터 적용 결과. (현재
+   구현은 전체를 enrich한 뒤 반환하므로 비공허 RED.)
 
-기존 회귀: `list-adapters.test.js`, `ws.list-subscriptions.test.js` 전체 green.
+회귀 가드 (RED 아님 — 이동·불변 보증):
+
+- `mapSubscriptionToBdArgs({ type: 'closed-issues' })` (since 없음) —
+  `--closed-after` 미포함, 기존 args 불변.
+- `applyClosedIssuesFilter`의 leaf 추출 후에도 `server/ws/context.js` 경유
+  import가 동작 — 기존 `ws.list-subscriptions.test.js` 등 회귀로 커버.
+- full mock 테스트 6개(`ws.list-subscriptions`, `ws.list-refresh.coalesce`,
+  `ws.mutation-window`, `ws.snapshot-cache`, `ws.workspace-isolation`,
+  `ws.git-pull-workspace`)가 무수정으로 green.
+- `list-adapters.test.js` 전체 green.
 
 ## 검증
 
