@@ -321,15 +321,22 @@ export function implFreshness(workspace_root, receipt_sha, bead_id) {
 }
 
 /**
+ * Receipt parsing always runs — it is string work the glyphs need. Only the git
+ * probes are gated on {@link staleProbesApply}.
+ *
  * @param {Record<string, any>} md - issue metadata
  * @param {string | undefined | null} workspace_root
  * @param {string | null} head - precomputed HEAD (avoids re-shelling per issue)
  * @param {string | undefined | null} bead_id - issue id (impl branch name)
+ * @param {string | null} status - issue status, or null to always probe
  * @returns {{ spec_stale: boolean, impl_stale: boolean, spec_receipt: ParsedReceipt | null, impl_receipt: ParsedReceipt | null }}
  */
-function computeStaleWithHead(md, workspace_root, head, bead_id) {
+function computeStaleWithHead(md, workspace_root, head, bead_id, status) {
   const spec_receipt = parseReceipt(md.spec_review);
   const impl_receipt = parseReceipt(md.impl_review);
+  if (!staleProbesApply(status)) {
+    return { spec_stale: false, impl_stale: false, spec_receipt, impl_receipt };
+  }
   const spec_stale =
     !!spec_receipt &&
     typeof md.spec_id === 'string' &&
@@ -341,21 +348,43 @@ function computeStaleWithHead(md, workspace_root, head, bead_id) {
 }
 
 /**
+ * Whether the staleness git probes are worth running for a status.
+ *
+ * A `closed` bead is merged, so its `spec_stale`/`impl_stale`/plan `stale`
+ * become true simply because later commits landed — a marker nobody can act on,
+ * recomputed on every 30s poll at roughly 930ms of blocking `execFileSync` per
+ * pass. `resolved` is deliberately NOT included: it is pre-merge, where
+ * staleness still drives a re-review.
+ *
+ * @param {string | null} status
+ */
+function staleProbesApply(status) {
+  return status !== 'closed';
+}
+
+/**
  * Compute `spec_stale` / `impl_stale` for one issue's metadata.
  *
  * @param {Record<string, any> | null | undefined} metadata
  * @param {string | undefined | null} workspace_root
  * @param {string | undefined | null} [bead_id] - issue id (impl branch name)
+ * @param {string | null} [status] - omit to probe regardless of status
  * @returns {{ spec_stale: boolean, impl_stale: boolean }}
  */
-export function computeStale(metadata, workspace_root, bead_id = null) {
+export function computeStale(
+  metadata,
+  workspace_root,
+  bead_id = null,
+  status = null
+) {
   const md = metadata || {};
   const head = gitHead(workspace_root);
   const { spec_stale, impl_stale } = computeStaleWithHead(
     md,
     workspace_root,
     head,
-    bead_id
+    bead_id,
+    status
   );
   return { spec_stale, impl_stale };
 }
@@ -481,8 +510,9 @@ function planStage(md, status, workspace_root, head) {
       return makeStage('dim', null, false, raw);
     }
     const stale =
+      staleProbesApply(status) &&
       planFreshness(workspace_root, head, receipt.sha, md.plan_path) ===
-      'stale';
+        'stale';
     return makeStage('full', classifyGlyph(receipt), stale, raw);
   }
   if (status === 'resolved' || status === 'closed') {
@@ -555,7 +585,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
   const bead_id = (issue && issue.id) || null;
   const resolved_head = head === undefined ? gitHead(workspace_root) : head;
   const { spec_stale, impl_stale, spec_receipt, impl_receipt } =
-    computeStaleWithHead(md, workspace_root, resolved_head, bead_id);
+    computeStaleWithHead(md, workspace_root, resolved_head, bead_id, status);
 
   const route = deriveRoute(md);
   // Explicit only when the metadata pin itself is a valid enum value — any
