@@ -656,7 +656,13 @@ export function handleSubscribeSessionLog(ws, req) {
   ws.send(JSON.stringify(makeOk(req, { id: client_id, attempt_id })));
 
   const lines = runtime.sessionLog.read(key, attempt_id);
-  emitSessionLogSnapshot(ws, client_id, attempt_id, lines);
+  emitSessionLogSnapshot(
+    ws,
+    client_id,
+    attempt_id,
+    lines,
+    runtime.sessionLog.lastEventAtOf(key, attempt_id)
+  );
 
   const off = runtime.sessionLog.subscribe((a) => {
     if (a.workspace === key && a.attempt_id === attempt_id) {

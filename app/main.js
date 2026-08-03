@@ -239,7 +239,8 @@ export function bootstrap(root_element) {
         try {
           session_log_store.set(
             p.attempt_id,
-            Array.isArray(p.lines) ? p.lines : []
+            Array.isArray(p.lines) ? p.lines : [],
+            typeof p.last_event_at === 'number' ? p.last_event_at : null
           );
         } catch {
           // ignore

@@ -96,4 +96,17 @@ describe('worker/session-log', () => {
   test('read of an absent attempt returns []', () => {
     expect(createSessionLog().read(WS, 'nope')).toEqual([]);
   });
+
+  test('lastEventAtOf returns the log file mtime in epoch ms', () => {
+    const log = createSessionLog();
+    writeRunnerLine('att-4', { type: 'system' });
+
+    const at = log.lastEventAtOf(WS, 'att-4');
+
+    expect(at).toBe(fs.statSync(sessionLogPath(WS, 'att-4')).mtimeMs);
+  });
+
+  test('lastEventAtOf returns null for an absent attempt', () => {
+    expect(createSessionLog().lastEventAtOf(WS, 'nope')).toBe(null);
+  });
 });
