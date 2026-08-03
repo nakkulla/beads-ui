@@ -1,0 +1,69 @@
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import {
+  guardHookDir,
+  sessionLogPath,
+  workspaceSlug,
+  workspaceStateDir
+} from './state-paths.js';
+
+const WS = '/tmp/example-workspace/project-a';
+
+/** @type {string | undefined} */
+let saved_xdg;
+
+beforeEach(() => {
+  saved_xdg = process.env.XDG_STATE_HOME;
+  process.env.XDG_STATE_HOME = '/state';
+});
+
+afterEach(() => {
+  if (saved_xdg === undefined) {
+    delete process.env.XDG_STATE_HOME;
+  } else {
+    process.env.XDG_STATE_HOME = saved_xdg;
+  }
+});
+
+describe('guardHookDir', () => {
+  test('lives beside the queue file in the per-workspace state dir', () => {
+    const dir = guardHookDir(WS, 'UI-8mvc-1');
+
+    expect(dir).toBe(
+      path.join('/state', 'bdui', workspaceSlug(WS), 'guard-hooks', 'UI-8mvc-1')
+    );
+    expect(path.dirname(path.dirname(dir))).toBe(workspaceStateDir(WS));
+  });
+
+  test('gives each attempt its own directory', () => {
+    expect(guardHookDir(WS, 'UI-8mvc-1')).not.toBe(
+      guardHookDir(WS, 'UI-8mvc-2')
+    );
+  });
+
+  test('sanitizes an attempt id the same way the session log does', () => {
+    const dir = guardHookDir(WS, '../escape/UI-1');
+
+    expect(path.basename(dir)).toBe('.._escape_UI-1');
+    expect(path.basename(sessionLogPath(WS, '../escape/UI-1'))).toBe(
+      '.._escape_UI-1.jsonl'
+    );
+  });
+
+  test('falls back to the XDG default when the env var is unset', () => {
+    delete process.env.XDG_STATE_HOME;
+
+    expect(guardHookDir(WS, 'UI-1')).toBe(
+      path.join(
+        os.homedir(),
+        '.local',
+        'state',
+        'bdui',
+        workspaceSlug(WS),
+        'guard-hooks',
+        'UI-1'
+      )
+    );
+  });
+});

@@ -133,6 +133,96 @@ describe('worker/gh — openPrForBranch', () => {
   });
 });
 
+describe('worker/gh — mergedPrForBranch', () => {
+  test('queries the MERGED PR for the head branch in the repo dir', async () => {
+    const run = makeRun({ stdout: '[]' });
+
+    await makeGh(run).mergedPrForBranch('/repo', 'UI-1');
+
+    expect(run).toHaveBeenCalledWith(
+      [
+        'pr',
+        'list',
+        '--head',
+        'UI-1',
+        '--state',
+        'merged',
+        '--json',
+        'number,url,headRefName,headRefOid,baseRefName,state',
+        '--repo',
+        'o/r'
+      ],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('returns ok with the merged PR normalized', async () => {
+    const run = makeRun({
+      stdout: JSON.stringify([{ ...PR, state: 'MERGED' }])
+    });
+
+    const r = await makeGh(run).mergedPrForBranch('/repo', 'UI-1');
+
+    expect(r).toEqual({
+      state: 'ok',
+      data: {
+        number: 7,
+        url: PR.url,
+        head_ref: 'UI-1',
+        base_ref: 'main',
+        head_sha: PR.headRefOid,
+        state: 'MERGED'
+      }
+    });
+  });
+
+  test('returns empty when no PR for the branch was ever merged', async () => {
+    const run = makeRun({ stdout: '[]' });
+
+    const r = await makeGh(run).mergedPrForBranch('/repo', 'UI-1');
+
+    expect(r).toEqual({ state: 'empty' });
+  });
+
+  test('returns error (not empty) on a non-zero exit', async () => {
+    const run = makeRun({ code: 1, stderr: 'boom' });
+
+    const r = await makeGh(run).mergedPrForBranch('/repo', 'UI-1');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_failed' });
+  });
+
+  test('returns error (not empty) on unparseable output', async () => {
+    const run = makeRun({ stdout: 'not json' });
+
+    const r = await makeGh(run).mergedPrForBranch('/repo', 'UI-1');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
+  });
+
+  test('returns error when origin cannot be resolved', async () => {
+    const run = makeRun({ stdout: '[]' });
+    const git_run = vi.fn(async () => ({ code: 1, stdout: '', stderr: '' }));
+
+    const r = await createGh({ run, git_run }).mergedPrForBranch(
+      '/repo',
+      'UI-1'
+    );
+
+    expect(r).toEqual({ state: 'error', reason: 'origin_unresolvable' });
+  });
+
+  test('returns error when the runner throws', async () => {
+    const run = vi.fn(async () => {
+      throw new Error('spawn failed');
+    });
+
+    const r = await makeGh(run).mergedPrForBranch('/repo', 'UI-1');
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_spawn_failed' });
+  });
+});
+
 describe('worker/gh — checkAvailability', () => {
   test('returns ok when gh auth status exits zero', async () => {
     const run = makeRun();

@@ -176,15 +176,32 @@ describe('runner/preamble PR base directive (worker-base-scope-alignment §4)', 
   });
 });
 
-describe('runner/preamble base push guard notice (worker-base-scope-alignment §8)', () => {
+describe('runner/preamble base push guard notice (guard-enforcement-layer-replacement §4)', () => {
   test('announces the base-landing guard the session would otherwise trip blind', () => {
     expect(GUARD_CONTRACT_DIRECTIVE).toContain('base 브랜치 직접 랜딩 금지');
     expect(GUARD_CONTRACT_DIRECTIVE).toContain('gh pr merge');
   });
 
-  test('states that a push to ANOTHER repo base is allowed but must be provable', () => {
+  test('says a base push is refused by the hook rather than ending the session', () => {
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('pre-push hook 이 거부한다');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('세션은 종료되지 않고');
+  });
+
+  test('states that a push to ANOTHER repo base is not judged at all', () => {
     expect(GUARD_CONTRACT_DIRECTIVE).toContain('다른 저장소의 base');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('증명');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('판정 대상이 아니다');
+    expect(GUARD_CONTRACT_DIRECTIVE).not.toContain('증명');
+  });
+
+  test('names hook disabling as the second kill, alongside gh pr merge', () => {
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('즉시 종료되는 것은');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('--no-verify');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('core.hooksPath');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('GIT_CONFIG_COUNT');
+  });
+
+  test('announces the post-hoc base invariant', () => {
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('base_landing_detected');
   });
 
   test('keeps the two directives it already carried', () => {

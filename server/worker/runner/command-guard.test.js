@@ -9,8 +9,11 @@ import { describe, expect, test } from 'vitest';
 import {
   BASE_INTO_BRANCH_RE,
   BASE_LANDING_RE,
-  baseLandingRegex,
+  BASE_PUSH_RE,
+  GH_PR_MERGE_RE,
+  basePushRegex,
   findMergeViolation,
+  guardEffect,
   tokenize
 } from './command-guard.js';
 
@@ -110,6 +113,7 @@ describe('command-guard base-landing detection', () => {
     const violation = findMergeViolation('gh pr merge 311 --squash', NORMAL);
 
     expect(violation).toEqual({
+      kind: 'gh_pr_merge',
       reason: 'merge_to_base_blocked',
       command: 'gh pr merge 311 --squash'
     });
@@ -202,6 +206,7 @@ describe('command-guard interpreter recursion', () => {
     const violation = findMergeViolation('bash -c "gh pr merge 311"', NORMAL);
 
     expect(violation).toEqual({
+      kind: 'gh_pr_merge',
       reason: 'merge_to_base_blocked',
       command: 'gh pr merge 311'
     });
@@ -231,6 +236,7 @@ describe('command-guard interpreter recursion', () => {
     const violation = findMergeViolation(cmd, NORMAL);
 
     expect(violation).toEqual({
+      kind: 'gh_pr_merge',
       reason: 'merge_to_base_blocked',
       command: 'gh pr merge 311'
     });
@@ -257,6 +263,7 @@ describe('command-guard fallback on unresolvable input', () => {
 
     expect(BASE_LANDING_RE.test(cmd)).toBe(true);
     expect(violation).toEqual({
+      kind: 'gh_pr_merge',
       reason: 'merge_to_base_blocked',
       command: cmd
     });
@@ -625,13 +632,67 @@ describe('command-guard fallback is never more permissive than argv', () => {
   });
 
   test('builds the declared-base fallback regex and leaves the legacy one', () => {
-    expect(baseLandingRegex(null)).toBe(BASE_LANDING_RE);
-    expect(baseLandingRegex('ilsun/dev').test('git push origin main')).toBe(
-      false
+    expect(basePushRegex(null)).toBe(BASE_PUSH_RE);
+    expect(basePushRegex('ilsun/dev').test('git push origin main')).toBe(false);
+    expect(basePushRegex('ilsun/dev').test('git push origin ilsun/dev')).toBe(
+      true
     );
-    expect(
-      baseLandingRegex('ilsun/dev').test('git push origin ilsun/dev')
-    ).toBe(true);
+  });
+
+  // The two split shapes replaced ONE alternation; the legacy union stays
+  // exported so the split can be pinned against exactly what it covered.
+  test('covers the legacy union with the two split shapes', () => {
+    const cases = [
+      'gh pr merge 311',
+      'git push origin main',
+      'git push origin HEAD:master',
+      'git push origin UI-1',
+      'echo hello'
+    ];
+
+    for (const cmd of cases) {
+      expect(GH_PR_MERGE_RE.test(cmd) || BASE_PUSH_RE.test(cmd)).toBe(
+        BASE_LANDING_RE.test(cmd)
+      );
+    }
+  });
+});
+
+describe('command-guard fallback splits the two landing shapes', () => {
+  /**
+   * @param {string} cmd
+   * @returns {string}
+   */
+  function unparseable(cmd) {
+    return `${cmd} "`;
+  }
+
+  test('kills an unparseable `gh pr merge`', () => {
+    const broken = unparseable('gh pr merge 311');
+
+    expect(tokenize(broken)).toBeNull();
+    const violation = findMergeViolation(broken, ON_MAIN);
+
+    expect(violation?.kind).toBe('gh_pr_merge');
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  test('only warns on an unparseable base push', () => {
+    const broken = unparseable('git push origin main');
+
+    expect(tokenize(broken)).toBeNull();
+    const violation = findMergeViolation(broken, ON_MAIN);
+
+    expect(violation?.kind).toBe('git_push_base');
+    expect(guardEffect(violation)).toBe('warn');
+  });
+
+  test('kills the `gh pr merge` half of an unparseable command that has both', () => {
+    const broken = unparseable('git push origin main && gh pr merge 311');
+
+    const violation = findMergeViolation(broken, ON_MAIN);
+
+    expect(violation?.kind).toBe('gh_pr_merge');
   });
 });
 
@@ -759,19 +820,19 @@ describe('command-guard destination matching is exact', () => {
   });
 });
 
-describe('baseLandingRegex boundaries', () => {
+describe('basePushRegex boundaries', () => {
   test('matches a base that ends in a non-word character', () => {
-    expect(baseLandingRegex('foo-').test('git push origin foo-')).toBe(true);
+    expect(basePushRegex('foo-').test('git push origin foo-')).toBe(true);
   });
 
   test('still matches the base inside a full ref', () => {
     expect(
-      baseLandingRegex('main').test('git push origin HEAD:refs/heads/main')
+      basePushRegex('main').test('git push origin HEAD:refs/heads/main')
     ).toBe(true);
   });
 
   test('does not match a longer branch that starts with the base', () => {
-    expect(baseLandingRegex('ilsun').test('git push origin ilsun/dev')).toBe(
+    expect(basePushRegex('ilsun').test('git push origin ilsun/dev')).toBe(
       false
     );
   });
@@ -783,5 +844,343 @@ describe('baseLandingRegex boundaries', () => {
     expect(
       findMergeViolation(cmd, { repo: REPO, target_base: 'foo-' })?.reason
     ).toBe('merge_to_base_blocked');
+  });
+});
+
+describe('command-guard effect table', () => {
+  test('warns on a base push, whose judgment is now evidence only', () => {
+    const violation = findMergeViolation('git push origin main', ON_MAIN);
+
+    expect(violation?.kind).toBe('git_push_base');
+    expect(guardEffect(violation)).toBe('warn');
+  });
+
+  test('kills `gh pr merge`, which no other layer covers', () => {
+    const violation = findMergeViolation('gh pr merge 311', ON_MAIN);
+
+    expect(violation?.kind).toBe('gh_pr_merge');
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  test('kills a hook-disabling command', () => {
+    const violation = findMergeViolation(
+      'git push --no-verify origin UI-1',
+      ON_MAIN
+    );
+
+    expect(violation?.kind).toBe('hook_bypass');
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  test('kills `git merge`, unchanged by this Bead', () => {
+    const violation = findMergeViolation('git merge origin/main', ON_MAIN);
+
+    expect(violation?.kind).toBe('base_merge');
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  test('kills an unknown kind, so a new kind fails closed', () => {
+    const effect = guardEffect(
+      /** @type {any} */ ({ kind: 'something_new', command: 'x' })
+    );
+
+    expect(effect).toBe('kill');
+  });
+});
+
+describe('command-guard hook-bypass detection', () => {
+  test('kills `git push --no-verify`', () => {
+    const violation = findMergeViolation(
+      'git push --no-verify origin UI-1',
+      ON_MAIN
+    );
+
+    expect(violation).toEqual({
+      kind: 'hook_bypass',
+      reason: 'hook_bypass_blocked',
+      command: 'git push --no-verify origin UI-1'
+    });
+  });
+
+  test('kills `git -c core.hooksPath=`', () => {
+    const violation = findMergeViolation(
+      'git -c core.hooksPath=/dev/null push origin UI-1',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('hook_bypass_blocked');
+  });
+
+  test('kills `git config core.hooksPath`', () => {
+    const violation = findMergeViolation(
+      'git config --global core.hooksPath /tmp/empty-hooks',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('hook_bypass_blocked');
+  });
+
+  test('kills a GIT_CONFIG_* assignment prefix', () => {
+    const violation = findMergeViolation(
+      'GIT_CONFIG_COUNT=0 git push origin UI-1',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('hook_bypass_blocked');
+  });
+
+  test('kills a GIT_CONFIG_KEY_/VALUE_ redefinition', () => {
+    const violation = findMergeViolation(
+      'GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x git push origin UI-1',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('hook_bypass_blocked');
+  });
+
+  test('kills a bare GIT_CONFIG_COUNT assignment, which needs no command', () => {
+    const violation = findMergeViolation(
+      'GIT_CONFIG_COUNT=0; git push origin UI-1',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('hook_bypass_blocked');
+  });
+
+  test('kills the hooks-path override behind the env wrapper', () => {
+    const violation = findMergeViolation(
+      'env GIT_CONFIG_COUNT=0 git push origin UI-1',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('hook_bypass_blocked');
+  });
+
+  test('kills a hook bypass inside a `bash -c` payload', () => {
+    const violation = findMergeViolation(
+      'bash -c "git push --no-verify origin UI-1"',
+      ON_MAIN
+    );
+
+    expect(violation?.reason).toBe('hook_bypass_blocked');
+  });
+
+  // `-n` is `--dry-run`: it pushes nothing and runs no hook bypass.
+  test('passes `git push -n`, which is a dry run', () => {
+    expect(findMergeViolation('git push -n origin UI-1', ON_MAIN)).toBeNull();
+    expect(
+      findMergeViolation('git push --dry-run origin UI-1', ON_MAIN)
+    ).toBeNull();
+  });
+
+  test('passes an unrelated assignment prefix and an unrelated -c', () => {
+    expect(
+      findMergeViolation('GIT_CONFIG_GLOBAL=/dev/null git status', ON_MAIN)
+    ).toBeNull();
+    expect(
+      findMergeViolation('git -c user.name=x commit -m y', ON_MAIN)
+    ).toBeNull();
+  });
+
+  test('passes a command that merely mentions the flag as text', () => {
+    expect(
+      findMergeViolation('rg -n "core.hooksPath" docs/', ON_MAIN)
+    ).toBeNull();
+    expect(
+      findMergeViolation('git commit -m "no --no-verify here"', ON_MAIN)
+    ).toBeNull();
+  });
+
+  test('kills a hook bypass ahead of a base push, the stricter effect', () => {
+    const violation = findMergeViolation(
+      'git push --no-verify origin main',
+      ON_MAIN
+    );
+
+    expect(violation?.kind).toBe('hook_bypass');
+  });
+});
+
+describe('command-guard keeps `gh pr merge` kill on every shape', () => {
+  test('kills a merge aimed at ANOTHER repository', () => {
+    const violation = findMergeViolation(
+      'gh pr merge 12 --repo nakkulla/other --squash',
+      ON_MAIN
+    );
+
+    expect(violation?.kind).toBe('gh_pr_merge');
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  test('kills `gh pr merge` on a disposition session too', () => {
+    const violation = findMergeViolation('gh pr merge 311', {
+      ...ON_MAIN,
+      disposition: true
+    });
+
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  // gh takes its flags interspersed: both forms below are accepted by gh 2.x
+  // and both merge, so a fixed argv[1]/argv[2] test would let a real merge run.
+  test('kills a merge whose repo override sits BEFORE the subcommand', () => {
+    const violation = findMergeViolation(
+      'gh pr --repo nakkulla/other merge 12',
+      ON_MAIN
+    );
+
+    expect(violation?.kind).toBe('gh_pr_merge');
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  test('kills a merge whose `-R` override sits ahead of `pr`', () => {
+    const violation = findMergeViolation(
+      'gh -R nakkulla/other pr merge 12',
+      ON_MAIN
+    );
+
+    expect(violation?.kind).toBe('gh_pr_merge');
+  });
+
+  test('kills a merge with an attached `--repo=` override', () => {
+    expect(
+      findMergeViolation('gh pr --repo=nakkulla/other merge 12', ON_MAIN)?.kind
+    ).toBe('gh_pr_merge');
+  });
+
+  test('passes a gh command whose ARGUMENT merely reads `pr merge`', () => {
+    expect(
+      findMergeViolation("gh pr create --title 'pr merge' --body x", ON_MAIN)
+    ).toBeNull();
+    expect(findMergeViolation('gh issue list --repo a/b', ON_MAIN)).toBeNull();
+  });
+});
+
+describe('command-guard fallback catches a hook bypass the tokenizer refused', () => {
+  // A function definition makes the tokenizer refuse the whole input, which is
+  // the fallback's entire purpose — and the fallback must never be MORE
+  // permissive than the argv path, so a bypass there stays a kill instead of
+  // being demoted to the base-push warning.
+  test('kills `--no-verify` hidden behind a function definition', () => {
+    const violation = findMergeViolation(
+      'f() { :; }; git push --no-verify origin HEAD:main',
+      ON_MAIN
+    );
+
+    expect(violation?.kind).toBe('hook_bypass');
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  test('kills a relocated hooks path behind a function definition', () => {
+    expect(
+      findMergeViolation(
+        'f() { :; }; git -c core.hooksPath=/tmp/x push origin UI-1',
+        ON_MAIN
+      )?.kind
+    ).toBe('hook_bypass');
+    expect(
+      findMergeViolation(
+        'f() { :; }; git config core.hooksPath /tmp/x',
+        ON_MAIN
+      )?.kind
+    ).toBe('hook_bypass');
+  });
+
+  test('kills a GIT_CONFIG_* redefinition behind a function definition', () => {
+    expect(
+      findMergeViolation(
+        'f() { :; }; GIT_CONFIG_COUNT=0 git push origin UI-1',
+        ON_MAIN
+      )?.kind
+    ).toBe('hook_bypass');
+  });
+
+  test('leaves a disposition session alone on the same input', () => {
+    expect(
+      findMergeViolation('f() { :; }; git push --no-verify origin UI-1', {
+        ...ON_MAIN,
+        disposition: true
+      })
+    ).toBeNull();
+  });
+});
+
+describe('command-guard demotes the base-landing judgment to a warning', () => {
+  /**
+   * @param {string} cmd
+   * @returns {string}
+   */
+  function unparseable(cmd) {
+    return `${cmd} "`;
+  }
+
+  // The two measured incidents stay JUDGED (the fallback still fires when the
+  // command cannot be parsed) but no longer cost the session its life.
+  test('warns instead of killing on both unparseable incident commands', () => {
+    for (const cmd of [INCIDENT_2026_07_30, INCIDENT_2026_07_29]) {
+      const violation = findMergeViolation(unparseable(cmd), ON_MAIN);
+
+      expect(violation?.reason).toBe('merge_to_base_blocked');
+      expect(guardEffect(violation)).toBe('warn');
+    }
+  });
+
+  test('warns on every allowlist counterexample', () => {
+    const cases = [
+      'git push origin main',
+      '( cd /foreign ) && git push origin main',
+      '( cd /foreign ) && ( git push origin main )',
+      'false && cd /foreign; git push origin main',
+      'f(){ cd /foreign; }; git push origin main'
+    ];
+
+    for (const cmd of cases) {
+      const violation = findMergeViolation(cmd, ON_MAIN);
+
+      expect(violation?.reason).toBe('merge_to_base_blocked');
+      expect(guardEffect(violation)).toBe('warn');
+    }
+  });
+});
+
+describe('command-guard excludes a disposition session', () => {
+  const DISPOSING = { ...ON_MAIN, disposition: true };
+
+  test('passes a base push, which is the disposition session job', () => {
+    expect(findMergeViolation('git push origin main', DISPOSING)).toBeNull();
+    expect(
+      findMergeViolation('git push origin HEAD:refs/heads/main', DISPOSING)
+    ).toBeNull();
+  });
+
+  test('passes an unparseable base push too', () => {
+    expect(findMergeViolation('git push origin main "', DISPOSING)).toBeNull();
+  });
+
+  test('passes the hook-bypass forms, whose hook is never installed', () => {
+    expect(
+      findMergeViolation('git push --no-verify origin main', DISPOSING)
+    ).toBeNull();
+    expect(
+      findMergeViolation('GIT_CONFIG_COUNT=0 git push origin main', DISPOSING)
+    ).toBeNull();
+  });
+
+  test('still blocks `git merge`, which disposition does not need', () => {
+    expect(findMergeViolation('git merge origin/main', DISPOSING)?.kind).toBe(
+      'base_merge'
+    );
+  });
+
+  test('defaults to NOT disposition when the flag is absent or untrue', () => {
+    expect(findMergeViolation('git push origin main', ON_MAIN)?.kind).toBe(
+      'git_push_base'
+    );
+    expect(
+      findMergeViolation(
+        'git push origin main',
+        /** @type {any} */ ({ ...ON_MAIN, disposition: 'yes' })
+      )?.kind
+    ).toBe('git_push_base');
   });
 });

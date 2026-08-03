@@ -732,6 +732,51 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     });
   });
 
+  test('base_drift survives updateAttempt and a cold reload (UI-8mvc §3)', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue
+      .revision;
+    const appended = store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    expect(appended.queue.attempts['att-1'].base_drift).toBeNull();
+
+    const record = {
+      pinned: 'a'.repeat(40),
+      observed: 'b'.repeat(40),
+      landed: true,
+      via: 'direct_push',
+      shas: ['c'.repeat(40)]
+    };
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { base_drift: record }
+    });
+
+    expect(updated.queue.attempts['att-1'].base_drift).toEqual(record);
+    expect(createQueueStore().load(WS).attempts['att-1'].base_drift).toEqual(
+      record
+    );
+  });
+
+  test('normalizes a non-object base_drift to null', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue
+      .revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: /** @type {any} */ ({ base_drift: 'landed' })
+    });
+
+    expect(updated.queue.attempts['att-1'].base_drift).toBeNull();
+  });
+
   test('normalizes a non-object cause_detail to null', () => {
     const store = createQueueStore();
     const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue

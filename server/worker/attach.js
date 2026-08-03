@@ -482,6 +482,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // the admission pin are taken from a base read HERE, not one captured at
     // attachment construction.
     resolveBase,
+    // The DETECTION layer's two runners (UI-8mvc §3). The post-hoc base
+    // invariant walks `rev-list` with the SAME git runner the base resolver
+    // uses and excludes PR-merge landings through the SAME `gh` adapter verify
+    // and the poller observe with — so the observation can never disagree with
+    // the base it is judging, and unwiring either here is what turns the
+    // detection layer back into unit-test-only code.
+    gitRun,
+    gh,
     notify,
     // The external-row evidence the attempt-less conflict dispatch stands on
     // (UI-w0hi §1) — the SAME registry the poller refreshes and the merge click

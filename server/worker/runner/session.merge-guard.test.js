@@ -2,9 +2,14 @@
  * The split `MERGE_RE` fail-closed guards (worker-phase2 §1/§13), migrated from
  * the retired merge-lock guard suite: the gate is the ATTEMPT's mode, not a lock.
  *
- *   - `gh pr merge` / a base push  → killed on EVERY attempt.
+ * The EFFECT is the violation's `kind`, not its reason
+ * (guard-enforcement-layer-replacement §4):
+ *
+ *   - `gh pr merge` / hook bypass  → killed on EVERY attempt.
+ *   - a base push                  → warned about, session continues.
  *   - `git merge origin/main`      → killed on a normal attempt, ALLOWED on a
  *                                    conflict-resolution attempt.
+ *   - a disposition session        → base push and hook bypass do not apply.
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -34,8 +39,8 @@ function bashToolLine(command) {
  * Replay one shell command through a session and return the verdict + kill spy.
  *
  * @param {string} command
- * @param {{ conflict_resolution?: boolean, repo?: string,
- * target_base?: string }} [settings]
+ * @param {{ conflict_resolution?: boolean, disposition?: string|null,
+ * repo?: string, target_base?: string }} [settings]
  */
 async function runCommand(command, settings = {}) {
   const spawn_impl = makeFixtureSpawn({
@@ -81,22 +86,109 @@ describe('runner/session base-landing guard (always blocked)', () => {
     ).toBe(true);
   });
 
-  test('kills a push to main on a normal attempt', async () => {
-    const { verdict, kill_impl } = await runCommand('git push origin main');
+  test('kills `gh pr merge` aimed at another repository', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'gh pr merge 12 --repo nakkulla/other'
+    );
 
     expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
-    expect(
-      verdict.events.some((e) => e.reason === 'merge_to_base_blocked')
-    ).toBe(true);
+    expect(verdict.blocked).toBe(true);
+  });
+});
+
+describe('runner/session hook-bypass guard (killed)', () => {
+  test('kills a `--no-verify` push', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git push --no-verify origin UI-1'
+    );
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(verdict.blocked).toBe(true);
+    expect(verdict.blocked_detail).toEqual({
+      reason: 'hook_bypass_blocked',
+      command: 'git push --no-verify origin UI-1'
+    });
   });
 
-  test('kills a push to main on a conflict-resolution attempt too', async () => {
+  test('names the disabled hook in the blocker message', async () => {
+    const { verdict } = await runCommand('git config core.hooksPath /tmp/x');
+
+    const blocker = verdict.events.find((e) => e.kind === 'blocker');
+
+    expect(blocker?.reason).toBe('hook_bypass_blocked');
+    expect(blocker?.message).toContain('git config core.hooksPath /tmp/x');
+  });
+
+  test('kills a GIT_CONFIG_* assignment prefix', async () => {
+    const { kill_impl } = await runCommand(
+      'GIT_CONFIG_COUNT=0 git push origin UI-1'
+    );
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+  });
+
+  test('does not kill a dry-run push', async () => {
+    const { verdict, kill_impl } = await runCommand('git push -n origin UI-1');
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+  });
+});
+
+describe('runner/session base-push guard (warned, not killed)', () => {
+  test('does not kill a push to main on a normal attempt', async () => {
+    const { verdict, kill_impl } = await runCommand('git push origin main');
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+    expect(verdict.blocked_detail).toBeNull();
+  });
+
+  test('records the warning with the guard reason and the command', async () => {
+    const { verdict } = await runCommand('git push origin main');
+
+    const warning = verdict.events.find(
+      (e) => e.reason === 'merge_to_base_blocked'
+    );
+
+    expect(warning?.kind).toBe('error');
+    expect(warning?.message).toContain('git push origin main');
+  });
+
+  test('keeps normalizing the same line the warning came from', async () => {
+    const { verdict } = await runCommand('git push origin main');
+
+    expect(verdict.events.map((e) => e.kind)).toEqual(['error', 'tool']);
+  });
+
+  test('lets the session run to its own verdict after a warning', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        bashToolLine('git push origin main'),
+        JSON.stringify({ type: 'result', subtype: 'success', is_error: false })
+      ],
+      pid: 5150
+    });
+    const kill_impl = vi.fn();
+
+    const handle = runSession(claudeSpec(), { id: 'UI-1' }, WS, NORMAL, {
+      spawn_impl,
+      kill_impl
+    });
+    const verdict = await handle.done;
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.success).toBe(true);
+    expect(verdict.reason).toBe('ok');
+  });
+
+  test('does not kill a push to master on a conflict-resolution attempt', async () => {
     const { verdict, kill_impl } = await runCommand(
       'git push origin HEAD:master',
       RESOLVING
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
     expect(
       verdict.events.some((e) => e.reason === 'merge_to_base_blocked')
     ).toBe(true);
@@ -317,13 +409,13 @@ describe('runner/session base-landing guard reads its subject from settings', ()
     expect(verdict.blocked).toBe(false);
   });
 
-  test('kills a push to the declared base ilsun/dev', async () => {
+  test('warns without killing on a push to the declared base ilsun/dev', async () => {
     const { verdict, kill_impl } = await runCommand(
       'git push origin ilsun/dev',
       ON_DEV
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
     expect(
       verdict.events.some((e) => e.reason === 'merge_to_base_blocked')
     ).toBe(true);
@@ -341,10 +433,70 @@ describe('runner/session base-landing guard reads its subject from settings', ()
     expect(verdict.blocked).toBe(false);
   });
 
-  test('still kills a base push from the attempt repo itself', async () => {
-    const { kill_impl } = await runCommand('git push origin main', ON_MAIN);
+  test('still JUDGES a base push from the attempt repo itself', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git push origin main',
+      ON_MAIN
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(
+      verdict.events.some((e) => e.reason === 'merge_to_base_blocked')
+    ).toBe(true);
+  });
+});
+
+describe('runner/session excludes a disposition session', () => {
+  const REPO = path.join(os.homedir(), 'Documents/GitHub/beads-ui');
+  // The scheduler puts the disposition KIND on the settings, not a boolean.
+  const DISPOSING = {
+    repo: REPO,
+    target_base: 'main',
+    disposition: 'revise_fix'
+  };
+
+  // Publishing the resolved base IS the job of a REVISE-disposition session
+  // (`revise-disposition.js`), which this guard used to SIGTERM it for.
+  test('raises nothing at all for its base publication', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git push origin main',
+      DISPOSING
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+    expect(
+      verdict.events.some((e) => e.reason === 'merge_to_base_blocked')
+    ).toBe(false);
+  });
+
+  test('raises nothing for a hook-bypass form either', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git push --no-verify origin main',
+      DISPOSING
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+  });
+
+  test('still kills `gh pr merge`', async () => {
+    const { kill_impl } = await runCommand('gh pr merge 311', DISPOSING);
 
     expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+  });
+
+  test('applies the guard normally when the kind is null (every other attempt)', async () => {
+    const { verdict, kill_impl } = await runCommand('git push origin main', {
+      repo: REPO,
+      target_base: 'main',
+      disposition: null
+    });
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(
+      verdict.events.some((e) => e.reason === 'merge_to_base_blocked')
+    ).toBe(true);
   });
 });
 

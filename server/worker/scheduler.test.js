@@ -3,10 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { install as guardHookInstall } from './guard-hook.js';
 import { createQueueStore } from './queue-store.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { createScheduler } from './scheduler.js';
+import { guardHookDir } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
 const WS = '/tmp/example-workspace/project-a';
@@ -270,7 +272,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, gh?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -328,6 +330,15 @@ function setup(opts) {
       : undefined,
     probePid: opts.probePid,
     sessionMonitors: opts.sessionMonitors,
+    // Absent ⇒ the REAL guard-hook module, writing under the tmp
+    // XDG_STATE_HOME this file arms. An override is only how a test drives an
+    // install failure (UI-8mvc §2).
+    guardHook: opts.guardHook,
+    // The post-hoc base observation's two runners (UI-8mvc §3). Absent by
+    // default: a scheduler built without them records the observation as
+    // undone rather than judging an attempt it could not observe.
+    gitRun: opts.gitRun,
+    gh: opts.gh,
     notifyQueueChanged: opts.notifyQueueChanged,
     now: () => 1000
   });
@@ -1380,7 +1391,10 @@ describe('scheduler policy axis removal (worker-phase2 §2)', () => {
 
     await env.scheduler.tick(WS);
 
-    expect(env.runner.settingsFor('S1').env).toBe(undefined);
+    // `settings.env` is no longer empty — UI-8mvc §2 delivers the guard hook
+    // through it — so the retired token is asserted by key, not by the absence
+    // of the whole object.
+    expect(env.runner.settingsFor('S1').env.BDUI_WORKER_TOKEN).toBe(undefined);
   });
 
   test('conflict_resolution defaults to false on a normal dispatch (§6 seam)', async () => {
@@ -3134,10 +3148,79 @@ describe('conflict resolution reaches the session guard end-to-end (§1/§6)', (
     expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
   });
 
-  test('still kills the SAME resolution attempt for a push to the base', async () => {
+  // The base-push judgment survives the trip but no longer kills: the effect is
+  // the violation's kind (guard-enforcement-layer-replacement §4), and this one
+  // infers a cwd the guard cannot see.
+  test('only warns the SAME resolution attempt about a push to the base', async () => {
     const { kill_impl } = await resolveAndRun('git push origin HEAD:main');
 
+    expect(kill_impl).not.toHaveBeenCalled();
+  });
+
+  test('kills the SAME resolution attempt for a hook bypass', async () => {
+    const { kill_impl } = await resolveAndRun(
+      'git push --no-verify origin HEAD:B1'
+    );
+
     expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
+  });
+
+  // Publishing the base IS the disposition's job. The scheduler carries the
+  // disposition KIND (a string) on the settings, so this pins the real value
+  // reaching the guard rather than a hand-written boolean.
+  test('raises nothing when a DISPOSITION session publishes the base', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      // The second line is what makes this discriminating: a base push only
+      // warns for anyone, but a hook bypass kills every non-disposition session.
+      lines: [
+        bashToolLine('git push origin main'),
+        bashToolLine('git push --no-verify origin main')
+      ],
+      pid: 7200,
+      exit: 0
+    });
+    const kill_impl = vi.fn();
+    const env = setup({
+      config: {},
+      slots: 1,
+      disposition: { complete: async () => ({ ok: true }) },
+      makeRunner: (/** @type {string} */ name) =>
+        createRunner(name, { spawn_impl, kill_impl })
+    });
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.place(WS, { expected_revision: rev, bead_id: 'B1' }).queue
+      .revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'p1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'p1',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        spec_review_stale: true,
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-park',
+        finished_at: 50
+      }
+    });
+
+    const res = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+    await flush();
+    await flush();
+
+    expect(res.ok).toBe(true);
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
+        .cause_detail
+    ).toBeNull();
   });
 });
 
@@ -5515,5 +5598,856 @@ describe('scheduler→runner base wiring (worker-base-scope-alignment §3)', () 
       target_base: 'ilsun/dev',
       base_oid: 'b'.repeat(40)
     });
+  });
+});
+
+describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
+  /** @type {string | undefined} */
+  let saved_count;
+
+  beforeEach(() => {
+    // The append rule is asserted explicitly below; every OTHER case wants a
+    // deterministic index 0, so the ambient value is cleared here.
+    saved_count = process.env.GIT_CONFIG_COUNT;
+    delete process.env.GIT_CONFIG_COUNT;
+  });
+
+  afterEach(() => {
+    if (saved_count === undefined) {
+      delete process.env.GIT_CONFIG_COUNT;
+    } else {
+      process.env.GIT_CONFIG_COUNT = saved_count;
+    }
+  });
+
+  /**
+   * Whether an attempt's executable hook is on disk.
+   *
+   * @param {string} attempt_id
+   * @returns {boolean}
+   */
+  function hookInstalled(attempt_id) {
+    return fs.existsSync(path.join(guardHookDir(WS, attempt_id), 'pre-push'));
+  }
+
+  /**
+   * A guardHook double whose install always fails, for the refusal path.
+   *
+   * @param {string} reason
+   */
+  function failingGuardHook(reason) {
+    return {
+      install: vi.fn(() => ({ ok: false, reason })),
+      envFor: vi.fn(() => ({})),
+      remove: vi.fn(() => true)
+    };
+  }
+
+  test('delivers the three GIT_CONFIG keys to the spawned session', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('S1').env).toEqual({
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: guardHookDir(WS, 'S1-1000-1')
+    });
+    expect(hookInstalled('S1-1000-1')).toBe(true);
+  });
+
+  test('the delivered keys reach the real spawn env', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          permission_denials: []
+        })
+      ],
+      exit: 0
+    });
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      makeRunner: (/** @type {string} */ name) =>
+        createRunner(name, { spawn_impl })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const spawned = spawn_impl.captured.calls[0].options.env;
+    expect(spawned.GIT_CONFIG_COUNT).toBe('1');
+    expect(spawned.GIT_CONFIG_KEY_0).toBe('core.hooksPath');
+    expect(spawned.GIT_CONFIG_VALUE_0).toBe(guardHookDir(WS, 'S1-1000-1'));
+    await flush();
+  });
+
+  test('appends to an inherited GIT_CONFIG_COUNT instead of overwriting it', async () => {
+    process.env.GIT_CONFIG_COUNT = '2';
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    // Writing COUNT=1 over an inherited COUNT=2 would drop the parent's
+    // KEY_1/VALUE_1 pair.
+    expect(env.runner.settingsFor('S1').env).toEqual({
+      GIT_CONFIG_COUNT: '3',
+      GIT_CONFIG_KEY_2: 'core.hooksPath',
+      GIT_CONFIG_VALUE_2: guardHookDir(WS, 'S1-1000-1')
+    });
+  });
+
+  test('installs and delivers on a manual resume', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'anc', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'anc',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'ilsun/dev',
+        session_id: 'sid-abc',
+        workflow_mode_prior: null
+      }
+    });
+
+    const res = await env.scheduler.resume(WS, 'anc');
+
+    expect(res.ok).toBe(true);
+    expect(hookInstalled(String(res.attempt_id))).toBe(true);
+    expect(env.runner.settingsFor('B1').env.GIT_CONFIG_VALUE_0).toBe(
+      guardHookDir(WS, String(res.attempt_id))
+    );
+  });
+
+  test('installs and delivers on an external-conflict dispatch', async () => {
+    const env = setup({
+      config: { X1: { repo: '/repo', status: 'resolved' } },
+      slots: 1,
+      externalPrs: { X1: { bead_id: 'X1', pr_url: 'u' } }
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res.ok).toBe(true);
+    expect(hookInstalled(String(res.attempt_id))).toBe(true);
+    expect(env.runner.settingsFor('X1').env.GIT_CONFIG_VALUE_0).toBe(
+      guardHookDir(WS, String(res.attempt_id))
+    );
+  });
+
+  test('installs NOTHING for a disposition attempt', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'p1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'p1',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-park',
+        workflow_mode_prior: null
+      }
+    });
+
+    const res = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+
+    // Publishing the resolved base IS this session's job.
+    expect(res.ok).toBe(true);
+    expect(hookInstalled(String(res.attempt_id))).toBe(false);
+    expect(env.runner.settingsFor('B1').env).toBe(undefined);
+  });
+
+  test('refuses the dispatch with guard_hook_install_failed and leaves zero residue', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      guardHook: failingGuardHook('guard_hook_mkdir_failed')
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'guard_hook_install_failed'
+    );
+    // Nothing downstream of the install point ever ran.
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.bd.calls.filter((c) => c.method !== 'snapshotBead')).toEqual([]);
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+  });
+
+  test('a PARTIAL install failure refuses and leaves no hook dir behind', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    // Only the HOOK write fails — the queue store shares this module.
+    const real_write = fs.writeFileSync;
+    const spy = vi
+      .spyOn(fs, 'writeFileSync')
+      .mockImplementation((file, data, options) => {
+        if (
+          String(file).endsWith(
+            path.join('guard-hooks', 'S1-1000-1', 'pre-push')
+          )
+        ) {
+          throw new Error('ENOSPC');
+        }
+        return real_write(file, data, options);
+      });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'guard_hook_install_failed'
+    );
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  test('refuses the resume with guard_hook_install_failed before spending the ancestor', async () => {
+    const env = setup({
+      config: {},
+      slots: 1,
+      guardHook: failingGuardHook('guard_hook_mkdir_failed')
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'anc', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'anc',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-abc',
+        workflow_mode_prior: null
+      }
+    });
+
+    const res = await env.scheduler.resume(WS, 'anc');
+
+    expect(res).toEqual({ ok: false, reason: 'guard_hook_install_failed' });
+    // No child attempt was minted, so the ancestor is still resumable.
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual(['anc']);
+    expect(env.scheduler.isRunning('B1')).toBe(false);
+  });
+
+  for (const early of [
+    {
+      name: 'the worktree pre-flight refuses (worktree_stale_work)',
+      arrange: (/** @type {any} */ env) => {
+        env.worktree.removeIfDiscardable = vi.fn(async () => ({
+          ok: false,
+          removed: false,
+          reason: 'dirty'
+        }));
+      }
+    },
+    {
+      name: 'the worktree pre-flight throws (git_error)',
+      arrange: (/** @type {any} */ env) => {
+        env.worktree.removeIfDiscardable = vi.fn(async () => {
+          throw new Error('git exploded');
+        });
+      }
+    },
+    {
+      name: 'worktree.add fails (worktree_add_failed)',
+      arrange: (/** @type {any} */ env) => {
+        env.worktree.add = vi.fn(async () => {
+          throw new Error('add failed');
+        });
+      }
+    }
+  ]) {
+    test(`removes the hook when ${early.name}`, async () => {
+      const env = setup({ config: { S1: {} }, slots: 1 });
+      early.arrange(env);
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.scheduler.isRunning('S1')).toBe(false);
+      expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+    });
+  }
+
+  test('removes the hook when the admission re-check refuses', async () => {
+    let nth = 0;
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      admission: {
+        validate: async () => {
+          nth += 1;
+          // Pass the scan, refuse the dispatch-time re-check.
+          return nth === 1 ? { ok: true } : { ok: false, reason: 'no_spec' };
+        }
+      }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook when the workflow_mode record fails', async () => {
+    const env = setup({ config: { S1: { throwOnSet: true } }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.cause).toBe('workflow_mode_record_failed');
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook when an exec stamp fails', async () => {
+    const env = setup({
+      config: { S1: { model: null, throwOnSetKey: 'orchestration_model' } },
+      slots: 1
+    });
+    seedExecDefaults(env.store, { orchestration_model: 'opus' });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.cause).toBe('exec_stamp_failed');
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook when the spawn throws', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      makeRunner: () => ({
+        name: 'claude',
+        spawn() {
+          throw new Error('spawn failed');
+        }
+      })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.cause).toBe('spawn_failed');
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook when the session terminates normally', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    expect(hookInstalled('S1-1000-1')).toBe(true);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook when the session fails', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'exit_1' });
+    await flush();
+    await flush();
+
+    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
+  });
+
+  test('removes the hook of a restart-surviving attempt disposed by reconcile', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null }),
+      verifyOk: false
+    });
+    // A hook left by the PREVIOUS server process, whose attempt this one only
+    // ever sees as a durable `running` record.
+    const installed = installGuardHookForTest('att-dead');
+    expect(installed).toBe(true);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-dead', bead_id: 'UI-9' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-dead',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(fs.existsSync(guardHookDir(WS, 'att-dead'))).toBe(false);
+  });
+});
+
+/**
+ * Install a real hook for an attempt id the scheduler did not mint — the
+ * restart cases need one on disk before the scheduler ever sees the record.
+ *
+ * @param {string} attempt_id
+ * @returns {boolean}
+ */
+function installGuardHookForTest(attempt_id) {
+  return guardHookInstall({
+    workspace: WS,
+    attempt_id,
+    repo: '/repo',
+    target_base: 'main'
+  }).ok;
+}
+
+describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
+  const MOVED = 'b'.repeat(40);
+  const LANDED = 'c'.repeat(40);
+  const FOREIGN = 'e'.repeat(40);
+
+  /**
+   * The forced base re-resolution seam, answering with a tip that is NOT the
+   * `base-<bead>` oid the worktree fake pins at dispatch — i.e. a base that
+   * moved while the session ran.
+   *
+   * @param {string} [tip]
+   */
+  function movedBase(tip = MOVED) {
+    return vi.fn(async () => ({
+      ok: /** @type {const} */ (true),
+      base: 'main',
+      declared: false,
+      remote: 'origin',
+      remote_ref: 'refs/remotes/origin/main',
+      base_oid: tip,
+      local_only: false
+    }));
+  }
+
+  /**
+   * A `git` runner answering the two `rev-list` walks by range.
+   *
+   * @param {Record<string, string>} by_range
+   */
+  function gitFor(by_range) {
+    return vi.fn(async (/** @type {string[]} */ args) => ({
+      code: 0,
+      stdout: by_range[args[1]] ?? '',
+      stderr: ''
+    }));
+  }
+
+  /**
+   * @param {{ state: string, data?: unknown, reason?: string }} [result]
+   */
+  function ghFor(result = { state: 'empty' }) {
+    return { mergedPrForBranch: vi.fn(async () => result) };
+  }
+
+  /** The walks of an attempt whose commit IS on the moved base. */
+  const LANDED_WALKS = {
+    'base-S1..refs/heads/S1': `${LANDED}\n`,
+    [`base-S1..${MOVED}`]: `${LANDED}\n${FOREIGN}\n`
+  };
+
+  test('fails the attempt when its commits are found on the moved remote base', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor(LANDED_WALKS),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    const attempt = q.attempts['S1-1000-1'];
+    expect(attempt.status).toBe('failed');
+    expect(attempt.cause).toBe('base_landing_detected');
+    expect(attempt.cause_detail).toEqual({
+      reason: 'base_landing_detected',
+      command: null
+    });
+    expect(attempt.base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      shas: [LANDED]
+    });
+    // The queue stops and the PR verdict is never reached: a landing is not
+    // laundered into a success by an open PR.
+    expect(q.auto_advance).toBe(false);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('records the observation and completes normally when someone else moved the base', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor({
+        'base-S1..refs/heads/S1': `${LANDED}\n`,
+        [`base-S1..${MOVED}`]: `${FOREIGN}\n`
+      }),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts['S1-1000-1'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: false
+    });
+    expect(q.attempts['S1-1000-1'].status).toBe('done');
+    expect(q.pr_wait.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  test('observes the base of a session that ended in failure', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor(LANDED_WALKS),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    // A SIGTERMed session may have pushed before it died: the landing is the
+    // honest cause, not the runner's own exit reason.
+    env.runner.finish('S1', { success: false, reason: 'exit_1' });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(
+      'base_landing_detected'
+    );
+  });
+
+  test('observes the base after a user stop and fails the attempt on a landing', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor(LANDED_WALKS),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    await env.scheduler.stop(WS, 'S1-1000-1');
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts['S1-1000-1'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      shas: [LANDED]
+    });
+    expect(q.attempts['S1-1000-1'].cause).toBe('base_landing_detected');
+    expect(q.auto_advance).toBe(false);
+  });
+
+  test('leaves a stopped attempt stopped when the base did not move', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase('base-S1'),
+      gitRun: gitFor({}),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    await env.scheduler.stop(WS, 'S1-1000-1');
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts['S1-1000-1'].status).toBe('stopped');
+    expect(q.attempts['S1-1000-1'].base_drift).toBeNull();
+  });
+
+  test('observes the base of a restart-restored paused attempt discarded by ■', async () => {
+    const gh = ghFor();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor({
+        'base-S1..refs/heads/UI-7': `${LANDED}\n`,
+        [`base-S1..${MOVED}`]: `${LANDED}\n`
+      }),
+      gh
+    });
+    // A `paused` record whose server restarted: it is not `running`, so
+    // reconcile never disposes of it, and its `onSessionDone` died with the
+    // previous process — this discard is its only observer.
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-paused', bead_id: 'UI-7' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-paused',
+      patch: {
+        status: 'paused',
+        pid: null,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        workflow_mode_prior: null
+      }
+    });
+
+    const discarded = await env.scheduler.stop(WS, 'att-paused');
+
+    expect(discarded).toBe(true);
+    const attempt = env.store.snapshot(WS).attempts['att-paused'];
+    expect(attempt.cause).toBe('base_landing_detected');
+    expect(attempt.base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      shas: [LANDED]
+    });
+    expect(env.store.snapshot(WS).auto_advance).toBe(false);
+  });
+
+  test('discards a restart-restored paused attempt normally when nothing landed', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase('base-S1'),
+      gitRun: gitFor({}),
+      gh: ghFor()
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-paused', bead_id: 'UI-7' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-paused',
+      patch: {
+        status: 'paused',
+        pid: null,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.stop(WS, 'att-paused');
+
+    const attempt = env.store.snapshot(WS).attempts['att-paused'];
+    expect(attempt.status).toBe('stopped');
+    expect(attempt.base_drift).toBeNull();
+  });
+
+  test('observes the base of a restart-surviving attempt disposed by reconcile', async () => {
+    const gh = ghFor();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null }),
+      resolveBase: movedBase(),
+      gitRun: gitFor({
+        'base-S1..refs/heads/UI-9': `${LANDED}\n`,
+        [`base-S1..${MOVED}`]: `${LANDED}\n`
+      }),
+      gh
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-dead', bead_id: 'UI-9' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-dead',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['att-dead'];
+    expect(attempt.cause).toBe('base_landing_detected');
+    expect(attempt.base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      shas: [LANDED]
+    });
+    expect(gh.mergedPrForBranch).toHaveBeenCalledWith('/repo', 'UI-9');
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('records the exclusion of an attempt dispatched without a pinned base', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null }),
+      resolveBase: movedBase(),
+      gitRun: gitFor(LANDED_WALKS),
+      gh: ghFor()
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-ext', bead_id: 'UI-9' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-ext',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        base_oid: null,
+        external_conflict: true,
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['att-ext'];
+    expect(attempt.base_drift).toEqual({ skipped: 'no_base_oid' });
+    expect(attempt.cause).toBeNull();
+  });
+
+  test('records the exclusion of a disposition attempt before its own verdict', async () => {
+    const gitRun = gitFor(LANDED_WALKS);
+    const env = setup({
+      config: {},
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun,
+      gh: ghFor(),
+      disposition: { complete: vi.fn(async () => ({ ok: true })) }
+    });
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.place(WS, { expected_revision: rev, bead_id: 'B1' }).queue
+      .revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'p1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'p1',
+      patch: {
+        status: 'failed',
+        cause: 'verify_failed:pr_missing',
+        spec_review_stale: true,
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'base-B1',
+        runner: 'claude',
+        session_id: 'sid-park',
+        workflow_mode_prior: null
+      }
+    });
+
+    const res = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    const child =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(child.base_drift).toEqual({ skipped: 'disposition' });
+    expect(gitRun).not.toHaveBeenCalled();
+  });
+
+  test('records an unobservable attempt without failing it', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: vi.fn(async () => ({ code: 128, stdout: '', stderr: 'boom' })),
+      gh: ghFor()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts['S1-1000-1'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      error: 'rev_list_branch'
+    });
+    // Observation failure is evidence, not a verdict: the attempt finishes.
+    expect(q.attempts['S1-1000-1'].status).toBe('done');
+    expect(q.pr_wait.map((e) => e.bead_id)).toEqual(['S1']);
   });
 });

@@ -352,3 +352,99 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
     expect(pushed).toHaveLength(1);
   });
 });
+
+describe('worker/session-monitor guard effect parity (guard-enforcement-layer-replacement Phase 2)', () => {
+  // The attempt's own repo/base — findMergeViolation's cross-repo allowlist
+  // (isExemptCrossRepoPush) requires `ctx.repo` to actually be a real,
+  // resolvable path, so this mirrors session.merge-guard.test.js's REPO.
+  const REPO = path.join(os.homedir(), 'Documents/GitHub/beads-ui');
+
+  test("warns without killing on a push to the attempt repo's own declared base", () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, {
+      repo: REPO,
+      target_base: 'main'
+    });
+    /** @type {any[]} */
+    const pushed = [];
+    env.session_log.subscribe((a) => pushed.push(a));
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLine('git push origin main'));
+    env.monitors.stop(WS, 'att-1');
+
+    // No kill: guardEffect('git_push_base') is 'warn', not 'kill'.
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_kill).toBe(null);
+    // The raw bash line, THEN the synthesized warning — the monitor stays
+    // alive and keeps re-broadcasting to the drawer.
+    expect(pushed).toHaveLength(2);
+    expect(pushed[1].event).toMatchObject({
+      kind: 'error',
+      reason: 'merge_to_base_blocked'
+    });
+    expect(pushed[1].event.message).toContain('git push origin main');
+  });
+
+  test('renders no verdict at all for a cross-repo publication that leaves the attempt repo', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, {
+      repo: REPO,
+      target_base: 'main'
+    });
+    /** @type {any[]} */
+    const pushed = [];
+    env.session_log.subscribe((a) => pushed.push(a));
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(
+      env.session_log,
+      bashLine('cd ~/GitHub/thalamus && git push origin main')
+    );
+    env.monitors.stop(WS, 'att-1');
+
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_kill).toBe(null);
+    // Only the raw line — no warning was synthesized (no violation at all).
+    expect(pushed).toHaveLength(1);
+  });
+
+  test('does not apply the base-push judgment to a disposition session', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, {
+      repo: REPO,
+      target_base: 'main',
+      disposition: 'revise_fix'
+    });
+    /** @type {any[]} */
+    const pushed = [];
+    env.session_log.subscribe((a) => pushed.push(a));
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLine('git push origin main'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_kill).toBe(null);
+    expect(pushed).toHaveLength(1);
+  });
+
+  test('still kills on gh pr merge (kind decided by argv alone, unaffected by the warn demotion)', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, {
+      repo: REPO,
+      target_base: 'main'
+    });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLine('gh pr merge 42 --squash'));
+    env.monitors.stop(WS, 'att-1');
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(record.guard_kill).toMatchObject({
+      reason: 'merge_to_base_blocked',
+      command: 'gh pr merge 42 --squash'
+    });
+    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+  });
+});
