@@ -76,8 +76,9 @@ describe('runner/preamble guard-contract directive (UI-t3wk)', () => {
     expect(out).toContain(GUARD_CONTRACT_DIRECTIVE);
   });
 
-  test('states the merge prohibition and the background-task warning', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('git merge` 절대 금지');
+  test('states that a base merge is allowed and the background-task warning', () => {
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('허용된다');
+    expect(GUARD_CONTRACT_DIRECTIVE).not.toContain('git merge` 절대 금지');
     expect(GUARD_CONTRACT_DIRECTIVE).toContain('턴을 끝내지 말 것');
   });
 });
@@ -204,8 +205,22 @@ describe('runner/preamble base push guard notice (guard-enforcement-layer-replac
     expect(GUARD_CONTRACT_DIRECTIVE).toContain('base_landing_detected');
   });
 
-  test('keeps the two directives it already carried', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('git merge` 절대 금지');
+  test('keeps the background-task warning it already carried', () => {
     expect(GUARD_CONTRACT_DIRECTIVE).toContain('턴을 끝내지 말 것');
+  });
+
+  // UI-1xcd §5: the directive that cost a session $11.67 said the opposite.
+  test('tells the session a base merge does NOT end it', () => {
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('git merge origin/main');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('허용된다');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('기록된다');
+  });
+
+  test('names hook-path READING as no violation, unlike writing it', () => {
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain(
+      'git config --get core.hooksPath'
+    );
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('위반이 아니다');
+    expect(GUARD_CONTRACT_DIRECTIVE).toContain('git config set|unset');
   });
 });

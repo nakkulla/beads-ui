@@ -27,7 +27,11 @@
 import { EventEmitter } from 'node:events';
 import nodeFs from 'node:fs';
 import path from 'node:path';
-import { findMergeViolation, guardEffect } from './command-guard.js';
+import {
+  findMergeViolation,
+  guardEffect,
+  guardWarningMessage
+} from './command-guard.js';
 import { createTailReader } from './tail-reader.js';
 
 /**
@@ -42,6 +46,11 @@ import { createTailReader } from './tail-reader.js';
  * @property {string} [message] - Error/blocker/guard-warning message.
  * @property {string} [reason] - Fail-closed reason (kind='blocker'), or the
  * guard reason of a warning the session survived (kind='error').
+ * @property {{ reason: string, command: string|null }} [guard_warning] - Present
+ * ONLY on a guard verdict the session survived (UI-1xcd §1). It is what lets a
+ * consumer recognize the event structurally instead of matching the `error`
+ * kind against a reason vocabulary, and it carries the command the durable
+ * record needs.
  * @property {{ message_id?: string, input_tokens?: number, output_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number, total_cost_usd?: number }} [usage] -
  * Token usage the adapter lifted off this line (UI-raqh §1). Absent whenever
  * the runner reported none — the consumer's fail-quiet contract. `message_id`
@@ -240,11 +249,6 @@ export function runSession(spec, bead, workspace, settings, deps) {
   // Avoid MaxListeners warnings when many raw lines are consumed.
   events.setMaxListeners(0);
 
-  // Conflict-resolution attempts are the ONLY ones allowed to merge the base
-  // into their own branch. Absent/non-true ⇒ blocked, so a caller that forgets
-  // to plumb it fails closed (worker-phase2 §1/§6). Phase 5 sets it true when
-  // dispatching a resolution session.
-  const conflict_resolution = settings?.conflict_resolution === true;
   // The base-landing guard's SUBJECT (worker-base-scope-alignment §6): the repo
   // this attempt owns and the base that repo DECLARES. Absent either one the
   // guard keeps its legacy `main|master` name match and applies no cross-repo
@@ -407,7 +411,6 @@ export function runSession(spec, bead, workspace, settings, deps) {
       const cmd = spec.extractShellCommand(obj);
       const violation = cmd
         ? findMergeViolation(cmd, {
-            conflict_resolution,
             disposition,
             repo: guard_repo,
             target_base: guard_target_base
@@ -416,12 +419,18 @@ export function runSession(spec, bead, workspace, settings, deps) {
       if (violation && guardEffect(violation) === 'warn') {
         // `error` is the only enum member that carries a message without
         // claiming the session stopped (`blocker` means fail-closed), and
-        // `reason` is what tells a consumer which guard spoke.
+        // `reason` is what tells a consumer which guard spoke. `guard_warning`
+        // is what makes it durable: the scheduler recognizes the event by that
+        // key and appends it to the attempt record (UI-1xcd §1).
         /** @type {RunnerEvent} */
         const guard_warning = {
           kind: 'error',
           reason: violation.reason,
-          message: `base landing suspected, session continues (the pre-push hook is the enforcement layer): ${violation.command}`,
+          message: guardWarningMessage(violation),
+          guard_warning: {
+            reason: violation.reason,
+            command: violation.command
+          },
           raw: obj
         };
         norm_events.push(guard_warning);
@@ -438,7 +447,9 @@ export function runSession(spec, bead, workspace, settings, deps) {
             ? `landing on the base branch is never permitted: ${violation.command}`
             : violation.reason === 'hook_bypass_blocked'
               ? `disabling the git hooks is never permitted: ${violation.command}`
-              : `merging into the branch is permitted only for a conflict-resolution attempt: ${violation.command}`;
+              : // Unreachable while the effect table names only the two kinds
+                // above as kills; kept so a NEW kind still says something.
+                `the session engine refused this command: ${violation.command}`;
         /** @type {RunnerEvent} */
         const merge_blocker = {
           kind: 'blocker',

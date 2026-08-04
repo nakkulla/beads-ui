@@ -229,24 +229,20 @@ function staleDispatchPrompt(bead_id, stale) {
  * @property {{
  *   install: (i: { workspace: string, attempt_id: string, repo: string, target_base: string }) => { ok: boolean, dir?: string, hook_path?: string, reason?: string },
  *   envFor: (i: { workspace: string, attempt_id: string }) => Record<string, string>,
- *   remove: (i: { workspace: string, attempt_id: string }) => boolean
+ *   remove: (i: { workspace: string, attempt_id: string }) => boolean,
+ *   readPushLog?: (i: { workspace: string, attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string }
  * }} [guardHook]
  * The prevention layer (UI-8mvc §2). Defaults to the real `guard-hook.js`, so
  * production wiring is the module itself and a test overrides it only to drive
  * an install failure. Every attempt EXCEPT a disposition gets one: a
  * REVISE-disposition session publishes the base as its job.
  * @property {(args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>} [gitRun]
- * The `git` runner the DETECTION layer walks its two `rev-list` ranges with
- * (UI-8mvc §3). Wired from the attachment's one runner, so the observation runs
- * the same git the base resolver does. Absent wiring makes every observation
- * record `no_observer_deps` — an attempt that could not be observed is recorded
- * as such, never judged.
- * @property {{ mergedPrForBranch: (repo_dir: string, branch: string) => Promise<{ state: string, data?: unknown, reason?: string }>, mergedPrsForCommit?: (repo_dir: string, sha: string, target_base: string) => Promise<{ state: string, data?: unknown, reason?: string }> }} [gh]
- * The PR adapter the detection layer excludes merge-landings with (UI-8mvc
- * §3-4, UI-43bh). Same instance the verify/poller paths use. `mergedPrForBranch`
- * excludes THIS branch's merge; `mergedPrsForCommit` accounts for a shared
- * commit by ANOTHER unit's merged PR. Absent wiring of either records
- * `pr_observe:no_gh` rather than reporting an unexcluded violation.
+ * The `git` runner the DETECTION layer asks its reachability question with
+ * (UI-8mvc §3, UI-1xcd §4), and the one `launchSession` reads an attempt's
+ * starting branch tip with. Wired from the attachment's one runner, so the
+ * observation runs the same git the base resolver does. Absent wiring makes
+ * every observation record `no_observer_deps` — an attempt that could not be
+ * observed is recorded as such, never judged.
  * @property {(pid: number|null) => { alive: boolean, started_at: number|null }} [probePid]
  * Liveness + start-time probe for {@link createScheduler}'s `reconcile`. Absent
  * (legacy wiring / dispatch-only tests) makes every reconcile pass a no-op:
@@ -597,6 +593,73 @@ export function createScheduler(deps) {
       return false;
     }
     return true;
+  }
+
+  /**
+   * The tip of an attempt's own branch, or null when it cannot be read
+   * (UI-1xcd §4.2).
+   *
+   * Null is the honest answer, never a substitute value: this is diagnostic
+   * data, and a `base_oid` stand-in is what made the old field look like a
+   * measurement when it was a copy.
+   *
+   * @param {string} repo
+   * @param {string} bead_id
+   * @returns {Promise<string|null>}
+   */
+  async function branchTip(repo, bead_id) {
+    if (typeof deps.gitRun !== 'function' || !repo || !bead_id) {
+      return null;
+    }
+    try {
+      const r = await deps.gitRun(['rev-parse', `refs/heads/${bead_id}`], {
+        cwd: repo
+      });
+      if (r.code !== 0) {
+        return null;
+      }
+      const oid = String(r.stdout || '').trim();
+      return /^[0-9a-f]{40,64}$/i.test(oid) ? oid : null;
+    } catch (err) {
+      log('branch tip read failed for %s in %s: %o', bead_id, repo, err);
+      return null;
+    }
+  }
+
+  /**
+   * Append one surviving guard verdict to the attempt record (UI-1xcd §1).
+   *
+   * Read-modify-write off the store, so the accumulation is the same one the
+   * restart monitor performs and a cold reload sees every warning in order.
+   * Never throws: an unpersisted diagnostic must not end a session that broke
+   * no invariant.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {{ reason: string, command: string|null }} detail
+   */
+  function recordGuardWarning(workspace, attempt_id, detail) {
+    try {
+      const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+      const prior = Array.isArray(attempt?.guard_warnings)
+        ? attempt.guard_warnings
+        : [];
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          guard_warnings: [
+            ...prior,
+            {
+              reason: detail.reason,
+              command: detail.command ?? null,
+              at: now()
+            }
+          ]
+        }
+      });
+    } catch (err) {
+      log('guard-warning record failed for %s: %o', attempt_id, err);
+    }
   }
 
   /**
@@ -1122,7 +1185,13 @@ export function createScheduler(deps) {
         attempt,
         resolveBase: deps.resolveBase,
         git: deps.gitRun,
-        gh: deps.gh
+        // The attempt's own pre-push record (UI-1xcd §4.1). Read lazily so an
+        // excluded attempt never touches the filesystem, and read HERE because
+        // the observer has no workspace of its own.
+        readPushLog: () =>
+          typeof guardHook.readPushLog === 'function'
+            ? guardHook.readPushLog({ workspace, attempt_id })
+            : { ok: false, reason: 'absent' }
       });
     } catch (err) {
       // The observer is internally fail-open; a throw is a defect, and letting
@@ -1724,13 +1793,29 @@ export function createScheduler(deps) {
    * @param {any} attempt
    */
   async function disposeDeadAttempt(workspace, attempt_id, attempt) {
+    // The hook assets come down AFTER the disposition, never before it
+    // (UI-1xcd §4). They now carry the push record the settlement below reads,
+    // and removing them at entry deleted that evidence a step ahead of the
+    // observation — so the removal sits in a `finally` covering every branch's
+    // own `return`, exactly as `onSessionDone` already does it.
+    try {
+      await disposeDeadAttemptSettlement(workspace, attempt_id, attempt);
+    } finally {
+      removeGuardHook(workspace, attempt_id);
+    }
+  }
+
+  /**
+   * The body of {@link disposeDeadAttempt}; see its contract. Split out only so
+   * the hook removal can wrap every early return.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {any} attempt
+   */
+  async function disposeDeadAttemptSettlement(workspace, attempt_id, attempt) {
     const bead_id = attempt.bead_id;
     const prior = attempt.workflow_mode_prior ?? null;
-    // The restart-side counterpart of `onSessionDone`'s cleanup: this path is
-    // only reached for an attempt whose process the PID probe already found
-    // dead, so nothing can still push through its hook (UI-8mvc §5). Done at
-    // entry because the branches below all `return` on their own.
-    removeGuardHook(workspace, attempt_id);
     const repo = typeof attempt.repo === 'string' ? attempt.repo : '';
     // A DISPOSITION session that outlived a restart is judged by its own
     // verdict, never by the PR observation (UI-hs11 §3.3): it opens no PR, so
@@ -2426,9 +2511,11 @@ export function createScheduler(deps) {
    * `spawn_failed`, release the claim) so no stamped metadata or leaked
    * `running` record outlives the aborted launch.
    *
-   * `conflict_resolution` marks a resolution attempt (worker-phase2 §6). It is
-   * the ONLY input that relaxes the session-side `git merge` guard, so it
-   * defaults to false here and only Phase 5's resolution dispatch passes true.
+   * A resolution attempt is no longer named here (UI-1xcd §3): the flag existed
+   * only to relax the session-side `git merge` guard, which now warns for every
+   * attempt, so nothing about the launch depends on it. It stays on the ATTEMPT
+   * RECORD (`relaunchFromAttempt`), where it identifies the attempt kind for
+   * consumers outside the guard.
    *
    * @param {{
    *   workspace: string,
@@ -2447,7 +2534,6 @@ export function createScheduler(deps) {
    *   title?: string|null,
    *   launch_kind?: 'dispatch'|'resume'|'conflict'|'disposition',
    *   resume_session_id?: string|null,
-   *   conflict_resolution?: boolean,
    *   disposition?: string|null
    * }} input
    * @returns {Promise<{ ok: boolean, reason?: string }>} Whether the session
@@ -2490,7 +2576,6 @@ export function createScheduler(deps) {
       repo,
       target_base,
       base_oid: base_oid ?? null,
-      conflict_resolution: input.conflict_resolution === true,
       // A disposition session repairs a spec on the base and opens no PR, so
       // the always-on PR-submit directive would instruct it to do the one
       // thing its own prompt forbids (UI-hs11 §3.3).
@@ -2530,6 +2615,18 @@ export function createScheduler(deps) {
       }
     }
 
+    // The attempt's STARTING POINT, read before the process exists (UI-1xcd
+    // §4.2). Two things were wrong with reading it after the spawn: the value
+    // written was a copy of `base_oid` rather than the branch tip, and the
+    // read happened at a moment the child could already have committed. The
+    // worktree pre-flight has run, so the branch exists here.
+    //
+    // Diagnostic only — the landing judgment stands on the push record — which
+    // is exactly why a failed read leaves the field ABSENT instead of falling
+    // back to `base_oid`: a wrong value dressed as a fact is the class of
+    // problem this Bead exists to remove.
+    const start_oid = await branchTip(repo, bead_id);
+
     /** @type {RunnerHandle} */
     let handle;
     try {
@@ -2565,7 +2662,7 @@ export function createScheduler(deps) {
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
-        head_oid: base_oid,
+        ...(start_oid === null ? {} : { head_oid: start_oid }),
         started_at,
         pid: handle.pid,
         runner: runner_name,
@@ -2602,20 +2699,26 @@ export function createScheduler(deps) {
     // and persisted onto the attempt at termination; the fanout is throttled
     // because a usage tick is not a queue transition.
     const usage_store = deps.usage;
-    if (usage_store) {
-      handle.events.on('event', (ev) => {
-        const usage = ev && ev.usage;
-        if (!usage) {
-          return;
-        }
-        if (ev.kind === 'result') {
-          usage_store.recordResult(workspace, attempt_id, usage);
-        } else {
-          usage_store.record(workspace, attempt_id, usage);
-        }
-        scheduleUsageFanout(workspace);
-      });
-    }
+    handle.events.on('event', (ev) => {
+      // A guard verdict the session SURVIVED (UI-1xcd §1). The stream event was
+      // its only trace, and nothing persisted it — so `base_merge` moving onto
+      // the warn path would have made "the session merged the base in" a fact
+      // that vanished with the process. Unconditional, unlike the usage arm
+      // below: the record is evidence, not telemetry.
+      if (ev && ev.guard_warning) {
+        recordGuardWarning(workspace, attempt_id, ev.guard_warning);
+      }
+      const usage = ev && ev.usage;
+      if (!usage_store || !usage) {
+        return;
+      }
+      if (ev.kind === 'result') {
+        usage_store.recordResult(workspace, attempt_id, usage);
+      } else {
+        usage_store.record(workspace, attempt_id, usage);
+      }
+      scheduleUsageFanout(workspace);
+    });
     running.set(attempt_id, { bead_id, repo, handle, prior: prior_wf });
     notifyChanged(workspace);
 
@@ -3087,7 +3190,6 @@ export function createScheduler(deps) {
       // A FRESH session, not a resume: an external row carries no session id to
       // continue, and the prompt is self-contained.
       resume_session_id: null,
-      conflict_resolution: true,
       spawnBead: { id: bead_id, prompt: conflictPrompt(bead_id, base) }
     });
     if (!launched.ok) {
@@ -3145,6 +3247,26 @@ export function createScheduler(deps) {
     // its parked `done` promise must not outlive the relaunch — nor do its hook
     // assets, which a restart-restored `paused` record would otherwise strand
     // (its `onSessionDone` belongs to a process this one never spawned).
+    //
+    // Which makes THIS the last moment its push record exists (UI-1xcd §4,
+    // implementation review 2026-08-04): a restart-restored ancestor reaches no
+    // other observer, so removing the hook first deleted the only evidence of
+    // what it pushed. The settlement is skipped for an ancestor that already
+    // carries a `base_drift`, because re-observing a hook that is already gone
+    // would overwrite a real record with `push_log_absent`.
+    if (
+      prior.base_drift == null &&
+      (await settleBaseDrift(workspace, attempt_id))
+    ) {
+      // A relaunch on top of a landing would build further work on a violation.
+      // The evidence is durable now, so the assets can go.
+      removeGuardHook(workspace, attempt_id);
+      if (!options.disposition) {
+        removeGuardHook(workspace, new_attempt_id);
+      }
+      notifyChanged(workspace);
+      return { ok: false, reason: 'base_landing_detected' };
+    }
     paused_done.delete(attempt_id);
     removeGuardHook(workspace, attempt_id);
     claimed.add(bead_id);
@@ -3317,7 +3439,6 @@ export function createScheduler(deps) {
         prompt: options.prompt
       },
       resume_session_id,
-      conflict_resolution: options.conflict_resolution,
       disposition: options.disposition ?? null
     });
     if (!launched.ok) {
@@ -3787,8 +3908,14 @@ export function createScheduler(deps) {
     });
     // The one termination that reaches neither `onSessionDone` nor
     // `disposeDeadAttempt`: a `paused` record discarded after a restart, whose
-    // process this server never held (UI-8mvc §5).
-    removeGuardHook(workspace, attempt_id);
+    // process this server never held (UI-8mvc §5). Guarded on the ABSENT handle
+    // for the same reason the settlement above is (UI-1xcd §4, implementation
+    // review 2026-08-04): while `pending_done` is held the process may still be
+    // pushing, and its `onSessionDone` settles and then removes the hook in its
+    // own `finally` — removing it here would delete that settlement's evidence.
+    if (!pending_done) {
+      removeGuardHook(workspace, attempt_id);
+    }
     await releaseBeadClaim(rec.bead_id);
     if (pending_done) {
       // Detached exactly like the live path: stop() must answer its ws caller

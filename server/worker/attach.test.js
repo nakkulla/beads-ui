@@ -12,6 +12,10 @@ import {
   stopWorkerAttempt,
   tickWorkerQueue
 } from './attach.js';
+import {
+  pushLogPath as guardPushLogPath,
+  install as installGuardHook
+} from './guard-hook.js';
 import { createQueueStore } from './queue-store.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createWorkerRuntime } from './runtime.js';
@@ -497,51 +501,39 @@ describe('worker/attach construction + live loop (F1)', () => {
     }
   });
 
-  test('wires the detection layer with the attachment git runner and gh adapter (UI-8mvc §3)', async () => {
+  test('wires the detection layer with the attachment git runner and push record (UI-8mvc §3, UI-1xcd §4)', async () => {
     const PINNED = 'a'.repeat(40);
     const MOVED = 'b'.repeat(40);
     const LANDED = 'c'.repeat(40);
     const runtime = createWorkerRuntime();
-    // The two leaves the observation spends: the attachment's own git runner
-    // and its gh adapter. If `createWorkerAttachment` stops handing them to the
-    // scheduler, nothing below is reached and no `base_drift` is written.
-    // Both walks hold the attempt's commit: it is on the branch AND on the
-    // remote tip the base moved to.
-    const BRANCH_TIP = 'f'.repeat(40);
-    const REFLOG_ANCHOR = '0'.repeat(40);
+    // The two leaves the observation spends now: the attachment's own git
+    // runner (the reachability query) and the attempt's own push record. If
+    // `createWorkerAttachment` stops handing the runner to the scheduler,
+    // nothing below is reached and no `base_drift` is written.
     const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
-      // The containment probe in the NOT-contained posture (UI-43bh): a branch
-      // head of its own, and `--is-ancestor` answering "no" (exit 1), so this
-      // landing is still judged rather than excluded as a rebase.
-      if (args[0] === 'rev-parse') {
-        return { code: 0, stdout: `${BRANCH_TIP}\n`, stderr: '' };
-      }
       if (args[0] === 'merge-base') {
-        return { code: 1, stdout: '', stderr: '' };
+        // The recorded push IS reachable from the tip the base moved to.
+        return { code: args[2] === LANDED ? 0 : 1, stdout: '', stderr: '' };
       }
-      // The precedence stage (UI-zcoi) in the BRANCH-FIRST posture, so the
-      // landing is still a violation: each ref hands back its tip and then an
-      // anchor entry whose walk is empty.
-      if (args[0] === 'reflog') {
-        const ref = args[2];
-        const t = ref.startsWith('refs/heads/') ? 100 : 200;
-        const tip = ref.startsWith('refs/heads/') ? BRANCH_TIP : MOVED;
-        return {
-          code: 0,
-          stdout: `${tip} ${ref}@{${t}}\n${REFLOG_ANCHOR} ${ref}@{0}\n`,
-          stderr: ''
-        };
-      }
-      if (args[1] === `${PINNED}..${REFLOG_ANCHOR}`) {
-        return { code: 0, stdout: '', stderr: '' };
-      }
-      return { code: 0, stdout: `${LANDED}\n`, stderr: '' };
+      return { code: 128, stdout: '', stderr: 'unexpected' };
     });
-    const gh = {
-      mergedPrForBranch: vi.fn(async () => ({ state: 'empty' })),
-      mergedPrsForCommit: vi.fn(async () => ({ state: 'empty' })),
-      checkAvailability: vi.fn(async () => ({ state: 'ok', data: true }))
-    };
+    // The real prevention-layer artefacts: the hook the attempt installed, and
+    // the base-destined push its own pre-push script recorded.
+    installGuardHook({
+      workspace: path.resolve(WS),
+      attempt_id: 'att-1',
+      repo: '/repo',
+      target_base: 'main'
+    });
+    fs.appendFileSync(
+      guardPushLogPath(path.resolve(WS), 'att-1'),
+      `${JSON.stringify({
+        local_ref: 'HEAD',
+        local_oid: LANDED,
+        remote_ref: 'refs/heads/main',
+        remote_oid: PINNED
+      })}\n`
+    );
     const att = createWorkerAttachment(WS, {
       runtime,
       bd: fakeBd(),
@@ -550,8 +542,7 @@ describe('worker/attach construction + live loop (F1)', () => {
       spawn_impl: makeFixtureSpawn({ lines: [] }),
       probePid: () => ({ alive: false, started_at: null }),
       resolveBase: okBase('main', MOVED),
-      gitRun,
-      gh: /** @type {any} */ (gh)
+      gitRun
     });
     seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
     runtime.queueStore.updateAttempt(WS, {
@@ -563,17 +554,16 @@ describe('worker/attach construction + live loop (F1)', () => {
 
     const attempt = runtime.queueStore.snapshot(WS).attempts['att-1'];
     expect(gitRun).toHaveBeenCalledWith(
-      ['rev-list', `${PINNED}..refs/heads/UI-1`],
+      ['merge-base', '--is-ancestor', LANDED, MOVED],
       { cwd: '/repo' }
     );
-    expect(gh.mergedPrForBranch).toHaveBeenCalledWith('/repo', 'UI-1');
     expect(attempt.base_drift).toEqual({
       pinned: PINNED,
       observed: MOVED,
       landed: true,
       via: 'direct_push',
-      shas: [LANDED],
-      inherited: []
+      pushed: [LANDED],
+      shas: [LANDED]
     });
     expect(attempt.cause).toBe('base_landing_detected');
   });

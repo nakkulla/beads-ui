@@ -272,7 +272,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, gh?: any }} opts
+ * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any }} opts
  */
 function setup(opts) {
   const store = createQueueStore();
@@ -338,7 +338,6 @@ function setup(opts) {
     // default: a scheduler built without them records the observation as
     // undone rather than judging an attempt it could not observe.
     gitRun: opts.gitRun,
-    gh: opts.gh,
     notifyQueueChanged: opts.notifyQueueChanged,
     now: () => 1000
   });
@@ -1514,13 +1513,15 @@ describe('scheduler policy axis removal (worker-phase2 §2)', () => {
     expect(env.runner.settingsFor('S1').env.BDUI_WORKER_TOKEN).toBe(undefined);
   });
 
-  test('conflict_resolution defaults to false on a normal dispatch (§6 seam)', async () => {
+  // UI-1xcd §3: the flag only ever relaxed the base-into-branch guard, which
+  // now warns for every attempt — so the runner is not told about it at all.
+  test('carries no conflict_resolution into the runner settings', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
 
     await env.scheduler.tick(WS);
 
-    expect(env.runner.settingsFor('S1').conflict_resolution).toBe(false);
+    expect('conflict_resolution' in env.runner.settingsFor('S1')).toBe(false);
   });
 });
 
@@ -2179,13 +2180,15 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(child.conflict_resolution).toBe(true);
   });
 
-  test('passes conflict_resolution into the runner settings', async () => {
+  // The ATTEMPT RECORD keeps the flag (asserted above); the guard input does
+  // not exist any more (UI-1xcd §3).
+  test('does not pass conflict_resolution into the runner settings', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedDoneAttempt(env.store);
 
     await env.scheduler.resolveConflict(WS, 'B1');
 
-    expect(env.runner.settingsFor('B1').conflict_resolution).toBe(true);
+    expect('conflict_resolution' in env.runner.settingsFor('B1')).toBe(false);
   });
 
   test('instructs merge-into-branch, never rebase, and never a PR merge', async () => {
@@ -2236,7 +2239,7 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     );
   });
 
-  test('a normal dispatch never carries the resolution flag (fail-closed default)', async () => {
+  test('a normal dispatch carries no resolution flag in its settings either', async () => {
     const env = setup({
       config: { A1: { ready: true, repo: '/repo', target_base: 'main' } },
       slots: 1
@@ -2246,7 +2249,7 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     await env.scheduler.tick(WS);
     await flush();
 
-    expect(env.runner.settingsFor('A1').conflict_resolution).toBe(false);
+    expect('conflict_resolution' in env.runner.settingsFor('A1')).toBe(false);
   });
 });
 
@@ -2344,12 +2347,12 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     );
   });
 
-  test('passes conflict_resolution into the runner settings', async () => {
+  test('does not pass conflict_resolution into the runner settings', async () => {
     const env = extEnv();
 
     await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
 
-    expect(env.runner.settingsFor('X1').conflict_resolution).toBe(true);
+    expect('conflict_resolution' in env.runner.settingsFor('X1')).toBe(false);
   });
 
   test('runs with the slot cap already full (human-click origin)', async () => {
@@ -6158,16 +6161,11 @@ function installGuardHookForTest(attempt_id) {
   }).ok;
 }
 
-describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
+describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', () => {
   const MOVED = 'b'.repeat(40);
   const LANDED = 'c'.repeat(40);
   const FOREIGN = 'e'.repeat(40);
   const BRANCH_HEAD = 'f'.repeat(40);
-  // A SHA no walk stub answers, so `<pinned>..<it>` is empty: the reflog
-  // anchor that stops an acquisition-time walk.
-  const REFLOG_ANCHOR = '0'.repeat(40);
-  const BASE_T = 200;
-  const BRANCH_T = 100;
 
   /**
    * The forced base re-resolution seam, answering with a tip that is NOT the
@@ -6189,76 +6187,80 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
   }
 
   /**
-   * A `git` runner answering the two `rev-list` walks by range, plus the
-   * containment probe in the NOT-contained posture (UI-43bh): a branch head
-   * distinct from the observed tip and `--is-ancestor` answering "no" (exit 1).
-   * Every case below is a real landing, so none of them is a rebase.
+   * The `git` runner the detection layer now spends on ONE question —
+   * "is this recorded push reachable from the observed tip?" — plus the
+   * `rev-parse` `launchSession` reads the attempt's starting branch tip with.
    *
-   * The `reflog show` answers put each ref in the BRANCH-FIRST posture
-   * (UI-zcoi), which is what keeps these landings violations: two entries per
-   * ref, its tip and then an anchor SHA no walk stub answers, so
-   * `<pinned>..<anchor>` comes back empty and ends the walk. The branch tip
-   * entry's walk is aliased to whichever `refs/heads/` range the case declared.
-   *
-   * @param {Record<string, string>} by_range
+   * @param {{ reachable?: string[], ancestor_code?: number, head?: string|null }} [posture]
    */
-  function gitFor(by_range) {
-    const branch_key = Object.keys(by_range).find((range) =>
-      range.includes('..refs/heads/')
-    );
+  function gitFor(posture = {}) {
+    const reachable = posture.reachable ?? [];
+    const head = posture.head === undefined ? BRANCH_HEAD : posture.head;
     return vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'rev-parse') {
-        return { code: 0, stdout: `${BRANCH_HEAD}\n`, stderr: '' };
+        return head === null
+          ? { code: 128, stdout: '', stderr: 'unknown revision' }
+          : { code: 0, stdout: `${head}\n`, stderr: '' };
       }
       if (args[0] === 'merge-base') {
-        return { code: 1, stdout: '', stderr: '' };
-      }
-      if (args[0] === 'reflog') {
-        const ref = args[2];
-        const on_branch = ref.startsWith('refs/heads/');
-        const tip = on_branch ? BRANCH_HEAD : MOVED;
-        const t = on_branch ? BRANCH_T : BASE_T;
+        if (posture.ancestor_code !== undefined) {
+          return { code: posture.ancestor_code, stdout: '', stderr: 'boom' };
+        }
         return {
-          code: 0,
-          stdout: `${tip} ${ref}@{${t}}\n${REFLOG_ANCHOR} ${ref}@{0}\n`,
+          code: reachable.includes(args[2]) ? 0 : 1,
+          stdout: '',
           stderr: ''
         };
       }
-      const range =
-        args[1].endsWith(`..${BRANCH_HEAD}`) && branch_key !== undefined
-          ? branch_key
-          : args[1];
-      return { code: 0, stdout: by_range[range] ?? '', stderr: '' };
+      throw new Error(`unexpected git command: ${args.join(' ')}`);
     });
   }
 
   /**
-   * The PR adapter seam. `mergedPrsForCommit` answers `empty` — no other
-   * unit's merged PR explains the shared commit — because that is what leaves
-   * these landings violations.
+   * A `guardHook` override whose push record is driven per attempt id. Every
+   * unnamed attempt gets an INITIALIZED-but-empty log, which is what a
+   * post-deployment attempt that pushed nothing actually has.
    *
-   * @param {{ state: string, data?: unknown, reason?: string }} [result]
+   * @param {Record<string, Record<string, unknown>[]|null>} [by_attempt] - null
+   * marks an attempt whose log is ABSENT (dispatched before the record existed).
    */
-  function ghFor(result = { state: 'empty' }) {
+  function guardHookWith(by_attempt = {}) {
     return {
-      mergedPrForBranch: vi.fn(async () => result),
-      mergedPrsForCommit: vi.fn(async () => ({ state: 'empty' }))
+      install: () => ({ ok: true, dir: '/dir', hook_path: '/dir/pre-push' }),
+      envFor: () => ({}),
+      remove: () => true,
+      readPushLog: vi.fn(
+        (/** @type {{ attempt_id: string }} */ { attempt_id }) => {
+          const entries = by_attempt[attempt_id];
+          return entries === null
+            ? { ok: /** @type {const} */ (false), reason: 'absent' }
+            : { ok: /** @type {const} */ (true), entries: entries ?? [] };
+        }
+      )
     };
   }
 
-  /** The walks of an attempt whose commit IS on the moved base. */
-  const LANDED_WALKS = {
-    'base-S1..refs/heads/S1': `${LANDED}\n`,
-    [`base-S1..${MOVED}`]: `${LANDED}\n${FOREIGN}\n`
-  };
+  /**
+   * One base-destined push line as the hook records it.
+   *
+   * @param {string} local_oid
+   */
+  function pushedToBase(local_oid) {
+    return {
+      local_ref: 'HEAD',
+      local_oid,
+      remote_ref: 'refs/heads/main',
+      remote_oid: 'base-S1'
+    };
+  }
 
-  test('fails the attempt when its commits are found on the moved remote base', async () => {
+  test('fails the attempt when its recorded base push is on the moved base', async () => {
     const env = setup({
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
-      gitRun: gitFor(LANDED_WALKS),
-      gh: ghFor()
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook: guardHookWith({ 'S1-1000-1': [pushedToBase(LANDED)] })
     });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -6280,8 +6282,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       observed: MOVED,
       landed: true,
       via: 'direct_push',
-      shas: [LANDED],
-      inherited: []
+      pushed: [LANDED],
+      shas: [LANDED]
     });
     // The queue stops and the PR verdict is never reached: a landing is not
     // laundered into a success by an open PR.
@@ -6289,16 +6291,26 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
 
-  test('records the observation and completes normally when someone else moved the base', async () => {
+  // Regression 1 (2026-08-03, ×2 pairs) and regression 4 (the mixed state):
+  // the base moved, the attempt pushed nothing at it, and the old inference
+  // called that a landing.
+  test('completes normally when the attempt pushed nothing at the base', async () => {
+    const gitRun = gitFor({ reachable: [FOREIGN] });
     const env = setup({
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
-      gitRun: gitFor({
-        'base-S1..refs/heads/S1': `${LANDED}\n`,
-        [`base-S1..${MOVED}`]: `${FOREIGN}\n`
-      }),
-      gh: ghFor()
+      gitRun,
+      guardHook: guardHookWith({
+        'S1-1000-1': [
+          {
+            local_ref: 'HEAD',
+            local_oid: LANDED,
+            remote_ref: 'refs/heads/S1',
+            remote_oid: '0'.repeat(40)
+          }
+        ]
+      })
     });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -6311,10 +6323,38 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
     expect(q.attempts['S1-1000-1'].base_drift).toEqual({
       pinned: 'base-S1',
       observed: MOVED,
-      landed: false
+      landed: false,
+      pushed: []
     });
     expect(q.attempts['S1-1000-1'].status).toBe('done');
     expect(q.pr_wait.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+
+  // The migration boundary: an attempt dispatched before the hook wrote a log
+  // is UNOBSERVABLE, and must not quietly read as innocent.
+  test('records push_log_absent for a pre-deployment attempt', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor(),
+      guardHook: guardHookWith({ 'S1-1000-1': null })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts['S1-1000-1'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      error: 'push_log_absent'
+    });
+    // Unobservable is not guilty: the attempt still finishes.
+    expect(q.attempts['S1-1000-1'].status).toBe('done');
   });
 
   test('observes the base of a session that ended in failure', async () => {
@@ -6322,8 +6362,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
-      gitRun: gitFor(LANDED_WALKS),
-      gh: ghFor()
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook: guardHookWith({ 'S1-1000-1': [pushedToBase(LANDED)] })
     });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -6344,8 +6384,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
-      gitRun: gitFor(LANDED_WALKS),
-      gh: ghFor()
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook: guardHookWith({ 'S1-1000-1': [pushedToBase(LANDED)] })
     });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -6361,8 +6401,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       observed: MOVED,
       landed: true,
       via: 'direct_push',
-      shas: [LANDED],
-      inherited: []
+      pushed: [LANDED],
+      shas: [LANDED]
     });
     expect(q.attempts['S1-1000-1'].cause).toBe('base_landing_detected');
     expect(q.auto_advance).toBe(false);
@@ -6373,8 +6413,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase('base-S1'),
-      gitRun: gitFor({}),
-      gh: ghFor()
+      gitRun: gitFor(),
+      guardHook: guardHookWith()
     });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -6390,16 +6430,12 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
   });
 
   test('observes the base of a restart-restored paused attempt discarded by ■', async () => {
-    const gh = ghFor();
     const env = setup({
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
-      gitRun: gitFor({
-        'base-S1..refs/heads/UI-7': `${LANDED}\n`,
-        [`base-S1..${MOVED}`]: `${LANDED}\n`
-      }),
-      gh
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook: guardHookWith({ 'att-paused': [pushedToBase(LANDED)] })
     });
     // A `paused` record whose server restarted: it is not `running`, so
     // reconcile never disposes of it, and its `onSessionDone` died with the
@@ -6429,10 +6465,45 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       observed: MOVED,
       landed: true,
       via: 'direct_push',
-      shas: [LANDED],
-      inherited: []
+      pushed: [LANDED],
+      shas: [LANDED]
     });
     expect(env.store.snapshot(WS).auto_advance).toBe(false);
+  });
+
+  // The ⏸ of a LIVE session parks its `done` promise, and that promise's
+  // `onSessionDone` is the observer. Removing the hook at discard time deleted
+  // the record before it ran (implementation review 2026-08-04).
+  test('leaves the hook alone when a parked `done` still owes the settlement', async () => {
+    /** @type {string[]} */
+    const removed = [];
+    const base = guardHookWith();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase('base-S1'),
+      gitRun: gitFor(),
+      guardHook: {
+        ...base,
+        remove: (/** @type {any} */ i) => {
+          removed.push(i.attempt_id);
+          return true;
+        }
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    await env.scheduler.pause(WS, 'S1-1000-1');
+
+    await env.scheduler.stop(WS, 'S1-1000-1');
+
+    // Nothing removed yet: the parked `done` settles first and removes it in
+    // its own `finally`.
+    expect(removed).not.toContain('S1-1000-1');
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+    expect(removed).toContain('S1-1000-1');
   });
 
   test('discards a restart-restored paused attempt normally when nothing landed', async () => {
@@ -6440,8 +6511,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase('base-S1'),
-      gitRun: gitFor({}),
-      gh: ghFor()
+      gitRun: gitFor(),
+      guardHook: guardHookWith()
     });
     env.store.appendAttempt(WS, {
       expected_revision: env.store.snapshot(WS).revision,
@@ -6466,17 +6537,14 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
   });
 
   test('observes the base of a restart-surviving attempt disposed by reconcile', async () => {
-    const gh = ghFor();
+    const guardHook = guardHookWith({ 'att-dead': [pushedToBase(LANDED)] });
     const env = setup({
       config: { S1: {} },
       slots: 1,
       probePid: () => ({ alive: false, started_at: null }),
       resolveBase: movedBase(),
-      gitRun: gitFor({
-        'base-S1..refs/heads/UI-9': `${LANDED}\n`,
-        [`base-S1..${MOVED}`]: `${LANDED}\n`
-      }),
-      gh
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook
     });
     env.store.appendAttempt(WS, {
       expected_revision: env.store.snapshot(WS).revision,
@@ -6503,11 +6571,155 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       observed: MOVED,
       landed: true,
       via: 'direct_push',
-      shas: [LANDED],
-      inherited: []
+      pushed: [LANDED],
+      shas: [LANDED]
     });
-    expect(gh.mergedPrForBranch).toHaveBeenCalledWith('/repo', 'UI-9');
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  // UI-1xcd §4: the hook assets carry the record the settlement reads, so the
+  // dead-attempt disposal must not delete them before it has read them.
+  test('reads the dead attempt push record BEFORE removing its hook', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const base = guardHookWith({ 'att-dead': [pushedToBase(LANDED)] });
+    const guardHook = {
+      ...base,
+      readPushLog: (/** @type {any} */ i) => {
+        order.push('read');
+        return base.readPushLog(i);
+      },
+      remove: () => {
+        order.push('remove');
+        return true;
+      }
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null }),
+      resolveBase: movedBase(),
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-dead', bead_id: 'UI-9' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-dead',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(order).toEqual(['read', 'remove']);
+    expect(env.store.snapshot(WS).attempts['att-dead'].cause).toBe(
+      'base_landing_detected'
+    );
+  });
+
+  // A restart-restored `paused` ancestor reaches no other observer: removing
+  // its hook at relaunch used to delete its push record unread, so a real
+  // landing simply disappeared (implementation review 2026-08-04).
+  test('settles the ancestor before a resume removes its hook, and refuses on a landing', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const base = guardHookWith({ 'att-paused': [pushedToBase(LANDED)] });
+    const guardHook = {
+      ...base,
+      readPushLog: (/** @type {any} */ i) => {
+        order.push(`read:${i.attempt_id}`);
+        return base.readPushLog(i);
+      },
+      remove: (/** @type {any} */ i) => {
+        order.push(`remove:${i.attempt_id}`);
+        return true;
+      }
+    };
+    const env = setup({
+      config: { 'UI-7': {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-paused', bead_id: 'UI-7' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-paused',
+      patch: {
+        status: 'paused',
+        pid: null,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        session_id: 'sid-1',
+        workflow_mode_prior: null
+      }
+    });
+
+    const res = await env.scheduler.resume(WS, 'att-paused');
+
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('base_landing_detected');
+    expect(order[0]).toBe('read:att-paused');
+    expect(env.store.snapshot(WS).attempts['att-paused'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      pushed: [LANDED],
+      shas: [LANDED]
+    });
+  });
+
+  test('does not re-observe an ancestor that already carries a base_drift', async () => {
+    const guardHook = guardHookWith();
+    const env = setup({
+      config: { 'UI-7': {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor(),
+      guardHook
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-paused', bead_id: 'UI-7' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-paused',
+      patch: {
+        status: 'paused',
+        pid: null,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        session_id: 'sid-1',
+        workflow_mode_prior: null,
+        // Already settled by its own termination path; re-observing a hook that
+        // is gone would overwrite this with `push_log_absent`.
+        base_drift: { pinned: 'base-S1', observed: MOVED, landed: false }
+      }
+    });
+
+    await env.scheduler.resume(WS, 'att-paused');
+
+    expect(guardHook.readPushLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ attempt_id: 'att-paused' })
+    );
+    expect(env.store.snapshot(WS).attempts['att-paused'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: false
+    });
   });
 
   test('records the exclusion of an attempt dispatched without a pinned base', async () => {
@@ -6516,8 +6728,8 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
       slots: 1,
       probePid: () => ({ alive: false, started_at: null }),
       resolveBase: movedBase(),
-      gitRun: gitFor(LANDED_WALKS),
-      gh: ghFor()
+      gitRun: gitFor(),
+      guardHook: guardHookWith()
     });
     env.store.appendAttempt(WS, {
       expected_revision: env.store.snapshot(WS).revision,
@@ -6544,13 +6756,13 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
   });
 
   test('records the exclusion of a disposition attempt before its own verdict', async () => {
-    const gitRun = gitFor(LANDED_WALKS);
+    const guardHook = guardHookWith();
     const env = setup({
       config: {},
       slots: 1,
       resolveBase: movedBase(),
-      gitRun,
-      gh: ghFor(),
+      gitRun: gitFor(),
+      guardHook,
       disposition: { complete: vi.fn(async () => ({ ok: true })) }
     });
     let rev = env.store.snapshot(WS).revision;
@@ -6587,26 +6799,20 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
     const child =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
     expect(child.base_drift).toEqual({ skipped: 'disposition' });
-    expect(gitRun).not.toHaveBeenCalled();
+    // The disposition CHILD is excluded before anything is consulted; the
+    // ancestor `p1` is settled on its way out, which is a different attempt.
+    expect(guardHook.readPushLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ attempt_id: res.attempt_id })
+    );
   });
 
-  test('records an unobservable attempt without failing it', async () => {
+  test('records an unanswerable reachability query without failing the attempt', async () => {
     const env = setup({
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
-      // The containment probe answers; the WALK is what cannot run.
-      gitRun: vi.fn(async (/** @type {string[]} */ args) => {
-        if (args[0] === 'rev-list') {
-          return { code: 128, stdout: '', stderr: 'boom' };
-        }
-        return {
-          code: args[0] === 'merge-base' ? 1 : 0,
-          stdout: `${BRANCH_HEAD}\n`,
-          stderr: ''
-        };
-      }),
-      gh: ghFor()
+      gitRun: gitFor({ ancestor_code: 128 }),
+      guardHook: guardHookWith({ 'S1-1000-1': [pushedToBase(LANDED)] })
     });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -6619,10 +6825,167 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
     expect(q.attempts['S1-1000-1'].base_drift).toEqual({
       pinned: 'base-S1',
       observed: MOVED,
-      error: 'rev_list_branch'
+      pushed: [LANDED],
+      error: 'reachability:merge_base'
     });
     // Observation failure is evidence, not a verdict: the attempt finishes.
     expect(q.attempts['S1-1000-1'].status).toBe('done');
     expect(q.pr_wait.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+});
+
+describe('scheduler captures the attempt starting point (UI-1xcd §4.2)', () => {
+  const BRANCH_HEAD = 'f'.repeat(40);
+
+  test('reads the branch tip BEFORE the spawn, not the base_oid copy', async () => {
+    // The order is the seam: read after the spawn and the child may already
+    // have committed, so whatever is measured is a race.
+    /** @type {string[]} */
+    const order = [];
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'rev-parse') {
+        order.push(`rev-parse:${args[1]}`);
+        return { code: 0, stdout: `${BRANCH_HEAD}\n`, stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    });
+    const runner = makeFakeRunner();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      gitRun,
+      makeRunner: () => ({
+        spawn: (
+          /** @type {any} */ bead,
+          /** @type {string} */ cwd,
+          /** @type {any} */ settings
+        ) => {
+          order.push('spawn');
+          return runner.factory('claude').spawn(bead, cwd, settings);
+        }
+      })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['S1-1000-1'];
+    expect(attempt.head_oid).toBe(BRANCH_HEAD);
+    expect(attempt.head_oid).not.toBe(attempt.base_oid);
+    expect(order).toEqual(['rev-parse:refs/heads/S1', 'spawn']);
+  });
+
+  test('leaves the field absent rather than falling back to base_oid', async () => {
+    const gitRun = vi.fn(async () => ({
+      code: 128,
+      stdout: '',
+      stderr: 'unknown revision'
+    }));
+    const env = setup({ config: { S1: {} }, slots: 1, gitRun });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['S1-1000-1'];
+    expect(attempt.head_oid).toBe(null);
+    expect(attempt.base_oid).toBe('base-S1');
+  });
+
+  test('leaves the field absent when no git runner is wired at all', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].head_oid).toBe(null);
+  });
+});
+
+describe('scheduler records surviving guard warnings (UI-1xcd §1)', () => {
+  test('appends a warning event to the attempt record', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.eventsFor('A1').emit('event', {
+      kind: 'error',
+      reason: 'base_merge_blocked',
+      guard_warning: {
+        reason: 'base_merge_blocked',
+        command: 'git merge origin/main --no-edit'
+      }
+    });
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    const warnings = attempt.guard_warnings || [];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      reason: 'base_merge_blocked',
+      command: 'git merge origin/main --no-edit'
+    });
+    expect(typeof warnings[0].at).toBe('number');
+  });
+
+  test('accumulates repeat warnings in order', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+
+    events.emit('event', {
+      kind: 'error',
+      guard_warning: { reason: 'base_merge_blocked', command: 'git merge a' }
+    });
+    events.emit('event', {
+      kind: 'error',
+      guard_warning: { reason: 'merge_to_base_blocked', command: 'git push b' }
+    });
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect((attempt.guard_warnings || []).map((w) => w.command)).toEqual([
+      'git merge a',
+      'git push b'
+    ]);
+  });
+
+  test('records the warning even when no usage store is wired', async () => {
+    const env = setup({ config: { A1: {} }, usage: null });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.eventsFor('A1').emit('event', {
+      kind: 'error',
+      guard_warning: { reason: 'base_merge_blocked', command: 'git merge a' }
+    });
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.guard_warnings).toHaveLength(1);
+  });
+
+  test('leaves guard_warnings null on an attempt that drew none', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.eventsFor('A1').emit('event', { kind: 'text' });
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.guard_warnings).toBe(null);
+  });
+
+  test('the warning survives a cold reload of the store', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('A1').emit('event', {
+      kind: 'error',
+      guard_warning: { reason: 'base_merge_blocked', command: 'git merge a' }
+    });
+
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    expect(
+      createQueueStore().load(WS).attempts[attempt_id].guard_warnings
+    ).toHaveLength(1);
   });
 });

@@ -2,7 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { envFor, install, remove, renderHookScript } from './guard-hook.js';
+import {
+  envFor,
+  install,
+  pushLogPath,
+  readPushLog,
+  remove,
+  renderHookScript
+} from './guard-hook.js';
 import { guardHookDir } from './state-paths.js';
 
 const WS = '/tmp/example-workspace/project-a';
@@ -60,7 +67,8 @@ describe('guard-hook install', () => {
     const script = renderHookScript({
       repo: "/re'po",
       target_base: "dev'; rm -rf /; echo '",
-      attempt_id: ATTEMPT
+      attempt_id: ATTEMPT,
+      push_log: '/tmp/pushes.jsonl'
     });
 
     // Every interpolated value stays inside ONE single-quoted literal, so no
@@ -132,6 +140,125 @@ describe('guard-hook install', () => {
     expect(fs.existsSync(guardHookDir(WS, ATTEMPT))).toBe(false);
     spy.mockRestore();
     expect(fs.writeFileSync).toBe(real_write);
+  });
+});
+
+describe('guard-hook push log (UI-1xcd §4.1)', () => {
+  test('install initializes an EMPTY push log beside the hook', () => {
+    const result = install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(pushLogPath(WS, ATTEMPT)).toBe(
+      path.join(guardHookDir(WS, ATTEMPT), 'pushes.jsonl')
+    );
+    expect(fs.readFileSync(pushLogPath(WS, ATTEMPT), 'utf8')).toBe('');
+  });
+
+  // The migration boundary: a file that EXISTS means the new hook ran, so
+  // "no push recorded" is a fact. Absent means the attempt predates the
+  // deployment, which is unobservable rather than innocent.
+  test('reads an initialized-but-empty log as ok with no entries', () => {
+    install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main'
+    });
+
+    expect(readPushLog({ workspace: WS, attempt_id: ATTEMPT })).toEqual({
+      ok: true,
+      entries: []
+    });
+  });
+
+  test('reports absence for an attempt that never had a log', () => {
+    expect(
+      readPushLog({ workspace: WS, attempt_id: 'legacy-attempt' })
+    ).toEqual({ ok: false, reason: 'absent' });
+  });
+
+  test('parses the recorded push lines in order', () => {
+    install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main'
+    });
+    fs.appendFileSync(
+      pushLogPath(WS, ATTEMPT),
+      `${JSON.stringify({
+        local_ref: 'refs/heads/UI-1',
+        local_oid: 'a'.repeat(40),
+        remote_ref: 'refs/heads/main',
+        remote_oid: 'b'.repeat(40)
+      })}\n${JSON.stringify({
+        local_ref: 'refs/heads/UI-1',
+        local_oid: 'c'.repeat(40),
+        remote_ref: 'refs/heads/UI-1',
+        remote_oid: '0'.repeat(40)
+      })}\n`
+    );
+
+    const read = readPushLog({ workspace: WS, attempt_id: ATTEMPT });
+
+    expect(read.ok).toBe(true);
+    expect((read.ok ? read.entries : []).map((e) => e.remote_ref)).toEqual([
+      'refs/heads/main',
+      'refs/heads/UI-1'
+    ]);
+  });
+
+  test('skips an unparseable line instead of failing the whole read', () => {
+    install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main'
+    });
+    fs.appendFileSync(
+      pushLogPath(WS, ATTEMPT),
+      `not json\n${JSON.stringify({ remote_ref: 'refs/heads/main' })}\n`
+    );
+
+    const read = readPushLog({ workspace: WS, attempt_id: ATTEMPT });
+
+    expect(read.ok ? read.entries : []).toHaveLength(1);
+  });
+
+  test('the script appends every judged line before it decides', () => {
+    const script = renderHookScript({
+      repo: '/repo',
+      target_base: 'main',
+      attempt_id: ATTEMPT,
+      push_log: '/state/pushes.jsonl'
+    });
+
+    expect(script).toContain("guard_push_log='/state/pushes.jsonl'");
+    // Recorded BEFORE the refusal branch: a refused push is evidence too.
+    const record_at = script.indexOf('guard_record');
+    const refuse_at = script.indexOf('refusing push to');
+    expect(record_at).toBeGreaterThan(-1);
+    expect(record_at).toBeLessThan(refuse_at);
+    // An append failure must never turn into a failed push.
+    expect(script).toContain('|| :');
+  });
+
+  test('removing the attempt tree removes the push log with it', () => {
+    install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main'
+    });
+
+    remove({ workspace: WS, attempt_id: ATTEMPT });
+
+    expect(fs.existsSync(pushLogPath(WS, ATTEMPT))).toBe(false);
   });
 });
 

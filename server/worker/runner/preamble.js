@@ -45,12 +45,12 @@ export const PR_SUBMIT_DIRECTIVE =
  * mode. The session engine enforces two fail-closed guards that a session
  * cannot see from its own vantage point, so the prompt must state them
  * explicitly rather than let the session discover them by triggering a kill:
- * (a) the merge guard (`command-guard.js` base-into-branch rule) SIGTERMs the
- * session the instant it runs `git merge` — a session that doesn't know this
- * can lose real work mid-merge instead of just being blocked at admission; a
- * conflict-resolution attempt is the sole named exception, since resolving an
- * in-flight conflict is not the same act as initiating a new merge. (b) the
- * headless process exits as soon as the turn ends, which kills any
+ * (a) merging the base into the branch is ALLOWED and recorded (UI-1xcd §5).
+ * The old directive forbade `git merge` outright, which left a session with no
+ * way to sync its base at all — rebase needs a force-push the push-safety rules
+ * forbid, and merge was killed by the guard. Saying so is load-bearing in the
+ * other direction too: a session told "merge kills you" will not try the one
+ * legitimate sync it has. (b) the headless process exits as soon as the turn ends, which kills any
  * background task left pending (e.g. an async review bridge) — a session
  * that ends its turn "to wait" for such a task silently loses the result
  * instead of actually waiting for it (worker-phase2 §1, UI-2wa9 attempt
@@ -62,12 +62,15 @@ export const PR_SUBMIT_DIRECTIVE =
  * session is what argv alone decides: `gh pr merge`, and any attempt to disable
  * the hook. Naming the two effects separately is the point — a session told
  * "your base push kills you" cannot tell that from "your base push is refused",
- * and only the second is true now.
+ * and only the second is true now. (d) reading `core.hooksPath` is not a
+ * violation: the old directive named `git config … core.hooksPath` as a kill
+ * without qualification, and a session that merely ASKED where the hooks live
+ * was killed for it (measured 2026-08-04, $8.99).
  *
  * @type {string}
  */
 export const GUARD_CONTRACT_DIRECTIVE =
-  '가드 계약 고지 — (1) `git merge` 절대 금지: 충돌 해소 attempt를 제외하고 세션 엔진이 `git merge` 실행 즉시 세션을 종료한다. (2) 백그라운드 태스크를 대기 상태로 둔 채 턴을 끝내지 말 것: headless 프로세스가 턴 종료와 동시에 종료되며 대기 중이던 태스크가 함께 kill되어 결과(예: 리뷰 결과)가 유실된다. (3) base 브랜치 직접 랜딩 금지: 이 attempt 가 맡은 저장소의 base 로 향하는 `git push` 는 attempt 전용 pre-push hook 이 거부한다 — 세션은 종료되지 않고 push 만 실패한다. 다른 저장소의 base 로 향하는 push 는 hook 의 판정 대상이 아니다(통과). (4) 즉시 종료되는 것은 `gh pr merge` 와 hook 무력화 시도다 — `git push --no-verify`, `git -c core.hooksPath=…`, `git config … core.hooksPath`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` 재정의. 사후에도 원격 base 이동이 이 attempt 의 커밋으로 설명되면 attempt 가 `base_landing_detected` 로 실패 처리된다.';
+  '가드 계약 고지 — (1) base 를 브랜치로 들이는 `git merge`(예: `git merge origin/main`)는 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다. (2) 백그라운드 태스크를 대기 상태로 둔 채 턴을 끝내지 말 것: headless 프로세스가 턴 종료와 동시에 종료되며 대기 중이던 태스크가 함께 kill되어 결과(예: 리뷰 결과)가 유실된다. (3) base 브랜치 직접 랜딩 금지: 이 attempt 가 맡은 저장소의 base 로 향하는 `git push` 는 attempt 전용 pre-push hook 이 거부한다 — 세션은 종료되지 않고 push 만 실패한다. 다른 저장소의 base 로 향하는 push 는 hook 의 판정 대상이 아니다(통과). (4) 즉시 종료되는 것은 `gh pr merge` 와 hook 무력화 **쓰기**다 — `git push --no-verify`, `git -c core.hooksPath=…`, `git config core.hooksPath <값>` / `git config set|unset core.hooksPath` / `git config --unset core.hooksPath`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` 재정의. hook 경로를 **읽는 것**(`git config --get core.hooksPath`, `git config get core.hooksPath`, `git config core.hooksPath`)은 위반이 아니다. 사후에도 이 attempt 가 자기 base 로 push 한 기록이 있고 그 커밋이 원격 base 에서 도달 가능하면 attempt 가 `base_landing_detected` 로 실패 처리된다.';
 
 /**
  * The PR base directive (worker-base-scope-alignment §4).

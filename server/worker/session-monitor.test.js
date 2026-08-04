@@ -198,18 +198,18 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
     const attempt = seedRunningAttempt(env.store);
 
     env.monitors.start(WS, attempt);
-    sessionWrites(env.session_log, bashLine('git merge origin/main'));
+    sessionWrites(env.session_log, bashLine('gh pr merge 304 --squash'));
     env.monitors.stop(WS, 'att-1');
 
     const record = env.store.snapshot(WS).attempts['att-1'];
     expect(record.guard_kill).toMatchObject({
-      reason: 'base_merge_blocked',
-      command: 'git merge origin/main',
+      reason: 'merge_to_base_blocked',
+      command: 'gh pr merge 304 --squash',
       at: 5000
     });
     expect(record.cause_detail).toEqual({
-      reason: 'base_merge_blocked',
-      command: 'git merge origin/main'
+      reason: 'merge_to_base_blocked',
+      command: 'gh pr merge 304 --squash'
     });
     // NEGATIVE pid: the whole session process group, exactly like the engine.
     expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
@@ -236,18 +236,55 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
     expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
   });
 
-  test('allows the base merge of a conflict-resolution attempt', () => {
+  // UI-1xcd §1/§3: the restart path judges a base merge exactly as the live one
+  // does now — no kill, and the fact written where it outlives the session.
+  test('records a base merge durably instead of killing, on any attempt', () => {
     const env = setup();
-    const attempt = seedRunningAttempt(env.store, {
-      conflict_resolution: true
-    });
+    const attempt = seedRunningAttempt(env.store);
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLine('git merge origin/main --no-edit'));
+    env.monitors.stop(WS, 'att-1');
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(record.guard_kill).toBe(null);
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(record.guard_warnings).toEqual([
+      {
+        reason: 'base_merge_blocked',
+        command: 'git merge origin/main --no-edit',
+        at: 5000
+      }
+    ]);
+  });
+
+  test('accumulates repeat warnings in order on one attempt', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store);
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLine('git merge origin/main'));
+    sessionWrites(env.session_log, bashLine('git merge --ff-only origin/main'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(
+      (env.store.snapshot(WS).attempts['att-1'].guard_warnings || []).map(
+        (w) => w.command
+      )
+    ).toEqual(['git merge origin/main', 'git merge --ff-only origin/main']);
+  });
+
+  test('the warning survives a cold reload of the store', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store);
 
     env.monitors.start(WS, attempt);
     sessionWrites(env.session_log, bashLine('git merge origin/main'));
     env.monitors.stop(WS, 'att-1');
 
-    expect(env.store.snapshot(WS).attempts['att-1'].guard_kill).toBe(null);
-    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(
+      createQueueStore().load(WS).attempts['att-1'].guard_warnings
+    ).toHaveLength(1);
   });
 
   test('writes the evidence but sends NO signal when the pid stopped being ours', () => {
@@ -261,7 +298,7 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
       patch: { started_at: 999999 }
     });
 
-    sessionWrites(env.session_log, bashLine('git merge origin/main'));
+    sessionWrites(env.session_log, bashLine('gh pr merge 304 --squash'));
     env.monitors.stop(WS, 'att-1');
 
     expect(env.store.snapshot(WS).attempts['att-1'].guard_kill).toBeTruthy();
@@ -278,7 +315,7 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
         throw new Error('queue write failed');
       });
 
-    sessionWrites(env.session_log, bashLine('git merge origin/main'));
+    sessionWrites(env.session_log, bashLine('gh pr merge 304 --squash'));
     env.monitors.stop(WS, 'att-1');
     write_spy.mockRestore();
 

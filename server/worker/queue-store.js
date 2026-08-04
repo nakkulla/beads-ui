@@ -40,18 +40,22 @@
  * @property {string|null} effort - Effort snapshot.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
- * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
- * The POST-HOC base observation (UI-8mvc §3), written at every termination
- * path: the pinned `base_oid`, the remote tip re-resolved after the session
- * ended, whether this attempt's commits reached it and how, plus the
- * intersection SHAs that are a violation's whole evidence. `inherited` holds the
- * shared commits the precedence stage excluded as base-first (present as `[]`
- * when that stage completed and excluded none). `skipped` records an
- * attempt the invariant does not apply to (a disposition, or an
- * external-conflict dispatch with no pinned base) and `error` the observation
- * step that could not be completed — a failed observation is deliberately NOT a
- * violation. Null on every attempt observed before the field existed and on one
- * whose base never moved: there is nothing to say.
+ * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], pushed?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
+ * The POST-HOC base observation (UI-8mvc §3, rebuilt UI-1xcd §4), written at
+ * every termination path: the pinned `base_oid`, the remote tip re-resolved
+ * after the session ended, and — from the attempt's OWN pre-push record —
+ * whether it pushed at its base and whether that push is on the base now.
+ * `pushed` holds the base-destined oids the hook recorded (present as `[]` when
+ * the record was readable and held none); `shas` narrows that to the ones
+ * reachable from the observed tip, which is a violation's whole evidence.
+ * `skipped` records an attempt the invariant does not apply to (a disposition,
+ * or an external-conflict dispatch with no pinned base) and `error` the
+ * observation step that could not be completed — including `push_log_absent`,
+ * the attempt dispatched before the record existed. A failed observation is
+ * deliberately NOT a violation. Null on every attempt observed before the field
+ * existed and on one whose base never moved: there is nothing to say.
+ * `inherited` is retired (the reflog precedence stage it belonged to is gone)
+ * and kept in the shape only so a legacy record round-trips.
  * @property {string|null} repo - Target repo root (the reconcile's observation
  * scope: a dead attempt's PR is looked for in THIS repo).
  * @property {string|null} status - Attempt lifecycle: running/done/failed/
@@ -123,6 +127,17 @@
  * Written before the signal, so it survives even when the kill itself does not
  * happen (a pid that turned out to be dead or recycled). Null on every attempt
  * no monitor ever stopped.
+ * @property {{ reason: string, command: string|null, at: number }[]|null} guard_warnings -
+ * The guard verdicts this attempt drew that did NOT end it (UI-1xcd §1). A
+ * `warn` lets the session run on, so the only trace it used to leave was a
+ * stream event nothing persisted — and `base_merge` moved onto that path, which
+ * makes "the session merged the base into its branch" a fact worth having after
+ * the session is gone. Accumulated in dispatch order by the live path and by
+ * the restart monitor alike, and BOUNDED at normalize time
+ * ({@link GUARD_WARNINGS_CAP} entries, {@link GUARD_WARNING_COMMAND_MAX}
+ * characters of command) so a chatty session cannot grow `queue.json` without
+ * limit. Null on an attempt that drew none and on every record written before
+ * the field existed.
  * @property {boolean} spec_review_stale - Whether this attempt was dispatched
  * with a stale spec_review receipt (UI-dlim §3.2), i.e. the session was asked
  * to run the contract's in-session re-review lane before implementing. Recorded
@@ -490,6 +505,51 @@ function normalizeLane(arr) {
 }
 
 /**
+ * How many surviving guard verdicts one attempt keeps, and how much of the
+ * command each keeps (UI-1xcd §1, implementation review 2026-08-04).
+ *
+ * `queue.json` is durable and rewritten on every attempt update, so an
+ * unbounded append is a file that grows for as long as a session keeps warning.
+ * The EARLIEST warnings are the ones kept: the first occurrence is what explains
+ * how a session got where it did, and a full record stops changing.
+ *
+ * @type {number}
+ */
+export const GUARD_WARNINGS_CAP = 50;
+
+/** @type {number} */
+export const GUARD_WARNING_COMMAND_MAX = 500;
+
+/**
+ * Normalize a guard-warning list onto its bounded shape.
+ *
+ * @param {unknown[]} raw
+ * @returns {{ reason: string, command: string|null, at: number }[]}
+ */
+function boundGuardWarnings(raw) {
+  /** @type {{ reason: string, command: string|null, at: number }[]} */
+  const out = [];
+  for (const entry of raw) {
+    if (out.length >= GUARD_WARNINGS_CAP) {
+      break;
+    }
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const command =
+      typeof entry.command === 'string'
+        ? entry.command.slice(0, GUARD_WARNING_COMMAND_MAX)
+        : null;
+    out.push({
+      reason: typeof entry.reason === 'string' ? entry.reason : '',
+      command,
+      at: typeof entry.at === 'number' ? entry.at : 0
+    });
+  }
+  return out;
+}
+
+/**
  * Fill an attempt container over its default (all-null) shape.
  *
  * @param {Partial<Attempt> & { attempt_id: string, bead_id: string }} fields
@@ -548,6 +608,11 @@ export function makeAttempt(fields) {
     external_conflict: fields.external_conflict === true,
     guard_kill: isRecord(fields.guard_kill)
       ? /** @type {Attempt['guard_kill']} */ (fields.guard_kill)
+      : null,
+    guard_warnings: Array.isArray(fields.guard_warnings)
+      ? /** @type {Attempt['guard_warnings']} */ (
+          boundGuardWarnings(fields.guard_warnings)
+        )
       : null,
     spec_review_stale: fields.spec_review_stale === true,
     disposition: fields.disposition ?? null,
