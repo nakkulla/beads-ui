@@ -183,6 +183,7 @@ function isConflicting(pr) {
  *   },
  *   worktree: {
  *     remove: (input: { repo: string, bead_id: string }) => Promise<unknown>,
+ *     removeByBranch: (input: { repo: string, branch: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *     exists?: (repo: string, bead_id: string) => boolean,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
@@ -1144,15 +1145,14 @@ export function createPrActions(deps) {
    */
   async function cleanupBranches(bead_id, head_ref = null) {
     const branch = headBranchFor(bead_id, head_ref);
-    try {
-      await deps.worktree.remove({ repo, bead_id });
-    } catch (err) {
-      log('worktree remove threw for %s: %o', bead_id, err);
-    }
-    if (
-      typeof deps.worktree.exists === 'function' &&
-      deps.worktree.exists(repo, bead_id)
-    ) {
+    // The worktree is found BY THE BRANCH being deleted, not by a name derived
+    // from the bead id (UI-u7hh §3) — the branch name comes from GitHub, and
+    // deriving the worktree separately is what let the two disagree. No
+    // `typeof` guard and no confirming re-check: the fallback a guard creates
+    // is the very bug being fixed, and the lookup already decides inside one
+    // lock hold, so there is nothing left to confirm afterwards.
+    const wt = await deps.worktree.removeByBranch({ repo, branch });
+    if (!wt.ok) {
       return { ok: false, reason: 'worktree_remove_failed' };
     }
 

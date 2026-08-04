@@ -396,6 +396,154 @@ describe('worker/worktree (real git)', () => {
     expect(fs.existsSync(created.path)).toBe(true);
   });
 
+  test('removeByBranch clears a worktree whose name is the collision fallback', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    // What the contract's collision ladder produces: worktree and branch both
+    // named `<bead-id>-<YYYYMMDD>`, which no bead-id computation can reach.
+    const created = await wt.add({ repo, bead_id: 'UI-1-20260804', base });
+
+    const result = await wt.removeByBranch({
+      repo,
+      branch: 'UI-1-20260804'
+    });
+
+    expect(result).toEqual({ ok: true, removed: true, reason: null });
+    expect(fs.existsSync(created.path)).toBe(false);
+    // The whole point: the branch is now deletable.
+    git(['branch', '-D', 'UI-1-20260804'], repo);
+  });
+
+  test('removeByBranch reports no removal when no worktree holds the branch', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+
+    const result = await wt.removeByBranch({ repo, branch: 'UI-none' });
+
+    expect(result).toEqual({ ok: true, removed: false, reason: null });
+  });
+
+  test('removeByBranch matches the branch exactly, never by prefix', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-abcd',
+      base: headOf(repo)
+    });
+
+    const result = await wt.removeByBranch({ repo, branch: 'UI-abc' });
+
+    expect(result).toEqual({ ok: true, removed: false, reason: null });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeByBranch never matches a detached worktree', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    // The worker's own verify worktree: detached, so its record carries no
+    // `branch` line at all.
+    const created = await wt.addDetached({
+      repo,
+      name: 'verify-UI-1',
+      sha: base
+    });
+
+    const result = await wt.removeByBranch({ repo, branch: 'verify-UI-1' });
+
+    expect(result).toEqual({ ok: true, removed: false, reason: null });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeByBranch clears a prunable record whose directory is gone', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    // The registration outlives the directory and keeps holding the branch —
+    // the state `fs.existsSync` reports as "already cleaned up".
+    fs.rmSync(created.path, { recursive: true, force: true });
+
+    const result = await wt.removeByBranch({ repo, branch: 'UI-1' });
+
+    expect(result).toEqual({ ok: true, removed: true, reason: null });
+    git(['branch', '-D', 'UI-1'], repo);
+  });
+
+  test('removeByBranch refuses a worktree outside .worktrees/ and leaves it on disk', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    // A worktree a person made for their own work — exactly what the removed
+    // name computation could never reach, and what `--force` cannot undo.
+    const outside = path.join(repo, 'mine');
+    git(['worktree', 'add', '-q', '-B', 'feat', outside, 'HEAD'], repo);
+
+    const result = await wt.removeByBranch({ repo, branch: 'feat' });
+
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'foreign_worktree'
+    });
+    expect(fs.existsSync(path.join(outside, 'README.md'))).toBe(true);
+  });
+
+  test('removeByBranch refuses a sibling directory that only shares the prefix', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    // `.worktrees-backup/` satisfies a `startsWith` test on `.worktrees` — the
+    // reason the boundary is decided by `path.relative`.
+    const sibling = path.join(repo, '.worktrees-backup', 'feat');
+    git(['worktree', 'add', '-q', '-B', 'feat', sibling, 'HEAD'], repo);
+
+    const result = await wt.removeByBranch({ repo, branch: 'feat' });
+
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'foreign_worktree'
+    });
+    expect(fs.existsSync(path.join(sibling, 'README.md'))).toBe(true);
+  });
+
+  test('removeByBranch refuses a worktree whose basename is not the branch', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const odd = path.join(repo, '.worktrees', 'not-the-branch');
+    git(['worktree', 'add', '-q', '-B', 'UI-2', odd, 'HEAD'], repo);
+
+    const result = await wt.removeByBranch({ repo, branch: 'UI-2' });
+
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'foreign_worktree'
+    });
+    expect(fs.existsSync(path.join(odd, 'README.md'))).toBe(true);
+  });
+
+  test('removeByBranch fails closed when the listing itself fails', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({
+      locks,
+      run: async () => ({ code: 128, stdout: '', stderr: 'boom' })
+    });
+
+    const result = await wt.removeByBranch({ repo, branch: 'UI-1' });
+
+    // A failed observation is not an absence — the misreading this replaces.
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'observe_failed'
+    });
+  });
+
   test('add is serialized by the topology lock (no ref-db race)', async () => {
     const locks = createLockManager();
     const wt = createWorktreeManager({ locks });

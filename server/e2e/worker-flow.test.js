@@ -304,6 +304,7 @@ function buildSystem(opts) {
 function prActionsWorktree(runtime) {
   return {
     remove: async () => ({ code: 0 }),
+    removeByBranch: async () => ({ ok: true, removed: false, reason: null }),
     /**
      * @template T
      * @param {string} repo

@@ -156,6 +156,7 @@ const fakeWorktree = {
     base_oid: 'oid'
   }),
   remove: async () => ({ code: 0 }),
+  removeByBranch: async () => ({ ok: true, removed: false, reason: null }),
   // The manager owns the repo topology lock and hands it to the modules that
   // run their own ref-mutating git commands, so the fake must offer it too.
   withTopologyLock: async (
