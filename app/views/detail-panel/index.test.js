@@ -1030,3 +1030,163 @@ describe('views/detail-panel comments wiring (UI-ucq6 §변경 3)', () => {
     expect(mount.textContent).not.toContain('사람 댓글');
   });
 });
+
+describe('views/detail-panel comment compose (UI-ucq6 §변경 2/3)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  const composeIssue = {
+    id: 'UI-1',
+    title: '댓글 이슈',
+    status: 'open',
+    priority: 2,
+    description: '설명',
+    comment_count: 1
+  };
+
+  const existing = [
+    {
+      id: 'c1',
+      author: 'ilsun yun',
+      text: '먼저 있던 댓글',
+      created_at: '2026-08-03T17:20:00Z'
+    }
+  ];
+
+  const after_add = [
+    ...existing,
+    {
+      id: 'c2',
+      author: 'ilsun yun',
+      text: '새로 쓴 댓글',
+      created_at: '2026-08-04T09:00:00Z'
+    }
+  ];
+
+  /**
+   * @param {(type: string, payload: unknown) => Promise<unknown>} transport
+   */
+  function mountComposePanel(transport) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      transport,
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:UI-1', {
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    issueStores.getStore('detail:UI-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: /** @type {any} */ ([composeIssue])
+    });
+    panel.load('UI-1');
+    return { mount, panel };
+  }
+
+  test('submitting sends add-comment and swaps in the reply payload', async () => {
+    const transport = vi.fn((/** @type {string} */ type) =>
+      Promise.resolve(type === 'get-comments' ? existing : after_add)
+    );
+    const { mount } = mountComposePanel(/** @type {any} */ (transport));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const box = /** @type {HTMLTextAreaElement} */ (
+      mount.querySelector('.detail-comment-compose__input')
+    );
+    box.value = '새로 쓴 댓글';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-comment-compose__btn')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(transport).toHaveBeenCalledWith('add-comment', {
+      id: 'UI-1',
+      text: '새로 쓴 댓글'
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mount.textContent).toContain('새로 쓴 댓글');
+    // The reply payload IS the refresh — no second get-comments.
+    expect(
+      transport.mock.calls.filter((c) => c[0] === 'get-comments').length
+    ).toBe(1);
+  });
+
+  test('clears the draft after a successful submission', async () => {
+    const transport = vi.fn((/** @type {string} */ type) =>
+      Promise.resolve(type === 'get-comments' ? existing : after_add)
+    );
+    const { mount } = mountComposePanel(/** @type {any} */ (transport));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const box = /** @type {HTMLTextAreaElement} */ (
+      mount.querySelector('.detail-comment-compose__input')
+    );
+    box.value = '새로 쓴 댓글';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-comment-compose__btn')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      /** @type {HTMLTextAreaElement} */ (
+        mount.querySelector('.detail-comment-compose__input')
+      ).value
+    ).toBe('');
+  });
+
+  test('keeps the draft and the old list when the submission fails', async () => {
+    const transport = vi.fn((/** @type {string} */ type) =>
+      type === 'get-comments' ? Promise.resolve(existing) : Promise.resolve([])
+    );
+    const { mount } = mountComposePanel(/** @type {any} */ (transport));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const box = /** @type {HTMLTextAreaElement} */ (
+      mount.querySelector('.detail-comment-compose__input')
+    );
+    box.value = '실패할 댓글';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-comment-compose__btn')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      /** @type {HTMLTextAreaElement} */ (
+        mount.querySelector('.detail-comment-compose__input')
+      ).value
+    ).toBe('실패할 댓글');
+    expect(mount.textContent).toContain('먼저 있던 댓글');
+  });
+
+  test('shows the load failure line when get-comments rejects', async () => {
+    const transport = vi.fn((/** @type {string} */ type) =>
+      type === 'get-comments'
+        ? Promise.reject(new Error('bd failed'))
+        : Promise.resolve(composeIssue)
+    );
+    const { mount } = mountComposePanel(/** @type {any} */ (transport));
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mount.querySelector('[data-seam="comments-error"]')).not.toBe(null);
+    expect(mount.querySelector('.detail-comment-compose')).not.toBe(null);
+  });
+});

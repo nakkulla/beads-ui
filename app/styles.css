@@ -5249,6 +5249,11 @@ html[data-theme='dark'] {
   overflow: hidden;
 }
 
+/* 세션 이력 행과 같은 hover 관례 — 새 색을 섞지 않고 테두리만 바꾼다. */
+.detail-report:hover {
+  border-color: var(--border-tile-run);
+}
+
 .detail-report__head {
   display: grid;
   grid-template-columns: auto auto 1fr;
@@ -5265,10 +5270,6 @@ html[data-theme='dark'] {
   font: inherit;
   text-align: left;
   cursor: pointer;
-}
-
-.detail-report__head:hover {
-  background: color-mix(in srgb, var(--bg-card) 80%, var(--text-dim));
 }
 
 .detail-report__head:focus-visible {
@@ -5332,6 +5333,19 @@ html[data-theme='dark'] {
   font-size: var(--fs-body-sm);
 }
 
+/* 인라인 코드는 md 뷰어(`.md code`)와 같은 `--code-bg`/`--code-fg`를 쓴다. 앱이
+   이 역할로 이미 두 테마 모두에 정의해 둔 토큰이라 새 색이 아니고, 다른 값을
+   쓰면 같은 마크다운이 화면마다 다르게 보인다. */
+.detail-report__body code,
+.detail-comment__body code {
+  padding: 1px var(--sp-4);
+  border-radius: var(--r-4);
+  background: var(--code-bg);
+  color: var(--code-fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+}
+
 /* 보고서 6절 제목은 섹션 라벨과 같은 캡션으로 눌러 섹션 헤더보다 튀지 않게 한다. */
 .detail-report__body h1,
 .detail-report__body h2,
@@ -5356,7 +5370,7 @@ html[data-theme='dark'] {
 
 .detail-report__body ul,
 .detail-report__body ol {
-  padding-left: 18px;
+  padding-left: var(--sp-16);
 }
 
 .detail-report__body li {
@@ -5365,16 +5379,6 @@ html[data-theme='dark'] {
 
 .detail-report__body strong {
   color: var(--text-primary);
-}
-
-.detail-report__body code,
-.detail-comment__body code {
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: var(--code-bg);
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: var(--fs-chip);
 }
 
 .detail-comment {
@@ -5419,7 +5423,6 @@ html[data-theme='dark'] {
 
 .detail-comment-compose__input {
   width: 100%;
-  min-height: 54px;
   padding: var(--sp-8);
   border: 1px solid var(--border-card);
   border-radius: var(--r-4);

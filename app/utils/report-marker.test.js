@@ -118,6 +118,62 @@ describe('utils/report-marker', () => {
     expect(report?.body).toBe('### 진행 경과\n\n본문만 있다.');
   });
 
+  test('returns null when the anchor line carries trailing whitespace', () => {
+    const text = [
+      `${ANCHOR}  `,
+      '> session · sid b36fdefa · 2026-08-04T02:01:46Z',
+      '',
+      '**결론** — 규격 위반'
+    ].join('\n');
+
+    const report = parseReport(text);
+
+    expect(report).toBe(null);
+  });
+
+  test('returns null when the meta line is indented', () => {
+    const text = [
+      ANCHOR,
+      '  > session · sid b36fdefa · 2026-08-04T02:01:46Z',
+      '',
+      '**결론** — 규격 위반'
+    ].join('\n');
+
+    const report = parseReport(text);
+
+    expect(report).toBe(null);
+  });
+
+  test('recognizes a CRLF report and leaves no carriage return behind', () => {
+    const text = [
+      ANCHOR,
+      '> worker · attempt 1785076768091-1 · 2026-08-04T09:12:33Z',
+      '',
+      '**결론** — 머지 가능.',
+      '',
+      '### 진행 경과'
+    ].join('\r\n');
+
+    const report = parseReport(text);
+
+    expect(report?.conclusion).toBe('머지 가능.');
+    expect(report?.body).toBe('### 진행 경과');
+  });
+
+  test('leaves an indented conclusion line to the body', () => {
+    const text = [
+      ANCHOR,
+      '> session · sid b36fdefa · 2026-08-04T02:01:46Z',
+      '',
+      '  **결론** — 들여쓴 결론'
+    ].join('\n');
+
+    const report = parseReport(text);
+
+    expect(report?.conclusion).toBe('');
+    expect(report?.body).toBe('**결론** — 들여쓴 결론');
+  });
+
   test('returns null on a non-string input', () => {
     expect(parseReport(/** @type {any} */ (null))).toBe(null);
     expect(parseReport(/** @type {any} */ (undefined))).toBe(null);

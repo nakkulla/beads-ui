@@ -41,11 +41,13 @@ export function parseReport(text) {
   if (typeof text !== 'string' || text.length === 0) {
     return null;
   }
-  const lines = text.split('\n');
-  if ((lines[0] || '').trimEnd() !== ANCHOR) {
+  // CRLF만 정규화한다. 그 외의 공백은 손대지 않는다 — 계약 정규식은 줄 전체에
+  // 앵커돼 있으므로, 여기서 트림하면 규격을 벗어난 줄까지 일치로 만들어 준다.
+  const lines = text.split(/\r?\n/);
+  if (lines[0] !== ANCHOR) {
     return null;
   }
-  const meta = META_RE.exec((lines[1] || '').trimEnd());
+  const meta = META_RE.exec(lines[1] || '');
   if (!meta) {
     return null;
   }
@@ -58,7 +60,7 @@ export function parseReport(text) {
     i += 1;
   }
   const conclusion_match =
-    i < lines.length ? CONCLUSION_RE.exec(lines[i].trim()) : null;
+    i < lines.length ? CONCLUSION_RE.exec(lines[i]) : null;
   const conclusion = conclusion_match
     ? conclusion_match[1].replace(/\s+/g, ' ').trim()
     : '';
