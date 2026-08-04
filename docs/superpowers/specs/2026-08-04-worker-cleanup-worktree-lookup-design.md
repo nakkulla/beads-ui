@@ -284,10 +284,27 @@ RED-GREEN 시임 3개. 셋 다 `server/worker/pr-actions.test.js` 의 기존 정
 머지 후 `bdui-shared restart` 와 실행 경로·포트·HTTP 응답 확인까지를 완료 조건으로
 요구한다. 이 변경은 서버 측 워커 코드이므로 재시작 없이는 실 서비스에 반영되지 않는다.
 
-이 저장소에는 `deploy.json` 이 없다. 워크플로 계약이 요구하는 세 처분 중
-**`worker-ineligible` 라벨**을 선택한다 — 머지 후 작업이 공유 서비스 재시작이고 그
-실행은 무인 워커가 아니라 사람이 주관하는 세션에 속한다. 선례는 `UI-1xcd`
-(`2026-08-04-worker-guard-kill-scope-reduction-design.md`)와 같다.
+이 저장소에는 루트 `deploy.json` 이 없다. 그러나 그것이 커버리지 부재는 아니다 —
+등록 위치가 다를 뿐이다. 머지 후 재시작은 `~/.config/bdui/config.toml` 의
+`[worker.deploy."<beads-ui 절대경로>"]` 에 `cmd = ["bdui-shared", "restart"]`,
+`detached = true` 로 **이미 등록돼 있고**, 워커의 머지 후 정리 sweep 이 그것을
+실행한다. 따라서 계약이 요구하는 세 처분 중 이 Bead 에 해당하는 것은 **등록
+완료**이고, `worker-ineligible` 라벨은 붙이지 않는다.
+
+다만 `detached = true` 라서 `CLEANUP_STEPS` 의 `deploy` 단계는 명령을 `pending` 으로
+넘기기만 하고, 실제 `bdui-shared restart` 는 나머지 정리 단계가 모두 성공하고 durable
+기록이 끝난 뒤 마지막에 launch 된다 (`pr-actions.js:1380-1418` 의 THE TERMINAL
+LAUNCH). 재시작이 이 서버 자신을 죽이기 때문이다. 그래서 **이 Bead 가 고치려는
+`branch_cleanup` 실패가 실제로 나면 재시작은 돌지 않는다** — 배포 커버리지가 이 Bead
+의 수정 대상과 같은 경로 위에 놓여 있다. 그 실패가 조용하지는 않다: bead 는
+`pr_wait` 에 `resolved` 로 남아 `parent_close` 에 도달하지 못하고, 배너가 뜨며 자동
+재시도는 없다 (`pr-actions.js:1421-1424`).
+
+또 자동 정리는 이 서버의 [머지] 클릭으로 머지된 worker row 에만 걸린다. github.com
+에서 직접 머지한 PR 은 external row 로 관측만 기록되고 [정리] 클릭이 단일 트리거다
+(`pr-poller.js:345-357`). 그러므로 자동 경로가 돌았더라도 아래 적용 순서의 7단계
+실측과 완료 선언 책임은 그대로 남고, 자동 경로가 성립하지 않았거나 정리가 멈췄다면
+아래 절차를 사람이 직접 수행한다.
 
 ### 적용 순서
 
