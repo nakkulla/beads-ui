@@ -6,21 +6,228 @@
  * drawer only renders its own bar+body. It subscribes to the live append
  * stream via `subscribe-session-log` (server pushes a snapshot then per-event
  * appends into `sessionLogStore`), parses the raw stream with `parseTranscript`,
- * and renders assistant / tool / gate / phase / result / error lines. The same
- * viewer opens a Done/Failed session's persisted log (snapshot-only — no
- * appends ever fire for a finished attempt).
+ * and renders assistant / thinking / tool / gate / phase / result / error lines.
+ * The same viewer opens a Done/Failed session's persisted log (snapshot-only —
+ * no appends ever fire for a finished attempt).
+ *
+ * Readability (UI-dixx): assistant and result bodies are markdown, so they go
+ * through `renderMarkdown` (marked + DOMPurify) instead of `pre-wrap`; thinking
+ * blocks — the only place a session says *why* — show as a dim one-liner that
+ * expands; and the bar carries a current-stage chip sourced in three tiers
+ * (see {@link stageOf}).
  *
  * Live-follow: the `⇣` pill auto-scrolls to the tail on each append while ON;
  * a manual scroll-up flips it OFF; clicking the pill toggles it back.
  */
 import { html, render } from 'lit-html';
 import { copyToClipboard } from '../../utils/clipboard.js';
+import { renderMarkdown } from '../../utils/markdown.js';
 import { formatRelativeTime } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import { parseTranscript } from './transcript-render.js';
 
+/**
+ * @import { DisplayLine } from './transcript-render.js'
+ */
+
 /** A run of this many identical tool lines collapses into one group. */
 const FOLD_AT = 5;
+
+/** How many trailing tool lines the tier-3 stage guess votes over. */
+const ACTIVITY_WINDOW = 10;
+
+/** `Task #7 created …` in a TaskCreate tool_result — the only place the id appears. */
+const TASK_ID_RE = /Task\s+#(\d+)/;
+
+/** Publishing shell commands (tier-3 bucket). */
+const PUBLISH_RE = /\bgh\s+pr\s+create\b|\bgit\s+push\b/;
+
+/** Verification shell commands (tier-3 bucket). */
+const VERIFY_RE = /\bnpm\s+(?:run\s+)?(?:test|tsc|lint|build)\b|\bvitest\b/;
+
+/**
+ * First non-empty line of a block, trimmed.
+ *
+ * @param {unknown} text
+ * @returns {string}
+ */
+function firstLineOf(text) {
+  if (typeof text !== 'string') {
+    return '';
+  }
+  return (text.split(/\r?\n/).find((l) => l.trim().length > 0) || '').trim();
+}
+
+/**
+ * @param {unknown} text
+ * @returns {number}
+ */
+function lineCountOf(text) {
+  if (typeof text !== 'string' || text.length === 0) {
+    return 0;
+  }
+  return text.split(/\r?\n/).length;
+}
+
+/**
+ * Tier 1 — the last stage the session named out loud. Consumes the parser's
+ * existing gate/phase classification only; no new patterns.
+ *
+ * @param {DisplayLine[]} lines
+ * @returns {string|null}
+ */
+function exactStage(lines) {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (line.kind === 'phase' || line.kind === 'gate') {
+      return line.text || null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Tier 2 — the task the session declared it is inside. `TaskCreate.input`
+ * carries the wording but no id, and `TaskUpdate.input` carries the id but no
+ * wording, so the two are joined through the `Task #N` the create's tool_result
+ * echoes back. A create whose result never arrived (or never matched) is
+ * dropped rather than guessed at.
+ *
+ * @param {DisplayLine[]} lines
+ * @returns {string|null}
+ */
+function taskStage(lines) {
+  /** @type {Map<string, { label: string, active: number }>} */
+  const tasks = new Map();
+  let step = 0;
+  for (const line of lines) {
+    if (line.kind !== 'tool') {
+      continue;
+    }
+    step += 1;
+    const input = /** @type {any} */ (line.input) || {};
+    if (line.tool === 'TaskCreate') {
+      const echoed = TASK_ID_RE.exec(line.output || line.result || '');
+      const label = String(input.activeForm || input.subject || '').trim();
+      if (!echoed || label.length === 0) {
+        continue;
+      }
+      tasks.set(echoed[1], {
+        label,
+        active: input.status === 'in_progress' ? step : 0
+      });
+      continue;
+    }
+    if (line.tool !== 'TaskUpdate') {
+      continue;
+    }
+    const task = tasks.get(String(input.taskId ?? ''));
+    if (!task) {
+      continue;
+    }
+    const relabel = input.activeForm || input.subject;
+    if (typeof relabel === 'string' && relabel.trim().length > 0) {
+      task.label = relabel.trim();
+    }
+    if (typeof input.status === 'string') {
+      task.active = input.status === 'in_progress' ? step : 0;
+    }
+  }
+  /** @type {{ label: string, active: number } | null} */
+  let latest = null;
+  for (const task of tasks.values()) {
+    if (task.active > 0 && (!latest || task.active > latest.active)) {
+      latest = task;
+    }
+  }
+  return latest ? latest.label : null;
+}
+
+/**
+ * The activity bucket a single tool line votes for, or null for a tool that
+ * says nothing about the stage.
+ *
+ * @param {DisplayLine} line
+ * @returns {string|null}
+ */
+function activityBucket(line) {
+  if (line.tool === 'Bash') {
+    const command = line.command || '';
+    if (PUBLISH_RE.test(command)) {
+      return '~ PR/게시 중';
+    }
+    return VERIFY_RE.test(command) ? '~ 검증 중' : null;
+  }
+  if (
+    line.tool === 'Edit' ||
+    line.tool === 'Write' ||
+    line.tool === 'MultiEdit'
+  ) {
+    return '~ 구현 중';
+  }
+  if (line.tool === 'Read' || line.tool === 'Grep' || line.tool === 'Glob') {
+    return '~ 탐색 중';
+  }
+  return null;
+}
+
+/**
+ * Tier 3 — a guess from what the session has been touching. Majority over the
+ * trailing {@link ACTIVITY_WINDOW} tool lines so one stray tool cannot flip the
+ * chip; a tie goes to whichever bucket signalled most recently.
+ *
+ * @param {DisplayLine[]} lines
+ * @returns {string|null}
+ */
+function activityStage(lines) {
+  const tools = lines.filter((l) => l.kind === 'tool').slice(-ACTIVITY_WINDOW);
+  /** @type {Map<string, { count: number, last: number }>} */
+  const buckets = new Map();
+  tools.forEach((line, i) => {
+    const bucket = activityBucket(line);
+    if (!bucket) {
+      return;
+    }
+    const seen = buckets.get(bucket) || { count: 0, last: -1 };
+    seen.count += 1;
+    seen.last = i;
+    buckets.set(bucket, seen);
+  });
+  /** @type {{ label: string, count: number, last: number } | null} */
+  let best = null;
+  for (const [label, seen] of buckets) {
+    if (
+      !best ||
+      seen.count > best.count ||
+      (seen.count === best.count && seen.last > best.last)
+    ) {
+      best = { label, count: seen.count, last: seen.last };
+    }
+  }
+  return best ? best.label : null;
+}
+
+/**
+ * The current-stage chip: three sources in priority order, where a higher tier
+ * short-circuits the ones below it. Tiers 1-2 are what the session said, tier 3
+ * is inference — the `~` prefix and the chip colour keep that difference honest.
+ * A finished session keeps its last known stage; this is not a live-only chip.
+ *
+ * @param {DisplayLine[]} lines
+ * @returns {{ text: string, guess: boolean } | null}
+ */
+function stageOf(lines) {
+  const exact = exactStage(lines);
+  if (exact) {
+    return { text: exact, guess: false };
+  }
+  const task = taskStage(lines);
+  if (task) {
+    return { text: task, guess: false };
+  }
+  const activity = activityStage(lines);
+  return activity ? { text: activity, guess: true } : null;
+}
 
 /**
  * How long ago the session last moved, in the drawer's second-level register
@@ -197,6 +404,23 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   }
 
   /**
+   * The latest narrative the session produced. Thinking blocks are where a
+   * session says why it is doing what it is doing, so the "지금" bar shows the
+   * newest one even when no tool is open.
+   *
+   * @param {import('./transcript-render.js').DisplayLine[]} lines
+   * @returns {import('./transcript-render.js').DisplayLine | null}
+   */
+  function lastThinking(lines) {
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (lines[i].kind === 'thinking') {
+        return lines[i];
+      }
+    }
+    return null;
+  }
+
+  /**
    * @param {number} idx
    * @param {import('./transcript-render.js').DisplayLine} line
    * @returns {import('lit-html').TemplateResult | string}
@@ -209,13 +433,34 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       return html`<div class="sv__phase">${line.text}</div>`;
     }
     if (line.kind === 'result') {
+      // The final report is markdown too — the glyph and the verdict colour are
+      // the drawer's own signal, so only the body goes through the renderer.
       return html`<div
         class="sv__result${line.success
           ? ' sv__result--ok'
           : ' sv__result--fail'}"
       >
-        ${line.success ? '✓' : '✗'}
-        ${line.text || (line.success ? 'DONE' : '실패')}
+        <span class="sv__result-glyph">${line.success ? '✓' : '✗'}</span>
+        <span class="sv__result-body"
+          >${renderMarkdown(
+            line.text || (line.success ? 'DONE' : '실패')
+          )}</span
+        >
+      </div>`;
+    }
+    if (line.kind === 'thinking') {
+      const is_expanded = expanded.has(idx);
+      return html`<div
+        class="sv__think${is_expanded ? ' sv__think--expanded' : ''}"
+        role="button"
+        tabindex="0"
+        title="펼치기"
+        @click=${() => toggleExpand(idx)}
+      >
+        <span class="sv__think-line">💭 ${firstLineOf(line.text)}</span>
+        ${is_expanded
+          ? html`<pre class="sv__think-expand">${line.text}</pre>`
+          : ''}
       </div>`;
     }
     if (line.kind === 'error') {
@@ -226,8 +471,16 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     }
     if (line.kind === 'tool') {
       const is_expanded = expanded.has(idx);
+      // A heredoc folded onto one nowrap line is unreadable; show its opening
+      // line and say how much is hidden.
+      const command_lines =
+        line.tool === 'Bash' ? lineCountOf(line.command) : 0;
       const detail =
-        line.tool === 'Bash' ? line.command : line.path || line.command || '';
+        line.tool === 'Bash'
+          ? command_lines > 1
+            ? firstLineOf(line.command)
+            : line.command
+          : line.path || line.command || '';
       return html`<div
         class="sv__tool${is_expanded ? ' sv__tool--expanded' : ''}"
         role="button"
@@ -238,6 +491,9 @@ export function createTranscriptDrawer(mount_element, options = {}) {
           <span class="sv__tool-icon">${line.icon}</span>
           <span class="sv__tool-name">${line.tool}</span>
           ${detail ? html`<span class="sv__tool-detail">${detail}</span>` : ''}
+          ${command_lines > 1
+            ? html`<span class="sv__tool-more">⋯ ${command_lines}줄</span>`
+            : ''}
           ${typeof line.added === 'number'
             ? html`<span class="sv__diff-add">+${line.added}</span>`
             : ''}
@@ -253,8 +509,9 @@ export function createTranscriptDrawer(mount_element, options = {}) {
           : ''}
       </div>`;
     }
-    // assistant
-    return html`<div class="sv__as">${line.text}</div>`;
+    // assistant — session output is untrusted, and renderMarkdown sanitizes
+    // through DOMPurify before it reaches the DOM.
+    return html`<div class="sv__as">${renderMarkdown(line.text || '')}</div>`;
   }
 
   /**
@@ -263,7 +520,15 @@ export function createTranscriptDrawer(mount_element, options = {}) {
    */
   function expandBody(line) {
     const parts = [];
-    if (line.input !== undefined) {
+    if (
+      line.tool === 'Bash' &&
+      typeof line.command === 'string' &&
+      line.command.length > 0
+    ) {
+      // Verbatim, not the JSON-escaped input blob — the command is the thing
+      // the reader came to read.
+      parts.push(line.command);
+    } else if (line.input !== undefined) {
       try {
         parts.push(`input: ${JSON.stringify(line.input, null, 2)}`);
       } catch {
@@ -293,9 +558,18 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     // Only a live attempt has a "지금" — a paused or finished session's dangling
     // tool line is history, and pinning it would claim work that is not running.
     const pending = live ? pendingTool(lines) : null;
+    const thinking = live ? lastThinking(lines) : null;
+    const stage = stageOf(lines);
     return html`<div class="sv" data-attempt-id=${attempt_id}>
       <div class="sv__bar">
         <span class="sv__id">${attempt_id}</span>
+        ${stage
+          ? html`<span
+              class="sv__stage${stage.guess ? ' sv__stage--guess' : ''}"
+              title=${stage.text}
+              >${stage.text}</span
+            >`
+          : ''}
         ${live
           ? html`<span
               class="sv__live"
@@ -351,16 +625,23 @@ export function createTranscriptDrawer(mount_element, options = {}) {
                 : lineTemplate(seg.idx, seg.line)
             )}
       </div>
-      ${pending
+      ${pending || thinking
         ? html`<div class="sv__now">
             <span class="sv__now-label">지금</span>
-            <span class="sv__now-icon">${pending.icon}</span>
-            <span class="sv__now-name">${pending.tool}</span>
-            <span class="sv__now-detail"
-              >${pending.tool === 'Bash'
-                ? pending.command
-                : pending.path || pending.command || ''}</span
-            >
+            ${pending
+              ? html`<span class="sv__now-icon">${pending.icon}</span>
+                  <span class="sv__now-name">${pending.tool}</span>
+                  <span class="sv__now-detail"
+                    >${pending.tool === 'Bash'
+                      ? firstLineOf(pending.command)
+                      : pending.path || pending.command || ''}</span
+                  >`
+              : ''}
+            ${thinking
+              ? html`<span class="sv__now-think"
+                  >💭 ${firstLineOf(thinking.text)}</span
+                >`
+              : ''}
           </div>`
         : ''}
     </div>`;

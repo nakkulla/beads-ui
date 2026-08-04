@@ -464,3 +464,505 @@ describe('transcript drawer', () => {
     expect(closed).toBe(true);
   });
 });
+
+/**
+ * One `tool_use` block with an arbitrary input payload.
+ *
+ * @param {string} id
+ * @param {string} name
+ * @param {Record<string, unknown>} input
+ */
+function toolWith(id, name, input) {
+  return {
+    type: 'assistant',
+    message: {
+      content: [{ type: 'tool_use', id, name, input }]
+    }
+  };
+}
+
+/**
+ * The `tool_result` that closes a {@link toolWith} with a chosen body.
+ *
+ * @param {string} id
+ * @param {string} content
+ */
+function resultWith(id, content) {
+  return {
+    type: 'user',
+    message: {
+      content: [{ type: 'tool_result', tool_use_id: id, content }]
+    }
+  };
+}
+
+/**
+ * A claude `thinking` content block.
+ *
+ * @param {string} text
+ */
+function thinking(text) {
+  return {
+    type: 'assistant',
+    message: { content: [{ type: 'thinking', thinking: text }] }
+  };
+}
+
+describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx 변경 1·2)', () => {
+  test('renders an assistant line as markdown DOM', () => {
+    store.set('att-md', [
+      {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: '## 결론\n\n**머지 가능** 상태.' }]
+        }
+      }
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-md' });
+
+    expect(mount.querySelector('.sv__as h2')?.textContent).toContain('결론');
+    expect(mount.querySelector('.sv__as strong')?.textContent).toContain(
+      '머지 가능'
+    );
+  });
+
+  test('renders the result body as markdown and keeps its verdict glyph', () => {
+    store.set('att-md2', [
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: '**완료** — 검증 통과'
+      }
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-md2' });
+
+    const res = mount.querySelector('.sv__result--ok');
+    expect(res?.textContent).toContain('✓');
+    expect(res?.querySelector('strong')?.textContent).toContain('완료');
+  });
+
+  test('keeps the failure glyph and colour on an errored result', () => {
+    store.set('att-md3', [
+      {
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: '**실패** — tsc'
+      }
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-md3' });
+
+    const res = mount.querySelector('.sv__result--fail');
+    expect(res?.textContent).toContain('✗');
+    expect(res?.querySelector('strong')?.textContent).toContain('실패');
+  });
+
+  test('shows a thinking line as its first line and expands on click', () => {
+    store.set('att-th', [thinking('첫 줄 판단\n둘째 줄 세부')]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+    drawer.open({ attempt_id: 'att-th' });
+
+    const think = /** @type {HTMLElement} */ (
+      mount.querySelector('.sv__think')
+    );
+    expect(think.textContent).toContain('💭');
+    expect(think.textContent).toContain('첫 줄 판단');
+    expect(think.textContent).not.toContain('둘째 줄 세부');
+
+    think.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.sv__think-expand')?.textContent).toContain(
+      '둘째 줄 세부'
+    );
+  });
+
+  test('keeps a thinking line out of the tool fold groups', () => {
+    /** @type {unknown[]} */
+    const lines = [];
+    for (let i = 0; i < 6; i += 1) {
+      lines.push(toolUse(`r${i}`, 'Read'), toolResult(`r${i}`));
+    }
+    lines.push(thinking('중간 판단'));
+    store.set('att-th2', lines);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-th2' });
+
+    expect(mount.querySelector('.sv__group')).toBeTruthy();
+    expect(mount.querySelector('.sv__think')?.textContent).toContain(
+      '중간 판단'
+    );
+  });
+
+  test('shows a multi-line Bash command as its first line plus a line-count badge', () => {
+    store.set('att-bash', [
+      toolWith('b1', 'Bash', {
+        command: 'cat <<EOF > /tmp/x\nline two\nline three\nEOF'
+      })
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+    drawer.open({ attempt_id: 'att-bash' });
+
+    expect(mount.querySelector('.sv__tool-detail')?.textContent).toContain(
+      'cat <<EOF'
+    );
+    expect(mount.querySelector('.sv__tool-detail')?.textContent).not.toContain(
+      'line two'
+    );
+    expect(mount.querySelector('.sv__tool-more')?.textContent).toContain(
+      '⋯ 4줄'
+    );
+  });
+
+  test('expands a Bash line to the verbatim command, not its input JSON', () => {
+    store.set('att-bash2', [
+      toolWith('b1', 'Bash', { command: 'echo one\necho two' }),
+      resultWith('b1', 'one\ntwo')
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+    drawer.open({ attempt_id: 'att-bash2' });
+
+    /** @type {HTMLElement} */ (mount.querySelector('.sv__tool')).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    const body = mount.querySelector('.sv__tool-expand')?.textContent || '';
+    expect(body).toContain('echo one\necho two');
+    expect(body).not.toContain('"command"');
+    expect(body).toContain('output:');
+  });
+
+  test('pairs the pending tool with the latest thinking in the 지금 bar', () => {
+    store.set('att-now-th', [
+      thinking('테스트 먼저 돌린다\n세부'),
+      toolWith('b1', 'Bash', { command: 'npm test' })
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-now-th', meta: { status: 'running' } });
+
+    expect(mount.querySelector('.sv__now-name')?.textContent).toContain('Bash');
+    const think = mount.querySelector('.sv__now-think')?.textContent || '';
+    expect(think).toContain('테스트 먼저 돌린다');
+    expect(think).not.toContain('세부');
+    drawer.destroy();
+  });
+
+  test('shows the 지금 bar for a latest thinking with no pending tool', () => {
+    store.set('att-now-th2', [
+      toolWith('b1', 'Bash', { command: 'npm test' }),
+      resultWith('b1', 'ok'),
+      thinking('결과 읽는 중')
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-now-th2', meta: { status: 'running' } });
+
+    expect(mount.querySelector('.sv__now')).toBeTruthy();
+    expect(mount.querySelector('.sv__now-name')).toBeFalsy();
+    expect(mount.querySelector('.sv__now-think')?.textContent).toContain(
+      '결과 읽는 중'
+    );
+    drawer.destroy();
+  });
+
+  test('shows no 지금 bar for a finished session with thinking', () => {
+    store.set('att-now-th3', [thinking('끝난 세션 판단')]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-now-th3', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__now')).toBeFalsy();
+  });
+});
+
+/**
+ * A TaskCreate tool_use whose input carries only subject/activeForm — the
+ * real shape (no taskId until the tool_result comes back).
+ *
+ * @param {string} id
+ * @param {string} subject
+ * @param {string} activeForm
+ */
+function taskCreate(id, subject, activeForm) {
+  return toolWith(id, 'TaskCreate', { subject, activeForm });
+}
+
+/**
+ * A TaskUpdate tool_use whose input carries only taskId/status.
+ *
+ * @param {string} id
+ * @param {number} taskId
+ * @param {string} status
+ */
+function taskUpdate(id, taskId, status) {
+  return toolWith(id, 'TaskUpdate', { taskId, status });
+}
+
+describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
+  test('1층: shows the last phase/gate line as an exact stage chip', () => {
+    store.set('att-chip1', [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Phase 1/3 · 파서 확장' }] }
+      },
+      {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'Phase 2/3 · 드로어 렌더' }]
+        }
+      }
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip1', meta: { status: 'done' } });
+
+    const chip = mount.querySelector('.sv__stage');
+    expect(chip?.textContent).toContain('Phase 2/3');
+    expect(chip?.classList.contains('sv__stage--guess')).toBe(false);
+  });
+
+  test('2층: shows the in_progress task activeForm resolved through Task #N', () => {
+    store.set('att-chip2', [
+      taskCreate('c1', '파서 확장', '파서 확장하는 중'),
+      resultWith('c1', 'Task #1 created: 파서 확장'),
+      taskUpdate('u1', 1, 'in_progress')
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip2', meta: { status: 'done' } });
+
+    const chip = mount.querySelector('.sv__stage');
+    expect(chip?.textContent).toContain('파서 확장하는 중');
+    expect(chip?.classList.contains('sv__stage--guess')).toBe(false);
+  });
+
+  test('2층: falls through to the lower tier once the task completes', () => {
+    store.set('att-chip3', [
+      taskCreate('c1', '파서 확장', '파서 확장하는 중'),
+      resultWith('c1', 'Task #1 created: 파서 확장'),
+      taskUpdate('u1', 1, 'in_progress'),
+      taskUpdate('u2', 1, 'completed'),
+      toolWith('e1', 'Edit', {
+        file_path: '/a.js',
+        old_string: 'a',
+        new_string: 'b'
+      })
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip3', meta: { status: 'done' } });
+
+    const chip = mount.querySelector('.sv__stage');
+    expect(chip?.textContent).toContain('~ 구현 중');
+    expect(chip?.classList.contains('sv__stage--guess')).toBe(true);
+  });
+
+  test('2층: ignores a TaskCreate whose tool_result never carried a Task #N', () => {
+    store.set('att-chip4', [
+      taskCreate('c1', '파서 확장', '파서 확장하는 중'),
+      taskUpdate('u1', 1, 'in_progress'),
+      toolWith('r1', 'Read', { file_path: '/a.js' })
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip4', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__stage')?.textContent).toContain(
+      '~ 탐색 중'
+    );
+  });
+
+  test('3층: the majority bucket beats a single more-recent signal', () => {
+    /** @type {unknown[]} */
+    const lines = [];
+    for (let i = 0; i < 6; i += 1) {
+      lines.push(toolWith(`g${i}`, 'Grep', { pattern: `p${i}` }));
+    }
+    lines.push(
+      toolWith('e1', 'Edit', {
+        file_path: '/a.js',
+        old_string: 'a',
+        new_string: 'b'
+      })
+    );
+    store.set('att-chip5', lines);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip5', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__stage')?.textContent).toContain(
+      '~ 탐색 중'
+    );
+  });
+
+  test('3층: a tie resolves to the more recent signal', () => {
+    store.set('att-chip6', [
+      toolWith('e1', 'Edit', {
+        file_path: '/a.js',
+        old_string: 'a',
+        new_string: 'b'
+      }),
+      toolWith('e2', 'Write', { file_path: '/b.js', content: 'x' }),
+      toolWith('r1', 'Read', { file_path: '/c.js' }),
+      toolWith('r2', 'Grep', { pattern: 'q' })
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip6', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__stage')?.textContent).toContain(
+      '~ 탐색 중'
+    );
+  });
+
+  test('3층: a single verification bucket reads 검증 중', () => {
+    store.set('att-chip7', [toolWith('b1', 'Bash', { command: 'npm test' })]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip7', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__stage')?.textContent).toContain(
+      '~ 검증 중'
+    );
+  });
+
+  test('3층: a PR/publish bucket reads PR/게시 중', () => {
+    store.set('att-chip8', [
+      toolWith('b1', 'Bash', { command: 'gh pr create --base main' })
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip8', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__stage')?.textContent).toContain(
+      '~ PR/게시 중'
+    );
+  });
+
+  test('3층: no bucket signal hides the chip', () => {
+    store.set('att-chip9', [
+      toolWith('b1', 'Bash', { command: 'echo hi' }),
+      TEXT_EVENT
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip9', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__stage')).toBeFalsy();
+  });
+
+  test('층간 우선순위: an exact tier-1 signal wins over task and activity', () => {
+    store.set('att-chip10', [
+      taskCreate('c1', '파서 확장', '파서 확장하는 중'),
+      resultWith('c1', 'Task #1 created'),
+      taskUpdate('u1', 1, 'in_progress'),
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Phase 3/3 · 마감' }] }
+      },
+      toolWith('e1', 'Edit', {
+        file_path: '/a.js',
+        old_string: 'a',
+        new_string: 'b'
+      })
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip10', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__stage')?.textContent).toContain(
+      'Phase 3/3'
+    );
+  });
+
+  test('층간 우선순위: a tier-2 task wins over the activity fallback', () => {
+    /** @type {unknown[]} */
+    const lines = [
+      taskCreate('c1', '검증', '검증하는 중'),
+      resultWith('c1', 'Task #1 created'),
+      taskUpdate('u1', 1, 'in_progress')
+    ];
+    for (let i = 0; i < 6; i += 1) {
+      lines.push(toolWith(`r${i}`, 'Read', { file_path: `/f${i}.js` }));
+    }
+    store.set('att-chip11', lines);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-chip11', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__stage')?.textContent).toContain(
+      '검증하는 중'
+    );
+  });
+});

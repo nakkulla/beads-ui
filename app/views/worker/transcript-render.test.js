@@ -168,3 +168,67 @@ describe('parseTranscript — synthetic line types (spec §5.6)', () => {
     expect(diffCounts('a\nb', 'a\nb')).toEqual({ added: 0, removed: 0 });
   });
 });
+
+describe('parseTranscript — thinking blocks (UI-dixx 변경 1)', () => {
+  test('emits a thinking line from a claude thinking block', () => {
+    const lines = parseTranscript([
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'thinking', thinking: 'Need to check auth first.\nThen…' }
+          ]
+        }
+      }
+    ]);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].kind).toBe('thinking');
+    expect(lines[0].text).toBe('Need to check auth first.\nThen…');
+  });
+
+  test('emits a thinking line from a codex reasoning item', () => {
+    const lines = parseTranscript([
+      {
+        type: 'item.completed',
+        item: { type: 'reasoning', text: 'Weighing two fixes.' }
+      }
+    ]);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].kind).toBe('thinking');
+    expect(lines[0].text).toBe('Weighing two fixes.');
+  });
+
+  test('drops a whitespace-only thinking block', () => {
+    const lines = parseTranscript([
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'thinking', thinking: '  \n\t ' }] }
+      },
+      {
+        type: 'item.completed',
+        item: { type: 'reasoning', text: '   ' }
+      }
+    ]);
+
+    expect(lines).toHaveLength(0);
+  });
+
+  test('keeps thinking in stream order next to text and tool lines', () => {
+    const lines = parseTranscript([
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'thinking', thinking: 'plan it' },
+            { type: 'text', text: '구현합니다.' },
+            { type: 'tool_use', id: 't1', name: 'Read', input: { path: '/a' } }
+          ]
+        }
+      }
+    ]);
+
+    expect(lines.map((l) => l.kind)).toEqual(['thinking', 'assistant', 'tool']);
+  });
+});
