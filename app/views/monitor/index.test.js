@@ -811,6 +811,21 @@ describe('views/monitor 드래그앤드롭 (UI-gwkl §2.4)', () => {
 
     expect(gotoIssue).toHaveBeenCalledWith('A-1');
   });
+
+  // 브라우저 대부분은 드래그 뒤에 click을 아예 발행하지 않는다 — 소비만 기다리면
+  // 플래그가 남아 한참 뒤의 정상 클릭을 삼킨다.
+  test('expires the suppression when the drop is followed by no click at all', async () => {
+    const { mount, view, gotoIssue } = twoRepoSetup();
+    view.load();
+
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-2"]'), 'dragstart');
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-1"]'), 'drop');
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-2"]'), 'dragend');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    click(mount, '#monitor-queue [data-issue-id="A-1"] .mon-c__title');
+
+    expect(gotoIssue).toHaveBeenCalledWith('A-1');
+  });
 });
 
 describe('views/monitor live clock', () => {

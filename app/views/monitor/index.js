@@ -397,9 +397,28 @@ export function createMonitorView(mount_element, options) {
   let dragging = null;
   /**
    * 드롭의 마우스업이 그대로 click으로 이어져 카드를 열어 버리는 것을 막는 1회용
-   * 플래그. 다음 click이 소비하므로 그 다음 클릭부터는 정상 동작한다.
+   * 플래그. 뒤따르는 click 하나가 소비하고, 그 다음 클릭부터는 정상 동작한다.
    */
   let suppress_open_click = false;
+  /**
+   * 플래그 만료 타이머. 브라우저 대부분은 드래그 뒤에 click을 **아예 발행하지
+   * 않으므로**, 소비만 기다리면 플래그가 그대로 남아 한참 뒤의 정상 클릭을
+   * 삼킨다. 드롭 직후의 click은 같은 태스크에서 오므로 다음 매크로태스크에
+   * 만료시키면 둘 다 만족한다.
+   *
+   * @type {any}
+   */
+  let suppress_timer = null;
+
+  function expireDragSuppressSoon() {
+    if (suppress_timer !== null) {
+      clearTimeout(suppress_timer);
+    }
+    suppress_timer = setTimeout(() => {
+      suppress_timer = null;
+      suppress_open_click = false;
+    }, 0);
+  }
 
   /**
    * @param {Event} ev
@@ -496,6 +515,7 @@ export function createMonitorView(mount_element, options) {
   function onDragEnd() {
     dragging = null;
     clearDragOver();
+    expireDragSuppressSoon();
   }
 
   /**
@@ -938,6 +958,13 @@ export function createMonitorView(mount_element, options) {
     }
   }
 
+  function stopSuppressTimer() {
+    if (suppress_timer !== null) {
+      clearTimeout(suppress_timer);
+      suppress_timer = null;
+    }
+  }
+
   return {
     // 데이터 갱신은 push가 끌어온다 (집계 구독이 debounce 후 전체 스냅샷을
     // 밀어준다). 시계만 지나가도 값이 바뀌는 경과·하트비트를 위해 탭이 보이는
@@ -962,6 +989,7 @@ export function createMonitorView(mount_element, options) {
     },
     clear() {
       stopTick();
+      stopSuppressTimer();
       if (unsubscribe_pipeline) {
         unsubscribe_pipeline();
         unsubscribe_pipeline = null;
