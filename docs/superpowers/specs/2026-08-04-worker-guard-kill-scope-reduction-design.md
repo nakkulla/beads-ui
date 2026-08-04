@@ -86,13 +86,23 @@ attempt 의 꼬리표가 생사를 가르고 있다.
 | `base_merge` | kill | **warn** | 로컬 브랜치만 바뀐다. 원격은 움직이지 않고 `git reset` 으로 되돌아간다 |
 | `git_push_base` | warn | warn (유지) | pre-push 훅이 실제 push 를 거부한다 |
 
-`warn` 의 의미는 `session.js:416-429` 에 이미 구현돼 있다 — 세션은 계속 진행하고 사실만
-`error` 이벤트로 기록된다. `base_merge` 는 이 경로로 옮겨가므로 **merge 는 실제로 실행되고,
-발생 사실은 attempt 로그에 한 줄 남는다.**
+`warn` 이면 세션이 계속 진행한다는 것은 `session.js:416-429` 에 이미 구현돼 있다. 그러나
+**그 사실이 durable 하게 남지는 않는다.** live 경로에서 `sessionLog.attach()` 는 `raw`
+이벤트만 재전송하고(`session-log.js`), 가드가 emit 하는 `guard_warning` 은 `event` 로 나가
+아무 데도 저장되지 않는다. 재시작 감시 경로(`session-monitor.js:267-284`)의 `publish()` 도
+메모리 broker 전송이라 파일이나 attempt 레코드에 닿지 않는다 — 그 자리의 주석이 직접
+인정한다("the live path never actually forwards this shape today").
 
-브랜치가 base 를 흡수하는 것은 의도된 동작이며 사후 검출층과 충돌하지 않는다.
-`base-drift.js` 는 이미 `merge-base --is-ancestor observed <ref>` 로 흡수 케이스를
-`branch_contains_observed` 로 배제한다.
+승인된 결정은 "merge 를 허용하되 나중 진단을 위해 기록을 남긴다" 이므로, **기록이 남는 것이
+이 절의 요구사항이다.** live 와 재시작 양쪽에서 같은 구조의 경고를 attempt 레코드에 durable
+하게 쓰고 readback 한다. `base_merge` 는 이 경로로 옮겨가므로 **merge 는 실제로 실행되고,
+발생 사실은 세션 종료 후에도 조회된다.**
+
+브랜치가 base 를 흡수하는 것은 의도된 동작이다. 현행 `base-drift.js` 도 흡수를
+`branch_contains_observed` 로 배제하려 하지만 그 배제는 조건부이고(§4 참조) 08-03 오탐이
+바로 그 틈에서 났다. **이 절이 merge 를 허용하는 이상 흡수는 예외가 아니라 정상 경로가
+되므로, 사후 검출층이 그것을 확실히 구별하는 것은 §4 의 책임이다** — 두 절은 함께 적용
+되어야 하며, §1 만 적용하면 흡수한 attempt 가 남의 랜딩을 뒤집어쓰는 빈도가 오히려 늘어난다.
 
 ### §2 `hook_bypass` 에서 읽기를 위반에서 제외한다
 
@@ -106,63 +116,120 @@ if (subcommand === 'config') {
 ```
 
 주석(`:1372-1374`)은 이 선택을 "읽기와 쓰기를 가리려면 인자 개수가 필요하고, 이 키를 쓰는
-다른 용도가 없으니 fail-closed 를 유지한다" 로 정당화했다. 앞의 전제는 참이 아니다 —
-`--get`/`--get-all`/`--get-regexp`/`--list` 는 **읽기를 명시하는 토큰**이므로 인자 개수를
-세지 않고도 판정된다.
+다른 용도가 없으니 fail-closed 를 유지한다" 로 정당화했다. 인자 개수가 필요하다는 것은
+맞다. 그것이 판정을 포기할 이유가 되지 않을 뿐이다 — `git config` 의 **연산은 argv 위치로
+분류할 수 있고**, 이 가드는 이미 그렇게 판정하는 코드다.
 
-`git config` 의 인자에 이 읽기 플래그가 하나라도 명시되면 위반이 아니다. 나머지는 그대로 kill 이다:
+읽기는 세 가지 형태로 쓰인다. 셋 다 훅을 옮기지 않으므로 셋 다 위반이 아니다.
 
-- `git config core.hooksPath <경로>` (쓰기)
+| 형태 | 예 |
+| --- | --- |
+| modern 하위 명령 | `git config get core.hooksPath`, `git config list` |
+| legacy 명시 플래그 | `git config --get\|--get-all\|--get-regexp\|--list core.hooksPath` |
+| legacy 암묵 읽기 | `git config core.hooksPath` (키만 있고 값이 없다) |
+
+암묵 읽기가 인자 개수를 요구하는 바로 그 경우다 — `git config <key>` 는 읽기,
+`git config <key> <value>` 는 쓰기다. 이 하나를 세지 않아 08-04 오탐이 났다.
+
+kill 은 그대로 유지된다:
+
+- `git config core.hooksPath <경로>` / `git config set core.hooksPath <경로>` (쓰기)
+- `git config --unset core.hooksPath` / `git config unset core.hooksPath`
 - `git -c core.hooksPath=…` (1회 재배치)
 - `git push --no-verify`
 - `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` 주입
 
-같은 완화를 `HOOK_BYPASS_RE`(`:102-103`) 폴백 경로에도 적용한다. 폴백은 토큰화가 실패했을
-때만 쓰이므로 읽기 플래그 판정도 정규식 수준으로만 수행한다 — 토큰화가 가능한 입력은 §2 의
-argv 경로가 이미 처리한다.
+**폴백 경로의 우선순위.** `HOOK_BYPASS_RE`(`:102-103`) 는 토큰화가 실패했을 때만 쓰인다.
+거기서는 명령 경계를 신뢰할 수 없으므로 읽기 면제를 무조건 적용하면 안 된다 — 한 덩어리
+안에 `git config --get core.hooksPath` 와 `git push --no-verify …:main` 이 함께 있으면
+면제가 진짜 무력화를 가릴 수 있다.
+
+순서를 고정한다: **`--no-verify`·`git -c core.hooksPath=`·`GIT_CONFIG_*` 주입을 먼저
+독립적으로 판정해 하나라도 걸리면 kill**, 그 뒤에만 `git config` 읽기 면제를 적용하되
+**같은 `git config` 명령 구간 안에서만** 적용한다. 즉 폴백에서 면제는 kill 을 이길 수 없다.
 
 ### §3 `conflict_resolution` 예외 구조를 제거한다
 
-`conflict_resolution` 은 오직 `base_merge` 판정 한 곳을 위해 존재한다 —
-`command-guard.js:1579`, `:1647` 이 전부이고 다른 소비자가 없다. `base_merge` 가 `warn` 이
-되면 이 플래그가 가리는 대상이 사라진다.
+가드 **판정 로직** 안에서 `conflict_resolution` 을 읽는 곳은 `command-guard.js:1579` 와
+`:1647` 두 곳뿐이고, 둘 다 `base_merge` 를 위한 것이다. `base_merge` 가 `warn` 이 되면 이
+플래그가 가드 안에서 가리는 대상이 사라진다 — 그러면 그 값을 가드까지 실어나르던 전달
+경로도 함께 목적을 잃는다.
 
-제거 범위: `GuardContext` 의 `conflict_resolution` 필드(`:187`), `findMergeViolation` 의
-옵션 처리(`:1744`), `session.js` 의 전달 경로, 그리고 이 분기를 검증하던 테스트.
-`scheduler.js` 가 attempt 레코드에 기록하는 `conflict_resolution` 필드 자체는 충돌 해소
-attempt 의 식별자로 다른 곳에서도 쓰이므로 **건드리지 않는다** — 제거 대상은 가드로 가는
-경로뿐이다.
+**제거하는 것** — 가드로 들어가는 입력 경로뿐이다:
 
-### §4 사후 검출의 시작점을 사실로 교정한다
+- `GuardContext` 의 `conflict_resolution` 필드(`command-guard.js:187`)와 `findMergeViolation`
+  의 옵션 처리(`:1744`)
+- `session.js` 의 가드 호출 인자
+- `scheduler.js:3320` 이 runner settings 로 실어 보내는 전달
+- `session-monitor.js:257-262` 가 재시작 감시 경로에서 가드에 넘기는 전달
+
+**유지하는 것** — `scheduler.js:2493` 이 attempt 레코드에 쓰는 `conflict_resolution` 필드와
+`:2726`·`:2826`·`:2966`·`:3090`·`:3185` 의 사용처. 이 필드는 충돌 해소 attempt 의 식별자로
+가드 밖에서도 쓰이므로 건드리지 않는다.
+
+기존 테스트 세 곳이 현행 동작을 명시적으로 고정하고 있어 함께 갱신 대상이다 —
+`scheduler.test.js`(전달 여부), `session-monitor.test.js`(일반 attempt 의 merge kill),
+`preamble.test.js`(`git merge` 절대 금지 문구). 이 셋을 갱신하지 않으면 제거와
+`npm run all` green 을 동시에 만족할 수 없다.
+
+### §4 랜딩 판정을 push 사실 위에 세운다
 
 `base-drift.js` 의 오탐은 판정 근거가 **추정**이기 때문이다. 지금은 "이 커밋을 누가 먼저
-가졌나" 를 reflog 획득 시각으로 재구성한다. 그런데 답을 추정할 필요가 없다 — attempt 가
-커밋을 만들었는지는 **관측 가능한 사실**이다.
+가졌나" 를 reflog 획득 시각으로 재구성한다.
 
-문제는 그 사실이 지금 기록되지 않는다는 데 있다. spawn 직후 런타임 스냅샷을 채우는
-`scheduler.js:2565-2575` 가 `head_oid: base_oid` 로 쓰기 때문에, `head_oid` 는 브랜치 tip 이
-아니라 `base_oid` 의 복사본이다(`Analysis-ex0` 레코드에서 두 값이 동일한 이유).
+**커밋 그래프만으로는 provenance 를 알 수 없다.** `rev-list <시작점>..<종료 tip>` 은 "이
+attempt 가 만든 커밋" 이 아니라 "그 구간에서 새로 도달 가능해진 커밋" 이다. attempt 가
+로컬 커밋 `A` 를 만든 뒤 외부 base 커밋 `B` 를 흡수하면 구간에는 `A`·`B`·머지 커밋이 모두
+들어간다. 그 상태에서 원격 base 에 `B` 만 반영돼 있으면 — 남이 올린 정상 이동인데 —
+교집합이 비지 않아 랜딩으로 오판한다. §1 이 `base_merge` 를 허용하므로 이 혼합 상태는
+드문 경우가 아니라 **정상 경로**가 된다. 시작점만 교정해서는 닫히지 않는다.
 
-**교정**: 같은 지점에서 `head_oid` 를 그 attempt 가 실제로 시작하는 브랜치 tip
-(`git rev-parse refs/heads/<bead_id>`) 으로 채운다. 신규 브랜치면 결과적으로 `base_oid` 와
-같고, resume 이면 기존 브랜치 tip 이 들어간다. 이 시점에는 워크트리 pre-flight 가 이미
-끝나 브랜치가 존재한다. rev-parse 가 실패하면 `base_oid` 로 폴백하되 그 사실을 레코드에
-남긴다 — 시작점을 모르는 채로 랜딩을 판정하지 않기 위해서다.
+답을 추정할 필요가 없다. push 는 이 시스템에서 이미 가로채이고 있다.
 
-이 값이 채워지면 종료 시점 판정이 사실 위에 선다. `observeBaseDrift` 는 이미
-`git rev-parse refs/heads/<bead_id>` 로 종료 시점 tip 을 읽으므로 별도 기록이 필요 없다.
+**§4.1 pre-push hook 이 push 를 사실로 기록한다.** 선행 설계가 설치한 attempt 전용
+pre-push hook(`$XDG_STATE_HOME/bdui/<slug>/guard-hooks/<attempt_id>/pre-push`)은 stdin 으로
+`<local_ref> <local_oid> <remote_ref> <remote_oid>` 를 받는다 — git 이 계산한 목적지이며
+명령 모양과 무관하다. 이 hook 이 판정을 내리기 전에 받은 줄을 같은 디렉터리의
+`pushes.jsonl` 에 append 한다. 거부하는 push 도 기록한다(시도 자체가 증거다).
 
-- `head_oid == 종료 시점 tip` → **이 attempt 는 커밋을 하나도 만들지 않았다.** 만들지 않은
-  커밋을 base 에 올렸을 수 없으므로 랜딩 판정 대상이 아니다. 08-03 오탐 4건이 여기서 닫힌다.
-- 그렇지 않으면 `rev-list <head_oid>..<종료 시점 tip>` 이 이 attempt 가 만든 커밋이고,
-  그 집합과 base 이동분의 교집합만 랜딩 후보가 된다.
+기록은 추정이 아니다. **`pushes.jsonl` 에 `remote_ref == refs/heads/<target_base>` 인 줄이
+있는 attempt 만 랜딩 후보**이고, 없으면 base 가 아무리 움직였어도 이 attempt 의 손이 아니다.
+08-03 오탐 4건은 push 기록이 아예 없으므로 여기서 닫힌다. 혼합 상태(`A` 생성 + `B` 흡수,
+push 없음)도 같은 이유로 무위반이다.
 
-`head !== observed` 조건부 containment 분기(`base-drift.js`)와 reflog precedence 비교는
-이 사실 판정으로 대체된다. 판정이 관측 실패로 흐르는 `precedence_observe:*` 경로가 함께
-사라지므로, "reflog 를 읽을 수 없으면 위반도 오탐과 함께 사라진다" 던 선행 설계의 절충도
-해소된다.
+**§4.2 시작점 기록을 사실로 바로잡는다 — 진단용이다.** 지금 `scheduler.js:2565-2575` 가
+spawn **직후** 런타임 스냅샷에서 `head_oid: base_oid` 로 쓴다. 두 가지가 잘못돼 있다 — 값이
+브랜치 tip 이 아니라 `base_oid` 의 복사본이고(`Analysis-ex0` 에서 두 값이 같은 이유), 읽는
+시점이 자식 프로세스가 이미 커밋할 수 있는 시점이라 무엇을 재도 race 다.
+
+`runner.spawn()` **이전에** `git rev-parse refs/heads/<bead_id>` 로 브랜치 tip 을 읽어
+기록한다. 워크트리 pre-flight 가 이미 끝난 뒤이므로 브랜치는 존재한다. rev-parse 가
+실패하면 `base_oid` 로 폴백하지 않는다 — 틀린 값을 사실인 척 남기지 않기 위해서다. 실패는
+관측 불가(필드 부재)로 기록한다.
+
+**이 값은 §4.3 의 판정에 쓰이지 않는다.** 판정은 push 기록만으로 선다. 이 절이 필요한
+이유는 따로다 — 랜딩이 실제로 검출됐을 때 "그 attempt 가 어디서 출발했는가" 가 조사의
+출발점이고, 지금 그 자리에는 `base_oid` 의 복사본이 사실인 양 들어 있다. 잘못된 진단
+데이터를 남겨두는 것이 이 스펙이 고치려는 문제와 같은 종류다.
+
+**§4.3 판정 절차.** 원격 base 가 pin 된 값에서 움직였을 때. 시작점은 여기 등장하지 않는다:
+
+1. `pushes.jsonl` 에 base 를 향한 push 기록이 없다 → **무위반.** 여기서 대부분이 끝난다.
+2. 기록이 있다 → 그 줄의 `local_oid` 가 원격 base 에서 도달 가능한지 확인한다. 도달 가능하면
+   **랜딩**이고, 그 SHA 가 증거다.
+3. hook 이 설치되지 않은 attempt(disposition 등 선행 설계의 제외 대상)는 지금처럼 관측
+   대상이 아니다 — `skipped` 사유를 그대로 기록한다.
+
+`head !== observed` 조건부 containment 분기와 reflog precedence 비교(`acquisitionTimes`,
+`precedence_observe:*` 경로)는 이 사실 판정으로 대체되어 사라진다. "reflog 를 읽을 수 없으면
+위반도 오탐과 함께 사라진다" 던 선행 설계의 절충도 함께 해소된다.
 
 진짜 랜딩에 대한 처벌(attempt `failed`)은 그대로 둔다. 이 절은 판정 근거만 바꾼다.
+
+**미탐 경계**: hook 을 타지 않은 경로로 base 가 움직이면 기록이 남지 않는다 — hook 무력화,
+그리고 `gh` API 나 웹 UI 를 경유한 머지가 그렇다. 전자는 §1 에서 여전히 kill 이고, 후자는
+사람의 행위이므로 애초에 이 판정의 대상이 아니다. 이는 추정 기반 판정이 오탐과 맞바꿔
+갖고 있던 미탐과 성격이 다르다 — 어디가 비어 있는지 명시적으로 안다.
 
 ### §5 프리앰블을 바뀐 계약에 맞춘다
 
@@ -181,15 +248,28 @@ RED → GREEN 을 적용할 seam 은 아래로 한정한다.
 | seam | 파일 | 검증 대상 |
 | --- | --- | --- |
 | `GUARD_EFFECTS` 재판정 | `server/worker/runner/command-guard.test.js` | `base_merge` 가 `warn`, 나머지 3종의 효과가 표대로인지 |
-| `hook_bypass` 읽기 제외 | `server/worker/runner/command-guard.test.js` | 읽기 4종(`--get`/`--get-all`/`--get-regexp`/`--list`) 통과, 쓰기·`-c`·`--no-verify`·`GIT_CONFIG_*` 는 위반 유지 |
-| 폴백 경로 정합 | `server/worker/runner/command-guard.test.js` | 토큰화 실패 입력에서도 읽기/쓰기 판정이 argv 경로와 어긋나지 않는지 |
-| `conflict_resolution` 제거 | `server/worker/runner/session.merge-guard.test.js` | 충돌 해소 여부와 무관하게 merge 가 `warn` 인지 |
-| `head_oid` 교정 | `server/worker/scheduler.test.js` | dispatch 시 실제 브랜치 tip 이 기록되는지(신규·resume 양쪽) |
-| 사실 기반 랜딩 판정 | `server/worker/base-drift.test.js` | 커밋 없는 attempt 는 랜딩 아님, 커밋을 base 에 올린 attempt 는 랜딩 |
+| `hook_bypass` 읽기 제외 | `server/worker/runner/command-guard.test.js` | 읽기 3형태(modern `config get`/`list`, legacy 명시 플래그, 암묵 `config <key>`) 통과, 쓰기·`set`/`unset`·`-c`·`--no-verify`·`GIT_CONFIG_*` 는 위반 유지 |
+| 폴백 kill 우선순위 | `server/worker/runner/command-guard.test.js` | 토큰화 실패 입력에 읽기와 진짜 무력화가 섞이면 kill 이 이기는지 |
+| `conflict_resolution` 가드 입력 제거 | `server/worker/runner/session.merge-guard.test.js` | 충돌 해소 여부와 무관하게 merge 가 `warn` 인지 |
+| 전달 경로 제거 | `server/worker/scheduler.test.js` | runner settings 로 `conflict_resolution` 을 더는 싣지 않는지 |
+| 재시작 경로 정합 | `server/worker/session-monitor.test.js` | 재시작 감시에서도 일반 attempt 의 merge 가 kill 이 아닌지 |
+| 프리앰블 문구 | `server/worker/runner/preamble.test.js` | 바뀐 가드 계약을 고지하는지 |
+| warn durable 기록 | `server/worker/session-monitor.test.js`, `server/worker/scheduler.test.js` | live·재시작 양쪽에서 경고가 attempt 레코드에 남고 세션 종료 후 조회되는지 |
+| push 기록 | `server/worker/guard-hook.test.js` | hook 이 stdin 의 push 줄을 `pushes.jsonl` 에 남기는지(거부 케이스 포함) |
+| 시작점 캡처 시점 | `server/worker/scheduler.test.js` | `spawn()` **이전**에 브랜치 tip 을 읽는지, rev-parse 실패 시 `base_oid` 로 폴백하지 않는지(신규·resume 양쪽) |
+| push 사실 기반 랜딩 판정 | `server/worker/base-drift.test.js` | push 기록 없으면 무위반, base 를 향한 push 기록이 있고 도달 가능하면 랜딩 |
 
-**회귀 고정**: 08-03 `base_landing_detected` 2쌍과 08-04 `git config --get`,
-08-04 `git merge origin/main --no-edit` 을 각각 재현하는 케이스를 추가한다. 이 네 입력이
-현재 코드에서 위반, 변경 후 무위반이어야 한다.
+**회귀 고정** — 관측된 사건과 리뷰가 지적한 혼합 케이스를 각각 재현한다:
+
+1. 08-03 `base_landing_detected` 2쌍 (커밋을 만들지 않은 attempt 가 남의 랜딩을 뒤집어쓴 건)
+2. 08-04 `git config --get core.hooksPath` (순수 읽기)
+3. 08-04 `git merge origin/main --no-edit` (정당한 base 동기화)
+4. **mixed**: attempt 가 로컬 커밋을 만들고 **동시에** base 를 흡수했으나 push 하지 않은 상태
+   에서 원격 base 가 남의 손으로 움직인 경우 → 무위반
+5. **mixed 대조군**: 같은 상태에서 attempt 가 자기 커밋을 base 로 push 한 경우 → 랜딩
+
+1–4 는 현재 코드에서 위반, 변경 후 무위반이어야 한다. 5 는 양쪽 모두 위반이어야 한다 —
+완화가 진짜 랜딩까지 놓치지 않는다는 것이 이 대조군의 역할이다.
 
 ## 검증
 
@@ -212,11 +292,21 @@ Bead 의 범위가 아니고, 별도 단위로 다루는 것이 맞다.
 
 ### 적용 순서
 
-1. PR 머지 (`main` 으로).
-2. 머지된 `main` 체크아웃에서 `~/.config/bdui/config.toml` 런타임 설정 정합 확인.
-3. `bdui-shared restart`.
-4. 프로세스 실행 경로·리스닝 포트·HTTP 응답 확인. 세 가지가 모두 머지된 체크아웃을
-   가리킬 때만 완료로 선언한다.
+각 단계는 앞 단계가 확인된 뒤에만 진행한다. 중간에 멈춰도 상태는 회복 가능하다 — 4단계
+이전에 멈추면 실행 중인 서버는 머지 이전 코드 그대로이고, 재개는 1단계 확인부터 다시 하면
+된다.
+
+1. **PR 머지 확인** — `gh pr view` 로 `MERGED` 와 머지 SHA 를 확보한다.
+2. **공유 체크아웃이 안전한지 확인** — `git status --porcelain` 이 비어 있고 현재 브랜치가
+   `main` 인지. 사용자 작업이 남아 있으면 여기서 멈춘다.
+3. **base 동기화** — `git fetch --no-tags origin main` 후 `git merge --ff-only origin/main`.
+   ff 가 불가능하면 하드 스톱이다(발산).
+4. **머지된 코드인지 검증** — `HEAD == origin/main == 1단계의 머지 SHA`. 세 값이 일치할
+   때만 다음으로 간다. 이 검증이 없으면 stale 체크아웃을 재시작하고도 성공으로 오인한다.
+5. **런타임 설정 정합 확인** — `~/.config/bdui/config.toml`.
+6. **재시작** — `bdui-shared restart`.
+7. **실측 확인** — 프로세스 실행 경로가 이 체크아웃인지, 리스닝 포트, HTTP 응답. 셋이 모두
+   머지된 체크아웃을 가리킬 때만 완료로 선언한다.
 
 ## 잔여 위험
 
@@ -226,10 +316,17 @@ Bead 의 범위가 아니고, 별도 단위로 다루는 것이 맞다.
 2. **훅 무력화는 여전히 클라이언트 측 방어다.** 세션은 훅 스크립트 파일에 접근할 수 있고,
    우회 의지가 있는 세션을 막지 못한다. 우회 불가능한 방어는 GitHub 브랜치 보호(서버 측)뿐이며
    이 저장소 코드 범위 밖이다 — 선행 스펙의 잔여 위험 4 를 그대로 승계한다.
-3. **§4 는 `head_oid` 가 정확히 기록된다는 전제에 선다.** 기록 지점은 한 곳이지만 그곳을
-   통과하는 dispatch 종류가 신규·resume·충돌 해소로 갈리고, 판정을 소비하는
-   `settleBaseDrift` 호출 지점은 4곳(`scheduler.js:1193`, `:1218`, `:1767`, `:3763`)이다.
-   rev-parse 폴백이 발동한 attempt 는 시작점이 옛 의미(`base_oid`)로 남으므로, 그 레코드
-   표시가 사후 진단의 유일한 단서가 된다. Test scope 가 신규·resume 양쪽을 요구하는 이유다.
-4. **읽기 플래그 목록은 열거 방식이다.** `git config` 에 새로운 읽기 형태가 추가되면 목록이
+3. **§4 의 랜딩 판정은 hook 의 push 기록에 의존한다.** 기록이 없는 attempt 는 판정할 수
+   없고 무위반으로 흐른다. 이는 의도된 방향이다 — 이 검출층은 사후 관측이고, 예방은 hook
+   자신이 이미 수행한다. 다만 hook 설치가 조용히 실패하면 검출층이 통째로 눈을 감으므로,
+   설치 실패는 선행 설계대로 dispatch 실패로 다뤄져야 하며 이 스펙은 그 계약을 바꾸지 않는다.
+4. **시작점 기록은 진단 품질에만 영향을 준다.** 신규·resume·충돌 해소가 모두 `spawn()`
+   이전 캡처를 거치지 않으면 그 종류만 옛 값을 갖지만, 판정은 push 기록으로 서므로 오탐이나
+   미탐으로 이어지지는 않는다. 증상은 조용하다 — 랜딩을 조사할 때만 드러난다. Test scope 가
+   신규·resume 양쪽을 요구하는 이유이고, 이 항목이 blocking 이 아닌 이유이기도 하다.
+5. **읽기 형태 판정은 열거에 기반한다.** `git config` 가 새로운 읽기 문법을 추가하면 목록이
    따라가야 한다. 누락 시 증상은 오탐(과잉 차단)이지 미탐이 아니므로 fail-closed 방향이다.
+6. **`pushes.jsonl` 은 세션이 쓸 수 있는 파일이다.** 세션이 그 파일을 지우면 자기 랜딩을
+   지울 수 있다. 잔여 위험 2 와 같은 성질이며 — 우회 의지가 있는 세션은 이 층의 대상이
+   아니다 — 파일 삭제로 예방층 자체가 무력화되지는 않는다. hook 은 여전히 실행되고 push 를
+   거부한다.
