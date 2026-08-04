@@ -600,6 +600,42 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Append one surviving guard verdict to the attempt record (UI-1xcd §1).
+   *
+   * Read-modify-write off the store, so the accumulation is the same one the
+   * restart monitor performs and a cold reload sees every warning in order.
+   * Never throws: an unpersisted diagnostic must not end a session that broke
+   * no invariant.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {{ reason: string, command: string|null }} detail
+   */
+  function recordGuardWarning(workspace, attempt_id, detail) {
+    try {
+      const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+      const prior = Array.isArray(attempt?.guard_warnings)
+        ? attempt.guard_warnings
+        : [];
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          guard_warnings: [
+            ...prior,
+            {
+              reason: detail.reason,
+              command: detail.command ?? null,
+              at: now()
+            }
+          ]
+        }
+      });
+    } catch (err) {
+      log('guard-warning record failed for %s: %o', attempt_id, err);
+    }
+  }
+
+  /**
    * Drop an attempt's hook assets. Idempotent and never throwing, so every
    * early return between the install and the spawn — and every termination
    * path — can call it unconditionally, including for the disposition attempts
@@ -2426,9 +2462,11 @@ export function createScheduler(deps) {
    * `spawn_failed`, release the claim) so no stamped metadata or leaked
    * `running` record outlives the aborted launch.
    *
-   * `conflict_resolution` marks a resolution attempt (worker-phase2 §6). It is
-   * the ONLY input that relaxes the session-side `git merge` guard, so it
-   * defaults to false here and only Phase 5's resolution dispatch passes true.
+   * A resolution attempt is no longer named here (UI-1xcd §3): the flag existed
+   * only to relax the session-side `git merge` guard, which now warns for every
+   * attempt, so nothing about the launch depends on it. It stays on the ATTEMPT
+   * RECORD (`relaunchFromAttempt`), where it identifies the attempt kind for
+   * consumers outside the guard.
    *
    * @param {{
    *   workspace: string,
@@ -2447,7 +2485,6 @@ export function createScheduler(deps) {
    *   title?: string|null,
    *   launch_kind?: 'dispatch'|'resume'|'conflict'|'disposition',
    *   resume_session_id?: string|null,
-   *   conflict_resolution?: boolean,
    *   disposition?: string|null
    * }} input
    * @returns {Promise<{ ok: boolean, reason?: string }>} Whether the session
@@ -2490,7 +2527,6 @@ export function createScheduler(deps) {
       repo,
       target_base,
       base_oid: base_oid ?? null,
-      conflict_resolution: input.conflict_resolution === true,
       // A disposition session repairs a spec on the base and opens no PR, so
       // the always-on PR-submit directive would instruct it to do the one
       // thing its own prompt forbids (UI-hs11 §3.3).
@@ -2602,20 +2638,26 @@ export function createScheduler(deps) {
     // and persisted onto the attempt at termination; the fanout is throttled
     // because a usage tick is not a queue transition.
     const usage_store = deps.usage;
-    if (usage_store) {
-      handle.events.on('event', (ev) => {
-        const usage = ev && ev.usage;
-        if (!usage) {
-          return;
-        }
-        if (ev.kind === 'result') {
-          usage_store.recordResult(workspace, attempt_id, usage);
-        } else {
-          usage_store.record(workspace, attempt_id, usage);
-        }
-        scheduleUsageFanout(workspace);
-      });
-    }
+    handle.events.on('event', (ev) => {
+      // A guard verdict the session SURVIVED (UI-1xcd §1). The stream event was
+      // its only trace, and nothing persisted it — so `base_merge` moving onto
+      // the warn path would have made "the session merged the base in" a fact
+      // that vanished with the process. Unconditional, unlike the usage arm
+      // below: the record is evidence, not telemetry.
+      if (ev && ev.guard_warning) {
+        recordGuardWarning(workspace, attempt_id, ev.guard_warning);
+      }
+      const usage = ev && ev.usage;
+      if (!usage_store || !usage) {
+        return;
+      }
+      if (ev.kind === 'result') {
+        usage_store.recordResult(workspace, attempt_id, usage);
+      } else {
+        usage_store.record(workspace, attempt_id, usage);
+      }
+      scheduleUsageFanout(workspace);
+    });
     running.set(attempt_id, { bead_id, repo, handle, prior: prior_wf });
     notifyChanged(workspace);
 
@@ -3087,7 +3129,6 @@ export function createScheduler(deps) {
       // A FRESH session, not a resume: an external row carries no session id to
       // continue, and the prompt is self-contained.
       resume_session_id: null,
-      conflict_resolution: true,
       spawnBead: { id: bead_id, prompt: conflictPrompt(bead_id, base) }
     });
     if (!launched.ok) {
@@ -3317,7 +3358,6 @@ export function createScheduler(deps) {
         prompt: options.prompt
       },
       resume_session_id,
-      conflict_resolution: options.conflict_resolution,
       disposition: options.disposition ?? null
     });
     if (!launched.ok) {

@@ -1514,13 +1514,15 @@ describe('scheduler policy axis removal (worker-phase2 §2)', () => {
     expect(env.runner.settingsFor('S1').env.BDUI_WORKER_TOKEN).toBe(undefined);
   });
 
-  test('conflict_resolution defaults to false on a normal dispatch (§6 seam)', async () => {
+  // UI-1xcd §3: the flag only ever relaxed the base-into-branch guard, which
+  // now warns for every attempt — so the runner is not told about it at all.
+  test('carries no conflict_resolution into the runner settings', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
 
     await env.scheduler.tick(WS);
 
-    expect(env.runner.settingsFor('S1').conflict_resolution).toBe(false);
+    expect('conflict_resolution' in env.runner.settingsFor('S1')).toBe(false);
   });
 });
 
@@ -2179,13 +2181,15 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(child.conflict_resolution).toBe(true);
   });
 
-  test('passes conflict_resolution into the runner settings', async () => {
+  // The ATTEMPT RECORD keeps the flag (asserted above); the guard input does
+  // not exist any more (UI-1xcd §3).
+  test('does not pass conflict_resolution into the runner settings', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedDoneAttempt(env.store);
 
     await env.scheduler.resolveConflict(WS, 'B1');
 
-    expect(env.runner.settingsFor('B1').conflict_resolution).toBe(true);
+    expect('conflict_resolution' in env.runner.settingsFor('B1')).toBe(false);
   });
 
   test('instructs merge-into-branch, never rebase, and never a PR merge', async () => {
@@ -2236,7 +2240,7 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     );
   });
 
-  test('a normal dispatch never carries the resolution flag (fail-closed default)', async () => {
+  test('a normal dispatch carries no resolution flag in its settings either', async () => {
     const env = setup({
       config: { A1: { ready: true, repo: '/repo', target_base: 'main' } },
       slots: 1
@@ -2246,7 +2250,7 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     await env.scheduler.tick(WS);
     await flush();
 
-    expect(env.runner.settingsFor('A1').conflict_resolution).toBe(false);
+    expect('conflict_resolution' in env.runner.settingsFor('A1')).toBe(false);
   });
 });
 
@@ -2344,12 +2348,12 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     );
   });
 
-  test('passes conflict_resolution into the runner settings', async () => {
+  test('does not pass conflict_resolution into the runner settings', async () => {
     const env = extEnv();
 
     await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
 
-    expect(env.runner.settingsFor('X1').conflict_resolution).toBe(true);
+    expect('conflict_resolution' in env.runner.settingsFor('X1')).toBe(false);
   });
 
   test('runs with the slot cap already full (human-click origin)', async () => {
@@ -6624,5 +6628,94 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3)', () => {
     // Observation failure is evidence, not a verdict: the attempt finishes.
     expect(q.attempts['S1-1000-1'].status).toBe('done');
     expect(q.pr_wait.map((e) => e.bead_id)).toEqual(['S1']);
+  });
+});
+
+describe('scheduler records surviving guard warnings (UI-1xcd §1)', () => {
+  test('appends a warning event to the attempt record', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.eventsFor('A1').emit('event', {
+      kind: 'error',
+      reason: 'base_merge_blocked',
+      guard_warning: {
+        reason: 'base_merge_blocked',
+        command: 'git merge origin/main --no-edit'
+      }
+    });
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    const warnings = attempt.guard_warnings || [];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      reason: 'base_merge_blocked',
+      command: 'git merge origin/main --no-edit'
+    });
+    expect(typeof warnings[0].at).toBe('number');
+  });
+
+  test('accumulates repeat warnings in order', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+
+    events.emit('event', {
+      kind: 'error',
+      guard_warning: { reason: 'base_merge_blocked', command: 'git merge a' }
+    });
+    events.emit('event', {
+      kind: 'error',
+      guard_warning: { reason: 'merge_to_base_blocked', command: 'git push b' }
+    });
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect((attempt.guard_warnings || []).map((w) => w.command)).toEqual([
+      'git merge a',
+      'git push b'
+    ]);
+  });
+
+  test('records the warning even when no usage store is wired', async () => {
+    const env = setup({ config: { A1: {} }, usage: null });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.eventsFor('A1').emit('event', {
+      kind: 'error',
+      guard_warning: { reason: 'base_merge_blocked', command: 'git merge a' }
+    });
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.guard_warnings).toHaveLength(1);
+  });
+
+  test('leaves guard_warnings null on an attempt that drew none', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.eventsFor('A1').emit('event', { kind: 'text' });
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.guard_warnings).toBe(null);
+  });
+
+  test('the warning survives a cold reload of the store', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('A1').emit('event', {
+      kind: 'error',
+      guard_warning: { reason: 'base_merge_blocked', command: 'git merge a' }
+    });
+
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    expect(
+      createQueueStore().load(WS).attempts[attempt_id].guard_warnings
+    ).toHaveLength(1);
   });
 });

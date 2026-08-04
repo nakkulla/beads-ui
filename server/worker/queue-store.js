@@ -123,6 +123,14 @@
  * Written before the signal, so it survives even when the kill itself does not
  * happen (a pid that turned out to be dead or recycled). Null on every attempt
  * no monitor ever stopped.
+ * @property {{ reason: string, command: string|null, at: number }[]|null} guard_warnings -
+ * The guard verdicts this attempt drew that did NOT end it (UI-1xcd §1). A
+ * `warn` lets the session run on, so the only trace it used to leave was a
+ * stream event nothing persisted — and `base_merge` moved onto that path, which
+ * makes "the session merged the base into its branch" a fact worth having after
+ * the session is gone. Accumulated in dispatch order by the live path and by
+ * the restart monitor alike. Null on an attempt that drew none and on every
+ * record written before the field existed.
  * @property {boolean} spec_review_stale - Whether this attempt was dispatched
  * with a stale spec_review receipt (UI-dlim §3.2), i.e. the session was asked
  * to run the contract's in-session re-review lane before implementing. Recorded
@@ -548,6 +556,11 @@ export function makeAttempt(fields) {
     external_conflict: fields.external_conflict === true,
     guard_kill: isRecord(fields.guard_kill)
       ? /** @type {Attempt['guard_kill']} */ (fields.guard_kill)
+      : null,
+    guard_warnings: Array.isArray(fields.guard_warnings)
+      ? /** @type {Attempt['guard_warnings']} */ (
+          fields.guard_warnings.filter((w) => isRecord(w))
+        )
       : null,
     spec_review_stale: fields.spec_review_stale === true,
     disposition: fields.disposition ?? null,

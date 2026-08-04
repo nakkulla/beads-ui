@@ -18,7 +18,13 @@ import {
 } from './command-guard.js';
 
 const NORMAL = {};
-const RESOLVING = { conflict_resolution: true };
+
+/**
+ * A caller still passing the retired `conflict_resolution` option (UI-1xcd §3).
+ * The guard no longer reads it, so every verdict below must be identical to
+ * {@link NORMAL}'s — the flag is inert, not an exception.
+ */
+const LEGACY_RESOLVING = /** @type {any} */ ({ conflict_resolution: true });
 
 /**
  * The attempt's repo, inside the home directory exactly like the real one — so
@@ -171,27 +177,30 @@ describe('command-guard base-landing detection', () => {
     expect(violation?.reason).toBe('merge_to_base_blocked');
   });
 
-  test('blocks base landing on a conflict-resolution attempt too', () => {
-    const violation = findMergeViolation('gh pr merge 311', RESOLVING);
+  test('blocks base landing when the retired resolution flag is passed', () => {
+    const violation = findMergeViolation('gh pr merge 311', LEGACY_RESOLVING);
 
     expect(violation?.reason).toBe('merge_to_base_blocked');
   });
 });
 
 describe('command-guard base-into-branch detection', () => {
-  test('blocks `git merge` on a normal attempt', () => {
+  test('records `git merge` on a normal attempt', () => {
     const violation = findMergeViolation('git merge origin/main', NORMAL);
 
     expect(violation?.reason).toBe('base_merge_blocked');
   });
 
-  test('allows `git merge` on a conflict-resolution attempt', () => {
-    const violation = findMergeViolation('git merge origin/main', RESOLVING);
+  test('records `git merge` identically when the retired flag is passed', () => {
+    const violation = findMergeViolation(
+      'git merge origin/main',
+      LEGACY_RESOLVING
+    );
 
-    expect(violation).toBeNull();
+    expect(violation?.reason).toBe('base_merge_blocked');
   });
 
-  test('blocks `git merge-index`, outside the three-subcommand allowlist', () => {
+  test('records `git merge-index`, outside the three-subcommand allowlist', () => {
     const violation = findMergeViolation(
       'git merge-index git-merge-one-file -a',
       NORMAL
@@ -287,13 +296,14 @@ describe('command-guard fallback on unresolvable input', () => {
     expect(violation?.reason).toBe('merge_to_base_blocked');
   });
 
-  test('keeps the conflict-resolution exception on the fallback path', () => {
+  test('judges the fallback path without the retired resolution flag', () => {
     const cmd = "git merge origin/main -m 'unbalanced";
 
-    const violation = findMergeViolation(cmd, RESOLVING);
+    const violation = findMergeViolation(cmd, LEGACY_RESOLVING);
 
     expect(tokenize(cmd)).toBeNull();
-    expect(violation).toBeNull();
+    expect(violation?.kind).toBe('base_merge');
+    expect(guardEffect(violation)).toBe('warn');
   });
 });
 
@@ -872,11 +882,16 @@ describe('command-guard effect table', () => {
     expect(guardEffect(violation)).toBe('kill');
   });
 
-  test('kills `git merge`, unchanged by this Bead', () => {
-    const violation = findMergeViolation('git merge origin/main', ON_MAIN);
+  // The 2026-08-04 `dotfiles-v05o` incident ($11.67): a legitimate base sync
+  // cost the whole session. Nothing about it moves the remote (UI-1xcd §1).
+  test('warns on `git merge`, which only moves a local branch', () => {
+    const violation = findMergeViolation(
+      'git merge origin/main --no-edit',
+      ON_MAIN
+    );
 
     expect(violation?.kind).toBe('base_merge');
-    expect(guardEffect(violation)).toBe('kill');
+    expect(guardEffect(violation)).toBe('warn');
   });
 
   test('kills an unknown kind, so a new kind fails closed', () => {
@@ -998,6 +1013,139 @@ describe('command-guard hook-bypass detection', () => {
     );
 
     expect(violation?.kind).toBe('hook_bypass');
+  });
+});
+
+describe('command-guard excludes a hooks-path READ from the bypass', () => {
+  // The 2026-08-04 false positive ($8.99): the session asked where the hooks
+  // live and was killed for it. Asking is not moving (UI-1xcd §2).
+  test('passes the measured incident command verbatim', () => {
+    expect(
+      findMergeViolation(
+        'git config --get core.hooksPath 2>/dev/null | head -c0',
+        ON_MAIN
+      )
+    ).toBeNull();
+  });
+
+  test('passes every legacy explicit read flag', () => {
+    for (const flag of ['--get', '--get-all', '--get-regexp', '--list']) {
+      expect(
+        findMergeViolation(`git config ${flag} core.hooksPath`, ON_MAIN)
+      ).toBeNull();
+    }
+  });
+
+  test('passes the modern read subcommands', () => {
+    expect(
+      findMergeViolation('git config get core.hooksPath', ON_MAIN)
+    ).toBeNull();
+    expect(
+      findMergeViolation('git config list --show-origin', ON_MAIN)
+    ).toBeNull();
+  });
+
+  test('passes the implicit read, whose key carries no value', () => {
+    expect(findMergeViolation('git config core.hooksPath', ON_MAIN)).toBeNull();
+    expect(
+      findMergeViolation('git config --global core.hooksPath', ON_MAIN)
+    ).toBeNull();
+  });
+
+  test('kills the implicit WRITE, which is the same shape plus a value', () => {
+    expect(
+      findMergeViolation('git config core.hooksPath /tmp/x', ON_MAIN)?.kind
+    ).toBe('hook_bypass');
+  });
+
+  test('kills the modern write subcommands', () => {
+    expect(
+      findMergeViolation('git config set core.hooksPath /tmp/x', ON_MAIN)?.kind
+    ).toBe('hook_bypass');
+    expect(
+      findMergeViolation('git config unset core.hooksPath', ON_MAIN)?.kind
+    ).toBe('hook_bypass');
+  });
+
+  test('kills the legacy write flags, whose key looks like a lone read', () => {
+    expect(
+      findMergeViolation('git config --unset core.hooksPath', ON_MAIN)?.kind
+    ).toBe('hook_bypass');
+    expect(
+      findMergeViolation('git config --unset-all core.hooksPath', ON_MAIN)?.kind
+    ).toBe('hook_bypass');
+    expect(
+      findMergeViolation(
+        'git config --replace-all core.hooksPath /tmp/x',
+        ON_MAIN
+      )?.kind
+    ).toBe('hook_bypass');
+  });
+
+  test('leaves the three non-config bypass shapes killing', () => {
+    expect(
+      findMergeViolation(
+        'git -c core.hooksPath=/dev/null push origin UI-1',
+        ON_MAIN
+      )?.kind
+    ).toBe('hook_bypass');
+    expect(
+      findMergeViolation('git push --no-verify origin UI-1', ON_MAIN)?.kind
+    ).toBe('hook_bypass');
+    expect(
+      findMergeViolation('GIT_CONFIG_COUNT=0 git push origin UI-1', ON_MAIN)
+        ?.kind
+    ).toBe('hook_bypass');
+  });
+});
+
+describe('command-guard fallback keeps kill above the read exemption', () => {
+  /**
+   * @param {string} cmd
+   * @returns {string}
+   */
+  function unparseable(cmd) {
+    return `f() { :; }; ${cmd}`;
+  }
+
+  test('passes a lone hooks-path read the tokenizer refused', () => {
+    const cmd = unparseable('git config --get core.hooksPath');
+
+    expect(tokenize(cmd)).toBeNull();
+    expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
+  });
+
+  test('kills when a real bypass rides along with the read', () => {
+    const cmd = unparseable(
+      'git config --get core.hooksPath; git push --no-verify origin HEAD:main'
+    );
+
+    expect(tokenize(cmd)).toBeNull();
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('kills when a `-c` relocation rides along with the read', () => {
+    const cmd = unparseable(
+      'git config --get core.hooksPath; git -c core.hooksPath=/tmp/x push origin UI-1'
+    );
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('kills when a GIT_CONFIG_* injection rides along with the read', () => {
+    const cmd = unparseable(
+      'git config --get core.hooksPath; GIT_CONFIG_COUNT=0 git push origin UI-1'
+    );
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('kills a second `git config` segment that WRITES the key', () => {
+    const cmd = unparseable(
+      'git config --get core.hooksPath && git config core.hooksPath /tmp/x'
+    );
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 });
 

@@ -777,6 +777,51 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(updated.queue.attempts['att-1'].base_drift).toBeNull();
   });
 
+  test('guard_warnings survive updateAttempt and a cold reload (UI-1xcd §1)', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue
+      .revision;
+    const appended = store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    expect(appended.queue.attempts['att-1'].guard_warnings).toBeNull();
+
+    const warnings = [
+      {
+        reason: 'base_merge_blocked',
+        command: 'git merge origin/main --no-edit',
+        at: 1_700_000_000_000
+      }
+    ];
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { guard_warnings: warnings }
+    });
+
+    expect(updated.queue.attempts['att-1'].guard_warnings).toEqual(warnings);
+    expect(
+      createQueueStore().load(WS).attempts['att-1'].guard_warnings
+    ).toEqual(warnings);
+  });
+
+  test('normalizes a non-array guard_warnings to null', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue
+      .revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: /** @type {any} */ ({ guard_warnings: 'base_merge_blocked' })
+    });
+
+    expect(updated.queue.attempts['att-1'].guard_warnings).toBeNull();
+  });
+
   test('normalizes a non-object cause_detail to null', () => {
     const store = createQueueStore();
     const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue

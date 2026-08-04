@@ -7,8 +7,10 @@
  *
  *   - `gh pr merge` / hook bypass  → killed on EVERY attempt.
  *   - a base push                  → warned about, session continues.
- *   - `git merge origin/main`      → killed on a normal attempt, ALLOWED on a
- *                                    conflict-resolution attempt.
+ *   - `git merge origin/main`      → warned about on EVERY attempt (UI-1xcd
+ *                                    §1/§3); the attempt's mode no longer
+ *                                    decides, because the command touches
+ *                                    nothing remote.
  *   - a disposition session        → base push and hook bypass do not apply.
  */
 import os from 'node:os';
@@ -40,7 +42,9 @@ function bashToolLine(command) {
  *
  * @param {string} command
  * @param {{ conflict_resolution?: boolean, disposition?: string|null,
- * repo?: string, target_base?: string }} [settings]
+ * repo?: string, target_base?: string }} [settings] - `conflict_resolution` is
+ * retired (UI-1xcd §3) and kept in the type only so the tests below can prove a
+ * caller still passing it changes nothing.
  */
 async function runCommand(command, settings = {}) {
   const spawn_impl = makeFixtureSpawn({
@@ -59,7 +63,7 @@ async function runCommand(command, settings = {}) {
 }
 
 const NORMAL = {};
-const RESOLVING = { conflict_resolution: true };
+const LEGACY_RESOLVING = /** @type {any} */ ({ conflict_resolution: true });
 
 describe('runner/session base-landing guard (always blocked)', () => {
   test('kills `gh pr merge` on a normal attempt', async () => {
@@ -74,10 +78,10 @@ describe('runner/session base-landing guard (always blocked)', () => {
     ).toBe(true);
   });
 
-  test('kills `gh pr merge` on a conflict-resolution attempt too', async () => {
+  test('kills `gh pr merge` when the retired resolution flag is passed', async () => {
     const { verdict, kill_impl } = await runCommand(
       'gh pr merge 304 --squash',
-      RESOLVING
+      LEGACY_RESOLVING
     );
 
     expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
@@ -182,10 +186,10 @@ describe('runner/session base-push guard (warned, not killed)', () => {
     expect(verdict.reason).toBe('ok');
   });
 
-  test('does not kill a push to master on a conflict-resolution attempt', async () => {
+  test('does not kill a push to master when the retired flag is passed', async () => {
     const { verdict, kill_impl } = await runCommand(
       'git push origin HEAD:master',
-      RESOLVING
+      LEGACY_RESOLVING
     );
 
     expect(kill_impl).not.toHaveBeenCalled();
@@ -195,52 +199,58 @@ describe('runner/session base-push guard (warned, not killed)', () => {
   });
 });
 
-describe('runner/session base-into-branch guard (mode-gated)', () => {
-  test('kills `git merge origin/main` on a normal attempt', async () => {
+describe('runner/session base-into-branch guard (recorded, not blocked)', () => {
+  // The 2026-08-04 `dotfiles-v05o` incident, verbatim: the session was doing the
+  // one legitimate base sync left to it and lost $11.67 for it (UI-1xcd §1).
+  test('lets `git merge origin/main --no-edit` run and records it', async () => {
     const { verdict, kill_impl } = await runCommand(
-      'git merge origin/main',
+      'git merge origin/main --no-edit',
       NORMAL
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
-    expect(verdict.blocked).toBe(true);
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+    const warning = verdict.events.find(
+      (e) => e.reason === 'base_merge_blocked'
+    );
+    expect(warning?.kind).toBe('error');
+    expect(warning?.guard_warning).toEqual({
+      reason: 'base_merge_blocked',
+      command: 'git merge origin/main --no-edit'
+    });
+  });
+
+  test('records `git merge origin/main` identically with the retired flag', async () => {
+    const { verdict, kill_impl } = await runCommand(
+      'git merge origin/main',
+      LEGACY_RESOLVING
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
     expect(verdict.events.some((e) => e.reason === 'base_merge_blocked')).toBe(
       true
     );
   });
 
-  test('allows `git merge origin/main` on a conflict-resolution attempt', async () => {
+  test('records rather than kills when the flag is absent entirely', async () => {
     const { verdict, kill_impl } = await runCommand(
-      'git merge origin/main',
-      RESOLVING
+      'git merge --no-ff origin/main'
     );
 
     expect(kill_impl).not.toHaveBeenCalled();
-    expect(verdict.blocked).toBe(false);
-  });
-
-  test('blocks by default when the flag is absent entirely', async () => {
-    const { kill_impl } = await runCommand('git merge --no-ff origin/main');
-
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
-  });
-
-  test('blocks when the flag is a truthy non-boolean (fail-closed)', async () => {
-    const { kill_impl } = await runCommand(
-      'git merge origin/main',
-      /** @type {any} */ ({ conflict_resolution: 'yes' })
+    expect(verdict.events.some((e) => e.reason === 'base_merge_blocked')).toBe(
+      true
     );
-
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
   });
 
-  test('kills `git merge --ff-only` on a normal attempt', async () => {
+  test('records `git merge --ff-only`, the ff-only base sync', async () => {
     const { verdict, kill_impl } = await runCommand(
       'git merge --ff-only origin/release',
       NORMAL
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
     expect(verdict.events.some((e) => e.reason === 'base_merge_blocked')).toBe(
       true
     );
@@ -278,25 +288,25 @@ describe('runner/session base-into-branch guard subcommand allowlist', () => {
     expect(verdict.blocked).toBe(false);
   });
 
-  test('kills `git merge-index`, outside the allowlist', async () => {
+  test('records `git merge-index`, outside the allowlist', async () => {
     const { verdict, kill_impl } = await runCommand(
       'git merge-index git-merge-one-file -a',
       NORMAL
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
     expect(verdict.events.some((e) => e.reason === 'base_merge_blocked')).toBe(
       true
     );
   });
 
-  test('kills `git merge-resolve`, outside the allowlist', async () => {
+  test('records `git merge-resolve`, outside the allowlist', async () => {
     const { verdict, kill_impl } = await runCommand(
       'git merge-resolve 1a2b3c4 -- HEAD 5d6e7f8',
       NORMAL
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
     expect(verdict.events.some((e) => e.reason === 'base_merge_blocked')).toBe(
       true
     );

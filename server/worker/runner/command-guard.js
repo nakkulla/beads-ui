@@ -89,11 +89,41 @@ export function basePushRegex(target_base) {
 }
 
 /**
+ * The hook-disabling shapes that are a bypass NO MATTER what else the source
+ * holds — a `--no-verify` push, a one-shot `-c core.hooksPath=` relocation, and
+ * a `GIT_CONFIG_*` injection. Split out of {@link HOOK_BYPASS_RE} because the
+ * fallback's `git config` arm now has a READ exemption (UI-1xcd §2) and an
+ * exemption must never be able to outvote a kill: on unparseable input the
+ * command boundaries are exactly what cannot be trusted, so one blob holding
+ * both `git config --get core.hooksPath` and `git push --no-verify` has to
+ * resolve to the kill.
+ *
+ * FALLBACK ONLY — deliberately over-eager, like the two regexes above.
+ *
+ * @type {RegExp}
+ */
+export const HOOK_BYPASS_STRICT_RE =
+  /git\s+push\b[\s\S]*?--no-verify\b|-c\s*core\.hookspath|core\.hookspath\s*=|\bGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)\s*=/i;
+
+/**
+ * A `git config` command naming the hooks path, in an UNPARSEABLE command.
+ * Whether it is a bypass depends on the OPERATION, which
+ * {@link fallbackConfigBypass} decides per matched segment.
+ *
+ * @type {RegExp}
+ */
+const GIT_CONFIG_HOOKS_RE = /git\s+config\b[\s\S]*?core\.hookspath/gi;
+
+/**
  * A hook-disabling attempt in an UNPARSEABLE command. The argv judgment
  * ({@link isHookBypass}) is the primary one; this exists because a tokenizer
  * refusal must not be an escape hatch — without it a function definition ahead
  * of `git push --no-verify` demotes a kill to the base-push warning, which is
  * the fallback being MORE permissive than the argv path.
+ *
+ * Kept as the union of both arms so a caller asking "does this text hold a
+ * hooks-path shape at all" still gets one answer; the VERDICT is
+ * {@link fallbackViolation}'s, which orders the two arms.
  *
  * FALLBACK ONLY — deliberately over-eager, like the two regexes above.
  *
@@ -104,11 +134,9 @@ export const HOOK_BYPASS_RE =
 
 /**
  * Merging the base INTO the session's own branch (`git merge origin/main`).
- * Blocked by default, but ALLOWED for a conflict-resolution attempt — that is
- * exactly the operation such an attempt exists to perform (worker-phase2 §6).
- * The distinction is the attempt's mode, not a lock: nothing about this command
- * touches the base, so a normal attempt is refused only because it has no
- * business merging at all.
+ * RECORDED, not blocked (UI-1xcd §1): nothing about this command touches the
+ * remote, so the attempt's mode no longer decides its life — the merge runs and
+ * the fact is written to the attempt record for later diagnosis.
  *
  * The negative lookahead is an explicit ALLOWLIST of the three `git merge-*`
  * subcommands that create no merge commit and update no ref — `merge-base`
@@ -184,7 +212,6 @@ export const BASE_INTO_BRANCH_RE = /git\s+merge(?!-(?:base|tree|file)\b)/i;
  * The judgment's subject, resolved once per {@link findMergeViolation} call.
  *
  * @typedef {Object} GuardContext
- * @property {boolean} conflict_resolution
  * @property {boolean} disposition - A REVISE-disposition session, whose JOB is
  * publishing the resolved base (`revise-disposition.js`). Neither the base-push
  * judgment nor the hook-bypass one applies to it; `gh pr merge` and `git merge`
@@ -197,11 +224,18 @@ export const BASE_INTO_BRANCH_RE = /git\s+merge(?!-(?:base|tree|file)\b)/i;
  */
 
 /**
- * The effect table. `git_push_base` is the ONLY warning: that judgment infers a
- * cwd from a command string and its misfire cost was a whole session
- * (measured 21min/$11), while the pre-push hook now judges the same push from
- * the destination ref git itself computed. The other three are decided by the
- * command's own argv, where there is nothing to infer.
+ * The effect table. One question decides a row (UI-1xcd §1): does the command
+ * change REMOTE state irreversibly, or tear down the layer that prevents that?
+ *
+ *   - `gh_pr_merge` — the remote base moves at once and no pre-push hook is on
+ *     that path. Kill.
+ *   - `hook_bypass` — changes nothing by itself, but the next push then really
+ *     does move the remote base (measured, UI-8mvc). Kill.
+ *   - `base_merge` — a local branch pointer moves and `git reset` undoes it.
+ *     The remote never hears about it, and the 2026-08-04 kill cost a session
+ *     $11.67 for a legitimate base sync. Warn.
+ *   - `git_push_base` — the pre-push hook refuses the push itself, so the text
+ *     judgment (which has to infer a cwd) is evidence only. Warn.
  *
  * @type {Record<MergeViolationKind, 'warn'|'kill'>}
  */
@@ -209,7 +243,7 @@ const GUARD_EFFECTS = {
   git_push_base: 'warn',
   gh_pr_merge: 'kill',
   hook_bypass: 'kill',
-  base_merge: 'kill'
+  base_merge: 'warn'
 };
 
 /**
@@ -224,6 +258,21 @@ export function guardEffect(violation) {
   return violation && GUARD_EFFECTS[violation.kind] === 'warn'
     ? 'warn'
     : 'kill';
+}
+
+/**
+ * The message a surviving verdict announces. Shared by the live runner and the
+ * restart monitor so one warning does not read as two different facts, and
+ * branched on the KIND because the two warnings are not the same event: a base
+ * push was refused by the hook, while a base merge actually happened.
+ *
+ * @param {MergeViolation} violation
+ * @returns {string}
+ */
+export function guardWarningMessage(violation) {
+  return violation.kind === 'base_merge'
+    ? `base merged into the branch, session continues (recorded for diagnosis): ${violation.command}`
+    : `base landing suspected, session continues (the pre-push hook is the enforcement layer): ${violation.command}`;
 }
 
 /**
@@ -1363,15 +1412,107 @@ function configKeyOf(token) {
 }
 
 /**
+ * `git config` operations that only READ, in their two written forms: the
+ * modern subcommands and the legacy explicit flags. `--get-urlmatch`/
+ * `--get-color`/`--get-colorbool` are here for completeness — they take extra
+ * positional arguments, which the argument-count rule would otherwise read as a
+ * write.
+ *
+ * @type {Set<string>}
+ */
+const CONFIG_READ_SUBCOMMANDS = new Set(['get', 'list']);
+
+/** @type {Set<string>} */
+const CONFIG_READ_FLAGS = new Set([
+  '--get',
+  '--get-all',
+  '--get-regexp',
+  '--get-urlmatch',
+  '--get-color',
+  '--get-colorbool',
+  '--list',
+  '-l'
+]);
+
+/**
+ * `git config` options that WRITE, and therefore outrank every read signal. The
+ * legacy ones matter most: `git config --unset core.hooksPath` carries exactly
+ * one positional argument, so without this set the argument-count rule would
+ * classify a removal as an implicit read.
+ *
+ * @type {Set<string>}
+ */
+const CONFIG_WRITE_FLAGS = new Set([
+  '--unset',
+  '--unset-all',
+  '--replace-all',
+  '--add',
+  '--remove-section',
+  '--rename-section',
+  '--edit',
+  '-e'
+]);
+
+/** @type {Set<string>} */
+const CONFIG_WRITE_SUBCOMMANDS = new Set([
+  'set',
+  'unset',
+  'edit',
+  'add',
+  'replace-all',
+  'remove-section',
+  'rename-section'
+]);
+
+/**
+ * Does this `git config` argument list only READ (UI-1xcd §2)? Moving the hooks
+ * and ASKING where they are are different acts, and the operation is decidable
+ * from argv position — the three read forms are the modern subcommand
+ * (`config get`/`config list`), a legacy explicit flag (`--get`…), and the
+ * implicit read `config <key>`, which is told from `config <key> <value>` by
+ * the argument count and nothing else.
+ *
+ * Fail-closed by construction: a read must be POSITIVELY established, so an
+ * unrecognized shape — a future read syntax, a `-f <file>` whose value lands in
+ * the positional count — reads as a write. The symptom of a missed form is one
+ * over-block, never a missed relocation (design 잔여 위험 5).
+ *
+ * @param {string[]} args - The tokens after `config`.
+ * @returns {boolean}
+ */
+function isConfigReadOnly(args) {
+  /** @type {string[]} */
+  const positional = [];
+  for (const token of args) {
+    if (CONFIG_WRITE_FLAGS.has(token)) {
+      return false;
+    }
+    if (!token.startsWith('-')) {
+      positional.push(token);
+    }
+  }
+  if (positional.length > 0 && CONFIG_WRITE_SUBCOMMANDS.has(positional[0])) {
+    return false;
+  }
+  if (args.some((token) => CONFIG_READ_FLAGS.has(token))) {
+    return true;
+  }
+  if (positional.length > 0 && CONFIG_READ_SUBCOMMANDS.has(positional[0])) {
+    return true;
+  }
+  // The implicit read: a key and nothing to assign to it.
+  return positional.length === 1;
+}
+
+/**
  * Does this command DISABLE the pre-push hook the attempt installed? Four
  * shapes, all decided by argv POSITION (spec §4):
  *
  *   1. `git push --no-verify` — measured to move the remote base with the hook
  *      never running;
  *   2. `git -c core.hooksPath=…` — relocates the hooks for this one command;
- *   3. `git config … core.hooksPath …` — relocates them persistently. A READ of
- *      the same key is caught too: telling read from write needs the argument
- *      count, and this guard stays fail-closed on a key nothing else names;
+ *   3. `git config … core.hooksPath …` — relocates them persistently, UNLESS
+ *      the operation only reads the key ({@link isConfigReadOnly}, UI-1xcd §2);
  *   4. a `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` assignment ahead of the command —
  *      the very channel the hook is wired through, so redefining it is how the
  *      wiring is undone (and it applies to every repo the process touches).
@@ -1419,7 +1560,10 @@ function isHookBypass(argv, prefix) {
     return options.includes('--no-verify');
   }
   if (subcommand === 'config') {
-    return args.some((token) => HOOKS_PATH_RE.test(configKeyOf(token)));
+    return (
+      args.some((token) => HOOKS_PATH_RE.test(configKeyOf(token))) &&
+      !isConfigReadOnly(args)
+    );
   }
   return false;
 }
@@ -1542,6 +1686,43 @@ function isExemptCrossRepoPush(commands, push_idx, ctx) {
 }
 
 /**
+ * Command separators, used to bound one `git config` invocation inside text the
+ * tokenizer refused. Approximate by necessity — that IS the fallback's
+ * situation — and the approximation is safe in one direction only: a segment cut
+ * too SHORT can lose a trailing value and read as a read, so the strict arm
+ * runs first and the exemption can never outvote it.
+ *
+ * @type {RegExp}
+ */
+const COMMAND_SEPARATOR_RE = /[;&|\n()]/;
+
+/**
+ * Does any `git config … core.hooksPath` segment of unparseable text actually
+ * WRITE the key (UI-1xcd §2)? Each match is cut at the next command separator
+ * and classified on its own, so a read in one segment cannot excuse a write in
+ * another.
+ *
+ * @param {string} src
+ * @returns {boolean}
+ */
+function fallbackConfigBypass(src) {
+  GIT_CONFIG_HOOKS_RE.lastIndex = 0;
+  /** @type {RegExpExecArray|null} */
+  let m;
+  while ((m = GIT_CONFIG_HOOKS_RE.exec(src)) !== null) {
+    const tail = src.slice(m.index);
+    const cut = tail.search(COMMAND_SEPARATOR_RE);
+    const segment = cut >= 0 ? tail.slice(0, cut) : tail;
+    // `git config` is words 0-1 of the segment by construction of the regex.
+    const args = segment.trim().split(/\s+/).slice(2);
+    if (!isConfigReadOnly(args)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * The pre-argv regex judgment, used when (and only when) tokenization failed.
  *
  * @param {string} src
@@ -1549,9 +1730,14 @@ function isExemptCrossRepoPush(commands, push_idx, ctx) {
  * @returns {MergeViolation|null}
  */
 function fallbackViolation(src, ctx) {
-  // Strictest first: an unparseable command that disables the hook must not be
-  // demoted to the base-push warning by matching that shape instead.
-  if (!ctx.disposition && HOOK_BYPASS_RE.test(src)) {
+  // Strictest first, in two steps. The shapes that are a bypass unconditionally
+  // are judged BEFORE the `git config` arm, because that arm now carries a read
+  // exemption and an exemption must not be able to hide a real relocation
+  // sitting in the same unparseable blob (UI-1xcd §2).
+  if (
+    !ctx.disposition &&
+    (HOOK_BYPASS_STRICT_RE.test(src) || fallbackConfigBypass(src))
+  ) {
     return {
       kind: 'hook_bypass',
       reason: 'hook_bypass_blocked',
@@ -1576,7 +1762,7 @@ function fallbackViolation(src, ctx) {
       command: src
     };
   }
-  if (!ctx.conflict_resolution && BASE_INTO_BRANCH_RE.test(src)) {
+  if (BASE_INTO_BRANCH_RE.test(src)) {
     return { kind: 'base_merge', reason: 'base_merge_blocked', command: src };
   }
   return null;
@@ -1643,8 +1829,7 @@ function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
     name === 'git' &&
     typeof argv[1] === 'string' &&
     /^merge(-|$)/.test(argv[1]) &&
-    !['merge-base', 'merge-tree', 'merge-file'].includes(argv[1]) &&
-    !ctx.conflict_resolution
+    !['merge-base', 'merge-tree', 'merge-file'].includes(argv[1])
   ) {
     return {
       kind: 'base_merge',
@@ -1727,21 +1912,24 @@ function scanCommand(src, ctx, depth) {
  * Judge a session's shell command against the two merge guards.
  *
  * @param {string} cmd - The command the session asked to run.
- * @param {{ conflict_resolution?: boolean, disposition?: boolean,
- * repo?: string|null, target_base?: string|null }} [options] - The attempt's
- * judgment subject. `conflict_resolution` true relaxes the base-into-branch ONLY
- * (worker-phase2 §6); absent or non-true fails closed. `disposition` true drops
- * the base-push and hook-bypass judgments, whose subject that session IS
- * (guard-enforcement-layer-replacement §4). `repo`/`target_base` are the
- * attempt's subject (worker-base-scope-alignment §6): absent `target_base`
- * keeps the legacy `main|master` match, absent `repo` disables the cross-repo
- * allowlist. Every absence reproduces today's verdict exactly.
+ * @param {{ disposition?: boolean, repo?: string|null,
+ * target_base?: string|null }} [options] - The attempt's judgment subject.
+ * `disposition` true drops the base-push and hook-bypass judgments, whose
+ * subject that session IS (guard-enforcement-layer-replacement §4).
+ * `repo`/`target_base` are the attempt's subject
+ * (worker-base-scope-alignment §6): absent `target_base` keeps the legacy
+ * `main|master` match, absent `repo` disables the cross-repo allowlist. Every
+ * absence reproduces today's verdict exactly.
+ *
+ * `conflict_resolution` was retired here (UI-1xcd §3): it existed only to relax
+ * the base-into-branch judgment, which is now a warning for every attempt, so
+ * the flag no longer names an exception the guard can make. A caller still
+ * passing it is simply ignored.
  * @returns {MergeViolation|null} The first violation found, else null.
  */
 export function findMergeViolation(cmd, options) {
   /** @type {GuardContext} */
   const ctx = {
-    conflict_resolution: options?.conflict_resolution === true,
     disposition: options?.disposition === true,
     repo:
       typeof options?.repo === 'string' && options.repo.length > 0
