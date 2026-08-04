@@ -48,8 +48,10 @@
   실패는 메타 줄 선두 `⚠ 실패`(accent-warn) + 카드 테두리 warn 톤.
   paused → `⏸ 일시정지` 동일 문법.
 - **실행가능 카드**: 제목 → 메타(⠿그립 · mono ID · route 칩 · 레포 · 수정 시각).
-- **대기 행**: 부속이 적어 한 줄 유지 — ⠿그립 · `#순번` · mono ID · 제목(flex:1).
-  REVISE 파킹 배지·처분 버튼(`worker-mini__revise-*`)은 기존 계약 유지.
+- **대기 행**: 예외 없이 같은 2줄 문법 — 제목 첫 줄(전폭) → 메타 줄(⠿그립 ·
+  `#순번` · mono ID · REVISE 파킹 배지). 좌측 레일은 1fr로 현재보다 좁아지므로
+  한 줄 유지는 제목 압축을 재발시킨다 (spec 리뷰 finding 1). REVISE 파킹
+  처분 버튼(`worker-mini__revise-*`)은 메타 아래 꼬리 줄, 기존 계약 유지.
 - **PR 대기 카드**: 제목 → 메타(ID·PR 링크·배지) → 꼬리(usage·머지 진행·액션).
   버튼은 기존 클래스 계약(`worker-mini__merge`/`__merge-cancel`/`__discard`)을
   그대로 발행해 `index.js` 클릭 위임이 무변경으로 동작한다.
@@ -89,6 +91,20 @@ Worker 탭의 네이티브 HTML5 드래그 규약(`app/views/worker/index.js`)�
   (크로스레포 적재는 서버에 없는 개념).
 - **대기 그룹 내 재정렬**: 같은 그룹 안 드래그로 `worker-queue-reorder`.
   그룹 간 이동은 불허(레포가 다르다).
+- **드롭 인덱스 산식 (raw queue 기준, DOM 순서 금지)**: 대기 레인 DOM은
+  실행중으로 빠진 버드를 숨기지만 서버의 `queue` 배열에는 남아 있으므로,
+  DOM 서수로 인덱스를 세면 숨은 항목을 넘어 오배치된다 (spec 리뷰 finding 2).
+  모든 인덱스는 렌더된 행이 이미 싣는 raw 좌표(`data-queue-index`,
+  `queue_length`)에서만 유도한다:
+  - 적재(place): 어떤 행 앞에 놓으면 그 행의 `queue_index`, 그룹 맨 끝이면
+    raw `queue_length` (현행 `place_index` 규약과 동일).
+  - 재정렬(reorder): 행 앞 드롭 기준 대상 인덱스 `k` = 그 행의
+    `queue_index`. 소스 raw 인덱스 `s` 기준 `to_index` = `s > k`(위로 이동)면
+    `k`, `s < k`(아래로 이동)면 `k - 1`(제거 후 삽입 보정). 그룹 맨 끝 드롭은
+    `to_index = queue_length - 1`.
+- **드래그 직후 클릭 억제**: dragstart에서 플래그를 세우고 dragend 후 첫
+  click을 카드 열기(`gotoIssue`)로 위임하지 않는다 — 드롭 마우스업이 행
+  열기로 새는 것을 막는다 (spec 리뷰 finding 3).
 - 드롭 대상 하이라이트는 기존 `--drag-over` 어휘 재사용. CAS·1회 재시도
   규약은 기존 `sendCas` 경로 그대로.
 - 기존 ↑/↓/✕ 버튼과 [대기로 ↴]는 유지 — HTML5 드래그는 터치에서 동작하지
@@ -128,12 +144,17 @@ Worker 탭의 네이티브 HTML5 드래그 규약(`app/views/worker/index.js`)�
 - **신규 RED→GREEN 시임**:
   1. 드래그 적재 대상 판정 — 같은 레포 대기 그룹만 드롭 허용, 타 레포
      그룹 거부 (`index.test.js`).
-  2. 드래그 재정렬 — 같은 그룹 내 drop이 `worker-queue-reorder`를 올바른
-     `to_index`로 전송 (`index.test.js`).
+  2. 드래그 재정렬·적재 인덱스 — 같은 그룹 내 drop이 §2.4 산식대로
+     `to_index`를 전송하되, **실행중으로 숨은 항목이 큐 선두·중간에 있는
+     케이스**에서 raw `queue_index` 기준으로 보정됨을 단언 (`index.test.js`).
   3. 카드 템플릿 — 실행중 타일이 제목 블록과 메타 줄을 분리 렌더하고 실패
-     상태를 메타 선두에 싣는다 (`lanes.test.js`).
+     상태를 메타 선두에 싣는다; **대기 행도 제목 전폭 첫 줄 + 메타 둘째 줄
+     구조** (`lanes.test.js`).
   4. 그룹 컨트롤 — 라벨 텍스트(진행/머지/슬롯/설정)와 `data-on`/CAS 속성
-     공존 (`lanes.test.js`).
+     공존, **각 컨트롤에 SVG 아이콘 존재 + 기존 이모지 glyph(▶🔀⧉⚙) 부재**
+     (`lanes.test.js`).
+  5. 드래그 직후 클릭 억제 — dragstart→drop 후 발생한 click이 `gotoIssue`를
+     호출하지 않고, 다음 일반 클릭부터 정상 동작 (`index.test.js`).
 - 시각 회귀(간격·색)는 자동화하지 않는다 — 수동 확인으로 갈음.
 
 ## 5. 검증·적용 절차
