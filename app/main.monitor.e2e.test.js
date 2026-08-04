@@ -206,7 +206,7 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     const running = monitor_root.querySelector(
       '#monitor-running [data-issue-id="UI-run"]'
     );
-    expect(running?.querySelector('.worker-mini__repo')?.textContent).toContain(
+    expect(running?.querySelector('.mon-c__repo')?.textContent).toContain(
       'ws-a'
     );
     expect(running?.querySelector('.mon-live__elapsed')).not.toBe(null);

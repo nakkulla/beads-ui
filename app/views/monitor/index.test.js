@@ -115,6 +115,31 @@ function click(mount, selector) {
   return el;
 }
 
+/**
+ * Dispatch one drag-phase event. jsdom은 `DragEvent`/`DataTransfer`를 구현하지
+ * 않는다. 컨트롤러는 dataTransfer를
+ * 옵셔널로만 만지므로 취소 가능한 평범한 이벤트로도 판정 경로가 전부 돈다 —
+ * 드롭 허용 여부는 `defaultPrevented`로 읽는다.
+ *
+ * @param {HTMLElement|null} el
+ * @param {string} type
+ * @returns {Event}
+ */
+function fireDrag(el, type) {
+  const ev = new Event(type, { bubbles: true, cancelable: true });
+  /** @type {HTMLElement} */ (el).dispatchEvent(ev);
+  return ev;
+}
+
+/**
+ * @param {HTMLElement} mount
+ * @param {string} selector
+ * @returns {HTMLElement}
+ */
+function el(mount, selector) {
+  return /** @type {HTMLElement} */ (mount.querySelector(selector));
+}
+
 describe('views/monitor lanes (UI-qrfo §8)', () => {
   test('renders every bead in its own lane pane', () => {
     const { mount, view } = setup({
@@ -181,11 +206,11 @@ describe('views/monitor lanes (UI-qrfo §8)', () => {
   test('badges each card with the repo it belongs to', () => {
     const { mount, view } = setup({
       workspaces: [
-        workspace({ queue: [{ bead_id: 'A-1', added_at: NOW }] }),
+        workspace({ done: [{ bead_id: 'A-1', added_at: NOW }] }),
         workspace({
           root_dir: WS_B,
           name: 'repo-b',
-          queue: [{ bead_id: 'B-1', added_at: NOW }]
+          done: [{ bead_id: 'B-1', added_at: NOW }]
         })
       ],
       workspaces_state: [state(), state({ root_dir: WS_B, name: 'repo-b' })]
@@ -194,10 +219,26 @@ describe('views/monitor lanes (UI-qrfo §8)', () => {
     view.load();
 
     expect(
-      Array.from(
-        mount.querySelectorAll('#monitor-queue .worker-mini__repo')
-      ).map((el) => el.textContent?.trim())
+      Array.from(mount.querySelectorAll('#monitor-done .mon-c__repo')).map(
+        (el) => el.textContent?.trim()
+      )
     ).toEqual(['repo-a', 'repo-b']);
+  });
+
+  // 대기 레인은 이미 레포별 그룹이다 — 행마다 레포 칩을 또 실으면 같은 사실을 두
+  // 번 말하면서 제목이 쓸 폭만 줄인다 (UI-gwkl §2.2).
+  test('leaves the repo chip off a waiting row the group header already names', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ queue: [{ bead_id: 'A-1', added_at: NOW }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(mount.querySelector('#monitor-queue .mon-c__repo')).toBe(null);
+    expect(
+      mount.querySelector('#monitor-queue .mon-group__name')?.textContent
+    ).toContain('repo-a');
   });
 });
 
@@ -519,7 +560,7 @@ describe('views/monitor card click (UI-nprg)', () => {
     });
     view.load();
 
-    click(mount, '[data-issue-id="A-1"] .worker-mini__title');
+    click(mount, '[data-issue-id="A-1"] .mon-c__title');
 
     expect(gotoIssue).toHaveBeenCalledWith('A-1');
     expect(switchWorkspace).not.toHaveBeenCalled();
@@ -539,7 +580,7 @@ describe('views/monitor card click (UI-nprg)', () => {
     });
     view.load();
 
-    click(mount, '[data-issue-id="B-1"] .worker-mini__title');
+    click(mount, '[data-issue-id="B-1"] .mon-c__title');
     await Promise.resolve();
 
     expect(switchWorkspace).toHaveBeenCalledWith(WS_B);
@@ -561,7 +602,7 @@ describe('views/monitor card click (UI-nprg)', () => {
     });
     view.load();
 
-    click(mount, '[data-issue-id="B-1"] .worker-mini__title');
+    click(mount, '[data-issue-id="B-1"] .mon-c__title');
     await Promise.resolve();
     await Promise.resolve();
 
@@ -578,6 +619,212 @@ describe('views/monitor card click (UI-nprg)', () => {
     click(mount, '[data-issue-id="A-1"] .mon-op--remove');
 
     expect(gotoIssue).not.toHaveBeenCalled();
+  });
+});
+
+describe('views/monitor 드래그앤드롭 (UI-gwkl §2.4)', () => {
+  /**
+   * Two repos whose waiting head is hidden by a running attempt. repo-a의 대기
+   * 큐는 [A-run(실행중이라 화면에서 숨음), A-1, A-2]다. DOM은 두
+   * 행만 그리므로 DOM 서수와 raw 좌표가 어긋난다 — 이 어긋남이 산식 테스트의
+   * 전부다.
+   */
+  function twoRepoSetup() {
+    return setup({
+      workspaces: [
+        workspace({
+          queue: [
+            { bead_id: 'A-run', added_at: NOW },
+            { bead_id: 'A-1', added_at: NOW },
+            { bead_id: 'A-2', added_at: NOW }
+          ],
+          runnable: [{ bead_id: 'A-next', title: '실행 가능' }],
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-run',
+              status: 'running',
+              started_at: NOW - 1_000
+            }
+          }
+        }),
+        workspace({ root_dir: WS_B, name: 'repo-b' })
+      ],
+      workspaces_state: [
+        state({ revision: 4 }),
+        state({ root_dir: WS_B, name: 'repo-b', revision: 9 })
+      ]
+    });
+  }
+
+  test('highlights only the waiting group of the dragged card own repo', () => {
+    const { mount, view } = twoRepoSetup();
+    view.load();
+    const own = el(mount, `#monitor-queue .mon-group[data-root-dir="${WS_A}"]`);
+    const other = el(
+      mount,
+      `#monitor-queue .mon-group[data-root-dir="${WS_B}"]`
+    );
+
+    fireDrag(
+      el(mount, '#monitor-runnable [data-issue-id="A-next"]'),
+      'dragstart'
+    );
+    const on_own = fireDrag(own.querySelector('.mon-group__list'), 'dragover');
+    const on_other = fireDrag(
+      other.querySelector('.mon-group__list'),
+      'dragover'
+    );
+
+    expect(on_own.defaultPrevented).toBe(true);
+    expect(own.classList.contains('mon-group--drag-over')).toBe(true);
+    expect(on_other.defaultPrevented).toBe(false);
+    expect(other.classList.contains('mon-group--drag-over')).toBe(false);
+  });
+
+  // 크로스레포 적재는 서버에 없는 개념이다 — 허용하면 클릭이 거부로만 돌아온다.
+  test('sends nothing when a runnable card is dropped on another repo group', () => {
+    const { mount, view, sent } = twoRepoSetup();
+    view.load();
+
+    fireDrag(
+      el(mount, '#monitor-runnable [data-issue-id="A-next"]'),
+      'dragstart'
+    );
+    fireDrag(
+      el(
+        mount,
+        `#monitor-queue .mon-group[data-root-dir="${WS_B}"] .mon-group__list`
+      ),
+      'drop'
+    );
+
+    expect(sent).toEqual([]);
+  });
+
+  test('places a runnable card at the raw queue index of the row it was dropped before', () => {
+    const { mount, view, sent } = twoRepoSetup();
+    view.load();
+
+    fireDrag(
+      el(mount, '#monitor-runnable [data-issue-id="A-next"]'),
+      'dragstart'
+    );
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-2"]'), 'drop');
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: {
+          bead_id: 'A-next',
+          index: 2,
+          root_dir: WS_A,
+          expected_revision: 4
+        }
+      }
+    ]);
+  });
+
+  test('places a runnable card at the raw queue length when dropped past the last row', () => {
+    const { mount, view, sent } = twoRepoSetup();
+    view.load();
+
+    fireDrag(
+      el(mount, '#monitor-runnable [data-issue-id="A-next"]'),
+      'dragstart'
+    );
+    fireDrag(
+      el(
+        mount,
+        `#monitor-queue .mon-group[data-root-dir="${WS_A}"] .mon-group__list`
+      ),
+      'drop'
+    );
+
+    expect(sent[0].payload).toEqual({
+      bead_id: 'A-next',
+      index: 3,
+      root_dir: WS_A,
+      expected_revision: 4
+    });
+  });
+
+  test('reorders upward to the raw index of the row it was dropped before', () => {
+    const { mount, view, sent } = twoRepoSetup();
+    view.load();
+
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-2"]'), 'dragstart');
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-1"]'), 'drop');
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-reorder',
+        payload: {
+          bead_id: 'A-2',
+          to_index: 1,
+          root_dir: WS_A,
+          expected_revision: 4
+        }
+      }
+    ]);
+  });
+
+  // 아래로 보내는 이동은 제거 후 삽입이라 한 칸 보정이 붙는다.
+  test('reorders to the last raw slot when dropped past the last row', () => {
+    const { mount, view, sent } = twoRepoSetup();
+    view.load();
+
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-1"]'), 'dragstart');
+    fireDrag(
+      el(
+        mount,
+        `#monitor-queue .mon-group[data-root-dir="${WS_A}"] .mon-group__list`
+      ),
+      'drop'
+    );
+
+    expect(sent[0].payload.to_index).toBe(2);
+  });
+
+  test('sends nothing when a waiting row is dropped on itself', () => {
+    const { mount, view, sent } = twoRepoSetup();
+    view.load();
+
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-1"]'), 'dragstart');
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-1"]'), 'drop');
+
+    expect(sent).toEqual([]);
+  });
+
+  // 드롭의 마우스업이 그대로 click으로 이어지면 방금 옮긴 카드가 열려 버린다.
+  test('swallows only the first click after a drop, then opens normally', () => {
+    const { mount, view, gotoIssue } = twoRepoSetup();
+    view.load();
+
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-2"]'), 'dragstart');
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-1"]'), 'drop');
+    click(mount, '#monitor-queue [data-issue-id="A-1"] .mon-c__title');
+
+    expect(gotoIssue).not.toHaveBeenCalled();
+
+    click(mount, '#monitor-queue [data-issue-id="A-1"] .mon-c__title');
+
+    expect(gotoIssue).toHaveBeenCalledWith('A-1');
+  });
+
+  // 브라우저 대부분은 드래그 뒤에 click을 아예 발행하지 않는다 — 소비만 기다리면
+  // 플래그가 남아 한참 뒤의 정상 클릭을 삼킨다.
+  test('expires the suppression when the drop is followed by no click at all', async () => {
+    const { mount, view, gotoIssue } = twoRepoSetup();
+    view.load();
+
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-2"]'), 'dragstart');
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-1"]'), 'drop');
+    fireDrag(el(mount, '#monitor-queue [data-issue-id="A-2"]'), 'dragend');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    click(mount, '#monitor-queue [data-issue-id="A-1"] .mon-c__title');
+
+    expect(gotoIssue).toHaveBeenCalledWith('A-1');
   });
 });
 

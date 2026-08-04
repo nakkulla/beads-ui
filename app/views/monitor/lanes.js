@@ -1,12 +1,15 @@
 /**
- * Monitor tab lane builder + the three monitor-only templates (UI-qrfo §8).
+ * Monitor tab lane builder + the monitor's own templates (UI-qrfo §8,
+ * UI-gwkl §2.2).
  *
- * The monitor is the Worker console's cross-repo superset, so the CARD
- * templates are Worker's (`paneTemplate`/`miniRow`/`candidateCard`) and only
- * three things are built here: the lane builder that merges every visible
- * workspace into five exclusive lanes, the waiting lane's per-repo group
- * header (which carries that repo's four workspace-scoped controls), and the
- * top bar (master automation toggle + overall counts).
+ * The monitor borrows Worker's pane SHELL (`paneTemplate`) but owns its cards.
+ * Worker's one-line row packs 레포 칩 · 크로스레포 ID · 사용량 · 배지 onto the
+ * same line as the title; in the monitor's narrower lanes those fixed-width
+ * parts eat the whole row and the title is squeezed into a 1~4 글자 column that
+ * flows vertically. 모니터 카드는 예외 없이 **제목 첫 줄(전폭) + 흐린 메타 한
+ * 줄**이라 그 붕괴가 구조적으로 불가능하다. 버튼 class·`data-*` 계약만 Worker와
+ * 공유하므로 `index.js`의 클릭 위임은 그대로 동작하고, Worker 탭 렌더는
+ * 무변경이다.
  *
  * 배타 우선순위는 `running > pr_wait > queue > runnable > done`이다 — 실행중인
  * 버드는 `queue` 레인에 그대로 남아 있고 conflict-resolution attempt는 `pr_wait`
@@ -24,8 +27,22 @@ import {
   formatRelativeTime,
   formatTimestampLocal
 } from '../../utils/relative-time.js';
-import { sumAttemptUsage } from '../../utils/token-usage.js';
+import {
+  formatUsageTotalWithCost,
+  sumAttemptUsage,
+  usageTooltip
+} from '../../utils/token-usage.js';
 import { formatElapsed } from '../worker/running-grid.js';
+import {
+  iconClose,
+  iconGear,
+  iconMerge,
+  iconPause,
+  iconPlay,
+  iconPlayAll,
+  iconSlots,
+  iconStop
+} from './icons.js';
 
 /**
  * @import { MiniItem } from '../worker/lanes.js'
@@ -666,49 +683,386 @@ export function heartbeatTemplate(last_event_at, now) {
 }
 
 /**
- * The 실행중 카드의 라이브 지표 — 시계가 지나가는 것만으로 값이 바뀌는 유일한
- * 자리다 (경과·하트비트). 완료 카드의 종류 배지도 여기서 그린다: `miniRow`가
- * 모르는 사실이고, 잘못 칠하면 모르는 종료가 "정상"으로 읽힌다.
+ * The title line every monitor card opens with — 카드 문법의 전부가 여기 걸려 있다.
+ * 제목이 언제나 자기 블록 줄을
+ * 통째로 가지므로, 메타에 무엇이 실리든 제목 폭이 눌리지 않는다 (§2.2).
+ *
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult}
+ */
+function titleLine(item) {
+  return html`<div class="mon-c__title">${item.title}</div>`;
+}
+
+/**
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult}
+ */
+function idChip(item) {
+  return html`<span class="mon-c__id" title="클릭하면 상세로 이동"
+    >${item.id}</span
+  >`;
+}
+
+/**
+ * The owning repo chip: 전 레포를 한 화면에 섞는 순간부터 레포는 부가 정보가 아니라
+ * 좌표다.
+ * 대기 레인만 예외인데, 거기서는 그룹 헤더가 이미 레포를 말한다.
+ *
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function repoChip(item) {
+  return item.workspace_name
+    ? html`<span class="mon-c__repo" title=${item.root_dir || ''}
+        >${item.workspace_name}</span
+      >`
+    : '';
+}
+
+/**
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function usageChip(item) {
+  const label = formatUsageTotalWithCost(item.usage);
+  return label
+    ? html`<span class="mon-c__usage" title=${usageTooltip(item.usage)}
+        >${label}</span
+      >`
+    : '';
+}
+
+/**
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult[]}
+ */
+function badgeChips(item) {
+  const badges = Array.isArray(item.badges) ? item.badges : [];
+  return badges.map(
+    (b) =>
+      html`<span class="mon-c__badge${item.alert ? ' mon-c__badge--alert' : ''}"
+        >${b}</span
+      >`
+  );
+}
+
+/**
+ * The running tile's controls (§2.3): 라벨 없이 라인 아이콘 + 툴팁. `mon-op--*` 클래스가
+ * 클릭 위임 계약이므로 아이콘화는 표면만 바꾼다.
+ *
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult}
+ */
+function runningOps(item) {
+  return html`<span class="mon-c__ops">
+    ${item.run_state === 'running'
+      ? html`<button
+          type="button"
+          class="mon-op mon-op--pause"
+          ?disabled=${item.can_pause === false}
+          aria-label="일시정지"
+          title="일시정지 — 세션을 끊고 이어하기 가능 상태로 둡니다"
+        >
+          ${iconPause()}
+        </button>`
+      : html`<button
+          type="button"
+          class="mon-op mon-op--resume"
+          ?disabled=${item.can_resume === false}
+          aria-label="이어하기"
+          title="이어하기"
+        >
+          ${iconPlay()}
+        </button>`}
+    <button
+      type="button"
+      class="mon-op mon-op--stop"
+      aria-label="중단"
+      title="중단 — 세션을 죽이고 대기 큐에서 뺍니다"
+    >
+      ${iconStop()}
+    </button>
+    ${item.run_state === 'failed'
+      ? html`<button
+          type="button"
+          class="mon-op mon-op--dismiss"
+          aria-label="실패 기록 닫기"
+          title="실패 기록 닫기"
+        >
+          ${iconClose()}
+        </button>`
+      : ''}
+  </span>`;
+}
+
+/**
+ * The 실행중 tile — 이 탭의 주인공. 경과·하트비트는 시계가 지나가는 것만으로 값이
+ * 바뀌는 유일한 자리이므로 1초 tick이 이 템플릿만을 위해 돈다.
  *
  * @param {MonitorItem} item
  * @param {number} now
- * @returns {import('lit-html').TemplateResult|''}
+ * @returns {import('lit-html').TemplateResult}
  */
-export function monitorLiveTemplate(item, now) {
-  if (item.lane === 'running') {
-    const elapsed =
-      typeof item.started_at === 'number'
-        ? formatElapsed(now - item.started_at)
-        : '';
-    return html`<span class="mon-live">
-      ${heartbeatTemplate(item.last_event_at, now)}
+export function monitorRunningTile(item, now) {
+  const elapsed =
+    typeof item.started_at === 'number'
+      ? formatElapsed(now - item.started_at)
+      : '';
+  return html`${titleLine(item)}
+    <div class="mon-c__meta">
+      ${badgeChips(item)}${heartbeatTemplate(item.last_event_at, now)}${idChip(
+        item
+      )}${repoChip(item)}
+      ${item.model ? html`<span class="mon-c__model">${item.model}</span>` : ''}
       ${elapsed ? html`<span class="mon-live__elapsed">${elapsed}</span>` : ''}
-      ${item.model
-        ? html`<span class="mon-live__model">${item.model}</span>`
+      ${usageChip(item)}${runningOps(item)}
+    </div>`;
+}
+
+/**
+ * The 실행가능 card. `[대기로 ↴]`는 드래그의 보완재로 남는다 (§2.4) — HTML5 드래그가
+ * 터치에서 동작하지 않으므로 이 버튼이 모바일 수단이다.
+ *
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function monitorRunnableCard(item) {
+  const workflow = item.workflow;
+  const chips = (workflow && workflow.chips) || {};
+  const route = chips.route || (workflow && workflow.route);
+  const danger =
+    typeof item.reason === 'string' && item.reason.startsWith('⛔');
+  const updated = formatRelativeTime(item.updated_at);
+  return html`${titleLine(item)}
+    <div class="mon-c__meta">
+      <span class="mon-c__grip" aria-hidden="true">⠿</span>${idChip(item)}
+      ${route
+        ? html`<span class="ctl-chip ctl-chip--route">${route}</span>`
         : ''}
-    </span>`;
+      ${repoChip(item)}
+      ${updated
+        ? html`<span title=${`수정 ${formatTimestampLocal(item.updated_at)}`}
+            >수정 ${updated}</span
+          >`
+        : ''}
+      ${item.reason
+        ? html`<span
+            class="mon-c__reason${danger ? ' mon-c__reason--danger' : ''}"
+            >${item.reason}</span
+          >`
+        : ''}
+      <span class="mon-c__ops">
+        <button
+          type="button"
+          class="worker-card__place"
+          data-bead-id=${item.id}
+          title="대기 큐 맨 뒤에 추가"
+        >
+          대기로 ↴
+        </button>
+      </span>
+    </div>`;
+}
+
+/**
+ * The 대기 row — 예외 없이 실행중·실행가능과 같은 2줄 문법이다 (§2.2, spec 리뷰
+ * finding 1). 좌측 레일은 1fr이라 현재보다 좁고, 한 줄을 유지하면 제목 압축이
+ * 그대로 재발한다. REVISE 처분 버튼만 메타 아래 꼬리 줄로 내려간다.
+ *
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function monitorQueueRow(item) {
+  return html`${titleLine(item)}
+    <div class="mon-c__meta">
+      <span class="mon-c__grip" aria-hidden="true">⠿</span>
+      <span class="mon-live__pos">#${item.queue_position}</span>${idChip(item)}
+      ${badgeChips(item)}
+      ${item.reason
+        ? html`<span class="mon-c__reason">${item.reason}</span>`
+        : ''}
+      <span class="mon-c__ops">
+        <button
+          type="button"
+          class="mon-op mon-op--up"
+          ?disabled=${(item.queue_position ?? 1) <= 1}
+          aria-label="한 칸 앞으로"
+          title="한 칸 앞으로"
+        >
+          ↑
+        </button>
+        <button
+          type="button"
+          class="mon-op mon-op--down"
+          ?disabled=${(item.queue_index ?? 0) >= (item.queue_length ?? 1) - 1}
+          aria-label="한 칸 뒤로"
+          title="한 칸 뒤로"
+        >
+          ↓
+        </button>
+        <button
+          type="button"
+          class="mon-op mon-op--remove"
+          aria-label="대기 큐에서 제거"
+          title="대기 큐에서 제거"
+        >
+          ✕
+        </button>
+      </span>
+    </div>
+    ${item.revise_action
+      ? html`<div class="mon-c__tail">
+          <button
+            type="button"
+            class="worker-mini__revise-fix"
+            data-bead-id=${item.id}
+            ?disabled=${item.revise_enabled === false}
+            title=${item.revise_title || ''}
+          >
+            finding 수용·수정
+          </button>
+          <button
+            type="button"
+            class="worker-mini__revise-approve"
+            data-bead-id=${item.id}
+            ?disabled=${item.revise_enabled === false}
+            title="델타를 사용자 권한으로 승인해 영수증을 갱신하고 파킹을 해제합니다 (세션 없음)"
+          >
+            승인하고 진행
+          </button>
+        </div>`
+      : ''}`;
+}
+
+/**
+ * PR 대기 카드. 버튼은 Worker의 class 계약(`worker-mini__merge` 등)을 그대로
+ * 발행해 `index.js`의 클릭 위임이 무변경으로 동작한다 (§2.2).
+ *
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function monitorPrCard(item) {
+  const has_tail = !!(
+    formatUsageTotalWithCost(item.usage) ||
+    item.merge_action ||
+    item.cancel_action ||
+    item.discard_action
+  );
+  return html`${titleLine(item)}
+    <div class="mon-c__meta">
+      ${idChip(item)}${repoChip(item)}
+      ${item.pr_url && item.pr_number
+        ? html`<a
+            class="mon-c__pr"
+            href=${item.pr_url}
+            target="_blank"
+            rel="noreferrer noopener"
+            title="PR 열기"
+            >#${item.pr_number} ↗</a
+          >`
+        : ''}
+      ${badgeChips(item)}
+      ${item.reason
+        ? html`<span class="mon-c__reason">${item.reason}</span>`
+        : ''}
+    </div>
+    ${has_tail
+      ? html`<div class="mon-c__tail">
+          ${usageChip(item)}
+          ${item.merge_action
+            ? html`<button
+                type="button"
+                class="worker-mini__merge"
+                data-bead-id=${item.id}
+                ?disabled=${item.merge_enabled === false}
+                title=${item.merge_title || ''}
+              >
+                ${item.merge_label || '머지'}
+              </button>`
+            : ''}
+          ${item.cancel_action
+            ? html`<button
+                type="button"
+                class="worker-mini__merge-cancel"
+                data-bead-id=${item.id}
+                ?disabled=${item.cancel_enabled === false}
+                title=${item.cancel_title || ''}
+              >
+                취소
+              </button>`
+            : ''}
+          ${item.discard_action
+            ? html`<button
+                type="button"
+                class="worker-mini__discard"
+                data-bead-id=${item.id}
+                ?disabled=${item.discard_enabled === false}
+                title=${item.discard_enabled === false
+                  ? item.discard_title || '머지 진행 중 — 폐기할 수 없습니다'
+                  : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음)'}
+              >
+                폐기
+              </button>`
+            : ''}
+        </div>`
+      : ''}`;
+}
+
+/**
+ * The 완료 row, kind label included: 모르는 종료를 "정상"으로 칠하지 않는 색 규약은
+ * 그대로다.
+ *
+ * @param {MonitorItem} item
+ * @param {number} now
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function monitorDoneRow(item, now) {
+  const kind = item.done_kind || '';
+  const label = kind ? DONE_KIND_LABELS[kind] || kind : '';
+  const done_at = formatRelativeTime(item.done_at, now);
+  return html`${titleLine(item)}
+    <div class="mon-c__meta">
+      ${idChip(item)}${repoChip(item)}
+      ${label
+        ? html`<span
+            class="mon-live__kind${DONE_KIND_SUCCESS.has(kind)
+              ? ' mon-live__kind--ok'
+              : ' mon-live__kind--warn'}"
+            >${label}</span
+          >`
+        : ''}
+      ${usageChip(item)}
+      ${done_at
+        ? html`<span title=${`완료 ${formatTimestampLocal(item.done_at)}`}
+            >완료 ${done_at}</span
+          >`
+        : ''}
+    </div>`;
+}
+
+/**
+ * The per-lane body dispatcher — `.mon-card` 껍데기(좌표·드래그 계약)는
+ * `index.js`가 소유한다.
+ *
+ * @param {MonitorItem} item
+ * @param {number} now
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function monitorCardBody(item, now) {
+  if (item.lane === 'running') {
+    return monitorRunningTile(item, now);
   }
-  if (item.lane === 'done') {
-    const kind = item.done_kind || '';
-    const label = kind ? DONE_KIND_LABELS[kind] || kind : '';
-    if (!label) {
-      return '';
-    }
-    return html`<span class="mon-live">
-      <span
-        class="mon-live__kind${DONE_KIND_SUCCESS.has(kind)
-          ? ' mon-live__kind--ok'
-          : ' mon-live__kind--warn'}"
-        >${label}</span
-      >
-    </span>`;
+  if (item.lane === 'runnable') {
+    return monitorRunnableCard(item);
   }
-  if (item.lane === 'queue' && typeof item.queue_position === 'number') {
-    return html`<span class="mon-live"
-      ><span class="mon-live__pos">#${item.queue_position}</span></span
-    >`;
+  if (item.lane === 'queue') {
+    return monitorQueueRow(item);
   }
-  return '';
+  if (item.lane === 'pr_wait') {
+    return monitorPrCard(item);
+  }
+  return monitorDoneRow(item, now);
 }
 
 /**
@@ -726,7 +1080,7 @@ export function monitorLiveTemplate(item, now) {
 export function monitorGroupHeaderTemplate(group) {
   const revision = String(group.revision);
   return html`<header
-    class="mon-group__hd"
+    class="mon-group__hd${group.items.length === 0 ? ' is-empty' : ''}"
     data-root-dir=${group.root_dir}
     data-revision=${revision}
   >
@@ -746,7 +1100,8 @@ export function monitorGroupHeaderTemplate(group) {
           ? '자동 진행 켜짐 — 클릭하면 멈춥니다'
           : '자동 진행 꺼짐 — 클릭하면 대기 큐를 디스패치합니다'}
       >
-        ${group.auto_advance ? '⏸' : '▶'}
+        ${group.auto_advance ? iconPause() : iconPlay()}
+        <span class="mon-ctl__label">진행</span>
       </button>
       <button
         type="button"
@@ -761,10 +1116,12 @@ export function monitorGroupHeaderTemplate(group) {
           ? '자동 머지 켜짐 — 클릭하면 끄고 이 레포의 머지 대기열을 비웁니다'
           : '자동 머지 꺼짐 — 클릭하면 자격이 생기는 PR을 계속 머지합니다'}
       >
-        🔀
+        ${iconMerge()}
+        <span class="mon-ctl__label">머지</span>
       </button>
       <label class="mon-ctl mon-ctl--slots" title="동시에 실행할 세션 수">
-        <span aria-hidden="true">⧉</span>
+        ${iconSlots()}
+        <span class="mon-ctl__label">슬롯</span>
         <input
           type="number"
           class="mon-slots__input"
@@ -785,7 +1142,8 @@ export function monitorGroupHeaderTemplate(group) {
         aria-label=${`${group.name} 실행 기본값`}
         title="실행 기본값"
       >
-        ⚙
+        ${iconGear()}
+        <span class="mon-ctl__label">설정</span>
       </button>
     </span>
   </header>`;
@@ -830,7 +1188,12 @@ export function monitorTopBarTemplate(model) {
         ? '전 레포의 자동 진행·자동 머지를 함께 끕니다 (머지 대기열도 비워집니다)'
         : '전 레포의 자동 진행·자동 머지를 함께 켭니다'}
     >
-      ${all_on ? '⏹ 전체 자동화' : `⏵⏵ 전체 자동화 ${both_on}/${total}`}
+      ${all_on ? iconStop() : iconPlayAll()}
+      <span class="mon-auto-all__label"
+        >${all_on
+          ? '전체 자동화 멈춤'
+          : `전체 자동화 ${both_on}/${total}`}</span
+      >
     </button>
     <div class="mon-kpi">
       <span class="mon-kpi__chip mon-kpi__chip--running"

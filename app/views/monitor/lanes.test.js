@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import {
   buildLanes,
   monitorGroupHeaderTemplate,
+  monitorQueueRow,
+  monitorRunningTile,
   monitorTopBarTemplate
 } from './lanes.js';
 
@@ -336,7 +338,7 @@ describe('monitor top bar (UI-qrfo §6)', () => {
     );
 
     expect(mount.querySelector('.mon-auto-all')?.textContent?.trim()).toBe(
-      '⏵⏵ 전체 자동화 3/4'
+      '전체 자동화 3/4'
     );
     expect(mount.querySelector('.mon-auto-all')?.getAttribute('data-on')).toBe(
       'true'
@@ -355,7 +357,7 @@ describe('monitor top bar (UI-qrfo §6)', () => {
     );
 
     expect(mount.querySelector('.mon-auto-all')?.textContent?.trim()).toBe(
-      '⏹ 전체 자동화'
+      '전체 자동화 멈춤'
     );
     expect(mount.querySelector('.mon-auto-all')?.getAttribute('data-on')).toBe(
       'false'
@@ -921,5 +923,142 @@ describe('monitor lane fail-quiet', () => {
     const lanes = buildLanes([workspace()], [state()]);
 
     expect(lanes.runnable).toEqual([]);
+  });
+});
+
+describe('monitor 카드 문법 (UI-gwkl §2.2)', () => {
+  test('gives a running tile a title block outside its meta line', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_titles: { 'A-run': '모니터 탭 시각 디자인 개선·모바일 호환' },
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-run',
+              status: 'running',
+              started_at: NOW - 65_000,
+              last_event_at: NOW
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorRunningTile(lanes.running[0], NOW), mount);
+
+    expect(mount.querySelector('.mon-c__title')?.textContent?.trim()).toBe(
+      '모니터 탭 시각 디자인 개선·모바일 호환'
+    );
+    expect(mount.querySelector('.mon-c__meta .mon-c__title')).toBe(null);
+    expect(mount.querySelector('.mon-c__meta .mon-c__id')?.textContent).toBe(
+      'A-run'
+    );
+    expect(mount.querySelector('.mon-c__meta .mon-live__elapsed')).not.toBe(
+      null
+    );
+  });
+
+  // 실패는 카드에서 가장 먼저 읽혀야 하는 사실이다.
+  test('leads the running meta line with the failure state', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-run',
+              status: 'failed',
+              started_at: NOW - 1_000,
+              finished_at: NOW
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorRunningTile(lanes.running[0], NOW), mount);
+
+    const first = mount.querySelector('.mon-c__meta')?.firstElementChild;
+    expect(first?.className).toContain('mon-c__badge--alert');
+    expect(first?.textContent).toContain('실패');
+  });
+
+  // 좌측 레일은 1fr이라 현재보다 좁다 — 대기 행만 한 줄로 두면 제목 압축이
+  // 그대로 재발한다 (spec 리뷰 finding 1).
+  test('gives a waiting row the same title-first two-line structure', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_titles: { 'A-1': '대기 중인 아주 긴 한글 제목' },
+          queue: [{ bead_id: 'A-1', added_at: NOW }]
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorQueueRow(lanes.queue[0]), mount);
+
+    expect(mount.querySelector('.mon-c__title')?.textContent?.trim()).toBe(
+      '대기 중인 아주 긴 한글 제목'
+    );
+    expect(mount.querySelector('.mon-c__meta .mon-c__title')).toBe(null);
+    expect(
+      mount.querySelector('.mon-c__meta .mon-live__pos')?.textContent
+    ).toBe('#1');
+    expect(mount.querySelector('.mon-c__meta .mon-c__id')?.textContent).toBe(
+      'A-1'
+    );
+  });
+});
+
+describe('monitor 그룹 컨트롤 라벨 (UI-gwkl §2.3)', () => {
+  test('labels all four group controls and keeps their CAS attributes', () => {
+    const lanes = buildLanes(
+      [],
+      [
+        state({
+          root_dir: WS_B,
+          name: 'repo-b',
+          revision: 9,
+          auto_advance: false
+        })
+      ]
+    );
+
+    render(monitorGroupHeaderTemplate(lanes.queue_groups[0]), mount);
+
+    expect(
+      Array.from(mount.querySelectorAll('.mon-ctl__label')).map((el) =>
+        el.textContent?.trim()
+      )
+    ).toEqual(['진행', '머지', '슬롯', '설정']);
+    const advance = mount.querySelector('.mon-ctl--advance');
+    expect(advance?.getAttribute('data-on')).toBe('true');
+    expect(advance?.getAttribute('data-revision')).toBe('9');
+    expect(advance?.getAttribute('data-root-dir')).toBe(WS_B);
+  });
+
+  // 이모지는 폰트마다 크기·색이 제각각이라 라벨보다 시각적으로 앞선다.
+  test('draws an svg icon on every control and no emoji glyph', () => {
+    const lanes = buildLanes([], [state()]);
+
+    render(monitorGroupHeaderTemplate(lanes.queue_groups[0]), mount);
+
+    for (const selector of [
+      '.mon-ctl--advance',
+      '.mon-ctl--merge-auto',
+      '.mon-ctl--slots',
+      '.mon-ctl--exec'
+    ]) {
+      expect(
+        mount.querySelector(
+          `${selector} svg.mon-i path, ${selector} svg.mon-i rect, ${selector} svg.mon-i circle`
+        )
+      ).not.toBe(null);
+    }
+    expect(/[▶🔀⧉⚙]/u.test(mount.textContent || '')).toBe(false);
   });
 });

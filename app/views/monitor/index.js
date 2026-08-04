@@ -23,12 +23,12 @@ import {
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
 import { createExecDefaultsDialog } from '../worker/exec-defaults-dialog.js';
-import { candidateCard, miniRow, paneTemplate } from '../worker/lanes.js';
+import { paneTemplate } from '../worker/lanes.js';
 import {
   MIN_SLOTS,
   buildLanes,
+  monitorCardBody,
   monitorGroupHeaderTemplate,
-  monitorLiveTemplate,
   monitorTopBarTemplate
 } from './lanes.js';
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
@@ -99,9 +99,14 @@ const TICK_MS = 1_000;
  */
 
 /**
- * The five lanes in display order (§8). `pane` is the Worker pane vocabulary the
- * lane borrows its spine/dot colour and card template from — 실행가능은 후보
- * 레인의 카드(`candidateCard`)를 그대로 쓴다.
+ * The five lanes in DOM order (§8). `pane` is the Worker pane vocabulary the
+ * lane borrows its spine/dot colour from; 카드는 모니터 전용 템플릿이다
+ * (UI-gwkl §2.2).
+ *
+ * DOM 순서는 생애주기 좌→우 독해 그대로 두고, 데스크톱 관제 삼단 배치
+ * (좌 실행가능·대기 / 중앙 실행중 / 우 PR 대기·완료)와 모바일 스와이프 순서
+ * (실행중 우선)는 CSS grid/order가 소유한다 (§2.1·§2.5) — DOM을 두 번 재배열하면
+ * 탭 이동 순서가 화면마다 달라진다.
  *
  * @type {ReadonlyArray<{ lane: 'runnable'|'queue'|'running'|'pr_wait'|'done', pane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, empty: string }>}
  */
@@ -119,96 +124,26 @@ const MONITOR_LANES = [
 ];
 
 /**
- * The monitor-only action strip a card carries beside its Worker template —
- * 순서 변경·제거(대기)와 실행 제어(실행중)는 `miniRow`가 모르는 조작이다.
- * 나머지 레인의 버튼(머지·취소·폐기·처분·적재)은 Worker 템플릿이 이미 싣는다.
+ * One monitor card: the monitor's own card body plus this tab's coordinates
+ * (`root_dir` · CAS revision · lane · raw 큐 좌표). 좌표를 카드 껍데기에 두는
+ * 이유는 조작 위임과 드래그 산식이 "이 클릭/드롭이 어느 레포의 어느 revision을
+ * 향하는가"를 한 자리에서 읽을 수 있어야 하기 때문이다.
  *
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult|''}
- */
-function cardOpsTemplate(item) {
-  if (item.lane === 'queue') {
-    const first = (item.queue_position ?? 1) <= 1;
-    const last = (item.queue_index ?? 0) >= (item.queue_length ?? 1) - 1;
-    return html`<div class="mon-card__ops">
-      <button
-        type="button"
-        class="mon-op mon-op--up"
-        ?disabled=${first}
-        title="한 칸 앞으로"
-      >
-        ↑
-      </button>
-      <button
-        type="button"
-        class="mon-op mon-op--down"
-        ?disabled=${last}
-        title="한 칸 뒤로"
-      >
-        ↓
-      </button>
-      <button
-        type="button"
-        class="mon-op mon-op--remove"
-        title="대기 큐에서 제거"
-      >
-        ✕
-      </button>
-    </div>`;
-  }
-  if (item.lane === 'running') {
-    return html`<div class="mon-card__ops">
-      ${item.run_state === 'running'
-        ? html`<button
-            type="button"
-            class="mon-op mon-op--pause"
-            ?disabled=${item.can_pause === false}
-            title="일시정지 — 세션을 끊고 이어하기 가능 상태로 둡니다"
-          >
-            ⏸
-          </button>`
-        : html`<button
-            type="button"
-            class="mon-op mon-op--resume"
-            ?disabled=${item.can_resume === false}
-            title="이어하기"
-          >
-            ▶
-          </button>`}
-      <button
-        type="button"
-        class="mon-op mon-op--stop"
-        title="중단 — 세션을 죽이고 대기 큐에서 뺍니다"
-      >
-        ■
-      </button>
-      ${item.run_state === 'failed'
-        ? html`<button
-            type="button"
-            class="mon-op mon-op--dismiss"
-            title="실패 기록 닫기"
-          >
-            ✕
-          </button>`
-        : ''}
-    </div>`;
-  }
-  return '';
-}
-
-/**
- * One monitor card: the Worker template plus this tab's own coordinates
- * (`root_dir` · CAS revision · lane) and action strip. 좌표를 카드 껍데기에
- * 두는 이유는 조작 위임이 "이 클릭이 어느 레포의 어느 revision을 향하는가"를
- * 한 자리에서 읽을 수 있어야 하기 때문이다.
+ * 인덱스 두 개는 **서버 큐의 raw 좌표**다 (§2.4): 대기 레인 DOM은 실행중으로
+ * 빠진 버드를 숨기지만 서버의 `queue` 배열에는 남아 있으므로, DOM 서수로 세면
+ * 숨은 항목을 넘어 오배치된다.
  *
  * @param {MonitorItem} item
  * @param {number} now
  * @returns {import('lit-html').TemplateResult}
  */
 function cardTemplate(item, now) {
+  const draggable = item.lane === 'runnable' || item.lane === 'queue';
   return html`<div
-    class="mon-card mon-card--${item.lane}"
+    class="mon-card mon-card--${item.lane}${item.alert
+      ? ' mon-card--alert'
+      : ''}"
+    draggable=${draggable ? 'true' : 'false'}
     data-issue-id=${item.id}
     data-root-dir=${item.root_dir}
     data-revision=${String(item.expected_revision)}
@@ -216,9 +151,9 @@ function cardTemplate(item, now) {
     data-attempt-id=${item.attempt_id || ''}
     data-place-index=${String(item.place_index ?? '')}
     data-queue-index=${String(item.queue_index ?? '')}
+    data-queue-length=${String(item.queue_length ?? '')}
   >
-    ${item.lane === 'runnable' ? candidateCard(item) : miniRow(item)}
-    ${monitorLiveTemplate(item, now)}${cardOpsTemplate(item)}
+    ${monitorCardBody(item, now)}
   </div>`;
 }
 
@@ -451,6 +386,203 @@ export function createMonitorView(mount_element, options) {
     }
   }
 
+  // --- 네이티브 HTML5 드래그 (§2.4). 라이브러리 없음 — Worker 탭과 같은 규약. ---
+
+  /**
+   * 지금 끌고 있는 카드가 실어 온 좌표. 드롭 인덱스는 전부 여기서 나오는 raw 큐
+   * 좌표로만 계산한다 (DOM 서수 금지).
+   *
+   * @type {{ bead_id: string, lane: string, root_dir: string, revision: number, queue_index: number, queue_length: number, place_index: number }|null}
+   */
+  let dragging = null;
+  /**
+   * 드롭의 마우스업이 그대로 click으로 이어져 카드를 열어 버리는 것을 막는 1회용
+   * 플래그. 뒤따르는 click 하나가 소비하고, 그 다음 클릭부터는 정상 동작한다.
+   */
+  let suppress_open_click = false;
+  /**
+   * 플래그 만료 타이머. 브라우저 대부분은 드래그 뒤에 click을 **아예 발행하지
+   * 않으므로**, 소비만 기다리면 플래그가 그대로 남아 한참 뒤의 정상 클릭을
+   * 삼킨다. 드롭 직후의 click은 같은 태스크에서 오므로 다음 매크로태스크에
+   * 만료시키면 둘 다 만족한다.
+   *
+   * @type {any}
+   */
+  let suppress_timer = null;
+
+  function expireDragSuppressSoon() {
+    if (suppress_timer !== null) {
+      clearTimeout(suppress_timer);
+    }
+    suppress_timer = setTimeout(() => {
+      suppress_timer = null;
+      suppress_open_click = false;
+    }, 0);
+  }
+
+  /**
+   * @param {Event} ev
+   * @returns {HTMLElement|null}
+   */
+  function groupOfEvent(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    return typeof target?.closest === 'function'
+      ? /** @type {HTMLElement|null} */ (target.closest('.mon-group'))
+      : null;
+  }
+
+  /**
+   * The waiting group a drop may actually land on. **다른 레포 그룹은 드롭 불가** —
+   * 크로스레포 적재는 서버에 없는 개념이라 허용하면 거부로만 돌아온다.
+   *
+   * @param {Event} ev
+   * @returns {HTMLElement|null}
+   */
+  function dropTargetGroup(ev) {
+    const group = groupOfEvent(ev);
+    if (!group || !dragging) {
+      return null;
+    }
+    return (group.getAttribute('data-root-dir') || '') === dragging.root_dir
+      ? group
+      : null;
+  }
+
+  function clearDragOver() {
+    for (const el of Array.from(
+      console_el.querySelectorAll('.mon-group--drag-over')
+    )) {
+      el.classList.remove('mon-group--drag-over');
+    }
+  }
+
+  /**
+   * @param {DragEvent} ev
+   */
+  function onDragStart(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    const card =
+      typeof target?.closest === 'function'
+        ? /** @type {HTMLElement|null} */ (
+            target.closest('.mon-card[draggable="true"]')
+          )
+        : null;
+    if (!card) {
+      return;
+    }
+    dragging = {
+      bead_id: card.getAttribute('data-issue-id') || '',
+      lane: card.getAttribute('data-lane') || '',
+      root_dir: card.getAttribute('data-root-dir') || '',
+      revision: Number(card.getAttribute('data-revision') || 0) || 0,
+      queue_index: Number(card.getAttribute('data-queue-index')),
+      queue_length: Number(card.getAttribute('data-queue-length')),
+      place_index: Number(card.getAttribute('data-place-index'))
+    };
+    suppress_open_click = true;
+    try {
+      ev.dataTransfer?.setData('text/plain', dragging.bead_id);
+      if (ev.dataTransfer) {
+        ev.dataTransfer.effectAllowed = 'move';
+      }
+    } catch {
+      /* ignore — 드래그 자체는 플래그만으로도 성립한다 */
+    }
+  }
+
+  /**
+   * @param {DragEvent} ev
+   */
+  function onDragOver(ev) {
+    const group = dropTargetGroup(ev);
+    if (!group) {
+      return;
+    }
+    ev.preventDefault();
+    if (ev.dataTransfer) {
+      ev.dataTransfer.dropEffect = 'move';
+    }
+    group.classList.add('mon-group--drag-over');
+  }
+
+  /**
+   * @param {DragEvent} ev
+   */
+  function onDragLeave(ev) {
+    groupOfEvent(ev)?.classList.remove('mon-group--drag-over');
+  }
+
+  function onDragEnd() {
+    dragging = null;
+    clearDragOver();
+    expireDragSuppressSoon();
+  }
+
+  /**
+   * Drop index math (§2.4) — 렌더된 행이 실어 온 raw 좌표에서만 유도한다:
+   * 적재는 행 앞이면 그 행의 `queue_index`, 그룹 맨 끝이면 끌고 온 카드의
+   * `place_index`(= 그 레포 raw `queue_length`). 재정렬은 제거 후 삽입 보정까지
+   * 포함해 `s > k ? k : k - 1`.
+   *
+   * @param {DragEvent} ev
+   */
+  function onDrop(ev) {
+    const group = dropTargetGroup(ev);
+    const drag = dragging;
+    dragging = null;
+    clearDragOver();
+    if (!group || !drag || !drag.bead_id) {
+      return;
+    }
+    ev.preventDefault();
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    const over =
+      typeof target?.closest === 'function'
+        ? /** @type {HTMLElement|null} */ (
+            target.closest('.mon-card[data-lane="queue"]')
+          )
+        : null;
+    const k =
+      over && group.contains(over)
+        ? Number(over.getAttribute('data-queue-index'))
+        : NaN;
+
+    if (drag.lane === 'runnable') {
+      const index = Number.isFinite(k) ? k : drag.place_index;
+      if (!Number.isFinite(index)) {
+        return;
+      }
+      void sendCas(
+        'worker-queue-place',
+        { bead_id: drag.bead_id, index },
+        drag.root_dir,
+        drag.revision
+      );
+      return;
+    }
+    if (drag.lane !== 'queue') {
+      return;
+    }
+    if (over && over.getAttribute('data-issue-id') === drag.bead_id) {
+      return;
+    }
+    const s = drag.queue_index;
+    const to_index = Number.isFinite(k)
+      ? s > k
+        ? k
+        : k - 1
+      : drag.queue_length - 1;
+    if (!Number.isFinite(to_index) || to_index < 0 || to_index === s) {
+      return;
+    }
+    void sendCas(
+      'worker-queue-reorder',
+      { bead_id: drag.bead_id, to_index },
+      drag.root_dir,
+      drag.revision
+    );
+  }
+
   /**
    * @param {number} now
    * @returns {import('lit-html').TemplateResult}
@@ -672,6 +804,10 @@ export function createMonitorView(mount_element, options) {
    * @param {Event} ev
    */
   function onClick(ev) {
+    // 드롭 직후의 첫 click은 카드 열기로 새지 않는다 (§2.4). 플래그는 클릭 종류를
+    // 가리지 않고 여기서 소비되므로, 그 다음 클릭부터는 언제나 정상 동작한다.
+    const after_drag = suppress_open_click;
+    suppress_open_click = false;
     const target = /** @type {HTMLElement|null} */ (ev.target);
     if (!target || typeof target.closest !== 'function') {
       return;
@@ -749,7 +885,7 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     const id = card.getAttribute('data-issue-id');
-    if (id) {
+    if (id && !after_drag) {
       ev.preventDefault();
       openRow(id, card.getAttribute('data-root-dir') || '');
     }
@@ -794,6 +930,11 @@ export function createMonitorView(mount_element, options) {
 
   mount_element.addEventListener('click', onClick);
   mount_element.addEventListener('change', onChange);
+  mount_element.addEventListener('dragstart', /** @type {any} */ (onDragStart));
+  mount_element.addEventListener('dragover', /** @type {any} */ (onDragOver));
+  mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
+  mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
+  mount_element.addEventListener('dragend', onDragEnd);
 
   if (pipelineStore && typeof pipelineStore.subscribe === 'function') {
     unsubscribe_pipeline = pipelineStore.subscribe(() => {
@@ -814,6 +955,13 @@ export function createMonitorView(mount_element, options) {
     if (tick_timer !== null) {
       clearInterval(tick_timer);
       tick_timer = null;
+    }
+  }
+
+  function stopSuppressTimer() {
+    if (suppress_timer !== null) {
+      clearTimeout(suppress_timer);
+      suppress_timer = null;
     }
   }
 
@@ -841,12 +989,27 @@ export function createMonitorView(mount_element, options) {
     },
     clear() {
       stopTick();
+      stopSuppressTimer();
       if (unsubscribe_pipeline) {
         unsubscribe_pipeline();
         unsubscribe_pipeline = null;
       }
       mount_element.removeEventListener('click', onClick);
       mount_element.removeEventListener('change', onChange);
+      mount_element.removeEventListener(
+        'dragstart',
+        /** @type {any} */ (onDragStart)
+      );
+      mount_element.removeEventListener(
+        'dragover',
+        /** @type {any} */ (onDragOver)
+      );
+      mount_element.removeEventListener(
+        'dragleave',
+        /** @type {any} */ (onDragLeave)
+      );
+      mount_element.removeEventListener('drop', /** @type {any} */ (onDrop));
+      mount_element.removeEventListener('dragend', onDragEnd);
       exec_defaults_dialog.destroy();
       exec_listeners.clear();
       mount_element.replaceChildren();
