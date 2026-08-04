@@ -2220,70 +2220,6 @@ html[data-theme='dark'] {
   }
 }
 
-/* Comments section */
-.comments {
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-}
-
-.comment-item {
-  padding: 12px;
-  margin-bottom: 8px;
-  background: color-mix(in srgb, var(--panel-bg) 95%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-
-.comment-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-  font-size: 12px;
-}
-
-.comment-author {
-  font-weight: 600;
-  color: var(--fg);
-}
-
-.comment-date {
-  color: var(--muted);
-}
-
-.comment-text {
-  font-size: 14px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-
-.comment-input {
-  margin-top: 12px;
-}
-
-.comment-input textarea {
-  width: 100%;
-  min-height: 60px;
-  padding: 8px;
-  border: 1px solid var(--control-border);
-  border-radius: 4px;
-  background: var(--control-bg);
-  color: var(--fg);
-  font-family: inherit;
-  font-size: 14px;
-  resize: vertical;
-}
-
-.comment-input textarea:focus {
-  outline: none;
-  border-color: var(--link);
-}
-
-.comment-input button {
-  margin-top: 8px;
-}
-
 /* --- Delete Issue Button --- */
 .delete-issue-btn {
   position: relative;
@@ -5295,6 +5231,251 @@ html[data-theme='dark'] {
   color: var(--text-dim);
   font-size: var(--fs-caption);
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Detail-panel comments / work reports (UI-ucq6) ----------
+   형태로 종류를 가른다: 보고서는 카드, 사람 댓글은 왼쪽 선 하나. 배지 칩 없이도
+   6절짜리 기계 산출물과 한 줄짜리 사람 메모가 한눈에 갈린다. 신규 토큰은 없다. */
+.detail-comments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.detail-report {
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.detail-report__head {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  grid-template-areas:
+    'tri glyph meta'
+    '.   .     concl';
+  gap: 0 var(--sp-6);
+  align-items: center;
+  width: 100%;
+  padding: var(--sp-8) var(--sp-10);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.detail-report__head:hover {
+  background: color-mix(in srgb, var(--bg-card) 80%, var(--text-dim));
+}
+
+.detail-report__head:focus-visible {
+  outline: 2px solid var(--text-id-mono);
+  outline-offset: -2px;
+}
+
+.detail-report__tri {
+  grid-area: tri;
+  width: 10px;
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+}
+
+.detail-report__glyph {
+  grid-area: glyph;
+  font-size: var(--fs-chip);
+}
+
+.detail-report__meta {
+  grid-area: meta;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-6);
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+
+.detail-report__kind {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.detail-report__lane {
+  font-family: var(--font-mono);
+}
+
+/* 무인 실행이 먼저 눈에 들어와야 한다 — 레인 색은 worker만. */
+.detail-report__lane--worker {
+  color: var(--text-id-mono);
+}
+
+.detail-report__time {
+  margin-left: auto;
+  font-family: var(--font-mono);
+}
+
+/* 접힌 상태에서 읽어야 하는 문장은 결론 하나뿐이므로 카드에서 가장 큰 글자다. */
+.detail-report__concl {
+  grid-area: concl;
+  margin-top: var(--sp-2);
+  color: var(--text-primary);
+  font-size: var(--fs-body);
+}
+
+.detail-report__body {
+  padding: var(--sp-10) var(--sp-10) var(--sp-12);
+  border-top: 1px solid var(--border-card);
+  color: var(--text-muted);
+  font-size: var(--fs-body-sm);
+}
+
+/* 보고서 6절 제목은 섹션 라벨과 같은 캡션으로 눌러 섹션 헤더보다 튀지 않게 한다. */
+.detail-report__body h1,
+.detail-report__body h2,
+.detail-report__body h3,
+.detail-report__body h4 {
+  margin: var(--sp-12) 0 var(--sp-4);
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.detail-report__body > :first-child {
+  margin-top: 0;
+}
+
+.detail-report__body p,
+.detail-report__body ul,
+.detail-report__body ol {
+  margin: 0 0 var(--sp-8);
+}
+
+.detail-report__body ul,
+.detail-report__body ol {
+  padding-left: 18px;
+}
+
+.detail-report__body li {
+  margin-bottom: var(--sp-2);
+}
+
+.detail-report__body strong {
+  color: var(--text-primary);
+}
+
+.detail-report__body code,
+.detail-comment__body code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--code-bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+}
+
+.detail-comment {
+  padding: var(--sp-2) 0 var(--sp-2) var(--sp-10);
+  border-left: 2px solid var(--border-card);
+}
+
+.detail-comment__meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-2);
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+
+.detail-comment__author {
+  color: var(--text-muted);
+}
+
+.detail-comment__time {
+  margin-left: auto;
+  font-family: var(--font-mono);
+}
+
+.detail-comment__body {
+  color: var(--text-muted);
+  font-size: var(--fs-body-sm);
+}
+
+.detail-comment__body > :first-child {
+  margin-top: 0;
+}
+
+.detail-comment__body > :last-child {
+  margin-bottom: 0;
+}
+
+.detail-comment-compose {
+  margin-top: var(--sp-8);
+}
+
+.detail-comment-compose__input {
+  width: 100%;
+  min-height: 54px;
+  padding: var(--sp-8);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-4);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-body-sm);
+  resize: vertical;
+}
+
+.detail-comment-compose__input::placeholder {
+  color: var(--text-dim);
+}
+
+.detail-comment-compose__input:focus {
+  outline: none;
+  border-color: var(--text-id-mono);
+}
+
+.detail-comment-compose__row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--sp-6);
+}
+
+.detail-comment-compose__btn {
+  padding: var(--sp-5) var(--sp-12);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-4);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-chip);
+  cursor: pointer;
+}
+
+.detail-comment-compose__btn:hover:not(:disabled) {
+  border-color: var(--text-id-mono);
+}
+
+.detail-comment-compose__btn:disabled {
+  color: var(--text-dim);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 좁은 화면에서는 시각을 오른쪽 끝으로 밀지 않고 메타 줄에 같이 흐르게 한다. */
+@media (max-width: 480px) {
+  .detail-report__time,
+  .detail-comment__time {
+    margin-left: 0;
+  }
+
+  .detail-report__meta {
+    gap: var(--sp-4);
+  }
 }
 
 /* ---------- Worker responsive (<=640px): single-column lanes + grid ---------- */
