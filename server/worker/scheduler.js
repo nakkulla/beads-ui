@@ -229,24 +229,20 @@ function staleDispatchPrompt(bead_id, stale) {
  * @property {{
  *   install: (i: { workspace: string, attempt_id: string, repo: string, target_base: string }) => { ok: boolean, dir?: string, hook_path?: string, reason?: string },
  *   envFor: (i: { workspace: string, attempt_id: string }) => Record<string, string>,
- *   remove: (i: { workspace: string, attempt_id: string }) => boolean
+ *   remove: (i: { workspace: string, attempt_id: string }) => boolean,
+ *   readPushLog?: (i: { workspace: string, attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string }
  * }} [guardHook]
  * The prevention layer (UI-8mvc §2). Defaults to the real `guard-hook.js`, so
  * production wiring is the module itself and a test overrides it only to drive
  * an install failure. Every attempt EXCEPT a disposition gets one: a
  * REVISE-disposition session publishes the base as its job.
  * @property {(args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>} [gitRun]
- * The `git` runner the DETECTION layer walks its two `rev-list` ranges with
- * (UI-8mvc §3). Wired from the attachment's one runner, so the observation runs
- * the same git the base resolver does. Absent wiring makes every observation
- * record `no_observer_deps` — an attempt that could not be observed is recorded
- * as such, never judged.
- * @property {{ mergedPrForBranch: (repo_dir: string, branch: string) => Promise<{ state: string, data?: unknown, reason?: string }>, mergedPrsForCommit?: (repo_dir: string, sha: string, target_base: string) => Promise<{ state: string, data?: unknown, reason?: string }> }} [gh]
- * The PR adapter the detection layer excludes merge-landings with (UI-8mvc
- * §3-4, UI-43bh). Same instance the verify/poller paths use. `mergedPrForBranch`
- * excludes THIS branch's merge; `mergedPrsForCommit` accounts for a shared
- * commit by ANOTHER unit's merged PR. Absent wiring of either records
- * `pr_observe:no_gh` rather than reporting an unexcluded violation.
+ * The `git` runner the DETECTION layer asks its reachability question with
+ * (UI-8mvc §3, UI-1xcd §4), and the one `launchSession` reads an attempt's
+ * starting branch tip with. Wired from the attachment's one runner, so the
+ * observation runs the same git the base resolver does. Absent wiring makes
+ * every observation record `no_observer_deps` — an attempt that could not be
+ * observed is recorded as such, never judged.
  * @property {(pid: number|null) => { alive: boolean, started_at: number|null }} [probePid]
  * Liveness + start-time probe for {@link createScheduler}'s `reconcile`. Absent
  * (legacy wiring / dispatch-only tests) makes every reconcile pass a no-op:
@@ -597,6 +593,37 @@ export function createScheduler(deps) {
       return false;
     }
     return true;
+  }
+
+  /**
+   * The tip of an attempt's own branch, or null when it cannot be read
+   * (UI-1xcd §4.2).
+   *
+   * Null is the honest answer, never a substitute value: this is diagnostic
+   * data, and a `base_oid` stand-in is what made the old field look like a
+   * measurement when it was a copy.
+   *
+   * @param {string} repo
+   * @param {string} bead_id
+   * @returns {Promise<string|null>}
+   */
+  async function branchTip(repo, bead_id) {
+    if (typeof deps.gitRun !== 'function' || !repo || !bead_id) {
+      return null;
+    }
+    try {
+      const r = await deps.gitRun(['rev-parse', `refs/heads/${bead_id}`], {
+        cwd: repo
+      });
+      if (r.code !== 0) {
+        return null;
+      }
+      const oid = String(r.stdout || '').trim();
+      return /^[0-9a-f]{40,64}$/i.test(oid) ? oid : null;
+    } catch (err) {
+      log('branch tip read failed for %s in %s: %o', bead_id, repo, err);
+      return null;
+    }
   }
 
   /**
@@ -1158,7 +1185,13 @@ export function createScheduler(deps) {
         attempt,
         resolveBase: deps.resolveBase,
         git: deps.gitRun,
-        gh: deps.gh
+        // The attempt's own pre-push record (UI-1xcd §4.1). Read lazily so an
+        // excluded attempt never touches the filesystem, and read HERE because
+        // the observer has no workspace of its own.
+        readPushLog: () =>
+          typeof guardHook.readPushLog === 'function'
+            ? guardHook.readPushLog({ workspace, attempt_id })
+            : { ok: false, reason: 'absent' }
       });
     } catch (err) {
       // The observer is internally fail-open; a throw is a defect, and letting
@@ -1760,13 +1793,29 @@ export function createScheduler(deps) {
    * @param {any} attempt
    */
   async function disposeDeadAttempt(workspace, attempt_id, attempt) {
+    // The hook assets come down AFTER the disposition, never before it
+    // (UI-1xcd §4). They now carry the push record the settlement below reads,
+    // and removing them at entry deleted that evidence a step ahead of the
+    // observation — so the removal sits in a `finally` covering every branch's
+    // own `return`, exactly as `onSessionDone` already does it.
+    try {
+      await disposeDeadAttemptSettlement(workspace, attempt_id, attempt);
+    } finally {
+      removeGuardHook(workspace, attempt_id);
+    }
+  }
+
+  /**
+   * The body of {@link disposeDeadAttempt}; see its contract. Split out only so
+   * the hook removal can wrap every early return.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {any} attempt
+   */
+  async function disposeDeadAttemptSettlement(workspace, attempt_id, attempt) {
     const bead_id = attempt.bead_id;
     const prior = attempt.workflow_mode_prior ?? null;
-    // The restart-side counterpart of `onSessionDone`'s cleanup: this path is
-    // only reached for an attempt whose process the PID probe already found
-    // dead, so nothing can still push through its hook (UI-8mvc §5). Done at
-    // entry because the branches below all `return` on their own.
-    removeGuardHook(workspace, attempt_id);
     const repo = typeof attempt.repo === 'string' ? attempt.repo : '';
     // A DISPOSITION session that outlived a restart is judged by its own
     // verdict, never by the PR observation (UI-hs11 §3.3): it opens no PR, so
@@ -2566,6 +2615,18 @@ export function createScheduler(deps) {
       }
     }
 
+    // The attempt's STARTING POINT, read before the process exists (UI-1xcd
+    // §4.2). Two things were wrong with reading it after the spawn: the value
+    // written was a copy of `base_oid` rather than the branch tip, and the
+    // read happened at a moment the child could already have committed. The
+    // worktree pre-flight has run, so the branch exists here.
+    //
+    // Diagnostic only — the landing judgment stands on the push record — which
+    // is exactly why a failed read leaves the field ABSENT instead of falling
+    // back to `base_oid`: a wrong value dressed as a fact is the class of
+    // problem this Bead exists to remove.
+    const start_oid = await branchTip(repo, bead_id);
+
     /** @type {RunnerHandle} */
     let handle;
     try {
@@ -2601,7 +2662,7 @@ export function createScheduler(deps) {
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
-        head_oid: base_oid,
+        ...(start_oid === null ? {} : { head_oid: start_oid }),
         started_at,
         pid: handle.pid,
         runner: runner_name,

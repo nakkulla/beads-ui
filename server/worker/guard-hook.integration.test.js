@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { envFor, install } from './guard-hook.js';
+import { envFor, install, readPushLog } from './guard-hook.js';
 
 const ATTEMPT = 'UI-8mvc-1';
 // A slash-bearing base is the realistic shape (`ilsun/dev`) AND the quoting
@@ -284,6 +284,59 @@ describe('guard hook — prevention layer (UI-8mvc §2)', () => {
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain('bdui guard');
     expect(remoteTip(origin, BASE)).toBe(before);
+  });
+
+  test('records a REFUSED base push in the push log (UI-1xcd §4.1)', () => {
+    commit(repo, 'base-landing-recorded');
+    const local = git(['rev-parse', 'HEAD'], repo).trim();
+
+    run('git', ['push', 'origin', `HEAD:${BASE}`], repo);
+
+    const read = readPushLog({ workspace: repo, attempt_id: ATTEMPT });
+    expect(read.ok).toBe(true);
+    expect(read.ok ? read.entries : []).toEqual([
+      {
+        local_ref: 'HEAD',
+        local_oid: local,
+        remote_ref: `refs/heads/${BASE}`,
+        remote_oid: remoteTip(origin, BASE)
+      }
+    ]);
+  });
+
+  test('records a PASSING push to a non-base branch too', () => {
+    commit(worktree, 'feature-recorded');
+
+    run('git', ['push', 'origin', 'HEAD:refs/heads/UI-8mvc'], worktree);
+
+    const read = readPushLog({ workspace: repo, attempt_id: ATTEMPT });
+    expect((read.ok ? read.entries : []).map((e) => e.remote_ref)).toEqual([
+      'refs/heads/UI-8mvc'
+    ]);
+  });
+
+  test('records NOTHING for a push in another repository', () => {
+    commit(other, 'enclosed-change');
+
+    run('git', ['push', 'origin', `HEAD:${BASE}`], other);
+
+    // Step 1 exits before the loop: a foreign repo is out of scope, and
+    // recording it would make the detection layer judge someone else's push.
+    expect(readPushLog({ workspace: repo, attempt_id: ATTEMPT })).toEqual({
+      ok: true,
+      entries: []
+    });
+  });
+
+  test('records nothing for a --no-verify push, the documented blind spot', () => {
+    commit(repo, 'bypass-unrecorded');
+
+    run('git', ['push', '--no-verify', 'origin', `HEAD:${BASE}`], repo);
+
+    expect(readPushLog({ workspace: repo, attempt_id: ATTEMPT })).toEqual({
+      ok: true,
+      entries: []
+    });
   });
 
   test('passes --no-verify, and the remote base really moves', () => {

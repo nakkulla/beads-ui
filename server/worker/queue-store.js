@@ -40,18 +40,22 @@
  * @property {string|null} effort - Effort snapshot.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
- * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
- * The POST-HOC base observation (UI-8mvc §3), written at every termination
- * path: the pinned `base_oid`, the remote tip re-resolved after the session
- * ended, whether this attempt's commits reached it and how, plus the
- * intersection SHAs that are a violation's whole evidence. `inherited` holds the
- * shared commits the precedence stage excluded as base-first (present as `[]`
- * when that stage completed and excluded none). `skipped` records an
- * attempt the invariant does not apply to (a disposition, or an
- * external-conflict dispatch with no pinned base) and `error` the observation
- * step that could not be completed — a failed observation is deliberately NOT a
- * violation. Null on every attempt observed before the field existed and on one
- * whose base never moved: there is nothing to say.
+ * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], pushed?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
+ * The POST-HOC base observation (UI-8mvc §3, rebuilt UI-1xcd §4), written at
+ * every termination path: the pinned `base_oid`, the remote tip re-resolved
+ * after the session ended, and — from the attempt's OWN pre-push record —
+ * whether it pushed at its base and whether that push is on the base now.
+ * `pushed` holds the base-destined oids the hook recorded (present as `[]` when
+ * the record was readable and held none); `shas` narrows that to the ones
+ * reachable from the observed tip, which is a violation's whole evidence.
+ * `skipped` records an attempt the invariant does not apply to (a disposition,
+ * or an external-conflict dispatch with no pinned base) and `error` the
+ * observation step that could not be completed — including `push_log_absent`,
+ * the attempt dispatched before the record existed. A failed observation is
+ * deliberately NOT a violation. Null on every attempt observed before the field
+ * existed and on one whose base never moved: there is nothing to say.
+ * `inherited` is retired (the reflog precedence stage it belonged to is gone)
+ * and kept in the shape only so a legacy record round-trips.
  * @property {string|null} repo - Target repo root (the reconcile's observation
  * scope: a dead attempt's PR is looked for in THIS repo).
  * @property {string|null} status - Attempt lifecycle: running/done/failed/
