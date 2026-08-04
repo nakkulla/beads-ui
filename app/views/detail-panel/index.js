@@ -5,6 +5,7 @@ import { showToast } from '../../utils/toast.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
+import { commentsTemplate } from './comments.js';
 import { execSettingsTemplate } from './exec-settings.js';
 import { createMdViewer } from './md-viewer.js';
 import { sessionHistoryTemplate } from './session-history.js';
@@ -81,6 +82,164 @@ export function createDetailPanel(mount_element, options) {
     desc_draft = '';
     label_draft = '';
   }
+
+  // Comments state (UI-ucq6 §변경 3). Comments do not ride the issue snapshot,
+  // so they are fetched once per issue and refetched only when the snapshot's
+  // `comment_count` moves — that field is what carries an external (worker)
+  // write into the client, via the server's periodic list refresh.
+  /** @type {import('./comments.js').IssueComment[]} */
+  let comments = [];
+  /** @type {string|null} */
+  let comments_loaded_for = null;
+  /** @type {number|null} */
+  let last_comment_count = null;
+  let comments_error = false;
+  let comment_draft = '';
+  let comment_sending = false;
+  // Guards a late reply from an issue the reader has already left.
+  let comments_request_seq = 0;
+  /** @type {Set<string>} */
+  const comments_expanded = new Set();
+
+  function resetComments() {
+    comments = [];
+    comments_loaded_for = null;
+    last_comment_count = null;
+    comments_error = false;
+    comment_draft = '';
+    comment_sending = false;
+    comments_request_seq += 1;
+    comments_expanded.clear();
+  }
+
+  /**
+   * Fetch the comment list for one issue.
+   *
+   * The failure branch needs a transport that propagates its rejection; the
+   * production one in `main.js` swallows every error into `[]`, where an empty
+   * list is also a legitimate success value. There it degrades to the
+   * "댓글 없음" empty state rather than the failure line — fail-quiet either way,
+   * and the rest of the panel is untouched.
+   *
+   * @param {string} id
+   */
+  async function fetchComments(id) {
+    if (!transport) {
+      return;
+    }
+    const seq = ++comments_request_seq;
+    try {
+      const res = await Promise.resolve(transport('get-comments', { id }));
+      if (seq !== comments_request_seq || id !== current_id) {
+        return;
+      }
+      comments = Array.isArray(res) ? res : [];
+      comments_error = false;
+    } catch {
+      if (seq !== comments_request_seq || id !== current_id) {
+        return;
+      }
+      comments_error = true;
+    }
+    doRender();
+  }
+
+  /**
+   * Fetch on first open, then only when `comment_count` actually moves. A
+   * snapshot without the field stops the auto-refetch and keeps the first fetch
+   * (fail-quiet) — an older server should lose freshness, not the section.
+   */
+  function syncComments() {
+    if (!transport || !current_id) {
+      return;
+    }
+    const count =
+      current && typeof current.comment_count === 'number'
+        ? current.comment_count
+        : null;
+    if (comments_loaded_for !== current_id) {
+      comments_loaded_for = current_id;
+      last_comment_count = count;
+      void fetchComments(current_id);
+      return;
+    }
+    if (count !== null && count !== last_comment_count) {
+      last_comment_count = count;
+      void fetchComments(current_id);
+    }
+  }
+
+  /**
+   * @param {string} comment_id
+   */
+  function toggleReport(comment_id) {
+    if (comments_expanded.has(comment_id)) {
+      comments_expanded.delete(comment_id);
+    } else {
+      comments_expanded.add(comment_id);
+    }
+    doRender();
+  }
+
+  /**
+   * Re-render only at the empty↔non-empty boundary, which is the only thing the
+   * draft drives in the template (the submit button). Rendering on every
+   * keystroke would rewrite the textarea's `.value` and move the caret.
+   *
+   * @param {string} value
+   */
+  function onCommentDraftInput(value) {
+    const was_blank = comment_draft.trim().length === 0;
+    comment_draft = value;
+    if (was_blank !== (value.trim().length === 0)) {
+      doRender();
+    }
+  }
+
+  /**
+   * `handleAddComment` answers with the refreshed comment array and is the one
+   * mutation handler that triggers no list refresh, so the reply payload — not
+   * a refetch and not the `comment_count` path — is what updates the list.
+   */
+  async function submitComment() {
+    const text = comment_draft.trim();
+    if (!transport || !current_id || text.length === 0 || comment_sending) {
+      return;
+    }
+    const id = current_id;
+    comment_sending = true;
+    doRender();
+    let ok = false;
+    try {
+      const res = await Promise.resolve(transport('add-comment', { id, text }));
+      // A successful add always yields at least the comment just written, so an
+      // empty array is the transport's swallowed error rather than a result.
+      if (Array.isArray(res) && res.length > 0) {
+        ok = true;
+        if (id === current_id) {
+          comments = res;
+          comments_error = false;
+          comment_draft = '';
+          last_comment_count = res.length;
+        }
+      }
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      showToast('댓글 추가 실패', 'error');
+    }
+    if (id === current_id) {
+      comment_sending = false;
+    }
+    doRender();
+  }
+
+  const comment_handlers = {
+    onToggle: toggleReport,
+    onDraftInput: onCommentDraftInput,
+    onSubmit: submitComment
+  };
 
   // md viewer lives in its own body-appended overlay mount.
   const mv_mount = document.createElement('div');
@@ -289,6 +448,7 @@ export function createDetailPanel(mount_element, options) {
       const found = snap.find((it) => it && it.id === current_id);
       current = found || snap[0] || current;
     }
+    syncComments();
     doRender();
   }
 
@@ -1050,6 +1210,12 @@ export function createDetailPanel(mount_element, options) {
           </button>
           ${titleTemplate(title)} ${propsTemplate(status, priority_val)}
           ${timesTemplate(data)} ${descTemplate(description)}
+          ${commentsTemplate(comments, comment_handlers, {
+            expanded: comments_expanded,
+            draft: comment_draft,
+            sending: comment_sending,
+            error: comments_error
+          })}
           ${notesTemplate(data)} ${labelsTemplate(data)} ${depsTemplate(data)}
           ${workflowTemplate(data)} ${workflowMetaTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
@@ -1075,6 +1241,7 @@ export function createDetailPanel(mount_element, options) {
       if (id !== current_id) {
         exec_local = {};
         resetEditors();
+        resetComments();
       }
       current_id = id;
       current = null;
@@ -1085,6 +1252,7 @@ export function createDetailPanel(mount_element, options) {
       current = null;
       exec_local = {};
       resetEditors();
+      resetComments();
       md_viewer.close();
       transcript_drawer.close();
       render(html``, mount_element);
@@ -1109,6 +1277,7 @@ export function createDetailPanel(mount_element, options) {
       }
       current_id = null;
       current = null;
+      resetComments();
       render(html``, mount_element);
     }
   };

@@ -1198,6 +1198,13 @@ export function bootstrap(root_element) {
     const router = createHashRouter(store);
     router.start();
 
+    // Request types whose rejection must reach the caller (UI-ucq6). Swallowing
+    // into `[]` works for the mutations, where an empty array is never a valid
+    // result — but `get-comments` returns `[]` on a genuinely empty issue, so
+    // the swallow would make a bd failure indistinguishable from "no comments"
+    // and the detail panel could never show it.
+    const PROPAGATED_ERROR_TYPES = new Set(['get-comments']);
+
     /**
      * @param {string} type
      * @param {unknown} payload
@@ -1205,7 +1212,10 @@ export function bootstrap(root_element) {
     const transport = async (type, payload) => {
       try {
         return await tracked_send(/** @type {MessageType} */ (type), payload);
-      } catch {
+      } catch (err) {
+        if (PROPAGATED_ERROR_TYPES.has(type)) {
+          throw err;
+        }
         return [];
       }
     };

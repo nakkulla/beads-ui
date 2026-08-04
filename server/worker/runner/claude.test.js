@@ -454,3 +454,43 @@ describe('runner/claude PR base wiring (worker-base-scope-alignment §3/§4)', (
     expect(args.at(-1)).not.toContain('PR base 고지');
   });
 });
+
+describe('runner/claude 능력 축소 플래그 부재 가드 (UI-ucq6 §변경 4)', () => {
+  // 회귀 가드: worker 세션이 전역 지시와 `workflow` 스킬을 그대로 로드한다는
+  // 판단은 "launch argv에 축소 플래그가 없다"는 관측 하나에 기댄다. 축소 플래그가
+  // 도입되면 여기서 빨간불이 나고, 그것이 보고서 의무를 preamble로 옮길지 판단할
+  // 신호가 된다.
+  const NARROWING_FLAGS = [
+    '--setting-sources',
+    '--tools',
+    '--strict-mcp-config',
+    '--allowedTools'
+  ];
+
+  test('carries no capability-narrowing flag on an ordinary dispatch', () => {
+    const spec = claudeSpec();
+
+    const { args } = spec.buildArgv({ id: 'UI-1' }, '/wt/UI-1', {
+      fast_track: true,
+      target_base: 'main'
+    });
+
+    for (const flag of NARROWING_FLAGS) {
+      expect(args).not.toContain(flag);
+    }
+  });
+
+  test('carries no capability-narrowing flag on a resumed dispatch', () => {
+    const spec = claudeSpec();
+
+    const { args } = spec.buildArgv({ id: 'UI-1' }, '/wt/UI-1', {
+      resume_session_id: 'sess-1',
+      model: 'opus',
+      effort: 'high'
+    });
+
+    for (const flag of NARROWING_FLAGS) {
+      expect(args).not.toContain(flag);
+    }
+  });
+});
