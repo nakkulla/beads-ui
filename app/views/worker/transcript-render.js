@@ -9,24 +9,27 @@
  * drawer owns the lit-html rendering.
  *
  * Both wire shapes are handled by auto-detecting the line kind per event:
- *   - claude: `{type:'assistant', message:{content:[{type:'text'|'tool_use'…}]}}`,
+ *   - claude: `{type:'assistant', message:{content:[{type:'text'|'thinking'|
+ *     'tool_use'…}]}}`,
  *     `{type:'user', message:{content:[{type:'tool_result', tool_use_id, content}]}}`,
- *     `{type:'result', subtype, is_error, result}`. `system`/`thinking` dropped.
- *   - codex: `{type:'item.completed', item:{type:'agent_message'|'error', …}}`,
+ *     `{type:'result', subtype, is_error, result}`. `system` dropped.
+ *   - codex: `{type:'item.completed', item:{type:'agent_message'|'reasoning'|
+ *     'error', …}}`,
  *     `{type:'turn.completed'}`, `{type:'turn.failed', error}`, `{type:'error'}`.
  *     `thread.started`/`turn.started` dropped.
  *
- * Line kinds (order-preserving): `assistant` · `tool` · `gate` · `phase` ·
- * `result` · `error` · `blocker`. Assistant text that matches a gate-receipt or
- * a Phase-heading pattern is reclassified into `gate`/`phase` so the drawer can
- * highlight it per the mockup (`✓ spec 게이트 — codex APPROVE`, `Phase 2/4 …`).
+ * Line kinds (order-preserving): `assistant` · `thinking` · `tool` · `gate` ·
+ * `phase` · `result` · `error` · `blocker`. Assistant text that matches a
+ * gate-receipt or a Phase-heading pattern is reclassified into `gate`/`phase` so
+ * the drawer can highlight it per the mockup (`✓ spec 게이트 — codex APPROVE`,
+ * `Phase 2/4 …`).
  */
 
 /**
  * A parsed display line.
  *
  * @typedef {Object} DisplayLine
- * @property {'assistant'|'tool'|'gate'|'phase'|'result'|'error'|'blocker'} kind
+ * @property {'assistant'|'thinking'|'tool'|'gate'|'phase'|'result'|'error'|'blocker'} kind
  * @property {string} [text] - Assistant/error/result/blocker body.
  * @property {boolean} [success] - Result verdict (kind='result').
  * @property {string} [tool] - Tool name (kind='tool').
@@ -208,6 +211,21 @@ function toolLine(block) {
 }
 
 /**
+ * A thinking line, or null for a block that carries no visible text. The
+ * narrative of a session lives here — the parser keeps the raw text intact and
+ * leaves first-line extraction to the drawer.
+ *
+ * @param {unknown} text
+ * @returns {DisplayLine | null}
+ */
+function thinkingLine(text) {
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return null;
+  }
+  return { kind: 'thinking', text };
+}
+
+/**
  * Reclassify an assistant text block into a gate/phase line, or return an
  * assistant line. Multi-line text is only pattern-tested against its first
  * non-empty line so a long prose block is never mis-tagged.
@@ -256,6 +274,11 @@ function parseClaude(raw, toolsById) {
       }
       if (c.type === 'text' && typeof c.text === 'string') {
         out.push(classifyText(c.text));
+      } else if (c.type === 'thinking') {
+        const line = thinkingLine(c.thinking);
+        if (line) {
+          out.push(line);
+        }
       } else if (c.type === 'tool_use') {
         const line = toolLine(c);
         if (typeof c.id === 'string') {
@@ -263,7 +286,6 @@ function parseClaude(raw, toolsById) {
         }
         out.push(line);
       }
-      // `thinking` blocks are intentionally dropped (not shown in the mockup).
     }
     return out;
   }
@@ -309,6 +331,12 @@ function parseCodex(raw) {
     const item = /** @type {any} */ (raw.item);
     if (item.type === 'agent_message' && typeof item.text === 'string') {
       return [classifyText(item.text)];
+    }
+    if (item.type === 'reasoning') {
+      // No local codex fixture carries this shape; a differing payload keeps the
+      // old drop behaviour rather than emitting a half-parsed line.
+      const line = thinkingLine(item.text);
+      return line ? [line] : [];
     }
     if (item.type === 'error') {
       return [{ kind: 'error', text: String(item.message || '') }];
