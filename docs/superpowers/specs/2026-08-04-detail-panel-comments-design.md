@@ -94,11 +94,48 @@ md 뷰어의 `docs/` 경로 제약을 타지 않는다. 접힘 상태는 댓글 
 임포트)로 알리고 입력은 지우지 않는다. 빈 문자열은 서버가 이미 거부하므로
 (`mutation-handlers.js`의 `text.trim().length === 0`) 프론트는 버튼 비활성만 맞춘다.
 
-**스타일**: `detail-comment*` 신규 클래스로 기존 `detail-*` 체계를 따른다.
-`app/styles.css:2223`의 `.comments`/`.comment-item`/`.comment-header`/
-`.comment-author`는 제거한다 — 재설계 때 소비자가 사라진 죽은 코드이고, 같은 기능
-영역에 이름이 겹치는 두 벌을 남기면 다음 사람이 어느 쪽이 살아있는지 파일을
-열어봐야 한다.
+**스타일 잔해 제거**: `app/styles.css:2223`의 `.comments`/`.comment-item`/
+`.comment-header`/`.comment-author`는 제거한다 — 재설계 때 소비자가 사라진 죽은
+코드이고, 같은 기능 영역에 이름이 겹치는 두 벌을 남기면 다음 사람이 어느 쪽이
+살아있는지 파일을 열어봐야 한다.
+
+## 시각 설계
+
+`app/styles/tokens.css`의 기존 토큰만 쓴다. **신규 색·간격·폰트 크기를 만들지
+않는다.** 이 섹션은 관제탑 상세 패널 안의 한 블록이지 독립 화면이 아니다.
+
+클래스는 `detail-*` 체계를 따른다 — 목록 `.detail-comments`, 보고서
+`.detail-report`(+`__head`/`__tri`/`__glyph`/`__meta`/`__kind`/`__lane`/`__time`/
+`__concl`/`__body`), 사람 댓글 `.detail-comment`(+`__meta`/`__author`/`__time`/
+`__body`), 작성 `.detail-comment-compose`.
+
+**형태로 종류를 가른다.** 보고서는 카드(`--bg-card` + `--border-card` +
+`--r-6`), 사람 댓글은 카드 없이 왼쪽 2px `--border-card` 선만. 배지 칩 없이도 6절
+짜리 기계 산출물과 한 줄짜리 사람 메모가 한눈에 갈린다.
+
+**결론이 카드에서 가장 큰 글자다.** 「작업 보고서」 제목은 `--fs-caption` /
+`--text-dim`으로 눌러 메타 줄에 붙이고, 결론을 `--fs-body` / `--text-primary`로
+올린다. 접힌 상태에서 읽어야 하는 문장은 결론 하나뿐인데, 제목을 키우면 카드마다
+똑같은 「작업 보고서」가 크게 반복되고 정작 서로 다른 내용이 작게 깔린다.
+
+**🤖는 글리프 자리에 둔다.** `.detail-session__glyph`가 이미 상태를 한 글자로
+말하는 관례이므로 같은 위치를 쓴다. 새 배지 칩을 만들면 라벨 칩 체계와 경쟁한다.
+
+**레인 색은 worker만.** `worker`는 `--text-id-mono`(청록), `session`은
+`--text-dim` 중립. 무인 실행이 먼저 눈에 들어와야 한다. 새 색은 만들지 않는다.
+
+**접힘 어포던스**는 `▸`/`▾`, `--text-dim`. 카드 헤더 전체가 버튼이고
+`aria-expanded`를 갖는다. 포커스 링은 `--text-id-mono`, `outline-offset: -2px`.
+
+**펼친 본문**은 상단 `--border-card` 구분선 하나로 헤더와 나눈다. 마크다운 `h2`는
+섹션 라벨과 같은 대문자 캡션(`--fs-chip` / `--text-dim` / `letter-spacing: .05em`)
+으로 눌러 6절이 섹션 헤더보다 튀지 않게 한다.
+
+**모바일**(≤480px)에서는 시각을 `margin-left: auto`로 밀지 않고 메타 줄에
+같이 흐르게 한다.
+
+시각 확인용 목업(2026-08-04, 라이트·다크 전환 및 3개 상태 포함):
+`~/tmp/mockups/2026-08-04-detail-panel-comments.html`.
 
 ## 변경 3 — 데이터 흐름 (`app/views/detail-panel/index.js`)
 
@@ -171,7 +208,7 @@ F8의 end-to-end 실측이 된다 — 현재 worker 레인 보고서는 한 번�
 | 파일 | seam |
 | --- | --- |
 | `app/utils/report-marker.test.js` (신규) | 정상 인식 · 앵커만 일치 · 메타 규격 위반 · 앵커가 첫 줄이 아님 · 레인↔식별자 교차 조합(`worker · sid`) · 결론 추출과 공백 접기 · 결론 줄 부재 |
-| `app/views/detail-panel/comments.test.js` (신규) | 0건 빈 상태 · 보고서와 일반 댓글 혼재 정렬 · 접힘 토글 · 작성 전송과 입력 비우기 · 빈 입력 시 버튼 비활성 |
+| `app/views/detail-panel/comments.test.js` (신규) | 0건 빈 상태 · 보고서와 일반 댓글 혼재 정렬 · 접힘 토글과 `aria-expanded` 반영 · 인식 실패 댓글이 일반 댓글로 렌더 · 작성 전송과 입력 비우기 · 빈 입력 시 버튼 비활성 |
 | `app/views/detail-panel/index.test.js` (추가) | `comment_count` 변화 시 재요청 · 불변 시 미요청 · 이슈 전환 시 상태 초기화 |
 | `server/worker/runner/claude.test.js` (추가) | `buildArgv()` argv에 축소 플래그 부재 |
 
