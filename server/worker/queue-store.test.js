@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { createQueueStore } from './queue-store.js';
+import {
+  GUARD_WARNINGS_CAP,
+  GUARD_WARNING_COMMAND_MAX,
+  createQueueStore
+} from './queue-store.js';
 import {
   deployLogDir,
   queueFilePath,
@@ -803,6 +807,60 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(
       createQueueStore().load(WS).attempts['att-1'].guard_warnings
     ).toEqual(warnings);
+  });
+
+  // `queue.json` is durable and rewritten per update, so an unbounded append is
+  // a file that grows for as long as a session keeps warning (implementation
+  // review 2026-08-04).
+  test('bounds guard_warnings at the cap, keeping the earliest', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue
+      .revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    const many = Array.from({ length: GUARD_WARNINGS_CAP + 20 }, (_, i) => ({
+      reason: 'base_merge_blocked',
+      command: `git merge ${i}`,
+      at: i
+    }));
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { guard_warnings: many }
+    });
+
+    const kept = updated.queue.attempts['att-1'].guard_warnings || [];
+    expect(kept).toHaveLength(GUARD_WARNINGS_CAP);
+    expect(kept[0].command).toBe('git merge 0');
+  });
+
+  test('truncates an over-long guard warning command', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue
+      .revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: {
+        guard_warnings: [
+          {
+            reason: 'base_merge_blocked',
+            command: 'x'.repeat(GUARD_WARNING_COMMAND_MAX + 100),
+            at: 1
+          }
+        ]
+      }
+    });
+
+    expect(updated.queue.attempts['att-1'].guard_warnings?.[0].command).toBe(
+      'x'.repeat(GUARD_WARNING_COMMAND_MAX)
+    );
   });
 
   test('normalizes a non-array guard_warnings to null', () => {

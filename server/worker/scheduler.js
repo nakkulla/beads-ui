@@ -3247,6 +3247,26 @@ export function createScheduler(deps) {
     // its parked `done` promise must not outlive the relaunch — nor do its hook
     // assets, which a restart-restored `paused` record would otherwise strand
     // (its `onSessionDone` belongs to a process this one never spawned).
+    //
+    // Which makes THIS the last moment its push record exists (UI-1xcd §4,
+    // implementation review 2026-08-04): a restart-restored ancestor reaches no
+    // other observer, so removing the hook first deleted the only evidence of
+    // what it pushed. The settlement is skipped for an ancestor that already
+    // carries a `base_drift`, because re-observing a hook that is already gone
+    // would overwrite a real record with `push_log_absent`.
+    if (
+      prior.base_drift == null &&
+      (await settleBaseDrift(workspace, attempt_id))
+    ) {
+      // A relaunch on top of a landing would build further work on a violation.
+      // The evidence is durable now, so the assets can go.
+      removeGuardHook(workspace, attempt_id);
+      if (!options.disposition) {
+        removeGuardHook(workspace, new_attempt_id);
+      }
+      notifyChanged(workspace);
+      return { ok: false, reason: 'base_landing_detected' };
+    }
     paused_done.delete(attempt_id);
     removeGuardHook(workspace, attempt_id);
     claimed.add(bead_id);
@@ -3888,8 +3908,14 @@ export function createScheduler(deps) {
     });
     // The one termination that reaches neither `onSessionDone` nor
     // `disposeDeadAttempt`: a `paused` record discarded after a restart, whose
-    // process this server never held (UI-8mvc §5).
-    removeGuardHook(workspace, attempt_id);
+    // process this server never held (UI-8mvc §5). Guarded on the ABSENT handle
+    // for the same reason the settlement above is (UI-1xcd §4, implementation
+    // review 2026-08-04): while `pending_done` is held the process may still be
+    // pushing, and its `onSessionDone` settles and then removes the hook in its
+    // own `finally` — removing it here would delete that settlement's evidence.
+    if (!pending_done) {
+      removeGuardHook(workspace, attempt_id);
+    }
     await releaseBeadClaim(rec.bead_id);
     if (pending_done) {
       // Detached exactly like the live path: stop() must answer its ws caller

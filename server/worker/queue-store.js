@@ -133,8 +133,11 @@
  * stream event nothing persisted — and `base_merge` moved onto that path, which
  * makes "the session merged the base into its branch" a fact worth having after
  * the session is gone. Accumulated in dispatch order by the live path and by
- * the restart monitor alike. Null on an attempt that drew none and on every
- * record written before the field existed.
+ * the restart monitor alike, and BOUNDED at normalize time
+ * ({@link GUARD_WARNINGS_CAP} entries, {@link GUARD_WARNING_COMMAND_MAX}
+ * characters of command) so a chatty session cannot grow `queue.json` without
+ * limit. Null on an attempt that drew none and on every record written before
+ * the field existed.
  * @property {boolean} spec_review_stale - Whether this attempt was dispatched
  * with a stale spec_review receipt (UI-dlim §3.2), i.e. the session was asked
  * to run the contract's in-session re-review lane before implementing. Recorded
@@ -502,6 +505,51 @@ function normalizeLane(arr) {
 }
 
 /**
+ * How many surviving guard verdicts one attempt keeps, and how much of the
+ * command each keeps (UI-1xcd §1, implementation review 2026-08-04).
+ *
+ * `queue.json` is durable and rewritten on every attempt update, so an
+ * unbounded append is a file that grows for as long as a session keeps warning.
+ * The EARLIEST warnings are the ones kept: the first occurrence is what explains
+ * how a session got where it did, and a full record stops changing.
+ *
+ * @type {number}
+ */
+export const GUARD_WARNINGS_CAP = 50;
+
+/** @type {number} */
+export const GUARD_WARNING_COMMAND_MAX = 500;
+
+/**
+ * Normalize a guard-warning list onto its bounded shape.
+ *
+ * @param {unknown[]} raw
+ * @returns {{ reason: string, command: string|null, at: number }[]}
+ */
+function boundGuardWarnings(raw) {
+  /** @type {{ reason: string, command: string|null, at: number }[]} */
+  const out = [];
+  for (const entry of raw) {
+    if (out.length >= GUARD_WARNINGS_CAP) {
+      break;
+    }
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const command =
+      typeof entry.command === 'string'
+        ? entry.command.slice(0, GUARD_WARNING_COMMAND_MAX)
+        : null;
+    out.push({
+      reason: typeof entry.reason === 'string' ? entry.reason : '',
+      command,
+      at: typeof entry.at === 'number' ? entry.at : 0
+    });
+  }
+  return out;
+}
+
+/**
  * Fill an attempt container over its default (all-null) shape.
  *
  * @param {Partial<Attempt> & { attempt_id: string, bead_id: string }} fields
@@ -563,7 +611,7 @@ export function makeAttempt(fields) {
       : null,
     guard_warnings: Array.isArray(fields.guard_warnings)
       ? /** @type {Attempt['guard_warnings']} */ (
-          fields.guard_warnings.filter((w) => isRecord(w))
+          boundGuardWarnings(fields.guard_warnings)
         )
       : null,
     spec_review_stale: fields.spec_review_stale === true,

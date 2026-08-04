@@ -106,13 +106,13 @@ export const HOOK_BYPASS_STRICT_RE =
   /git\s+push\b[\s\S]*?--no-verify\b|-c\s*core\.hookspath|core\.hookspath\s*=|\bGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)\s*=/i;
 
 /**
- * A `git config` command naming the hooks path, in an UNPARSEABLE command.
- * Whether it is a bypass depends on the OPERATION, which
- * {@link fallbackConfigBypass} decides per matched segment.
+ * The hooks-path key inside one unparseable command's arguments. Whether naming
+ * it is a bypass depends on the OPERATION, which {@link fallbackConfigBypass}
+ * decides per command segment.
  *
  * @type {RegExp}
  */
-const GIT_CONFIG_HOOKS_RE = /git\s+config\b[\s\S]*?core\.hookspath/gi;
+const HOOKS_PATH_FALLBACK_RE = /core\.hookspath/i;
 
 /**
  * A hook-disabling attempt in an UNPARSEABLE command. The argv judgment
@@ -1465,6 +1465,49 @@ const CONFIG_WRITE_SUBCOMMANDS = new Set([
 ]);
 
 /**
+ * `git config` options that stand ALONE — every other option is treated as
+ * consuming the token after it.
+ *
+ * The default is inverted on purpose (implementation review 2026-08-04). If an
+ * unknown option were assumed to stand alone, its operand would slide into the
+ * positional list and could impersonate a read: `git config --comment get
+ * core.hooksPath /tmp/x` writes the key, but `get` — the comment's value —
+ * would read as the modern read subcommand. Consuming the operand instead makes
+ * an unrecognized option end in an over-block, which is the direction this
+ * guard is allowed to be wrong in.
+ *
+ * `--opt=value` needs no entry: it is one token and never consumes another.
+ *
+ * @type {Set<string>}
+ */
+const CONFIG_FLAG_ONLY = new Set([
+  '--global',
+  '--system',
+  '--local',
+  '--worktree',
+  '--null',
+  '-z',
+  '--name-only',
+  '--show-origin',
+  '--show-scope',
+  '--show-names',
+  '--includes',
+  '--no-includes',
+  '--all',
+  '--no-all',
+  '--fixed-value',
+  '--regexp',
+  '--bool',
+  '--int',
+  '--bool-or-int',
+  '--path',
+  '--expiry-date',
+  '--url',
+  ...CONFIG_READ_FLAGS,
+  ...CONFIG_WRITE_FLAGS
+]);
+
+/**
  * Does this `git config` argument list only READ (UI-1xcd §2)? Moving the hooks
  * and ASKING where they are are different acts, and the operation is decidable
  * from argv position — the three read forms are the modern subcommand
@@ -1483,18 +1526,30 @@ const CONFIG_WRITE_SUBCOMMANDS = new Set([
 function isConfigReadOnly(args) {
   /** @type {string[]} */
   const positional = [];
-  for (const token of args) {
+  let has_read_flag = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
     if (CONFIG_WRITE_FLAGS.has(token)) {
       return false;
     }
-    if (!token.startsWith('-')) {
-      positional.push(token);
+    if (CONFIG_READ_FLAGS.has(token)) {
+      has_read_flag = true;
+      continue;
     }
+    if (token.startsWith('-') && token.length > 1) {
+      // An option with an attached value is self-contained; anything else is
+      // assumed to consume the next token unless it is a known lone flag.
+      if (!token.includes('=') && !CONFIG_FLAG_ONLY.has(token)) {
+        i += 1;
+      }
+      continue;
+    }
+    positional.push(token);
   }
   if (positional.length > 0 && CONFIG_WRITE_SUBCOMMANDS.has(positional[0])) {
     return false;
   }
-  if (args.some((token) => CONFIG_READ_FLAGS.has(token))) {
+  if (has_read_flag) {
     return true;
   }
   if (positional.length > 0 && CONFIG_READ_SUBCOMMANDS.has(positional[0])) {
@@ -1686,35 +1741,37 @@ function isExemptCrossRepoPush(commands, push_idx, ctx) {
 }
 
 /**
- * Command separators, used to bound one `git config` invocation inside text the
- * tokenizer refused. Approximate by necessity — that IS the fallback's
- * situation — and the approximation is safe in one direction only: a segment cut
- * too SHORT can lose a trailing value and read as a read, so the strict arm
- * runs first and the exemption can never outvote it.
+ * Command separators, used to cut unparseable text into candidate commands.
+ * Approximate by necessity — that IS the fallback's situation.
  *
  * @type {RegExp}
  */
-const COMMAND_SEPARATOR_RE = /[;&|\n()]/;
+const COMMAND_SEPARATOR_RE = /[;&|\n()]+/;
 
 /**
- * Does any `git config … core.hooksPath` segment of unparseable text actually
- * WRITE the key (UI-1xcd §2)? Each match is cut at the next command separator
- * and classified on its own, so a read in one segment cannot excuse a write in
- * another.
+ * Does any `git config … core.hooksPath` command inside unparseable text
+ * actually WRITE the key (UI-1xcd §2)?
+ *
+ * The SPLIT comes first and the match second (implementation review
+ * 2026-08-04). Matching first and cutting afterwards let one lazy match start
+ * at an innocent `git config --get foo` and end at a `core.hooksPath` belonging
+ * to a LATER command — the segment then classified as a read, and the real
+ * write skipped because the scan resumed past it. Splitting first means every
+ * command is classified on its own bytes, so a read can never excuse a write.
  *
  * @param {string} src
  * @returns {boolean}
  */
 function fallbackConfigBypass(src) {
-  GIT_CONFIG_HOOKS_RE.lastIndex = 0;
-  /** @type {RegExpExecArray|null} */
-  let m;
-  while ((m = GIT_CONFIG_HOOKS_RE.exec(src)) !== null) {
-    const tail = src.slice(m.index);
-    const cut = tail.search(COMMAND_SEPARATOR_RE);
-    const segment = cut >= 0 ? tail.slice(0, cut) : tail;
-    // `git config` is words 0-1 of the segment by construction of the regex.
-    const args = segment.trim().split(/\s+/).slice(2);
+  for (const segment of String(src).split(COMMAND_SEPARATOR_RE)) {
+    const m = /git\s+config\b([\s\S]*)$/i.exec(segment);
+    if (m === null || !HOOKS_PATH_FALLBACK_RE.test(m[1])) {
+      continue;
+    }
+    const args = m[1]
+      .trim()
+      .split(/\s+/)
+      .filter((t) => t.length > 0);
     if (!isConfigReadOnly(args)) {
       return true;
     }

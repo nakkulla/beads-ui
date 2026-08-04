@@ -1082,6 +1082,36 @@ describe('command-guard excludes a hooks-path READ from the bypass', () => {
     ).toBe('hook_bypass');
   });
 
+  // An option's OPERAND must never be read as the operation word: `--comment`
+  // takes a value, so `get` here is the comment, not a read subcommand
+  // (implementation review 2026-08-04).
+  test('kills a write whose option operand impersonates a read subcommand', () => {
+    expect(
+      findMergeViolation(
+        'git config --comment get core.hooksPath /tmp/x',
+        ON_MAIN
+      )?.kind
+    ).toBe('hook_bypass');
+  });
+
+  test('kills a write behind an UNKNOWN option, which fails closed', () => {
+    expect(
+      findMergeViolation(
+        'git config --future-flag get core.hooksPath /tmp/x',
+        ON_MAIN
+      )?.kind
+    ).toBe('hook_bypass');
+  });
+
+  test('still passes a read behind a value-taking option', () => {
+    expect(
+      findMergeViolation('git config -f /tmp/cfg --get core.hooksPath', ON_MAIN)
+    ).toBeNull();
+    expect(
+      findMergeViolation('git config --type=path --get core.hooksPath', ON_MAIN)
+    ).toBeNull();
+  });
+
   test('leaves the three non-config bypass shapes killing', () => {
     expect(
       findMergeViolation(
@@ -1144,6 +1174,24 @@ describe('command-guard fallback keeps kill above the read exemption', () => {
     const cmd = unparseable(
       'git config --get core.hooksPath && git config core.hooksPath /tmp/x'
     );
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  // The read that shadowed a later write: an earlier `git config` naming a
+  // DIFFERENT key used to swallow the hooks-path match belonging to the command
+  // after it (implementation review 2026-08-04).
+  test('kills a write hidden behind an unrelated earlier `git config`', () => {
+    const cmd =
+      'git config --get foo; git config core.hooksPath /tmp/x; f() { :; }';
+
+    expect(tokenize(cmd)).toBeNull();
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('kills a write hidden behind an unrelated earlier read of the key', () => {
+    const cmd =
+      'git config --get core.hooksPath; git config --global core.hooksPath /tmp/x; f() { :; }';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });

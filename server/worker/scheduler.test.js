@@ -6471,6 +6471,41 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     expect(env.store.snapshot(WS).auto_advance).toBe(false);
   });
 
+  // The ⏸ of a LIVE session parks its `done` promise, and that promise's
+  // `onSessionDone` is the observer. Removing the hook at discard time deleted
+  // the record before it ran (implementation review 2026-08-04).
+  test('leaves the hook alone when a parked `done` still owes the settlement', async () => {
+    /** @type {string[]} */
+    const removed = [];
+    const base = guardHookWith();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase('base-S1'),
+      gitRun: gitFor(),
+      guardHook: {
+        ...base,
+        remove: (/** @type {any} */ i) => {
+          removed.push(i.attempt_id);
+          return true;
+        }
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    await env.scheduler.pause(WS, 'S1-1000-1');
+
+    await env.scheduler.stop(WS, 'S1-1000-1');
+
+    // Nothing removed yet: the parked `done` settles first and removes it in
+    // its own `finally`.
+    expect(removed).not.toContain('S1-1000-1');
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+    expect(removed).toContain('S1-1000-1');
+  });
+
   test('discards a restart-restored paused attempt normally when nothing landed', async () => {
     const env = setup({
       config: { S1: {} },
@@ -6591,6 +6626,102 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     );
   });
 
+  // A restart-restored `paused` ancestor reaches no other observer: removing
+  // its hook at relaunch used to delete its push record unread, so a real
+  // landing simply disappeared (implementation review 2026-08-04).
+  test('settles the ancestor before a resume removes its hook, and refuses on a landing', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const base = guardHookWith({ 'att-paused': [pushedToBase(LANDED)] });
+    const guardHook = {
+      ...base,
+      readPushLog: (/** @type {any} */ i) => {
+        order.push(`read:${i.attempt_id}`);
+        return base.readPushLog(i);
+      },
+      remove: (/** @type {any} */ i) => {
+        order.push(`remove:${i.attempt_id}`);
+        return true;
+      }
+    };
+    const env = setup({
+      config: { 'UI-7': {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-paused', bead_id: 'UI-7' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-paused',
+      patch: {
+        status: 'paused',
+        pid: null,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        session_id: 'sid-1',
+        workflow_mode_prior: null
+      }
+    });
+
+    const res = await env.scheduler.resume(WS, 'att-paused');
+
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('base_landing_detected');
+    expect(order[0]).toBe('read:att-paused');
+    expect(env.store.snapshot(WS).attempts['att-paused'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      pushed: [LANDED],
+      shas: [LANDED]
+    });
+  });
+
+  test('does not re-observe an ancestor that already carries a base_drift', async () => {
+    const guardHook = guardHookWith();
+    const env = setup({
+      config: { 'UI-7': {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor(),
+      guardHook
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-paused', bead_id: 'UI-7' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-paused',
+      patch: {
+        status: 'paused',
+        pid: null,
+        repo: '/repo',
+        base_oid: 'base-S1',
+        session_id: 'sid-1',
+        workflow_mode_prior: null,
+        // Already settled by its own termination path; re-observing a hook that
+        // is gone would overwrite this with `push_log_absent`.
+        base_drift: { pinned: 'base-S1', observed: MOVED, landed: false }
+      }
+    });
+
+    await env.scheduler.resume(WS, 'att-paused');
+
+    expect(guardHook.readPushLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ attempt_id: 'att-paused' })
+    );
+    expect(env.store.snapshot(WS).attempts['att-paused'].base_drift).toEqual({
+      pinned: 'base-S1',
+      observed: MOVED,
+      landed: false
+    });
+  });
+
   test('records the exclusion of an attempt dispatched without a pinned base', async () => {
     const env = setup({
       config: { S1: {} },
@@ -6668,7 +6799,11 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     const child =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
     expect(child.base_drift).toEqual({ skipped: 'disposition' });
-    expect(guardHook.readPushLog).not.toHaveBeenCalled();
+    // The disposition CHILD is excluded before anything is consulted; the
+    // ancestor `p1` is settled on its way out, which is a different attempt.
+    expect(guardHook.readPushLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ attempt_id: res.attempt_id })
+    );
   });
 
   test('records an unanswerable reachability query without failing the attempt', async () => {
