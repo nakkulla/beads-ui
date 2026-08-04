@@ -66,6 +66,18 @@ JSON 이스케이프된 `input` 덩어리로 보여준다.
   input JSON 대신 커맨드 원문 verbatim + output을 보여준다.
 - thinking 원문은 대부분 영어 — 번역·요약 없이 원문 표시.
 
+## 변경 3 — 현재 단계 칩 (사용자 추가 승인, 2026-08-04)
+
+파서가 이미 분류하는 `phase`/`gate` 라인을 재사용해, 스트림에서 phase
+또는 gate kind로 감지된 라인 중 **가장 나중 것**의 텍스트를 드로어 상단
+바에 칩으로 표시한다.
+
+- 새 휴리스틱 추가 없음 — 기존 `classifyText` 분류 결과만 소비한다.
+- 감지된 라인이 없으면 칩을 렌더하지 않는다(fail-quiet, 계약 표시 관례와
+  동일).
+- 좁은 화면(≤640px)에서는 worktree 경로와 같은 방식으로 숨긴다(`title`
+  속성은 전체 텍스트 유지).
+
 ## 엣지 케이스
 
 - `expanded`/`unfolded`는 라인 인덱스 기반인데, 파싱 규칙 변경이 스트림
@@ -79,23 +91,32 @@ JSON 이스케이프된 `input` 덩어리로 보여준다.
 
 ## 범위 밖
 
-- 진행 관제 헤더·phase 구간 접기(브레인스토밍 C안) — B안 사용 후 별도
-  판단.
+- 진행 관제 헤더의 집계 요소(경과시간·tool 카운트)와 phase 구간
+  접기(브레인스토밍 C안 잔여분 — 현재 단계 칩은 변경 3으로 편입) — B안
+  사용 후 별도 판단.
 - `parseTranscript` 증분 파싱 등 성능 재구조화.
 - 모니터 탭 레인 표시 변경.
 
 ## Test scope
 
+RED-GREEN seam (변경 전 실제 실패를 확인해야 하는 항목):
+
 - `app/views/worker/transcript-render.test.js`
   - claude `thinking` 블록 → `{kind:'thinking', text}` 방출
-  - 공백뿐인 thinking 드랍
   - codex `item.completed`/`reasoning` → thinking 방출
 - `app/views/worker/transcript-drawer.test.js`
   - assistant 라인이 마크다운 DOM으로 렌더됨(굵게/헤딩 요소 존재)
-  - result 라인 본문 마크다운 렌더 + 성공/실패 글리프 유지
+  - result 라인 본문 마크다운 렌더
   - thinking 라인 첫 줄 표시·클릭 확장
   - Bash 멀티라인 첫 줄 + `⋯ N줄` 배지, 확장 시 커맨드 원문
   - "지금" 바: 미완료 tool + 최신 thinking 병기 / thinking 단독 표시
+  - 상단 바 현재 단계 칩: 마지막 phase/gate 라인 표시·부재 시 숨김
+
+RED-GREEN 제외 — 회귀 검증 (현 구현에서도 통과해 vacuous RED이므로
+seam이 아니라 GREEN 구현 후 에지 검증으로 추가):
+
+- 공백뿐인 thinking 드랍
+- result 성공/실패 글리프 유지
 
 ## 검증
 
@@ -103,3 +124,8 @@ JSON 이스케이프된 `input` 덩어리로 보여준다.
 - `npm run build` 후 `app/main.bundle.js`(.map 포함) 갱신 커밋
 - 머지 후: `bdui-shared restart` + 프로세스 경로·포트·HTTP 응답 확인
   (AGENTS.md Post-Merge Runtime Validation)
+- post-merge continuity 처분: 이 레포에는 `deploy.json`이 없어
+  sessionless merge-click 경로는 머지 후 재시작 필요를 발견하지 못한다.
+  본 유닛은 UI-dixx에 `worker-ineligible` 라벨을 기록해 unattended
+  worker 디스패치에서 제외하고, 위 머지 후 런타임 검증은 interactive
+  lane에서 수행한다.
