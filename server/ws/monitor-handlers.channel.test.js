@@ -84,6 +84,7 @@ const {
   monitorPipelineSubscriberCount,
   pollDemandFor
 } = await import('./monitor-handlers.js');
+const { emitQueueChanged } = await import('../worker/queue-events.js');
 
 /**
  * A fake socket recording every frame it was sent.
@@ -192,6 +193,39 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
     refresh_listener?.(WS_A);
 
     expect(invalidations).toEqual([]);
+  });
+
+  test('invalidates the runnable cache when a queue event moved the revision', () => {
+    const ws = fakeWs();
+    snapshots[WS_A] = { queue: [], pr_wait: [], done: [], revision: 3 };
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    emitQueueChanged(WS_A);
+    invalidations = [];
+
+    snapshots[WS_A] = { queue: [], pr_wait: [], done: [], revision: 4 };
+    emitQueueChanged(WS_A);
+
+    expect(invalidations).toEqual([WS_A]);
+  });
+
+  // 세션 로그 하트비트(last_event_at fanout)도 `emitQueueChanged`로 온다 —
+  // revision이 안 움직였으면 캐시는 그대로 두고 push만 나간다. 안 그러면
+  // 라이브 세션이 있는 동안 몇 초마다 레포별 `bd list`가 다시 돌고 실행가능
+  // 레인이 깜빡인다.
+  test('skips invalidation on a heartbeat queue event but still pushes', () => {
+    const ws = fakeWs();
+    snapshots[WS_A] = { queue: [], pr_wait: [], done: [], revision: 3 };
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    emitQueueChanged(WS_A);
+    vi.advanceTimersByTime(250);
+    invalidations = [];
+    const pushed_before = ws.snapshots().length;
+
+    emitQueueChanged(WS_A);
+    vi.advanceTimersByTime(250);
+
+    expect(invalidations).toEqual([]);
+    expect(ws.snapshots().length).toBe(pushed_before + 1);
   });
 
   test('stops pushing after unsubscribe', () => {

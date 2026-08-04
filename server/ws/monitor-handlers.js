@@ -391,7 +391,14 @@ function queueRevisionMoved(workspace) {
 function ensureRefreshWired() {
   if (!queue_changed_unsubscribe) {
     queue_changed_unsubscribe = onQueueChanged((workspace) => {
-      invalidateRunnable(workspace);
+      // `emitQueueChanged`는 진짜 레인 전이만이 아니라 세션 로그 하트비트
+      // (`session-log.js`의 last_event_at fanout, 3초 코얼레스)로도 온다 —
+      // revision이 안 움직인 이벤트로 캐시를 만료시키면 라이브 세션이 있는
+      // 동안 레포마다 몇 초 간격으로 `bd list`가 다시 돈다. 판정은 snapshot
+      // refresh 리스너와 같은 revision 이동이다.
+      if (queueRevisionMoved(workspace)) {
+        invalidateRunnable(workspace);
+      }
       schedulePush();
     });
     try {

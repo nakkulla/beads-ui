@@ -278,7 +278,9 @@ describe('runnable cache TTL (UI-qrfo §4)', () => {
 });
 
 describe('runnable cache invalidation (UI-qrfo §4)', () => {
-  test('drops only the workspace whose queue changed', async () => {
+  // 삭제가 아니라 만료다: 삭제하면 비동기 재스캔이 끝날 때까지 동기 읽기가
+  // `[]`를 답해 실행가능 레인이 push마다 깜빡인다.
+  test('keeps serving the stale list while the changed workspace re-scans', async () => {
     const cache = createRunnableCache({
       runJson: fakeBd({ [WS_A]: [row()], [WS_B]: [row({ id: 'UI-2' })] })
     });
@@ -288,7 +290,9 @@ describe('runnable cache invalidation (UI-qrfo §4)', () => {
 
     emitQueueChanged(WS_A);
 
-    expect(cache.runnableFor(WS_A)).toEqual([]);
+    expect(cache.runnableFor(WS_A).map((item) => item.bead_id)).toEqual([
+      'UI-1'
+    ]);
     expect(cache.runnableFor(WS_B).map((item) => item.bead_id)).toEqual([
       'UI-2'
     ]);
@@ -304,6 +308,20 @@ describe('runnable cache invalidation (UI-qrfo §4)', () => {
     await warm(cache, WS_A);
 
     expect(runJson).toHaveBeenCalledTimes(2);
+  });
+
+  test('replaces the stale list once the re-scan lands', async () => {
+    /** @type {Record<string, Array<Record<string, any>>>} */
+    const rows_by_workspace = { [WS_A]: [row()] };
+    const cache = createRunnableCache({ runJson: fakeBd(rows_by_workspace) });
+    onQueueChanged((workspace) => cache.invalidate(workspace));
+    await warm(cache, WS_A);
+
+    rows_by_workspace[WS_A] = [row({ id: 'UI-9' })];
+    emitQueueChanged(WS_A);
+    const out = await warm(cache, WS_A);
+
+    expect(out.map((item) => item.bead_id)).toEqual(['UI-9']);
   });
 });
 

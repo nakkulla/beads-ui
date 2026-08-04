@@ -422,9 +422,14 @@ export function createRunnableCache(options = {}) {
     },
 
     /**
-     * Drop one workspace's record so the next read re-scans. Wired to
-     * `onQueueChanged`: a bead that was just placed must leave the runnable lane
-     * immediately, or it renders in two lanes at once for a whole TTL.
+     * Expire one workspace's record so the next read re-scans. Wired to
+     * `onQueueChanged`. EXPIRE, never delete: a delete makes the next
+     * synchronous read answer `[]` until the async `bd list` lands, which
+     * blanks the 실행가능 lane for every push in between — with a live session
+     * emitting queue events every few seconds the lane visibly flickers. The
+     * stale list is safe to keep serving because the read-time `exclude_ids`
+     * already removes any bead that just entered a lane, so "renders in two
+     * lanes at once" cannot happen through this record.
      *
      * The negative entry is dropped too — a queue change is fresh evidence that
      * the workspace is being worked in, so holding a stale failure back would
@@ -434,7 +439,10 @@ export function createRunnableCache(options = {}) {
      */
     invalidate(workspace) {
       const key = keyOf(workspace);
-      records.delete(key);
+      const hit = records.get(key);
+      if (hit) {
+        records.set(key, { items: hit.items, at: -Infinity });
+      }
       failed.delete(key);
     },
 
