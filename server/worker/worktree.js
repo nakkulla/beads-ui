@@ -50,6 +50,83 @@ function parseCount(result) {
 }
 
 /**
+ * Split `git worktree list --porcelain -z` output into records.
+ *
+ * `-z` rather than plain `--porcelain` (UI-u7hh §2): attributes are terminated
+ * by NUL and records separated by an empty attribute, so a repo path containing
+ * a newline can never be mistaken for a record boundary. Attributes other than
+ * `worktree` and `branch` (`HEAD`, `detached`, `prunable`, `locked`) carry
+ * nothing this lookup needs — a `detached` record simply has no `branch`, which
+ * is what keeps `.worktrees/.verify/`'s worker-owned worktrees unmatchable.
+ *
+ * @param {string} stdout
+ * @returns {{ path: string, branch: string|null }[]}
+ */
+function parseWorktreeRecords(stdout) {
+  /** @type {{ path: string, branch: string|null }[]} */
+  const records = [];
+  /** @type {{ path: string, branch: string|null }|null} */
+  let current = null;
+  for (const attr of stdout.split('\0')) {
+    if (attr === '') {
+      if (current) {
+        records.push(current);
+        current = null;
+      }
+      continue;
+    }
+    const sep = attr.indexOf(' ');
+    const key = sep === -1 ? attr : attr.slice(0, sep);
+    const value = sep === -1 ? '' : attr.slice(sep + 1);
+    if (key === 'worktree') {
+      if (current) {
+        records.push(current);
+      }
+      current = { path: value, branch: null };
+    } else if (current && key === 'branch') {
+      current.branch = value;
+    }
+  }
+  if (current) {
+    records.push(current);
+  }
+  return records;
+}
+
+/**
+ * Whether `wt` is a worktree this worker owns and may force-remove (UI-u7hh
+ * §1).
+ *
+ * The name computation this lookup replaces WAS the boundary — {@link
+ * createWorktreeManager}'s `pathFor` cannot address anything outside
+ * `repo/.worktrees/<bead_id>`. A real `git worktree list` returns every
+ * worktree attached to the repo, including ones a person created for their own
+ * work, and `remove --force` on one of those is not recoverable. So the two
+ * conditions the contract's own naming rule guarantees are required back:
+ *
+ * 1. directly under `repo/.worktrees/` — by `path.relative`, not a string
+ *    prefix, which a sibling like `.worktrees-backup/` would satisfy;
+ * 2. `basename === branch`, the routing invariant every route holds. The
+ *    collision fallback `<bead-id>-<YYYYMMDD>` names worktree and branch
+ *    alike, so this admits exactly the case UI-u7hh exists to fix.
+ *
+ * @param {string} repo
+ * @param {string} wt
+ * @param {string} branch
+ * @returns {boolean}
+ */
+function isOwnedWorktree(repo, wt, branch) {
+  const rel = path.relative(path.join(repo, '.worktrees'), wt);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    return false;
+  }
+  if (rel.includes(path.sep)) {
+    return false;
+  }
+  return path.basename(wt) === branch;
+}
+
+/**
  * Create a worktree manager bound to a lock manager.
  *
  * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs') }} deps
@@ -58,6 +135,7 @@ function parseCount(result) {
  *   exists: (repo: string, bead_id: string) => boolean,
  *   add: (input: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>,
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
+ *   removeByBranch: (input: { repo: string, branch: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *   removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *   addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
  *   removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>,
@@ -192,6 +270,82 @@ export function createWorktreeManager(deps) {
           cwd: input.repo
         });
         return { code: removed.code, stderr: removed.stderr };
+      } finally {
+        release();
+      }
+    },
+
+    /**
+     * Remove the worktree that has `branch` checked out — ASKING git where it
+     * is instead of computing a name from the bead id (UI-u7hh §1).
+     *
+     * The contract allows two names for the same session (the bead id, and the
+     * collision fallback `<bead-id>-<YYYYMMDD>`), and a worktree whose
+     * directory is gone still holds its branch through the `.git/worktrees/`
+     * registration. Neither is expressible by name computation, and both end
+     * the same way: `git branch -D` refuses a branch some worktree still owns.
+     * A real lookup covers both because it observes the occupancy directly.
+     *
+     * Observation failure is NOT absence — the bug this replaces was exactly
+     * that reading (`fs.existsSync` false ⇒ "already cleaned up"), so a failed
+     * `worktree list`, and an impossible 2+ match that can only be a parse
+     * error, both return `observe_failed` rather than a quiet success.
+     *
+     * The lookup and the removal share ONE topology-lock hold: releasing
+     * between them would decide the removal on a topology another slot may
+     * already have changed (`removeIfDiscardable` holds the lock for the same
+     * reason). DEADLOCK BOUNDARY (see {@link withTopologyLock}): raw git only
+     * in here — never another manager method, which would take the same
+     * non-reentrant lock.
+     *
+     * @param {{ repo: string, branch: string }} input
+     * @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null }>}
+     */
+    async removeByBranch(input) {
+      const release = await locks.topologyLock(input.repo);
+      try {
+        const listed = await run(['worktree', 'list', '--porcelain', '-z'], {
+          cwd: input.repo
+        });
+        if (listed.code !== 0) {
+          return { ok: false, removed: false, reason: 'observe_failed' };
+        }
+        const ref = `refs/heads/${input.branch}`;
+        // Exact ref match, never a prefix: `UI-abc` must not claim `UI-abcd`.
+        const matches = parseWorktreeRecords(listed.stdout).filter(
+          (record) => record.branch === ref
+        );
+        // git itself forbids one branch in two worktrees, so 2+ is a parse
+        // fault, not a state to act on.
+        if (matches.length > 1) {
+          return { ok: false, removed: false, reason: 'observe_failed' };
+        }
+        if (matches.length === 0) {
+          return { ok: true, removed: false, reason: null };
+        }
+        const wt = matches[0].path;
+        // git reports canonical paths, so the repo side is resolved too before
+        // they are compared (a symlinked repo root would otherwise read as
+        // foreign).
+        let root = input.repo;
+        try {
+          root = fs.realpathSync(input.repo);
+        } catch {
+          // Keep the given path; the boundary check below still applies.
+        }
+        if (
+          !isOwnedWorktree(root, wt, input.branch) &&
+          !isOwnedWorktree(input.repo, wt, input.branch)
+        ) {
+          return { ok: false, removed: false, reason: 'foreign_worktree' };
+        }
+        const removed = await run(['worktree', 'remove', '--force', wt], {
+          cwd: input.repo
+        });
+        if (removed.code !== 0) {
+          return { ok: false, removed: false, reason: 'remove_failed' };
+        }
+        return { ok: true, removed: true, reason: null };
       } finally {
         release();
       }

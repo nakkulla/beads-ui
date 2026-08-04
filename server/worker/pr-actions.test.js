@@ -134,6 +134,8 @@ function seedStore(options = {}) {
  *   mergeFails?: boolean,
  *   afterMerge?: any,
  *   worktreeExists?: boolean,
+ *   worktrees?: Record<string, string>,
+ *   removeByBranchResult?: { ok: boolean, removed: boolean, reason: string|null },
  *   resolveConflictResult?: any,
  *   externalConflictResult?: any,
  *   activity?: any,
@@ -297,10 +299,37 @@ function makeActions(options = {}) {
   /** @type {Map<string, string>} */
   const bd_status = new Map();
 
+  // Which worktree holds which branch — the fake stands in for real git's
+  // causality: a branch a worktree has checked out cannot be deleted, and only
+  // taking that worktree down frees it. Without this the harness would let
+  // `branch -D` succeed no matter what the worktree step did, and no test of
+  // the cleanup could tell a found worktree from a missed one.
+  /** @type {Map<string, string>} */
+  const worktree_holds = new Map(Object.entries(options.worktrees || {}));
+  /** @param {string} branch */
+  const branchHeld = (branch) => [...worktree_holds.values()].includes(branch);
+
   const worktree = {
-    remove: vi.fn(async () => {
+    remove: vi.fn(async (/** @type {{ bead_id: string }} */ input) => {
       calls.push('wt:remove');
+      // Names the worktree, so it frees the branch only when that computed
+      // name is the one actually holding it.
+      worktree_holds.delete(input.bead_id);
       return { code: 0, stderr: '' };
+    }),
+    removeByBranch: vi.fn(async (/** @type {{ branch: string }} */ input) => {
+      calls.push('wt:removeByBranch');
+      if (options.removeByBranchResult) {
+        return options.removeByBranchResult;
+      }
+      const name = [...worktree_holds.entries()].find(
+        ([, held]) => held === input.branch
+      )?.[0];
+      if (name === undefined) {
+        return { ok: true, removed: false, reason: null };
+      }
+      worktree_holds.delete(name);
+      return { ok: true, removed: true, reason: null };
     }),
     exists: vi.fn(() => options.worktreeExists === true),
     // The repo topology lock, recorded on the SAME ordered log as the git and
@@ -331,6 +360,11 @@ function makeActions(options = {}) {
     calls.push(`git:${args.slice(0, 2).join(' ')}`);
     if (options.gitFail && options.gitFail(args)) {
       return { code: 1, stdout: '', stderr: 'boom' };
+    }
+    // git refuses to delete a branch a worktree has checked out; the
+    // confirming `rev-parse --verify` then still finds it (the default below).
+    if (args[0] === 'branch' && args[1] === '-D' && branchHeld(args[2])) {
+      return { code: 1, stdout: '', stderr: 'used by worktree' };
     }
     if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
       return { code: 0, stdout: 'base-sha-1\n', stderr: '' };
@@ -664,7 +698,7 @@ describe('merge click — a zero exit is not a merge (§6)', () => {
     });
     expect(h.gh.mergeSquash).toHaveBeenCalled();
     expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
-    expect(h.worktree.remove).not.toHaveBeenCalled();
+    expect(h.worktree.removeByBranch).not.toHaveBeenCalled();
     const q = h.store.snapshot(WS);
     expect(q.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toEqual([BEAD]);
     expect(q.done).toEqual([]);
@@ -821,7 +855,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
         c === 'verify:run' ||
         c.startsWith('spawn:bdui-shared') ||
         c.startsWith('bd:setStatus') ||
-        c === 'wt:remove' ||
+        c === 'wt:removeByBranch' ||
         c === 'git:branch -D' ||
         c === 'git:push origin'
     );
@@ -836,7 +870,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
       'spawn:bdui-shared:sync',
       'bd:setStatus:UI-1.1.1:closed',
       'bd:setStatus:UI-1.1:closed',
-      'wt:remove',
+      'wt:removeByBranch',
       'git:branch -D',
       'git:push origin',
       'bd:setStatus:UI-1:closed'
@@ -877,7 +911,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     expect(q.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toEqual([BEAD]);
     expect(q.done).toEqual([]);
     expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
-    expect(h.worktree.remove).not.toHaveBeenCalled();
+    expect(h.worktree.removeByBranch).not.toHaveBeenCalled();
   });
 
   test('survives a restart: the cleanup failure is reloaded from queue.json', async () => {
@@ -1174,7 +1208,7 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
       bd_restore: 'restore_failed'
     });
     // The parent close is LAST now, so the branch cleanup already ran.
-    expect(h.worktree.remove).toHaveBeenCalled();
+    expect(h.worktree.removeByBranch).toHaveBeenCalled();
   });
 
   test('does not touch bd when the cleanup stops BEFORE the parent close', async () => {
@@ -1185,6 +1219,69 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
     expect(r).toMatchObject({ ok: false, cleanup_step: 'base_sync' });
     expect(h.bd.setStatus).not.toHaveBeenCalled();
     expect(h.store.snapshot(WS).cleanup_failed[BEAD].bd_restore).toBeNull();
+  });
+});
+
+describe('post-merge cleanup — the worktree is FOUND, not named (UI-u7hh)', () => {
+  test('clears a branch held by a worktree whose name is the collision fallback', async () => {
+    const fallback = `${BEAD}-20260804`;
+    const h = makeActions({
+      // The contract's collision-ladder fallback: branch and worktree share the
+      // `<bead-id>-<YYYYMMDD>` name, and neither is the bead id.
+      details: [prOf({ head_ref: fallback })],
+      worktrees: { [fallback]: fallback }
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, reason: null });
+    expect(h.worktree.removeByBranch).toHaveBeenCalledWith({
+      repo: REPO,
+      branch: fallback
+    });
+    expect(h.calls).toContain('git:push origin');
+  });
+
+  test('stops at branch_cleanup when the worktree observation itself fails', async () => {
+    const h = makeActions({
+      removeByBranchResult: {
+        ok: false,
+        removed: false,
+        reason: 'observe_failed'
+      }
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'branch_cleanup',
+      reason: 'worktree_remove_failed'
+    });
+    // A failed observation is never read as "already gone": nothing downstream
+    // of it may run.
+    expect(h.calls).not.toContain('git:branch -D');
+    expect(h.calls).not.toContain('git:push origin');
+  });
+
+  test('stops at branch_cleanup when the match falls outside the owned worktree area', async () => {
+    const h = makeActions({
+      removeByBranchResult: {
+        ok: false,
+        removed: false,
+        reason: 'foreign_worktree'
+      }
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'branch_cleanup',
+      reason: 'worktree_remove_failed'
+    });
+    expect(h.calls).not.toContain('git:branch -D');
+    expect(h.calls).not.toContain('git:push origin');
   });
 });
 
@@ -1262,7 +1359,7 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
       reason: 'deploy_failed'
     });
     // The steps after deploy never ran.
-    expect(h.worktree.remove).not.toHaveBeenCalled();
+    expect(h.worktree.removeByBranch).not.toHaveBeenCalled();
     expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
   });
 
@@ -1834,7 +1931,7 @@ describe('post-merge cleanup — ref operations hold the topology lock (§8)', (
       (c) =>
         c.startsWith('lock:') ||
         c === 'git:fetch --no-tags' ||
-        c === 'wt:remove' ||
+        c === 'wt:removeByBranch' ||
         c === 'git:branch -D' ||
         c === 'git:push origin'
     );
@@ -1845,7 +1942,7 @@ describe('post-merge cleanup — ref operations hold the topology lock (§8)', (
       'lock:release',
       // Branch cleanup: the worktree removal takes the same lock INSIDE the
       // worktree manager, so it runs before this hold — nesting would deadlock.
-      'wt:remove',
+      'wt:removeByBranch',
       'lock:acquire',
       'git:branch -D',
       'git:push origin',
@@ -1881,9 +1978,13 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
         (c) =>
           c === 'git:fetch --no-tags' ||
           c === 'bd:setStatus:UI-1:closed' ||
-          c === 'wt:remove'
+          c === 'wt:removeByBranch'
       )
-    ).toEqual(['git:fetch --no-tags', 'wt:remove', 'bd:setStatus:UI-1:closed']);
+    ).toEqual([
+      'git:fetch --no-tags',
+      'wt:removeByBranch',
+      'bd:setStatus:UI-1:closed'
+    ]);
     expect(
       h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
@@ -1985,7 +2086,7 @@ describe('[폐기] — the order-sensitive discard transition (discard spec §1)
           c === 'gh:prDetail' ||
           c === 'gh:closePr' ||
           c.startsWith('bd:') ||
-          c === 'wt:remove' ||
+          c === 'wt:removeByBranch' ||
           c === 'git:push origin'
       )
     ).toEqual([
@@ -1996,7 +2097,7 @@ describe('[폐기] — the order-sensitive discard transition (discard spec §1)
       'bd:readStatus:UI-1',
       'bd:unsetMetadata:UI-1:pr_url',
       'bd:readMetadata:UI-1:pr_url',
-      'wt:remove',
+      'wt:removeByBranch',
       'git:push origin'
     ]);
   });
@@ -2084,7 +2185,7 @@ describe('[폐기] — the order-sensitive discard transition (discard spec §1)
 
     expect(r).toEqual({ ok: false, reason: 'pr_close_failed:gh_failed' });
     expect(h.bd.setStatus).not.toHaveBeenCalled();
-    expect(h.worktree.remove).not.toHaveBeenCalled();
+    expect(h.worktree.removeByBranch).not.toHaveBeenCalled();
     expect(
       h.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
