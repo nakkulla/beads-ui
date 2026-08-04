@@ -75,12 +75,19 @@ JSON 이스케이프된 `input` 덩어리로 보여준다.
    라인 중 가장 나중 것의 텍스트. 기존 `classifyText` 분류 결과만
    소비하고 새 패턴을 추가하지 않는다.
 2. **task 도구 선언 (파란 칩)** — 세션이 TaskCreate/TaskUpdate 도구를
-   쓰는 경우, taskId별 마지막 상태를 추적해 가장 최근에
-   `in_progress`가 되었고 이후 완료되지 않은 task의
-   `activeForm`(없으면 `subject`)을 표시한다. 세션이 스스로 선언한
-   단계이므로 정확 감지와 같은 톤을 쓴다. tool 라인의 `input`은 이미
-   보존되므로(`DisplayLine.input`) 새 파싱 없이 드로어 쪽 파생으로
-   구현한다.
+   쓰는 경우, 가장 최근에 `in_progress`가 되었고 이후 완료되지 않은
+   task의 `activeForm`(없으면 `subject`)을 표시한다. 세션이 스스로
+   선언한 단계이므로 정확 감지와 같은 톤을 쓴다.
+   - 데이터 흐름(실측 로그 형태 기준): `TaskCreate.input`에는
+     `subject`/`activeForm`만 있고 taskId가 없으며,
+     `TaskUpdate.input`에는 `taskId`/`status`만 있는 것이 일반형이다.
+     따라서 taskId↔표시문 연결은 TaskCreate 라인에 짝지어진
+     tool_result의 `DisplayLine.output`에서 `Task #N` 패턴으로 ID를
+     추출해 생성 입력의 `activeForm`/`subject`와 매핑하고,
+     TaskUpdate는 그 맵의 상태를 전이시킨다(`input`에
+     `activeForm`/`subject`가 있으면 맵을 갱신). output 미도착·패턴
+     불일치 시 해당 TaskCreate는 무시한다(fail-quiet). 드로어 쪽
+     파생으로 구현하며 파서는 변경하지 않는다.
 3. **활동 fallback (흐린 노란 칩, `~` 접두)** — 1·2층 신호가 없으면
    최근 tool 라인 윈도(마지막 10개)를 버킷 다수결(동률 시 더 최근
    신호)로 분류해 추정 단계를 표시한다: `gh pr create`/`git push`성
@@ -127,10 +134,14 @@ RED-GREEN seam (변경 전 실제 실패를 확인해야 하는 항목):
   - Bash 멀티라인 첫 줄 + `⋯ N줄` 배지, 확장 시 커맨드 원문
   - "지금" 바: 미완료 tool + 최신 thinking 병기 / thinking 단독 표시
   - 상단 바 현재 단계 칩 1층: 마지막 phase/gate 라인 표시
-  - 단계 칩 2층: TaskUpdate `in_progress` → `activeForm` 표시, 이후
-    완료되면 다음 층으로 강하
-  - 단계 칩 3층: Edit 연속 → `~ 구현 중`, 검증 Bash → `~ 검증 중`,
-    무신호 → 칩 숨김
+  - 단계 칩 2층: `TaskCreate(activeForm 포함) → tool_result("Task #1
+    created …") → status만 있는 TaskUpdate(in_progress)` 시퀀스에서
+    activeForm 칩 표시, 이후 `completed` 전이 시 하위 층으로 강하
+  - 단계 칩 3층 알고리즘: 혼합 10개 tool 윈도에서 다수결 버킷이 최근
+    단일 신호를 이기는 사례 / 동률이 더 최근 신호로 풀리는 사례
+  - 층간 우선순위: 1층 신호 존재 시 2·3층 미평가, 2층 존재 시 3층
+    미평가
+  - 3층 단일 버킷: 검증 Bash → `~ 검증 중`, 무신호 → 칩 숨김
 
 RED-GREEN 제외 — 회귀 검증 (현 구현에서도 통과해 vacuous RED이므로
 seam이 아니라 GREEN 구현 후 에지 검증으로 추가):
