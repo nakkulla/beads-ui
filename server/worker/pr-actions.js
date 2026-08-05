@@ -56,7 +56,7 @@ import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { evaluateMergeGate } from './merge-gate.js';
 import { resolvePrRef, rollupConclusion } from './pr-poller.js';
-import { isSelfRepo } from './repo-ops.js';
+import { selfRepoState } from './repo-ops.js';
 import { shipExportedCapabilities } from './ship-capabilities.js';
 import { errorDetail, runVerifyCmd } from './verify-cmd.js';
 import { branchForBead } from './worktree.js';
@@ -193,10 +193,10 @@ function isConflicting(pr) {
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
- *   resolveVerify?: (pinned_sha?: string|null) => Promise<import('./repo-ops.js').VerifyResolution>,
+ *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').VerifyResolution>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
- *   resolveDeploy?: (pinned_sha?: string|null) => Promise<import('./repo-ops.js').DeployResolution>,
- *   isSelfRepo?: (repo: string) => boolean,
+ *   resolveDeploy?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').DeployResolution>,
+ *   selfRepoState?: (repo: string) => 'self'|'other'|'unknown',
  *   spawnImpl?: typeof spawn,
  *   notifyChanged?: (workspace: string) => void,
  *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void> },
@@ -235,7 +235,7 @@ export function createPrActions(deps) {
       ));
   // Injectable so a fixture can stand in for "the repo this server runs from"
   // without moving the process (UI-kfl4 §4.3).
-  const selfRepo = deps.isSelfRepo || isSelfRepo;
+  const selfRepo = deps.selfRepoState || selfRepoState;
   const spawnImpl = deps.spawnImpl || spawn;
   const runVerify =
     deps.runVerify ||
@@ -595,8 +595,10 @@ export function createPrActions(deps) {
     const pr = observed.pr;
     // Pre-merge context: the resolver pins rung 1 to the fetched remote
     // target-base tip, so a PR cannot define the command that judges it
-    // (UI-kfl4 §4.1).
-    const resolved = await resolveVerify();
+    // (UI-kfl4 §4.1). `force` because this is the AUTHORITATIVE click-time
+    // gate — a memoized pin could still name the base as it stood before a
+    // declaration landed on it, which is the one place that matters.
+    const resolved = await resolveVerify({ force: true });
     let entry = deps.observations.get(workspace, bead_id);
     let verdict = evaluateMergeGate(entry, {
       verify_cmd_state: resolved.state
@@ -744,7 +746,7 @@ export function createPrActions(deps) {
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string, detail?: string, output_tail?: string, log_path?: string }>}
    */
   async function postMergeVerify(bead_id, base_sha) {
-    const resolved = await resolveVerify(base_sha);
+    const resolved = await resolveVerify({ sha: base_sha });
     if (resolved.state === 'invalid') {
       return {
         ok: false,
@@ -865,6 +867,8 @@ export function createPrActions(deps) {
    *   - no `[deploy]` declaration and no `[worker.deploy]` section → nothing to
    *     run, which is a pass with the same meaning verify's "no command" has —
    *     EXCEPT in this server's own repo, see `deploy_missing_for_self` below,
+   *   - an undecidable self-repo comparison → `deploy_self_check_failed`
+   *     (§4.3): the two defences below cannot be evaluated at all,
    *   - an unreadable declaration → `deploy_config_invalid` (UI-kfl4 §4.2): a
    *     broken declaration never falls through to the legacy config rung, or the
    *     drift the ladder closes would simply hide again,
@@ -906,8 +910,19 @@ export function createPrActions(deps) {
   async function runDeploy(bead_id, base_sha, target_base) {
     // Post-merge context, so both resolutions pin to the base commit the
     // cleanup synced to (UI-kfl4 §4.1).
-    const resolution = await resolveDeploy(base_sha);
-    const self = selfRepo(repo);
+    const resolution = await resolveDeploy({ sha: base_sha });
+    const self_state = selfRepo(repo);
+    if (self_state === 'unknown') {
+      // Both self-repo defences below hang off this answer, so an undecidable
+      // comparison refuses rather than assuming the safe-looking side.
+      log('deploy refused for %s: self-repo comparison undecidable', bead_id);
+      deps.store.recordLastDeploy(
+        workspace,
+        deployRecord('failed', 'deploy_self_check_failed', bead_id, base_sha)
+      );
+      return { ok: false, reason: 'deploy_self_check_failed' };
+    }
+    const self = self_state === 'self';
     if (resolution.state === 'invalid') {
       deps.store.recordLastDeploy(
         workspace,
@@ -949,7 +964,7 @@ export function createPrActions(deps) {
       );
       return { ok: false, reason: 'deploy_not_detached_for_self' };
     }
-    if ((await resolveVerify(base_sha)).state !== 'resolved') {
+    if ((await resolveVerify({ sha: base_sha })).state !== 'resolved') {
       deps.store.recordLastDeploy(
         workspace,
         deployRecord('failed', 'deploy_verify_missing', bead_id, base_sha)

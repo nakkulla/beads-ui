@@ -404,6 +404,22 @@ describe('worker/pr-poller — local verification binding (§5)', () => {
     expect(runVerify).not.toHaveBeenCalled();
   });
 
+  test('resolves the declaration even for a repo that HAS ci (UI-kfl4)', async () => {
+    const resolveVerify = vi.fn(async () => RESOLVED);
+    const { poller } = makePoller({
+      checks: { state: 'ok', data: [{ name: 'build', conclusion: 'pass' }] },
+      resolveVerify,
+      runVerify: vi.fn()
+    });
+
+    await poller.tick();
+
+    // The run below needs it only in the no-CI tier, but the synchronous
+    // consumers read the projection this call publishes: skipping it left a
+    // broken declaration rendering as a mergeable row.
+    expect(resolveVerify).toHaveBeenCalled();
+  });
+
   test('does not run a verification without a resolved verify_cmd', async () => {
     const runVerify = vi.fn();
     const { poller } = makePoller({

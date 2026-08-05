@@ -125,7 +125,7 @@ function seedStore(options = {}) {
  *   verifyResolution?: import('./repo-ops.js').VerifyResolution,
  *   verifyResolutions?: Array<import('./repo-ops.js').VerifyResolution>,
  *   deployResolution?: import('./repo-ops.js').DeployResolution,
- *   isSelfRepo?: (repo: string) => boolean,
+ *   selfRepoState?: (repo: string) => 'self'|'other'|'unknown',
  *   deploySpawn?: 'ok'|'fail'|'hang'|'error'|'throw',
  *   deployOutput?: string[],
  *   repo?: string,
@@ -571,7 +571,7 @@ function makeActions(options = {}) {
             value: options.deploy
           }
         : { state: /** @type {const} */ ('absent') }),
-    isSelfRepo: options.isSelfRepo || (() => false),
+    selfRepoState: options.selfRepoState || (() => 'other'),
     spawnImpl: /** @type {any} */ (spawnImpl),
     requeryDelayMs: 0,
     sleep: async () => {},
@@ -1491,7 +1491,7 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
     const h = makeActions({
       verify: VERIFY_CFG,
       deploy: DEPLOY_SYNC,
-      isSelfRepo: () => true,
+      selfRepoState: () => 'self',
       ...ON_BASE
     });
 
@@ -1515,7 +1515,7 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
     const h = makeActions({
       verify: VERIFY_CFG,
       deploy: DEPLOY_DETACHED,
-      isSelfRepo: () => true,
+      selfRepoState: () => 'self',
       ...ON_BASE
     });
 
@@ -1527,7 +1527,7 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
   test('names the lost restart when this server own repo declares no deploy (UI-kfl4 §4.3-3)', async () => {
     const h = makeActions({
       verify: VERIFY_CFG,
-      isSelfRepo: () => true,
+      selfRepoState: () => 'self',
       ...ON_BASE
     });
 
@@ -1546,10 +1546,29 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
     });
   });
 
+  test('refuses to deploy when the self-repo comparison cannot be made', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      selfRepoState: () => 'unknown',
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    // Guessing `other` here would disarm both self-repo defences at once.
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'deploy',
+      reason: 'deploy_self_check_failed'
+    });
+    expect(h.spawnImpl).not.toHaveBeenCalled();
+  });
+
   test('keeps an absent deploy a pass in any OTHER repo', async () => {
     const h = makeActions({
       verify: VERIFY_CFG,
-      isSelfRepo: () => false,
+      selfRepoState: () => 'other',
       ...ON_BASE
     });
 

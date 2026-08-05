@@ -569,9 +569,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
    *
    * @returns {Promise<string|null>}
    */
-  const premergePin = async () => {
+  const premergePin = async (/** @type {boolean} */ force) => {
     try {
-      const resolved = await resolveBase();
+      const resolved = await resolveBase(force ? { force: true } : {});
       return resolved.ok ? resolved.base_oid : null;
     } catch {
       return null;
@@ -579,26 +579,43 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   };
 
   /**
+   * Which commit a resolution reads rung 1 from.
+   *
+   * @typedef {Object} OpsPin
+   * @property {string|null} [sha] - An explicit pin: the cleanup's synced base
+   * commit. Everything else omits it and takes the pre-merge pin.
+   * @property {boolean} [force] - Re-resolve the target base instead of taking
+   * the scan memo. Set by the AUTHORITATIVE click-time gate, whose whole job is
+   * to judge against the base as it stands right now.
+   */
+
+  /**
    * The workspace's resolved verify command, read LIVE (both rungs can change
    * between a poll and a click) — shared by the poller's pre-merge tier and the
    * actions' click-time re-verification + post-merge verification.
    *
-   * `pinned_sha` is the caller's context: the cleanup passes the base commit it
-   * synced to, everything else passes nothing and gets the pre-merge pin.
+   * A THROWN resolution is `invalid`, not `absent`: a resolver that could not
+   * answer must never be read as a repo that declares nothing, which is a
+   * passing tier for the merge gate.
    *
-   * @param {string|null} [pinned_sha]
+   * @param {OpsPin} [pin]
    * @returns {Promise<import('./repo-ops.js').VerifyResolution>}
    */
-  const resolveVerify = async (pinned_sha = null) => {
+  const resolveVerify = async (pin = {}) => {
     try {
       return await resolveVerifyAt({
         gitRun,
         repo,
-        sha: pinned_sha || (await premergePin()),
+        sha: pin.sha || (await premergePin(pin.force === true)),
         config_map: getConfig().worker_verify
       });
-    } catch {
-      return { state: 'absent' };
+    } catch (err) {
+      log('verify resolution failed for %s: %o', repo, err);
+      return {
+        state: 'invalid',
+        source: 'declaration',
+        detail: 'resolver_threw'
+      };
     }
   };
 
@@ -606,19 +623,24 @@ export function createWorkerAttachment(workspace_root, options = {}) {
    * The workspace's post-merge deploy command, on the same two-rung ladder and
    * the same pin contract as {@link resolveVerify}.
    *
-   * @param {string|null} [pinned_sha]
+   * @param {OpsPin} [pin]
    * @returns {Promise<import('./repo-ops.js').DeployResolution>}
    */
-  const resolveDeploy = async (pinned_sha = null) => {
+  const resolveDeploy = async (pin = {}) => {
     try {
       return await resolveDeployAt({
         gitRun,
         repo,
-        sha: pinned_sha || (await premergePin()),
+        sha: pin.sha || (await premergePin(pin.force === true)),
         config_map: getConfig().worker_deploy
       });
-    } catch {
-      return { state: 'absent' };
+    } catch (err) {
+      log('deploy resolution failed for %s: %o', repo, err);
+      return {
+        state: 'invalid',
+        source: 'declaration',
+        detail: 'resolver_threw'
+      };
     }
   };
 

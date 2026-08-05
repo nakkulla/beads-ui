@@ -106,6 +106,21 @@ const CACHE_MAX = 64;
 const ABSENT = { state: 'absent' };
 
 /**
+ * What an async resolution returns when the CALLER could not supply a pin —
+ * the target base did not resolve. `invalid`, not `absent`: with no pin there
+ * is no rung 1 to read, and answering from the legacy rung alone would let an
+ * unresolvable base merge on a command nothing checked against the base it is
+ * merging into. Every consumer already fails closed on `invalid`.
+ *
+ * @type {OpsResolution<any>}
+ */
+const PIN_UNAVAILABLE = {
+  state: 'invalid',
+  source: 'declaration',
+  detail: 'pin_unavailable'
+};
+
+/**
  * Memoized declaration reads, keyed `<repo>\0<sha>`.
  *
  * @type {Map<string, { verify: VerifyResolution, deploy: DeployResolution }>}
@@ -113,11 +128,13 @@ const ABSENT = { state: 'absent' };
 const declaration_cache = new Map();
 
 /**
- * The LAST declaration resolved for each repo, whatever pin produced it. Read
- * by the synchronous {@link peekVerifyResolution} / {@link peekDeployResolution}
- * projections — see their doc for why a cache read is the right thing there.
+ * The LAST declaration resolved for each repo, with the pin that produced it.
+ * Read by the synchronous {@link peekVerifyResolution} /
+ * {@link peekDeployResolution} projections — see their doc for why a cache read
+ * is the right thing there. One entry per workspace, so it is bounded by the
+ * number of repos the server serves.
  *
- * @type {Map<string, { verify: VerifyResolution, deploy: DeployResolution }>}
+ * @type {Map<string, { sha: string, verify: VerifyResolution, deploy: DeployResolution }>}
  */
 const latest_by_repo = new Map();
 
@@ -135,6 +152,13 @@ export function resetRepoOpsCache() {
  * the argv rule is identical: the worker spawns WITHOUT a shell, so a shell
  * one-liner string is not a command it can run.
  *
+ * An OMITTED `timeout_ms` takes the default; a PRESENT one that is not a
+ * positive number is `invalid`. The two are different facts — "the repo did not
+ * say" versus "the repo said something we cannot honour" — and coercing the
+ * second into the default is the silent-typo failure the three-state contract
+ * exists to stop. Tolerant parsing covers keys this reader does not KNOW, never
+ * known keys carrying nonsense.
+ *
  * @param {any} section
  * @returns {{ ok: true, cmd: string[], timeout_ms: number }|{ ok: false, detail: string }}
  */
@@ -150,14 +174,26 @@ function normalizeDeclaredCmd(section) {
   ) {
     return { ok: false, detail: 'cmd_not_a_nonempty_argv_array' };
   }
+  if (!Object.hasOwn(section, 'timeout_ms')) {
+    return {
+      ok: true,
+      cmd: raw_cmd.slice(),
+      timeout_ms: DEFAULT_TIMEOUT_MS
+    };
+  }
   const raw_timeout = section.timeout_ms;
-  const timeout_ms =
-    typeof raw_timeout === 'number' &&
-    Number.isFinite(raw_timeout) &&
-    raw_timeout > 0
-      ? Math.floor(raw_timeout)
-      : DEFAULT_TIMEOUT_MS;
-  return { ok: true, cmd: raw_cmd.slice(), timeout_ms };
+  if (
+    typeof raw_timeout !== 'number' ||
+    !Number.isFinite(raw_timeout) ||
+    raw_timeout <= 0
+  ) {
+    return { ok: false, detail: 'timeout_ms_not_a_positive_number' };
+  }
+  return {
+    ok: true,
+    cmd: raw_cmd.slice(),
+    timeout_ms: Math.floor(raw_timeout)
+  };
 }
 
 /**
@@ -203,6 +239,19 @@ function declaredDeploy(parsed) {
       detail: `deploy:${normalized.detail}`
     };
   }
+  // `detached` decides whether this command may run synchronously, and this
+  // repo's own deploy restarts the server — so a non-boolean value is refused
+  // rather than read as `false`, which is the dangerous side.
+  if (
+    Object.hasOwn(parsed.deploy, 'detached') &&
+    typeof parsed.deploy.detached !== 'boolean'
+  ) {
+    return {
+      state: 'invalid',
+      source: 'declaration',
+      detail: 'deploy:detached_not_a_boolean'
+    };
+  }
   return {
     state: 'resolved',
     source: 'declaration',
@@ -216,14 +265,32 @@ function declaredDeploy(parsed) {
 
 /**
  * @param {string} repo
+ * @param {string} sha
  * @param {{ verify: VerifyResolution, deploy: DeployResolution }} entry
  */
-function remember(repo, entry) {
-  latest_by_repo.set(repo, entry);
+function remember(repo, sha, entry) {
+  latest_by_repo.set(repo, { ...entry, sha });
+}
+
+/**
+ * Both sections of one unreadable declaration.
+ *
+ * @param {string} detail
+ * @returns {{ verify: VerifyResolution, deploy: DeployResolution }}
+ */
+function brokenEntry(detail) {
+  /** @type {{ state: 'invalid', source: 'declaration', detail: string }} */
+  const broken = { state: 'invalid', source: 'declaration', detail };
+  return { verify: broken, deploy: broken };
 }
 
 /**
  * Turn one `git show` result into the pair of resolutions it declares.
+ *
+ * A non-zero exit here means the PATH is not in that tree — the pin itself was
+ * verified to exist by the probe in {@link readDeclarationAt} before this ran,
+ * which is what makes "the repo declares nothing at this commit" separable from
+ * "git could not answer". Only the first is `absent`.
  *
  * @param {string} repo
  * @param {string} sha
@@ -247,13 +314,7 @@ function declarationEntry(repo, sha, shown) {
   } catch {
     // A file that exists but does not parse is the case `invalid` was
     // introduced for: it says something, and we cannot tell what.
-    /** @type {{ state: 'invalid', source: 'declaration', detail: string }} */
-    const broken = {
-      state: 'invalid',
-      source: 'declaration',
-      detail: 'toml_parse_failed'
-    };
-    return { verify: broken, deploy: broken };
+    return brokenEntry('toml_parse_failed');
   }
   if (!parsed || typeof parsed !== 'object') {
     return { verify: ABSENT, deploy: ABSENT };
@@ -264,12 +325,13 @@ function declarationEntry(repo, sha, shown) {
 /**
  * Read and parse the declaration at one pin.
  *
- * A non-zero `git show` is `absent`, NOT `invalid`. The two cases it covers —
- * the repo declares nothing at that commit, and git itself could not answer —
- * are indistinguishable from the exit code, and `invalid` is a blocking state:
- * treating a transient git failure as one would freeze every merge on the repo.
- * `absent` falls through to the config rung, which is exactly the behaviour that
- * existed before this module.
+ * TWO probes, because "this commit declares nothing" and "git could not answer"
+ * must not produce the same state — the first is a legitimate `absent` that
+ * falls through to the config rung, the second is a read failure that would
+ * make an unreadable pin look like an unconfigured repo (a PASSING tier for the
+ * merge gate). So the pin's existence is verified first with `rev-parse`, and
+ * only then is a non-zero `git show` read as "the path is not in this tree".
+ * Anything else — an unresolvable pin, a thrown adapter — is `invalid`.
  *
  * @param {{
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
@@ -284,20 +346,34 @@ async function readDeclarationAt(input) {
   const key = `${repo}\0${sha}`;
   const cached = declaration_cache.get(key);
   if (cached) {
-    remember(repo, cached);
+    remember(repo, sha, cached);
     return cached;
   }
-  /** @type {{ code: number, stdout: string, stderr: string }} */
-  let shown;
+  /** @type {{ verify: VerifyResolution, deploy: DeployResolution }} */
+  let entry;
   try {
-    shown = await input.gitRun(['show', `${sha}:${REPO_OPS_BLOB_PATH}`], {
-      cwd: repo
-    });
+    const pinned = await input.gitRun(
+      ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`],
+      { cwd: repo }
+    );
+    if (pinned.code !== 0 || pinned.stdout.trim().length === 0) {
+      log('declaration pin %s unresolvable in %s', sha, repo);
+      // NOT cached: an object database that does not have the commit yet may
+      // have it after the next fetch, and caching the failure would keep the
+      // repo blocked past the condition that caused it.
+      return brokenEntry('pin_unresolvable');
+    }
+    entry = declarationEntry(
+      repo,
+      sha,
+      await input.gitRun(['show', `${sha}:${REPO_OPS_BLOB_PATH}`], {
+        cwd: repo
+      })
+    );
   } catch (err) {
     log('declaration read threw for %s at %s: %o', repo, sha, err);
-    return { verify: ABSENT, deploy: ABSENT };
+    return brokenEntry('git_error');
   }
-  const entry = declarationEntry(repo, sha, shown);
   if (declaration_cache.size >= CACHE_MAX) {
     const oldest = declaration_cache.keys().next();
     if (!oldest.done) {
@@ -305,7 +381,7 @@ async function readDeclarationAt(input) {
     }
   }
   declaration_cache.set(key, entry);
-  remember(repo, entry);
+  remember(repo, sha, entry);
   return entry;
 }
 
@@ -407,13 +483,10 @@ function ladder(repo, kind, declared, configured) {
  * @returns {Promise<VerifyResolution>}
  */
 export async function resolveVerifyAt(input) {
-  const configured = configVerify(input.repo, input.config_map);
   if (!input.sha) {
-    // No pin means no rung 1 at all — an unresolvable base, not a declaration
-    // that says nothing. The legacy rung still answers, which is what keeps a
-    // repo whose base cannot be resolved behaving as it did before.
-    return configured;
+    return PIN_UNAVAILABLE;
   }
+  const configured = configVerify(input.repo, input.config_map);
   const declaration = await readDeclarationAt({
     gitRun: input.gitRun,
     repo: input.repo,
@@ -434,10 +507,10 @@ export async function resolveVerifyAt(input) {
  * @returns {Promise<DeployResolution>}
  */
 export async function resolveDeployAt(input) {
-  const configured = configDeploy(input.repo, input.config_map);
   if (!input.sha) {
-    return configured;
+    return PIN_UNAVAILABLE;
   }
+  const configured = configDeploy(input.repo, input.config_map);
   const declaration = await readDeclarationAt({
     gitRun: input.gitRun,
     repo: input.repo,
@@ -451,12 +524,17 @@ export async function resolveDeployAt(input) {
  * await: the queue-snapshot decoration and the auto-merge enrollment scan.
  *
  * Rung 1 comes from the last declaration the ASYNC resolver read for this repo
- * — never a second parse path — and a repo nothing has resolved yet reads as
- * `absent`, which is precisely what the ladder does with a repo that declares
- * nothing: fall through to config. Both call sites are advisory (a dialog's
- * display, an enrollment shortlist) and the authoritative decision behind each
- * one — `gateNow` before a merge, `runDeploy` during cleanup — awaits the real
- * resolver against a fresh pin.
+ * — never a second parse path. The PR poller resolves once per pass for every
+ * observed bead, CI or no CI, so any repo the two call sites have something to
+ * say about has already published a resolution here; the staleness bound is one
+ * poll pass. A repo nothing has resolved yet reads as `absent` and falls
+ * through to config, which is also what the ladder does with a repo that
+ * declares nothing — and such a repo has no observation either, so its gate is
+ * `unobserved` and nothing enrolls.
+ *
+ * Both call sites are advisory (a dialog's display, an enrollment shortlist)
+ * and the authoritative decision behind each one — `gateNow` before a merge,
+ * `runDeploy` during cleanup — awaits the real resolver against a fresh pin.
  *
  * @param {string} repo
  * @param {Record<string, { cmd: string[], timeout_ms: number }>|null|undefined} config_map
@@ -502,24 +580,42 @@ const SELF_ROOT = path.resolve(
  *
  * Compared through `realpathSync` because the workspace path and the module
  * path routinely differ by a symlink (`/tmp` → `/private/tmp` on darwin, an
- * `npm link`ed install). An unresolvable path is not this repo: the guard's job
- * is to recognise a match, and claiming one it cannot prove would refuse a
- * legitimate deploy on another repo.
+ * `npm link`ed install). A comparison that cannot be MADE returns `unknown`
+ * rather than `other`: both self-repo defences hang off this answer, and a
+ * guess of "not this repo" is the side that lets a self-killing deploy through.
+ * The caller decides what `unknown` costs — the deploy step refuses.
+ *
+ * A workspace path that does NOT EXIST is the one resolution failure that is
+ * still an answer: this process is running from its own checkout, so a path
+ * with nothing at it cannot be that checkout. Every other error is undecidable
+ * — an unreadable parent directory could still hide a symlink into it.
  *
  * @param {string} repo
  * @param {{ fs?: typeof import('node:fs'), self_root?: string }} [options]
- * @returns {boolean}
+ * @returns {'self'|'other'|'unknown'}
  */
-export function isSelfRepo(repo, options = {}) {
+export function selfRepoState(repo, options = {}) {
   const fs = options.fs || nodeFs;
   const self_root = options.self_root || SELF_ROOT;
+  /** @type {string} */
+  let self_real;
   try {
-    return (
-      fs.realpathSync(path.resolve(String(repo || ''))) ===
-      fs.realpathSync(self_root)
-    );
+    self_real = fs.realpathSync(self_root);
   } catch (err) {
+    log('self root unresolvable (%s): %o', self_root, err);
+    return 'unknown';
+  }
+  try {
+    return fs.realpathSync(path.resolve(String(repo || ''))) === self_real
+      ? 'self'
+      : 'other';
+  } catch (err) {
+    const code =
+      err && typeof err === 'object' ? /** @type {any} */ (err).code : null;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return 'other';
+    }
     log('self-repo comparison failed for %s: %o', repo, err);
-    return false;
+    return 'unknown';
   }
 }
