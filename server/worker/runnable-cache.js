@@ -73,9 +73,25 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan']);
  * @property {string} title
  * @property {string} route - The `metadata.route` that qualified it.
  * @property {string} spec_id - The `metadata.spec_id` that qualified it.
+ * @property {string[]} labels - The bead's labels, carried so the 실행가능 card
+ * can show routing labels like `worker-ineligible` (UI-lzfa §4.1). NOT part of
+ * 판정 — the human queueing decides, the screen only supplies the ground.
  * @property {number|string|null} created_at
  * @property {number|string|null} updated_at
  */
+
+/**
+ * A row's labels, string entries only. Same tolerant principle as `stampOf`:
+ * a shape the client cannot render becomes an empty list rather than an error.
+ *
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function labelsOf(value) {
+  return Array.isArray(value)
+    ? value.filter((entry) => typeof entry === 'string')
+    : [];
+}
 
 /**
  * Keep a timestamp only in the shapes the client can format; anything else
@@ -164,6 +180,7 @@ function qualify(row) {
     title: typeof row.title === 'string' ? row.title : '',
     route,
     spec_id,
+    labels: labelsOf(row.labels),
     created_at: stampOf(row.created_at),
     updated_at: stampOf(row.updated_at)
   };

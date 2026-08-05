@@ -4,6 +4,7 @@ import {
   buildLanes,
   monitorGroupHeaderTemplate,
   monitorQueueRow,
+  monitorRunnableCard,
   monitorRunningTile,
   monitorTopBarTemplate
 } from './lanes.js';
@@ -756,6 +757,34 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
 
     expect(lanes.runnable[0].reason).toBe('⛔ spec_missing (docs/x.md)');
   });
+
+  test('carries the server labels onto the runnable item', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-3',
+              title: '실행 가능',
+              labels: ['worker-ineligible']
+            }
+          ]
+        })
+      ],
+      []
+    );
+
+    expect(lanes.runnable[0].labels).toEqual(['worker-ineligible']);
+  });
+
+  test('leaves the runnable labels empty when the server sends none', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [{ bead_id: 'A-3', title: '실행 가능' }] })],
+      []
+    );
+
+    expect(lanes.runnable[0].labels).toEqual([]);
+  });
 });
 
 describe('monitor 완료 레인 기간 필터 (UI-qrfo §7)', () => {
@@ -1011,6 +1040,46 @@ describe('monitor 카드 문법 (UI-gwkl §2.2)', () => {
     expect(mount.querySelector('.mon-c__meta .mon-c__id')?.textContent).toBe(
       'A-1'
     );
+  });
+
+  // 큐잉 판단이 일어나는 화면이 실행가능 레인이므로, 라우팅 라벨은 여기서
+  // 읽혀야 한다 (UI-lzfa §4.2).
+  test('renders the bead labels as chips on a runnable card', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-3',
+              title: '실행 가능',
+              route: 'spec_backed',
+              labels: ['worker-ineligible', 'frontend']
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.mon-c__meta .ctl-chip--label'),
+        (el) => el.textContent
+      )
+    ).toEqual(['worker-ineligible', 'frontend']);
+  });
+
+  test('draws no label chip on a runnable card with no labels', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [{ bead_id: 'A-3', title: '실행 가능' }] })],
+      [state()]
+    );
+
+    render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+    expect(mount.querySelectorAll('.ctl-chip--label').length).toBe(0);
   });
 });
 
