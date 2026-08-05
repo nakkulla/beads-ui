@@ -26,7 +26,6 @@
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
-import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
@@ -48,9 +47,12 @@ import {
 } from '../worker/attach.js';
 import { evaluateMergeGate } from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
+import {
+  peekDeployResolution,
+  peekVerifyResolution
+} from '../worker/repo-ops.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { readDeclaredBase } from '../worker/target-base.js';
-import { resolveVerifyCmd } from '../worker/verify-cmd.js';
 import {
   emitSessionLogAppend,
   emitSessionLogSnapshot,
@@ -228,10 +230,10 @@ export function withExternalPrWait(workspace_key, queue) {
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
- * @param {boolean} verify_cmd_present
+ * @param {'resolved'|'absent'|'invalid'} verify_cmd_state
  * @returns {Record<string, unknown>}
  */
-function prObservationsFor(workspace_key, queue, verify_cmd_present) {
+function prObservationsFor(workspace_key, queue, verify_cmd_state) {
   /** @type {Record<string, unknown>} */
   const out = {};
   const lane = Array.isArray(queue.pr_wait)
@@ -259,7 +261,7 @@ function prObservationsFor(workspace_key, queue, verify_cmd_present) {
       verify: record ? record.verify : null,
       error: record ? record.error : null,
       observed_at: record ? record.observed_at : null,
-      gate: evaluateMergeGate(record, { verify_cmd_present })
+      gate: evaluateMergeGate(record, { verify_cmd_state })
     };
   }
   return out;
@@ -540,19 +542,31 @@ export function decorateQueue(workspace_key, raw_queue) {
   // Overlaid FIRST so every decoration below — observations, activity, titles —
   // sees the external rows without knowing they exist (UI-7agi §2).
   const queue = withExternalPrWait(workspace_key, raw_queue);
-  /** @type {{ cmd: string[], timeout_ms: number } | null} */
-  let verify_cmd = null;
+  // Both commands come off the SAME two-rung ladder the worker executes
+  // (UI-kfl4), read through its synchronous projection because this decoration
+  // runs on every snapshot push and cannot await a git spawn. Display only —
+  // no merge, verification or deploy is decided here.
+  /** @type {import('../worker/repo-ops.js').VerifyResolution} */
+  let verify_resolution = { state: 'absent' };
   try {
-    verify_cmd = resolveVerifyCmd(workspace_key, getConfig().worker_verify);
+    verify_resolution = peekVerifyResolution(
+      workspace_key,
+      getConfig().worker_verify
+    );
   } catch {
-    verify_cmd = null;
+    verify_resolution = { state: 'absent' };
   }
+  const verify_cmd =
+    verify_resolution.state === 'resolved' ? verify_resolution.value : null;
   /** @type {{ cmd: string[], timeout_ms: number, detached: boolean } | null} */
   let deploy_cmd = null;
   try {
+    const deploy_resolution = peekDeployResolution(
+      workspace_key,
+      getConfig().worker_deploy
+    );
     deploy_cmd =
-      getConfig().worker_deploy[path.resolve(String(workspace_key || ''))] ||
-      null;
+      deploy_resolution.state === 'resolved' ? deploy_resolution.value : null;
   } catch {
     deploy_cmd = null;
   }
@@ -589,7 +603,11 @@ export function decorateQueue(workspace_key, raw_queue) {
     workspace_info: { verify_cmd, deploy_cmd, last_deploy, slots },
     // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
     // (worker-phase2 §4) — it exists only on the wire and in server memory.
-    pr_observations: prObservationsFor(workspace_key, queue, !!verify_cmd),
+    pr_observations: prObservationsFor(
+      workspace_key,
+      queue,
+      verify_resolution.state
+    ),
     // What is RUNNING against each `pr_wait` bead right now (UI-raqh §3/§4) —
     // observation/verification activity and merge progress. Also non-persisted.
     pr_activity: prActivityFor(workspace_key, queue),

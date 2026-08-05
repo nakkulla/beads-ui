@@ -531,7 +531,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
         }),
         tick: async () => {}
       },
-      resolveVerify: () => null,
+      resolveVerify: async () => ({ state: 'absent' }),
       requeryDelayMs: 0,
       sleep: async () => {}
     });
@@ -545,7 +545,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     // resolves to the tier that enabled the button.
     expect(
       evaluateMergeGate(observations.get(WS, 'M1'), {
-        verify_cmd_present: false
+        verify_cmd_state: 'absent'
       })
     ).toMatchObject({
       enabled: true,
@@ -642,7 +642,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
         }),
         tick: async () => {}
       },
-      resolveVerify: () => null,
+      resolveVerify: async () => ({ state: 'absent' }),
       requeryDelayMs: 0,
       sleep: async () => {}
     });

@@ -41,6 +41,11 @@ import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
+import {
+  peekVerifyResolution,
+  resolveDeployAt,
+  resolveVerifyAt
+} from './repo-ops.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
@@ -48,7 +53,7 @@ import { createScheduler } from './scheduler.js';
 import { createSessionMonitors } from './session-monitor.js';
 import { baseUnresolvedReason, resolveTargetBase } from './target-base.js';
 import { replayUsage } from './usage-replay.js';
-import { resolveVerifyCmd, runVerifyAtSha } from './verify-cmd.js';
+import { runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
@@ -557,32 +562,63 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   runtime.setRunningCountProvider(() => scheduler.runningCount());
 
   /**
-   * The workspace's resolved verify command, read LIVE (config can change
-   * between a poll and a click) — shared by the poller's pre-merge tier and the
-   * actions' click-time re-verification + post-merge verification.
+   * The base sha a PRE-MERGE resolution pins to: the FETCHED remote tip of the
+   * target base (UI-kfl4 §4.1). Null when the base cannot be resolved, which
+   * drops the declaration rung and leaves the legacy config rung answering
+   * alone — the behaviour that existed before the declaration was read at all.
    *
-   * @returns {import('./verify-cmd.js').ResolvedVerifyCmd|null}
+   * @returns {Promise<string|null>}
    */
-  const resolveVerify = () => {
+  const premergePin = async () => {
     try {
-      return resolveVerifyCmd(repo, getConfig().worker_verify);
+      const resolved = await resolveBase();
+      return resolved.ok ? resolved.base_oid : null;
     } catch {
       return null;
     }
   };
 
   /**
-   * The workspace's post-merge deploy command, also read LIVE so a config edit
-   * lands without a restart. Config-only by design (worker-deploy-hook §1):
-   * absent section = this repo has no deployment.
+   * The workspace's resolved verify command, read LIVE (both rungs can change
+   * between a poll and a click) — shared by the poller's pre-merge tier and the
+   * actions' click-time re-verification + post-merge verification.
    *
-   * @returns {import('./pr-actions.js').ResolvedDeployCmd|null}
+   * `pinned_sha` is the caller's context: the cleanup passes the base commit it
+   * synced to, everything else passes nothing and gets the pre-merge pin.
+   *
+   * @param {string|null} [pinned_sha]
+   * @returns {Promise<import('./repo-ops.js').VerifyResolution>}
    */
-  const resolveDeploy = () => {
+  const resolveVerify = async (pinned_sha = null) => {
     try {
-      return getConfig().worker_deploy[repo] || null;
+      return await resolveVerifyAt({
+        gitRun,
+        repo,
+        sha: pinned_sha || (await premergePin()),
+        config_map: getConfig().worker_verify
+      });
     } catch {
-      return null;
+      return { state: 'absent' };
+    }
+  };
+
+  /**
+   * The workspace's post-merge deploy command, on the same two-rung ladder and
+   * the same pin contract as {@link resolveVerify}.
+   *
+   * @param {string|null} [pinned_sha]
+   * @returns {Promise<import('./repo-ops.js').DeployResolution>}
+   */
+  const resolveDeploy = async (pinned_sha = null) => {
+    try {
+      return await resolveDeployAt({
+        gitRun,
+        repo,
+        sha: pinned_sha || (await premergePin()),
+        config_map: getConfig().worker_deploy
+      });
+    } catch {
+      return { state: 'absent' };
     }
   };
 
@@ -783,14 +819,17 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createAutoMerge({
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
-      verifyCmdPresent: () => {
+      // The enrollment scan is synchronous, so it reads the ladder through the
+      // cached projection (UI-kfl4): advisory shortlisting only — every item it
+      // queues is re-gated by `gateNow` against a fresh pin before it merges.
+      verifyCmdState: () => {
         try {
-          return !!resolveVerifyCmd(
+          return peekVerifyResolution(
             keyFor(workspace_root),
             getConfig().worker_verify
-          );
+          ).state;
         } catch {
-          return false;
+          return 'absent';
         }
       },
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
@@ -1173,11 +1212,11 @@ export function enrollWorkerMergeCandidates(workspace_root, input = {}) {
     createAutoMerge({
       workspace: key,
       store: getWorkerRuntime().queueStore,
-      verifyCmdPresent: () => {
+      verifyCmdState: () => {
         try {
-          return !!resolveVerifyCmd(key, getConfig().worker_verify);
+          return peekVerifyResolution(key, getConfig().worker_verify).state;
         } catch {
-          return false;
+          return 'absent';
         }
       },
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),

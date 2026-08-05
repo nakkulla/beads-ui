@@ -56,6 +56,7 @@ import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { evaluateMergeGate } from './merge-gate.js';
 import { resolvePrRef, rollupConclusion } from './pr-poller.js';
+import { isSelfRepo } from './repo-ops.js';
 import { shipExportedCapabilities } from './ship-capabilities.js';
 import { errorDetail, runVerifyCmd } from './verify-cmd.js';
 import { branchForBead } from './worktree.js';
@@ -101,9 +102,11 @@ export const CLEANUP_STEPS = [
 ];
 
 /**
- * A workspace's resolved post-merge deploy command (`[worker.deploy."<abs>"]`).
- * Config-only — unlike verify there is NO auto-detection, so a null resolution
- * means "this repo has no deployment", never "we could not guess one".
+ * A workspace's resolved post-merge deploy command — the repo's own `[deploy]`
+ * declaration first, the legacy `[worker.deploy."<abs>"]` config section second
+ * (UI-kfl4). Declared only, never guessed: there is NO auto-detection, so an
+ * `absent` resolution means "this repo has no deployment", never "we could not
+ * guess one".
  *
  * @typedef {Object} ResolvedDeployCmd
  * @property {string[]} cmd - Deploy argv (spawned WITHOUT a shell).
@@ -190,9 +193,10 @@ function isConflicting(pr) {
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
- *   resolveVerify?: () => ResolvedVerifyCmd|null,
+ *   resolveVerify?: (pinned_sha?: string|null) => Promise<import('./repo-ops.js').VerifyResolution>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
- *   resolveDeploy?: () => ResolvedDeployCmd|null,
+ *   resolveDeploy?: (pinned_sha?: string|null) => Promise<import('./repo-ops.js').DeployResolution>,
+ *   isSelfRepo?: (repo: string) => boolean,
  *   spawnImpl?: typeof spawn,
  *   notifyChanged?: (workspace: string) => void,
  *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void> },
@@ -213,8 +217,25 @@ export function createPrActions(deps) {
       ? deps.requeryDelayMs
       : DEFAULT_CLICK_REQUERY_DELAY_MS;
   const notifyChanged = deps.notifyChanged || (() => {});
-  const resolveVerify = deps.resolveVerify || (() => null);
-  const resolveDeploy = deps.resolveDeploy || (() => null);
+  const resolveVerify =
+    deps.resolveVerify ||
+    (() =>
+      Promise.resolve(
+        /** @type {import('./repo-ops.js').VerifyResolution} */ ({
+          state: 'absent'
+        })
+      ));
+  const resolveDeploy =
+    deps.resolveDeploy ||
+    (() =>
+      Promise.resolve(
+        /** @type {import('./repo-ops.js').DeployResolution} */ ({
+          state: 'absent'
+        })
+      ));
+  // Injectable so a fixture can stand in for "the repo this server runs from"
+  // without moving the process (UI-kfl4 §4.3).
+  const selfRepo = deps.isSelfRepo || isSelfRepo;
   const spawnImpl = deps.spawnImpl || spawn;
   const runVerify =
     deps.runVerify ||
@@ -572,13 +593,16 @@ export function createPrActions(deps) {
       return observed;
     }
     const pr = observed.pr;
-    const resolved = resolveVerify();
+    // Pre-merge context: the resolver pins rung 1 to the fetched remote
+    // target-base tip, so a PR cannot define the command that judges it
+    // (UI-kfl4 §4.1).
+    const resolved = await resolveVerify();
     let entry = deps.observations.get(workspace, bead_id);
     let verdict = evaluateMergeGate(entry, {
-      verify_cmd_present: !!resolved
+      verify_cmd_state: resolved.state
     });
     if (
-      resolved &&
+      resolved.state === 'resolved' &&
       !verdict.enabled &&
       verdict.tier === 'local_verify' &&
       (verdict.reason === 'verify_missing' ||
@@ -592,8 +616,8 @@ export function createPrActions(deps) {
           bead_id,
           sha: pr.head_sha,
           pr_number: number,
-          cmd: resolved.cmd,
-          timeout_ms: resolved.timeout_ms
+          cmd: resolved.value.cmd,
+          timeout_ms: resolved.value.timeout_ms
         });
       } catch (err) {
         log('click-time verification threw for %s: %o', bead_id, err);
@@ -606,7 +630,7 @@ export function createPrActions(deps) {
         at: now()
       });
       entry = deps.observations.get(workspace, bead_id);
-      verdict = evaluateMergeGate(entry, { verify_cmd_present: true });
+      verdict = evaluateMergeGate(entry, { verify_cmd_state: 'resolved' });
     }
     return { pr, verdict };
   }
@@ -706,17 +730,29 @@ export function createPrActions(deps) {
 
   /**
    * Step 2 — the repo's own post-merge verification, run against the MERGED base
-   * commit in a detached worktree. A repo that requires none (no configured or
-   * detectable `verify_cmd`) has nothing to run, which is a pass, not a skip
-   * that hides a failure.
+   * commit in a detached worktree. A repo that requires none (no declaration and
+   * no configured `verify_cmd`) has nothing to run, which is a pass, not a skip
+   * that hides a failure — but a declaration that cannot be READ is a failure,
+   * because "we could not tell" must never be recorded as "nothing to check"
+   * (UI-kfl4 §4.2).
+   *
+   * The resolution is pinned to `base_sha` — the merged base this step verifies
+   * — so the commands come from the same commit as the code they run against.
    *
    * @param {string} bead_id
    * @param {string} base_sha
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string, detail?: string, output_tail?: string, log_path?: string }>}
    */
   async function postMergeVerify(bead_id, base_sha) {
-    const resolved = resolveVerify();
-    if (!resolved) {
+    const resolved = await resolveVerify(base_sha);
+    if (resolved.state === 'invalid') {
+      return {
+        ok: false,
+        reason: 'verify_config_invalid',
+        detail: resolved.detail
+      };
+    }
+    if (resolved.state === 'absent') {
       return { ok: true };
     }
     /** @type {{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string }} */
@@ -727,8 +763,8 @@ export function createPrActions(deps) {
         bead_id: `${bead_id}-postmerge`,
         sha: base_sha,
         pr_number: null,
-        cmd: resolved.cmd,
-        timeout_ms: resolved.timeout_ms
+        cmd: resolved.value.cmd,
+        timeout_ms: resolved.value.timeout_ms
       });
     } catch (err) {
       log('post-merge verification threw for %s: %o', bead_id, err);
@@ -824,10 +860,24 @@ export function createPrActions(deps) {
   /**
    * Step 3 — the repo's post-merge DEPLOYMENT (worker-deploy-hook §2).
    *
-   * Three ways this returns without spawning anything:
+   * Ways this returns without spawning anything:
    *
-   *   - no `[worker.deploy]` section → nothing to run, which is a pass with the
-   *     same meaning verify's "no command" has,
+   *   - no `[deploy]` declaration and no `[worker.deploy]` section → nothing to
+   *     run, which is a pass with the same meaning verify's "no command" has —
+   *     EXCEPT in this server's own repo, see `deploy_missing_for_self` below,
+   *   - an unreadable declaration → `deploy_config_invalid` (UI-kfl4 §4.2): a
+   *     broken declaration never falls through to the legacy config rung, or the
+   *     drift the ladder closes would simply hide again,
+   *   - a non-`detached` deploy of THIS server's own repo →
+   *     `deploy_not_detached_for_self` (§4.3-2). A synchronous
+   *     `bdui-shared restart` kills the process mid-cleanup and strands every
+   *     remaining step; refusing at the declaration error is what keeps a
+   *     mis-declared PR from doing it,
+   *   - NOTHING to deploy in this server's own repo → `deploy_missing_for_self`
+   *     (§4.3-3). Elsewhere an absent deploy honestly means "this repo has no
+   *     deployment"; here it means the merge closes without the restart that
+   *     makes it a delivery, so it is named and banner-visible instead of
+   *     silent,
    *   - no RESOLVABLE verify command → `deploy_verify_missing`. "No verify = a
    *     pass" is a MERGE-GATE semantics; a deployment is not allowed to inherit
    *     it, or a deploy-only repo would ship code nothing ever checked,
@@ -854,11 +904,52 @@ export function createPrActions(deps) {
    * @returns {Promise<{ ok: true, pending: ResolvedDeployCmd|null }|{ ok: false, reason: string, detail?: string, output_tail?: string, log_path?: string }>}
    */
   async function runDeploy(bead_id, base_sha, target_base) {
-    const deploy = resolveDeploy();
-    if (!deploy) {
-      return { ok: true, pending: null };
+    // Post-merge context, so both resolutions pin to the base commit the
+    // cleanup synced to (UI-kfl4 §4.1).
+    const resolution = await resolveDeploy(base_sha);
+    const self = selfRepo(repo);
+    if (resolution.state === 'invalid') {
+      deps.store.recordLastDeploy(
+        workspace,
+        deployRecord('failed', 'deploy_config_invalid', bead_id, base_sha, {
+          detail: resolution.detail
+        })
+      );
+      return {
+        ok: false,
+        reason: 'deploy_config_invalid',
+        detail: resolution.detail
+      };
     }
-    if (!resolveVerify()) {
+    if (resolution.state === 'absent') {
+      if (!self) {
+        return { ok: true, pending: null };
+      }
+      log('deploy declaration missing for this server own repo %s', repo);
+      deps.store.recordLastDeploy(
+        workspace,
+        deployRecord('failed', 'deploy_missing_for_self', bead_id, base_sha)
+      );
+      return { ok: false, reason: 'deploy_missing_for_self' };
+    }
+    const deploy = resolution.value;
+    if (self && !deploy.detached) {
+      // Applied to BOTH rungs on purpose: a config.toml entry that forgot
+      // `detached` is the same self-kill as a declaration that did.
+      log('deploy refused for %s: self repo deploy is not detached', bead_id);
+      deps.store.recordLastDeploy(
+        workspace,
+        deployRecord(
+          'failed',
+          'deploy_not_detached_for_self',
+          bead_id,
+          base_sha,
+          { detail: resolution.source }
+        )
+      );
+      return { ok: false, reason: 'deploy_not_detached_for_self' };
+    }
+    if ((await resolveVerify(base_sha)).state !== 'resolved') {
       deps.store.recordLastDeploy(
         workspace,
         deployRecord('failed', 'deploy_verify_missing', bead_id, base_sha)

@@ -53,8 +53,8 @@ function ciOf(ci = {}) {
   };
 }
 
-const NO_VERIFY = { verify_cmd_present: false };
-const WITH_VERIFY = { verify_cmd_present: true };
+const NO_VERIFY = /** @type {const} */ ({ verify_cmd_state: 'absent' });
+const WITH_VERIFY = /** @type {const} */ ({ verify_cmd_state: 'resolved' });
 
 describe('worker/merge-gate — tier 1: the repo has CI', () => {
   test('enables the gate on green checks', () => {
@@ -243,6 +243,41 @@ describe('worker/merge-gate — terminal PR states (§4)', () => {
       tier: 'closed_unmerged',
       gate_badge: 'PR closed'
     });
+  });
+});
+
+describe('worker/merge-gate — an unreadable verify declaration (UI-kfl4)', () => {
+  const BROKEN = /** @type {const} */ ({ verify_cmd_state: 'invalid' });
+
+  test('blocks as undecidable instead of falling to the no-signal tier', () => {
+    const entry = entryOf({ ci: ciOf({ state: 'empty', conclusion: null }) });
+
+    const v = evaluateMergeGate(entry, BROKEN);
+
+    // The whole point of the third state: collapsing it to `none` would turn a
+    // broken `[verify]` section into an unverified-merge path.
+    expect(v).toMatchObject({
+      enabled: false,
+      tier: 'undecidable',
+      reason: 'verify_config_invalid'
+    });
+  });
+
+  test('blocks even on green CI — the declaration also drives the post-merge steps', () => {
+    const entry = entryOf({
+      ci: ciOf({ state: 'ok', conclusion: 'pass' })
+    });
+
+    expect(evaluateMergeGate(entry, BROKEN)).toMatchObject({
+      enabled: false,
+      tier: 'undecidable'
+    });
+  });
+
+  test('leaves an ALREADY MERGED pr reporting its terminal state', () => {
+    const entry = entryOf({ pr: prOf({ state: 'MERGED' }) });
+
+    expect(evaluateMergeGate(entry, BROKEN).tier).toBe('merged');
   });
 });
 

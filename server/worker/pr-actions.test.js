@@ -122,6 +122,10 @@ function seedStore(options = {}) {
  *   verify?: { cmd: string[], timeout_ms: number }|null,
  *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string }>,
  *   deploy?: { cmd: string[], timeout_ms: number, detached: boolean }|null,
+ *   verifyResolution?: import('./repo-ops.js').VerifyResolution,
+ *   verifyResolutions?: Array<import('./repo-ops.js').VerifyResolution>,
+ *   deployResolution?: import('./repo-ops.js').DeployResolution,
+ *   isSelfRepo?: (repo: string) => boolean,
  *   deploySpawn?: 'ok'|'fail'|'hang'|'error'|'throw',
  *   deployOutput?: string[],
  *   repo?: string,
@@ -162,6 +166,8 @@ function makeActions(options = {}) {
 
   const details = options.details || [prOf()];
   let detail_i = 0;
+  /** How many verify resolutions the actions have asked for. */
+  let verify_resolutions = 0;
   // What GitHub reports about the PR once OUR merge command has returned zero.
   // The default is the ordinary case (it really merged); a test overrides it to
   // model a merge queue that only ENQUEUED the PR, or an unreadable re-check.
@@ -535,9 +541,37 @@ function makeActions(options = {}) {
         base_oid: 'a'.repeat(40),
         local_only: false
       })),
-    resolveVerify: () => options.verify ?? null,
+    // The two-rung resolvers (UI-kfl4). `verify`/`deploy` stay the shorthand
+    // for "this repo resolves THIS command"; `verifyResolution` /
+    // `deployResolution` are what the three-state tests override with.
+    resolveVerify: async () =>
+      // `verifyResolutions` walks one entry per resolution call and holds on the
+      // last — how a base that advanced between the click gate and the cleanup
+      // is expressed.
+      (Array.isArray(options.verifyResolutions)
+        ? options.verifyResolutions[
+            Math.min(verify_resolutions++, options.verifyResolutions.length - 1)
+          ]
+        : null) ??
+      options.verifyResolution ??
+      (options.verify
+        ? {
+            state: /** @type {const} */ ('resolved'),
+            source: /** @type {const} */ ('config'),
+            value: options.verify
+          }
+        : { state: /** @type {const} */ ('absent') }),
     runVerify,
-    resolveDeploy: () => options.deploy ?? null,
+    resolveDeploy: async () =>
+      options.deployResolution ??
+      (options.deploy
+        ? {
+            state: /** @type {const} */ ('resolved'),
+            source: /** @type {const} */ ('config'),
+            value: options.deploy
+          }
+        : { state: /** @type {const} */ ('absent') }),
+    isSelfRepo: options.isSelfRepo || (() => false),
     spawnImpl: /** @type {any} */ (spawnImpl),
     requeryDelayMs: 0,
     sleep: async () => {},
@@ -912,6 +946,56 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     expect(q.done).toEqual([]);
     expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
     expect(h.worktree.removeByBranch).not.toHaveBeenCalled();
+  });
+
+  test('refuses the click outright on an unreadable verify declaration (UI-kfl4 §4.2)', async () => {
+    const h = makeActions({
+      verifyResolution: {
+        state: 'invalid',
+        source: 'declaration',
+        detail: 'verify:cmd_not_a_nonempty_argv_array'
+      }
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    // The gate goes undecidable rather than dropping to the no-signal tier, so
+    // nothing merges and no cleanup starts.
+    expect(r).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'verify_config_invalid'
+    });
+    expect(h.calls).not.toContain('gh:mergeSquash');
+  });
+
+  test('fails post_merge_verify when the declaration breaks after the gate passed', async () => {
+    const h = makeActions({
+      // 1st resolution = the click-time gate (a valid declaration), from the
+      // 2nd on = the cleanup, pinned to a base that advanced onto a broken one.
+      verifyResolutions: [
+        { state: 'resolved', source: 'declaration', value: VERIFY_CFG },
+        {
+          state: 'invalid',
+          source: 'declaration',
+          detail: 'verify:cmd_not_a_nonempty_argv_array'
+        }
+      ]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    // "We could not tell what to run" must never be recorded as "there was
+    // nothing to check", which is the passing branch right next to it.
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'post_merge_verify',
+      reason: 'verify_config_invalid'
+    });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_verify',
+      reason: 'verify_config_invalid'
+    });
   });
 
   test('survives a restart: the cleanup failure is reloaded from queue.json', async () => {
@@ -1400,6 +1484,104 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
     expect(r).toMatchObject({
       cleanup_step: 'deploy',
       reason: 'deploy_spawn_error'
+    });
+  });
+
+  test('refuses a non-detached deploy of this server own repo (UI-kfl4 §4.3-2)', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_SYNC,
+      isSelfRepo: () => true,
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'deploy',
+      reason: 'deploy_not_detached_for_self'
+    });
+    // A synchronous restart would kill this process mid-cleanup, so nothing is
+    // allowed to spawn.
+    expect(h.spawnImpl).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_not_detached_for_self'
+    });
+  });
+
+  test('still allows a DETACHED deploy of this server own repo', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      isSelfRepo: () => true,
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, reason: null });
+  });
+
+  test('names the lost restart when this server own repo declares no deploy (UI-kfl4 §4.3-3)', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      isSelfRepo: () => true,
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    // Elsewhere an absent deploy is an honest pass; here it means the merge
+    // closes without the restart that makes it a delivery.
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'deploy',
+      reason: 'deploy_missing_for_self'
+    });
+    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_missing_for_self'
+    });
+  });
+
+  test('keeps an absent deploy a pass in any OTHER repo', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      isSelfRepo: () => false,
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, reason: null });
+    expect(h.store.snapshot(WS).last_deploy).toBeNull();
+  });
+
+  test('stops on an unreadable deploy declaration instead of falling back (UI-kfl4 §4.2)', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deployResolution: {
+        state: 'invalid',
+        source: 'declaration',
+        detail: 'deploy:cmd_not_a_nonempty_argv_array'
+      },
+      ...ON_BASE
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'deploy',
+      reason: 'deploy_config_invalid'
+    });
+    expect(h.spawnImpl).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'failed',
+      reason: 'deploy_config_invalid',
+      detail: 'deploy:cmd_not_a_nonempty_argv_array'
     });
   });
 

@@ -62,7 +62,7 @@ function enroller(store, input = {}) {
   const auto = createAutoMerge({
     workspace: WS,
     store,
-    verifyCmdPresent: () => true,
+    verifyCmdState: () => 'resolved',
     headSha: (bead_id) =>
       input.heads && bead_id in input.heads ? input.heads[bead_id] : HEAD,
     lane: () =>
@@ -196,7 +196,7 @@ describe('worker/auto-merge — 워커 소유 Bead 비후보 (UI-b8n8 §접근 A
     return createAutoMerge({
       workspace: WS,
       store,
-      verifyCmdPresent: () => false,
+      verifyCmdState: () => 'absent',
       headSha: () => HEAD,
       notifyChanged: vi.fn(),
       kick: vi.fn(async () => {})
@@ -286,7 +286,7 @@ describe('worker/auto-merge — 구독 (UI-yk55 §4.1/§4.3)', () => {
     const auto = createAutoMerge({
       workspace: WS,
       store,
-      verifyCmdPresent: () => true,
+      verifyCmdState: () => 'resolved',
       headSha: () => HEAD,
       lane: () => [
         { bead_id: 'UI-1', external: false },
@@ -346,7 +346,7 @@ describe('worker/auto-merge — 구독 (UI-yk55 §4.1/§4.3)', () => {
     const auto = createAutoMerge({
       workspace: WS,
       store,
-      verifyCmdPresent: () => true,
+      verifyCmdState: () => 'resolved',
       headSha: () => HEAD,
       lane: () => {
         throw new Error('boom');
