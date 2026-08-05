@@ -165,10 +165,10 @@ export function overlaidPrWait(workspace_key, queue) {
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue - The OVERLAID snapshot (external rows
  * included), i.e. what the lane actually renders.
- * @param {boolean} verify_cmd_present
+ * @param {'resolved'|'absent'|'invalid'} verify_cmd_state
  * @returns {Array<{ bead_id: string, external: boolean }>}
  */
-export function mergeQueueCandidates(workspace_key, queue, verify_cmd_present) {
+export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
   const lane = Array.isArray(queue.pr_wait)
     ? /** @type {any[]} */ (queue.pr_wait)
     : [];
@@ -194,7 +194,7 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_present) {
     }
     const external = entry.external === true;
     const gate = evaluateMergeGate(observed[bead_id] || null, {
-      verify_cmd_present
+      verify_cmd_state
     });
     const conflicting = gate.base_badge === '충돌';
     const merged_tier = gate.tier === 'merged';

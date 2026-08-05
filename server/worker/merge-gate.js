@@ -8,6 +8,7 @@
  * | no CI + `verify_cmd` resolved | only with a local green FOR | 로컬검증 ✓   |
  * |                               | THE CURRENT head SHA        |              |
  * | neither (successful empties)  | no gate                     | 검증 신호 없음 |
+ * | `verify_cmd` UNREADABLE       | blocked, undecidable        | 관측 오류    |
  *
  * Two rules dominate everything else here:
  *
@@ -95,9 +96,10 @@ function baseBadge(pr) {
  *
  * @param {PrObservationEntry|null} entry - The bead's observation, or null when
  * the poller has not observed it yet.
- * @param {{ verify_cmd_present: boolean }} options - Whether a `verify_cmd`
- * resolves for this workspace (explicit config or auto-detection — the second
- * tier only exists when one does).
+ * @param {{ verify_cmd_state: 'resolved'|'absent'|'invalid' }} options - How the
+ * workspace's verify command RESOLVES (UI-kfl4). The second tier exists only for
+ * `resolved`; `invalid` is a declaration that cannot be read and is handled by
+ * fail-closed rule 3 below.
  * @returns {MergeGateVerdict}
  */
 export function evaluateMergeGate(entry, options) {
@@ -148,6 +150,21 @@ export function evaluateMergeGate(entry, options) {
   }
 
   const base = baseBadge(pr);
+  // Fail-closed rule 3 (UI-kfl4): a verify declaration that EXISTS but cannot be
+  // read is undecidable, never tier 3. Collapsing it to "검증 신호 없음" would
+  // turn a broken `[verify]` section into an unverified-merge path — the exact
+  // inversion rule 1 forbids for observation errors. Checked ahead of the CI
+  // tier because the declaration is also what the post-merge steps read: a repo
+  // whose declaration is unreadable should not be merged on ANY signal.
+  if (options.verify_cmd_state === 'invalid') {
+    return verdict(
+      false,
+      'undecidable',
+      GATE_BADGES.error,
+      base,
+      'verify_config_invalid'
+    );
+  }
   const ci = entry.ci;
   if (!ci || ci.state === 'error') {
     return verdict(
@@ -182,7 +199,7 @@ export function evaluateMergeGate(entry, options) {
   }
 
   // Tier 2 — a SUCCESSFUL empty checks observation plus a resolved verify_cmd.
-  if (options.verify_cmd_present) {
+  if (options.verify_cmd_state === 'resolved') {
     const v = entry.verify;
     if (!v || v.head_sha !== pr.head_sha) {
       // No result for the current head: a cache miss after a restart, or the

@@ -41,6 +41,11 @@ import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
+import {
+  peekVerifyResolution,
+  resolveDeployAt,
+  resolveVerifyAt
+} from './repo-ops.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
@@ -48,7 +53,7 @@ import { createScheduler } from './scheduler.js';
 import { createSessionMonitors } from './session-monitor.js';
 import { baseUnresolvedReason, resolveTargetBase } from './target-base.js';
 import { replayUsage } from './usage-replay.js';
-import { resolveVerifyCmd, runVerifyAtSha } from './verify-cmd.js';
+import { runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
@@ -557,32 +562,85 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   runtime.setRunningCountProvider(() => scheduler.runningCount());
 
   /**
-   * The workspace's resolved verify command, read LIVE (config can change
-   * between a poll and a click) — shared by the poller's pre-merge tier and the
-   * actions' click-time re-verification + post-merge verification.
+   * The base sha a PRE-MERGE resolution pins to: the FETCHED remote tip of the
+   * target base (UI-kfl4 §4.1). Null when the base cannot be resolved, which
+   * drops the declaration rung and leaves the legacy config rung answering
+   * alone — the behaviour that existed before the declaration was read at all.
    *
-   * @returns {import('./verify-cmd.js').ResolvedVerifyCmd|null}
+   * @returns {Promise<string|null>}
    */
-  const resolveVerify = () => {
+  const premergePin = async (/** @type {boolean} */ force) => {
     try {
-      return resolveVerifyCmd(repo, getConfig().worker_verify);
+      const resolved = await resolveBase(force ? { force: true } : {});
+      return resolved.ok ? resolved.base_oid : null;
     } catch {
       return null;
     }
   };
 
   /**
-   * The workspace's post-merge deploy command, also read LIVE so a config edit
-   * lands without a restart. Config-only by design (worker-deploy-hook §1):
-   * absent section = this repo has no deployment.
+   * Which commit a resolution reads rung 1 from.
    *
-   * @returns {import('./pr-actions.js').ResolvedDeployCmd|null}
+   * @typedef {Object} OpsPin
+   * @property {string|null} [sha] - An explicit pin: the cleanup's synced base
+   * commit. Everything else omits it and takes the pre-merge pin.
+   * @property {boolean} [force] - Re-resolve the target base instead of taking
+   * the scan memo. Set by the AUTHORITATIVE click-time gate, whose whole job is
+   * to judge against the base as it stands right now.
    */
-  const resolveDeploy = () => {
+
+  /**
+   * The workspace's resolved verify command, read LIVE (both rungs can change
+   * between a poll and a click) — shared by the poller's pre-merge tier and the
+   * actions' click-time re-verification + post-merge verification.
+   *
+   * A THROWN resolution is `invalid`, not `absent`: a resolver that could not
+   * answer must never be read as a repo that declares nothing, which is a
+   * passing tier for the merge gate.
+   *
+   * @param {OpsPin} [pin]
+   * @returns {Promise<import('./repo-ops.js').VerifyResolution>}
+   */
+  const resolveVerify = async (pin = {}) => {
     try {
-      return getConfig().worker_deploy[repo] || null;
-    } catch {
-      return null;
+      return await resolveVerifyAt({
+        gitRun,
+        repo,
+        sha: pin.sha || (await premergePin(pin.force === true)),
+        config_map: getConfig().worker_verify
+      });
+    } catch (err) {
+      log('verify resolution failed for %s: %o', repo, err);
+      return {
+        state: 'invalid',
+        source: 'declaration',
+        detail: 'resolver_threw'
+      };
+    }
+  };
+
+  /**
+   * The workspace's post-merge deploy command, on the same two-rung ladder and
+   * the same pin contract as {@link resolveVerify}.
+   *
+   * @param {OpsPin} [pin]
+   * @returns {Promise<import('./repo-ops.js').DeployResolution>}
+   */
+  const resolveDeploy = async (pin = {}) => {
+    try {
+      return await resolveDeployAt({
+        gitRun,
+        repo,
+        sha: pin.sha || (await premergePin(pin.force === true)),
+        config_map: getConfig().worker_deploy
+      });
+    } catch (err) {
+      log('deploy resolution failed for %s: %o', repo, err);
+      return {
+        state: 'invalid',
+        source: 'declaration',
+        detail: 'resolver_threw'
+      };
     }
   };
 
@@ -783,14 +841,17 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createAutoMerge({
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
-      verifyCmdPresent: () => {
+      // The enrollment scan is synchronous, so it reads the ladder through the
+      // cached projection (UI-kfl4): advisory shortlisting only — every item it
+      // queues is re-gated by `gateNow` against a fresh pin before it merges.
+      verifyCmdState: () => {
         try {
-          return !!resolveVerifyCmd(
+          return peekVerifyResolution(
             keyFor(workspace_root),
             getConfig().worker_verify
-          );
+          ).state;
         } catch {
-          return false;
+          return 'absent';
         }
       },
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
@@ -1173,11 +1234,11 @@ export function enrollWorkerMergeCandidates(workspace_root, input = {}) {
     createAutoMerge({
       workspace: key,
       store: getWorkerRuntime().queueStore,
-      verifyCmdPresent: () => {
+      verifyCmdState: () => {
         try {
-          return !!resolveVerifyCmd(key, getConfig().worker_verify);
+          return peekVerifyResolution(key, getConfig().worker_verify).state;
         } catch {
-          return false;
+          return 'absent';
         }
       },
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),

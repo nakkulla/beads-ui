@@ -135,17 +135,25 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   배포까지 마쳐야 완료다. 머지 후 (1) `~/.config/bdui/config.toml` 런타임 설정
   정합을 확인하고, (2) `bdui-shared restart`로 공유 서버를 재시작한 뒤, (3) 아래
   검증(프로세스 경로·포트·HTTP 응답)을 통과한 다음에만 작업 완료를 선언한다.
-- **배포 선언의 SoT는 `docs/agents/repo-ops.toml`의 `[deploy]`다 — 루트
-  `deploy.json`이 아니다**: 이 저장소의 머지 후 재시작은 그 파일에
-  `cmd = ["bdui-shared", "restart"]`, `detached = true`로 선언돼 있고, 실행
-  표면인 `~/.config/bdui/config.toml`의
-  `[worker.deploy."<이 저장소 절대경로>"]`가 같은 값을 들고 있으며(대조는
-  dotfiles `scripts/repo_ops_check.py` warn-only), 워커의 머지 후 정리 sweep이
-  실행한다. 단 `detached = true`라 `CLEANUP_STEPS`의 `deploy` 단계에서 바로 뜨지
-  않는다 — 그 단계는 명령을 `pending`으로 넘기기만 하고, 실제
+- **배포 선언의 SoT이자 실행 표면은 `docs/agents/repo-ops.toml`의 `[deploy]`다 —
+  루트 `deploy.json`이 아니다**: 이 저장소의 머지 후 재시작은 그 파일에
+  `cmd = ["bdui-shared", "restart"]`, `detached = true`로 선언돼 있고, 워커가 그
+  선언을 직접 읽어(`server/worker/repo-ops.js`) 머지 후 정리 sweep에서 실행한다.
+  `~/.config/bdui/config.toml`의
+  `[worker.verify."<abs>"]`·`[worker.deploy."<abs>"]`는 선언 섹션이 없을 때만
+  쓰이는 **레거시 폴백**으로 남았다(대조는 dotfiles `scripts/repo_ops_check.py`
+  warn-only). 선언은 워킹트리가 아니라 핀된 base SHA의 git blob에서 읽으므로 —
+  머지 전은 fetch된 target-base tip, 머지 후는 `base_sync`가 확정한 SHA — PR이
+  자기 검증 명령을 정의할 수 없다. 선언이 있으나 해석 불가면 폴백으로 넘어가지
+  않고 fail-closed다(verify는 머지 게이트 차단, deploy는
+  `deploy_config_invalid`). 단 `detached = true`라 `CLEANUP_STEPS`의 `deploy`
+  단계에서 바로 뜨지 않는다 — 그 단계는 명령을 `pending`으로 넘기기만 하고, 실제
   `bdui-shared restart`는 나머지 정리 단계가 모두 성공하고 durable 기록이 끝난
   뒤 마지막에 launch된다 (`server/worker/pr-actions.js` THE TERMINAL LAUNCH).
-  재시작이 이 서버 자신을 죽이기 때문이다.
+  재시작이 이 서버 자신을 죽이기 때문이다. 이 저장소가 배포 대상일 때
+  `detached`가 아닌 선언은 `deploy_not_detached_for_self`로 거부되고, 두 단 모두
+  `[deploy]`가 없으면 `deploy_missing_for_self`로 정리가 멈춘다 — 재시작 없는
+  조용한 머지 종료를 막기 위해서다.
 - **자동 경로는 이 서버의 [머지] 클릭으로 머지된 PR에만 걸린다**: github.com에서
   직접 머지한 PR은 external row로 **관측만 기록되고 정리가 자동으로 돌지
   않는다** (`server/worker/pr-poller.js` — 레인에 `머지됨 · 정리`가 뜨고 [정리]

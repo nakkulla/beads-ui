@@ -169,7 +169,7 @@ export function rollupConclusion(checks) {
  *   observations: ReturnType<typeof import('./pr-observations.js').createPrObservationStore>,
  *   activity?: ReturnType<typeof import('./activity-store.js').createActivityStore>,
  *   getSubscriberCount: () => number,
- *   resolveVerify?: () => import('./verify-cmd.js').ResolvedVerifyCmd|null,
+ *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').VerifyResolution>,
  *   worktree?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
@@ -197,7 +197,14 @@ export function createPrPoller(deps) {
       ? deps.requeryDelayMs
       : DEFAULT_UNKNOWN_REQUERY_DELAY_MS;
   const notifyChanged = deps.notifyChanged || (() => {});
-  const resolveVerify = deps.resolveVerify || (() => null);
+  const resolveVerify =
+    deps.resolveVerify ||
+    (() =>
+      Promise.resolve(
+        /** @type {import('./repo-ops.js').VerifyResolution} */ ({
+          state: 'absent'
+        })
+      ));
   const runVerify =
     deps.runVerify ||
     ((/** @type {any} */ input) =>
@@ -392,11 +399,22 @@ export function createPrPoller(deps) {
             };
     deps.observations.record(workspace, bead_id, { error: null, pr, ci });
 
+    // Resolved on EVERY pass, CI or no CI (UI-kfl4 §4.1). The run below only
+    // needs it in the no-CI tier, but the SYNCHRONOUS consumers — the queue
+    // decoration's gate verdict and the auto-merge enrollment scan — read the
+    // projection this call publishes. Resolving only in the no-CI branch left a
+    // repo WITH CI publishing nothing, so a broken declaration rendered as a
+    // mergeable row and got enrolled.
+    // Pre-merge context, so the pin is the fetched remote target-base tip that
+    // the injected resolver supplies.
+    const resolved = await resolveVerify();
     if (ci.state !== 'empty') {
       return { verify: null };
     }
-    const resolved = resolveVerify();
-    if (!resolved) {
+    // An `invalid` declaration starts NO run: the gate refuses the row as
+    // undecidable, and running a command resolved from the legacy fallback
+    // would be the silent drift the ladder exists to end.
+    if (resolved.state !== 'resolved') {
       return { verify: null };
     }
     const prior = deps.observations.get(workspace, bead_id);
@@ -404,7 +422,7 @@ export function createPrPoller(deps) {
       return { verify: null };
     }
     return {
-      verify: startVerify(bead_id, ref.number, pr.head_sha, resolved)
+      verify: startVerify(bead_id, ref.number, pr.head_sha, resolved.value)
     };
   }
 

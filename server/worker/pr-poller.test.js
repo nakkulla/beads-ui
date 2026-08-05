@@ -99,7 +99,7 @@ function makePoller(input = {}) {
     observations,
     activity,
     getSubscriberCount: () => input.subscribers ?? 1,
-    resolveVerify: input.resolveVerify ?? (() => null),
+    resolveVerify: input.resolveVerify ?? (async () => ({ state: 'absent' })),
     runVerify: input.runVerify,
     onMerged: input.onMerged,
     external: input.external,
@@ -359,7 +359,11 @@ describe('worker/pr-poller — observation errors fail closed', () => {
 });
 
 describe('worker/pr-poller — local verification binding (§5)', () => {
-  const RESOLVED = { cmd: ['npm', 'test'], timeout_ms: 1000 };
+  const RESOLVED = /** @type {const} */ ({
+    state: 'resolved',
+    source: 'declaration',
+    value: { cmd: ['npm', 'test'], timeout_ms: 1000 }
+  });
 
   test('runs the verification pinned to the observed head sha', async () => {
     const runVerify = vi.fn(async () => ({
@@ -368,7 +372,7 @@ describe('worker/pr-poller — local verification binding (§5)', () => {
       exit: 0
     }));
     const { poller, observations } = makePoller({
-      resolveVerify: () => RESOLVED,
+      resolveVerify: async () => RESOLVED,
       runVerify
     });
 
@@ -391,7 +395,7 @@ describe('worker/pr-poller — local verification binding (§5)', () => {
     const runVerify = vi.fn();
     const { poller } = makePoller({
       checks: { state: 'ok', data: [{ name: 'build', conclusion: 'pass' }] },
-      resolveVerify: () => RESOLVED,
+      resolveVerify: async () => RESOLVED,
       runVerify
     });
 
@@ -400,9 +404,28 @@ describe('worker/pr-poller — local verification binding (§5)', () => {
     expect(runVerify).not.toHaveBeenCalled();
   });
 
+  test('resolves the declaration even for a repo that HAS ci (UI-kfl4)', async () => {
+    const resolveVerify = vi.fn(async () => RESOLVED);
+    const { poller } = makePoller({
+      checks: { state: 'ok', data: [{ name: 'build', conclusion: 'pass' }] },
+      resolveVerify,
+      runVerify: vi.fn()
+    });
+
+    await poller.tick();
+
+    // The run below needs it only in the no-CI tier, but the synchronous
+    // consumers read the projection this call publishes: skipping it left a
+    // broken declaration rendering as a mergeable row.
+    expect(resolveVerify).toHaveBeenCalled();
+  });
+
   test('does not run a verification without a resolved verify_cmd', async () => {
     const runVerify = vi.fn();
-    const { poller } = makePoller({ resolveVerify: () => null, runVerify });
+    const { poller } = makePoller({
+      resolveVerify: async () => ({ state: 'absent' }),
+      runVerify
+    });
 
     await poller.tick();
 
@@ -420,7 +443,7 @@ describe('worker/pr-poller — local verification binding (§5)', () => {
     const runVerify = vi.fn();
     const { poller } = makePoller({
       observations,
-      resolveVerify: () => RESOLVED,
+      resolveVerify: async () => RESOLVED,
       runVerify
     });
 
@@ -441,7 +464,7 @@ describe('worker/pr-poller — local verification binding (§5)', () => {
     const { poller } = makePoller({
       observations,
       detail: { state: 'ok', data: detailOf({ head_sha: NEW_SHA }) },
-      resolveVerify: () => RESOLVED,
+      resolveVerify: async () => RESOLVED,
       runVerify
     });
 
@@ -457,7 +480,7 @@ describe('worker/pr-poller — local verification binding (§5)', () => {
     const runVerify = vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }));
     const { poller } = makePoller({
       observations: createPrObservationStore(),
-      resolveVerify: () => RESOLVED,
+      resolveVerify: async () => RESOLVED,
       runVerify
     });
 
@@ -471,7 +494,7 @@ describe('worker/pr-poller — local verification binding (§5)', () => {
     const runVerify = vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }));
     const { poller } = makePoller({
       observations,
-      resolveVerify: () => RESOLVED,
+      resolveVerify: async () => RESOLVED,
       runVerify
     });
 
@@ -584,7 +607,11 @@ describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
     const { poller } = makePoller({
       activity,
       checks: { state: 'empty' },
-      resolveVerify: () => ({ cmd: ['npm', 'test'], timeout_ms: 1000 }),
+      resolveVerify: async () => ({
+        state: 'resolved',
+        source: 'declaration',
+        value: { cmd: ['npm', 'test'], timeout_ms: 1000 }
+      }),
       runVerify: () => gate.then(() => ({ ok: true, reason: 'ok', exit: 0 }))
     });
 
@@ -610,7 +637,11 @@ describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
     const { poller } = makePoller({
       activity,
       checks: { state: 'empty' },
-      resolveVerify: () => ({ cmd: ['npm', 'test'], timeout_ms: 1000 }),
+      resolveVerify: async () => ({
+        state: 'resolved',
+        source: 'declaration',
+        value: { cmd: ['npm', 'test'], timeout_ms: 1000 }
+      }),
       runVerify: () => gate.then(() => ({ ok: true, reason: 'ok', exit: 0 }))
     });
     const first = poller.tick();

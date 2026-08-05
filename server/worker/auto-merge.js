@@ -36,9 +36,9 @@ import {
  * @param {{
  *   workspace: string,
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
- *   verifyCmdPresent: () => boolean,
+ *   verifyCmdState: () => 'resolved'|'absent'|'invalid',
  *   headSha?: (bead_id: string) => string|null,
- *   candidates?: (workspace: string, queue: Record<string, unknown>, verify_cmd_present: boolean) => Array<{ bead_id: string, external: boolean }>,
+ *   candidates?: (workspace: string, queue: Record<string, unknown>, verify_cmd_state: 'resolved'|'absent'|'invalid') => Array<{ bead_id: string, external: boolean }>,
  *   lane?: (workspace: string, queue: Record<string, unknown>) => Array<{ bead_id: string, external: boolean }>,
  *   notifyChanged?: (workspace: string) => void,
  *   kick?: () => unknown,
@@ -80,15 +80,18 @@ export function createAutoMerge(deps) {
     const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
     const rows = lane(workspace, snapshot);
     const overlaid = { ...snapshot, pr_wait: rows };
-    let verify_cmd_present = false;
+    /** @type {'resolved'|'absent'|'invalid'} */
+    let verify_cmd_state = 'absent';
     try {
-      verify_cmd_present = !!deps.verifyCmdPresent();
+      verify_cmd_state = deps.verifyCmdState();
     } catch {
-      verify_cmd_present = false;
+      // An unreadable resolution is not a broken declaration — it is no
+      // declaration this pass could see, so the gate falls to its own tiers.
+      verify_cmd_state = 'absent';
     }
     /** @type {Array<{ bead_id: string, external: boolean, head_sha: string }>} */
     const entries = [];
-    for (const c of candidates(workspace, overlaid, verify_cmd_present)) {
+    for (const c of candidates(workspace, overlaid, verify_cmd_state)) {
       const head_sha = headSha(c.bead_id);
       if (!head_sha) {
         // Fail closed, the merge gate's own first rule: an unreadable head
