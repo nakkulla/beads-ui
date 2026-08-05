@@ -41,14 +41,24 @@
 
 - `index.js`에서 `.worker-auto-all` 버튼 렌더(:2204-2227), `setAutoAll()`
   (:1465-1467), 클릭 배선(:3010-3014), 관련 파생 상태(`auto_all_on`)를
-  제거한다. `자동 진행`(`.worker-play`)·`자동 머지` 토글은 변경 없음.
+  제거한다. `자동 진행`(`.worker-play`) 토글은 변경 없음.
+- **자동 머지 토글의 상시 접근 보장**: 현행 `.worker-merge-all`은
+  `nowPanelTemplate()` 안에만 있어(index.js:2324, :2468-2494) 실행중·PR
+  대기가 모두 없으면 패널과 함께 사라진다. 지금까지는 툴바의
+  `.worker-auto-all`이 그 빈틈을 메웠으므로, 버튼만 제거하면 idle 상태(특히
+  모바일)에서 `auto_merge`를 조작할 수단이 없어진다. 자동 머지 토글을
+  `자동 진행` 옆 툴바 위치로 옮겨(또는 툴바에 항상 렌더해) 패널 유무와
+  무관하게 항상 접근 가능하게 한다.
 - 관련 CSS(`.worker-auto-all`)와 테스트 참조를 함께 정리한다.
 
 ### 4.2 실패 어템프트 타일
 
-- 타일 소스 확장: `status='failed'|'orphaned'`이고 `dismissed_at`이 없는
-  어템프트도 실행 그리드에 타일로 렌더한다. 기존 실패 배너의 유도 조건과 같은
-  집합이므로 배너와 타일이 같은 실패를 가리킨다.
+- 타일 소스 확장: `status='failed'|'orphaned'`이고 **미처리**인 어템프트만
+  실행 그리드에 타일로 렌더한다. 미처리 판정은 기존 배너 유도가 쓰는 조건과
+  같은 술어를 공유한다 (index.js:1932-1948): `!superseded`(그 Bead의 최신
+  어템프트가 아니면 제외) && `!resolved_by_done` && `dismissed_at` 없음.
+  같은 집합이므로 배너와 타일이 같은 실패를 가리키고, 후속 어템프트로
+  대체됐거나 완료 처리된 과거 실패가 타일로 되살아나지 않는다.
 - 타일 변형 `rtile--failed`: 경과 자리에 `실패`(orphan은 `중단됨`), 헤더
   버튼은 `↻ 이어하기`(배너와 동일하게 `resume_eligible` 기준 비활성 +
   `resume_reason` 툴팁, 핸들러는 기존 `resumeAttempt()`:1148-1169 재사용)와
@@ -61,10 +71,18 @@
 
 ## 5. Test scope
 
-- `running-grid.js`: 실패 타일 렌더(failed/orphaned, dismissed 제외),
-  `resume_eligible=false` 비활성+툴팁, 닫기 버튼 존재 — 템플릿 단위 테스트
-  (RED→GREEN).
-- `index.js` 파생: 실패 어템프트가 타일 목록에 포함되고 dismiss 후 빠지는 것
-  — 기존 worker index 테스트 패턴으로 추가 (RED→GREEN).
-- 전체 자동화 버튼 제거: 기존 테스트에서 `.worker-auto-all` 참조 제거·부재
-  단언으로 전환.
+- `running-grid.js` 템플릿 seam: **이미 투영된** failed/orphaned 타일 입력에
+  대해 `rtile--failed` 변형, `resume_eligible=false` 비활성+`resume_reason`
+  툴팁, 닫기 버튼 존재만 검증 (RED→GREEN). 상태·dismiss·supersede·done 해소
+  판정은 템플릿이 받지 않는 정보이므로 이 seam에 두지 않는다 — 빈 배열 입력
+  테스트는 변경 전에도 통과하는 vacuous RED다.
+- `index.js` 파생 seam: 실패 어템프트가 타일 목록에 포함되는 것과 세 제외
+  조건(superseded / resolved_by_done / dismissed_at) 각각에서 빠지는 것 —
+  기존 worker index 테스트 패턴으로 추가 (RED→GREEN).
+- `index.js` 클릭 배선 seam: 실패 타일의 이어하기·닫기를 각각 클릭하면
+  `worker-attempt-resume`·`worker-attempt-dismiss`가 해당 타일의 정확한
+  `attempt_id`와 `expected_revision`으로 전송되는 것 (RED→GREEN). 버튼 존재
+  단언만으로는 배선 누락 구현이 통과한다.
+- 전체 자동화 버튼 제거·토글 이동: 기존 테스트에서 `.worker-auto-all` 참조
+  제거·부재 단언으로 전환하고, 실행중·PR 대기가 모두 빈 상태에서도
+  `.worker-merge-all`이 렌더되는 회귀 단언 추가 (RED→GREEN).
