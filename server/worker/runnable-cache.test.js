@@ -94,10 +94,43 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         title: '실행 대기 이슈',
         route: 'spec_backed',
         spec_id: 'docs/specs/thing.md',
+        labels: [],
         created_at: null,
         updated_at: null
       }
     ]);
+  });
+
+  test('carries the bead labels into the projection', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [row({ labels: ['worker-ineligible', 'frontend'] })]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].labels).toEqual(['worker-ineligible', 'frontend']);
+  });
+
+  test('drops non-string label entries', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({ [WS_A]: [row({ labels: ['ok', 3, null] })] })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].labels).toEqual(['ok']);
+  });
+
+  test('projects an empty label list when the row carries no labels array', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({ [WS_A]: [row({ labels: 'worker-ineligible' })] })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].labels).toEqual([]);
   });
 
   test('rejects a bead whose route is outside the admissible enum', async () => {

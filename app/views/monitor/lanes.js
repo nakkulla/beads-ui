@@ -23,6 +23,7 @@
  */
 import { html } from 'lit-html';
 import { CLOSED_RANGE_OPTIONS } from '../../data/closed-range.js';
+import { visibleLabels } from '../../utils/label-policy.js';
 import {
   formatRelativeTime,
   formatTimestampLocal
@@ -107,7 +108,8 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  *   queue_index?: number,
  *   queue_length?: number,
  *   place_index?: number,
- *   done_kind?: string|null
+ *   done_kind?: string|null,
+ *   labels?: string[]
  * }} MonitorItem
  */
 
@@ -551,6 +553,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
         reason: admissionBadge(admission, bead_id),
         created_at: entry.created_at ?? undefined,
         updated_at: entry.updated_at ?? undefined,
+        // 라우팅 라벨(`worker-ineligible` 등)이 큐잉 판단의 근거다 (UI-lzfa §4.2).
+        labels: Array.isArray(entry.labels) ? entry.labels : [],
         // route 칩만 쓰고 스테퍼는 그리지 않는다: 집계 payload에는 stage 요약이
         // 없고, `stepperTemplate`은 `stages` 없는 workflow를 빈 문자열로 돌려준다.
         workflow: /** @type {any} */ (
@@ -824,6 +828,10 @@ export function monitorRunningTile(item, now) {
  * The 실행가능 card. `[대기로 ↴]`는 드래그의 보완재로 남는다 (§2.4) — HTML5 드래그가
  * 터치에서 동작하지 않으므로 이 버튼이 모바일 수단이다.
  *
+ * 라벨 칩은 보드 카드와 같은 `visibleLabels`를 쓰되 정책은 null이다 (UI-lzfa
+ * §4.2): 모니터 파이프라인에는 표시 정책 배선 자체가 없고, null 정책 = 전부
+ * 표시가 기존 의미론이다.
+ *
  * @param {MonitorItem} item
  * @returns {import('lit-html').TemplateResult}
  */
@@ -840,6 +848,9 @@ export function monitorRunnableCard(item) {
       ${route
         ? html`<span class="ctl-chip ctl-chip--route">${route}</span>`
         : ''}
+      ${visibleLabels(item.labels, null).map(
+        (label) => html`<span class="ctl-chip ctl-chip--label">${label}</span>`
+      )}
       ${repoChip(item)}
       ${updated
         ? html`<span title=${`수정 ${formatTimestampLocal(item.updated_at)}`}
