@@ -453,12 +453,6 @@ body {
   min-height: 0;
 }
 
-/* 6-column layout contract (UX v3 spec §2): with the Deferred column shown,
-   5 status tracks narrow so Closed stays on the same row. */
-.board-root--deferred {
-  grid-template-columns: repeat(5, minmax(220px, 1fr)) auto;
-}
-
 /* Worker 관제탑 어휘 이식 (UI-rkly §1): 레인 페인과 같은 서페이스·보더·반경.
    컬럼 상단 2px 스파인은 컬럼별 규칙이 덮어쓰므로 여기서는 자리만 만든다. */
 .board-column {
@@ -539,14 +533,6 @@ body {
 #resolved-col .board-column__title-text::before,
 #resolved-col .board-column__count {
   color: var(--stage-merge-on);
-}
-
-#deferred-col {
-  border-top: 2px solid var(--text-dim);
-}
-#deferred-col .board-column__title-text::before,
-#deferred-col .board-column__count {
-  color: var(--text-dim);
 }
 
 #closed-col {
@@ -1406,10 +1392,6 @@ select.detail-kv__v {
 /* --- mobile: columns stack vertically (no horizontal scroll) --- */
 @media (max-width: 640px) {
   .board-root {
-    grid-template-columns: 1fr;
-  }
-
-  .board-root--deferred {
     grid-template-columns: 1fr;
   }
 

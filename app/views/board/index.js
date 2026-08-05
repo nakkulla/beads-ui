@@ -6,6 +6,7 @@ import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
 import { createReorderController } from '../reorder.js';
 import { columnTemplate } from './column.js';
+import { deferredPopupTemplate } from './deferred-popup.js';
 import { filterBarTemplate } from './filter-bar.js';
 
 /**
@@ -50,23 +51,22 @@ const CLOSED_RENDER_CAP = 200;
 /**
  * Map a droppable column id to its target status. The Blocked column is
  * derived (open + blocked) and is intentionally absent — it is not a status,
- * so cards cannot be dropped there.
+ * so cards cannot be dropped there. Deferred has no column at all (it lives in
+ * a popup), so it is not a drop target either.
  *
- * @type {Record<string, 'open'|'in_progress'|'deferred'|'resolved'|'closed'>}
+ * @type {Record<string, 'open'|'in_progress'|'resolved'|'closed'>}
  */
 const DROP_STATUS_BY_COL = {
   'ready-col': 'open',
   'in-progress-col': 'in_progress',
   'resolved-col': 'resolved',
-  'deferred-col': 'deferred',
   'closed-col': 'closed'
 };
 
 /**
  * Columns whose cards share the manual rank map and support same-column
  * reordering (spec §2; UX v3 — only in the `manual` sort mode). Closed is
- * excluded — it keeps `closed_at desc`. Deferred participates like every
- * other status column (UX v3 spec §2).
+ * excluded — it keeps `closed_at desc`.
  *
  * @type {Set<string>}
  */
@@ -74,8 +74,7 @@ const REORDER_COLS = new Set([
   'blocked-col',
   'ready-col',
   'in-progress-col',
-  'resolved-col',
-  'deferred-col'
+  'resolved-col'
 ]);
 
 /** localStorage key for the Board sort mode (UX v3 spec §3). */
@@ -145,8 +144,8 @@ export function createBoardView(mount_element, options) {
   let list_deferred = [];
   /** @type {IssueLite[]} */
   let list_closed = [];
-  /** Deferred column visibility (UX v3 spec §2) — session-local, no storage. */
-  let show_deferred = false;
+  /** Deferred popup visibility — session-local, no storage. */
+  let deferred_popup_open = false;
   /** Live deferred issue count for the toggle label (computed even when hidden). */
   let deferred_count = 0;
   /** @type {import('../../data/list-selectors.js').BoardSortMode} */
@@ -309,14 +308,13 @@ export function createBoardView(mount_element, options) {
           'resolved',
           sort_mode
         );
-        // Deferred is always composed (the toggle shows its live count) but
-        // participates in the render sets only while shown (UX v3 spec §2).
+        // Deferred is always composed: the button shows its live count and the
+        // popup renders it on demand.
         const deferred = selectors.selectBoardColumn(
           'tab:board:deferred',
           'deferred',
           sort_mode
         );
-        const deferred_shown = show_deferred ? deferred : [];
         const closed = selectors
           .selectBoardColumn('tab:board:closed', 'closed')
           .slice(0, CLOSED_RENDER_CAP);
@@ -326,7 +324,6 @@ export function createBoardView(mount_element, options) {
           ...ready,
           ...in_progress,
           ...resolved,
-          ...deferred_shown,
           ...closed
         ];
 
@@ -338,6 +335,8 @@ export function createBoardView(mount_element, options) {
         // render lists. Only these count as a "rendered parent" for folding; a
         // parent that is itself absent (cut by the closed period/cap filter) is
         // not present, so its child stays a card (spec §3.3 — no issue vanishes).
+        // A deferred card is not one of them: it only exists inside the popup,
+        // so folding a column child into it would take that child off the board.
         /** @type {Set<string>} */
         const rendered_parents = new Set();
         for (const it of all) {
@@ -361,9 +360,11 @@ export function createBoardView(mount_element, options) {
         list_resolved = fold
           ? excludeFolded(resolved, rendered_parents)
           : resolved;
-        list_deferred = fold
-          ? excludeFolded(deferred_shown, rendered_parents)
-          : deferred_shown;
+        // The popup is a separate surface, so board folding does not reach into
+        // it: it lists EVERY deferred issue. Folding it against the board's
+        // rendered parents would drop a deferred child of a column card out of
+        // the only place deferred issues are listed at all.
+        list_deferred = deferred;
         deferred_count = deferred.length;
         list_closed = fold ? excludeFolded(closed, rendered_parents) : closed;
 
@@ -386,7 +387,6 @@ export function createBoardView(mount_element, options) {
         for (const it of list_in_progress)
           col_by_id.set(it.id, 'in-progress-col');
         for (const it of list_resolved) col_by_id.set(it.id, 'resolved-col');
-        for (const it of list_deferred) col_by_id.set(it.id, 'deferred-col');
         for (const it of list_closed) col_by_id.set(it.id, 'closed-col');
       }
       doRender();
@@ -585,6 +585,16 @@ export function createBoardView(mount_element, options) {
     doRender();
   }
 
+  /**
+   * Read on every access so a pushed policy snapshot takes effect on the next
+   * render without rebuilding the card contexts.
+   *
+   * @returns {import('../../utils/label-policy.js').DisplayPolicy | null}
+   */
+  function currentPolicy() {
+    return displayPolicyStore ? displayPolicyStore.get() : null;
+  }
+
   const card_ctx = {
     onCardClick,
     onCopyId,
@@ -596,10 +606,47 @@ export function createBoardView(mount_element, options) {
     onRollupToggle,
     onChildClick,
     onFromChipClick,
-    // Read on every access so a pushed policy snapshot takes effect on the next
-    // render without rebuilding this context object.
     get policy() {
-      return displayPolicyStore ? displayPolicyStore.get() : null;
+      return currentPolicy();
+    }
+  };
+
+  /**
+   * @param {MouseEvent} ev
+   * @param {string} id
+   */
+  function onDeferredCardClick(ev, id) {
+    if (dragging_id) {
+      return;
+    }
+    closeDeferredPopup();
+    gotoIssue(id);
+  }
+
+  /**
+   * @param {Event} ev
+   * @param {string} id
+   */
+  function onDeferredNavigate(ev, id) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeDeferredPopup();
+    gotoIssue(id);
+  }
+
+  /**
+   * Popup cards behave like column cards, except that opening the detail also
+   * dismisses the modal — leaving it up would cover the panel it just opened.
+   * That holds for EVERY navigation a card offers (the card body, a rollup
+   * child row, the `from` chip), not only the card body.
+   */
+  const deferred_card_ctx = {
+    ...card_ctx,
+    onCardClick: onDeferredCardClick,
+    onChildClick: onDeferredNavigate,
+    onFromChipClick: onDeferredNavigate,
+    get policy() {
+      return currentPolicy();
     }
   };
 
@@ -649,6 +696,49 @@ export function createBoardView(mount_element, options) {
     doRender();
   }
 
+  /**
+   * ESC dismisses the popup. A native modal `<dialog>` reports ESC as `cancel`
+   * (wired in the template), but this listener is what closes it where
+   * `showModal` is unavailable (jsdom) and no `cancel` is ever dispatched.
+   *
+   * @param {KeyboardEvent} ev
+   */
+  function onDeferredPopupDocKeydown(ev) {
+    if (ev.key === 'Escape') {
+      closeDeferredPopup();
+    }
+  }
+
+  function openDeferredPopup() {
+    if (deferred_popup_open) {
+      return;
+    }
+    deferred_popup_open = true;
+    document.addEventListener('keydown', onDeferredPopupDocKeydown);
+    doRender();
+  }
+
+  function closeDeferredPopup() {
+    if (!deferred_popup_open) {
+      return;
+    }
+    deferred_popup_open = false;
+    document.removeEventListener('keydown', onDeferredPopupDocKeydown);
+    doRender();
+  }
+
+  const deferred_popup_handlers = {
+    onClose: closeDeferredPopup,
+    /** @param {MouseEvent} ev */
+    onOverlayClick(ev) {
+      // Only a click landing on the <dialog> itself is the backdrop; anything
+      // from inside the container bubbles up here and must not dismiss.
+      if (ev.target === ev.currentTarget) {
+        closeDeferredPopup();
+      }
+    }
+  };
+
   // --- filter handlers (board-local state) ---
   // A filter change flips whether child folding is active (spec §3.3), so it
   // must recompose the lists (refreshFromStores), not just re-render.
@@ -691,8 +781,11 @@ export function createBoardView(mount_element, options) {
       refreshFromStores();
     },
     onDeferredToggle() {
-      show_deferred = !show_deferred;
-      refreshFromStores();
+      if (deferred_popup_open) {
+        closeDeferredPopup();
+      } else {
+        openDeferredPopup();
+      }
     },
     onLabelMenuToggle() {
       if (label_menu_open) {
@@ -726,21 +819,16 @@ export function createBoardView(mount_element, options) {
   };
 
   function template() {
-    // 5→6 column layout contract (UX v3 spec §2): the modifier class swaps the
-    // grid template so Closed stays on the same row when Deferred is shown.
-    const root_class = show_deferred
-      ? 'board-root board-root--deferred'
-      : 'board-root';
     return html`
       <div class="board-view">
         ${filterBarTemplate(filters, filter_handlers, {
           sort_mode,
-          show_deferred,
+          deferred_popup_open,
           deferred_count,
           label_options: knownLabels(),
           label_menu_open
         })}
-        <div class=${root_class}>
+        <div class="board-root">
           ${columnTemplate(
             {
               title: 'Blocked',
@@ -773,16 +861,6 @@ export function createBoardView(mount_element, options) {
             },
             card_ctx
           )}
-          ${show_deferred
-            ? columnTemplate(
-                {
-                  title: 'Deferred',
-                  id: 'deferred-col',
-                  items: applyFilters(list_deferred)
-                },
-                card_ctx
-              )
-            : ''}
           ${columnTemplate(
             {
               title: 'Closed',
@@ -794,6 +872,16 @@ export function createBoardView(mount_element, options) {
             card_ctx
           )}
         </div>
+        ${deferred_popup_open
+          ? deferredPopupTemplate(
+              {
+                items: applyFilters(list_deferred),
+                count: deferred_count
+              },
+              deferred_card_ctx,
+              deferred_popup_handlers
+            )
+          : ''}
       </div>
     `;
   }
@@ -804,12 +892,25 @@ export function createBoardView(mount_element, options) {
   }
 
   /**
-   * Roving tabindex: first card of each column is tabbable.
+   * Roving tabindex: first card of each column (and of the popup) is tabbable.
+   * The popup also has to be promoted to a real modal here — lit renders the
+   * `<dialog>` markup, but only `showModal()` gives it the backdrop, the focus
+   * trap, and native ESC.
    */
   function postRenderEnhance() {
     try {
+      const popup = /** @type {HTMLDialogElement | null} */ (
+        mount_element.querySelector('#deferred-popup')
+      );
+      if (popup && !popup.open) {
+        if (typeof popup.showModal === 'function') {
+          popup.showModal();
+        } else {
+          popup.setAttribute('open', '');
+        }
+      }
       const columns = Array.from(
-        mount_element.querySelectorAll('.board-column')
+        mount_element.querySelectorAll('.board-column, .deferred-popup__body')
       );
       for (const col of columns) {
         const cards = Array.from(col.querySelectorAll('.board-card'));
@@ -858,8 +959,6 @@ export function createBoardView(mount_element, options) {
         return list_in_progress;
       case 'resolved-col':
         return list_resolved;
-      case 'deferred-col':
-        return list_deferred;
       default:
         return [];
     }
@@ -1123,6 +1222,7 @@ export function createBoardView(mount_element, options) {
     },
     clear() {
       closeLabelMenu();
+      closeDeferredPopup();
       if (unsubscribe_selectors) {
         unsubscribe_selectors();
         unsubscribe_selectors = null;
