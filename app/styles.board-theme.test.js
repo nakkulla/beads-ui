@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest';
 
 /**
  * Board 시각 어휘 계약 (UI-rkly §1). Board는 Worker 관제탑과 같은 어휘를 쓴다 —
- * 컬럼 상단 스테이지색 스파인 + In progress 실행중 서페이스. 색은 스펙의 6컬럼
+ * 컬럼 상단 스테이지색 스파인 + In progress 실행중 서페이스. 색은 스펙의 컬럼
  * 매핑 표로 고정되며, 토큰 전용(raw hex 금지)은 회귀 가드다.
  */
 const CSS = readFileSync(
@@ -39,14 +39,13 @@ describe('board visual vocabulary', () => {
     expect(BOARD_END).toBeGreaterThan(BOARD_START);
   });
 
-  // 스펙 §1의 컬럼→토큰 매핑 표. Worker 5단계 색과 Board 6컬럼은 일대일이
-  // 아니므로 이 표가 계약이다.
+  // 스펙 §1의 컬럼→토큰 매핑 표. Worker 5단계 색과 Board 컬럼은 일대일이
+  // 아니므로 이 표가 계약이다. Deferred는 컬럼이 아니라 팝업이라 여기 없다.
   const SPINE = [
     ['#blocked-col', '--accent-warn'],
     ['#ready-col', '--stage-plan-on'],
     ['#in-progress-col', '--stage-impl-on'],
     ['#resolved-col', '--stage-merge-on'],
-    ['#deferred-col', '--text-dim'],
     ['#closed-col', '--stage-merge-dim']
   ];
 

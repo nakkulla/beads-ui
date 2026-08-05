@@ -5657,3 +5657,67 @@ html[data-theme='dark'] {
     max-height: 60vh;
   }
 }
+
+/* --- board Deferred popup (2026-08-05-board-deferred-popup §4) --- */
+.deferred-popup {
+  width: min(720px, calc(100vw - 32px));
+  max-height: 80vh;
+  padding: 0;
+  border-radius: var(--r-6);
+  border: 1px solid var(--border-panel);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.deferred-popup::backdrop {
+  background: color-mix(in srgb, #000 45%, transparent);
+  backdrop-filter: blur(1px);
+}
+
+.deferred-popup__container {
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+}
+
+.deferred-popup__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-10) var(--sp-12);
+  border-bottom: 1px solid var(--border-panel);
+}
+
+.deferred-popup__title {
+  color: var(--text-title);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.deferred-popup__close {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-body);
+  cursor: pointer;
+}
+
+.deferred-popup__close:focus-visible {
+  outline: 2px solid var(--stage-plan-on);
+  outline-offset: 1px;
+}
+
+.deferred-popup__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+  overflow-y: auto;
+}
+
+.deferred-popup__empty {
+  color: var(--text-dim);
+  font-size: var(--fs-body);
+}

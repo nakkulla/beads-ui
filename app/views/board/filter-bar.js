@@ -28,7 +28,7 @@ import { html } from 'lit-html';
 /**
  * @typedef {Object} BoardFilterExtras
  * @property {string} sort_mode - Current Board sort mode (UX v3 spec §3).
- * @property {boolean} show_deferred - Deferred column visibility (spec §2).
+ * @property {boolean} deferred_popup_open - Whether the Deferred popup is open.
  * @property {number} deferred_count - Live deferred issue count.
  * @property {string[]} label_options - Union of labels across the loaded issues.
  * @property {boolean} label_menu_open
@@ -117,9 +117,9 @@ function labelFilterTemplate(state, handlers, extras) {
 }
 
 /**
- * Board filter bar: search + priority + type on the left; Deferred toggle,
- * sort dropdown, and "새 이슈" on the right (UX v3 spec §2–3). Filters are
- * board-local state, not app-store state.
+ * Board filter bar: search + priority + type on the left; the Deferred popup
+ * button, sort dropdown, and "새 이슈" on the right (UX v3 spec §2–3). Filters
+ * are board-local state, not app-store state.
  *
  * @param {BoardFilterState} state
  * @param {BoardFilterHandlers} handlers
@@ -171,10 +171,11 @@ export function filterBarTemplate(state, handlers, extras) {
       <span class="board-filter__spacer"></span>
       <button
         type="button"
-        class=${extras.show_deferred
+        class=${extras.deferred_popup_open
           ? 'board-filter__deferred is-on'
           : 'board-filter__deferred'}
-        aria-pressed=${extras.show_deferred ? 'true' : 'false'}
+        aria-haspopup="dialog"
+        aria-expanded=${extras.deferred_popup_open ? 'true' : 'false'}
         @click=${handlers.onDeferredToggle}
       >
         Deferred ${extras.deferred_count}

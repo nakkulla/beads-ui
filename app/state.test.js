@@ -21,19 +21,19 @@ describe('state store', () => {
     expect(state.worker.selected_parent_id).toBe('UI-62lm');
   });
 
-  test('tracks board deferred column state without emitting unchanged values', () => {
+  test('tracks board closed filter without emitting unchanged values', () => {
     const store = createStore();
-    /** @type {boolean[]} */
+    /** @type {string[]} */
     const seen = [];
-    const off = store.subscribe((s) => seen.push(s.board.show_deferred_column));
+    const off = store.subscribe((s) => seen.push(s.board.closed_filter));
 
-    store.setState({ board: { show_deferred_column: true } });
-    store.setState({ board: { show_deferred_column: true } });
-    store.setState({ board: { show_deferred_column: false } });
+    store.setState({ board: { closed_filter: '7' } });
+    store.setState({ board: { closed_filter: '7' } });
+    store.setState({ board: { closed_filter: 'today' } });
     off();
 
-    expect(seen).toEqual([true, false]);
-    expect(store.getState().board.show_deferred_column).toBe(false);
+    expect(seen).toEqual(['7', 'today']);
+    expect(store.getState().board.closed_filter).toBe('today');
   });
 
   test('hydrates config into initial state', () => {

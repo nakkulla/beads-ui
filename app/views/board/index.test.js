@@ -668,7 +668,7 @@ describe('views/board child integration (Phase 5)', () => {
   });
 });
 
-describe('views/board UX v3: deferred column + sort dropdown', () => {
+describe('views/board: deferred popup + sort dropdown', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
@@ -695,7 +695,25 @@ describe('views/board UX v3: deferred column + sort dropdown', () => {
     return stores;
   }
 
-  test('deferred column hidden by default; toggle shows it with live count', async () => {
+  /**
+   * @param {HTMLElement} mount
+   */
+  function deferredButton(mount) {
+    return /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.board-filter__deferred')
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   */
+  function popupCardIds(mount) {
+    return Array.from(
+      mount.querySelectorAll('#deferred-popup .board-card')
+    ).map((el) => el.getAttribute('data-issue-id'));
+  }
+
+  test('button click opens the deferred popup with its cards', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const view = createBoardView(mount, {
       gotoIssue: vi.fn(),
@@ -703,31 +721,138 @@ describe('views/board UX v3: deferred column + sort dropdown', () => {
     });
     await view.load();
 
-    expect(mount.querySelector('#deferred-col')).toBeNull();
-    const toggle = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.board-filter__deferred')
-    );
-    expect(toggle.textContent).toContain('Deferred 2');
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(mount.querySelector('#deferred-popup')).toBeNull();
+    const button = deferredButton(mount);
+    expect(button.textContent).toContain('Deferred 2');
+    expect(button.getAttribute('aria-expanded')).toBe('false');
 
-    toggle.click();
-    expect(mount.querySelector('#deferred-col')).not.toBeNull();
-    expect(mount.querySelectorAll('#deferred-col .board-card').length).toBe(2);
+    button.click();
+
+    expect(mount.querySelector('#deferred-popup')).not.toBeNull();
     // Default sort = created_desc → DF-2 (9000) above DF-1 (5000).
-    const ids = Array.from(
-      mount.querySelectorAll('#deferred-col .board-card')
-    ).map((el) => el.getAttribute('data-issue-id'));
-    expect(ids).toEqual(['DF-2', 'DF-1']);
+    expect(popupCardIds(mount)).toEqual(['DF-2', 'DF-1']);
+    expect(deferredButton(mount).getAttribute('aria-expanded')).toBe('true');
+  });
+
+  test('opening the popup adds no deferred column to the board', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedWithDeferred()
+    });
+    await view.load();
+
+    deferredButton(mount).click();
+
+    expect(mount.querySelector('#deferred-col')).toBeNull();
+    expect(mount.querySelectorAll('.board-root .board-column').length).toBe(5);
     const root = /** @type {HTMLElement} */ (
       mount.querySelector('.board-root')
     );
-    expect(root.classList.contains('board-root--deferred')).toBe(true);
+    expect(root.classList.contains('board-root--deferred')).toBe(false);
+  });
 
-    // Toggle off again → column unmounts, modifier class drops.
+  test('applies the board filters to the popup list', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedWithDeferred()
+    });
+    await view.load();
+    deferredButton(mount).click();
+
+    const search = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.board-filter__search')
+    );
+    search.value = 'deferred two';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(popupCardIds(mount)).toEqual(['DF-2']);
+  });
+
+  test('closes the popup on the close button', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedWithDeferred()
+    });
+    await view.load();
+    deferredButton(mount).click();
+
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.board-filter__deferred')
+      mount.querySelector('.deferred-popup__close')
     ).click();
-    expect(mount.querySelector('#deferred-col')).toBeNull();
+
+    expect(mount.querySelector('#deferred-popup')).toBeNull();
+    expect(deferredButton(mount).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('closes the popup on Escape', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedWithDeferred()
+    });
+    await view.load();
+    deferredButton(mount).click();
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+    );
+
+    expect(mount.querySelector('#deferred-popup')).toBeNull();
+  });
+
+  test('closes the popup on a backdrop click', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedWithDeferred()
+    });
+    await view.load();
+    deferredButton(mount).click();
+
+    // A click landing on the <dialog> itself (not its container) is the backdrop.
+    /** @type {HTMLElement} */ (
+      mount.querySelector('#deferred-popup')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('#deferred-popup')).toBeNull();
+  });
+
+  test('card click opens the detail and closes the popup', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const gotoIssue = vi.fn();
+    const view = createBoardView(mount, {
+      gotoIssue,
+      issueStores: seedWithDeferred()
+    });
+    await view.load();
+    deferredButton(mount).click();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('#deferred-popup .board-card')
+    ).click();
+
+    expect(gotoIssue).toHaveBeenCalledWith('DF-2');
+    expect(mount.querySelector('#deferred-popup')).toBeNull();
+  });
+
+  test('clear() closes an open popup', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedWithDeferred()
+    });
+    await view.load();
+    deferredButton(mount).click();
+
+    view.clear();
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+    );
+
+    expect(mount.querySelector('#deferred-popup')).toBeNull();
   });
 
   test('sort dropdown persists the mode and re-sorts columns', async () => {
