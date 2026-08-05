@@ -329,9 +329,7 @@ export function createBoardView(mount_element, options) {
 
         // The rollup must index every child (incl. folded ones) so a parent card
         // can list them — build it from the full render set, before exclusion.
-        // Deferred is indexed too: a deferred child folded out of the popup has
-        // to stay reachable through its parent's rollup.
-        rebuildChildrenIndex([...all, ...deferred]);
+        rebuildChildrenIndex(all);
 
         // rendered_parents: ids of TOP-LEVEL (parentless) cards across the five
         // render lists. Only these count as a "rendered parent" for folding; a
@@ -362,9 +360,11 @@ export function createBoardView(mount_element, options) {
         list_resolved = fold
           ? excludeFolded(resolved, rendered_parents)
           : resolved;
-        list_deferred = fold
-          ? excludeFolded(deferred, rendered_parents)
-          : deferred;
+        // The popup is a separate surface, so board folding does not reach into
+        // it: it lists EVERY deferred issue. Folding it against the board's
+        // rendered parents would drop a deferred child of a column card out of
+        // the only place deferred issues are listed at all.
+        list_deferred = deferred;
         deferred_count = deferred.length;
         list_closed = fold ? excludeFolded(closed, rendered_parents) : closed;
 
@@ -624,12 +624,27 @@ export function createBoardView(mount_element, options) {
   }
 
   /**
+   * @param {Event} ev
+   * @param {string} id
+   */
+  function onDeferredNavigate(ev, id) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeDeferredPopup();
+    gotoIssue(id);
+  }
+
+  /**
    * Popup cards behave like column cards, except that opening the detail also
    * dismisses the modal — leaving it up would cover the panel it just opened.
+   * That holds for EVERY navigation a card offers (the card body, a rollup
+   * child row, the `from` chip), not only the card body.
    */
   const deferred_card_ctx = {
     ...card_ctx,
     onCardClick: onDeferredCardClick,
+    onChildClick: onDeferredNavigate,
+    onFromChipClick: onDeferredNavigate,
     get policy() {
       return currentPolicy();
     }
