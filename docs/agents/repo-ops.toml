@@ -1,0 +1,21 @@
+# 이 레포의 worker verify·deploy 선언 — 스키마와 동기화 절차는 dotfiles
+# repo-onboarding 스킬이 소유한다.
+#
+# 이 파일이 verify·deploy 선언의 단일 SoT다. workflow 계약의 spec 게이트
+# post-merge continuity 판정도 이 [deploy] 선언을 읽는다 — 루트 deploy.json
+# 존재 여부가 아니다(이 레포에는 그 파일이 없고, 읽는 코드도 없다).
+# 실행 표면은 ~/.config/bdui/config.toml의
+# [worker.verify."<repo abs path>"] · [worker.deploy."<repo abs path>"]이며,
+# 이 파일은 그 값의 선언 출처다. 대조는 dotfiles install.sh shell의 warn-only
+# 체커(scripts/repo_ops_check.py), 적용은 repo-onboarding 스킬의 확인 게이트를
+# 거친다(자동 반영 없음).
+
+[verify]
+cmd = ["npm", "run", "all"]
+timeout_ms = 600000
+
+[deploy]
+cmd = ["bdui-shared", "restart"]
+detached = true
+
+env_notes = "재시작이 이 서버 자신을 죽이므로 detached — 워커는 나머지 정리 단계가 모두 성공하고 durable 기록이 끝난 뒤 마지막에 launch한다(server/worker/pr-actions.js THE TERMINAL LAUNCH)"

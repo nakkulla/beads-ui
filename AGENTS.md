@@ -135,15 +135,17 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   배포까지 마쳐야 완료다. 머지 후 (1) `~/.config/bdui/config.toml` 런타임 설정
   정합을 확인하고, (2) `bdui-shared restart`로 공유 서버를 재시작한 뒤, (3) 아래
   검증(프로세스 경로·포트·HTTP 응답)을 통과한 다음에만 작업 완료를 선언한다.
-- **배포 등록처는 루트 `deploy.json`이 아니다 — 재시작은 등록돼 있다**: 이
-  저장소의 머지 후 재시작은 `~/.config/bdui/config.toml`의
-  `[worker.deploy."<이 저장소 절대경로>"]`에 `cmd = ["bdui-shared", "restart"]`,
-  `detached = true`로 등록돼 있고, 워커의 머지 후 정리 sweep이 실행한다. 단
-  `detached = true`라 `CLEANUP_STEPS`의 `deploy` 단계에서 바로 뜨지 않는다 — 그
-  단계는 명령을 `pending`으로 넘기기만 하고, 실제 `bdui-shared restart`는 나머지
-  정리 단계가 모두 성공하고 durable 기록이 끝난 뒤 마지막에 launch된다
-  (`server/worker/pr-actions.js` THE TERMINAL LAUNCH). 재시작이 이 서버 자신을
-  죽이기 때문이다.
+- **배포 선언의 SoT는 `docs/agents/repo-ops.toml`의 `[deploy]`다 — 루트
+  `deploy.json`이 아니다**: 이 저장소의 머지 후 재시작은 그 파일에
+  `cmd = ["bdui-shared", "restart"]`, `detached = true`로 선언돼 있고, 실행
+  표면인 `~/.config/bdui/config.toml`의
+  `[worker.deploy."<이 저장소 절대경로>"]`가 같은 값을 들고 있으며(대조는
+  dotfiles `scripts/repo_ops_check.py` warn-only), 워커의 머지 후 정리 sweep이
+  실행한다. 단 `detached = true`라 `CLEANUP_STEPS`의 `deploy` 단계에서 바로 뜨지
+  않는다 — 그 단계는 명령을 `pending`으로 넘기기만 하고, 실제
+  `bdui-shared restart`는 나머지 정리 단계가 모두 성공하고 durable 기록이 끝난
+  뒤 마지막에 launch된다 (`server/worker/pr-actions.js` THE TERMINAL LAUNCH).
+  재시작이 이 서버 자신을 죽이기 때문이다.
 - **자동 경로는 이 서버의 [머지] 클릭으로 머지된 PR에만 걸린다**: github.com에서
   직접 머지한 PR은 external row로 **관측만 기록되고 정리가 자동으로 돌지
   않는다** (`server/worker/pr-poller.js` — 레인에 `머지됨 · 정리`가 뜨고 [정리]
@@ -152,11 +154,12 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   `resolved`로 남고 배너가 뜨며 자동 재시도는 없다 — 조용히 유실되지는 않지만,
   사람이 이어받아야 한다.
 - 루트 `deploy.json`은 없고, 이 저장소에는 그 파일을 읽는 코드도 없다 — 새로
-  만들어도 아무도 읽지 않는다. 따라서 workflow 계약의 post-merge continuity
-  판정에서 `test -f deploy.json` 결과만으로 "커버리지 없음"을 결론짓지 마라.
-  등록 위치가 다를 뿐 restart 커버리지는 존재한다. 이를 놓쳐 `worker-ineligible`
-  라벨이 잘못 붙은 사례가 있다(UI-1xcd · UI-dixx · UI-u7hh; 계약 문구 정정은
-  dotfiles `dotfiles-1tif`가 소유).
+  만들어도 아무도 읽지 않는다. workflow 계약의 post-merge continuity 판정은
+  `docs/agents/repo-ops.toml`의 `[deploy]` 선언을 읽으며 `test -f deploy.json`은
+  판정에서 명시적으로 금지됐다(dotfiles workflow.yaml v29). 등록 위치가 다를 뿐
+  restart 커버리지는 존재한다. 이를 놓쳐 `worker-ineligible` 라벨이 잘못 붙은
+  사례가 있다(UI-1xcd · UI-dixx · UI-u7hh; 계약 문구 정정은 dotfiles
+  `dotfiles-1tif`가 소유).
 - **자동 배포는 재시작을 대신할 뿐 확인을 대신하지 않는다**: 자동 경로가
   돌았어도 위 (3)의 검증(프로세스 경로·포트·HTTP 응답)과 완료 선언 책임은 그대로
   남는다. 자동 경로가 성립하지 않았거나 정리가 멈췄다면 아래 수동 절차로 직접
