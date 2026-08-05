@@ -86,9 +86,11 @@ queueing to the worker: beads-ui renders every label by default"라고 적는다
 
 - Pre-handoff: `npm run tsc` · `npm test` · `npm run lint` ·
   `npm run prettier:write` · `npm run build`(번들 갱신 커밋 포함).
-- 머지 후: 이 저장소의 배포 커버리지(`docs/agents/repo-ops.toml` `[deploy]` 선언
-  — dotfiles-1tif가 생성 — 실행 표면은 `~/.config/bdui/config.toml`의
-  `[worker.deploy]`)가 재시작을 커버한다. 처분 불요. 재시작 후 실행가능 레인에
+- 머지 후: 이 저장소의 배포 커버리지 — `~/.config/bdui/config.toml`의
+  `[worker.deploy."<이 저장소 절대경로>"]` = `["bdui-shared", "restart"]`,
+  `detached = true` (실측 확인) — 가 재시작을 커버한다. 처분 불요.
+  (`docs/agents/repo-ops.toml` `[deploy]` 선언 파일은 dotfiles-1tif가 별도로
+  생성할 예정이며, 이 유닛의 커버리지 판정은 그에 의존하지 않는다.) 재시작 후 실행가능 레인에
   라벨 칩이 실제 렌더되는지 육안 확인(프로세스 경로·포트·HTTP 실측 포함,
   AGENTS.md Post-Merge Runtime Validation).
 
