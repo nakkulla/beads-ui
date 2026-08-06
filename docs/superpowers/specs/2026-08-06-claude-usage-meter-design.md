@@ -43,8 +43,9 @@ cswap(claude-swap)이 터미널에서 보여주는 Claude Code 사용량(5시간
 }
 ```
 
-- `windows`는 5h → 7d → `scoped[]` 순서. `scoped` 항목의 `key`는
-  `display_name`(예: `Fable`) 그대로.
+- `windows`는 5h → 7d → `scoped[]` 순서로, `scoped[]`가 가변 길이이므로
+  항목 수는 2 + N이다. `scoped` 항목의 `key`는 cswap JSON의 `name` 필드
+  (예: `Fable`) 그대로.
 - 실패 시(`available: false`만 있는 몸체): cswap 실행 파일 없음, 종료 코드
   0 아님, 타임아웃, JSON 파싱 실패, `active` 계정 없음, `usage` 필드 없음.
   전부 200으로 fail-quiet — 헤더 위젯이 조용히 사라지는 게 계약이다.
@@ -57,9 +58,10 @@ cswap(claude-swap)이 터미널에서 보여주는 Claude Code 사용량(5시간
   `~/.local/bin/cswap` 폴백(launchd 환경의 좁은 PATH 대비). 존재 확인은
   spawn 실패(ENOENT)로 감지해도 된다.
 - 모듈 레벨 TTL 캐시 30초(`server/worker/title-cache.js` 패턴): 성공 응답은
-  30초간 재사용, 실패 응답도 30초 네거티브 캐시. 탭 여러 개가 폴링해도
-  cswap spawn은 30초에 1회로 제한된다. 테스트용 리셋 훅
-  (`__resetCacheForTest`)을 노출한다.
+  30초간 재사용, 실패 응답도 30초 네거티브 캐시. 캐시 miss 중 도착한 동시
+  요청은 **공유 in-flight Promise로 병합(coalesce)** 해서, 탭 여러 개가
+  동시에 폴링해도 cswap spawn은 어느 순간에도 1개, 빈도로는 30초에 1회로
+  제한된다. 테스트용 리셋 훅(`__resetCacheForTest`)을 노출한다.
 
 ## 프론트엔드
 
@@ -75,7 +77,8 @@ cswap(claude-swap)이 터미널에서 보여주는 Claude Code 사용량(5시간
 
 - 부트스트랩 직후 1회 + 60초 `setInterval`로 `/api/claude-usage` fetch.
   `destroy()`에서 interval 해제.
-- 표시(목업 1안): 윈도별로 `라벨 + 52px 바 + %` 3쌍을 인라인 배치.
+- 표시(목업 1안): 응답 `windows`의 **모든 항목**을 순서대로
+  `라벨 + 52px 바 + %` 쌍으로 인라인 배치(기본 5h·7d·모델별 N개).
   바 fill 폭은 `--progress` CSS 변수(`app/views/worker/lanes.js:281` 패턴).
 - 색 임계값(기존 토큰 재사용, 텍스트는 텍스트 토큰 유지):
   - `pct < 60` → `--accent-success`
@@ -104,9 +107,12 @@ cswap(claude-swap)이 터미널에서 보여주는 Claude Code 사용량(5시간
   변환(활성 계정 선택, windows 순서, scoped 매핑, 결측 필드 fail-quiet)을
   RED→GREEN으로 작성 — `server/routes/claude-usage.test.js`.
 - 라우트 동작: 성공 페이로드, spawn 실패 시 `available:false`, TTL 캐시로
-  spawn 1회 제한(리셋 훅 사용) — 같은 테스트 파일.
+  spawn 1회 제한(리셋 훅 사용), 그리고 **동시 요청 병합** — 캐시 리셋 후
+  `Promise.all`로 동시 요청을 날려도 spawn이 1회인지 검증 — 같은 테스트
+  파일.
 - `app/views/usage-meter.js`: jsdom 렌더 테스트 — 임계값별 색 클래스,
-  `available:false`일 때 숨김, stale 표시 — `app/views/usage-meter.test.js`.
+  `available:false`일 때 숨김, stale 표시, **`scoped` 복수(모델 2개 이상)
+  응답에서 windows 전 항목 렌더** — `app/views/usage-meter.test.js`.
 - 툴팁 카운트다운 재계산 유틸(순수 함수로 분리): 같은 날/다른 날 포맷 경계 —
   프론트 테스트 파일에 포함.
 
