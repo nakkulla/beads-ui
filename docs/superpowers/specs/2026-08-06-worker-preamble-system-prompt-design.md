@@ -42,16 +42,27 @@ Copilot agents.md 가이드, Anthropic harness 문서) 공통 패턴: 금지에�
 
 ### 1. preamble.js 재구조화
 
-- `GUARD_CONTRACT_DIRECTIVE`를 심각도 3단 마크다운 섹션으로 재작성:
-  - **즉시 종료(세션 kill)**: `gh pr merge`; hook 무력화 쓰기(`git push
-    --no-verify`, `git -c core.hooksPath=…`, `git config … core.hooksPath
-    <값>`, `GIT_CONFIG_COUNT/KEY_*/VALUE_*` 할당). git 설정 격리가 필요하면
-    `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null`을 쓰라는 허용
-    대안 병기 + 정답/오답 명령 예시 쌍(오답: 이번 사고의 `GIT_CONFIG_COUNT=…
-    go test`, 정답: `GIT_CONFIG_GLOBAL=/dev/null … go test`).
+- `GUARD_CONTRACT_DIRECTIVE`를 심각도 3단 마크다운 섹션으로 재작성.
+  **모든 금지에 허용 대안을 같은 항목에 병기한다**:
+  - **즉시 종료(세션 kill)**:
+    - `gh pr merge` — 대안: PR 제출과 bead `resolved` 기록까지가 이 세션의
+      종점이고, 머지는 사람의 클릭이다.
+    - hook 무력화 쓰기(`git push --no-verify`, `git -c core.hooksPath=…`,
+      `git config … core.hooksPath <값>`, `GIT_CONFIG_COUNT/KEY_*/VALUE_*`
+      할당) — 대안: git 설정 격리가 필요하면 `GIT_CONFIG_GLOBAL=/dev/null
+      GIT_CONFIG_SYSTEM=/dev/null`을 쓴다. 정답/오답 명령 예시 쌍 포함(오답:
+      이번 사고의 `GIT_CONFIG_COUNT=… go test`, 정답:
+      `GIT_CONFIG_GLOBAL=/dev/null … go test`).
   - **거부만 됨(세션 지속)**: 자기 base로의 `git push`(pre-push hook 거부),
-    사후 `base_landing_detected` 규칙; hooksPath 읽기는 위반 아님.
+    사후 `base_landing_detected` 규칙 — 대안: feature branch로 push하고
+    `gh pr create --base <target_base>`로 PR을 연다. hooksPath 읽기는 위반
+    아님.
   - **허용됨(오해 방지)**: `git merge origin/<base>` — 기록만 남는다.
+- **disposition 변형**: REVISE-disposition 세션은 command guard가
+  hook-bypass·base-push 판정을 생략한다(`session.js` — resolved base 게시가
+  그 세션의 임무). 따라서 계약도 동일 조건(`pr_submit: false` ↔
+  disposition)으로 분기해 실제 enforcement와 일치하는 변형을 조립하고,
+  변형별 snapshot으로 고정한다.
 - `UNATTENDED_PREAMBLE`을 환경 사실 프레이밍으로 재작성: "무인 모드 —
   사용자는 이 세션과 통신할 수 없다. 질문 도구는 응답자가 없다. hard-stop은
   `blocker` 줄 출력 후 비정상 종료로 표면화하라." 배경 태스크 유실 경고(현행
@@ -78,27 +89,45 @@ Copilot agents.md 가이드, Anthropic harness 문서) 공통 패턴: 금지에�
 - attempt 레코드에 `system_prompt`·`task_prompt` 문자열 필드를 spawn 시점에
   저장(기본·stale·resume·conflict·disposition 5형태 모두). 기존
   `disposition_prompt`는 호환 유지.
+- **기록은 argv를 만든 동일한 `applyPreamble` 호출 결과에서 나온다** — 별도
+  재조립 금지. 어댑터의 build 결과가 `{ argv, system_prompt, task_prompt }`
+  형태로 조립 산출물을 함께 노출하고, spawn 경로가 그 값을 attempt 레코드에
+  쓴다. 5개 spawn 경로 각각에서 저장값이 실제 `--append-system-prompt` 인자
+  및 positional task 인자와 동일함을 테스트로 증명한다.
 - worker-state push에는 프롬프트 본문을 싣지 않는다(페이로드 비대 방지).
-  조회는 on-demand 요청/응답 `get-attempt-prompt { attempt_id }` →
-  `{ attempt_id, system_prompt, task_prompt, recorded_at }`; 기록 없는 과거
-  attempt는 `{ missing: true }`로 fail-quiet.
+  attempt 객체는 현재 `decorateQueue`/`attemptsWithUsage`
+  (`server/ws/worker-handlers.js`)를 통해 그대로 snapshot에 실리므로, **이
+  두 투영 단계에서 프롬프트 필드를 제거**하고, 프롬프트가 든 attempt
+  fixture로 push 결과에 본문이 없음을 검증하는 테스트를 둔다.
+- 조회는 on-demand 요청/응답(§5)으로만; 기록 없는 과거 attempt는
+  `{ missing: true }`로 fail-quiet.
 
 ### 4. UI — 시스템 프롬프트 (설정 접근)
 
-- 설정 버튼 영역에서 "워커 시스템 프롬프트" 항목 → 다이얼로그로 현재 코드
-  기준 계약 전문 표시. 서버가 preamble.js로 조립해 반환하는 on-demand 요청
-  `get-worker-system-prompt {}` → 기본 변형(fast_track=false,
-  pr_submit=true, target_base 플레이스홀더) 전문 + 조건부 파트의 조건 라벨.
-  프론트에 텍스트 사본을 두지 않는다.
+- 설정 버튼 영역에서 "워커 시스템 프롬프트" 항목 → 다이얼로그로 계약 전문
+  표시. 서버가 preamble.js로 조립해 반환하는 on-demand 요청
+  `get-worker-system-prompt {}` → **워커 디스패치 실사용 기본 변형**
+  (`fast_track=true`, `pr_submit=true`, target_base 플레이스홀더 — scheduler
+  는 모든 디스패치에 `workflow_mode=fast_track`을 기록하므로 이것이 실제
+  기본값) 전문 + 조건부 파트(disposition 변형 등)의 조건 라벨. 프론트에
+  텍스트 사본을 두지 않는다.
 
-### 5. UI — 과업 (이슈 상세)
+### 5. UI — 과업 (이슈 상세·트랜스크립트)
 
 - Board 이슈 상세 패널에 "과업 프롬프트" 접힌 섹션(기본 접힘, 클릭 펼침).
-  표시 우선순위: ① 최근 attempt의 기록된 `task_prompt`(attempt id·시각 병기)
-  ② 없으면 bead 커스텀 `prompt` 필드 ③ 그것도 없으면 `defaultTaskPrompt`
-  미리보기를 "예상 기본 과업" 라벨로.
-- Monitor 트랜스크립트 뷰어에 해당 attempt의 발송본(시스템+과업) 표시 —
-  `get-attempt-prompt` 재사용.
+  조회는 **bead 기준** on-demand 요청 `get-bead-prompt { bead_id }` → 해당
+  워크스페이스에서 그 bead의 최신 기록 attempt의
+  `{ attempt_id, system_prompt, task_prompt, recorded_at }`; 기록이 없으면
+  `{ missing: true }`를 받고 UI는 `defaultTaskPrompt` 형태의 "예상 기본
+  과업" 미리보기를 표시한다(durable bead에 커스텀 prompt 필드는 존재하지
+  않으므로 그런 폴백은 두지 않는다). Worker 탭을 방문하지 않은 상태의 상세
+  패널에서도 동작해야 하며 그 경로의 렌더 테스트를 둔다.
+- Worker 탭 **`transcript-drawer.js`**(attempt 트랜스크립트 뷰어의 실제
+  위치 — Monitor가 아님)에 해당 attempt의 발송본(시스템+과업) 표시 —
+  `get-attempt-prompt { attempt_id }` 요청 추가. 워크스페이스 스코프는
+  `subscribe-session-log`와 동일한 검증된 연결 워크스페이스 경로를 따른다
+  (동일 스코프 규칙 재사용; 다른 워크스페이스의 attempt는 그 워크스페이스로
+  전환 후 조회).
 
 ### 6. 오류 처리
 
@@ -110,16 +139,22 @@ Copilot agents.md 가이드, Anthropic harness 문서) 공통 패턴: 금지에�
 RED→GREEN 시드 대상 seam:
 
 1. `applyPreamble` — `{system_prompt, task_prompt}` 분리 반환과 옵션 조합
-   (fast_track × pr_submit × target_base 유무)별 golden snapshot
-   (`preamble.test.js`).
+   (fast_track × pr_submit/disposition × target_base 유무)별 golden snapshot
+   (`preamble.test.js`), disposition 변형 계약 포함.
 2. `claudeSpec().buildArgv` — `--append-system-prompt` 포함, positional은
-   task만, resume 분기 동일 (`claude.test.js`).
-3. attempt 레코드 프롬프트 필드 영속 — spawn 경로별 기록 (`queue-store` /
-   session 테스트).
-4. 프로토콜 `get-attempt-prompt`·`get-worker-system-prompt` 요청/응답과
-   missing 케이스 (프로토콜 테스트).
-5. 이슈 상세 과업 섹션 접힘/펼침·우선순위 폴백, 설정 다이얼로그 시스템
-   프롬프트 표시 (프론트 렌더 테스트).
+   task만, resume 분기 동일, build 산출물의 `system_prompt`/`task_prompt`
+   노출이 argv 인자와 동일 (`claude.test.js`).
+3. attempt 레코드 프롬프트 필드 영속 — 5개 spawn 경로별로 저장값 == 실제
+   argv 인자 검증 (`queue-store` / session / scheduler 테스트).
+4. worker-state push 투영 — 프롬프트가 든 attempt fixture로
+   `decorateQueue`/`attemptsWithUsage` 결과에 프롬프트 본문이 없음을 검증
+   (worker-handlers 테스트).
+5. 프로토콜 `get-attempt-prompt`·`get-bead-prompt`·
+   `get-worker-system-prompt` 요청/응답과 missing 케이스, 워크스페이스
+   스코프 (프로토콜 테스트).
+6. 이슈 상세 과업 섹션 접힘/펼침·missing 폴백(Worker 탭 미방문 경로 포함),
+   설정 다이얼로그 시스템 프롬프트 표시, transcript-drawer 프롬프트 표시
+   (프론트 렌더 테스트).
 
 기존 preamble 문자열을 단언하는 테스트는 새 구조로 갱신한다(구현 코드를
 테스트에 맞추지 않는다는 원칙 위반 아님 — 계약 자체가 바뀌는 변경).
