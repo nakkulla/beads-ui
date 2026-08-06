@@ -40,8 +40,10 @@
 
 - 동작: 1차 실행 결과가 정확히 `verify_cmd_failed`일 때만 전체 verify를 1회
   재실행한다 (총 2회 상한, attempt 사이 지연 없음). 그 외 사유는 즉시 반환.
-- 각 attempt는 기존과 동일하게 각자의 타임스탬프 로그 파일을 남긴다 (로그
-  이름은 이미 per-run ms 타임스탬프를 포함하므로 충돌 없음).
+- 각 attempt는 각자의 로그 파일을 남긴다. ms 타임스탬프만으로는 빠른 두
+  attempt가 같은 이름을 받을 수 있으므로, `retry_flaky` 경로의 로그명에는
+  attempt 서수를 suffix로 추가한다 — `attempts`의 두 `log_path`는 항상
+  상이해야 한다.
 - 반환값에 attempt 이력을 추가한다: `attempts` —
   `[{ reason, log_path }]`. `retry_flaky` 활성 시 항상 존재하며 재시도가
   없으면 1개, 있으면 2개다. 최종 `ok`/`reason`/`log_path`/`output_tail`은
@@ -52,8 +54,13 @@
 
 1. **`postMergeVerify`** (`server/worker/pr-actions.js`): `retry_flaky` 활성.
 2. **`gateNow`의 click-time verify** (`server/worker/pr-actions.js`):
-   `retry_flaky` 활성. 게이트 판정은 최종 attempt 결과로 기존과 동일하게
-   기록한다 (`observations.recordVerify`).
+   `retry_flaky` 활성. 현재 `gateNow`는 `verify_missing`/`verify_sha_stale`
+   일 때만 verify를 실행하므로, poller가 현재 head SHA에 이미 기록한
+   `verify_cmd_failed`(cached red)에는 옵션만으로 재시도가 붙지 않는다 —
+   **cached red도 클릭 시 재검증 트리거 조건에 추가한다** (클릭당 총 2회
+   상한은 동일, poller 레인 자체는 어떤 경우에도 재시도하지 않음). 게이트
+   판정은 최종 attempt 결과로 기존과 동일하게 기록한다
+   (`observations.recordVerify`).
 
 poller의 두 call site(`pr-poller.js`)는 옵션을 켜지 않는다.
 
@@ -109,19 +116,38 @@ verify flake 흡수 (<lane>): 1차 verify_cmd_failed (<1차 log_path>) → 재�
    `flake` / `environment` / `regression`.
 2. `flake`·`environment` → 근거를 bead notes에 기록하고 판정을 구조화된
    결과로 반환한다. `environment`는 원인 수리용 bead 생성을 제안한다.
-3. `regression` → fix bead 생성 + fix PR 준비까지 수행한다. main 직접 수정
-   금지(기존 가드가 차단), landing은 사람의 머지 클릭.
+3. `regression` → 진단 세션은 **fix bead 생성까지만** 수행한다 (분류·근거·
+   재현 로그를 bead에 첨부; 코드는 수정하지 않는다). fix PR은 그 fix bead를
+   표준 워커 레인이 집어 기존 규칙(스펙·게이트·PR Delivery) 그대로
+   준비한다 — 사용자에게는 "진단 + fix PR 준비까지 자동"이라는 결과가
+   유지된다. main 직접 수정 금지(기존 가드가 차단), landing은 사람의 머지
+   클릭.
 4. 테스트를 약화·삭제·skip 처리해 통과시키는 행위 금지.
+
+### 판정 스키마와 durable 기록
+
+- 진단 attempt의 결과는 구조화된 판정으로 반환된다:
+  `{ verdict: 'flake'|'environment'|'regression', evidence: string,
+  refs?: { fix_bead_id?, env_bead_id? } }`. 이 세 값 외의 verdict, 파싱
+  불가, 필수 필드 부재는 모두 **malformed**다.
+- 워커는 판정을 검증한 뒤 큐 스토어의 `cleanup_failed[bead_id]`에
+  `diagnosis: { verdict, attempt_id, consumed: boolean }`로 **durable하게
+  병합**한다 — in-memory 이벤트가 아니라 저장된 기록이 소비의 단일
+  근거이므로, 서버 재시작 후에도 같은 판정이 두 번 소비되지 않는다.
 
 ### 판정 소비 (워커)
 
-- attempt 결과의 판정이 `flake` 또는 `environment`(수리 불요 판단 포함)이면
-  워커가 정리를 1회 자동 재실행한다 — 판정당 재실행은 1회로 상한.
-- `regression`이면 정리는 멈춘 채 유지하고, 실패 배너를 진단 결과(분류,
-  fix bead/PR 링크)로 갱신한다 — 사람이 받아볼 때 진단이 이미 붙어 있는
-  상태가 목표.
-- 판정을 읽을 수 없는 attempt(비정상 종료 등)는 배너에 그 사실만 기록하고
-  아무것도 자동 실행하지 않는다(fail-closed).
+- `verdict`가 `flake` 또는 `environment`이고 `consumed`가 false이면 워커가
+  정리를 1회 자동 재실행하고, **재실행 시작 전에** `consumed: true`를
+  durable하게 기록한다 — 판정당 재실행은 정확히 1회, 재시작·크래시 후에도
+  상한 유지.
+- 재실행이 다시 red면 기존과 동일한 `cleanup_failed` 실패로 남는다 — 이때
+  이미 `consumed: true`이므로 같은 판정으로 재실행이 반복되지 않는다.
+- `regression`이면 재실행 없이 정리는 멈춘 채 유지하고, 실패 배너를 진단
+  결과(분류, fix bead 링크)로 갱신한다 — 사람이 받아볼 때 진단이 이미
+  붙어 있는 상태가 목표.
+- **malformed 판정과 판정 없는 attempt 종료(비정상 종료 포함)는
+  fail-closed**: 아무것도 자동 실행하지 않고 배너에 그 사실만 기록한다.
 
 ## 에러 처리 원칙 요약
 
@@ -137,17 +163,26 @@ RED→GREEN 시임 (기존 테스트 파일 관례를 따름):
 
 1. `verify-cmd.test.js` — `retry_flaky`: 1차 `verify_cmd_failed` → 2차 green
    이면 ok + attempts 2개 / 2연속 red면 최종 red + attempts 2개 / timeout·
-   spawn_error는 재시도 없이 즉시 반환 / 옵션 미사용 시 기존 동작 불변.
+   spawn_error는 재시도 없이 즉시 반환 / 두 attempt의 `log_path`가 상이 /
+   옵션 미사용 시 기존 동작 불변.
 2. `pr-actions.test.js` — `postMergeVerify` 재시도 경로: 흡수 시 정리 계속
    진행 + notes append 호출 / append 실패에도 정리 진행(fail-quiet) /
    2연속 red면 기존과 동일한 `failCleanup`.
 3. `pr-actions.test.js` — `gateNow` click-time verify 재시도: 흡수 시 게이트
-   green 판정, 최종 attempt가 관측에 기록됨.
+   green 판정, 최종 attempt가 관측에 기록됨 / poller가 기록한 cached
+   `verify_cmd_failed`(현재 head SHA) → 클릭 → 재검증 green이면 게이트
+   green / `merge_gate` lane의 notes append 호출 / append 실패에도 게이트
+   green 판정 유지(fail-quiet).
 4. `running-grid.test.js`(또는 해당 뷰 테스트) — 갱신된 배너 문안 + [AI 정리]
    버튼 렌더·disabled 상태.
 5. 보드 카드 — `cleanup_failed` 배선 존재 시 배지+버튼 렌더, 부재 시 미렌더.
 6. 디스패치 가드 — `cleanup_failed` 없는 bead 거부 · in-flight 중복 거부 ·
-   판정 소비: `flake` → 정리 1회 재실행, `regression` → 재실행 없음.
+   판정 소비: `flake` → 정리 1회 재실행, `regression` → 재실행 없음 ·
+   malformed 판정 → fail-closed(재실행 없음, 배너 기록).
+7. 판정 소비 후 안전 invariant — `flake`/`environment` 판정으로 재실행된
+   정리의 verify가 다시 red: `cleanup_failed` 유지 · deploy(및 detached
+   launch) 미호출 · 같은 판정(`consumed: true`) 재소비 시 재실행 없음
+   (재시작 후 포함).
 
 ## 단계 구성 (승격 판정 참고)
 
