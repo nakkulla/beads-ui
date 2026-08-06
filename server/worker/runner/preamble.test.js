@@ -2,45 +2,113 @@ import { describe, expect, test } from 'vitest';
 import * as preamble from './preamble.js';
 import {
   FAST_TRACK_DIRECTIVE,
-  GUARD_CONTRACT_DIRECTIVE,
   PR_SUBMIT_DIRECTIVE,
   UNATTENDED_PREAMBLE,
   applyPreamble,
+  guardContractDirective,
   prBaseDirective
 } from './preamble.js';
 
-describe('runner/preamble', () => {
-  test('prepends the unattended preamble to the base prompt', () => {
+/**
+ * Every option combination the dispatch paths actually produce (UI-rxp3 Test
+ * scope 1): fast_track × pr_submit/disposition × target_base presence. Frozen
+ * as golden snapshots so a wording drift has to be an explicit edit.
+ *
+ * @type {Array<{ name: string, options: any }>}
+ */
+const COMBINATIONS = [
+  { name: 'plain', options: {} },
+  { name: 'fast_track', options: { fast_track: true } },
+  { name: 'base only', options: { target_base: 'ilsun/dev' } },
+  {
+    name: 'fast_track + base (the worker dispatch default)',
+    options: { fast_track: true, target_base: 'main' }
+  },
+  { name: 'disposition', options: { pr_submit: false } },
+  {
+    name: 'disposition + fast_track',
+    options: { pr_submit: false, fast_track: true }
+  },
+  {
+    name: 'disposition ignores target_base',
+    options: { pr_submit: false, target_base: 'main' }
+  }
+];
+
+describe('runner/preamble channel split (UI-rxp3 §1)', () => {
+  test('returns the system prompt and the task prompt as separate fields', () => {
     const out = applyPreamble('작업하라');
 
-    expect(out.startsWith(UNATTENDED_PREAMBLE)).toBe(true);
-    expect(out.endsWith('작업하라')).toBe(true);
-    expect(out).not.toContain(FAST_TRACK_DIRECTIVE);
+    expect(out.task_prompt).toBe('작업하라');
+    expect(out.system_prompt).toContain(UNATTENDED_PREAMBLE);
   });
 
-  test('injects the fast_track directive between preamble and prompt', () => {
-    const out = applyPreamble('작업하라', { fast_track: true });
+  test('keeps the task prompt free of every contract part', () => {
+    const out = applyPreamble('작업하라', {
+      fast_track: true,
+      target_base: 'main'
+    });
 
-    expect(out.indexOf(UNATTENDED_PREAMBLE)).toBeLessThan(
-      out.indexOf(FAST_TRACK_DIRECTIVE)
-    );
-    expect(out.indexOf(FAST_TRACK_DIRECTIVE)).toBeLessThan(
-      out.indexOf('작업하라')
-    );
+    expect(out.task_prompt).toBe('작업하라');
+    expect(out.task_prompt).not.toContain('무인 모드');
+    expect(out.task_prompt).not.toContain('가드 계약');
+  });
+
+  test('coerces a missing base prompt to an empty task prompt', () => {
+    expect(applyPreamble(/** @type {any} */ (undefined)).task_prompt).toBe('');
+  });
+
+  test('orders 무인 모드 → fast_track → 종점 → PR base → 가드 계약', () => {
+    const out = applyPreamble('작업하라', {
+      fast_track: true,
+      target_base: 'ilsun/dev'
+    }).system_prompt;
+    const idx = (/** @type {string} */ part) => out.indexOf(part);
+
+    expect(idx(UNATTENDED_PREAMBLE)).toBeLessThan(idx(FAST_TRACK_DIRECTIVE));
+    expect(idx(FAST_TRACK_DIRECTIVE)).toBeLessThan(idx(PR_SUBMIT_DIRECTIVE));
+    expect(idx(PR_SUBMIT_DIRECTIVE)).toBeLessThan(idx('## PR base'));
+    expect(idx('## PR base')).toBeLessThan(idx('## 가드 계약'));
+  });
+
+  test.each(COMBINATIONS)(
+    'freezes the assembled system prompt for $name',
+    ({ options }) => {
+      expect(
+        applyPreamble('작업하라', options).system_prompt
+      ).toMatchSnapshot();
+    }
+  );
+});
+
+describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
+  test('states the absence of a responder as an environment fact', () => {
+    expect(UNATTENDED_PREAMBLE).toContain('사용자는 이 세션과 통신할 수 없다');
+    expect(UNATTENDED_PREAMBLE).toContain('환경 사실');
+  });
+
+  test('keeps the blocker + abnormal-exit instruction', () => {
+    expect(UNATTENDED_PREAMBLE).toContain('`blocker`');
+    expect(UNATTENDED_PREAMBLE).toContain('비정상 종료');
+  });
+
+  test('carries the background-task warning the guard contract used to hold', () => {
+    expect(UNATTENDED_PREAMBLE).toContain('턴이 끝나는 즉시 종료된다');
+    expect(guardContractDirective()).not.toContain('백그라운드 태스크');
   });
 });
 
 describe('runner/preamble PR-submit directive (worker-phase2 §1)', () => {
   test('injects the PR-submit directive with no options at all', () => {
-    const out = applyPreamble('작업하라');
-
-    expect(out).toContain(PR_SUBMIT_DIRECTIVE);
+    expect(applyPreamble('작업하라').system_prompt).toContain(
+      PR_SUBMIT_DIRECTIVE
+    );
   });
 
   test('injects the PR-submit directive under fast_track too', () => {
-    const out = applyPreamble('작업하라', { fast_track: true });
-
-    expect(out).toContain(PR_SUBMIT_DIRECTIVE);
+    expect(
+      applyPreamble('작업하라', { fast_track: true }).system_prompt
+    ).toContain(PR_SUBMIT_DIRECTIVE);
   });
 
   test('states PR submission and forbids merging', () => {
@@ -50,36 +118,6 @@ describe('runner/preamble PR-submit directive (worker-phase2 §1)', () => {
 
   test('no longer names the retired merge_policy key', () => {
     expect(PR_SUBMIT_DIRECTIVE).not.toContain('merge_policy');
-  });
-
-  test('orders preamble → fast_track → PR-submit → prompt', () => {
-    const out = applyPreamble('작업하라', { fast_track: true });
-
-    const idx = (/** @type {string} */ part) => out.indexOf(part);
-
-    expect(idx(UNATTENDED_PREAMBLE)).toBeLessThan(idx(FAST_TRACK_DIRECTIVE));
-    expect(idx(FAST_TRACK_DIRECTIVE)).toBeLessThan(idx(PR_SUBMIT_DIRECTIVE));
-    expect(idx(PR_SUBMIT_DIRECTIVE)).toBeLessThan(idx('작업하라'));
-  });
-});
-
-describe('runner/preamble guard-contract directive (UI-t3wk)', () => {
-  test('injects the guard-contract directive with no options at all', () => {
-    const out = applyPreamble('작업하라');
-
-    expect(out).toContain(GUARD_CONTRACT_DIRECTIVE);
-  });
-
-  test('injects the guard-contract directive under fast_track too', () => {
-    const out = applyPreamble('작업하라', { fast_track: true });
-
-    expect(out).toContain(GUARD_CONTRACT_DIRECTIVE);
-  });
-
-  test('states that a base merge is allowed and the background-task warning', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('허용된다');
-    expect(GUARD_CONTRACT_DIRECTIVE).not.toContain('git merge` 절대 금지');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('턴을 끝내지 말 것');
   });
 });
 
@@ -91,7 +129,7 @@ describe('runner/preamble merge axis removal (worker-phase2 §2)', () => {
   });
 
   test('emits no merge-lock protocol block for any input', () => {
-    const out = applyPreamble('작업하라', { fast_track: true });
+    const out = applyPreamble('작업하라', { fast_track: true }).system_prompt;
 
     expect(out).not.toContain('merge-lock');
     expect(out).not.toContain('머지 락 프로토콜');
@@ -110,27 +148,38 @@ describe('runner/preamble merge axis removal (worker-phase2 §2)', () => {
       })
     );
 
-    expect(with_retired).toBe(plain);
+    expect(with_retired).toEqual(plain);
   });
 });
 
-describe('runner/preamble disposition sessions (UI-hs11 §3.3)', () => {
+describe('runner/preamble disposition sessions (UI-hs11 §3.3, UI-rxp3 §1)', () => {
   test('drops the PR-submit directive when the session opens no PR', () => {
-    const out = applyPreamble('처분하라', { pr_submit: false });
+    const out = applyPreamble('처분하라', { pr_submit: false }).system_prompt;
 
     expect(out).not.toContain('PR 제출까지 수행하고');
-    expect(out).toContain('무인 모드');
-    expect(out).toContain('가드 계약 고지');
+    expect(out).toContain('## 무인 모드');
+    expect(out).toContain('## 가드 계약');
   });
 
   test('keeps the PR-submit directive by default', () => {
-    expect(applyPreamble('작업하라')).toContain('PR 제출까지 수행하고');
+    expect(applyPreamble('작업하라').system_prompt).toContain(
+      'PR 제출까지 수행하고'
+    );
+  });
+
+  test('selects the disposition guard variant off the same flag', () => {
+    const out = applyPreamble('처분하라', { pr_submit: false }).system_prompt;
+
+    expect(out).toContain(guardContractDirective({ disposition: true }));
+    expect(out).not.toContain(guardContractDirective({ disposition: false }));
   });
 });
 
 describe('runner/preamble PR base directive (worker-base-scope-alignment §4)', () => {
   test('names the resolved base and the --base flag', () => {
-    const out = applyPreamble('작업하라', { target_base: 'ilsun/dev' });
+    const out = applyPreamble('작업하라', {
+      target_base: 'ilsun/dev'
+    }).system_prompt;
 
     expect(out).toContain('gh pr create --base ilsun/dev');
     expect(out).toContain('target_base 는 `ilsun/dev`');
@@ -146,81 +195,108 @@ describe('runner/preamble PR base directive (worker-base-scope-alignment §4)', 
   });
 
   test('injects nothing when no base was resolved', () => {
-    expect(applyPreamble('작업하라')).not.toContain('PR base 고지');
-    expect(applyPreamble('작업하라', { target_base: null })).not.toContain(
-      'PR base 고지'
-    );
-    expect(applyPreamble('작업하라', { target_base: '  ' })).not.toContain(
-      'PR base 고지'
-    );
+    expect(applyPreamble('작업하라').system_prompt).not.toContain('## PR base');
+    expect(
+      applyPreamble('작업하라', { target_base: null }).system_prompt
+    ).not.toContain('## PR base');
+    expect(
+      applyPreamble('작업하라', { target_base: '  ' }).system_prompt
+    ).not.toContain('## PR base');
   });
 
   test('drops the base directive with the PR-submit directive it belongs to', () => {
     const out = applyPreamble('처분하라', {
       pr_submit: false,
       target_base: 'ilsun/dev'
-    });
+    }).system_prompt;
 
-    expect(out).not.toContain('PR base 고지');
-  });
-
-  test('orders PR-submit → PR base → guard contract → prompt', () => {
-    const out = applyPreamble('작업하라', {
-      fast_track: true,
-      target_base: 'ilsun/dev'
-    });
-    const idx = (/** @type {string} */ part) => out.indexOf(part);
-
-    expect(idx(PR_SUBMIT_DIRECTIVE)).toBeLessThan(idx('PR base 고지'));
-    expect(idx('PR base 고지')).toBeLessThan(idx(GUARD_CONTRACT_DIRECTIVE));
-    expect(idx(GUARD_CONTRACT_DIRECTIVE)).toBeLessThan(idx('작업하라'));
+    expect(out).not.toContain('## PR base');
   });
 });
 
-describe('runner/preamble base push guard notice (guard-enforcement-layer-replacement §4)', () => {
-  test('announces the base-landing guard the session would otherwise trip blind', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('base 브랜치 직접 랜딩 금지');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('gh pr merge');
+describe('runner/preamble guard contract severity tiers (UI-rxp3 §1)', () => {
+  const contract = guardContractDirective();
+
+  test('declares the three severity tiers', () => {
+    expect(contract).toContain('### 즉시 종료');
+    expect(contract).toContain('### 거부만 됨');
+    expect(contract).toContain('### 허용됨');
   });
 
-  test('says a base push is refused by the hook rather than ending the session', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('pre-push hook 이 거부한다');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('세션은 종료되지 않고');
+  test('names both immediate-kill causes', () => {
+    expect(contract).toContain('gh pr merge');
+    expect(contract).toContain('--no-verify');
+    expect(contract).toContain('core.hooksPath');
+    expect(contract).toContain('GIT_CONFIG_COUNT');
+  });
+
+  test('pairs the hook-bypass prohibition with a legal isolation alternative', () => {
+    expect(contract).toContain(
+      'GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null'
+    );
+    expect(contract).toContain('오답:');
+    expect(contract).toContain('정답:');
+  });
+
+  test('pairs the merge prohibition with the session terminal it should reach', () => {
+    expect(contract).toContain('머지는 사람의 클릭이다');
+  });
+
+  test('pairs the base-push refusal with the feature-branch + PR alternative', () => {
+    expect(contract).toContain('pre-push hook 이 거부한다');
+    expect(contract).toContain('세션은 종료되지 않고');
+    expect(contract).toContain('gh pr create --base <target_base>');
   });
 
   test('states that a push to ANOTHER repo base is not judged at all', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('다른 저장소의 base');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('판정 대상이 아니다');
-    expect(GUARD_CONTRACT_DIRECTIVE).not.toContain('증명');
-  });
-
-  test('names hook disabling as the second kill, alongside gh pr merge', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('즉시 종료되는 것은');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('--no-verify');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('core.hooksPath');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('GIT_CONFIG_COUNT');
+    expect(contract).toContain('다른 저장소의 base');
+    expect(contract).toContain('판정 대상이 아니다');
   });
 
   test('announces the post-hoc base invariant', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('base_landing_detected');
-  });
-
-  test('keeps the background-task warning it already carried', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('턴을 끝내지 말 것');
+    expect(contract).toContain('base_landing_detected');
   });
 
   // UI-1xcd §5: the directive that cost a session $11.67 said the opposite.
   test('tells the session a base merge does NOT end it', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('git merge origin/main');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('허용된다');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('기록된다');
+    expect(contract).toContain('git merge origin/main');
+    expect(contract).toContain('허용된다');
+    expect(contract).toContain('기록된다');
   });
 
   test('names hook-path READING as no violation, unlike writing it', () => {
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain(
-      'git config --get core.hooksPath'
-    );
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('위반이 아니다');
-    expect(GUARD_CONTRACT_DIRECTIVE).toContain('git config set|unset');
+    expect(contract).toContain('git config --get core.hooksPath');
+    expect(contract).toContain('위반이 아니다');
+    expect(contract).toContain('git config set|unset');
+  });
+});
+
+describe('runner/preamble disposition guard variant (UI-rxp3 §1)', () => {
+  const contract = guardContractDirective({ disposition: true });
+
+  test('keeps gh pr merge as the one immediate kill', () => {
+    expect(contract).toContain('gh pr merge');
+    expect(contract).toContain('### 즉시 종료');
+  });
+
+  test('drops the hook-bypass kill the guard does not apply to it', () => {
+    expect(contract).not.toContain('--no-verify');
+    expect(contract).not.toContain('GIT_CONFIG_COUNT');
+  });
+
+  test('drops the base-push refusal, whose judgment it is exempt from', () => {
+    expect(contract).not.toContain('pre-push hook 이 거부한다');
+    expect(contract).not.toContain('base_landing_detected');
+    expect(contract).toContain('거부 판정은 없다');
+  });
+
+  test('says publishing the resolved base IS the job', () => {
+    expect(contract).toContain('REVISE 처분 세션');
+    expect(contract).toContain('적용되지 않는다');
+  });
+
+  test('keeps the allowed tier it shares with every other session', () => {
+    expect(contract).toContain('git merge origin/main');
+    expect(contract).toContain('git config --get core.hooksPath');
   });
 });

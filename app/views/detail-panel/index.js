@@ -9,6 +9,7 @@ import { commentsTemplate } from './comments.js';
 import { execSettingsTemplate } from './exec-settings.js';
 import { createMdViewer } from './md-viewer.js';
 import { sessionHistoryTemplate } from './session-history.js';
+import { taskPromptTemplate } from './task-prompt.js';
 
 /**
  * Allowed status values (mirrors UPDATE_STATUS_ALLOWED in
@@ -261,6 +262,79 @@ export function createDetailPanel(mount_element, options) {
       : undefined,
     sessionLogStore
   });
+
+  // Task-prompt section state (UI-rxp3 §5). Collapsed by default, fetched on
+  // first expand and cached per bead — a second open of the same issue does not
+  // re-request, and switching issues drops it.
+  let prompt_expanded = false;
+  let prompt_loading = false;
+  let prompt_error = false;
+  /** @type {any} */
+  let prompt_data = null;
+  /** @type {string|null} */
+  let prompt_loaded_for = null;
+  // Guards a late reply from an issue the reader has already left.
+  let prompt_request_seq = 0;
+
+  function resetTaskPrompt() {
+    prompt_expanded = false;
+    prompt_loading = false;
+    prompt_error = false;
+    prompt_data = null;
+    prompt_loaded_for = null;
+    prompt_request_seq += 1;
+  }
+
+  /**
+   * Fetch the bead's recorded send. The reply is either a record or the missing
+   * shape carrying the default task prompt — both are rendered, neither is an
+   * error.
+   *
+   * @param {string} id
+   */
+  async function fetchTaskPrompt(id) {
+    if (!transport) {
+      return;
+    }
+    const seq = ++prompt_request_seq;
+    prompt_loading = true;
+    prompt_error = false;
+    doRender();
+    try {
+      const res = await Promise.resolve(
+        transport('get-bead-prompt', { bead_id: id })
+      );
+      if (seq !== prompt_request_seq) {
+        return;
+      }
+      // The production transport swallows failures into `[]`; an array is never
+      // a valid reply here, so it stays a failure.
+      if (!res || typeof res !== 'object' || Array.isArray(res)) {
+        prompt_error = true;
+      } else {
+        prompt_data = res;
+        prompt_loaded_for = id;
+      }
+    } catch {
+      if (seq === prompt_request_seq) {
+        prompt_error = true;
+      }
+    } finally {
+      if (seq === prompt_request_seq) {
+        prompt_loading = false;
+        doRender();
+      }
+    }
+  }
+
+  function toggleTaskPrompt() {
+    prompt_expanded = !prompt_expanded;
+    if (prompt_expanded && current_id && prompt_loaded_for !== current_id) {
+      void fetchTaskPrompt(current_id);
+      return;
+    }
+    doRender();
+  }
 
   /**
    * Attempts recorded for the current bead, newest first (from the client
@@ -1220,6 +1294,15 @@ export function createDetailPanel(mount_element, options) {
           ${workflowTemplate(data)} ${workflowMetaTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
           ${execSettingsTemplate(effective, exec_handlers, execDefaults())}
+          ${taskPromptTemplate(
+            {
+              expanded: prompt_expanded,
+              loading: prompt_loading,
+              error: prompt_error,
+              data: prompt_data
+            },
+            { onToggle: toggleTaskPrompt }
+          )}
           ${sessionHistoryTemplate(attemptsForBead(), session_handlers, {
             total: totalUsageForBead(),
             expanded: usage_expanded
@@ -1242,6 +1325,7 @@ export function createDetailPanel(mount_element, options) {
         exec_local = {};
         resetEditors();
         resetComments();
+        resetTaskPrompt();
       }
       current_id = id;
       current = null;
@@ -1253,6 +1337,7 @@ export function createDetailPanel(mount_element, options) {
       exec_local = {};
       resetEditors();
       resetComments();
+      resetTaskPrompt();
       md_viewer.close();
       transcript_drawer.close();
       render(html``, mount_element);
@@ -1278,6 +1363,7 @@ export function createDetailPanel(mount_element, options) {
       current_id = null;
       current = null;
       resetComments();
+      resetTaskPrompt();
       render(html``, mount_element);
     }
   };

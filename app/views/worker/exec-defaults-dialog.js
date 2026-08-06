@@ -8,6 +8,7 @@ import {
   MODELS,
   REVIEW_MODELS
 } from '../detail-panel/exec-settings.js';
+import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 
 /**
  * Worker-tab "전역 실행 설정" dialog: the single editing surface for the
@@ -408,6 +409,113 @@ export function createExecDefaultsDialog(mount_element, options) {
     </div>`;
   }
 
+  // Worker system-prompt section state (UI-rxp3 §4). Collapsed by default and
+  // fetched once per dialog lifetime — the contract is a constant, so a second
+  // open of the same dialog re-renders the text it already has.
+  let prompt_expanded = false;
+  let prompt_loading = false;
+  let prompt_error = false;
+  /** @type {any} */
+  let prompt_data = null;
+
+  /**
+   * Fetch the assembled contract. The server builds it through `preamble.js`,
+   * the single owner of the text — the client holds no copy to drift from it.
+   */
+  async function fetchSystemPrompt() {
+    if (!transport) {
+      return;
+    }
+    prompt_loading = true;
+    prompt_error = false;
+    doRender();
+    try {
+      const res = await Promise.resolve(
+        transport(/** @type {any} */ ('get-worker-system-prompt'), {})
+      );
+      if (!res || typeof res !== 'object' || Array.isArray(res)) {
+        prompt_error = true;
+      } else {
+        prompt_data = res;
+      }
+    } catch {
+      prompt_error = true;
+    } finally {
+      prompt_loading = false;
+      doRender();
+    }
+  }
+
+  function toggleSystemPrompt() {
+    prompt_expanded = !prompt_expanded;
+    if (prompt_expanded && !prompt_data) {
+      void fetchSystemPrompt();
+      return;
+    }
+    doRender();
+  }
+
+  /**
+   * The 「워커 시스템 프롬프트」 section: the full contract every worker session
+   * is launched with, plus the conditional variants and the condition that
+   * selects each. Read-only, like the verify/deploy section above it — the text
+   * is owned by the server and there is nothing to edit here.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function systemPromptSection() {
+    return html`<section class="exec-defaults__sp" data-seam="system-prompt">
+      <p class="exec-defaults__vd-title">
+        워커 시스템 프롬프트
+        <span class="exec-defaults__vd-ro">읽기 전용 — 서버가 조립</span>
+        <button
+          type="button"
+          class="exec-defaults__sp-toggle"
+          data-seam="system-prompt-toggle"
+          aria-expanded=${prompt_expanded ? 'true' : 'false'}
+          @click=${toggleSystemPrompt}
+        >
+          ${prompt_expanded ? '접기' : '전문 보기'}
+        </button>
+      </p>
+      ${prompt_expanded ? systemPromptBody() : ''}
+    </section>`;
+  }
+
+  /**
+   * @returns {import('lit-html').TemplateResult|''}
+   */
+  function systemPromptBody() {
+    const status = promptStatusTemplate({
+      loading: prompt_loading,
+      error: prompt_error
+    });
+    if (status) {
+      return status;
+    }
+    if (!prompt_data) {
+      return '';
+    }
+    const variants = Array.isArray(prompt_data.variants)
+      ? prompt_data.variants
+      : [];
+    return html`<div class="exec-defaults__sp-body">
+      ${prompt_data.target_base_placeholder
+        ? html`<div class="prompt-block__meta">
+            \`${prompt_data.target_base_placeholder}\`는 디스패치 시점에 해석된
+            base로 치환됩니다.
+          </div>`
+        : ''}
+      ${variants.map(
+        (/** @type {any} */ v) =>
+          html`<div class="exec-defaults__sp-variant" data-variant=${v.key}>
+            <div class="exec-defaults__sp-cond">${v.condition}</div>
+            ${promptBlockTemplate(v.label, v.system_prompt)}
+          </div>`
+      )}
+    </div>`;
+  }
+
   /**
    * @param {any} info
    * @returns {import('lit-html').TemplateResult}
@@ -451,6 +559,7 @@ export function createExecDefaultsDialog(mount_element, options) {
               selectRow(row.key, row.values(), defaults[row.key] || '')
             )}
             ${verifyDeploySection(currentWorkspaceInfo())}
+            ${systemPromptSection()}
           </div>
         </div>
       `,

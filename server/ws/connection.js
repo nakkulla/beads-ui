@@ -57,6 +57,9 @@ import {
 } from './ui-order-handlers.js';
 import {
   detachWorkerQueue,
+  handleGetAttemptPrompt,
+  handleGetBeadPrompt,
+  handleGetWorkerSystemPrompt,
   handleSubscribeSessionLog,
   handleSubscribeWorkerQueue,
   handleUnsubscribeSessionLog,
@@ -523,6 +526,15 @@ export async function handleMessage(ws, data) {
       return;
     case 'subscribe-session-log':
       handleSubscribeSessionLog(ws, req);
+      return;
+    case 'get-attempt-prompt':
+      handleGetAttemptPrompt(ws, req);
+      return;
+    case 'get-bead-prompt':
+      handleGetBeadPrompt(ws, req);
+      return;
+    case 'get-worker-system-prompt':
+      handleGetWorkerSystemPrompt(ws, req);
       return;
     case 'unsubscribe-session-log':
       handleUnsubscribeSessionLog(ws, req);

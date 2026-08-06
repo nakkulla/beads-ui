@@ -5721,3 +5721,122 @@ html[data-theme='dark'] {
   color: var(--text-dim);
   font-size: var(--fs-body);
 }
+
+/* Prompt inspection (UI-rxp3 §4/§5): the shared block used by the ⚙ dialog's
+   worker system prompt, the issue detail panel's task prompt, and the
+   transcript drawer's per-attempt send. Read-only everywhere — a prompt is
+   observed here, never edited. */
+.prompt-block + .prompt-block {
+  margin-top: var(--sp-8);
+}
+
+.prompt-block__label {
+  margin-bottom: var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+}
+
+.prompt-block__body {
+  max-height: 22rem;
+  margin: 0;
+  padding: var(--sp-8);
+  border: 1px solid var(--border-panel);
+  border-radius: var(--r-4);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.prompt-block__status {
+  color: var(--text-dim);
+  font-size: var(--fs-body-sm);
+}
+
+.prompt-block__status--error {
+  color: var(--accent-danger);
+}
+
+.prompt-block__meta {
+  margin-bottom: var(--sp-6);
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+
+/* Detail panel 과업 프롬프트 section. */
+.detail-prompt__toggle {
+  margin-left: var(--sp-6);
+  padding: 0 var(--sp-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-9);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.detail-prompt {
+  margin-bottom: var(--sp-10);
+}
+
+.detail-prompt__meta,
+.detail-prompt__missing {
+  margin-bottom: var(--sp-6);
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+
+/* Transcript drawer sent-prompt panel. */
+.sv__prompt {
+  padding: var(--sp-10) var(--sp-12);
+  border-bottom: 1px solid var(--border-panel);
+  overflow-y: auto;
+  max-height: 40%;
+}
+
+.sv__prompt-toggle {
+  padding: 0 var(--sp-7);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-9);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.sv__prompt-toggle--on {
+  border-color: var(--accent-child);
+  color: var(--text-primary);
+}
+
+/* ⚙ dialog worker system-prompt section. */
+.exec-defaults__sp {
+  margin-top: var(--sp-14);
+  padding-top: var(--sp-10);
+  border-top: 1px solid var(--border-panel);
+}
+
+.exec-defaults__sp-toggle {
+  margin-left: auto;
+  padding: 0 var(--sp-7);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-9);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.exec-defaults__sp-variant + .exec-defaults__sp-variant {
+  margin-top: var(--sp-12);
+}
+
+.exec-defaults__sp-cond {
+  margin-bottom: var(--sp-4);
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}

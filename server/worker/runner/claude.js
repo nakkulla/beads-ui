@@ -301,24 +301,44 @@ export function claudeSpec(options = {}) {
         args.push('--effort', String(s.effort));
       }
       args.push('--permission-mode', 'bypassPermissions');
-      args.push(
-        applyPreamble(promptFor(bead), {
-          fast_track: !!s.fast_track,
-          // A disposition session opens no PR (UI-hs11 §3.3).
-          pr_submit: !s.disposition,
-          // The base the session must open its PR against
-          // (worker-base-scope-alignment §4).
-          target_base: typeof s.target_base === 'string' ? s.target_base : null
-        })
-      );
+      // The two channels (UI-rxp3 §2): the session-constant contract goes to
+      // `--append-system-prompt`, and only the task stays positional. The
+      // resume branch above takes the same path deliberately — a `--resume`
+      // run re-declares the contract instead of relying on it surviving deep in
+      // the resumed history.
+      //
+      // MEASURED 2026-08-06 (§2's required experiment): `--resume <sid>` DOES
+      // apply a fresh `--append-system-prompt`. A resumed session was given a
+      // second marker on that channel and echoed both the original and the new
+      // one, so the resumed run sees the current contract, not a frozen copy.
+      // The spec's fallback — re-prefixing the contract onto the task prompt on
+      // the resume path only — is therefore not applied.
+      const { system_prompt, task_prompt } = applyPreamble(promptFor(bead), {
+        fast_track: !!s.fast_track,
+        // A disposition session opens no PR (UI-hs11 §3.3) and takes the
+        // matching guard-contract variant.
+        pr_submit: !s.disposition,
+        // The base the session must open its PR against
+        // (worker-base-scope-alignment §4).
+        target_base: typeof s.target_base === 'string' ? s.target_base : null
+      });
+      args.push('--append-system-prompt', system_prompt);
+      args.push(task_prompt);
       // Worker sessions inherit the user's `~/.claude/settings.json` hooks, so a
       // headless run would fire the Stop hook's "응답 완료" Discord notice on top
       // of the worker lane's own. `CLAUDE_HOOK_SUPPRESS` is the dotfiles-side
       // blanket switch; `routing_env` still wins if it names the same key.
+      //
+      // `system_prompt`/`task_prompt` ride back out with the argv so the spawn
+      // path records what was ACTUALLY sent (UI-rxp3 §3) — the recording reads
+      // this one assembly rather than repeating it, which is what makes the two
+      // incapable of drifting.
       return {
         command: 'claude',
         args,
-        env: { CLAUDE_HOOK_SUPPRESS: '1', ...routing_env }
+        env: { CLAUDE_HOOK_SUPPRESS: '1', ...routing_env },
+        system_prompt,
+        task_prompt
       };
     },
     normalize,

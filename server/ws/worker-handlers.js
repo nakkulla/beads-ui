@@ -51,6 +51,7 @@ import {
   peekDeployResolution,
   peekVerifyResolution
 } from '../worker/repo-ops.js';
+import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { readDeclaredBase } from '../worker/target-base.js';
 import {
@@ -454,6 +455,39 @@ function beadDecorationFor(workspace_key, queue, method) {
 }
 
 /**
+ * The attempt fields that are recorded durably but must NOT ride the
+ * worker-state push (UI-rxp3 §3): the full system + task prompts. A queue
+ * snapshot carries every attempt of every lane and is pushed on every
+ * transition, so shipping two multi-kilobyte strings per attempt would bloat
+ * the channel for a value almost no render reads. The UI fetches them on demand
+ * instead (`get-attempt-prompt` / `get-bead-prompt`).
+ *
+ * @type {string[]}
+ */
+const PROMPT_FIELDS = ['system_prompt', 'task_prompt'];
+
+/**
+ * Drop {@link PROMPT_FIELDS} from one attempt. A record that carries neither is
+ * returned untouched so the common case allocates nothing.
+ *
+ * @param {any} attempt
+ * @returns {any}
+ */
+function stripPrompts(attempt) {
+  if (!attempt || typeof attempt !== 'object') {
+    return attempt;
+  }
+  if (!PROMPT_FIELDS.some((field) => field in attempt)) {
+    return attempt;
+  }
+  const out = { ...attempt };
+  for (const field of PROMPT_FIELDS) {
+    delete out[field];
+  }
+  return out;
+}
+
+/**
  * Project the attempts map with the LIVE, non-persisted per-attempt values
  * folded in: the token tally (UI-raqh §1) and `last_event_at`, the time of the
  * attempt's last session-log line (UI-53es §1), which the monitor row turns
@@ -479,9 +513,6 @@ export function attemptsWithUsage(queue, workspace_key) {
     store = null;
     session_log = null;
   }
-  if (!store && !session_log) {
-    return attempts;
-  }
   /** @type {Record<string, unknown>} */
   const out = {};
   for (const [attempt_id, attempt] of Object.entries(attempts)) {
@@ -492,7 +523,7 @@ export function attemptsWithUsage(queue, workspace_key) {
         ? session_log.lastEventAt(workspace_key, attempt_id)
         : null;
     /** @type {any} */
-    let projected = attempt;
+    let projected = stripPrompts(attempt);
     if (live) {
       projected = { ...projected, usage: live };
     }
@@ -812,6 +843,170 @@ export function handleUnsubscribeSessionLog(ws, req) {
   }
   ws.send(
     JSON.stringify(makeOk(req, { id: client_id, unsubscribed: removed }))
+  );
+}
+
+/**
+ * The base placeholder the system-prompt preview is assembled with. The preview
+ * is workspace-independent on purpose — it shows the CONTRACT, and pinning a
+ * real branch name into it would make the same text read differently per
+ * workspace for no gain.
+ *
+ * @type {string}
+ */
+const PREVIEW_TARGET_BASE = '<target_base>';
+
+/**
+ * One attempt's recorded send, or the missing shape. A record written before
+ * UI-rxp3 carries neither field, which is a fact about the record rather than
+ * an error — the reader shows "기록 없음" (fail-quiet contract consumption).
+ *
+ * @param {any} attempt
+ * @returns {{ attempt_id: string, system_prompt: string|null, task_prompt: string|null, recorded_at: number|null }|{ missing: true }}
+ */
+function promptRecordOf(attempt) {
+  if (!attempt || typeof attempt !== 'object') {
+    return { missing: true };
+  }
+  const system_prompt =
+    typeof attempt.system_prompt === 'string' ? attempt.system_prompt : null;
+  const task_prompt =
+    typeof attempt.task_prompt === 'string' ? attempt.task_prompt : null;
+  if (system_prompt === null && task_prompt === null) {
+    return { missing: true };
+  }
+  return {
+    attempt_id: String(attempt.attempt_id || ''),
+    system_prompt,
+    task_prompt,
+    recorded_at:
+      typeof attempt.started_at === 'number' ? attempt.started_at : null
+  };
+}
+
+/**
+ * Handle `get-attempt-prompt`. Payload: `{ attempt_id }`.
+ *
+ * Workspace scope follows `subscribe-session-log`: the connection's own
+ * verified workspace, and nothing else. An attempt of another workspace is
+ * simply not found here — the reader switches workspace to see it, exactly as
+ * for its transcript.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleGetAttemptPrompt(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  const attempt_id = typeof p.attempt_id === 'string' ? p.attempt_id : '';
+  if (attempt_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const attempt = queueStore().snapshot(key).attempts[attempt_id];
+  ws.send(JSON.stringify(makeOk(req, promptRecordOf(attempt))));
+}
+
+/**
+ * Handle `get-bead-prompt`. Payload: `{ bead_id }`.
+ *
+ * Keyed by BEAD rather than attempt (UI-rxp3 §5): the issue detail panel knows
+ * which bead it is showing and nothing about attempts, so resolving the newest
+ * recorded attempt is the server's job. A bead with no recorded attempt gets
+ * the missing shape plus the default task prompt the next dispatch WOULD send,
+ * so the panel can preview it without holding a copy of the text.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleGetBeadPrompt(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  const bead_id = typeof p.bead_id === 'string' ? p.bead_id : '';
+  if (bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = workspaceKeyOf(ws);
+  const attempts = Object.values(queueStore().snapshot(key).attempts).filter(
+    (/** @type {any} */ a) => a && a.bead_id === bead_id
+  );
+  // Newest first by start time; an attempt that never started (a refusal
+  // recorded before the spawn) sorts last and carries no prompt anyway.
+  attempts.sort(
+    (/** @type {any} */ a, /** @type {any} */ b) =>
+      (typeof b.started_at === 'number' ? b.started_at : 0) -
+      (typeof a.started_at === 'number' ? a.started_at : 0)
+  );
+  for (const attempt of attempts) {
+    const record = promptRecordOf(attempt);
+    if (!(/** @type {any} */ (record).missing)) {
+      ws.send(JSON.stringify(makeOk(req, record)));
+      return;
+    }
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        missing: true,
+        default_task_prompt: defaultTaskPrompt(bead_id)
+      })
+    )
+  );
+}
+
+/**
+ * Handle `get-worker-system-prompt`. Payload: `{}`.
+ *
+ * Assembles the contract through `preamble.js` — the single owner of the text —
+ * rather than shipping a client-side copy that would drift the first time the
+ * contract changes. The default variant is the one the scheduler actually
+ * dispatches with (`fast_track: true`, PR-submitting), because that is what
+ * every queued bead gets; the conditional variants ride along with the
+ * condition that selects them.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleGetWorkerSystemPrompt(ws, req) {
+  const dispatch = applyPreamble('', {
+    fast_track: true,
+    target_base: PREVIEW_TARGET_BASE
+  });
+  const disposition = applyPreamble('', {
+    fast_track: true,
+    pr_submit: false
+  });
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        target_base_placeholder: PREVIEW_TARGET_BASE,
+        system_prompt: dispatch.system_prompt,
+        variants: [
+          {
+            key: 'dispatch',
+            label: '워커 디스패치 (기본)',
+            condition:
+              'fast_track · PR 제출 · target_base 해석됨 — 큐 디스패치·재개·충돌 해결',
+            system_prompt: dispatch.system_prompt
+          },
+          {
+            key: 'disposition',
+            label: 'REVISE 처분 세션',
+            condition:
+              'disposition — PR 미제출, base push·hook 판정 면제 (가드 계약 처분 변형)',
+            system_prompt: disposition.system_prompt
+          }
+        ]
+      })
+    )
   );
 }
 
