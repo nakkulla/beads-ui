@@ -37,7 +37,8 @@ const PLAN_RECEIPT_RE = /^(user|triage|codex)@([0-9a-fA-F]{40})$/;
 
 /**
  * Reviewer tokens the workflow contract enumerates as review evidence
- * (`docs/contracts/workflow.md:115`). beads-ui consumes that enumeration rather
+ * (`docs/contracts/workflow.md` `## Review gates` Receipts, "Consumer glyph
+ * classification"). beads-ui consumes that enumeration rather
  * than inferring it: a token outside this set and outside `skipped` earns no
  * glyph at all (fail-quiet), so `user@` and typos never pose as review evidence.
  *
