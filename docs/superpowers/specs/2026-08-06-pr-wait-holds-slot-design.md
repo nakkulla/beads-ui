@@ -56,7 +56,11 @@ fire-and-forget으로 요청해 다음 이슈가 폴링 주기를 기다리지 �
   재시작 후 startup reconcile(`attach.js` 1058행 부근)이 담당하고, 타 저장소
   deploy에서는 tick이 즉시 유효하다. 재시작에 휘말려 tick이 소실돼도 무해하다.
 - [폐기]: `removeFromPrWait`(2164행 부근) 성공 후 tick.
-- 폴백: tick이 누락돼도 45초 pr-poller/reconciler 주기가 다음 pass를 돌린다.
+- 주기적 폴백은 **없다**: scheduler tick은 이벤트 구동뿐이며(`runtime.js` 상단
+  주석 — 슬롯을 새로 채울 수 있는 이벤트에서만 `tickWorkerQueue`), pr-poller와
+  reconciler는 주기마다 dispatch pass를 돌리지 않는다. 위 이탈 지점 tick이
+  누락되면 다음 슬롯-해제 이벤트(다른 세션 종료·pause·토글 등)까지 dispatch가
+  지연된다 — 그래서 이탈 지점 tick 세 곳이 이 스펙의 필수 요소다.
 
 ## 프로토콜/WS
 
@@ -65,8 +69,12 @@ fire-and-forget으로 요청해 다음 이슈가 폴링 주기를 기다리지 �
   payload `{ on: boolean, expected_revision }`. `worker-merge-auto-toggle`
   핸들러 미러: `on` boolean 검증 → `mutationWorkspaceOf` → 스토어 CAS 세터 →
   브로드캐스트. 성공 시 `tickWorkerQueue(key)`를 fire-and-forget으로 호출한다 —
-  특히 ON→OFF 전환은 점유를 즉시 푸는 변화라 tick 없이는 다음 폴링까지
-  dispatch가 지연된다.
+  특히 ON→OFF 전환은 점유를 즉시 푸는 변화라 tick 없이는 다음 슬롯-해제
+  이벤트까지 dispatch가 지연된다.
+- `server/ws/connection.js`에 핸들러를 **등록**한다: import 목록(71행 부근)과
+  메시지 dispatch switch(495행 부근 `worker-merge-auto-toggle` case 인접)에
+  `worker-queue-set-pr-wait-hold` case 추가. 이 등록이 빠지면 메시지가
+  핸들러에 도달하지 않는다.
 - 스냅샷 payload는 `decorateQueue`가 스토어 snapshot을 그대로 실어 나르므로
   플래그는 추가 작업 없이 클라이언트에 도달한다.
 
@@ -76,31 +84,44 @@ fire-and-forget으로 요청해 다음 이슈가 폴링 주기를 기다리지 �
   title 속성: "PR이 머지·정리 완료될 때까지 다음 이슈를 시작하지 않습니다".
 - 클릭 → `worker-queue-set-pr-wait-hold` 전송. CAS 불일치 시 1회 재시도는
   `setSlots`(1477행 부근)와 동일 패턴.
-- 힌트 라인: `pr_wait_holds_slot === true && auto_merge !== true &&
-  pr_wait.length > 0 && waiting.length > 0`일 때 큐 섹션에 한 줄 —
+- 힌트 라인: 다음 조건이 **모두** 참일 때만 큐 섹션에 한 줄 표시 —
   "PR 머지 대기 중 — 다음 이슈는 머지·정리 완료 후 시작됩니다 (자동 머지
-  꺼짐)". 조건이 깨지면 사라진다(fail-quiet).
+  꺼짐)". 조건이 하나라도 깨지면 사라진다(fail-quiet).
+  1. `pr_wait_holds_slot === true` && `auto_advance === true` &&
+     `auto_merge !== true`
+  2. durable `pr_wait` 레인 멤버(store snapshot의 `q.pr_wait`, external 표시
+     행 제외)가 1건 이상
+  3. 대기열(`waiting`)이 1건 이상
+  4. 슬롯 포화: live running bead_id ∪ durable `pr_wait` bead_id 합집합
+     크기 ≥ `slots` — 여유 슬롯이 남아 dispatch가 계속되는 동안에는 표시하지
+     않는다.
 - 스타일·마크업은 기존 자동 진행/자동 머지 토글 클래스를 재사용한다.
 
 ## Test scope
 
 - `server/worker/queue-store.test.js`: normalize 기본 `false` / 세터 CAS 성공
   / revision 불일치 거부 / round-trip 지속성.
-- `server/worker/scheduler.test.js`: ON + `pr_wait` 1건 + `slots=1` → dispatch
-  0건; ON + `pr_wait` 1건 + `slots=2` → dispatch 1건; OFF → 기존 동작 불변;
-  `pr_wait` 이탈 후 tick → 다음 이슈 dispatch.
+- `server/worker/scheduler.test.js`: ON + `pr_wait` 1건 + `slots=1` + 대기열
+  1건 이상 → dispatch 0건; ON + `pr_wait` 1건 + `slots=2` + **대기열 2건** →
+  정확히 1건만 dispatch(대기 1건 seam은 현행 구현으로도 통과하는 공허한
+  RED이므로 금지); OFF + `pr_wait` 1건 → 기존과 동일하게 dispatch(불변 확인);
+  이탈 seam은 **한 테스트 안에서** 이탈 전 dispatch 0건을 먼저 단언한 뒤
+  `pr_wait` 제거 + tick 후 dispatch 1건을 단언한다.
 - `server/worker/pr-actions.test.js`: cleanup 성공(비-deploy/deploy)과 [폐기]
   각각에서 `scheduler.tick` 호출 검증.
 - `server/ws` worker-handlers 테스트: payload 검증, CAS 반영, tick 호출,
-  브로드캐스트에 플래그 포함.
-- `app/views/worker/index.test.js`: 토글 렌더·클릭 시 메시지 전송·힌트 표시
-  조건(4개 조건 조합).
+  브로드캐스트에 플래그 포함, 그리고 `connection.js` dispatch 라우팅으로
+  메시지가 핸들러에 실제 도달하는지 검증.
+- `app/views/worker/index.test.js`: 토글 렌더·클릭 시 메시지 전송, 힌트 표시
+  양성 1건 + 음성 사례(여유 슬롯 있음 / `auto_advance` OFF / external 표시
+  행만 있음 / `auto_merge` ON 각각 → 미표시).
 
 ## 에러 처리
 
 - CAS 불일치: 기존 큐 mutation과 동일하게 처리하고 다음 스냅샷으로 수렴한다.
-- tick 실패: fire-and-forget + 로그. 폴러 주기가 폴백이므로 큐가 영구 정지하지
-  않는다.
+- tick 실패: fire-and-forget + 로그. 주기적 폴백은 없으므로 실패 시 다음
+  슬롯-해제 이벤트까지 dispatch가 지연될 수 있다(영구 정지는 아니지만 지연은
+  가능 — 이탈 지점 tick 세 곳과 토글 핸들러 tick이 이를 최소화한다).
 
 ## 비범위
 
