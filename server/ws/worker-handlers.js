@@ -456,15 +456,20 @@ function beadDecorationFor(workspace_key, queue, method) {
 
 /**
  * The attempt fields that are recorded durably but must NOT ride the
- * worker-state push (UI-rxp3 §3): the full system + task prompts. A queue
+ * worker-state push (UI-rxp3 §3): the full system + task prompts, plus the
+ * disposition lane's own task prompt, which is a prompt body by the same
+ * measure and has no client reader. A queue
  * snapshot carries every attempt of every lane and is pushed on every
- * transition, so shipping two multi-kilobyte strings per attempt would bloat
- * the channel for a value almost no render reads. The UI fetches them on demand
- * instead (`get-attempt-prompt` / `get-bead-prompt`).
+ * transition — through this one projection, which the Monitor channel's
+ * cross-workspace aggregation reuses — so shipping multi-kilobyte prompt bodies
+ * per attempt would bloat the channel for a value almost no render reads. The
+ * UI fetches them on demand instead (`get-attempt-prompt` / `get-bead-prompt`).
+ * The scheduler's own `disposition_prompt` reader goes through the store, not
+ * this projection, so dropping it here changes no server behaviour.
  *
  * @type {string[]}
  */
-const PROMPT_FIELDS = ['system_prompt', 'task_prompt'];
+const PROMPT_FIELDS = ['system_prompt', 'task_prompt', 'disposition_prompt'];
 
 /**
  * Drop {@link PROMPT_FIELDS} from one attempt. A record that carries neither is
@@ -971,6 +976,9 @@ export function handleGetBeadPrompt(ws, req) {
  * dispatches with (`fast_track: true`, PR-submitting), because that is what
  * every queued bead gets; the conditional variants ride along with the
  * condition that selects them.
+ *
+ * The reply is a constant of the contract, not of the request: there is no
+ * payload field to read, so there is none to validate either.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req

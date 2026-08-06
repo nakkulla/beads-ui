@@ -32,6 +32,10 @@ const COMBINATIONS = [
   {
     name: 'disposition ignores target_base',
     options: { pr_submit: false, target_base: 'main' }
+  },
+  {
+    name: 'disposition + fast_track ignores target_base',
+    options: { pr_submit: false, fast_track: true, target_base: 'main' }
   }
 ];
 

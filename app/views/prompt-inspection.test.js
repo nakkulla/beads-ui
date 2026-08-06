@@ -139,6 +139,42 @@ describe('detail panel 과업 프롬프트 section (UI-rxp3 §5)', () => {
     panel.destroy();
   });
 
+  test('refetches for the same bead id after a workspace switch', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    let workspace = '/ws/a';
+    const transport = vi.fn(async (/** @type {string} */ type) => ({
+      attempt_id: `a-${workspace}`,
+      system_prompt: 's',
+      task_prompt: `${workspace} 과업`,
+      recorded_at: null,
+      type
+    }));
+    const panel = createDetailPanel(mount, {
+      onClose: vi.fn(),
+      transport: /** @type {any} */ (transport),
+      getWorkspacePath: () => workspace
+    });
+    panel.load('UI-1');
+
+    click(seamEl(mount, 'task-prompt-toggle'));
+    await settle();
+    expect(seamEl(mount, 'task-prompt').textContent).toContain('/ws/a 과업');
+
+    // The overlay stays open across a workspace switch, and the bead id is the
+    // same in both — a bead-only cache key would keep showing the old send.
+    click(seamEl(mount, 'task-prompt-toggle'));
+    workspace = '/ws/b';
+    panel.load('UI-1');
+    click(seamEl(mount, 'task-prompt-toggle'));
+    await settle();
+
+    expect(seamEl(mount, 'task-prompt').textContent).toContain('/ws/b 과업');
+    expect(
+      transport.mock.calls.filter((c) => c[0] === 'get-bead-prompt')
+    ).toHaveLength(2);
+    panel.destroy();
+  });
+
   test('shows a failure line and leaves the rest of the panel intact', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi.fn(async () => {

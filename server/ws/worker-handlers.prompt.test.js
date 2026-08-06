@@ -111,6 +111,23 @@ describe('worker-state push prompt stripping (UI-rxp3 §3)', () => {
     expect(attempt.task_prompt).toContain('Bead UI-1');
   });
 
+  test('drops the disposition lane task prompt too', () => {
+    const out = attemptsWithUsage(
+      {
+        attempts: {
+          a1: recordedAttempt({
+            disposition: 'revise_fix',
+            disposition_prompt: '처분 과업 본문'
+          })
+        }
+      },
+      WS
+    );
+
+    expect('disposition_prompt' in /** @type {any} */ (out.a1)).toBe(false);
+    expect(/** @type {any} */ (out.a1).disposition).toBe('revise_fix');
+  });
+
   test('passes a legacy attempt with no prompt fields through', () => {
     const out = attemptsWithUsage(
       {

@@ -276,6 +276,22 @@ export function createDetailPanel(mount_element, options) {
   // Guards a late reply from an issue the reader has already left.
   let prompt_request_seq = 0;
 
+  /**
+   * The cache key: the WORKSPACE plus the bead. A workspace switch leaves the
+   * overlay open with the same `selected_id`, so a bead-only key would serve
+   * the previous workspace's send for a same-id bead in the new one — and the
+   * reply is resolved server-side against the connection's workspace, so the
+   * two really are different records.
+   *
+   * @param {string} id
+   * @returns {string}
+   */
+  function promptCacheKey(id) {
+    const workspace =
+      (options.getWorkspacePath && options.getWorkspacePath()) || '';
+    return `${workspace}::${id}`;
+  }
+
   function resetTaskPrompt() {
     prompt_expanded = false;
     prompt_loading = false;
@@ -313,7 +329,7 @@ export function createDetailPanel(mount_element, options) {
         prompt_error = true;
       } else {
         prompt_data = res;
-        prompt_loaded_for = id;
+        prompt_loaded_for = promptCacheKey(id);
       }
     } catch {
       if (seq === prompt_request_seq) {
@@ -329,7 +345,12 @@ export function createDetailPanel(mount_element, options) {
 
   function toggleTaskPrompt() {
     prompt_expanded = !prompt_expanded;
-    if (prompt_expanded && current_id && prompt_loaded_for !== current_id) {
+    if (
+      prompt_expanded &&
+      current_id &&
+      prompt_loaded_for !== promptCacheKey(current_id)
+    ) {
+      prompt_data = null;
       void fetchTaskPrompt(current_id);
       return;
     }
