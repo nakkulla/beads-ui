@@ -269,11 +269,16 @@ describe('worker/attach construction + live loop (F1)', () => {
     await waitFor(() => spawn_impl.captured.calls.length > 0);
     const call = spawn_impl.captured.calls[0];
     expect(call.command).toBe('claude');
-    // The always-on PR-submit directive reached the prompt …
-    const prompt = call.args[call.args.length - 1];
-    expect(prompt).toContain('PR 제출까지 수행하고 절대 머지하지 말 것');
+    // The always-on PR-submit directive reached the SYSTEM channel (UI-rxp3 §2)…
+    const system_prompt =
+      call.args[call.args.indexOf('--append-system-prompt') + 1];
+    expect(system_prompt).toContain('PR 제출까지 수행하고 절대 머지하지 말 것');
+    // … the positional argument carries the task and nothing else …
+    expect(call.args[call.args.length - 1]).toBe(
+      'Bead S1 작업을 계약 네이티브 흐름으로 완료하라.'
+    );
     // … and the retired merge-lock protocol did not.
-    expect(prompt).not.toContain('/api/worker/merge-lock');
+    expect(system_prompt).not.toContain('/api/worker/merge-lock');
     // No per-session worker token is issued any more.
     expect(call.options.env.BDUI_WORKER_TOKEN).toBe(undefined);
   });

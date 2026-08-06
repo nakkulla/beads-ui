@@ -94,12 +94,19 @@ import { createTailReader } from './tail-reader.js';
  * @property {(signal?: NodeJS.Signals|number) => void} kill - Group-kill helper.
  * @property {EventEmitter} events - Emits 'event'(RunnerEvent), 'raw'(object), 'session_id'(string, once).
  * @property {Promise<RunnerVerdict>} done - Resolves with the terminal verdict.
+ * @property {{ system_prompt: string|null, task_prompt: string|null }} prompts -
+ * What this spawn sent, lifted off the SAME `buildArgv` result the argv came
+ * from (UI-rxp3 §3). Recording it from anywhere else would re-assemble the
+ * prompt, and a re-assembly can drift from what the process actually received.
  */
 
 /**
  * @typedef {Object} AdapterSpec
  * @property {string} name - Adapter name (claude/codex/ccx).
- * @property {(bead: any, workspace: string, settings: any) => { command: string, args: string[], env?: Record<string, string|undefined> }} buildArgv
+ * @property {(bead: any, workspace: string, settings: any) => { command: string, args: string[], env?: Record<string, string|undefined>, system_prompt?: string, task_prompt?: string }} buildArgv -
+ * Build the spawn argv. `system_prompt`/`task_prompt` are the assembled prompts
+ * the argv carries (UI-rxp3 §3), exposed so the spawn path can record what was
+ * sent without rebuilding it; an adapter that omits them records nothing.
  * @property {(raw: any) => RunnerEvent|RunnerEvent[]|null} normalize - Map a raw line to normalized event(s) (or null to drop).
  * @property {(raw: any) => (string|null)} detectQuestion - Return a reason string when a raw line is an interactive request, else null.
  * @property {(raw: any) => (string|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use, else null (feeds the merge guards).
@@ -282,7 +289,8 @@ export function runSession(spec, bead, workspace, settings, deps) {
       ? settings.stderr_path
       : null;
 
-  const { command, args, env } = spec.buildArgv(bead, workspace, settings);
+  const built = spec.buildArgv(bead, workspace, settings);
+  const { command, args, env } = built;
   // Opened BEFORE the spawn so the fds exist to be inherited; an open failure
   // throws out of runSession, which the dispatcher records as a spawn failure.
   const fds = log_path ? openOutputFds(fs, log_path, stderr_path) : null;
@@ -546,5 +554,19 @@ export function runSession(spec, bead, workspace, settings, deps) {
     child.on('close', (code) => finish(typeof code === 'number' ? code : null));
   });
 
-  return { pid, kill, events, done };
+  return {
+    pid,
+    kill,
+    events,
+    done,
+    // What this spawn ACTUALLY sent, straight off the build that produced the
+    // argv above (UI-rxp3 §3). An adapter that exposes neither yields null, and
+    // the recording path writes nothing rather than a guess.
+    prompts: {
+      system_prompt:
+        typeof built.system_prompt === 'string' ? built.system_prompt : null,
+      task_prompt:
+        typeof built.task_prompt === 'string' ? built.task_prompt : null
+    }
+  };
 }

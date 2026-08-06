@@ -1,22 +1,39 @@
 /**
- * beads-ui-owned unattended preamble (spec §5.4).
+ * beads-ui-owned unattended preamble (spec §5.4, restructured by UI-rxp3).
  *
- * The preamble is prepended to every headless session prompt to declare the
- * unattended contract to the session: no interactive question tools, and any
- * hard-stop condition must be surfaced as a `blocker` line followed by an
- * abnormal exit rather than a question. Prompt trust is NOT the enforcement
- * mechanism — the runner adapter independently fails closed on any question /
- * approval event (see claude.js / codex.js). The preamble merely makes the
- * contract explicit so a well-behaved session self-reports instead of hanging.
+ * Everything a session is told that is CONSTANT for the session — the
+ * unattended contract, the fast_track directive, the PR-submit + PR-base
+ * notices, and the guard contract — is composed here into ONE system prompt,
+ * which `claude.js` delivers through `--append-system-prompt`. The task prompt
+ * carries the work and nothing else. Prompt trust is NOT the enforcement
+ * mechanism — the runner adapter fails closed on any question/approval event
+ * and `command-guard.js` judges commands independently. The preamble makes the
+ * contract explicit so a well-behaved session self-reports instead of hanging,
+ * and — since UI-rxp3 — so a session that hits a prohibition has a stated legal
+ * alternative instead of inventing a bypass.
  */
 
 /**
- * The canonical unattended-mode preamble string.
+ * The canonical unattended-mode preamble.
+ *
+ * Framed as an ENVIRONMENT FACT rather than a prohibition (UI-rxp3): "no
+ * question tools" reads as a rule to be weighed, while "there is nobody on the
+ * other end" is a property of the room the session is standing in. The
+ * background-task warning moved here from the guard contract for the same
+ * reason — a headless process dying at turn end is a fact about unattended
+ * execution, not a guard verdict.
  *
  * @type {string}
  */
-export const UNATTENDED_PREAMBLE =
-  '무인 모드 — 질문 도구 금지, hard-stop=blocker 출력 후 비정상 종료';
+export const UNATTENDED_PREAMBLE = [
+  '## 무인 모드',
+  '',
+  '이 세션은 사람 없이 실행된다. 다음은 규칙이 아니라 환경 사실이다.',
+  '',
+  '- 사용자는 이 세션과 통신할 수 없다. 질문 도구는 응답자가 없어 영원히 대기한다.',
+  '- hard-stop 조건은 `blocker` 줄을 출력한 뒤 비정상 종료로 표면화하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.',
+  '- headless 프로세스는 턴이 끝나는 즉시 종료된다. 대기 중인 백그라운드 태스크(예: 비동기 리뷰 브리지)는 함께 kill되고 결과는 유실된다. 결과가 필요한 태스크는 턴 안에서 완료까지 기다려라.'
+].join('\n');
 
 /**
  * The fast_track directive injected when the dispatch runs in fast_track mode.
@@ -26,51 +43,101 @@ export const UNATTENDED_PREAMBLE =
  *
  * @type {string}
  */
-export const FAST_TRACK_DIRECTIVE =
-  'fast_track — 게이트 자동 디스패치(영수증만), 질문 없이 기본값으로 진행';
+export const FAST_TRACK_DIRECTIVE = [
+  '## fast_track',
+  '',
+  '게이트는 기본값으로 자동 디스패치하고 영수증만 남긴다. 질문 없이 기본값으로 진행하라.'
+].join('\n');
 
 /**
- * The terminal directive, injected into EVERY session (worker-phase2 §1): the
- * session delivers a PR and records `resolved`, but never merges — the merge is
- * a human click. It is no longer a policy branch; with the merge axis gone
- * there is exactly one terminal shape, so the directive is a fixed constant.
+ * The terminal directive, injected into every session that opens a PR
+ * (worker-phase2 §1): the session delivers a PR and records `resolved`, but
+ * never merges — the merge is a human click.
  *
  * @type {string}
  */
-export const PR_SUBMIT_DIRECTIVE =
-  'PR 제출까지 수행하고 절대 머지하지 말 것 — PR 생성·CI 확인·bead `resolved`(pr_url metadata 포함) 기록까지 마친 뒤 종료하라. 머지는 사람의 클릭이다.';
+export const PR_SUBMIT_DIRECTIVE = [
+  '## 종점',
+  '',
+  'PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·bead `resolved`(pr_url metadata 포함) 기록까지 마친 뒤 종료하라. 머지는 사람의 클릭이다.'
+].join('\n');
 
 /**
- * The guard-contract directive, injected into EVERY session regardless of
- * mode. The session engine enforces two fail-closed guards that a session
- * cannot see from its own vantage point, so the prompt must state them
- * explicitly rather than let the session discover them by triggering a kill:
- * (a) merging the base into the branch is ALLOWED and recorded (UI-1xcd §5).
- * The old directive forbade `git merge` outright, which left a session with no
- * way to sync its base at all — rebase needs a force-push the push-safety rules
- * forbid, and merge was killed by the guard. Saying so is load-bearing in the
- * other direction too: a session told "merge kills you" will not try the one
- * legitimate sync it has. (b) the headless process exits as soon as the turn ends, which kills any
- * background task left pending (e.g. an async review bridge) — a session
- * that ends its turn "to wait" for such a task silently loses the result
- * instead of actually waiting for it (worker-phase2 §1, UI-2wa9 attempt
- * `1785076768091-1`).
- * (c) base landing: the enforcement layer moved (UI-8mvc §4). A push at the
- * attempt's own base is refused by the per-attempt pre-push hook, which reads
- * the destination ref git itself computed — so the session survives it and a
- * push into ANOTHER repository is not judged at all. What still ends the
- * session is what argv alone decides: `gh pr merge`, and any attempt to disable
- * the hook. Naming the two effects separately is the point — a session told
- * "your base push kills you" cannot tell that from "your base push is refused",
- * and only the second is true now. (d) reading `core.hooksPath` is not a
- * violation: the old directive named `git config … core.hooksPath` as a kill
- * without qualification, and a session that merely ASKED where the hooks live
- * was killed for it (measured 2026-08-04, $8.99).
+ * The guard contract, restructured into three SEVERITY tiers (UI-rxp3).
  *
- * @type {string}
+ * The old flat directive named the same prohibitions but offered no legal
+ * alternative, so a session that needed hermetic git config invented
+ * `GIT_CONFIG_COUNT=…` and was killed for it (External/beads, 2026-08-05). Every
+ * prohibition here therefore carries its alternative in the SAME item, and the
+ * one that caused the incident carries a wrong/right command pair.
+ *
+ * The tiers exist because the three effects are genuinely different and a
+ * session cannot tell them apart from the inside: `gh pr merge` and hook
+ * disabling end the session from argv alone, a base push is merely refused by
+ * the per-attempt pre-push hook, and a base merge is allowed outright. A
+ * session told "your base push kills you" cannot distinguish that from "your
+ * base push is refused", and only the second is true.
+ *
+ * The disposition variant matches ENFORCEMENT rather than restating it: a
+ * REVISE-disposition session publishes the resolved base as its job, so
+ * `command-guard.js` skips the hook-bypass and base-push judgments for it
+ * (`disposition` in `runMergeGuard`). Telling such a session that a base push
+ * is refused would be false.
+ *
+ * @param {{ disposition?: boolean }} [options]
+ * @returns {string}
  */
-export const GUARD_CONTRACT_DIRECTIVE =
-  '가드 계약 고지 — (1) base 를 브랜치로 들이는 `git merge`(예: `git merge origin/main`)는 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다. (2) 백그라운드 태스크를 대기 상태로 둔 채 턴을 끝내지 말 것: headless 프로세스가 턴 종료와 동시에 종료되며 대기 중이던 태스크가 함께 kill되어 결과(예: 리뷰 결과)가 유실된다. (3) base 브랜치 직접 랜딩 금지: 이 attempt 가 맡은 저장소의 base 로 향하는 `git push` 는 attempt 전용 pre-push hook 이 거부한다 — 세션은 종료되지 않고 push 만 실패한다. 다른 저장소의 base 로 향하는 push 는 hook 의 판정 대상이 아니다(통과). (4) 즉시 종료되는 것은 `gh pr merge` 와 hook 무력화 **쓰기**다 — `git push --no-verify`, `git -c core.hooksPath=…`, `git config core.hooksPath <값>` / `git config set|unset core.hooksPath` / `git config --unset core.hooksPath`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` 재정의. hook 경로를 **읽는 것**(`git config --get core.hooksPath`, `git config get core.hooksPath`, `git config core.hooksPath`)은 위반이 아니다. 사후에도 이 attempt 가 자기 base 로 push 한 기록이 있고 그 커밋이 원격 base 에서 도달 가능하면 attempt 가 `base_landing_detected` 로 실패 처리된다.';
+export function guardContractDirective(options = {}) {
+  const disposition = options.disposition === true;
+  const lines = [
+    '## 가드 계약',
+    '',
+    '이 세션 위에는 세션이 안에서 볼 수 없는 가드 층이 있다. 심각도는 셋으로 갈린다.',
+    '',
+    '### 즉시 종료 — 세션이 kill된다',
+    '',
+    '- `gh pr merge` — argv만으로 판정되어 즉시 종료된다.',
+    disposition
+      ? '  - 대안: 이 세션의 종점은 스펙 수정 커밋과 영수증 기록이다. 머지는 물론 PR도 이 세션의 일이 아니다.'
+      : '  - 대안: 이 세션의 종점은 PR 제출과 bead `resolved` 기록이다. 머지는 사람의 클릭이다.'
+  ];
+  if (disposition) {
+    lines.push(
+      '',
+      '위 한 항목이 이 세션에 걸리는 즉시 종료 조건의 전부다. hook 무력화 판정은 이 세션에 적용되지 않는다 — 아래 「허용됨」을 보라.'
+    );
+  } else {
+    lines.push(
+      '- hook 무력화 **쓰기** — `git push --no-verify`, `git -c core.hooksPath=…`, `git config core.hooksPath <값>` / `git config set|unset core.hooksPath` / `git config --unset core.hooksPath`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` 재정의.',
+      '  - 대안: git 설정을 격리해야 하면 `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.',
+      '  - 오답: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...`',
+      '  - 정답: `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...`'
+    );
+  }
+  lines.push('', '### 거부만 됨 — 세션은 계속된다', '');
+  if (disposition) {
+    lines.push(
+      '- 이 세션에 걸리는 거부 판정은 없다. base push 판정이 이 세션에는 적용되지 않기 때문이다(아래 「허용됨」).'
+    );
+  } else {
+    lines.push(
+      '- base 브랜치 직접 랜딩 금지 — 이 attempt 가 맡은 저장소의 base 로 향하는 `git push` 는 attempt 전용 pre-push hook 이 거부한다. 세션은 종료되지 않고 push 만 실패한다. 다른 저장소의 base 로 향하는 push 는 hook 의 판정 대상이 아니다(통과).',
+      '  - 대안: feature branch 로 push 하고 `gh pr create --base <target_base>` 로 PR 을 연다.',
+      '- 사후 판정 — 이 attempt 가 자기 base 로 push 한 기록이 있고 그 커밋이 원격 base 에서 도달 가능하면 attempt 가 `base_landing_detected` 로 실패 처리된다.'
+    );
+  }
+  lines.push('', '### 허용됨 — 오해하지 말 것', '');
+  if (disposition) {
+    lines.push(
+      '- 이 세션은 REVISE 처분 세션이다. resolved base 에 스펙 수정을 게시하는 것이 임무이므로 base 로의 `git push` 와 hook 무력화 판정이 **적용되지 않는다**. 그렇다고 hook 을 무력화할 이유는 없다 — 설치된 hook 자체가 없다.'
+    );
+  }
+  lines.push(
+    '- base 를 브랜치로 들이는 `git merge`(예: `git merge origin/main`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.',
+    '- hook 경로를 **읽는 것**(`git config --get core.hooksPath`, `git config get core.hooksPath`, `git config core.hooksPath`) — 위반이 아니다.'
+  );
+  return lines.join('\n');
+}
 
 /**
  * The PR base directive (worker-base-scope-alignment §4).
@@ -89,7 +156,11 @@ export const GUARD_CONTRACT_DIRECTIVE =
  * @returns {string}
  */
 export function prBaseDirective(target_base) {
-  return `PR base 고지 — 이 저장소의 target_base 는 \`${target_base}\` 다. PR 은 반드시 \`gh pr create --base ${target_base}\` 로 열어라. \`--base\` 를 빼면 GitHub 기본 브랜치로 열리고, 머지 클릭이 그대로 그 브랜치에 랜딩한다. 머지 직전 게이트가 PR 의 baseRefName 을 이 값과 대조해 불일치면 fail-closed 로 멈춘다(자동 재타겟 없음).`;
+  return [
+    '## PR base',
+    '',
+    `이 저장소의 target_base 는 \`${target_base}\` 다. PR 은 반드시 \`gh pr create --base ${target_base}\` 로 열어라. \`--base\` 를 빼면 GitHub 기본 브랜치로 열리고, 머지 클릭이 그대로 그 브랜치에 랜딩한다. 머지 직전 게이트가 PR 의 baseRefName 을 이 값과 대조해 불일치면 fail-closed 로 멈춘다(자동 재타겟 없음).`
+  ].join('\n');
 }
 
 /**
@@ -107,14 +178,19 @@ export function defaultTaskPrompt(bead_id) {
 }
 
 /**
- * Compose the full prompt sent to a runner: the unattended preamble, an optional
- * fast_track directive, the PR-submit and guard-contract directives, then the
- * caller's base prompt.
+ * Split the session's prompt into the two CHANNELS it is delivered through
+ * (UI-rxp3): the session-constant contract, which rides
+ * `--append-system-prompt`, and the task, which stays the positional user
+ * prompt. Returning both rather than one concatenated string is what lets the
+ * adapter place each on its own channel — and what lets the spawn path record
+ * exactly what was sent without reassembling it.
  *
  * `pr_submit: false` drops the PR-submit directive — the ONE session shape that
  * must not open a PR is the REVISE-disposition repair (UI-hs11 §3.3), which
- * commits a spec fix on the shared target_base checkout and ends. Leaving the
- * directive in would order it to do exactly what its own task prompt forbids.
+ * commits a spec fix on the shared target_base checkout and ends. The SAME flag
+ * selects the disposition guard-contract variant, because that is the same
+ * session shape `command-guard.js` exempts from the hook-bypass and base-push
+ * judgments.
  *
  * `target_base` rides ALONGSIDE the PR-submit directive (§4): the session that
  * must open a PR is exactly the session that must know which base to open it
@@ -122,14 +198,15 @@ export function defaultTaskPrompt(bead_id) {
  *
  * @param {string} base_prompt - The task prompt for the session.
  * @param {{ fast_track?: boolean, pr_submit?: boolean, target_base?: string|null }} [options]
- * @returns {string} The preamble-wrapped prompt.
+ * @returns {{ system_prompt: string, task_prompt: string }}
  */
 export function applyPreamble(base_prompt, options = {}) {
+  const pr_submit = options.pr_submit !== false;
   const parts = [UNATTENDED_PREAMBLE];
   if (options.fast_track) {
     parts.push(FAST_TRACK_DIRECTIVE);
   }
-  if (options.pr_submit !== false) {
+  if (pr_submit) {
     parts.push(PR_SUBMIT_DIRECTIVE);
     const target_base =
       typeof options.target_base === 'string' ? options.target_base.trim() : '';
@@ -137,7 +214,9 @@ export function applyPreamble(base_prompt, options = {}) {
       parts.push(prBaseDirective(target_base));
     }
   }
-  parts.push(GUARD_CONTRACT_DIRECTIVE);
-  parts.push(String(base_prompt ?? ''));
-  return parts.join('\n\n');
+  parts.push(guardContractDirective({ disposition: !pr_submit }));
+  return {
+    system_prompt: parts.join('\n\n'),
+    task_prompt: String(base_prompt ?? '')
+  };
 }

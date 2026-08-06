@@ -24,6 +24,11 @@ import { copyToClipboard } from '../../utils/clipboard.js';
 import { renderMarkdown } from '../../utils/markdown.js';
 import { formatRelativeTime } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
+import {
+  formatRecordedAt,
+  promptBlockTemplate,
+  promptStatusTemplate
+} from '../prompt-block.js';
 import { parseTranscript } from './transcript-render.js';
 
 /**
@@ -282,6 +287,118 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   let storeOff = null;
   /** @type {ReturnType<typeof setInterval> | null} */
   let heartbeat = null;
+  // The attempt's recorded send (UI-rxp3 §5), collapsed by default and fetched
+  // on first expand. Scoped to the open attempt: opening another one drops it.
+  let prompt_expanded = false;
+  let prompt_loading = false;
+  let prompt_error = false;
+  /** @type {any} */
+  let prompt_data = null;
+  /** @type {string|null} */
+  let prompt_loaded_for = null;
+
+  function resetPrompt() {
+    prompt_expanded = false;
+    prompt_loading = false;
+    prompt_error = false;
+    prompt_data = null;
+    prompt_loaded_for = null;
+  }
+
+  /**
+   * Fetch the open attempt's send. Workspace scope is the server's: the request
+   * resolves against the connection's verified workspace, the same one
+   * `subscribe-session-log` reads, so an attempt of another workspace simply
+   * comes back missing.
+   *
+   * @param {string} id
+   */
+  async function fetchPrompt(id) {
+    if (!transport) {
+      return;
+    }
+    prompt_loading = true;
+    prompt_error = false;
+    doRender();
+    try {
+      const res = await Promise.resolve(
+        transport('get-attempt-prompt', { attempt_id: id })
+      );
+      if (attempt_id !== id) {
+        return;
+      }
+      if (!res || typeof res !== 'object' || Array.isArray(res)) {
+        prompt_error = true;
+      } else {
+        prompt_data = res;
+        prompt_loaded_for = id;
+      }
+    } catch {
+      if (attempt_id === id) {
+        prompt_error = true;
+      }
+    } finally {
+      if (attempt_id === id) {
+        prompt_loading = false;
+        doRender();
+      }
+    }
+  }
+
+  function togglePrompt() {
+    prompt_expanded = !prompt_expanded;
+    if (prompt_expanded && attempt_id && prompt_loaded_for !== attempt_id) {
+      void fetchPrompt(attempt_id);
+      return;
+    }
+    doRender();
+  }
+
+  /**
+   * The sent-prompt panel under the bar. Rendered only while expanded — the body is
+   * the transcript's, and a prompt pinned above it would push the log down.
+   *
+   * @returns {import('lit-html').TemplateResult|''}
+   */
+  function promptTemplate() {
+    if (!prompt_expanded) {
+      return '';
+    }
+    const status = promptStatusTemplate({
+      loading: prompt_loading,
+      error: prompt_error
+    });
+    if (status) {
+      return html`<div class="sv__prompt" data-seam="attempt-prompt">
+        ${status}
+      </div>`;
+    }
+    if (!prompt_data) {
+      return '';
+    }
+    if (prompt_data.missing) {
+      return html`<div class="sv__prompt" data-seam="attempt-prompt">
+        <div class="prompt-block__status">
+          기록 없음 — 프롬프트 기록 이전에 실행된 attempt입니다
+        </div>
+      </div>`;
+    }
+    const recorded_at = formatRecordedAt(prompt_data.recorded_at);
+    return html`<div class="sv__prompt" data-seam="attempt-prompt">
+      ${recorded_at
+        ? html`<div class="prompt-block__meta">${recorded_at} 발송</div>`
+        : ''}
+      ${typeof prompt_data.task_prompt === 'string'
+        ? promptBlockTemplate('과업 (user)', prompt_data.task_prompt)
+        : ''}
+      ${typeof prompt_data.system_prompt === 'string'
+        ? promptBlockTemplate(
+            '시스템 계약 (--append-system-prompt)',
+            prompt_data.system_prompt
+          )
+        : ''}
+    </div>`;
+  }
 
   /**
    * @returns {import('./transcript-render.js').DisplayLine[]}
@@ -599,6 +716,19 @@ export function createTranscriptDrawer(mount_element, options = {}) {
           : ''}
         <button
           type="button"
+          class="sv__prompt-toggle${prompt_expanded
+            ? ' sv__prompt-toggle--on'
+            : ''}"
+          data-seam="attempt-prompt-toggle"
+          aria-pressed=${prompt_expanded ? 'true' : 'false'}
+          aria-label="발송 프롬프트 보기"
+          title="이 세션에 실제로 보낸 시스템·과업 프롬프트"
+          @click=${togglePrompt}
+        >
+          ✉ 프롬프트
+        </button>
+        <button
+          type="button"
           class="sv__follow${follow ? ' sv__follow--on' : ''}"
           aria-pressed=${follow ? 'true' : 'false'}
           aria-label=${follow_label}
@@ -616,6 +746,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
           ✕
         </button>
       </div>
+      ${promptTemplate()}
       <div class="sv__body">
         ${lines.length === 0
           ? html`<div class="sv__empty">세션 로그 없음</div>`
@@ -770,6 +901,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     follow = true;
     expanded.clear();
     unfolded.clear();
+    resetPrompt();
     if (!storeOff && sessionLogStore) {
       storeOff = sessionLogStore.subscribe(doRender);
     }
@@ -789,6 +921,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     attempt_id = null;
     expanded.clear();
     unfolded.clear();
+    resetPrompt();
     stopHeartbeat();
     if (transport && id) {
       void Promise.resolve(

@@ -2,11 +2,14 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { install as guardHookInstall } from './guard-hook.js';
 import { createQueueStore } from './queue-store.js';
+import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
+import { runSession } from './runner/session.js';
 import { createScheduler } from './scheduler.js';
 import { guardHookDir } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
@@ -6987,5 +6990,233 @@ describe('scheduler records surviving guard warnings (UI-1xcd §1)', () => {
     expect(
       createQueueStore().load(WS).attempts[attempt_id].guard_warnings
     ).toHaveLength(1);
+  });
+});
+
+describe('scheduler prompt recording (UI-rxp3 §3)', () => {
+  const STALE_RECEIPT_SHA = 'a'.repeat(40);
+  const STALE_DELTA_SHA = 'b'.repeat(40);
+
+  /**
+   * A runner that spawns the REAL claude engine over a capturing fake spawn.
+   * The point is that nothing here rebuilds a prompt: the argv the assertions
+   * read and the record the scheduler writes both come from one `buildArgv`.
+   *
+   * `stdout` is a stream that never ends, so no `close` fires, `done` stays
+   * pending and the attempt record is read exactly as the spawn left it.
+   */
+  function makeRecordingClaudeRunner() {
+    /** @type {Array<{ args: string[] }>} */
+    const calls = [];
+    const spawn_impl = (
+      /** @type {string} */ _command,
+      /** @type {string[]} */ args
+    ) => {
+      calls.push({ args });
+      const child = new EventEmitter();
+      /** @type {any} */ (child).pid = 7777;
+      /** @type {any} */ (child).kill = () => {};
+      /** @type {any} */ (child).stdout = new PassThrough();
+      return /** @type {any} */ (child);
+    };
+    const factory = () => ({
+      name: 'claude',
+      spawn: (
+        /** @type {any} */ bead,
+        /** @type {string} */ ws,
+        /** @type {any} */ settings
+      ) => runSession(claudeSpec(), bead, ws, settings, { spawn_impl })
+    });
+    return { factory, calls };
+  }
+
+  /**
+   * @param {string[]} args
+   * @returns {{ system_prompt: string, task_prompt: string }}
+   */
+  function sentPrompts(args) {
+    const i = args.indexOf('--append-system-prompt');
+    return {
+      system_prompt: i >= 0 ? args[i + 1] : '',
+      task_prompt: /** @type {string} */ (args.at(-1))
+    };
+  }
+
+  /**
+   * The newest attempt of a bead — the one the launch under test just minted.
+   *
+   * @param {any} store
+   * @param {string} bead_id
+   * @returns {any}
+   */
+  function latestAttempt(store, bead_id) {
+    const attempts = Object.values(store.snapshot(WS).attempts).filter(
+      (/** @type {any} */ a) => a.bead_id === bead_id
+    );
+    return attempts[attempts.length - 1];
+  }
+
+  /**
+   * @param {any} store
+   * @param {string} attempt_id
+   * @param {Partial<import('./queue-store.js').Attempt>} patch
+   */
+  function seedAttempt(store, attempt_id, patch) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id: /** @type {any} */ (patch).bead_id }
+    });
+    store.updateAttempt(WS, { attempt_id, patch });
+  }
+
+  /**
+   * @param {Partial<import('./queue-store.js').Attempt>} [over]
+   * @returns {Partial<import('./queue-store.js').Attempt>}
+   */
+  function priorAttempt(over = {}) {
+    return {
+      bead_id: 'B1',
+      status: 'failed',
+      repo: '/repo',
+      target_base: 'main',
+      base_oid: 'base-B1',
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      session_id: 'sid-abc',
+      workflow_mode_prior: null,
+      ...over
+    };
+  }
+
+  test('records the first dispatch prompts exactly as spawned', async () => {
+    const recorder = makeRecordingClaudeRunner();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      makeRunner: recorder.factory
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    const sent = sentPrompts(recorder.calls[0].args);
+    const attempt = latestAttempt(env.store, 'B1');
+    expect(attempt.system_prompt).toBe(sent.system_prompt);
+    expect(attempt.task_prompt).toBe(sent.task_prompt);
+    expect(attempt.system_prompt).toContain('## 가드 계약');
+  });
+
+  test('records the stale-dispatch task prompt, not the default one', async () => {
+    const recorder = makeRecordingClaudeRunner();
+    const env = setup({
+      config: { B1: { spec_review: `codex@${STALE_RECEIPT_SHA}` } },
+      slots: 1,
+      makeRunner: recorder.factory,
+      admission: {
+        validate: vi.fn(async () => ({
+          ok: true,
+          stale: {
+            receipt_sha: STALE_RECEIPT_SHA,
+            delta_shas: [STALE_DELTA_SHA]
+          }
+        }))
+      }
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    const sent = sentPrompts(recorder.calls[0].args);
+    const attempt = latestAttempt(env.store, 'B1');
+    expect(attempt.task_prompt).toBe(sent.task_prompt);
+    expect(attempt.task_prompt).toContain('stale spec_review 관측');
+    expect(attempt.system_prompt).toBe(sent.system_prompt);
+  });
+
+  test('records the resume prompts on the child attempt', async () => {
+    const recorder = makeRecordingClaudeRunner();
+    const env = setup({
+      config: {},
+      slots: 1,
+      makeRunner: recorder.factory
+    });
+    seedAttempt(env.store, 'r1', priorAttempt());
+
+    const res = await env.scheduler.resume(WS, 'r1');
+
+    expect(res.ok).toBe(true);
+    const sent = sentPrompts(recorder.calls[0].args);
+    const attempt =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(attempt.task_prompt).toBe(sent.task_prompt);
+    expect(attempt.task_prompt).toContain('이전 무인 세션');
+    expect(attempt.system_prompt).toBe(sent.system_prompt);
+  });
+
+  test('records the conflict-resolution prompts', async () => {
+    const recorder = makeRecordingClaudeRunner();
+    const env = setup({
+      config: {},
+      slots: 1,
+      makeRunner: recorder.factory
+    });
+    seedAttempt(
+      env.store,
+      'd1',
+      priorAttempt({ status: 'done', session_id: 'sid-orig', finished_at: 50 })
+    );
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+
+    expect(res.ok).toBe(true);
+    const sent = sentPrompts(recorder.calls[0].args);
+    const attempt =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(attempt.task_prompt).toBe(sent.task_prompt);
+    expect(attempt.task_prompt).toContain('git merge origin/main');
+    expect(attempt.system_prompt).toBe(sent.system_prompt);
+  });
+
+  test('records the disposition prompts and its own guard variant', async () => {
+    const recorder = makeRecordingClaudeRunner();
+    const env = setup({
+      config: {},
+      slots: 1,
+      makeRunner: recorder.factory
+    });
+    seedAttempt(
+      env.store,
+      'p1',
+      priorAttempt({ status: 'done', session_id: 'sid-park', finished_at: 50 })
+    );
+
+    const res = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+
+    expect(res.ok).toBe(true);
+    const sent = sentPrompts(recorder.calls[0].args);
+    const attempt =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(attempt.task_prompt).toBe(sent.task_prompt);
+    expect(attempt.task_prompt).toBe('처분 프롬프트');
+    expect(attempt.system_prompt).toBe(sent.system_prompt);
+    // The disposition variant: no PR-submit directive, no base-push refusal.
+    expect(attempt.system_prompt).not.toContain('PR 제출까지 수행하고');
+    expect(attempt.system_prompt).toContain('REVISE 처분 세션');
+  });
+
+  test('leaves the fields null for a runner that exposes no prompts', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = latestAttempt(env.store, 'B1');
+    expect(attempt.system_prompt).toBeNull();
+    expect(attempt.task_prompt).toBeNull();
   });
 });

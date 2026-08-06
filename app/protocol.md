@@ -213,6 +213,29 @@ Streams a per-attempt raw runner event stream to the transcript viewer.
 - `session-log-append` (push) payload: `{ id, attempt_id, event }` — one raw
   event.
 
+## Prompt inspection (UI-rxp3 §4/§5)
+
+Read-only, request/response. The recorded prompts are multi-kilobyte and almost
+never rendered, so they are STRIPPED from the worker-queue push
+(`attemptsWithUsage`) and fetched only when a reader opens them. Workspace scope
+is the connection's own workspace, exactly like `subscribe-session-log`.
+
+- `get-attempt-prompt` payload: `{ attempt_id }` — replies
+  `{ attempt_id, system_prompt, task_prompt, recorded_at }`, or
+  `{ missing: true }` for an attempt recorded before the fields existed (or one
+  of another workspace). `recorded_at` is the attempt's `started_at` in epoch
+  ms.
+- `get-bead-prompt` payload: `{ bead_id }` — the same record for the bead's
+  NEWEST attempt that recorded one. A bead that was never dispatched replies
+  `{ missing: true, default_task_prompt }` — what the next dispatch would send,
+  so the panel can preview it without holding a copy of the text.
+- `get-worker-system-prompt` payload: `{}` — replies
+  `{ target_base_placeholder, system_prompt, variants:[{ key, label, condition, system_prompt }] }`.
+  Assembled server-side through `runner/preamble.js`, the single owner of the
+  contract text; `system_prompt` is the dispatch default (`fast_track`,
+  PR-submitting) and `variants` carries each conditional shape with the
+  condition that selects it.
+
 ## Removed (historical)
 
 `list-issues`, `epic-status`, `list-ready`, `subscribe-updates` /

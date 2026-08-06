@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
 import { claudeSpec, spawnClaude } from './claude.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
+import { defaultTaskPrompt } from './preamble.js';
 
 const SUCCESS_FIXTURE = fileURLToPath(
   new URL('../__fixtures__/claude-success.jsonl', import.meta.url)
@@ -394,6 +395,94 @@ describe('runner/claude resume argv (spec §1.4)', () => {
   });
 });
 
+/**
+ * The `--append-system-prompt` value carried by an argv (UI-rxp3 §2).
+ *
+ * @param {string[]} args
+ * @returns {string}
+ */
+function systemPromptOf(args) {
+  const i = args.indexOf('--append-system-prompt');
+  return i >= 0 ? args[i + 1] : '';
+}
+
+describe('runner/claude system-prompt channel (UI-rxp3 §2)', () => {
+  test('sends the contract on --append-system-prompt and the task positionally', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv({ id: 'UI-1', prompt: '작업하라' }, '/repo', {
+      fast_track: true,
+      target_base: 'main'
+    });
+
+    expect(systemPromptOf(built.args)).toContain('## 무인 모드');
+    expect(systemPromptOf(built.args)).toContain('## 가드 계약');
+    expect(built.args.at(-1)).toBe('작업하라');
+  });
+
+  test('leaves no contract text in the positional argument', () => {
+    const spec = claudeSpec();
+
+    const { args } = spec.buildArgv(
+      { id: 'UI-1', prompt: '작업하라' },
+      '/repo',
+      {
+        fast_track: true,
+        target_base: 'main'
+      }
+    );
+
+    expect(args.at(-1)).not.toContain('무인 모드');
+    expect(args.at(-1)).not.toContain('가드 계약');
+    expect(args.at(-1)).not.toContain('PR 제출까지 수행하고');
+  });
+
+  test('applies the same channel split on the resume branch', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv({ id: 'UI-1', prompt: '이어하라' }, '/repo', {
+      resume_session_id: 'sess-1',
+      fast_track: true,
+      target_base: 'main'
+    });
+
+    expect(built.args).toContain('--resume');
+    expect(systemPromptOf(built.args)).toContain('## 가드 계약');
+    expect(built.args.at(-1)).toBe('이어하라');
+  });
+
+  test('exposes the assembled prompts alongside the argv they were built into', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv({ id: 'UI-1', prompt: '작업하라' }, '/repo', {
+      fast_track: true,
+      target_base: 'main'
+    });
+
+    expect(built.system_prompt).toBe(systemPromptOf(built.args));
+    expect(built.task_prompt).toBe(built.args.at(-1));
+  });
+
+  test('exposes the same pair on a disposition build', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv({ id: 'UI-1', prompt: '처분하라' }, '/repo', {
+      disposition: 'revise_fix'
+    });
+
+    expect(built.system_prompt).toBe(systemPromptOf(built.args));
+    expect(built.task_prompt).toBe('처분하라');
+  });
+
+  test('builds the default task prompt when the bead carries none', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv({ id: 'UI-9' }, '/repo', {});
+
+    expect(built.task_prompt).toBe(defaultTaskPrompt('UI-9'));
+  });
+});
+
 describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
   test('omits the PR-submit directive for a disposition session', () => {
     const spec = claudeSpec();
@@ -404,8 +493,8 @@ describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
       { fast_track: true, disposition: 'revise_fix' }
     );
 
-    expect(args.at(-1)).not.toContain('PR 제출까지 수행하고');
-    expect(args.at(-1)).toContain('처분하라');
+    expect(systemPromptOf(args)).not.toContain('PR 제출까지 수행하고');
+    expect(args.at(-1)).toBe('처분하라');
   });
 
   test('keeps it for an ordinary dispatch', () => {
@@ -415,12 +504,12 @@ describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
       fast_track: true
     });
 
-    expect(args.at(-1)).toContain('PR 제출까지 수행하고');
+    expect(systemPromptOf(args)).toContain('PR 제출까지 수행하고');
   });
 });
 
 describe('runner/claude PR base wiring (worker-base-scope-alignment §3/§4)', () => {
-  test('carries the settings target_base into the prompt', () => {
+  test('carries the settings target_base into the system prompt', () => {
     const spec = claudeSpec();
 
     const { args } = spec.buildArgv({ id: 'UI-1' }, '/wt/UI-1', {
@@ -429,7 +518,7 @@ describe('runner/claude PR base wiring (worker-base-scope-alignment §3/§4)', (
       target_base: 'ilsun/dev'
     });
 
-    expect(args.at(-1)).toContain('gh pr create --base ilsun/dev');
+    expect(systemPromptOf(args)).toContain('gh pr create --base ilsun/dev');
   });
 
   test('injects no base directive when the settings carry none', () => {
@@ -439,7 +528,7 @@ describe('runner/claude PR base wiring (worker-base-scope-alignment §3/§4)', (
       fast_track: true
     });
 
-    expect(args.at(-1)).not.toContain('PR base 고지');
+    expect(systemPromptOf(args)).not.toContain('## PR base');
   });
 
   test('omits the base directive for a disposition session with a base', () => {
@@ -451,7 +540,7 @@ describe('runner/claude PR base wiring (worker-base-scope-alignment §3/§4)', (
       target_base: 'ilsun/dev'
     });
 
-    expect(args.at(-1)).not.toContain('PR base 고지');
+    expect(systemPromptOf(args)).not.toContain('## PR base');
   });
 });
 

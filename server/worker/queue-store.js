@@ -159,6 +159,16 @@
  * @property {string|null} disposition_prompt - The task prompt this disposition
  * was launched with. Durable so the substitute session can be launched with the
  * identical instruction without re-deriving it — and so a restart can too.
+ * @property {string|null} system_prompt - The contract this attempt was sent on
+ * the `--append-system-prompt` channel (UI-rxp3 §3), verbatim. Written at spawn
+ * from the same `buildArgv` result the argv came from, so it is what the process
+ * received rather than a reconstruction. Null on every attempt recorded before
+ * the field existed — the reader treats that as "기록 없음", never as empty.
+ * @property {string|null} task_prompt - The positional task prompt of the same
+ * spawn, on the same terms. Distinct from {@link Attempt.disposition_prompt},
+ * which is the disposition lane's own relaunch input and is kept for that.
+ * NEITHER field rides the worker-state push: the projection strips both
+ * (`worker-handlers.js`), and the UI fetches them on demand.
  */
 /**
  * @typedef {Object} Queue
@@ -618,7 +628,9 @@ export function makeAttempt(fields) {
     disposition: fields.disposition ?? null,
     disposition_receipt: fields.disposition_receipt ?? null,
     disposition_resume: fields.disposition_resume === true,
-    disposition_prompt: fields.disposition_prompt ?? null
+    disposition_prompt: fields.disposition_prompt ?? null,
+    system_prompt: fields.system_prompt ?? null,
+    task_prompt: fields.task_prompt ?? null
   };
 }
 

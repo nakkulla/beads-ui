@@ -2656,6 +2656,22 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'spawn_failed' };
     }
 
+    // What the spawn actually sent (UI-rxp3 §3), lifted off the handle rather
+    // than rebuilt here — ONE assembly feeds both the argv and this record, so
+    // the two cannot disagree. Every launch shape passes through this single
+    // point (first dispatch, stale dispatch, resume, conflict, disposition), so
+    // there is no per-shape recording to keep in sync either. An adapter that
+    // exposes no prompts writes nothing rather than a placeholder.
+    const prompts = handle.prompts || {};
+    /** @type {Record<string, string>} */
+    const prompt_patch = {};
+    if (typeof prompts.system_prompt === 'string') {
+      prompt_patch.system_prompt = prompts.system_prompt;
+    }
+    if (typeof prompts.task_prompt === 'string') {
+      prompt_patch.task_prompt = prompts.task_prompt;
+    }
+
     // Fill the runtime snapshot now that the process exists (spec §5.2). The
     // durable fields (repo/base_oid/exec_stamped_keys) were pre-recorded above;
     // here we add the spawn-time facts + resolved exec values.
@@ -2667,7 +2683,8 @@ export function createScheduler(deps) {
         pid: handle.pid,
         runner: runner_name,
         model: model ?? null,
-        effort: effort ?? null
+        effort: effort ?? null,
+        ...prompt_patch
       }
     });
 
