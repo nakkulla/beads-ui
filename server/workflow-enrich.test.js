@@ -487,6 +487,191 @@ describe('planStage (full_plan)', () => {
     expect(wf.stages.plan?.fill).toBe('none');
   });
 
+  test('new review and approval receipts stay separate', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const approval_sha = commitAll(dir, 'add plan');
+    const review = 'codex@' + 'b'.repeat(12);
+    const approval = 'user@' + approval_sha;
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: review,
+          plan_approval: approval
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan).toMatchObject({
+      fill: 'full',
+      glyph: 'review',
+      stale: false,
+      receipt: review,
+      approval_receipt: approval,
+      approval_state: 'fresh'
+    });
+  });
+
+  test('legacy plan_check and plan_review=user map to review and approval', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const approval_sha = commitAll(dir, 'add plan');
+    const review = 'fable@' + 'c'.repeat(12);
+    const approval = 'user@' + approval_sha;
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_check: review,
+          plan_review: approval
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan).toMatchObject({
+      fill: 'full',
+      glyph: 'review',
+      receipt: review,
+      approval_receipt: approval,
+      approval_state: 'fresh'
+    });
+  });
+
+  test('new skipped review keeps approval independent', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const approval_sha = commitAll(dir, 'add plan');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'skipped@' + 'd'.repeat(12),
+          plan_approval: 'user@' + approval_sha
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan).toMatchObject({
+      fill: 'full',
+      glyph: 'skip',
+      approval_state: 'fresh'
+    });
+  });
+
+  test('malformed new approval never falls back to legacy plan_review', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const approval_sha = commitAll(dir, 'add plan');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_check: 'codex@' + 'e'.repeat(12),
+          plan_review: 'user@' + approval_sha,
+          plan_approval: 'user@not-a-sha'
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan).toMatchObject({
+      fill: 'dim',
+      glyph: null,
+      approval_receipt: 'user@not-a-sha',
+      approval_state: 'missing'
+    });
+  });
+
+  test('new review without approval remains visible while approval is pending', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    commitAll(dir, 'add plan');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'self@' + 'f'.repeat(12)
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan).toMatchObject({
+      fill: 'dim',
+      glyph: 'review',
+      approval_receipt: null,
+      approval_state: 'missing'
+    });
+  });
+
+  test('new approval becomes stale after a committed or dirty plan change', () => {
+    const committed_dir = makeRepo();
+    writeFile(committed_dir, 'docs/plan.md', '# plan\n');
+    const committed_sha = commitAll(committed_dir, 'add plan');
+    writeFile(committed_dir, 'docs/plan.md', '# plan\nchanged\n');
+    commitAll(committed_dir, 'change plan');
+
+    const committed = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'codex@' + '1'.repeat(12),
+          plan_approval: 'user@' + committed_sha
+        }
+      },
+      committed_dir
+    );
+
+    const dirty_dir = makeRepo();
+    writeFile(dirty_dir, 'docs/plan.md', '# plan\n');
+    const dirty_sha = commitAll(dirty_dir, 'add plan');
+    writeFile(dirty_dir, 'docs/plan.md', '# plan\ndirty\n');
+    const dirty = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'codex@' + '2'.repeat(12),
+          plan_approval: 'user@' + dirty_sha
+        }
+      },
+      dirty_dir
+    );
+
+    expect(committed.stages.plan).toMatchObject({
+      fill: 'dim',
+      stale: true,
+      approval_state: 'stale'
+    });
+    expect(dirty.stages.plan).toMatchObject({
+      fill: 'dim',
+      stale: true,
+      approval_state: 'stale'
+    });
+  });
+
   test('valid user receipt, fresh → reviewed', () => {
     const dir = makeRepo();
     writeFile(dir, 'docs/plan.md', '# plan\n');

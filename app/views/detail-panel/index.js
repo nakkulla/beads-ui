@@ -912,6 +912,7 @@ export function createDetailPanel(mount_element, options) {
     const stages = wf.stages || {};
     const specStale = stages.spec && stages.spec.stale;
     const implStale = stages.impl && stages.impl.stale;
+    const plan = stages.plan || null;
     // Same explicit/derived distinction as the board chip (§6): an inferred
     // route renders dimmed with a `?` suffix instead of posing as a pin.
     const route_derived = wf.route_source === 'derived';
@@ -934,6 +935,23 @@ export function createDetailPanel(mount_element, options) {
           >${md.spec_review || '없음'}${specStale ? ' · stale' : ''}</span
         >
       </div>
+      ${wf.route === 'full_plan'
+        ? html`<div class="detail-kv">
+              <span class="detail-kv__k">plan_review</span>
+              <span class="detail-kv__v">${plan?.receipt || '없음'}</span>
+            </div>
+            <div class="detail-kv">
+              <span class="detail-kv__k">plan_approval</span>
+              <span class="detail-kv__v"
+                >${plan?.approval_receipt || '없음'}${plan?.approval_state ===
+                'stale'
+                  ? ' · stale'
+                  : plan?.approval_state === 'unknown'
+                    ? ' · unknown'
+                    : ''}</span
+              >
+            </div>`
+        : ''}
       <div class="detail-kv">
         <span class="detail-kv__k">impl_review</span>
         <span class="detail-kv__v"

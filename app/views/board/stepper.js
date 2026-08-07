@@ -10,6 +10,8 @@ import { html } from 'lit-html';
  * @property {'review'|'skip'|null} [glyph]
  * @property {boolean} [stale]
  * @property {string | null} [receipt]
+ * @property {string | null} [approval_receipt]
+ * @property {'missing'|'fresh'|'stale'|'unknown'|'legacy'} [approval_state]
  */
 
 /**
@@ -111,6 +113,36 @@ function stageStateText(stage) {
 }
 
 /**
+ * Accessible plan state keeps review evidence and native approval distinct
+ * while the visual cell continues to reuse the existing glyph/fill vocabulary.
+ *
+ * @param {WorkflowStage} stage
+ * @returns {string}
+ */
+function planStageStateText(stage) {
+  if (!stage || !stage.approval_state) {
+    return stageStateText(stage);
+  }
+  /** @type {string[]} */
+  const parts = [];
+  if (stage.glyph === 'review') {
+    parts.push(STATE_TEXT.review);
+  } else if (stage.glyph === 'skip') {
+    parts.push(STATE_TEXT.skip);
+  }
+  if (stage.approval_state === 'missing') {
+    parts.push('승인 필요');
+  } else if (stage.approval_state === 'stale') {
+    parts.push('재승인 필요');
+  } else if (stage.approval_state === 'unknown') {
+    parts.push('승인 확인 불가');
+  } else {
+    parts.push('승인 완료');
+  }
+  return parts.join(' · ');
+}
+
+/**
  * Render one stepper segment (bar + label). The server already resolved the
  * three axes; this only maps them onto classes and the glyph character, and
  * pairs the current cell with an inline stage-on color so `currentColor`
@@ -175,7 +207,7 @@ export function stepperTemplate(workflow, status) {
   const aria_label = `워크플로우 진행: ${order
     .map(
       (key) =>
-        `${/** @type {Record<string, string>} */ (STAGE_LABEL)[key] || key} ${stageStateText(stages[key] || {})}`
+        `${/** @type {Record<string, string>} */ (STAGE_LABEL)[key] || key} ${key === 'plan' ? planStageStateText(stages[key] || {}) : stageStateText(stages[key] || {})}`
     )
     .join(' · ')}`;
   return html`

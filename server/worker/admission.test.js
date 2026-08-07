@@ -67,6 +67,22 @@ describe('worker/admission fail-closed validator', () => {
     );
   });
 
+  test('ignores plan receipts and keeps admission spec-only', async () => {
+    const gitRun = makeGitRun();
+    const r = await validateAdmission({
+      gitRun,
+      repo: '/repo',
+      base: BASE,
+      bead: {
+        ...makeBead({ route: 'full_plan' }),
+        plan_review: 'malformed',
+        plan_approval: null
+      }
+    });
+
+    expect(r).toEqual({ ok: true });
+  });
+
   test('accepts a skipped@<40hex> receipt (skip is explicit user authority)', async () => {
     const r = await run(
       makeGitRun(),

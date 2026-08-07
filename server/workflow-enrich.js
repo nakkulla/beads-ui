@@ -28,12 +28,14 @@ const log = debug('workflow-enrich');
 /** `<reviewer>@<sha>` — reviewer is a token, sha is 7-40 hex chars. */
 const RECEIPT_RE = /^([A-Za-z0-9_.:-]+)@([0-9a-fA-F]{7,40})$/;
 
-/**
- * Strict plan-receipt: reviewer EXACTLY `user`/`triage`/`codex`, sha EXACTLY
- * 40 hex. `user@` is the normal approval; `triage@`/`codex@` are the worker
- * autorun stale-lane refresh tokens (`docs/contracts/workflow.md`).
- */
+/** Legacy plan approval receipt stored in `plan_review`. */
 const PLAN_RECEIPT_RE = /^(user|triage|codex)@([0-9a-fA-F]{40})$/;
+
+/** New plan draft review evidence, bound to exact draft bytes. */
+const PLAN_REVIEW_RECEIPT_RE = /^(codex|fable|self|skipped)@([0-9a-fA-F]{12})$/;
+
+/** New native Plan Mode approval, bound to the saved plan commit. */
+const PLAN_APPROVAL_RECEIPT_RE = /^(user)@([0-9a-fA-F]{40})$/;
 
 /**
  * Reviewer tokens the workflow contract enumerates as review evidence
@@ -103,6 +105,37 @@ export function parsePlanReceipt(value) {
     return null;
   }
   const m = PLAN_RECEIPT_RE.exec(value.trim());
+  return m ? { reviewer: m[1], sha: m[2], is_skip: false } : null;
+}
+
+/**
+ * Parse the new plan draft-review receipt.
+ *
+ * @param {unknown} value
+ * @returns {ParsedReceipt | null}
+ */
+export function parsePlanReviewReceipt(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const m = PLAN_REVIEW_RECEIPT_RE.exec(value.trim());
+  if (!m) {
+    return null;
+  }
+  return { reviewer: m[1], sha: m[2], is_skip: m[1] === 'skipped' };
+}
+
+/**
+ * Parse the new native plan-approval receipt.
+ *
+ * @param {unknown} value
+ * @returns {ParsedReceipt | null}
+ */
+export function parsePlanApprovalReceipt(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const m = PLAN_APPROVAL_RECEIPT_RE.exec(value.trim());
   return m ? { reviewer: m[1], sha: m[2], is_skip: false } : null;
 }
 
@@ -442,6 +475,8 @@ export function parsePrNumber(pr_url) {
  * @property {'review'|'skip'|null} glyph
  * @property {boolean} stale
  * @property {string | null} receipt - Raw receipt string (spec/plan/impl only).
+ * @property {string | null} [approval_receipt] - Plan approval receipt only.
+ * @property {'missing'|'fresh'|'stale'|'unknown'|'legacy'} [approval_state] - Plan approval state only.
  */
 
 /**
@@ -479,17 +514,10 @@ function specStage(md, receipt, stale) {
 }
 
 /**
- * Compute the PLAN stage (full_plan route only, spec §4/§5.3). Symmetric to
- * {@link specStage}, but plan approval has NO skip path: only a strict
- * `user|triage|codex@<40hex>` receipt is an approval, its freshness is 3-state,
- * and — fail-quiet like the rest of this module — only `stale` downgrades
- * (`unknown` stays approved). A present-but-invalid receipt is NOT an approval
- * (shown pending, raw receipt exposed); an absent receipt on a resolved/closed
- * bead is a legacy approval.
- *
- * Only a receipt this stage accepts is handed to {@link classifyGlyph} (spec
- * §3.1). Otherwise `plan_review = skipped@...` would render a `⊘` on a `dim`
- * cell — "in progress, review skipped" — and enter the blink candidacy.
+ * Compute the PLAN stage (full_plan only). The glyph comes from draft review;
+ * fill/freshness come from native approval. New keys win without malformed-key
+ * fallback. Legacy `plan_check` + `plan_review=user@40sha` maps onto the same
+ * two axes without rewriting stored metadata.
  *
  * @param {Record<string, any>} md
  * @param {string} status
@@ -498,28 +526,67 @@ function specStage(md, receipt, stale) {
  * @returns {WorkflowStage}
  */
 function planStage(md, status, workspace_root, head) {
-  const raw = typeof md.plan_review === 'string' ? md.plan_review : null;
   if (!md.plan_path) {
-    return makeStage('none', null, false, raw);
+    return {
+      ...makeStage('none', null, false, null),
+      approval_receipt: null,
+      approval_state: 'missing'
+    };
   }
-  if (Object.hasOwn(md, 'plan_review')) {
-    // Presence via hasOwn: a present non-string/null value is an INVALID
-    // receipt (pending), never key-absence — key-absence is what legitimizes
-    // the legacy branch below.
-    const receipt = parsePlanReceipt(md.plan_review);
-    if (!receipt) {
-      return makeStage('dim', null, false, raw);
-    }
-    const stale =
-      staleProbesApply(status) &&
-      planFreshness(workspace_root, head, receipt.sha, md.plan_path) ===
-        'stale';
-    return makeStage('full', classifyGlyph(receipt), stale, raw);
+
+  const has_new_approval = Object.hasOwn(md, 'plan_approval');
+  const legacy_approval = has_new_approval
+    ? null
+    : parsePlanReceipt(md.plan_review);
+
+  let review_raw = null;
+  let review_receipt = null;
+  if (legacy_approval) {
+    review_raw = typeof md.plan_check === 'string' ? md.plan_check : null;
+    review_receipt = parsePlanReviewReceipt(md.plan_check);
+  } else if (Object.hasOwn(md, 'plan_review')) {
+    review_raw = typeof md.plan_review === 'string' ? md.plan_review : null;
+    review_receipt = parsePlanReviewReceipt(md.plan_review);
+  } else {
+    review_raw = typeof md.plan_check === 'string' ? md.plan_check : null;
+    review_receipt = parsePlanReviewReceipt(md.plan_check);
   }
-  if (status === 'resolved' || status === 'closed') {
-    return makeStage('full', null, false, null);
+
+  const approval_raw = has_new_approval
+    ? typeof md.plan_approval === 'string'
+      ? md.plan_approval
+      : null
+    : legacy_approval && typeof md.plan_review === 'string'
+      ? md.plan_review
+      : null;
+  const approval_receipt = has_new_approval
+    ? parsePlanApprovalReceipt(md.plan_approval)
+    : legacy_approval;
+
+  /** @type {'missing'|'fresh'|'stale'|'unknown'|'legacy'} */
+  let approval_state = 'missing';
+  if (approval_receipt) {
+    approval_state = staleProbesApply(status)
+      ? planFreshness(workspace_root, head, approval_receipt.sha, md.plan_path)
+      : 'fresh';
+  } else if (
+    !has_new_approval &&
+    !Object.hasOwn(md, 'plan_review') &&
+    (status === 'resolved' || status === 'closed')
+  ) {
+    approval_state = 'legacy';
   }
-  return makeStage('dim', null, false, null);
+
+  const stale = approval_state === 'stale';
+  const fill =
+    approval_state === 'missing' || stale
+      ? 'dim'
+      : /** @type {const} */ ('full');
+  return {
+    ...makeStage(fill, classifyGlyph(review_receipt), stale, review_raw),
+    approval_receipt: approval_raw,
+    approval_state
+  };
 }
 
 /**

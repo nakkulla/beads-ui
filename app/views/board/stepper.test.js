@@ -234,6 +234,74 @@ describe('views/board/stepper', () => {
     );
   });
 
+  test('plan aria-label distinguishes draft review from native approval', () => {
+    const m = mountStepper(
+      wf(
+        {
+          spec: stage('full', 'review'),
+          plan: {
+            ...stage('full', 'skip'),
+            approval_receipt: 'user@' + 'a'.repeat(40),
+            approval_state: 'fresh'
+          },
+          impl: NONE,
+          pr: NONE,
+          merge: NONE
+        },
+        'full_plan'
+      ),
+      'in_progress'
+    );
+
+    expect(m.querySelector('.stp')?.getAttribute('aria-label')).toContain(
+      'plan 검토 생략 · 승인 완료'
+    );
+  });
+
+  test('plan aria-label exposes reviewed-but-unapproved and stale approval', () => {
+    const pending = mountStepper(
+      wf(
+        {
+          spec: stage('full', 'review'),
+          plan: {
+            ...stage('dim', 'review'),
+            approval_receipt: null,
+            approval_state: 'missing'
+          },
+          impl: NONE,
+          pr: NONE,
+          merge: NONE
+        },
+        'full_plan'
+      ),
+      'in_progress'
+    );
+    expect(pending.querySelector('.stp')?.getAttribute('aria-label')).toContain(
+      'plan 검토 완료 · 승인 필요'
+    );
+
+    const stale = mountStepper(
+      wf(
+        {
+          spec: stage('full', 'review'),
+          plan: {
+            ...stage('dim', 'review', true),
+            approval_receipt: 'user@' + 'a'.repeat(40),
+            approval_state: 'stale'
+          },
+          impl: NONE,
+          pr: NONE,
+          merge: NONE
+        },
+        'full_plan'
+      ),
+      'resolved'
+    );
+    expect(stale.querySelector('.stp')?.getAttribute('aria-label')).toContain(
+      'plan 검토 완료 · 재승인 필요'
+    );
+  });
+
   test('aria-label uses 재검토 필요 for stale and 완료 for a glyphless full', () => {
     const m = mountStepper(
       wf({

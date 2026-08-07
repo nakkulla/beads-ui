@@ -112,6 +112,49 @@ describe('views/detail-panel', () => {
     created_at: 1700000000000
   };
 
+  test('workflow detail separates normalized plan review and approval', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const review = 'codex@' + 'b'.repeat(12);
+    const approval = 'user@' + 'a'.repeat(40);
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: {
+          route: 'full_plan',
+          plan_review: review,
+          plan_approval: approval
+        },
+        workflow: {
+          route: 'full_plan',
+          route_source: 'explicit',
+          stages: {
+            spec: { stale: false },
+            plan: {
+              receipt: review,
+              approval_receipt: approval,
+              approval_state: 'fresh',
+              stale: false
+            },
+            impl: { stale: false }
+          }
+        }
+      },
+      vi.fn()
+    );
+
+    const rows = Object.fromEntries(
+      Array.from(mount.querySelectorAll('.detail-kv')).map((row) => [
+        row.querySelector('.detail-kv__k')?.textContent?.trim(),
+        row.querySelector('.detail-kv__v')?.textContent?.trim()
+      ])
+    );
+    expect(rows.plan_review).toBe(review);
+    expect(rows.plan_approval).toBe(approval);
+
+    panel.destroy();
+  });
+
   test('title pencil opens an input; save sends edit-text title', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi

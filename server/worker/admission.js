@@ -106,7 +106,12 @@ const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
  *   repo: string,
  *   base: string,
  *   base_label?: string,
- *   bead: { route?: string|null, spec_id?: string|null, spec_review?: unknown }
+ *   bead: {
+ *     route?: string|null,
+ *     spec_id?: string|null,
+ *     spec_review?: unknown,
+ *     [key: string]: unknown
+ *   }
  * }} input
  * @returns {Promise<AdmissionResult>}
  */
