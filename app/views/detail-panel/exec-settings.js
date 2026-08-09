@@ -2,19 +2,71 @@ import { html } from 'lit-html';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
+ * @typedef {{ value: string, label: string }} SelectOption
+ * @typedef {{ label: string|null, options: SelectOption[] }} SelectGroup
+ * @typedef {{
+ *   key: string,
+ *   groups: SelectGroup[],
+ *   selected: string,
+ *   disabled: boolean,
+ *   runner: string|null
+ * }} ExecRow
  */
 
 /**
- * Orchestration models. Mirrors the server enum in server/worker/exec-enums.js
- * (claude is the worker's only runner — worker-phase1 §4).
+ * `spec_review_model` / `impl_review_model` options. Contract-fixed rather than
+ * catalog-derived (mirrors server/worker/exec-enums.js REVIEW_STEP_MODELS): the
+ * review legs are dispatched by the session, and `self`/`skip` are verbs, not
+ * models.
  */
-export const MODELS = ['opus', 'sonnet', 'haiku', 'fable'];
+export const REVIEW_STEP_MODELS = ['codex', 'opus', 'fable', 'self', 'skip'];
 
-export const EFFORTS = ['low', 'medium', 'high', 'xhigh'];
-export const REVIEW_MODELS = ['codex', 'opus', 'fable', 'self', 'skip'];
-export const IMPL_MODELS = ['opus', 'fable', 'sonnet', 'haiku'];
+/** `plan_review_model` options — narrower by contract: no `self`, no `opus`. */
+export const PLAN_REVIEW_MODELS = ['codex', 'fable', 'skip'];
+
+/** Effort vocabulary shared by all three review steps. */
+export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
+
 /** Stored workflow_mode values; `standard` records as key removal (unset). */
 export const WORKFLOW_MODES = ['standard', 'fast_track'];
+
+/**
+ * The 10 workspace-global-capable exec keys, in display order. Mirrors the
+ * server table in server/worker/exec-enums.js; `workflow_mode` is per-bead only
+ * and therefore not part of it.
+ */
+export const EXEC_KEYS = [
+  'orchestration_model',
+  'orchestration_effort',
+  'spec_review_model',
+  'spec_review_effort',
+  'impl_review_model',
+  'impl_review_effort',
+  'plan_review_model',
+  'plan_review_effort',
+  'impl_model',
+  'impl_effort'
+];
+
+/**
+ * Which `*_review_model` key gates each `*_review_effort` key (mqcj §4.4).
+ *
+ * @type {Record<string, string>}
+ */
+const REVIEW_EFFORT_PAIR = {
+  spec_review_effort: 'spec_review_model',
+  impl_review_effort: 'impl_review_model',
+  plan_review_effort: 'plan_review_model'
+};
+
+/**
+ * Review-model values that dispatch no separate leg, so there is no effort to
+ * choose: `self` runs inside the session and `skip` runs nothing at all.
+ */
+const EFFORT_GATING_MODELS = ['self', 'skip'];
+
+/** Mirror of policy.js ORCHESTRATION_MODEL_FALLBACK — what runs when nothing is set. */
+const ORCHESTRATION_MODEL_FALLBACK = 'opus';
 
 /**
  * `(기본)` labels for each exec key = what actually runs when NEITHER the bead
@@ -26,18 +78,27 @@ export const WORKFLOW_MODES = ['standard', 'fast_track'];
  * MIRROR: keep in sync with the resolution fallbacks —
  *   - orchestration_model: hardcoded `opus` (policy.js
  *     ORCHESTRATION_MODEL_FALLBACK), so `--model opus` is always passed.
- *   - orchestration_effort: no `--effort` passed ⇒ the claude CLI's own default
- *     (claude.js buildArgv omits the flag when unset).
- *   - review_model: session workflow gate default `codex`.
+ *   - orchestration_effort: no effort flag passed ⇒ the runner CLI's own default
+ *     (buildArgv omits the flag when unset).
+ *   - `*_review_model`: session workflow gate default `codex` for all three
+ *     steps.
+ *   - `*_review_effort`: the workflow preset for that step.
  *   - impl_model: workflow delegation tier auto (complex=opus / boundary=sonnet).
+ *   - impl_effort: whatever the chosen leaf tier defaults to.
  *
  * @type {Record<string, string>}
  */
 export const DEFAULT_LABELS = {
   orchestration_model: '(기본: opus)',
   orchestration_effort: '(기본: CLI 기본)',
-  review_model: '(기본: codex)',
-  impl_model: '(기본: 티어 자동)'
+  spec_review_model: '(기본: codex)',
+  spec_review_effort: '(기본: 프리셋)',
+  impl_review_model: '(기본: codex)',
+  impl_review_effort: '(기본: 프리셋)',
+  plan_review_model: '(기본: codex)',
+  plan_review_effort: '(기본: 프리셋)',
+  impl_model: '(기본: 티어 자동)',
+  impl_effort: '(기본: 리프 기본)'
 };
 
 /**
@@ -59,6 +120,276 @@ export function defaultLabelFor(key, globals) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {value is Record<string, any>}
+ */
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The snapshot catalog's runners as ordered `[name, entry]` pairs, or null when
+ * the decoration is absent or unreadable. Null is the FAIL-QUIET signal: the
+ * caller shows the stored value alone rather than an empty selector, because a
+ * server that could not resolve the catalog has told us nothing about which
+ * models exist — not that none do.
+ *
+ * @param {any} runner_catalog
+ * @returns {[string, any][] | null}
+ */
+function catalogRunners(runner_catalog) {
+  if (!isRecord(runner_catalog) || !isRecord(runner_catalog.runners)) {
+    return null;
+  }
+  const pairs = Object.entries(runner_catalog.runners).filter(
+    ([, entry]) => isRecord(entry) && isRecord(entry.models)
+  );
+  return pairs.length > 0 ? pairs : null;
+}
+
+/**
+ * @param {string} value
+ * @returns {SelectOption}
+ */
+function plainOption(value) {
+  return { value, label: value };
+}
+
+/**
+ * A stored value that is not in the current vocabulary renders as its OWN
+ * selected `(비호환)` option — never hidden behind `(기본)`. That both surfaces
+ * the real saved state and keeps `(기본)` a live target: selecting it fires a
+ * change that unsets.
+ *
+ * @param {string} selected
+ * @returns {SelectGroup}
+ */
+function incompatibleGroup(selected) {
+  return {
+    label: null,
+    options: [{ value: selected, label: `${selected} (비호환)` }]
+  };
+}
+
+/**
+ * Grouped options for a catalog-driven MODEL selector: one `<optgroup>` per
+ * runner, so a globally-unique model name still shows which runner will spawn
+ * it. Without a catalog the stored value stands alone and unjudged — we cannot
+ * call it incompatible with a table we never received.
+ *
+ * @param {any} runner_catalog
+ * @param {string} selected
+ * @returns {SelectGroup[]}
+ */
+export function modelGroups(runner_catalog, selected) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners) {
+    return selected ? [{ label: null, options: [plainOption(selected)] }] : [];
+  }
+  const groups = runners.map(([name, entry]) => ({
+    label: name,
+    options: Object.keys(entry.models).map(plainOption)
+  }));
+  const known = groups.some((g) => g.options.some((o) => o.value === selected));
+  return selected && !known ? [incompatibleGroup(selected), ...groups] : groups;
+}
+
+/**
+ * Ungrouped options for a fixed vocabulary, with the same `(비호환)` rule.
+ *
+ * @param {ReadonlyArray<string>} values
+ * @param {string} selected
+ * @returns {SelectGroup[]}
+ */
+export function valueGroups(values, selected) {
+  const group = { label: null, options: values.map(plainOption) };
+  return selected && !values.includes(selected)
+    ? [incompatibleGroup(selected), group]
+    : [group];
+}
+
+/**
+ * The runner that owns `model` per the snapshot catalog, or null.
+ *
+ * @param {any} runner_catalog
+ * @param {string} model
+ * @returns {string|null}
+ */
+export function modelRunnerOf(runner_catalog, model) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners || !model) {
+    return null;
+  }
+  for (const [name, entry] of runners) {
+    if (Object.hasOwn(entry.models, model)) {
+      return name;
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {any} entry - A catalog runner entry.
+ * @param {any} model_entry
+ * @returns {string[]}
+ */
+function effortsOf(entry, model_entry) {
+  if (isRecord(model_entry) && Array.isArray(model_entry.efforts)) {
+    return model_entry.efforts.slice();
+  }
+  return Array.isArray(entry.efforts) ? entry.efforts.slice() : [];
+}
+
+/**
+ * Effort vocabulary `model` accepts: its own list when it pins one, else the
+ * owning runner's. An unknown model (or an absent catalog) has none.
+ *
+ * @param {any} runner_catalog
+ * @param {string} model
+ * @returns {string[]}
+ */
+export function effortsForModel(runner_catalog, model) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners || !model) {
+    return [];
+  }
+  for (const [, entry] of runners) {
+    if (Object.hasOwn(entry.models, model)) {
+      return effortsOf(entry, entry.models[model]);
+    }
+  }
+  return [];
+}
+
+/**
+ * Every effort level ANY catalog model accepts — the vocabulary for a setting
+ * whose model is not yet chosen (`impl_effort` names a delegation leaf the
+ * session picks later).
+ *
+ * @param {any} runner_catalog
+ * @returns {string[]}
+ */
+export function catalogEffortUnion(runner_catalog) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners) {
+    return [];
+  }
+  /** @type {string[]} */
+  const out = [];
+  for (const [, entry] of runners) {
+    for (const model_entry of Object.values(entry.models)) {
+      for (const effort of effortsOf(entry, model_entry)) {
+        if (!out.includes(effort)) {
+          out.push(effort);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Build the option model for all 10 exec rows — the SINGLE implementation both
+ * the per-bead detail panel and the ⚙ global dialog render, so the two surfaces
+ * cannot drift on grouping, effort narrowing or the self/skip gate.
+ *
+ * The two callbacks are deliberately separate. `selectedOf` is what THIS surface
+ * stores (bead metadata / exec_defaults) and decides which option is selected —
+ * an unset key must keep `(기본)` selected. `effectiveOf` is what would actually
+ * apply (bead > global on the detail panel, the global alone in the dialog) and
+ * decides the derived vocabulary and the gate, because those follow the value in
+ * force, not the value this one layer happens to hold.
+ *
+ * @param {{
+ *   selectedOf: (key: string) => string,
+ *   effectiveOf: (key: string) => string,
+ *   runner_catalog: any
+ * }} input
+ * @returns {ExecRow[]}
+ */
+export function execSettingRows(input) {
+  const { selectedOf, effectiveOf, runner_catalog } = input;
+  const orchestration_model =
+    effectiveOf('orchestration_model') || ORCHESTRATION_MODEL_FALLBACK;
+  const impl_model = effectiveOf('impl_model');
+
+  return EXEC_KEYS.map((key) => {
+    const selected = selectedOf(key);
+    /** @type {SelectGroup[]} */
+    let groups;
+    let disabled = false;
+    if (key === 'orchestration_model' || key === 'impl_model') {
+      groups = modelGroups(runner_catalog, selected);
+    } else if (key === 'orchestration_effort') {
+      groups = valueGroups(
+        effortsForModel(runner_catalog, orchestration_model),
+        selected
+      );
+    } else if (key === 'impl_effort') {
+      groups = valueGroups(
+        impl_model
+          ? effortsForModel(runner_catalog, impl_model)
+          : catalogEffortUnion(runner_catalog),
+        selected
+      );
+    } else if (key === 'plan_review_model') {
+      groups = valueGroups(PLAN_REVIEW_MODELS, selected);
+    } else if (Object.hasOwn(REVIEW_EFFORT_PAIR, key)) {
+      groups = valueGroups(REVIEW_EFFORTS, selected);
+      disabled = EFFORT_GATING_MODELS.includes(
+        effectiveOf(REVIEW_EFFORT_PAIR[key])
+      );
+    } else {
+      groups = valueGroups(REVIEW_STEP_MODELS, selected);
+    }
+    return {
+      key,
+      groups,
+      selected,
+      disabled,
+      runner:
+        key === 'orchestration_model'
+          ? modelRunnerOf(runner_catalog, orchestration_model)
+          : null
+    };
+  });
+}
+
+/**
+ * The `<option>`/`<optgroup>` children of one exec `<select>`.
+ *
+ * @param {SelectGroup[]} groups
+ * @param {string} selected
+ * @param {string} [default_label] - Label for the leading unset option; omit for none.
+ * @returns {TemplateResult}
+ */
+export function selectOptionsTemplate(groups, selected, default_label) {
+  return html`
+    ${typeof default_label === 'string'
+      ? html`<option value="" ?selected=${!selected}>${default_label}</option>`
+      : ''}
+    ${groups.map((group) =>
+      group.label === null
+        ? group.options.map((opt) => optionTemplate(opt, selected))
+        : html`<optgroup label=${group.label}>
+            ${group.options.map((opt) => optionTemplate(opt, selected))}
+          </optgroup>`
+    )}
+  `;
+}
+
+/**
+ * @param {SelectOption} opt
+ * @param {string} selected
+ * @returns {TemplateResult}
+ */
+function optionTemplate(opt, selected) {
+  return html`<option value=${opt.value} ?selected=${opt.value === selected}>
+    ${opt.label}
+  </option>`;
+}
+
+/**
  * @typedef {Object} ExecSettingsHandlers
  * @property {(key: string, value: string) => void} onChange
  */
@@ -67,54 +398,52 @@ export function defaultLabelFor(key, globals) {
  * Build one labelled `<select>` row (detail-panel.html `.kv`).
  *
  * @param {string} key
- * @param {string} label
- * @param {{ value: string, label: string }[]} options
+ * @param {TemplateResult} options - The row's option children.
  * @param {string} selected
  * @param {boolean} highlight
+ * @param {boolean} disabled
+ * @param {string|null} runner - Derived runner badge, when the row has one.
  * @param {ExecSettingsHandlers} handlers
  * @returns {TemplateResult}
  */
-function selectRow(key, label, options, selected, highlight, handlers) {
+function selectRow(
+  key,
+  options,
+  selected,
+  highlight,
+  disabled,
+  runner,
+  handlers
+) {
   return html`
     <div class="detail-kv">
-      <span class="detail-kv__k">${label}</span>
-      <select
-        class=${highlight ? 'detail-kv__v detail-kv__v--sel' : 'detail-kv__v'}
-        aria-label=${label}
-        data-key=${key}
-        @change=${(/** @type {Event} */ ev) =>
-          handlers.onChange(
-            key,
-            /** @type {HTMLSelectElement} */ (ev.target).value
-          )}
-      >
-        ${options.map(
-          (opt) =>
-            html`<option value=${opt.value} ?selected=${opt.value === selected}>
-              ${opt.label}
-            </option>`
-        )}
-      </select>
+      <span class="detail-kv__k">${key}</span>
+      <span class="detail-kv__vgroup">
+        <select
+          class=${highlight ? 'detail-kv__v detail-kv__v--sel' : 'detail-kv__v'}
+          aria-label=${key}
+          data-key=${key}
+          ?disabled=${disabled}
+          @change=${(/** @type {Event} */ ev) =>
+            handlers.onChange(
+              key,
+              /** @type {HTMLSelectElement} */ (ev.target).value
+            )}
+        >
+          ${options}
+        </select>
+        ${runner
+          ? html`<span class="detail-kv__note" data-runner-for=${key}
+              >${runner}</span
+            >`
+          : ''}
+      </span>
     </div>
   `;
 }
 
 /**
- * Build select options, optionally prefixed with an unset `(기본…)` option.
- *
- * @param {string[]} values
- * @param {string} [default_label] - Label for the unset option; omit for none.
- * @returns {{ value: string, label: string }[]}
- */
-function toOptions(values, default_label) {
-  const opts = values.map((v) => ({ value: v, label: v }));
-  return typeof default_label === 'string'
-    ? [{ value: '', label: default_label }, ...opts]
-    : opts;
-}
-
-/**
- * Execution-settings editor (detail-panel.html "실행 설정"): the 4 exec keys +
+ * Execution-settings editor (detail-panel.html "실행 설정"): the 10 exec keys +
  * workflow_mode. Selecting `standard` for workflow_mode (or `(기본)` for a key)
  * records an unset — the server mutation removes the metadata key.
  *
@@ -122,54 +451,57 @@ function toOptions(values, default_label) {
  * @param {ExecSettingsHandlers} handlers
  * @param {Record<string, any>} [exec_defaults] - Workspace-global exec defaults
  * (queue snapshot). A bead-unset key resolves through these first, so they drive
- * the `(기본)` label (§3.2).
+ * the `(기본)` label (§3.2) and the derived vocabularies.
+ * @param {any} [runner_catalog] - The snapshot's `runner_catalog` decoration.
+ * Null/absent degrades the model selectors to the stored value (fail-quiet).
  * @returns {TemplateResult}
  */
-export function execSettingsTemplate(effective_issue, handlers, exec_defaults) {
+export function execSettingsTemplate(
+  effective_issue,
+  handlers,
+  exec_defaults,
+  runner_catalog
+) {
   const md = (effective_issue && effective_issue.metadata) || {};
   const globals =
     exec_defaults && typeof exec_defaults === 'object' ? exec_defaults : {};
+  /** @param {string} key */
+  const selectedOf = (key) => (typeof md[key] === 'string' ? md[key] : '');
+  /** @param {string} key */
+  const effectiveOf = (key) => {
+    const own = selectedOf(key);
+    if (own) {
+      return own;
+    }
+    return typeof globals[key] === 'string' ? globals[key] : '';
+  };
+  const rows = execSettingRows({ selectedOf, effectiveOf, runner_catalog });
   const wf_mode = md.workflow_mode === 'fast_track' ? 'fast_track' : 'standard';
+
   return html`
     <div class="detail-section-label">실행 설정 (수정 가능)</div>
-    ${selectRow(
-      'orchestration_model',
-      'orchestration_model',
-      toOptions(MODELS, defaultLabelFor('orchestration_model', globals)),
-      md.orchestration_model || '',
-      false,
-      handlers
-    )}
-    ${selectRow(
-      'orchestration_effort',
-      'orchestration_effort',
-      toOptions(EFFORTS, defaultLabelFor('orchestration_effort', globals)),
-      md.orchestration_effort || '',
-      false,
-      handlers
-    )}
-    ${selectRow(
-      'review_model',
-      'review_model',
-      toOptions(REVIEW_MODELS, defaultLabelFor('review_model', globals)),
-      md.review_model || '',
-      false,
-      handlers
-    )}
-    ${selectRow(
-      'impl_model',
-      'impl_model',
-      toOptions(IMPL_MODELS, defaultLabelFor('impl_model', globals)),
-      md.impl_model || '',
-      false,
-      handlers
+    ${rows.map((row) =>
+      selectRow(
+        row.key,
+        selectOptionsTemplate(
+          row.groups,
+          row.selected,
+          defaultLabelFor(row.key, globals)
+        ),
+        row.selected,
+        false,
+        row.disabled,
+        row.runner,
+        handlers
+      )
     )}
     ${selectRow(
       'workflow_mode',
-      'workflow_mode',
-      toOptions(WORKFLOW_MODES),
+      selectOptionsTemplate(valueGroups(WORKFLOW_MODES, wf_mode), wf_mode),
       wf_mode,
       md.workflow_mode === 'fast_track',
+      false,
+      null,
       handlers
     )}
   `;

@@ -238,10 +238,38 @@ export function createLiveBd(config) {
           typeof md.orchestration_effort === 'string'
             ? md.orchestration_effort
             : undefined,
-        review_model:
-          typeof md.review_model === 'string' ? md.review_model : undefined,
+        // The per-step exec keys (dotfiles-mqcj). They reach `policy.js` only
+        // through this snapshot, so the bead-over-global layering and the
+        // stamp/revert duty both depend on every one of them being read here.
+        // The retired `review_model` is deliberately absent: no dual read.
+        spec_review_model:
+          typeof md.spec_review_model === 'string'
+            ? md.spec_review_model
+            : undefined,
+        spec_review_effort:
+          typeof md.spec_review_effort === 'string'
+            ? md.spec_review_effort
+            : undefined,
+        impl_review_model:
+          typeof md.impl_review_model === 'string'
+            ? md.impl_review_model
+            : undefined,
+        impl_review_effort:
+          typeof md.impl_review_effort === 'string'
+            ? md.impl_review_effort
+            : undefined,
+        plan_review_model:
+          typeof md.plan_review_model === 'string'
+            ? md.plan_review_model
+            : undefined,
+        plan_review_effort:
+          typeof md.plan_review_effort === 'string'
+            ? md.plan_review_effort
+            : undefined,
         impl_model:
           typeof md.impl_model === 'string' ? md.impl_model : undefined,
+        impl_effort:
+          typeof md.impl_effort === 'string' ? md.impl_effort : undefined,
         workflow_mode:
           typeof md.workflow_mode === 'string' ? md.workflow_mode : null,
         route,

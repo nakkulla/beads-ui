@@ -148,8 +148,14 @@ function staleDispatchPrompt(bead_id, stale) {
  * a PR to.
  * @property {string} [model] - orchestration_model.
  * @property {string} [effort] - orchestration_effort.
- * @property {string} [review_model] - review_model (per-bead exec setting).
+ * @property {string} [spec_review_model] - spec_review_model (per-bead exec setting).
+ * @property {string} [spec_review_effort] - spec_review_effort (per-bead exec setting).
+ * @property {string} [impl_review_model] - impl_review_model (per-bead exec setting).
+ * @property {string} [impl_review_effort] - impl_review_effort (per-bead exec setting).
+ * @property {string} [plan_review_model] - plan_review_model (per-bead exec setting).
+ * @property {string} [plan_review_effort] - plan_review_effort (per-bead exec setting).
  * @property {string} [impl_model] - impl_model (per-bead exec setting).
+ * @property {string} [impl_effort] - impl_effort (per-bead exec setting).
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).

@@ -203,7 +203,7 @@ function makeFakeBd(config) {
         target_base: c.target_base ?? 'main',
         model: c.model === null ? undefined : (c.model ?? 'opus'),
         effort: c.effort === null ? undefined : (c.effort ?? 'high'),
-        review_model: c.review_model ?? undefined,
+        spec_review_model: c.spec_review_model ?? undefined,
         impl_model: c.impl_model ?? undefined,
         workflow_mode: c.workflow_mode ?? null,
         route: c.route ?? null,
@@ -1616,7 +1616,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       // termination path reverts workflow_mode AND the exec stamps.
     });
     seedExecDefaults(env.store, {
-      review_model: 'opus',
+      spec_review_model: 'opus',
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
@@ -1635,11 +1635,13 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(a.exec_stamped_keys).toEqual([
       'orchestration_model',
       'orchestration_effort',
-      'review_model'
+      'spec_review_model'
     ]);
 
     // Bead metadata was stamped with the three global-filled keys.
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'review_model')).toBe(true);
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'spec_review_model')).toBe(
+      true
+    );
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
       true
     );
@@ -1654,7 +1656,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(env.store.snapshot(WS).pr_wait.map((e) => e.bead_id)).toContain(
       'S1'
     );
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       true
     );
     expect(
@@ -1666,21 +1668,21 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
   });
 
   test('a bead-SET key beats the global and is never stamped/reverted', async () => {
-    // Bead pins review_model=opus; impl_model is unset (global fills it).
+    // Bead pins spec_review_model=opus; impl_model is unset (global fills it).
     const env = setup({
       config: {
         S1: {
           runner: 'claude',
           model: 'opus',
           effort: 'high',
-          review_model: 'opus'
+          spec_review_model: 'opus'
         }
       },
       slots: 1,
       verifyOk: true
     });
     seedExecDefaults(env.store, {
-      review_model: 'codex',
+      spec_review_model: 'codex',
       impl_model: 'haiku'
     });
     seedQueue(env.store, ['S1']);
@@ -1688,17 +1690,19 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
 
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     const a = /** @type {any} */ (env.store.snapshot(WS).attempts[attempt_id]);
-    // Only the global-filled impl_model is stamped; the bead-set review_model
+    // Only the global-filled impl_model is stamped; the bead-set spec_review_model
     // is not (its value is the bead's own, not the global 'codex').
     expect(a.exec_stamped_keys).toEqual(['impl_model']);
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'impl_model')).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'review_model')).toBe(false);
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'spec_review_model')).toBe(
+      false
+    );
 
     env.runner.finish('S1', { success: true });
     await flush();
     await flush();
     expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'impl_model')).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       false
     );
   });
@@ -1758,7 +1762,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       slots: 1
     });
     seedExecDefaults(env.store, {
-      review_model: 'opus',
+      spec_review_model: 'opus',
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
@@ -1779,7 +1783,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(a.exec_stamped_keys).toEqual([
       'orchestration_model',
       'orchestration_effort',
-      'review_model'
+      'spec_review_model'
     ]);
 
     // The one key that WAS stamped is cleaned up; workflow_mode reverted too.
@@ -1819,7 +1823,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       slots: 1
     });
     seedExecDefaults(env.store, {
-      review_model: 'opus',
+      spec_review_model: 'opus',
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
@@ -1845,7 +1849,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(
       calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
     ).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       true
     );
     // workflow_mode is reverted too; the dispatch failed in isolation.
@@ -1864,7 +1868,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       verifyOk: true
     });
     seedExecDefaults(env.store, {
-      review_model: 'opus',
+      spec_review_model: 'opus',
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
@@ -1877,7 +1881,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
 
     const snap = env.store.snapshot(WS);
     expect(snap.pr_wait.map((e) => e.bead_id)).toContain('S1');
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       true
     );
     expect(
@@ -2466,7 +2470,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
       defaults: {
         orchestration_model: 'sonnet',
         orchestration_effort: 'high',
-        review_model: 'opus'
+        spec_review_model: 'opus'
       }
     });
 
@@ -2477,7 +2481,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(a.exec_stamped_keys).toEqual([
       'orchestration_model',
       'orchestration_effort',
-      'review_model'
+      'spec_review_model'
     ]);
     expect(a.model).toBe('sonnet');
     expect(env.runner.settingsFor('X1').model).toBe('sonnet');
@@ -2485,11 +2489,11 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
 
   test('restores every written stamp when one exec key fails to stamp', async () => {
     const env = extEnv({
-      bead: { model: null, effort: null, throwOnSetKey: 'review_model' },
+      bead: { model: null, effort: null, throwOnSetKey: 'spec_review_model' },
       defaults: {
         orchestration_model: 'sonnet',
         orchestration_effort: 'high',
-        review_model: 'opus'
+        spec_review_model: 'opus'
       }
     });
 
@@ -2499,7 +2503,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     for (const key of [
       'orchestration_model',
       'orchestration_effort',
-      'review_model',
+      'spec_review_model',
       'workflow_mode'
     ]) {
       expect(env.bd.calls).toContainEqual({
@@ -2579,8 +2583,8 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
         repo: '/repo',
         target_base: 'main',
         workflow_mode_prior: null,
-        exec_stamped_keys: ['review_model'],
-        exec_values: { review_model: 'opus' },
+        exec_stamped_keys: ['spec_review_model'],
+        exec_values: { spec_review_model: 'opus' },
         conflict_resolution: true,
         external_conflict: true
       }
@@ -2596,7 +2600,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(env.bd.calls).toContainEqual({
       method: 'unsetMetadata',
       bead_id: 'X1',
-      key: 'review_model'
+      key: 'spec_review_model'
     });
     expect(env.bd.calls).toContainEqual({
       method: 'unsetMetadata',

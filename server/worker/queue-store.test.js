@@ -298,12 +298,12 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
 
     let r = store.setExecDefault(WS, {
       expected_revision: 0,
-      key: 'review_model',
+      key: 'spec_review_model',
       value: 'codex'
     });
     expect(r.ok).toBe(true);
     expect(r.queue.revision).toBe(1);
-    expect(r.queue.exec_defaults).toEqual({ review_model: 'codex' });
+    expect(r.queue.exec_defaults).toEqual({ spec_review_model: 'codex' });
 
     r = store.setExecDefault(WS, {
       expected_revision: r.queue.revision,
@@ -312,24 +312,24 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     });
     expect(r.ok).toBe(true);
     expect(r.queue.exec_defaults).toEqual({
-      review_model: 'codex',
+      spec_review_model: 'codex',
       orchestration_model: 'sonnet'
     });
 
     // Stale revision → CAS conflict, no write.
     const stale = store.setExecDefault(WS, {
       expected_revision: 0,
-      key: 'review_model',
+      key: 'spec_review_model',
       value: 'opus'
     });
     expect(stale.ok).toBe(false);
     expect(stale.conflict).toBe(true);
-    expect(store.snapshot(WS).exec_defaults.review_model).toBe('codex');
+    expect(store.snapshot(WS).exec_defaults.spec_review_model).toBe('codex');
 
     // null unsets the key entirely.
     const unsetNull = store.setExecDefault(WS, {
       expected_revision: store.snapshot(WS).revision,
-      key: 'review_model',
+      key: 'spec_review_model',
       value: null
     });
     expect(unsetNull.ok).toBe(true);
@@ -383,22 +383,87 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     });
     expect(badValue.ok).toBe(false);
 
-    // review_model enum does not include 'sonnet'.
+    // spec_review_model enum does not include 'sonnet'.
     const wrongEnum = store.setExecDefault(WS, {
       expected_revision: 0,
-      key: 'review_model',
+      key: 'spec_review_model',
       value: 'sonnet'
     });
     expect(wrongEnum.ok).toBe(false);
 
+    // plan_review_model narrows further: no `self`, no `opus`.
+    const planSelf = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'plan_review_model',
+      value: 'self'
+    });
+    expect(planSelf.ok).toBe(false);
+
     expect(store.snapshot(WS).exec_defaults).toEqual({});
+  });
+
+  test('the retired review_model key is rejected outright (dotfiles-mqcj)', () => {
+    const store = createQueueStore();
+
+    const r = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'review_model',
+      value: 'codex'
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).exec_defaults).toEqual({});
+  });
+
+  test('accepts a codex short-name model for orchestration_model and impl_model', () => {
+    const store = createQueueStore();
+
+    const r = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'orchestration_model',
+      value: 'sol'
+    });
+    const impl = store.setExecDefault(WS, {
+      expected_revision: r.queue.revision,
+      key: 'impl_model',
+      value: 'luna'
+    });
+
+    expect(r.ok).toBe(true);
+    expect(impl.ok).toBe(true);
+    expect(impl.queue.exec_defaults).toEqual({
+      orchestration_model: 'sol',
+      impl_model: 'luna'
+    });
+  });
+
+  test('accepts a per-step review effort and a codex-only impl effort', () => {
+    const store = createQueueStore();
+
+    const effort = store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'impl_review_effort',
+      value: 'xhigh'
+    });
+    const implEffort = store.setExecDefault(WS, {
+      expected_revision: effort.queue.revision,
+      key: 'impl_effort',
+      value: 'max'
+    });
+
+    expect(effort.ok).toBe(true);
+    expect(implEffort.ok).toBe(true);
+    expect(implEffort.queue.exec_defaults).toEqual({
+      impl_review_effort: 'xhigh',
+      impl_effort: 'max'
+    });
   });
 
   test('exec_defaults survive a reload; invalid persisted keys/values drop in normalize', () => {
     const store = createQueueStore();
     const r = store.setExecDefault(WS, {
       expected_revision: 0,
-      key: 'review_model',
+      key: 'spec_review_model',
       value: 'opus'
     });
     store.setExecDefault(WS, {
@@ -409,7 +474,7 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
 
     const restarted = createQueueStore();
     expect(restarted.load(WS).exec_defaults).toEqual({
-      review_model: 'opus',
+      spec_review_model: 'opus',
       orchestration_effort: 'high'
     });
 
@@ -417,12 +482,34 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
     raw.exec_defaults = {
       bogus_key: 'x',
-      orchestration_effort: 'ultra',
-      review_model: 'opus'
+      orchestration_effort: 'nope',
+      spec_review_model: 'opus'
     };
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
     const again = createQueueStore();
-    expect(again.load(WS).exec_defaults).toEqual({ review_model: 'opus' });
+    expect(again.load(WS).exec_defaults).toEqual({ spec_review_model: 'opus' });
+  });
+
+  test('a persisted review_model drops on load with no replacement (dotfiles-mqcj)', () => {
+    const store = createQueueStore();
+    store.setExecDefault(WS, {
+      expected_revision: 0,
+      key: 'orchestration_effort',
+      value: 'high'
+    });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.exec_defaults = {
+      review_model: 'codex',
+      orchestration_effort: 'high'
+    };
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    // The retired key has no enum entry, so it is dropped on load — it is NOT
+    // migrated into the per-step keys (no dual read, no fallback).
+    const loaded = createQueueStore().load(WS);
+    expect(loaded.exec_defaults).toEqual({ orchestration_effort: 'high' });
+    expect(loaded.exec_defaults.spec_review_model).toBeUndefined();
+    expect(loaded.exec_defaults.impl_review_model).toBeUndefined();
   });
 
   test('retired/stale exec defaults drop on load (worker-phase1 §3)', () => {

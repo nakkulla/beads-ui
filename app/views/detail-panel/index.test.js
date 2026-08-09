@@ -758,7 +758,43 @@ describe('views/detail-panel', () => {
         queue: [],
         done: [],
         attempts: {},
-        exec_defaults: { review_model: 'opus' }
+        exec_defaults: { spec_review_model: 'opus' },
+        runner_catalog: {
+          runners: {
+            claude: {
+              command: 'claude',
+              models: {
+                opus: { id: 'opus' },
+                sonnet: { id: 'sonnet' },
+                haiku: { id: 'haiku' },
+                fable: { id: 'fable' }
+              },
+              efforts: ['low', 'medium', 'high', 'xhigh'],
+              default_model: 'opus'
+            },
+            codex: {
+              command: 'codex',
+              models: {
+                sol: { id: 'gpt-5.6-sol' },
+                terra: { id: 'gpt-5.6-terra' },
+                luna: {
+                  id: 'gpt-5.6-luna',
+                  efforts: ['low', 'medium', 'high', 'xhigh', 'max']
+                }
+              },
+              efforts: ['minimal', 'low', 'medium', 'high', 'xhigh']
+            }
+          },
+          model_index: {
+            opus: 'claude',
+            sonnet: 'claude',
+            haiku: 'claude',
+            fable: 'claude',
+            sol: 'codex',
+            terra: 'codex',
+            luna: 'codex'
+          }
+        }
       })
     );
     const panel = createDetailPanel(mount, {
@@ -778,18 +814,33 @@ describe('views/detail-panel', () => {
     });
     panel.load('UI-1');
 
-    // Global review_model default surfaces as the `(기본: opus — 전역)` label.
+    // Global spec_review_model default surfaces as `(기본: opus — 전역)`.
     const review = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('select[data-key="review_model"]')
+      mount.querySelector('select[data-key="spec_review_model"]')
     );
     expect(review.options[0].textContent).toContain('기본: opus');
-    // The model catalog is the claude one; the retired runner row is gone.
+    // The snapshot's runner_catalog drives the grouped model selector.
     const model = /** @type {HTMLSelectElement} */ (
       mount.querySelector('select[data-key="orchestration_model"]')
     );
     const opts = Array.from(model.options).map((o) => o.value);
-    expect(opts).toEqual(['', 'opus', 'sonnet', 'haiku', 'fable']);
+    expect(opts).toEqual([
+      '',
+      'opus',
+      'sonnet',
+      'haiku',
+      'fable',
+      'sol',
+      'terra',
+      'luna'
+    ]);
+    expect(
+      Array.from(model.querySelectorAll('optgroup')).map((g) =>
+        g.getAttribute('label')
+      )
+    ).toEqual(['claude', 'codex']);
     expect(mount.querySelector('select[data-key="worker_runner"]')).toBe(null);
+    expect(mount.querySelector('select[data-key="review_model"]')).toBe(null);
 
     panel.destroy();
   });

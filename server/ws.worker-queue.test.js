@@ -476,7 +476,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     sock.sent = [];
 
     await send(sock, 'm1', 'worker-queue-set-exec-default', {
-      key: 'review_model',
+      key: 'spec_review_model',
       value: 'codex',
       expected_revision: 0
     });
@@ -485,34 +485,34 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     expect(reply.payload.applied).toBe(true);
     expect(reply.payload.conflict).toBe(false);
     expect(reply.payload.queue.revision).toBe(1);
-    expect(reply.payload.queue.exec_defaults.review_model).toBe('codex');
+    expect(reply.payload.queue.exec_defaults.spec_review_model).toBe('codex');
 
     const snaps = queueSnapshots(sock);
     expect(snaps.length).toBe(1);
-    expect(snaps.at(-1).exec_defaults.review_model).toBe('codex');
+    expect(snaps.at(-1).exec_defaults.spec_review_model).toBe('codex');
   });
 
   test('unset (null) deletes the key', async () => {
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     await send(sock, 'm1', 'worker-queue-set-exec-default', {
-      key: 'review_model',
+      key: 'spec_review_model',
       value: 'codex',
       expected_revision: 0
     });
     sock.sent = [];
 
     await send(sock, 'm2', 'worker-queue-set-exec-default', {
-      key: 'review_model',
+      key: 'spec_review_model',
       value: null,
       expected_revision: 1
     });
     const reply = replyFor(sock, 'm2');
     expect(reply.payload.applied).toBe(true);
     expect(reply.payload.queue.revision).toBe(2);
-    expect(reply.payload.queue.exec_defaults.review_model).toBeUndefined();
+    expect(reply.payload.queue.exec_defaults.spec_review_model).toBeUndefined();
     expect(
-      queueSnapshots(sock).at(-1).exec_defaults.review_model
+      queueSnapshots(sock).at(-1).exec_defaults.spec_review_model
     ).toBeUndefined();
   });
 
@@ -541,7 +541,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     sock.sent = [];
 
     await send(sock, 'm1', 'worker-queue-set-exec-default', {
-      key: 'review_model',
+      key: 'spec_review_model',
       value: 'not-a-runner',
       expected_revision: 0
     });
@@ -551,7 +551,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     expect(reply.payload.conflict).toBe(false);
     // Store unchanged: revision still 0, key absent.
     expect(reply.payload.queue.revision).toBe(0);
-    expect(reply.payload.queue.exec_defaults.review_model).toBeUndefined();
+    expect(reply.payload.queue.exec_defaults.spec_review_model).toBeUndefined();
     // No fanout on a rejected mutation.
     expect(queueSnapshots(sock).length).toBe(0);
   });
@@ -593,7 +593,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     await send(sock, 'm1', 'worker-queue-set-exec-default', {
-      key: 'review_model',
+      key: 'spec_review_model',
       value: 'codex',
       expected_revision: 0
     });
@@ -601,7 +601,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
 
     // A second client still thinks revision is 0.
     await send(sock, 'm2', 'worker-queue-set-exec-default', {
-      key: 'review_model',
+      key: 'spec_review_model',
       value: 'claude',
       expected_revision: 0
     });
@@ -611,7 +611,7 @@ describe('ws worker-queue-set-exec-default [Phase 2]', () => {
     expect(reply.payload.conflict).toBe(true);
     // Current snapshot returned so the client can re-sync + retry.
     expect(reply.payload.queue.revision).toBe(1);
-    expect(reply.payload.queue.exec_defaults.review_model).toBe('codex');
+    expect(reply.payload.queue.exec_defaults.spec_review_model).toBe('codex');
     // No fanout snapshot on conflict.
     expect(queueSnapshots(sock).length).toBe(0);
   });

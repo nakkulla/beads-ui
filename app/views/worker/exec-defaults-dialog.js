@@ -3,16 +3,14 @@ import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import {
   DEFAULT_LABELS,
-  EFFORTS,
-  IMPL_MODELS,
-  MODELS,
-  REVIEW_MODELS
+  execSettingRows,
+  selectOptionsTemplate
 } from '../detail-panel/exec-settings.js';
 import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 
 /**
  * Worker-tab "전역 실행 설정" dialog: the single editing surface for the
- * workspace-global exec defaults (the 4 exec keys, NOT workflow_mode). It mirrors
+ * workspace-global exec defaults (the 10 exec keys, NOT workflow_mode). It mirrors
  * the display-settings dialog's native `<dialog>` shell (showModal/jsdom fallback,
  * close/cancel handling, destroy) and the Worker view's CAS contract:
  * a change sends `worker-queue-set-exec-default` with the current queue revision,
@@ -20,10 +18,10 @@ import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
  * against the fresh revision on a CAS conflict.
  *
  * Values resolve bead metadata > this global default > final fallback (`opus`
- * for orchestration_model, unset for the other 3), so selecting `(기본)` records
- * an unset (null) — the store drops the key. A stored value
- * outside the current catalog (e.g. a codex model left over from before the
- * claude-only change) shows as its own selected `(비호환)` option, still
+ * for orchestration_model, unset for the other 9), so selecting `(기본)` records
+ * an unset (null) — the store drops the key. A stored value outside the current
+ * vocabulary (e.g. a model dropped from `config.toml`, or an effort the chosen
+ * model does not accept) shows as its own selected `(비호환)` option, still
  * resettable to `(기본)`.
  *
  * Below the editing form the dialog also renders the read-only 「검증·배포 설정」
@@ -112,14 +110,6 @@ const DETAIL_MAX = 160;
 function truncateDetail(text) {
   return text.length > DETAIL_MAX ? `${text.slice(0, DETAIL_MAX)}…` : text;
 }
-
-/** The 4 workspace-global exec keys, in display order (workflow_mode excluded). */
-const EXEC_ROWS = [
-  { key: 'orchestration_model', values: () => MODELS },
-  { key: 'orchestration_effort', values: () => EFFORTS },
-  { key: 'review_model', values: () => REVIEW_MODELS },
-  { key: 'impl_model', values: () => IMPL_MODELS }
-];
 
 /**
  * Create the exec-defaults dialog (native `<dialog>`).
@@ -217,40 +207,49 @@ export function createExecDefaultsDialog(mount_element, options) {
   }
 
   /**
-   * @param {string} key
-   * @param {string[]} values
-   * @param {string} selected
+   * The snapshot's `runner_catalog` decoration — the source of the grouped model
+   * options and the per-model effort lists. Absent on a pre-snapshot or legacy
+   * queue, which the shared row builder degrades fail-quiet.
+   *
+   * @returns {any}
+   */
+  function currentCatalog() {
+    return currentQueue().runner_catalog ?? null;
+  }
+
+  /**
+   * One global exec-default row. The option model comes from the SAME
+   * `execSettingRows` the detail panel uses, so the two surfaces share the
+   * grouping, the per-model effort narrowing, the self/skip gate and the
+   * `(비호환)` rule instead of implementing them twice. This dialog edits the
+   * global layer itself, so `selected` and `effective` are the one value.
+   *
+   * @param {import('../detail-panel/exec-settings.js').ExecRow} row
    * @returns {import('lit-html').TemplateResult}
    */
-  function selectRow(key, values, selected) {
-    // A stored value that is not in the current catalog (an incompatible
-    // cross-key model, e.g. a codex model left over after the runner flipped to
-    // claude) renders as its OWN selected `(비호환)` option — never hidden
-    // behind `(기본)`. That both surfaces the real saved state and keeps the
-    // `(기본)` option a live target: selecting it fires a change that unsets.
-    const incompatible = Boolean(selected) && !values.includes(selected);
+  function selectRow(row) {
+    const { key } = row;
     return html`<div class="exec-defaults__row">
       <span class="exec-defaults__k">${key}</span>
       <select
         class="exec-defaults__sel"
         aria-label=${`전역 ${key}`}
         data-key=${key}
+        ?disabled=${row.disabled}
         @change=${(/** @type {Event} */ ev) =>
           void save(key, /** @type {HTMLSelectElement} */ (ev.target).value)}
       >
-        <option value="" ?selected=${!selected}>
-          ${DEFAULT_LABELS[key] || '(기본)'}
-        </option>
-        ${incompatible
-          ? html`<option value=${selected} ?selected=${true}>
-              ${selected} (비호환)
-            </option>`
-          : ''}
-        ${values.map(
-          (v) =>
-            html`<option value=${v} ?selected=${selected === v}>${v}</option>`
+        ${selectOptionsTemplate(
+          row.groups,
+          row.selected,
+          DEFAULT_LABELS[key] || '(기본)'
         )}
       </select>
+      ${row.runner
+        ? html`<span class="exec-defaults__runner" data-runner-for=${key}
+            >${row.runner}</span
+          >`
+        : ''}
     </div>`;
   }
 
@@ -535,6 +534,14 @@ export function createExecDefaultsDialog(mount_element, options) {
 
   function doRender() {
     const defaults = currentDefaults();
+    /** @param {string} key */
+    const valueOf = (key) =>
+      typeof defaults[key] === 'string' ? defaults[key] : '';
+    const rows = execSettingRows({
+      selectedOf: valueOf,
+      effectiveOf: valueOf,
+      runner_catalog: currentCatalog()
+    });
     render(
       html`
         <div class="exec-defaults__container">
@@ -555,9 +562,7 @@ export function createExecDefaultsDialog(mount_element, options) {
               …)'은 이 전역값도 미설정일 때 실제 적용되는 하드코딩·CLI·워크플로
               기본입니다.
             </p>
-            ${EXEC_ROWS.map((row) =>
-              selectRow(row.key, row.values(), defaults[row.key] || '')
-            )}
+            ${rows.map((row) => selectRow(row))}
             ${verifyDeploySection(currentWorkspaceInfo())}
             ${systemPromptSection()}
           </div>

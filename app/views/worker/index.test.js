@@ -116,6 +116,51 @@ function startOfToday() {
 }
 
 /**
+ * The `runner_catalog` decoration every real snapshot carries (UI-jrb3 §7) —
+ * the source the exec-defaults dialog renders its model selectors from.
+ *
+ * @returns {any}
+ */
+function catalogFixture() {
+  return {
+    runners: {
+      claude: {
+        command: 'claude',
+        models: {
+          opus: { id: 'opus' },
+          sonnet: { id: 'sonnet' },
+          haiku: { id: 'haiku' },
+          fable: { id: 'fable' }
+        },
+        efforts: ['low', 'medium', 'high', 'xhigh'],
+        default_model: 'opus'
+      },
+      codex: {
+        command: 'codex',
+        models: {
+          sol: { id: 'gpt-5.6-sol', efforts: ['low', 'medium', 'high'] },
+          terra: { id: 'gpt-5.6-terra', efforts: ['low', 'medium', 'high'] },
+          luna: {
+            id: 'gpt-5.6-luna',
+            efforts: ['low', 'medium', 'high', 'xhigh', 'max']
+          }
+        },
+        efforts: ['minimal', 'low', 'medium', 'high', 'xhigh']
+      }
+    },
+    model_index: {
+      opus: 'claude',
+      sonnet: 'claude',
+      haiku: 'claude',
+      fable: 'claude',
+      sol: 'codex',
+      terra: 'codex',
+      luna: 'codex'
+    }
+  };
+}
+
+/**
  * @param {Partial<any>} [over]
  * @returns {any}
  */
@@ -128,6 +173,7 @@ function queueOf(over = {}) {
     queue: [],
     done: [],
     attempts: {},
+    runner_catalog: catalogFixture(),
     ...over
   };
   // 완료 레인은 기간 필터를 타고 기본값이 '오늘'이다 (UI-d7pw §3.2). 픽스처의
@@ -2121,29 +2167,37 @@ describe('views/worker', () => {
 
     const dialog = openExecDefaults(mount);
     expect(dialog.hasAttribute('open')).toBe(true);
-    // The 5 exec keys render (workflow_mode is NOT a global default).
+    // The 10 exec keys render (workflow_mode is NOT a global default).
     for (const key of [
       'orchestration_model',
       'orchestration_effort',
-      'review_model',
-      'impl_model'
+      'spec_review_model',
+      'spec_review_effort',
+      'impl_review_model',
+      'impl_review_effort',
+      'plan_review_model',
+      'plan_review_effort',
+      'impl_model',
+      'impl_effort'
     ]) {
       expect(execSelect(dialog, key)).not.toBeNull();
     }
     expect(execSelect(dialog, 'workflow_mode')).toBeNull();
+    expect(execSelect(dialog, 'review_model')).toBeNull();
   });
 
   test('changing an exec-default select sends worker-queue-set-exec-default with the current revision', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(queueOf({ revision: 3 }));
-    const transport = vi
-      .fn()
-      .mockResolvedValue(
-        reply(
-          queueOf({ revision: 4, exec_defaults: { review_model: 'codex' } })
-        )
-      );
+    const transport = vi.fn().mockResolvedValue(
+      reply(
+        queueOf({
+          revision: 4,
+          exec_defaults: { spec_review_model: 'codex' }
+        })
+      )
+    );
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
@@ -2151,13 +2205,13 @@ describe('views/worker', () => {
     });
 
     const dialog = openExecDefaults(mount);
-    const sel = execSelect(dialog, 'review_model');
+    const sel = execSelect(dialog, 'spec_review_model');
     sel.value = 'codex';
     sel.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
-      key: 'review_model',
+      key: 'spec_review_model',
       value: 'codex',
       expected_revision: 3
     });
@@ -2167,7 +2221,7 @@ describe('views/worker', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
-      queueOf({ revision: 3, exec_defaults: { review_model: 'codex' } })
+      queueOf({ revision: 3, exec_defaults: { spec_review_model: 'codex' } })
     );
     const transport = vi
       .fn()
@@ -2179,14 +2233,14 @@ describe('views/worker', () => {
     });
 
     const dialog = openExecDefaults(mount);
-    const sel = execSelect(dialog, 'review_model');
+    const sel = execSelect(dialog, 'spec_review_model');
     expect(sel.value).toBe('codex');
     sel.value = '';
     sel.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
-      key: 'review_model',
+      key: 'spec_review_model',
       value: null,
       expected_revision: 3
     });
@@ -2205,7 +2259,10 @@ describe('views/worker', () => {
       })
       .mockResolvedValueOnce(
         reply(
-          queueOf({ revision: 6, exec_defaults: { review_model: 'codex' } })
+          queueOf({
+            revision: 6,
+            exec_defaults: { spec_review_model: 'codex' }
+          })
         )
       );
     createWorkerView(mount, {
@@ -2215,7 +2272,7 @@ describe('views/worker', () => {
     });
 
     const dialog = openExecDefaults(mount);
-    const sel = execSelect(dialog, 'review_model');
+    const sel = execSelect(dialog, 'spec_review_model');
     sel.value = 'codex';
     sel.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
@@ -2233,7 +2290,7 @@ describe('views/worker', () => {
         exec_defaults: {
           orchestration_model: 'sonnet',
           orchestration_effort: 'high',
-          review_model: 'opus',
+          spec_review_model: 'opus',
           impl_model: 'sonnet'
         }
       })
@@ -2248,11 +2305,11 @@ describe('views/worker', () => {
     expect(execSelect(dialog, 'orchestration_model').value).toBe('sonnet');
     expect(execSelect(dialog, 'worker_runner')).toBeNull();
     expect(execSelect(dialog, 'orchestration_effort').value).toBe('high');
-    expect(execSelect(dialog, 'review_model').value).toBe('opus');
+    expect(execSelect(dialog, 'spec_review_model').value).toBe('opus');
     expect(execSelect(dialog, 'impl_model').value).toBe('sonnet');
   });
 
-  test('the orchestration_model options are the claude catalog', () => {
+  test('the model options are the snapshot catalog, grouped by runner', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(queueOf({ exec_defaults: {} }));
@@ -2263,11 +2320,68 @@ describe('views/worker', () => {
     });
 
     const dialog = openExecDefaults(mount);
-    const opts = Array.from(
-      execSelect(dialog, 'orchestration_model').options
-    ).map((o) => o.value);
+    const model = execSelect(dialog, 'orchestration_model');
+    const opts = Array.from(model.options).map((o) => o.value);
     expect(opts).toContain('opus');
+    expect(opts).toContain('sol');
     expect(opts).not.toContain('gpt-5.6');
+    expect(
+      Array.from(model.querySelectorAll('optgroup')).map((g) =>
+        g.getAttribute('label')
+      )
+    ).toEqual(['claude', 'codex']);
+    // impl_model reuses the exact same catalog rendering.
+    expect(
+      Array.from(
+        execSelect(dialog, 'impl_model').querySelectorAll('optgroup')
+      ).map((g) => g.getAttribute('label'))
+    ).toEqual(['claude', 'codex']);
+  });
+
+  test('the effort options narrow to the selected model vocabulary', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        exec_defaults: { orchestration_model: 'luna', impl_model: 'sol' }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const dialog = openExecDefaults(mount);
+
+    expect(
+      Array.from(execSelect(dialog, 'orchestration_effort').options).map(
+        (o) => o.value
+      )
+    ).toContain('max');
+    expect(
+      Array.from(execSelect(dialog, 'impl_effort').options).map((o) => o.value)
+    ).toEqual(['', 'low', 'medium', 'high']);
+  });
+
+  test('a self/skip review model disables its paired effort select', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        exec_defaults: { spec_review_model: 'self', impl_review_model: 'codex' }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const dialog = openExecDefaults(mount);
+
+    expect(execSelect(dialog, 'spec_review_effort').disabled).toBe(true);
+    expect(execSelect(dialog, 'impl_review_effort').disabled).toBe(false);
   });
 
   test('an incompatible stored model shows as a selected (비호환) option, and (기본) still unsets it', async () => {
@@ -2324,9 +2438,9 @@ describe('views/worker', () => {
     const modelUnset = execSelect(dialog, 'orchestration_model').options[0];
     expect(modelUnset.value).toBe('');
     expect(modelUnset.textContent).toContain('기본: opus');
-    expect(execSelect(dialog, 'review_model').options[0].textContent).toContain(
-      '기본: codex'
-    );
+    expect(
+      execSelect(dialog, 'spec_review_model').options[0].textContent
+    ).toContain('기본: codex');
     expect(execSelect(dialog, 'impl_model').options[0].textContent).toContain(
       '티어 자동'
     );
@@ -2352,8 +2466,8 @@ describe('views/worker', () => {
     expect(
       dialog.querySelector('select[data-policy-key="drift_policy"]')
     ).toBeNull();
-    // The 4 exec rows survive.
-    expect(dialog.querySelectorAll('.exec-defaults__row').length).toBe(4);
+    // The 10 exec rows survive.
+    expect(dialog.querySelectorAll('.exec-defaults__row').length).toBe(10);
   });
 
   /**

@@ -38,9 +38,14 @@ let cached_catalog = null;
 /**
  * The process-wide resolved catalog (builtin defaults + `[runner]` overrides).
  *
+ * Exported since UI-jrb3: the exec-setting enums and the WS snapshot decoration
+ * need the SAME resolution the dispatch path uses, and a second `resolveCatalog`
+ * call would both repeat its warnings and let a mid-flight config edit hand the
+ * UI a vocabulary the launcher does not share.
+ *
  * @returns {ResolvedCatalog}
  */
-function activeCatalog() {
+export function runtimeCatalog() {
   if (!cached_catalog) {
     cached_catalog = resolveCatalog({
       overrides: getConfig().runner_overrides
@@ -63,7 +68,7 @@ function codexEntry(runner_name, deps) {
   if (runner_name !== 'codex') {
     return null;
   }
-  const catalog = deps.catalog || activeCatalog();
+  const catalog = deps.catalog || runtimeCatalog();
   return Object.prototype.hasOwnProperty.call(catalog.runners, 'codex')
     ? catalog.runners.codex
     : null;

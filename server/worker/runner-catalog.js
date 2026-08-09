@@ -370,6 +370,33 @@ export function modelRunner(catalog, model) {
 }
 
 /**
+ * Every effort level ANY model in the catalog accepts, first-seen order.
+ *
+ * This is the vocabulary for the settings that name an effort WITHOUT pinning
+ * the model it applies to — `impl_effort` is stored for a delegation leaf the
+ * session picks later, so validating it against one model would reject a value
+ * that is legal for the leaf actually chosen. A per-model check belongs to
+ * `modelEfforts` and is used wherever the model IS known.
+ *
+ * @param {ResolvedCatalog} catalog
+ * @returns {string[]}
+ */
+export function catalogEfforts(catalog) {
+  /** @type {string[]} */
+  const out = [];
+  for (const entry of Object.values(catalog.runners)) {
+    for (const model of Object.values(entry.models)) {
+      for (const effort of model.efforts ?? entry.efforts) {
+        if (!out.includes(effort)) {
+          out.push(effort);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Effort vocabulary accepted by `model`: its own list when it pins one, else
  * the owning runner's. An unknown model has no valid effort at all.
  *

@@ -322,7 +322,7 @@
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
-import { EXEC_SETTING_ENUMS } from './exec-enums.js';
+import { execSettingEnums } from './exec-enums.js';
 import { queueFilePath } from './state-paths.js';
 
 /**
@@ -698,12 +698,17 @@ function normalizeQueue(raw) {
   // A legacy queue.json carrying the retired workspace-global `merge_policy` /
   // `drift_policy` simply has no destination field here, so the keys are DROPPED
   // on load without error (worker-phase2 §9).
-  // Retired keys (`worker_runner`) and values outside the current catalog (the
-  // old codex `gpt-5.*` orchestration models) have no entry here, so they are
-  // dropped on load and the setting falls back to unset (spec §3).
+  // Retired keys (`worker_runner`, and `review_model` since dotfiles-mqcj) and
+  // values outside the current catalog (the old codex `gpt-5.*` orchestration
+  // models) have no entry here, so they are dropped on load and the setting
+  // falls back to unset (spec §3). A dropped `review_model` is NOT migrated into
+  // the per-step keys — the split contract has no dual read.
   if (isRecord(raw.exec_defaults)) {
+    // Resolved at CALL time, never at module load: the enum table is catalog-
+    // derived and the catalog is a config-file input.
+    const enums = execSettingEnums();
     for (const [key, value] of Object.entries(raw.exec_defaults)) {
-      const allowed = EXEC_SETTING_ENUMS[key];
+      const allowed = enums[key];
       if (allowed && typeof value === 'string' && allowed.includes(value)) {
         q.exec_defaults[key] = value;
       }
@@ -1594,7 +1599,7 @@ export function createQueueStore(options = {}) {
     setExecDefault(workspace, input) {
       const { expected_revision, key, value } = input;
       return applyMutation(workspace, expected_revision, (next) => {
-        const allowed = EXEC_SETTING_ENUMS[key];
+        const allowed = execSettingEnums()[key];
         if (!allowed) {
           return false;
         }

@@ -1,11 +1,16 @@
 /**
  * Worker exec settings — resolution order (worker-global-exec-defaults §3).
  *
- * The 4 exec keys (orchestration_model / orchestration_effort / review_model /
- * impl_model) resolve bead metadata > workspace global (queue store) > final
- * fallback. A non-enum value at any level falls through to the next level
- * instead of blocking. The final fallback is `opus` for orchestration_model
- * (worker-orchestration-model-default-opus) and unset for the other 3 keys.
+ * The 10 exec keys (orchestration_model / orchestration_effort, the three
+ * `*_review_model` + `*_review_effort` step pairs, and impl_model / impl_effort)
+ * resolve bead metadata > workspace global (queue store) > final fallback. A
+ * non-enum value at any level falls through to the next level instead of
+ * blocking. The final fallback is `opus` for orchestration_model
+ * (worker-orchestration-model-default-opus) and unset for the other 9 keys.
+ *
+ * The single `review_model` key is retired (dotfiles-mqcj): it is neither read
+ * nor used to seed the per-step keys, so a bead still carrying it resolves the
+ * same as one that never had it.
  *
  * The `merge_policy`/`drift_policy` axis is retired with the merge axis
  * (worker-phase2 §2): every session is PR-stop by construction and drift
@@ -18,8 +23,17 @@
  * vocabulary, which is per-model and therefore only knowable after the model
  * resolves.
  */
-import { IMPL_MODELS, REVIEW_MODELS } from './exec-enums.js';
-import { modelEfforts, modelRunner, resolveCatalog } from './runner-catalog.js';
+import {
+  PLAN_REVIEW_MODELS,
+  REVIEW_EFFORTS,
+  REVIEW_STEP_MODELS
+} from './exec-enums.js';
+import {
+  catalogEfforts,
+  modelEfforts,
+  modelRunner,
+  resolveCatalog
+} from './runner-catalog.js';
 
 /**
  * Hardcoded final fallback for `orchestration_model`: what dispatch runs when
@@ -88,43 +102,83 @@ function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
 }
 
 /**
- * Resolve the 4 exec settings for one dispatch, plus the runner they imply
- * (worker-global-exec-defaults; worker-multi-provider-runner §C).
+ * @typedef {{
+ *   model?: unknown,
+ *   effort?: unknown,
+ *   spec_review_model?: unknown,
+ *   spec_review_effort?: unknown,
+ *   impl_review_model?: unknown,
+ *   impl_review_effort?: unknown,
+ *   plan_review_model?: unknown,
+ *   plan_review_effort?: unknown,
+ *   impl_model?: unknown,
+ *   impl_effort?: unknown
+ * }} ExecBeadLayer
+ * @typedef {{
+ *   orchestration_model?: unknown,
+ *   orchestration_effort?: unknown,
+ *   spec_review_model?: unknown,
+ *   spec_review_effort?: unknown,
+ *   impl_review_model?: unknown,
+ *   impl_review_effort?: unknown,
+ *   plan_review_model?: unknown,
+ *   plan_review_effort?: unknown,
+ *   impl_model?: unknown,
+ *   impl_effort?: unknown
+ * }} ExecDefaultsLayer
+ */
+
+/**
+ * Resolve the 10 exec settings for one dispatch, plus the runner they imply
+ * (worker-global-exec-defaults; worker-multi-provider-runner §C; dotfiles-mqcj).
  *
  * Order is bead metadata > workspace-global default > final fallback.
  * `orchestration_model` alone has a hardcoded final fallback (`opus`) and
- * therefore never resolves to undefined; the other 3 keys still end at unset.
+ * therefore never resolves to undefined; the other 9 keys still end at unset.
  *
- * Two of the picks are catalog-driven: `orchestration_model` is validated
- * against every model name the catalog knows (across runners), and
- * `orchestration_effort` against the vocabulary of the model that actually
- * resolved — so a codex-only effort like `max` is accepted under `luna` and
- * rejected under `opus`. The returned `runner` is the reverse lookup of the
- * resolved model, never an independently-set key. `review_model`/`impl_model`
- * stay plain enum picks: their consumer is the workflow skill inside the
- * session, not the worker launcher.
+ * Four of the picks are catalog-driven. `orchestration_model` and `impl_model`
+ * are validated against every model name the catalog knows across runners (the
+ * codex short names pass through unexpanded — assembling a full model id is the
+ * adapter's job, not this one's). `orchestration_effort` is validated against
+ * the vocabulary of the model that ACTUALLY resolved, so a codex-only effort
+ * like `max` is accepted under `luna` and rejected under `opus`. `impl_effort`
+ * cannot be: it names a delegation leaf the session picks later, so it validates
+ * against the catalog-wide union and is stored as a pass-through.
+ *
+ * The returned `runner` is the reverse lookup of the resolved orchestration
+ * model, never an independently-set key. The six review keys are plain enum
+ * picks — their consumer is the workflow skill inside the session, not the
+ * worker launcher — with `plan_review_model` on the narrower vocabulary.
  *
  * `stamped_keys` is the list of METADATA key names whose bead value was absent
  * and whose resolved value came from the workspace-global default — i.e. the
  * exact keys dispatch should stamp onto the bead metadata (and revert on
- * terminate). Order is stable: orchestration_model, orchestration_effort,
- * review_model, impl_model.
+ * terminate). Order is FIXED and mirrors the pick order below:
+ * orchestration_model, orchestration_effort, spec_review_model,
+ * spec_review_effort, impl_review_model, impl_review_effort, plan_review_model,
+ * plan_review_effort, impl_model, impl_effort.
  *
- * The `bead` argument uses the BeadSnapshot field names (model/effort/
- * review_model/impl_model); `defaults` uses the exec_defaults metadata key
- * names (orchestration_model/orchestration_effort/review_model/impl_model).
+ * The `bead` argument uses the BeadSnapshot field names (`model`/`effort` for
+ * orchestration, the metadata name for everything else); `defaults` uses the
+ * exec_defaults metadata key names throughout.
  *
  * @param {{
- *   bead?: { model?: unknown, effort?: unknown, review_model?: unknown, impl_model?: unknown } | null,
- *   defaults?: { orchestration_model?: unknown, orchestration_effort?: unknown, review_model?: unknown, impl_model?: unknown } | null,
+ *   bead?: ExecBeadLayer | null,
+ *   defaults?: ExecDefaultsLayer | null,
  *   catalog?: ReturnType<typeof resolveCatalog>
  * }} input
  * @returns {{
  *   orchestration_model: string,
  *   orchestration_effort: string|undefined,
  *   runner: string,
- *   review_model: string|undefined,
+ *   spec_review_model: string|undefined,
+ *   spec_review_effort: string|undefined,
+ *   impl_review_model: string|undefined,
+ *   impl_review_effort: string|undefined,
+ *   plan_review_model: string|undefined,
+ *   plan_review_effort: string|undefined,
  *   impl_model: string|undefined,
+ *   impl_effort: string|undefined,
  *   stamped_keys: string[]
  * }}
  */
@@ -132,12 +186,13 @@ export function resolveExecSettings(input) {
   const bead = (input && input.bead) || {};
   const defaults = (input && input.defaults) || {};
   const catalog = (input && input.catalog) || defaultCatalog();
+  const model_names = Object.keys(catalog.model_index);
   /** @type {string[]} */
   const stamped_keys = [];
 
   const orchestration_model =
     pickLayered(
-      Object.keys(catalog.model_index),
+      model_names,
       bead.model,
       defaults.orchestration_model,
       'orchestration_model',
@@ -151,18 +206,60 @@ export function resolveExecSettings(input) {
     'orchestration_effort',
     stamped_keys
   );
-  const review_model = pickLayered(
-    REVIEW_MODELS,
-    bead.review_model,
-    defaults.review_model,
-    'review_model',
+  const spec_review_model = pickLayered(
+    REVIEW_STEP_MODELS,
+    bead.spec_review_model,
+    defaults.spec_review_model,
+    'spec_review_model',
+    stamped_keys
+  );
+  const spec_review_effort = pickLayered(
+    REVIEW_EFFORTS,
+    bead.spec_review_effort,
+    defaults.spec_review_effort,
+    'spec_review_effort',
+    stamped_keys
+  );
+  const impl_review_model = pickLayered(
+    REVIEW_STEP_MODELS,
+    bead.impl_review_model,
+    defaults.impl_review_model,
+    'impl_review_model',
+    stamped_keys
+  );
+  const impl_review_effort = pickLayered(
+    REVIEW_EFFORTS,
+    bead.impl_review_effort,
+    defaults.impl_review_effort,
+    'impl_review_effort',
+    stamped_keys
+  );
+  const plan_review_model = pickLayered(
+    PLAN_REVIEW_MODELS,
+    bead.plan_review_model,
+    defaults.plan_review_model,
+    'plan_review_model',
+    stamped_keys
+  );
+  const plan_review_effort = pickLayered(
+    REVIEW_EFFORTS,
+    bead.plan_review_effort,
+    defaults.plan_review_effort,
+    'plan_review_effort',
     stamped_keys
   );
   const impl_model = pickLayered(
-    IMPL_MODELS,
+    model_names,
     bead.impl_model,
     defaults.impl_model,
     'impl_model',
+    stamped_keys
+  );
+  const impl_effort = pickLayered(
+    catalogEfforts(catalog),
+    bead.impl_effort,
+    defaults.impl_effort,
+    'impl_effort',
     stamped_keys
   );
 
@@ -170,8 +267,14 @@ export function resolveExecSettings(input) {
     orchestration_model,
     orchestration_effort,
     runner,
-    review_model,
+    spec_review_model,
+    spec_review_effort,
+    impl_review_model,
+    impl_review_effort,
+    plan_review_model,
+    plan_review_effort,
     impl_model,
+    impl_effort,
     stamped_keys
   };
 }
