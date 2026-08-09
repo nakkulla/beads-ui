@@ -52,7 +52,7 @@
   - 무인 실행: claude `--permission-mode bypassPermissions`의 등가물로 `--dangerously-bypass-approvals-and-sandbox`(또는 동등한 `-c approval_policy=never -c sandbox_mode=danger-full-access` 조합 — 구현 시 설치된 CLI 버전에서 실측해 하나로 고정, §6 검증 항목).
   - resume 분기: `settings.resume_session_id` 존재 시 `codex exec resume <session_id> --json ...` (스펙 §D).
   - 시스템 프롬프트 채널: codex에는 `--append-system-prompt`가 없으므로 `applyPreamble()`의 계약 텍스트를 task 프롬프트 앞에 접두한 단일 positional 인자로 전달한다. claude 어댑터와 동일하게 조립 결과(`system_prompt`/`task_prompt`)를 argv와 함께 반환해 기록 경로가 재조립 없이 동일 소스를 읽게 한다(UI-rxp3 §3와 같은 원칙).
-  - env: `CLAUDE_HOOK_SUPPRESS`는 넣지 않는다. codex 쪽 훅 억제 필요가 실측되면 대응 키를 카탈로그 config `[runner.codex.env]`로 선언한다.
+  - env (리뷰 finding 1): `CLAUDE_HOOK_SUPPRESS`는 넣지 않는 대신 **`CODEX_SILENT=1`을 강제**한다 — dotfiles codex 훅(`stop-hook.sh`, `codex-input-watcher.sh`)이 이 변수를 소비해 세션 내부 codex 런치의 알림/훅을 억제하는 확인된 계약이며, claude 어댑터의 `CLAUDE_HOOK_SUPPRESS`와 등가물이다. 훅 비활성 CLI 플래그(`--disable hooks` 상당)가 설치된 codex CLI에 존재하면 argv에도 추가한다(§6 실측 항목 — env 소비는 확인됐으므로 플래그는 보강). buildArgv/env는 테스트 대상(§8).
 - `normalize(raw)` — codex JSONL 이벤트를 기존 `RunnerEvent`(`text`/`tool`/`result`)로 매핑:
   - 어시스턴트 메시지 아이템 → `{kind:'text'}`
   - 커맨드 실행 아이템 → `{kind:'tool', name:'shell', input:{command}}` (merge 가드가 소비)
@@ -88,6 +88,7 @@ codex: {
 - 어휘: 메타데이터/UI/카탈로그 키는 단축명(`sol` 등), 어댑터가 `models[<name>].id`로 전체 ID를 조립한다. claude 모델은 alias가 곧 CLI 값이므로 `id` 생략 시 키를 그대로 쓴다.
 - 모델별 `efforts`가 있으면 runner 전역 `efforts`보다 우선한다(luna의 `max` 지원 등 — 실측 검증 §6).
 - config 오버라이드: `~/.config/bdui/config.toml`의 `[runner.<name>]`/`[runner.<name>.models.<model>]`이 내장 값을 딥 머지로 오버라이드/확장한다(`server/config.js` 기존 smol-toml 파싱 경로에 편입). 파싱 실패·부분 비정합은 내장 카탈로그로 fail-quiet + 서버 로그 경고. 새 runner 섹션 선언만으로는 어댑터가 없으므로 디스패치 대상이 되지 않는다(어댑터 존재가 활성 조건).
+- **모델명 전역 유일성 (리뷰 finding 2)**: 딥 머지 완료 후 활성 runner 전체에 걸쳐 모델 키의 유일성을 검증한다. config가 다른 runner에 이미 존재하는 모델명을 추가하려 하면 **그 충돌 항목만 무시하고 경고 로그를 남긴다**(내장 카탈로그 우선, 선언 순서 무관 결정적). 모델→runner 역참조는 이 검증 통과 후에만 성립하므로 모호해질 수 없다. 유일성 검증은 테스트 대상(§8).
 - 스냅샷 제공: 워커 큐 WS 스냅샷(`workspace_info` 계열)에 resolved 카탈로그를 포함해 프론트가 셀렉터를 렌더한다. `app/views/detail-panel/exec-settings.js:11-15`의 로컬 enum 배열은 삭제한다(서버/프론트 이중 하드코딩 제거).
 
 ### C. exec 키와 해석 (`policy.js`, `exec-enums.js` 대체)
@@ -107,13 +108,19 @@ dotfiles-mqcj가 계약으로 확정할 키 어휘(본 스펙의 소비 전제):
 - `orchestration_effort`는 파생된 runner(모델별 efforts 우선)의 어휘로 검증하고, 비정합 값은 다음 층으로 fall-through, 최종 미해석 시 unset(현행과 동일: unset이면 effort 플래그 미전달).
 - 리뷰 3스텝·impl 키는 세션 내 스킬 소비용 pass-through로 현행 `review_model`/`impl_model`과 같은 지위를 유지하되 키 수만 늘어난다. 워커 launcher는 소비하지 않는다.
 - `launchSession`은 resolved `{runner, model, effort}`를 settings로 넘기고 `createRunner(runner)`로 스폰한다. attempt 레코드와 알림(`notify.js` attemptStarted)에 runner를 포함한다.
+- **scheduler의 runner 결정 경로 3곳 (리뷰 finding 3)** — codex 선택이 실제로 claude를 스폰하는 일이 없도록 각 경로의 runner 소스를 고정한다:
+  1. 일반 dispatch(`dispatch()`→`launchSession()`): `resolveExecSettings()` 결과의 runner(모델 역참조 파생).
+  2. external-PR 충돌 해소 relaunch: **직전 attempt의 `runner`** (없으면 exec 해석 결과).
+  3. resume·conflict·disposition(REVISE 수리) relaunch: **직전 attempt의 `runner`** — 세션 연속성(resume id는 해당 runner의 것)이 근거. `runner` 기록이 없는 레거시 attempt만 claude 폴백.
+  세 경로 각각 scheduler 수준 RED 테스트를 둔다(§8).
 
 ### D. 세션 라이브·세션 id·복구
 
 - transcript 경로·fd 직결 기록·tail-reader·WS(`subscribe-session-log`) 파이프라인은 **무변경 재사용**. codex 어댑터의 `normalize`가 같은 `RunnerEvent`를 내므로 라이브 드로어·usage 배지가 동일하게 동작한다.
 - attempt 레코드(`queue-store.js`)에 `runner` 필드를 추가한다(스냅샷 필드로 노출). `session_id`는 codex thread id를 같은 필드에 저장한다.
 - resume: `scheduler.js`의 resume 경로가 attempt의 `runner`로 어댑터를 선택하고, codex는 `codex exec resume <id>` argv 분기를 탄다. `session_id` 부재 시 거부(`no_session_id`) 로직은 현행 유지.
-- `session-monitor.js`: 재시작 복구 시 attempt의 `runner` 기록으로 spec을 선택한다. `runner` 기록이 없는 레거시 attempt만 `claudeSpec()` 기본값(`server/worker/session-monitor.js:61-62`의 고정 해소).
+- `session-monitor.js`: 재시작 복구 시 attempt의 `runner` 기록으로 spec을 선택한다. `runner` 기록이 없는 레거시 attempt만 `claudeSpec()` 기본값(`server/worker/session-monitor.js:61-62`의 고정 해소). `recoverRunningAttempts` 경로가 attempt의 `runner`를 monitor·replay에 전달한다.
+- **usage 추출의 어댑터 seam화 (리뷰 finding 4)**: 현재 `session-monitor.js`와 `usage-replay.js`가 claude 전용 `liftUsage`를 직접 import한다 — monitor spec 선택만 바꾸면 codex attempt의 재시작 전후 usage 복구가 누락된다. `liftUsage`를 `AdapterSpec`의 required 멤버로 승격하고(claude는 기존 구현 이동, codex는 §A의 usage 투영), monitor와 replay 모두 attempt의 `runner`로 해당 spec의 `liftUsage`를 선택한다. 라이브 경로(`normalize`)와 replay 경로가 같은 함수를 지나므로 복구 tally가 라이브와 드리프트할 수 없다는 기존 invariant(claude.js 주석)가 runner별로 유지된다.
 
 ### E. preamble·env 분기
 
@@ -157,6 +164,7 @@ bead 메타데이터 + 전역 기본값
 
 1. `codex exec --json`의 이벤트/필드 스키마(스레드 시작·아이템·턴 종료·usage 필드) — 실측 JSONL을 `server/worker/__fixtures__`에 캡처.
 2. 무인 실행 플래그 조합(`--dangerously-bypass-approvals-and-sandbox` vs `-c` 조합)과 승인 요청 이벤트의 실제 형태.
+2-1. 훅 비활성 CLI 플래그(`--disable hooks` 상당)의 존재 여부 — 존재하면 codex argv에 추가(`CODEX_SILENT=1` env는 실측 없이 확정, §4-A).
 3. `codex exec resume <id> --json` 동작과 resume 시 프롬프트 전달 방식.
 4. `-c model_reasoning_effort=` 허용 값, 특히 luna의 `max` 지원 여부(미지원이면 카탈로그에서 제외).
 5. worker-phase1 retire 사유(plan-save 훅 claude 전용)의 현재 영향: fast_track 강제 하에서 full_plan 진입 경로가 워커 세션에 존재하는지 확인하고, 존재하면 codex runner에서의 동작을 스펙 리뷰 시점에 dotfiles-mqcj와 정합.
@@ -170,16 +178,21 @@ bead 메타데이터 + 전역 기본값
 
 ## 8. Test scope
 
-RED-GREEN seam은 아래 경계로 한정한다(`tdd` 스킬 소비용):
+리뷰 finding 5에 따라 **진짜 RED seam**(변경 전 실패를 관측할 수 있는 것)과 **characterization 검사**(현행 구현에서 이미 통과 — 회귀 방지용, RED 아님)를 구분한다.
 
-1. **codex 어댑터 순수 함수** (`runner/codex.js`): 실측 fixture JSONL 입력 → `normalize`/`extractSessionId`/`extractShellCommand`/`detectQuestion`/`verdict`/usage 투영 출력. `claude.test.js` 패턴 재사용.
-2. **buildArgv**: 모델 단축명→전체 ID 변환, effort 플래그, resume 분기, 시스템 프롬프트 접두 결합, 무인 플래그.
-3. **카탈로그** (`runner-catalog.js`): 내장 기본값, config 딥 머지 오버라이드, 파싱 실패 fail-quiet, 모델별 efforts 우선.
-4. **policy 해석**: 모델→runner 파생, runner별 effort 검증·fall-through, `review_model` 부재(드롭) 확인, stamped_keys 불변.
-5. **queue-store**: attempt `runner` 필드 왕복, 레거시 `review_model` normalize 드롭.
-6. **session-monitor**: attempt runner 기록 기반 spec 선택, 레거시 폴백.
-7. **레지스트리**: `createRunner('codex')` 해석, 미지 이름 claude 폴백.
-8. 스폰 통합은 `fixture-spawn.js` 패턴으로 codex 가짜 스트림 재생 테스트 1본.
+### RED-GREEN seam (`tdd` 스킬 소비용)
+
+1. **codex 어댑터 순수 함수** (`runner/codex.js` 신설): 실측 fixture JSONL 입력 → `normalize`/`extractSessionId`/`extractShellCommand`/`detectQuestion`/`verdict`/usage 투영 출력. `claude.test.js` 패턴 재사용. (파일 부재가 RED.)
+2. **buildArgv/env**: 모델 단축명→전체 ID 변환, effort 플래그, resume 분기, 시스템 프롬프트 접두 결합, 무인 플래그, **`CODEX_SILENT=1` env 포함**(finding 1).
+3. **카탈로그** (`runner-catalog.js` 신설): 내장 기본값, config 딥 머지 오버라이드, 파싱 실패 fail-quiet, 모델별 efforts 우선, **머지 후 모델명 전역 유일성 검증·충돌 항목 무시+경고**(finding 2).
+4. **policy 해석**: codex 모델→runner 파생, runner별 effort 검증·fall-through — 현행 구현에는 codex 모델이 어휘에 없으므로 새 기대는 변경 전 실패한다.
+5. **scheduler runner 경로 3곳**(finding 3): 일반 dispatch가 resolved runner로 스폰, external-PR 충돌 relaunch·resume/disposition relaunch가 직전 attempt `runner`로 스폰 — 각각 codex attempt 기대로 RED 관측(현행은 무조건 claude 스폰).
+6. **usage seam**(finding 4): `usage-replay`·`session-monitor`가 attempt `runner`로 어댑터 `liftUsage`를 선택 — codex fixture replay에서 usage tally 복구 기대가 변경 전 실패한다.
+7. 스폰 통합은 `fixture-spawn.js` 패턴으로 codex 가짜 스트림 재생 테스트 1본.
+
+### characterization (RED 아님 — 회귀 방지)
+
+- attempt `runner` 필드 왕복(queue-store), `runner` 기록 없는 attempt의 claude 폴백(monitor·registry), 미지 runner 이름의 claude 폴백, 레거시 `review_model` normalize 드롭 — 현행 동작 보존 확인.
 
 프론트 셀렉터 렌더는 기존 테스트 관례(있는 범위)에 따르고, 스냅샷 카탈로그 전달은 ws 테스트로 검증한다.
 
