@@ -95,7 +95,8 @@ codex: {
 dotfiles-mqcj가 계약으로 확정할 키 어휘(본 스펙의 소비 전제):
 
 - `orchestration_model` / `orchestration_effort` — 크로스-프로바이더(카탈로그 전체 모델 어휘).
-- `spec_review_model` / `spec_review_effort`, `impl_review_model` / `impl_review_effort`, `plan_review_model` / `plan_review_effort` — 리뷰 3스텝 각각 `[codex, opus, fable, self, skip]` + effort. (`codex` 토큰의 의미·리뷰어 매핑은 계약 소유.)
+- `spec_review_model` / `spec_review_effort`, `impl_review_model` / `impl_review_effort` — 각각 `[codex, opus, fable, self, skip]`(= harness `review.options`) + effort.
+- `plan_review_model` / `plan_review_effort` — `[codex, fable, skip]`(= harness `plan_review.options`; `self`/`opus`는 계약 어휘에 없음) + effort. (`codex` 토큰의 의미·리뷰어 매핑은 계약 소유.)
 - `impl_model` / `impl_effort` — 구현 위임 tier.
 - **`review_model`은 폐기, 폴백 없음**: `EXEC_SETTING_ENUMS`에서 제거하고, `queue-store.js` normalize가 레거시 `worker_runner`/`gpt-5.6` 값과 같은 방식(`server/worker/queue-store.js:701-711`)으로 기존 저장값을 드롭한다. 기존 bead의 `review_model` 메타데이터는 무시된다(세션 내 스킬 소비도 계약 변경과 함께 종료 — dotfiles-mqcj).
 
