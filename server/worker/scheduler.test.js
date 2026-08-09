@@ -7325,6 +7325,65 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
     await flush();
   });
 
+  // Impl review 2026-08-10 finding 2: the trio is inherited TOGETHER — a prior
+  // codex attempt must never be relaunched with today's claude model.
+  test('inherits the prior attempt model and effort with its runner', async () => {
+    const env = extRunnerEnv({ model: 'opus', effort: 'low' });
+    seedSettledAttempt(env.store, 'prev-1', {
+      runner: 'codex',
+      model: 'sol',
+      effort: 'high'
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    expect(env.runner.settingsFor('X1').model).toBe('sol');
+    expect(env.runner.settingsFor('X1').effort).toBe('high');
+    const a =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(a.model).toBe('sol');
+    expect(a.effort).toBe('high');
+    await flush();
+  });
+
+  test('leaves the model unset when the inherited prior attempt recorded none', async () => {
+    const env = extRunnerEnv({ model: 'opus' });
+    seedSettledAttempt(env.store, 'prev-1', { runner: 'codex' });
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.settingsFor('X1').model).toBe(undefined);
+    await flush();
+  });
+
+  test('skips the orchestration stamps when the launch trio came from the prior attempt', async () => {
+    const env = extRunnerEnv({ model: null, effort: null });
+    seedSettledAttempt(env.store, 'prev-1', {
+      runner: 'codex',
+      model: 'sol',
+      effort: 'high'
+    });
+    env.store.setExecDefault(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      key: 'orchestration_model',
+      value: 'sonnet'
+    });
+    env.store.setExecDefault(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      key: 'spec_review_model',
+      value: 'opus'
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    const a =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(a.exec_stamped_keys).toEqual(['spec_review_model']);
+    expect(a.model).toBe('sol');
+    await flush();
+  });
+
   test('inherits the prior runner on a conflict relaunch', async () => {
     const env = setup({ config: { B1: {} }, slots: 1 });
     const rev = env.store.snapshot(WS).revision;

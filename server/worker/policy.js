@@ -34,6 +34,7 @@ import {
   modelRunner,
   resolveCatalog
 } from './runner-catalog.js';
+import { runtimeCatalog } from './runner/index.js';
 
 /**
  * Hardcoded final fallback for `orchestration_model`: what dispatch runs when
@@ -49,21 +50,17 @@ export const ORCHESTRATION_MODEL_FALLBACK = 'opus';
 const RUNNER_FALLBACK = 'claude';
 
 /**
- * Lazily-built builtin catalog for callers that pass no `catalog` — resolving
- * it is pure, but repeating it per dispatch would also repeat its warnings.
+ * Catalog for callers that pass no `catalog`: the process-wide RUNTIME catalog
+ * (builtin + `[runner]` config overrides), the same one `createRunner`, the
+ * enum table, and the WS snapshot resolve through (impl review 2026-08-10
+ * finding 1). A builtin-only default here would let the store accept and the UI
+ * offer a config-added model that dispatch then silently demotes to
+ * `opus`/claude.
  *
- * @type {ReturnType<typeof resolveCatalog> | null}
- */
-let default_catalog = null;
-
-/**
  * @returns {ReturnType<typeof resolveCatalog>}
  */
 function defaultCatalog() {
-  if (!default_catalog) {
-    default_catalog = resolveCatalog();
-  }
-  return default_catalog;
+  return runtimeCatalog();
 }
 
 /**

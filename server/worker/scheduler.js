@@ -2958,18 +2958,17 @@ export function createScheduler(deps) {
   }
 
   /**
-   * The runner recorded on the MOST RECENT attempt of `bead_id`, or null when
-   * the bead has no attempt or the last one predates the field.
+   * The MOST RECENT attempt of `bead_id`, or null when the bead has none.
    *
    * The store's attempt map is insertion-ordered by launch, so the last match is
-   * the latest attempt — and it is the latest one that says which CLI wrote the
-   * branch this bead's next session continues.
+   * the latest attempt — and it is the latest one that says which CLI (and which
+   * model) wrote the branch this bead's next session continues.
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @returns {string|null}
+   * @returns {any}
    */
-  function lastAttemptRunner(workspace, bead_id) {
+  function lastAttemptOf(workspace, bead_id) {
     /** @type {any} */
     let last = null;
     const attempts = deps.store.snapshot(workspace).attempts || {};
@@ -2979,9 +2978,7 @@ export function createScheduler(deps) {
         last = a;
       }
     }
-    return last && typeof last.runner === 'string' && last.runner.length > 0
-      ? last.runner
-      : null;
+    return last;
   }
 
   /**
@@ -3061,13 +3058,30 @@ export function createScheduler(deps) {
       bead: snap,
       defaults: deps.store.snapshot(workspace).exec_defaults
     });
-    // The RUNNER is the one field that does look back (§C-2). This dispatch
-    // resumes work an earlier session left in the SAME worktree, so the runner
-    // that wrote that branch is the one that should carry it forward — a
-    // re-derivation from today's model could hand a codex branch to claude.
-    // Only a bead with no recorded attempt at all falls through to the exec
-    // derivation.
-    const runner_name = lastAttemptRunner(workspace, bead_id) ?? exec.runner;
+    // The RUNNER — and with it the model/effort — does look back (§C-2, impl
+    // review 2026-08-10 finding 2). This dispatch resumes work an earlier
+    // session left in the SAME worktree, so the runner that wrote that branch
+    // carries it forward; and the trio is inherited TOGETHER, because splitting
+    // it hands one runner another runner's model (`codex -m opus`). An absent
+    // prior model/effort stays null — the runner's own CLI default, never a
+    // cross-runner substitute. Only a bead with no runner-recorded attempt at
+    // all falls through to the exec derivation.
+    const prior_attempt = lastAttemptOf(workspace, bead_id);
+    const inherit_prior =
+      prior_attempt !== null &&
+      typeof prior_attempt.runner === 'string' &&
+      prior_attempt.runner.length > 0;
+    const runner_name = inherit_prior ? prior_attempt.runner : exec.runner;
+    const launch_model = inherit_prior
+      ? typeof prior_attempt.model === 'string'
+        ? prior_attempt.model
+        : null
+      : (exec.orchestration_model ?? null);
+    const launch_effort = inherit_prior
+      ? typeof prior_attempt.effort === 'string'
+        ? prior_attempt.effort
+        : null
+      : (exec.orchestration_effort ?? null);
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
 
@@ -3091,7 +3105,16 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'guard_hook_install_failed' };
     }
 
-    const stamped_keys = exec.stamped_keys;
+    // When the launch trio came from the prior attempt, the orchestration pair
+    // resolved from today's globals was NOT applied — stamping it would write
+    // metadata claiming a model this dispatch is not running. The step-key
+    // stamps stay: the session's skills consume them regardless of runner.
+    const stamped_keys = inherit_prior
+      ? exec.stamped_keys.filter(
+          (key) =>
+            key !== 'orchestration_model' && key !== 'orchestration_effort'
+        )
+      : exec.stamped_keys;
     /** @type {Record<string, string>} */
     const exec_values = {};
     for (const key of stamped_keys) {
@@ -3121,8 +3144,8 @@ export function createScheduler(deps) {
         target_base: base,
         base_oid: null,
         runner: runner_name,
-        model: exec.orchestration_model ?? null,
-        effort: exec.orchestration_effort ?? null,
+        model: launch_model,
+        effort: launch_effort,
         workflow_mode_prior: prior,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values: stamped_keys.length > 0 ? exec_values : null,
@@ -3238,8 +3261,8 @@ export function createScheduler(deps) {
       target_base: base,
       base_oid: null,
       runner_name,
-      model: exec.orchestration_model ?? null,
-      effort: exec.orchestration_effort ?? null,
+      model: launch_model,
+      effort: launch_effort,
       prior_wf: prior,
       stamped_keys,
       wt_path:

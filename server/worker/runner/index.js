@@ -55,6 +55,16 @@ export function runtimeCatalog() {
 }
 
 /**
+ * Drop the cached runtime catalog so the next {@link runtimeCatalog} call
+ * re-reads the config file. Tests that point `BDUI_CONFIG_PATH` at a fixture
+ * config need this on both sides of the override, or the process-wide cache
+ * leaks one test's catalog into every later one.
+ */
+export function __resetRuntimeCatalogForTest() {
+  cached_catalog = null;
+}
+
+/**
  * The catalog's codex entry when `runner_name` asks for codex and the catalog
  * still carries it, else null — the single codex/claude judgement both
  * `createRunner` and `adapterSpec` resolve through. A config that drops the

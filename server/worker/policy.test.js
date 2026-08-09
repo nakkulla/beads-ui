@@ -372,3 +372,39 @@ describe('worker/policy runner derivation from the model catalog', () => {
     expect(r.runner).toBe('claude');
   });
 });
+
+describe('worker/policy default catalog = runtime catalog (impl review finding 1)', () => {
+  test('resolves a config-added model without an injected catalog', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { __resetRuntimeCatalogForTest } = await import('./runner/index.js');
+    const dir = mkdtempSync(join(tmpdir(), 'bdui-policy-catalog-'));
+    const config_path = join(dir, 'config.toml');
+    writeFileSync(
+      config_path,
+      '[runner.codex.models.nova]\nid = "gpt-5.7-nova"\nefforts = ["high"]\n'
+    );
+    const prev = process.env.BDUI_CONFIG_PATH;
+    process.env.BDUI_CONFIG_PATH = config_path;
+    __resetRuntimeCatalogForTest();
+    try {
+      const r = resolveExecSettings({
+        bead: { model: 'nova', effort: 'high' },
+        defaults: {}
+      });
+
+      expect(r.orchestration_model).toBe('nova');
+      expect(r.runner).toBe('codex');
+      expect(r.orchestration_effort).toBe('high');
+    } finally {
+      if (prev === undefined) {
+        delete process.env.BDUI_CONFIG_PATH;
+      } else {
+        process.env.BDUI_CONFIG_PATH = prev;
+      }
+      __resetRuntimeCatalogForTest();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
