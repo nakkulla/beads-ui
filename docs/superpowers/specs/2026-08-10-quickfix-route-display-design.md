@@ -37,13 +37,16 @@
   `WORKFLOW_META_ENUMS.route`가 2값이라, 핀된 quick_fix가 드롭다운에서 "(미설정
   · 추론)"으로 표시되고 quick_fix 쓰기는 `bad_request`로 거부된다
   (`server/ws/workflow-meta-mutation.test.js:107`이 거부를 단언).
-- **워커 dispatch는 이미 3중 fail-closed** (bead 범위 3항은 검증으로 종결):
-  `server/worker/runnable-cache.js:56` `RUNNABLE_ROUTES` 화이트리스트(후보
-  캐시에서 사전 제외), `server/worker/admission.js:53` `ADMISSIBLE_ROUTES`(큐
-  진입·tick·dispatch 재검사 3지점에서 `invalid_route` 거부),
-  `server/ws/mutation-handlers.js:195`(쓰기 게이트). 세 곳 모두 quick_fix 거부
-  테스트가 존재한다(`runnable-cache.test.js:136`, `admission.test.js:94,283`,
-  `workflow-meta-mutation.test.js:107`). 오배정 경로 없음.
+- **워커 dispatch는 워커 측 2중 화이트리스트로 fail-closed** (bead 범위 3항은
+  검증으로 종결): `server/worker/runnable-cache.js:56` `RUNNABLE_ROUTES`(후보
+  캐시에서 사전 제외)와 `server/worker/admission.js:53` `ADMISSIBLE_ROUTES`(큐
+  진입·tick·dispatch 재검사 3지점에서 `invalid_route` 거부). 두 곳 모두
+  quick_fix 거부 테스트가 존재한다(`runnable-cache.test.js:136`,
+  `admission.test.js:94,283`). 오배정 경로 없음. 참고: 쓰기 게이트
+  (`server/ws/mutation-handlers.js:195`)도 현재 quick_fix를 거부하지만
+  (`workflow-meta-mutation.test.js:107`), 본 스펙 §3.4가 그 enum을 의도적으로
+  열므로 dispatch 방어선으로 세지 않는다 — 오배정 방지는 워커 측 2중
+  화이트리스트가 전담한다.
 - **보드 레인은 status 기반**: `app/views/board/index.js:52-64` 컬럼 소속은
   전적으로 status로 결정되고 route는 읽지 않는다 — quick_fix bead는 이미 올바른
   컬럼에 뜬다. Bead 기재의 "레인 신설"은 실측상 불필요하며, 실제 작업은 칩·
@@ -69,8 +72,9 @@
 비목표:
 
 - 보드 레인(컬럼) 구조 변경 — status 기반 유지.
-- 워커 dispatch 로직 변경 — 3중 fail-closed 실측 확인으로 종결, 기존 거부
-  테스트가 회귀 가드로 유지된다.
+- 워커 dispatch 로직 변경 — 워커 측 2중 화이트리스트(runnable 사전 필터 +
+  admission 3지점 재검사) 실측 확인으로 종결, 그 두 곳의 거부 테스트가 회귀
+  가드로 유지된다.
 - admission 거부 사유 `invalid_route`의 어휘 변경 — quick_fix는
   `runnable-cache`에서 사전 필터되어 그 사유가 실전에서 노출될 경로가 없다.
 - monitor 표면 변경 — runnable 경로는 사전 필터로 quick_fix를 보지 않고, 그 외
@@ -103,6 +107,9 @@
 - `ROUTE_ORDER.quick_fix = ['impl', 'close']`.
 - `STAGE_CLASS.close = 'mrg'`(merge 색상 클래스 재사용 — CSS 무변경),
   `STAGE_LABEL.close = 'close'`.
+- 클라이언트 typedef 갱신: `stepper.js:19` `WorkflowSummary.route`와
+  `app/views/board/card.js:31` `BoardCardChips.route`의 2값 유니온에
+  `'quick_fix'` 추가.
 - 200행 coercion을 3값 조회로 교체:
   `const order = ROUTE_ORDER[workflow.route] || ROUTE_ORDER.spec_backed;`
 - `currentStageKey`·aria 라벨은 order 파생이라 자동 정합: in_progress에서 impl
@@ -123,14 +130,24 @@
 
 - `WORKFLOW_META_ENUMS.route`에 `'quick_fix'` 추가 — 드롭다운 쓰기 허용과 서버
   게이트를 동일 집합으로 유지한다. 계약 enum과 일치하므로 소비자 역할 안에
-  있다.
+  있다. 이 확장은 쓰기 게이트를 dispatch 방어선에서 의도적으로 제외하는
+  결정이다 — quick_fix 오배정 방지는 §1 실측대로 워커 측 2중 화이트리스트
+  (runnable 사전 필터 + admission)가 전담하며, 이 두 곳은 본 스펙에서 변경하지
+  않는다.
 
-### 3.5 워커 후보 사유 칩 — `app/views/worker/index.js`
+### 3.5 워커 후보 사유 칩 — `app/views/worker/index.js` + `app/views/worker/lanes.js`
 
-- `candidate_rows`(1693-1712행)에서 `hasSpec` 검사보다 먼저 route 분기:
-  `metadata.route === 'quick_fix'`이면 사유 `'quick_fix · 워커 비대상'`,
-  `eligible = false`(드래그 불가 유지). 그 외 route는 현행 `'spec 없음'` 경로
-  그대로.
+- `candidate_rows`(1693-1722행)에서 `has_spec`과 `eligible`을 분리한다:
+  `const has_spec = hasSpec(it)`은 원래 의미(spec_id 존재)를 보존해 row의
+  `has_spec` 필드(UI-ki09 후보 필터 입력, 166행 `filter.spec` 판정)에 그대로
+  넣고, `eligible = !is_quick_fix && has_spec`으로 드래그 가능성만 route를
+  반영한다 — spec_id가 남아 있는 quick_fix bead(계약 이탈)가 'spec 없음'
+  필터로 오분류되지 않도록.
+- 사유 칩: route가 quick_fix이면 `'quick_fix · 워커 비대상'`(spec 존재 여부
+  무관), 그 외 route는 현행 `'spec 없음'` 경로 그대로.
+- 비활성 카드 tooltip(`app/views/worker/lanes.js:395` 'spec이 없어 대기 큐에
+  넣을 수 없습니다')도 route 인지로 분기: quick_fix면 'quick_fix route는
+  워커 실행 대상이 아닙니다' 문구.
 
 ### 3.6 fail-quiet 경계
 
@@ -157,7 +174,10 @@ RED → GREEN seam (신규 동작):
 4. `server/ws/workflow-meta-mutation.test.js` — `route=quick_fix` 쓰기 수용
    (기존 107행 거부 단언을 수용 단언으로 교체).
 5. `app/views/worker/index.test.js` — quick_fix bead의 reason이
-   `'quick_fix · 워커 비대상'`, `eligible === false`.
+   `'quick_fix · 워커 비대상'`, `draggable === false`. spec_id가 남아 있는
+   quick_fix fixture(계약 이탈)로 `has_spec === true` 보존(후보 필터
+   오분류 없음)·reason·draggable을 함께 단언. tooltip route 분기는
+   `app/views/worker/lanes.test.js`.
 
 Characterization 갱신 (기존 단언의 표본 교체):
 
@@ -175,10 +195,12 @@ Characterization 갱신 (기존 단언의 표본 교체):
 - Pre-Handoff Validation: `npm run tsc` / `npm test` / `npm run lint` /
   `npm run prettier:write` / `npm run build`(+ 갱신된 `app/main.bundle.js`,
   `app/main.bundle.js.map` 포함).
-- 머지 후: `docs/agents/repo-ops.toml [deploy]` 자동 경로(`bdui-shared
-  restart`, detached)가 걸리는 [머지] 클릭 경로 사용 시 자동 재시작 후, 프로세스
-  경로·포트·HTTP 응답 검증. 수동 머지 시 AGENTS.md Post-Merge Runtime
-  Validation 절차 직접 수행.
+- 머지 후 (frontend 변경이므로 재빌드가 필수, 순서 고정): ① 머지된 `main`
+  checkout에서 `npm run build` 실행 → ② `bdui-shared restart` → ③ 프로세스
+  경로·포트·HTTP 응답 검증. `[deploy]` 자동 경로([머지] 클릭 시 `bdui-shared
+  restart`, detached)는 restart만 수행하고 재빌드를 하지 않으므로, 자동
+  재시작이 먼저 발생했더라도 ①→②→③을 이 순서로 재실행한다. 수동 머지 시에도
+  동일 절차(AGENTS.md Post-Merge Runtime Validation).
 - 표시 확인: route가 quick_fix로 핀된 실제 bead 1건으로 보드 칩(`quick_fix`,
   추론 마커 없음)·2셀 stepper·상세 패널(영수증 행 부재, 드롭다운 quick_fix
   선택 표시)·워커 후보 사유 칩을 브라우저에서 확인.
