@@ -78,7 +78,7 @@ describe('parseTranscript — codex-success.jsonl (real fixture)', () => {
 
   test('maps agent_message → assistant text and turn.completed → result', () => {
     const asst = lines.find((l) => l.kind === 'assistant');
-    expect(asst?.text).toBe('pong');
+    expect(asst?.text).toBe('DONE');
     const result = lines.filter((l) => l.kind === 'result');
     expect(result).toHaveLength(1);
     expect(result[0].success).toBe(true);
@@ -92,7 +92,7 @@ describe('parseTranscript — codex-failure.jsonl (real fixture)', () => {
     const errors = lines.filter((l) => l.kind === 'error');
     expect(errors.length).toBeGreaterThanOrEqual(1);
     expect(
-      errors.some((l) => (l.text || '').includes('gpt-5.1-codex-mini'))
+      errors.some((l) => (l.text || '').includes('invalid_enum_value'))
     ).toBe(true);
   });
 

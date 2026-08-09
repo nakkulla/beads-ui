@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import * as policy from './policy.js';
 import { resolveExecSettings } from './policy.js';
+import { resolveCatalog } from './runner-catalog.js';
 
 describe('worker/policy merge axis removal', () => {
   test('exports no merge/drift policy surface', () => {
@@ -149,5 +150,118 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.review_model).toBe('skip');
     expect(r.impl_model).toBe('haiku');
     expect(r.stamped_keys).toEqual(['impl_model']);
+  });
+});
+
+describe('worker/policy runner derivation from the model catalog', () => {
+  test('derives claude for the hardcoded model fallback', () => {
+    const r = resolveExecSettings({ bead: {}, defaults: {} });
+
+    expect(r.orchestration_model).toBe('opus');
+    expect(r.runner).toBe('claude');
+  });
+
+  test('accepts a codex model and derives the codex runner', () => {
+    const r = resolveExecSettings({ bead: { model: 'sol' }, defaults: {} });
+
+    expect(r.orchestration_model).toBe('sol');
+    expect(r.runner).toBe('codex');
+    expect(r.stamped_keys).toEqual([]);
+  });
+
+  test('derives the codex runner from a workspace-global codex model', () => {
+    const r = resolveExecSettings({
+      bead: {},
+      defaults: { orchestration_model: 'terra' }
+    });
+
+    expect(r.orchestration_model).toBe('terra');
+    expect(r.runner).toBe('codex');
+    expect(r.stamped_keys).toEqual(['orchestration_model']);
+  });
+
+  test('falls back to opus on claude for an unknown model', () => {
+    const r = resolveExecSettings({
+      bead: { model: 'grok4' },
+      defaults: {}
+    });
+
+    expect(r.orchestration_model).toBe('opus');
+    expect(r.runner).toBe('claude');
+  });
+
+  test('accepts the per-model max effort luna alone allows', () => {
+    const r = resolveExecSettings({
+      bead: { model: 'luna', effort: 'max' },
+      defaults: {}
+    });
+
+    expect(r.orchestration_model).toBe('luna');
+    expect(r.runner).toBe('codex');
+    expect(r.orchestration_effort).toBe('max');
+  });
+
+  test('leaves the effort unset when the resolved model rejects it', () => {
+    const r = resolveExecSettings({
+      bead: { model: 'sol', effort: 'max' },
+      defaults: {}
+    });
+
+    expect(r.orchestration_model).toBe('sol');
+    expect(r.orchestration_effort).toBe(undefined);
+    expect(r.stamped_keys).toEqual([]);
+  });
+
+  test('falls the effort through to the global when the model rejects the bead value', () => {
+    const r = resolveExecSettings({
+      bead: { model: 'sol', effort: 'max' },
+      defaults: { orchestration_effort: 'xhigh' }
+    });
+
+    expect(r.orchestration_effort).toBe('xhigh');
+    expect(r.stamped_keys).toEqual([]);
+  });
+
+  test('validates the effort against the resolved model, not the bead model', () => {
+    const r = resolveExecSettings({
+      bead: { effort: 'minimal' },
+      defaults: {}
+    });
+
+    // `minimal` belongs to the codex runner-wide list; the resolved model is
+    // claude/opus, so it is not a valid effort here.
+    expect(r.orchestration_effort).toBe(undefined);
+  });
+
+  test('resolves a config-added model from an injected catalog', () => {
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: { models: { nova: { id: 'gpt-5.7-nova', efforts: ['max'] } } }
+      },
+      warn: () => {}
+    });
+
+    const r = resolveExecSettings({
+      bead: { model: 'nova', effort: 'max' },
+      defaults: {},
+      catalog
+    });
+
+    expect(r.orchestration_model).toBe('nova');
+    expect(r.runner).toBe('codex');
+    expect(r.orchestration_effort).toBe('max');
+  });
+
+  test('rejects a model absent from the injected catalog', () => {
+    const catalog = resolveCatalog({ active: ['claude'] });
+
+    const r = resolveExecSettings({
+      bead: { model: 'sol' },
+      defaults: {},
+      catalog
+    });
+
+    expect(r.orchestration_model).toBe('opus');
+    expect(r.runner).toBe('claude');
   });
 });

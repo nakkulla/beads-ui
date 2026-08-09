@@ -1,4 +1,7 @@
-{"type":"thread.started","thread_id":"019f658d-e031-7a91-bac0-9a9c6ced0557"}
+{"type":"thread.started","thread_id":"019fe700-4fd3-7990-89a9-3b9896824273"}
 {"type":"turn.started"}
-{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"pong"}}
-{"type":"turn.completed","usage":{"input_tokens":16418,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"**Executing command and finishing**"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'echo hello-fixture'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'echo hello-fixture'","aggregated_output":"hello-fixture\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"DONE"}}
+{"type":"turn.completed","usage":{"input_tokens":34610,"cached_input_tokens":16128,"cache_write_input_tokens":0,"output_tokens":62,"reasoning_output_tokens":13}}

@@ -264,6 +264,25 @@ function normalizeWorkerNotify(parsed) {
 }
 
 /**
+ * Hand the raw `[runner]` section through untouched (worker-multi-provider-runner
+ * §B). Validation and the deep merge onto the builtin catalog belong to
+ * `server/worker/runner-catalog.js`, which is the only consumer and owns the
+ * fail-quiet rules; duplicating them here would split that judgement across two
+ * files. Anything that is not a table is replaced by `{}` so the consumer always
+ * receives an object.
+ *
+ * @param {any} parsed
+ * @returns {Record<string, unknown>}
+ */
+function readRunnerOverrides(parsed) {
+  const section = parsed?.runner;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return {};
+  }
+  return section;
+}
+
+/**
  * Normalize the top-level `poll_interval_seconds` setting (spec §7). Governs the
  * server-side periodic list-refresh poller: default 30, an explicit `0` disables
  * polling, and any missing / non-numeric / negative value falls back to the
@@ -290,7 +309,8 @@ function normalizePollIntervalSeconds(value) {
  *   poll_interval_seconds: number,
  *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
  *   worker_deploy: Record<string, { cmd: string[], timeout_ms: number, detached: boolean }>,
- *   worker_notify: { enabled: boolean, cmd: string[] }
+ *   worker_notify: { enabled: boolean, cmd: string[] },
+ *   runner_overrides: Record<string, unknown>
  * }}
  */
 function readRuntimeConfig(config_path) {
@@ -327,7 +347,8 @@ function readRuntimeConfig(config_path) {
       ),
       worker_verify: normalizeWorkerVerify(parsed),
       worker_deploy: normalizeWorkerDeploy(parsed),
-      worker_notify: normalizeWorkerNotify(parsed)
+      worker_notify: normalizeWorkerNotify(parsed),
+      runner_overrides: readRunnerOverrides(parsed)
     };
   } catch (error) {
     if (
@@ -349,7 +370,8 @@ function readRuntimeConfig(config_path) {
       poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
       worker_verify: {},
       worker_deploy: {},
-      worker_notify: { enabled: false, cmd: DEFAULT_NOTIFY_CMD.slice() }
+      worker_notify: { enabled: false, cmd: DEFAULT_NOTIFY_CMD.slice() },
+      runner_overrides: {}
     };
   }
 }
@@ -380,7 +402,8 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *   poll_interval_seconds: number,
  *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
  *   worker_deploy: Record<string, { cmd: string[], timeout_ms: number, detached: boolean }>,
- *   worker_notify: { enabled: boolean, cmd: string[] }
+ *   worker_notify: { enabled: boolean, cmd: string[] },
+ *   runner_overrides: Record<string, unknown>
  * }}
  */
 export function getConfig() {

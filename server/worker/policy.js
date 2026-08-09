@@ -11,8 +11,15 @@
  * (worker-phase2 §2): every session is PR-stop by construction and drift
  * behaviour is fixed at the contract default (auto_rereview), so neither is a
  * per-dispatch choice any more.
+ *
+ * The runner is NOT a separate axis either — it is DERIVED from the resolved
+ * `orchestration_model` through the catalog's globally-unique model names
+ * (worker-multi-provider-runner §C). That derivation also fixes the effort
+ * vocabulary, which is per-model and therefore only knowable after the model
+ * resolves.
  */
-import { EFFORTS, IMPL_MODELS, MODELS, REVIEW_MODELS } from './exec-enums.js';
+import { IMPL_MODELS, REVIEW_MODELS } from './exec-enums.js';
+import { modelEfforts, modelRunner, resolveCatalog } from './runner-catalog.js';
 
 /**
  * Hardcoded final fallback for `orchestration_model`: what dispatch runs when
@@ -23,6 +30,27 @@ import { EFFORTS, IMPL_MODELS, MODELS, REVIEW_MODELS } from './exec-enums.js';
  * MIRROR: app/views/detail-panel/exec-settings.js DEFAULT_LABELS.
  */
 export const ORCHESTRATION_MODEL_FALLBACK = 'opus';
+
+/** Runner the hardcoded model fallback belongs to. */
+const RUNNER_FALLBACK = 'claude';
+
+/**
+ * Lazily-built builtin catalog for callers that pass no `catalog` — resolving
+ * it is pure, but repeating it per dispatch would also repeat its warnings.
+ *
+ * @type {ReturnType<typeof resolveCatalog> | null}
+ */
+let default_catalog = null;
+
+/**
+ * @returns {ReturnType<typeof resolveCatalog>}
+ */
+function defaultCatalog() {
+  if (!default_catalog) {
+    default_catalog = resolveCatalog();
+  }
+  return default_catalog;
+}
 
 /**
  * @param {ReadonlyArray<string>} allowed
@@ -60,14 +88,21 @@ function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
 }
 
 /**
- * Resolve the 4 exec settings for one dispatch (worker-global-exec-defaults;
- * runner axis retired by worker-phase1 §4).
+ * Resolve the 4 exec settings for one dispatch, plus the runner they imply
+ * (worker-global-exec-defaults; worker-multi-provider-runner §C).
  *
- * Order is bead metadata > workspace-global default > final fallback. All four
- * keys are plain enum-hierarchy picks — with claude as the only runner there is
- * no runner-dependent model catalog to reconcile. `orchestration_model` alone
- * has a hardcoded final fallback (`opus`) and therefore never resolves to
- * undefined; the other 3 keys still end at unset.
+ * Order is bead metadata > workspace-global default > final fallback.
+ * `orchestration_model` alone has a hardcoded final fallback (`opus`) and
+ * therefore never resolves to undefined; the other 3 keys still end at unset.
+ *
+ * Two of the picks are catalog-driven: `orchestration_model` is validated
+ * against every model name the catalog knows (across runners), and
+ * `orchestration_effort` against the vocabulary of the model that actually
+ * resolved — so a codex-only effort like `max` is accepted under `luna` and
+ * rejected under `opus`. The returned `runner` is the reverse lookup of the
+ * resolved model, never an independently-set key. `review_model`/`impl_model`
+ * stay plain enum picks: their consumer is the workflow skill inside the
+ * session, not the worker launcher.
  *
  * `stamped_keys` is the list of METADATA key names whose bead value was absent
  * and whose resolved value came from the workspace-global default — i.e. the
@@ -81,11 +116,13 @@ function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
  *
  * @param {{
  *   bead?: { model?: unknown, effort?: unknown, review_model?: unknown, impl_model?: unknown } | null,
- *   defaults?: { orchestration_model?: unknown, orchestration_effort?: unknown, review_model?: unknown, impl_model?: unknown } | null
+ *   defaults?: { orchestration_model?: unknown, orchestration_effort?: unknown, review_model?: unknown, impl_model?: unknown } | null,
+ *   catalog?: ReturnType<typeof resolveCatalog>
  * }} input
  * @returns {{
  *   orchestration_model: string,
  *   orchestration_effort: string|undefined,
+ *   runner: string,
  *   review_model: string|undefined,
  *   impl_model: string|undefined,
  *   stamped_keys: string[]
@@ -94,19 +131,21 @@ function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
 export function resolveExecSettings(input) {
   const bead = (input && input.bead) || {};
   const defaults = (input && input.defaults) || {};
+  const catalog = (input && input.catalog) || defaultCatalog();
   /** @type {string[]} */
   const stamped_keys = [];
 
   const orchestration_model =
     pickLayered(
-      MODELS,
+      Object.keys(catalog.model_index),
       bead.model,
       defaults.orchestration_model,
       'orchestration_model',
       stamped_keys
     ) ?? ORCHESTRATION_MODEL_FALLBACK;
+  const runner = modelRunner(catalog, orchestration_model) ?? RUNNER_FALLBACK;
   const orchestration_effort = pickLayered(
-    EFFORTS,
+    modelEfforts(catalog, orchestration_model),
     bead.effort,
     defaults.orchestration_effort,
     'orchestration_effort',
@@ -130,6 +169,7 @@ export function resolveExecSettings(input) {
   return {
     orchestration_model,
     orchestration_effort,
+    runner,
     review_model,
     impl_model,
     stamped_keys
