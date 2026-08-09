@@ -176,6 +176,59 @@ describe('worker/usage-replay (UI-ediw)', () => {
     expect(usage_store.get('/ws', 'a1')).toBe(null);
   });
 
+  test('lifts a codex turn total when the attempt ran on codex', () => {
+    const usage_store = createUsageStore();
+
+    const replayed = replayUsage({
+      session_log: fakeSessionLog([
+        {
+          type: 'turn.completed',
+          usage: {
+            input_tokens: 34610,
+            cached_input_tokens: 16128,
+            cache_write_input_tokens: 0,
+            output_tokens: 62
+          }
+        }
+      ]),
+      usage_store,
+      workspace: '/ws',
+      attempt_id: 'a1',
+      runner: 'codex'
+    });
+
+    expect(replayed).toBe(true);
+    expect(usage_store.get('/ws', 'a1')).toMatchObject({
+      input_tokens: 34610,
+      output_tokens: 62,
+      cache_read_input_tokens: 16128
+    });
+  });
+
+  // Characterization: an attempt with no recorded runner replays through claude,
+  // which is what every pre-catalog attempt record needs.
+  test('replays through claude when no runner is given', () => {
+    const usage_store = createUsageStore();
+
+    const replayed = replayUsage({
+      session_log: fakeSessionLog([
+        {
+          type: 'result',
+          usage: { input_tokens: 18, output_tokens: 1113 }
+        }
+      ]),
+      usage_store,
+      workspace: '/ws',
+      attempt_id: 'a1'
+    });
+
+    expect(replayed).toBe(true);
+    expect(usage_store.get('/ws', 'a1')).toMatchObject({
+      input_tokens: 18,
+      output_tokens: 1113
+    });
+  });
+
   test('returns false when the log read throws', () => {
     const usage_store = createUsageStore();
     const session_log = /** @type {any} */ ({

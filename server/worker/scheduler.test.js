@@ -49,43 +49,53 @@ function makeFakeRunner() {
   const byBead = new Map();
   /** @type {string[]} */
   const spawnOrder = [];
-  const factory = (/** @type {string} */ runner_name) => ({
-    name: runner_name,
-    /**
-     * @param {any} bead
-     * @param {string} ws
-     * @param {any} settings
-     */
-    spawn(bead, ws, settings) {
-      const events = new EventEmitter();
-      /** @type {(v: any) => void} */
-      let resolveDone = () => {};
-      const done = new Promise((res) => {
-        resolveDone = res;
-      });
-      const handle = {
-        pid: 9000 + spawnOrder.length,
-        kill: vi.fn(),
-        events,
-        done
-      };
-      byBead.set(
-        bead.id,
-        /** @type {any} */ ({
-          handle,
-          resolve: resolveDone,
-          settings,
-          bead,
-          cwd: ws
-        })
-      );
-      spawnOrder.push(bead.id);
-      return handle;
-    }
-  });
+  /**
+   * The runner NAME each launch asked the factory for, in call order.
+   *
+   * @type {string[]}
+   */
+  const factoryNames = [];
+  const factory = (/** @type {string} */ runner_name) => {
+    factoryNames.push(runner_name);
+    return {
+      name: runner_name,
+      /**
+       * @param {any} bead
+       * @param {string} ws
+       * @param {any} settings
+       */
+      spawn(bead, ws, settings) {
+        const events = new EventEmitter();
+        /** @type {(v: any) => void} */
+        let resolveDone = () => {};
+        const done = new Promise((res) => {
+          resolveDone = res;
+        });
+        const handle = {
+          pid: 9000 + spawnOrder.length,
+          kill: vi.fn(),
+          events,
+          done
+        };
+        byBead.set(
+          bead.id,
+          /** @type {any} */ ({
+            handle,
+            resolve: resolveDone,
+            settings,
+            bead,
+            cwd: ws
+          })
+        );
+        spawnOrder.push(bead.id);
+        return handle;
+      }
+    };
+  };
   return {
     factory,
     spawnOrder,
+    factoryNames,
     /**
      * @param {string} bead_id
      * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null }>} v
@@ -2012,14 +2022,15 @@ describe('scheduler resume (spec §1)', () => {
     expect((await env.scheduler.resume(WS, 'r1')).ok).toBe(true);
   });
 
-  test('a legacy codex ancestor resumes onto claude', async () => {
+  test('a codex ancestor resumes onto codex', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedAttempt(env.store, 'r2', resumablePrior({ runner: 'codex' }));
     const res = await env.scheduler.resume(WS, 'r2');
     expect(res.ok).toBe(true);
-    // The child always runs claude, whatever the ancestor recorded.
+    // The child reopens the ancestor's session id, which only the CLI that
+    // minted it can accept (§C-2).
     expect(env.store.snapshot(WS).attempts[String(res.attempt_id)].runner).toBe(
-      'claude'
+      'codex'
     );
   });
 
@@ -5100,6 +5111,7 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     expect(notify.attemptStarted.mock.calls[0][0]).toEqual({
       bead_id: 'S1',
       title: '워커 알림',
+      runner: 'claude',
       model: 'opus',
       effort: 'high',
       repo: '/repo',
@@ -7218,5 +7230,147 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
     const attempt = latestAttempt(env.store, 'B1');
     expect(attempt.system_prompt).toBeNull();
     expect(attempt.task_prompt).toBeNull();
+  });
+});
+
+describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () => {
+  /**
+   * The external-conflict environment: the bead is an external row, blocked and
+   * not ready, so only the click path can dispatch it.
+   *
+   * @param {Record<string, any>} bead
+   */
+  function extRunnerEnv(bead) {
+    return setup({
+      config: { X1: { repo: '/repo', ready: false, blocked: true, ...bead } },
+      slots: 1,
+      externalPrs: {
+        X1: { bead_id: 'X1', pr_url: 'https://github.com/o/r/pull/9' }
+      }
+    });
+  }
+
+  /**
+   * Persist one settled attempt of X1 the way a prior session left it.
+   *
+   * @param {any} store
+   * @param {string} attempt_id
+   * @param {Partial<import('./queue-store.js').Attempt>} patch
+   */
+  function seedSettledAttempt(store, attempt_id, patch) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id: 'X1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id,
+      patch: { status: 'done', repo: '/repo', target_base: 'main', ...patch }
+    });
+  }
+
+  test('dispatches a codex-model bead through the codex runner', async () => {
+    const env = setup({ config: { S1: { model: 'sol' } }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    await flush();
+  });
+
+  test('records the resolved runner on the attempt', async () => {
+    const env = setup({ config: { S1: { model: 'sol' } }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(attempt.runner).toBe('codex');
+    await flush();
+  });
+
+  test('continues an external conflict on the prior attempt runner', async () => {
+    const env = extRunnerEnv({ model: 'opus' });
+    seedSettledAttempt(env.store, 'prev-1', { runner: 'codex' });
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    await flush();
+  });
+
+  test('resolves an external conflict from exec when no attempt precedes it', async () => {
+    const env = extRunnerEnv({ model: 'sol' });
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    await flush();
+  });
+
+  test('prefers the LAST prior attempt runner over an earlier one', async () => {
+    const env = extRunnerEnv({ model: 'opus' });
+    seedSettledAttempt(env.store, 'prev-1', { runner: 'codex' });
+    seedSettledAttempt(env.store, 'prev-2', { runner: 'claude' });
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.factoryNames).toEqual(['claude']);
+    await flush();
+  });
+
+  test('inherits the prior runner on a conflict relaunch', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    const rev = env.store.snapshot(WS).revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'd1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'd1',
+      patch: {
+        status: 'done',
+        repo: '/repo',
+        target_base: 'main',
+        runner: 'codex',
+        session_id: 'sid-orig',
+        finished_at: 50
+      }
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+
+    expect(res.ok).toBe(true);
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    await flush();
+  });
+
+  // Characterization: a legacy attempt written before the runner field carried
+  // a value still relaunches, and claude is the only honest guess for it.
+  test('falls back to claude when the prior attempt recorded no runner', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    const rev = env.store.snapshot(WS).revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'd1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'd1',
+      patch: {
+        status: 'done',
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-orig',
+        finished_at: 50
+      }
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+
+    expect(res.ok).toBe(true);
+    expect(env.runner.factoryNames).toEqual(['claude']);
+    await flush();
   });
 });

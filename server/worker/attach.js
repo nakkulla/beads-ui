@@ -968,6 +968,9 @@ function recoverRunningAttempts(att, key) {
           usage_store,
           workspace: key,
           attempt_id,
+          // The adapter that WROTE this log, so the replay lifts usage the way
+          // the dead session's live stream did.
+          ...(typeof a.runner === 'string' ? { runner: a.runner } : {}),
           ...(boundary == null ? {} : { end_offset: boundary })
         });
       }

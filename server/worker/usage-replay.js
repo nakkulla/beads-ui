@@ -8,15 +8,17 @@
  * stream per attempt, so every usage event UP TO the restart is on disk.
  *
  * Replay feeds those raw events back through the SAME lift + record pair the
- * live path uses (`runner/claude.js` `liftUsage` → `usage-store`), which is
- * what keeps the recovered number identical to the one the live stream had.
+ * live path uses (the attempt's own adapter `liftUsage` → `usage-store`), which
+ * is what keeps the recovered number identical to the one the live stream had.
+ * The adapter is picked by the attempt's recorded runner, because a codex log
+ * read through the claude lift yields nothing at all rather than a wrong number.
  * Events after the restart are gone for good, so the result is marked
  * `replayed` — a partial tally that says so beats a missing badge.
  *
  * @import { createUsageStore } from './usage-store.js'
  * @import { createSessionLog } from './session-log.js'
  */
-import { liftUsage } from './runner/claude.js';
+import { adapterSpec } from './runner/index.js';
 
 /**
  * Replay one attempt's persisted stream into the usage store.
@@ -30,15 +32,19 @@ import { liftUsage } from './runner/claude.js';
  *   usage_store: ReturnType<typeof createUsageStore>,
  *   workspace: string,
  *   attempt_id: string,
- *   end_offset?: number
+ *   end_offset?: number,
+ *   runner?: string|null
  * }} input - `end_offset` bounds the replay at the handoff boundary a
  * reattached monitor continues from (UI-o2yt §3.3); omitted, the whole log is
- * replayed, which is what a dead attempt's recovery wants.
+ * replayed, which is what a dead attempt's recovery wants. `runner` names the
+ * adapter that wrote the log; absent or unknown, claude reads it, which is what
+ * every attempt recorded before the field carried a value needs.
  * @returns {boolean}
  */
 export function replayUsage(input) {
   const { session_log, usage_store, workspace, attempt_id, end_offset } = input;
   try {
+    const { liftUsage } = adapterSpec(input.runner ?? null);
     let recorded = 0;
     const lines =
       typeof end_offset === 'number'

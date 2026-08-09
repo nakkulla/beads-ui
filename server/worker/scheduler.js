@@ -2189,7 +2189,10 @@ export function createScheduler(deps) {
       bead: snap,
       defaults: deps.store.snapshot(workspace).exec_defaults
     });
-    const runner_name = 'claude';
+    // DERIVED from the resolved model, never an independent axis: the catalog
+    // owns the model→runner map, so a bead asking for `sol` dispatches through
+    // codex without anyone setting a runner key (§C-2).
+    const runner_name = exec.runner;
 
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
@@ -2691,6 +2694,7 @@ export function createScheduler(deps) {
     notifyLifecycle('attemptStarted', {
       bead_id,
       title: input.title ?? null,
+      runner: runner_name,
       model,
       effort,
       repo,
@@ -2948,6 +2952,33 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The runner recorded on the MOST RECENT attempt of `bead_id`, or null when
+   * the bead has no attempt or the last one predates the field.
+   *
+   * The store's attempt map is insertion-ordered by launch, so the last match is
+   * the latest attempt — and it is the latest one that says which CLI wrote the
+   * branch this bead's next session continues.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {string|null}
+   */
+  function lastAttemptRunner(workspace, bead_id) {
+    /** @type {any} */
+    let last = null;
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    for (const attempt of Object.values(attempts)) {
+      const a = /** @type {any} */ (attempt);
+      if (a && a.bead_id === bead_id) {
+        last = a;
+      }
+    }
+    return last && typeof last.runner === 'string' && last.runner.length > 0
+      ? last.runner
+      : null;
+  }
+
+  /**
    * Dispatch a conflict-resolution session for an EXTERNAL PR row (UI-w0hi §1):
    * a bead an ordinary session delivered a PR for, which the durable lanes and
    * the attempt registry never held.
@@ -3016,15 +3047,21 @@ export function createScheduler(deps) {
       typeof target_base === 'string' && target_base.length > 0
         ? target_base
         : 'main';
-    // Resolved from scratch, not inherited: there is no prior attempt to carry
-    // a snapshot forward from, so this is the queue dispatch's contract
+    // The EXEC SETTINGS are resolved from scratch: there is no prior attempt to
+    // carry a snapshot forward from, so this is the queue dispatch's contract
     // verbatim (bead metadata > workspace default > hardcoded fallback), with
     // the same stamp-and-revert duty for the globally-filled keys.
     const exec = resolveExecSettings({
       bead: snap,
       defaults: deps.store.snapshot(workspace).exec_defaults
     });
-    const runner_name = 'claude';
+    // The RUNNER is the one field that does look back (§C-2). This dispatch
+    // resumes work an earlier session left in the SAME worktree, so the runner
+    // that wrote that branch is the one that should carry it forward — a
+    // re-derivation from today's model could hand a codex branch to claude.
+    // Only a bead with no recorded attempt at all falls through to the exec
+    // derivation.
+    const runner_name = lastAttemptRunner(workspace, bead_id) ?? exec.runner;
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
 
@@ -3237,7 +3274,14 @@ export function createScheduler(deps) {
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
     const attempt_id = prior.attempt_id;
-    const runner_name = 'claude';
+    // Inherited verbatim like the rest of the snapshot below (§1.3), and for a
+    // sharper reason: the child RESUMES the ancestor's session id, which only
+    // the CLI that minted it can reopen. claude is the fallback for an attempt
+    // written before the field carried a value, not a default.
+    const runner_name =
+      typeof prior.runner === 'string' && prior.runner.length > 0
+        ? prior.runner
+        : 'claude';
 
     const new_attempt_id = makeAttemptId(bead_id);
     const target_base =

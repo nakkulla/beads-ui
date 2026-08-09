@@ -15,13 +15,19 @@
  * An unknown runner name resolves to claude — the pre-existing behaviour, kept
  * because a bead carrying a stale or misspelled runner must still dispatch.
  *
- * @import { RunnerHandle, EngineDeps } from './session.js'
- * @import { ResolvedCatalog } from '../runner-catalog.js'
+ * `adapterSpec` is the SPAWN-FREE half of the same resolution, for the readers
+ * that parse a runner's output without owning a process (the startup usage
+ * replay and the detached-session monitor). Both halves judge through
+ * `codexEntry`, so a reader can never lift usage with a different adapter than
+ * the one that wrote the log.
+ *
+ * @import { AdapterSpec, RunnerHandle, EngineDeps } from './session.js'
+ * @import { ResolvedCatalog, RunnerCatalogEntry } from '../runner-catalog.js'
  */
 import { getConfig } from '../../config.js';
 import { ACTIVE_RUNNERS, resolveCatalog } from '../runner-catalog.js';
-import { spawnClaude } from './claude.js';
-import { spawnCodex } from './codex.js';
+import { claudeSpec, spawnClaude } from './claude.js';
+import { codexSpec, spawnCodex } from './codex.js';
 
 /** @type {ReadonlyArray<string>} */
 export const RUNNERS = ACTIVE_RUNNERS;
@@ -44,6 +50,38 @@ function activeCatalog() {
 }
 
 /**
+ * The catalog's codex entry when `runner_name` asks for codex and the catalog
+ * still carries it, else null — the single codex/claude judgement both
+ * `createRunner` and `adapterSpec` resolve through. A config that drops the
+ * section leaves nothing to build an argv from, so it is not dispatchable.
+ *
+ * @param {string|null|undefined} runner_name
+ * @param {{ catalog?: ResolvedCatalog }} deps
+ * @returns {RunnerCatalogEntry|null}
+ */
+function codexEntry(runner_name, deps) {
+  if (runner_name !== 'codex') {
+    return null;
+  }
+  const catalog = deps.catalog || activeCatalog();
+  return Object.prototype.hasOwnProperty.call(catalog.runners, 'codex')
+    ? catalog.runners.codex
+    : null;
+}
+
+/**
+ * The adapter spec for `runner_name`, built without spawning anything.
+ *
+ * @param {string|null} [runner_name]
+ * @param {{ catalog?: ResolvedCatalog }} [deps]
+ * @returns {AdapterSpec}
+ */
+export function adapterSpec(runner_name, deps = {}) {
+  const entry = codexEntry(runner_name, deps);
+  return entry ? codexSpec(entry) : claudeSpec();
+}
+
+/**
  * Create the runner adapter for `runner_name`.
  *
  * @param {string} [runner_name]
@@ -51,14 +89,7 @@ function activeCatalog() {
  * @returns {{ name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }}
  */
 export function createRunner(runner_name, deps = {}) {
-  const catalog = deps.catalog || activeCatalog();
-  // Only a runner the catalog still carries is dispatchable: a config that drops
-  // the section leaves nothing to build an argv from.
-  const codex_entry =
-    runner_name === 'codex' &&
-    Object.prototype.hasOwnProperty.call(catalog.runners, 'codex')
-      ? catalog.runners.codex
-      : null;
+  const codex_entry = codexEntry(runner_name, deps);
   if (codex_entry) {
     return {
       name: 'codex',
