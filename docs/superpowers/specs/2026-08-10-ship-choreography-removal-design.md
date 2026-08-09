@@ -115,9 +115,10 @@
 
 ### 3.4 즉시 조치 (데이터)
 
-- 구현 단계에서 실행: `bd label remove UI-19yr export:plan-review-runner-authz`
-  및 `bd label remove UI-19yr provides:plan-review-runner-authz`, 각각
-  `bd show UI-19yr --json` readback으로 라벨 소거 확인.
+- `bd label remove UI-19yr export:plan-review-runner-authz` 및
+  `bd label remove UI-19yr provides:plan-review-runner-authz`, 각각
+  `bd show UI-19yr --json` readback으로 라벨 소거 확인. 실행 시점과 중단 시
+  재개 규칙은 §6 적용 순서가 소유한다.
 - 이로써 Bead가 "스펙에서 확정"으로 남긴 잔여 표시 정합의 처분이 완결된다:
   코드 제거로 특수 표시가 소멸하고, 일반 라벨 칩에 남을 유일한 폐기 어휘
   데이터도 소거된다. 이후 `export:`/`provides:`는 어떤 코드도 특수 취급하지
@@ -150,17 +151,36 @@ RED→GREEN 시임:
 
 - 삭제: `ship-capabilities.test.js` 전체, `queue-store.test.js`의
   ship_failure describe(:1621-1712), `worker/index.test.js`의 ship 배너
-  4건(:3617-3710).
+  4건(:3617-3710), `bd-metadata.test.js`의 ship + label argv contract
+  describe(:390-464 — `ship()`/`removeLabel()` 직접 호출).
 - 갱신: `pr-actions.test.js`의 ship 단언 제거,
-  `e2e/worker-flow.test.js`(:513-522)·`attach.test.js`(:1413) mock에서
+  `server/e2e/worker-flow.test.js`(:513-522)·`attach.test.js`(:1413) mock에서
   `ship`/`removeLabel` 제거, `worker/index.test.js`에 단계 총수(8)를 단언하는
   테스트가 있으면 7로 갱신.
 
-## 6. 검증
+## 6. Ordered apply procedure
 
-- Pre‑Handoff 전체: `npm run tsc` / `npm test` / `npm run lint` /
-  `npm run prettier:write` / `npm run build`.
-- 종료 증거: `rg -i ship` 전수에서 남는 매치가 산문 오탐(membership 등)뿐임을
-  기록. 즉시 조치 readback(UI-19yr 라벨 0건) 포함.
-- 머지 후: `[deploy]` 자동 경로 실행 확인 + 프로세스 경로·포트·HTTP 응답
-  검증(AGENTS.md 소유 절차).
+머지 이후까지의 고정 적용 순서. 각 단계는 라이브 검증을 동반하고, 중단 시
+재개 지점을 명시한다.
+
+1. **구현·검증**: 코드 제거 + 테스트 정리 후 Pre‑Handoff 전체 —
+   `npm run tsc` / `npm test` / `npm run lint` / `npm run prettier:write` /
+   `npm run build`(번들·맵을 커밋에 포함). 실패 시 여기서 멈춘다 — 라이브
+   상태 변화가 아직 없으므로 수정 후 재실행이 재개다.
+2. **즉시 조치(데이터, idempotent)**: §3.4의 라벨 제거 2건을 각각 readback과
+   함께 실행. 한 건만 제거된 채 중단되어도 각 명령을 재실행하면 재개된다.
+   코드 경로와 독립이므로 머지 전·후 어느 시점이든 안전하나, 잊힘 방지를 위해
+   머지 전 이 위치에 고정한다.
+3. **머지**: PR 경로(워커 머지 클릭 또는 `pr-finish`). 정리 sweep이 어느
+   단계에서 멈추면 배너·`pr_wait` 잔존으로 드러나고 detached 배포는 launch되지
+   않는다(AGENTS.md) — 4단계로 넘어가지 말고 사람이 정리를 마무리한 뒤
+   진행한다.
+4. **재시작 확인**: `[deploy]` 자동 경로(`bdui-shared restart`, detached)의
+   실행을 확인. 자동 경로가 성립하지 않은 경우(외부 머지·정리 중단)는 수동
+   `bdui-shared restart`가 재개다.
+5. **라이브 검증**: `~/.config/bdui/config.toml` 정합 → 프로세스 경로(머지된
+   체크아웃 소유)·포트·HTTP 응답 확인. 실패 시 `systematic-debugging`으로
+   전환하고 완료를 선언하지 않는다.
+
+종료 증거: `rg -i ship` 전수에서 남는 매치가 산문 오탐(membership 등)뿐임 +
+2단계 readback(UI-19yr 라벨 0건).
