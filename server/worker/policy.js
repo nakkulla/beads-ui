@@ -22,18 +22,15 @@
  * (worker-multi-provider-runner §C). That derivation also fixes the effort
  * vocabulary, which is per-model and therefore only knowable after the model
  * resolves.
+ *
+ * @import { ResolvedCatalog } from './runner-catalog.js'
  */
 import {
   PLAN_REVIEW_MODELS,
   REVIEW_EFFORTS,
   REVIEW_STEP_MODELS
 } from './exec-enums.js';
-import {
-  catalogEfforts,
-  modelEfforts,
-  modelRunner,
-  resolveCatalog
-} from './runner-catalog.js';
+import { catalogEfforts, modelEfforts, modelRunner } from './runner-catalog.js';
 import { runtimeCatalog } from './runner/index.js';
 
 /**
@@ -57,7 +54,7 @@ const RUNNER_FALLBACK = 'claude';
  * offer a config-added model that dispatch then silently demotes to
  * `opus`/claude.
  *
- * @returns {ReturnType<typeof resolveCatalog>}
+ * @returns {ResolvedCatalog}
  */
 function defaultCatalog() {
   return runtimeCatalog();
@@ -162,7 +159,7 @@ function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
  * @param {{
  *   bead?: ExecBeadLayer | null,
  *   defaults?: ExecDefaultsLayer | null,
- *   catalog?: ReturnType<typeof resolveCatalog>
+ *   catalog?: ResolvedCatalog
  * }} input
  * @returns {{
  *   orchestration_model: string,
