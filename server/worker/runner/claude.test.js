@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
-import { claudeSpec, spawnClaude } from './claude.js';
+import { claudeSpec, liftUsage, spawnClaude } from './claude.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
 import { defaultTaskPrompt } from './preamble.js';
 
@@ -224,6 +224,32 @@ describe('runner/claude usage extraction (UI-raqh §1)', () => {
     const v = await handle.done;
 
     expect(v.events.find((e) => e.kind === 'text')?.usage).toBe(undefined);
+  });
+
+  test('exposes the same liftUsage on the spec as the named export', () => {
+    const spec = claudeSpec();
+    const raw = {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      usage: { input_tokens: 18, output_tokens: 3 }
+    };
+
+    expect(spec.liftUsage(raw)).toEqual(liftUsage(raw));
+  });
+
+  test('lifts a result usage off the spec member', () => {
+    const spec = claudeSpec();
+
+    const lifted = spec.liftUsage({
+      type: 'result',
+      usage: { input_tokens: 7, output_tokens: 2 }
+    });
+
+    expect(lifted).toEqual({
+      kind: 'result',
+      usage: { input_tokens: 7, output_tokens: 2 }
+    });
   });
 
   test('omits usage when the payload is not an object', async () => {

@@ -655,7 +655,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.title).toBe(null);
   });
 
-  test('snapshotBead extracts review_model and impl_model metadata', async () => {
+  test('snapshotBead extracts every per-step exec metadata key (dotfiles-mqcj)', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {
         return {
@@ -664,7 +664,16 @@ describe('worker/attach createLiveBd bd show parsing', () => {
             {
               id: 'UI-1',
               status: 'open',
-              metadata: { review_model: 'opus', impl_model: 'haiku' }
+              metadata: {
+                spec_review_model: 'codex',
+                spec_review_effort: 'high',
+                impl_review_model: 'self',
+                impl_review_effort: 'low',
+                plan_review_model: 'fable',
+                plan_review_effort: 'xhigh',
+                impl_model: 'luna',
+                impl_effort: 'max'
+              }
             }
           ]
         };
@@ -678,11 +687,45 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       runJson
     });
     const snap = await bd.snapshotBead('UI-1');
-    expect(snap.review_model).toBe('opus');
-    expect(snap.impl_model).toBe('haiku');
+    expect(snap).toMatchObject({
+      spec_review_model: 'codex',
+      spec_review_effort: 'high',
+      impl_review_model: 'self',
+      impl_review_effort: 'low',
+      plan_review_model: 'fable',
+      plan_review_effort: 'xhigh',
+      impl_model: 'luna',
+      impl_effort: 'max'
+    });
   });
 
-  test('snapshotBead leaves review_model/impl_model undefined when absent', async () => {
+  test('snapshotBead no longer reads the retired review_model key', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'UI-2',
+              status: 'open',
+              metadata: { review_model: 'opus' }
+            }
+          ]
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-2' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson
+    });
+    const snap = await bd.snapshotBead('UI-2');
+    expect(/** @type {any} */ (snap).review_model).toBeUndefined();
+  });
+
+  test('snapshotBead leaves the per-step exec fields undefined when absent', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {
         return {
@@ -699,8 +742,14 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       runJson
     });
     const snap = await bd.snapshotBead('UI-3');
-    expect(snap.review_model).toBeUndefined();
+    expect(snap.spec_review_model).toBeUndefined();
+    expect(snap.spec_review_effort).toBeUndefined();
+    expect(snap.impl_review_model).toBeUndefined();
+    expect(snap.impl_review_effort).toBeUndefined();
+    expect(snap.plan_review_model).toBeUndefined();
+    expect(snap.plan_review_effort).toBeUndefined();
     expect(snap.impl_model).toBeUndefined();
+    expect(snap.impl_effort).toBeUndefined();
   });
 
   test('snapshotBead keeps reading the bare-object show shape', async () => {

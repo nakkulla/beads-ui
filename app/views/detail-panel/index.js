@@ -507,6 +507,18 @@ export function createDetailPanel(mount_element, options) {
     return d && typeof d === 'object' ? d : {};
   }
 
+  /**
+   * The queue snapshot's `runner_catalog` decoration (UI-jrb3 §7) — the source
+   * of the grouped model options and per-model effort lists. Null before the
+   * first snapshot, which the editor degrades fail-quiet.
+   *
+   * @returns {any}
+   */
+  function runnerCatalog() {
+    const q = queueStore ? queueStore.get() : null;
+    return (q && /** @type {any} */ (q).runner_catalog) || null;
+  }
+
   /** @type {null | (() => void)} */
   let unsubscribe = null;
   if (issueStores && issueStores.subscribe) {
@@ -1332,7 +1344,12 @@ export function createDetailPanel(mount_element, options) {
           ${notesTemplate(data)} ${labelsTemplate(data)} ${depsTemplate(data)}
           ${workflowTemplate(data)} ${workflowMetaTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
-          ${execSettingsTemplate(effective, exec_handlers, execDefaults())}
+          ${execSettingsTemplate(
+            effective,
+            exec_handlers,
+            execDefaults(),
+            runnerCatalog()
+          )}
           ${taskPromptTemplate(
             {
               expanded: prompt_expanded,

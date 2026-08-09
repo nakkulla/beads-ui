@@ -342,6 +342,11 @@ export function claudeSpec(options = {}) {
       };
     },
     normalize,
+    // Also a named export, still imported directly by `usage-replay.js`. The
+    // spec member is what the engine-facing contract requires (AdapterSpec), and
+    // both names resolve to the one function, so the replay path cannot drift
+    // from the live one while that import is rewired.
+    liftUsage,
     detectQuestion,
     extractShellCommand,
     extractSessionId,

@@ -1108,6 +1108,36 @@ select.detail-kv__v {
   cursor: pointer;
 }
 
+/* An exec row whose value cannot apply — a `self`/`skip` review step dispatches
+   no separate leg, so its effort is inert rather than merely unset (mqcj §4.4).
+   The gate has to READ as a gate, not as an empty choice. */
+select.detail-kv__v:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Model row: the select plus its derived-runner badge (UI-jrb3). The group owns
+   the row's value-side width so the select keeps its old 60% cap. */
+.detail-kv__vgroup {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-6);
+  min-width: 0;
+  max-width: 60%;
+}
+
+.detail-kv__vgroup .detail-kv__v {
+  max-width: 100%;
+}
+
+.detail-kv__note {
+  flex: 0 0 auto;
+  font-size: var(--fs-chip);
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+}
+
 /* --- detail panel: inline editing (title / description / labels) --- */
 .detail-title-row {
   display: flex;

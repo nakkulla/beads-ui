@@ -63,6 +63,42 @@ describe('worker/notify argv assembly', () => {
     ]);
   });
 
+  test('names the runner ahead of the model on the exec line', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.attemptStarted({
+      bead_id: 'UI-1',
+      title: '워커 알림',
+      runner: 'codex',
+      model: 'sol',
+      effort: 'high',
+      repo: '/r/proj',
+      kind: 'dispatch'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      '🤖 🚀 시작 — UI-1 워커 알림\n리포: proj\n실행: codex sol / high'
+    );
+  });
+
+  test('names the runner alone when no model or effort resolved', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.attemptStarted({
+      bead_id: 'UI-1',
+      title: '워커 알림',
+      runner: 'codex',
+      repo: '/r/proj',
+      kind: 'dispatch'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      '🤖 🚀 시작 — UI-1 워커 알림\n리포: proj\n실행: codex'
+    );
+  });
+
   test('sends no title, colour or quiet flag', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });

@@ -36,12 +36,9 @@ function fakeWs() {
 
 describe('buildExecSettingsArgs', () => {
   test('set produces --set-metadata key=value', () => {
-    expect(buildExecSettingsArgs('UI-1', 'review_model', 'codex')).toEqual([
-      'update',
-      'UI-1',
-      '--set-metadata',
-      'review_model=codex'
-    ]);
+    expect(buildExecSettingsArgs('UI-1', 'spec_review_model', 'codex')).toEqual(
+      ['update', 'UI-1', '--set-metadata', 'spec_review_model=codex']
+    );
   });
 
   test('workflow_mode=standard produces --unset-metadata (never stores literal)', () => {
@@ -110,11 +107,38 @@ describe('handleUpdateExecSettings', () => {
     await handleUpdateExecSettings(ws, {
       id: 'r3',
       type: 'update-exec-settings',
-      payload: { id: 'UI-1', key: 'review_model', value: 'bogus' }
+      payload: { id: 'UI-1', key: 'spec_review_model', value: 'bogus' }
     });
     expect(runBdInWorkspace).not.toHaveBeenCalled();
     expect(sent[0].ok).toBe(false);
     expect(sent[0].error.code).toBe('bad_request');
+  });
+
+  test('the retired review_model key is rejected as unknown (dotfiles-mqcj)', async () => {
+    const { ws, sent } = fakeWs();
+    await handleUpdateExecSettings(ws, {
+      id: 'r3b',
+      type: 'update-exec-settings',
+      payload: { id: 'UI-1', key: 'review_model', value: 'codex' }
+    });
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+    expect(sent[0].ok).toBe(false);
+    expect(sent[0].error.message).toContain('unknown exec-setting key');
+  });
+
+  test('a per-step review key reaches bd with its own metadata name', async () => {
+    const { ws } = fakeWs();
+    await handleUpdateExecSettings(ws, {
+      id: 'r3c',
+      type: 'update-exec-settings',
+      payload: { id: 'UI-1', key: 'plan_review_model', value: 'fable' }
+    });
+    expect(runBdInWorkspace).toHaveBeenCalledWith(expect.anything(), [
+      'update',
+      'UI-1',
+      '--set-metadata',
+      'plan_review_model=fable'
+    ]);
   });
 
   test('unknown key is rejected', async () => {

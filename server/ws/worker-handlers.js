@@ -51,6 +51,7 @@ import {
   peekDeployResolution,
   peekVerifyResolution
 } from '../worker/repo-ops.js';
+import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { readDeclaredBase } from '../worker/target-base.js';
@@ -561,6 +562,9 @@ export function attemptsWithUsage(queue, workspace_key) {
  *   - `bead_titles`: display titles for the queue/pr_wait/done beads (UI-12k6),
  *     which are in no subscribed issue column and would otherwise render as
  *     bare ids,
+ *   - `runner_catalog`: the resolved runner/model catalog (UI-jrb3 §7) the
+ *     exec-setting selectors render from, so the client never keeps its own copy
+ *     of a table `config.toml` can extend,
  *   - the configured `deploy_cmd` and the workspace's `last_deploy` record
  *     (worker-deploy-hook §3), so the ⚙ dialog can show what the merge click
  *     will run and what the last one did. Read-only on the wire: the commands
@@ -628,8 +632,21 @@ export function decorateQueue(workspace_key, raw_queue) {
   } catch {
     declared_base = null;
   }
+  // The resolved runner/model catalog (UI-jrb3 §7) — the source the exec-setting
+  // selectors render their grouped model options and per-model effort lists
+  // from. Non-persisted like every other decoration here, and fail-quiet: a
+  // catalog that cannot be resolved travels as null and the client falls back to
+  // showing the stored value alone rather than an empty selector.
+  /** @type {import('../worker/runner-catalog.js').ResolvedCatalog|null} */
+  let runner_catalog = null;
+  try {
+    runner_catalog = runtimeCatalog();
+  } catch {
+    runner_catalog = null;
+  }
   return {
     ...queue,
+    runner_catalog,
     // The workspace's declared base (UI-j6wa §3), non-persisted like every
     // other decoration here. Display only — nothing dispatches on it.
     declared_base,
@@ -1351,7 +1368,7 @@ export function handleWorkerQueueSetExecDefault(ws, req) {
         makeError(
           req,
           'bad_request',
-          'payload requires { key: orchestration_model|orchestration_effort|review_model|impl_model }'
+          'payload requires { key: <exec setting key> } — see server/worker/exec-enums.js'
         )
       )
     );

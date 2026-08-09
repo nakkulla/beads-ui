@@ -169,6 +169,58 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
     });
   });
 
+  test('tallies a codex turn total for an attempt that ran on codex', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, { runner: 'codex' });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(
+      env.session_log,
+      `${JSON.stringify({
+        type: 'turn.completed',
+        usage: {
+          input_tokens: 34610,
+          cached_input_tokens: 16128,
+          cache_write_input_tokens: 0,
+          output_tokens: 62
+        }
+      })}\n`
+    );
+    env.monitors.stop(WS, 'att-1');
+
+    expect(env.usage?.get(WS, 'att-1')).toMatchObject({
+      input_tokens: 34610,
+      output_tokens: 62,
+      cache_read_input_tokens: 16128
+    });
+  });
+
+  // Characterization: an attempt written before the runner field carried a value
+  // still monitors, through the claude adapter.
+  test('monitors an attempt with no recorded runner through claude', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store);
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(
+      env.session_log,
+      `${JSON.stringify({
+        type: 'assistant',
+        message: {
+          id: 'm7',
+          content: [{ type: 'text', text: 'hi' }],
+          usage: { input_tokens: 3, output_tokens: 1 }
+        }
+      })}\n`
+    );
+    env.monitors.stop(WS, 'att-1');
+
+    expect(env.usage?.get(WS, 'att-1')).toMatchObject({
+      input_tokens: 3,
+      output_tokens: 1
+    });
+  });
+
   test('drains the tail to EOF on stop so the last lines still count', () => {
     const env = setup();
     const attempt = seedRunningAttempt(env.store);

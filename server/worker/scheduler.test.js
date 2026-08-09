@@ -49,43 +49,53 @@ function makeFakeRunner() {
   const byBead = new Map();
   /** @type {string[]} */
   const spawnOrder = [];
-  const factory = (/** @type {string} */ runner_name) => ({
-    name: runner_name,
-    /**
-     * @param {any} bead
-     * @param {string} ws
-     * @param {any} settings
-     */
-    spawn(bead, ws, settings) {
-      const events = new EventEmitter();
-      /** @type {(v: any) => void} */
-      let resolveDone = () => {};
-      const done = new Promise((res) => {
-        resolveDone = res;
-      });
-      const handle = {
-        pid: 9000 + spawnOrder.length,
-        kill: vi.fn(),
-        events,
-        done
-      };
-      byBead.set(
-        bead.id,
-        /** @type {any} */ ({
-          handle,
-          resolve: resolveDone,
-          settings,
-          bead,
-          cwd: ws
-        })
-      );
-      spawnOrder.push(bead.id);
-      return handle;
-    }
-  });
+  /**
+   * The runner NAME each launch asked the factory for, in call order.
+   *
+   * @type {string[]}
+   */
+  const factoryNames = [];
+  const factory = (/** @type {string} */ runner_name) => {
+    factoryNames.push(runner_name);
+    return {
+      name: runner_name,
+      /**
+       * @param {any} bead
+       * @param {string} ws
+       * @param {any} settings
+       */
+      spawn(bead, ws, settings) {
+        const events = new EventEmitter();
+        /** @type {(v: any) => void} */
+        let resolveDone = () => {};
+        const done = new Promise((res) => {
+          resolveDone = res;
+        });
+        const handle = {
+          pid: 9000 + spawnOrder.length,
+          kill: vi.fn(),
+          events,
+          done
+        };
+        byBead.set(
+          bead.id,
+          /** @type {any} */ ({
+            handle,
+            resolve: resolveDone,
+            settings,
+            bead,
+            cwd: ws
+          })
+        );
+        spawnOrder.push(bead.id);
+        return handle;
+      }
+    };
+  };
   return {
     factory,
     spawnOrder,
+    factoryNames,
     /**
      * @param {string} bead_id
      * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null }>} v
@@ -193,7 +203,7 @@ function makeFakeBd(config) {
         target_base: c.target_base ?? 'main',
         model: c.model === null ? undefined : (c.model ?? 'opus'),
         effort: c.effort === null ? undefined : (c.effort ?? 'high'),
-        review_model: c.review_model ?? undefined,
+        spec_review_model: c.spec_review_model ?? undefined,
         impl_model: c.impl_model ?? undefined,
         workflow_mode: c.workflow_mode ?? null,
         route: c.route ?? null,
@@ -1606,7 +1616,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       // termination path reverts workflow_mode AND the exec stamps.
     });
     seedExecDefaults(env.store, {
-      review_model: 'opus',
+      spec_review_model: 'opus',
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
@@ -1625,11 +1635,13 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(a.exec_stamped_keys).toEqual([
       'orchestration_model',
       'orchestration_effort',
-      'review_model'
+      'spec_review_model'
     ]);
 
     // Bead metadata was stamped with the three global-filled keys.
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'review_model')).toBe(true);
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'spec_review_model')).toBe(
+      true
+    );
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
       true
     );
@@ -1644,7 +1656,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(env.store.snapshot(WS).pr_wait.map((e) => e.bead_id)).toContain(
       'S1'
     );
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       true
     );
     expect(
@@ -1656,21 +1668,21 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
   });
 
   test('a bead-SET key beats the global and is never stamped/reverted', async () => {
-    // Bead pins review_model=opus; impl_model is unset (global fills it).
+    // Bead pins spec_review_model=opus; impl_model is unset (global fills it).
     const env = setup({
       config: {
         S1: {
           runner: 'claude',
           model: 'opus',
           effort: 'high',
-          review_model: 'opus'
+          spec_review_model: 'opus'
         }
       },
       slots: 1,
       verifyOk: true
     });
     seedExecDefaults(env.store, {
-      review_model: 'codex',
+      spec_review_model: 'codex',
       impl_model: 'haiku'
     });
     seedQueue(env.store, ['S1']);
@@ -1678,17 +1690,19 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
 
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     const a = /** @type {any} */ (env.store.snapshot(WS).attempts[attempt_id]);
-    // Only the global-filled impl_model is stamped; the bead-set review_model
+    // Only the global-filled impl_model is stamped; the bead-set spec_review_model
     // is not (its value is the bead's own, not the global 'codex').
     expect(a.exec_stamped_keys).toEqual(['impl_model']);
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'impl_model')).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'review_model')).toBe(false);
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'spec_review_model')).toBe(
+      false
+    );
 
     env.runner.finish('S1', { success: true });
     await flush();
     await flush();
     expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'impl_model')).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       false
     );
   });
@@ -1748,7 +1762,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       slots: 1
     });
     seedExecDefaults(env.store, {
-      review_model: 'opus',
+      spec_review_model: 'opus',
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
@@ -1769,7 +1783,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(a.exec_stamped_keys).toEqual([
       'orchestration_model',
       'orchestration_effort',
-      'review_model'
+      'spec_review_model'
     ]);
 
     // The one key that WAS stamped is cleaned up; workflow_mode reverted too.
@@ -1809,7 +1823,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       slots: 1
     });
     seedExecDefaults(env.store, {
-      review_model: 'opus',
+      spec_review_model: 'opus',
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
@@ -1835,7 +1849,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(
       calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
     ).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       true
     );
     // workflow_mode is reverted too; the dispatch failed in isolation.
@@ -1854,7 +1868,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       verifyOk: true
     });
     seedExecDefaults(env.store, {
-      review_model: 'opus',
+      spec_review_model: 'opus',
       orchestration_model: 'sonnet',
       orchestration_effort: 'high'
     });
@@ -1867,7 +1881,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
 
     const snap = env.store.snapshot(WS);
     expect(snap.pr_wait.map((e) => e.bead_id)).toContain('S1');
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'review_model')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       true
     );
     expect(
@@ -2012,14 +2026,15 @@ describe('scheduler resume (spec §1)', () => {
     expect((await env.scheduler.resume(WS, 'r1')).ok).toBe(true);
   });
 
-  test('a legacy codex ancestor resumes onto claude', async () => {
+  test('a codex ancestor resumes onto codex', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedAttempt(env.store, 'r2', resumablePrior({ runner: 'codex' }));
     const res = await env.scheduler.resume(WS, 'r2');
     expect(res.ok).toBe(true);
-    // The child always runs claude, whatever the ancestor recorded.
+    // The child reopens the ancestor's session id, which only the CLI that
+    // minted it can accept (§C-2).
     expect(env.store.snapshot(WS).attempts[String(res.attempt_id)].runner).toBe(
-      'claude'
+      'codex'
     );
   });
 
@@ -2455,7 +2470,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
       defaults: {
         orchestration_model: 'sonnet',
         orchestration_effort: 'high',
-        review_model: 'opus'
+        spec_review_model: 'opus'
       }
     });
 
@@ -2466,7 +2481,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(a.exec_stamped_keys).toEqual([
       'orchestration_model',
       'orchestration_effort',
-      'review_model'
+      'spec_review_model'
     ]);
     expect(a.model).toBe('sonnet');
     expect(env.runner.settingsFor('X1').model).toBe('sonnet');
@@ -2474,11 +2489,11 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
 
   test('restores every written stamp when one exec key fails to stamp', async () => {
     const env = extEnv({
-      bead: { model: null, effort: null, throwOnSetKey: 'review_model' },
+      bead: { model: null, effort: null, throwOnSetKey: 'spec_review_model' },
       defaults: {
         orchestration_model: 'sonnet',
         orchestration_effort: 'high',
-        review_model: 'opus'
+        spec_review_model: 'opus'
       }
     });
 
@@ -2488,7 +2503,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     for (const key of [
       'orchestration_model',
       'orchestration_effort',
-      'review_model',
+      'spec_review_model',
       'workflow_mode'
     ]) {
       expect(env.bd.calls).toContainEqual({
@@ -2568,8 +2583,8 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
         repo: '/repo',
         target_base: 'main',
         workflow_mode_prior: null,
-        exec_stamped_keys: ['review_model'],
-        exec_values: { review_model: 'opus' },
+        exec_stamped_keys: ['spec_review_model'],
+        exec_values: { spec_review_model: 'opus' },
         conflict_resolution: true,
         external_conflict: true
       }
@@ -2585,7 +2600,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(env.bd.calls).toContainEqual({
       method: 'unsetMetadata',
       bead_id: 'X1',
-      key: 'review_model'
+      key: 'spec_review_model'
     });
     expect(env.bd.calls).toContainEqual({
       method: 'unsetMetadata',
@@ -5100,6 +5115,7 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     expect(notify.attemptStarted.mock.calls[0][0]).toEqual({
       bead_id: 'S1',
       title: '워커 알림',
+      runner: 'claude',
       model: 'opus',
       effort: 'high',
       repo: '/repo',
@@ -7218,5 +7234,206 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
     const attempt = latestAttempt(env.store, 'B1');
     expect(attempt.system_prompt).toBeNull();
     expect(attempt.task_prompt).toBeNull();
+  });
+});
+
+describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () => {
+  /**
+   * The external-conflict environment: the bead is an external row, blocked and
+   * not ready, so only the click path can dispatch it.
+   *
+   * @param {Record<string, any>} bead
+   */
+  function extRunnerEnv(bead) {
+    return setup({
+      config: { X1: { repo: '/repo', ready: false, blocked: true, ...bead } },
+      slots: 1,
+      externalPrs: {
+        X1: { bead_id: 'X1', pr_url: 'https://github.com/o/r/pull/9' }
+      }
+    });
+  }
+
+  /**
+   * Persist one settled attempt of X1 the way a prior session left it.
+   *
+   * @param {any} store
+   * @param {string} attempt_id
+   * @param {Partial<import('./queue-store.js').Attempt>} patch
+   */
+  function seedSettledAttempt(store, attempt_id, patch) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id: 'X1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id,
+      patch: { status: 'done', repo: '/repo', target_base: 'main', ...patch }
+    });
+  }
+
+  test('dispatches a codex-model bead through the codex runner', async () => {
+    const env = setup({ config: { S1: { model: 'sol' } }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    await flush();
+  });
+
+  test('records the resolved runner on the attempt', async () => {
+    const env = setup({ config: { S1: { model: 'sol' } }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(attempt.runner).toBe('codex');
+    await flush();
+  });
+
+  test('continues an external conflict on the prior attempt runner', async () => {
+    const env = extRunnerEnv({ model: 'opus' });
+    seedSettledAttempt(env.store, 'prev-1', { runner: 'codex' });
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    await flush();
+  });
+
+  test('resolves an external conflict from exec when no attempt precedes it', async () => {
+    const env = extRunnerEnv({ model: 'sol' });
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    await flush();
+  });
+
+  test('prefers the LAST prior attempt runner over an earlier one', async () => {
+    const env = extRunnerEnv({ model: 'opus' });
+    seedSettledAttempt(env.store, 'prev-1', { runner: 'codex' });
+    seedSettledAttempt(env.store, 'prev-2', { runner: 'claude' });
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.factoryNames).toEqual(['claude']);
+    await flush();
+  });
+
+  // Impl review 2026-08-10 finding 2: the trio is inherited TOGETHER — a prior
+  // codex attempt must never be relaunched with today's claude model.
+  test('inherits the prior attempt model and effort with its runner', async () => {
+    const env = extRunnerEnv({ model: 'opus', effort: 'low' });
+    seedSettledAttempt(env.store, 'prev-1', {
+      runner: 'codex',
+      model: 'sol',
+      effort: 'high'
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    expect(env.runner.settingsFor('X1').model).toBe('sol');
+    expect(env.runner.settingsFor('X1').effort).toBe('high');
+    const a =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(a.model).toBe('sol');
+    expect(a.effort).toBe('high');
+    await flush();
+  });
+
+  test('leaves the model unset when the inherited prior attempt recorded none', async () => {
+    const env = extRunnerEnv({ model: 'opus' });
+    seedSettledAttempt(env.store, 'prev-1', { runner: 'codex' });
+
+    await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(env.runner.settingsFor('X1').model).toBe(undefined);
+    await flush();
+  });
+
+  test('skips the orchestration stamps when the launch trio came from the prior attempt', async () => {
+    const env = extRunnerEnv({ model: null, effort: null });
+    seedSettledAttempt(env.store, 'prev-1', {
+      runner: 'codex',
+      model: 'sol',
+      effort: 'high'
+    });
+    env.store.setExecDefault(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      key: 'orchestration_model',
+      value: 'sonnet'
+    });
+    env.store.setExecDefault(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      key: 'spec_review_model',
+      value: 'opus'
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    const a =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(a.exec_stamped_keys).toEqual(['spec_review_model']);
+    expect(a.model).toBe('sol');
+    await flush();
+  });
+
+  test('inherits the prior runner on a conflict relaunch', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    const rev = env.store.snapshot(WS).revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'd1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'd1',
+      patch: {
+        status: 'done',
+        repo: '/repo',
+        target_base: 'main',
+        runner: 'codex',
+        session_id: 'sid-orig',
+        finished_at: 50
+      }
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+
+    expect(res.ok).toBe(true);
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    await flush();
+  });
+
+  // Characterization: a legacy attempt written before the runner field carried
+  // a value still relaunches, and claude is the only honest guess for it.
+  test('falls back to claude when the prior attempt recorded no runner', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    const rev = env.store.snapshot(WS).revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'd1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'd1',
+      patch: {
+        status: 'done',
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-orig',
+        finished_at: 50
+      }
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+
+    expect(res.ok).toBe(true);
+    expect(env.runner.factoryNames).toEqual(['claude']);
+    await flush();
   });
 });

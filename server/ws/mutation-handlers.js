@@ -3,7 +3,7 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import { makeError, makeOk } from '../../app/protocol.js';
-import { EXEC_SETTING_ENUMS as EXEC_SETTING_ENUMS_BASE } from '../worker/exec-enums.js';
+import { execSettingEnums } from '../worker/exec-enums.js';
 import {
   getGitUserNameInWorkspace,
   log,
@@ -73,17 +73,21 @@ export async function handleUpdateAssignee(ws, req) {
 
 /**
  * Allowed values per exec-preference key for the per-bead detail-panel edit
- * surface: the 5 workspace-global keys from the shared exec-enums single source
+ * surface: the 10 workspace-global keys from the shared exec-enums single source
  * PLUS `workflow_mode` (per-bead only — its only stored value is `fast_track`;
- * `standard`/empty is recorded as key removal). The 5-key table stays canonical
+ * `standard`/empty is recorded as key removal). The 10-key table stays canonical
  * in exec-enums.js; only the extra per-bead `workflow_mode` is synthesized here
  * so this edit surface's behavior is unchanged. `orchestration_model` uses the
- * union across runners; the client narrows by chosen runner for UX.
+ * catalog union across runners; the client narrows by chosen runner for UX.
+ *
+ * Built per call, not per module load: the base table is catalog-derived and the
+ * catalog is read from `config.toml` at first use.
+ *
+ * @returns {Record<string, ReadonlyArray<string>>}
  */
-const EXEC_SETTING_ENUMS = {
-  ...EXEC_SETTING_ENUMS_BASE,
-  workflow_mode: ['fast_track']
-};
+function execSettingEnumsForBead() {
+  return { ...execSettingEnums(), workflow_mode: ['fast_track'] };
+}
 
 /**
  * Build the `bd update` argv for a single exec-setting change. A `standard`/
@@ -114,7 +118,8 @@ export function buildExecSettingsArgs(id, key, value) {
  * @returns {string | null}
  */
 function validateExecSetting(key, value) {
-  if (!Object.prototype.hasOwnProperty.call(EXEC_SETTING_ENUMS, key)) {
+  const enums = execSettingEnumsForBead();
+  if (!Object.prototype.hasOwnProperty.call(enums, key)) {
     return `unknown exec-setting key: ${key}`;
   }
   if (value === '') {
@@ -123,9 +128,7 @@ function validateExecSetting(key, value) {
   if (key === 'workflow_mode' && value === 'standard') {
     return null; // standard — mapped to unset
   }
-  const allowed = /** @type {Record<string, string[]>} */ (EXEC_SETTING_ENUMS)[
-    key
-  ];
+  const allowed = enums[key];
   if (!allowed.includes(value)) {
     return `invalid value for ${key}: ${value}`;
   }
@@ -133,7 +136,7 @@ function validateExecSetting(key, value) {
 }
 
 /**
- * Set or unset one of the 5 exec-preference metadata keys (+ workflow_mode) via
+ * Set or unset one of the 10 exec-preference metadata keys (+ workflow_mode) via
  * `bd update --set-metadata` / `--unset-metadata`. Selecting `standard` (or
  * clearing a value) removes the key rather than storing a literal.
  *

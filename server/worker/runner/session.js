@@ -108,6 +108,15 @@ import { createTailReader } from './tail-reader.js';
  * the argv carries (UI-rxp3 §3), exposed so the spawn path can record what was
  * sent without rebuilding it; an adapter that omits them records nothing.
  * @property {(raw: any) => RunnerEvent|RunnerEvent[]|null} normalize - Map a raw line to normalized event(s) (or null to drop).
+ * @property {(raw: any) => ({ kind: 'message'|'result', usage: Record<string, number|string> }|null)} liftUsage -
+ * Lift the token usage off ONE raw line, tagged with the recording rule it obeys
+ * (`message` usage is keyed by id and a repeat REPLACES; `result` usage is the
+ * session's authoritative total). Null when the line carries none. REQUIRED of
+ * every adapter, and required to be the same function `normalize` uses: the live
+ * stream and the session-log replay both tally through it, so a
+ * restart-recovered total cannot drift from the one the live path produced. An
+ * adapter that lifted usage inline in `normalize` and left replay to a second
+ * implementation is exactly the drift this member forecloses.
  * @property {(raw: any) => (string|null)} detectQuestion - Return a reason string when a raw line is an interactive request, else null.
  * @property {(raw: any) => (string|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use, else null (feeds the merge guards).
  * @property {(raw: any) => (string|null)} [extractSessionId] - Return the runner's session identifier from a raw line, else null. The engine emits the FIRST non-null result once on the `session_id` event so the attempt record can persist it for `--resume`/transcript tracking (spec §2).

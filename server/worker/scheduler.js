@@ -148,8 +148,14 @@ function staleDispatchPrompt(bead_id, stale) {
  * a PR to.
  * @property {string} [model] - orchestration_model.
  * @property {string} [effort] - orchestration_effort.
- * @property {string} [review_model] - review_model (per-bead exec setting).
+ * @property {string} [spec_review_model] - spec_review_model (per-bead exec setting).
+ * @property {string} [spec_review_effort] - spec_review_effort (per-bead exec setting).
+ * @property {string} [impl_review_model] - impl_review_model (per-bead exec setting).
+ * @property {string} [impl_review_effort] - impl_review_effort (per-bead exec setting).
+ * @property {string} [plan_review_model] - plan_review_model (per-bead exec setting).
+ * @property {string} [plan_review_effort] - plan_review_effort (per-bead exec setting).
  * @property {string} [impl_model] - impl_model (per-bead exec setting).
+ * @property {string} [impl_effort] - impl_effort (per-bead exec setting).
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
@@ -2189,7 +2195,10 @@ export function createScheduler(deps) {
       bead: snap,
       defaults: deps.store.snapshot(workspace).exec_defaults
     });
-    const runner_name = 'claude';
+    // DERIVED from the resolved model, never an independent axis: the catalog
+    // owns the model→runner map, so a bead asking for `sol` dispatches through
+    // codex without anyone setting a runner key (§C-2).
+    const runner_name = exec.runner;
 
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
@@ -2691,6 +2700,7 @@ export function createScheduler(deps) {
     notifyLifecycle('attemptStarted', {
       bead_id,
       title: input.title ?? null,
+      runner: runner_name,
       model,
       effort,
       repo,
@@ -2948,6 +2958,30 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The MOST RECENT attempt of `bead_id`, or null when the bead has none.
+   *
+   * The store's attempt map is insertion-ordered by launch, so the last match is
+   * the latest attempt — and it is the latest one that says which CLI (and which
+   * model) wrote the branch this bead's next session continues.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {any}
+   */
+  function lastAttemptOf(workspace, bead_id) {
+    /** @type {any} */
+    let last = null;
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    for (const attempt of Object.values(attempts)) {
+      const a = /** @type {any} */ (attempt);
+      if (a && a.bead_id === bead_id) {
+        last = a;
+      }
+    }
+    return last;
+  }
+
+  /**
    * Dispatch a conflict-resolution session for an EXTERNAL PR row (UI-w0hi §1):
    * a bead an ordinary session delivered a PR for, which the durable lanes and
    * the attempt registry never held.
@@ -3016,15 +3050,38 @@ export function createScheduler(deps) {
       typeof target_base === 'string' && target_base.length > 0
         ? target_base
         : 'main';
-    // Resolved from scratch, not inherited: there is no prior attempt to carry
-    // a snapshot forward from, so this is the queue dispatch's contract
+    // The EXEC SETTINGS are resolved from scratch: there is no prior attempt to
+    // carry a snapshot forward from, so this is the queue dispatch's contract
     // verbatim (bead metadata > workspace default > hardcoded fallback), with
     // the same stamp-and-revert duty for the globally-filled keys.
     const exec = resolveExecSettings({
       bead: snap,
       defaults: deps.store.snapshot(workspace).exec_defaults
     });
-    const runner_name = 'claude';
+    // The RUNNER — and with it the model/effort — does look back (§C-2, impl
+    // review 2026-08-10 finding 2). This dispatch resumes work an earlier
+    // session left in the SAME worktree, so the runner that wrote that branch
+    // carries it forward; and the trio is inherited TOGETHER, because splitting
+    // it hands one runner another runner's model (`codex -m opus`). An absent
+    // prior model/effort stays null — the runner's own CLI default, never a
+    // cross-runner substitute. Only a bead with no runner-recorded attempt at
+    // all falls through to the exec derivation.
+    const prior_attempt = lastAttemptOf(workspace, bead_id);
+    const inherit_prior =
+      prior_attempt !== null &&
+      typeof prior_attempt.runner === 'string' &&
+      prior_attempt.runner.length > 0;
+    const runner_name = inherit_prior ? prior_attempt.runner : exec.runner;
+    const launch_model = inherit_prior
+      ? typeof prior_attempt.model === 'string'
+        ? prior_attempt.model
+        : null
+      : (exec.orchestration_model ?? null);
+    const launch_effort = inherit_prior
+      ? typeof prior_attempt.effort === 'string'
+        ? prior_attempt.effort
+        : null
+      : (exec.orchestration_effort ?? null);
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
 
@@ -3048,7 +3105,16 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'guard_hook_install_failed' };
     }
 
-    const stamped_keys = exec.stamped_keys;
+    // When the launch trio came from the prior attempt, the orchestration pair
+    // resolved from today's globals was NOT applied — stamping it would write
+    // metadata claiming a model this dispatch is not running. The step-key
+    // stamps stay: the session's skills consume them regardless of runner.
+    const stamped_keys = inherit_prior
+      ? exec.stamped_keys.filter(
+          (key) =>
+            key !== 'orchestration_model' && key !== 'orchestration_effort'
+        )
+      : exec.stamped_keys;
     /** @type {Record<string, string>} */
     const exec_values = {};
     for (const key of stamped_keys) {
@@ -3078,8 +3144,8 @@ export function createScheduler(deps) {
         target_base: base,
         base_oid: null,
         runner: runner_name,
-        model: exec.orchestration_model ?? null,
-        effort: exec.orchestration_effort ?? null,
+        model: launch_model,
+        effort: launch_effort,
         workflow_mode_prior: prior,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values: stamped_keys.length > 0 ? exec_values : null,
@@ -3195,8 +3261,8 @@ export function createScheduler(deps) {
       target_base: base,
       base_oid: null,
       runner_name,
-      model: exec.orchestration_model ?? null,
-      effort: exec.orchestration_effort ?? null,
+      model: launch_model,
+      effort: launch_effort,
       prior_wf: prior,
       stamped_keys,
       wt_path:
@@ -3237,7 +3303,14 @@ export function createScheduler(deps) {
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
     const attempt_id = prior.attempt_id;
-    const runner_name = 'claude';
+    // Inherited verbatim like the rest of the snapshot below (§1.3), and for a
+    // sharper reason: the child RESUMES the ancestor's session id, which only
+    // the CLI that minted it can reopen. claude is the fallback for an attempt
+    // written before the field carried a value, not a default.
+    const runner_name =
+      typeof prior.runner === 'string' && prior.runner.length > 0
+        ? prior.runner
+        : 'claude';
 
     const new_attempt_id = makeAttemptId(bead_id);
     const target_base =

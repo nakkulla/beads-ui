@@ -2588,6 +2588,21 @@ html[data-theme='dark'] {
   font-size: var(--fs-body);
 }
 
+/* A `self`/`skip` review step dispatches no separate leg, so its effort is
+   inert — the gate must read as a gate (mqcj §4.4). */
+.exec-defaults__sel:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Runner derived from the selected model — a label, not a control. */
+.exec-defaults__runner {
+  flex: 0 0 auto;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-chip);
+  color: var(--text-muted);
+}
+
 /* Read-only 검증·배포 설정 section (worker-deploy-hook §4): display only —
    the commands are defined in config.toml, which is the security boundary, so
    this block styles no interactive control. */

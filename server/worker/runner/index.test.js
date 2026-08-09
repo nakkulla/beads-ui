@@ -14,27 +14,122 @@ function resultLine() {
   });
 }
 
+/**
+ * @returns {string[]}
+ */
+function codexLines() {
+  return [
+    JSON.stringify({ type: 'thread.started', thread_id: 'th-1' }),
+    JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 1, output_tokens: 1 }
+    })
+  ];
+}
+
+/**
+ * A catalog with both adapters, injected so the registry tests never depend on
+ * the machine's `~/.config/bdui/config.toml`.
+ *
+ * @returns {import('../runner-catalog.js').ResolvedCatalog}
+ */
+function testCatalog() {
+  return {
+    runners: {
+      claude: {
+        command: 'claude',
+        models: { opus: { id: 'opus' } },
+        efforts: []
+      },
+      codex: {
+        command: 'codex',
+        models: { sol: { id: 'gpt-5.6-sol' } },
+        efforts: []
+      }
+    },
+    model_index: { opus: 'claude', sol: 'codex' }
+  };
+}
+
 const WS = '/tmp/ws';
 
-describe('runner/index registry (worker-phase1 §4)', () => {
-  test('claude is the only runner', () => {
-    expect([...RUNNERS]).toEqual(['claude']);
+describe('runner/index registry (worker-multi-provider-runner §B)', () => {
+  test('exposes the catalog active runners as the adapter vocabulary', () => {
+    expect([...RUNNERS]).toEqual(['claude', 'codex']);
   });
 
-  test('any runner name resolves to the claude adapter', async () => {
-    for (const name of ['claude', 'codex', 'ccx', 'nope', undefined]) {
+  test('resolves codex to the codex adapter', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: codexLines(), exit: 0 });
+    const runner = createRunner('codex', {
+      spawn_impl,
+      catalog: testCatalog()
+    });
+
+    const v = await runner.spawn({ id: 'UI-1' }, WS, { model: 'sol' }).done;
+
+    expect(runner.name).toBe('codex');
+    expect(spawn_impl.captured.calls[0].command).toBe('codex');
+    expect(v.success).toBe(true);
+  });
+
+  test('carries a config catalog command into the codex spawn', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: codexLines(), exit: 0 });
+    const catalog = testCatalog();
+    catalog.runners.codex.command = '/opt/codex';
+    const runner = createRunner('codex', { spawn_impl, catalog });
+
+    await runner.spawn({ id: 'UI-1' }, WS, { model: 'sol' }).done;
+
+    expect(spawn_impl.captured.calls[0].command).toBe('/opt/codex');
+  });
+
+  test('falls back to claude for an unknown runner name', async () => {
+    for (const name of ['ccx', 'nope', undefined]) {
       const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
-      const runner = createRunner(/** @type {any} */ (name), { spawn_impl });
-      expect(runner.name).toBe('claude');
+      const runner = createRunner(/** @type {any} */ (name), {
+        spawn_impl,
+        catalog: testCatalog()
+      });
+
       const v = await runner.spawn({ id: 'UI-1' }, WS, {}).done;
+
+      expect(runner.name).toBe('claude');
       expect(spawn_impl.captured.calls[0].command).toBe('claude');
       expect(v.success).toBe(true);
     }
   });
 
+  test('resolves claude to the claude adapter', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+    const runner = createRunner('claude', {
+      spawn_impl,
+      catalog: testCatalog()
+    });
+
+    const v = await runner.spawn({ id: 'UI-1' }, WS, {}).done;
+
+    expect(runner.name).toBe('claude');
+    expect(v.success).toBe(true);
+  });
+
+  test('falls back to claude when the catalog drops the codex entry', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+    const catalog = testCatalog();
+    delete catalog.runners.codex;
+    const runner = createRunner('codex', { spawn_impl, catalog });
+
+    const v = await runner.spawn({ id: 'UI-1' }, WS, {}).done;
+
+    expect(runner.name).toBe('claude');
+    expect(v.success).toBe(true);
+  });
+
   test('a full_plan bead spawns without a runner guard', async () => {
     const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
-    const runner = createRunner('claude', { spawn_impl });
+    const runner = createRunner('claude', {
+      spawn_impl,
+      catalog: testCatalog()
+    });
     const v = await runner.spawn(
       { id: 'UI-3', route: 'full_plan', plan_path: 'docs/plan.md' },
       WS,
