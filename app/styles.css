@@ -380,6 +380,72 @@ a {
   align-items: center;
   gap: var(--space-5);
 }
+
+/* Claude Code usage meter: active account windows, in cswap order. */
+.usage-meter-mount,
+.usage-meter {
+  display: inline-flex;
+  align-items: center;
+}
+
+.usage-meter {
+  gap: var(--sp-12);
+  margin-right: var(--sp-4);
+}
+
+.usage-meter--stale {
+  opacity: 0.55;
+}
+
+.usage-meter__window {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-5);
+  color: var(--text-primary);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.usage-meter__window--success {
+  --usage-meter-color: var(--accent-success);
+}
+
+.usage-meter__window--warn {
+  --usage-meter-color: var(--accent-warn);
+}
+
+.usage-meter__window--danger {
+  --usage-meter-color: var(--accent-danger);
+}
+
+.usage-meter__label {
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+}
+
+.usage-meter__track {
+  width: 52px;
+  height: var(--sp-6);
+  overflow: hidden;
+  border-radius: var(--r-10);
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+
+.usage-meter__fill {
+  display: block;
+  width: var(--progress);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--usage-meter-color);
+}
+
+.usage-meter__pct {
+  color: var(--text-primary);
+  font-size: var(--fs-chip-lg);
+  font-variant-numeric: tabular-nums;
+}
+
 .header-loading {
   display: inline-flex;
   align-items: center;
@@ -1392,6 +1458,10 @@ input.inline-edit:focus {
 
 /* Responsive: stack panels on narrow screens */
 @media (max-width: 900px) {
+  .usage-meter-mount {
+    display: none;
+  }
+
   .app-shell {
     height: auto;
   }

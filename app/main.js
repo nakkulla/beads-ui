@@ -29,6 +29,7 @@ import {
 } from './views/monitor/index.js';
 import { createTopNav } from './views/nav.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
+import { createUsageMeter } from './views/usage-meter.js';
 import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 import { createWsClient } from './ws.js';
@@ -161,6 +162,8 @@ export function bootstrap(root_element) {
   /** @type {HTMLElement|null} */
   const nav_mount = document.getElementById('top-nav');
   /** @type {HTMLElement|null} */
+  const usage_mount = document.getElementById('usage-meter');
+  /** @type {HTMLElement|null} */
   const board_root = document.getElementById('board-root');
   /** @type {HTMLElement|null} */
   const worker_root = document.getElementById('worker-root');
@@ -168,6 +171,10 @@ export function bootstrap(root_element) {
   const monitor_root = document.getElementById('monitor-root');
   /** @type {HTMLElement|null} */
   const detail_mount = document.getElementById('detail-panel');
+
+  if (usage_mount) {
+    createUsageMeter(usage_mount);
+  }
 
   if (board_root && worker_root && monitor_root && detail_mount) {
     /** @type {HTMLElement|null} */
