@@ -623,7 +623,7 @@ ${F.output}`),O.join(`
           </div>
         </div>
       </div>
-    `:c``}function p(){Pe(d(),e)}async function f($,y={}){s=$,o="loading",i="",a="",p();let C=n?n():"";if(!C){o="error",a="\uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uAC00 \uC120\uD0DD\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4",p();return}if(!r){o="error",a="fetch\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4",p();return}let V="/api/doc?workspace="+encodeURIComponent(C)+"&path="+encodeURIComponent($);try{let Z=await r(V),ne=await Z.json().catch(()=>({}));if(!Z.ok||!ne||ne.ok!==!0){if(ne?.error==="not_found"&&y.missing_state==="plan_pending"){o="pending",a="\uACC4\uD68D \uC791\uC131 \uC804 \xB7 \uACBD\uB85C\uB9CC \uC608\uC57D\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4",p();return}o="error",a="\uBB38\uC11C\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 ("+String(ne&&ne.error||Z.status)+")",p();return}i=String(ne.content||""),o="ready",p()}catch{o="error",a="\uBB38\uC11C \uC694\uCCAD \uC2E4\uD328",p()}}function h(){s=null,Pe(c``,e)}function S(){document.removeEventListener("keydown",l),h()}return{open:f,close:h,destroy:S}}var au=[{key:"input_tokens",label:"\uC785\uB825"},{key:"output_tokens",label:"\uCD9C\uB825"},{key:"cache_read_input_tokens",label:"\uCE90\uC2DC \uC77D\uAE30"},{key:"cache_creation_input_tokens",label:"\uCE90\uC2DC \uC0DD\uC131"}],ua="\uC11C\uBC84 \uC7AC\uC2DC\uC791 \uBCF5\uAD6C \u2014 \uBD80\uBD84 \uC9D1\uACC4";function lu(e){return typeof e=="number"&&Number.isFinite(e)?e:0}function cu(e){let t=ft(e);if(t.length>0)return t.map(s=>c`<span class="detail-usage-total" title=${s.tooltip}
+    `:c``}function p(){Pe(d(),e)}async function f($,y={}){s=$,o="loading",i="",a="",p();let C=n?n():"";if(!C){o="error",a="\uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uAC00 \uC120\uD0DD\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4",p();return}if(!r){o="error",a="fetch\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4",p();return}let V="/api/doc?workspace="+encodeURIComponent(C)+"&path="+encodeURIComponent($);try{let Z=await r(V),ne=await Z.json().catch(()=>({}));if(!Z.ok||!ne||ne.ok!==!0){if(ne?.error==="not_found"&&y.missing_state==="plan_pending"){o="pending",a="\uACC4\uD68D \uC791\uC131 \uC804 \xB7 \uACBD\uB85C\uB9CC \uC608\uC57D\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4",p();return}o="error",a="\uBB38\uC11C\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 ("+String(ne&&ne.error||Z.status)+")",p();return}i=String(ne.content||""),o="ready",p()}catch{o="error",a="\uBB38\uC11C \uC694\uCCAD \uC2E4\uD328",p()}}function h(){s=null,Pe(c``,e)}function S(){document.removeEventListener("keydown",l),h()}return{open:f,close:h,destroy:S}}var au=[{key:"input_tokens",label:"\uC785\uB825"},{key:"output_tokens",label:"\uCD9C\uB825"},{key:"cache_read_input_tokens",label:"\uCE90\uC2DC \uC77D\uAE30"}],ua="\uC11C\uBC84 \uC7AC\uC2DC\uC791 \uBCF5\uAD6C \u2014 \uBD80\uBD84 \uC9D1\uACC4";function lu(e){return typeof e=="number"&&Number.isFinite(e)?e:0}function cu(e){let t=ft(e);if(t.length>0)return t.map(s=>c`<span class="detail-usage-total" title=${s.tooltip}
           >${s.label}</span
         >`);let n=Tn(e);if(!n||!e)return"";let r=typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)?` \xB7 $${e.total_cost_usd.toFixed(2)}`:"";return c`<span
       class="detail-usage-total"
@@ -649,17 +649,17 @@ ${F.output}`),O.join(`
         ${i?c`<span class="detail-session__usage" title=${i.tooltip}
               >${i.label}</span
             >`:""}
-      </div>`}):[]}):""}function uu(e){let t=typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)?e.total_cost_usd:null;return c`<div class="detail-session__usage-detail">
-    ${au.map(n=>c`<span class="detail-session__usage-field"
-          ><span class="detail-session__usage-label">${n.label}</span
+      </div>`}):[]}):""}function uu(e,t){let n=typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)?e.total_cost_usd:null,r=[...au,{key:"cache_creation_input_tokens",label:t==="codex"?"\uCE90\uC2DC \uC4F0\uAE30":"\uCE90\uC2DC \uC0DD\uC131"},...t==="codex"&&typeof e.reasoning_output_tokens=="number"&&Number.isFinite(e.reasoning_output_tokens)?[{key:"reasoning_output_tokens",label:"\uCD94\uB860 \uCD9C\uB825"}]:[]];return c`<div class="detail-session__usage-detail">
+    ${r.map(s=>c`<span class="detail-session__usage-field"
+          ><span class="detail-session__usage-label">${s.label}</span
           ><span class="detail-session__usage-value"
-            >${lu(e[n.key]).toLocaleString("en-US")}</span
+            >${lu(e[s.key]).toLocaleString("en-US")}</span
           ></span
         >`)}
-    ${t===null?"":c`<span class="detail-session__usage-field"
+    ${n===null?"":c`<span class="detail-session__usage-field"
           ><span class="detail-session__usage-label">비용</span
           ><span class="detail-session__usage-value"
-            >$${t.toFixed(2)}</span
+            >$${n.toFixed(2)}</span
           ></span
         >`}
     ${e.replayed?c`<span class="detail-session__usage-note">${ua}</span>`:""}
@@ -732,7 +732,7 @@ ${F.output}`),O.join(`
             <span class="detail-session__time">${pa(d.started_at)}</span>
           </button>
           ${l(d)} ${i(d)} ${a(d)} ${fu(d)}
-          ${s.has(d.attempt_id)&&d.usage?uu(d.usage):""}
+          ${s.has(d.attempt_id)&&d.usage?uu(d.usage,d.runner==="codex"?"codex":"claude"):""}
           ${du(p)}
         </div>`})}
     </div>

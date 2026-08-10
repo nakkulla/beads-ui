@@ -217,6 +217,38 @@ describe('session-history token usage (UI-d7pw §2.2)', () => {
     ).toContain('812,003');
   });
 
+  test('labels direct Codex cache and reasoning as subset breakdown fields', () => {
+    const attempts = [
+      {
+        attempt_id: 'codex-1',
+        status: 'done',
+        runner: 'codex',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 100,
+          cache_creation_input_tokens: 9,
+          reasoning_output_tokens: 8
+        }
+      }
+    ];
+
+    const host = mount(
+      sessionHistoryTemplate(
+        attempts,
+        {},
+        {
+          expanded: new Set(['codex-1'])
+        }
+      )
+    );
+    const detail = host.querySelector('.detail-session__usage-detail');
+
+    expect(detail?.textContent).toContain('캐시 쓰기');
+    expect(detail?.textContent).toContain('추론 출력');
+    expect(detail?.textContent).not.toContain('캐시 생성');
+  });
+
   test('hides the breakdown for an attempt not marked expanded', () => {
     const attempts = [
       {

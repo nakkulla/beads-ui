@@ -15,7 +15,7 @@ import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { runSession } from './runner/session.js';
 import { createScheduler } from './scheduler.js';
-import { guardHookDir } from './state-paths.js';
+import { guardHookDir, usageReceiptInboxDir } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
 const WS = '/tmp/example-workspace/project-a';
@@ -373,6 +373,44 @@ afterEach(() => {
  */
 function flush() {
   return new Promise((r) => setImmediate(r));
+}
+
+/**
+ * Publish one exact v1 receipt into an attempt's deterministic inbox.
+ *
+ * @param {string} attempt_id
+ * @param {string} [receipt_id]
+ * @returns {string}
+ */
+function writeUsageReceipt(attempt_id, receipt_id = 'late-receipt') {
+  const inbox = usageReceiptInboxDir(WS, attempt_id);
+  fs.mkdirSync(inbox, { recursive: true, mode: 0o700 });
+  fs.chmodSync(inbox, 0o700);
+  const file = path.join(inbox, `${receipt_id}.json`);
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      schema: 'codex-usage-receipt-v1',
+      receipt_id,
+      attempt_id,
+      provider: 'codex',
+      role: 'implementation',
+      thread_id: 'thread-late',
+      turn_id: 'turn-late',
+      model: 'gpt-5.6-terra',
+      usage: {
+        input_tokens: 5,
+        output_tokens: 3,
+        cache_read_input_tokens: 2,
+        cache_creation_input_tokens: 1,
+        reasoning_output_tokens: 2
+      },
+      completed_at: '2026-08-11T12:34:56Z'
+    }),
+    { mode: 0o600 }
+  );
+  fs.chmodSync(file, 0o600);
+  return file;
 }
 
 /**
@@ -5536,6 +5574,18 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
 
+  test('recovers a late receipt for a paused attempt after restart', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store, { status: 'paused' });
+    const receipt_file = writeUsageReceipt('att-1');
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].usage_legs).toHaveLength(1);
+    expect(fs.existsSync(receipt_file)).toBe(false);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
   test('skips an attempt this process still holds a session handle for', async () => {
     const env = setup({
       config: { S1: {} },
@@ -6415,6 +6465,25 @@ describe('scheduler token usage (UI-raqh §1)', () => {
 });
 
 describe('scheduler usage after a pause or a stop (UI-raqh §1)', () => {
+  test('persists a late receipt after pause without an outer usage delta', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('A1').emit('session_id', 'sid-1');
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.pause(WS, attempt_id);
+    const receipt_file = writeUsageReceipt(attempt_id);
+
+    env.runner.finish('A1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].usage_legs).toHaveLength(
+      1
+    );
+    expect(fs.existsSync(receipt_file)).toBe(false);
+  });
+
   test('persists a trailing usage event that lands after the pause', async () => {
     const env = setup({ config: { A1: {} } });
     seedQueue(env.store, ['A1']);

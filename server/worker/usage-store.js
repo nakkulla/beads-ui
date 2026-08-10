@@ -83,7 +83,8 @@ function hasAnyNumber(input) {
 }
 
 /**
- * Normalize a stream payload to the tally shape (unknown/absent → 0).
+ * Normalize a stream payload to the tally shape. Core counters default to 0;
+ * optional provider counters stay absent unless the provider reported them.
  *
  * @param {UsageInput} input
  * @returns {UsageTally}
@@ -94,9 +95,14 @@ function toTally(input) {
     input_tokens: numeric(input.input_tokens),
     output_tokens: numeric(input.output_tokens),
     cache_read_input_tokens: numeric(input.cache_read_input_tokens),
-    cache_creation_input_tokens: numeric(input.cache_creation_input_tokens),
-    reasoning_output_tokens: numeric(input.reasoning_output_tokens)
+    cache_creation_input_tokens: numeric(input.cache_creation_input_tokens)
   };
+  if (
+    typeof input.reasoning_output_tokens === 'number' &&
+    Number.isFinite(input.reasoning_output_tokens)
+  ) {
+    tally.reasoning_output_tokens = input.reasoning_output_tokens;
+  }
   if (
     typeof input.total_cost_usd === 'number' &&
     Number.isFinite(input.total_cost_usd)
@@ -236,13 +242,18 @@ export function createUsageStore() {
         input_tokens: 0,
         output_tokens: 0,
         cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
-        reasoning_output_tokens: 0
+        cache_creation_input_tokens: 0
       };
       let cost = 0;
       let has_cost = false;
       for (const tally of entry.by_message.values()) {
         for (const field of SUM_FIELDS) {
+          if (
+            field === 'reasoning_output_tokens' &&
+            typeof tally[field] !== 'number'
+          ) {
+            continue;
+          }
           total[field] = numeric(total[field]) + numeric(tally[field]);
         }
         if (typeof tally.total_cost_usd === 'number') {

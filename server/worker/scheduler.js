@@ -92,6 +92,9 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   'stopped'
 ]);
 
+/** Maximum terminal receipt inboxes inspected per reconciliation pass. */
+const TERMINAL_RECEIPT_RECOVERY_MAX = 32;
+
 /**
  * Project a session's `blocked_detail` onto the attempt's durable
  * `cause_detail` (UI-2o4z §2). Undefined when the session left nothing to
@@ -302,6 +305,8 @@ export function createScheduler(deps) {
   const now = deps.now || (() => Date.now());
   const guardHook = deps.guardHook || default_guard_hook;
   const usage_receipts = deps.usageReceipts || default_usage_receipts;
+  /** @type {Map<string, number>} */
+  const receipt_recovery_cursor = new Map();
   let attempt_seq = 0;
   const makeAttemptId =
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
@@ -570,6 +575,58 @@ export function createScheduler(deps) {
     } catch (err) {
       log('receipt inbox gc failed for workspace %s: %o', workspace, err);
     }
+  }
+
+  /**
+   * Re-scan terminal/history-only attempts after a restart. These attempts have
+   * no live handle left to perform another terminal mutation, so a receipt that
+   * landed after pause/stop would otherwise remain stranded indefinitely.
+   *
+   * @param {string} workspace
+   * @param {Record<string, any>} attempts
+   * @returns {boolean}
+   */
+  function recoverTerminalUsageReceipts(workspace, attempts) {
+    if (typeof usage_receipts.readAttemptUsageReceipts !== 'function') {
+      return false;
+    }
+    const candidates = Object.entries(attempts || {})
+      .filter(([, attempt]) => {
+        const status = /** @type {any} */ (attempt)?.status;
+        return status === 'paused' || TERMINAL_ATTEMPT_STATUSES.has(status);
+      })
+      .sort(([left], [right]) => left.localeCompare(right));
+    if (candidates.length === 0) {
+      receipt_recovery_cursor.delete(workspace);
+      return false;
+    }
+    const limit = Math.min(TERMINAL_RECEIPT_RECOVERY_MAX, candidates.length);
+    const start =
+      (receipt_recovery_cursor.get(workspace) || 0) % candidates.length;
+    let changed = false;
+    for (let offset = 0; offset < limit; offset += 1) {
+      const [attempt_id, attempt] =
+        candidates[(start + offset) % candidates.length];
+      try {
+        const scanned = usage_receipts.readAttemptUsageReceipts(
+          workspace,
+          attempt_id,
+          { known_legs: /** @type {any} */ (attempt).usage_legs }
+        );
+        if (scanned.files.length === 0) {
+          continue;
+        }
+        const result = deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {}
+        });
+        changed = changed || !!result?.ok;
+      } catch (err) {
+        log('terminal receipt recovery failed for %s: %o', attempt_id, err);
+      }
+    }
+    receipt_recovery_cursor.set(workspace, (start + limit) % candidates.length);
+    return changed;
   }
 
   /**
@@ -1596,8 +1653,11 @@ export function createScheduler(deps) {
           releaseDisposition(bead_id);
         }
         const patch = usagePatch(workspace, attempt_id);
-        if (patch.usage) {
-          deps.store.updateAttempt(workspace, { attempt_id, patch });
+        const result = deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch
+        });
+        if (result?.ok) {
           notifyChanged(workspace);
         }
         // The ⏸/■ path returns here, so the settlement step has to run on this
@@ -2478,7 +2538,11 @@ export function createScheduler(deps) {
     }
     reconciling.add(workspace);
     try {
-      const q = deps.store.snapshot(workspace);
+      let q = deps.store.snapshot(workspace);
+      if (recoverTerminalUsageReceipts(workspace, q.attempts)) {
+        q = deps.store.snapshot(workspace);
+        notifyChanged(workspace);
+      }
       gcUsageReceiptInboxes(workspace);
       /** @type {Array<{ attempt_id: string, attempt: any }>} */
       const dead = [];

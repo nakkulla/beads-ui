@@ -17,13 +17,12 @@ import {
  * The breakdown rows behind [τ 자세히] (UI-d7pw §2.2), in tally order. Cost is
  * appended separately because it is reported once per session, not per field.
  *
- * @type {ReadonlyArray<{ key: 'input_tokens'|'output_tokens'|'cache_read_input_tokens'|'cache_creation_input_tokens', label: string }>}
+ * @type {ReadonlyArray<{ key: 'input_tokens'|'output_tokens'|'cache_read_input_tokens', label: string }>}
  */
 const USAGE_BREAKDOWN = [
   { key: 'input_tokens', label: '입력' },
   { key: 'output_tokens', label: '출력' },
-  { key: 'cache_read_input_tokens', label: '캐시 읽기' },
-  { key: 'cache_creation_input_tokens', label: '캐시 생성' }
+  { key: 'cache_read_input_tokens', label: '캐시 읽기' }
 ];
 
 /**
@@ -168,16 +167,38 @@ function receiptLegs(projection) {
  * row-click=open-transcript convention stays intact.
  *
  * @param {UsageRecord} usage
+ * @param {'claude'|'codex'} provider
  * @returns {TemplateResult}
  */
-function usageDetail(usage) {
+function usageDetail(usage, provider) {
   const cost =
     typeof usage.total_cost_usd === 'number' &&
     Number.isFinite(usage.total_cost_usd)
       ? usage.total_cost_usd
       : null;
+  const provider_rows = [
+    ...USAGE_BREAKDOWN,
+    {
+      key: /** @type {'cache_creation_input_tokens'} */ (
+        'cache_creation_input_tokens'
+      ),
+      label: provider === 'codex' ? '캐시 쓰기' : '캐시 생성'
+    },
+    ...(provider === 'codex' &&
+    typeof usage.reasoning_output_tokens === 'number' &&
+    Number.isFinite(usage.reasoning_output_tokens)
+      ? [
+          {
+            key: /** @type {'reasoning_output_tokens'} */ (
+              'reasoning_output_tokens'
+            ),
+            label: '추론 출력'
+          }
+        ]
+      : [])
+  ];
   return html`<div class="detail-session__usage-detail">
-    ${USAGE_BREAKDOWN.map(
+    ${provider_rows.map(
       (row) =>
         html`<span class="detail-session__usage-field"
           ><span class="detail-session__usage-label">${row.label}</span
@@ -480,7 +501,9 @@ export function sessionHistoryTemplate(
             <span class="detail-session__time">${shortTime(a.started_at)}</span>
           </button>
           ${usageButton(a)} ${resumeButton(a)} ${causeLine(a)} ${presetAudit(a)}
-          ${expanded.has(a.attempt_id) && a.usage ? usageDetail(a.usage) : ''}
+          ${expanded.has(a.attempt_id) && a.usage
+            ? usageDetail(a.usage, a.runner === 'codex' ? 'codex' : 'claude')
+            : ''}
           ${receiptLegs(projection)}
         </div>`;
       })}

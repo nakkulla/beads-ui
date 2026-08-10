@@ -295,6 +295,21 @@ describe('attempt usage receipts', () => {
 
       expect(removed).toBe(0);
       expect(fs.existsSync(orphan)).toBe(true);
+
+      const removed_next = gcUsageReceiptInboxes(
+        workspace,
+        {
+          'a-active': {
+            attempt_id: 'a-active',
+            status: 'running',
+            usage_legs: []
+          }
+        },
+        { retention_ms: 1, max: 1 }
+      );
+
+      expect(removed_next).toBe(1);
+      expect(fs.existsSync(orphan)).toBe(false);
     } finally {
       if (prior === undefined) {
         delete process.env.XDG_STATE_HOME;

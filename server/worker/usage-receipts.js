@@ -21,6 +21,8 @@ const FILE_MODE = 0o600;
 export const USAGE_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /** @type {number} */
 export const USAGE_RECEIPT_GC_MAX = 32;
+/** @type {Map<string, number>} */
+const GC_CURSOR_BY_ROOT = new Map();
 const TOP_LEVEL_KEYS = new Set([
   'schema',
   'receipt_id',
@@ -462,12 +464,12 @@ export function gcUsageReceiptInboxes(workspace, attempts, options = {}) {
     return 0;
   }
   let removed = 0;
-  let inspected = 0;
-  for (const name of names) {
-    if (inspected >= max) {
-      break;
-    }
-    inspected += 1;
+  const inspection_limit =
+    Number.isInteger(max) && max > 0 ? Math.min(max, names.length) : 0;
+  const start =
+    names.length > 0 ? (GC_CURSOR_BY_ROOT.get(root) || 0) % names.length : 0;
+  for (let offset = 0; offset < inspection_limit; offset += 1) {
+    const name = names[(start + offset) % names.length];
     const dir = path.join(root, name);
     if (!validateDirectory(dir, file_system).ok) {
       continue;
@@ -525,6 +527,9 @@ export function gcUsageReceiptInboxes(workspace, attempts, options = {}) {
     } catch (err) {
       log('receipt inbox gc failed: %o', err);
     }
+  }
+  if (names.length > 0) {
+    GC_CURSOR_BY_ROOT.set(root, (start + inspection_limit) % names.length);
   }
   return removed;
 }
