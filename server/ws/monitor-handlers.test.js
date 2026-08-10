@@ -128,6 +128,34 @@ describe('buildMonitorPipeline visibility (UI-nprg)', () => {
 
     expect(out[0].name).toBe('repo-a');
   });
+
+  test('carries attempt usage legs through the monitor snapshot', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-1',
+              status: 'running',
+              runner: 'claude',
+              model: 'claude-opus',
+              session_id: 'outer-session',
+              usage_legs: [{ receipt_id: 'launch-1', role: 'implementation' }]
+            }
+          }
+        })
+      }
+    });
+
+    expect(/** @type {any} */ (out[0]).attempts.a1).toMatchObject({
+      runner: 'claude',
+      model: 'claude-opus',
+      session_id: 'outer-session',
+      usage_legs: [{ receipt_id: 'launch-1', role: 'implementation' }]
+    });
+  });
 });
 
 describe('buildMonitorPipeline done lane (UI-qrfo §7)', () => {

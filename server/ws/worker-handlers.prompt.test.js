@@ -102,6 +102,41 @@ describe('worker-state push prompt stripping (UI-rxp3 §3)', () => {
     expect(/** @type {any} */ (out.a1).started_at).toBe(1_700_000_000_000);
   });
 
+  test('keeps usage legs while stripping every prompt field', () => {
+    const out = attemptsWithUsage(
+      {
+        attempts: {
+          a1: recordedAttempt({
+            status: 'running',
+            usage_legs: [
+              {
+                receipt_id: 'launch-1',
+                provider: 'codex',
+                role: 'implementation',
+                session_id: 'thread-1',
+                turn_id: 'turn-1',
+                model: 'gpt-5.6-terra',
+                usage: {
+                  input_tokens: 1,
+                  output_tokens: 1,
+                  cache_read_input_tokens: 0,
+                  cache_creation_input_tokens: 0,
+                  reasoning_output_tokens: 0
+                },
+                completed_at: '2026-08-11T12:34:56Z'
+              }
+            ]
+          })
+        }
+      },
+      WS
+    );
+
+    expect(/** @type {any} */ (out.a1).usage_legs).toHaveLength(1);
+    expect('system_prompt' in /** @type {any} */ (out.a1)).toBe(false);
+    expect('task_prompt' in /** @type {any} */ (out.a1)).toBe(false);
+  });
+
   test('leaves the durable record itself untouched', () => {
     const attempt = recordedAttempt();
 

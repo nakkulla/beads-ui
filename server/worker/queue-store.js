@@ -80,6 +80,8 @@
  * Null on an attempt whose runner reported none and on every record written
  * before the field existed — the display is fail-quiet, so a null simply
  * renders nothing.
+ * @property {UsageLeg[]} usage_legs - Completed nested provider usage receipts.
+ * Legacy attempts normalize this optional field to an empty list.
  *
  * RETIRED merge-axis fields (worker-phase2 §2). New attempts never write them,
  * but attempt history is immutable (§9), so the shape is preserved so a legacy
@@ -179,6 +181,17 @@
  * which is the disposition lane's own relaunch input and is kept for that.
  * NEITHER field rides the worker-state push: the projection strips both
  * (`worker-handlers.js`), and the UI fetches them on demand.
+ */
+/**
+ * @typedef {Object} UsageLeg
+ * @property {string} receipt_id
+ * @property {'codex'} provider
+ * @property {'implementation'|'review-consult'} role
+ * @property {string} session_id
+ * @property {string} turn_id
+ * @property {string} model
+ * @property {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }} usage
+ * @property {string} completed_at
  */
 /**
  * @typedef {Object} Queue
@@ -318,6 +331,11 @@ import nodeFs from 'node:fs';
 import path from 'node:path';
 import { execSettingEnums } from './exec-enums.js';
 import { queueFilePath } from './state-paths.js';
+import {
+  consumeUsageReceiptFiles,
+  normalizeUsageLegs,
+  readAttemptUsageReceipts
+} from './usage-receipts.js';
 
 /**
  * Default concurrency cap when a queue carries no (or an unusable) `slots`
@@ -593,6 +611,7 @@ export function makeAttempt(fields) {
     usage: isRecord(fields.usage)
       ? /** @type {Attempt['usage']} */ (fields.usage)
       : null,
+    usage_legs: normalizeUsageLegs(fields.usage_legs),
     merge_policy: fields.merge_policy ?? null,
     drift_policy: fields.drift_policy ?? null,
     demoted_reason: fields.demoted_reason ?? null,
@@ -1017,6 +1036,51 @@ export function createQueueStore(options = {}) {
     return { ok: true, conflict: false, queue: clone(next) };
   }
 
+  /**
+   * Fold the terminal receipt scan into the SAME queue mutation that settles an
+   * attempt. Files stay untouched until that atomic write succeeds, so a queue
+   * persistence failure is retried from the inbox rather than losing evidence.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {Partial<Attempt>} patch
+   * @returns {{ patch: Partial<Attempt>, files: string[] }}
+   */
+  function terminalReceiptPatch(workspace, attempt_id, patch) {
+    const current = ensureLoaded(workspace).attempts[attempt_id];
+    if (!current) {
+      return { patch, files: [] };
+    }
+    let scanned;
+    try {
+      scanned = readAttemptUsageReceipts(workspace, attempt_id, {
+        known_legs: current.usage_legs
+      });
+    } catch {
+      return { patch, files: [] };
+    }
+    return {
+      patch: {
+        ...patch,
+        usage_legs: normalizeUsageLegs([
+          ...(Array.isArray(current.usage_legs) ? current.usage_legs : []),
+          ...scanned.legs
+        ])
+      },
+      files: scanned.files
+    };
+  }
+
+  /**
+   * @param {QueueOpResult} result
+   * @param {string[]} files
+   */
+  function consumeTerminalReceipts(result, files) {
+    if (result.ok && files.length > 0) {
+      consumeUsageReceiptFiles(files);
+    }
+  }
+
   return {
     /**
      * Cold-load (and cache) a workspace queue, forcing auto_advance=false.
@@ -1239,7 +1303,23 @@ export function createQueueStore(options = {}) {
      */
     updateAttempt(workspace, input) {
       const { attempt_id, patch } = input;
-      return applyUnconditional(workspace, (next) => {
+      const current_status =
+        ensureLoaded(workspace).attempts[attempt_id]?.status;
+      const terminal =
+        patch.status === 'paused' ||
+        patch.status === 'stopped' ||
+        patch.status === 'done' ||
+        patch.status === 'failed' ||
+        patch.status === 'orphaned' ||
+        current_status === 'paused' ||
+        current_status === 'stopped' ||
+        current_status === 'done' ||
+        current_status === 'failed' ||
+        current_status === 'orphaned';
+      const prepared = terminal
+        ? terminalReceiptPatch(workspace, attempt_id, patch)
+        : { patch, files: [] };
+      const result = applyUnconditional(workspace, (next) => {
         const cur = next.attempts[attempt_id];
         if (!cur) {
           return false;
@@ -1247,13 +1327,15 @@ export function createQueueStore(options = {}) {
         next.attempts[attempt_id] = makeAttempt(
           /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ ({
             ...cur,
-            ...patch,
+            ...prepared.patch,
             attempt_id,
-            bead_id: patch.bead_id ?? cur.bead_id
+            bead_id: prepared.patch.bead_id ?? cur.bead_id
           })
         );
         return true;
       });
+      consumeTerminalReceipts(result, prepared.files);
+      return result;
     },
 
     /**
@@ -1272,7 +1354,8 @@ export function createQueueStore(options = {}) {
      */
     discardAttempt(workspace, input) {
       const { attempt_id, bead_id, patch } = input;
-      return applyUnconditional(workspace, (next) => {
+      const prepared = terminalReceiptPatch(workspace, attempt_id, patch);
+      const result = applyUnconditional(workspace, (next) => {
         const cur = next.attempts[attempt_id];
         if (!cur || typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
@@ -1280,7 +1363,7 @@ export function createQueueStore(options = {}) {
         next.attempts[attempt_id] = makeAttempt(
           /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ ({
             ...cur,
-            ...patch,
+            ...prepared.patch,
             attempt_id,
             bead_id: cur.bead_id
           })
@@ -1289,6 +1372,8 @@ export function createQueueStore(options = {}) {
         delete next.admission[bead_id];
         return true;
       });
+      consumeTerminalReceipts(result, prepared.files);
+      return result;
     },
 
     /**
@@ -1307,7 +1392,8 @@ export function createQueueStore(options = {}) {
      */
     moveToPrWait(workspace, input) {
       const { bead_id, attempt_id, patch } = input;
-      return applyUnconditional(workspace, (next) => {
+      const prepared = terminalReceiptPatch(workspace, attempt_id, patch);
+      const result = applyUnconditional(workspace, (next) => {
         const cur = next.attempts[attempt_id];
         if (!cur || typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
@@ -1315,7 +1401,7 @@ export function createQueueStore(options = {}) {
         next.attempts[attempt_id] = makeAttempt(
           /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ ({
             ...cur,
-            ...patch,
+            ...prepared.patch,
             attempt_id,
             bead_id: cur.bead_id
           })
@@ -1340,6 +1426,8 @@ export function createQueueStore(options = {}) {
         next.pr_wait.push({ bead_id, added_at: now() });
         return true;
       });
+      consumeTerminalReceipts(result, prepared.files);
+      return result;
     },
 
     /**
@@ -1366,7 +1454,11 @@ export function createQueueStore(options = {}) {
      */
     moveToDone(workspace, input) {
       const { bead_id, attempt_id, patch } = input;
-      return applyUnconditional(workspace, (next) => {
+      const prepared =
+        typeof attempt_id === 'string' && attempt_id.length > 0
+          ? terminalReceiptPatch(workspace, attempt_id, patch || {})
+          : { patch: patch || {}, files: [] };
+      const result = applyUnconditional(workspace, (next) => {
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
         }
@@ -1381,7 +1473,7 @@ export function createQueueStore(options = {}) {
           next.attempts[attempt_id] = makeAttempt(
             /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ ({
               ...cur,
-              ...(patch || {}),
+              ...prepared.patch,
               attempt_id,
               bead_id: cur.bead_id
             })
@@ -1392,6 +1484,8 @@ export function createQueueStore(options = {}) {
         next.done.push({ bead_id, added_at: now() });
         return true;
       });
+      consumeTerminalReceipts(result, prepared.files);
+      return result;
     },
 
     /**
