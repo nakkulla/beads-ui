@@ -1135,6 +1135,114 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     expect(h.calls).not.toContain('spawn:bdui-shared:detached');
   });
 
+  test('replays the complete cleanup from a prerecorded completion operation', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      verifyResults: [{ ok: true, reason: 'ok' }]
+    });
+    h.store.enqueueCompletionIntent(WS, {
+      root_bead_id: BEAD,
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'b'.repeat(40)
+      }
+    });
+    h.store.setCompletionSubject(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      subject: h.store.snapshot(WS).completion_intents[BEAD].subject
+    });
+    h.store.prepareCompletionOp(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      op: {
+        op_id: 'cleanup-1',
+        kind: 'retry_cleanup',
+        failure_key: {
+          stage: 'post_merge_verify',
+          reason: 'verify_cmd_failed',
+          subject_sha: 'b'.repeat(40),
+          base_sha: 'b'.repeat(40),
+          result_digest: 'c'.repeat(64)
+        },
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const result = await h.actions.resumeCompletionCleanup(BEAD);
+
+    expect(result).toMatchObject({ ok: true, step: null, reason: null });
+    const queue = h.store.snapshot(WS);
+    expect(
+      queue.done.map((/** @type {any} */ entry) => entry.bead_id)
+    ).toContain(BEAD);
+    expect(queue.completion_intents[BEAD]).toMatchObject({
+      phase: 'completed',
+      active_op: null
+    });
+    expect(h.worktree.removeByBranch).toHaveBeenCalledTimes(1);
+    expect(h.bd.setStatus).toHaveBeenCalledWith(BEAD, 'closed');
+  });
+
+  test('stops a completion cleanup replay before detached deploy when verify stays red', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
+    });
+    h.store.enqueueCompletionIntent(WS, {
+      root_bead_id: BEAD,
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'b'.repeat(40)
+      }
+    });
+    h.store.setCompletionSubject(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      subject: h.store.snapshot(WS).completion_intents[BEAD].subject
+    });
+    h.store.prepareCompletionOp(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      op: {
+        op_id: 'cleanup-1',
+        kind: 'retry_cleanup',
+        failure_key: {
+          stage: 'post_merge_verify',
+          reason: 'verify_cmd_failed',
+          subject_sha: 'b'.repeat(40),
+          base_sha: 'b'.repeat(40),
+          result_digest: 'c'.repeat(64)
+        },
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const result = await h.actions.resumeCompletionCleanup(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed'
+    });
+    expect(h.calls).not.toContain('spawn:bdui-shared:detached');
+  });
+
   test('refuses the click outright on an unreadable verify declaration (UI-kfl4 §4.2)', async () => {
     const h = makeActions({
       verifyResolution: {

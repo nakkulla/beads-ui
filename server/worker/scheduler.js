@@ -4261,7 +4261,18 @@ export function createScheduler(deps) {
         ? { ok: true, attempt_id: op.attempt_id, adopted: true }
         : { ok: false, reason: 'completion_attempt_collision' };
     }
-    if (intent.active_op !== null) {
+    const active_op = intent.active_op;
+    const replaces_create =
+      op.kind === 'dispatch_repair' &&
+      active_op?.kind === 'create_repair' &&
+      active_op.status === 'observed' &&
+      active_op.repair_bead_id === op.repair_bead_id &&
+      active_op.failure_key?.stage === op.failure_key.stage &&
+      active_op.failure_key?.reason === op.failure_key.reason &&
+      active_op.failure_key?.subject_sha === op.failure_key.subject_sha &&
+      active_op.failure_key?.base_sha === op.failure_key.base_sha &&
+      active_op.failure_key?.result_digest === op.failure_key.result_digest;
+    if (intent.active_op !== null && !replaces_create) {
       return { ok: false, reason: 'completion_op_in_flight' };
     }
     if (

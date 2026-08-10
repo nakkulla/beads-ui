@@ -640,6 +640,21 @@ export function createMergeQueue(deps) {
       });
       return;
     }
+    const q = snapshot();
+    if (
+      intent.subject?.role === 'repair' &&
+      Array.isArray(q.done) &&
+      q.done.some(
+        (/** @type {any} */ entry) => entry.bead_id === subject_bead_id
+      )
+    ) {
+      await handoffCompletion(root_bead_id, subject_bead_id, {
+        ok: true,
+        action: 'already_merged',
+        reason: null
+      });
+      return;
+    }
     /** @type {number|null} */
     let unconfirmed_deadline = null;
     const restored = runningResolutionAttempt(subject_bead_id);

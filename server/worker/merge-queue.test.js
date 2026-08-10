@@ -431,6 +431,79 @@ describe('worker/merge-queue — completion subject continuity', () => {
     ]);
     expect(queue.completion_intents['UI-root'].repair_sessions_used).toBe(1);
   });
+
+  test('adopts a repair child already in done without issuing a duplicate merge', async () => {
+    const store = seed(['UI-root', 'UI-repair']);
+    store.dequeueMerge(WS, 'UI-repair');
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    const failure_key = {
+      stage: 'merge_gate',
+      reason: 'verify_cmd_failed',
+      subject_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      result_digest: 'd'.repeat(64)
+    };
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-1',
+        kind: 'create_repair',
+        failure_key,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-1',
+      repair_bead_id: 'UI-repair'
+    });
+    store.advanceCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-1',
+      status: 'consumed',
+      next_phase: 'gating',
+      clear: true
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: {
+        role: 'repair',
+        bead_id: 'UI-repair',
+        pr_url: 'https://github.com/o/r/pull/2',
+        head_sha: 'c'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'c'.repeat(40)
+      }
+    });
+    store.moveToDone(WS, { bead_id: 'UI-repair' });
+    const merge = vi.fn();
+    const onCompletionResult = vi.fn();
+    const mq = driver(store, { merge, onCompletionResult });
+
+    await mq.kick();
+
+    expect(merge).not.toHaveBeenCalled();
+    expect(onCompletionResult).toHaveBeenCalledWith('UI-root', 'UI-repair', {
+      ok: true,
+      action: 'already_merged',
+      reason: null
+    });
+  });
 });
 
 describe('worker/merge-queue — conflict resolution rounds', () => {

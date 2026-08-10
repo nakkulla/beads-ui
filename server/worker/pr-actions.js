@@ -2091,6 +2091,41 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Coordinator-owned replay of the same complete cleanup choreography after
+   * a merged-base repair. Authorization is the root intent's prerecorded
+   * `retry_cleanup` op, not the diagnosis marker used by the human retry path.
+   * No cleanup steps are copied here: both entries call {@link runCleanup}.
+   *
+   * @param {string} root_bead_id
+   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   */
+  async function resumeCompletionCleanup(root_bead_id) {
+    if (in_flight.has(root_bead_id)) {
+      return { ok: false, step: null, reason: 'action_in_flight' };
+    }
+    const q = deps.store.snapshot(workspace);
+    const intent = q.completion_intents?.[root_bead_id];
+    if (!inPrWait(q, root_bead_id)) {
+      return { ok: false, step: null, reason: 'not_in_pr_wait' };
+    }
+    if (
+      !intent ||
+      intent.phase !== 'cleaning' ||
+      intent.subject?.role !== 'root' ||
+      intent.active_op?.kind !== 'retry_cleanup'
+    ) {
+      return { ok: false, step: null, reason: 'completion_cleanup_unowned' };
+    }
+    in_flight.add(root_bead_id);
+    try {
+      return await runCleanup(root_bead_id);
+    } finally {
+      in_flight.delete(root_bead_id);
+      clearStep(root_bead_id);
+    }
+  }
+
+  /**
    * Run [폐기]: throw the PR, the worktree and the branch away, and hand the
    * bead back to the candidate lane. It does NOT re-queue and does NOT dispatch
    * — re-running is the drag path (후보 → 대기), which re-passes admission
@@ -2269,6 +2304,7 @@ export function createPrActions(deps) {
     discard,
     cleanupObservedMerge,
     retryCleanup,
+    resumeCompletionCleanup,
     prState,
     completionGate
   };

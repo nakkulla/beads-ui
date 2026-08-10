@@ -3,7 +3,11 @@
  * what it must NOT resurrect (UI-wwby §2).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { mergeQueueCandidates, overlaidPrWait } from './merge-candidates.js';
+import {
+  completionIntentSeed,
+  mergeQueueCandidates,
+  overlaidPrWait
+} from './merge-candidates.js';
 import { getWorkerRuntime } from './runtime.js';
 
 const WS = '/tmp/example-workspace/merge-candidates';
@@ -186,5 +190,77 @@ describe('worker/merge-candidates — completion repair intake', () => {
         'resolved'
       )
     ).toEqual([]);
+  });
+
+  test('includes a worker-owned repairable post-merge verify failure', () => {
+    const runtime = getWorkerRuntime();
+    runtime.prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'MERGED',
+        mergeable: 'UNKNOWN',
+        merge_state_status: 'UNKNOWN',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main'
+      },
+      ci: null
+    });
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [{ bead_id: 'UI-1' }],
+        attempts: {},
+        cleanup_failed: {
+          'UI-1': {
+            step: 'post_merge_verify',
+            reason: 'verify_cmd_failed'
+          }
+        }
+      },
+      'resolved'
+    );
+
+    expect(result).toEqual([
+      { bead_id: 'UI-1', external: false, repairable: true }
+    ]);
+  });
+
+  test('seeds an already-merged root with its observed landed SHA', () => {
+    const runtime = getWorkerRuntime();
+    runtime.prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'MERGED',
+        mergeable: 'UNKNOWN',
+        merge_state_status: 'UNKNOWN',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main'
+      },
+      ci: null
+    });
+
+    const result = completionIntentSeed(
+      WS,
+      {
+        attempts: {
+          att: {
+            bead_id: 'UI-1',
+            target_base: 'main',
+            base_oid: 'b'.repeat(40)
+          }
+        }
+      },
+      'UI-1'
+    );
+
+    expect(result?.subject).toMatchObject({
+      head_sha: 'a'.repeat(40),
+      merged_sha: 'a'.repeat(40)
+    });
   });
 });

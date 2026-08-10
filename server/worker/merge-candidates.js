@@ -201,7 +201,10 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
     const repairable =
       !external &&
       ((gate.tier === 'local_verify' && gate.reason === 'verify_cmd_failed') ||
-        (gate.tier === 'ci' && gate.reason === 'ci_failed'));
+        (gate.tier === 'ci' && gate.reason === 'ci_failed') ||
+        (merged_tier &&
+          cleanup_failed[bead_id]?.step === 'post_merge_verify' &&
+          cleanup_failed[bead_id]?.reason === 'verify_cmd_failed'));
     // An EXTERNAL conflict vetoes even a green gate, exactly as the row does
     // (UI-7agi §5): the click-time branch order puts DIRTY before the gate, so
     // `merge()` refuses it whatever its CI says.
@@ -281,7 +284,7 @@ export function completionIntentSeed(workspace_key, queue, bead_id) {
       pr_url: pr.url,
       head_sha: pr.head_sha,
       base_sha: source.base_oid,
-      merged_sha: null
+      merged_sha: pr.state === 'MERGED' ? pr.head_sha : null
     }
   };
 }

@@ -506,6 +506,22 @@ function normalizeCompletionFailureKey(value) {
 }
 
 /**
+ * @param {CompletionFailureKey|null} left
+ * @param {CompletionFailureKey|null} right
+ */
+function sameCompletionFailureKey(left, right) {
+  return (
+    left !== null &&
+    right !== null &&
+    left.stage === right.stage &&
+    left.reason === right.reason &&
+    left.subject_sha === right.subject_sha &&
+    left.base_sha === right.base_sha &&
+    left.result_digest === right.result_digest
+  );
+}
+
+/**
  * @param {unknown} value
  * @returns {CompletionOperation|null}
  */
@@ -2399,9 +2415,19 @@ export function createQueueStore(options = {}) {
       return applyUnconditional(workspace, (next) => {
         const intent = next.completion_intents[root_bead_id];
         const normalized_op = normalizeCompletionOperation(op);
+        const active_op = intent?.active_op;
+        const replaces_create =
+          normalized_op?.kind === 'dispatch_repair' &&
+          active_op?.kind === 'create_repair' &&
+          active_op.repair_bead_id === normalized_op.repair_bead_id &&
+          active_op.status === 'observed' &&
+          sameCompletionFailureKey(
+            active_op.failure_key,
+            normalized_op.failure_key
+          );
         if (
           !intent ||
-          intent.active_op !== null ||
+          (intent.active_op !== null && !replaces_create) ||
           intent.phase === 'paused' ||
           intent.phase === 'needs_human' ||
           intent.phase === 'completed' ||

@@ -451,6 +451,57 @@ describe('worker/queue-store', () => {
     expect(rejected.queue.completion_intents['UI-repair']).toBeUndefined();
   });
 
+  test('atomically replaces an observed create op with its repair attempt', () => {
+    const store = storeWithCompletionIntent();
+    const failure_key = resumeRepairOp('unused', 'unused').failure_key;
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-1',
+        kind: 'create_repair',
+        failure_key,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-1',
+      repair_bead_id: 'UI-repair'
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: {
+        op_id: 'dispatch-1',
+        kind: 'dispatch_repair',
+        failure_key,
+        attempt_id: 'att-repair',
+        repair_bead_id: 'UI-repair',
+        status: 'prepared'
+      },
+      attempt: { attempt_id: 'att-repair', bead_id: 'UI-repair' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'repairing',
+      repair_sessions_used: 1,
+      active_op: {
+        op_id: 'dispatch-1',
+        kind: 'dispatch_repair',
+        repair_bead_id: 'UI-repair'
+      }
+    });
+    expect(result.queue.attempts['att-repair']).toMatchObject({
+      bead_id: 'UI-repair'
+    });
+  });
+
   test('switches the current subject to a recorded repair child in one revision', () => {
     const store = storeWithCompletionIntent();
     store.prepareCompletionOp(WS, {

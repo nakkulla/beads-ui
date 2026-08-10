@@ -1039,6 +1039,72 @@ describe('scheduler completion repair dispatch', () => {
     });
   });
 
+  test('atomically replaces a recorded create operation with its repair dispatch', async () => {
+    const repair_bead_id = 'B1-rcccccccc';
+    const env = setup({
+      config: { B1: {}, [repair_bead_id]: {} },
+      gitRun: ownedGit(),
+      slots: 1
+    });
+    seedCompletionIntent(env.store, repair_bead_id);
+    env.store.prepareCompletionOp(WS, {
+      root_bead_id: 'B1',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-atomic',
+        kind: 'create_repair',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    env.store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'B1',
+      op_id: 'create-atomic',
+      repair_bead_id
+    });
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.add.mockImplementation(async ({ bead_id, base }) => ({
+      path: `/wt/${bead_id}`,
+      branch: bead_id,
+      base_oid: base
+    }));
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'dispatch-atomic',
+        kind: 'dispatch_repair',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: 'repair-attempt-atomic',
+        repair_bead_id,
+        status: 'prepared'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.store.snapshot(WS)).toMatchObject({
+      completion_intents: {
+        B1: {
+          repair_sessions_used: 1,
+          active_op: {
+            op_id: 'dispatch-atomic',
+            kind: 'dispatch_repair',
+            repair_bead_id
+          }
+        }
+      },
+      attempts: {
+        'repair-attempt-atomic': {
+          completion_root_id: 'B1',
+          completion_op_id: 'dispatch-atomic'
+        }
+      }
+    });
+    expect(env.runner.spawnOrder).toEqual([repair_bead_id]);
+  });
+
   test('resolves a linked repair from its current workspace exec settings', async () => {
     const repair_bead_id = 'B1-rcccccccc';
     const env = setup({
