@@ -468,7 +468,8 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
     mergeStateStatus: 'CLEAN',
     headRefName: 'UI-1',
     headRefOid: 'b'.repeat(40),
-    baseRefName: 'main'
+    baseRefName: 'main',
+    mergeCommit: null
   };
 
   test('returns ok with the PR detail normalized', async () => {
@@ -486,7 +487,8 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
         merge_state_status: 'CLEAN',
         head_ref: 'UI-1',
         base_ref: 'main',
-        head_sha: DETAIL.headRefOid
+        head_sha: DETAIL.headRefOid,
+        merged_sha: null
       }
     });
   });
@@ -502,7 +504,7 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
         'view',
         '304',
         '--json',
-        'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName',
+        'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName,mergeCommit',
         '--repo',
         'o/r'
       ],
@@ -525,13 +527,31 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
   });
 
   test('reports a MERGED PR as ok with its state', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const run = makeRun({
+      stdout: JSON.stringify({
+        ...DETAIL,
+        state: 'MERGED',
+        mergeCommit: { oid: merge_sha }
+      })
+    });
+
+    const r = await makeGh(run).prDetail('/repo', 304);
+
+    expect(r).toMatchObject({
+      state: 'ok',
+      data: { state: 'MERGED', merged_sha: merge_sha }
+    });
+  });
+
+  test('fails closed when a MERGED PR has no merge commit SHA', async () => {
     const run = makeRun({
       stdout: JSON.stringify({ ...DETAIL, state: 'MERGED' })
     });
 
     const r = await makeGh(run).prDetail('/repo', 304);
 
-    expect(r).toMatchObject({ state: 'ok', data: { state: 'MERGED' } });
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
   });
 
   test('returns error when the PR cannot be resolved', async () => {

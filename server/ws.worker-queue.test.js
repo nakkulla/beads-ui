@@ -1159,7 +1159,12 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     store.moveToPrWait('', {
       bead_id,
       attempt_id: `att-${bead_id}`,
-      patch: { status: 'done', finished_at: 1 }
+      patch: {
+        status: 'done',
+        finished_at: 1,
+        target_base: 'main',
+        base_oid: 'e'.repeat(40)
+      }
     });
   }
 

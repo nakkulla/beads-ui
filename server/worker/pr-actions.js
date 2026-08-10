@@ -739,6 +739,13 @@ export function createPrActions(deps) {
     if (!base_ok.ok) {
       return { ok: false, reason: base_ok.reason };
     }
+    if (
+      gated.pr.state === 'MERGED' &&
+      (typeof gated.pr.merged_sha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(gated.pr.merged_sha))
+    ) {
+      return { ok: false, reason: 'merge_sha_unobserved' };
+    }
     const entry = deps.observations.get(workspace, bead_id);
     const ci = entry?.ci;
     const verify = entry?.verify;
@@ -752,7 +759,7 @@ export function createPrActions(deps) {
         pr_url: gated.pr.url,
         head_sha: gated.pr.head_sha,
         base_sha: pinned.base_oid,
-        merged_sha: gated.pr.state === 'MERGED' ? gated.pr.head_sha : null
+        merged_sha: gated.pr.state === 'MERGED' ? gated.pr.merged_sha : null
       },
       verdict: gated.verdict,
       evidence: {

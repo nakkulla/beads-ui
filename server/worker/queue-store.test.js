@@ -206,6 +206,7 @@ describe('worker/queue-store', () => {
             },
             repair_sessions_used: 0,
             repair_bead_ids: [],
+            subject_stack: [],
             active_op: null,
             terminal_reason: null
           }
@@ -228,6 +229,7 @@ describe('worker/queue-store', () => {
       },
       repair_sessions_used: 0,
       repair_bead_ids: [],
+      subject_stack: [],
       active_op: null,
       terminal_reason: null
     });
@@ -262,6 +264,42 @@ describe('worker/queue-store', () => {
     expect(intent.terminal_reason).toMatchObject({
       reason: 'intent_state_invalid',
       stage: 'state'
+    });
+  });
+
+  test('loads a repair subject without return lineage as needs_human', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        completion_intents: {
+          'UI-root': {
+            target_base: 'main',
+            phase: 'gating',
+            subject: {
+              role: 'repair',
+              bead_id: 'UI-repair',
+              pr_url: 'https://github.com/o/r/pull/2',
+              head_sha: 'a'.repeat(40),
+              base_sha: 'b'.repeat(40),
+              merged_sha: null
+            },
+            repair_sessions_used: 1,
+            repair_bead_ids: ['UI-repair'],
+            active_op: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    const intent =
+      createQueueStore().snapshot(WS).completion_intents['UI-root'];
+
+    expect(intent).toMatchObject({
+      phase: 'needs_human',
+      repair_sessions_used: 1,
+      terminal_reason: { reason: 'intent_state_invalid' }
     });
   });
 
@@ -447,6 +485,7 @@ describe('worker/queue-store', () => {
     expect(recorded.ok).toBe(true);
     expect(recorded.queue.completion_intents['UI-root']).toMatchObject({
       repair_bead_ids: ['UI-repair'],
+      subject_stack: [{ role: 'root', bead_id: 'UI-root' }],
       active_op: { repair_bead_id: 'UI-repair', status: 'observed' }
     });
     expect(rejected.ok).toBe(false);
@@ -573,6 +612,40 @@ describe('worker/queue-store', () => {
     expect(result.queue.merge_queue).toEqual([]);
   });
 
+  test.each([
+    [null, 'gating'],
+    ['c'.repeat(40), 'cleaning']
+  ])('resumes a paused intent into %s-aware phase', (merged_sha, phase) => {
+    const store = storeWithCompletionIntent();
+    if (merged_sha) {
+      store.setCompletionSubject(WS, {
+        root_bead_id: 'UI-root',
+        phase: 'cleaning',
+        subject: {
+          ...store.snapshot(WS).completion_intents['UI-root'].subject,
+          merged_sha
+        }
+      });
+    }
+    store.pauseCompletionIntent(WS, { root_bead_id: 'UI-root' });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.resumeCompletionIntent(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.completion_intents['UI-root'].phase).toBe(phase);
+    expect(result.queue.merge_queue).toEqual([
+      { bead_id: 'UI-root', resolution_rounds: 0 }
+    ]);
+  });
+
   test('re-enables a paused intent at a fresh queue position without resetting budget', () => {
     const store = storeWithCompletionIntent();
     store.beginRepairOp(WS, {
@@ -635,9 +708,66 @@ describe('worker/queue-store', () => {
       phase: 'gating',
       repair_sessions_used: 1,
       subject: {
-        head_sha: 'c'.repeat(40),
-        base_sha: 'd'.repeat(40)
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40)
       }
+    });
+  });
+
+  test('restores the prior subject and pops its durable lineage atomically', () => {
+    const store = storeWithCompletionIntent();
+    const failure_key = resumeRepairOp('unused', 'unused').failure_key;
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-1',
+        kind: 'create_repair',
+        failure_key,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-1',
+      repair_bead_id: 'UI-repair'
+    });
+    store.advanceCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-1',
+      status: 'consumed',
+      next_phase: 'gating',
+      subject: {
+        role: 'repair',
+        bead_id: 'UI-repair',
+        pr_url: 'https://github.com/o/r/pull/2',
+        head_sha: 'c'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      },
+      clear: true
+    });
+
+    const result = store.restoreCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'gating',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'd'.repeat(40),
+        base_sha: 'e'.repeat(40),
+        merged_sha: null
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'gating',
+      subject: { role: 'root', bead_id: 'UI-root' },
+      subject_stack: []
     });
   });
 

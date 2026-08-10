@@ -203,7 +203,8 @@ describe('worker/merge-candidates — completion repair intake', () => {
         merge_state_status: 'UNKNOWN',
         head_ref: 'UI-1',
         head_sha: 'a'.repeat(40),
-        base_ref: 'main'
+        base_ref: 'main',
+        merged_sha: 'c'.repeat(40)
       },
       ci: null
     });
@@ -228,6 +229,44 @@ describe('worker/merge-candidates — completion repair intake', () => {
     ]);
   });
 
+  test.each([
+    'deploy_config_invalid',
+    'deploy_missing_for_self',
+    'deploy_not_detached_for_self',
+    'deploy_verify_missing',
+    'deploy_failed'
+  ])('includes a worker-owned repairable %s cleanup failure', (reason) => {
+    const runtime = getWorkerRuntime();
+    runtime.prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'MERGED',
+        mergeable: 'UNKNOWN',
+        merge_state_status: 'UNKNOWN',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main',
+        merged_sha: 'c'.repeat(40)
+      },
+      ci: null
+    });
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [{ bead_id: 'UI-1' }],
+        attempts: {},
+        cleanup_failed: { 'UI-1': { step: 'deploy', reason } }
+      },
+      'resolved'
+    );
+
+    expect(result).toEqual([
+      { bead_id: 'UI-1', external: false, repairable: true }
+    ]);
+  });
+
   test('seeds an already-merged root with its observed landed SHA', () => {
     const runtime = getWorkerRuntime();
     runtime.prObservations.record(WS, 'UI-1', {
@@ -239,7 +278,8 @@ describe('worker/merge-candidates — completion repair intake', () => {
         merge_state_status: 'UNKNOWN',
         head_ref: 'UI-1',
         head_sha: 'a'.repeat(40),
-        base_ref: 'main'
+        base_ref: 'main',
+        merged_sha: 'c'.repeat(40)
       },
       ci: null
     });
@@ -260,7 +300,41 @@ describe('worker/merge-candidates — completion repair intake', () => {
 
     expect(result?.subject).toMatchObject({
       head_sha: 'a'.repeat(40),
-      merged_sha: 'a'.repeat(40)
+      merged_sha: 'c'.repeat(40)
     });
+  });
+
+  test('refuses to seed a merged root without an authoritative merge SHA', () => {
+    const runtime = getWorkerRuntime();
+    runtime.prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'MERGED',
+        mergeable: 'UNKNOWN',
+        merge_state_status: 'UNKNOWN',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main',
+        merged_sha: null
+      },
+      ci: null
+    });
+
+    const result = completionIntentSeed(
+      WS,
+      {
+        attempts: {
+          att: {
+            bead_id: 'UI-1',
+            target_base: 'main',
+            base_oid: 'b'.repeat(40)
+          }
+        }
+      },
+      'UI-1'
+    );
+
+    expect(result).toBe(null);
   });
 });

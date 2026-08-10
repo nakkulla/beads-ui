@@ -108,6 +108,8 @@ import { runShell } from '../bd.js';
  * @property {string} merge_state_status - CLEAN|BEHIND|BLOCKED|DIRTY|UNKNOWN…
  * @property {string} head_ref - Head branch name.
  * @property {string} head_sha - Head commit sha; every gate verdict binds here.
+ * @property {string|null} [merged_sha] - Authoritative merge commit SHA for a
+ * MERGED PR; null while no merge commit exists.
  * @property {string} base_ref - Base branch name. The ONLY base signal an
  * external PR has (UI-7agi §3): with no attempt to read `target_base` from, the
  * post-merge cleanup would otherwise sync, verify and deploy `main` for a PR
@@ -182,7 +184,7 @@ const PR_JSON_FIELDS = 'number,url,headRefName,headRefOid,baseRefName,state';
  * @type {string}
  */
 const PR_DETAIL_FIELDS =
-  'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName';
+  'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName,mergeCommit';
 
 /**
  * `gh pr view --json` field set for the checks observation. See the module
@@ -713,7 +715,24 @@ export function createGh(deps = {}) {
       // observation: in the "검증 신호 없음" tier the gate is ENABLED, and an
       // empty sha reaching that path would merge a head nothing pinned.
       const head_sha = typeof rec.headRefOid === 'string' ? rec.headRefOid : '';
-      if (url.length === 0 || state.length === 0 || head_sha.length === 0) {
+      const merge_commit =
+        rec.mergeCommit &&
+        typeof rec.mergeCommit === 'object' &&
+        !Array.isArray(rec.mergeCommit)
+          ? /** @type {Record<string, unknown>} */ (rec.mergeCommit)
+          : null;
+      const merged_sha =
+        merge_commit &&
+        typeof merge_commit.oid === 'string' &&
+        /^[0-9a-f]{40}$/i.test(merge_commit.oid)
+          ? merge_commit.oid
+          : null;
+      if (
+        url.length === 0 ||
+        state.length === 0 ||
+        head_sha.length === 0 ||
+        (state === 'MERGED' && merged_sha === null)
+      ) {
         return { state: 'error', reason: 'gh_bad_json' };
       }
       return {
@@ -729,7 +748,8 @@ export function createGh(deps = {}) {
               : '',
           head_ref: typeof rec.headRefName === 'string' ? rec.headRefName : '',
           base_ref: typeof rec.baseRefName === 'string' ? rec.baseRefName : '',
-          head_sha
+          head_sha,
+          merged_sha
         }
       };
     },

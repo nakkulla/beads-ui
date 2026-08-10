@@ -4342,7 +4342,7 @@ export function createScheduler(deps) {
    */
   function completionRepairPrompt(root_bead_id, bead_id, mode) {
     return mode === 'resume_root'
-      ? `Bead ${root_bead_id}의 자동머지 실패를 같은 구현 세션 문맥에서 수정하고 feature branch PR을 다시 제출하라.`
+      ? `Bead ${bead_id}의 자동머지 실패를 같은 구현 세션 문맥에서 수정하고 feature branch PR을 다시 제출하라. 완료 의도 root는 ${root_bead_id}다.`
       : `Bead ${root_bead_id}의 pinned-base 실패를 linked repair Bead ${bead_id}에서 수정하고 feature branch PR을 제출하라.`;
   }
 
@@ -4433,9 +4433,17 @@ export function createScheduler(deps) {
         recorded_failure?.subject_sha === op.failure_key.subject_sha &&
         recorded_failure?.base_sha === op.failure_key.base_sha &&
         recorded_failure?.result_digest === op.failure_key.result_digest;
-      return same
+      const active_same =
+        intent.active_op?.op_id === op.op_id &&
+        intent.active_op?.attempt_id === op.attempt_id;
+      return same && active_same
         ? { ok: true, attempt_id: op.attempt_id, adopted: true }
-        : { ok: false, reason: 'completion_attempt_collision' };
+        : {
+            ok: false,
+            reason: same
+              ? 'completion_attempt_not_active'
+              : 'completion_attempt_collision'
+          };
     }
     const active_op = intent.active_op;
     const replaces_create =
@@ -4473,14 +4481,12 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'completion_lineage_missing' };
     }
     const mode = /** @type {'resume_root'|'dispatch_repair'} */ (op.kind);
-    const bead_id = mode === 'resume_root' ? root_bead_id : op.repair_bead_id;
+    const bead_id =
+      mode === 'resume_root' ? intent.subject.bead_id : op.repair_bead_id;
     if (typeof bead_id !== 'string' || bead_id.length === 0) {
       return { ok: false, reason: 'repair_bead_missing' };
     }
-    if (
-      mode === 'dispatch_repair' &&
-      !intent.repair_bead_ids.includes(bead_id)
-    ) {
+    if (bead_id !== root_bead_id && !intent.repair_bead_ids.includes(bead_id)) {
       return { ok: false, reason: 'repair_bead_unowned' };
     }
     if (claimed.has(root_bead_id) || claimed.has(bead_id)) {
@@ -4539,6 +4545,7 @@ export function createScheduler(deps) {
           ? resume_source.session_id
           : null;
       resumed_from = resume_source.attempt_id;
+      prior_wf = resume_source.workflow_mode_prior ?? null;
       runner_name =
         typeof resume_source.runner === 'string' &&
         resume_source.runner.length > 0

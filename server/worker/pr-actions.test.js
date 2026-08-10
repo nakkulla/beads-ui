@@ -64,6 +64,7 @@ function prOf(over = {}) {
     head_ref: BEAD,
     base_ref: 'main',
     head_sha: 'sha-aaa',
+    merged_sha: null,
     ...over
   };
 }
@@ -3701,5 +3702,40 @@ describe('worker/pr-actions completion gate evidence', () => {
       }
     });
     expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('uses the authoritative merge commit SHA for a merged subject', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const env = makeActions({
+      details: [
+        prOf({
+          state: 'MERGED',
+          head_sha: 'a'.repeat(40),
+          merged_sha: merge_sha
+        })
+      ]
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(result).toMatchObject({
+      ok: true,
+      subject: {
+        head_sha: 'a'.repeat(40),
+        merged_sha: merge_sha
+      }
+    });
+  });
+
+  test('fails closed when a merged subject has no merge commit SHA', async () => {
+    const env = makeActions({
+      details: [
+        prOf({ state: 'MERGED', head_sha: 'a'.repeat(40), merged_sha: null })
+      ]
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(result).toEqual({ ok: false, reason: 'merge_sha_unobserved' });
   });
 });

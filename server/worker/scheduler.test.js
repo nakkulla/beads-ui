@@ -1224,6 +1224,114 @@ describe('scheduler completion repair dispatch', () => {
     ).toBe(1);
   });
 
+  test('refuses to adopt a terminal attempt after its active journal was cleared', async () => {
+    const env = setup({ config: { B1: {} }, gitRun: ownedGit(), slots: 1 });
+    seedCompletionIntent(env.store);
+    const op = {
+      op_id: 'settled-op',
+      kind: 'resume_root',
+      failure_key: COMPLETION_FAILURE,
+      attempt_id: 'repair-attempt-settled',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+    await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+    env.store.advanceCompletionOp(WS, {
+      root_bead_id: 'B1',
+      op_id: op.op_id,
+      status: 'consumed',
+      next_phase: 'gating',
+      clear: true
+    });
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'completion_attempt_not_active'
+    });
+    expect(env.runner.spawnOrder).toEqual(['B1']);
+  });
+
+  test('resumes the current repair subject transcript', async () => {
+    const repair_bead_id = 'B1-rcccccccc';
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+        return { code: 0, stdout: `${repair_bead_id}\n`, stderr: '' };
+      }
+      return { code: 0, stdout: `${'d'.repeat(40)}\n`, stderr: '' };
+    });
+    const env = setup({
+      config: { B1: {}, [repair_bead_id]: {} },
+      gitRun,
+      slots: 1
+    });
+    seedCompletionIntent(env.store, repair_bead_id);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-repair-subject', bead_id: repair_bead_id }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-repair-subject',
+      patch: {
+        status: 'done',
+        repo: '/repo',
+        target_base: 'main',
+        runner: 'codex',
+        model: 'sol',
+        effort: 'xhigh',
+        session_id: 'session-repair',
+        finished_at: 20
+      }
+    });
+    env.store.setCompletionSubject(WS, {
+      root_bead_id: 'B1',
+      phase: 'gating',
+      subject: {
+        role: 'repair',
+        bead_id: repair_bead_id,
+        pr_url: 'https://github.com/o/r/pull/2',
+        head_sha: 'd'.repeat(40),
+        base_sha: COMPLETION_FAILURE.base_sha,
+        merged_sha: null
+      }
+    });
+    const failure_key = {
+      ...COMPLETION_FAILURE,
+      subject_sha: 'd'.repeat(40)
+    };
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'resume-repair-subject',
+        kind: 'resume_root',
+        failure_key,
+        attempt_id: 'repair-attempt-subject',
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.settingsFor(repair_bead_id)).toMatchObject({
+      resume_session_id: 'session-repair',
+      completion_repair: { mode: 'resume_root' }
+    });
+    expect(
+      env.store.snapshot(WS).attempts['repair-attempt-subject']
+    ).toMatchObject({
+      bead_id: repair_bead_id,
+      resumed_from: 'att-repair-subject'
+    });
+  });
+
   test('rejects adoption when the pinned failure identity changed', async () => {
     const env = setup({ config: { B1: {} }, gitRun: ownedGit(), slots: 1 });
     seedCompletionIntent(env.store);

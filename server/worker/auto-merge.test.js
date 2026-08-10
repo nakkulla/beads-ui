@@ -75,6 +75,17 @@ function enroller(store, input = {}) {
         bead_id,
         external: false
       })),
+    completionSeed: (_workspace, _queue, bead_id) => ({
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id,
+        pr_url: `https://github.com/o/r/pull/${bead_id}`,
+        head_sha: HEAD,
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    }),
     notifyChanged,
     kick,
     subscribeQueueChanged: (fn) => {
@@ -234,6 +245,44 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
       subject: { role: 'root', bead_id: 'UI-1', head_sha: HEAD }
     });
   });
+
+  test.each(['green', 'conflict'])(
+    'atomically creates a root completion intent for worker-owned %s',
+    (kind) => {
+      const store = park(createQueueStore(), ['UI-1']);
+      store.toggleAutoMerge(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        on: true
+      });
+      const auto = createAutoMerge({
+        workspace: WS,
+        store,
+        verifyCmdState: () => 'resolved',
+        headSha: () => HEAD,
+        lane: () => [{ bead_id: 'UI-1', external: false }],
+        candidates: () => [{ bead_id: 'UI-1', external: false, kind }],
+        completionSeed: () => ({
+          target_base: 'main',
+          subject: {
+            role: 'root',
+            bead_id: 'UI-1',
+            pr_url: 'https://github.com/o/r/pull/1',
+            head_sha: HEAD,
+            base_sha: 'b'.repeat(40),
+            merged_sha: null
+          }
+        })
+      });
+
+      const result = auto.enroll();
+
+      expect(result.applied).toBe(true);
+      expect(store.snapshot(WS).completion_intents['UI-1']).toMatchObject({
+        phase: 'gating',
+        subject: { bead_id: 'UI-1', head_sha: HEAD }
+      });
+    }
+  );
 });
 
 describe('worker/auto-merge — 워커 소유 Bead 비후보 (UI-b8n8 §접근 A)', () => {
@@ -350,6 +399,17 @@ describe('worker/auto-merge — 구독 (UI-yk55 §4.1/§4.3)', () => {
           { bead_id: 'UI-2', external: false }
         ];
       },
+      completionSeed: (_workspace, _queue, bead_id) => ({
+        target_base: 'main',
+        subject: {
+          role: 'root',
+          bead_id,
+          pr_url: `https://github.com/o/r/pull/${bead_id}`,
+          head_sha: HEAD,
+          base_sha: 'b'.repeat(40),
+          merged_sha: null
+        }
+      }),
       // The REAL wiring: enrolment emits the very event it subscribes to.
       notifyChanged: (ws_key) => {
         for (const fn of [...listeners]) {

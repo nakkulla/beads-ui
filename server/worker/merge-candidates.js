@@ -15,6 +15,7 @@
  *
  * @import { Queue } from './queue-store.js'
  */
+import { isRepairableCleanupFailure } from './completion-repair-policy.js';
 import { evaluateMergeGate } from './merge-gate.js';
 import { getWorkerRuntime } from './runtime.js';
 
@@ -202,9 +203,7 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
       !external &&
       ((gate.tier === 'local_verify' && gate.reason === 'verify_cmd_failed') ||
         (gate.tier === 'ci' && gate.reason === 'ci_failed') ||
-        (merged_tier &&
-          cleanup_failed[bead_id]?.step === 'post_merge_verify' &&
-          cleanup_failed[bead_id]?.reason === 'verify_cmd_failed'));
+        (merged_tier && isRepairableCleanupFailure(cleanup_failed[bead_id])));
     // An EXTERNAL conflict vetoes even a green gate, exactly as the row does
     // (UI-7agi §5): the click-time branch order puts DIRTY before the gate, so
     // `merge()` refuses it whatever its CI says.
@@ -257,6 +256,13 @@ export function completionIntentSeed(workspace_key, queue, bead_id) {
   ) {
     return null;
   }
+  const merged_sha =
+    typeof pr.merged_sha === 'string' && /^[0-9a-f]{40}$/i.test(pr.merged_sha)
+      ? pr.merged_sha
+      : null;
+  if (pr.state === 'MERGED' && merged_sha === null) {
+    return null;
+  }
   /** @type {any} */
   let source = null;
   for (const attempt of Object.values(
@@ -284,7 +290,7 @@ export function completionIntentSeed(workspace_key, queue, bead_id) {
       pr_url: pr.url,
       head_sha: pr.head_sha,
       base_sha: source.base_oid,
-      merged_sha: pr.state === 'MERGED' ? pr.head_sha : null
+      merged_sha: pr.state === 'MERGED' ? merged_sha : null
     }
   };
 }

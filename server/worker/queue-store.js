@@ -374,6 +374,8 @@
  * @property {CompletionSubject} subject
  * @property {number} repair_sessions_used
  * @property {string[]} repair_bead_ids
+ * @property {CompletionSubject[]} subject_stack - Prior subjects to restore
+ * after a nested linked repair merges, oldest first.
  * @property {CompletionOperation|null} active_op
  * @property {CompletionTerminal|null} terminal_reason
  */
@@ -665,6 +667,7 @@ function invalidCompletionIntent(root_bead_id, value) {
         ? raw.repair_sessions_used
         : MAX_REPAIR_SESSIONS,
     repair_bead_ids,
+    subject_stack: [],
     active_op: null,
     terminal_reason: {
       reason: 'intent_state_invalid',
@@ -691,6 +694,15 @@ function normalizeCompletionIntent(root_bead_id, value) {
   const repair_bead_ids = Array.isArray(value.repair_bead_ids)
     ? [...new Set(value.repair_bead_ids)]
     : null;
+  const raw_subject_stack =
+    value.subject_stack === undefined
+      ? []
+      : Array.isArray(value.subject_stack)
+        ? value.subject_stack
+        : null;
+  const subject_stack = raw_subject_stack?.map((item) =>
+    normalizeCompletionSubject(item, root_bead_id)
+  );
   const active_op =
     value.active_op === null
       ? null
@@ -715,6 +727,14 @@ function normalizeCompletionIntent(root_bead_id, value) {
     value.repair_sessions_used < 0 ||
     value.repair_sessions_used > MAX_REPAIR_SESSIONS ||
     !valid_repair_ids ||
+    !subject_stack ||
+    subject_stack.length > MAX_REPAIR_SESSIONS ||
+    subject_stack.some(
+      (item) =>
+        !item ||
+        (item.role === 'repair' && !repair_bead_ids.includes(item.bead_id))
+    ) ||
+    (subject.role === 'repair' && subject_stack.length === 0) ||
     (subject.role === 'repair' && !repair_bead_ids.includes(subject.bead_id)) ||
     (value.active_op !== null && !active_op) ||
     (value.terminal_reason !== null && !terminal_reason) ||
@@ -729,6 +749,7 @@ function normalizeCompletionIntent(root_bead_id, value) {
     subject,
     repair_sessions_used: value.repair_sessions_used,
     repair_bead_ids: /** @type {string[]} */ (repair_bead_ids),
+    subject_stack: /** @type {CompletionSubject[]} */ (subject_stack),
     active_op,
     terminal_reason
   };
@@ -1341,6 +1362,34 @@ function enqueueMember(q, bead_id, external) {
     return false;
   }
   return external || q.pr_wait.some((e) => e.bead_id === bead_id);
+}
+
+/**
+ * Resume one paused saga without discarding its current subject or lineage.
+ * The merged SHA is the durable discriminator between pre-merge gating and
+ * post-merge cleanup replay.
+ *
+ * @param {Queue} next
+ * @param {string} root_bead_id
+ */
+function resumeCompletionIntentRecord(next, root_bead_id) {
+  const intent = next.completion_intents[root_bead_id];
+  if (
+    next.auto_merge !== true ||
+    !intent ||
+    intent.phase !== 'paused' ||
+    intent.active_op !== null
+  ) {
+    return false;
+  }
+  intent.phase = intent.subject.merged_sha === null ? 'gating' : 'cleaning';
+  if (!next.merge_queue.some((entry) => entry.bead_id === root_bead_id)) {
+    next.merge_queue.push({ bead_id: root_bead_id, resolution_rounds: 0 });
+  }
+  if (next.auto_merge_skips[root_bead_id]) {
+    delete next.auto_merge_skips[root_bead_id];
+  }
+  return true;
 }
 
 /**
@@ -2474,6 +2523,7 @@ export function createQueueStore(options = {}) {
           subject,
           repair_sessions_used: 0,
           repair_bead_ids: [],
+          subject_stack: [],
           active_op: null,
           terminal_reason: null
         });
@@ -2536,7 +2586,7 @@ export function createQueueStore(options = {}) {
           attempt.bead_id.length === 0 ||
           Object.hasOwn(next.attempts, attempt.attempt_id) ||
           (normalized_op.kind === 'resume_root' &&
-            attempt.bead_id !== root_bead_id) ||
+            attempt.bead_id !== intent.subject.bead_id) ||
           (normalized_op.kind === 'dispatch_repair' &&
             (normalized_op.repair_bead_id === null ||
               attempt.bead_id !== normalized_op.repair_bead_id ||
@@ -2621,7 +2671,11 @@ export function createQueueStore(options = {}) {
           return false;
         }
         if (!intent.repair_bead_ids.includes(repair_bead_id)) {
+          if (intent.subject_stack.length >= MAX_REPAIR_SESSIONS) {
+            return false;
+          }
           intent.repair_bead_ids.push(repair_bead_id);
+          intent.subject_stack.push({ ...intent.subject });
         }
         active_op.repair_bead_id = repair_bead_id;
         active_op.status = 'observed';
@@ -2727,6 +2781,48 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Restore the subject that was active before the current linked repair.
+     * The identity check and stack pop share one durable mutation.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, phase: CompletionPhase, subject: CompletionSubject }} input
+     * @returns {QueueOpResult}
+     */
+    restoreCompletionSubject(workspace, input) {
+      const { root_bead_id, phase, subject } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const normalized_subject = normalizeCompletionSubject(
+          subject,
+          root_bead_id
+        );
+        const prior = intent?.subject_stack[intent.subject_stack.length - 1];
+        if (
+          !intent ||
+          intent.active_op !== null ||
+          intent.phase === 'paused' ||
+          intent.phase === 'needs_human' ||
+          intent.phase === 'completed' ||
+          intent.subject.role !== 'repair' ||
+          !prior ||
+          !normalized_subject ||
+          normalized_subject.role !== prior.role ||
+          normalized_subject.bead_id !== prior.bead_id ||
+          !COMPLETION_PHASES.includes(phase) ||
+          phase === 'paused' ||
+          phase === 'needs_human' ||
+          phase === 'completed'
+        ) {
+          return false;
+        }
+        intent.subject_stack.pop();
+        intent.subject = normalized_subject;
+        intent.phase = phase;
+        return true;
+      });
+    },
+
+    /**
      * Stop new completion work after auto-merge is disabled. An in-flight op
      * must settle first; the paused intent remains durable while its pending
      * queue position is released, matching the explicit OFF boundary.
@@ -2754,6 +2850,19 @@ export function createQueueStore(options = {}) {
         );
         return true;
       });
+    },
+
+    /**
+     * Re-enable an idle paused saga at the tail of the root merge queue.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    resumeCompletionIntent(workspace, input) {
+      return applyUnconditional(workspace, (next) =>
+        resumeCompletionIntentRecord(next, input.root_bead_id)
+      );
     },
 
     /**
@@ -2852,17 +2961,9 @@ export function createQueueStore(options = {}) {
                 changed += 1;
               }
               if (existing_intent.phase === 'paused') {
-                const resumed = normalizeCompletionIntent(bead_id, {
-                  ...existing_intent,
-                  target_base: entry.completion.target_base,
-                  subject: entry.completion.subject,
-                  phase: 'gating',
-                  terminal_reason: null
-                });
-                if (resumed.phase === 'needs_human') {
+                if (!resumeCompletionIntentRecord(next, bead_id)) {
                   continue;
                 }
-                next.completion_intents[bead_id] = resumed;
                 changed += 1;
               }
               if (!next.merge_queue.some((item) => item.bead_id === bead_id)) {
@@ -2877,6 +2978,7 @@ export function createQueueStore(options = {}) {
               subject: entry.completion.subject,
               repair_sessions_used: 0,
               repair_bead_ids: [],
+              subject_stack: [],
               active_op: null,
               terminal_reason: null
             });

@@ -7,6 +7,7 @@
  * before executing.
  */
 import { createHash } from 'node:crypto';
+import { isRepairableCleanupFailure } from './completion-repair-policy.js';
 
 const OUTPUT_TAIL_MAX = 4_000;
 const CHECKS_MAX = 100;
@@ -79,7 +80,7 @@ export function createCompletionFailureKey(input) {
  * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any }} ObservedCompletionFact
  */
 /**
- * @typedef {{ kind: 'gate'|'probe'|'resume_root'|'create_repair'|'dispatch_repair'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'pause'|'needs_human'|'complete', reason?: string }} CompletionAction
+ * @typedef {{ kind: 'gate'|'probe'|'enter_cleanup'|'resume_intent'|'resume_root'|'create_repair'|'dispatch_repair'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'pause'|'needs_human'|'complete', reason?: string }} CompletionAction
  */
 
 /**
@@ -106,7 +107,7 @@ export function decideCompletionAction(input) {
     return { kind: 'reconcile_op' };
   }
   if (intent.phase === 'paused') {
-    return { kind: 'gate' };
+    return { kind: 'resume_intent' };
   }
   if (fact.state === 'undecidable') {
     return {
@@ -151,6 +152,13 @@ export function decideCompletionAction(input) {
   }
   if (intent.phase !== 'gating') {
     return { kind: 'needs_human', reason: 'intent_state_invalid' };
+  }
+  if (
+    fact.state === 'cleanup_repairable' ||
+    fact.state === 'cleanup_pending' ||
+    fact.state === 'cleanup_red'
+  ) {
+    return { kind: 'enter_cleanup' };
   }
   if (
     fact.state === 'green' ||
@@ -335,13 +343,20 @@ const REPAIR_SESSION_CAP = 2;
  * @param {string} root_bead_id
  * @param {string} kind
  * @param {any} failure_key
+ * @param {number|null} [repair_round]
  */
-function operationIdentity(root_bead_id, kind, failure_key) {
+function operationIdentity(
+  root_bead_id,
+  kind,
+  failure_key,
+  repair_round = null
+) {
   const digest = createHash('sha256')
     .update(
       JSON.stringify({
         root_bead_id,
         kind,
+        repair_round,
         stage: failure_key.stage,
         reason: failure_key.reason,
         subject_sha: failure_key.subject_sha,
@@ -481,7 +496,8 @@ export function createCompletionActionDriver(deps) {
     const dispatch_op_id = operationIdentity(
       root_bead_id,
       'dispatch_repair',
-      failure_key
+      failure_key,
+      current.repair_sessions_used + 1
     );
     const result = await deps.scheduler.dispatchCompletionRepair(
       deps.workspace,
@@ -758,10 +774,7 @@ export function createCompletionActionDriver(deps) {
       base_sha: intent.subject.base_sha,
       evidence: { output_tail: failure.output_tail }
     });
-    if (
-      failure.step === 'post_merge_verify' &&
-      failure.reason === 'verify_cmd_failed'
-    ) {
+    if (isRepairableCleanupFailure(failure)) {
       return {
         state: 'cleanup_repairable',
         source: 'local_verify',
@@ -878,17 +891,12 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (kind === 'resume_root') {
-      if (current.subject.role !== 'root') {
-        terminalize(
-          root_bead_id,
-          'repair_subject_red',
-          'repair_dispatch',
-          failure_key,
-          fact.evidence
-        );
-        return;
-      }
-      const op_id = operationIdentity(root_bead_id, kind, failure_key);
+      const op_id = operationIdentity(
+        root_bead_id,
+        kind,
+        failure_key,
+        current.repair_sessions_used + 1
+      );
       const result = await deps.scheduler.dispatchCompletionRepair(
         deps.workspace,
         {
@@ -919,7 +927,8 @@ export function createCompletionActionDriver(deps) {
     const create_op_id = operationIdentity(
       root_bead_id,
       'create_repair',
-      failure_key
+      failure_key,
+      current.repair_sessions_used + 1
     );
     const prepared = deps.store.prepareCompletionOp(deps.workspace, {
       root_bead_id,
@@ -1023,13 +1032,56 @@ export function createCompletionActionDriver(deps) {
     }
     if (action.kind === 'gate') {
       if (fact.gated?.subject) {
-        deps.store.setCompletionSubject(deps.workspace, {
+        const recorded = deps.store.setCompletionSubject(deps.workspace, {
           root_bead_id,
           phase: 'gating',
           subject: fact.gated.subject
         });
+        if (recorded.ok) {
+          notify();
+        }
+      }
+      return;
+    }
+    if (action.kind === 'resume_intent') {
+      const resumed = deps.store.resumeCompletionIntent(deps.workspace, {
+        root_bead_id
+      });
+      if (resumed.ok) {
         notify();
       }
+      return;
+    }
+    if (action.kind === 'enter_cleanup') {
+      if (
+        !fact.gated?.subject ||
+        typeof fact.gated.subject.merged_sha !== 'string'
+      ) {
+        terminalize(
+          root_bead_id,
+          'root_cleanup_pin_missing',
+          'post_merge_cleanup',
+          fact.failure_key,
+          fact.evidence
+        );
+        return;
+      }
+      const cleaning = deps.store.setCompletionSubject(deps.workspace, {
+        root_bead_id,
+        phase: 'cleaning',
+        subject: fact.gated.subject
+      });
+      if (!cleaning.ok) {
+        terminalize(
+          root_bead_id,
+          'root_cleanup_transition_failed',
+          'post_merge_cleanup',
+          fact.failure_key,
+          fact.evidence
+        );
+        return;
+      }
+      notify();
       return;
     }
     if (action.kind === 'probe') {
@@ -1210,6 +1262,9 @@ export function createCompletionActionDriver(deps) {
     if (!intent) {
       return;
     }
+    if (intent.subject.bead_id !== subject_bead_id) {
+      return;
+    }
     const merged =
       result &&
       (result.action === 'merged' ||
@@ -1276,21 +1331,39 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (merged && result.ok === true && subject_bead_id !== root_bead_id) {
-      let root_gate;
-      try {
-        root_gate = await deps.prActions.completionGate(root_bead_id, 'root');
-      } catch {
-        root_gate = null;
+      const prior_subject =
+        intent.subject_stack?.[intent.subject_stack.length - 1];
+      if (!prior_subject) {
+        terminalize(root_bead_id, 'repair_lineage_missing', 'subject_restore');
+        return;
       }
-      if (root_gate?.ok === true) {
-        const cleanup_pending = !!queue.cleanup_failed?.[root_bead_id];
-        const transitioned = deps.store.setCompletionSubject(deps.workspace, {
-          root_bead_id,
-          phase: cleanup_pending ? 'cleaning' : 'gating',
-          subject: root_gate.subject
-        });
+      let prior_gate;
+      try {
+        prior_gate = await deps.prActions.completionGate(
+          prior_subject.bead_id,
+          prior_subject.role
+        );
+      } catch {
+        prior_gate = null;
+      }
+      if (prior_gate?.ok === true) {
+        const cleanup_pending =
+          prior_gate.subject.role === 'root' &&
+          prior_gate.subject.merged_sha !== null;
+        const transitioned = deps.store.restoreCompletionSubject(
+          deps.workspace,
+          {
+            root_bead_id,
+            phase: cleanup_pending ? 'cleaning' : 'gating',
+            subject: prior_gate.subject
+          }
+        );
         if (!transitioned.ok) {
-          terminalize(root_bead_id, 'root_regate_record_failed', 'root_regate');
+          terminalize(
+            root_bead_id,
+            'subject_restore_record_failed',
+            'subject_restore'
+          );
           return;
         }
         notify();
@@ -1306,8 +1379,8 @@ export function createCompletionActionDriver(deps) {
       }
       terminalize(
         root_bead_id,
-        root_gate?.reason || 'root_regate_failed',
-        'root_regate'
+        prior_gate?.reason || 'subject_restore_failed',
+        'subject_restore'
       );
       return;
     }

@@ -102,7 +102,7 @@ export function createAutoMerge(deps) {
         // observation instead of being queued on a guess.
         continue;
       }
-      if (c.repairable === true) {
+      if (c.external !== true && snapshot.auto_merge === true) {
         const completion = completionSeed(workspace, snapshot, c.bead_id);
         if (!completion) {
           continue;
