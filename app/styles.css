@@ -381,7 +381,7 @@ a {
   gap: var(--space-5);
 }
 
-/* Claude Code usage meter: active account windows, in cswap order. */
+/* Provider usage meters: active account windows, in source order. */
 .usage-meter-mount,
 .usage-meter {
   display: inline-flex;
@@ -393,8 +393,25 @@ a {
   margin-right: var(--sp-4);
 }
 
-.usage-meter--stale {
+.usage-meter__group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.usage-meter__group + .usage-meter__group {
+  padding-left: var(--sp-12);
+  border-left: 1px solid var(--border-chip);
+}
+
+.usage-meter__group--stale {
   opacity: 0.55;
+}
+
+.usage-meter__provider {
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  font-weight: 700;
 }
 
 .usage-meter__window {
