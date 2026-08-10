@@ -510,7 +510,9 @@ export function bootstrap(root_element) {
       ensureWorkerSubscriptions(state.view === 'worker');
       ensureMonitorPipelineChannel(state.view === 'monitor');
       ensureWorkerQueueChannel(
-        state.view === 'worker' || Boolean(state.selected_id)
+        state.view === 'board' ||
+          state.view === 'worker' ||
+          Boolean(state.selected_id)
       );
     }
 
@@ -723,9 +725,8 @@ export function bootstrap(root_element) {
 
     /**
      * The per-workspace worker-queue channel (reuses the authenticated ws).
-     * The Worker tab is its only reader again since UI-nprg: the Monitor moved
-     * to the server-global pipeline aggregation, which covers this workspace
-     * too.
+     * Board joins Worker as a reader for durable cleanup-failure controls; the
+     * Monitor remains on its server-global pipeline aggregation.
      *
      * @param {boolean} active
      */
@@ -927,7 +928,9 @@ export function bootstrap(root_element) {
       ensureWorkerSubscriptions(state.view === 'worker');
       ensureMonitorPipelineChannel(state.view === 'monitor');
       ensureWorkerQueueChannel(
-        state.view === 'worker' || Boolean(state.selected_id)
+        state.view === 'board' ||
+          state.view === 'worker' ||
+          Boolean(state.selected_id)
       );
     }
 
@@ -963,7 +966,9 @@ export function bootstrap(root_element) {
       ensureWorkerSubscriptions(current_state.view === 'worker');
       ensureMonitorPipelineChannel(current_state.view === 'monitor');
       ensureWorkerQueueChannel(
-        current_state.view === 'worker' || Boolean(current_state.selected_id)
+        current_state.view === 'board' ||
+          current_state.view === 'worker' ||
+          Boolean(current_state.selected_id)
       );
       if (current_state.selected_id) {
         scheduleDetailSubscription(current_state.selected_id);
@@ -1355,6 +1360,7 @@ export function bootstrap(root_element) {
       gotoIssue: (id) => router.gotoIssue(id),
       issueStores: sub_issue_stores,
       transport,
+      workerQueueStore: worker_queue_store,
       uiOrderStore: ui_order_store,
       displayPolicyStore: display_policy_store,
       closedRange: closed_range,
@@ -1464,7 +1470,9 @@ export function bootstrap(root_element) {
       ensureBoardSubscriptions(s.view === 'board');
       ensureWorkerSubscriptions(s.view === 'worker');
       ensureMonitorPipelineChannel(s.view === 'monitor');
-      ensureWorkerQueueChannel(s.view === 'worker' || Boolean(s.selected_id));
+      ensureWorkerQueueChannel(
+        s.view === 'board' || s.view === 'worker' || Boolean(s.selected_id)
+      );
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
       }

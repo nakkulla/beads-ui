@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
 import { createUiOrderStore } from '../../data/ui-order-store.js';
+import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { createBoardView } from './index.js';
 
 function createTestIssueStores() {
@@ -134,6 +135,129 @@ describe('views/board', () => {
     );
     expect(rangeSel).toBeTruthy();
     expect(rangeSel?.value).toBe('today');
+  });
+
+  test('dispatches cleanup diagnosis from the matching card with a fresh CAS revision', async () => {
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 7,
+        cleanup_failed: {
+          'RD-1': { step: 'post_merge_verify', reason: 'verify_cmd_failed' }
+        }
+      })
+    );
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        conflict: true,
+        queue: {
+          revision: 8,
+          cleanup_failed: {
+            'RD-1': {
+              step: 'post_merge_verify',
+              reason: 'verify_cmd_failed'
+            }
+          }
+        }
+      })
+      .mockResolvedValueOnce({ ok: true, conflict: false });
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedAll(),
+      transport,
+      workerQueueStore: queueStore
+    });
+    await view.load();
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.board-card[data-issue-id="RD-1"] .board-card__cleanup-diagnose'
+      )
+    ).click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenNthCalledWith(1, 'worker-cleanup-diagnose', {
+      bead_id: 'RD-1',
+      expected_revision: 7
+    });
+    expect(transport).toHaveBeenNthCalledWith(2, 'worker-cleanup-diagnose', {
+      bead_id: 'RD-1',
+      expected_revision: 8
+    });
+  });
+
+  test('keeps cards quiet when the worker queue is unavailable', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedAll(),
+      transport: vi.fn()
+    });
+    await view.load();
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.board-card[data-issue-id="RD-1"]')
+    );
+
+    expect(card.querySelector('.ctl-chip--cleanup')).toBeNull();
+    expect(card.querySelector('.board-card__cleanup-diagnose')).toBeNull();
+  });
+
+  test('keeps the cleanup diagnosis card button disabled for a durable running attempt', async () => {
+    const queueStore = createWorkerQueueStore();
+    const queue = /** @type {any} */ ({
+      revision: 1,
+      cleanup_failed: {
+        'RD-1': { step: 'post_merge_verify', reason: 'verify_cmd_failed' }
+      },
+      attempts: {
+        diagnosis: {
+          attempt_id: 'diagnosis',
+          bead_id: 'RD-1',
+          cleanup_diagnosis: true,
+          status: 'running'
+        }
+      }
+    });
+    queueStore.set(queue);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedAll(),
+      transport: vi.fn(),
+      workerQueueStore: queueStore
+    });
+    await view.load();
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector(
+          '.board-card[data-issue-id="RD-1"] .board-card__cleanup-diagnose'
+        )
+      ).disabled
+    ).toBe(true);
+
+    queueStore.set({
+      ...queue,
+      attempts: {
+        diagnosis: {
+          ...queue.attempts.diagnosis,
+          status: 'done'
+        }
+      }
+    });
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector(
+          '.board-card[data-issue-id="RD-1"] .board-card__cleanup-diagnose'
+        )
+      ).disabled
+    ).toBe(false);
   });
 
   test('closed column renders at most 200 cards (render cap)', async () => {

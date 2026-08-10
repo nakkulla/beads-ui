@@ -603,6 +603,59 @@ describe('views/board/card display policy', () => {
     expect(m.querySelector('.ctl-chip--blocked-dep')).toBeNull();
   });
 
+  test('renders a cleanup failure chip and diagnoses the matching bead', () => {
+    const onCleanupDiagnose = vi.fn();
+    const m = mountCard(
+      { id: 'UI-1', title: 'cleanup failed' },
+      makeCtx({
+        policy: makePolicy(),
+        cleanupFailureFor: () => ({
+          step: 'post_merge_verify',
+          reason: 'verify_cmd_failed'
+        }),
+        isCleanupDiagnosisPending: () => false,
+        onCleanupDiagnose
+      })
+    );
+
+    const chip = /** @type {HTMLElement} */ (
+      m.querySelector('.ctl-chip--cleanup')
+    );
+    const button = /** @type {HTMLButtonElement} */ (
+      m.querySelector('.board-card__cleanup-diagnose')
+    );
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(chip.textContent).toContain('정리 실패');
+    expect(button.dataset.beadId).toBe('UI-1');
+    expect(onCleanupDiagnose).toHaveBeenCalledWith(expect.anything(), 'UI-1');
+  });
+
+  test('omits cleanup controls without a failure or when blocked chips are disabled', () => {
+    const missing = mountCard(
+      { id: 'UI-1', title: 'quiet' },
+      makeCtx({ cleanupFailureFor: () => null })
+    );
+
+    expect(missing.querySelector('.ctl-chip--cleanup')).toBeNull();
+    expect(missing.querySelector('.board-card__cleanup-diagnose')).toBeNull();
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const hidden = mountCard(
+      { id: 'UI-1', title: 'hidden' },
+      makeCtx({
+        policy: makePolicy({ chips: { blocked: false } }),
+        cleanupFailureFor: () => ({
+          step: 'post_merge_verify',
+          reason: 'verify_cmd_failed'
+        })
+      })
+    );
+
+    expect(hidden.querySelector('.ctl-chip--cleanup')).toBeNull();
+    expect(hidden.querySelector('.board-card__cleanup-diagnose')).toBeNull();
+  });
+
   test('omits the route chip when its toggle is off', () => {
     const m = mountCard(
       { id: 'UI-1', workflow: { chips: { route: 'full_plan' } } },

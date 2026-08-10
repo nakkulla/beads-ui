@@ -107,6 +107,44 @@ const CANDIDATE_FILTER_KEY = 'beads-ui.worker.candidate-filter';
 const CANDIDATE_FILTER_DEFAULT = { show_blocked: false, spec: 'all' };
 
 /**
+ * Whether a cleanup-diagnosis attempt still owns a bead's action slot. A paused
+ * ancestor that has a resume child is history, matching the running-tile leaf
+ * rule below; a leaf paused diagnosis remains in flight.
+ *
+ * @param {unknown} attempts
+ * @param {string} bead_id
+ * @returns {boolean}
+ */
+function hasActiveCleanupDiagnosis(attempts, bead_id) {
+  if (!attempts || typeof attempts !== 'object' || Array.isArray(attempts)) {
+    return false;
+  }
+  const records = Object.values(attempts);
+  /** @type {Set<string>} */
+  const resumed_from_ids = new Set();
+  for (const attempt of records) {
+    if (
+      attempt &&
+      typeof attempt === 'object' &&
+      typeof attempt.resumed_from === 'string' &&
+      attempt.resumed_from.length > 0
+    ) {
+      resumed_from_ids.add(attempt.resumed_from);
+    }
+  }
+  return records.some(
+    (attempt) =>
+      attempt &&
+      typeof attempt === 'object' &&
+      attempt.bead_id === bead_id &&
+      attempt.cleanup_diagnosis === true &&
+      (attempt.status === 'running' ||
+        (attempt.status === 'paused' &&
+          !resumed_from_ids.has(attempt.attempt_id)))
+  );
+}
+
+/**
  * Read the persisted filter. Anything unreadable (absent, malformed JSON, wrong
  * shape, storage denied) falls back to the default rather than throwing — a bad
  * stored value must never take the Worker tab down.
@@ -937,6 +975,8 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {Set<string>}
    */
   const revise_pending = new Set();
+  /** @type {Set<string>} */
+  const cleanup_diagnose_pending = new Set();
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -1204,6 +1244,43 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (res && res.dismissed === false && !res.conflict && res.reason) {
       showToast(`배너 닫기 거부: ${res.reason}`, 'error', 2400);
+    }
+  }
+
+  /**
+   * Dispatch one cleanup-diagnosis attempt under the queue revision CAS. The
+   * server remains authoritative for cleanup eligibility; the local pending
+   * set only closes the duplicate-click window before its snapshot arrives.
+   *
+   * @param {string} bead_id
+   */
+  async function diagnoseCleanup(bead_id) {
+    if (!transport || !bead_id || cleanup_diagnose_pending.has(bead_id)) {
+      return;
+    }
+    cleanup_diagnose_pending.add(bead_id);
+    doRender();
+    /** @type {any} */
+    let res;
+    try {
+      res = await transport('worker-cleanup-diagnose', {
+        bead_id,
+        expected_revision: currentRevision()
+      });
+      adopt(res);
+      if (res && res.conflict) {
+        res = await transport('worker-cleanup-diagnose', {
+          bead_id,
+          expected_revision: currentRevision()
+        });
+        adopt(res);
+      }
+    } finally {
+      cleanup_diagnose_pending.delete(bead_id);
+      doRender();
+    }
+    if (res && !res.conflict && res.ok === false && res.reason) {
+      showToast(`AI 정리 거부: ${res.reason}`, 'error', 2400);
     }
   }
 
@@ -1520,7 +1597,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string, diagnosis?: { verdict: string, evidence: string, fix_bead_id?: string|null, malformed?: boolean }|null, diagnosis_pending: boolean }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -1613,7 +1690,7 @@ export function createWorkerView(mount_element, options = {}) {
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
-    /** @type {Record<string, { step: string, reason: string, detail?: string|null, output_tail?: string, log_path?: string }>} */
+    /** @type {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} */
     const cleanup_failed = q.cleanup_failed || {};
     const cleanup_failures = Object.entries(cleanup_failed).map(
       ([bead_id, rec]) => ({
@@ -1629,7 +1706,26 @@ export function createWorkerView(mount_element, options = {}) {
         log_path:
           rec && typeof rec.log_path === 'string' && rec.log_path
             ? rec.log_path
-            : undefined
+            : undefined,
+        diagnosis:
+          rec &&
+          rec.diagnosis &&
+          typeof rec.diagnosis === 'object' &&
+          typeof rec.diagnosis.verdict === 'string' &&
+          typeof rec.diagnosis.evidence === 'string'
+            ? {
+                verdict: rec.diagnosis.verdict,
+                evidence: rec.diagnosis.evidence,
+                fix_bead_id:
+                  typeof rec.diagnosis.fix_bead_id === 'string'
+                    ? rec.diagnosis.fix_bead_id
+                    : null,
+                malformed: rec.diagnosis.malformed === true
+              }
+            : null,
+        diagnosis_pending:
+          cleanup_diagnose_pending.has(bead_id) ||
+          hasActiveCleanupDiagnosis(q.attempts, bead_id)
       })
     );
     const queue_entries = /** @type {any[]} */ (q.queue || []);
@@ -3079,6 +3175,16 @@ export function createWorkerView(mount_element, options = {}) {
       const att = dismissBtn.dataset.attemptId;
       if (att) {
         void dismissAttempt(att);
+      }
+      return;
+    }
+    const cleanupDiagnoseBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-banner__cleanup-diagnose')
+    );
+    if (cleanupDiagnoseBtn) {
+      const bead_id = cleanupDiagnoseBtn.dataset.beadId;
+      if (bead_id) {
+        void diagnoseCleanup(bead_id);
       }
       return;
     }
