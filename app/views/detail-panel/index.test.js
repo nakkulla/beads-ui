@@ -190,6 +190,73 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('quick_fix omits absent review rows and offers the route option', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: { route: 'quick_fix' },
+        workflow: {
+          route: 'quick_fix',
+          route_source: 'explicit',
+          stages: {
+            impl: { stale: false },
+            close: { fill: 'none', stale: false }
+          }
+        }
+      },
+      vi.fn()
+    );
+    const keys = Array.from(mount.querySelectorAll('.detail-kv__k')).map(
+      (node) => node.textContent?.trim()
+    );
+    const route_select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-edit="wfmeta-route"]')
+    );
+
+    expect(keys).not.toContain('spec_review');
+    expect(keys).not.toContain('impl_review');
+    expect(
+      Array.from(route_select.options).map((option) => option.value)
+    ).toContain('quick_fix');
+
+    panel.destroy();
+  });
+
+  test('quick_fix renders review rows when metadata carries them', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: {
+          route: 'quick_fix',
+          spec_review: 'codex@' + 'a'.repeat(40),
+          impl_review: 'self@' + 'b'.repeat(40)
+        },
+        workflow: {
+          route: 'quick_fix',
+          route_source: 'explicit',
+          stages: {
+            spec: { stale: false },
+            impl: { stale: false },
+            close: { fill: 'none', stale: false }
+          }
+        }
+      },
+      vi.fn()
+    );
+    const keys = Array.from(mount.querySelectorAll('.detail-kv__k')).map(
+      (node) => node.textContent?.trim()
+    );
+
+    expect(keys).toContain('spec_review');
+    expect(keys).toContain('impl_review');
+
+    panel.destroy();
+  });
+
   test('title pencil opens an input; save sends edit-text title', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi
@@ -849,11 +916,11 @@ describe('views/detail-panel', () => {
     });
     panel.load('UI-1');
 
-    // Global spec_review_model default surfaces as `(기본: opus — 전역)`.
+    // Legacy per-key queue values no longer become an active default source.
     const review = /** @type {HTMLSelectElement} */ (
       mount.querySelector('select[data-key="spec_review_model"]')
     );
-    expect(review.options[0].textContent).toContain('기본: opus');
+    expect(review.options[0].textContent).toContain('기본: codex');
     // The snapshot's runner_catalog drives the grouped model selector.
     const model = /** @type {HTMLSelectElement} */ (
       mount.querySelector('select[data-key="orchestration_model"]')
@@ -877,6 +944,89 @@ describe('views/detail-panel', () => {
     expect(mount.querySelector('select[data-key="worker_runner"]')).toBe(null);
     expect(mount.querySelector('select[data-key="review_model"]')).toBe(null);
 
+    panel.destroy();
+  });
+
+  test('preserves an inherited exact implementation model when the selected preset resolves codex', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {},
+        default_exec_preset_id: 'p1',
+        runner_catalog: {
+          runners: {
+            claude: {
+              models: { opus: { id: 'opus' } },
+              efforts: ['low', 'medium', 'high']
+            },
+            codex: {
+              models: { terra: { id: 'terra' } },
+              efforts: ['low', 'medium', 'high']
+            }
+          }
+        }
+      })
+    );
+    const execPresetStore = createExecPresetStore();
+    execPresetStore.set({
+      revision: 1,
+      presets: [
+        {
+          id: 'p1',
+          name: 'Codex 기본',
+          settings: { orchestration_model: 'terra' }
+        }
+      ]
+    });
+    const issue = {
+      ...baseIssue,
+      metadata: {
+        impl_runtime: 'codex',
+        impl_model: 'terra',
+        impl_effort: 'high'
+      }
+    };
+    const transport = vi.fn().mockResolvedValue(issue);
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      queueStore,
+      execPresetStore,
+      transport,
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:UI-1', {
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    issueStores.getStore('detail:UI-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: /** @type {any} */ ([issue])
+    });
+    panel.load('UI-1');
+
+    const runtime = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-key="impl_runtime"]')
+    );
+    runtime.value = 'inherit';
+    runtime.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('update-impl-target', {
+      id: 'UI-1',
+      impl_runtime: 'inherit',
+      impl_model: 'terra',
+      impl_effort: 'high',
+      orchestration_runtime: 'codex'
+    });
     panel.destroy();
   });
 

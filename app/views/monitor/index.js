@@ -232,7 +232,7 @@ export function createMonitorView(mount_element, options) {
   const exec_store = {
     get() {
       if (!exec_target) {
-        return { revision: 0, exec_defaults: {} };
+        return { revision: 0, exec_defaults: {}, default_exec_preset_id: null };
       }
       const adopted = exec_adopted.get(exec_target);
       if (adopted) {
@@ -247,6 +247,7 @@ export function createMonitorView(mount_element, options) {
       return {
         revision: group ? group.revision : 0,
         exec_defaults: group ? group.exec_defaults : {},
+        default_exec_preset_id: group ? group.default_exec_preset_id : null,
         runner_catalog: group ? group.runner_catalog : null,
         workspace_info: workspace ? workspace.workspace_info : undefined
       };
@@ -274,7 +275,7 @@ export function createMonitorView(mount_element, options) {
     transport: transport
       ? (/** @type {any} */ type, /** @type {any} */ payload) => {
           const workspace_scoped =
-            type === 'worker-queue-set-exec-default' ||
+            type === 'worker-queue-set-default-exec-preset' ||
             type === 'get-worker-system-prompt';
           return transport(
             type,

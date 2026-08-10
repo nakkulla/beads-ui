@@ -397,10 +397,48 @@ describe('enrichIssueWorkflow', () => {
 
     // An invalid pin value is NOT explicit.
     const invalid = enrichIssueWorkflow(
-      { status: 'open', metadata: { route: 'quick_fix' } },
+      { status: 'open', metadata: { route: 'foo' } },
       dir
     );
     expect(invalid.route_source).toBe('derived');
+  });
+
+  test('recognizes a pinned quick_fix route with an empty close stage', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'open',
+        metadata: { route: 'quick_fix', plan_path: 'docs/ignored.md' }
+      },
+      dir
+    );
+
+    expect(wf.route).toBe('quick_fix');
+    expect(wf.route_source).toBe('explicit');
+    expect(wf.chips.route).toBe('quick_fix');
+    expect(wf.stages.close).toEqual({
+      fill: 'none',
+      glyph: null,
+      stale: false,
+      receipt: null
+    });
+    expect(wf.stages.plan).toBeUndefined();
+  });
+
+  test('fills the quick_fix close stage when the bead is closed', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+
+    const wf = enrichIssueWorkflow(
+      { status: 'closed', metadata: { route: 'quick_fix' } },
+      dir
+    );
+
+    expect(wf.stages.close?.fill).toBe('full');
   });
 });
 

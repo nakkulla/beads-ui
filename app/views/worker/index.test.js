@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createExecPresetStore } from '../../data/exec-preset-store.js';
 import { createSessionLogStore } from '../../data/session-log-store.js';
 import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
@@ -2090,6 +2091,47 @@ describe('views/worker', () => {
     expect(card.querySelector('.b-impl.dim.stale')).not.toBeNull();
   });
 
+  test('quick_fix candidate stays in the with-spec filter but cannot be queued', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'QF-1',
+        title: 'quick fix candidate',
+        status: 'open',
+        metadata: { route: 'quick_fix', spec_id: 'legacy-spec' }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-candidate .worker-card[data-bead-id="QF-1"]'
+      )
+    );
+    expect(card.querySelector('.worker-card__reason')?.textContent).toContain(
+      'quick_fix · 워커 비대상'
+    );
+    expect(card.getAttribute('draggable')).toBe('false');
+    expect(
+      card.querySelector('.worker-card__place')?.getAttribute('title')
+    ).toBe('quick_fix route는 워커 실행 대상이 아닙니다');
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-filter__chip[data-spec="with"]')
+    ).click();
+
+    expect(
+      mount.querySelector(
+        '#worker-pane-candidate .worker-card[data-bead-id="QF-1"]'
+      )
+    ).not.toBeNull();
+  });
+
   test('a candidate without workflow renders no chip/stepper and does not throw', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const stores = createTestIssueStores();
@@ -2135,17 +2177,6 @@ describe('views/worker', () => {
     );
   }
 
-  /**
-   * @param {HTMLElement} dialog
-   * @param {string} key
-   * @returns {HTMLSelectElement}
-   */
-  function execSelect(dialog, key) {
-    return /** @type {HTMLSelectElement} */ (
-      dialog.querySelector(`select[data-key="${key}"]`)
-    );
-  }
-
   test('the ⚙ button carries aria-haspopup and opens the global exec-defaults dialog', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     createWorkerView(mount, {
@@ -2168,307 +2199,95 @@ describe('views/worker', () => {
 
     const dialog = openExecDefaults(mount);
     expect(dialog.hasAttribute('open')).toBe(true);
-    // The 10 exec keys render (workflow_mode is NOT a global default).
-    for (const key of [
-      'orchestration_model',
-      'orchestration_effort',
-      'spec_review_model',
-      'spec_review_effort',
-      'impl_review_model',
-      'impl_review_effort',
-      'plan_review_model',
-      'plan_review_effort',
-      'impl_model',
-      'impl_effort'
-    ]) {
-      expect(execSelect(dialog, key)).not.toBeNull();
-    }
-    expect(execSelect(dialog, 'workflow_mode')).toBeNull();
-    expect(execSelect(dialog, 'review_model')).toBeNull();
+    expect(
+      dialog.querySelector('[data-workspace-preset-select]')
+    ).not.toBeNull();
+    expect(dialog.querySelectorAll('.exec-defaults__row')).toHaveLength(0);
   });
 
-  test('changing an exec-default select sends worker-queue-set-exec-default with the current revision', async () => {
+  test('selecting a workspace preset sends both current revisions', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(queueOf({ revision: 3 }));
-    const transport = vi.fn().mockResolvedValue(
-      reply(
-        queueOf({
-          revision: 4,
-          exec_defaults: { spec_review_model: 'codex' }
-        })
-      )
-    );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
+    const execPresetStore = createExecPresetStore();
+    execPresetStore.set({
+      revision: 7,
+      presets: [{ id: 'p1', name: '개발', settings: {} }]
     });
-
-    const dialog = openExecDefaults(mount);
-    const sel = execSelect(dialog, 'spec_review_model');
-    sel.value = 'codex';
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
-      key: 'spec_review_model',
-      value: 'codex',
-      expected_revision: 3
-    });
-  });
-
-  test('selecting (기본) sends an unset (null value) exec-default', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({ revision: 3, exec_defaults: { spec_review_model: 'codex' } })
-    );
-    const transport = vi
-      .fn()
-      .mockResolvedValue(reply(queueOf({ revision: 4 })));
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-
-    const dialog = openExecDefaults(mount);
-    const sel = execSelect(dialog, 'spec_review_model');
-    expect(sel.value).toBe('codex');
-    sel.value = '';
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
-      key: 'spec_review_model',
-      value: null,
-      expected_revision: 3
-    });
-  });
-
-  test('a CAS conflict re-reads the returned snapshot and retries the exec-default set once', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ revision: 0 }));
-    const transport = vi
-      .fn()
-      .mockResolvedValueOnce({
-        applied: false,
-        conflict: true,
-        queue: queueOf({ revision: 5 })
-      })
-      .mockResolvedValueOnce(
-        reply(
-          queueOf({
-            revision: 6,
-            exec_defaults: { spec_review_model: 'codex' }
-          })
-        )
-      );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-
-    const dialog = openExecDefaults(mount);
-    const sel = execSelect(dialog, 'spec_review_model');
-    sel.value = 'codex';
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledTimes(2);
-    expect(transport.mock.calls[0][1].expected_revision).toBe(0);
-    expect(transport.mock.calls[1][1].expected_revision).toBe(5);
-  });
-
-  test('the exec-defaults dialog reflects exec_defaults from the queue snapshot', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
-        exec_defaults: {
-          orchestration_model: 'sonnet',
-          orchestration_effort: 'high',
-          spec_review_model: 'opus',
-          impl_model: 'sonnet'
-        }
-      })
-    );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport: vi.fn()
-    });
-
-    const dialog = openExecDefaults(mount);
-    expect(execSelect(dialog, 'orchestration_model').value).toBe('sonnet');
-    expect(execSelect(dialog, 'worker_runner')).toBeNull();
-    expect(execSelect(dialog, 'orchestration_effort').value).toBe('high');
-    expect(execSelect(dialog, 'spec_review_model').value).toBe('opus');
-    expect(execSelect(dialog, 'impl_model').value).toBe('sonnet');
-  });
-
-  test('the model options are the snapshot catalog, grouped by runner', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ exec_defaults: {} }));
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport: vi.fn()
-    });
-
-    const dialog = openExecDefaults(mount);
-    const model = execSelect(dialog, 'orchestration_model');
-    const opts = Array.from(model.options).map((o) => o.value);
-    expect(opts).toContain('opus');
-    expect(opts).toContain('sol');
-    expect(opts).not.toContain('gpt-5.6');
-    expect(
-      Array.from(model.querySelectorAll('optgroup')).map((g) =>
-        g.getAttribute('label')
-      )
-    ).toEqual(['claude', 'codex']);
-    // impl_model reuses the exact same catalog rendering.
-    expect(
-      Array.from(
-        execSelect(dialog, 'impl_model').querySelectorAll('optgroup')
-      ).map((g) => g.getAttribute('label'))
-    ).toEqual(['claude', 'codex']);
-  });
-
-  test('the effort options narrow to the selected model vocabulary', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
-        exec_defaults: { orchestration_model: 'luna', impl_model: 'sol' }
-      })
-    );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport: vi.fn()
-    });
-
-    const dialog = openExecDefaults(mount);
-
-    expect(
-      Array.from(execSelect(dialog, 'orchestration_effort').options).map(
-        (o) => o.value
-      )
-    ).toContain('max');
-    expect(
-      Array.from(execSelect(dialog, 'impl_effort').options).map((o) => o.value)
-    ).toEqual(['', 'low', 'medium', 'high']);
-  });
-
-  test('a self/skip review model disables its paired effort select', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
-        exec_defaults: { spec_review_model: 'self', impl_review_model: 'codex' }
-      })
-    );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport: vi.fn()
-    });
-
-    const dialog = openExecDefaults(mount);
-
-    expect(execSelect(dialog, 'spec_review_effort').disabled).toBe(true);
-    expect(execSelect(dialog, 'impl_review_effort').disabled).toBe(false);
-  });
-
-  test('an incompatible stored model shows as a selected (비호환) option, and (기본) still unsets it', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    // A codex-era model left in the store is outside the claude catalog, so it
-    // renders as its own (비호환) option (worker-phase1 §3).
-    queueStore.set(
-      queueOf({
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      queue: queueOf({ revision: 4, default_exec_preset_id: 'p1' }),
+      presets: {
         revision: 7,
-        exec_defaults: { orchestration_model: 'gpt-5.6' }
-      })
-    );
-    const transport = vi
-      .fn()
-      .mockResolvedValue(reply(queueOf({ revision: 8 })));
+        presets: [{ id: 'p1', name: '개발', settings: {} }]
+      }
+    });
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
+      execPresetStore,
       transport
     });
 
     const dialog = openExecDefaults(mount);
-    const model = execSelect(dialog, 'orchestration_model');
-    // The incompatible stored value is surfaced (not hidden behind '(기본)') and
-    // is the selected option, labelled '(비호환)'.
-    expect(model.value).toBe('gpt-5.6');
-    const selectedOption = model.options[model.selectedIndex];
-    expect(selectedOption.value).toBe('gpt-5.6');
-    expect(selectedOption.textContent).toContain('비호환');
-
-    // '(기본)' is a live target: selecting it fires a change that unsets (null).
-    model.value = '';
-    model.dispatchEvent(new Event('change', { bubbles: true }));
+    const sel = /** @type {HTMLSelectElement} */ (
+      dialog.querySelector('[data-workspace-preset-select]')
+    );
+    sel.value = 'p1';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
-    expect(transport).toHaveBeenCalledWith('worker-queue-set-exec-default', {
-      key: 'orchestration_model',
-      value: null,
-      expected_revision: 7
-    });
-  });
 
-  test('the ⚙ dialog labels the (기본) option with the static fallback (§3.1)', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore: createWorkerQueueStore(),
-      transport: vi.fn()
-    });
-
-    const dialog = openExecDefaults(mount);
-    // The global dialog edits the global layer itself, so its unset option is
-    // always the static final-fallback label — not a `(… — 전역)` echo.
-    const modelUnset = execSelect(dialog, 'orchestration_model').options[0];
-    expect(modelUnset.value).toBe('');
-    expect(modelUnset.textContent).toContain('기본: opus');
-    expect(
-      execSelect(dialog, 'spec_review_model').options[0].textContent
-    ).toContain('기본: codex');
-    expect(execSelect(dialog, 'impl_model').options[0].textContent).toContain(
-      '작업 성격에 따라 구현 모델 자동 선택'
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-set-default-exec-preset',
+      {
+        preset_id: 'p1',
+        expected_queue_revision: 3,
+        expected_preset_revision: 7
+      }
     );
   });
 
-  test('the ⚙ dialog no longer renders global policy rows (worker-phase2 §2)', () => {
+  test('adopts both authoritative snapshots and keeps selection after a dual CAS conflict', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf(/** @type {any} */ ({ revision: 3, merge_policy: 'pr_stop' }))
-    );
+    queueStore.set(queueOf({ revision: 3 }));
+    const execPresetStore = createExecPresetStore();
+    execPresetStore.set({
+      revision: 7,
+      presets: [{ id: 'p1', name: '초안', settings: {} }]
+    });
+    const transport = vi.fn().mockResolvedValue({
+      applied: false,
+      conflict: true,
+      queue: queueOf({ revision: 4 }),
+      presets: {
+        revision: 8,
+        presets: [{ id: 'p2', name: '최신', settings: {} }]
+      }
+    });
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
-      transport: vi.fn()
+      execPresetStore,
+      transport
     });
 
     const dialog = openExecDefaults(mount);
+    const sel = /** @type {HTMLSelectElement} */ (
+      dialog.querySelector('[data-workspace-preset-select]')
+    );
+    sel.value = 'p1';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
 
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(queueStore.get()?.revision).toBe(4);
+    expect(execPresetStore.get()?.revision).toBe(8);
     expect(
-      dialog.querySelector('select[data-policy-key="merge_policy"]')
-    ).toBeNull();
-    expect(
-      dialog.querySelector('select[data-policy-key="drift_policy"]')
-    ).toBeNull();
-    // The 10 exec rows survive.
-    expect(dialog.querySelectorAll('.exec-defaults__row').length).toBe(10);
+      /** @type {HTMLSelectElement} */ (
+        dialog.querySelector('[data-workspace-preset-select]')
+      ).value
+    ).toBe('p1');
   });
 
   /**

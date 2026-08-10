@@ -6,6 +6,13 @@
  * @property {string} id
  * @property {string} name
  * @property {Record<string, string>} settings
+ * @property {{ kind: 'user' }|{ kind: 'workspace-exec-defaults', workspace_key: string, source_digest: string }} [origin]
+ * @property {boolean} [compatible]
+ * @property {string|null} [incompatibility_reason]
+ * @property {boolean} [migration_pending]
+ * @property {number|null} [reference_count]
+ * @property {{ workspace_key: string, display_name: string }[]} [reference_summary]
+ * @property {boolean} [reference_scan_complete]
  */
 /**
  * @typedef {Object} ExecPresetState

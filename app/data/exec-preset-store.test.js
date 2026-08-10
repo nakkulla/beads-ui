@@ -24,4 +24,31 @@ describe('client exec-preset store', () => {
     });
     expect(listener).toHaveBeenCalledTimes(2);
   });
+
+  test('preserves origin compatibility and reference fields verbatim', () => {
+    const store = createExecPresetStore();
+    const snapshot = {
+      revision: 2,
+      presets: [
+        {
+          id: 'p2',
+          name: '마이그레이션',
+          settings: {},
+          origin: /** @type {const} */ ({
+            kind: 'workspace-exec-defaults',
+            workspace_key: '/repo',
+            source_digest: 'abc'
+          }),
+          compatible: false,
+          incompatibility_reason: 'impl_runtime_required',
+          reference_count: 2,
+          reference_summary: [{ workspace_key: '/repo', display_name: 'repo' }]
+        }
+      ]
+    };
+
+    store.set(snapshot);
+
+    expect(store.get()).toEqual(snapshot);
+  });
 });

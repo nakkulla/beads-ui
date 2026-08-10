@@ -148,9 +148,6 @@ Nothing merges without a human `[머지]` click.
 - `worker-queue-set-pr-wait-hold` payload: `{ on, expected_revision }` — when
   enabled, forces the effective concurrency cap to 1 through PR merge cleanup
   while preserving the stored `slots` preference for later restoration.
-- `worker-queue-set-exec-default` payload:
-  `{ key: <one of the 5 exec keys>, value: string|null, expected_revision }` —
-  workspace-global exec default; null/`''` unsets.
 - `worker-queue-remove` payload: `{ bead_id, expected_revision }`
 - `worker-attempt-pause` / `worker-attempt-stop` payload: `{ attempt_id }` —
   pauses (⏸) or discards (■) a running attempt (group-kill + `workflow_mode`

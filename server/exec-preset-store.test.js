@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createExecPresetStore } from './exec-preset-store.js';
 
 /** @type {string} */
@@ -56,14 +56,144 @@ describe('exec-preset-store defaults', () => {
         {
           id: 'preset-1',
           name: 'Legacy',
-          settings: { orchestration_model: 'removed-model' }
+          settings: { orchestration_model: 'removed-model' },
+          origin: { kind: 'user' }
         }
       ]
     });
   });
+
+  test('persists normalized legacy origin and inferred implementation runtime once', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({
+        revision: 3,
+        presets: [
+          { id: 'legacy', name: '기존', settings: { impl_model: 'terra' } }
+        ]
+      })
+    );
+    const store = createExecPresetStore({ filePath: file_path });
+
+    const snapshot = store.snapshot();
+    const durable = JSON.parse(fs.readFileSync(file_path, 'utf8'));
+    const restarted = createExecPresetStore({ filePath: file_path });
+
+    expect(snapshot).toMatchObject({
+      revision: 3,
+      presets: [
+        {
+          id: 'legacy',
+          origin: { kind: 'user' },
+          settings: { impl_model: 'terra', impl_runtime: 'codex' }
+        }
+      ]
+    });
+    expect(durable).toEqual(snapshot);
+    expect(restarted.snapshot()).toEqual(snapshot);
+  });
+
+  test('keeps parsed legacy presets durable when normalization persistence fails', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    const legacy = {
+      revision: 7,
+      presets: [
+        { id: 'legacy', name: '기존', settings: { impl_model: 'terra' } }
+      ]
+    };
+    fs.writeFileSync(file_path, JSON.stringify(legacy));
+    const original_write_file = fs.writeFileSync;
+    const write_file = vi.spyOn(fs, 'writeFileSync');
+    write_file.mockImplementation((target, data, options) => {
+      if (target === `${file_path}.tmp`) {
+        throw new Error('disk full');
+      }
+      return original_write_file(target, data, options);
+    });
+    const store = createExecPresetStore({ filePath: file_path });
+
+    expect(() => store.snapshot()).toThrow('disk full');
+
+    expect(JSON.parse(fs.readFileSync(file_path, 'utf8'))).toEqual(legacy);
+    write_file.mockRestore();
+  });
+
+  test('fails closed when normalized state readback changes its revision', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({
+        revision: 3,
+        presets: [
+          { id: 'legacy', name: '기존', settings: { impl_model: 'terra' } }
+        ]
+      })
+    );
+    const original_read_file = fs.readFileSync;
+    let reads = 0;
+    const read_file = vi.spyOn(fs, 'readFileSync');
+    read_file.mockImplementation((target, options) => {
+      if (target === file_path && ++reads === 2) {
+        return JSON.stringify({ revision: 0, presets: [] });
+      }
+      return original_read_file(target, options);
+    });
+    const store = createExecPresetStore({ filePath: file_path });
+
+    expect(() => store.snapshot()).toThrow(
+      'Normalized exec preset state failed readback verification'
+    );
+
+    read_file.mockRestore();
+    expect(store.snapshot()).toMatchObject({ revision: 3 });
+  });
 });
 
 describe('exec-preset-store CRUD', () => {
+  test('reuses a legacy migration across restart after resolving a user-name collision', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    const ids = ['user-preset', 'migration-preset'];
+    const store = createExecPresetStore({
+      filePath: file_path,
+      randomUUID: () => /** @type {string} */ (ids.shift())
+    });
+    store.create({
+      expected_revision: 0,
+      name: '이전 기본값 · 작업 공간',
+      settings: { orchestration_model: 'sol' }
+    });
+
+    const first = store.createOrReuseMigration({
+      name: '이전 기본값 · 작업 공간',
+      settings: { orchestration_model: 'sol' },
+      workspace_key: 'workspace-12345678',
+      source_digest: 'legacy-defaults-digest'
+    });
+    const restarted = createExecPresetStore({ filePath: file_path });
+    const resumed = restarted.createOrReuseMigration({
+      name: '이전 기본값 · 작업 공간',
+      settings: { orchestration_model: 'sol' },
+      workspace_key: 'workspace-12345678',
+      source_digest: 'legacy-defaults-digest'
+    });
+
+    expect(first).toMatchObject({
+      applied: true,
+      reused: false,
+      preset: {
+        id: 'migration-preset',
+        name: '이전 기본값 · 작업 공간 · 12345678'
+      }
+    });
+    expect(resumed).toMatchObject({
+      applied: false,
+      reused: true,
+      preset: { id: 'migration-preset' }
+    });
+    expect(restarted.snapshot().presets).toHaveLength(2);
+  });
+
   test('creates and persists a validated preset', () => {
     const file_path = path.join(tmp_dir, 'exec-presets.json');
     const store = createExecPresetStore({
@@ -86,7 +216,8 @@ describe('exec-preset-store CRUD', () => {
         {
           id: 'preset-1',
           name: '기본 개발',
-          settings: { orchestration_model: 'sol' }
+          settings: { orchestration_model: 'sol' },
+          origin: { kind: 'user' }
         }
       ]
     });
@@ -131,7 +262,8 @@ describe('exec-preset-store CRUD', () => {
     expect(result.presets[0]).toEqual({
       id: 'preset-1',
       name: '수정됨',
-      settings: { orchestration_model: 'terra' }
+      settings: { orchestration_model: 'terra' },
+      origin: { kind: 'user' }
     });
   });
 
@@ -175,7 +307,14 @@ describe('exec-preset-store CRUD', () => {
       applied: false,
       conflict: true,
       revision: 1,
-      presets: [{ id: 'preset-1', name: '현재', settings: {} }]
+      presets: [
+        {
+          id: 'preset-1',
+          name: '현재',
+          settings: {},
+          origin: { kind: 'user' }
+        }
+      ]
     });
     expect(fs.readFileSync(file_path, 'utf8')).toBe(before);
   });
