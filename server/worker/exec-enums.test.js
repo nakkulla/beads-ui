@@ -8,6 +8,7 @@ import {
   REVIEW_STEP_MODELS,
   execSettingEnums,
   inferImplRuntime,
+  validateExecSettings,
   validateImplSettings
 } from './exec-enums.js';
 import { resolveCatalog } from './runner-catalog.js';
@@ -130,6 +131,26 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
 });
 
 describe('worker/exec-enums implementation target coherence', () => {
+  test('marks stale known settings incompatible across all 11 keys', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    expect(
+      validateExecSettings(
+        { orchestration_model: 'removed-model' },
+        { catalog }
+      )
+    ).toMatchObject({ ok: false, reason: 'invalid_orchestration_model' });
+    expect(
+      validateExecSettings(
+        { impl_review_model: 'removed-reviewer' },
+        { catalog }
+      )
+    ).toMatchObject({ ok: false, reason: 'invalid_impl_review_model' });
+    expect(
+      validateExecSettings({ impl_review_effort: 'max' }, { catalog })
+    ).toMatchObject({ ok: false, reason: 'invalid_impl_review_effort' });
+  });
+
   test('infers a provider only for a known model-only legacy value', () => {
     const catalog = resolveCatalog({ warn: () => {} });
 

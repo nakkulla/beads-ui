@@ -195,6 +195,41 @@ export function validateImplSettings(settings, options = {}) {
 }
 
 /**
+ * Validate every present canonical exec setting against the current catalog,
+ * then validate the linked implementation target as one coherent unit. Unlike
+ * durable-state normalization this only reports incompatibility; callers that
+ * read old state keep its strings available for display and diagnostics.
+ *
+ * @param {Record<string, unknown>} settings
+ * @param {{ catalog?: ResolvedCatalog, active_writer?: boolean, controller_runtime?: string }} [options]
+ * @returns {{ ok: true, impl_runtime: string|undefined, inferred: boolean }|{ ok: false, reason: string }}
+ */
+export function validateExecSettings(settings, options = {}) {
+  const catalog = options.catalog ?? runtimeCatalog();
+  const enums = execSettingEnums(catalog);
+  for (const key of EXEC_SETTING_KEYS) {
+    if (!Object.hasOwn(settings, key)) {
+      continue;
+    }
+    const value = settings[key];
+    if (typeof value === 'string' && enums[key].includes(value)) {
+      continue;
+    }
+    if (key === 'impl_model') {
+      return { ok: false, reason: 'unknown_impl_model' };
+    }
+    if (key === 'impl_effort') {
+      return { ok: false, reason: 'illegal_impl_effort' };
+    }
+    if (key === 'impl_runtime') {
+      return { ok: false, reason: 'invalid_impl_runtime' };
+    }
+    return { ok: false, reason: `invalid_${key}` };
+  }
+  return validateImplSettings(settings, { ...options, catalog });
+}
+
+/**
  * Allowed values per exec-preference key — the 11 workspace-global-capable keys
  * (`workflow_mode` excluded).
  *

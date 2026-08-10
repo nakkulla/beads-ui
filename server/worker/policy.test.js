@@ -198,6 +198,38 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([]);
   });
 
+  test('infers a Bead model runtime before a preset runtime can fill it', () => {
+    const r = resolveExecSettings({
+      bead: { impl_model: 'terra' },
+      defaults: { impl_runtime: 'claude' }
+    });
+
+    expect(r.impl_runtime).toBe('codex');
+    expect(r.impl_runtime_inferred).toBe(true);
+    expect(r.invalid_reason).toBe(undefined);
+    expect(r.stamped_keys).toEqual([]);
+  });
+
+  test('stamps a runtime inferred from a preset model-only target', () => {
+    const r = resolveExecSettings({
+      bead: {},
+      defaults: { impl_model: 'terra' }
+    });
+
+    expect(r.impl_runtime).toBe('codex');
+    expect(r.impl_runtime_inferred).toBe(true);
+    expect(r.stamped_keys).toEqual(['impl_runtime', 'impl_model']);
+  });
+
+  test('rejects invalid implementation targets after layer normalization', () => {
+    const r = resolveExecSettings({
+      bead: { impl_model: 'terra' },
+      defaults: { impl_effort: 'max' }
+    });
+
+    expect(r.invalid_reason).toBe('illegal_impl_effort');
+  });
+
   test('explicit inherit blocks a lower runtime and resolves against the controller', () => {
     const r = resolveExecSettings({
       bead: { impl_runtime: 'inherit' },

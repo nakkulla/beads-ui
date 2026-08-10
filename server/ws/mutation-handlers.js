@@ -148,6 +148,9 @@ export function buildImplTargetArgs(id, target) {
  * @returns {string | null}
  */
 function validateExecSetting(key, value) {
+  if (['impl_runtime', 'impl_model', 'impl_effort'].includes(key)) {
+    return 'implementation target must be updated with update-impl-target';
+  }
   const enums = execSettingEnumsForBead();
   if (!Object.prototype.hasOwnProperty.call(enums, key)) {
     return `unknown exec-setting key: ${key}`;

@@ -117,6 +117,41 @@ function pickImplLayered(beadVal, globalVal) {
 }
 
 /**
+ * Infer a known model-only implementation runtime before merging a layer with
+ * lower-precedence values. This prevents a lower preset runtime from changing
+ * the provider implied by a Bead model.
+ *
+ * @param {{ impl_runtime?: unknown, impl_model?: unknown, impl_effort?: unknown }} layer
+ * @param {ResolvedCatalog} catalog
+ * @returns {{ values: Record<string, unknown>, inferred: boolean }}
+ */
+function normalizeImplLayer(layer, catalog) {
+  /** @type {Record<string, unknown>} */
+  const values = {};
+  if (typeof layer.impl_runtime === 'string') {
+    values.impl_runtime = layer.impl_runtime;
+  }
+  if (typeof layer.impl_model === 'string') {
+    values.impl_model = layer.impl_model;
+  }
+  if (typeof layer.impl_effort === 'string') {
+    values.impl_effort = layer.impl_effort;
+  }
+  const validation = validateImplSettings(values, {
+    catalog,
+    active_writer: false
+  });
+  if (
+    validation.ok &&
+    validation.inferred &&
+    typeof validation.impl_runtime === 'string'
+  ) {
+    values.impl_runtime = validation.impl_runtime;
+  }
+  return { values, inferred: validation.ok && validation.inferred };
+}
+
+/**
  * @typedef {{
  *   model?: unknown,
  *   effort?: unknown,
@@ -264,14 +299,19 @@ export function resolveExecSettings(input) {
     'impl_review_effort',
     stamped_keys
   );
+  const bead_impl = normalizeImplLayer(bead, catalog);
+  const defaults_impl = normalizeImplLayer(defaults, catalog);
   const impl_runtime_pick = pickImplLayered(
-    bead.impl_runtime,
-    defaults.impl_runtime
+    bead_impl.values.impl_runtime,
+    defaults_impl.values.impl_runtime
   );
-  const impl_model_pick = pickImplLayered(bead.impl_model, defaults.impl_model);
+  const impl_model_pick = pickImplLayered(
+    bead_impl.values.impl_model,
+    defaults_impl.values.impl_model
+  );
   const impl_effort_pick = pickImplLayered(
-    bead.impl_effort,
-    defaults.impl_effort
+    bead_impl.values.impl_effort,
+    defaults_impl.values.impl_effort
   );
   const impl_validation = validateImplSettings(
     {
@@ -290,7 +330,11 @@ export function resolveExecSettings(input) {
   const impl_runtime = impl_validation.ok
     ? impl_validation.impl_runtime
     : undefined;
-  const impl_runtime_inferred = impl_validation.ok && impl_validation.inferred;
+  const impl_runtime_inferred =
+    impl_validation.ok &&
+    ((impl_runtime_pick.source === 'bead' && bead_impl.inferred) ||
+      (impl_runtime_pick.source === 'global' && defaults_impl.inferred) ||
+      impl_validation.inferred);
   const impl_model =
     impl_validation.ok && typeof impl_model_pick.value === 'string'
       ? impl_model_pick.value

@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import {
   EXEC_SETTING_KEYS,
   execSettingEnums,
-  validateImplSettings
+  validateExecSettings
 } from './exec-enums.js';
 import { resolveExecSettings } from './policy.js';
 import { discoverQueueStates } from './queue-state-discovery.js';
@@ -60,7 +60,7 @@ function normalizeLegacySettings(raw) {
     }
     settings[key] = value;
   }
-  const coherence = validateImplSettings(settings, { active_writer: false });
+  const coherence = validateExecSettings(settings, { active_writer: false });
   if (!coherence.ok) {
     return null;
   }
@@ -151,7 +151,7 @@ export function createExecPresetCoordinator(options) {
         .map((preset) => {
           const references = referencesFor(discovered, preset.id);
           const pending = !migrationIsComplete(discovered, preset);
-          const coherence = validateImplSettings(preset.settings, {
+          const coherence = validateExecSettings(preset.settings, {
             active_writer: false
           });
           return {
@@ -225,7 +225,7 @@ export function createExecPresetCoordinator(options) {
           presets
         };
       }
-      const coherence = validateImplSettings(selected.settings, {
+      const coherence = validateExecSettings(selected.settings, {
         active_writer: false
       });
       if (!coherence.ok) {
@@ -278,7 +278,7 @@ export function createExecPresetCoordinator(options) {
           reason: 'default_exec_preset_missing'
         });
       }
-      const coherence = validateImplSettings(preset.settings, {
+      const coherence = validateExecSettings(preset.settings, {
         active_writer: false
       });
       if (!coherence.ok) {
@@ -364,20 +364,44 @@ export function createExecPresetCoordinator(options) {
    * @param {string} workspace
    */
   function migrateWorkspace(workspace) {
-    const initial = queueStore.snapshot(workspace);
-    const legacy_defaults = isRecord(initial.exec_defaults)
-      ? /** @type {Record<string, string>} */ (initial.exec_defaults)
-      : {};
+    const workspace_key = workspaceKeyFor(workspace);
+    const discovered = discover();
+    const durable_state = discovered.states.find(
+      (state) => state.workspace_key === workspace_key
+    );
+    if (!discovered.complete) {
+      return { ok: false, step: 'legacy_discovery_incomplete' };
+    }
+    if (!durable_state) {
+      return { ok: true, migrated: false };
+    }
+    if (durable_state.status === 'absent') {
+      return { ok: true, migrated: false };
+    }
+    if (durable_state.status !== 'ok' || !durable_state.raw) {
+      return { ok: false, step: 'legacy_discovery_incomplete' };
+    }
+    if (!Object.hasOwn(durable_state.raw, 'exec_defaults')) {
+      return { ok: true, migrated: false };
+    }
+    const raw_legacy_defaults = durable_state.raw.exec_defaults;
+    if (!isRecord(raw_legacy_defaults)) {
+      return { ok: false, step: 'legacy_incompatible' };
+    }
+    const legacy_defaults = /** @type {Record<string, string>} */ (
+      raw_legacy_defaults
+    );
     const settings = normalizeLegacySettings(legacy_defaults);
+    if (!settings) {
+      return { ok: false, step: 'legacy_incompatible' };
+    }
+    if (Object.keys(legacy_defaults).length === 0) {
+      return { ok: true, migrated: false };
+    }
+    const initial = queueStore.snapshot(workspace);
     if (initial.default_exec_preset_id !== null) {
-      if (Object.keys(legacy_defaults).length === 0) {
-        return { ok: true, migrated: false };
-      }
-      if (!settings) {
-        return { ok: false, step: 'legacy_incompatible' };
-      }
       const expected_origin = {
-        workspace_key: workspaceKeyFor(workspace),
+        workspace_key,
         source_digest: sourceDigest(settings)
       };
       const referenced = presetStore
@@ -404,13 +428,6 @@ export function createExecPresetCoordinator(options) {
         ? { ok: true, migrated: true }
         : { ok: false, step: 'legacy_clear' };
     }
-    if (Object.keys(legacy_defaults).length === 0) {
-      return { ok: true, migrated: false };
-    }
-    if (!settings) {
-      return { ok: false, step: 'legacy_incompatible' };
-    }
-    const workspace_key = workspaceKeyFor(workspace);
     let created;
     try {
       created = presetStore.createOrReuseMigration({

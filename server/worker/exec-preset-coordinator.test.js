@@ -59,6 +59,7 @@ function createFixture(options = {}) {
   return {
     queueStore,
     presetStore,
+    discover,
     coordinator: createExecPresetCoordinator({
       queueStore,
       presetStore,
@@ -211,6 +212,45 @@ describe('exec-preset coordinator legacy migration', () => {
       reason: 'default_exec_preset_incompatible'
     });
   });
+
+  test.each([
+    ['unknown orchestration model', { orchestration_model: 'removed-model' }],
+    ['illegal review model', { impl_review_model: 'removed-reviewer' }],
+    ['illegal review effort', { impl_review_effort: 'max' }]
+  ])(
+    'marks %s incompatible in snapshots and rejects selection and dispatch',
+    (_, settings) => {
+      const fixture = createFixture({
+        queue: { revision: 2, default_exec_preset_id: 'preset-1' },
+        preset: {
+          revision: 7,
+          presets: [
+            {
+              id: 'preset-1',
+              name: '기본',
+              settings,
+              origin: { kind: 'user' }
+            }
+          ]
+        }
+      });
+
+      expect(fixture.coordinator.snapshot().presets[0].compatible).toBe(false);
+      expect(
+        fixture.coordinator.setDefaultExecPreset(WORKSPACE, {
+          preset_id: 'preset-1',
+          expected_queue_revision: 2,
+          expected_preset_revision: 7
+        })
+      ).toMatchObject({
+        applied: false,
+        reason: 'default_exec_preset_incompatible'
+      });
+      expect(
+        fixture.coordinator.resolveForDispatch(WORKSPACE, beadSnapshot())
+      ).toEqual({ ok: false, reason: 'default_exec_preset_incompatible' });
+    }
+  );
 
   test('migrates legacy defaults in ordered durable steps and is restart-idempotent', () => {
     const first = createFixture({
@@ -510,6 +550,77 @@ describe('exec-preset coordinator legacy migration', () => {
     ).not.toHaveProperty('exec_defaults');
   });
 
+  test('fails closed on unknown raw legacy defaults without mutating queue or presets', () => {
+    const fixture = createFixture({
+      queue: {
+        revision: 4,
+        exec_defaults: { orchestration_model: 'removed-model' }
+      }
+    });
+
+    expect(fixture.coordinator.migrateWorkspace(WORKSPACE)).toEqual({
+      ok: false,
+      step: 'legacy_incompatible'
+    });
+    expect(fixture.queueStore.snapshot(WORKSPACE)).toMatchObject({
+      revision: 4,
+      exec_defaults: {}
+    });
+    expect(
+      JSON.parse(fs.readFileSync(path.join(tmp_dir, 'queue.json'), 'utf8'))
+    ).toMatchObject({
+      revision: 4,
+      exec_defaults: { orchestration_model: 'removed-model' }
+    });
+    expect(fixture.presetStore.snapshot().presets).toEqual([]);
+  });
+
+  test('fails closed when raw discovery cannot read the target legacy queue', () => {
+    const fixture = createFixture({
+      queue: { revision: 4, exec_defaults: { orchestration_model: 'sol' } }
+    });
+    const coordinator = createExecPresetCoordinator({
+      queueStore: fixture.queueStore,
+      presetStore: fixture.presetStore,
+      discover: () => ({
+        complete: false,
+        states: [
+          {
+            workspace_key: 'workspace-key',
+            display_name: '작업 공간',
+            status: 'unreadable',
+            queue_file: path.join(tmp_dir, 'queue.json'),
+            raw: null
+          }
+        ]
+      }),
+      workspaceKeyFor: () => 'workspace-key'
+    });
+
+    expect(coordinator.migrateWorkspace(WORKSPACE)).toEqual({
+      ok: false,
+      step: 'legacy_discovery_incomplete'
+    });
+    expect(fixture.queueStore.snapshot(WORKSPACE).revision).toBe(4);
+    expect(fixture.presetStore.snapshot().presets).toEqual([]);
+  });
+
+  test('skips migration when a complete raw scan has no target queue state', () => {
+    const fixture = createFixture();
+    const coordinator = createExecPresetCoordinator({
+      queueStore: fixture.queueStore,
+      presetStore: fixture.presetStore,
+      discover: () => ({ complete: true, states: [] }),
+      workspaceKeyFor: () => 'workspace-key'
+    });
+
+    expect(coordinator.migrateWorkspace(WORKSPACE)).toEqual({
+      ok: true,
+      migrated: false
+    });
+    expect(fixture.presetStore.snapshot().presets).toEqual([]);
+  });
+
   test('preserves migratable values across every ordered failure boundary and converges on restart', () => {
     const steps = [
       'preset_persist',
@@ -587,7 +698,7 @@ describe('exec-preset coordinator legacy migration', () => {
       const coordinator = createExecPresetCoordinator({
         queueStore,
         presetStore,
-        discover: () => ({ complete: true, states: [] }),
+        discover: fixture.discover,
         workspaceKeyFor: () => 'workspace-key',
         workspaceNameFor: () => '작업 공간'
       });

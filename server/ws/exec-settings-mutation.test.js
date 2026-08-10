@@ -147,16 +147,21 @@ describe('handleUpdateExecSettings', () => {
     ]);
   });
 
-  test('rejects a model-only implementation write before calling bd', async () => {
+  test.each([
+    ['impl_runtime', 'codex'],
+    ['impl_model', 'terra'],
+    ['impl_effort', 'high'],
+    ['impl_runtime', '']
+  ])('rejects generic %s mutations before calling bd', async (key, value) => {
     const { ws, sent } = fakeWs();
     await handleUpdateExecSettings(ws, {
       id: 'r3d',
       type: 'update-exec-settings',
-      payload: { id: 'UI-1', key: 'impl_model', value: 'terra' }
+      payload: { id: 'UI-1', key, value }
     });
 
     expect(runBdInWorkspace).not.toHaveBeenCalled();
-    expect(sent[0].error.message).toContain('impl_runtime_required');
+    expect(sent[0].error.message).toContain('update-impl-target');
   });
 
   test('unknown key is rejected', async () => {
