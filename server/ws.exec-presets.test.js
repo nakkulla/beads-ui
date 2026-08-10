@@ -76,7 +76,8 @@ describe('ws exec-preset channel', () => {
         'exec-presets-snapshot',
         'exec-preset-create',
         'exec-preset-update',
-        'exec-preset-delete'
+        'exec-preset-delete',
+        'apply-exec-preset'
       ])
     );
   });

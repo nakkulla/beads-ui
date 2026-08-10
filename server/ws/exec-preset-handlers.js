@@ -6,6 +6,9 @@
  */
 import { makeError, makeOk } from '../../app/protocol.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
+import { EXEC_SETTING_KEYS, execSettingEnums } from '../worker/exec-enums.js';
+import { runBdInWorkspace, runBdJsonInWorkspace } from './context.js';
+import { triggerMutationRefreshOnce } from './refresh.js';
 
 const DEFAULT_CLIENT_ID = 'exec:presets';
 
@@ -14,6 +17,26 @@ let STORE = createExecPresetStore();
 
 /** @type {Set<{ ws: WebSocket, client_id: string }>} */
 const SUBSCRIBERS = new Set();
+
+/**
+ * Build one `bd update` argv that replaces every canonical exec metadata key.
+ * Missing preset keys become explicit `--unset-metadata` entries.
+ *
+ * @param {string} issue_id
+ * @param {Record<string, string>} settings
+ * @returns {string[]}
+ */
+export function buildApplyExecPresetArgs(issue_id, settings) {
+  const args = ['update', issue_id];
+  for (const key of EXEC_SETTING_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(settings, key)) {
+      args.push('--set-metadata', `${key}=${settings[key]}`);
+    } else {
+      args.push('--unset-metadata', key);
+    }
+  }
+  return args;
+}
 
 /**
  * @param {RequestEnvelope} req
@@ -132,6 +155,149 @@ export function handleExecPresetUpdate(ws, req) {
 /** @param {WebSocket} ws - Socket. @param {RequestEnvelope} req - Request. */
 export function handleExecPresetDelete(ws, req) {
   handleMutation(ws, req, 'delete');
+}
+
+/**
+ * Apply one preset to all 10 issue metadata keys without changing preset state.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleApplyExecPreset(ws, req) {
+  const { id, preset_id, expected_revision } = /** @type {any} */ (
+    req.payload || {}
+  );
+  if (
+    typeof id !== 'string' ||
+    id.length === 0 ||
+    typeof preset_id !== 'string' ||
+    preset_id.length === 0 ||
+    !Number.isInteger(expected_revision) ||
+    expected_revision < 0
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { id, preset_id, expected_revision }'
+        )
+      )
+    );
+    return;
+  }
+
+  const snapshot = STORE.snapshot();
+  if (expected_revision !== snapshot.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: false,
+          conflict: true,
+          revision: snapshot.revision,
+          presets: snapshot.presets
+        })
+      )
+    );
+    return;
+  }
+  const preset = snapshot.presets.find((entry) => entry.id === preset_id);
+  if (!preset) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'exec_preset_missing', 'Execution preset not found')
+      )
+    );
+    return;
+  }
+  const enums = execSettingEnums();
+  for (const [key, value] of Object.entries(preset.settings)) {
+    const allowed = enums[key];
+    if (!Array.isArray(allowed) || !allowed.includes(value)) {
+      ws.send(
+        JSON.stringify(
+          makeError(
+            req,
+            'exec_preset_incompatible',
+            `Execution preset value is incompatible: ${key}`
+          )
+        )
+      );
+      return;
+    }
+  }
+
+  let updated;
+  try {
+    updated = await runBdInWorkspace(
+      ws,
+      buildApplyExecPresetArgs(id, preset.settings)
+    );
+  } catch (err) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_update_failed',
+          err instanceof Error ? err.message : String(err)
+        )
+      )
+    );
+    return;
+  }
+  if (updated.code !== 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bd_update_failed', updated.stderr || 'bd update failed')
+      )
+    );
+    return;
+  }
+
+  let shown;
+  try {
+    shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
+  } catch (err) {
+    triggerMutationRefreshOnce();
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          err instanceof Error ? err.message : String(err)
+        )
+      )
+    );
+    return;
+  }
+  triggerMutationRefreshOnce();
+  const raw_issue = Array.isArray(shown.stdoutJson)
+    ? shown.stdoutJson[0]
+    : shown.stdoutJson;
+  if (
+    shown.code !== 0 ||
+    !raw_issue ||
+    typeof raw_issue !== 'object' ||
+    Array.isArray(raw_issue) ||
+    typeof (/** @type {any} */ (raw_issue).id) !== 'string'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bd_readback_failed', shown.stderr || 'bd show failed')
+      )
+    );
+    return;
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        applied: true,
+        conflict: false,
+        revision: snapshot.revision,
+        issue: raw_issue
+      })
+    )
+  );
 }
 
 /** @param {WebSocket} ws */

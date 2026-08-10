@@ -24,6 +24,7 @@ import {
 } from './display-policy-handlers.js';
 import {
   detachExecPresets,
+  handleApplyExecPreset,
   handleExecPresetCreate,
   handleExecPresetDelete,
   handleExecPresetUpdate,
@@ -475,6 +476,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'exec-preset-delete':
       handleExecPresetDelete(ws, req);
+      return;
+    case 'apply-exec-preset':
+      await handleApplyExecPreset(ws, req);
       return;
     case 'monitor-auto-toggle':
       handleMonitorAutoToggle(ws, req);
