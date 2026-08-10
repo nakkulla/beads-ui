@@ -277,6 +277,23 @@ async function getCodexUsage(runCodexAuth, now) {
 }
 
 /**
+ * Recalculate snapshot age for every response without refreshing the source.
+ *
+ * @param {ReturnType<typeof normalizeCodexUsage>} payload
+ * @param {() => number} now
+ */
+function withCurrentAge(payload, now) {
+  if (!payload.available) {
+    return payload;
+  }
+  const fetched_at = Date.parse(payload.fetchedAt);
+  return {
+    ...payload,
+    ageSeconds: Math.max(0, Math.floor((now() - fetched_at) / 1000))
+  };
+}
+
+/**
  * Create the fail-quiet Codex usage route handler.
  *
  * @param {{ runCodexAuth?: () => Promise<{ code: number, stdout: string, stderr: string }>, now?: () => number }} [options]
@@ -291,7 +308,8 @@ export function createCodexUsageHandler(options = {}) {
    * @param {Response} res
    */
   async function handler(_req, res) {
-    const payload = await getCodexUsage(runCodexAuth, now);
+    const cached_or_fresh = await getCodexUsage(runCodexAuth, now);
+    const payload = withCurrentAge(cached_or_fresh, now);
     res.set('Cache-Control', 'no-store');
     res.type('application/json');
     res.status(200).send(payload);

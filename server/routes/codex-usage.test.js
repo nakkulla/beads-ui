@@ -318,12 +318,17 @@ describe('GET /api/codex-usage', () => {
   });
 
   test('negative-caches unavailable responses for 180 seconds', async () => {
+    let clock = 1_786_334_400_000;
+    const now = () => clock;
     const runCodexAuth = vi.fn().mockRejectedValue(new Error('private detail'));
 
-    await requestUsage(runCodexAuth);
-    await requestUsage(runCodexAuth);
+    await requestUsage(runCodexAuth, now);
+    clock += 179_999;
+    await requestUsage(runCodexAuth, now);
+    clock += 1;
+    await requestUsage(runCodexAuth, now);
 
-    expect(runCodexAuth).toHaveBeenCalledTimes(1);
+    expect(runCodexAuth).toHaveBeenCalledTimes(2);
   });
 
   test('refreshes the positive cache after 180 seconds', async () => {
@@ -342,6 +347,24 @@ describe('GET /api/codex-usage', () => {
     await requestUsage(runCodexAuth, now);
 
     expect(runCodexAuth).toHaveBeenCalledTimes(2);
+  });
+
+  test('recalculates snapshot age while reusing the positive cache', async () => {
+    let clock = 1_786_334_948_000;
+    const now = () => clock;
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify(usageSnapshot()),
+      stderr: ''
+    });
+
+    const first = await requestUsage(runCodexAuth, now);
+    clock += 20_000;
+    const second = await requestUsage(runCodexAuth, now);
+
+    expect(first.body).toMatchObject({ ageSeconds: 590 });
+    expect(second.body).toMatchObject({ ageSeconds: 610 });
+    expect(runCodexAuth).toHaveBeenCalledTimes(1);
   });
 
   test('coalesces concurrent cache misses into one process', async () => {
