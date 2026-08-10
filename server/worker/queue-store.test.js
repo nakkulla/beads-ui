@@ -520,6 +520,74 @@ describe('worker/queue-store', () => {
     expect(result.queue.merge_queue).toEqual([]);
   });
 
+  test('re-enables a paused intent at a fresh queue position without resetting budget', () => {
+    const store = storeWithCompletionIntent();
+    store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: resumeRepairOp('op-1', 'att-repair-1'),
+      attempt: { attempt_id: 'att-repair-1', bead_id: 'UI-root' }
+    });
+    store.advanceCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'op-1',
+      status: 'consumed',
+      next_phase: 'gating',
+      clear: true
+    });
+    store.pauseCompletionIntent(WS, { root_bead_id: 'UI-root' });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-later', bead_id: 'UI-later' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-later',
+      attempt_id: 'att-later',
+      patch: { status: 'done', finished_at: 2 }
+    });
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-later' }]
+    });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+
+    const result = store.enqueueMergeAuto(WS, {
+      entries: [
+        {
+          bead_id: 'UI-root',
+          head_sha: 'c'.repeat(40),
+          completion: {
+            target_base: 'main',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-root',
+              pr_url: 'https://github.com/o/r/pull/1',
+              head_sha: 'c'.repeat(40),
+              base_sha: 'd'.repeat(40),
+              merged_sha: null
+            }
+          }
+        }
+      ]
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.merge_queue.map((entry) => entry.bead_id)).toEqual([
+      'UI-later',
+      'UI-root'
+    ]);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'gating',
+      repair_sessions_used: 1,
+      subject: {
+        head_sha: 'c'.repeat(40),
+        base_sha: 'd'.repeat(40)
+      }
+    });
+  });
+
   test('terminalizes an intent with bounded evidence in one revision', () => {
     const store = storeWithCompletionIntent();
     const revision = store.snapshot(WS).revision;
@@ -548,6 +616,7 @@ describe('worker/queue-store', () => {
         at: 12
       }
     });
+    expect(result.queue.merge_queue).toEqual([]);
   });
 
   test('marks the root intent completed in the same move to done', () => {

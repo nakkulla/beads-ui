@@ -40,7 +40,10 @@ import { parsePrNumber } from '../workflow-enrich.js';
 import { validateAdmission } from './admission.js';
 import { createAutoMerge } from './auto-merge.js';
 import { createBdMetadata } from './bd-metadata.js';
-import { createCompletionIntentCoordinator } from './completion-intent.js';
+import {
+  createCompletionActionDriver,
+  createCompletionIntentCoordinator
+} from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
@@ -357,6 +360,7 @@ export function defaultProbePid(pid) {
  *   mergeQueue?: any,
  *   autoMerge?: any,
  *   completionIntent?: any,
+ *   completionActionDriver?: any,
  *   completionRepair?: any,
  *   getSubscriberCount?: () => number
  * }} [options]
@@ -504,6 +508,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   let prActions = null;
   /** @type {ReturnType<typeof createCompletionIntentCoordinator>|null} */
   let completionIntent = null;
+  /** @type {ReturnType<typeof createCompletionActionDriver>|null} */
+  let completionActionDriver = null;
 
   const probePid = options.probePid || defaultProbePid;
 
@@ -893,6 +899,18 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // poller never looks at can never end.
       isExternalRow: (/** @type {string} */ bead_id) =>
         !!runtime.externalPrs.get(keyFor(workspace_root), bead_id),
+      onCompletionResult: (
+        /** @type {string} */ root_bead_id,
+        /** @type {string} */ subject_bead_id,
+        /** @type {any} */ result
+      ) =>
+        completionActionDriver
+          ? completionActionDriver.onMergeResult(
+              root_bead_id,
+              subject_bead_id,
+              result
+            )
+          : Promise.resolve(),
       // Re-derive the EXTERNAL rows once before the resumed queue's first item
       // (UI-5v7d §2): at boot the registry is empty until something scans bd,
       // and a restored external head would otherwise be refused as a non-member.
@@ -941,6 +959,20 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         runVerifyAtSha({ ...input, worktree, git: gitRun })
     });
 
+  const resolvedCompletionActionDriver =
+    options.completionActionDriver ||
+    createCompletionActionDriver({
+      workspace: keyFor(workspace_root),
+      store: runtime.queueStore,
+      prActions,
+      completionRepair,
+      scheduler,
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
+      kickMerge: () => mergeQueue.kick(),
+      log
+    });
+  completionActionDriver = resolvedCompletionActionDriver;
+
   // Durable completion-intent lifecycle. Phase-specific effects stay injected;
   // the attachment owns only startup, queue-event wakeups, and shutdown.
   const resolvedCompletionIntent =
@@ -949,6 +981,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
       subscribeQueueChanged: onQueueChanged,
+      observe: resolvedCompletionActionDriver.observe,
+      onAction: resolvedCompletionActionDriver.onAction,
+      onAttemptSettled: resolvedCompletionActionDriver.onAttemptSettled,
       log
     });
   completionIntent = resolvedCompletionIntent;
@@ -991,6 +1026,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     mergeQueue,
     autoMerge,
     completionIntent: resolvedCompletionIntent,
+    completionActionDriver: resolvedCompletionActionDriver,
     completionRepair,
     refreshExternalPrs,
     reviseDisposition,

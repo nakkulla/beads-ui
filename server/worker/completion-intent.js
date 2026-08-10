@@ -76,6 +76,9 @@ export function createCompletionFailureKey(input) {
  * @typedef {{ state: CompletionFactState, reason?: string }} CompletionFact
  */
 /**
+ * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any }} ObservedCompletionFact
+ */
+/**
  * @typedef {{ kind: 'gate'|'probe'|'resume_root'|'create_repair'|'dispatch_repair'|'merge_subject'|'retry_cleanup'|'pause'|'needs_human'|'complete', reason?: string }} CompletionAction
  */
 
@@ -312,4 +315,582 @@ export function createCompletionIntentCoordinator(deps) {
       return current;
     }
   };
+}
+
+const REPAIR_SESSION_CAP = 2;
+
+/**
+ * @param {string} root_bead_id
+ * @param {string} kind
+ * @param {any} failure_key
+ */
+function operationIdentity(root_bead_id, kind, failure_key) {
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify({
+        root_bead_id,
+        kind,
+        stage: failure_key.stage,
+        reason: failure_key.reason,
+        subject_sha: failure_key.subject_sha,
+        base_sha: failure_key.base_sha,
+        result_digest: failure_key.result_digest
+      })
+    )
+    .digest('hex')
+    .slice(0, 24);
+  return `completion-${digest}`;
+}
+
+/**
+ * Live effect owner for the coordinator kernel. The kernel decides one action;
+ * this adapter pins gate evidence, journals external effects, and returns every
+ * merge/session result to the same durable root intent.
+ *
+ * @param {{
+ *   workspace: string,
+ *   store: any,
+ *   prActions: { completionGate: (bead_id: string, role?: 'root'|'repair') => Promise<any> },
+ *   completionRepair: { probeOwnership: (input: any) => Promise<any>, ensureLinkedBead: (input: any) => Promise<any> },
+ *   scheduler: { dispatchCompletionRepair: (workspace: string, input: any) => Promise<any> },
+ *   notifyChanged?: (workspace: string) => void,
+ *   kickMerge?: () => Promise<unknown>|unknown,
+ *   now?: () => number,
+ *   log?: (...args: any[]) => void
+ * }} deps
+ */
+export function createCompletionActionDriver(deps) {
+  const facts = new Map();
+  const now = deps.now || (() => Date.now());
+  const log = deps.log || (() => {});
+
+  function notify() {
+    if (typeof deps.notifyChanged === 'function') {
+      try {
+        deps.notifyChanged(deps.workspace);
+      } catch {
+        // Durable state is authoritative even when fanout fails.
+      }
+    }
+  }
+
+  /**
+   * @param {any} left
+   * @param {any} right
+   */
+  function sameFailure(left, right) {
+    return (
+      left &&
+      right &&
+      left.stage === right.stage &&
+      left.reason === right.reason &&
+      left.subject_sha === right.subject_sha &&
+      left.base_sha === right.base_sha &&
+      left.result_digest === right.result_digest
+    );
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @param {string} reason
+   * @param {string} stage
+   * @param {any} [failure_key]
+   * @param {any} [evidence]
+   */
+  function terminalize(
+    root_bead_id,
+    reason,
+    stage,
+    failure_key = null,
+    evidence = null
+  ) {
+    const text =
+      evidence === null
+        ? null
+        : typeof evidence === 'string'
+          ? evidence
+          : JSON.stringify(evidence);
+    deps.store.terminalizeCompletionIntent(deps.workspace, {
+      root_bead_id,
+      terminal: {
+        reason,
+        stage,
+        failure_key,
+        evidence: typeof text === 'string' ? text.slice(-4000) : null,
+        log_path:
+          typeof evidence?.log_path === 'string' ? evidence.log_path : null,
+        at: now()
+      }
+    });
+    notify();
+  }
+
+  /**
+   * @param {any} gated
+   * @returns {ObservedCompletionFact}
+   */
+  function factFromGate(gated) {
+    if (!gated || gated.ok !== true) {
+      const reason = gated?.reason || 'completion_gate_unreadable';
+      return reason === 'pr_ref_unknown'
+        ? { state: 'waiting', reason }
+        : { state: 'undecidable', reason };
+    }
+    const verdict = gated.verdict || {};
+    if (verdict.tier === 'merged') {
+      return {
+        state:
+          gated.subject?.role === 'repair' ? 'repair_pr_merged' : 'completed',
+        gated
+      };
+    }
+    if (verdict.enabled === true) {
+      return { state: 'green', gated };
+    }
+    if (verdict.base_badge === '충돌') {
+      return { state: 'conflict', gated };
+    }
+    const reason = verdict.reason;
+    if (reason === 'verify_cmd_failed' || reason === 'ci_failed') {
+      const verify = gated.evidence?.verify;
+      const ci = gated.evidence?.ci;
+      const failure_key = createCompletionFailureKey({
+        stage: 'merge_gate',
+        reason,
+        subject_sha: gated.subject.head_sha,
+        base_sha: gated.base_sha,
+        evidence: {
+          output_tail: verify?.output_tail,
+          checks: ci?.checks
+        }
+      });
+      return {
+        state: reason === 'ci_failed' ? 'ci_red' : 'verify_red',
+        source: reason === 'ci_failed' ? 'ci' : 'local_verify',
+        failure_key,
+        evidence: reason === 'ci_failed' ? ci : verify,
+        gated
+      };
+    }
+    if (
+      reason === 'ci_pending' ||
+      reason === 'verify_missing' ||
+      reason === 'verify_sha_stale' ||
+      reason === 'not_observed'
+    ) {
+      return { state: 'waiting', reason, gated };
+    }
+    return {
+      state: 'undecidable',
+      reason: reason || 'completion_gate_refused',
+      gated
+    };
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @param {any} intent
+   * @returns {Promise<ObservedCompletionFact>}
+   */
+  async function observe(root_bead_id, intent) {
+    if (intent.active_op) {
+      /** @type {ObservedCompletionFact} */
+      const fact = { state: 'waiting', reason: 'completion_op_in_flight' };
+      facts.set(root_bead_id, fact);
+      return fact;
+    }
+    if (intent.phase === 'cleaning') {
+      /** @type {ObservedCompletionFact} */
+      const fact = { state: 'waiting', reason: 'cleanup_in_flight' };
+      facts.set(root_bead_id, fact);
+      return fact;
+    }
+    const role = intent.subject?.role === 'repair' ? 'repair' : 'root';
+    let gated;
+    try {
+      gated = await deps.prActions.completionGate(intent.subject.bead_id, role);
+    } catch (err) {
+      log('completion gate failed for %s: %o', root_bead_id, err);
+      gated = { ok: false, reason: 'completion_gate_spawn_failed' };
+    }
+    let fact = factFromGate(gated);
+    if (
+      gated.ok === true &&
+      (intent.subject.head_sha !== gated.subject.head_sha ||
+        intent.subject.base_sha !== gated.subject.base_sha ||
+        intent.subject.pr_url !== gated.subject.pr_url)
+    ) {
+      fact = { state: 'stale', gated };
+    }
+    facts.set(root_bead_id, fact);
+    return fact;
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @param {'resume_root'|'create_repair'} kind
+   * @param {any} fact
+   */
+  async function startRepair(root_bead_id, kind, fact) {
+    const current = deps.store.snapshot(deps.workspace).completion_intents?.[
+      root_bead_id
+    ];
+    const failure_key = fact?.failure_key;
+    if (!current || !failure_key) {
+      terminalize(root_bead_id, 'repair_evidence_missing', 'repair_dispatch');
+      return;
+    }
+    if (current.repair_sessions_used >= REPAIR_SESSION_CAP) {
+      terminalize(
+        root_bead_id,
+        'repair_session_budget_exhausted',
+        'repair_dispatch',
+        failure_key,
+        fact.evidence
+      );
+      return;
+    }
+    if (kind === 'resume_root') {
+      if (current.subject.role !== 'root') {
+        terminalize(
+          root_bead_id,
+          'repair_subject_red',
+          'repair_dispatch',
+          failure_key,
+          fact.evidence
+        );
+        return;
+      }
+      const op_id = operationIdentity(root_bead_id, kind, failure_key);
+      const result = await deps.scheduler.dispatchCompletionRepair(
+        deps.workspace,
+        {
+          root_bead_id,
+          op: {
+            op_id,
+            kind,
+            failure_key,
+            attempt_id: `${op_id}-attempt`,
+            repair_bead_id: null,
+            status: 'prepared'
+          },
+          log_path: fact.evidence?.log_path ?? null
+        }
+      );
+      if (!result.ok) {
+        terminalize(
+          root_bead_id,
+          result.reason || 'repair_dispatch_failed',
+          'repair_dispatch',
+          failure_key,
+          fact.evidence
+        );
+      }
+      return;
+    }
+
+    const create_op_id = operationIdentity(
+      root_bead_id,
+      'create_repair',
+      failure_key
+    );
+    const prepared = deps.store.prepareCompletionOp(deps.workspace, {
+      root_bead_id,
+      phase: 'repairing',
+      op: {
+        op_id: create_op_id,
+        kind: 'create_repair',
+        failure_key,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    if (!prepared.ok) {
+      terminalize(
+        root_bead_id,
+        'repair_create_prerecord_failed',
+        'repair_create',
+        failure_key
+      );
+      return;
+    }
+    notify();
+    let linked;
+    try {
+      linked = await deps.completionRepair.ensureLinkedBead({
+        root_bead_id,
+        op_id: create_op_id,
+        failure_key
+      });
+    } catch (err) {
+      terminalize(
+        root_bead_id,
+        'repair_bead_create_failed',
+        'repair_create',
+        failure_key,
+        String(err)
+      );
+      return;
+    }
+    const recorded = deps.store.recordCompletionRepairBead(deps.workspace, {
+      root_bead_id,
+      op_id: create_op_id,
+      repair_bead_id: linked.bead_id
+    });
+    if (!recorded.ok) {
+      terminalize(
+        root_bead_id,
+        'repair_bead_record_failed',
+        'repair_create',
+        failure_key
+      );
+      return;
+    }
+    const consumed = deps.store.advanceCompletionOp(deps.workspace, {
+      root_bead_id,
+      op_id: create_op_id,
+      status: 'consumed',
+      next_phase: 'repairing',
+      clear: true
+    });
+    if (!consumed.ok) {
+      terminalize(
+        root_bead_id,
+        'repair_create_consume_failed',
+        'repair_create',
+        failure_key
+      );
+      return;
+    }
+    notify();
+    const dispatch_op_id = operationIdentity(
+      root_bead_id,
+      'dispatch_repair',
+      failure_key
+    );
+    const result = await deps.scheduler.dispatchCompletionRepair(
+      deps.workspace,
+      {
+        root_bead_id,
+        op: {
+          op_id: dispatch_op_id,
+          kind: 'dispatch_repair',
+          failure_key,
+          attempt_id: `${dispatch_op_id}-attempt`,
+          repair_bead_id: linked.bead_id,
+          status: 'prepared'
+        },
+        log_path: fact.evidence?.log_path ?? null
+      }
+    );
+    if (!result.ok) {
+      terminalize(
+        root_bead_id,
+        result.reason || 'repair_dispatch_failed',
+        'repair_dispatch',
+        failure_key,
+        fact.evidence
+      );
+    }
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @param {CompletionAction} action
+   * @param {any} intent
+   */
+  async function onAction(root_bead_id, action, intent) {
+    const fact = facts.get(root_bead_id) || { state: 'waiting' };
+    if (action.kind === 'gate') {
+      if (fact.gated?.subject) {
+        deps.store.setCompletionSubject(deps.workspace, {
+          root_bead_id,
+          phase: 'gating',
+          subject: fact.gated.subject
+        });
+        notify();
+      }
+      return;
+    }
+    if (action.kind === 'probe') {
+      const ownership = await deps.completionRepair.probeOwnership({
+        root_bead_id,
+        source: fact.source,
+        failure_key: fact.failure_key
+      });
+      if (ownership.state === 'pr_owned') {
+        await startRepair(root_bead_id, 'resume_root', fact);
+      } else if (ownership.state === 'base_owned') {
+        await startRepair(root_bead_id, 'create_repair', {
+          ...fact,
+          evidence: ownership.evidence || fact.evidence
+        });
+      } else {
+        terminalize(
+          root_bead_id,
+          ownership.reason || 'ownership_undecidable',
+          'base_probe',
+          fact.failure_key,
+          ownership.evidence || fact.evidence
+        );
+      }
+      return;
+    }
+    if (action.kind === 'resume_root' || action.kind === 'create_repair') {
+      await startRepair(root_bead_id, action.kind, fact);
+      return;
+    }
+    if (action.kind === 'merge_subject') {
+      if (intent.phase !== 'merging') {
+        deps.store.setCompletionSubject(deps.workspace, {
+          root_bead_id,
+          phase: 'merging',
+          subject: fact.gated?.subject || intent.subject
+        });
+        notify();
+      }
+      if (typeof deps.kickMerge === 'function') {
+        await deps.kickMerge();
+      }
+      return;
+    }
+    if (action.kind === 'pause') {
+      deps.store.pauseCompletionIntent(deps.workspace, { root_bead_id });
+      notify();
+      return;
+    }
+    if (action.kind === 'needs_human') {
+      terminalize(
+        root_bead_id,
+        action.reason || 'completion_needs_human',
+        'coordinator',
+        fact.failure_key,
+        fact.evidence
+      );
+    }
+  }
+
+  /**
+   * @param {any} input
+   */
+  async function onAttemptSettled(input) {
+    const queue = deps.store.snapshot(deps.workspace);
+    const intent = queue.completion_intents?.[input.root_bead_id];
+    const op = intent?.active_op;
+    if (
+      !intent ||
+      !op ||
+      op.op_id !== input.op_id ||
+      !sameFailure(op.failure_key, input.failure_key) ||
+      input.attempt?.status === 'running' ||
+      input.attempt?.status === 'paused'
+    ) {
+      return;
+    }
+    const bead_id = input.attempt?.bead_id;
+    const role = bead_id === input.root_bead_id ? 'root' : 'repair';
+    let gated;
+    try {
+      gated = await deps.prActions.completionGate(bead_id, role);
+    } catch {
+      gated = null;
+    }
+    const next_phase = queue.auto_merge === true ? 'gating' : 'paused';
+    const advanced = deps.store.advanceCompletionOp(deps.workspace, {
+      root_bead_id: input.root_bead_id,
+      op_id: input.op_id,
+      status: 'consumed',
+      next_phase,
+      ...(gated?.ok === true ? { subject: gated.subject } : {}),
+      clear: true
+    });
+    if (!advanced.ok) {
+      terminalize(
+        input.root_bead_id,
+        'repair_settlement_record_failed',
+        'repair_settlement',
+        input.failure_key
+      );
+      return;
+    }
+    notify();
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @param {string} subject_bead_id
+   * @param {any} result
+   */
+  async function onMergeResult(root_bead_id, subject_bead_id, result) {
+    const intent = deps.store.snapshot(deps.workspace).completion_intents?.[
+      root_bead_id
+    ];
+    if (!intent) {
+      return;
+    }
+    const merged =
+      result &&
+      (result.action === 'merged' ||
+        result.action === 'updated_and_merged' ||
+        result.action === 'already_merged');
+    if (merged && result.ok === true && subject_bead_id === root_bead_id) {
+      return;
+    }
+    if (merged && result.ok === true && subject_bead_id !== root_bead_id) {
+      let root_gate;
+      try {
+        root_gate = await deps.prActions.completionGate(root_bead_id, 'root');
+      } catch {
+        root_gate = null;
+      }
+      if (root_gate?.ok === true) {
+        deps.store.setCompletionSubject(deps.workspace, {
+          root_bead_id,
+          phase: 'gating',
+          subject: root_gate.subject
+        });
+        notify();
+        return;
+      }
+      terminalize(
+        root_bead_id,
+        root_gate?.reason || 'root_regate_failed',
+        'root_regate'
+      );
+      return;
+    }
+    if (
+      result?.reason === 'resolution_round_cap' ||
+      result?.reason === 'resolution_timeout'
+    ) {
+      terminalize(root_bead_id, result.reason, 'conflict_resolution');
+      return;
+    }
+    let gated;
+    try {
+      gated = await deps.prActions.completionGate(
+        subject_bead_id,
+        subject_bead_id === root_bead_id ? 'root' : 'repair'
+      );
+    } catch {
+      gated = null;
+    }
+    if (gated?.ok === true) {
+      deps.store.setCompletionSubject(deps.workspace, {
+        root_bead_id,
+        phase: 'gating',
+        subject: gated.subject
+      });
+      notify();
+      return;
+    }
+    terminalize(
+      root_bead_id,
+      result?.reason || gated?.reason || 'completion_merge_failed',
+      'merge_subject'
+    );
+  }
+
+  return { observe, onAction, onAttemptSettled, onMergeResult };
 }

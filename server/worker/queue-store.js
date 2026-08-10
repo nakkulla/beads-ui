@@ -2514,14 +2514,18 @@ export function createQueueStore(options = {}) {
      * Status is monotonic; clearing is legal only after logical consumption.
      *
      * @param {string} workspace
-     * @param {{ root_bead_id: string, op_id: string, status: CompletionOperation['status'], next_phase?: CompletionPhase, clear?: boolean }} input
+     * @param {{ root_bead_id: string, op_id: string, status: CompletionOperation['status'], next_phase?: CompletionPhase, subject?: CompletionSubject, clear?: boolean }} input
      * @returns {QueueOpResult}
      */
     advanceCompletionOp(workspace, input) {
-      const { root_bead_id, op_id, status, next_phase, clear } = input;
+      const { root_bead_id, op_id, status, next_phase, subject, clear } = input;
       return applyUnconditional(workspace, (next) => {
         const intent = next.completion_intents[root_bead_id];
         const active_op = intent?.active_op;
+        const normalized_subject =
+          subject === undefined
+            ? null
+            : normalizeCompletionSubject(subject, root_bead_id);
         const current_index = active_op
           ? COMPLETION_OP_STATUSES.indexOf(active_op.status)
           : -1;
@@ -2536,7 +2540,10 @@ export function createQueueStore(options = {}) {
           (next_phase !== undefined &&
             (!COMPLETION_PHASES.includes(next_phase) ||
               next_phase === 'needs_human' ||
-              next_phase === 'completed'))
+              next_phase === 'completed')) ||
+          (subject !== undefined && !normalized_subject) ||
+          (normalized_subject?.role === 'repair' &&
+            !intent.repair_bead_ids.includes(normalized_subject.bead_id))
         ) {
           return false;
         }
@@ -2544,8 +2551,16 @@ export function createQueueStore(options = {}) {
         if (next_phase !== undefined) {
           intent.phase = next_phase;
         }
+        if (normalized_subject) {
+          intent.subject = normalized_subject;
+        }
         if (clear === true) {
           intent.active_op = null;
+        }
+        if (next_phase === 'paused') {
+          next.merge_queue = next.merge_queue.filter(
+            (entry) => entry.bead_id !== root_bead_id
+          );
         }
         return true;
       });
@@ -2640,6 +2655,9 @@ export function createQueueStore(options = {}) {
         }
         intent.phase = 'needs_human';
         intent.terminal_reason = normalized_terminal;
+        next.merge_queue = next.merge_queue.filter(
+          (entry) => entry.bead_id !== root_bead_id
+        );
         return true;
       });
     },
@@ -2659,7 +2677,7 @@ export function createQueueStore(options = {}) {
      * every other scheduler/driver write).
      *
      * @param {string} workspace
-     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string }>, present_ids?: string[] }} input
+     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, completion?: { target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
      * @returns {QueueOpResult}
      */
     enqueueMergeAuto(workspace, input) {
@@ -2688,6 +2706,71 @@ export function createQueueStore(options = {}) {
             continue;
           }
           if (!enqueueMember(next, bead_id, entry.external === true)) {
+            continue;
+          }
+          if (entry.completion) {
+            if (next.auto_merge !== true || entry.external === true) {
+              continue;
+            }
+            if (
+              Object.values(next.completion_intents).some((intent) =>
+                intent.repair_bead_ids.includes(bead_id)
+              )
+            ) {
+              continue;
+            }
+            const existing_intent = next.completion_intents[bead_id];
+            if (existing_intent) {
+              if (
+                existing_intent.phase === 'needs_human' ||
+                existing_intent.phase === 'completed'
+              ) {
+                continue;
+              }
+              if (next.auto_merge_skips[bead_id]) {
+                delete next.auto_merge_skips[bead_id];
+                changed += 1;
+              }
+              if (existing_intent.phase === 'paused') {
+                const resumed = normalizeCompletionIntent(bead_id, {
+                  ...existing_intent,
+                  target_base: entry.completion.target_base,
+                  subject: entry.completion.subject,
+                  phase: 'gating',
+                  terminal_reason: null
+                });
+                if (resumed.phase === 'needs_human') {
+                  continue;
+                }
+                next.completion_intents[bead_id] = resumed;
+                changed += 1;
+              }
+              if (!next.merge_queue.some((item) => item.bead_id === bead_id)) {
+                next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+                changed += 1;
+              }
+              continue;
+            }
+            const normalized = normalizeCompletionIntent(bead_id, {
+              target_base: entry.completion.target_base,
+              phase: 'gating',
+              subject: entry.completion.subject,
+              repair_sessions_used: 0,
+              repair_bead_ids: [],
+              active_op: null,
+              terminal_reason: null
+            });
+            if (normalized.phase === 'needs_human') {
+              continue;
+            }
+            next.completion_intents[bead_id] = normalized;
+            if (!next.merge_queue.some((item) => item.bead_id === bead_id)) {
+              next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+            }
+            if (next.auto_merge_skips[bead_id]) {
+              delete next.auto_merge_skips[bead_id];
+            }
+            changed += 1;
             continue;
           }
           const skip = next.auto_merge_skips[bead_id];

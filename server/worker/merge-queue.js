@@ -100,6 +100,7 @@ const RESOLUTION_POLL_MS = 30 * 1000;
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
+ *   onCompletionResult?: (root_bead_id: string, subject_bead_id: string, result: MergeClickResult) => Promise<void>|void,
  *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
  *   notifyChanged?: (workspace: string) => void,
@@ -157,6 +158,8 @@ export function createMergeQueue(deps) {
    * @type {string|null}
    */
   let halted_on_head = null;
+  /** @type {string|null} */
+  let halted_on_completion = null;
   let prepared = false;
   /** @type {string|null} */
   let active = null;
@@ -241,6 +244,15 @@ export function createMergeQueue(deps) {
     const q = snapshot();
     const lane = q && Array.isArray(q.merge_queue) ? q.merge_queue : [];
     return lane.find((/** @type {any} */ e) => e.bead_id === bead_id) || null;
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @returns {any|null}
+   */
+  function completionIntent(root_bead_id) {
+    const q = snapshot();
+    return q?.completion_intents?.[root_bead_id] || null;
   }
 
   /**
@@ -489,17 +501,18 @@ export function createMergeQueue(deps) {
   /**
    * Wait for a resolution session to end.
    *
-   * @param {string} bead_id
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
    * @param {string|null} attempt_id
    * @returns {Promise<'ended'|'timeout'|'gone'|'stopped'>}
    */
-  async function waitForResolution(bead_id, attempt_id) {
+  async function waitForResolution(queue_bead_id, subject_bead_id, attempt_id) {
     const deadline = now() + resolution_wait_ms;
     while (!stopped) {
-      if (!queuedEntry(bead_id)) {
+      if (!queuedEntry(queue_bead_id)) {
         return 'gone';
       }
-      if (!resolutionStillRunning(bead_id, attempt_id)) {
+      if (!resolutionStillRunning(subject_bead_id, attempt_id)) {
         return 'ended';
       }
       const left = deadline - now();
@@ -520,11 +533,12 @@ export function createMergeQueue(deps) {
    * restart on every such flip and hold the head forever; the item's clock
    * bounds the whole state no matter how many times it re-enters.
    *
-   * @param {string} bead_id
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
    * @param {number} deadline
    * @returns {Promise<'merged'|'pr_closed_unmerged'|'merge_unconfirmed_timeout'|'gone'|'stopped'>}
    */
-  async function watchUnconfirmed(bead_id, deadline) {
+  async function watchUnconfirmed(queue_bead_id, subject_bead_id, deadline) {
     while (!stopped) {
       const left = deadline - now();
       if (left <= 0) {
@@ -537,15 +551,19 @@ export function createMergeQueue(deps) {
       // The bead can leave `pr_wait` under us: the poller observes the same
       // MERGED and runs the cleanup through its own trigger. That is a
       // completion, not a loss — the item is simply already done.
-      if (!queuedEntry(bead_id)) {
+      if (!queuedEntry(queue_bead_id)) {
         return 'gone';
       }
       /** @type {any} */
       let observed;
       try {
-        observed = await deps.observePr(bead_id);
+        observed = await deps.observePr(subject_bead_id);
       } catch (err) {
-        log('merge queue re-observation failed for %s: %o', bead_id, err);
+        log(
+          'merge queue re-observation failed for %s: %o',
+          subject_bead_id,
+          err
+        );
         observed = null;
       }
       const state = observed && observed.state;
@@ -576,6 +594,163 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * Hand a completion-owned result back without creating an auto-merge skip.
+   * The root intent is the terminal authority; the root queue position remains
+   * held unless the callback completes or terminalizes it.
+   *
+   * @param {string} root_bead_id
+   * @param {string} subject_bead_id
+   * @param {MergeClickResult} result
+   */
+  async function handoffCompletion(root_bead_id, subject_bead_id, result) {
+    if (typeof deps.onCompletionResult === 'function') {
+      try {
+        await deps.onCompletionResult(root_bead_id, subject_bead_id, result);
+      } catch (err) {
+        log('completion merge handoff failed for %s: %o', root_bead_id, err);
+      }
+    }
+    if (queuedEntry(root_bead_id)) {
+      halted = true;
+      halted_on_completion = root_bead_id;
+    }
+    notify();
+  }
+
+  /**
+   * Drive the current subject while preserving the root's public queue slot.
+   * Conflict rounds stay on the root queue entry, independent from the shared
+   * repair-session budget stored on the intent.
+   *
+   * @param {string} root_bead_id
+   * @param {any} intent
+   */
+  async function processCompletionItem(root_bead_id, intent) {
+    if (intent.phase !== 'merging') {
+      halted = true;
+      halted_on_completion = root_bead_id;
+      return;
+    }
+    const subject_bead_id = intent.subject?.bead_id;
+    if (typeof subject_bead_id !== 'string' || subject_bead_id.length === 0) {
+      await handoffCompletion(root_bead_id, root_bead_id, {
+        ok: false,
+        action: 'refused',
+        reason: 'completion_subject_invalid'
+      });
+      return;
+    }
+    /** @type {number|null} */
+    let unconfirmed_deadline = null;
+    const restored = runningResolutionAttempt(subject_bead_id);
+    if (restored) {
+      const entry = queuedEntry(root_bead_id);
+      if (entry && entry.resolution_rounds >= round_cap) {
+        await handoffCompletion(root_bead_id, subject_bead_id, {
+          ok: false,
+          action: 'refused',
+          reason: 'resolution_round_cap'
+        });
+        return;
+      }
+      const outcome = await waitForResolution(
+        root_bead_id,
+        subject_bead_id,
+        restored
+      );
+      if (outcome === 'stopped' || outcome === 'gone') {
+        return;
+      }
+      if (outcome === 'timeout') {
+        await handoffCompletion(root_bead_id, subject_bead_id, {
+          ok: false,
+          action: 'refused',
+          reason: 'resolution_timeout'
+        });
+        return;
+      }
+      if (!bumpRound(root_bead_id)) {
+        halted = true;
+        return;
+      }
+    }
+
+    while (!stopped && !halted && queuedEntry(root_bead_id)) {
+      const result = await runMerge(subject_bead_id);
+      const action = result ? result.action : null;
+      if (
+        action === 'merged' ||
+        action === 'updated_and_merged' ||
+        action === 'already_merged'
+      ) {
+        await handoffCompletion(root_bead_id, subject_bead_id, result);
+        return;
+      }
+      if (action === 'conflict_resolution') {
+        if (!result.ok) {
+          await handoffCompletion(root_bead_id, subject_bead_id, result);
+          return;
+        }
+        const entry = queuedEntry(root_bead_id);
+        const rounds = entry ? entry.resolution_rounds : round_cap;
+        if (rounds >= round_cap) {
+          await handoffCompletion(root_bead_id, subject_bead_id, {
+            ok: false,
+            action: 'refused',
+            reason: 'resolution_round_cap'
+          });
+          return;
+        }
+        const outcome = await waitForResolution(
+          root_bead_id,
+          subject_bead_id,
+          result.attempt_id || null
+        );
+        if (outcome === 'stopped' || outcome === 'gone') {
+          return;
+        }
+        if (outcome === 'timeout') {
+          await handoffCompletion(root_bead_id, subject_bead_id, {
+            ok: false,
+            action: 'refused',
+            reason: 'resolution_timeout'
+          });
+          return;
+        }
+        if (!bumpRound(root_bead_id)) {
+          halted = true;
+          return;
+        }
+        continue;
+      }
+      if (action === 'merge_unconfirmed') {
+        if (unconfirmed_deadline === null) {
+          unconfirmed_deadline = now() + unconfirmed_wait_ms;
+        }
+        const verdict = await watchUnconfirmed(
+          root_bead_id,
+          subject_bead_id,
+          unconfirmed_deadline
+        );
+        if (verdict === 'stopped' || verdict === 'gone') {
+          return;
+        }
+        if (verdict === 'merged') {
+          continue;
+        }
+        await handoffCompletion(root_bead_id, subject_bead_id, {
+          ok: false,
+          action: 'refused',
+          reason: verdict
+        });
+        return;
+      }
+      await handoffCompletion(root_bead_id, subject_bead_id, result);
+      return;
+    }
+  }
+
+  /**
    * Drive ONE queue item to a terminal disposition.
    *
    * @param {string} bead_id
@@ -585,6 +760,11 @@ export function createMergeQueue(deps) {
     // over, and leaving it up would label a live attempt with a dead failure.
     failures.delete(bead_id);
     notify();
+    const completion = completionIntent(bead_id);
+    if (completion) {
+      await processCompletionItem(bead_id, completion);
+      return;
+    }
     /** @type {number|null} */
     let unconfirmed_deadline = null;
 
@@ -641,7 +821,7 @@ export function createMergeQueue(deps) {
         failAndDequeue(bead_id, 'resolution_round_cap');
         return;
       }
-      const outcome = await waitForResolution(bead_id, restored);
+      const outcome = await waitForResolution(bead_id, bead_id, restored);
       if (outcome === 'stopped' || outcome === 'gone') {
         return;
       }
@@ -702,6 +882,7 @@ export function createMergeQueue(deps) {
         }
         const outcome = await waitForResolution(
           bead_id,
+          bead_id,
           result.attempt_id || null
         );
         if (outcome === 'stopped' || outcome === 'gone') {
@@ -722,7 +903,11 @@ export function createMergeQueue(deps) {
         if (unconfirmed_deadline === null) {
           unconfirmed_deadline = now() + unconfirmed_wait_ms;
         }
-        const verdict = await watchUnconfirmed(bead_id, unconfirmed_deadline);
+        const verdict = await watchUnconfirmed(
+          bead_id,
+          bead_id,
+          unconfirmed_deadline
+        );
         if (verdict === 'stopped' || verdict === 'gone') {
           return;
         }
@@ -753,6 +938,7 @@ export function createMergeQueue(deps) {
     draining = true;
     halted = false;
     halted_on_head = null;
+    halted_on_completion = null;
     try {
       // A queue resumed after a restart can hold EXTERNAL rows, and those exist
       // only in the in-memory registry the ws overlay reads — empty until
@@ -820,6 +1006,18 @@ export function createMergeQueue(deps) {
             const head = halted_on_head;
             if (!queuedEntry(head) || headSha(head) || !pollerObserves(head)) {
               halted_on_head = null;
+              void drain();
+            }
+          }
+          if (!draining && halted_on_completion) {
+            const root_bead_id = halted_on_completion;
+            const intent = completionIntent(root_bead_id);
+            if (
+              !queuedEntry(root_bead_id) ||
+              !intent ||
+              intent.phase === 'merging'
+            ) {
+              halted_on_completion = null;
               void drain();
             }
           }
