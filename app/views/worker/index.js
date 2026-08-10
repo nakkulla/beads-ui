@@ -1747,6 +1747,7 @@ export function createWorkerView(mount_element, options = {}) {
         // Candidate cards consume the server-enriched workflow/status (spec §2);
         // queue lanes carry no workflow snapshot, so they stay on miniRow.
         workflow: it.workflow,
+        is_quick_fix,
         status: it.status,
         // Filter inputs (UI-ki09); the card template ignores them.
         blocked: is_blocked,

@@ -2099,15 +2099,7 @@ describe('views/worker', () => {
         id: 'QF-1',
         title: 'quick fix candidate',
         status: 'open',
-        metadata: { route: 'quick_fix', spec_id: 'legacy-spec' },
-        workflow: {
-          route: 'quick_fix',
-          route_source: 'explicit',
-          stages: {
-            impl: { fill: 'none', glyph: null, stale: false },
-            close: { fill: 'none', glyph: null, stale: false }
-          }
-        }
+        metadata: { route: 'quick_fix', spec_id: 'legacy-spec' }
       }
     ]);
     createWorkerView(mount, {
@@ -2125,6 +2117,9 @@ describe('views/worker', () => {
       'quick_fix · 워커 비대상'
     );
     expect(card.getAttribute('draggable')).toBe('false');
+    expect(
+      card.querySelector('.worker-card__place')?.getAttribute('title')
+    ).toBe('quick_fix route는 워커 실행 대상이 아닙니다');
 
     /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-filter__chip[data-spec="with"]')
