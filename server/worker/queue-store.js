@@ -125,6 +125,10 @@
  * restart-recovery path (`disposeDeadAttempt`) has no in-memory record of what
  * kind of attempt it is disposing. Defaults false — a missing value fails
  * closed onto the ordinary completion.
+ * @property {boolean} cleanup_diagnosis - Whether this attempt only classifies
+ * a durable cleanup failure and does not open a PR.
+ * @property {string|null} cleanup_diagnosis_result_path - Fixed JSON result
+ * path for the diagnosis attempt.
  * @property {{ reason: string, command: string|null, at: number }|null} guard_kill -
  * The fail-closed evidence a DETACHED session monitor recorded before killing an
  * orphan session (UI-o2yt §3.3). A killed session leaves no verdict behind, so
@@ -205,7 +209,7 @@
  * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
  * stale spec_review receipt, so the badge must not read as a refusal. Every
  * record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and nothing retries by itself — so the record that a human must
@@ -613,6 +617,11 @@ export function makeAttempt(fields) {
     resumed_from: fields.resumed_from ?? null,
     conflict_resolution: fields.conflict_resolution === true,
     external_conflict: fields.external_conflict === true,
+    cleanup_diagnosis: fields.cleanup_diagnosis === true,
+    cleanup_diagnosis_result_path:
+      typeof fields.cleanup_diagnosis_result_path === 'string'
+        ? fields.cleanup_diagnosis_result_path
+        : null,
     guard_kill: isRecord(fields.guard_kill)
       ? /** @type {Attempt['guard_kill']} */ (fields.guard_kill)
       : null,
@@ -750,6 +759,26 @@ function normalizeQueue(raw) {
         }
         if (typeof value.log_path === 'string') {
           q.cleanup_failed[bead_id].log_path = value.log_path;
+        }
+        if (
+          isRecord(value.diagnosis) &&
+          typeof value.diagnosis.verdict === 'string' &&
+          typeof value.diagnosis.attempt_id === 'string' &&
+          typeof value.diagnosis.evidence === 'string'
+        ) {
+          q.cleanup_failed[bead_id].diagnosis = {
+            verdict: value.diagnosis.verdict,
+            attempt_id: value.diagnosis.attempt_id,
+            consumed: value.diagnosis.consumed === true,
+            evidence: value.diagnosis.evidence
+          };
+          if (typeof value.diagnosis.fix_bead_id === 'string') {
+            q.cleanup_failed[bead_id].diagnosis.fix_bead_id =
+              value.diagnosis.fix_bead_id;
+          }
+          if (value.diagnosis.malformed === true) {
+            q.cleanup_failed[bead_id].diagnosis.malformed = true;
+          }
         }
       }
     }
@@ -1493,6 +1522,7 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
+        const diagnosis = next.cleanup_failed[bead_id]?.diagnosis;
         next.cleanup_failed[bead_id] = {
           step: typeof step === 'string' ? step : '',
           reason,
@@ -1507,6 +1537,68 @@ export function createQueueStore(options = {}) {
         if (typeof log_path === 'string' && log_path.length > 0) {
           next.cleanup_failed[bead_id].log_path = log_path;
         }
+        if (diagnosis) {
+          next.cleanup_failed[bead_id].diagnosis = diagnosis;
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Persist a cleanup-diagnosis result only while its cleanup failure remains
+     * active. Replaying the same attempt preserves a consumed marker so a
+     * restart cannot spend one diagnosis twice.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, verdict: string, attempt_id: string, evidence: string, fix_bead_id?: string|null, malformed?: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    recordCleanupDiagnosis(workspace, input) {
+      const { bead_id, verdict, attempt_id, evidence, fix_bead_id, malformed } =
+        input;
+      return applyUnconditional(workspace, (next) => {
+        const record = next.cleanup_failed[bead_id];
+        if (
+          !record ||
+          typeof verdict !== 'string' ||
+          verdict.length === 0 ||
+          typeof attempt_id !== 'string' ||
+          attempt_id.length === 0 ||
+          typeof evidence !== 'string'
+        ) {
+          return false;
+        }
+        const prior = record.diagnosis;
+        record.diagnosis = {
+          verdict,
+          attempt_id,
+          consumed: prior?.attempt_id === attempt_id && prior.consumed === true,
+          evidence
+        };
+        if (typeof fix_bead_id === 'string' && fix_bead_id.length > 0) {
+          record.diagnosis.fix_bead_id = fix_bead_id;
+        }
+        if (malformed === true) {
+          record.diagnosis.malformed = true;
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Spend a durable cleanup diagnosis before its single automatic retry.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {QueueOpResult}
+     */
+    markDiagnosisConsumed(workspace, bead_id) {
+      return applyUnconditional(workspace, (next) => {
+        const diagnosis = next.cleanup_failed[bead_id]?.diagnosis;
+        if (!diagnosis || diagnosis.consumed === true) {
+          return false;
+        }
+        diagnosis.consumed = true;
         return true;
       });
     },

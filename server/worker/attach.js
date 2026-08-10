@@ -496,6 +496,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // without disposition wiring reports.
   /** @type {ReturnType<typeof createReviseDisposition>|null} */
   let reviseDisposition = null;
+  /** @type {ReturnType<typeof createPrActions>|null} */
+  let prActions = null;
 
   const probePid = options.probePid || defaultProbePid;
 
@@ -557,6 +559,21 @@ export function createWorkerAttachment(workspace_root, options = {}) {
        */
       release(bead_id) {
         reviseDisposition?.release(bead_id);
+      }
+    },
+    cleanupDiagnosis: {
+      /** @param {string} bead_id */
+      async retryCleanup(bead_id) {
+        if (!prActions) {
+          return { ok: false, reason: 'retry_unwired' };
+        }
+        const result = await prActions.retryCleanup(bead_id);
+        return {
+          ok: result.ok,
+          ...(typeof result.reason === 'string'
+            ? { reason: result.reason }
+            : {})
+        };
       }
     },
     probePid,
@@ -809,7 +826,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // observation cache, worktree manager and scheduler the poller and dispatch
   // use, so a click can never act on a different view of the world than the
   // badges it followed.
-  const prActions = createPrActions({
+  prActions = createPrActions({
     workspace: keyFor(workspace_root),
     repo,
     store: runtime.queueStore,
@@ -1420,6 +1437,25 @@ export async function reviseApproveWorkerBead(workspace_root, bead_id) {
     return { ok: false, reason: 'no_attachment' };
   }
   return att.reviseDisposition.approve(bead_id);
+}
+
+/**
+ * Start a human-requested cleanup diagnosis, if this workspace has a live
+ * scheduler attachment.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+ */
+export async function diagnoseWorkerCleanup(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.dispatchCleanupDiagnosis(
+    keyFor(workspace_root),
+    bead_id
+  );
 }
 
 /**

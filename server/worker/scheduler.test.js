@@ -28,6 +28,206 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
 });
 
+describe('scheduler cleanup diagnosis (UI-7u3d)', () => {
+  /**
+   * @param {any} store
+   */
+  function seedCleanupFailure(store) {
+    seedPrWait(store, 'B1');
+    store.recordCleanupFailure(WS, {
+      bead_id: 'B1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      log_path: '/logs/verify.log',
+      output_tail: 'FAIL example'
+    });
+  }
+
+  test('refuses diagnosis without a cleanup failure', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+
+    const result = await env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+
+    expect(result).toEqual({ ok: false, reason: 'cleanup_failed_missing' });
+  });
+
+  test('refuses diagnosis without its bead worktree', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedCleanupFailure(env.store);
+    env.worktree.exists.mockReturnValue(false);
+
+    const result = await env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+
+    expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
+  });
+
+  test('refuses a second diagnosis while its bead is running', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedCleanupFailure(env.store);
+
+    expect((await env.scheduler.dispatchCleanupDiagnosis(WS, 'B1')).ok).toBe(
+      true
+    );
+
+    expect(await env.scheduler.dispatchCleanupDiagnosis(WS, 'B1')).toEqual({
+      ok: false,
+      reason: 'bead_running'
+    });
+  });
+
+  test('records flake then consumes it before exactly one cleanup retry', async () => {
+    const retryCleanup = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      cleanupDiagnosis: { retryCleanup },
+      readCleanupDiagnosisResult: vi.fn(async () =>
+        JSON.stringify({ verdict: 'flake', evidence: 'passes on rerun' })
+      )
+    });
+    seedCleanupFailure(env.store);
+
+    const dispatched = await env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    expect(dispatched.ok).toBe(true);
+    expect(retryCleanup).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).cleanup_failed.B1.diagnosis).toMatchObject({
+      verdict: 'flake',
+      consumed: true,
+      evidence: 'passes on rerun'
+    });
+  });
+
+  test('consumes environment diagnosis once and does not reconsume after reload', async () => {
+    const retryCleanup = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      cleanupDiagnosis: { retryCleanup },
+      readCleanupDiagnosisResult: vi.fn(async () =>
+        JSON.stringify({ verdict: 'environment', evidence: 'disk full' })
+      )
+    });
+    seedCleanupFailure(env.store);
+
+    await env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+    env.store.__clearCacheForTest();
+
+    expect(retryCleanup).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).cleanup_failed.B1.diagnosis).toMatchObject({
+      verdict: 'environment',
+      consumed: true
+    });
+  });
+
+  test('does not reconsume a persisted environment diagnosis during restart reconciliation', async () => {
+    const store = createQueueStore();
+    const retryCleanup = vi.fn(async () => ({ ok: true }));
+    seedCleanupFailure(store);
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'diagnosis-restart',
+        bead_id: 'B1',
+        cleanup_diagnosis: true,
+        cleanup_diagnosis_result_path: '/diagnosis-result.json'
+      }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'diagnosis-restart',
+      patch: { status: 'running', pid: null, repo: '/repo' }
+    });
+    store.recordCleanupDiagnosis(WS, {
+      bead_id: 'B1',
+      verdict: 'environment',
+      attempt_id: 'diagnosis-restart',
+      evidence: 'disk full'
+    });
+    store.markDiagnosisConsumed(WS, 'B1');
+    store.__clearCacheForTest();
+    const env = setup({
+      config: { B1: {} },
+      store,
+      slots: 1,
+      cleanupDiagnosis: { retryCleanup },
+      readCleanupDiagnosisResult: vi.fn(async () =>
+        JSON.stringify({ verdict: 'environment', evidence: 'disk full' })
+      ),
+      probePid: () => ({ alive: false, started_at: null })
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(retryCleanup).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['diagnosis-restart'].status).toBe(
+      'done'
+    );
+    expect(env.store.snapshot(WS).cleanup_failed.B1.diagnosis).toMatchObject({
+      verdict: 'environment',
+      attempt_id: 'diagnosis-restart',
+      consumed: true
+    });
+  });
+
+  test('records regression fix id without retrying cleanup', async () => {
+    const retryCleanup = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      cleanupDiagnosis: { retryCleanup },
+      readCleanupDiagnosisResult: vi.fn(async () =>
+        JSON.stringify({
+          verdict: 'regression',
+          evidence: 'reproduces',
+          refs: { fix_bead_id: 'UI-fix' }
+        })
+      )
+    });
+    seedCleanupFailure(env.store);
+
+    await env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    expect(retryCleanup).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).cleanup_failed.B1.diagnosis).toMatchObject({
+      verdict: 'regression',
+      fix_bead_id: 'UI-fix',
+      consumed: false
+    });
+  });
+
+  test('fails closed for a malformed diagnosis result', async () => {
+    const retryCleanup = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      cleanupDiagnosis: { retryCleanup },
+      readCleanupDiagnosisResult: vi.fn(async () => '{bad json')
+    });
+    seedCleanupFailure(env.store);
+
+    await env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    expect(retryCleanup).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).cleanup_failed.B1.diagnosis).toMatchObject({
+      verdict: 'malformed',
+      malformed: true,
+      consumed: false
+    });
+  });
+});
+
 afterEach(() => {
   delete process.env.XDG_STATE_HOME;
   try {
@@ -296,7 +496,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, cleanupDiagnosis?: any, readCleanupDiagnosisResult?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -384,6 +584,8 @@ function setup(opts) {
     // undone rather than judging an attempt it could not observe.
     gitRun: opts.gitRun,
     notifyQueueChanged: opts.notifyQueueChanged,
+    cleanupDiagnosis: opts.cleanupDiagnosis,
+    readCleanupDiagnosisResult: opts.readCleanupDiagnosisResult,
     now: () => 1000
   });
   // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a

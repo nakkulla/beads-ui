@@ -1236,6 +1236,106 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     });
   });
 
+  test('persists a cleanup diagnosis and its consumed marker across reload', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed'
+    });
+
+    store.recordCleanupDiagnosis(WS, {
+      bead_id: 'UI-1',
+      verdict: 'regression',
+      attempt_id: 'diag-1',
+      evidence: 'reproduced by verify',
+      fix_bead_id: 'UI-fix'
+    });
+    store.markDiagnosisConsumed(WS, 'UI-1');
+
+    expect(
+      createQueueStore().load(WS).cleanup_failed['UI-1'].diagnosis
+    ).toEqual({
+      verdict: 'regression',
+      attempt_id: 'diag-1',
+      consumed: true,
+      evidence: 'reproduced by verify',
+      fix_bead_id: 'UI-fix'
+    });
+  });
+
+  test.each(['flake', 'environment'])(
+    'preserves a consumed %s diagnosis across serialize and reload',
+    (verdict) => {
+      const store = createQueueStore();
+      seedPrWait(store);
+      store.recordCleanupFailure(WS, {
+        bead_id: 'UI-1',
+        step: 'post_merge_verify',
+        reason: 'verify_cmd_failed'
+      });
+      store.recordCleanupDiagnosis(WS, {
+        bead_id: 'UI-1',
+        verdict,
+        attempt_id: `diag-${verdict}`,
+        evidence: 'evidence'
+      });
+      store.markDiagnosisConsumed(WS, 'UI-1');
+
+      const diagnosis =
+        createQueueStore().load(WS).cleanup_failed['UI-1'].diagnosis;
+
+      expect(diagnosis).toMatchObject({
+        verdict,
+        attempt_id: `diag-${verdict}`,
+        consumed: true,
+        evidence: 'evidence'
+      });
+    }
+  );
+
+  test('preserves a consumed diagnosis when retry cleanup records failure', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed'
+    });
+    store.recordCleanupDiagnosis(WS, {
+      bead_id: 'UI-1',
+      verdict: 'flake',
+      attempt_id: 'diag-1',
+      evidence: 'intermittent'
+    });
+    store.markDiagnosisConsumed(WS, 'UI-1');
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed'
+    });
+
+    expect(store.snapshot(WS).cleanup_failed['UI-1'].diagnosis?.consumed).toBe(
+      true
+    );
+  });
+
+  test('does not create a diagnosis without a cleanup failure record', () => {
+    const store = createQueueStore();
+
+    const result = store.recordCleanupDiagnosis(WS, {
+      bead_id: 'UI-1',
+      verdict: 'flake',
+      attempt_id: 'diag-1',
+      evidence: 'intermittent'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).cleanup_failed).toEqual({});
+  });
+
   test('round-trips a cleanup failure detail across a reload', () => {
     const store = createQueueStore();
     seedPrWait(store);

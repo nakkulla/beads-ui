@@ -1084,6 +1084,57 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     });
   });
 
+  test('keeps a consumed diagnosis and skips detached deploy when its cleanup retry stays red', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      verifyResults: [
+        {
+          ok: false,
+          reason: 'verify_cmd_failed',
+          attempts: [
+            { reason: 'verify_cmd_failed', log_path: '/logs/first.log' },
+            { reason: 'verify_cmd_failed', log_path: '/logs/retry.log' }
+          ]
+        }
+      ]
+    });
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed'
+    });
+    h.store.recordCleanupDiagnosis(WS, {
+      bead_id: BEAD,
+      verdict: 'flake',
+      attempt_id: 'diagnosis-1',
+      evidence: 'intermittent verify failure'
+    });
+    h.store.markDiagnosisConsumed(WS, BEAD);
+
+    const result = await h.actions.retryCleanup(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed'
+    });
+    expect(h.runVerify).toHaveBeenCalledWith(
+      expect.objectContaining({ retry_flaky: true })
+    );
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      diagnosis: {
+        verdict: 'flake',
+        attempt_id: 'diagnosis-1',
+        evidence: 'intermittent verify failure',
+        consumed: true
+      }
+    });
+    expect(h.calls).not.toContain('spawn:bdui-shared:detached');
+  });
+
   test('refuses the click outright on an unreadable verify declaration (UI-kfl4 §4.2)', async () => {
     const h = makeActions({
       verifyResolution: {

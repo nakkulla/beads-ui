@@ -1957,6 +1957,34 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Reuse the existing cleanup execution path for one diagnosis-authorized
+   * retry. The scheduler writes its durable consumed marker before calling this
+   * entry, so this function deliberately has no retry policy of its own.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   */
+  async function retryCleanup(bead_id) {
+    if (in_flight.has(bead_id)) {
+      return { ok: false, step: null, reason: 'action_in_flight' };
+    }
+    const q = deps.store.snapshot(workspace);
+    if (!inPrWait(q, bead_id)) {
+      return { ok: false, step: null, reason: 'not_in_pr_wait' };
+    }
+    if (!q.cleanup_failed?.[bead_id]) {
+      return { ok: false, step: null, reason: 'cleanup_failed_missing' };
+    }
+    in_flight.add(bead_id);
+    try {
+      return await runCleanup(bead_id);
+    } finally {
+      in_flight.delete(bead_id);
+      clearStep(bead_id);
+    }
+  }
+
+  /**
    * Run [폐기]: throw the PR, the worktree and the branch away, and hand the
    * bead back to the candidate lane. It does NOT re-queue and does NOT dispatch
    * — re-running is the drag path (후보 → 대기), which re-passes admission
@@ -2130,5 +2158,5 @@ export function createPrActions(deps) {
     return { ok: true, reason: null };
   }
 
-  return { merge, discard, cleanupObservedMerge, prState };
+  return { merge, discard, cleanupObservedMerge, retryCleanup, prState };
 }

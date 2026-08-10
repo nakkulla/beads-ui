@@ -43,6 +43,7 @@ vi.mock('../worker/attach.js', () => {
   };
   return {
     checkWorkerQueueAdmission: rec(() => Promise.resolve({ ok: true })),
+    diagnoseWorkerCleanup: rec(() => Promise.resolve({ ok: true })),
     discardWorkerPr: rec(() => Promise.resolve({ ok: true })),
     enrollWorkerMergeCandidates: rec(() => ({
       applied: false,
@@ -182,6 +183,11 @@ const MUTATIONS = [
   {
     action: 'worker-revise-approve',
     run: handlers.handleWorkerReviseApprove,
+    payload: { bead_id: 'UI-1', expected_revision: 0 }
+  },
+  {
+    action: 'worker-cleanup-diagnose',
+    run: handlers.handleWorkerCleanupDiagnose,
     payload: { bead_id: 'UI-1', expected_revision: 0 }
   }
 ];
