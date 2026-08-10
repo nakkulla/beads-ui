@@ -1351,6 +1351,39 @@ export function handleWorkerQueueSetSlots(ws, req) {
 }
 
 /**
+ * Handle `worker-queue-set-pr-wait-hold`.
+ * Payload: `{ on: boolean, expected_revision }`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerQueueSetPrWaitHold(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.on !== 'boolean') {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { on: boolean }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const result = queueStore().setPrWaitHoldsSlot(key, {
+    expected_revision: revisionOf(p),
+    on: p.on
+  });
+  replyMutation(ws, req, key, result);
+  if (result.ok) {
+    Promise.resolve(tickWorkerQueue(key)).catch((err) => {
+      log('worker tick after pr_wait hold toggle failed for %s: %o', key, err);
+    });
+  }
+}
+
+/**
  * Handle `worker-queue-set-exec-default`. Payload:
  * `{ key: <one of the 5 exec keys>, value: string|null, expected_revision }`.
  * Persists the workspace-global exec-setting default (CAS); null/'' unsets. Enum

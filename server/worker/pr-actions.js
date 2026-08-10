@@ -258,6 +258,17 @@ export function createPrActions(deps) {
 
   const activity = deps.activity || null;
   const external = deps.external || null;
+
+  /** Request a dispatch pass after a durable PR-wait member leaves its lane. */
+  function requestQueueTick() {
+    try {
+      Promise.resolve(deps.scheduler.tick(workspace)).catch((err) => {
+        log('worker tick after pr_wait exit failed for %s: %o', workspace, err);
+      });
+    } catch (err) {
+      log('worker tick after pr_wait exit failed for %s: %o', workspace, err);
+    }
+  }
   // Optional so every existing construction site (and test) keeps working with
   // no notifier at all — a missing one is silence, never a cleanup failure.
   const notify = deps.notify || null;
@@ -1479,6 +1490,9 @@ export function createPrActions(deps) {
         deps.store.moveToDone(workspace, { bead_id });
       }
       notifyChanged(workspace);
+      if (durable) {
+        requestQueueTick();
+      }
       await announceMerged(bead_id, pr_url);
       return { ok: true, step: null, reason: null, base_sync };
     }
@@ -1497,6 +1511,9 @@ export function createPrActions(deps) {
       deps.store.recordLastDeploy(workspace, launch_record);
     }
     notifyChanged(workspace);
+    if (durable) {
+      requestQueueTick();
+    }
     // Announced BEFORE the launch, for the same reason the durable write is:
     // the detached deploy may restart this process, and a notification that
     // never got sent is a merge nobody heard about. AWAITED, so "before" means
@@ -2166,6 +2183,7 @@ export function createPrActions(deps) {
       return { ok: false, reason: 'pr_wait_remove_failed' };
     }
     notifyChanged(workspace);
+    requestQueueTick();
     return { ok: true, reason: null };
   }
 

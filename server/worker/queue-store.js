@@ -174,6 +174,8 @@
  * @typedef {Object} Queue
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
+ * @property {boolean} pr_wait_holds_slot - Whether durable PR-wait members
+ * consume scheduler slots until merge cleanup or discard removes them.
  * @property {Record<string, string>} exec_defaults - Workspace-global exec
  * setting defaults (subset of the 5 exec keys; an unset key is absent). Only
  * valid enum values survive normalize. An absent key leaves dispatch on the
@@ -381,6 +383,7 @@ function emptyQueue() {
   return {
     revision: 0,
     auto_advance: false,
+    pr_wait_holds_slot: false,
     exec_defaults: {},
     slots: DEFAULT_SLOTS,
     queue: [],
@@ -667,6 +670,7 @@ function normalizeQueue(raw) {
       ? Math.max(0, Math.floor(raw.revision))
       : 0;
   q.slots = normalizeSlots(raw.slots) ?? DEFAULT_SLOTS;
+  q.pr_wait_holds_slot = raw.pr_wait_holds_slot === true;
   // LEGACY MERGE (worker-phase2 §9): a queue.json from the serial/parallel
   // regime has no `queue` key, so its two lanes fold into the single lane —
   // ALL of `serial` first (it was the priority lane), then `parallel`, each
@@ -1122,6 +1126,22 @@ export function createQueueStore(options = {}) {
       const { expected_revision, on } = input;
       return applyMutation(workspace, expected_revision, (next) => {
         next.auto_advance = !!on;
+        return true;
+      });
+    },
+
+    /**
+     * Toggle whether durable PR-wait members consume scheduler slots. The flag
+     * is durable because the wait routinely spans server restarts.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, on: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    setPrWaitHoldsSlot(workspace, input) {
+      const { expected_revision, on } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        next.pr_wait_holds_slot = !!on;
         return true;
       });
     },

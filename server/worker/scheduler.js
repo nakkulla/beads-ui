@@ -3725,6 +3725,13 @@ export function createScheduler(deps) {
         occupied.add(a.bead_id);
       }
     }
+    if (q.pr_wait_holds_slot === true) {
+      for (const entry of q.pr_wait || []) {
+        if (entry && typeof entry.bead_id === 'string') {
+          occupied.add(entry.bead_id);
+        }
+      }
+    }
     let free = slotsOf(q) - occupied.size;
     for (const entry of q.queue) {
       if (free <= 0) {

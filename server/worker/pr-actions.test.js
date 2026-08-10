@@ -913,6 +913,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
       h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
     expect(h.store.snapshot(WS).pr_wait).toEqual([]);
+    expect(h.scheduler.tick).toHaveBeenCalledWith(WS);
   });
 
   test('stops mid-sequence on a failed post-merge verification, leaving a durable record and no bd close', async () => {
@@ -1735,6 +1736,7 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
     expect(
       h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
+    expect(h.scheduler.tick).toHaveBeenCalledWith(WS);
   });
 
   test('spawns the detached deploy with detached + stdio ignore', async () => {
@@ -2314,7 +2316,7 @@ describe('[폐기] — the order-sensitive discard transition (discard spec §1)
     // Not requeued: re-running is the 후보 → 대기 drag, which re-passes
     // admission — so nothing is dispatched from here either.
     expect(q.queue).toEqual([]);
-    expect(h.scheduler.tick).not.toHaveBeenCalled();
+    expect(h.scheduler.tick).toHaveBeenCalledWith(WS);
   });
 
   test('skips the close when the authoritative re-read reports CLOSED-unmerged', async () => {

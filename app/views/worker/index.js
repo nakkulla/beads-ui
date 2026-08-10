@@ -997,6 +997,7 @@ export function createWorkerView(mount_element, options = {}) {
         revision: 0,
         auto_advance: false,
         auto_merge: false,
+        pr_wait_holds_slot: false,
         slots: MIN_SLOTS,
         queue: [],
         pr_wait: [],
@@ -1489,6 +1490,28 @@ export function createWorkerView(mount_element, options = {}) {
     if (res && res.conflict) {
       await transport('worker-queue-set-slots', {
         slots: value,
+        expected_revision: currentRevision()
+      }).then(adopt);
+    }
+  }
+
+  /**
+   * Toggle whether durable PR-wait members consume scheduler slots.
+   *
+   * @param {boolean} on
+   */
+  async function setPrWaitHoldsSlot(on) {
+    if (!transport) {
+      return;
+    }
+    const res = await transport('worker-queue-set-pr-wait-hold', {
+      on,
+      expected_revision: currentRevision()
+    });
+    adopt(res);
+    if (res && res.conflict) {
+      await transport('worker-queue-set-pr-wait-hold', {
+        on,
         expected_revision: currentRevision()
       }).then(adopt);
     }
@@ -2265,6 +2288,17 @@ export function createWorkerView(mount_element, options = {}) {
           .value=${String(m.slots)}
           title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
       /></label>
+      <label
+        class="worker-tgl"
+        title="PR이 머지·정리 완료될 때까지 다음 이슈를 시작하지 않습니다"
+      >
+        <input
+          type="checkbox"
+          class="worker-pr-wait-hold"
+          ?checked=${m.queue.pr_wait_holds_slot === true}
+        />
+        머지까지 대기
+      </label>
       <button
         type="button"
         class="worker-exec-defaults-btn"
@@ -2443,6 +2477,41 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Explain why automatic progress is paused behind a durable PR wait.
+   *
+   * @param {ReturnType<typeof buildModel>} m
+   * @returns {import('lit-html').TemplateResult|undefined}
+   */
+  function prWaitHoldHintTemplate(m) {
+    const durable_pr_wait = (m.queue.pr_wait || []).filter(
+      (/** @type {any} */ entry) =>
+        entry && entry.external !== true && typeof entry.bead_id === 'string'
+    );
+    const occupied = new Set(
+      m.running
+        .filter((/** @type {any} */ row) => !row.paused)
+        .map((/** @type {any} */ row) => row.bead_id)
+    );
+    for (const entry of durable_pr_wait) {
+      occupied.add(entry.bead_id);
+    }
+    if (
+      m.queue.pr_wait_holds_slot !== true ||
+      m.queue.auto_advance !== true ||
+      m.queue.auto_merge === true ||
+      durable_pr_wait.length === 0 ||
+      m.waiting.length === 0 ||
+      occupied.size < m.slots
+    ) {
+      return undefined;
+    }
+    return html`<div class="worker-stat worker-pr-wait-hint">
+      PR 머지 대기 중 — 다음 이슈는 머지·정리 완료 후 시작됩니다 (자동 머지
+      꺼짐)
+    </div>`;
+  }
+
+  /**
    * The PR 대기 lane header's bulk control (UI-5v7d §4, made a durable toggle by
    * UI-yk55 §5.1). ONE button, four states, never two side by side: asking the
    * reader to tell start from stop at a glance is exactly the misread that costs
@@ -2529,6 +2598,7 @@ export function createWorkerView(mount_element, options = {}) {
           title: '대기',
           items: m.waiting,
           empty: '드래그 또는 [대기로 ↴]로 배치',
+          controls: prWaitHoldHintTemplate(m),
           collapsible: true,
           collapsed: lane_collapse.queue,
           preview: stripPreview(m.waiting)
@@ -2554,7 +2624,8 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'queue',
         title: '대기',
         items: m.waiting,
-        empty: '드래그로 배치'
+        empty: '드래그로 배치',
+        controls: prWaitHoldHintTemplate(m)
       })}
       ${paneTemplate({
         id: 'worker-pane-running',
@@ -2899,6 +2970,13 @@ export function createWorkerView(mount_element, options = {}) {
           sort_select.value || CANDIDATE_SORT_DEFAULT
         )
       );
+      return;
+    }
+    const hold_toggle = /** @type {HTMLInputElement|null} */ (
+      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-pr-wait-hold')
+    );
+    if (hold_toggle) {
+      void setPrWaitHoldsSlot(hold_toggle.checked);
       return;
     }
     const input = /** @type {HTMLInputElement|null} */ (
