@@ -9,7 +9,7 @@
  * - Server can also send unsolicited events (e.g., subscription `snapshot`).
  */
 
-/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'dep-add'|'dep-remove'|'update-assignee'|'update-exec-settings'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-queue-set-slots'|'worker-queue-set-pr-wait-hold'|'worker-queue-set-exec-default'|'worker-queue-remove'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-attempt-dismiss'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-ui-order'|'unsubscribe-ui-order'|'ui-order-set'|'ui-order-snapshot'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-worker-system-prompt'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-auto-toggle'|'subscribe-exec-presets'|'unsubscribe-exec-presets'|'exec-presets-snapshot'|'exec-preset-create'|'exec-preset-update'|'exec-preset-delete'|'apply-exec-preset'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-queue-set-slots'|'worker-queue-set-pr-wait-hold'|'worker-queue-set-default-exec-preset'|'worker-queue-remove'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-attempt-dismiss'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-ui-order'|'unsubscribe-ui-order'|'ui-order-set'|'ui-order-snapshot'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-worker-system-prompt'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-auto-toggle'|'subscribe-exec-presets'|'unsubscribe-exec-presets'|'exec-presets-snapshot'|'exec-preset-create'|'exec-preset-update'|'exec-preset-delete'|'apply-exec-preset'} MessageType */
 
 /**
  * @typedef {Object} RequestEnvelope
@@ -43,8 +43,10 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'dep-add',
   'dep-remove',
   'update-assignee',
-  // Execution-preference metadata (5 keys + workflow_mode)
+  // Execution-preference metadata (11 keys + workflow_mode), plus the linked
+  // implementation target's atomic three-key mutation.
   'update-exec-settings',
+  'update-impl-target',
   // Workflow metadata enum edits (route)
   'update-workflow-meta',
   'label-add',
@@ -78,8 +80,7 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'worker-queue-set-slots',
   // Durable PR-wait occupancy toggle (CAS-guarded, UI-mh3x)
   'worker-queue-set-pr-wait-hold',
-  // Workspace-global exec-setting defaults (4 exec keys; CAS-guarded set/unset)
-  'worker-queue-set-exec-default',
+  'worker-queue-set-default-exec-preset',
   'worker-queue-remove',
   // Pause (⏸) a running attempt: resumable, bead stays queued
   'worker-attempt-pause',

@@ -96,10 +96,16 @@
  * stamped onto the bead at dispatch (bead-absent keys filled from the
  * workspace-global default). Recorded durably BEFORE the first metadata write
  * so a restart's reconcile can revert them; null when nothing was stamped.
- * @property {Record<string, string>|null} exec_values - Resolved values of the
- * exec keys stamped at dispatch, kept so a manual session resume re-stamps with
- * the PRIOR snapshot values instead of re-resolving the current global defaults
- * (spec §1); null when nothing was stamped.
+ * @property {string|null} exec_default_preset_id - Selected workspace preset
+ * ID snapshotted for this fresh dispatch; null when the workspace used harness
+ * fallbacks without a selected preset.
+ * @property {number|null} exec_default_preset_revision - Global preset-store
+ * revision paired with `exec_default_preset_id`; null without a selected
+ * preset. Together they prove which mutable preset version the attempt pinned.
+ * @property {Record<string, string|null>|null} exec_values - Effective resolved
+ * values from the 11-key dispatch contract, kept independently from the worker
+ * stamp subset so a manual session resume reuses the PRIOR snapshot rather than
+ * re-resolving a changed/deleted preset. Null on legacy attempts.
  * @property {string|null} resumed_from - Prior attempt_id this attempt resumes
  * (manual session resume, spec §1); null for a first-launch attempt. The
  * `already_resumed` guard scans attempts for a child carrying this so a failed
@@ -174,6 +180,8 @@
  * @typedef {Object} Queue
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
+ * @property {string|null} default_exec_preset_id - The selected server-global
+ * preset reference. Queue state never owns a copy of preset settings.
  * @property {boolean} pr_wait_holds_slot - Whether dispatch runs serially until
  * each durable PR wait leaves through merge cleanup or discard. The legacy key
  * name remains stable; the stored `slots` preference is not overwritten.
@@ -385,6 +393,7 @@ function emptyQueue() {
     revision: 0,
     auto_advance: false,
     pr_wait_holds_slot: false,
+    default_exec_preset_id: null,
     exec_defaults: {},
     slots: DEFAULT_SLOTS,
     queue: [],
@@ -608,6 +617,12 @@ export function makeAttempt(fields) {
     release_rejected: fields.release_rejected ?? null,
     done_kind: fields.done_kind ?? null,
     verify_cmd_result: fields.verify_cmd_result ?? null,
+    exec_default_preset_id: fields.exec_default_preset_id ?? null,
+    exec_default_preset_revision:
+      typeof fields.exec_default_preset_revision === 'number' &&
+      Number.isFinite(fields.exec_default_preset_revision)
+        ? fields.exec_default_preset_revision
+        : null,
     exec_stamped_keys: Array.isArray(fields.exec_stamped_keys)
       ? fields.exec_stamped_keys
       : null,
@@ -672,6 +687,11 @@ function normalizeQueue(raw) {
       : 0;
   q.slots = normalizeSlots(raw.slots) ?? DEFAULT_SLOTS;
   q.pr_wait_holds_slot = raw.pr_wait_holds_slot === true;
+  q.default_exec_preset_id =
+    typeof raw.default_exec_preset_id === 'string' &&
+    raw.default_exec_preset_id.trim().length > 0
+      ? raw.default_exec_preset_id.trim()
+      : null;
   // LEGACY MERGE (worker-phase2 §9): a queue.json from the serial/parallel
   // regime has no `queue` key, so its two lanes fold into the single lane —
   // ALL of `serial` first (it was the priority lane), then `parallel`, each
@@ -1607,12 +1627,37 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Set (or unset with null/'') a workspace-global exec-setting default. CAS-
-     * guarded: unknown keys and non-enum values are
-     * rejected without a write. `orchestration_model` is validated against the
-     * runner UNION here (runner↔model cross-compatibility is a dispatch-resolve
-     * / UI-filter concern, not a set-time one — spec §2).
+     * Set the workspace's only durable preset authority under its queue CAS.
      *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, preset_id: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    setDefaultExecPresetId(workspace, input) {
+      const { expected_revision, preset_id } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        if (preset_id !== null && typeof preset_id !== 'string') {
+          return false;
+        }
+        if (typeof preset_id === 'string') {
+          const normalized_id = preset_id.trim();
+          if (normalized_id.length === 0) {
+            return false;
+          }
+          next.default_exec_preset_id = normalized_id;
+          return true;
+        }
+        next.default_exec_preset_id = null;
+        return true;
+      });
+    },
+
+    /**
+     * Retained only for in-process legacy callers while the wire protocol is
+     * removed. New authority is `setDefaultExecPresetId` through the
+     * coordinator; no new handler exposes this method.
+     *
+     * @deprecated
      * @param {string} workspace
      * @param {{ expected_revision: number, key: string, value: unknown }} input
      * @returns {QueueOpResult}
@@ -1632,6 +1677,25 @@ export function createQueueStore(options = {}) {
           return false;
         }
         next.exec_defaults[key] = value;
+        return true;
+      });
+    },
+
+    /**
+     * Clear raw legacy defaults after a preset-reference readback. This is a
+     * migration-only operation, not an active per-key editor.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number }} input
+     * @returns {QueueOpResult}
+     */
+    clearLegacyExecDefaults(workspace, input) {
+      return applyMutation(workspace, input.expected_revision, (next) => {
+        if (Object.keys(next.exec_defaults).length === 0) {
+          return false;
+        }
+        const legacy_queue = /** @type {Partial<Queue>} */ (next);
+        delete legacy_queue.exec_defaults;
         return true;
       });
     },

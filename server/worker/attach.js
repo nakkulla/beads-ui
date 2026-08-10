@@ -266,6 +266,8 @@ export function createLiveBd(config) {
           typeof md.plan_review_effort === 'string'
             ? md.plan_review_effort
             : undefined,
+        impl_runtime:
+          typeof md.impl_runtime === 'string' ? md.impl_runtime : undefined,
         impl_model:
           typeof md.impl_model === 'string' ? md.impl_model : undefined,
         impl_effort:
@@ -504,6 +506,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   const scheduler = createScheduler({
     store: runtime.queueStore,
+    execPresetCoordinator: runtime.execPresetCoordinator,
     makeRunner,
     bd,
     worktree,

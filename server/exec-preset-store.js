@@ -5,6 +5,7 @@
  * @property {string} id
  * @property {string} name
  * @property {Record<string, string>} settings
+ * @property {{ kind: 'user' }|{ kind: 'workspace-exec-defaults', workspace_key: string, source_digest: string }} origin
  */
 /**
  * @typedef {Object} ExecPresetState
@@ -14,7 +15,11 @@
 import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
-import { EXEC_SETTING_KEYS, execSettingEnums } from './worker/exec-enums.js';
+import {
+  EXEC_SETTING_KEYS,
+  execSettingEnums,
+  validateImplSettings
+} from './worker/exec-enums.js';
 import { execPresetsFilePath } from './worker/state-paths.js';
 
 /**
@@ -77,7 +82,30 @@ function normalizeState(raw) {
         }
       }
     }
-    state.presets.push({ id, name, settings });
+    const origin =
+      isRecord(entry.origin) &&
+      entry.origin.kind === 'workspace-exec-defaults' &&
+      typeof entry.origin.workspace_key === 'string' &&
+      entry.origin.workspace_key.length > 0 &&
+      typeof entry.origin.source_digest === 'string' &&
+      entry.origin.source_digest.length > 0
+        ? {
+            kind: /** @type {'workspace-exec-defaults'} */ (
+              'workspace-exec-defaults'
+            ),
+            workspace_key: entry.origin.workspace_key,
+            source_digest: entry.origin.source_digest
+          }
+        : { kind: /** @type {'user'} */ ('user') };
+    const coherence = validateImplSettings(settings, { active_writer: false });
+    if (
+      coherence.ok &&
+      coherence.inferred &&
+      typeof coherence.impl_runtime === 'string'
+    ) {
+      settings.impl_runtime = coherence.impl_runtime;
+    }
+    state.presets.push({ id, name, settings, origin });
   }
   return state;
 }
@@ -98,12 +126,25 @@ export function createExecPresetStore(options = {}) {
     if (cache) {
       return cache;
     }
+    let parsed;
     try {
       const raw = fs.readFileSync(file_path, 'utf8');
-      cache = normalizeState(JSON.parse(raw));
+      parsed = JSON.parse(raw);
     } catch {
       cache = emptyState();
+      return cache;
     }
+    const normalized = normalizeState(parsed);
+    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
+      persist(normalized);
+      const readback = JSON.parse(fs.readFileSync(file_path, 'utf8'));
+      if (JSON.stringify(readback) !== JSON.stringify(normalized)) {
+        throw new Error(
+          'Normalized exec preset state failed readback verification'
+        );
+      }
+    }
+    cache = normalized;
     return cache;
   }
 
@@ -165,6 +206,9 @@ export function createExecPresetStore(options = {}) {
       }
       normalized_settings[key] = value;
     }
+    if (!validateImplSettings(normalized_settings).ok) {
+      return null;
+    }
     return { name: trimmed_name, settings: normalized_settings };
   }
 
@@ -221,7 +265,8 @@ export function createExecPresetStore(options = {}) {
         next.presets.push({
           id: randomUUID(),
           name: normalized.name,
-          settings: normalized.settings
+          settings: normalized.settings,
+          origin: { kind: 'user' }
         });
         return true;
       });
@@ -254,7 +299,8 @@ export function createExecPresetStore(options = {}) {
         next.presets[index] = {
           id,
           name: normalized.name,
-          settings: normalized.settings
+          settings: normalized.settings,
+          origin: next.presets[index].origin
         };
         return true;
       });
@@ -273,6 +319,83 @@ export function createExecPresetStore(options = {}) {
         next.presets.splice(index, 1);
         return true;
       });
+    },
+
+    /**
+     * Create or reuse a deterministic preset for one legacy workspace state.
+     * The migration coordinator serializes this startup-only operation; origin
+     * is its idempotency key, so a failed later queue write cannot duplicate it.
+     *
+     * @param {{ name: string, settings: Record<string, string>, workspace_key: string, source_digest: string }} input
+     */
+    createOrReuseMigration(input) {
+      const normalized = normalizeMutation(input?.name, input?.settings);
+      const workspace_key =
+        typeof input?.workspace_key === 'string' ? input.workspace_key : '';
+      const source_digest =
+        typeof input?.source_digest === 'string' ? input.source_digest : '';
+      const current = ensureLoaded();
+      if (!normalized || !workspace_key || !source_digest) {
+        return rejected(current, false, 'invalid');
+      }
+      const existing = current.presets.find(
+        (preset) =>
+          preset.origin.kind === 'workspace-exec-defaults' &&
+          preset.origin.workspace_key === workspace_key &&
+          preset.origin.source_digest === source_digest
+      );
+      if (existing) {
+        return {
+          applied: false,
+          reused: true,
+          conflict: false,
+          revision: current.revision,
+          preset: clone(existing),
+          presets: clone(current.presets)
+        };
+      }
+      const next = clone(current);
+      const suffix = workspace_key.slice(-8);
+      let name = normalized.name;
+      if (
+        next.presets.some(
+          (preset) => preset.name.toLowerCase() === name.toLowerCase()
+        )
+      ) {
+        name = `${normalized.name} · ${suffix}`;
+      }
+      let ordinal = 2;
+      while (
+        next.presets.some(
+          (preset) => preset.name.toLowerCase() === name.toLowerCase()
+        )
+      ) {
+        name = `${normalized.name} · ${suffix}-${ordinal++}`;
+      }
+      const preset = {
+        id: randomUUID(),
+        name,
+        settings: normalized.settings,
+        origin: {
+          kind: /** @type {'workspace-exec-defaults'} */ (
+            'workspace-exec-defaults'
+          ),
+          workspace_key,
+          source_digest
+        }
+      };
+      next.presets.push(preset);
+      next.revision = current.revision + 1;
+      persist(next);
+      cache = next;
+      return {
+        applied: true,
+        reused: false,
+        conflict: false,
+        revision: next.revision,
+        preset: clone(preset),
+        presets: clone(next.presets)
+      };
     }
   };
 }

@@ -717,7 +717,7 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(loaded.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
-  test('exec_stamped_keys survive appendAttempt/updateAttempt and a reload', () => {
+  test('exec provenance survives appendAttempt/updateAttempt and a reload', () => {
     const store = createQueueStore();
     let rev = store.place(WS, {
       expected_revision: 0,
@@ -731,6 +731,11 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     });
     expect(bare.ok).toBe(true);
     expect(bare.queue.attempts['att-0'].exec_stamped_keys).toBe(null);
+    expect(bare.queue.attempts['att-0'].exec_default_preset_id).toBe(null);
+    expect(bare.queue.attempts['att-0'].exec_default_preset_revision).toBe(
+      null
+    );
+    expect(bare.queue.attempts['att-0'].exec_values).toBe(null);
     rev = bare.queue.revision;
 
     const appended = store.appendAttempt(WS, {
@@ -738,7 +743,13 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
       attempt: {
         attempt_id: 'att-1',
         bead_id: 'UI-1',
-        exec_stamped_keys: ['worker_runner', 'review_model']
+        exec_default_preset_id: 'preset-1',
+        exec_default_preset_revision: 7,
+        exec_stamped_keys: ['worker_runner', 'review_model'],
+        exec_values: {
+          orchestration_model: 'opus',
+          spec_review_model: 'codex'
+        }
       }
     });
     expect(appended.ok).toBe(true);
@@ -746,6 +757,14 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
       'worker_runner',
       'review_model'
     ]);
+    expect(appended.queue.attempts['att-1']).toMatchObject({
+      exec_default_preset_id: 'preset-1',
+      exec_default_preset_revision: 7,
+      exec_values: {
+        orchestration_model: 'opus',
+        spec_review_model: 'codex'
+      }
+    });
 
     // updateAttempt patch (makeAttempt shape) must carry the field, not drop it.
     const updated = store.updateAttempt(WS, {
@@ -762,6 +781,14 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(restarted.load(WS).attempts['att-1'].exec_stamped_keys).toEqual([
       'impl_model'
     ]);
+    expect(restarted.load(WS).attempts['att-1']).toMatchObject({
+      exec_default_preset_id: 'preset-1',
+      exec_default_preset_revision: 7,
+      exec_values: {
+        orchestration_model: 'opus',
+        spec_review_model: 'codex'
+      }
+    });
     expect(restarted.load(WS).attempts['att-0'].exec_stamped_keys).toBe(null);
   });
 

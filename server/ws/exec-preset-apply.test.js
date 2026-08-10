@@ -74,7 +74,7 @@ afterEach(() => {
 });
 
 describe('buildApplyExecPresetArgs', () => {
-  test('replaces all 10 metadata keys in canonical order with one update argv', () => {
+  test('replaces all 11 metadata keys in canonical order with one update argv', () => {
     const args = buildApplyExecPresetArgs('UI-1', {
       orchestration_model: 'sol',
       impl_effort: 'high'
@@ -100,20 +100,22 @@ describe('buildApplyExecPresetArgs', () => {
       '--unset-metadata',
       'impl_review_effort',
       '--unset-metadata',
+      'impl_runtime',
+      '--unset-metadata',
       'impl_model',
       '--set-metadata',
       'impl_effort=high'
     ]);
   });
 
-  test('sets all 10 keys when the preset defines every value', () => {
+  test('sets all 11 keys when the preset defines every value', () => {
     const settings = Object.fromEntries(
       EXEC_SETTING_KEYS.map((key) => [key, `${key}-value`])
     );
 
     const args = buildApplyExecPresetArgs('UI-1', settings);
 
-    expect(args.filter((value) => value === '--set-metadata')).toHaveLength(10);
+    expect(args.filter((value) => value === '--set-metadata')).toHaveLength(11);
     expect(args).not.toContain('--unset-metadata');
   });
 });
@@ -219,6 +221,47 @@ describe('handleApplyExecPreset', () => {
 
     expect(sent[0].error.code).toBe('exec_preset_incompatible');
     expect(runBdInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('adds the inferred runtime when applying a known model-only legacy preset', async () => {
+    const file_path = path.join(tmp_state, 'bdui', 'exec-presets.json');
+    fs.mkdirSync(path.dirname(file_path), { recursive: true });
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({
+        revision: 4,
+        presets: [
+          {
+            id: 'legacy',
+            name: '과거 Codex 모델',
+            settings: { impl_model: 'terra', impl_effort: 'high' }
+          }
+        ]
+      })
+    );
+    __resetExecPresetsForTest();
+    const { ws, sent } = fakeWs();
+    runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
+    runBdJsonInWorkspace.mockResolvedValue({
+      code: 0,
+      stdoutJson: { id: 'UI-1', metadata: {} }
+    });
+
+    await handleApplyExecPreset(ws, {
+      id: 'apply',
+      type: 'apply-exec-preset',
+      payload: { id: 'UI-1', preset_id: 'legacy', expected_revision: 4 }
+    });
+
+    expect(runBdInWorkspace).toHaveBeenCalledWith(
+      ws,
+      buildApplyExecPresetArgs('UI-1', {
+        impl_runtime: 'codex',
+        impl_model: 'terra',
+        impl_effort: 'high'
+      })
+    );
+    expect(sent.at(-1).ok).toBe(true);
   });
 
   test('reports update failure without readback or refresh', async () => {
