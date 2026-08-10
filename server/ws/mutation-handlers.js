@@ -328,7 +328,7 @@ export async function handleUpdateImplTarget(ws, req) {
  * empty value removes the key (absence = derived/default at read time).
  */
 const WORKFLOW_META_ENUMS = {
-  route: ['spec_backed', 'full_plan']
+  route: ['quick_fix', 'spec_backed', 'full_plan']
 };
 
 /**

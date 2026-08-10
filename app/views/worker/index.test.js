@@ -2091,6 +2091,47 @@ describe('views/worker', () => {
     expect(card.querySelector('.b-impl.dim.stale')).not.toBeNull();
   });
 
+  test('quick_fix candidate stays in the with-spec filter but cannot be queued', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'QF-1',
+        title: 'quick fix candidate',
+        status: 'open',
+        metadata: { route: 'quick_fix', spec_id: 'legacy-spec' }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-candidate .worker-card[data-bead-id="QF-1"]'
+      )
+    );
+    expect(card.querySelector('.worker-card__reason')?.textContent).toContain(
+      'quick_fix · 워커 비대상'
+    );
+    expect(card.getAttribute('draggable')).toBe('false');
+    expect(
+      card.querySelector('.worker-card__place')?.getAttribute('title')
+    ).toBe('quick_fix route는 워커 실행 대상이 아닙니다');
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-filter__chip[data-spec="with"]')
+    ).click();
+
+    expect(
+      mount.querySelector(
+        '#worker-pane-candidate .worker-card[data-bead-id="QF-1"]'
+      )
+    ).not.toBeNull();
+  });
+
   test('a candidate without workflow renders no chip/stepper and does not throw', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const stores = createTestIssueStores();

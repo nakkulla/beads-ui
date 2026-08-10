@@ -69,6 +69,8 @@ export function timesMeta(item) {
  * @property {string} [root_dir] - Owning workspace root; the repo badge's
  * tooltip.
  * @property {boolean} [done] - Rendered dimmed with no grip.
+ * @property {boolean} [is_quick_fix] - Candidate route fallback when workflow
+ * enrichment is unavailable.
  * @property {boolean} [external] - PR 대기 행이 외부 세션이 배달한 PR인지
  * (UI-w0hi §4). 좌측 액센트 보더 + 미세 배경 틴트로 구분만 하고 행동은 바꾸지
  * 않는다.
@@ -340,6 +342,9 @@ export function candidateCard(item) {
   const derived =
     chips.route_source === 'derived' ||
     !!(workflow && workflow.route_source === 'derived');
+  const is_quick_fix =
+    item.is_quick_fix === true ||
+    (!!workflow && workflow.route === 'quick_fix');
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
   return html`<div
@@ -392,7 +397,9 @@ export function candidateCard(item) {
         ?disabled=${!draggable}
         title=${draggable
           ? '대기 큐 맨 뒤에 추가'
-          : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
+          : is_quick_fix
+            ? 'quick_fix route는 워커 실행 대상이 아닙니다'
+            : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
       >
         대기로 ↴
       </button>

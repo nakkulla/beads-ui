@@ -1,6 +1,6 @@
 import { render } from 'lit-html';
 import { beforeEach, describe, expect, test } from 'vitest';
-import { miniRow } from './lanes.js';
+import { candidateCard, miniRow } from './lanes.js';
 
 /** @type {HTMLElement} */
 let mount;
@@ -24,6 +24,35 @@ function renderRow(item) {
     mount
   );
   return /** @type {HTMLElement} */ (mount.querySelector('.worker-mini'));
+}
+
+/**
+ * @param {Partial<import('./lanes.js').MiniItem>} item
+ * @returns {HTMLElement}
+ */
+function renderCandidate(item) {
+  render(
+    candidateCard(
+      /** @type {any} */ ({
+        id: 'UI-qf',
+        title: 'quick fix',
+        draggable: false,
+        lane: 'candidate',
+        reason: 'quick_fix · 워커 비대상',
+        workflow: {
+          route: 'quick_fix',
+          route_source: 'explicit',
+          stages: {
+            impl: { fill: 'none', glyph: null, stale: false },
+            close: { fill: 'none', glyph: null, stale: false }
+          }
+        },
+        ...item
+      })
+    ),
+    mount
+  );
+  return /** @type {HTMLElement} */ (mount.querySelector('.worker-card'));
 }
 
 const USAGE = {
@@ -85,5 +114,15 @@ describe('done lane row', () => {
 
     expect(row.querySelector('.worker-mini__row1')).toBeNull();
     expect(row.querySelector('.worker-mini__line')).not.toBeNull();
+  });
+});
+
+describe('candidate card', () => {
+  test('explains why a quick_fix route cannot enter the worker queue', () => {
+    const card = renderCandidate({});
+
+    expect(
+      card.querySelector('.worker-card__place')?.getAttribute('title')
+    ).toBe('quick_fix route는 워커 실행 대상이 아닙니다');
   });
 });

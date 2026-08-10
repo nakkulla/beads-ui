@@ -16,7 +16,7 @@ import { html } from 'lit-html';
 
 /**
  * @typedef {Object} WorkflowSummary
- * @property {'spec_backed'|'full_plan'} route
+ * @property {'quick_fix'|'spec_backed'|'full_plan'} route
  * @property {Record<string, WorkflowStage>} stages
  */
 
@@ -26,7 +26,8 @@ const STAGE_CLASS = {
   plan: 'plan',
   impl: 'impl',
   pr: 'pr',
-  merge: 'mrg'
+  merge: 'mrg',
+  close: 'mrg'
 };
 
 /** Stage key → visible label text. */
@@ -35,11 +36,13 @@ const STAGE_LABEL = {
   plan: 'plan',
   impl: 'impl',
   pr: 'pr',
-  merge: 'merge'
+  merge: 'merge',
+  close: 'close'
 };
 
 /** Route → ordered stage keys (spec_backed omits plan). */
 const ROUTE_ORDER = {
+  quick_fix: ['impl', 'close'],
   spec_backed: ['spec', 'impl', 'pr', 'merge'],
   full_plan: ['spec', 'plan', 'impl', 'pr', 'merge']
 };
@@ -197,8 +200,9 @@ export function stepperTemplate(workflow, status) {
   if (!workflow || !workflow.stages) {
     return '';
   }
-  const route = workflow.route === 'full_plan' ? 'full_plan' : 'spec_backed';
-  const order = ROUTE_ORDER[route];
+  const order =
+    /** @type {Record<string, string[]>} */ (ROUTE_ORDER)[workflow.route] ||
+    ROUTE_ORDER.spec_backed;
   const stages = workflow.stages;
   const current_key = currentStageKey(order, stages, String(status || 'open'));
   // `role="img"` replaces child content in the a11y tree, so per-segment labels

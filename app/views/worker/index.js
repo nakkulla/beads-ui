@@ -1716,14 +1716,20 @@ export function createWorkerView(mount_element, options = {}) {
 
     /** @type {any[]} */
     const candidate_rows = candidate_issues.map((/** @type {any} */ it) => {
-      const eligible = hasSpec(it);
+      const has_spec = hasSpec(it);
+      const is_quick_fix =
+        it.workflow?.route === 'quick_fix' ||
+        (it.metadata && it.metadata.route === 'quick_fix');
+      const eligible = !is_quick_fix && has_spec;
       const is_blocked = blocked_ids.has(it.id);
       /** @type {string[]} */
       const parts = [];
       if (is_blocked) {
         parts.push(blockedReason(it));
       }
-      if (!eligible) {
+      if (is_quick_fix) {
+        parts.push('quick_fix · 워커 비대상');
+      } else if (!has_spec) {
         parts.push('spec 없음');
       }
       const adm = admissionBadge(it.id);
@@ -1741,10 +1747,11 @@ export function createWorkerView(mount_element, options = {}) {
         // Candidate cards consume the server-enriched workflow/status (spec §2);
         // queue lanes carry no workflow snapshot, so they stay on miniRow.
         workflow: it.workflow,
+        is_quick_fix,
         status: it.status,
         // Filter inputs (UI-ki09); the card template ignores them.
         blocked: is_blocked,
-        has_spec: eligible
+        has_spec
       };
     });
     // DISPLAY-only projection: `candidate_issues` above stays the unfiltered

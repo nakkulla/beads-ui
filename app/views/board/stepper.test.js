@@ -64,6 +64,31 @@ describe('views/board/stepper', () => {
     expect(five.textContent).toContain('plan');
   });
 
+  test('quick_fix renders impl and close with the merge color', () => {
+    const m = mountStepper(
+      wf({ impl: stage('dim'), close: stage('full') }, 'quick_fix'),
+      'in_progress'
+    );
+    const segments = Array.from(m.querySelectorAll('.seg'));
+
+    expect(segments).toHaveLength(2);
+    expect(segments[0].textContent).toContain('impl');
+    expect(segments[1].textContent).toContain('close');
+    expect(segments[1].querySelector('.bar')?.classList.contains('b-mrg')).toBe(
+      true
+    );
+  });
+
+  test('unknown routes fall back to the spec_backed order', () => {
+    const m = mountStepper(
+      wf({ spec: NONE, impl: NONE, pr: NONE, merge: NONE }, 'foo')
+    );
+
+    expect(m.querySelectorAll('.seg')).toHaveLength(4);
+    expect(m.textContent).toContain('spec');
+    expect(m.textContent).not.toContain('close');
+  });
+
   test('fill=none: bar has no color/fill class, label not colored', () => {
     const m = mountStepper(
       wf({ spec: NONE, impl: NONE, pr: NONE, merge: NONE })

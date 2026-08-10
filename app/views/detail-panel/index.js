@@ -1298,12 +1298,14 @@ export function createDetailPanel(mount_element, options) {
           >${route_derived ? 'unset' : route_label}</span
         >
       </div>
-      <div class="detail-kv">
-        <span class="detail-kv__k">spec_review</span>
-        <span class="detail-kv__v"
-          >${md.spec_review || '없음'}${specStale ? ' · stale' : ''}</span
-        >
-      </div>
+      ${wf.route !== 'quick_fix' || Object.hasOwn(md, 'spec_review')
+        ? html`<div class="detail-kv">
+            <span class="detail-kv__k">spec_review</span>
+            <span class="detail-kv__v"
+              >${md.spec_review || '없음'}${specStale ? ' · stale' : ''}</span
+            >
+          </div>`
+        : ''}
       ${wf.route === 'full_plan'
         ? html`<div class="detail-kv">
               <span class="detail-kv__k">plan_review</span>
@@ -1321,12 +1323,14 @@ export function createDetailPanel(mount_element, options) {
               >
             </div>`
         : ''}
-      <div class="detail-kv">
-        <span class="detail-kv__k">impl_review</span>
-        <span class="detail-kv__v"
-          >${md.impl_review || '없음'}${implStale ? ' · stale' : ''}</span
-        >
-      </div>
+      ${wf.route !== 'quick_fix' || Object.hasOwn(md, 'impl_review')
+        ? html`<div class="detail-kv">
+            <span class="detail-kv__k">impl_review</span>
+            <span class="detail-kv__v"
+              >${md.impl_review || '없음'}${implStale ? ' · stale' : ''}</span
+            >
+          </div>`
+        : ''}
       ${md.pr_url
         ? html`<div class="detail-kv">
             <span class="detail-kv__k">pr_url</span>
@@ -1344,7 +1348,7 @@ export function createDetailPanel(mount_element, options) {
    */
   /** @type {Record<'route', string[]>} */
   const WORKFLOW_META_OPTIONS = {
-    route: ['spec_backed', 'full_plan']
+    route: ['quick_fix', 'spec_backed', 'full_plan']
   };
 
   /**
