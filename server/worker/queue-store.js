@@ -179,6 +179,14 @@
  * which is the disposition lane's own relaunch input and is kept for that.
  * NEITHER field rides the worker-state push: the projection strips both
  * (`worker-handlers.js`), and the UI fetches them on demand.
+ * @property {string|null} completion_root_id - Root completion intent that
+ * owns this repair attempt; null for ordinary sessions.
+ * @property {string|null} completion_op_id - Journal operation paired with the
+ * attempt before spawn.
+ * @property {'resume_root'|'dispatch_repair'|null} completion_mode - Repair
+ * dispatch shape.
+ * @property {CompletionFailureKey|null} completion_failure_key - SHA-bound
+ * failure identity the session was asked to repair.
  */
 /**
  * @typedef {Object} Queue
@@ -1013,7 +1021,23 @@ export function makeAttempt(fields) {
     disposition_resume: fields.disposition_resume === true,
     disposition_prompt: fields.disposition_prompt ?? null,
     system_prompt: fields.system_prompt ?? null,
-    task_prompt: fields.task_prompt ?? null
+    task_prompt: fields.task_prompt ?? null,
+    completion_root_id:
+      typeof fields.completion_root_id === 'string'
+        ? fields.completion_root_id
+        : null,
+    completion_op_id:
+      typeof fields.completion_op_id === 'string'
+        ? fields.completion_op_id
+        : null,
+    completion_mode:
+      fields.completion_mode === 'resume_root' ||
+      fields.completion_mode === 'dispatch_repair'
+        ? fields.completion_mode
+        : null,
+    completion_failure_key: normalizeCompletionFailureKey(
+      fields.completion_failure_key
+    )
   };
 }
 

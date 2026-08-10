@@ -164,6 +164,37 @@ export function prBaseDirective(target_base) {
 }
 
 /**
+ * Completion-repair scope delivered to a resumed or fresh repair session.
+ * The command guard remains the enforcement layer; this block supplies the
+ * pinned evidence and narrows the legal repair surface before work starts.
+ *
+ * @param {{ mode: 'resume_root'|'dispatch_repair', stage: string, reason: string, subject_sha: string, base_sha: string, result_digest: string, log_path?: string|null }} repair
+ * @returns {string}
+ */
+export function repairDirective(repair) {
+  const log_path =
+    typeof repair.log_path === 'string' && repair.log_path.length > 0
+      ? repair.log_path
+      : '(없음)';
+  return [
+    '## completion repair',
+    '',
+    `복구 mode: \`${repair.mode}\``,
+    `실패: \`${repair.stage}/${repair.reason}\``,
+    `subject SHA: \`${repair.subject_sha}\``,
+    `pinned base SHA: \`${repair.base_sha}\``,
+    `result digest: \`${repair.result_digest}\``,
+    `evidence log: \`${log_path}\``,
+    '',
+    '- 이 저장소의 위 실패만 재현하고 원인을 수정하라.',
+    '- 테스트를 삭제·skip·약화하거나 assertion·threshold를 낮추지 말라.',
+    '- credentials·권한·외부 서비스·전역 환경을 변경하지 말라.',
+    '- feature branch push와 PR 제출까지만 수행하라. base push와 agent merge는 금지된다.',
+    '- pinned SHA 또는 실패 정체가 달라졌으면 추측해 소비하지 말고 blocker로 종료하라.'
+  ].join('\n');
+}
+
+/**
  * The default task prompt for a first dispatch: the bead id plus the instruction
  * to run it through the contract-native flow. It lives here rather than only in
  * the adapter because the scheduler builds ON it when a dispatch carries extra
@@ -196,7 +227,7 @@ export function defaultTaskPrompt(bead_id) {
  * against, so a shape that opens none is told no base either.
  *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, target_base?: string|null }} [options]
+ * @param {{ fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, target_base?: string|null, repair?: { mode: 'resume_root'|'dispatch_repair', stage: string, reason: string, subject_sha: string, base_sha: string, result_digest: string, log_path?: string|null } }} [options]
  * @returns {{ system_prompt: string, task_prompt: string }}
  */
 export function applyPreamble(base_prompt, options = {}) {
@@ -213,6 +244,9 @@ export function applyPreamble(base_prompt, options = {}) {
     if (target_base.length > 0) {
       parts.push(prBaseDirective(target_base));
     }
+  }
+  if (options.repair) {
+    parts.push(repairDirective(options.repair));
   }
   parts.push(guardContractDirective({ disposition }));
   return {

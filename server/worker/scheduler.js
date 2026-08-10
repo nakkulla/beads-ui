@@ -239,6 +239,9 @@ function staleDispatchPrompt(bead_id, stale) {
  * Late-bound cleanup retry owned by the attachment.
  * @property {(result_path: string) => Promise<unknown>|unknown} [readCleanupDiagnosisResult]
  * Injectable diagnosis-result reader for tests.
+ * @property {(input: { workspace: string, root_bead_id: string, op_id: string, failure_key: any, attempt: any, verdict: RunnerVerdict|null }) => Promise<void>|void} [onCompletionAttemptSettled]
+ * Completion coordinator settlement hook. Invoked only after the ordinary
+ * attempt termination path has durably updated the record.
  * @property {{
  *   attemptStarted: (i: any) => void,
  *   attemptFailed: (i: any) => void,
@@ -285,6 +288,7 @@ function staleDispatchPrompt(bead_id, stale) {
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchCleanupDiagnosis: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean }>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
  *   activeBeadIds: (workspace: string) => Set<string>,
@@ -2786,6 +2790,45 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Notify the completion coordinator after the normal scheduler settlement
+   * has written the attempt's observed session/PR result.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {RunnerVerdict|null} verdict
+   */
+  async function reportCompletionSettlement(workspace, attempt_id, verdict) {
+    if (typeof deps.onCompletionAttemptSettled !== 'function') {
+      return;
+    }
+    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    if (
+      !attempt ||
+      typeof attempt.completion_root_id !== 'string' ||
+      typeof attempt.completion_op_id !== 'string' ||
+      !attempt.completion_failure_key
+    ) {
+      return;
+    }
+    try {
+      await deps.onCompletionAttemptSettled({
+        workspace,
+        root_bead_id: attempt.completion_root_id,
+        op_id: attempt.completion_op_id,
+        failure_key: attempt.completion_failure_key,
+        attempt,
+        verdict
+      });
+    } catch (err) {
+      log(
+        'completion attempt settlement hook failed for %s: %o',
+        attempt_id,
+        err
+      );
+    }
+  }
+
+  /**
    * Shared launch tail for a first dispatch AND a manual resume: spawn the
    * runner, fill the spawn-time snapshot, attach the session log, wire
    * session_id capture + the done handler. On a spawn throw it cleans up exactly
@@ -2814,10 +2857,11 @@ export function createScheduler(deps) {
    *   wt_path: string,
    *   spawnBead: any,
    *   title?: string|null,
-   *   launch_kind?: 'dispatch'|'resume'|'conflict'|'disposition'|'cleanup_diagnosis',
+   *   launch_kind?: 'dispatch'|'resume'|'conflict'|'disposition'|'cleanup_diagnosis'|'completion_repair',
    *   resume_session_id?: string|null,
    *   disposition?: string|null,
    *   cleanup_diagnosis?: boolean
+   *   completion_repair?: any
    * }} input
    * @returns {Promise<{ ok: boolean, reason?: string }>} Whether the session
    * actually started. A spawn abort is REPORTED rather than swallowed: the
@@ -2865,6 +2909,9 @@ export function createScheduler(deps) {
       disposition: input.disposition ?? null,
       cleanup_diagnosis: input.cleanup_diagnosis === true
     };
+    if (input.completion_repair) {
+      settings.completion_repair = input.completion_repair;
+    }
     // Hand the session the hook that was installed BEFORE any state change
     // (UI-8mvc §2). Delivery creates nothing, which is why it belongs here even
     // though the install does not: `runner/session.js` spreads `settings.env`
@@ -3030,9 +3077,21 @@ export function createScheduler(deps) {
     const doneSnap = /** @type {BeadSnapshot} */ (
       /** @type {any} */ ({ repo, target_base })
     );
-    handle.done.then((verdict) =>
-      onSessionDone(workspace, attempt_id, bead_id, doneSnap, prior_wf, verdict)
-    );
+    handle.done
+      .then(async (verdict) => {
+        await onSessionDone(
+          workspace,
+          attempt_id,
+          bead_id,
+          doneSnap,
+          prior_wf,
+          verdict
+        );
+        await reportCompletionSettlement(workspace, attempt_id, verdict);
+      })
+      .catch((err) => {
+        log('session settlement failed for %s: %o', attempt_id, err);
+      });
     return { ok: true };
   }
 
@@ -3430,6 +3489,32 @@ export function createScheduler(deps) {
     for (const attempt of Object.values(attempts)) {
       const a = /** @type {any} */ (attempt);
       if (a && a.bead_id === bead_id) {
+        last = a;
+      }
+    }
+    return last;
+  }
+
+  /**
+   * The most recent same-Bead attempt that captured a resumable transcript.
+   * A newer pre-session failure must not hide an older valid conversation.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {any}
+   */
+  function lastSessionAttemptOf(workspace, bead_id) {
+    /** @type {any} */
+    let last = null;
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    for (const attempt of Object.values(attempts)) {
+      const a = /** @type {any} */ (attempt);
+      if (
+        a &&
+        a.bead_id === bead_id &&
+        typeof a.session_id === 'string' &&
+        a.session_id.length > 0
+      ) {
         last = a;
       }
     }
@@ -4035,6 +4120,461 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Prove that the canonical owned worktree still has the Bead branch checked
+   * out. A transcript-missing fallback is fresh only after this proof; an
+   * arbitrary directory is never accepted as same-Bead continuity.
+   *
+   * @param {string} repo
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: true, path: string }|{ ok: false, reason: string }>}
+   */
+  async function proveOwnedWorktree(repo, bead_id) {
+    if (
+      typeof deps.worktree.exists !== 'function' ||
+      typeof deps.worktree.pathFor !== 'function' ||
+      typeof deps.gitRun !== 'function' ||
+      !deps.worktree.exists(repo, bead_id)
+    ) {
+      return { ok: false, reason: 'worktree_missing' };
+    }
+    const wt_path = deps.worktree.pathFor(repo, bead_id);
+    if (typeof wt_path !== 'string' || wt_path.length === 0) {
+      return { ok: false, reason: 'worktree_unowned' };
+    }
+    let branch;
+    try {
+      branch = await deps.gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], {
+        cwd: wt_path
+      });
+    } catch {
+      return { ok: false, reason: 'worktree_branch_unreadable' };
+    }
+    if (branch.code !== 0) {
+      return { ok: false, reason: 'worktree_branch_unreadable' };
+    }
+    if (String(branch.stdout || '').trim() !== bead_id) {
+      return { ok: false, reason: 'worktree_branch_mismatch' };
+    }
+    return { ok: true, path: wt_path };
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @param {string} bead_id
+   * @param {'resume_root'|'dispatch_repair'} mode
+   * @returns {string}
+   */
+  function completionRepairPrompt(root_bead_id, bead_id, mode) {
+    return mode === 'resume_root'
+      ? `Bead ${root_bead_id}의 자동머지 실패를 같은 구현 세션 문맥에서 수정하고 feature branch PR을 다시 제출하라.`
+      : `Bead ${root_bead_id}의 pinned-base 실패를 linked repair Bead ${bead_id}에서 수정하고 feature branch PR을 제출하라.`;
+  }
+
+  /**
+   * Fail one prerecorded completion attempt before its process starts.
+   *
+   * @param {{ workspace: string, attempt_id: string, bead_id: string, repo: string, reason: string, prior_wf: string|null, stamped_keys?: string[], remove_worktree?: boolean }} input
+   */
+  async function failPreparedCompletion(input) {
+    const {
+      workspace,
+      attempt_id,
+      bead_id,
+      repo,
+      reason,
+      prior_wf,
+      stamped_keys,
+      remove_worktree
+    } = input;
+    if (Array.isArray(stamped_keys) && stamped_keys.length > 0) {
+      await revertExecStamps(bead_id, stamped_keys);
+    }
+    try {
+      await revertWorkflowMode(bead_id, prior_wf);
+    } catch {
+      // Durable attempt failure and completion op remain the recovery evidence.
+    }
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { status: 'failed', cause: reason, finished_at: now() }
+    });
+    if (remove_worktree === true) {
+      try {
+        await deps.worktree.remove({ repo, bead_id });
+      } catch {
+        // The failed attempt remains durable; reconciliation owns residue.
+      }
+    }
+    removeGuardHook(workspace, attempt_id);
+    claimed.delete(bead_id);
+    notifyLifecycle('attemptFailed', {
+      bead_id,
+      cause: reason,
+      repo,
+      cause_detail: null
+    });
+    notifyChanged(workspace);
+    await reportCompletionSettlement(workspace, attempt_id, null);
+    return { ok: false, reason };
+  }
+
+  /**
+   * Dispatch one coordinator-owned repair attempt. The supplied attempt id is
+   * journaled atomically with the root budget before any worktree, metadata, or
+   * process effect. Replaying an already-prerecorded operation adopts it and
+   * never spends or spawns again.
+   *
+   * @param {string} workspace
+   * @param {{ root_bead_id: string, op: any, log_path?: string|null }} input
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean }>}
+   */
+  async function dispatchCompletionRepair(workspace, input) {
+    const { root_bead_id, op } = input;
+    if (
+      !op ||
+      (op.kind !== 'resume_root' && op.kind !== 'dispatch_repair') ||
+      op.status !== 'prepared' ||
+      typeof op.op_id !== 'string' ||
+      typeof op.attempt_id !== 'string' ||
+      !op.failure_key
+    ) {
+      return { ok: false, reason: 'completion_op_invalid' };
+    }
+    const q = deps.store.snapshot(workspace);
+    const intent = q.completion_intents?.[root_bead_id];
+    if (!intent) {
+      return { ok: false, reason: 'completion_intent_missing' };
+    }
+    const existing = q.attempts?.[op.attempt_id];
+    if (existing) {
+      const recorded_failure = existing.completion_failure_key;
+      const same =
+        existing.completion_root_id === root_bead_id &&
+        existing.completion_op_id === op.op_id &&
+        existing.completion_mode === op.kind &&
+        recorded_failure?.stage === op.failure_key.stage &&
+        recorded_failure?.reason === op.failure_key.reason &&
+        recorded_failure?.subject_sha === op.failure_key.subject_sha &&
+        recorded_failure?.base_sha === op.failure_key.base_sha &&
+        recorded_failure?.result_digest === op.failure_key.result_digest;
+      return same
+        ? { ok: true, attempt_id: op.attempt_id, adopted: true }
+        : { ok: false, reason: 'completion_attempt_collision' };
+    }
+    if (intent.active_op !== null) {
+      return { ok: false, reason: 'completion_op_in_flight' };
+    }
+    if (
+      intent.subject?.head_sha &&
+      intent.subject.head_sha !== op.failure_key.subject_sha
+    ) {
+      return { ok: false, reason: 'completion_subject_sha_stale' };
+    }
+    if (
+      intent.subject?.base_sha &&
+      intent.subject.base_sha !== op.failure_key.base_sha
+    ) {
+      return { ok: false, reason: 'completion_base_sha_stale' };
+    }
+
+    const source = lastAttemptOf(workspace, root_bead_id);
+    if (
+      !source ||
+      typeof source.repo !== 'string' ||
+      source.repo.length === 0
+    ) {
+      return { ok: false, reason: 'completion_lineage_missing' };
+    }
+    const mode = /** @type {'resume_root'|'dispatch_repair'} */ (op.kind);
+    const bead_id = mode === 'resume_root' ? root_bead_id : op.repair_bead_id;
+    if (typeof bead_id !== 'string' || bead_id.length === 0) {
+      return { ok: false, reason: 'repair_bead_missing' };
+    }
+    if (
+      mode === 'dispatch_repair' &&
+      !intent.repair_bead_ids.includes(bead_id)
+    ) {
+      return { ok: false, reason: 'repair_bead_unowned' };
+    }
+    if (claimed.has(root_bead_id) || claimed.has(bead_id)) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    for (const attempt of Object.values(q.attempts || {})) {
+      if (
+        attempt &&
+        (attempt.bead_id === root_bead_id || attempt.bead_id === bead_id) &&
+        attempt.status === 'running'
+      ) {
+        return { ok: false, reason: 'bead_running' };
+      }
+    }
+
+    const repo = source.repo;
+    const target_base =
+      typeof intent.target_base === 'string' && intent.target_base.length > 0
+        ? intent.target_base
+        : source.target_base;
+    if (typeof target_base !== 'string' || target_base.length === 0) {
+      return { ok: false, reason: 'target_base_missing' };
+    }
+    /** @type {string} */
+    let wt_path;
+    /** @type {string|null} */
+    let resume_session_id = null;
+    /** @type {string|null} */
+    let resumed_from = null;
+    /** @type {string|null} */
+    let prior_wf = source.workflow_mode_prior ?? null;
+    /** @type {string} */
+    let runner_name;
+    /** @type {string|null} */
+    let launch_model;
+    /** @type {string|null} */
+    let launch_effort;
+    /** @type {string[]} */
+    let stamped_keys;
+    /** @type {Record<string, string|null>|null} */
+    let exec_values;
+    /** @type {string|null} */
+    let preset_id;
+    /** @type {number|null} */
+    let preset_revision;
+    if (mode === 'resume_root') {
+      const resume_source = lastSessionAttemptOf(workspace, bead_id) || source;
+      const owned = await proveOwnedWorktree(repo, bead_id);
+      if (!owned.ok) {
+        return owned;
+      }
+      wt_path = owned.path;
+      resume_session_id =
+        typeof resume_source.session_id === 'string' &&
+        resume_source.session_id.length > 0
+          ? resume_source.session_id
+          : null;
+      resumed_from = resume_source.attempt_id;
+      runner_name =
+        typeof resume_source.runner === 'string' &&
+        resume_source.runner.length > 0
+          ? resume_source.runner
+          : 'claude';
+      launch_model = resume_source.model ?? null;
+      launch_effort = resume_source.effort ?? null;
+      stamped_keys = Array.isArray(resume_source.exec_stamped_keys)
+        ? resume_source.exec_stamped_keys
+        : [];
+      exec_values =
+        resume_source.exec_values &&
+        typeof resume_source.exec_values === 'object'
+          ? resume_source.exec_values
+          : null;
+      preset_id = resume_source.exec_default_preset_id ?? null;
+      preset_revision = resume_source.exec_default_preset_revision ?? null;
+    } else {
+      if (
+        typeof deps.worktree.exists === 'function' &&
+        deps.worktree.exists(repo, bead_id)
+      ) {
+        return { ok: false, reason: 'repair_worktree_exists' };
+      }
+      let repair_snap;
+      try {
+        repair_snap = await deps.bd.snapshotBead(bead_id);
+      } catch {
+        return { ok: false, reason: 'bd_snapshot_failed' };
+      }
+      if (repair_snap.repo !== repo) {
+        return { ok: false, reason: 'repair_repo_mismatch' };
+      }
+      const resolved_exec = resolveDispatchSettings(workspace, repair_snap);
+      if (!resolved_exec.ok) {
+        return { ok: false, reason: resolved_exec.reason };
+      }
+      const exec = resolved_exec.exec;
+      if (exec.invalid_reason) {
+        return { ok: false, reason: exec.invalid_reason };
+      }
+      prior_wf = repair_snap.workflow_mode ?? null;
+      runner_name = exec.runner;
+      launch_model = exec.orchestration_model ?? null;
+      launch_effort = exec.orchestration_effort ?? null;
+      stamped_keys = exec.stamped_keys;
+      exec_values = execValuesFor(exec);
+      preset_id = resolved_exec.preset_id;
+      preset_revision = resolved_exec.preset_revision;
+      wt_path = '';
+    }
+
+    const attempt_id = op.attempt_id;
+    if (!installGuardHook({ workspace, attempt_id, repo, target_base })) {
+      return { ok: false, reason: 'guard_hook_install_failed' };
+    }
+    claimed.add(bead_id);
+    const prerecord = deps.store.beginRepairOp(workspace, {
+      root_bead_id,
+      op,
+      attempt: {
+        attempt_id,
+        bead_id,
+        repo,
+        target_base,
+        base_oid: op.failure_key.base_sha,
+        runner: runner_name,
+        model: launch_model,
+        effort: launch_effort,
+        workflow_mode_prior: prior_wf,
+        exec_default_preset_id: preset_id,
+        exec_default_preset_revision: preset_revision,
+        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+        exec_values,
+        resumed_from,
+        completion_root_id: root_bead_id,
+        completion_op_id: op.op_id,
+        completion_mode: mode,
+        completion_failure_key: op.failure_key,
+        status: 'running',
+        pid: null
+      }
+    });
+    if (!prerecord.ok) {
+      removeGuardHook(workspace, attempt_id);
+      claimed.delete(bead_id);
+      return { ok: false, reason: 'attempt_prerecord_failed' };
+    }
+    notifyChanged(workspace);
+
+    if (mode === 'dispatch_repair') {
+      try {
+        const created = await deps.worktree.add({
+          repo,
+          bead_id,
+          base: op.failure_key.base_sha
+        });
+        if (
+          created.base_oid !== op.failure_key.base_sha ||
+          created.branch !== bead_id
+        ) {
+          return await failPreparedCompletion({
+            workspace,
+            attempt_id,
+            bead_id,
+            repo,
+            reason: 'repair_worktree_pin_mismatch',
+            prior_wf,
+            remove_worktree: true
+          });
+        }
+        wt_path = created.path;
+      } catch {
+        return await failPreparedCompletion({
+          workspace,
+          attempt_id,
+          bead_id,
+          repo,
+          reason: 'repair_worktree_failed',
+          prior_wf,
+          remove_worktree: true
+        });
+      }
+    }
+
+    let mode_ok = false;
+    try {
+      await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
+      mode_ok =
+        (await deps.bd.readMetadata(bead_id, 'workflow_mode')) === 'fast_track';
+    } catch {
+      mode_ok = false;
+    }
+    if (!mode_ok) {
+      return failPreparedCompletion({
+        workspace,
+        attempt_id,
+        bead_id,
+        repo,
+        reason: 'workflow_mode_record_failed',
+        prior_wf,
+        remove_worktree: mode === 'dispatch_repair'
+      });
+    }
+
+    /** @type {string[]} */
+    const stamped = [];
+    for (const key of stamped_keys) {
+      const value = exec_values?.[key];
+      if (typeof value !== 'string') {
+        continue;
+      }
+      try {
+        await deps.bd.setMetadata(bead_id, key, value);
+        stamped.push(key);
+        if ((await deps.bd.readMetadata(bead_id, key)) !== value) {
+          throw new Error('readback mismatch');
+        }
+      } catch {
+        return failPreparedCompletion({
+          workspace,
+          attempt_id,
+          bead_id,
+          repo,
+          reason: 'exec_stamp_failed',
+          prior_wf,
+          stamped_keys: stamped,
+          remove_worktree: mode === 'dispatch_repair'
+        });
+      }
+    }
+
+    const completion_repair = {
+      mode,
+      stage: op.failure_key.stage,
+      reason: op.failure_key.reason,
+      subject_sha: op.failure_key.subject_sha,
+      base_sha: op.failure_key.base_sha,
+      result_digest: op.failure_key.result_digest,
+      log_path: input.log_path ?? null
+    };
+    const launched = await launchSession({
+      workspace,
+      attempt_id,
+      bead_id,
+      repo,
+      target_base,
+      base_oid: op.failure_key.base_sha,
+      runner_name,
+      model: launch_model,
+      effort: launch_effort,
+      prior_wf,
+      stamped_keys,
+      wt_path,
+      launch_kind: 'completion_repair',
+      resume_session_id,
+      completion_repair,
+      spawnBead: {
+        id: bead_id,
+        prompt: completionRepairPrompt(root_bead_id, bead_id, mode)
+      }
+    });
+    if (!launched.ok) {
+      if (mode === 'dispatch_repair') {
+        try {
+          await deps.worktree.remove({ repo, bead_id });
+        } catch {
+          // Attempt failure is durable; reconciliation owns remaining residue.
+        }
+      }
+      await reportCompletionSettlement(workspace, attempt_id, null);
+      return { ok: false, reason: launched.reason || 'spawn_failed' };
+    }
+    deps.store.advanceCompletionOp(workspace, {
+      root_bead_id,
+      op_id: op.op_id,
+      status: 'dispatched'
+    });
+    notifyChanged(workspace);
+    return { ok: true, attempt_id };
+  }
+
+  /**
    * Dispatch the REVISE-disposition (finding acceptance) session for a parked
    * bead (UI-hs11 §3.3). It reuses the relaunch machinery — a child attempt
    * carrying `resumed_from`, the prior snapshot inherited verbatim, the same
@@ -4540,6 +5080,7 @@ export function createScheduler(deps) {
     dispatchExternalConflict,
     dispatchCleanupDiagnosis,
     dispatchReviseFix,
+    dispatchCompletionRepair,
     reconcile,
     sweepClosedQueue,
     activeBeadIds,

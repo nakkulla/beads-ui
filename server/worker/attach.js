@@ -41,6 +41,7 @@ import { validateAdmission } from './admission.js';
 import { createAutoMerge } from './auto-merge.js';
 import { createBdMetadata } from './bd-metadata.js';
 import { createCompletionIntentCoordinator } from './completion-intent.js';
+import { createCompletionRepairService } from './completion-repair.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
@@ -356,6 +357,7 @@ export function defaultProbePid(pid) {
  *   mergeQueue?: any,
  *   autoMerge?: any,
  *   completionIntent?: any,
+ *   completionRepair?: any,
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -500,6 +502,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   let reviseDisposition = null;
   /** @type {ReturnType<typeof createPrActions>|null} */
   let prActions = null;
+  /** @type {ReturnType<typeof createCompletionIntentCoordinator>|null} */
+  let completionIntent = null;
 
   const probePid = options.probePid || defaultProbePid;
 
@@ -577,6 +581,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
             : {})
         };
       }
+    },
+    onCompletionAttemptSettled(input) {
+      return completionIntent
+        ? completionIntent.attemptSettled(input)
+        : Promise.resolve();
     },
     probePid,
     sessionMonitors,
@@ -921,9 +930,20 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       log
     });
 
+  const completionRepair =
+    options.completionRepair ||
+    createCompletionRepairService({
+      bd,
+      repo,
+      gh,
+      resolveVerify,
+      runVerify: (/** @type {any} */ input) =>
+        runVerifyAtSha({ ...input, worktree, git: gitRun })
+    });
+
   // Durable completion-intent lifecycle. Phase-specific effects stay injected;
   // the attachment owns only startup, queue-event wakeups, and shutdown.
-  const completionIntent =
+  const resolvedCompletionIntent =
     options.completionIntent ||
     createCompletionIntentCoordinator({
       workspace: keyFor(workspace_root),
@@ -931,6 +951,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       subscribeQueueChanged: onQueueChanged,
       log
     });
+  completionIntent = resolvedCompletionIntent;
 
   // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
   // BUILT here but never started here — `initWorkerRuntime` starts it only when
@@ -969,7 +990,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     prActions,
     mergeQueue,
     autoMerge,
-    completionIntent,
+    completionIntent: resolvedCompletionIntent,
+    completionRepair,
     refreshExternalPrs,
     reviseDisposition,
     sessionMonitors,

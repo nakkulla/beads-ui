@@ -321,7 +321,11 @@ export function claudeSpec(options = {}) {
         disposition: !!s.disposition,
         // The base the session must open its PR against
         // (worker-base-scope-alignment §4).
-        target_base: typeof s.target_base === 'string' ? s.target_base : null
+        target_base: typeof s.target_base === 'string' ? s.target_base : null,
+        repair:
+          s.completion_repair && typeof s.completion_repair === 'object'
+            ? s.completion_repair
+            : undefined
       });
       args.push('--append-system-prompt', system_prompt);
       args.push(task_prompt);

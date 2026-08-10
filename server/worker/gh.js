@@ -204,10 +204,14 @@ const PR_CHECKS_FIELDS = 'statusCheckRollup';
  */
 function checkConclusion(item) {
   if (typeof item.status === 'string') {
-    if (item.status !== 'COMPLETED') {
+    const status = item.status.toUpperCase();
+    if (status !== 'COMPLETED') {
       return 'pending';
     }
-    const c = item.conclusion;
+    const c =
+      typeof item.conclusion === 'string'
+        ? item.conclusion.toUpperCase()
+        : item.conclusion;
     if (c === 'SUCCESS' || c === 'NEUTRAL') {
       return 'pass';
     }
@@ -217,10 +221,11 @@ function checkConclusion(item) {
     return 'fail';
   }
   if (typeof item.state === 'string') {
-    if (item.state === 'SUCCESS') {
+    const state = item.state.toUpperCase();
+    if (state === 'SUCCESS') {
       return 'pass';
     }
-    if (item.state === 'PENDING' || item.state === 'EXPECTED') {
+    if (state === 'PENDING' || state === 'EXPECTED') {
       return 'pending';
     }
     return 'fail';
@@ -797,6 +802,115 @@ export function createGh(deps = {}) {
         checks.push({ name, conclusion });
       }
       return { state: 'ok', data: checks };
+    },
+
+    /**
+     * Observe all CI signals attached to one exact commit SHA. Completion
+     * ownership cannot use a PR rollup here because the comparison subject is
+     * the pinned target-base commit, not the PR head.
+     *
+     * Both REST sources are required: Checks API runs and legacy commit
+     * statuses. A response larger than the bounded page fails closed instead
+     * of silently classifying an incomplete set.
+     *
+     * @param {string} repo_dir
+     * @param {string} sha
+     * @returns {Promise<GhResult<CheckObservation[]>>}
+     */
+    async commitChecks(repo_dir, sha) {
+      if (!/^[0-9a-f]{40}$/i.test(sha)) {
+        return { state: 'error', reason: 'commit_sha_invalid' };
+      }
+      const repo = await resolveRepo(repo_dir);
+      if (repo === null) {
+        return { state: 'error', reason: 'origin_unresolvable' };
+      }
+      const [check_runs_result, statuses_result] = await Promise.all([
+        runJson(
+          [
+            'api',
+            '--method',
+            'GET',
+            `repos/${repo}/commits/${sha}/check-runs?per_page=100`
+          ],
+          repo_dir
+        ),
+        runJson(
+          [
+            'api',
+            '--method',
+            'GET',
+            `repos/${repo}/commits/${sha}/status?per_page=100`
+          ],
+          repo_dir
+        )
+      ]);
+      if (check_runs_result.state === 'error') {
+        return check_runs_result;
+      }
+      if (statuses_result.state === 'error') {
+        return statuses_result;
+      }
+      const check_payload = check_runs_result.data;
+      const status_payload = statuses_result.data;
+      if (
+        !check_payload ||
+        typeof check_payload !== 'object' ||
+        Array.isArray(check_payload) ||
+        !status_payload ||
+        typeof status_payload !== 'object' ||
+        Array.isArray(status_payload)
+      ) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      const check_record = /** @type {Record<string, unknown>} */ (
+        check_payload
+      );
+      const status_record = /** @type {Record<string, unknown>} */ (
+        status_payload
+      );
+      if (
+        !Array.isArray(check_record.check_runs) ||
+        !Array.isArray(status_record.statuses) ||
+        typeof check_record.total_count !== 'number' ||
+        typeof status_record.total_count !== 'number'
+      ) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      if (
+        check_record.total_count > check_record.check_runs.length ||
+        status_record.total_count > status_record.statuses.length
+      ) {
+        return { state: 'error', reason: 'gh_checks_truncated' };
+      }
+      /** @type {CheckObservation[]} */
+      const checks = [];
+      for (const raw of [
+        ...check_record.check_runs,
+        ...status_record.statuses
+      ]) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        const item = /** @type {Record<string, unknown>} */ (raw);
+        const conclusion = checkConclusion(item);
+        if (conclusion === null) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        const name =
+          typeof item.name === 'string'
+            ? item.name
+            : typeof item.context === 'string'
+              ? item.context
+              : '';
+        if (name.length === 0) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        checks.push({ name: name.slice(0, 200), conclusion });
+      }
+      return checks.length === 0
+        ? { state: 'empty' }
+        : { state: 'ok', data: checks };
     },
 
     /**

@@ -3549,3 +3549,49 @@ describe('worker/pr-actions base gate freshness (implementation review 2026-07-3
     expect(calls.every((c) => c && c.force === true)).toBe(true);
   });
 });
+
+describe('worker/pr-actions completion gate evidence', () => {
+  test('returns a bounded pinned gate result without issuing a merge', async () => {
+    const env = makeActions({
+      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
+      verifyResults: [
+        {
+          ok: false,
+          reason: 'verify_cmd_failed',
+          output_tail: 'regression',
+          log_path: '/state/verify.log'
+        }
+      ],
+      details: [prOf({ head_sha: 'a'.repeat(40), base_ref: 'main' })]
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(result).toMatchObject({
+      ok: true,
+      target_base: 'main',
+      base_sha: 'a'.repeat(40),
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'a'.repeat(40),
+        merged_sha: null
+      },
+      verdict: {
+        enabled: false,
+        tier: 'local_verify',
+        reason: 'verify_cmd_failed'
+      },
+      evidence: {
+        verify: {
+          head_sha: 'a'.repeat(40),
+          ok: false,
+          reason: 'verify_cmd_failed'
+        }
+      }
+    });
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+});

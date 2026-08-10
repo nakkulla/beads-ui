@@ -41,6 +41,8 @@ import path from 'node:path';
  * @property {boolean} ok - Whether the command exited 0 in time.
  * @property {string} reason - `ok` or one of the verify-cmd failure reasons.
  * @property {number} at - Epoch ms the run finished.
+ * @property {string} [output_tail] - Bounded failure output for repair evidence.
+ * @property {string} [log_path] - Full-output log path when one was written.
  */
 
 /**

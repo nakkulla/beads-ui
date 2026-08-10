@@ -649,7 +649,7 @@ export function createPrActions(deps) {
         verdict.reason === 'verify_sha_stale' ||
         cached_flaky_failure)
     ) {
-      /** @type {{ ok: boolean, reason: string, attempts?: { reason: string, log_path?: string }[] }} */
+      /** @type {{ ok: boolean, reason: string, output_tail?: string, log_path?: string, attempts?: { reason: string, log_path?: string }[] }} */
       let r;
       try {
         r = await runVerify({
@@ -672,12 +672,118 @@ export function createPrActions(deps) {
         head_sha: pr.head_sha,
         ok: !!r.ok,
         reason: r.reason,
-        at: now()
+        at: now(),
+        ...(typeof r.output_tail === 'string'
+          ? { output_tail: r.output_tail.slice(-4000) }
+          : {}),
+        ...(typeof r.log_path === 'string' ? { log_path: r.log_path } : {})
       });
       entry = deps.observations.get(workspace, bead_id);
       verdict = evaluateMergeGate(entry, { verify_cmd_state: 'resolved' });
     }
     return { pr, verdict };
+  }
+
+  /**
+   * Re-run the authoritative merge gate and expose only the SHA-bound evidence
+   * the completion coordinator needs. This path never updates a branch, merges
+   * a PR, or starts cleanup.
+   *
+   * @param {string} bead_id
+   * @param {'root'|'repair'} [role]
+   * @returns {Promise<any>}
+   */
+  async function completionGate(bead_id, role = 'root') {
+    const q = deps.store.snapshot(workspace);
+    const member = await laneMembership(q, bead_id);
+    if (!member.ok) {
+      return { ok: false, reason: member.reason };
+    }
+    if (member.external === true) {
+      return { ok: false, reason: 'external_completion_unsupported' };
+    }
+    const ref = resolvePrRef(q, bead_id, null);
+    if (!ref || typeof ref.number !== 'number') {
+      return { ok: false, reason: 'pr_ref_unknown' };
+    }
+    const expected = await expectedBaseFor(q, bead_id);
+    if (!expected.ok) {
+      return { ok: false, reason: expected.reason };
+    }
+    if (typeof deps.resolveBase !== 'function') {
+      return { ok: false, reason: 'base_unresolved:no_resolver' };
+    }
+    let pinned;
+    try {
+      pinned = await deps.resolveBase({ force: true });
+    } catch {
+      return { ok: false, reason: 'base_unresolved:git_error' };
+    }
+    if (!pinned.ok) {
+      return { ok: false, reason: `base_unresolved:${pinned.step}` };
+    }
+    if (pinned.base !== expected.base) {
+      return {
+        ok: false,
+        reason: `base_pin_mismatch:${expected.base}!=${pinned.base}`
+      };
+    }
+    if (typeof pinned.base_oid !== 'string' || pinned.base_oid.length === 0) {
+      return { ok: false, reason: 'base_sha_unobserved' };
+    }
+    const gated = await gateNow(bead_id, ref.number);
+    if ('error' in gated) {
+      return { ok: false, reason: gated.error };
+    }
+    const base_ok = await baseGate(q, bead_id, gated.pr.base_ref);
+    if (!base_ok.ok) {
+      return { ok: false, reason: base_ok.reason };
+    }
+    const entry = deps.observations.get(workspace, bead_id);
+    const ci = entry?.ci;
+    const verify = entry?.verify;
+    return {
+      ok: true,
+      target_base: expected.base,
+      base_sha: pinned.base_oid,
+      subject: {
+        role,
+        bead_id,
+        pr_url: gated.pr.url,
+        head_sha: gated.pr.head_sha,
+        base_sha: pinned.base_oid,
+        merged_sha: gated.pr.state === 'MERGED' ? gated.pr.head_sha : null
+      },
+      verdict: gated.verdict,
+      evidence: {
+        ...(ci
+          ? {
+              ci: {
+                state: ci.state,
+                head_sha: ci.head_sha,
+                conclusion: ci.conclusion,
+                reason: ci.reason,
+                checks: ci.checks.slice(0, 100)
+              }
+            }
+          : {}),
+        ...(verify
+          ? {
+              verify: {
+                head_sha: verify.head_sha,
+                ok: verify.ok,
+                reason: verify.reason,
+                ...(typeof verify.output_tail === 'string'
+                  ? { output_tail: verify.output_tail.slice(-4000) }
+                  : {}),
+                ...(typeof verify.log_path === 'string'
+                  ? { log_path: verify.log_path }
+                  : {})
+              }
+            }
+          : {})
+      }
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -2158,5 +2264,12 @@ export function createPrActions(deps) {
     return { ok: true, reason: null };
   }
 
-  return { merge, discard, cleanupObservedMerge, retryCleanup, prState };
+  return {
+    merge,
+    discard,
+    cleanupObservedMerge,
+    retryCleanup,
+    prState,
+    completionGate
+  };
 }

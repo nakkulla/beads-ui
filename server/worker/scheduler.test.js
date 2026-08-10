@@ -627,7 +627,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, cleanupDiagnosis?: any, readCleanupDiagnosisResult?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, cleanupDiagnosis?: any, readCleanupDiagnosisResult?: any, onCompletionAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -717,6 +717,7 @@ function setup(opts) {
     notifyQueueChanged: opts.notifyQueueChanged,
     cleanupDiagnosis: opts.cleanupDiagnosis,
     readCleanupDiagnosisResult: opts.readCleanupDiagnosisResult,
+    onCompletionAttemptSettled: opts.onCompletionAttemptSettled,
     now: () => 1000
   });
   // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a
@@ -763,6 +764,436 @@ function seedPrWait(store, bead_id) {
     patch: { status: 'done' }
   });
 }
+
+const COMPLETION_FAILURE = {
+  stage: 'merge_gate',
+  reason: 'verify_cmd_failed',
+  subject_sha: 'a'.repeat(40),
+  base_sha: 'b'.repeat(40),
+  result_digest: 'c'.repeat(64)
+};
+
+/**
+ * @param {any} store
+ * @param {string|null} [repair_bead_id]
+ */
+function seedCompletionIntent(store, repair_bead_id = null) {
+  seedPrWait(store, 'B1');
+  store.updateAttempt(WS, {
+    attempt_id: 'att-B1',
+    patch: {
+      repo: '/repo',
+      target_base: 'main',
+      base_oid: COMPLETION_FAILURE.base_sha,
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      session_id: 'session-root',
+      finished_at: 10
+    }
+  });
+  store.enqueueCompletionIntent(WS, {
+    root_bead_id: 'B1',
+    target_base: 'main',
+    subject: {
+      role: 'root',
+      bead_id: 'B1',
+      pr_url: 'https://github.com/o/r/pull/1',
+      head_sha: COMPLETION_FAILURE.subject_sha,
+      base_sha: COMPLETION_FAILURE.base_sha,
+      merged_sha: null
+    }
+  });
+  if (repair_bead_id) {
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'B1',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-child',
+        kind: 'create_repair',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'B1',
+      op_id: 'create-child',
+      repair_bead_id
+    });
+    store.advanceCompletionOp(WS, {
+      root_bead_id: 'B1',
+      op_id: 'create-child',
+      status: 'consumed',
+      next_phase: 'repairing',
+      clear: true
+    });
+  }
+}
+
+describe('scheduler completion repair dispatch', () => {
+  /** @returns {any} */
+  function ownedGit() {
+    return vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+        return { code: 0, stdout: 'B1\n', stderr: '' };
+      }
+      if (args[0] === 'rev-parse' && args[1].startsWith('refs/heads/')) {
+        return { code: 0, stdout: `${'d'.repeat(40)}\n`, stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+  }
+
+  test('resumes the latest same-Bead transcript with the preallocated attempt', async () => {
+    const env = setup({ config: { B1: {} }, gitRun: ownedGit(), slots: 1 });
+    seedCompletionIntent(env.store);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'newer', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'newer',
+      patch: {
+        status: 'done',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: COMPLETION_FAILURE.base_sha,
+        runner: 'claude',
+        model: 'opus',
+        effort: 'high',
+        session_id: 'session-latest',
+        finished_at: 20
+      }
+    });
+    const op = {
+      op_id: 'resume-op',
+      kind: 'resume_root',
+      failure_key: COMPLETION_FAILURE,
+      attempt_id: 'repair-attempt-1',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+
+    expect(result).toEqual({ ok: true, attempt_id: 'repair-attempt-1' });
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      resume_session_id: 'session-latest',
+      completion_repair: { mode: 'resume_root' }
+    });
+    expect(env.store.snapshot(WS).attempts['repair-attempt-1']).toMatchObject({
+      resumed_from: 'newer',
+      completion_root_id: 'B1',
+      completion_op_id: 'resume-op'
+    });
+    expect(
+      env.store.snapshot(WS).completion_intents.B1.repair_sessions_used
+    ).toBe(1);
+  });
+
+  test('falls back to a fresh same-Bead session only with owned worktree proof', async () => {
+    const env = setup({ config: { B1: {} }, gitRun: ownedGit(), slots: 1 });
+    seedCompletionIntent(env.store);
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-B1',
+      patch: { session_id: null }
+    });
+    const op = {
+      op_id: 'fresh-root-op',
+      kind: 'resume_root',
+      failure_key: COMPLETION_FAILURE,
+      attempt_id: 'repair-attempt-2',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.settingsFor('B1').resume_session_id).toBeUndefined();
+    expect(env.runner.settingsFor('B1').completion_repair.mode).toBe(
+      'resume_root'
+    );
+  });
+
+  test('resumes the latest attempt that actually captured a session id', async () => {
+    const env = setup({ config: { B1: {} }, gitRun: ownedGit(), slots: 1 });
+    seedCompletionIntent(env.store);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'newer-without-session', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'newer-without-session',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        runner: 'codex',
+        model: 'sol',
+        effort: 'xhigh',
+        session_id: null,
+        finished_at: 20
+      }
+    });
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'resume-valid-transcript',
+        kind: 'resume_root',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: 'repair-attempt-valid-transcript',
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      resume_session_id: 'session-root',
+      model: 'opus',
+      effort: 'high'
+    });
+    expect(
+      env.store.snapshot(WS).attempts['repair-attempt-valid-transcript']
+    ).toMatchObject({ resumed_from: 'att-B1', runner: 'claude' });
+  });
+
+  test('refuses a transcript-missing fallback when the worktree owns another branch', async () => {
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => ({
+      code: 0,
+      stdout: args[1] === '--abbrev-ref' ? 'other\n' : `${'d'.repeat(40)}\n`,
+      stderr: ''
+    }));
+    const env = setup({ config: { B1: {} }, gitRun, slots: 1 });
+    seedCompletionIntent(env.store);
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-B1',
+      patch: { session_id: null }
+    });
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'wrong-branch',
+        kind: 'resume_root',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: 'repair-attempt-3',
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'worktree_branch_mismatch' });
+    expect(
+      env.store.snapshot(WS).completion_intents.B1.repair_sessions_used
+    ).toBe(0);
+  });
+
+  test('cuts a linked repair worktree from the pinned base before a fresh launch', async () => {
+    const repair_bead_id = 'B1-rcccccccc';
+    const env = setup({
+      config: { B1: {}, [repair_bead_id]: {} },
+      gitRun: ownedGit(),
+      slots: 1
+    });
+    seedCompletionIntent(env.store, repair_bead_id);
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.add.mockImplementation(async ({ bead_id, base }) => ({
+      path: `/wt/${bead_id}`,
+      branch: bead_id,
+      base_oid: base
+    }));
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'repair-child-op',
+        kind: 'dispatch_repair',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: 'repair-attempt-4',
+        repair_bead_id,
+        status: 'prepared'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.worktree.add).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: repair_bead_id,
+      base: COMPLETION_FAILURE.base_sha
+    });
+    expect(env.runner.cwdFor(repair_bead_id)).toBe(`/wt/${repair_bead_id}`);
+    expect(env.runner.settingsFor(repair_bead_id)).toMatchObject({
+      completion_repair: { mode: 'dispatch_repair' },
+      base_oid: COMPLETION_FAILURE.base_sha
+    });
+  });
+
+  test('resolves a linked repair from its current workspace exec settings', async () => {
+    const repair_bead_id = 'B1-rcccccccc';
+    const env = setup({
+      config: {
+        B1: {},
+        [repair_bead_id]: { model: 'sol', effort: 'xhigh' }
+      },
+      gitRun: ownedGit(),
+      slots: 1
+    });
+    seedCompletionIntent(env.store, repair_bead_id);
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.add.mockImplementation(async ({ bead_id, base }) => ({
+      path: `/wt/${bead_id}`,
+      branch: bead_id,
+      base_oid: base
+    }));
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'repair-current-selector',
+        kind: 'dispatch_repair',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: 'repair-attempt-current-selector',
+        repair_bead_id,
+        status: 'prepared'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.settingsFor(repair_bead_id)).toMatchObject({
+      model: 'sol',
+      effort: 'xhigh'
+    });
+    expect(
+      env.store.snapshot(WS).attempts['repair-attempt-current-selector']
+    ).toMatchObject({
+      runner: 'codex',
+      model: 'sol',
+      effort: 'xhigh',
+      exec_values: expect.objectContaining({
+        orchestration_model: 'sol',
+        orchestration_effort: 'xhigh'
+      })
+    });
+  });
+
+  test('adopts an already-prerecorded operation without spending or spawning again', async () => {
+    const env = setup({ config: { B1: {} }, gitRun: ownedGit(), slots: 1 });
+    seedCompletionIntent(env.store);
+    const op = {
+      op_id: 'adopt-op',
+      kind: 'resume_root',
+      failure_key: COMPLETION_FAILURE,
+      attempt_id: 'repair-attempt-5',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+    await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      attempt_id: 'repair-attempt-5',
+      adopted: true
+    });
+    expect(env.runner.spawnOrder).toEqual(['B1']);
+    expect(
+      env.store.snapshot(WS).completion_intents.B1.repair_sessions_used
+    ).toBe(1);
+  });
+
+  test('rejects adoption when the pinned failure identity changed', async () => {
+    const env = setup({ config: { B1: {} }, gitRun: ownedGit(), slots: 1 });
+    seedCompletionIntent(env.store);
+    const op = {
+      op_id: 'adopt-stale-op',
+      kind: 'resume_root',
+      failure_key: COMPLETION_FAILURE,
+      attempt_id: 'repair-attempt-stale-adopt',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+    await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        ...op,
+        failure_key: {
+          ...COMPLETION_FAILURE,
+          subject_sha: 'd'.repeat(40)
+        }
+      }
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'completion_attempt_collision'
+    });
+    expect(env.runner.spawnOrder).toEqual(['B1']);
+  });
+
+  test('reports the durable attempt result and failure identity after settlement', async () => {
+    const onCompletionAttemptSettled = vi.fn();
+    const env = setup({
+      config: { B1: {} },
+      gitRun: ownedGit(),
+      onCompletionAttemptSettled,
+      slots: 1
+    });
+    seedCompletionIntent(env.store);
+    const op = {
+      op_id: 'settle-op',
+      kind: 'resume_root',
+      failure_key: COMPLETION_FAILURE,
+      attempt_id: 'repair-attempt-6',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+    await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+
+    env.runner.finish('B1', { success: false, reason: 'subtype' });
+    await flush();
+    await flush();
+
+    expect(onCompletionAttemptSettled).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspace: WS,
+        root_bead_id: 'B1',
+        op_id: 'settle-op',
+        failure_key: COMPLETION_FAILURE,
+        attempt: expect.objectContaining({
+          attempt_id: 'repair-attempt-6',
+          status: 'failed'
+        }),
+        verdict: expect.objectContaining({ success: false, reason: 'subtype' })
+      })
+    );
+  });
+});
 
 /**
  * Set workspace-global exec defaults (CAS-threaded) before dispatch.

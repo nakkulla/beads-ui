@@ -1,0 +1,233 @@
+/**
+ * Ownership probes and deterministic repair-Bead lineage for completion intents.
+ * External effects stay behind injected adapters so the coordinator can
+ * prerecord them before calling this module.
+ */
+import { createHash } from 'node:crypto';
+
+const REPAIR_SUFFIX_LENGTH = 8;
+
+/**
+ * @param {string} root_bead_id
+ * @param {string} op_id
+ */
+export function repairBeadIdentity(root_bead_id, op_id) {
+  if (typeof op_id !== 'string' || op_id.length === 0) {
+    throw new Error('completion_operation_id_invalid');
+  }
+  const digest = createHash('sha256').update(op_id).digest('hex');
+  const bead_id = `${root_bead_id}-r${digest.slice(0, REPAIR_SUFFIX_LENGTH)}`;
+  return { bead_id, branch: bead_id };
+}
+
+/**
+ * @param {string} root_bead_id
+ * @param {string} op_id
+ * @param {{ stage: string, reason: string, result_digest: string }} failure_key
+ */
+function failureMarker(root_bead_id, op_id, failure_key) {
+  return [
+    `출처: ${root_bead_id}`,
+    `completion_op=${op_id}`,
+    `completion_failure=${failure_key.stage}/${failure_key.reason}/${failure_key.result_digest}`
+  ].join('\n');
+}
+
+/**
+ * @param {Record<string, any>} issue
+ * @param {{ root_bead_id: string, marker: string, title: string }} expected
+ */
+function matchesIdentity(issue, expected) {
+  const description =
+    typeof issue.description === 'string' ? issue.description : '';
+  const notes = typeof issue.notes === 'string' ? issue.notes : '';
+  const dependencies = Array.isArray(issue.dependencies)
+    ? issue.dependencies
+    : [];
+  return (
+    issue.title === expected.title &&
+    issue.issue_type === 'bug' &&
+    issue.priority === 1 &&
+    `${description}\n${notes}`.includes(expected.marker) &&
+    dependencies.some(
+      (dependency) =>
+        dependency &&
+        typeof dependency === 'object' &&
+        dependency.depends_on_id === expected.root_bead_id &&
+        dependency.type === 'discovered-from'
+    )
+  );
+}
+
+/**
+ * @param {{
+ *   bd: {
+ *     findIssue?: (bead_id: string) => Promise<Record<string, any>|null>,
+ *     createIssue?: (input: { id: string, title: string, description: string, type: string, priority: number, dependency: string }) => Promise<void>
+ *   },
+ *   repo: string,
+ *   gh?: { commitChecks: (repo: string, sha: string) => Promise<any> },
+ *   resolveVerify?: (pin: { sha: string }) => Promise<any>,
+ *   runVerify?: (input: any) => Promise<any>
+ * }} deps
+ */
+export function createCompletionRepairService(deps) {
+  return {
+    /**
+     * Idempotently create or adopt the child whose id is derived from the
+     * root failure. A concurrent creator and a crash after `bd create` both
+     * converge through the same confirming readback.
+     *
+     * @param {{ root_bead_id: string, op_id: string, failure_key: any }} input
+     */
+    async ensureLinkedBead(input) {
+      const { root_bead_id, op_id, failure_key } = input;
+      const identity = repairBeadIdentity(root_bead_id, op_id);
+      const marker = failureMarker(root_bead_id, op_id, failure_key);
+      const title = `${root_bead_id} 자동머지 실패 복구`;
+      const expected = { root_bead_id, marker, title };
+      const findIssue = deps.bd.findIssue;
+      const createIssue = deps.bd.createIssue;
+      if (
+        typeof findIssue !== 'function' ||
+        typeof createIssue !== 'function'
+      ) {
+        throw new Error('repair_bead_adapter_missing');
+      }
+      const existing = await findIssue(identity.bead_id);
+      if (existing) {
+        if (!matchesIdentity(existing, expected)) {
+          throw new Error('repair_bead_identity_conflict');
+        }
+        return { ...identity, created: false };
+      }
+
+      let created = true;
+      try {
+        await createIssue({
+          id: identity.bead_id,
+          title,
+          description: [
+            `${root_bead_id}의 자동머지 완료 의도에서 관측된 실패를 복구한다.`,
+            '',
+            marker
+          ].join('\n'),
+          type: 'bug',
+          priority: 1,
+          dependency: `discovered-from:${root_bead_id}`
+        });
+      } catch {
+        created = false;
+      }
+      const confirmed = await findIssue(identity.bead_id);
+      if (!confirmed || !matchesIdentity(confirmed, expected)) {
+        throw new Error(
+          confirmed
+            ? 'repair_bead_identity_conflict'
+            : 'repair_bead_readback_failed'
+        );
+      }
+      return { ...identity, created };
+    },
+
+    /**
+     * Re-run the same signal at the pinned target-base SHA. Green base means
+     * the red belongs to the PR; matching red base means the base owns it.
+     * Missing, pending, timeout, spawn, auth, or config evidence is never
+     * guessed.
+     *
+     * @param {{ root_bead_id: string, source: 'local_verify'|'ci', failure_key: any }} input
+     */
+    async probeOwnership(input) {
+      const { root_bead_id, source, failure_key } = input;
+      if (source === 'ci') {
+        if (!deps.gh || typeof deps.gh.commitChecks !== 'function') {
+          return { state: 'undecidable', reason: 'base_checks_unavailable' };
+        }
+        let observed;
+        try {
+          observed = await deps.gh.commitChecks(
+            deps.repo,
+            failure_key.base_sha
+          );
+        } catch {
+          return { state: 'undecidable', reason: 'base_checks_spawn_failed' };
+        }
+        if (observed.state === 'empty') {
+          return { state: 'undecidable', reason: 'base_checks_absent' };
+        }
+        if (observed.state !== 'ok') {
+          return {
+            state: 'undecidable',
+            reason: `base_checks_${observed.reason || 'failed'}`
+          };
+        }
+        const checks = observed.data;
+        if (!Array.isArray(checks) || checks.length === 0) {
+          return { state: 'undecidable', reason: 'base_checks_absent' };
+        }
+        if (checks.some((check) => check.conclusion === 'pending')) {
+          return {
+            state: 'undecidable',
+            reason: 'base_checks_pending',
+            evidence: { checks }
+          };
+        }
+        return checks.some((check) => check.conclusion === 'fail')
+          ? { state: 'base_owned', evidence: { checks } }
+          : { state: 'pr_owned', evidence: { checks } };
+      }
+
+      if (
+        source !== 'local_verify' ||
+        typeof deps.resolveVerify !== 'function' ||
+        typeof deps.runVerify !== 'function'
+      ) {
+        return { state: 'undecidable', reason: 'verify_probe_unavailable' };
+      }
+      let resolved;
+      try {
+        resolved = await deps.resolveVerify({ sha: failure_key.base_sha });
+      } catch {
+        return { state: 'undecidable', reason: 'verify_config_unreadable' };
+      }
+      if (resolved?.state !== 'resolved') {
+        return {
+          state: 'undecidable',
+          reason: `verify_config_${resolved?.state || 'unreadable'}`
+        };
+      }
+      let result;
+      try {
+        result = await deps.runVerify({
+          repo: deps.repo,
+          bead_id: root_bead_id,
+          sha: failure_key.base_sha,
+          cmd: resolved.value.cmd,
+          timeout_ms: resolved.value.timeout_ms,
+          retry_flaky: false
+        });
+      } catch {
+        return { state: 'undecidable', reason: 'verify_cmd_spawn_error' };
+      }
+      if (result.ok === true) {
+        return { state: 'pr_owned' };
+      }
+      if (result.reason !== 'verify_cmd_failed') {
+        return {
+          state: 'undecidable',
+          reason: result.reason || 'verify_probe_failed'
+        };
+      }
+      const evidence = {
+        output_tail:
+          typeof result.output_tail === 'string'
+            ? result.output_tail.slice(-4000)
+            : undefined,
+        log_path:
+          typeof result.log_path === 'string' ? result.log_path : undefined
+      };
+      return { state: 'base_owned', evidence };
+    }
+  };
+}

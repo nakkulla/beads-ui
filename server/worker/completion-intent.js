@@ -170,6 +170,7 @@ export function decideCompletionAction(input) {
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
  *   observe?: (root_bead_id: string, intent: any, queue: any) => Promise<CompletionFact>|CompletionFact,
  *   onAction?: (root_bead_id: string, action: CompletionAction, intent: any) => Promise<void>|void,
+ *   onAttemptSettled?: (input: any) => Promise<void>|void,
  *   log?: (...args: any[]) => void
  * }} deps
  */
@@ -261,6 +262,20 @@ export function createCompletionIntentCoordinator(deps) {
   return {
     reconcile,
     wake,
+
+    /**
+     * Scheduler handoff after its ordinary attempt settlement is durable.
+     * The optional consumer may validate the SHA/digest immediately; every
+     * settlement also wakes a full reconciliation from persisted state.
+     *
+     * @param {any} input
+     */
+    async attemptSettled(input) {
+      if (typeof deps.onAttemptSettled === 'function') {
+        await deps.onAttemptSettled(input);
+      }
+      wake();
+    },
 
     start() {
       stopped = false;

@@ -1048,3 +1048,99 @@ describe('worker/gh — repoSlug (UI-b8n8)', () => {
     expect(run).not.toHaveBeenCalled();
   });
 });
+
+describe('worker/gh — commitChecks', () => {
+  test('combines check runs and commit statuses bound to the exact SHA', async () => {
+    const sha = 'b'.repeat(40);
+    const run = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[3].endsWith('/check-runs?per_page=100')) {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            total_count: 1,
+            check_runs: [
+              { name: 'Build', status: 'completed', conclusion: 'failure' }
+            ]
+          }),
+          stderr: ''
+        };
+      }
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          total_count: 1,
+          statuses: [{ context: 'legacy', state: 'success' }]
+        }),
+        stderr: ''
+      };
+    });
+
+    const result = await makeGh(run).commitChecks('/repo', sha);
+
+    expect(result).toEqual({
+      state: 'ok',
+      data: [
+        { name: 'Build', conclusion: 'fail' },
+        { name: 'legacy', conclusion: 'pass' }
+      ]
+    });
+    expect(run).toHaveBeenNthCalledWith(
+      1,
+      [
+        'api',
+        '--method',
+        'GET',
+        `repos/o/r/commits/${sha}/check-runs?per_page=100`
+      ],
+      { cwd: '/repo' }
+    );
+    expect(run).toHaveBeenNthCalledWith(
+      2,
+      [
+        'api',
+        '--method',
+        'GET',
+        `repos/o/r/commits/${sha}/status?per_page=100`
+      ],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('returns empty only when both exact-SHA sources are structurally empty', async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: JSON.stringify({ total_count: 0, check_runs: [] }),
+        stderr: ''
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: JSON.stringify({ total_count: 0, statuses: [] }),
+        stderr: ''
+      });
+
+    const result = await makeGh(run).commitChecks('/repo', 'b'.repeat(40));
+
+    expect(result).toEqual({ state: 'empty' });
+  });
+
+  test('fails closed when a source exceeds the bounded response', async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: JSON.stringify({ total_count: 101, check_runs: [] }),
+        stderr: ''
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: JSON.stringify({ total_count: 0, statuses: [] }),
+        stderr: ''
+      });
+
+    const result = await makeGh(run).commitChecks('/repo', 'b'.repeat(40));
+
+    expect(result).toEqual({ state: 'error', reason: 'gh_checks_truncated' });
+  });
+});
