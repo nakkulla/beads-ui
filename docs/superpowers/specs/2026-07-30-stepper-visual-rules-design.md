@@ -182,7 +182,7 @@ autorun stale lane의 plan 브랜치를 정의하며, stale해진 `plan_review`�
 | | `none` | `dim` | `full` |
 |---|---|---|---|
 | **spec** | `spec_id` 없음 | 리시트 없음 | 리시트 있음 |
-| **plan** | `plan_path` 없음 | 유효 승인 없음 | 유효 승인 있음 · 키 부재 + `resolved`/`closed`(legacy) |
+| **plan** | `plan_path` 없음 · authoring receipt 없이 예약된 경로의 문서가 아직 없음 | 문서 있음 + 유효 승인 없음 · authoring receipt가 있으나 문서가 유실된 오류 상태 | 유효 승인 있음 · 키 부재 + `resolved`/`closed`(legacy) |
 | **impl** | 미착수 | `in_progress` 또는 `pr_url` 있음 | 리시트 있음 · **리시트 없고 `resolved`/`closed`** |
 | **pr** | `pr_url` 없음 | *(사용하지 않음)* | `pr_url` 있음 |
 | **merge** | PR 없음 | `pr_url` + `resolved` | `closed` |

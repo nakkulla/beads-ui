@@ -21,7 +21,9 @@
  * Receipt format: `<reviewer>@<40hexsha>` or `skipped@<40hexsha>`.
  */
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import { debug } from './logging.js';
+import { resolveRealpathWithinDocs } from './path-safety.js';
 
 const log = debug('workflow-enrich');
 
@@ -514,10 +516,37 @@ function specStage(md, receipt, stale) {
 }
 
 /**
+ * Determine whether a reserved plan path currently resolves to a readable
+ * markdown file inside the workspace docs tree. A missing workspace keeps the
+ * older fail-quiet behavior because absence cannot be proven.
+ *
+ * @param {string | undefined | null} workspace_root
+ * @param {string} plan_path
+ * @returns {boolean | null}
+ */
+function planArtifactExists(workspace_root, plan_path) {
+  if (!workspace_root) {
+    return null;
+  }
+  const resolved = resolveRealpathWithinDocs(workspace_root, plan_path);
+  if (!resolved.ok) {
+    return false;
+  }
+  try {
+    return fs.statSync(resolved.path).isFile();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Compute the PLAN stage (full_plan only). The glyph comes from draft review;
  * fill/freshness come from native approval. New keys win without malformed-key
  * fallback. Legacy `plan_check` + `plan_review=user@40sha` maps onto the same
- * two axes without rewriting stored metadata.
+ * two axes without rewriting stored metadata. A deterministic `plan_path`
+ * reserved before authoring does not fill the stepper until the document
+ * exists. Existing authoring receipts remain visible when their document is
+ * broken or missing so that corrupt durable state does not disappear quietly.
  *
  * @param {Record<string, any>} md
  * @param {string} status
@@ -527,6 +556,21 @@ function specStage(md, receipt, stale) {
  */
 function planStage(md, status, workspace_root, head) {
   if (!md.plan_path) {
+    return {
+      ...makeStage('none', null, false, null),
+      approval_receipt: null,
+      approval_state: 'missing'
+    };
+  }
+
+  const has_authoring_history =
+    Object.hasOwn(md, 'plan_check') ||
+    Object.hasOwn(md, 'plan_review') ||
+    Object.hasOwn(md, 'plan_approval');
+  if (
+    !has_authoring_history &&
+    planArtifactExists(workspace_root, md.plan_path) === false
+  ) {
     return {
       ...makeStage('none', null, false, null),
       approval_receipt: null,

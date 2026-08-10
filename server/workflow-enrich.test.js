@@ -352,8 +352,8 @@ describe('enrichIssueWorkflow', () => {
 
   test('full_plan route adds a plan stage and parses PR chip', () => {
     const dir = makeRepo();
-    writeFile(dir, 'x.txt', '1\n');
-    commitAll(dir, 'init');
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    commitAll(dir, 'add plan');
     const wf = enrichIssueWorkflow(
       {
         status: 'resolved',
@@ -485,6 +485,32 @@ describe('planStage (full_plan)', () => {
       dir
     );
     expect(wf.stages.plan?.fill).toBe('none');
+  });
+
+  test('reserved plan_path without a document stays empty', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md'
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan).toMatchObject({
+      fill: 'none',
+      glyph: null,
+      stale: false,
+      receipt: null,
+      approval_receipt: null,
+      approval_state: 'missing'
+    });
   });
 
   test('new review and approval receipts stay separate', () => {

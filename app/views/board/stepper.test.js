@@ -258,6 +258,30 @@ describe('views/board/stepper', () => {
     );
   });
 
+  test('plan aria-label treats an empty plan stage as unreached', () => {
+    const m = mountStepper(
+      wf(
+        {
+          spec: stage('full', 'review'),
+          plan: {
+            ...stage('none'),
+            approval_receipt: null,
+            approval_state: 'missing'
+          },
+          impl: NONE,
+          pr: NONE,
+          merge: NONE
+        },
+        'full_plan'
+      ),
+      'in_progress'
+    );
+
+    expect(m.querySelector('.stp')?.getAttribute('aria-label')).toContain(
+      'plan 미도달'
+    );
+  });
+
   test('plan aria-label exposes reviewed-but-unapproved and stale approval', () => {
     const pending = mountStepper(
       wf(

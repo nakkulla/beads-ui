@@ -120,7 +120,7 @@ function stageStateText(stage) {
  * @returns {string}
  */
 function planStageStateText(stage) {
-  if (!stage || !stage.approval_state) {
+  if (!stage || stage.fill === 'none' || !stage.approval_state) {
     return stageStateText(stage);
   }
   /** @type {string[]} */
