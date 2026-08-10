@@ -96,10 +96,16 @@
  * stamped onto the bead at dispatch (bead-absent keys filled from the
  * workspace-global default). Recorded durably BEFORE the first metadata write
  * so a restart's reconcile can revert them; null when nothing was stamped.
- * @property {Record<string, string>|null} exec_values - Resolved values of the
- * exec keys stamped at dispatch, kept so a manual session resume re-stamps with
- * the PRIOR snapshot values instead of re-resolving the current global defaults
- * (spec §1); null when nothing was stamped.
+ * @property {string|null} exec_default_preset_id - Selected workspace preset
+ * ID snapshotted for this fresh dispatch; null when the workspace used harness
+ * fallbacks without a selected preset.
+ * @property {number|null} exec_default_preset_revision - Global preset-store
+ * revision paired with `exec_default_preset_id`; null without a selected
+ * preset. Together they prove which mutable preset version the attempt pinned.
+ * @property {Record<string, string|null>|null} exec_values - Effective resolved
+ * values from the 11-key dispatch contract, kept independently from the worker
+ * stamp subset so a manual session resume reuses the PRIOR snapshot rather than
+ * re-resolving a changed/deleted preset. Null on legacy attempts.
  * @property {string|null} resumed_from - Prior attempt_id this attempt resumes
  * (manual session resume, spec §1); null for a first-launch attempt. The
  * `already_resumed` guard scans attempts for a child carrying this so a failed
@@ -611,6 +617,12 @@ export function makeAttempt(fields) {
     release_rejected: fields.release_rejected ?? null,
     done_kind: fields.done_kind ?? null,
     verify_cmd_result: fields.verify_cmd_result ?? null,
+    exec_default_preset_id: fields.exec_default_preset_id ?? null,
+    exec_default_preset_revision:
+      typeof fields.exec_default_preset_revision === 'number' &&
+      Number.isFinite(fields.exec_default_preset_revision)
+        ? fields.exec_default_preset_revision
+        : null,
     exec_stamped_keys: Array.isArray(fields.exec_stamped_keys)
       ? fields.exec_stamped_keys
       : null,

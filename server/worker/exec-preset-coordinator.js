@@ -11,7 +11,12 @@ import {
   execSettingEnums,
   validateImplSettings
 } from './exec-enums.js';
+import { resolveExecSettings } from './policy.js';
 import { discoverQueueStates } from './queue-state-discovery.js';
+
+/**
+ * @typedef {{ ok: true, preset_id: string|null, preset_revision: number|null, settings: Readonly<Record<string, string>>, exec: any }|{ ok: false, reason: string }} DispatchResolution
+ */
 
 /**
  * @param {Record<string, string>} settings
@@ -247,6 +252,63 @@ export function createExecPresetCoordinator(options) {
   }
 
   /**
+   * Resolve the selected workspace preset exactly once for a dispatch. This is
+   * the boundary that turns the mutable preset/reference stores into an
+   * immutable launch snapshot; every later dispatch step consumes this object
+   * rather than reading either store again.
+   *
+   * @param {string} workspace
+   * @param {any} bead_snapshot
+   * @returns {DispatchResolution}
+   */
+  function resolveForDispatch(workspace, bead_snapshot) {
+    const queue = queueStore.snapshot(workspace);
+    const preset_id = queue.default_exec_preset_id;
+    /** @type {Record<string, string>} */
+    let settings = {};
+    /** @type {number|null} */
+    let preset_revision = null;
+
+    if (preset_id !== null) {
+      const state = presetStore.snapshot();
+      const preset = state.presets.find((entry) => entry.id === preset_id);
+      if (!preset) {
+        return /** @type {DispatchResolution} */ ({
+          ok: false,
+          reason: 'default_exec_preset_missing'
+        });
+      }
+      const coherence = validateImplSettings(preset.settings, {
+        active_writer: false
+      });
+      if (!coherence.ok) {
+        return /** @type {DispatchResolution} */ ({
+          ok: false,
+          reason: 'default_exec_preset_incompatible'
+        });
+      }
+      settings = { ...preset.settings };
+      preset_revision = state.revision;
+    }
+
+    const raw_exec = resolveExecSettings({
+      bead: bead_snapshot,
+      defaults: settings
+    });
+    const exec = Object.freeze({
+      ...raw_exec,
+      stamped_keys: Object.freeze([...raw_exec.stamped_keys])
+    });
+    return Object.freeze({
+      ok: true,
+      preset_id,
+      preset_revision,
+      settings: Object.freeze(settings),
+      exec
+    });
+  }
+
+  /**
    * @param {{ expected_revision: number, id: string }} input
    */
   function deletePreset(input) {
@@ -471,6 +533,7 @@ export function createExecPresetCoordinator(options) {
     },
     delete: deletePreset,
     setDefaultExecPreset,
+    resolveForDispatch,
     migrateWorkspace,
     migrateWorkspaces,
     referenceInfo

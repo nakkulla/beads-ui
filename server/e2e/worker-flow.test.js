@@ -270,6 +270,7 @@ function buildSystem(opts) {
   };
   const scheduler = createScheduler({
     store: runtime.queueStore,
+    execPresetCoordinator: runtime.execPresetCoordinator,
     // Real runner registry, but with the fixture-replaying fake spawn injected.
     makeRunner: (name) =>
       createRunner(name, {
@@ -758,6 +759,7 @@ describe('worker e2e — runtime seam reflects the live scheduler', () => {
     const finishers = [];
     const scheduler = createScheduler({
       store: runtime.queueStore,
+      execPresetCoordinator: runtime.execPresetCoordinator,
       makeRunner: () => ({
         name: 'claude',
         spawn() {

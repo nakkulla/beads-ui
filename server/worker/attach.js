@@ -506,6 +506,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   const scheduler = createScheduler({
     store: runtime.queueStore,
+    execPresetCoordinator: runtime.execPresetCoordinator,
     makeRunner,
     bd,
     worktree,

@@ -41,8 +41,8 @@
  */
 import { debug } from '../logging.js';
 import { observeBaseDrift } from './base-drift.js';
+import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import * as default_guard_hook from './guard-hook.js';
-import { resolveExecSettings } from './policy.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
 
@@ -172,6 +172,10 @@ function staleDispatchPrompt(bead_id, stale) {
 /**
  * @typedef {Object} SchedulerDeps
  * @property {any} store - Queue store (queue-store.js).
+ * @property {ReturnType<typeof import('./exec-preset-coordinator.js').createExecPresetCoordinator>} execPresetCoordinator
+ * The sole authority for workspace preset resolution. It snapshots the selected
+ * preset before launch state changes, so the scheduler never reads mutable
+ * preset/default state itself.
  * @property {(runner_name: string) => { name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }} makeRunner
  * @property {{
  *   snapshotBead: (bead_id: string) => Promise<BeadSnapshot>,
@@ -569,6 +573,73 @@ export function createScheduler(deps) {
     claimed.delete(bead_id);
     dispatch_refused.add(bead_id);
     requestRescan();
+  }
+
+  /**
+   * Resolve the effective values through the coordinator's one immutable
+   * dispatch snapshot. A missing coordinator is a fail-closed wiring error;
+   * the scheduler must never reconstruct defaults from the queue itself.
+   *
+   * @param {string} workspace
+   * @param {BeadSnapshot} bead_snapshot
+   * @returns {{ ok: true, preset_id: string|null, preset_revision: number|null, settings: Readonly<Record<string, string>>, exec: any }|{ ok: false, reason: string }}
+   */
+  function resolveDispatchSettings(workspace, bead_snapshot) {
+    if (
+      !deps.execPresetCoordinator ||
+      typeof deps.execPresetCoordinator.resolveForDispatch !== 'function'
+    ) {
+      return {
+        ok: false,
+        reason: 'default_exec_preset_resolution_unavailable'
+      };
+    }
+    try {
+      return deps.execPresetCoordinator.resolveForDispatch(
+        workspace,
+        bead_snapshot
+      );
+    } catch {
+      return { ok: false, reason: 'default_exec_preset_resolution_failed' };
+    }
+  }
+
+  /**
+   * Build the durable effective-value provenance independently from the subset
+   * of keys this worker writes into metadata. Unset optional keys are recorded
+   * as null so every fresh snapshot still has the complete 11-key shape.
+   *
+   * @param {any} exec
+   * @returns {Record<string, string|null>}
+   */
+  function execValuesFor(exec) {
+    /** @type {Record<string, string|null>} */
+    const values = {};
+    for (const key of EXEC_SETTING_KEYS) {
+      values[key] = typeof exec[key] === 'string' ? exec[key] : null;
+    }
+    return values;
+  }
+
+  /**
+   * Persist a complete attempt before its first metadata write. A failed CAS or
+   * persistence write means the launch has no durable cleanup/provenance record
+   * and must stop before it can stamp or spawn.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   */
+  function prerecordAttempt(workspace, attempt) {
+    try {
+      return (
+        deps.store.appendAttempt(workspace, {
+          expected_revision: deps.store.snapshot(workspace).revision,
+          attempt
+        }).ok === true
+      );
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -2191,15 +2262,15 @@ export function createScheduler(deps) {
       return;
     }
 
-    // Resolve the 11 exec settings (bead metadata > workspace-global default >
-    // final fallback: `opus` for orchestration_model, unset for the other 10).
-    // `stamped_keys` names the bead-absent keys filled from the global default
-    // that this dispatch must stamp (and later revert) —
-    // worker-global-exec-defaults §3; the hardcoded fallback never stamps.
-    const exec = resolveExecSettings({
-      bead: snap,
-      defaults: deps.store.snapshot(workspace).exec_defaults
-    });
+    // Capture the preset/reference + effective values once, before any launch
+    // state mutation. The coordinator's snapshot is the only default source;
+    // all later stamp/provenance work consumes this immutable result.
+    const resolved_exec = resolveDispatchSettings(workspace, snap);
+    if (!resolved_exec.ok) {
+      refuseDispatch(workspace, bead_id, resolved_exec.reason);
+      return;
+    }
+    const exec = resolved_exec.exec;
     if (exec.invalid_reason) {
       refuseDispatch(workspace, bead_id, exec.invalid_reason);
       return;
@@ -2328,6 +2399,38 @@ export function createScheduler(deps) {
       return;
     }
 
+    // DURABLE pre-record before the FIRST metadata write. It carries the whole
+    // effective 11-key snapshot, separate from the subset the worker will
+    // stamp, so restart/reconcile and every relaunch have exact provenance.
+    const stamped_keys = exec.stamped_keys;
+    const exec_values = execValuesFor(exec);
+    if (
+      !prerecordAttempt(workspace, {
+        attempt_id,
+        bead_id,
+        repo: snap.repo,
+        target_base: snap.target_base,
+        base_oid: wt.base_oid,
+        workflow_mode_prior: prior,
+        exec_default_preset_id: resolved_exec.preset_id,
+        exec_default_preset_revision: resolved_exec.preset_revision,
+        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+        exec_values,
+        spec_review_stale: !!adm.stale,
+        status: 'running',
+        pid: null
+      })
+    ) {
+      removeGuardHook(workspace, attempt_id);
+      try {
+        await deps.worktree.remove({ repo: snap.repo, bead_id });
+      } catch {
+        // The durable refusal is already recorded below.
+      }
+      refuseDispatch(workspace, bead_id, 'attempt_prerecord_failed');
+      return;
+    }
+
     // Record + readback workflow_mode=fast_track (double-delivered with prompt).
     // The set AND its confirming readback are contained: a bd failure or a
     // readback that does not echo `fast_track` fails THIS dispatch only (records
@@ -2351,17 +2454,9 @@ export function createScheduler(deps) {
       fast_track_ok = false;
     }
     if (!fast_track_ok) {
-      deps.store.appendAttempt(workspace, {
-        expected_revision: deps.store.snapshot(workspace).revision,
-        attempt: { attempt_id, bead_id }
-      });
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {
-          repo: snap.repo,
-          target_base: snap.target_base,
-          base_oid: wt.base_oid,
-          workflow_mode_prior: prior,
           status: 'failed',
           cause: 'workflow_mode_record_failed',
           finished_at: now()
@@ -2386,56 +2481,25 @@ export function createScheduler(deps) {
       return;
     }
 
-    // DURABLE pre-record: persist the attempt (status 'running', pid null)
-    // BEFORE the first exec-setting metadata write, recording the exact keys
-    // this dispatch will stamp. If a crash lands between here and spawn, a
-    // restart's reconcile can revert the stamps from this record — an
-    // in-memory-only registry could not (worker-global-exec-defaults §3).
-    const stamped_keys = exec.stamped_keys;
-    // Persist the resolved values of the stamped keys too (spec §1): a later
-    // manual resume re-stamps from the PRIOR snapshot rather than re-resolving
-    // the current global defaults, so the values must travel on the attempt.
-    /** @type {Record<string, string>} */
-    const exec_values = {};
-    for (const key of stamped_keys) {
-      const value = /** @type {Record<string, string>} */ (
-        /** @type {any} */ (exec)
-      )[key];
-      if (typeof value === 'string') {
-        exec_values[key] = value;
-      }
-    }
-    deps.store.appendAttempt(workspace, {
-      expected_revision: deps.store.snapshot(workspace).revision,
-      attempt: { attempt_id, bead_id }
-    });
-    deps.store.updateAttempt(workspace, {
-      attempt_id,
-      patch: {
-        repo: snap.repo,
-        target_base: snap.target_base,
-        base_oid: wt.base_oid,
-        workflow_mode_prior: prior,
-        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
-        exec_values: stamped_keys.length > 0 ? exec_values : null,
-        spec_review_stale: !!adm.stale,
-        status: 'running',
-        pid: null
-      }
-    });
-
     // Stamp each bead-absent, global-filled exec key onto the bead metadata
     // (set + confirming readback, mirroring the workflow_mode stamp). A bd
     // failure or a readback mismatch on ANY key fails THIS dispatch only: the
-    // durably-recorded stamped_keys are unset (idempotent for keys not yet
-    // written — a set that succeeded but whose readback threw/mismatched is
-    // still cleaned up), the attempt is recorded failed, the mode is reverted,
-    // the claim released — no queue halt, no sibling pause.
+    // attempted prefix is durably narrowed and unset (including a set that
+    // succeeded but whose readback threw/mismatched), the attempt is recorded
+    // failed, the mode is reverted, the claim released — no queue halt, no
+    // sibling pause.
     let exec_stamp_ok = true;
+    /** @type {string[]} */
+    const attempted_stamped_keys = [];
     for (const key of stamped_keys) {
-      const value = /** @type {Record<string, string>} */ (
+      const value = /** @type {Record<string, string|null>} */ (
         /** @type {any} */ (exec)
       )[key];
+      if (typeof value !== 'string') {
+        exec_stamp_ok = false;
+        break;
+      }
+      attempted_stamped_keys.push(key);
       try {
         await deps.bd.setMetadata(bead_id, key, value);
         const rb = await deps.bd.readMetadata(bead_id, key);
@@ -2457,7 +2521,14 @@ export function createScheduler(deps) {
       }
     }
     if (!exec_stamp_ok) {
-      await revertExecStamps(bead_id, stamped_keys);
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          exec_stamped_keys:
+            attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
+        }
+      });
+      await revertExecStamps(bead_id, attempted_stamped_keys);
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {
@@ -3059,41 +3130,65 @@ export function createScheduler(deps) {
       typeof target_base === 'string' && target_base.length > 0
         ? target_base
         : 'main';
-    // The EXEC SETTINGS are resolved from scratch: there is no prior attempt to
-    // carry a snapshot forward from, so this is the queue dispatch's contract
-    // verbatim (bead metadata > workspace default > hardcoded fallback), with
-    // the same stamp-and-revert duty for the globally-filled keys.
-    const exec = resolveExecSettings({
-      bead: snap,
-      defaults: deps.store.snapshot(workspace).exec_defaults
-    });
-    if (exec.invalid_reason) {
-      return { ok: false, reason: exec.invalid_reason };
-    }
-    // The RUNNER — and with it the model/effort — does look back (§C-2, impl
-    // review 2026-08-10 finding 2). This dispatch resumes work an earlier
-    // session left in the SAME worktree, so the runner that wrote that branch
-    // carries it forward; and the trio is inherited TOGETHER, because splitting
-    // it hands one runner another runner's model (`codex -m opus`). An absent
-    // prior model/effort stays null — the runner's own CLI default, never a
-    // cross-runner substitute. Only a bead with no runner-recorded attempt at
-    // all falls through to the exec derivation.
     const prior_attempt = lastAttemptOf(workspace, bead_id);
-    const inherit_prior =
-      prior_attempt !== null &&
-      typeof prior_attempt.runner === 'string' &&
-      prior_attempt.runner.length > 0;
-    const runner_name = inherit_prior ? prior_attempt.runner : exec.runner;
-    const launch_model = inherit_prior
-      ? typeof prior_attempt.model === 'string'
-        ? prior_attempt.model
-        : null
-      : (exec.orchestration_model ?? null);
-    const launch_effort = inherit_prior
-      ? typeof prior_attempt.effort === 'string'
-        ? prior_attempt.effort
-        : null
-      : (exec.orchestration_effort ?? null);
+    /** @type {string} */
+    let runner_name;
+    /** @type {string|null} */
+    let launch_model;
+    /** @type {string|null} */
+    let launch_effort;
+    /** @type {string[]} */
+    let stamped_keys;
+    /** @type {Record<string, string|null>|null} */
+    let exec_values;
+    /** @type {string|null} */
+    let preset_id;
+    /** @type {number|null} */
+    let preset_revision;
+    if (prior_attempt) {
+      // A prior external attempt is one lineage: preset reads are forbidden so
+      // an update/delete cannot change either its metadata or its actual CLI.
+      exec_values =
+        prior_attempt.exec_values &&
+        typeof prior_attempt.exec_values === 'object'
+          ? /** @type {Record<string, string|null>} */ (
+              prior_attempt.exec_values
+            )
+          : null;
+      runner_name =
+        typeof prior_attempt.runner === 'string' && prior_attempt.runner.length
+          ? prior_attempt.runner
+          : 'claude';
+      launch_model =
+        typeof prior_attempt.model === 'string'
+          ? prior_attempt.model
+          : (exec_values?.orchestration_model ?? null);
+      launch_effort =
+        typeof prior_attempt.effort === 'string'
+          ? prior_attempt.effort
+          : (exec_values?.orchestration_effort ?? null);
+      stamped_keys = Array.isArray(prior_attempt.exec_stamped_keys)
+        ? prior_attempt.exec_stamped_keys
+        : [];
+      preset_id = prior_attempt.exec_default_preset_id ?? null;
+      preset_revision = prior_attempt.exec_default_preset_revision ?? null;
+    } else {
+      const resolved_exec = resolveDispatchSettings(workspace, snap);
+      if (!resolved_exec.ok) {
+        return { ok: false, reason: resolved_exec.reason };
+      }
+      const exec = resolved_exec.exec;
+      if (exec.invalid_reason) {
+        return { ok: false, reason: exec.invalid_reason };
+      }
+      runner_name = exec.runner;
+      launch_model = exec.orchestration_model ?? null;
+      launch_effort = exec.orchestration_effort ?? null;
+      stamped_keys = exec.stamped_keys;
+      exec_values = execValuesFor(exec);
+      preset_id = resolved_exec.preset_id;
+      preset_revision = resolved_exec.preset_revision;
+    }
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
 
@@ -3117,27 +3212,6 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'guard_hook_install_failed' };
     }
 
-    // When the launch trio came from the prior attempt, the orchestration pair
-    // resolved from today's globals was NOT applied — stamping it would write
-    // metadata claiming a model this dispatch is not running. The step-key
-    // stamps stay: the session's skills consume them regardless of runner.
-    const stamped_keys = inherit_prior
-      ? exec.stamped_keys.filter(
-          (key) =>
-            key !== 'orchestration_model' && key !== 'orchestration_effort'
-        )
-      : exec.stamped_keys;
-    /** @type {Record<string, string>} */
-    const exec_values = {};
-    for (const key of stamped_keys) {
-      const value = /** @type {Record<string, string>} */ (
-        /** @type {any} */ (exec)
-      )[key];
-      if (typeof value === 'string') {
-        exec_values[key] = value;
-      }
-    }
-
     claimed.add(bead_id);
 
     // DURABLE pre-record before the first metadata write, exactly as the queue
@@ -3145,13 +3219,10 @@ export function createScheduler(deps) {
     // restart can revert the stamps from. `base_oid` stays null — this dispatch
     // creates no worktree and passes no admission, so there is no pinned base
     // to honestly record.
-    deps.store.appendAttempt(workspace, {
-      expected_revision: deps.store.snapshot(workspace).revision,
-      attempt: { attempt_id, bead_id }
-    });
-    deps.store.updateAttempt(workspace, {
-      attempt_id,
-      patch: {
+    if (
+      !prerecordAttempt(workspace, {
+        attempt_id,
+        bead_id,
         repo,
         target_base: base,
         base_oid: null,
@@ -3159,14 +3230,21 @@ export function createScheduler(deps) {
         model: launch_model,
         effort: launch_effort,
         workflow_mode_prior: prior,
+        exec_default_preset_id: preset_id,
+        exec_default_preset_revision: preset_revision,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
-        exec_values: stamped_keys.length > 0 ? exec_values : null,
+        exec_values,
         conflict_resolution: true,
         external_conflict: true,
         status: 'running',
         pid: null
-      }
-    });
+      })
+    ) {
+      removeGuardHook(workspace, attempt_id);
+      claimed.delete(bead_id);
+      notifyChanged(workspace);
+      return { ok: false, reason: 'attempt_prerecord_failed' };
+    }
 
     let mode_ok = false;
     try {
@@ -3208,11 +3286,14 @@ export function createScheduler(deps) {
     }
 
     let exec_ok = true;
+    /** @type {string[]} */
+    const attempted_stamped_keys = [];
     for (const key of stamped_keys) {
-      const value = exec_values[key];
+      const value = exec_values?.[key];
       if (typeof value !== 'string') {
         continue;
       }
+      attempted_stamped_keys.push(key);
       try {
         await deps.bd.setMetadata(bead_id, key, value);
         const rb = await deps.bd.readMetadata(bead_id, key);
@@ -3239,7 +3320,14 @@ export function createScheduler(deps) {
       }
     }
     if (!exec_ok) {
-      await revertExecStamps(bead_id, stamped_keys);
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          exec_stamped_keys:
+            attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
+        }
+      });
+      await revertExecStamps(bead_id, attempted_stamped_keys);
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {
@@ -3382,20 +3470,17 @@ export function createScheduler(deps) {
       : [];
     const exec_values =
       prior.exec_values && typeof prior.exec_values === 'object'
-        ? /** @type {Record<string, string>} */ (prior.exec_values)
-        : {};
+        ? /** @type {Record<string, string|null>} */ (prior.exec_values)
+        : null;
 
     // Mint the new attempt inheriting the PRIOR snapshot verbatim (§1.3): repo/
     // target_base/base_oid/runner/model/effort — never re-resolved from current
     // globals. The retired merge-axis fields are NOT copied forward: history
     // keeps them on the old record, new attempts stop writing them (§9).
-    deps.store.appendAttempt(workspace, {
-      expected_revision: deps.store.snapshot(workspace).revision,
-      attempt: { attempt_id: new_attempt_id, bead_id }
-    });
-    deps.store.updateAttempt(workspace, {
-      attempt_id: new_attempt_id,
-      patch: {
+    if (
+      !prerecordAttempt(workspace, {
+        attempt_id: new_attempt_id,
+        bead_id,
         repo,
         target_base,
         base_oid: prior.base_oid ?? null,
@@ -3403,8 +3488,11 @@ export function createScheduler(deps) {
         model: prior.model ?? null,
         effort: prior.effort ?? null,
         workflow_mode_prior: prior_wf,
+        exec_default_preset_id: prior.exec_default_preset_id ?? null,
+        exec_default_preset_revision:
+          prior.exec_default_preset_revision ?? null,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
-        exec_values: stamped_keys.length > 0 ? exec_values : null,
+        exec_values,
         resumed_from: attempt_id,
         conflict_resolution: options.conflict_resolution,
         // INHERITED, never re-derived (UI-w0hi §1): a child of an external
@@ -3422,8 +3510,13 @@ export function createScheduler(deps) {
         disposition_prompt: options.disposition ? options.prompt : null,
         status: 'running',
         pid: null
-      }
-    });
+      })
+    ) {
+      removeGuardHook(workspace, new_attempt_id);
+      claimed.delete(bead_id);
+      notifyChanged(workspace);
+      return { ok: false, reason: 'attempt_prerecord_failed' };
+    }
 
     // Re-stamp workflow_mode=fast_track from the PRIOR snapshot (set + readback).
     let mode_ok = false;
@@ -3463,11 +3556,14 @@ export function createScheduler(deps) {
 
     // Re-stamp the exec keys with the PRIOR values (set + confirming readback).
     let exec_ok = true;
+    /** @type {string[]} */
+    const attempted_stamped_keys = [];
     for (const key of stamped_keys) {
-      const value = exec_values[key];
+      const value = exec_values?.[key];
       if (typeof value !== 'string') {
         continue;
       }
+      attempted_stamped_keys.push(key);
       try {
         await deps.bd.setMetadata(bead_id, key, value);
         const rb = await deps.bd.readMetadata(bead_id, key);
@@ -3482,7 +3578,14 @@ export function createScheduler(deps) {
       }
     }
     if (!exec_ok) {
-      await revertExecStamps(bead_id, stamped_keys);
+      deps.store.updateAttempt(workspace, {
+        attempt_id: new_attempt_id,
+        patch: {
+          exec_stamped_keys:
+            attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
+        }
+      });
+      await revertExecStamps(bead_id, attempted_stamped_keys);
       deps.store.updateAttempt(workspace, {
         attempt_id: new_attempt_id,
         patch: {

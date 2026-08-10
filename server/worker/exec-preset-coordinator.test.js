@@ -69,7 +69,149 @@ function createFixture(options = {}) {
   };
 }
 
+/**
+ * @param {Partial<import('./scheduler.js').BeadSnapshot>} [over]
+ */
+function beadSnapshot(over = {}) {
+  return {
+    ready: true,
+    blocked: false,
+    repo: '/repo',
+    target_base: 'main',
+    ...over
+  };
+}
+
 describe('exec-preset coordinator legacy migration', () => {
+  test('resolves one frozen preset snapshot with bead precedence and preset stamps', () => {
+    const fixture = createFixture({
+      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
+      preset: {
+        revision: 7,
+        presets: [
+          {
+            id: 'preset-1',
+            name: '기본',
+            settings: {
+              orchestration_model: 'sol',
+              spec_review_model: 'codex'
+            },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const resolved = fixture.coordinator.resolveForDispatch(
+      WORKSPACE,
+      beadSnapshot({
+        model: 'opus'
+      })
+    );
+
+    if (!resolved.ok) {
+      throw new Error(resolved.reason);
+    }
+
+    expect(resolved).toMatchObject({
+      ok: true,
+      preset_id: 'preset-1',
+      preset_revision: 7,
+      settings: {
+        orchestration_model: 'sol',
+        spec_review_model: 'codex'
+      },
+      exec: {
+        orchestration_model: 'opus',
+        spec_review_model: 'codex',
+        stamped_keys: ['spec_review_model']
+      }
+    });
+    expect(Object.isFrozen(resolved.settings)).toBe(true);
+    expect(Object.isFrozen(resolved.exec)).toBe(true);
+  });
+
+  test('rejects a missing selected preset before dispatch', () => {
+    const fixture = createFixture({
+      queue: { revision: 2, default_exec_preset_id: 'gone' },
+      preset: { revision: 7, presets: [] }
+    });
+
+    expect(
+      fixture.coordinator.resolveForDispatch(WORKSPACE, beadSnapshot())
+    ).toEqual({
+      ok: false,
+      reason: 'default_exec_preset_missing'
+    });
+  });
+
+  test('keeps a resolved snapshot pinned while the next resolution reads an updated preset', () => {
+    const fixture = createFixture({
+      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
+      preset: {
+        revision: 7,
+        presets: [
+          {
+            id: 'preset-1',
+            name: '기본',
+            settings: {},
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const first = fixture.coordinator.resolveForDispatch(
+      WORKSPACE,
+      beadSnapshot()
+    );
+    fixture.coordinator.update({
+      expected_revision: 7,
+      id: 'preset-1',
+      name: '갱신됨',
+      settings: { orchestration_model: 'sol' }
+    });
+    const next = fixture.coordinator.resolveForDispatch(
+      WORKSPACE,
+      beadSnapshot()
+    );
+
+    expect(first).toMatchObject({
+      ok: true,
+      preset_revision: 7,
+      exec: { orchestration_model: 'opus' }
+    });
+    expect(next).toMatchObject({
+      ok: true,
+      preset_revision: 8,
+      exec: { orchestration_model: 'sol' }
+    });
+  });
+
+  test('rejects an incompatible selected preset before dispatch', () => {
+    const fixture = createFixture({
+      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
+      preset: {
+        revision: 7,
+        presets: [
+          {
+            id: 'preset-1',
+            name: '기본',
+            settings: { impl_runtime: 'claude', impl_model: 'terra' },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    expect(
+      fixture.coordinator.resolveForDispatch(WORKSPACE, beadSnapshot())
+    ).toEqual({
+      ok: false,
+      reason: 'default_exec_preset_incompatible'
+    });
+  });
+
   test('migrates legacy defaults in ordered durable steps and is restart-idempotent', () => {
     const first = createFixture({
       queue: { revision: 4, exec_defaults: { orchestration_model: 'sol' } }
