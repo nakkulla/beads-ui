@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { checkHealth } from './health.js';
 import { registerWorkspace } from './registry-watcher.js';
+import { claudeUsageHandler } from './routes/claude-usage.js';
 import { docHandler } from './routes/doc.js';
 
 /**
@@ -79,6 +80,9 @@ export function createApp(config) {
 
   // Serve a markdown document from a registered workspace's docs/ directory.
   app.get('/api/doc', docHandler);
+
+  // Fail-quiet Claude Code usage snapshot for the header meter.
+  app.get('/api/claude-usage', claudeUsageHandler);
 
   // Register workspace endpoint - allows CLI to register workspaces dynamically
   // when the server is already running
