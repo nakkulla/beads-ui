@@ -23,6 +23,14 @@ import {
   handleUnsubscribeDisplayPolicy
 } from './display-policy-handlers.js';
 import {
+  detachExecPresets,
+  handleExecPresetCreate,
+  handleExecPresetDelete,
+  handleExecPresetUpdate,
+  handleSubscribeExecPresets,
+  handleUnsubscribeExecPresets
+} from './exec-preset-handlers.js';
+import {
   detachMonitorPipeline,
   handleMonitorAutoToggle,
   handleSubscribeMonitorPipeline,
@@ -253,6 +261,7 @@ export function attachWsServer(http_server, options = {}) {
         detachMonitorPipeline(ws);
         detachUiOrder(ws);
         detachDisplayPolicy(ws);
+        detachExecPresets(ws);
       } catch {
         // ignore cleanup errors
       }
@@ -451,6 +460,21 @@ export async function handleMessage(ws, data) {
       return;
     case 'unsubscribe-monitor-pipeline':
       handleUnsubscribeMonitorPipeline(ws, req);
+      return;
+    case 'subscribe-exec-presets':
+      handleSubscribeExecPresets(ws, req);
+      return;
+    case 'unsubscribe-exec-presets':
+      handleUnsubscribeExecPresets(ws, req);
+      return;
+    case 'exec-preset-create':
+      handleExecPresetCreate(ws, req);
+      return;
+    case 'exec-preset-update':
+      handleExecPresetUpdate(ws, req);
+      return;
+    case 'exec-preset-delete':
+      handleExecPresetDelete(ws, req);
       return;
     case 'monitor-auto-toggle':
       handleMonitorAutoToggle(ws, req);
