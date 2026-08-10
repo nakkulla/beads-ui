@@ -649,7 +649,7 @@ export function createPrActions(deps) {
         verdict.reason === 'verify_sha_stale' ||
         cached_flaky_failure)
     ) {
-      /** @type {{ ok: boolean, reason: string, attempts?: { reason: string, log_path?: string }[] }} */
+      /** @type {{ ok: boolean, reason: string, output_tail?: string, log_path?: string, attempts?: { reason: string, log_path?: string }[] }} */
       let r;
       try {
         r = await runVerify({
@@ -672,12 +672,125 @@ export function createPrActions(deps) {
         head_sha: pr.head_sha,
         ok: !!r.ok,
         reason: r.reason,
-        at: now()
+        at: now(),
+        ...(typeof r.output_tail === 'string'
+          ? { output_tail: r.output_tail.slice(-4000) }
+          : {}),
+        ...(typeof r.log_path === 'string' ? { log_path: r.log_path } : {})
       });
       entry = deps.observations.get(workspace, bead_id);
       verdict = evaluateMergeGate(entry, { verify_cmd_state: 'resolved' });
     }
     return { pr, verdict };
+  }
+
+  /**
+   * Re-run the authoritative merge gate and expose only the SHA-bound evidence
+   * the completion coordinator needs. This path never updates a branch, merges
+   * a PR, or starts cleanup.
+   *
+   * @param {string} bead_id
+   * @param {'root'|'repair'} [role]
+   * @returns {Promise<any>}
+   */
+  async function completionGate(bead_id, role = 'root') {
+    const q = deps.store.snapshot(workspace);
+    const member = await laneMembership(q, bead_id);
+    if (!member.ok) {
+      return { ok: false, reason: member.reason };
+    }
+    if (member.external === true) {
+      return { ok: false, reason: 'external_completion_unsupported' };
+    }
+    const ref = resolvePrRef(q, bead_id, null);
+    if (!ref || typeof ref.number !== 'number') {
+      return { ok: false, reason: 'pr_ref_unknown' };
+    }
+    const expected = await expectedBaseFor(q, bead_id);
+    if (!expected.ok) {
+      return { ok: false, reason: expected.reason };
+    }
+    if (typeof deps.resolveBase !== 'function') {
+      return { ok: false, reason: 'base_unresolved:no_resolver' };
+    }
+    let pinned;
+    try {
+      pinned = await deps.resolveBase({ force: true });
+    } catch {
+      return { ok: false, reason: 'base_unresolved:git_error' };
+    }
+    if (!pinned.ok) {
+      return { ok: false, reason: `base_unresolved:${pinned.step}` };
+    }
+    if (pinned.base !== expected.base) {
+      return {
+        ok: false,
+        reason: `base_pin_mismatch:${expected.base}!=${pinned.base}`
+      };
+    }
+    if (typeof pinned.base_oid !== 'string' || pinned.base_oid.length === 0) {
+      return { ok: false, reason: 'base_sha_unobserved' };
+    }
+    const gated = await gateNow(bead_id, ref.number);
+    if ('error' in gated) {
+      return { ok: false, reason: gated.error };
+    }
+    const base_ok = await baseGate(q, bead_id, gated.pr.base_ref);
+    if (!base_ok.ok) {
+      return { ok: false, reason: base_ok.reason };
+    }
+    if (
+      gated.pr.state === 'MERGED' &&
+      (typeof gated.pr.merged_sha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(gated.pr.merged_sha))
+    ) {
+      return { ok: false, reason: 'merge_sha_unobserved' };
+    }
+    const entry = deps.observations.get(workspace, bead_id);
+    const ci = entry?.ci;
+    const verify = entry?.verify;
+    return {
+      ok: true,
+      target_base: expected.base,
+      base_sha: pinned.base_oid,
+      subject: {
+        role,
+        bead_id,
+        pr_url: gated.pr.url,
+        head_sha: gated.pr.head_sha,
+        base_sha: pinned.base_oid,
+        merged_sha: gated.pr.state === 'MERGED' ? gated.pr.merged_sha : null
+      },
+      verdict: gated.verdict,
+      evidence: {
+        ...(ci
+          ? {
+              ci: {
+                state: ci.state,
+                head_sha: ci.head_sha,
+                conclusion: ci.conclusion,
+                reason: ci.reason,
+                checks: ci.checks.slice(0, 100)
+              }
+            }
+          : {}),
+        ...(verify
+          ? {
+              verify: {
+                head_sha: verify.head_sha,
+                ok: verify.ok,
+                reason: verify.reason,
+                ...(typeof verify.output_tail === 'string'
+                  ? { output_tail: verify.output_tail.slice(-4000) }
+                  : {}),
+                ...(typeof verify.log_path === 'string'
+                  ? { log_path: verify.log_path }
+                  : {})
+              }
+            }
+          : {})
+      }
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -1985,6 +2098,41 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Coordinator-owned replay of the same complete cleanup choreography after
+   * a merged-base repair. Authorization is the root intent's prerecorded
+   * `retry_cleanup` op, not the diagnosis marker used by the human retry path.
+   * No cleanup steps are copied here: both entries call {@link runCleanup}.
+   *
+   * @param {string} root_bead_id
+   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   */
+  async function resumeCompletionCleanup(root_bead_id) {
+    if (in_flight.has(root_bead_id)) {
+      return { ok: false, step: null, reason: 'action_in_flight' };
+    }
+    const q = deps.store.snapshot(workspace);
+    const intent = q.completion_intents?.[root_bead_id];
+    if (!inPrWait(q, root_bead_id)) {
+      return { ok: false, step: null, reason: 'not_in_pr_wait' };
+    }
+    if (
+      !intent ||
+      intent.phase !== 'cleaning' ||
+      intent.subject?.role !== 'root' ||
+      intent.active_op?.kind !== 'retry_cleanup'
+    ) {
+      return { ok: false, step: null, reason: 'completion_cleanup_unowned' };
+    }
+    in_flight.add(root_bead_id);
+    try {
+      return await runCleanup(root_bead_id);
+    } finally {
+      in_flight.delete(root_bead_id);
+      clearStep(root_bead_id);
+    }
+  }
+
+  /**
    * Run [폐기]: throw the PR, the worktree and the branch away, and hand the
    * bead back to the candidate lane. It does NOT re-queue and does NOT dispatch
    * — re-running is the drag path (후보 → 대기), which re-passes admission
@@ -2158,5 +2306,13 @@ export function createPrActions(deps) {
     return { ok: true, reason: null };
   }
 
-  return { merge, discard, cleanupObservedMerge, retryCleanup, prState };
+  return {
+    merge,
+    discard,
+    cleanupObservedMerge,
+    retryCleanup,
+    resumeCompletionCleanup,
+    prState,
+    completionGate
+  };
 }

@@ -4,6 +4,19 @@
 - Bead: UI-5v7d
 - 상태: 사용자 설계 승인 + codex spec 리뷰(REVISE) 반영 완료
 
+## 후속 설계에 따른 범위 정정
+
+[`2026-08-11-self-healing-auto-merge-completion-intent-design.md`](./2026-08-11-self-healing-auto-merge-completion-intent-design.md)가
+worker-owned root의 repairable verify/CI red와 post-merge cleanup red를 자동
+복구한 뒤 이 순차 queue로 되돌리는 연속성 계약을 후속 정의한다. 이 문서의 FIFO,
+driver-only merge, 충돌 해소 cap, 재시작 안전성은 그대로 유효하지만, 해당
+repairable refusal/cleanup failure를 곧바로 skip하고 자동 처리를 끝낸다는 범위는
+후속 설계로 대체된다. external PR과 terminal failure는 기존 처리를 유지한다.
+
+후속 구현은 새 Beads workflow metadata key를 만들지 않는다. durable 복구 상태는
+`queue.json.completion_intents`에만 두며, 배포 SoT와 post-merge 확인 책임은 계속
+`docs/agents/repo-ops.toml`의 기존 `[deploy]` 선언을 따른다.
+
 ## 배경과 문제
 
 pr_wait 레인의 [머지] 클릭은 bead 단위로 즉시 실행된다

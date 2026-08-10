@@ -197,6 +197,315 @@ describe('worker/merge-queue — sequencing', () => {
   });
 });
 
+describe('worker/merge-queue — completion subject continuity', () => {
+  test('holds the root queue head while its repair PR is not ready to merge', async () => {
+    const store = seed(['UI-root', 'UI-next']);
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'waiting_repair_pr',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    const merge = vi.fn();
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    expect(merge).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue[0].bead_id).toBe('UI-root');
+  });
+
+  test('merges only the repair subject and returns the held root to gating', async () => {
+    const store = seed(['UI-root', 'UI-repair']);
+    store.dequeueMerge(WS, 'UI-repair');
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    const failure_key = {
+      stage: 'base_probe',
+      reason: 'verify_cmd_failed',
+      subject_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      result_digest: 'd'.repeat(64)
+    };
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-repair',
+        kind: 'create_repair',
+        failure_key,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-repair',
+      repair_bead_id: 'UI-repair'
+    });
+    store.advanceCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-repair',
+      status: 'consumed',
+      next_phase: 'gating',
+      clear: true
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: {
+        role: 'repair',
+        bead_id: 'UI-repair',
+        pr_url: 'https://github.com/o/r/pull/2',
+        head_sha: 'c'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    const merge = vi.fn(async (bead_id) => {
+      store.moveToDone(WS, { bead_id });
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const onCompletionResult = vi.fn(async (root_bead_id) => {
+      store.setCompletionSubject(WS, {
+        root_bead_id,
+        phase: 'gating',
+        subject: {
+          role: 'root',
+          bead_id: root_bead_id,
+          pr_url: 'https://github.com/o/r/pull/1',
+          head_sha: 'a'.repeat(40),
+          base_sha: 'b'.repeat(40),
+          merged_sha: null
+        }
+      });
+    });
+    const mq = driver(store, { merge, onCompletionResult });
+
+    await mq.kick();
+
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(merge).toHaveBeenCalledWith('UI-repair');
+    expect(onCompletionResult).toHaveBeenCalledWith(
+      'UI-root',
+      'UI-repair',
+      expect.objectContaining({ action: 'merged', ok: true })
+    );
+    expect(store.snapshot(WS).merge_queue[0].bead_id).toBe('UI-root');
+    expect(store.snapshot(WS).completion_intents['UI-root']).toMatchObject({
+      phase: 'gating',
+      subject: { role: 'root', bead_id: 'UI-root' }
+    });
+  });
+
+  test('counts conflict rounds independently from the shared repair-session budget', async () => {
+    const store = seed(['UI-root']);
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    const failure_key = {
+      stage: 'merge_gate',
+      reason: 'verify_cmd_failed',
+      subject_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      result_digest: 'd'.repeat(64)
+    };
+    store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: {
+        op_id: 'resume-1',
+        kind: 'resume_root',
+        failure_key,
+        attempt_id: 'repair-1',
+        repair_bead_id: null,
+        status: 'prepared'
+      },
+      attempt: { attempt_id: 'repair-1', bead_id: 'UI-root' }
+    });
+    store.advanceCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'resume-1',
+      status: 'consumed',
+      next_phase: 'gating',
+      clear: true
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    let calls = 0;
+    /** @type {(() => void)|null} */
+    let end_session = null;
+    const mq = driver(
+      store,
+      {
+        merge: async (/** @type {string} */ bead_id) => {
+          calls += 1;
+          if (calls === 1) {
+            store.appendAttempt(WS, {
+              expected_revision: store.snapshot(WS).revision,
+              attempt: {
+                attempt_id: 'conflict-1',
+                bead_id,
+                status: 'running',
+                conflict_resolution: true
+              }
+            });
+            end_session = () =>
+              store.updateAttempt(WS, {
+                attempt_id: 'conflict-1',
+                patch: { status: 'done', finished_at: 2 }
+              });
+            return {
+              ok: true,
+              action: 'conflict_resolution',
+              reason: null,
+              attempt_id: 'conflict-1'
+            };
+          }
+          return { ok: false, action: 'refused', reason: 'ci_failed' };
+        },
+        onCompletionResult: vi.fn()
+      },
+      () => {
+        if (end_session) {
+          end_session();
+          end_session = null;
+        }
+      }
+    );
+
+    await mq.kick();
+
+    const queue = store.snapshot(WS);
+    expect(queue.attempts['conflict-1']).toMatchObject({ status: 'done' });
+    expect(calls).toBe(2);
+    expect(queue.merge_queue).toEqual([
+      { bead_id: 'UI-root', resolution_rounds: 1 }
+    ]);
+    expect(queue.completion_intents['UI-root'].repair_sessions_used).toBe(1);
+  });
+
+  test('adopts a repair child already in done without issuing a duplicate merge', async () => {
+    const store = seed(['UI-root', 'UI-repair']);
+    store.dequeueMerge(WS, 'UI-repair');
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    const failure_key = {
+      stage: 'merge_gate',
+      reason: 'verify_cmd_failed',
+      subject_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      result_digest: 'd'.repeat(64)
+    };
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-1',
+        kind: 'create_repair',
+        failure_key,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-1',
+      repair_bead_id: 'UI-repair'
+    });
+    store.advanceCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-1',
+      status: 'consumed',
+      next_phase: 'gating',
+      clear: true
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: {
+        role: 'repair',
+        bead_id: 'UI-repair',
+        pr_url: 'https://github.com/o/r/pull/2',
+        head_sha: 'c'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'c'.repeat(40)
+      }
+    });
+    store.moveToDone(WS, { bead_id: 'UI-repair' });
+    const merge = vi.fn();
+    const onCompletionResult = vi.fn();
+    const mq = driver(store, { merge, onCompletionResult });
+
+    await mq.kick();
+
+    expect(merge).not.toHaveBeenCalled();
+    expect(onCompletionResult).toHaveBeenCalledWith('UI-root', 'UI-repair', {
+      ok: true,
+      action: 'already_merged',
+      reason: null
+    });
+  });
+});
+
 describe('worker/merge-queue — conflict resolution rounds', () => {
   /**
    * Record a running conflict-resolution attempt for a bead, and return the

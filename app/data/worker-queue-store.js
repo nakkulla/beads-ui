@@ -8,13 +8,31 @@
  * bookkeeping like the issue stores.
  *
  * @typedef {import('../../server/worker/queue-store.js').Queue} Queue
+ * @typedef {Object} CompletionStatus
+ * @property {string} root_bead_id
+ * @property {'gating'|'repairing'|'waiting_repair_pr'|'merging'|'cleaning'|'paused'|'needs_human'|'completed'} phase
+ * @property {'root'|'repair'|null} subject_role
+ * @property {string|null} subject_bead_id
+ * @property {string|null} [head_sha]
+ * @property {string|null} [base_sha]
+ * @property {string|null} [merged_sha]
+ * @property {number} repair_sessions_used
+ * @property {number} repair_session_cap
+ * @property {{ bead_id: string, pr_url?: string|null, pr_number?: number|null }|null} current_repair
+ * @property {string|null} active_attempt_id
+ * @property {string|null} [failure_stage]
+ * @property {string|null} [failure_reason]
+ * @property {string|null} [evidence]
+ * @property {string|null} [log_path]
+ * @property {string|null} terminal_reason
+ * @typedef {Omit<Queue, 'completion_intents'> & { completion_status?: Record<string, CompletionStatus> }} WorkerQueueSnapshot
  */
 
 /**
- * @returns {{ get: () => Queue|null, set: (q: Queue|null) => void, clear: () => void, subscribe: (fn: () => void) => () => void }}
+ * @returns {{ get: () => WorkerQueueSnapshot|null, set: (q: WorkerQueueSnapshot|null) => void, clear: () => void, subscribe: (fn: () => void) => () => void }}
  */
 export function createWorkerQueueStore() {
-  /** @type {Queue|null} */
+  /** @type {WorkerQueueSnapshot|null} */
   let queue = null;
   /** @type {Set<() => void>} */
   const listeners = new Set();
@@ -33,7 +51,7 @@ export function createWorkerQueueStore() {
     get() {
       return queue;
     },
-    /** @param {Queue|null} q */
+    /** @param {WorkerQueueSnapshot|null} q */
     set(q) {
       queue = q;
       emit();

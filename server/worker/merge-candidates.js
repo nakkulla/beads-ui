@@ -15,6 +15,7 @@
  *
  * @import { Queue } from './queue-store.js'
  */
+import { isRepairableCleanupFailure } from './completion-repair-policy.js';
 import { evaluateMergeGate } from './merge-gate.js';
 import { getWorkerRuntime } from './runtime.js';
 
@@ -166,7 +167,7 @@ export function overlaidPrWait(workspace_key, queue) {
  * @param {Record<string, unknown>} queue - The OVERLAID snapshot (external rows
  * included), i.e. what the lane actually renders.
  * @param {'resolved'|'absent'|'invalid'} verify_cmd_state
- * @returns {Array<{ bead_id: string, external: boolean }>}
+ * @returns {Array<{ bead_id: string, external: boolean, repairable?: boolean }>}
  */
 export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
   const lane = Array.isArray(queue.pr_wait)
@@ -182,7 +183,7 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
   const cleanup_failed = /** @type {Record<string, any>} */ (
     queue.cleanup_failed || {}
   );
-  /** @type {Array<{ bead_id: string, external: boolean }>} */
+  /** @type {Array<{ bead_id: string, external: boolean, repairable?: boolean }>} */
   const out = [];
   for (const entry of lane) {
     const bead_id = entry && entry.bead_id;
@@ -198,6 +199,11 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
     });
     const conflicting = gate.base_badge === '충돌';
     const merged_tier = gate.tier === 'merged';
+    const repairable =
+      !external &&
+      ((gate.tier === 'local_verify' && gate.reason === 'verify_cmd_failed') ||
+        (gate.tier === 'ci' && gate.reason === 'ci_failed') ||
+        (merged_tier && isRepairableCleanupFailure(cleanup_failed[bead_id])));
     // An EXTERNAL conflict vetoes even a green gate, exactly as the row does
     // (UI-7agi §5): the click-time branch order puts DIRTY before the gate, so
     // `merge()` refuses it whatever its CI says.
@@ -208,13 +214,85 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
       gate.enabled === true ||
       (conflicting && !external) ||
       (!!cleanup_failed[bead_id] && merged_tier) ||
-      (external && merged_tier);
+      (external && merged_tier) ||
+      repairable;
     if (!eligible) {
       continue;
     }
-    out.push({ bead_id, external });
+    out.push({
+      bead_id,
+      external,
+      ...(repairable ? { repairable: true } : {})
+    });
   }
   return out;
+}
+
+/**
+ * Build the bounded initial root subject for a repairable-red intake from the
+ * observation cache and the latest worker attempt. The coordinator immediately
+ * re-pins both SHAs before acting; this seed exists so intent creation and the
+ * public root queue position can be one store mutation.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @param {string} bead_id
+ * @returns {{ target_base: string, subject: any }|null}
+ */
+export function completionIntentSeed(workspace_key, queue, bead_id) {
+  let observed = null;
+  try {
+    observed = getWorkerRuntime().prObservations.get(workspace_key, bead_id);
+  } catch {
+    return null;
+  }
+  const pr = observed?.pr;
+  if (
+    !pr ||
+    typeof pr.url !== 'string' ||
+    pr.url.length === 0 ||
+    typeof pr.head_sha !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(pr.head_sha)
+  ) {
+    return null;
+  }
+  const merged_sha =
+    typeof pr.merged_sha === 'string' && /^[0-9a-f]{40}$/i.test(pr.merged_sha)
+      ? pr.merged_sha
+      : null;
+  if (pr.state === 'MERGED' && merged_sha === null) {
+    return null;
+  }
+  /** @type {any} */
+  let source = null;
+  for (const attempt of Object.values(
+    /** @type {Record<string, any>} */ (queue.attempts || {})
+  )) {
+    if (
+      attempt &&
+      attempt.bead_id === bead_id &&
+      typeof attempt.target_base === 'string' &&
+      attempt.target_base.length > 0 &&
+      typeof attempt.base_oid === 'string' &&
+      /^[0-9a-f]{40}$/i.test(attempt.base_oid)
+    ) {
+      source = attempt;
+    }
+  }
+  if (!source) {
+    return null;
+  }
+  return {
+    target_base: source.target_base,
+    subject: {
+      role: 'root',
+      bead_id,
+      pr_url: pr.url,
+      head_sha: pr.head_sha,
+      base_sha: source.base_oid,
+      merged_sha: pr.state === 'MERGED' ? merged_sha : null
+    }
+  };
 }
 
 /**

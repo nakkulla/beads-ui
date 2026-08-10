@@ -4,6 +4,19 @@
 - Bead: UI-yk55
 - 상태: 사용자 설계 승인 완료
 
+## 후속 설계에 따른 범위 정정
+
+[`2026-08-11-self-healing-auto-merge-completion-intent-design.md`](./2026-08-11-self-healing-auto-merge-completion-intent-design.md)가
+worker-owned PR의 repairable verify/CI red와 post-merge cleanup red를 같은 root
+intent로 자동 복구하는 범위를 후속 정의한다. 따라서 이 문서의 durable 토글,
+자동 편입, 순차 driver, SHA-bound skip은 그대로 유효하지만, repairable failure를
+항상 skip하고 사람에게 넘긴다는 범위는 후속 설계로 대체된다. external PR,
+terminal failure, 수동 경로의 기존 의미는 유지한다.
+
+후속 구현은 새 Beads workflow metadata key를 만들지 않는다. 서버 소유 journal은
+`queue.json.completion_intents`이며, 배포 SoT와 post-merge 확인 책임은 계속
+`docs/agents/repo-ops.toml`의 기존 `[deploy]` 선언을 따른다.
+
 ## 배경과 문제
 
 UI-5v7d로 순차 머지 큐가 이미 있다. `merge_queue`는 durable하고, 드라이버

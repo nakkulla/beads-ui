@@ -302,8 +302,169 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(typeof att.scheduler.stop).toBe('function');
     expect(typeof att.scheduler.reconcile).toBe('function');
     expect(typeof att.reconciler.start).toBe('function');
+    expect(typeof att.completionIntent.start).toBe('function');
+    expect(typeof att.completionIntent.stop).toBe('function');
     // The runtime running-count seam now reflects THIS scheduler.
     expect(runtime.status(WS).running_count).toBe(0);
+  });
+
+  test('wires the completion action driver into the default coordinator', async () => {
+    const runtime = createWorkerRuntime();
+    const completionActionDriver = {
+      observe: vi.fn(async () => ({ state: 'green' })),
+      onAction: vi.fn(),
+      onAttemptSettled: vi.fn(),
+      onMergeResult: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      completionActionDriver,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    runtime.queueStore.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-root', bead_id: 'UI-root' }
+    });
+    runtime.queueStore.moveToPrWait(WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'att-root',
+      patch: { status: 'done' }
+    });
+    runtime.queueStore.toggleAutoMerge(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      on: true
+    });
+    runtime.queueStore.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+
+    att.completionIntent.start();
+    await att.completionIntent.idle();
+    att.completionIntent.stop();
+
+    expect(completionActionDriver.observe).toHaveBeenCalledTimes(1);
+    expect(completionActionDriver.onAction).toHaveBeenCalledWith(
+      'UI-root',
+      { kind: 'merge_subject' },
+      expect.objectContaining({ phase: 'gating' })
+    );
+  });
+
+  test('returns completion merge results to the injected action driver', async () => {
+    const runtime = createWorkerRuntime();
+    const completionActionDriver = {
+      observe: vi.fn(),
+      onAction: vi.fn(),
+      onAttemptSettled: vi.fn(),
+      onMergeResult: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      resolveBase: okBase('main', 'b'.repeat(40)),
+      completionActionDriver,
+      gh: /** @type {any} */ ({
+        prDetail: vi.fn(async () => ({ state: 'error', reason: 'unreadable' }))
+      }),
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    runtime.queueStore.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'att-root',
+        bead_id: 'UI-root',
+        target_base: 'main',
+        verify_result: {
+          pr_url: 'https://github.com/o/r/pull/1',
+          pr_number: 1
+        }
+      }
+    });
+    runtime.queueStore.moveToPrWait(WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'att-root',
+      patch: { status: 'done' }
+    });
+    runtime.queueStore.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    runtime.queueStore.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+
+    await att.mergeQueue.kick();
+
+    expect(completionActionDriver.onMergeResult).toHaveBeenCalledWith(
+      'UI-root',
+      'UI-root',
+      expect.objectContaining({ ok: false, action: 'refused' })
+    );
+  });
+
+  test('initWorkerRuntime starts the completion-intent coordinator', () => {
+    const completionIntent = { start: vi.fn(), stop: vi.fn() };
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      completionIntent,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+
+    expect(completionIntent.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('reset stops the completion-intent coordinator', () => {
+    const completionIntent = { start: vi.fn(), stop: vi.fn() };
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      completionIntent,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    __resetWorkerAttachmentsForTest();
+
+    expect(completionIntent.stop).toHaveBeenCalledTimes(1);
   });
 
   test('builds a PR poller that stays silent without a subscriber provider', async () => {

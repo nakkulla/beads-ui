@@ -117,6 +117,55 @@ describe('worker/bd-metadata readStatus fail-closed', () => {
   });
 });
 
+describe('worker/bd-metadata repair issue operations', () => {
+  test('findIssue distinguishes exact-id absence structurally', async () => {
+    const runJson = vi.fn(async () => ({ code: 0, stdoutJson: [] }));
+
+    const result = await createBdMetadata({ runJson, cwd: '/repo' }).findIssue(
+      'UI-1-rdeadbeef'
+    );
+
+    expect(result).toBeNull();
+    expect(runJson).toHaveBeenCalledWith(
+      ['list', '--json', '--all', '--limit', '0', '--id', 'UI-1-rdeadbeef'],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('createIssue sends the deterministic id and discovered-from dependency', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '{}', stderr: '' }));
+
+    await createBdMetadata({ run }).createIssue({
+      id: 'UI-1-rdeadbeef',
+      title: 'UI-1 자동머지 실패 복구',
+      description: '설명',
+      type: 'bug',
+      priority: 1,
+      dependency: 'discovered-from:UI-1'
+    });
+
+    expect(run).toHaveBeenCalledWith(
+      [
+        'create',
+        '--id',
+        'UI-1-rdeadbeef',
+        '--title',
+        'UI-1 자동머지 실패 복구',
+        '--description',
+        '설명',
+        '--type',
+        'bug',
+        '--priority',
+        '1',
+        '--deps',
+        'discovered-from:UI-1',
+        '--json'
+      ],
+      undefined
+    );
+  });
+});
+
 describe('worker/bd-metadata child listing (post-merge sweep)', () => {
   /**
    * @param {Record<string, any[]>} by_selector - Keyed by the selector flag.

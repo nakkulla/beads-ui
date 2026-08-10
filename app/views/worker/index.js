@@ -638,6 +638,107 @@ function baseException(declared_base, target_base) {
 }
 
 /**
+ * Turn the server's bounded completion projection into one root-card status.
+ * Missing or unfamiliar optional projection stays invisible; malformed durable
+ * intents are normalized server-side to the explicit `needs_human` phase.
+ *
+ * @param {import('../../data/worker-queue-store.js').CompletionStatus|null|undefined} completion
+ * @returns {{ badge: string, title: string, alert: boolean, lock_actions: boolean, repair_pr_url: string, repair_pr_number: number|null }|null}
+ */
+function completionView(completion) {
+  if (!completion || typeof completion !== 'object') {
+    return null;
+  }
+  const used = Number.isInteger(completion.repair_sessions_used)
+    ? Math.max(0, completion.repair_sessions_used)
+    : 0;
+  const cap = Number.isInteger(completion.repair_session_cap)
+    ? Math.max(0, completion.repair_session_cap)
+    : 0;
+  const repair =
+    completion.current_repair && typeof completion.current_repair === 'object'
+      ? completion.current_repair
+      : null;
+  const repair_number =
+    repair && typeof repair.pr_number === 'number' ? repair.pr_number : null;
+  let badge = '';
+  switch (completion.phase) {
+    case 'gating':
+      badge = 'root 재검증 중';
+      break;
+    case 'repairing':
+      badge =
+        completion.subject_role === 'root'
+          ? `자동복구 ${used}/${cap} · 원 PR 수정 중`
+          : `자동복구 ${used}/${cap} · repair PR 준비 중`;
+      break;
+    case 'waiting_repair_pr':
+      badge = repair_number
+        ? `repair PR #${repair_number} 대기`
+        : 'repair PR 대기';
+      break;
+    case 'merging':
+      badge =
+        completion.subject_role === 'repair'
+          ? repair_number
+            ? `repair PR #${repair_number} 머지 중`
+            : 'repair PR 머지 중'
+          : 'root 머지 중';
+      break;
+    case 'cleaning':
+      badge = '정리 복구 중';
+      break;
+    case 'paused':
+      badge = '자동복구 일시정지';
+      break;
+    case 'needs_human':
+      badge = `사람 확인 필요 · ${completion.terminal_reason || '원인 미상'}`;
+      break;
+    case 'completed':
+      return null;
+    default:
+      return null;
+  }
+
+  /** @type {string[]} */
+  const details = [`복구 세션 ${used}/${cap}`];
+  if (completion.head_sha) {
+    details.push(`head ${completion.head_sha}`);
+  }
+  if (completion.base_sha) {
+    details.push(`base ${completion.base_sha}`);
+  }
+  if (completion.failure_stage || completion.failure_reason) {
+    details.push(
+      `${completion.failure_stage || 'failure'} · ${completion.failure_reason || '원인 미상'}`
+    );
+  }
+  if (completion.active_attempt_id) {
+    details.push(`attempt ${completion.active_attempt_id}`);
+  }
+  if (repair && typeof repair.bead_id === 'string') {
+    details.push(`repair ${repair.bead_id}`);
+  }
+  if (completion.evidence) {
+    details.push(completion.evidence);
+  }
+  if (completion.log_path) {
+    details.push(completion.log_path);
+  }
+
+  return {
+    badge,
+    title: details.join('\n'),
+    alert: completion.phase === 'needs_human',
+    lock_actions:
+      completion.phase !== 'paused' && completion.phase !== 'needs_human',
+    repair_pr_url:
+      repair && typeof repair.pr_url === 'string' ? repair.pr_url : '',
+    repair_pr_number: repair_number
+  };
+}
+
+/**
  * Project one `pr_wait` bead into a lane row, carrying whatever the server's PR
  * poller has observed (worker-phase2 §4/§5): the PR link, the gate/base badges,
  * and the two actions (§6).
@@ -684,6 +785,8 @@ function baseException(declared_base, target_base) {
  * still, and a badge saying otherwise would be a lie.
  * @param {string|null} [base_exception] - `→ <target_base>` when the attempt
  * behind this row targets a base other than the declared one (UI-j6wa §3).
+ * @param {import('../../data/worker-queue-store.js').CompletionStatus|null} [completion] - Bounded root completion status;
+ * the durable journal itself never reaches the client (UI-x9tu §10).
  * @returns {any}
  */
 function prWaitRow(
@@ -698,7 +801,8 @@ function prWaitRow(
   merge_queue = null,
   wt_present = true,
   auto_skip = null,
-  base_exception = null
+  base_exception = null,
+  completion = null
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const queue_active = !!merge_queue && merge_queue.active === true;
@@ -706,6 +810,7 @@ function prWaitRow(
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
+  const recovery = completionView(completion);
   /** @type {string[]} */
   const badges = [];
   if (external) {
@@ -742,6 +847,9 @@ function prWaitRow(
   }
   if (cleanup_failed) {
     badges.push('정리 실패');
+  }
+  if (recovery) {
+    badges.push(recovery.badge);
   }
   // Its place in line, or why it lost it (UI-5v7d §4). The waiting badge is the
   // only thing that tells a reader why a row with a green gate is sitting still,
@@ -790,6 +898,10 @@ function prWaitRow(
     external,
     pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
     pr_url: pr && typeof pr.url === 'string' ? pr.url : '',
+    completion_badge: recovery ? recovery.badge : null,
+    completion_title: recovery ? recovery.title : '',
+    completion_repair_pr_url: recovery ? recovery.repair_pr_url : '',
+    completion_repair_pr_number: recovery ? recovery.repair_pr_number : null,
     badges,
     // Which badge (if any) reports live server activity rather than a settled
     // state — the row draws that one with the breathing dot and no colour
@@ -808,22 +920,30 @@ function prWaitRow(
     alert:
       (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) ||
       !!cleanup_failed ||
-      !!queue_failure,
+      !!queue_failure ||
+      !!(recovery && recovery.alert),
     // A queued row has nothing to click but [취소]: the merge is the driver's
     // now, and a second [머지] would only be a no-op re-queue (UI-5v7d §4).
     merge_action: !queued,
     cancel_action: queued,
-    cancel_enabled: !queue_active,
-    cancel_title: queue_active
-      ? '머지 진행 중 — 취소할 수 없습니다'
-      : '머지 큐에서 이 항목을 뺍니다 (다시 [머지]로 넣을 수 있습니다)',
+    cancel_enabled: !queue_active && !(recovery && recovery.lock_actions),
+    cancel_title:
+      recovery && recovery.lock_actions
+        ? '자동복구 중 — 중단하려면 상단 자동 머지 중단을 사용하세요'
+        : queue_active
+          ? '머지 진행 중 — 취소할 수 없습니다'
+          : '머지 큐에서 이 항목을 뺍니다 (다시 [머지]로 넣을 수 있습니다)',
     // `cleanup_failed` is DURABLE merged evidence — right after a restart the
     // observation cache is empty, so the gate tier alone would re-offer [폐기]
     // on a tile whose merge already landed (discard spec §2).
     discard_action:
       !external && !cleanup_failed && !(gate && gate.tier === 'merged'),
     merge_step,
-    discard_enabled: !merge_step && !conflict_session && !queued,
+    discard_enabled:
+      !merge_step &&
+      !conflict_session &&
+      !queued &&
+      !(recovery && recovery.lock_actions),
     // Not a guard — the scheduler already refuses a second dispatch for a
     // claimed/running attempt. The disabled buttons say WHY clicking now is
     // pointless, which the server's refusal never reaches the user with.
@@ -841,6 +961,7 @@ function prWaitRow(
     merge_enabled:
       !merge_step &&
       !conflict_session &&
+      !(recovery && recovery.lock_actions) &&
       !external_conflict_unresolvable &&
       (enabled || conflicting || cleanup_retry || external_cleanup),
     // The label says what the click DOES: on a conflicting gate it dispatches a
@@ -2301,7 +2422,12 @@ export function createWorkerView(mount_element, options = {}) {
             // (UI-yk55 §3.4) — 기록이 지워지는 시점도 자동 스캔이므로, 꺼진
             // 상태의 잔여 기록을 뱃지로 보이면 사실이 아닌 설명이 된다.
             q.auto_merge === true ? autoSkipReason(e.bead_id) : null,
-            baseException(declared_base, prWaitTargetBase(e.bead_id))
+            baseException(declared_base, prWaitTargetBase(e.bead_id)),
+            q.completion_status &&
+              typeof q.completion_status === 'object' &&
+              !Array.isArray(q.completion_status)
+              ? q.completion_status[e.bead_id] || null
+              : null
           )
         )
         .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),

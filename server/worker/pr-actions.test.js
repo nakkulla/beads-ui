@@ -64,6 +64,7 @@ function prOf(over = {}) {
     head_ref: BEAD,
     base_ref: 'main',
     head_sha: 'sha-aaa',
+    merged_sha: null,
     ...over
   };
 }
@@ -1131,6 +1132,114 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
         evidence: 'intermittent verify failure',
         consumed: true
       }
+    });
+    expect(h.calls).not.toContain('spawn:bdui-shared:detached');
+  });
+
+  test('replays the complete cleanup from a prerecorded completion operation', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      verifyResults: [{ ok: true, reason: 'ok' }]
+    });
+    h.store.enqueueCompletionIntent(WS, {
+      root_bead_id: BEAD,
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'b'.repeat(40)
+      }
+    });
+    h.store.setCompletionSubject(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      subject: h.store.snapshot(WS).completion_intents[BEAD].subject
+    });
+    h.store.prepareCompletionOp(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      op: {
+        op_id: 'cleanup-1',
+        kind: 'retry_cleanup',
+        failure_key: {
+          stage: 'post_merge_verify',
+          reason: 'verify_cmd_failed',
+          subject_sha: 'b'.repeat(40),
+          base_sha: 'b'.repeat(40),
+          result_digest: 'c'.repeat(64)
+        },
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const result = await h.actions.resumeCompletionCleanup(BEAD);
+
+    expect(result).toMatchObject({ ok: true, step: null, reason: null });
+    const queue = h.store.snapshot(WS);
+    expect(
+      queue.done.map((/** @type {any} */ entry) => entry.bead_id)
+    ).toContain(BEAD);
+    expect(queue.completion_intents[BEAD]).toMatchObject({
+      phase: 'completed',
+      active_op: null
+    });
+    expect(h.worktree.removeByBranch).toHaveBeenCalledTimes(1);
+    expect(h.bd.setStatus).toHaveBeenCalledWith(BEAD, 'closed');
+  });
+
+  test('stops a completion cleanup replay before detached deploy when verify stays red', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploy: DEPLOY_DETACHED,
+      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
+    });
+    h.store.enqueueCompletionIntent(WS, {
+      root_bead_id: BEAD,
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'b'.repeat(40)
+      }
+    });
+    h.store.setCompletionSubject(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      subject: h.store.snapshot(WS).completion_intents[BEAD].subject
+    });
+    h.store.prepareCompletionOp(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      op: {
+        op_id: 'cleanup-1',
+        kind: 'retry_cleanup',
+        failure_key: {
+          stage: 'post_merge_verify',
+          reason: 'verify_cmd_failed',
+          subject_sha: 'b'.repeat(40),
+          base_sha: 'b'.repeat(40),
+          result_digest: 'c'.repeat(64)
+        },
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const result = await h.actions.resumeCompletionCleanup(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed'
     });
     expect(h.calls).not.toContain('spawn:bdui-shared:detached');
   });
@@ -3547,5 +3656,86 @@ describe('worker/pr-actions base gate freshness (implementation review 2026-07-3
 
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.every((c) => c && c.force === true)).toBe(true);
+  });
+});
+
+describe('worker/pr-actions completion gate evidence', () => {
+  test('returns a bounded pinned gate result without issuing a merge', async () => {
+    const env = makeActions({
+      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
+      verifyResults: [
+        {
+          ok: false,
+          reason: 'verify_cmd_failed',
+          output_tail: 'regression',
+          log_path: '/state/verify.log'
+        }
+      ],
+      details: [prOf({ head_sha: 'a'.repeat(40), base_ref: 'main' })]
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(result).toMatchObject({
+      ok: true,
+      target_base: 'main',
+      base_sha: 'a'.repeat(40),
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'a'.repeat(40),
+        merged_sha: null
+      },
+      verdict: {
+        enabled: false,
+        tier: 'local_verify',
+        reason: 'verify_cmd_failed'
+      },
+      evidence: {
+        verify: {
+          head_sha: 'a'.repeat(40),
+          ok: false,
+          reason: 'verify_cmd_failed'
+        }
+      }
+    });
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('uses the authoritative merge commit SHA for a merged subject', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const env = makeActions({
+      details: [
+        prOf({
+          state: 'MERGED',
+          head_sha: 'a'.repeat(40),
+          merged_sha: merge_sha
+        })
+      ]
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(result).toMatchObject({
+      ok: true,
+      subject: {
+        head_sha: 'a'.repeat(40),
+        merged_sha: merge_sha
+      }
+    });
+  });
+
+  test('fails closed when a merged subject has no merge commit SHA', async () => {
+    const env = makeActions({
+      details: [
+        prOf({ state: 'MERGED', head_sha: 'a'.repeat(40), merged_sha: null })
+      ]
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(result).toEqual({ ok: false, reason: 'merge_sha_unobserved' });
   });
 });

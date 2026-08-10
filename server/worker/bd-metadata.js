@@ -34,6 +34,8 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
  *   readStatus: (bead_id: string) => Promise<string|null>,
  *   readIssue: (bead_id: string) => Promise<Record<string, any>>,
+ *   findIssue: (bead_id: string) => Promise<Record<string, any>|null>,
+ *   createIssue: (input: { id: string, title: string, description: string, type: string, priority: number, dependency: string }) => Promise<void>,
  *   updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>,
  *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
  *   scanBeads: () => Promise<{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string> }>
@@ -179,6 +181,80 @@ export function createBdMetadata(deps = {}) {
         throw new Error(`bd show ${bead_id} returned an unreadable payload`);
       }
       return /** @type {Record<string, any>} */ (issue);
+    },
+
+    /**
+     * Exact-id lookup whose successful empty array means genuinely absent.
+     * Unlike `bd show`, this can distinguish absence from an operational
+     * failure without parsing stderr, which is required for idempotent repair
+     * Bead creation.
+     *
+     * @param {string} bead_id
+     * @returns {Promise<Record<string, any>|null>}
+     */
+    async findIssue(bead_id) {
+      const r = await runJson(
+        ['list', '--json', '--all', '--limit', '0', '--id', bead_id],
+        opts
+      );
+      if (r && typeof r.code === 'number' && r.code !== 0) {
+        throw new Error(
+          `bd list --id ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
+      if (!Array.isArray(r.stdoutJson)) {
+        throw new Error(
+          `bd list --id ${bead_id} returned an unreadable payload`
+        );
+      }
+      if (r.stdoutJson.length === 0) {
+        return null;
+      }
+      if (
+        r.stdoutJson.length !== 1 ||
+        !r.stdoutJson[0] ||
+        typeof r.stdoutJson[0] !== 'object' ||
+        r.stdoutJson[0].id !== bead_id
+      ) {
+        throw new Error(
+          `bd list --id ${bead_id} returned an ambiguous payload`
+        );
+      }
+      return /** @type {Record<string, any>} */ (r.stdoutJson[0]);
+    },
+
+    /**
+     * Create one preallocated repair issue. The caller always follows this
+     * with {@link findIssue}; a collision therefore becomes an adoptable
+     * readback instead of a second identity.
+     *
+     * @param {{ id: string, title: string, description: string, type: string, priority: number, dependency: string }} input
+     */
+    async createIssue(input) {
+      const r = await run(
+        [
+          'create',
+          '--id',
+          input.id,
+          '--title',
+          input.title,
+          '--description',
+          input.description,
+          '--type',
+          input.type,
+          '--priority',
+          String(input.priority),
+          '--deps',
+          input.dependency,
+          '--json'
+        ],
+        opts
+      );
+      if (r.code !== 0) {
+        throw new Error(
+          `bd create ${input.id} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
     },
 
     /**
