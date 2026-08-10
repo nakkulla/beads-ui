@@ -76,6 +76,17 @@ import { timesMeta } from './lanes.js';
  * @property {string} [log_path] - Absolute path to that command's FULL
  * preserved output (UI-0x54), which the capped tail above cannot hold; absent
  * on a record whose run left no complete log file.
+ * @property {CleanupDiagnosis|null} [diagnosis] - Durable diagnosis from the
+ * cleanup worker, retained in the queue snapshot across restarts.
+ * @property {boolean} [diagnosis_pending] - The diagnose request is in flight.
+ */
+
+/**
+ * @typedef {Object} CleanupDiagnosis
+ * @property {string} verdict
+ * @property {string} evidence
+ * @property {string|null} [fix_bead_id]
+ * @property {boolean} [malformed]
  */
 
 /**
@@ -153,6 +164,34 @@ function logPathLine(log_path) {
 }
 
 /**
+ * Render a stored cleanup-diagnosis result without relying on transient events.
+ *
+ * @param {CleanupDiagnosis|null|undefined} diagnosis
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+function cleanupDiagnosisLine(diagnosis) {
+  if (
+    !diagnosis ||
+    typeof diagnosis.verdict !== 'string' ||
+    typeof diagnosis.evidence !== 'string'
+  ) {
+    return '';
+  }
+  if (diagnosis.malformed === true || diagnosis.verdict === 'malformed') {
+    return html`<div class="worker-banner__detail">
+      <b>진단 결과 형식 오류</b> · ${truncateDetail(diagnosis.evidence)}
+    </div>`;
+  }
+  return html`<div class="worker-banner__detail">
+    진단: <b>${diagnosis.verdict}</b> · 근거:
+    ${truncateDetail(diagnosis.evidence)}
+    ${diagnosis.verdict === 'regression' && diagnosis.fix_bead_id
+      ? html` · 수정 bead: ${diagnosis.fix_bead_id}`
+      : ''}
+  </div>`;
+}
+
+/**
  * Format an elapsed duration (ms) as `MmSSs` / `SSs`. Exported so the monitor
  * tab writes a running attempt's elapsed the same way this tile does (UI-53es
  * §1) — the same fact must not read differently on two tabs.
@@ -220,8 +259,18 @@ export function bannersTemplate(state) {
           data-bead-id=${c.bead_id}
         >
           ⚠ ${c.bead_id} 머지 완료 — 머지 후 정리가 <b>${c.step}</b> 단계에서
-          멈췄습니다 (${c.reason}). bead는 resolved로 남아 있고 자동 재시도는
-          하지 않습니다 — 정리를 사람이 마무리하세요.
+          멈췄습니다 (${c.reason}). 1회 자동 재시도 후에도 실패했습니다 — [AI
+          정리]로 진단하거나 정리를 사람이 마무리하세요.
+          <button
+            type="button"
+            class="worker-banner__cleanup-diagnose"
+            data-bead-id=${c.bead_id}
+            ?disabled=${c.diagnosis_pending === true}
+            title="정리 실패 원인을 AI 세션으로 분류합니다"
+          >
+            AI 정리
+          </button>
+          ${cleanupDiagnosisLine(c.diagnosis)}
           ${c.detail
             ? html`<div class="worker-banner__detail">
                 <code>${truncateDetail(c.detail)}</code>

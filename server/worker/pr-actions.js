@@ -168,6 +168,7 @@ function isConflicting(pr) {
  *     readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *     readIssue?: (bead_id: string) => Promise<Record<string, any>>,
  *     listChildren?: (bead_id: string) => Promise<{ id: string, status: string }[]>,
+ *     updateFields?: (bead_id: string, input: { append_notes?: string }) => Promise<void>,
  *   },
  *   external?: {
  *     get: (workspace: string, bead_id: string) => import('./external-pr.js').ExternalPrRow|null,
@@ -183,7 +184,7 @@ function isConflicting(pr) {
  *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').VerifyResolution>,
- *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
+ *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
  *   resolveDeploy?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').DeployResolution>,
  *   selfRepoState?: (repo: string) => 'self'|'other'|'unknown',
  *   spawnImpl?: typeof spawn,
@@ -261,6 +262,39 @@ export function createPrActions(deps) {
   // Optional so every existing construction site (and test) keeps working with
   // no notifier at all — a missing one is silence, never a cleanup failure.
   const notify = deps.notify || null;
+
+  /**
+   * Append one bounded-verify flake absorption note without making it part of
+   * the action's success condition. The verify runner owns the retry lifecycle;
+   * this helper only records the two attempt log paths when the final result is
+   * green.
+   *
+   * @param {string} bead_id
+   * @param {'post_merge_verify'|'merge_gate'} lane
+   * @param {{ reason: string, log_path?: string }[]} attempts
+   */
+  async function appendVerifyFlakeNote(bead_id, lane, attempts) {
+    if (
+      typeof deps.bd.updateFields !== 'function' ||
+      attempts.length !== 2 ||
+      attempts[0].reason !== 'verify_cmd_failed'
+    ) {
+      return;
+    }
+    const first_log = attempts[0].log_path || '없음';
+    const retry_log = attempts[1].log_path || '없음';
+    const append_notes = `verify flake 흡수 (${lane}): 1차 verify_cmd_failed (${first_log}) → 재시도 green (${retry_log})`;
+    try {
+      await deps.bd.updateFields(bead_id, { append_notes });
+    } catch (err) {
+      log(
+        'verify flake note append failed for %s (%s): %o',
+        bead_id,
+        lane,
+        err
+      );
+    }
+  }
 
   /**
    * Publish the merge's current step (UI-raqh §4). The click runs for minutes
@@ -603,14 +637,19 @@ export function createPrActions(deps) {
     let verdict = evaluateMergeGate(entry, {
       verify_cmd_state: resolved.state
     });
+    const cached_flaky_failure =
+      verdict.reason === 'verify_cmd_failed' &&
+      entry?.verify?.head_sha === pr.head_sha &&
+      entry.verify.ok === false;
     if (
       resolved.state === 'resolved' &&
       !verdict.enabled &&
       verdict.tier === 'local_verify' &&
       (verdict.reason === 'verify_missing' ||
-        verdict.reason === 'verify_sha_stale')
+        verdict.reason === 'verify_sha_stale' ||
+        cached_flaky_failure)
     ) {
-      /** @type {{ ok: boolean, reason: string }} */
+      /** @type {{ ok: boolean, reason: string, attempts?: { reason: string, log_path?: string }[] }} */
       let r;
       try {
         r = await runVerify({
@@ -619,11 +658,15 @@ export function createPrActions(deps) {
           sha: pr.head_sha,
           pr_number: number,
           cmd: resolved.value.cmd,
-          timeout_ms: resolved.value.timeout_ms
+          timeout_ms: resolved.value.timeout_ms,
+          retry_flaky: true
         });
       } catch (err) {
         log('click-time verification threw for %s: %o', bead_id, err);
         r = { ok: false, reason: 'verify_cmd_spawn_error' };
+      }
+      if (r.ok && Array.isArray(r.attempts) && r.attempts.length === 2) {
+        await appendVerifyFlakeNote(bead_id, 'merge_gate', r.attempts);
       }
       deps.observations.recordVerify(workspace, bead_id, {
         head_sha: pr.head_sha,
@@ -757,7 +800,7 @@ export function createPrActions(deps) {
     if (resolved.state === 'absent') {
       return { ok: true };
     }
-    /** @type {{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string }} */
+    /** @type {{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string, attempts?: { reason: string, log_path?: string }[] }} */
     let r;
     try {
       r = await runVerify({
@@ -766,11 +809,15 @@ export function createPrActions(deps) {
         sha: base_sha,
         pr_number: null,
         cmd: resolved.value.cmd,
-        timeout_ms: resolved.value.timeout_ms
+        timeout_ms: resolved.value.timeout_ms,
+        retry_flaky: true
       });
     } catch (err) {
       log('post-merge verification threw for %s: %o', bead_id, err);
       return { ok: false, reason: 'verify_cmd_spawn_error' };
+    }
+    if (r.ok && Array.isArray(r.attempts) && r.attempts.length === 2) {
+      await appendVerifyFlakeNote(bead_id, 'post_merge_verify', r.attempts);
     }
     return r.ok
       ? { ok: true }
@@ -1910,6 +1957,34 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Reuse the existing cleanup execution path for one diagnosis-authorized
+   * retry. The scheduler writes its durable consumed marker before calling this
+   * entry, so this function deliberately has no retry policy of its own.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   */
+  async function retryCleanup(bead_id) {
+    if (in_flight.has(bead_id)) {
+      return { ok: false, step: null, reason: 'action_in_flight' };
+    }
+    const q = deps.store.snapshot(workspace);
+    if (!inPrWait(q, bead_id)) {
+      return { ok: false, step: null, reason: 'not_in_pr_wait' };
+    }
+    if (!q.cleanup_failed?.[bead_id]) {
+      return { ok: false, step: null, reason: 'cleanup_failed_missing' };
+    }
+    in_flight.add(bead_id);
+    try {
+      return await runCleanup(bead_id);
+    } finally {
+      in_flight.delete(bead_id);
+      clearStep(bead_id);
+    }
+  }
+
+  /**
    * Run [폐기]: throw the PR, the worktree and the branch away, and hand the
    * bead back to the candidate lane. It does NOT re-queue and does NOT dispatch
    * — re-running is the drag path (후보 → 대기), which re-passes admission
@@ -2083,5 +2158,5 @@ export function createPrActions(deps) {
     return { ok: true, reason: null };
   }
 
-  return { merge, discard, cleanupObservedMerge, prState };
+  return { merge, discard, cleanupObservedMerge, retryCleanup, prState };
 }

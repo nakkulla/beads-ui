@@ -149,9 +149,16 @@ describe('main exec-preset subscription lifecycle', () => {
     ).toHaveLength(2);
   });
 
-  test('keeps the worker queue channel while a detail panel is open', async () => {
+  test('keeps the worker queue channel on Board after a detail panel closes', async () => {
     bootstrap(setupShell());
     await settle();
+
+    expect(
+      CLIENT.sent.filter(
+        (/** @type {{ type: string }} */ message) =>
+          message.type === 'subscribe-worker-queue'
+      )
+    ).toHaveLength(1);
 
     window.location.hash = '#/board?issue=UI-1';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -173,7 +180,7 @@ describe('main exec-preset subscription lifecycle', () => {
         (/** @type {{ type: string }} */ message) =>
           message.type === 'unsubscribe-worker-queue'
       )
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 
   test('opens the Worker-owned global settings dialog from an empty detail preset state', async () => {

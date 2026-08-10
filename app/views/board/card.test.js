@@ -603,6 +603,107 @@ describe('views/board/card display policy', () => {
     expect(m.querySelector('.ctl-chip--blocked-dep')).toBeNull();
   });
 
+  test('renders a cleanup failure chip and diagnoses the matching bead', () => {
+    const onCleanupDiagnose = vi.fn();
+    const m = mountCard(
+      { id: 'UI-1', title: 'cleanup failed' },
+      makeCtx({
+        policy: makePolicy(),
+        cleanupFailureFor: () => ({
+          step: 'post_merge_verify',
+          reason: 'verify_cmd_failed'
+        }),
+        isCleanupDiagnosisPending: () => false,
+        onCleanupDiagnose
+      })
+    );
+
+    const chip = /** @type {HTMLElement} */ (
+      m.querySelector('.ctl-chip--cleanup')
+    );
+    const button = /** @type {HTMLButtonElement} */ (
+      m.querySelector('.board-card__cleanup-diagnose')
+    );
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(chip.textContent).toContain('정리 실패');
+    expect(button.dataset.beadId).toBe('UI-1');
+    expect(onCleanupDiagnose).toHaveBeenCalledWith(expect.anything(), 'UI-1');
+  });
+
+  test('renders durable cleanup diagnosis details on the card', () => {
+    const m = mountCard(
+      { id: 'UI-1', title: 'cleanup failed' },
+      makeCtx({
+        policy: makePolicy(),
+        cleanupFailureFor: () => ({
+          step: 'post_merge_verify',
+          reason: 'verify_cmd_failed',
+          diagnosis: {
+            verdict: 'regression',
+            evidence: 'same assertion fails on the merge head',
+            fix_bead_id: 'UI-fix'
+          }
+        })
+      })
+    );
+
+    const result = /** @type {HTMLElement} */ (
+      m.querySelector('.board-card__cleanup-diagnosis')
+    );
+
+    expect(result.textContent).toContain('regression');
+    expect(result.textContent).toContain('same assertion fails');
+    expect(result.textContent).toContain('UI-fix');
+  });
+
+  test('renders malformed cleanup diagnosis fail-closed on the card', () => {
+    const m = mountCard(
+      { id: 'UI-1', title: 'cleanup failed' },
+      makeCtx({
+        policy: makePolicy(),
+        cleanupFailureFor: () => ({
+          step: 'post_merge_verify',
+          reason: 'verify_cmd_failed',
+          diagnosis: {
+            verdict: 'malformed',
+            evidence: 'diagnosis result is absent',
+            malformed: true
+          }
+        })
+      })
+    );
+
+    expect(
+      m.querySelector('.board-card__cleanup-diagnosis')?.textContent
+    ).toContain('판정 불가');
+  });
+
+  test('omits cleanup controls without a failure or when blocked chips are disabled', () => {
+    const missing = mountCard(
+      { id: 'UI-1', title: 'quiet' },
+      makeCtx({ cleanupFailureFor: () => null })
+    );
+
+    expect(missing.querySelector('.ctl-chip--cleanup')).toBeNull();
+    expect(missing.querySelector('.board-card__cleanup-diagnose')).toBeNull();
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const hidden = mountCard(
+      { id: 'UI-1', title: 'hidden' },
+      makeCtx({
+        policy: makePolicy({ chips: { blocked: false } }),
+        cleanupFailureFor: () => ({
+          step: 'post_merge_verify',
+          reason: 'verify_cmd_failed'
+        })
+      })
+    );
+
+    expect(hidden.querySelector('.ctl-chip--cleanup')).toBeNull();
+    expect(hidden.querySelector('.board-card__cleanup-diagnose')).toBeNull();
+  });
+
   test('omits the route chip when its toggle is off', () => {
     const m = mountCard(
       { id: 'UI-1', workflow: { chips: { route: 'full_plan' } } },

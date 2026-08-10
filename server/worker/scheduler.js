@@ -39,6 +39,8 @@
  *
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { observeBaseDrift } from './base-drift.js';
@@ -233,6 +235,10 @@ function staleDispatchPrompt(bead_id, stale) {
  * Fired after autonomous queue transitions (dispatch records, admission
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
  * waiting for their next own mutation (worker-autorun-policy §6).
+ * @property {{ retryCleanup: (bead_id: string) => Promise<{ ok: boolean, reason?: string }> }} [cleanupDiagnosis]
+ * Late-bound cleanup retry owned by the attachment.
+ * @property {(result_path: string) => Promise<unknown>|unknown} [readCleanupDiagnosisResult]
+ * Injectable diagnosis-result reader for tests.
  * @property {{
  *   attemptStarted: (i: any) => void,
  *   attemptFailed: (i: any) => void,
@@ -277,6 +283,7 @@ function staleDispatchPrompt(bead_id, stale) {
  *   resume: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   dispatchCleanupDiagnosis: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
@@ -293,6 +300,23 @@ export function createScheduler(deps) {
   let attempt_seq = 0;
   const makeAttemptId =
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
+
+  /**
+   * The attachment binds this after creating pr-actions. Leaving it absent
+   * fails closed: a diagnosis may be recorded, but cannot trigger cleanup.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function retryCleanup(bead_id) {
+    if (
+      !deps.cleanupDiagnosis ||
+      typeof deps.cleanupDiagnosis.retryCleanup !== 'function'
+    ) {
+      return { ok: false, reason: 'retry_unwired' };
+    }
+    return deps.cleanupDiagnosis.retryCleanup(bead_id);
+  }
 
   /**
    * Live sessions keyed by attempt_id.
@@ -1313,6 +1337,150 @@ export function createScheduler(deps) {
    * @param {string|null} prior
    * @param {RunnerVerdict} verdict
    */
+  /**
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {boolean}
+   */
+  function cleanupDiagnosisOf(workspace, attempt_id) {
+    return (
+      deps.store.snapshot(workspace).attempts?.[attempt_id]
+        ?.cleanup_diagnosis === true
+    );
+  }
+
+  /**
+   * @param {any} raw
+   * @returns {{ ok: true, verdict: 'flake'|'environment'|'regression', evidence: string, fix_bead_id?: string }|{ ok: false, evidence: string }}
+   */
+  function parseCleanupDiagnosis(raw) {
+    /** @type {any} */
+    let value;
+    try {
+      value = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch {
+      return { ok: false, evidence: 'diagnosis JSON parse failed' };
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return { ok: false, evidence: 'diagnosis result is not an object' };
+    }
+    if (
+      value.verdict !== 'flake' &&
+      value.verdict !== 'environment' &&
+      value.verdict !== 'regression'
+    ) {
+      return { ok: false, evidence: 'diagnosis verdict is invalid' };
+    }
+    if (
+      typeof value.evidence !== 'string' ||
+      value.evidence.trim().length === 0
+    ) {
+      return { ok: false, evidence: 'diagnosis evidence is missing' };
+    }
+    const fix_bead_id = value.refs?.fix_bead_id;
+    return {
+      ok: true,
+      verdict: value.verdict,
+      evidence: value.evidence,
+      ...(typeof fix_bead_id === 'string' && fix_bead_id.length > 0
+        ? { fix_bead_id }
+        : {})
+    };
+  }
+
+  /**
+   * Read and consume one diagnosis result. Both live completion and restart
+   * reconciliation call this body, so the durable consumed flag is the sole
+   * authority for retrying cleanup.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {RunnerVerdict} verdict
+   */
+  async function settleCleanupDiagnosis(
+    workspace,
+    attempt_id,
+    bead_id,
+    verdict
+  ) {
+    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    const result_path = attempt?.cleanup_diagnosis_result_path;
+    /** @type {unknown} */
+    let raw = null;
+    if (typeof result_path === 'string' && result_path.length > 0) {
+      try {
+        raw =
+          typeof deps.readCleanupDiagnosisResult === 'function'
+            ? await deps.readCleanupDiagnosisResult(result_path)
+            : fs.readFileSync(result_path, 'utf8');
+      } catch {
+        raw = null;
+      }
+    }
+    const parsed =
+      raw === null
+        ? { ok: false, evidence: 'diagnosis result is absent' }
+        : parseCleanupDiagnosis(raw);
+    if (parsed.ok !== true) {
+      deps.store.recordCleanupDiagnosis(workspace, {
+        bead_id,
+        verdict: 'malformed',
+        attempt_id,
+        evidence: parsed.evidence,
+        malformed: true
+      });
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: { status: 'done', finished_at: now(), exit: verdict.exit }
+      });
+      notifyChanged(workspace);
+      return;
+    }
+    const valid =
+      /** @type {{ verdict: 'flake'|'environment'|'regression', evidence: string, fix_bead_id?: string }} */ (
+        parsed
+      );
+    deps.store.recordCleanupDiagnosis(workspace, {
+      bead_id,
+      verdict: valid.verdict,
+      attempt_id,
+      evidence: valid.evidence,
+      fix_bead_id: valid.fix_bead_id
+    });
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { status: 'done', finished_at: now(), exit: verdict.exit }
+    });
+    const diagnosis =
+      deps.store.snapshot(workspace).cleanup_failed?.[bead_id]?.diagnosis;
+    if (
+      (valid.verdict === 'flake' || valid.verdict === 'environment') &&
+      diagnosis?.attempt_id === attempt_id &&
+      diagnosis.consumed !== true
+    ) {
+      const consumed = deps.store.markDiagnosisConsumed(workspace, bead_id);
+      const confirmed =
+        deps.store.snapshot(workspace).cleanup_failed?.[bead_id]?.diagnosis;
+      if (
+        consumed.ok &&
+        confirmed?.attempt_id === attempt_id &&
+        confirmed.consumed === true
+      ) {
+        await retryCleanup(bead_id);
+      }
+    }
+    notifyChanged(workspace);
+  }
+
+  /**
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {BeadSnapshot} snap
+   * @param {string|null} prior
+   * @param {RunnerVerdict} verdict
+   */
   async function onSessionDone(
     workspace,
     attempt_id,
@@ -1383,6 +1551,11 @@ export function createScheduler(deps) {
         );
         notifyChanged(workspace);
         await tick(workspace);
+        return;
+      }
+
+      if (cleanupDiagnosisOf(workspace, attempt_id)) {
+        await settleCleanupDiagnosis(workspace, attempt_id, bead_id, verdict);
         return;
       }
 
@@ -1952,6 +2125,16 @@ export function createScheduler(deps) {
         claimed.delete(bead_id);
       }
       notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
+    if (cleanupDiagnosisOf(workspace, attempt_id)) {
+      await settleCleanupDiagnosis(
+        workspace,
+        attempt_id,
+        bead_id,
+        /** @type {RunnerVerdict} */ ({ exit: null })
+      );
       await tick(workspace);
       return;
     }
@@ -2631,9 +2814,10 @@ export function createScheduler(deps) {
    *   wt_path: string,
    *   spawnBead: any,
    *   title?: string|null,
-   *   launch_kind?: 'dispatch'|'resume'|'conflict'|'disposition',
+   *   launch_kind?: 'dispatch'|'resume'|'conflict'|'disposition'|'cleanup_diagnosis',
    *   resume_session_id?: string|null,
-   *   disposition?: string|null
+   *   disposition?: string|null,
+   *   cleanup_diagnosis?: boolean
    * }} input
    * @returns {Promise<{ ok: boolean, reason?: string }>} Whether the session
    * actually started. A spawn abort is REPORTED rather than swallowed: the
@@ -2675,10 +2859,11 @@ export function createScheduler(deps) {
       repo,
       target_base,
       base_oid: base_oid ?? null,
-      // A disposition session repairs a spec on the base and opens no PR, so
-      // the always-on PR-submit directive would instruct it to do the one
-      // thing its own prompt forbids (UI-hs11 §3.3).
-      disposition: input.disposition ?? null
+      // The two no-PR shapes stay separate: only a REVISE disposition may
+      // publish the base. Cleanup diagnosis keeps the ordinary command and
+      // pre-push guards while dropping PR delivery from its prompt.
+      disposition: input.disposition ?? null,
+      cleanup_diagnosis: input.cleanup_diagnosis === true
     };
     // Hand the session the hook that was installed BEFORE any state change
     // (UI-8mvc §2). Delivery creates nothing, which is why it belongs here even
@@ -2960,9 +3145,22 @@ export function createScheduler(deps) {
       recordSkipReason(workspace, bead_id, reason);
       return { ok: false, reason };
     }
+    const cleanup_diagnosis = prior.cleanup_diagnosis === true;
+    const diagnosis_result_path =
+      typeof prior.cleanup_diagnosis_result_path === 'string'
+        ? prior.cleanup_diagnosis_result_path
+        : null;
+    const diagnosis_prompt =
+      cleanup_diagnosis &&
+      typeof prior.task_prompt === 'string' &&
+      prior.task_prompt.length > 0
+        ? prior.task_prompt
+        : resumePrompt(bead_id, prior.status ?? null);
     const result = await relaunchFromAttempt(workspace, prior, {
-      prompt: resumePrompt(bead_id, prior.status ?? null),
-      conflict_resolution: false
+      prompt: diagnosis_prompt,
+      conflict_resolution: false,
+      cleanup_diagnosis,
+      cleanup_diagnosis_result_path: diagnosis_result_path
     });
     if (result.ok) {
       const cleared = deps.store.clearAdmission(workspace, bead_id);
@@ -3000,6 +3198,147 @@ export function createScheduler(deps) {
       '충돌은 양쪽 변경의 의도가 모두 보존되도록 해소하고, 레포의 테스트/검증을 돌려 통과시킨 뒤 브랜치에 push하라.',
       'PR 머지는 절대 수행하지 마라 — 머지는 사람이 버튼으로 한다.'
     ].join(' ');
+  }
+
+  /**
+   * @param {string} bead_id
+   * @param {{ step: string, reason: string, log_path?: string, output_tail?: string }} failure
+   * @param {string} result_path
+   * @returns {string}
+   */
+  function cleanupDiagnosisPrompt(bead_id, failure, result_path) {
+    return [
+      `bead ${bead_id}의 머지 후 정리 실패를 분류만 하라.`,
+      `실패 단계: ${failure.step}; 사유: ${failure.reason}.`,
+      `로그: ${failure.log_path || '없음'}; 출력 꼬리: ${failure.output_tail || '없음'}.`,
+      '허용 verdict는 flake, environment, regression뿐이다. 근거와 참조를 조사해 bead notes에 기록하라.',
+      'environment는 원인 수리 bead 생성을 제안까지만 하며, regression만 fix bead 생성까지 수행한다.',
+      '코드·테스트를 수정하거나, 테스트를 약화·삭제·skip 처리하지 마라. main을 직접 수정하지 마라.',
+      `종료 전 ${result_path}에 {"verdict":"flake|environment|regression","evidence":"...","refs":{"fix_bead_id":"..."}} JSON을 기록하라.`
+    ].join(' ');
+  }
+
+  /**
+   * Fresh, human-click diagnosis for a durable cleanup failure. It is
+   * cap-exempt like the existing conflict-resolution click and never resumes a
+   * prior coding session.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+   */
+  async function dispatchCleanupDiagnosis(workspace, bead_id) {
+    const q = deps.store.snapshot(workspace);
+    const failure = q.cleanup_failed?.[bead_id];
+    if (!failure) {
+      return { ok: false, reason: 'cleanup_failed_missing' };
+    }
+    if (activeBeadIdsFrom(q).has(bead_id)) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    /** @type {BeadSnapshot} */
+    let snap;
+    try {
+      snap = await deps.bd.snapshotBead(bead_id);
+    } catch {
+      return { ok: false, reason: 'bd_snapshot_failed' };
+    }
+    const repo = snap.repo;
+    const wt_present =
+      typeof deps.worktree.exists === 'function'
+        ? deps.worktree.exists(repo, bead_id)
+        : true;
+    if (!wt_present) {
+      return { ok: false, reason: 'worktree_missing' };
+    }
+    const resolved_exec = resolveDispatchSettings(workspace, snap);
+    if (!resolved_exec.ok) {
+      return { ok: false, reason: resolved_exec.reason };
+    }
+    const exec = resolved_exec.exec;
+    if (exec.invalid_reason) {
+      return { ok: false, reason: exec.invalid_reason };
+    }
+    const attempt_id = makeAttemptId(bead_id);
+    const wt_path =
+      typeof deps.worktree.pathFor === 'function'
+        ? deps.worktree.pathFor(repo, bead_id)
+        : '';
+    const result_path = path.join(
+      wt_path,
+      `.bdui-cleanup-diagnosis-${attempt_id}.json`
+    );
+    // `snapshotBead` is an await boundary. Re-read the failure and queue, then
+    // take the claim synchronously so a completed cleanup or concurrent click
+    // cannot race a stale diagnosis into the lane.
+    const latest_queue = deps.store.snapshot(workspace);
+    const latest_failure = latest_queue.cleanup_failed?.[bead_id];
+    if (!latest_failure) {
+      return { ok: false, reason: 'cleanup_failed_missing' };
+    }
+    if (activeBeadIdsFrom(latest_queue).has(bead_id)) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    if (
+      !installGuardHook({
+        workspace,
+        attempt_id,
+        repo,
+        target_base: snap.target_base || 'main'
+      })
+    ) {
+      return { ok: false, reason: 'guard_hook_install_failed' };
+    }
+    claimed.add(bead_id);
+    if (
+      !prerecordAttempt(workspace, {
+        attempt_id,
+        bead_id,
+        repo,
+        target_base: snap.target_base || 'main',
+        base_oid: null,
+        runner: exec.runner,
+        model: exec.orchestration_model ?? null,
+        effort: exec.orchestration_effort ?? null,
+        workflow_mode_prior: snap.workflow_mode ?? null,
+        exec_default_preset_id: resolved_exec.preset_id,
+        exec_default_preset_revision: resolved_exec.preset_revision,
+        exec_stamped_keys: null,
+        exec_values: execValuesFor(exec),
+        cleanup_diagnosis: true,
+        cleanup_diagnosis_result_path: result_path,
+        status: 'running',
+        pid: null
+      })
+    ) {
+      removeGuardHook(workspace, attempt_id);
+      claimed.delete(bead_id);
+      return { ok: false, reason: 'attempt_prerecord_failed' };
+    }
+    const launched = await launchSession({
+      workspace,
+      attempt_id,
+      bead_id,
+      repo,
+      target_base: snap.target_base || 'main',
+      base_oid: null,
+      runner_name: exec.runner,
+      model: exec.orchestration_model ?? null,
+      effort: exec.orchestration_effort ?? null,
+      prior_wf: snap.workflow_mode ?? null,
+      stamped_keys: [],
+      wt_path,
+      launch_kind: 'cleanup_diagnosis',
+      cleanup_diagnosis: true,
+      spawnBead: {
+        id: bead_id,
+        prompt: cleanupDiagnosisPrompt(bead_id, latest_failure, result_path)
+      }
+    });
+    if (!launched.ok) {
+      return { ok: false, reason: launched.reason || 'spawn_failed' };
+    }
+    return { ok: true, attempt_id };
   }
 
   /**
@@ -3432,7 +3771,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {any} prior - The source attempt record (guards already passed).
-   * @param {{ prompt: string, conflict_resolution: boolean, disposition?: string|null, disposition_receipt?: string|null, cwd?: string|null, resume?: boolean }} options
+   * @param {{ prompt: string, conflict_resolution: boolean, disposition?: string|null, disposition_receipt?: string|null, cleanup_diagnosis?: boolean, cleanup_diagnosis_result_path?: string|null, cwd?: string|null, resume?: boolean }} options
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function relaunchFromAttempt(workspace, prior, options) {
@@ -3544,6 +3883,9 @@ export function createScheduler(deps) {
           ? options.resume !== false
           : false,
         disposition_prompt: options.disposition ? options.prompt : null,
+        cleanup_diagnosis: options.cleanup_diagnosis === true,
+        cleanup_diagnosis_result_path:
+          options.cleanup_diagnosis_result_path ?? null,
         status: 'running',
         pid: null
       })
@@ -3672,15 +4014,18 @@ export function createScheduler(deps) {
       wt_path,
       launch_kind: options.disposition
         ? 'disposition'
-        : options.conflict_resolution
-          ? 'conflict'
-          : 'resume',
+        : options.cleanup_diagnosis
+          ? 'cleanup_diagnosis'
+          : options.conflict_resolution
+            ? 'conflict'
+            : 'resume',
       spawnBead: {
         id: bead_id,
         prompt: options.prompt
       },
       resume_session_id,
-      disposition: options.disposition ?? null
+      disposition: options.disposition ?? null,
+      cleanup_diagnosis: options.cleanup_diagnosis === true
     });
     if (!launched.ok) {
       return { ok: false, reason: launched.reason || 'spawn_failed' };
@@ -4193,6 +4538,7 @@ export function createScheduler(deps) {
     resume,
     resolveConflict,
     dispatchExternalConflict,
+    dispatchCleanupDiagnosis,
     dispatchReviseFix,
     reconcile,
     sweepClosedQueue,

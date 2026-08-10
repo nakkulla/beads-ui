@@ -64,6 +64,9 @@ import { stepperTemplate } from './stepper.js';
  * @property {(ev: Event, id: string) => void} [onRollupToggle]
  * @property {(ev: Event, id: string) => void} [onChildClick]
  * @property {(ev: Event, id: string) => void} [onFromChipClick]
+ * @property {(id: string) => Record<string, unknown>|null} [cleanupFailureFor]
+ * @property {(id: string) => boolean} [isCleanupDiagnosisPending]
+ * @property {(ev: Event, id: string) => void} [onCleanupDiagnose]
  * @property {import('../../utils/label-policy.js').DisplayPolicy | null} [policy]
  */
 
@@ -222,6 +225,63 @@ function chipsTemplate(issue, ctx) {
   }
   if (isChipEnabled(policy, 'blocked')) {
     items.push(...blockedChips(issue.blocked_info));
+  }
+  const cleanup_failure = ctx.cleanupFailureFor
+    ? ctx.cleanupFailureFor(issue.id)
+    : null;
+  if (cleanup_failure && isChipEnabled(policy, 'blocked')) {
+    const diagnosis_pending = ctx.isCleanupDiagnosisPending
+      ? ctx.isCleanupDiagnosisPending(issue.id)
+      : false;
+    const diagnosis = /** @type {any|null} */ (
+      cleanup_failure.diagnosis &&
+      typeof cleanup_failure.diagnosis === 'object' &&
+      !Array.isArray(cleanup_failure.diagnosis)
+        ? cleanup_failure.diagnosis
+        : null
+    );
+    items.push(
+      html`<span class="ctl-chip ctl-chip--cleanup">⚠ 정리 실패</span>`
+    );
+    if (diagnosis) {
+      const verdict =
+        diagnosis.malformed === true || diagnosis.verdict === 'malformed'
+          ? '판정 불가'
+          : String(diagnosis.verdict || '판정 불가');
+      const evidence =
+        typeof diagnosis.evidence === 'string'
+          ? diagnosis.evidence.trim().slice(0, 96)
+          : '';
+      const fix_bead =
+        typeof diagnosis.fix_bead_id === 'string' &&
+        diagnosis.fix_bead_id.length > 0
+          ? ` · fix ${diagnosis.fix_bead_id}`
+          : '';
+      const detail = evidence ? ` · ${evidence}` : '';
+      items.push(
+        html`<span
+          class="ctl-chip ctl-chip--cleanup board-card__cleanup-diagnosis"
+          title=${evidence}
+          >AI ${verdict}${detail}${fix_bead}</span
+        >`
+      );
+    }
+    items.push(
+      html`<button
+        type="button"
+        class="ctl-chip ctl-chip--cleanup board-card__cleanup-diagnose"
+        data-bead-id=${issue.id}
+        ?disabled=${diagnosis_pending}
+        title="정리 실패 원인을 AI 세션으로 분류합니다"
+        @click=${(/** @type {Event} */ ev) => {
+          if (ctx.onCleanupDiagnose) {
+            ctx.onCleanupDiagnose(ev, issue.id);
+          }
+        }}
+      >
+        AI 정리
+      </button>`
+    );
   }
   if (items.length === 0) {
     return '';

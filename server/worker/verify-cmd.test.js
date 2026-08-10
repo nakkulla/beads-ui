@@ -269,6 +269,39 @@ describe('worker/verify-cmd — pre-merge run pinned to a PR head sha (§5)', ()
     };
   }
 
+  /**
+   * Create a command script whose exit code changes after the first run.
+   *
+   * @param {number} first_exit
+   * @param {number} second_exit
+   * @returns {{ cmd: string[], state_file: string }}
+   */
+  function makeStatefulCommand(first_exit, second_exit) {
+    const state_file = path.join(
+      tmp_state,
+      `retry-state-${Date.now()}-${Math.random()}`
+    );
+    const script_file = path.join(
+      tmp_state,
+      `retry-command-${Date.now()}-${Math.random()}.js`
+    );
+    fs.writeFileSync(state_file, '0');
+    fs.writeFileSync(
+      script_file,
+      [
+        "import fs from 'node:fs';",
+        `const state_file = ${JSON.stringify(state_file)};`,
+        `const first_exit = ${first_exit};`,
+        `const second_exit = ${second_exit};`,
+        "const count = Number(fs.readFileSync(state_file, 'utf8')) + 1;",
+        'fs.writeFileSync(state_file, String(count));',
+        'const exit_code = count === 1 ? first_exit : second_exit;',
+        'process.exit(exit_code);'
+      ].join('\n')
+    );
+    return { cmd: [process.execPath, script_file], state_file };
+  }
+
   test('runs the command in a detached worktree pinned to the head sha', async () => {
     const { git } = fakeGit({ present: true });
     const worktree = fakeWorktree();
@@ -290,6 +323,139 @@ describe('worker/verify-cmd — pre-merge run pinned to a PR head sha (§5)', ()
       sha: SHA
     });
     expect(r.ok).toBe(true);
+  });
+
+  test('retries one command failure and returns the successful final attempt', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+    const command = makeStatefulCommand(3, 0);
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-retry',
+      sha: SHA,
+      pr_number: 304,
+      cmd: command.cmd,
+      timeout_ms: 10000,
+      retry_flaky: true,
+      worktree,
+      git
+    });
+
+    expect(r).toMatchObject({ ok: true, reason: 'ok', exit: 0 });
+    expect(r.attempts).toHaveLength(2);
+    expect(r.attempts?.map((attempt) => attempt.reason)).toEqual([
+      'verify_cmd_failed',
+      'ok'
+    ]);
+    expect(r.attempts?.[0].log_path).not.toBe(r.attempts?.[1].log_path);
+    expect(path.basename(String(r.attempts?.[0].log_path))).toContain(
+      '-r1.log'
+    );
+    expect(path.basename(String(r.attempts?.[1].log_path))).toContain(
+      '-r2.log'
+    );
+    expect(worktree.addDetached).toHaveBeenCalledTimes(2);
+    expect(worktree.removeDetached).toHaveBeenCalledTimes(2);
+    expect(fs.readFileSync(command.state_file, 'utf8')).toBe('2');
+  });
+
+  test('retries one command failure and returns the second failure', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+    const command = makeStatefulCommand(3, 4);
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-retry-red',
+      sha: SHA,
+      pr_number: 304,
+      cmd: command.cmd,
+      timeout_ms: 10000,
+      retry_flaky: true,
+      worktree,
+      git
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'verify_cmd_failed',
+      exit: 4
+    });
+    expect(r.attempts).toHaveLength(2);
+    expect(r.attempts?.map((attempt) => attempt.reason)).toEqual([
+      'verify_cmd_failed',
+      'verify_cmd_failed'
+    ]);
+    expect(r.log_path).toBe(r.attempts?.[1].log_path);
+    expect(worktree.addDetached).toHaveBeenCalledTimes(2);
+    expect(worktree.removeDetached).toHaveBeenCalledTimes(2);
+  });
+
+  test('returns one timeout attempt without retrying', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-retry-timeout',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'setTimeout(() => {}, 60000)'],
+      timeout_ms: 25,
+      retry_flaky: true,
+      worktree,
+      git
+    });
+
+    expect(r.reason).toBe('verify_cmd_timeout');
+    expect(r.attempts).toHaveLength(1);
+    expect(worktree.addDetached).toHaveBeenCalledTimes(1);
+    expect(worktree.removeDetached).toHaveBeenCalledTimes(1);
+  });
+
+  test('returns one spawn-error attempt without retrying', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-retry-spawn',
+      sha: SHA,
+      pr_number: 304,
+      cmd: ['bdui-definitely-not-a-binary-xyz'],
+      timeout_ms: 10000,
+      retry_flaky: true,
+      worktree,
+      git
+    });
+
+    expect(r.reason).toBe('verify_cmd_spawn_error');
+    expect(r.attempts).toHaveLength(1);
+    expect(worktree.addDetached).toHaveBeenCalledTimes(1);
+    expect(worktree.removeDetached).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the legacy result shape when retry is disabled', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+
+    const r = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-no-retry',
+      sha: SHA,
+      pr_number: 304,
+      cmd: [process.execPath, '-e', 'process.exit(3)'],
+      timeout_ms: 10000,
+      worktree,
+      git
+    });
+
+    expect(r.reason).toBe('verify_cmd_failed');
+    expect(r.attempts).toBeUndefined();
+    expect(path.basename(String(r.log_path))).not.toContain('-r1.log');
+    expect(worktree.addDetached).toHaveBeenCalledTimes(1);
+    expect(worktree.removeDetached).toHaveBeenCalledTimes(1);
   });
 
   test('skips the fetch when the repo already has the commit', async () => {

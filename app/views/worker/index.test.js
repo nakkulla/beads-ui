@@ -3268,18 +3268,21 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
   /**
    * @param {any} queue
+   * @param {any} [transport]
    */
-  function mountWith(queue) {
+  function mountWith(
+    queue,
+    transport = vi.fn(async () => ({ ok: true, action: 'merged' }))
+  ) {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(queue);
-    const transport = vi.fn(async () => ({ ok: true, action: 'merged' }));
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
       transport
     });
-    return { mount, transport };
+    return { mount, queueStore, transport };
   }
 
   const GREEN = {
@@ -3597,16 +3600,201 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     );
     const text = (banner.textContent || '').replace(/\s+/g, ' ');
     expect(text).toContain('child_sweep');
-    expect(text).toContain('자동 재시도는 하지 않습니다');
-    expect(text).toContain('resolved로 남아 있고');
+    expect(text).toContain('1회 자동 재시도 후에도 실패했습니다');
+    expect(text).toContain('[AI 정리]로 진단하거나');
     expect(banner.getAttribute('data-bead-id')).toBe('RD-1');
-    // The bead stays in the PR-wait row (not Done), and the only retry is the
-    // human's own click.
+    // The bead stays in the PR-wait row (not Done); the existing cleanup retry
+    // remains the human's click after any applicable bounded verify retry.
     const btn = /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-mini__merge')
     );
     expect(btn.disabled).toBe(false);
     expect(btn.getAttribute('title')).toContain('남은 정리를');
+  });
+
+  test('renders a cleanup diagnosis button and durable regression diagnosis', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'post_merge_verify',
+              reason: 'verify_cmd_failed',
+              diagnosis: {
+                verdict: 'regression',
+                attempt_id: 'diagnosis-1',
+                consumed: false,
+                evidence: '새 verify가 동일하게 실패합니다',
+                fix_bead_id: 'UI-fix'
+              }
+            }
+          }
+        }
+      )
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--cleanup')
+    );
+    const button = /** @type {HTMLButtonElement} */ (
+      banner.querySelector('.worker-banner__cleanup-diagnose')
+    );
+
+    expect(button.dataset.beadId).toBe('RD-1');
+    expect(button.disabled).toBe(false);
+    expect(banner.textContent).toContain('regression');
+    expect(banner.textContent).toContain('새 verify가 동일하게 실패합니다');
+    expect(banner.textContent).toContain('UI-fix');
+  });
+
+  test('renders a malformed cleanup diagnosis without offering automatic recovery', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'post_merge_verify',
+              reason: 'verify_cmd_failed',
+              diagnosis: {
+                verdict: 'malformed',
+                attempt_id: 'diagnosis-1',
+                consumed: false,
+                evidence: 'diagnosis result is absent',
+                malformed: true
+              }
+            }
+          }
+        }
+      )
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--cleanup')
+    );
+
+    expect(banner.textContent).toContain('진단 결과 형식 오류');
+    expect(banner.textContent).toContain('diagnosis result is absent');
+  });
+
+  test('disables the cleanup diagnosis button while its dispatch is in flight', async () => {
+    /** @type {(value: any) => void} */
+    let resolve_dispatch = () => {};
+    const transport = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolve_dispatch = resolve;
+        })
+    );
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': { step: 'post_merge_verify', reason: 'verify_cmd_failed' }
+          }
+        }
+      ),
+      transport
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-banner__cleanup-diagnose')
+    );
+    button.click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-cleanup-diagnose', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('.worker-banner__cleanup-diagnose')
+      ).disabled
+    ).toBe(true);
+
+    resolve_dispatch({ ok: true, conflict: false });
+    await flush();
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('.worker-banner__cleanup-diagnose')
+      ).disabled
+    ).toBe(false);
+  });
+
+  test('keeps the cleanup diagnosis button disabled for a durable running diagnosis attempt', () => {
+    const queue = queueWithGate(
+      {
+        enabled: false,
+        tier: 'merged',
+        gate_badge: '머지됨',
+        base_badge: '머지됨',
+        reason: null
+      },
+      {
+        cleanup_failed: {
+          'RD-1': { step: 'post_merge_verify', reason: 'verify_cmd_failed' }
+        }
+      }
+    );
+    const { mount, queueStore } = mountWith(queue);
+
+    queueStore.set({
+      ...queue,
+      attempts: {
+        diagnosis: {
+          attempt_id: 'diagnosis',
+          bead_id: 'RD-1',
+          cleanup_diagnosis: true,
+          status: 'running'
+        }
+      }
+    });
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('.worker-banner__cleanup-diagnose')
+      ).disabled
+    ).toBe(true);
+
+    queueStore.set({
+      ...queue,
+      attempts: {
+        diagnosis: {
+          attempt_id: 'diagnosis',
+          bead_id: 'RD-1',
+          cleanup_diagnosis: true,
+          status: 'done'
+        }
+      }
+    });
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('.worker-banner__cleanup-diagnose')
+      ).disabled
+    ).toBe(false);
   });
 
   test('shows the cleanup failure detail line when the record carries one', () => {

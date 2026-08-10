@@ -30,6 +30,7 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
+  diagnoseWorkerCleanup,
   discardWorkerPr,
   enrollWorkerMergeCandidates,
   kickWorkerMergeQueue,
@@ -1007,7 +1008,8 @@ export function handleGetWorkerSystemPrompt(ws, req) {
   });
   const disposition = applyPreamble('', {
     fast_track: true,
-    pr_submit: false
+    pr_submit: false,
+    disposition: true
   });
   ws.send(
     JSON.stringify(
@@ -2118,6 +2120,17 @@ export async function handleWorkerReviseFix(ws, req) {
  */
 export async function handleWorkerReviseApprove(ws, req) {
   await handleReviseDisposition(ws, req, reviseApproveWorkerBead);
+}
+
+/**
+ * Handle `worker-cleanup-diagnose`. The click uses the same revision-CAS and
+ * whole-queue fanout discipline as the existing worker disposition actions.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerCleanupDiagnose(ws, req) {
+  await handleReviseDisposition(ws, req, diagnoseWorkerCleanup);
 }
 
 /**

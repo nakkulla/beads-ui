@@ -185,23 +185,23 @@ export function defaultTaskPrompt(bead_id) {
  * adapter place each on its own channel — and what lets the spawn path record
  * exactly what was sent without reassembling it.
  *
- * `pr_submit: false` drops the PR-submit directive — the ONE session shape that
- * must not open a PR is the REVISE-disposition repair (UI-hs11 §3.3), which
- * commits a spec fix on the shared target_base checkout and ends. The SAME flag
- * selects the disposition guard-contract variant, because that is the same
- * session shape `command-guard.js` exempts from the hook-bypass and base-push
- * judgments.
+ * `pr_submit: false` drops the PR-submit directive. `disposition: true`
+ * independently selects the REVISE-disposition guard contract, whose base-push
+ * exemption is much broader than merely opening no PR. Cleanup diagnosis is the
+ * other no-PR shape: it keeps the ordinary guard contract and must never inherit
+ * the disposition exemption.
  *
  * `target_base` rides ALONGSIDE the PR-submit directive (§4): the session that
  * must open a PR is exactly the session that must know which base to open it
  * against, so a shape that opens none is told no base either.
  *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ fast_track?: boolean, pr_submit?: boolean, target_base?: string|null }} [options]
+ * @param {{ fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, target_base?: string|null }} [options]
  * @returns {{ system_prompt: string, task_prompt: string }}
  */
 export function applyPreamble(base_prompt, options = {}) {
   const pr_submit = options.pr_submit !== false;
+  const disposition = options.disposition === true;
   const parts = [UNATTENDED_PREAMBLE];
   if (options.fast_track) {
     parts.push(FAST_TRACK_DIRECTIVE);
@@ -214,7 +214,7 @@ export function applyPreamble(base_prompt, options = {}) {
       parts.push(prBaseDirective(target_base));
     }
   }
-  parts.push(guardContractDirective({ disposition: !pr_submit }));
+  parts.push(guardContractDirective({ disposition }));
   return {
     system_prompt: parts.join('\n\n'),
     task_prompt: String(base_prompt ?? '')
