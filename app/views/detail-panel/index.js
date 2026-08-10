@@ -6,7 +6,11 @@ import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
-import { execSettingsTemplate } from './exec-settings.js';
+import {
+  EXEC_KEYS,
+  execSettingRows,
+  execSettingsTemplate
+} from './exec-settings.js';
 import { createMdViewer } from './md-viewer.js';
 import { sessionHistoryTemplate } from './session-history.js';
 import { taskPromptTemplate } from './task-prompt.js';
@@ -41,9 +45,12 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<unknown>} [transport]
  * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
+ * @property {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [execPresetStore]
  * @property {{ get: (id: string) => { lines: unknown[] } | null, subscribe: (fn: () => void) => () => void }} [sessionLogStore]
  * @property {() => string | null | undefined} [getWorkspacePath]
  * @property {(id: string) => void} [onNavigate] - Navigate to a dependency id.
+ * @property {() => void} [onOpenExecPresets] - Close detail, move to Worker,
+ * and open the Worker-owned global execution-settings dialog.
  * @property {() => void} onClose - Invoked to request the overlay be closed.
  */
 
@@ -58,6 +65,7 @@ export function createDetailPanel(mount_element, options) {
   const transport = options.transport;
   const onNavigate = options.onNavigate;
   const queueStore = options.queueStore;
+  const execPresetStore = options.execPresetStore;
   const sessionLogStore = options.sessionLogStore;
 
   /** @type {string | null} */
@@ -66,6 +74,8 @@ export function createDetailPanel(mount_element, options) {
   let current = null;
   /** @type {Record<string, string>} */
   let exec_local = {};
+  let selected_preset_id = '';
+  let applying_preset = false;
 
   // Inline edit state. These live in the closure (not derived from `current`),
   // so an incoming subscription push re-render never wipes an open editor or the
@@ -519,6 +529,187 @@ export function createDetailPanel(mount_element, options) {
     return (q && /** @type {any} */ (q).runner_catalog) || null;
   }
 
+  /** @returns {{ revision: number, presets: any[] }|null} */
+  function execPresetState() {
+    const state = execPresetStore ? execPresetStore.get() : null;
+    if (!state || typeof state.revision !== 'number') {
+      return null;
+    }
+    return {
+      revision: state.revision,
+      presets: Array.isArray(state.presets) ? state.presets : []
+    };
+  }
+
+  /** @param {any} preset */
+  function presetIsIncompatible(preset) {
+    const settings =
+      preset && preset.settings && typeof preset.settings === 'object'
+        ? preset.settings
+        : {};
+    /** @param {string} key */
+    const valueOf = (key) =>
+      typeof settings[key] === 'string' ? settings[key] : '';
+    return execSettingRows({
+      selectedOf: valueOf,
+      effectiveOf: valueOf,
+      runner_catalog: runnerCatalog()
+    }).some((row) =>
+      row.groups.some((group) =>
+        group.options.some(
+          (option) =>
+            option.value === row.selected && option.label.endsWith('(비호환)')
+        )
+      )
+    );
+  }
+
+  /** @param {any} res */
+  function adoptExecPresets(res) {
+    if (
+      execPresetStore &&
+      res &&
+      typeof res.revision === 'number' &&
+      Array.isArray(res.presets)
+    ) {
+      execPresetStore.set({ revision: res.revision, presets: res.presets });
+    }
+  }
+
+  async function applyExecPreset() {
+    const state = execPresetState();
+    const preset = state?.presets.find(
+      (candidate) => candidate.id === selected_preset_id
+    );
+    if (
+      !transport ||
+      !current_id ||
+      !state ||
+      !preset ||
+      presetIsIncompatible(preset) ||
+      applying_preset
+    ) {
+      return;
+    }
+    applying_preset = true;
+    doRender();
+    try {
+      const res = /** @type {any} */ (
+        await Promise.resolve(
+          transport('apply-exec-preset', {
+            id: current_id,
+            preset_id: preset.id,
+            expected_revision: state.revision
+          })
+        )
+      );
+      if (res && res.conflict) {
+        adoptExecPresets(res);
+        showToast(
+          '프리셋이 변경됐습니다. 최신 목록에서 다시 적용하세요.',
+          'error',
+          4000
+        );
+        return;
+      }
+      const issue = res && Array.isArray(res.issue) ? res.issue[0] : res?.issue;
+      if (res && res.applied && issue && typeof issue === 'object') {
+        current = issue;
+        for (const key of EXEC_KEYS) {
+          delete exec_local[key];
+        }
+        showToast('실행 프리셋을 적용했습니다.', 'success', 2400);
+        return;
+      }
+      if (res && res.error === 'bd_readback_failed') {
+        showToast(
+          '설정은 전송됐지만 적용 여부 확인이 필요합니다.',
+          'error',
+          4000
+        );
+      } else {
+        showToast('실행 프리셋 적용 실패', 'error', 4000);
+      }
+    } catch (err) {
+      if (
+        err &&
+        typeof err === 'object' &&
+        /** @type {any} */ (err).code === 'bd_readback_failed'
+      ) {
+        showToast(
+          '설정은 전송됐지만 적용 여부 확인이 필요합니다.',
+          'error',
+          4000
+        );
+      } else {
+        showToast('실행 프리셋 적용 실패', 'error', 4000);
+      }
+    } finally {
+      applying_preset = false;
+      doRender();
+    }
+  }
+
+  function execPresetPanelTemplate() {
+    const state = execPresetState();
+    if (state && state.presets.length === 0) {
+      return html`<section class="detail-exec-presets">
+        <div class="detail-section-label">실행 프리셋</div>
+        <p>전역 실행 설정에서 프리셋을 추가하세요.</p>
+        <button
+          type="button"
+          data-open-exec-presets
+          @click=${() => options.onOpenExecPresets?.()}
+        >
+          전역 실행 설정 열기
+        </button>
+      </section>`;
+    }
+    const presets = state ? state.presets : [];
+    const selected = presets.find((preset) => preset.id === selected_preset_id);
+    const incompatible = selected ? presetIsIncompatible(selected) : false;
+    return html`<section class="detail-exec-presets">
+      <div class="detail-section-label">실행 프리셋</div>
+      <div class="detail-exec-presets__controls">
+        <select
+          data-exec-preset-select
+          aria-label="실행 프리셋"
+          ?disabled=${state === null || applying_preset}
+          @change=${(/** @type {Event} */ ev) => {
+            selected_preset_id = /** @type {HTMLSelectElement} */ (ev.target)
+              .value;
+            doRender();
+          }}
+        >
+          <option value="" ?selected=${selected_preset_id === ''}>
+            ${state === null ? '불러오는 중…' : '프리셋 선택'}
+          </option>
+          ${presets.map((preset) => {
+            const preset_incompatible = presetIsIncompatible(preset);
+            return html`<option
+              value=${preset.id}
+              ?selected=${preset.id === selected_preset_id}
+            >
+              ${preset.name}${preset_incompatible ? ' (비호환)' : ''}
+            </option>`;
+          })}
+        </select>
+        <button
+          type="button"
+          data-apply-exec-preset
+          ?disabled=${state === null ||
+          !selected ||
+          incompatible ||
+          applying_preset}
+          @click=${() => void applyExecPreset()}
+        >
+          10개 설정 적용
+        </button>
+      </div>
+      <p>적용하면 현재 이슈 실행 설정 전체를 교체합니다.</p>
+    </section>`;
+  }
+
   /** @type {null | (() => void)} */
   let unsubscribe = null;
   if (issueStores && issueStores.subscribe) {
@@ -529,6 +720,15 @@ export function createDetailPanel(mount_element, options) {
   if (queueStore && typeof queueStore.subscribe === 'function') {
     // A new/updated attempt should refresh the session-history list.
     unsubscribe_queue = queueStore.subscribe(() => {
+      if (current_id) {
+        doRender();
+      }
+    });
+  }
+  /** @type {null | (() => void)} */
+  let unsubscribe_presets = null;
+  if (execPresetStore && typeof execPresetStore.subscribe === 'function') {
+    unsubscribe_presets = execPresetStore.subscribe(() => {
       if (current_id) {
         doRender();
       }
@@ -1344,6 +1544,7 @@ export function createDetailPanel(mount_element, options) {
           ${notesTemplate(data)} ${labelsTemplate(data)} ${depsTemplate(data)}
           ${workflowTemplate(data)} ${workflowMetaTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
+          ${execPresetPanelTemplate()}
           ${execSettingsTemplate(
             effective,
             exec_handlers,
@@ -1379,6 +1580,7 @@ export function createDetailPanel(mount_element, options) {
     load(id) {
       if (id !== current_id) {
         exec_local = {};
+        selected_preset_id = '';
         resetEditors();
         resetComments();
         resetTaskPrompt();
@@ -1391,6 +1593,8 @@ export function createDetailPanel(mount_element, options) {
       current_id = null;
       current = null;
       exec_local = {};
+      selected_preset_id = '';
+      applying_preset = false;
       resetEditors();
       resetComments();
       resetTaskPrompt();
@@ -1407,6 +1611,10 @@ export function createDetailPanel(mount_element, options) {
         unsubscribe_queue();
         unsubscribe_queue = null;
       }
+      if (unsubscribe_presets) {
+        unsubscribe_presets();
+        unsubscribe_presets = null;
+      }
       document.removeEventListener('keydown', onKeydown);
       md_viewer.destroy();
       if (mv_mount.parentNode) {
@@ -1418,6 +1626,8 @@ export function createDetailPanel(mount_element, options) {
       }
       current_id = null;
       current = null;
+      selected_preset_id = '';
+      applying_preset = false;
       resetComments();
       resetTaskPrompt();
       render(html``, mount_element);

@@ -148,4 +148,96 @@ describe('main exec-preset subscription lifecycle', () => {
       )
     ).toHaveLength(2);
   });
+
+  test('keeps the worker queue channel while a detail panel is open', async () => {
+    bootstrap(setupShell());
+    await settle();
+
+    window.location.hash = '#/board?issue=UI-1';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await settle();
+
+    expect(
+      CLIENT.sent.filter(
+        (/** @type {{ type: string }} */ message) =>
+          message.type === 'subscribe-worker-queue'
+      )
+    ).toHaveLength(1);
+
+    window.location.hash = '#/board';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await settle();
+
+    expect(
+      CLIENT.sent.filter(
+        (/** @type {{ type: string }} */ message) =>
+          message.type === 'unsubscribe-worker-queue'
+      )
+    ).toHaveLength(1);
+  });
+
+  test('opens the Worker-owned global settings dialog from an empty detail preset state', async () => {
+    bootstrap(setupShell());
+    await settle();
+    CLIENT.trigger('exec-presets-snapshot', { revision: 0, presets: [] });
+    window.location.hash = '#/board?issue=UI-1';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await settle();
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('[data-open-exec-presets]')
+    ).click();
+    await settle();
+
+    expect(document.getElementById('detail-panel')?.hidden).toBe(true);
+    expect(document.getElementById('worker-root')?.hidden).toBe(false);
+    expect(
+      document
+        .querySelector('#worker-root #worker-exec-defaults-dialog')
+        ?.hasAttribute('open')
+    ).toBe(true);
+  });
+
+  test('shows the same preset snapshot in Worker and Monitor dialogs', async () => {
+    bootstrap(setupShell());
+    await settle();
+    CLIENT.trigger('exec-presets-snapshot', {
+      revision: 1,
+      presets: [{ id: 'p1', name: '공용 개발', settings: {} }]
+    });
+
+    window.location.hash = '#/worker';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await settle();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('#worker-root .worker-exec-defaults-btn')
+    ).click();
+    expect(
+      document.querySelector('#worker-root [data-preset-id="p1"]')?.textContent
+    ).toContain('공용 개발');
+
+    CLIENT.trigger('monitor-pipeline-snapshot', {
+      workspaces: [],
+      workspaces_state: [
+        {
+          root_dir: '/repo-a',
+          name: 'repo-a',
+          revision: 1,
+          slots: 1,
+          exec_defaults: {},
+          runner_catalog: { runners: {} }
+        }
+      ]
+    });
+    window.location.hash = '#/monitor';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await settle();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('#monitor-root .mon-ctl--exec')
+    ).click();
+
+    expect(
+      document.querySelector('#monitor-root [data-preset-id="p1"]')?.textContent
+    ).toContain('공용 개발');
+  });
 });

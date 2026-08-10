@@ -40,13 +40,39 @@ export const EXEC_KEYS = [
   'orchestration_effort',
   'spec_review_model',
   'spec_review_effort',
-  'impl_review_model',
-  'impl_review_effort',
   'plan_review_model',
   'plan_review_effort',
+  'impl_review_model',
+  'impl_review_effort',
   'impl_model',
   'impl_effort'
 ];
+
+/**
+ * User-facing execution-setting names and the two non-obvious fallback hints.
+ * Every execution-settings surface renders this table so labels cannot drift.
+ *
+ * @type {Record<string, { title: string, help?: string }>}
+ */
+export const EXEC_SETTING_PRESENTATION = {
+  orchestration_model: { title: '워커 실행 모델' },
+  orchestration_effort: { title: '워커 reasoning effort' },
+  spec_review_model: { title: '스펙 리뷰어' },
+  spec_review_effort: { title: '스펙 리뷰 reasoning effort' },
+  plan_review_model: { title: '계획 리뷰어' },
+  plan_review_effort: { title: '계획 리뷰 reasoning effort' },
+  impl_review_model: { title: '구현 리뷰어' },
+  impl_review_effort: { title: '구현 리뷰 reasoning effort' },
+  impl_model: {
+    title: '구현 모델',
+    help: '워크플로가 복잡 구현인지, 범위가 한정된 구현인지 판단해 현재 runtime의 구현용 모델을 선택합니다.'
+  },
+  impl_effort: {
+    title: '구현 reasoning effort',
+    help: '자동 선택이면 workflow tier에 선언된 effort를, 모델만 직접 지정했으면 해당 하위 에이전트 호출의 기본 effort를 사용합니다.'
+  },
+  workflow_mode: { title: '워크플로 모드' }
+};
 
 /**
  * Which `*_review_model` key gates each `*_review_effort` key (mqcj §4.4).
@@ -97,9 +123,26 @@ export const DEFAULT_LABELS = {
   impl_review_effort: '(기본: 프리셋)',
   plan_review_model: '(기본: codex)',
   plan_review_effort: '(기본: 프리셋)',
-  impl_model: '(기본: 티어 자동)',
-  impl_effort: '(기본: 리프 기본)'
+  impl_model: '(기본: 작업 성격에 따라 구현 모델 자동 선택)',
+  impl_effort: '(기본: 선택된 구현 에이전트의 reasoning effort 사용)'
 };
+
+/**
+ * Shared semantic label for an execution-setting row.
+ *
+ * @param {string} key
+ * @returns {TemplateResult}
+ */
+export function execSettingLabelTemplate(key) {
+  const presentation = EXEC_SETTING_PRESENTATION[key] || { title: key };
+  return html`<span data-exec-setting-label>
+    <span data-exec-setting-title>${presentation.title}</span>
+    <code data-exec-setting-key>${key}</code>
+    ${presentation.help
+      ? html`<small data-exec-setting-help=${key}>${presentation.help}</small>`
+      : ''}
+  </span>`;
+}
 
 /**
  * The `(기본)` option label for a key on the detail-panel (bead) surface: a bead
@@ -417,7 +460,7 @@ function selectRow(
 ) {
   return html`
     <div class="detail-kv">
-      <span class="detail-kv__k">${key}</span>
+      <span class="detail-kv__k">${execSettingLabelTemplate(key)}</span>
       <span class="detail-kv__vgroup">
         <select
           class=${highlight ? 'detail-kv__v detail-kv__v--sel' : 'detail-kv__v'}

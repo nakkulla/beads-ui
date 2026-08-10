@@ -2442,7 +2442,7 @@ describe('views/worker', () => {
       execSelect(dialog, 'spec_review_model').options[0].textContent
     ).toContain('기본: codex');
     expect(execSelect(dialog, 'impl_model').options[0].textContent).toContain(
-      '티어 자동'
+      '작업 성격에 따라 구현 모델 자동 선택'
     );
   });
 

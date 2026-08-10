@@ -88,6 +88,7 @@ const TICK_MS = 1_000;
  * @typedef {Object} MonitorViewOptions
  * @property {(id: string) => void} gotoIssue
  * @property {{ get: () => Array<Record<string, any>>|null, getWorkspacesState?: () => Array<Record<string, any>>, subscribe?: (fn: () => void) => () => void }} [pipelineStore]
+ * @property {any} [execPresetStore]
  * @property {(type: string, payload?: unknown) => Promise<any>} [transport] -
  * 워커 mutation 전송 경로 (Worker 뷰와 같은 시그니처).
  * @property {() => string|undefined} [getWorkspacePath] - 이 연결이 지금 보고 있는 repo의 root.
@@ -168,6 +169,7 @@ export function createMonitorView(mount_element, options) {
   const gotoIssue = options.gotoIssue;
   const pipelineStore = options.pipelineStore;
   const transport = options.transport;
+  const execPresetStore = options.execPresetStore;
   const getWorkspacePath = options.getWorkspacePath;
   const switchWorkspace = options.switchWorkspace;
   const nowFn = options.now || (() => Date.now());
@@ -245,6 +247,7 @@ export function createMonitorView(mount_element, options) {
       return {
         revision: group ? group.revision : 0,
         exec_defaults: group ? group.exec_defaults : {},
+        runner_catalog: group ? group.runner_catalog : null,
         workspace_info: workspace ? workspace.workspace_info : undefined
       };
     },
@@ -266,13 +269,23 @@ export function createMonitorView(mount_element, options) {
 
   const exec_defaults_dialog = createExecDefaultsDialog(mount_element, {
     queueStore: exec_store,
+    presetStore: execPresetStore,
     // 다이얼로그는 workspace를 모른다 — 대상 레포는 전송 경로가 실어 준다.
     transport: transport
-      ? (/** @type {any} */ type, /** @type {any} */ payload) =>
-          transport(type, {
-            .../** @type {Record<string, unknown>} */ (payload || {}),
-            root_dir: exec_target
-          })
+      ? (/** @type {any} */ type, /** @type {any} */ payload) => {
+          const workspace_scoped =
+            type === 'worker-queue-set-exec-default' ||
+            type === 'get-worker-system-prompt';
+          return transport(
+            type,
+            workspace_scoped
+              ? {
+                  .../** @type {Record<string, unknown>} */ (payload || {}),
+                  root_dir: exec_target
+                }
+              : payload
+          );
+        }
       : undefined,
     getWorkspacePath: () => exec_target || undefined
   });

@@ -505,11 +505,13 @@ export function bootstrap(root_element) {
      * ask again (the re-entry that raced it was skipped by the pending guard).
      */
     function syncSubscriptionsToView() {
-      const view = store.getState().view;
-      ensureBoardSubscriptions(view === 'board');
-      ensureWorkerSubscriptions(view === 'worker');
-      ensureMonitorPipelineChannel(view === 'monitor');
-      ensureWorkerQueueChannel(view === 'worker');
+      const state = store.getState();
+      ensureBoardSubscriptions(state.view === 'board');
+      ensureWorkerSubscriptions(state.view === 'worker');
+      ensureMonitorPipelineChannel(state.view === 'monitor');
+      ensureWorkerQueueChannel(
+        state.view === 'worker' || Boolean(state.selected_id)
+      );
     }
 
     // Closed column period (spec §3.2): the closed-issues subscription carries a
@@ -920,11 +922,13 @@ export function bootstrap(root_element) {
         }
       }
       subscribeDisplayPolicy();
-      const view = store.getState().view;
-      ensureBoardSubscriptions(view === 'board');
-      ensureWorkerSubscriptions(view === 'worker');
-      ensureMonitorPipelineChannel(view === 'monitor');
-      ensureWorkerQueueChannel(view === 'worker');
+      const state = store.getState();
+      ensureBoardSubscriptions(state.view === 'board');
+      ensureWorkerSubscriptions(state.view === 'worker');
+      ensureMonitorPipelineChannel(state.view === 'monitor');
+      ensureWorkerQueueChannel(
+        state.view === 'worker' || Boolean(state.selected_id)
+      );
     }
 
     // --- Workspace management ---
@@ -958,7 +962,9 @@ export function bootstrap(root_element) {
       ensureBoardSubscriptions(current_state.view === 'board');
       ensureWorkerSubscriptions(current_state.view === 'worker');
       ensureMonitorPipelineChannel(current_state.view === 'monitor');
-      ensureWorkerQueueChannel(current_state.view === 'worker');
+      ensureWorkerQueueChannel(
+        current_state.view === 'worker' || Boolean(current_state.selected_id)
+      );
       if (current_state.selected_id) {
         scheduleDetailSubscription(current_state.selected_id);
       }
@@ -1251,7 +1257,13 @@ export function bootstrap(root_element) {
     // result — but `get-comments` returns `[]` on a genuinely empty issue, so
     // the swallow would make a bd failure indistinguishable from "no comments"
     // and the detail panel could never show it.
-    const PROPAGATED_ERROR_TYPES = new Set(['get-comments']);
+    const PROPAGATED_ERROR_TYPES = new Set([
+      'get-comments',
+      'exec-preset-create',
+      'exec-preset-update',
+      'exec-preset-delete',
+      'apply-exec-preset'
+    ]);
 
     /**
      * @param {string} type
@@ -1360,6 +1372,7 @@ export function bootstrap(root_element) {
       transport,
       issueStores: sub_issue_stores,
       queueStore: worker_queue_store,
+      execPresetStore: exec_preset_store,
       sessionLogStore: session_log_store,
       uiOrderStore: ui_order_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),
@@ -1374,6 +1387,7 @@ export function bootstrap(root_element) {
     const monitor_view = createMonitorView(monitor_root, {
       transport,
       pipelineStore: monitor_pipeline_store,
+      execPresetStore: exec_preset_store,
       gotoIssue: (id) => router.gotoIssue(id),
       getWorkspacePath: () => store.getState().workspace.current?.path,
       switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir)
@@ -1384,6 +1398,7 @@ export function bootstrap(root_element) {
       issueStores: sub_issue_stores,
       transport,
       queueStore: worker_queue_store,
+      execPresetStore: exec_preset_store,
       sessionLogStore: session_log_store,
       getWorkspacePath: () => store.getState().workspace.current?.path,
       onNavigate: (id) => {
@@ -1405,6 +1420,11 @@ export function bootstrap(root_element) {
         } catch {
           // ignore
         }
+      },
+      onOpenExecPresets: () => {
+        store.setState({ selected_id: null });
+        router.gotoView('worker');
+        worker_view.openExecDefaults();
       }
     });
 
@@ -1444,7 +1464,7 @@ export function bootstrap(root_element) {
       ensureBoardSubscriptions(s.view === 'board');
       ensureWorkerSubscriptions(s.view === 'worker');
       ensureMonitorPipelineChannel(s.view === 'monitor');
-      ensureWorkerQueueChannel(s.view === 'worker');
+      ensureWorkerQueueChannel(s.view === 'worker' || Boolean(s.selected_id));
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
       }

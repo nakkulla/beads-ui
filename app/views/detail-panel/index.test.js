@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { createExecPresetStore } from '../../data/exec-preset-store.js';
 import { createSessionLogStore } from '../../data/session-log-store.js';
 import { createSubscriptionIssueStores } from '../../data/subscription-issue-stores.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
@@ -841,6 +842,225 @@ describe('views/detail-panel', () => {
     ).toEqual(['claude', 'codex']);
     expect(mount.querySelector('select[data-key="worker_runner"]')).toBe(null);
     expect(mount.querySelector('select[data-key="review_model"]')).toBe(null);
+
+    panel.destroy();
+  });
+
+  test('applies the selected preset and keeps the workflow_mode optimistic edit', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        exec_defaults: {},
+        attempts: {},
+        runner_catalog: {
+          runners: {
+            codex: {
+              models: { terra: { id: 'terra' } },
+              efforts: ['low', 'medium', 'high']
+            }
+          }
+        }
+      })
+    );
+    const execPresetStore = createExecPresetStore();
+    execPresetStore.set({
+      revision: 4,
+      presets: [{ id: 'p1', name: '개발', settings: { impl_model: 'terra' } }]
+    });
+    const transport = vi.fn(async (type) => {
+      if (type === 'apply-exec-preset') {
+        return {
+          applied: true,
+          conflict: false,
+          revision: 4,
+          issue: {
+            id: 'UI-1',
+            title: 't',
+            metadata: { impl_model: 'terra' }
+          }
+        };
+      }
+      return null;
+    });
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      queueStore,
+      execPresetStore,
+      transport,
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:UI-1', {
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    issueStores.getStore('detail:UI-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: /** @type {any} */ ([{ id: 'UI-1', title: 't', metadata: {} }])
+    });
+    panel.load('UI-1');
+    const workflow = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-key="workflow_mode"]')
+    );
+    workflow.value = 'fast_track';
+    workflow.dispatchEvent(new Event('change', { bubbles: true }));
+    const preset = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-exec-preset-select]')
+    );
+    preset.value = 'p1';
+    preset.dispatchEvent(new Event('change', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-apply-exec-preset]')
+    ).click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('apply-exec-preset', {
+      id: 'UI-1',
+      preset_id: 'p1',
+      expected_revision: 4
+    });
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-key="impl_model"]')
+      ).value
+    ).toBe('terra');
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-key="workflow_mode"]')
+      ).value
+    ).toBe('fast_track');
+
+    panel.destroy();
+  });
+
+  test('disables applying a preset that is incompatible with the catalog', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const execPresetStore = createExecPresetStore();
+    execPresetStore.set({
+      revision: 1,
+      presets: [
+        { id: 'p1', name: '과거 설정', settings: { impl_model: 'retired' } }
+      ]
+    });
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        attempts: {},
+        runner_catalog: {
+          runners: { codex: { models: { terra: {} }, efforts: ['high'] } }
+        }
+      })
+    );
+    const panel = createDetailPanel(mount, {
+      queueStore,
+      execPresetStore,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+    const preset = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-exec-preset-select]')
+    );
+    preset.value = 'p1';
+    preset.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(preset.options[preset.selectedIndex].textContent).toContain(
+      '비호환'
+    );
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('[data-apply-exec-preset]')
+      ).disabled
+    ).toBe(true);
+
+    panel.destroy();
+  });
+
+  test('disables preset controls before the first global snapshot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const execPresetStore = createExecPresetStore();
+    const panel = createDetailPanel(mount, {
+      execPresetStore,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-exec-preset-select]')
+      ).disabled
+    ).toBe(true);
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('[data-apply-exec-preset]')
+      ).disabled
+    ).toBe(true);
+
+    panel.destroy();
+  });
+
+  test('opens global settings from the empty preset state', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const execPresetStore = createExecPresetStore();
+    execPresetStore.set({ revision: 0, presets: [] });
+    const onOpenExecPresets = vi.fn();
+    const panel = createDetailPanel(mount, {
+      execPresetStore,
+      onOpenExecPresets,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-open-exec-presets]')
+    ).click();
+
+    expect(onOpenExecPresets).toHaveBeenCalledTimes(1);
+    panel.destroy();
+  });
+
+  test('adopts the authoritative preset snapshot on an apply conflict', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const execPresetStore = createExecPresetStore();
+    execPresetStore.set({
+      revision: 2,
+      presets: [{ id: 'p1', name: '이전', settings: {} }]
+    });
+    const transport = vi.fn().mockResolvedValue({
+      applied: false,
+      conflict: true,
+      revision: 3,
+      presets: [{ id: 'p2', name: '최신', settings: {} }]
+    });
+    const panel = createDetailPanel(mount, {
+      execPresetStore,
+      transport,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+    const preset = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-exec-preset-select]')
+    );
+    preset.value = 'p1';
+    preset.dispatchEvent(new Event('change', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-apply-exec-preset]')
+    ).click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(execPresetStore.get()?.revision).toBe(3);
+    expect(
+      Array.from(
+        /** @type {HTMLSelectElement} */ (
+          mount.querySelector('[data-exec-preset-select]')
+        ).options
+      ).map((option) => option.textContent?.trim())
+    ).toContain('최신');
 
     panel.destroy();
   });

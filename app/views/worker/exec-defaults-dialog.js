@@ -3,6 +3,9 @@ import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import {
   DEFAULT_LABELS,
+  EXEC_KEYS,
+  EXEC_SETTING_PRESENTATION,
+  execSettingLabelTemplate,
   execSettingRows,
   selectOptionsTemplate
 } from '../detail-panel/exec-settings.js';
@@ -32,8 +35,10 @@ import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
  * which is the security boundary.
  *
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
+ * @typedef {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} PresetStore
  * @typedef {Object} ExecDefaultsOptions
  * @property {QueueStore} queueStore
+ * @property {PresetStore} [presetStore]
  * @property {(type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<any>} [transport]
  * @property {() => (string|undefined)} [getWorkspacePath] - Current workspace
  * path, used only to name the `[worker.deploy."<path>"]` section a user must
@@ -119,7 +124,7 @@ function truncateDetail(text) {
  * @returns {{ open: () => void, close: () => void, destroy: () => void }}
  */
 export function createExecDefaultsDialog(mount_element, options) {
-  const { queueStore, transport, getWorkspacePath } = options;
+  const { queueStore, presetStore, transport, getWorkspacePath } = options;
 
   const dialog = /** @type {HTMLDialogElement} */ (
     document.createElement('dialog')
@@ -129,6 +134,10 @@ export function createExecDefaultsDialog(mount_element, options) {
   dialog.setAttribute('role', 'dialog');
   dialog.setAttribute('aria-modal', 'true');
   mount_element.appendChild(dialog);
+
+  /** @type {{ id: string|null, name: string, settings: Record<string, string> }|null} */
+  let preset_draft = null;
+  let preset_conflict = false;
 
   /**
    * @returns {any} Current queue snapshot (or an empty shape, mirroring the
@@ -154,6 +163,30 @@ export function createExecDefaultsDialog(mount_element, options) {
   function currentDefaults() {
     const d = currentQueue().exec_defaults;
     return d && typeof d === 'object' ? d : {};
+  }
+
+  /** @returns {{ revision: number, presets: any[] }|null} */
+  function currentPresetState() {
+    const state = presetStore ? presetStore.get() : null;
+    if (!state || typeof state.revision !== 'number') {
+      return null;
+    }
+    return {
+      revision: state.revision,
+      presets: Array.isArray(state.presets) ? state.presets : []
+    };
+  }
+
+  /** @param {any} res */
+  function adoptPresets(res) {
+    if (
+      presetStore &&
+      res &&
+      typeof res.revision === 'number' &&
+      Array.isArray(res.presets)
+    ) {
+      presetStore.set({ revision: res.revision, presets: res.presets });
+    }
   }
 
   /**
@@ -230,7 +263,7 @@ export function createExecDefaultsDialog(mount_element, options) {
   function selectRow(row) {
     const { key } = row;
     return html`<div class="exec-defaults__row">
-      <span class="exec-defaults__k">${key}</span>
+      <span class="exec-defaults__k">${execSettingLabelTemplate(key)}</span>
       <select
         class="exec-defaults__sel"
         aria-label=${`전역 ${key}`}
@@ -251,6 +284,310 @@ export function createExecDefaultsDialog(mount_element, options) {
           >`
         : ''}
     </div>`;
+  }
+
+  /** @param {any} preset */
+  function editPreset(preset) {
+    preset_draft = {
+      id: preset.id,
+      name: preset.name,
+      settings: { ...(preset.settings || {}) }
+    };
+    preset_conflict = false;
+    doRender();
+  }
+
+  function newPreset() {
+    preset_draft = { id: null, name: '', settings: {} };
+    preset_conflict = false;
+    doRender();
+  }
+
+  /** @param {any} preset */
+  function presetIsIncompatible(preset) {
+    const settings =
+      preset && preset.settings && typeof preset.settings === 'object'
+        ? preset.settings
+        : {};
+    /** @param {string} key */
+    const valueOf = (key) =>
+      typeof settings[key] === 'string' ? settings[key] : '';
+    return execSettingRows({
+      selectedOf: valueOf,
+      effectiveOf: valueOf,
+      runner_catalog: currentCatalog()
+    }).some((row) =>
+      row.groups.some((group) =>
+        group.options.some(
+          (option) =>
+            option.value === row.selected && option.label.endsWith('(비호환)')
+        )
+      )
+    );
+  }
+
+  /** @param {any} preset */
+  function presetSummary(preset) {
+    const settings =
+      preset && preset.settings && typeof preset.settings === 'object'
+        ? preset.settings
+        : {};
+    const count = EXEC_KEYS.filter(
+      (key) => typeof settings[key] === 'string'
+    ).length;
+    const model_keys = [
+      'orchestration_model',
+      'spec_review_model',
+      'plan_review_model',
+      'impl_review_model',
+      'impl_model'
+    ];
+    const choices = model_keys
+      .filter((key) => typeof settings[key] === 'string')
+      .map(
+        (key) =>
+          `${EXEC_SETTING_PRESENTATION[key]?.title || key}: ${settings[key]}`
+      );
+    return {
+      count: `${count}/10 지정`,
+      choices: choices.length > 0 ? choices.join(' · ') : '모든 항목 기본값'
+    };
+  }
+
+  /** @param {any} preset */
+  async function deletePreset(preset) {
+    if (!transport) {
+      return;
+    }
+    if (
+      !window.confirm(
+        `“${preset.name}” 프리셋을 삭제할까요? 이미 적용된 이슈는 변경되지 않습니다.`
+      )
+    ) {
+      return;
+    }
+    const state = currentPresetState();
+    if (!state) {
+      return;
+    }
+    try {
+      const res = await transport('exec-preset-delete', {
+        expected_revision: state.revision,
+        id: preset.id
+      });
+      adoptPresets(res);
+      if (res && res.conflict) {
+        showToast(
+          '프리셋이 다른 곳에서 변경됐습니다. 다시 확인하세요.',
+          'error',
+          4000
+        );
+      }
+    } catch {
+      showToast('프리셋 삭제 실패', 'error', 4000);
+    }
+  }
+
+  /** @param {boolean} [as_new] */
+  async function savePresetDraft(as_new = false) {
+    if (!transport || !preset_draft) {
+      return;
+    }
+    const state = currentPresetState();
+    if (!state) {
+      return;
+    }
+    const create = as_new || preset_draft.id === null;
+    const payload = {
+      expected_revision: state.revision,
+      ...(create ? {} : { id: preset_draft.id }),
+      name: preset_draft.name,
+      settings: { ...preset_draft.settings }
+    };
+    try {
+      const res = await transport(
+        create ? 'exec-preset-create' : 'exec-preset-update',
+        payload
+      );
+      adoptPresets(res);
+      if (res && res.conflict) {
+        preset_conflict = true;
+        doRender();
+        return;
+      }
+      if (res && res.applied) {
+        preset_draft = null;
+        preset_conflict = false;
+        doRender();
+        return;
+      }
+      showToast('프리셋 저장 실패', 'error', 4000);
+    } catch {
+      showToast('프리셋 저장 실패', 'error', 4000);
+    }
+  }
+
+  /** @param {import('../detail-panel/exec-settings.js').ExecRow} row */
+  function presetSelectRow(row) {
+    return html`<div class="exec-defaults__row exec-preset-editor__row">
+      <span class="exec-defaults__k">${execSettingLabelTemplate(row.key)}</span>
+      <select
+        class="exec-defaults__sel"
+        data-preset-key=${row.key}
+        ?disabled=${row.disabled}
+        @change=${(/** @type {Event} */ ev) => {
+          if (!preset_draft) {
+            return;
+          }
+          const value = /** @type {HTMLSelectElement} */ (ev.target).value;
+          if (value) {
+            preset_draft.settings[row.key] = value;
+          } else {
+            delete preset_draft.settings[row.key];
+          }
+          preset_conflict = false;
+          doRender();
+        }}
+      >
+        ${selectOptionsTemplate(
+          row.groups,
+          row.selected,
+          DEFAULT_LABELS[row.key] || '(기본)'
+        )}
+      </select>
+    </div>`;
+  }
+
+  function presetEditor() {
+    if (!preset_draft) {
+      return '';
+    }
+    /** @param {string} key */
+    const valueOf = (key) =>
+      typeof preset_draft?.settings[key] === 'string'
+        ? preset_draft.settings[key]
+        : '';
+    const rows = execSettingRows({
+      selectedOf: valueOf,
+      effectiveOf: valueOf,
+      runner_catalog: currentCatalog()
+    });
+    const state = currentPresetState();
+    const deleted =
+      preset_draft.id !== null &&
+      state !== null &&
+      !state.presets.some((preset) => preset.id === preset_draft?.id);
+    return html`<div class="exec-preset-editor" data-preset-editor>
+      <label class="exec-preset-editor__name">
+        프리셋 이름
+        <input
+          type="text"
+          value=${preset_draft.name}
+          data-preset-name
+          @input=${(/** @type {Event} */ ev) => {
+            if (preset_draft) {
+              preset_draft.name = /** @type {HTMLInputElement} */ (
+                ev.target
+              ).value;
+              preset_conflict = false;
+            }
+          }}
+        />
+      </label>
+      ${preset_conflict
+        ? html`<p class="exec-preset-editor__conflict" data-preset-conflict>
+            다른 곳에서 변경됨 — 최신 목록을 확인한 뒤 다시 저장하세요.
+          </p>`
+        : ''}
+      ${deleted
+        ? html`<p class="exec-preset-editor__conflict">
+            편집하던 프리셋이 다른 곳에서 삭제됐습니다.
+          </p>`
+        : ''}
+      ${rows.map(presetSelectRow)}
+      <div class="exec-preset-editor__actions">
+        ${deleted
+          ? html`<button
+              type="button"
+              data-preset-save-as-new
+              @click=${() => void savePresetDraft(true)}
+            >
+              새 프리셋으로 저장
+            </button>`
+          : html`<button
+              type="button"
+              data-preset-save
+              @click=${() => void savePresetDraft(false)}
+            >
+              저장
+            </button>`}
+        <button
+          type="button"
+          data-preset-cancel
+          @click=${() => {
+            preset_draft = null;
+            preset_conflict = false;
+            doRender();
+          }}
+        >
+          취소
+        </button>
+      </div>
+    </div>`;
+  }
+
+  function presetSection() {
+    const state = currentPresetState();
+    return html`<section class="exec-presets" data-exec-presets>
+      <div class="exec-presets__heading">
+        <h3>공용 실행 프리셋</h3>
+        <button type="button" data-preset-new @click=${newPreset}>
+          + 새 프리셋
+        </button>
+      </div>
+      <p class="exec-defaults__hint">
+        모든 워크스페이스에서 공유하며, 이슈에 적용하면 값이 복사됩니다.
+      </p>
+      ${state === null
+        ? html`<p class="exec-presets__empty">프리셋을 불러오는 중…</p>`
+        : state.presets.length === 0
+          ? html`<p class="exec-presets__empty">
+              아직 공용 프리셋이 없습니다.
+            </p>`
+          : state.presets.map((preset) => {
+              const summary = presetSummary(preset);
+              return html`<article
+                class="exec-preset-card"
+                data-preset-id=${preset.id}
+              >
+                <div class="exec-preset-card__main">
+                  <strong>${preset.name}</strong>
+                  <span>${summary.count}</span>
+                  ${presetIsIncompatible(preset)
+                    ? html`<span data-preset-incompatible>비호환</span>`
+                    : ''}
+                  <small>${summary.choices}</small>
+                </div>
+                <div class="exec-preset-card__actions">
+                  <button
+                    type="button"
+                    data-preset-edit=${preset.id}
+                    @click=${() => editPreset(preset)}
+                  >
+                    편집
+                  </button>
+                  <button
+                    type="button"
+                    data-preset-delete=${preset.id}
+                    @click=${() => void deletePreset(preset)}
+                  >
+                    삭제
+                  </button>
+                </div>
+              </article>`;
+            })}
+      ${presetEditor()}
+    </section>`;
   }
 
   /**
@@ -557,12 +894,16 @@ export function createExecDefaultsDialog(mount_element, options) {
             </button>
           </header>
           <div class="exec-defaults__body">
-            <p class="exec-defaults__hint">
-              워크스페이스 전역 기본값입니다. bead metadata가 우선하며, '(기본:
-              …)'은 이 전역값도 미설정일 때 실제 적용되는 하드코딩·CLI·워크플로
-              기본입니다.
-            </p>
-            ${rows.map((row) => selectRow(row))}
+            ${presetSection()}
+            <section class="exec-defaults__workspace">
+              <h3>현재 워크스페이스 기본값</h3>
+              <p class="exec-defaults__hint">
+                현재 워크스페이스에만 적용됩니다. bead metadata가 우선하며,
+                '(기본: …)'은 이 전역값도 미설정일 때 실제 적용되는
+                하드코딩·CLI·워크플로 기본입니다.
+              </p>
+              ${rows.map((row) => selectRow(row))}
+            </section>
             ${verifyDeploySection(currentWorkspaceInfo())}
             ${systemPromptSection()}
           </div>
@@ -588,6 +929,15 @@ export function createExecDefaultsDialog(mount_element, options) {
   let unsubscribe_queue = null;
   if (queueStore && queueStore.subscribe) {
     unsubscribe_queue = queueStore.subscribe(() => {
+      if (is_open) {
+        doRender();
+      }
+    });
+  }
+  /** @type {null | (() => void)} */
+  let unsubscribe_presets = null;
+  if (presetStore && presetStore.subscribe) {
+    unsubscribe_presets = presetStore.subscribe(() => {
       if (is_open) {
         doRender();
       }
@@ -629,6 +979,10 @@ export function createExecDefaultsDialog(mount_element, options) {
       if (unsubscribe_queue) {
         unsubscribe_queue();
         unsubscribe_queue = null;
+      }
+      if (unsubscribe_presets) {
+        unsubscribe_presets();
+        unsubscribe_presets = null;
       }
       dialog.remove();
     }
