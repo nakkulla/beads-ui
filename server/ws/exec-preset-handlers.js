@@ -6,7 +6,11 @@
  */
 import { makeError, makeOk } from '../../app/protocol.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
-import { EXEC_SETTING_KEYS, execSettingEnums } from '../worker/exec-enums.js';
+import {
+  EXEC_SETTING_KEYS,
+  execSettingEnums,
+  validateImplSettings
+} from '../worker/exec-enums.js';
 import { runBdInWorkspace, runBdJsonInWorkspace } from './context.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
 
@@ -158,7 +162,7 @@ export function handleExecPresetDelete(ws, req) {
 }
 
 /**
- * Apply one preset to all 10 issue metadata keys without changing preset state.
+ * Apply one preset to all 11 issue metadata keys without changing preset state.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -226,12 +230,31 @@ export async function handleApplyExecPreset(ws, req) {
       return;
     }
   }
+  const coherence = validateImplSettings(preset.settings, {
+    active_writer: false
+  });
+  if (!coherence.ok) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'exec_preset_incompatible',
+          `Execution preset value is incompatible: ${coherence.reason}`
+        )
+      )
+    );
+    return;
+  }
+  const apply_settings =
+    coherence.inferred && typeof coherence.impl_runtime === 'string'
+    ? { ...preset.settings, impl_runtime: coherence.impl_runtime }
+    : preset.settings;
 
   let updated;
   try {
     updated = await runBdInWorkspace(
       ws,
-      buildApplyExecPresetArgs(id, preset.settings)
+      buildApplyExecPresetArgs(id, apply_settings)
     );
   } catch (err) {
     ws.send(

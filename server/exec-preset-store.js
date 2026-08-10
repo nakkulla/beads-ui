@@ -14,7 +14,11 @@
 import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
-import { EXEC_SETTING_KEYS, execSettingEnums } from './worker/exec-enums.js';
+import {
+  EXEC_SETTING_KEYS,
+  execSettingEnums,
+  validateImplSettings
+} from './worker/exec-enums.js';
 import { execPresetsFilePath } from './worker/state-paths.js';
 
 /**
@@ -164,6 +168,9 @@ export function createExecPresetStore(options = {}) {
         return null;
       }
       normalized_settings[key] = value;
+    }
+    if (!validateImplSettings(normalized_settings).ok) {
+      return null;
     }
     return { name: trimmed_name, settings: normalized_settings };
   }

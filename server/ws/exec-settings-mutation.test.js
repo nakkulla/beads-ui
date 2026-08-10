@@ -141,6 +141,18 @@ describe('handleUpdateExecSettings', () => {
     ]);
   });
 
+  test('rejects a model-only implementation write before calling bd', async () => {
+    const { ws, sent } = fakeWs();
+    await handleUpdateExecSettings(ws, {
+      id: 'r3d',
+      type: 'update-exec-settings',
+      payload: { id: 'UI-1', key: 'impl_model', value: 'terra' }
+    });
+
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+    expect(sent[0].error.message).toContain('impl_runtime_required');
+  });
+
   test('unknown key is rejected', async () => {
     const { ws, sent } = fakeWs();
     await handleUpdateExecSettings(ws, {

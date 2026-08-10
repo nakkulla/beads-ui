@@ -1796,9 +1796,10 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
 
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     const a = /** @type {any} */ (env.store.snapshot(WS).attempts[attempt_id]);
-    // Only the global-filled impl_model is stamped; the bead-set spec_review_model
-    // is not (its value is the bead's own, not the global 'codex').
-    expect(a.exec_stamped_keys).toEqual(['impl_model']);
+    // A global exact model gets its inferred provider stamp too; the bead-set
+    // spec_review_model is not stamped (it is the bead's own value).
+    expect(a.exec_stamped_keys).toEqual(['impl_runtime', 'impl_model']);
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'impl_runtime')).toBe(true);
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'impl_model')).toBe(true);
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'spec_review_model')).toBe(
       false
@@ -1807,6 +1808,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     env.runner.finish('S1', { success: true });
     await flush();
     await flush();
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'impl_runtime')).toBe(true);
     expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'impl_model')).toBe(true);
     expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       false

@@ -43,7 +43,7 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('workspace global fills every key and stamps all 10 in contract order when the bead is bare', () => {
+  test('workspace global fills every key and stamps all 11 in contract order when the bead is bare', () => {
     const r = resolveExecSettings({
       bead: {},
       defaults: {
@@ -51,10 +51,11 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
         orchestration_effort: 'high',
         spec_review_model: 'opus',
         spec_review_effort: 'high',
-        impl_review_model: 'self',
-        impl_review_effort: 'low',
         plan_review_model: 'fable',
         plan_review_effort: 'xhigh',
+        impl_review_model: 'self',
+        impl_review_effort: 'low',
+        impl_runtime: 'claude',
         impl_model: 'sonnet',
         impl_effort: 'medium'
       }
@@ -64,10 +65,11 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
       orchestration_effort: 'high',
       spec_review_model: 'opus',
       spec_review_effort: 'high',
-      impl_review_model: 'self',
-      impl_review_effort: 'low',
       plan_review_model: 'fable',
       plan_review_effort: 'xhigh',
+      impl_review_model: 'self',
+      impl_review_effort: 'low',
+      impl_runtime: 'claude',
       impl_model: 'sonnet',
       impl_effort: 'medium'
     });
@@ -76,10 +78,11 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
       'orchestration_effort',
       'spec_review_model',
       'spec_review_effort',
-      'impl_review_model',
-      'impl_review_effort',
       'plan_review_model',
       'plan_review_effort',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_runtime',
       'impl_model',
       'impl_effort'
     ]);
@@ -92,10 +95,11 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
         effort: 'low',
         spec_review_model: 'skip',
         spec_review_effort: 'low',
-        impl_review_model: 'codex',
-        impl_review_effort: 'xhigh',
         plan_review_model: 'skip',
         plan_review_effort: 'medium',
+        impl_review_model: 'codex',
+        impl_review_effort: 'xhigh',
+        impl_runtime: 'claude',
         impl_model: 'haiku',
         impl_effort: 'high'
       },
@@ -104,10 +108,11 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
         orchestration_effort: 'high',
         spec_review_model: 'opus',
         spec_review_effort: 'high',
-        impl_review_model: 'self',
-        impl_review_effort: 'low',
         plan_review_model: 'fable',
         plan_review_effort: 'xhigh',
+        impl_review_model: 'self',
+        impl_review_effort: 'low',
+        impl_runtime: 'codex',
         impl_model: 'sonnet',
         impl_effort: 'medium'
       }
@@ -117,10 +122,11 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
       orchestration_effort: 'low',
       spec_review_model: 'skip',
       spec_review_effort: 'low',
-      impl_review_model: 'codex',
-      impl_review_effort: 'xhigh',
       plan_review_model: 'skip',
       plan_review_effort: 'medium',
+      impl_review_model: 'codex',
+      impl_review_effort: 'xhigh',
+      impl_runtime: 'claude',
       impl_model: 'haiku',
       impl_effort: 'high'
     });
@@ -179,6 +185,43 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
       defaults: {}
     });
     expect(bogus.impl_effort).toBe(undefined);
+  });
+
+  test('infers runtime for known model-only legacy metadata without overwriting it', () => {
+    const r = resolveExecSettings({
+      bead: { impl_model: 'terra', impl_effort: 'high' },
+      defaults: {}
+    });
+
+    expect(r.impl_runtime).toBe('codex');
+    expect(r.impl_runtime_inferred).toBe(true);
+    expect(r.stamped_keys).toEqual([]);
+  });
+
+  test('explicit inherit blocks a lower runtime and resolves against the controller', () => {
+    const r = resolveExecSettings({
+      bead: { impl_runtime: 'inherit' },
+      defaults: { orchestration_model: 'sol', impl_runtime: 'claude', impl_model: 'terra' }
+    });
+
+    expect(r.impl_runtime).toBe('inherit');
+    expect(r.impl_model).toBe('terra');
+    expect(r.invalid_reason).toBe(undefined);
+    expect(r.stamped_keys).toEqual(['orchestration_model', 'impl_model']);
+  });
+
+  test('rejects mismatched or unknown implementation targets instead of silently falling through', () => {
+    const mismatch = resolveExecSettings({
+      bead: { impl_runtime: 'claude', impl_model: 'terra' },
+      defaults: {}
+    });
+    const unknown = resolveExecSettings({
+      bead: { impl_model: 'removed-model' },
+      defaults: { impl_model: 'sonnet' }
+    });
+
+    expect(mismatch.invalid_reason).toBe('provider_model_mismatch');
+    expect(unknown.invalid_reason).toBe('unknown_impl_model');
   });
 
   test('a per-step review effort outside the fixed 4 falls through to the global', () => {
@@ -256,7 +299,7 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     });
     expect(r.spec_review_model).toBe('skip');
     expect(r.impl_model).toBe('haiku');
-    expect(r.stamped_keys).toEqual(['impl_model']);
+    expect(r.stamped_keys).toEqual(['impl_runtime', 'impl_model']);
   });
 });
 

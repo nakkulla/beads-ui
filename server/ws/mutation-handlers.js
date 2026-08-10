@@ -3,7 +3,10 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import { makeError, makeOk } from '../../app/protocol.js';
-import { execSettingEnums } from '../worker/exec-enums.js';
+import {
+  execSettingEnums,
+  validateImplSettings
+} from '../worker/exec-enums.js';
 import {
   getGitUserNameInWorkspace,
   log,
@@ -73,9 +76,9 @@ export async function handleUpdateAssignee(ws, req) {
 
 /**
  * Allowed values per exec-preference key for the per-bead detail-panel edit
- * surface: the 10 workspace-global keys from the shared exec-enums single source
+ * surface: the 11 workspace-global keys from the shared exec-enums single source
  * PLUS `workflow_mode` (per-bead only — its only stored value is `fast_track`;
- * `standard`/empty is recorded as key removal). The 10-key table stays canonical
+ * `standard`/empty is recorded as key removal). The 11-key table stays canonical
  * in exec-enums.js; only the extra per-bead `workflow_mode` is synthesized here
  * so this edit surface's behavior is unchanged. `orchestration_model` uses the
  * catalog union across runners; the client narrows by chosen runner for UX.
@@ -132,11 +135,17 @@ function validateExecSetting(key, value) {
   if (!allowed.includes(value)) {
     return `invalid value for ${key}: ${value}`;
   }
+  if (key === 'impl_model' || key === 'impl_runtime' || key === 'impl_effort') {
+    const coherence = validateImplSettings({ [key]: value });
+    if (!coherence.ok) {
+      return coherence.reason;
+    }
+  }
   return null;
 }
 
 /**
- * Set or unset one of the 10 exec-preference metadata keys (+ workflow_mode) via
+ * Set or unset one of the 11 exec-preference metadata keys (+ workflow_mode) via
  * `bd update --set-metadata` / `--unset-metadata`. Selecting `standard` (or
  * clearing a value) removes the key rather than storing a literal.
  *

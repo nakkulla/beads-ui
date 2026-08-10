@@ -155,6 +155,7 @@ function staleDispatchPrompt(bead_id, stale) {
  * @property {string} [impl_review_effort] - impl_review_effort (per-bead exec setting).
  * @property {string} [plan_review_model] - plan_review_model (per-bead exec setting).
  * @property {string} [plan_review_effort] - plan_review_effort (per-bead exec setting).
+ * @property {string} [impl_runtime] - impl_runtime (per-bead exec setting).
  * @property {string} [impl_model] - impl_model (per-bead exec setting).
  * @property {string} [impl_effort] - impl_effort (per-bead exec setting).
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
@@ -2190,8 +2191,8 @@ export function createScheduler(deps) {
       return;
     }
 
-    // Resolve the 4 exec settings (bead metadata > workspace-global default >
-    // final fallback: `opus` for orchestration_model, unset for the other 3).
+    // Resolve the 11 exec settings (bead metadata > workspace-global default >
+    // final fallback: `opus` for orchestration_model, unset for the other 10).
     // `stamped_keys` names the bead-absent keys filled from the global default
     // that this dispatch must stamp (and later revert) —
     // worker-global-exec-defaults §3; the hardcoded fallback never stamps.
@@ -2199,6 +2200,10 @@ export function createScheduler(deps) {
       bead: snap,
       defaults: deps.store.snapshot(workspace).exec_defaults
     });
+    if (exec.invalid_reason) {
+      refuseDispatch(workspace, bead_id, exec.invalid_reason);
+      return;
+    }
     // DERIVED from the resolved model, never an independent axis: the catalog
     // owns the model→runner map, so a bead asking for `sol` dispatches through
     // codex without anyone setting a runner key (§C-2).
@@ -3062,6 +3067,9 @@ export function createScheduler(deps) {
       bead: snap,
       defaults: deps.store.snapshot(workspace).exec_defaults
     });
+    if (exec.invalid_reason) {
+      return { ok: false, reason: exec.invalid_reason };
+    }
     // The RUNNER — and with it the model/effort — does look back (§C-2, impl
     // review 2026-08-10 finding 2). This dispatch resumes work an earlier
     // session left in the SAME worktree, so the runner that wrote that branch
