@@ -4,7 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createExecPresetStore } from '../exec-preset-store.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
+import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { install as guardHookInstall } from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
 import { createQueueStore } from './queue-store.js';
@@ -1823,6 +1825,131 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       }
     });
     expect(Object.keys(attempt.exec_values)).toEqual(EXEC_SETTING_KEYS);
+  });
+
+  test('applies a shared preset update only to a later workspace dispatch while the active Attempt stays pinned', async () => {
+    const second_workspace = `${WS}-second`;
+    const store = createQueueStore();
+    const presetStore = createExecPresetStore({
+      filePath: path.join(tmp_state, 'exec-presets.json'),
+      randomUUID: () => 'shared-preset'
+    });
+    presetStore.create({
+      expected_revision: 0,
+      name: '공유 기본값',
+      settings: { orchestration_model: 'sol' }
+    });
+    const coordinator = createExecPresetCoordinator({
+      queueStore: store,
+      presetStore,
+      discover: () => ({
+        complete: true,
+        states: [
+          {
+            workspace_key: WS,
+            display_name: '첫 작업 공간',
+            status: 'ok',
+            queue_file: path.join(tmp_state, 'first-queue.json'),
+            raw: store.snapshot(WS)
+          },
+          {
+            workspace_key: second_workspace,
+            display_name: '둘째 작업 공간',
+            status: 'ok',
+            queue_file: path.join(tmp_state, 'second-queue.json'),
+            raw: store.snapshot(second_workspace)
+          }
+        ]
+      })
+    });
+
+    expect(
+      coordinator.setDefaultExecPreset(WS, {
+        preset_id: 'shared-preset',
+        expected_queue_revision: 0,
+        expected_preset_revision: 1
+      }).applied
+    ).toBe(true);
+    expect(
+      coordinator.setDefaultExecPreset(second_workspace, {
+        preset_id: 'shared-preset',
+        expected_queue_revision: 0,
+        expected_preset_revision: 1
+      }).applied
+    ).toBe(true);
+    expect(coordinator.snapshot().presets[0].reference_count).toBe(2);
+
+    const first = setup({
+      store,
+      config: { S1: { model: null, effort: null } },
+      slots: 1,
+      execPresetCoordinator: coordinator
+    });
+    const second = setup({
+      store,
+      config: { S2: { model: null, effort: null } },
+      slots: 1,
+      execPresetCoordinator: coordinator
+    });
+    seedQueue(store, ['S1']);
+    let second_revision = store.snapshot(second_workspace).revision;
+    second_revision = store.setSlots(second_workspace, {
+      expected_revision: second_revision,
+      slots: 1
+    }).queue.revision;
+    store.place(second_workspace, {
+      expected_revision: second_revision,
+      bead_id: 'S2'
+    });
+    store.setAutoAdvance(second_workspace, true);
+
+    await first.scheduler.tick(WS);
+
+    const active_attempt = Object.values(store.snapshot(WS).attempts)[0];
+    const queue_revisions_before_update = {
+      first: store.snapshot(WS).revision,
+      second: store.snapshot(second_workspace).revision
+    };
+    expect(active_attempt).toMatchObject({
+      status: 'running',
+      exec_default_preset_id: 'shared-preset',
+      exec_default_preset_revision: 1,
+      exec_values: { orchestration_model: 'sol' }
+    });
+
+    expect(
+      coordinator.update({
+        expected_revision: 1,
+        id: 'shared-preset',
+        name: '공유 기본값',
+        settings: { orchestration_model: 'terra' }
+      }).applied
+    ).toBe(true);
+
+    expect(store.snapshot(WS).revision).toBe(
+      queue_revisions_before_update.first
+    );
+    expect(store.snapshot(second_workspace).revision).toBe(
+      queue_revisions_before_update.second
+    );
+
+    await second.scheduler.tick(second_workspace);
+
+    const fresh_attempt = Object.values(
+      store.snapshot(second_workspace).attempts
+    )[0];
+    expect(fresh_attempt).toMatchObject({
+      status: 'running',
+      exec_default_preset_id: 'shared-preset',
+      exec_default_preset_revision: 2,
+      exec_values: { orchestration_model: 'terra' }
+    });
+    expect(
+      store.snapshot(WS).attempts[active_attempt.attempt_id]
+    ).toMatchObject({
+      exec_default_preset_revision: 1,
+      exec_values: { orchestration_model: 'sol' }
+    });
   });
 
   test('refuses before metadata or runner launch when normal attempt prerecord fails', async () => {

@@ -201,7 +201,11 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
   test('explicit inherit blocks a lower runtime and resolves against the controller', () => {
     const r = resolveExecSettings({
       bead: { impl_runtime: 'inherit' },
-      defaults: { orchestration_model: 'sol', impl_runtime: 'claude', impl_model: 'terra' }
+      defaults: {
+        orchestration_model: 'sol',
+        impl_runtime: 'claude',
+        impl_model: 'terra'
+      }
     });
 
     expect(r.impl_runtime).toBe('inherit');

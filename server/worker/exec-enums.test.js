@@ -138,7 +138,10 @@ describe('worker/exec-enums implementation target coherence', () => {
       undefined
     );
     expect(
-      inferImplRuntime({ impl_runtime: 'inherit', impl_model: 'terra' }, catalog)
+      inferImplRuntime(
+        { impl_runtime: 'inherit', impl_model: 'terra' },
+        catalog
+      )
     ).toBe(undefined);
   });
 

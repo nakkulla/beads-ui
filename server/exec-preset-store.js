@@ -139,7 +139,9 @@ export function createExecPresetStore(options = {}) {
       persist(normalized);
       const readback = JSON.parse(fs.readFileSync(file_path, 'utf8'));
       if (JSON.stringify(readback) !== JSON.stringify(normalized)) {
-        throw new Error('Normalized exec preset state failed readback verification');
+        throw new Error(
+          'Normalized exec preset state failed readback verification'
+        );
       }
     }
     cache = normalized;

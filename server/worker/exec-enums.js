@@ -151,7 +151,8 @@ export function validateImplSettings(settings, options = {}) {
     return { ok: false, reason: 'illegal_impl_effort' };
   }
 
-  const model_runtime = model === undefined ? null : modelRunner(catalog, model);
+  const model_runtime =
+    model === undefined ? null : modelRunner(catalog, model);
   if (model !== undefined && !model_runtime) {
     return { ok: false, reason: 'unknown_impl_model' };
   }
@@ -165,9 +166,14 @@ export function validateImplSettings(settings, options = {}) {
     options.controller_runtime ??
     modelRunner(catalog, settings?.orchestration_model) ??
     undefined;
-  const effective_runtime = runtime === 'inherit' ? controller_runtime : runtime;
+  const effective_runtime =
+    runtime === 'inherit' ? controller_runtime : runtime;
 
-  if (model_runtime && effective_runtime && model_runtime !== effective_runtime) {
+  if (
+    model_runtime &&
+    effective_runtime &&
+    model_runtime !== effective_runtime
+  ) {
     return { ok: false, reason: 'provider_model_mismatch' };
   }
   if (model_runtime && runtime === 'inherit' && !effective_runtime) {

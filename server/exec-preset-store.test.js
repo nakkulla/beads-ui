@@ -78,6 +78,7 @@ describe('exec-preset-store defaults', () => {
 
     const snapshot = store.snapshot();
     const durable = JSON.parse(fs.readFileSync(file_path, 'utf8'));
+    const restarted = createExecPresetStore({ filePath: file_path });
 
     expect(snapshot).toMatchObject({
       revision: 3,
@@ -90,6 +91,7 @@ describe('exec-preset-store defaults', () => {
       ]
     });
     expect(durable).toEqual(snapshot);
+    expect(restarted.snapshot()).toEqual(snapshot);
   });
 
   test('keeps parsed legacy presets durable when normalization persistence fails', () => {
@@ -149,6 +151,49 @@ describe('exec-preset-store defaults', () => {
 });
 
 describe('exec-preset-store CRUD', () => {
+  test('reuses a legacy migration across restart after resolving a user-name collision', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    const ids = ['user-preset', 'migration-preset'];
+    const store = createExecPresetStore({
+      filePath: file_path,
+      randomUUID: () => /** @type {string} */ (ids.shift())
+    });
+    store.create({
+      expected_revision: 0,
+      name: '이전 기본값 · 작업 공간',
+      settings: { orchestration_model: 'sol' }
+    });
+
+    const first = store.createOrReuseMigration({
+      name: '이전 기본값 · 작업 공간',
+      settings: { orchestration_model: 'sol' },
+      workspace_key: 'workspace-12345678',
+      source_digest: 'legacy-defaults-digest'
+    });
+    const restarted = createExecPresetStore({ filePath: file_path });
+    const resumed = restarted.createOrReuseMigration({
+      name: '이전 기본값 · 작업 공간',
+      settings: { orchestration_model: 'sol' },
+      workspace_key: 'workspace-12345678',
+      source_digest: 'legacy-defaults-digest'
+    });
+
+    expect(first).toMatchObject({
+      applied: true,
+      reused: false,
+      preset: {
+        id: 'migration-preset',
+        name: '이전 기본값 · 작업 공간 · 12345678'
+      }
+    });
+    expect(resumed).toMatchObject({
+      applied: false,
+      reused: true,
+      preset: { id: 'migration-preset' }
+    });
+    expect(restarted.snapshot().presets).toHaveLength(2);
+  });
+
   test('creates and persists a validated preset', () => {
     const file_path = path.join(tmp_dir, 'exec-presets.json');
     const store = createExecPresetStore({

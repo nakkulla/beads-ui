@@ -2173,16 +2173,14 @@ describe('views/worker', () => {
       revision: 7,
       presets: [{ id: 'p1', name: '개발', settings: {} }]
     });
-    const transport = vi
-      .fn()
-      .mockResolvedValue({
-        applied: true,
-        queue: queueOf({ revision: 4, default_exec_preset_id: 'p1' }),
-        presets: {
-          revision: 7,
-          presets: [{ id: 'p1', name: '개발', settings: {} }]
-        }
-      });
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      queue: queueOf({ revision: 4, default_exec_preset_id: 'p1' }),
+      presets: {
+        revision: 7,
+        presets: [{ id: 'p1', name: '개발', settings: {} }]
+      }
+    });
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
@@ -2217,17 +2215,15 @@ describe('views/worker', () => {
       revision: 7,
       presets: [{ id: 'p1', name: '초안', settings: {} }]
     });
-    const transport = vi
-      .fn()
-      .mockResolvedValue({
-        applied: false,
-        conflict: true,
-        queue: queueOf({ revision: 4 }),
-        presets: {
-          revision: 8,
-          presets: [{ id: 'p2', name: '최신', settings: {} }]
-        }
-      });
+    const transport = vi.fn().mockResolvedValue({
+      applied: false,
+      conflict: true,
+      queue: queueOf({ revision: 4 }),
+      presets: {
+        revision: 8,
+        presets: [{ id: 'p2', name: '최신', settings: {} }]
+      }
+    });
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,

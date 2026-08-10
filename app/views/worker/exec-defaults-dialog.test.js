@@ -399,7 +399,9 @@ describe('worker exec preset dialog', () => {
     );
 
     expect(model.disabled).toBe(true);
-    expect(Array.from(model.options).map((option) => option.value)).toEqual(['']);
+    expect(Array.from(model.options).map((option) => option.value)).toEqual([
+      ''
+    ]);
     expect(model.value).toBe('');
     expect(effort.value).toBe('');
   });
