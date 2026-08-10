@@ -176,14 +176,14 @@ function chipsTemplate(issue, ctx) {
   /** @type {TemplateResult[]} */
   const items = [];
   if (chips.route && isChipEnabled(policy, 'route')) {
-    // A derived (unpinned) route renders dimmed with a `?` suffix so an
-    // inferred value never reads as a settled pin (worker-autorun-policy §6).
+    // A derived route is internal fallback only; the chip names the missing
+    // metadata pin instead of exposing that fallback as a route decision.
     const derived = chips.route_source === 'derived';
     items.push(
       html`<span
         class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
-        title=${derived ? 'route 추론값 (metadata 미핀)' : 'route'}
-        >${derived ? `${chips.route} ?` : chips.route}</span
+        title=${derived ? 'route 미핀 (metadata unset)' : 'route'}
+        >${derived ? 'unset' : chips.route}</span
       >`
     );
   }

@@ -361,8 +361,8 @@ export function candidateCard(item) {
       ${workflow && route
         ? html`<span
             class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
-            title=${derived ? 'route 추론값 (metadata 미핀)' : 'route'}
-            >${derived ? `${route} ?` : route}</span
+            title=${derived ? 'route 미핀 (metadata unset)' : 'route'}
+            >${derived ? 'unset' : route}</span
           >`
         : ''}
     </div>

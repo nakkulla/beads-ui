@@ -80,7 +80,7 @@ describe('views/board/card', () => {
     expect(m.querySelectorAll('.stp .seg').length).toBe(5);
   });
 
-  test('derived route chip renders dimmed with a ? suffix; explicit stays plain (§6)', () => {
+  test('derived route chip renders dimmed as unset; explicit stays plain', () => {
     const derived = mountCard(
       {
         id: 'UI-9',
@@ -108,7 +108,8 @@ describe('views/board/card', () => {
       derived.querySelector('.ctl-chip--route')
     );
     expect(chip.classList.contains('is-derived')).toBe(true);
-    expect(chip.textContent?.trim()).toBe('spec_backed ?');
+    expect(chip.textContent?.trim()).toBe('unset');
+    expect(chip.title).toBe('route 미핀 (metadata unset)');
 
     document.body.innerHTML = '<div id="m"></div>';
     const explicit = mountCard(

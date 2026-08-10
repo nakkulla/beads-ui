@@ -1126,8 +1126,8 @@ export function createDetailPanel(mount_element, options) {
     const specStale = stages.spec && stages.spec.stale;
     const implStale = stages.impl && stages.impl.stale;
     const plan = stages.plan || null;
-    // Same explicit/derived distinction as the board chip (§6): an inferred
-    // route renders dimmed with a `?` suffix instead of posing as a pin.
+    // Derived route remains available for workflow layout, but display names
+    // the missing metadata pin instead of exposing the fallback value.
     const route_derived = wf.route_source === 'derived';
     const route_label = wf.route || md.route || '—';
     return html`
@@ -1136,10 +1136,8 @@ export function createDetailPanel(mount_element, options) {
         <span class="detail-kv__k">route</span>
         <span
           class="detail-kv__v${route_derived ? ' detail-kv__v--derived' : ''}"
-          title=${route_derived ? 'route 추론값 (metadata 미핀)' : 'route'}
-          >${route_derived && wf.route
-            ? `${route_label} ? (추론)`
-            : route_label}</span
+          title=${route_derived ? 'route 미핀 (metadata unset)' : 'route'}
+          >${route_derived ? 'unset' : route_label}</span
         >
       </div>
       <div class="detail-kv">
@@ -1253,7 +1251,7 @@ export function createDetailPanel(mount_element, options) {
         </select>
       </div>`;
     };
-    return html` ${row('route', '(미설정 · 추론)')} `;
+    return html` ${row('route', '(unset)')} `;
   }
 
   /**
