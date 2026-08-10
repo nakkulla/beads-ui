@@ -3354,6 +3354,7 @@ html[data-theme='dark'] {
   line-height: 1.7;
   max-height: 46vh;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .sv__empty {
@@ -3657,13 +3658,16 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip-lg);
   color: var(--text-tool-mono);
   cursor: pointer;
+  min-width: 0;
 }
 
 .sv__tool-line {
-  display: inline-flex;
+  display: flex;
   align-items: baseline;
   gap: var(--sp-5);
   flex-wrap: wrap;
+  width: 100%;
+  min-width: 0;
 }
 
 .sv__tool-icon {
@@ -3676,12 +3680,11 @@ html[data-theme='dark'] {
 
 .sv__tool-detail {
   color: var(--text-tool-mono);
-  flex: 1 1 auto;
+  flex: 1 1 28ch;
   min-width: 0;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* 여러 줄 Bash 커맨드는 첫 줄만 보이고 나머지 줄 수를 배지로 알린다. */
@@ -3705,6 +3708,9 @@ html[data-theme='dark'] {
 
 .sv__tool-ok {
   color: var(--accent-success);
+  flex: 1 1 28ch;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .sv__tool-expand {

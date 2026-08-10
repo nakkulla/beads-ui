@@ -43,4 +43,22 @@ describe('worker console styles', () => {
     expect(workerBlock).toContain('.rtile--sel');
     expect(workerBlock).toContain('.detail-session');
   });
+
+  test('wraps long transcript tool details inside the drawer', () => {
+    const bodyRule =
+      workerBlock.match(/(?:^|\n)\.sv__body\s*{([^}]*)}/)?.[1] || '';
+    const lineRule =
+      workerBlock.match(/(?:^|\n)\.sv__tool-line\s*{([^}]*)}/)?.[1] || '';
+    const detailRule =
+      workerBlock.match(/(?:^|\n)\.sv__tool-detail\s*{([^}]*)}/)?.[1] || '';
+    const resultRule =
+      workerBlock.match(/(?:^|\n)\.sv__tool-ok\s*{([^}]*)}/)?.[1] || '';
+
+    expect(bodyRule).toContain('overflow-x: hidden');
+    expect(lineRule).toContain('display: flex');
+    expect(lineRule).toContain('width: 100%');
+    expect(detailRule).toContain('white-space: normal');
+    expect(detailRule).toContain('overflow-wrap: anywhere');
+    expect(resultRule).toContain('overflow-wrap: anywhere');
+  });
 });
