@@ -189,6 +189,8 @@ const LOG_DATA_MAX_BYTES =
  * @property {string} sha
  * @property {number} started_at_ms - Run start, which is also the filename's
  * timestamp component.
+ * @property {number} [attempt] - Retry attempt ordinal, included in the
+ * filename when bounded flake retry is enabled.
  */
 
 /**
@@ -293,9 +295,14 @@ function openRunLog(log_context, fs) {
     '_'
   );
   const sha7 = String(log_context.sha || '').slice(0, 7);
+  const attempt = log_context.attempt;
+  const attempt_suffix =
+    typeof attempt === 'number' && Number.isInteger(attempt) && attempt > 0
+      ? `-r${attempt}`
+      : '';
   const file = path.join(
     dir,
-    `${spec.prefix}-${safe_bead}-${sha7}-${log_context.started_at_ms}.log`
+    `${spec.prefix}-${safe_bead}-${sha7}-${log_context.started_at_ms}${attempt_suffix}.log`
   );
   /** @type {number} */
   let fd;
@@ -387,6 +394,8 @@ function openRunLog(log_context, fs) {
  * output (UI-0x54). Present only when a `log_context` was given AND every log
  * stage — open, writes, close — succeeded; a path to a possibly incomplete file
  * is worse than none.
+ * @property {{ reason: VerifyCmdResult['reason'], log_path?: string }[]} [attempts]
+ * The bounded retry history. Present only when `retry_flaky` was enabled.
  */
 
 /**
@@ -706,13 +715,35 @@ function withLifecycleMutex(key, fn) {
  *   },
  *   git: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   spawn_impl?: typeof spawn,
- *   fs_impl?: typeof import('node:fs')
+ *   fs_impl?: typeof import('node:fs'),
+ *   retry_flaky?: boolean
  * }} input
  * @returns {Promise<VerifyCmdResult>}
  */
 export async function runVerifyAtSha(input) {
+  const retry_flaky = input.retry_flaky === true;
+  /**
+   * @param {VerifyCmdResult[]} results
+   * @returns {VerifyCmdResult}
+   */
+  const with_attempts = (results) => {
+    const final_result = results[results.length - 1];
+    return {
+      ...final_result,
+      attempts: results.map((result) => ({
+        reason: result.reason,
+        log_path: result.log_path
+      }))
+    };
+  };
+
   if (typeof input.sha !== 'string' || input.sha.length === 0) {
-    return { ok: false, reason: 'verify_sha_unavailable', exit: null };
+    const result = /** @type {VerifyCmdResult} */ ({
+      ok: false,
+      reason: 'verify_sha_unavailable',
+      exit: null
+    });
+    return retry_flaky ? with_attempts([result]) : result;
   }
   // The fetch writes this repo's object/ref database, so it runs under the same
   // topology lock the worktree operations take (worker-phase2 §8). The lock is
@@ -727,7 +758,12 @@ export async function runVerifyAtSha(input) {
     )
   );
   if (!available) {
-    return { ok: false, reason: 'verify_sha_unavailable', exit: null };
+    const result = /** @type {VerifyCmdResult} */ ({
+      ok: false,
+      reason: 'verify_sha_unavailable',
+      exit: null
+    });
+    return retry_flaky ? with_attempts([result]) : result;
   }
   // Distinct from the bead's own `.worktrees/<bead_id>` (which a resume still
   // owns) and distinct per SHA, so a concurrent verification of an older head
@@ -737,65 +773,82 @@ export async function runVerifyAtSha(input) {
   // section per worktree name (UI-egj7 §2); `ensureCommitPresent` above is
   // name-independent and stays outside it.
   return withLifecycleMutex(`${input.repo}\0${name}`, async () => {
-    /** @type {{ path: string }} */
-    let wt;
-    try {
-      wt = await input.worktree.addDetached({
-        repo: input.repo,
-        name,
-        sha: input.sha
-      });
-    } catch (err) {
-      // The thrown message carries git's own stderr, which is the only thing
-      // that says WHY the detached worktree could not be created — dropping it
-      // left an unfalsifiable "transient?" guess behind (UI-2o4z §3).
-      return {
-        ok: false,
-        reason: 'verify_worktree_failed',
-        exit: null,
-        detail: errorDetail(err)
-      };
-    }
-    try {
-      return await runVerifyCmd({
-        cwd: wt.path,
-        cmd: input.cmd,
-        timeout_ms: input.timeout_ms,
-        spawn_impl: input.spawn_impl,
-        // `cwd` is the detached worktree, which is deleted in the `finally`
-        // below — the log has to be keyed on the REPO instead (UI-0x54).
-        log_context: {
-          kind: 'verify',
-          workspace_root: input.repo,
-          bead_id: input.bead_id,
-          sha: input.sha,
-          started_at_ms: Date.now()
-        },
-        fs_impl: input.fs_impl
-      });
-    } finally {
-      // Best-effort teardown that must NEVER mask the verdict (UI-egj7 §3):
-      // the failure is only recorded, never returned. The next run's reclaim
-      // ladder (§1) is what actually clears the residue.
+    /**
+     * @param {number|undefined} attempt
+     * @returns {Promise<VerifyCmdResult>}
+     */
+    const run_attempt = async (attempt) => {
+      /** @type {{ path: string }} */
+      let wt;
       try {
-        const removed = await input.worktree.removeDetached({
+        wt = await input.worktree.addDetached({
           repo: input.repo,
-          name
+          name,
+          sha: input.sha
         });
-        if (removed && removed.code !== 0) {
+      } catch (err) {
+        // The thrown message carries git's own stderr, which is the only thing
+        // that says WHY the detached worktree could not be created — dropping it
+        // left an unfalsifiable "transient?" guess behind (UI-2o4z §3).
+        return {
+          ok: false,
+          reason: 'verify_worktree_failed',
+          exit: null,
+          detail: errorDetail(err)
+        };
+      }
+      try {
+        return await runVerifyCmd({
+          cwd: wt.path,
+          cmd: input.cmd,
+          timeout_ms: input.timeout_ms,
+          spawn_impl: input.spawn_impl,
+          // `cwd` is the detached worktree, which is deleted in the `finally`
+          // below — the log has to be keyed on the REPO instead (UI-0x54).
+          log_context: {
+            kind: 'verify',
+            workspace_root: input.repo,
+            bead_id: input.bead_id,
+            sha: input.sha,
+            started_at_ms: Date.now(),
+            ...(attempt === undefined ? {} : { attempt })
+          },
+          fs_impl: input.fs_impl
+        });
+      } finally {
+        // Best-effort teardown that must NEVER mask the verdict (UI-egj7 §3):
+        // the failure is only recorded, never returned. The next run's reclaim
+        // ladder (§1) is what actually clears the residue.
+        try {
+          const removed = await input.worktree.removeDetached({
+            repo: input.repo,
+            name
+          });
+          if (removed && removed.code !== 0) {
+            log(
+              'verify worktree teardown failed for %s: %s',
+              name,
+              String(removed.stderr || '').trim()
+            );
+          }
+        } catch (err) {
           log(
             'verify worktree teardown failed for %s: %s',
             name,
-            String(removed.stderr || '').trim()
+            errorDetail(err)
           );
         }
-      } catch (err) {
-        log(
-          'verify worktree teardown failed for %s: %s',
-          name,
-          errorDetail(err)
-        );
       }
+    };
+
+    const first_result = await run_attempt(retry_flaky ? 1 : undefined);
+    if (!retry_flaky) {
+      return first_result;
     }
+    const results = [first_result];
+    if (first_result.reason === 'verify_cmd_failed') {
+      results.push(await run_attempt(2));
+    }
+    return with_attempts(results);
   });
 }
