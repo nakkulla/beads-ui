@@ -842,14 +842,15 @@ function prWaitRow(
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined) }} [options]
- * @returns {{ load: () => void, destroy: () => void }}
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, execPresetStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined) }} [options]
+ * @returns {{ load: () => void, openExecDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
   const {
     transport,
     issueStores,
     queueStore,
+    execPresetStore,
     sessionLogStore,
     uiOrderStore,
     gotoIssue,
@@ -982,6 +983,7 @@ export function createWorkerView(mount_element, options = {}) {
   // queueStore subscription so an open dialog re-renders as snapshots arrive.
   const exec_defaults_dialog = createExecDefaultsDialog(console_el, {
     queueStore,
+    presetStore: execPresetStore,
     transport,
     getWorkspacePath
   });
@@ -3249,6 +3251,9 @@ export function createWorkerView(mount_element, options = {}) {
   return {
     load() {
       doRender();
+    },
+    openExecDefaults() {
+      exec_defaults_dialog.open();
     },
     destroy() {
       for (const off of unsubscribers.splice(0)) {

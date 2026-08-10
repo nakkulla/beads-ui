@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  execPresetsFilePath,
   guardHookDir,
   sessionLogPath,
   workspaceSlug,
@@ -64,6 +65,14 @@ describe('guardHookDir', () => {
         'guard-hooks',
         'UI-1'
       )
+    );
+  });
+});
+
+describe('execPresetsFilePath', () => {
+  test('derives one server-global file under the bdui state root', () => {
+    expect(execPresetsFilePath()).toBe(
+      path.join('/state', 'bdui', 'exec-presets.json')
     );
   });
 });

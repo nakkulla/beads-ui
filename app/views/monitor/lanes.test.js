@@ -257,6 +257,14 @@ describe('monitor waiting lane repo groups (UI-qrfo §6)', () => {
     );
   });
 
+  test('carries the runtime catalog into an empty repo group', () => {
+    const runner_catalog = { runners: { codex: { models: {} } } };
+
+    const lanes = buildLanes([], [state({ runner_catalog })]);
+
+    expect(lanes.queue_groups[0].runner_catalog).toBe(runner_catalog);
+  });
+
   // 파이프라인이 빈 workspace는 무거운 배열에 없다 — CAS 토큰은 그룹이
   // `workspaces_state`에서 받아 헤더에 실어 두는 것 말고는 도달할 길이 없다.
   test('carries the empty repo own revision on all four group controls', () => {

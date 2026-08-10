@@ -123,6 +123,7 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  * @property {number} revision - 이 workspace의 CAS revision. 헤더의 네 제어가
  * 그대로 실어 보내는 값이므로, 파이프라인이 빈 레포에서도 반드시 있어야 한다.
  * @property {Record<string, string>} exec_defaults
+ * @property {Record<string, any>} runner_catalog
  * @property {MonitorItem[]} items
  */
 
@@ -623,7 +624,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
           auto_merge: w && w.auto_merge,
           slots: w && w.slots,
           revision: w && w.revision,
-          exec_defaults: w && w.exec_defaults
+          exec_defaults: w && w.exec_defaults,
+          runner_catalog: w && w.runner_catalog
         }));
 
   /** @type {MonitorQueueGroup[]} */
@@ -643,6 +645,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : MIN_SLOTS,
       revision: typeof source.revision === 'number' ? source.revision : 0,
       exec_defaults: objectOf(source.exec_defaults),
+      runner_catalog: objectOf(source.runner_catalog),
       items: queue_by_root.get(source.root_dir) || []
     });
   }

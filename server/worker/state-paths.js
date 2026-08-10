@@ -106,6 +106,16 @@ export function visibleWorkspacesFilePath() {
 }
 
 /**
+ * Absolute path to the SERVER-GLOBAL worker execution preset file. Presets are
+ * shared across workspaces, so this lives directly under the `bdui` state root.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/exec-presets.json`.
+ */
+export function execPresetsFilePath() {
+  return path.join(stateHome(), 'bdui', 'exec-presets.json');
+}
+
+/**
  * Absolute directory that holds a workspace's full verify-run output logs
  * (UI-0x54). Shares the per-workspace state dir with the queue file so a verify
  * failure's evidence outlives the detached worktree the run happened in — that

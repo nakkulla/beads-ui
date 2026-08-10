@@ -8,6 +8,7 @@ import {
   isClosedRange
 } from './data/closed-range.js';
 import { createDisplayPolicyStore } from './data/display-policy-store.js';
+import { createExecPresetStore } from './data/exec-preset-store.js';
 import { createMonitorPipelineStore } from './data/monitor-pipeline-store.js';
 import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
@@ -136,6 +137,9 @@ const UI_ORDER_CLIENT_ID = 'ui:order';
  */
 const DISPLAY_POLICY_CLIENT_ID = 'ui:display-policy';
 
+/** Client id for the singleton server-global execution-preset subscription. */
+const EXEC_PRESETS_CLIENT_ID = 'exec:presets';
+
 /** Client id / localStorage key for the Board Closed column period (spec §3.2). */
 const CLOSED_CLIENT_ID = 'tab:board:closed';
 const CLOSED_RANGE_KEY = 'beads-ui.board.closed-range';
@@ -233,7 +237,22 @@ export function bootstrap(root_element) {
     const monitor_pipeline_store = createMonitorPipelineStore();
     const ui_order_store = createUiOrderStore();
     const display_policy_store = createDisplayPolicyStore();
+    const exec_preset_store = createExecPresetStore();
     const session_log_store = createSessionLogStore();
+
+    client.on('exec-presets-snapshot', (payload) => {
+      const snapshot = /** @type {any} */ (payload);
+      if (
+        snapshot &&
+        typeof snapshot.revision === 'number' &&
+        Array.isArray(snapshot.presets)
+      ) {
+        exec_preset_store.set({
+          revision: snapshot.revision,
+          presets: snapshot.presets
+        });
+      }
+    });
 
     // Route the aggregated monitor pipeline snapshot (UI-nprg) into its store.
     // No workspace guard, unlike the worker queue: this payload is deliberately
@@ -486,11 +505,13 @@ export function bootstrap(root_element) {
      * ask again (the re-entry that raced it was skipped by the pending guard).
      */
     function syncSubscriptionsToView() {
-      const view = store.getState().view;
-      ensureBoardSubscriptions(view === 'board');
-      ensureWorkerSubscriptions(view === 'worker');
-      ensureMonitorPipelineChannel(view === 'monitor');
-      ensureWorkerQueueChannel(view === 'worker');
+      const state = store.getState();
+      ensureBoardSubscriptions(state.view === 'board');
+      ensureWorkerSubscriptions(state.view === 'worker');
+      ensureMonitorPipelineChannel(state.view === 'monitor');
+      ensureWorkerQueueChannel(
+        state.view === 'worker' || Boolean(state.selected_id)
+      );
     }
 
     // Closed column period (spec §3.2): the closed-issues subscription carries a
@@ -841,6 +862,25 @@ export function bootstrap(root_element) {
       display_policy_store.clear();
     }
 
+    // --- Execution-preset subscription lifecycle (server-global singleton) ---
+    /** @type {(() => Promise<unknown>) | null} */
+    let exec_presets_unsub = null;
+
+    function subscribeExecPresets() {
+      if (exec_presets_unsub) {
+        return;
+      }
+      void tracked_send('subscribe-exec-presets', {
+        id: EXEC_PRESETS_CLIENT_ID
+      }).catch((err) => {
+        log('subscribe-exec-presets failed: %o', err);
+      });
+      exec_presets_unsub = () =>
+        tracked_send('unsubscribe-exec-presets', {
+          id: EXEC_PRESETS_CLIENT_ID
+        });
+    }
+
     /**
      * Re-establish the per-workspace push subscriptions on a NEW socket after a
      * reconnect.
@@ -863,12 +903,15 @@ export function bootstrap(root_element) {
       // maps behind the fresh ones.
       display_policy_unsub = null;
       display_policy_store.clear();
+      exec_presets_unsub = null;
+      exec_preset_store.clear();
       worker_queue_unsub = null;
       monitor_pipeline_unsub = null;
       board_unsubs.clear();
       worker_unsubs.clear();
       sub_generation.board += 1;
       sub_generation.worker += 1;
+      subscribeExecPresets();
       const selected = store.getState().workspace.current?.path;
       if (selected) {
         try {
@@ -879,11 +922,13 @@ export function bootstrap(root_element) {
         }
       }
       subscribeDisplayPolicy();
-      const view = store.getState().view;
-      ensureBoardSubscriptions(view === 'board');
-      ensureWorkerSubscriptions(view === 'worker');
-      ensureMonitorPipelineChannel(view === 'monitor');
-      ensureWorkerQueueChannel(view === 'worker');
+      const state = store.getState();
+      ensureBoardSubscriptions(state.view === 'board');
+      ensureWorkerSubscriptions(state.view === 'worker');
+      ensureMonitorPipelineChannel(state.view === 'monitor');
+      ensureWorkerQueueChannel(
+        state.view === 'worker' || Boolean(state.selected_id)
+      );
     }
 
     // --- Workspace management ---
@@ -917,7 +962,9 @@ export function bootstrap(root_element) {
       ensureBoardSubscriptions(current_state.view === 'board');
       ensureWorkerSubscriptions(current_state.view === 'worker');
       ensureMonitorPipelineChannel(current_state.view === 'monitor');
-      ensureWorkerQueueChannel(current_state.view === 'worker');
+      ensureWorkerQueueChannel(
+        current_state.view === 'worker' || Boolean(current_state.selected_id)
+      );
       if (current_state.selected_id) {
         scheduleDetailSubscription(current_state.selected_id);
       }
@@ -1210,7 +1257,13 @@ export function bootstrap(root_element) {
     // result — but `get-comments` returns `[]` on a genuinely empty issue, so
     // the swallow would make a bd failure indistinguishable from "no comments"
     // and the detail panel could never show it.
-    const PROPAGATED_ERROR_TYPES = new Set(['get-comments']);
+    const PROPAGATED_ERROR_TYPES = new Set([
+      'get-comments',
+      'exec-preset-create',
+      'exec-preset-update',
+      'exec-preset-delete',
+      'apply-exec-preset'
+    ]);
 
     /**
      * @param {string} type
@@ -1319,6 +1372,7 @@ export function bootstrap(root_element) {
       transport,
       issueStores: sub_issue_stores,
       queueStore: worker_queue_store,
+      execPresetStore: exec_preset_store,
       sessionLogStore: session_log_store,
       uiOrderStore: ui_order_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),
@@ -1333,6 +1387,7 @@ export function bootstrap(root_element) {
     const monitor_view = createMonitorView(monitor_root, {
       transport,
       pipelineStore: monitor_pipeline_store,
+      execPresetStore: exec_preset_store,
       gotoIssue: (id) => router.gotoIssue(id),
       getWorkspacePath: () => store.getState().workspace.current?.path,
       switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir)
@@ -1343,6 +1398,7 @@ export function bootstrap(root_element) {
       issueStores: sub_issue_stores,
       transport,
       queueStore: worker_queue_store,
+      execPresetStore: exec_preset_store,
       sessionLogStore: session_log_store,
       getWorkspacePath: () => store.getState().workspace.current?.path,
       onNavigate: (id) => {
@@ -1364,6 +1420,11 @@ export function bootstrap(root_element) {
         } catch {
           // ignore
         }
+      },
+      onOpenExecPresets: () => {
+        store.setState({ selected_id: null });
+        router.gotoView('worker');
+        worker_view.openExecDefaults();
       }
     });
 
@@ -1403,7 +1464,7 @@ export function bootstrap(root_element) {
       ensureBoardSubscriptions(s.view === 'board');
       ensureWorkerSubscriptions(s.view === 'worker');
       ensureMonitorPipelineChannel(s.view === 'monitor');
-      ensureWorkerQueueChannel(s.view === 'worker');
+      ensureWorkerQueueChannel(s.view === 'worker' || Boolean(s.selected_id));
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
       }
@@ -1424,6 +1485,7 @@ export function bootstrap(root_element) {
     // (not from ensureBoard/WorkerSubscriptions) so it survives tab switches.
     subscribeUiOrder();
     subscribeDisplayPolicy();
+    subscribeExecPresets();
 
     // Load workspaces after startup subscriptions can safely resubscribe.
     void loadWorkspaces().finally(() => {

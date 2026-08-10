@@ -126,6 +126,31 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     expect(selectFor(mount, 'worker_runner')).toBe(null);
   });
 
+  test('renders semantic Korean labels in workflow order with code keys', () => {
+    const mount = mountTemplate();
+
+    const labels = Array.from(
+      mount.querySelectorAll('[data-exec-setting-label]')
+    ).map((node) => ({
+      label: node.querySelector('[data-exec-setting-title]')?.textContent,
+      key: node.querySelector('[data-exec-setting-key]')?.textContent
+    }));
+
+    expect(labels).toEqual([
+      { label: '워커 실행 모델', key: 'orchestration_model' },
+      { label: '워커 reasoning effort', key: 'orchestration_effort' },
+      { label: '스펙 리뷰어', key: 'spec_review_model' },
+      { label: '스펙 리뷰 reasoning effort', key: 'spec_review_effort' },
+      { label: '계획 리뷰어', key: 'plan_review_model' },
+      { label: '계획 리뷰 reasoning effort', key: 'plan_review_effort' },
+      { label: '구현 리뷰어', key: 'impl_review_model' },
+      { label: '구현 리뷰 reasoning effort', key: 'impl_review_effort' },
+      { label: '구현 모델', key: 'impl_model' },
+      { label: '구현 reasoning effort', key: 'impl_effort' },
+      { label: '워크플로 모드', key: 'workflow_mode' }
+    ]);
+  });
+
   test('the review model vocabularies follow the contract, plan narrowed', () => {
     const mount = mountTemplate();
 
@@ -356,14 +381,29 @@ describe('views/detail-panel/exec-settings default labels (§3.2)', () => {
       ['spec_review_effort', '기본: 프리셋'],
       ['impl_review_effort', '기본: 프리셋'],
       ['plan_review_effort', '기본: 프리셋'],
-      ['impl_model', '기본: 티어 자동'],
-      ['impl_effort', '기본: 리프 기본']
+      ['impl_model', '기본: 작업 성격에 따라 구현 모델 자동 선택'],
+      ['impl_effort', '기본: 선택된 구현 에이전트의 reasoning effort 사용']
     ];
     for (const [key, label] of expected) {
       const sel = selectFor(mount, key);
       expect(sel.options[0].value).toBe('');
       expect(sel.options[0].textContent).toContain(label);
     }
+  });
+
+  test('explains how the workflow chooses implementation model and effort', () => {
+    const mount = mountTemplate();
+
+    expect(
+      mount.querySelector('[data-exec-setting-help="impl_model"]')?.textContent
+    ).toContain(
+      '워크플로가 복잡 구현인지, 범위가 한정된 구현인지 판단해 현재 runtime의 구현용 모델을 선택합니다.'
+    );
+    expect(
+      mount.querySelector('[data-exec-setting-help="impl_effort"]')?.textContent
+    ).toContain(
+      '자동 선택이면 workflow tier에 선언된 effort를, 모델만 직접 지정했으면 해당 하위 에이전트 호출의 기본 effort를 사용합니다.'
+    );
   });
 
   test('a workspace-global default surfaces as the (기본: <값> — 전역) label', () => {

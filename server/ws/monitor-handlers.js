@@ -27,6 +27,7 @@ import {
   workerMergeQueueState
 } from '../worker/attach.js';
 import { onQueueChanged } from '../worker/queue-events.js';
+import { runtimeCatalog } from '../worker/runner/index.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { emitMonitorPipelineSnapshot, log } from './context.js';
 import {
@@ -210,7 +211,8 @@ export function buildMonitorPipeline(options = {}) {
  * @param {{
  *   listWorkspaces?: () => Array<{ path: string }>,
  *   listHidden?: () => string[],
- *   snapshotFor?: (workspace_key: string) => Record<string, unknown>
+ *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
+ *   runnerCatalog?: () => Record<string, unknown>
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
  */
@@ -219,6 +221,13 @@ export function buildMonitorWorkspacesState(options = {}) {
     options.snapshotFor ||
     ((/** @type {string} */ key) =>
       getWorkerRuntime().queueStore.snapshot(key));
+  /** @type {Record<string, unknown>|null} */
+  let runner_catalog = null;
+  try {
+    runner_catalog = (options.runnerCatalog || runtimeCatalog)();
+  } catch {
+    runner_catalog = null;
+  }
 
   /** @type {Array<Record<string, unknown>>} */
   const out = [];
@@ -241,6 +250,7 @@ export function buildMonitorWorkspacesState(options = {}) {
       auto_merge: queue.auto_merge === true,
       slots: typeof queue.slots === 'number' ? queue.slots : 1,
       revision: typeof queue.revision === 'number' ? queue.revision : 0,
+      runner_catalog,
       exec_defaults:
         queue.exec_defaults && typeof queue.exec_defaults === 'object'
           ? { ...queue.exec_defaults }

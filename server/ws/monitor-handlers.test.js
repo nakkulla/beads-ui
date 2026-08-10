@@ -328,6 +328,19 @@ describe('buildMonitorWorkspacesState (UI-qrfo §4)', () => {
     expect(out[0].exec_defaults).toEqual({ orchestration_model: 'opus' });
   });
 
+  test('decorates every workspace control state with the runtime catalog', () => {
+    const runner_catalog = { runners: { codex: { models: {} } } };
+
+    const out = buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () => snapshot(),
+      runnerCatalog: () => runner_catalog
+    });
+
+    expect(out[0].runner_catalog).toBe(runner_catalog);
+  });
+
   test('carries the automation flags and slot count', () => {
     const out = buildState({
       workspaces: [WS_A],

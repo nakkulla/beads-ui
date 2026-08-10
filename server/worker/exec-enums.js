@@ -58,6 +58,25 @@ export const PLAN_REVIEW_MODELS = ['codex', 'fable', 'skip'];
 export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 
 /**
+ * Canonical execution-setting key order shared by persistence, mutations, and
+ * UI presentation. `workflow_mode` is intentionally absent.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const EXEC_SETTING_KEYS = [
+  'orchestration_model',
+  'orchestration_effort',
+  'spec_review_model',
+  'spec_review_effort',
+  'plan_review_model',
+  'plan_review_effort',
+  'impl_review_model',
+  'impl_review_effort',
+  'impl_model',
+  'impl_effort'
+];
+
+/**
  * Allowed values per exec-preference key — the 10 workspace-global-capable keys
  * (`workflow_mode` excluded).
  *
