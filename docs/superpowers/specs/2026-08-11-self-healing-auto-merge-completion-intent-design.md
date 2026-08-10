@@ -119,10 +119,18 @@ completion_intents[root_bead_id] = {
   },
   repair_sessions_used: 0,
   repair_bead_ids: [],
+  subject_stack: [],
   active_op: null,
   terminal_reason: null
 }
 ```
+
+`subject_stack`은 linked repair로 subject를 바꾸기 직전의 subject를 oldest-first로
+보존한다. repair PR이 merge되면 top subject를 authoritative하게 다시 gate한 뒤 같은
+mutation에서 pop한다. 따라서 repair subject의 base failure로 nested repair가 생겨도
+항상 root로 점프하지 않고 직전 repair subject로 돌아간다. legacy record에 이 key가
+없으면 빈 stack으로 읽되, current subject가 repair인데 복귀 lineage가 없으면 새
+예산을 추측하지 않고 `needs_human:repair_lineage_missing`으로 끝낸다.
 
 `phase` vocabulary는 다음으로 제한한다.
 
@@ -158,6 +166,9 @@ active_op = {
 `result_digest`는 bounded failure evidence(`reason`, normalized output tail,
 check names/conclusions)의 SHA-256이다. 다른 SHA의 결과를 같다고 만드는 용도가
 아니라, 한 pinned failure가 중복 소비되는 것을 막는 식별자다.
+session operation identity에는 다음 `repair_sessions_used + 1` round도 포함한다. 같은
+head와 같은 failure가 다시 관측돼도 이미 terminal인 이전 attempt를 재채택하지 않고
+남은 두 번째 budget으로 새 attempt를 prerecord한다.
 
 구버전 `queue.json`에 key가 없으면 `{}`로 정규화한다. 알 수 없는 phase,
 invalid budget, malformed subject/op은 자동 실행하지 않고 해당 record를
@@ -203,8 +214,9 @@ head를 유지하는 것과 같은 이유다: base의 연속적인 이동, stale
 driver는 current subject를 `prActions.merge(subject.bead_id)`로 처리한다.
 
 - subject가 root면 기존 merge·cleanup 성공 후 intent를 `completed`로 소비한다.
-- subject가 repair child면 repair child의 merge·cleanup을 끝낸 뒤 base를 다시
-  pin하고 subject를 root로 되돌려 `gating`한다.
+- subject가 repair child면 repair child의 merge·cleanup을 끝낸 뒤
+  `subject_stack` top을 다시 pin해 직전 subject로 복귀한다. 직전 subject가 landed
+  root면 `cleaning`, 아니면 `gating`으로 이어 간다.
 
 ### 4.2 Conflict
 
@@ -309,7 +321,8 @@ repair하지 않는다.
 - 질문이 필요한 hard stop은 무인 runner 계약대로 blocker로 종료한다.
 
 same-Bead resume는 source attempt의 runner/model/effort/exec settings lineage를
-상속한다. fresh linked repair는 현재 workspace의 정상 runtime selector와 exec
+상속한다. 여기서 same-Bead는 root에 한정되지 않고 현재 PR-owned
+`subject.bead_id`다. fresh linked repair는 현재 workspace의 정상 runtime selector와 exec
 resolution을 한 번만 적용하고 attempt에 기록한다. provider/model failure는 다른
 provider로 fallback하지 않는다.
 
