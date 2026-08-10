@@ -542,6 +542,217 @@ export function attemptsWithUsage(queue, workspace_key) {
   return out;
 }
 
+const COMPLETION_PHASES = new Set([
+  'gating',
+  'repairing',
+  'waiting_repair_pr',
+  'merging',
+  'cleaning',
+  'paused',
+  'needs_human',
+  'completed'
+]);
+const COMPLETION_REPAIR_SESSION_CAP = 2;
+
+/**
+ * @param {unknown} value
+ * @param {number} [limit]
+ * @returns {string|null}
+ */
+function boundedCompletionText(value, limit = 4000) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return null;
+  }
+  return value.slice(-limit);
+}
+
+/**
+ * Project the durable coordinator journal into the bounded UI contract. Raw
+ * operations and repair-child membership never cross the wire; the client gets
+ * only root identity, phase, pinned evidence, budget, and current repair link.
+ * A malformed journal is visible as terminal instead of disappearing.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, any>} queue
+ * @returns {{ statuses: Record<string, any>, repair_ids: Set<string> }}
+ */
+function completionStatusFor(workspace_key, queue) {
+  const raw_intents =
+    queue.completion_intents &&
+    typeof queue.completion_intents === 'object' &&
+    !Array.isArray(queue.completion_intents)
+      ? queue.completion_intents
+      : {};
+  /** @type {Record<string, any>} */
+  const statuses = {};
+  /** @type {Set<string>} */
+  const repair_ids = new Set();
+  for (const [root_bead_id, raw] of Object.entries(raw_intents)) {
+    const value =
+      raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    const repair_bead_ids = Array.isArray(value?.repair_bead_ids)
+      ? value.repair_bead_ids.filter(
+          (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+        )
+      : [];
+    for (const repair_bead_id of repair_bead_ids) {
+      repair_ids.add(repair_bead_id);
+    }
+    const subject =
+      value?.subject &&
+      typeof value.subject === 'object' &&
+      !Array.isArray(value.subject)
+        ? value.subject
+        : null;
+    const used = Number.isInteger(value?.repair_sessions_used)
+      ? Math.max(
+          0,
+          Math.min(COMPLETION_REPAIR_SESSION_CAP, value.repair_sessions_used)
+        )
+      : 0;
+    const valid =
+      value !== null &&
+      COMPLETION_PHASES.has(value.phase) &&
+      subject !== null &&
+      (subject.role === 'root' || subject.role === 'repair') &&
+      typeof subject.bead_id === 'string' &&
+      subject.bead_id.length > 0 &&
+      Number.isInteger(value.repair_sessions_used) &&
+      value.repair_sessions_used >= 0 &&
+      value.repair_sessions_used <= COMPLETION_REPAIR_SESSION_CAP &&
+      Array.isArray(value.repair_bead_ids);
+    if (!valid) {
+      statuses[root_bead_id] = {
+        root_bead_id,
+        phase: 'needs_human',
+        subject_role: null,
+        subject_bead_id: root_bead_id,
+        head_sha: null,
+        base_sha: null,
+        merged_sha: null,
+        repair_sessions_used: used,
+        repair_session_cap: COMPLETION_REPAIR_SESSION_CAP,
+        current_repair: null,
+        active_attempt_id: null,
+        failure_stage: 'state',
+        failure_reason: 'intent_state_invalid',
+        evidence: 'completion_intent_malformed',
+        log_path: null,
+        terminal_reason: 'intent_state_invalid'
+      };
+      continue;
+    }
+    const active_op =
+      value.active_op &&
+      typeof value.active_op === 'object' &&
+      !Array.isArray(value.active_op)
+        ? value.active_op
+        : null;
+    const terminal =
+      value.terminal_reason &&
+      typeof value.terminal_reason === 'object' &&
+      !Array.isArray(value.terminal_reason)
+        ? value.terminal_reason
+        : null;
+    const cleanup =
+      queue.cleanup_failed?.[root_bead_id] &&
+      typeof queue.cleanup_failed[root_bead_id] === 'object'
+        ? queue.cleanup_failed[root_bead_id]
+        : null;
+    const failure_key = terminal?.failure_key || active_op?.failure_key || null;
+    const repair_bead_id =
+      subject.role === 'repair'
+        ? subject.bead_id
+        : repair_bead_ids[repair_bead_ids.length - 1] || null;
+    let current_repair = null;
+    if (repair_bead_id) {
+      let observed = null;
+      try {
+        observed = getWorkerRuntime().prObservations.get(
+          workspace_key,
+          repair_bead_id
+        );
+      } catch {
+        observed = null;
+      }
+      const observed_pr = observed?.pr || null;
+      const pr_url =
+        subject.role === 'repair' && typeof subject.pr_url === 'string'
+          ? subject.pr_url
+          : typeof observed_pr?.url === 'string'
+            ? observed_pr.url
+            : null;
+      current_repair = {
+        bead_id: repair_bead_id,
+        pr_url,
+        pr_number:
+          typeof observed_pr?.number === 'number' ? observed_pr.number : null
+      };
+    }
+    let evidence = boundedCompletionText(terminal?.evidence);
+    let log_path = boundedCompletionText(terminal?.log_path, 1000);
+    if (evidence === null && cleanup) {
+      evidence =
+        boundedCompletionText(cleanup.output_tail) ||
+        boundedCompletionText(cleanup.detail);
+    }
+    if (log_path === null && cleanup) {
+      log_path = boundedCompletionText(cleanup.log_path, 1000);
+    }
+    if (evidence === null || log_path === null) {
+      let observed = null;
+      try {
+        observed = getWorkerRuntime().prObservations.get(
+          workspace_key,
+          root_bead_id
+        );
+      } catch {
+        observed = null;
+      }
+      if (evidence === null) {
+        evidence = boundedCompletionText(observed?.verify?.output_tail);
+        if (evidence === null && Array.isArray(observed?.ci?.checks)) {
+          try {
+            evidence = JSON.stringify(observed.ci.checks.slice(0, 100)).slice(
+              -4000
+            );
+          } catch {
+            evidence = null;
+          }
+        }
+      }
+      if (log_path === null) {
+        log_path = boundedCompletionText(observed?.verify?.log_path, 1000);
+      }
+    }
+    statuses[root_bead_id] = {
+      root_bead_id,
+      phase: value.phase,
+      subject_role: subject.role,
+      subject_bead_id: subject.bead_id,
+      head_sha: boundedCompletionText(subject.head_sha, 64),
+      base_sha: boundedCompletionText(subject.base_sha, 64),
+      merged_sha: boundedCompletionText(subject.merged_sha, 64),
+      repair_sessions_used: used,
+      repair_session_cap: COMPLETION_REPAIR_SESSION_CAP,
+      current_repair,
+      active_attempt_id: boundedCompletionText(active_op?.attempt_id, 200),
+      failure_stage:
+        boundedCompletionText(failure_key?.stage, 200) ||
+        boundedCompletionText(terminal?.stage, 200) ||
+        boundedCompletionText(cleanup?.step, 200),
+      failure_reason:
+        boundedCompletionText(failure_key?.reason, 500) ||
+        boundedCompletionText(terminal?.reason, 500) ||
+        boundedCompletionText(cleanup?.reason, 500),
+      evidence,
+      log_path,
+      terminal_reason: boundedCompletionText(terminal?.reason, 500)
+    };
+  }
+  return { statuses, repair_ids };
+}
+
 /**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the resolved verify_cmd, which comes from an explicit `[worker.verify]`
@@ -582,7 +793,34 @@ export function attemptsWithUsage(queue, workspace_key) {
 export function decorateQueue(workspace_key, raw_queue) {
   // Overlaid FIRST so every decoration below — observations, activity, titles —
   // sees the external rows without knowing they exist (UI-7agi §2).
-  const queue = withExternalPrWait(workspace_key, raw_queue);
+  const overlaid = withExternalPrWait(workspace_key, raw_queue);
+  const completion = completionStatusFor(workspace_key, overlaid);
+  /** @type {Record<string, any>} */
+  const public_queue = { ...overlaid };
+  delete public_queue.completion_intents;
+  /** @type {Record<string, any>} */
+  const queue = {
+    ...public_queue,
+    queue: Array.isArray(overlaid.queue)
+      ? overlaid.queue.filter(
+          (/** @type {any} */ entry) =>
+            !completion.repair_ids.has(entry?.bead_id)
+        )
+      : [],
+    pr_wait: Array.isArray(overlaid.pr_wait)
+      ? overlaid.pr_wait.filter(
+          (/** @type {any} */ entry) =>
+            !completion.repair_ids.has(entry?.bead_id)
+        )
+      : [],
+    done: Array.isArray(overlaid.done)
+      ? overlaid.done.filter(
+          (/** @type {any} */ entry) =>
+            !completion.repair_ids.has(entry?.bead_id)
+        )
+      : [],
+    completion_status: completion.statuses
+  };
   // Both commands come off the SAME two-rung ladder the worker executes
   // (UI-kfl4), read through its synchronous projection because this decoration
   // runs on every snapshot push and cannot await a git spawn. Display only —

@@ -7497,6 +7497,226 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
   }
 
+  test('shows same-PR automatic repair progress and locks per-row cancellation', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: { active: null, failures: {} },
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'repairing',
+            subject_role: 'root',
+            subject_bead_id: 'RD-1',
+            repair_sessions_used: 1,
+            repair_session_cap: 2,
+            current_repair: null,
+            active_attempt_id: 'repair-a1',
+            failure_stage: 'merge_gate',
+            failure_reason: 'verify_cmd_failed',
+            evidence: 'test red',
+            log_path: '/state/verify.log',
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+    expect(row.textContent).toContain('자동복구 1/2 · 원 PR 수정 중');
+    const cancel = /** @type {HTMLButtonElement} */ (
+      row.querySelector('.worker-mini__merge-cancel')
+    );
+    expect(cancel.disabled).toBe(true);
+    expect(cancel.title).toContain('상단 자동 머지 중단');
+    const badge = /** @type {HTMLElement} */ (
+      Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
+        element.textContent?.includes('자동복구 1/2')
+      )
+    );
+    expect(badge.title).toContain('merge_gate · verify_cmd_failed');
+    expect(badge.title).toContain('/state/verify.log');
+  });
+
+  test('shows root revalidation after a repair result', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'gating',
+            subject_role: 'root',
+            subject_bead_id: 'RD-1',
+            repair_sessions_used: 1,
+            repair_session_cap: 2,
+            current_repair: null,
+            active_attempt_id: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    expect(rowOf(mount, 'RD-1').textContent).toContain('root 재검증 중');
+  });
+
+  test('keeps a repair PR link on the root card without a child row', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: { active: null, failures: {} },
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'waiting_repair_pr',
+            subject_role: 'root',
+            subject_bead_id: 'RD-1',
+            repair_sessions_used: 1,
+            repair_session_cap: 2,
+            current_repair: {
+              bead_id: 'RD-1-repair',
+              pr_url: 'https://github.com/o/r/pull/22',
+              pr_number: 22
+            },
+            active_attempt_id: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+    expect(row.textContent).toContain('repair PR #22 대기');
+    const link = /** @type {HTMLAnchorElement} */ (
+      row.querySelector('.worker-mini__repair-pr')
+    );
+    expect(link.textContent).toContain('repair #22');
+    expect(link.href).toBe('https://github.com/o/r/pull/22');
+    expect(rowOf(mount, 'RD-1-repair')).toBe(null);
+  });
+
+  test('shows the linked repair PR merge phase on the root card', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'merging',
+            subject_role: 'repair',
+            subject_bead_id: 'RD-1-repair',
+            repair_sessions_used: 1,
+            repair_session_cap: 2,
+            current_repair: {
+              bead_id: 'RD-1-repair',
+              pr_url: 'https://github.com/o/r/pull/22',
+              pr_number: 22
+            },
+            active_attempt_id: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    expect(rowOf(mount, 'RD-1').textContent).toContain('repair PR #22 머지 중');
+  });
+
+  test('shows cleanup recovery on the root card', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: { active: null, failures: {} },
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'cleaning',
+            subject_role: 'root',
+            subject_bead_id: 'RD-1',
+            repair_sessions_used: 1,
+            repair_session_cap: 2,
+            current_repair: { bead_id: 'RD-1-repair' },
+            active_attempt_id: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    expect(rowOf(mount, 'RD-1').textContent).toContain('정리 복구 중');
+  });
+
+  test('shows paused recovery while preserving the manual merge path', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'paused',
+            subject_role: 'root',
+            subject_bead_id: 'RD-1',
+            repair_sessions_used: 1,
+            repair_session_cap: 2,
+            current_repair: null,
+            active_attempt_id: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+    expect(row.textContent).toContain('자동복구 일시정지');
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        row.querySelector('.worker-mini__merge')
+      ).disabled
+    ).toBe(false);
+  });
+
+  test('renders terminal recovery evidence instead of hiding malformed state', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'needs_human',
+            subject_role: null,
+            subject_bead_id: 'RD-1',
+            repair_sessions_used: 2,
+            repair_session_cap: 2,
+            current_repair: null,
+            active_attempt_id: null,
+            evidence: 'journal malformed',
+            log_path: '/state/completion.log',
+            terminal_reason: 'intent_state_invalid'
+          }
+        }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+    expect(row.textContent).toContain('사람 확인 필요 · intent_state_invalid');
+    const badge = /** @type {HTMLElement} */ (
+      Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
+        element.textContent?.includes('사람 확인 필요')
+      )
+    );
+    expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
+    expect(badge.title).toContain('journal malformed');
+    expect(badge.title).toContain('/state/completion.log');
+  });
+
+  test('omits recovery UI when the optional projection is absent', () => {
+    const { mount } = mountLane(laneOf(['RD-1']));
+
+    const row = rowOf(mount, 'RD-1');
+    expect(row.textContent).not.toContain('자동복구');
+    expect(row.textContent).not.toContain('사람 확인 필요');
+    expect(row.querySelector('.worker-mini__repair-pr')).toBe(null);
+  });
+
   test('renders the waiting position badge and swaps 머지 for 취소', () => {
     const { mount } = mountLane(
       laneOf(['RD-1', 'RD-2'], {

@@ -76,6 +76,10 @@ export function timesMeta(item) {
  * 않는다.
  * @property {number|null} [pr_number] - Observed PR number (`pr_wait` rows).
  * @property {string} [pr_url] - Observed PR URL; renders the `#N ↗` link.
+ * @property {string|null} [completion_badge] - Root completion status badge.
+ * @property {string} [completion_title] - Bounded completion evidence tooltip.
+ * @property {number|null} [completion_repair_pr_number] - Linked repair PR.
+ * @property {string} [completion_repair_pr_url] - Linked repair PR URL.
  * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
  * @property {string|null} [live_badge] - Which of {@link MiniItem.badges}
  * reports live server activity rather than a settled state (UI-raqh §3); it is
@@ -168,6 +172,17 @@ export function miniRow(item) {
           >#${item.pr_number} ↗</a
         >`
       : '';
+  const repair_pr_el =
+    item.completion_repair_pr_url && item.completion_repair_pr_number
+      ? html`<a
+          class="worker-mini__pr worker-mini__repair-pr"
+          href=${item.completion_repair_pr_url}
+          target="_blank"
+          rel="noreferrer noopener"
+          title="repair PR 열기"
+          >repair #${item.completion_repair_pr_number} ↗</a
+        >`
+      : '';
   const badge_els = badges.map((b) =>
     b === item.live_badge
       ? // Live server activity (UI-raqh §3): neutral, never the warn colour —
@@ -182,6 +197,9 @@ export function miniRow(item) {
           class="worker-mini__badge${item.alert
             ? ' worker-mini__badge--alert'
             : ''}"
+          title=${b === item.completion_badge
+            ? item.completion_title || ''
+            : ''}
           >${b}</span
         >`
   );
@@ -302,7 +320,7 @@ export function miniRow(item) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${repo_el}${id_el}${pr_el}${badge_els}${reason_el}
+              ${grip}${repo_el}${id_el}${pr_el}${repair_pr_el}${badge_els}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}</div>
             ${has_foot
@@ -318,7 +336,7 @@ export function miniRow(item) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${repo_el}${id_el}${title_el}${pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
+              ${grip}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
             </div>
             ${timesMeta(item)}`}
   </div>`;
