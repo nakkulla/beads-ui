@@ -3597,11 +3597,11 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     );
     const text = (banner.textContent || '').replace(/\s+/g, ' ');
     expect(text).toContain('child_sweep');
-    expect(text).toContain('자동 재시도는 하지 않습니다');
-    expect(text).toContain('resolved로 남아 있고');
+    expect(text).toContain('1회 자동 재시도 후에도 실패했습니다');
+    expect(text).toContain('[AI 정리]로 진단하거나');
     expect(banner.getAttribute('data-bead-id')).toBe('RD-1');
-    // The bead stays in the PR-wait row (not Done), and the only retry is the
-    // human's own click.
+    // The bead stays in the PR-wait row (not Done); the existing cleanup retry
+    // remains the human's click after any applicable bounded verify retry.
     const btn = /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-mini__merge')
     );

@@ -157,10 +157,11 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
 - **자동 경로는 이 서버의 [머지] 클릭으로 머지된 PR에만 걸린다**: github.com에서
   직접 머지한 PR은 external row로 **관측만 기록되고 정리가 자동으로 돌지
   않는다** (`server/worker/pr-poller.js` — 레인에 `머지됨 · 정리`가 뜨고 [정리]
-  클릭이 단일 트리거다). 그리고 정리가 어느 단계에서든 멈추면 detached 배포는
-  launch되지 않으므로 재시작도 일어나지 않는다. 그때 bead는 `pr_wait`에
-  `resolved`로 남고 배너가 뜨며 자동 재시도는 없다 — 조용히 유실되지는 않지만,
-  사람이 이어받아야 한다.
+  클릭이 단일 트리거다). `post_merge_verify`가 `verify_cmd_failed`로 실패할 때만
+  전체 verify를 1회 bounded 자동 재시도하며, 그 재시도 후에도 정리가 멈추면
+  detached 배포는 launch되지 않으므로 재시작도 일어나지 않는다. 그때 bead는
+  `pr_wait`에 `resolved`로 남고 배너가 뜨며 [AI 정리] 버튼으로 진단하거나 사람이
+  이어받아야 한다.
 - 루트 `deploy.json`은 없고, 이 저장소에는 그 파일을 읽는 코드도 없다 — 새로
   만들어도 아무도 읽지 않는다. workflow 계약의 post-merge continuity 판정은
   `docs/agents/repo-ops.toml`의 `[deploy]` 선언을 읽으며 `test -f deploy.json`은

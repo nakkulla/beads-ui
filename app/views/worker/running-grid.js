@@ -220,8 +220,8 @@ export function bannersTemplate(state) {
           data-bead-id=${c.bead_id}
         >
           ⚠ ${c.bead_id} 머지 완료 — 머지 후 정리가 <b>${c.step}</b> 단계에서
-          멈췄습니다 (${c.reason}). bead는 resolved로 남아 있고 자동 재시도는
-          하지 않습니다 — 정리를 사람이 마무리하세요.
+          멈췄습니다 (${c.reason}). 1회 자동 재시도 후에도 실패했습니다 — [AI
+          정리]로 진단하거나 정리를 사람이 마무리하세요.
           ${c.detail
             ? html`<div class="worker-banner__detail">
                 <code>${truncateDetail(c.detail)}</code>

@@ -120,7 +120,7 @@ function seedStore(options = {}) {
  *   checks?: any,
  *   store?: any,
  *   verify?: { cmd: string[], timeout_ms: number }|null,
- *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string }>,
+ *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string, attempts?: { reason: string, log_path?: string }[] }>,
  *   deploy?: { cmd: string[], timeout_ms: number, detached: boolean }|null,
  *   verifyResolution?: import('./repo-ops.js').VerifyResolution,
  *   verifyResolutions?: Array<import('./repo-ops.js').VerifyResolution>,
@@ -257,7 +257,16 @@ function makeActions(options = {}) {
           ? { pr_url: options.bdPrUrl ?? undefined }
           : {}
       };
-    })
+    }),
+    updateFields: vi.fn(
+      async (/** @type {string} */ id, /** @type {any} */ input) => {
+        calls.push(`bd:updateFields:${id}`);
+        if (options.bdFail && options.bdFail('updateFields', id)) {
+          throw new Error('bd down');
+        }
+        return input;
+      }
+    )
   };
   /** @type {Map<string, string>} */
   const bd_status = new Map();
@@ -819,6 +828,84 @@ describe('merge click — click-time SHA re-evaluation (§5/§6)', () => {
       .map((c) => c[0].sha);
     expect(shas).toEqual(['sha-old', 'sha-updated']);
   });
+
+  test('retries a cached current-head verify failure and records a merge-gate flake note', async () => {
+    const h = makeActions({
+      verify: VERIFY,
+      verifyResults: [
+        {
+          ok: true,
+          reason: 'ok',
+          attempts: [
+            {
+              reason: 'verify_cmd_failed',
+              log_path: '/state/gate-r1.log'
+            },
+            { reason: 'ok', log_path: '/state/gate-r2.log' }
+          ]
+        },
+        { ok: true, reason: 'ok' }
+      ]
+    });
+    h.observations.recordVerify(WS, BEAD, {
+      head_sha: 'sha-aaa',
+      ok: false,
+      reason: 'verify_cmd_failed',
+      at: 1
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.runVerify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sha: 'sha-aaa',
+        retry_flaky: true
+      })
+    );
+    expect(h.observations.get(WS, BEAD)?.verify).toMatchObject({
+      head_sha: 'sha-aaa',
+      ok: true,
+      reason: 'ok'
+    });
+    expect(h.bd.updateFields).toHaveBeenCalledWith(BEAD, {
+      append_notes:
+        'verify flake 흡수 (merge_gate): 1차 verify_cmd_failed (/state/gate-r1.log) → 재시도 green (/state/gate-r2.log)'
+    });
+  });
+
+  test('keeps a green gate when merge-gate flake note append fails', async () => {
+    const h = makeActions({
+      verify: VERIFY,
+      bdFail: (method) => method === 'updateFields',
+      verifyResults: [
+        {
+          ok: true,
+          reason: 'ok',
+          attempts: [
+            {
+              reason: 'verify_cmd_failed',
+              log_path: '/state/gate-r1.log'
+            },
+            { reason: 'ok', log_path: '/state/gate-r2.log' }
+          ]
+        },
+        { ok: true, reason: 'ok' }
+      ]
+    });
+    h.observations.recordVerify(WS, BEAD, {
+      head_sha: 'sha-aaa',
+      ok: false,
+      reason: 'verify_cmd_failed',
+      at: 1
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.bd.updateFields).toHaveBeenCalledTimes(1);
+    expect(h.observations.get(WS, BEAD)?.verify?.ok).toBe(true);
+  });
 });
 
 describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
@@ -904,6 +991,97 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     expect(q.done).toEqual([]);
     expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
     expect(h.worktree.removeByBranch).not.toHaveBeenCalled();
+  });
+
+  test('absorbs one flaky post-merge verification and appends a bead note', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      verifyResults: [
+        { ok: true, reason: 'ok' },
+        {
+          ok: true,
+          reason: 'ok',
+          attempts: [
+            {
+              reason: 'verify_cmd_failed',
+              log_path: '/state/verify-r1.log'
+            },
+            { reason: 'ok', log_path: '/state/verify-r2.log' }
+          ]
+        }
+      ]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.bd.updateFields).toHaveBeenCalledWith(BEAD, {
+      append_notes:
+        'verify flake 흡수 (post_merge_verify): 1차 verify_cmd_failed (/state/verify-r1.log) → 재시도 green (/state/verify-r2.log)'
+    });
+  });
+
+  test('continues cleanup when post-merge flake note append fails', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      bdFail: (method) => method === 'updateFields',
+      verifyResults: [
+        { ok: true, reason: 'ok' },
+        {
+          ok: true,
+          reason: 'ok',
+          attempts: [
+            {
+              reason: 'verify_cmd_failed',
+              log_path: '/state/verify-r1.log'
+            },
+            { reason: 'ok', log_path: '/state/verify-r2.log' }
+          ]
+        }
+      ]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.bd.updateFields).toHaveBeenCalledTimes(1);
+    expect(h.store.snapshot(WS).done).toHaveLength(1);
+  });
+
+  test('keeps the existing cleanup failure on two post-merge red attempts', async () => {
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      verifyResults: [
+        { ok: true, reason: 'ok' },
+        {
+          ok: false,
+          reason: 'verify_cmd_failed',
+          attempts: [
+            {
+              reason: 'verify_cmd_failed',
+              log_path: '/state/verify-r1.log'
+            },
+            {
+              reason: 'verify_cmd_failed',
+              log_path: '/state/verify-r2.log'
+            }
+          ]
+        }
+      ]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      cleanup_step: 'post_merge_verify',
+      reason: 'verify_cmd_failed'
+    });
+    expect(h.bd.updateFields).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed'
+    });
   });
 
   test('refuses the click outright on an unreadable verify declaration (UI-kfl4 §4.2)', async () => {
