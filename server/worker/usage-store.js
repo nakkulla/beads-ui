@@ -26,6 +26,8 @@ import path from 'node:path';
  * @property {number} output_tokens
  * @property {number} cache_read_input_tokens
  * @property {number} cache_creation_input_tokens
+ * @property {number} [reasoning_output_tokens] - Optional Codex reasoning
+ * breakdown; this is not part of a Codex headline subtotal.
  * @property {number} [total_cost_usd] - Present only once a `result` event
  * reported one (assistant events carry no cost).
  * @property {boolean} [replayed] - Present only on a tally rebuilt from the
@@ -35,20 +37,21 @@ import path from 'node:path';
 /**
  * One usage payload as it arrives off the stream.
  *
- * @typedef {{ message_id?: string, input_tokens?: unknown, output_tokens?: unknown, cache_read_input_tokens?: unknown, cache_creation_input_tokens?: unknown, total_cost_usd?: unknown }} UsageInput
+ * @typedef {{ message_id?: string, input_tokens?: unknown, output_tokens?: unknown, cache_read_input_tokens?: unknown, cache_creation_input_tokens?: unknown, reasoning_output_tokens?: unknown, total_cost_usd?: unknown }} UsageInput
  */
 
 /**
- * The summable fields, in tally order. Cost is deliberately outside: it is
- * reported once, by the `result` event, not per message.
+ * The numeric usage fields, in tally order. Cost is deliberately outside: it
+ * is reported once, by the `result` event, not per message.
  *
- * @type {Array<'input_tokens'|'output_tokens'|'cache_read_input_tokens'|'cache_creation_input_tokens'>}
+ * @type {Array<'input_tokens'|'output_tokens'|'cache_read_input_tokens'|'cache_creation_input_tokens'|'reasoning_output_tokens'>}
  */
 const SUM_FIELDS = [
   'input_tokens',
   'output_tokens',
   'cache_read_input_tokens',
-  'cache_creation_input_tokens'
+  'cache_creation_input_tokens',
+  'reasoning_output_tokens'
 ];
 
 /**
@@ -91,7 +94,8 @@ function toTally(input) {
     input_tokens: numeric(input.input_tokens),
     output_tokens: numeric(input.output_tokens),
     cache_read_input_tokens: numeric(input.cache_read_input_tokens),
-    cache_creation_input_tokens: numeric(input.cache_creation_input_tokens)
+    cache_creation_input_tokens: numeric(input.cache_creation_input_tokens),
+    reasoning_output_tokens: numeric(input.reasoning_output_tokens)
   };
   if (
     typeof input.total_cost_usd === 'number' &&
@@ -232,13 +236,14 @@ export function createUsageStore() {
         input_tokens: 0,
         output_tokens: 0,
         cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0
+        cache_creation_input_tokens: 0,
+        reasoning_output_tokens: 0
       };
       let cost = 0;
       let has_cost = false;
       for (const tally of entry.by_message.values()) {
         for (const field of SUM_FIELDS) {
-          total[field] += tally[field];
+          total[field] = numeric(total[field]) + numeric(tally[field]);
         }
         if (typeof tally.total_cost_usd === 'number') {
           cost += tally.total_cost_usd;

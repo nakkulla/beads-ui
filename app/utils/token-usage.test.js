@@ -137,7 +137,9 @@ describe('summed attempt usage (UI-d7pw §1)', () => {
       }
     };
 
-    expect(sumAttemptUsage(attempts, 'UI-1')).toMatchObject({
+    expect(
+      sumAttemptUsage(attempts, 'UI-1')?.providers.claude?.breakdown
+    ).toMatchObject({
       input_tokens: 3,
       output_tokens: 30
     });
@@ -149,7 +151,9 @@ describe('summed attempt usage (UI-d7pw §1)', () => {
       a2: { attempt_id: 'a2', bead_id: 'UI-1', usage: null }
     };
 
-    expect(sumAttemptUsage(attempts, 'UI-1')).toMatchObject({
+    expect(
+      sumAttemptUsage(attempts, 'UI-1')?.providers.claude?.breakdown
+    ).toMatchObject({
       input_tokens: 1
     });
   });
@@ -189,7 +193,9 @@ describe('summed attempt usage (UI-d7pw §1)', () => {
       }
     };
 
-    expect(sumAttemptUsage(attempts, 'UI-1')?.total_cost_usd).toBe(1);
+    expect(
+      sumAttemptUsage(attempts, 'UI-1')?.providers.claude?.total_cost_usd
+    ).toBe(1);
   });
 
   test('omits the cost when only some attempts reported one (UI-tq13 §7)', () => {
@@ -209,8 +215,8 @@ describe('summed attempt usage (UI-d7pw §1)', () => {
 
     const total = sumAttemptUsage(attempts, 'UI-1');
 
-    expect(total).not.toHaveProperty('total_cost_usd');
-    expect(total?.input_tokens).toBe(7);
+    expect(total?.providers.claude).not.toHaveProperty('total_cost_usd');
+    expect(total?.providers.claude?.breakdown.input_tokens).toBe(7);
   });
 
   test('counts a usage-less attempt as neither summed nor cost-missing', () => {
@@ -223,7 +229,9 @@ describe('summed attempt usage (UI-d7pw §1)', () => {
       a2: { attempt_id: 'a2', bead_id: 'UI-1', usage: null }
     };
 
-    expect(sumAttemptUsage(attempts, 'UI-1')?.total_cost_usd).toBe(0.5);
+    expect(
+      sumAttemptUsage(attempts, 'UI-1')?.providers.claude?.total_cost_usd
+    ).toBe(0.5);
   });
 
   test('omits the cost when no attempt reported one', () => {
@@ -231,9 +239,9 @@ describe('summed attempt usage (UI-d7pw §1)', () => {
       a1: { attempt_id: 'a1', bead_id: 'UI-1', usage: { input_tokens: 1 } }
     };
 
-    expect(sumAttemptUsage(attempts, 'UI-1')).not.toHaveProperty(
-      'total_cost_usd'
-    );
+    expect(
+      sumAttemptUsage(attempts, 'UI-1')?.providers.claude
+    ).not.toHaveProperty('total_cost_usd');
   });
 
   test('propagates replayed when any summed attempt carried it', () => {
@@ -246,7 +254,9 @@ describe('summed attempt usage (UI-d7pw §1)', () => {
       }
     };
 
-    expect(sumAttemptUsage(attempts, 'UI-1')?.replayed).toBe(true);
+    expect(sumAttemptUsage(attempts, 'UI-1')?.providers.claude?.replayed).toBe(
+      true
+    );
   });
 
   test('sums the cache fields alongside the headline fields', () => {
@@ -263,8 +273,268 @@ describe('summed attempt usage (UI-d7pw §1)', () => {
       }
     };
 
-    expect(sumAttemptUsage(attempts, 'UI-1')?.cache_read_input_tokens).toBe(
-      300
+    expect(
+      sumAttemptUsage(attempts, 'UI-1')?.providers.claude?.breakdown
+        .cache_read_input_tokens
+    ).toBe(300);
+  });
+});
+
+describe('provider and role usage projection (UI-orfj Phase 1)', () => {
+  test('separates Claude and Codex subtotals without a provider grand total', () => {
+    const attempts = {
+      claude: {
+        attempt_id: 'claude',
+        bead_id: 'UI-1',
+        runner: 'claude',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 2,
+          cache_read_input_tokens: 3,
+          cache_creation_input_tokens: 4,
+          total_cost_usd: 0.5
+        }
+      },
+      codex: {
+        attempt_id: 'codex',
+        bead_id: 'UI-1',
+        runner: 'codex',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 100,
+          cache_creation_input_tokens: 9,
+          reasoning_output_tokens: 8
+        }
+      }
+    };
+
+    const projected = sumAttemptUsage(attempts, 'UI-1');
+
+    expect(projected?.providers).toMatchObject({
+      claude: {
+        subtotal: 10,
+        breakdown: {
+          input_tokens: 1,
+          output_tokens: 2,
+          cache_read_input_tokens: 3,
+          cache_creation_input_tokens: 4
+        },
+        total_cost_usd: 0.5
+      },
+      codex: {
+        subtotal: 15,
+        breakdown: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 100,
+          cache_creation_input_tokens: 9,
+          reasoning_output_tokens: 8
+        }
+      }
+    });
+    expect(projected).not.toHaveProperty('total');
+  });
+
+  test('projects outer usage and deduplicated nested receipts into role legs', () => {
+    const attempts = {
+      outer: {
+        attempt_id: 'outer',
+        bead_id: 'UI-1',
+        runner: 'claude',
+        model: 'gpt-5.6-sol',
+        session_id: 'outer-session',
+        usage: { input_tokens: 3 },
+        usage_legs: [
+          {
+            receipt_id: 'r-implementation',
+            provider: 'codex',
+            role: 'implementation',
+            model: 'gpt-5.6-terra',
+            session_id: 'thread-implementation',
+            turn_id: 'turn-implementation',
+            completed_at: '2026-08-11T00:00:00.000Z',
+            usage: { input_tokens: 10, output_tokens: 2 }
+          },
+          {
+            receipt_id: 'r-review',
+            provider: 'codex',
+            role: 'review-consult',
+            model: 'gpt-5.6-luna',
+            thread_id: 'thread-review',
+            turn_id: 'turn-review',
+            completed_at: '2026-08-11T00:01:00.000Z',
+            usage: { input_tokens: 20, output_tokens: 2 }
+          }
+        ]
+      },
+      duplicate: {
+        attempt_id: 'duplicate',
+        bead_id: 'UI-1',
+        usage_legs: [
+          {
+            receipt_id: 'r-implementation',
+            provider: 'codex',
+            role: 'implementation',
+            usage: { input_tokens: 10, output_tokens: 2 }
+          }
+        ]
+      }
+    };
+
+    const projected = sumAttemptUsage(attempts, 'UI-1');
+
+    expect(projected?.roles.orchestrator?.claude?.legs).toEqual([
+      expect.objectContaining({
+        model: 'gpt-5.6-sol',
+        session_id: 'outer-session'
+      })
+    ]);
+    expect(projected?.roles.implementation?.codex).toMatchObject({
+      subtotal: 12,
+      legs: [
+        {
+          receipt_id: 'r-implementation',
+          model: 'gpt-5.6-terra',
+          session_id: 'thread-implementation',
+          turn_id: 'turn-implementation',
+          completed_at: '2026-08-11T00:00:00.000Z'
+        }
+      ]
+    });
+    expect(projected?.roles['review-consult']?.codex).toMatchObject({
+      subtotal: 22,
+      legs: [
+        {
+          receipt_id: 'r-review',
+          model: 'gpt-5.6-luna',
+          session_id: 'thread-review',
+          turn_id: 'turn-review',
+          completed_at: '2026-08-11T00:01:00.000Z'
+        }
+      ]
+    });
+  });
+
+  test('omits historical absent reasoning from an aggregate breakdown', () => {
+    const projected = sumAttemptUsage(
+      {
+        codex: {
+          attempt_id: 'codex',
+          bead_id: 'UI-1',
+          runner: 'codex',
+          usage: { input_tokens: 3, output_tokens: 1 }
+        }
+      },
+      'UI-1'
     );
+
+    expect(projected?.providers.codex?.breakdown).not.toHaveProperty(
+      'reasoning_output_tokens'
+    );
+  });
+
+  test('preserves explicit zero reasoning in an aggregate breakdown', () => {
+    const projected = sumAttemptUsage(
+      {
+        codex: {
+          attempt_id: 'codex',
+          bead_id: 'UI-1',
+          runner: 'codex',
+          usage: {
+            input_tokens: 3,
+            output_tokens: 1,
+            reasoning_output_tokens: 0
+          }
+        }
+      },
+      'UI-1'
+    );
+
+    expect(projected?.providers.codex?.breakdown).toHaveProperty(
+      'reasoning_output_tokens',
+      0
+    );
+  });
+
+  test('omits a nested leg without a nonempty receipt id', () => {
+    const projected = sumAttemptUsage(
+      {
+        outer: {
+          attempt_id: 'outer',
+          bead_id: 'UI-1',
+          usage: { input_tokens: 1 },
+          usage_legs: [
+            {
+              receipt_id: '',
+              provider: 'codex',
+              role: 'implementation',
+              usage: { input_tokens: 10, output_tokens: 2 }
+            }
+          ]
+        }
+      },
+      'UI-1'
+    );
+
+    expect(projected?.providers).not.toHaveProperty('codex');
+    expect(projected?.roles).not.toHaveProperty('implementation');
+  });
+
+  test('exposes Claude cost only when every summed Claude outer attempt reports it', () => {
+    const attempts = {
+      priced: {
+        attempt_id: 'priced',
+        bead_id: 'UI-1',
+        usage: { input_tokens: 1, total_cost_usd: 0.5 }
+      },
+      unpriced: {
+        attempt_id: 'unpriced',
+        bead_id: 'UI-1',
+        usage: { input_tokens: 2 }
+      }
+    };
+
+    const projected = sumAttemptUsage(attempts, 'UI-1');
+
+    expect(projected?.providers.claude).not.toHaveProperty('total_cost_usd');
+  });
+
+  test('keeps explicit zero, replayed, and resumed outer attempts distinct from absent usage', () => {
+    const attempts = {
+      original: {
+        attempt_id: 'original',
+        bead_id: 'UI-1',
+        runner: 'codex',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 50,
+          replayed: true
+        }
+      },
+      resumed: {
+        attempt_id: 'resumed',
+        bead_id: 'UI-1',
+        runner: 'codex',
+        resumed_from: 'original',
+        usage: { input_tokens: 3 }
+      },
+      absent: {
+        attempt_id: 'absent',
+        bead_id: 'UI-1',
+        runner: 'codex',
+        usage: null
+      }
+    };
+
+    const projected = sumAttemptUsage(attempts, 'UI-1');
+
+    expect(projected?.providers.codex).toMatchObject({
+      subtotal: 3,
+      replayed: true,
+      breakdown: { cache_read_input_tokens: 50 }
+    });
+    expect(projected?.roles.orchestrator?.codex?.legs).toHaveLength(2);
   });
 });

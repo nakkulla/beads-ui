@@ -112,6 +112,17 @@ describe('worker/usage-store', () => {
     });
   });
 
+  test('preserves reasoning output on an authoritative tally', () => {
+    const store = createUsageStore();
+
+    store.recordResult('/ws', 'a1', {
+      input_tokens: 18,
+      reasoning_output_tokens: 7
+    });
+
+    expect(store.get('/ws', 'a1')?.reasoning_output_tokens).toBe(7);
+  });
+
   test('keeps a later message out of an already authoritative tally', () => {
     const store = createUsageStore();
     store.recordResult('/ws', 'a1', { input_tokens: 18, output_tokens: 1113 });

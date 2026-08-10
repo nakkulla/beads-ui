@@ -842,6 +842,7 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
           output_tokens: 1113,
           cache_read_input_tokens: 45784,
           cache_creation_input_tokens: 12577,
+          reasoning_output_tokens: 37,
           total_cost_usd: 0.0353
         }
       }
@@ -850,6 +851,7 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(createQueueStore().load(WS).attempts['att-1'].usage).toMatchObject({
       input_tokens: 18,
       output_tokens: 1113,
+      reasoning_output_tokens: 37,
       total_cost_usd: 0.0353
     });
   });
