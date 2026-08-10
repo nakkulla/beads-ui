@@ -1998,7 +1998,7 @@ describe('views/worker', () => {
     expect(cand.querySelector('.worker-card[data-bead-id="X-1.2"]')).toBeNull();
   });
 
-  test('candidate card renders the route chip (derived → ? suffix) and a 4-cell spec_backed stepper', () => {
+  test('candidate card renders a derived route as unset and keeps the 4-cell spec_backed stepper', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [
@@ -2034,7 +2034,8 @@ describe('views/worker', () => {
       card.querySelector('.ctl-chip--route')
     );
     expect(chip.classList.contains('is-derived')).toBe(true);
-    expect(chip.textContent?.trim()).toBe('spec_backed ?');
+    expect(chip.textContent?.trim()).toBe('unset');
+    expect(chip.title).toBe('route 미핀 (metadata unset)');
 
     // spec_backed → 4 stepper cells (spec/impl/pr/merge).
     expect(card.querySelectorAll('.stp .seg').length).toBe(4);

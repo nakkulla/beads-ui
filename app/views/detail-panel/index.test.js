@@ -156,6 +156,40 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('workflow detail renders a derived route and its empty editor option as unset', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: {},
+        workflow: {
+          route: 'spec_backed',
+          route_source: 'derived',
+          stages: {
+            spec: { stale: false },
+            impl: { stale: false }
+          }
+        }
+      },
+      vi.fn()
+    );
+
+    const route_value = /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-kv__v--derived')
+    );
+    const route_select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-edit="wfmeta-route"]')
+    );
+    expect(route_value.textContent?.trim()).toBe('unset');
+    expect(route_value.title).toBe('route 미핀 (metadata unset)');
+    expect(route_select.selectedOptions[0]?.textContent?.trim()).toBe(
+      '(unset)'
+    );
+
+    panel.destroy();
+  });
+
   test('title pencil opens an input; save sends edit-text title', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi
