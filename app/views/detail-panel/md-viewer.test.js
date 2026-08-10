@@ -68,6 +68,47 @@ describe('views/detail-panel/md-viewer', () => {
     expect(mount.querySelector('.mv__status--error')).not.toBeNull();
   });
 
+  test('shows a reserved missing plan as authoring pending', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mv'));
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ ok: false, error: 'not_found' })
+    });
+    const viewer = createMdViewer(mount, {
+      getWorkspacePath: () => '/ws/abs',
+      fetchImpl: /** @type {any} */ (fetchImpl)
+    });
+
+    await viewer.open('docs/plans/x.md', {
+      missing_state: 'plan_pending'
+    });
+    await tick();
+
+    expect(mount.textContent).toContain('계획 작성 전');
+    expect(mount.querySelector('.mv__status--error')).toBeNull();
+  });
+
+  test('keeps a forbidden reserved plan as an error', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mv'));
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ ok: false, error: 'forbidden' })
+    });
+    const viewer = createMdViewer(mount, {
+      getWorkspacePath: () => '/ws/abs',
+      fetchImpl: /** @type {any} */ (fetchImpl)
+    });
+
+    await viewer.open('docs/plans/x.md', {
+      missing_state: 'plan_pending'
+    });
+    await tick();
+
+    expect(mount.querySelector('.mv__status--error')).not.toBeNull();
+  });
+
   test('close() clears the overlay', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('mv'));
     const viewer = createMdViewer(mount, {

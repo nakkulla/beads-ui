@@ -13,6 +13,11 @@ import { renderMarkdown } from '../../utils/markdown.js';
  */
 
 /**
+ * @typedef {Object} MdViewerOpenOptions
+ * @property {'plan_pending'|null} [missing_state]
+ */
+
+/**
  * Trim the docs prefix for a compact viewer path label.
  *
  * @param {string} p
@@ -25,7 +30,7 @@ function shortPath(p) {
 /**
  * @param {HTMLElement} mount_element
  * @param {MdViewerOptions} options
- * @returns {{ open: (doc_path: string) => Promise<void>, close: () => void, destroy: () => void }}
+ * @returns {{ open: (doc_path: string, open_options?: MdViewerOpenOptions) => Promise<void>, close: () => void, destroy: () => void }}
  */
 export function createMdViewer(mount_element, options) {
   const getWorkspacePath = options.getWorkspacePath;
@@ -33,7 +38,7 @@ export function createMdViewer(mount_element, options) {
 
   /** @type {string | null} */
   let current_path = null;
-  /** @type {'loading'|'ready'|'error'} */
+  /** @type {'loading'|'ready'|'pending'|'error'} */
   let state = 'loading';
   let body_html = '';
   let error_message = '';
@@ -73,11 +78,13 @@ export function createMdViewer(mount_element, options) {
           <div class="mv__body">
             ${state === 'loading'
               ? html`<div class="mv__status">불러오는 중…</div>`
-              : state === 'error'
-                ? html`<div class="mv__status mv__status--error">
-                    ${error_message || '문서를 불러오지 못했습니다'}
-                  </div>`
-                : renderMarkdown(body_html)}
+              : state === 'pending'
+                ? html`<div class="mv__status">${error_message}</div>`
+                : state === 'error'
+                  ? html`<div class="mv__status mv__status--error">
+                      ${error_message || '문서를 불러오지 못했습니다'}
+                    </div>`
+                  : renderMarkdown(body_html)}
           </div>
         </div>
       </div>
@@ -90,8 +97,9 @@ export function createMdViewer(mount_element, options) {
 
   /**
    * @param {string} doc_path
+   * @param {MdViewerOpenOptions} [open_options]
    */
-  async function open(doc_path) {
+  async function open(doc_path, open_options = {}) {
     current_path = doc_path;
     state = 'loading';
     body_html = '';
@@ -120,6 +128,15 @@ export function createMdViewer(mount_element, options) {
       const resp = await doFetch(url);
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || !data || data.ok !== true) {
+        if (
+          data?.error === 'not_found' &&
+          open_options.missing_state === 'plan_pending'
+        ) {
+          state = 'pending';
+          error_message = '계획 작성 전 · 경로만 예약되어 있습니다';
+          doRender();
+          return;
+        }
         state = 'error';
         error_message =
           '문서를 불러오지 못했습니다 (' +
