@@ -255,6 +255,9 @@
  * a conflict item an endless supply of resolution sessions. A record is dropped
  * as soon as the head moves (someone actually changed the branch), when a human
  * clicks [머지] on the row, or when the bead leaves the lane.
+ * @property {Record<string, CompletionIntent>} completion_intents - Durable
+ * root-scoped completion sagas. Missing on legacy queue files and normalized
+ * to an empty map; execution lives in `completion-intent.js`.
  * @property {LastDeploy|null} last_deploy - The workspace's most recent
  * post-merge deployment (worker-deploy-hook §3). ONE record, overwritten each
  * time — the question it answers is "is the running service the merged code?",
@@ -306,6 +309,54 @@
  * observable output at all, and a pre-run refusal never opened a file.
  */
 /**
+ * @typedef {'gating'|'repairing'|'waiting_repair_pr'|'merging'|'cleaning'|'paused'|'needs_human'|'completed'} CompletionPhase
+ */
+/**
+ * @typedef {Object} CompletionSubject
+ * @property {'root'|'repair'} role
+ * @property {string} bead_id
+ * @property {string|null} pr_url
+ * @property {string|null} head_sha
+ * @property {string|null} base_sha
+ * @property {string|null} merged_sha
+ */
+/**
+ * @typedef {Object} CompletionFailureKey
+ * @property {string} stage
+ * @property {string} reason
+ * @property {string} subject_sha
+ * @property {string} base_sha
+ * @property {string} result_digest
+ */
+/**
+ * @typedef {Object} CompletionOperation
+ * @property {string} op_id
+ * @property {'resume_root'|'create_repair'|'dispatch_repair'|'merge_subject'|'retry_cleanup'} kind
+ * @property {CompletionFailureKey} failure_key
+ * @property {string|null} attempt_id
+ * @property {string|null} repair_bead_id
+ * @property {'prepared'|'dispatched'|'observed'|'consumed'} status
+ */
+/**
+ * @typedef {Object} CompletionTerminal
+ * @property {string} reason
+ * @property {string} stage
+ * @property {CompletionFailureKey|null} failure_key
+ * @property {string|null} evidence
+ * @property {string|null} log_path
+ * @property {number} at
+ */
+/**
+ * @typedef {Object} CompletionIntent
+ * @property {string} target_base
+ * @property {CompletionPhase} phase
+ * @property {CompletionSubject} subject
+ * @property {number} repair_sessions_used
+ * @property {string[]} repair_bead_ids
+ * @property {CompletionOperation|null} active_op
+ * @property {CompletionTerminal|null} terminal_reason
+ */
+/**
  * @typedef {Object} QueueOpResult
  * @property {boolean} ok - True when the mutation was applied.
  * @property {boolean} conflict - True when rejected by a revision mismatch.
@@ -334,6 +385,331 @@ export const DEFAULT_SLOTS = 2;
  * @type {number}
  */
 export const MIN_SLOTS = 1;
+
+/** @type {CompletionPhase[]} */
+const COMPLETION_PHASES = [
+  'gating',
+  'repairing',
+  'waiting_repair_pr',
+  'merging',
+  'cleaning',
+  'paused',
+  'needs_human',
+  'completed'
+];
+
+/** @type {CompletionOperation['kind'][]} */
+const COMPLETION_OP_KINDS = [
+  'resume_root',
+  'create_repair',
+  'dispatch_repair',
+  'merge_subject',
+  'retry_cleanup'
+];
+
+/** @type {CompletionOperation['status'][]} */
+const COMPLETION_OP_STATUSES = [
+  'prepared',
+  'dispatched',
+  'observed',
+  'consumed'
+];
+
+const MAX_REPAIR_SESSIONS = 2;
+
+const COMPLETION_EVIDENCE_MAX = 4_000;
+
+const COMPLETION_LOG_PATH_MAX = 1_000;
+
+/**
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+function isSha(value) {
+  return typeof value === 'string' && /^[0-9a-f]{40}$/i.test(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+function isDigest(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} root_bead_id
+ * @returns {CompletionSubject|null}
+ */
+function normalizeCompletionSubject(value, root_bead_id) {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const role = value.role;
+  const bead_id = value.bead_id;
+  if (
+    (role !== 'root' && role !== 'repair') ||
+    typeof bead_id !== 'string' ||
+    bead_id.length === 0 ||
+    (role === 'root' && bead_id !== root_bead_id) ||
+    typeof value.pr_url !== 'string' ||
+    value.pr_url.length === 0 ||
+    !isSha(value.head_sha) ||
+    !isSha(value.base_sha) ||
+    (value.merged_sha !== null && !isSha(value.merged_sha))
+  ) {
+    return null;
+  }
+  return {
+    role,
+    bead_id,
+    pr_url: value.pr_url,
+    head_sha: value.head_sha,
+    base_sha: value.base_sha,
+    merged_sha: value.merged_sha
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {CompletionFailureKey|null}
+ */
+function normalizeCompletionFailureKey(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.stage !== 'string' ||
+    value.stage.length === 0 ||
+    typeof value.reason !== 'string' ||
+    value.reason.length === 0 ||
+    !isSha(value.subject_sha) ||
+    !isSha(value.base_sha) ||
+    !isDigest(value.result_digest)
+  ) {
+    return null;
+  }
+  return {
+    stage: value.stage,
+    reason: value.reason,
+    subject_sha: value.subject_sha,
+    base_sha: value.base_sha,
+    result_digest: value.result_digest
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {CompletionOperation|null}
+ */
+function normalizeCompletionOperation(value) {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const kind = value.kind;
+  const status = value.status;
+  const failure_key = normalizeCompletionFailureKey(value.failure_key);
+  const session_op = kind === 'resume_root' || kind === 'dispatch_repair';
+  const attempt_id =
+    typeof value.attempt_id === 'string' && value.attempt_id.length > 0
+      ? value.attempt_id
+      : null;
+  if (
+    typeof value.op_id !== 'string' ||
+    value.op_id.length === 0 ||
+    typeof kind !== 'string' ||
+    !COMPLETION_OP_KINDS.includes(
+      /** @type {CompletionOperation['kind']} */ (kind)
+    ) ||
+    typeof status !== 'string' ||
+    !COMPLETION_OP_STATUSES.includes(
+      /** @type {CompletionOperation['status']} */ (status)
+    ) ||
+    !failure_key ||
+    (session_op && !attempt_id) ||
+    (!session_op && value.attempt_id !== null) ||
+    (value.repair_bead_id !== null &&
+      (typeof value.repair_bead_id !== 'string' ||
+        value.repair_bead_id.length === 0))
+  ) {
+    return null;
+  }
+  return {
+    op_id: value.op_id,
+    kind: /** @type {CompletionOperation['kind']} */ (kind),
+    failure_key,
+    attempt_id,
+    repair_bead_id:
+      typeof value.repair_bead_id === 'string' ? value.repair_bead_id : null,
+    status: /** @type {CompletionOperation['status']} */ (status)
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {CompletionTerminal|null}
+ */
+function normalizeCompletionTerminal(value) {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const failure_key =
+    value.failure_key === null
+      ? null
+      : normalizeCompletionFailureKey(value.failure_key);
+  if (
+    typeof value.reason !== 'string' ||
+    value.reason.length === 0 ||
+    typeof value.stage !== 'string' ||
+    value.stage.length === 0 ||
+    (value.failure_key !== null && !failure_key)
+  ) {
+    return null;
+  }
+  return {
+    reason: value.reason,
+    stage: value.stage,
+    failure_key,
+    evidence:
+      typeof value.evidence === 'string'
+        ? value.evidence.slice(-COMPLETION_EVIDENCE_MAX)
+        : null,
+    log_path:
+      typeof value.log_path === 'string'
+        ? value.log_path.slice(0, COMPLETION_LOG_PATH_MAX)
+        : null,
+    at: typeof value.at === 'number' && Number.isFinite(value.at) ? value.at : 0
+  };
+}
+
+/**
+ * Preserve a malformed record as a terminal saga instead of dropping it and
+ * silently granting a fresh repair budget on the next intake.
+ *
+ * @param {string} root_bead_id
+ * @param {unknown} value
+ * @returns {CompletionIntent}
+ */
+function invalidCompletionIntent(root_bead_id, value) {
+  const raw = isRecord(value) ? value : {};
+  const raw_subject = isRecord(raw.subject) ? raw.subject : {};
+  const repair_bead_ids = Array.isArray(raw.repair_bead_ids)
+    ? [...new Set(raw.repair_bead_ids.filter((id) => typeof id === 'string'))]
+    : [];
+  const role = raw_subject.role === 'repair' ? 'repair' : 'root';
+  const subject_id =
+    typeof raw_subject.bead_id === 'string' && raw_subject.bead_id.length > 0
+      ? raw_subject.bead_id
+      : root_bead_id;
+  if (role === 'repair' && !repair_bead_ids.includes(subject_id)) {
+    repair_bead_ids.push(subject_id);
+  }
+  return {
+    target_base: typeof raw.target_base === 'string' ? raw.target_base : '',
+    phase: 'needs_human',
+    subject: {
+      role,
+      bead_id: subject_id,
+      pr_url:
+        typeof raw_subject.pr_url === 'string' ? raw_subject.pr_url : null,
+      head_sha: isSha(raw_subject.head_sha) ? raw_subject.head_sha : null,
+      base_sha: isSha(raw_subject.base_sha) ? raw_subject.base_sha : null,
+      merged_sha: isSha(raw_subject.merged_sha) ? raw_subject.merged_sha : null
+    },
+    repair_sessions_used:
+      typeof raw.repair_sessions_used === 'number' &&
+      Number.isInteger(raw.repair_sessions_used) &&
+      raw.repair_sessions_used >= 0 &&
+      raw.repair_sessions_used <= MAX_REPAIR_SESSIONS
+        ? raw.repair_sessions_used
+        : MAX_REPAIR_SESSIONS,
+    repair_bead_ids,
+    active_op: null,
+    terminal_reason: {
+      reason: 'intent_state_invalid',
+      stage: 'state',
+      failure_key: null,
+      evidence: 'completion_intent_malformed',
+      log_path: null,
+      at: 0
+    }
+  };
+}
+
+/**
+ * @param {string} root_bead_id
+ * @param {unknown} value
+ * @returns {CompletionIntent}
+ */
+function normalizeCompletionIntent(root_bead_id, value) {
+  if (!isRecord(value)) {
+    return invalidCompletionIntent(root_bead_id, value);
+  }
+  const subject = normalizeCompletionSubject(value.subject, root_bead_id);
+  const phase = value.phase;
+  const repair_bead_ids = Array.isArray(value.repair_bead_ids)
+    ? [...new Set(value.repair_bead_ids)]
+    : null;
+  const active_op =
+    value.active_op === null
+      ? null
+      : normalizeCompletionOperation(value.active_op);
+  const terminal_reason =
+    value.terminal_reason === null
+      ? null
+      : normalizeCompletionTerminal(value.terminal_reason);
+  const valid_repair_ids =
+    repair_bead_ids !== null &&
+    repair_bead_ids.every(
+      (id) => typeof id === 'string' && id.length > 0 && id !== root_bead_id
+    );
+  if (
+    typeof value.target_base !== 'string' ||
+    value.target_base.length === 0 ||
+    typeof phase !== 'string' ||
+    !COMPLETION_PHASES.includes(/** @type {CompletionPhase} */ (phase)) ||
+    !subject ||
+    typeof value.repair_sessions_used !== 'number' ||
+    !Number.isInteger(value.repair_sessions_used) ||
+    value.repair_sessions_used < 0 ||
+    value.repair_sessions_used > MAX_REPAIR_SESSIONS ||
+    !valid_repair_ids ||
+    (subject.role === 'repair' && !repair_bead_ids.includes(subject.bead_id)) ||
+    (value.active_op !== null && !active_op) ||
+    (value.terminal_reason !== null && !terminal_reason) ||
+    (phase === 'needs_human' && !terminal_reason) ||
+    (phase !== 'needs_human' && terminal_reason)
+  ) {
+    return invalidCompletionIntent(root_bead_id, value);
+  }
+  return {
+    target_base: value.target_base,
+    phase: /** @type {CompletionPhase} */ (phase),
+    subject,
+    repair_sessions_used: value.repair_sessions_used,
+    repair_bead_ids: /** @type {string[]} */ (repair_bead_ids),
+    active_op,
+    terminal_reason
+  };
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {Record<string, CompletionIntent>}
+ */
+function normalizeCompletionIntents(raw) {
+  /** @type {Record<string, CompletionIntent>} */
+  const out = {};
+  if (!isRecord(raw)) {
+    return out;
+  }
+  for (const [root_bead_id, value] of Object.entries(raw)) {
+    if (root_bead_id.length === 0) {
+      continue;
+    }
+    out[root_bead_id] = normalizeCompletionIntent(root_bead_id, value);
+  }
+  return out;
+}
 
 /**
  * @param {unknown} value
@@ -388,6 +764,7 @@ function emptyQueue() {
     merge_queue: [],
     auto_merge: false,
     auto_merge_skips: {},
+    completion_intents: {},
     last_deploy: null
   };
 }
@@ -791,6 +1168,7 @@ function normalizeQueue(raw) {
   // `auto_advance` the stored value IS honoured on load — see the field doc.
   q.auto_merge = raw.auto_merge === true;
   q.auto_merge_skips = normalizeMergeSkips(raw.auto_merge_skips);
+  q.completion_intents = normalizeCompletionIntents(raw.completion_intents);
   // A queue.json written before the deploy hook simply has no key → null, which
   // reads as "this workspace has never deployed" (worker-deploy-hook §3). A
   // record carrying an outcome outside the vocabulary is dropped the same way:
@@ -904,6 +1282,24 @@ function enqueueMember(q, bead_id, external) {
     return false;
   }
   return external || q.pr_wait.some((e) => e.bead_id === bead_id);
+}
+
+/**
+ * The root's Done transition is also the saga's durable completion receipt.
+ * Repair children are not keys in this map, so their own cleanup cannot close
+ * the root by accident.
+ *
+ * @param {Queue} q
+ * @param {string} bead_id
+ */
+function completeIntentForDone(q, bead_id) {
+  const intent = q.completion_intents[bead_id];
+  if (!intent) {
+    return;
+  }
+  intent.phase = 'completed';
+  intent.active_op = null;
+  intent.terminal_reason = null;
 }
 
 /**
@@ -1390,6 +1786,44 @@ export function createQueueStore(options = {}) {
         removeFromLanes(next, bead_id);
         delete next.cleanup_failed[bead_id];
         next.done.push({ bead_id, added_at: now() });
+        completeIntentForDone(next, bead_id);
+        return true;
+      });
+    },
+
+    /**
+     * Prune bounded Done history and its completed saga membership together.
+     * A contradictory active/paused/terminal intent keeps its row and record;
+     * age alone may never erase evidence or reopen a repair budget.
+     *
+     * @param {string} workspace
+     * @param {{ before: number }} input
+     * @returns {QueueOpResult}
+     */
+    pruneDoneBefore(workspace, input) {
+      const { before } = input;
+      return applyUnconditional(workspace, (next) => {
+        if (typeof before !== 'number' || !Number.isFinite(before)) {
+          return false;
+        }
+        const removed = next.done.filter((entry) => {
+          const intent = next.completion_intents[entry.bead_id];
+          return (
+            entry.added_at < before && (!intent || intent.phase === 'completed')
+          );
+        });
+        if (removed.length === 0) {
+          return false;
+        }
+        const removed_ids = new Set(removed.map((entry) => entry.bead_id));
+        next.done = next.done.filter(
+          (entry) => !removed_ids.has(entry.bead_id)
+        );
+        for (const bead_id of removed_ids) {
+          if (next.completion_intents[bead_id]?.phase === 'completed') {
+            delete next.completion_intents[bead_id];
+          }
+        }
         return true;
       });
     },
@@ -1440,6 +1874,7 @@ export function createQueueStore(options = {}) {
         delete next.cleanup_failed[bead_id];
         next.done.push({ bead_id, added_at: now() });
         next.last_deploy = record;
+        completeIntentForDone(next, bead_id);
         return true;
       });
     },
@@ -1861,6 +2296,327 @@ export function createQueueStore(options = {}) {
           added += 1;
         }
         return added > 0 || cleared > 0;
+      });
+    },
+
+    /**
+     * Atomically create one root completion intent and place that public root
+     * identity in the sequential merge queue. The current subject starts as
+     * the root; later repair children change only the intent subject and never
+     * receive an independent queue entry or budget.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision?: number|null, root_bead_id: string, target_base: string, subject: CompletionSubject, external?: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    enqueueCompletionIntent(workspace, input) {
+      const {
+        expected_revision,
+        root_bead_id,
+        target_base,
+        subject,
+        external
+      } = input;
+      /**
+       * @param {Queue} next
+       */
+      const mutate = (next) => {
+        if (
+          typeof root_bead_id !== 'string' ||
+          root_bead_id.length === 0 ||
+          typeof target_base !== 'string' ||
+          target_base.length === 0 ||
+          Object.hasOwn(next.completion_intents, root_bead_id) ||
+          Object.values(next.completion_intents).some((intent) =>
+            intent.repair_bead_ids.includes(root_bead_id)
+          ) ||
+          !enqueueMember(next, root_bead_id, external === true)
+        ) {
+          return false;
+        }
+        const normalized = normalizeCompletionIntent(root_bead_id, {
+          target_base,
+          phase: 'gating',
+          subject,
+          repair_sessions_used: 0,
+          repair_bead_ids: [],
+          active_op: null,
+          terminal_reason: null
+        });
+        if (normalized.phase === 'needs_human') {
+          return false;
+        }
+        next.completion_intents[root_bead_id] = normalized;
+        if (!next.merge_queue.some((entry) => entry.bead_id === root_bead_id)) {
+          next.merge_queue.push({
+            bead_id: root_bead_id,
+            resolution_rounds: 0
+          });
+        }
+        return true;
+      };
+      return typeof expected_revision === 'number'
+        ? applyMutation(workspace, expected_revision, mutate)
+        : applyUnconditional(workspace, mutate);
+    },
+
+    /**
+     * Prerecord a repair session before spawn: the logical op, its consumed
+     * lineage budget, and the scheduler attempt appear in one durable write.
+     * A restart therefore adopts this exact attempt instead of granting a new
+     * budget slot or spawning a duplicate session.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, op: CompletionOperation, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
+     * @returns {QueueOpResult}
+     */
+    beginRepairOp(workspace, input) {
+      const { root_bead_id, op, attempt } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const normalized_op = normalizeCompletionOperation(op);
+        if (
+          !intent ||
+          intent.active_op !== null ||
+          intent.phase === 'paused' ||
+          intent.phase === 'needs_human' ||
+          intent.phase === 'completed' ||
+          intent.repair_sessions_used >= MAX_REPAIR_SESSIONS ||
+          !normalized_op ||
+          normalized_op.status !== 'prepared' ||
+          (normalized_op.kind !== 'resume_root' &&
+            normalized_op.kind !== 'dispatch_repair') ||
+          !attempt ||
+          attempt.attempt_id !== normalized_op.attempt_id ||
+          typeof attempt.bead_id !== 'string' ||
+          attempt.bead_id.length === 0 ||
+          Object.hasOwn(next.attempts, attempt.attempt_id) ||
+          (normalized_op.kind === 'resume_root' &&
+            attempt.bead_id !== root_bead_id) ||
+          (normalized_op.kind === 'dispatch_repair' &&
+            (normalized_op.repair_bead_id === null ||
+              attempt.bead_id !== normalized_op.repair_bead_id ||
+              !intent.repair_bead_ids.includes(attempt.bead_id)))
+        ) {
+          return false;
+        }
+        intent.active_op = normalized_op;
+        intent.phase = 'repairing';
+        intent.repair_sessions_used += 1;
+        next.attempts[attempt.attempt_id] = makeAttempt(attempt);
+        return true;
+      });
+    },
+
+    /**
+     * Prerecord an external effect that does not itself consume session budget
+     * (linked Bead creation, merge handoff, or cleanup replay).
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, phase: CompletionPhase, op: CompletionOperation }} input
+     * @returns {QueueOpResult}
+     */
+    prepareCompletionOp(workspace, input) {
+      const { root_bead_id, phase, op } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const normalized_op = normalizeCompletionOperation(op);
+        if (
+          !intent ||
+          intent.active_op !== null ||
+          intent.phase === 'paused' ||
+          intent.phase === 'needs_human' ||
+          intent.phase === 'completed' ||
+          !COMPLETION_PHASES.includes(phase) ||
+          phase === 'paused' ||
+          phase === 'needs_human' ||
+          phase === 'completed' ||
+          !normalized_op ||
+          normalized_op.status !== 'prepared' ||
+          normalized_op.attempt_id !== null ||
+          normalized_op.kind === 'resume_root' ||
+          normalized_op.kind === 'dispatch_repair'
+        ) {
+          return false;
+        }
+        intent.phase = phase;
+        intent.active_op = normalized_op;
+        return true;
+      });
+    },
+
+    /**
+     * Adopt the deterministic linked repair Bead created by an active
+     * `create_repair` operation. Membership is root-global, so the child can
+     * never enter later as a fresh completion root with a new budget.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, op_id: string, repair_bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    recordCompletionRepairBead(workspace, input) {
+      const { root_bead_id, op_id, repair_bead_id } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const active_op = intent?.active_op;
+        if (
+          !intent ||
+          !active_op ||
+          active_op.op_id !== op_id ||
+          active_op.kind !== 'create_repair' ||
+          typeof repair_bead_id !== 'string' ||
+          repair_bead_id.length === 0 ||
+          repair_bead_id === root_bead_id ||
+          Object.hasOwn(next.completion_intents, repair_bead_id) ||
+          Object.entries(next.completion_intents).some(
+            ([other_root, other_intent]) =>
+              other_root !== root_bead_id &&
+              other_intent.repair_bead_ids.includes(repair_bead_id)
+          )
+        ) {
+          return false;
+        }
+        if (!intent.repair_bead_ids.includes(repair_bead_id)) {
+          intent.repair_bead_ids.push(repair_bead_id);
+        }
+        active_op.repair_bead_id = repair_bead_id;
+        active_op.status = 'observed';
+        return true;
+      });
+    },
+
+    /**
+     * Advance the currently journaled operation without replacing its identity.
+     * Status is monotonic; clearing is legal only after logical consumption.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, op_id: string, status: CompletionOperation['status'], next_phase?: CompletionPhase, clear?: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    advanceCompletionOp(workspace, input) {
+      const { root_bead_id, op_id, status, next_phase, clear } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const active_op = intent?.active_op;
+        const current_index = active_op
+          ? COMPLETION_OP_STATUSES.indexOf(active_op.status)
+          : -1;
+        const next_index = COMPLETION_OP_STATUSES.indexOf(status);
+        if (
+          !intent ||
+          !active_op ||
+          active_op.op_id !== op_id ||
+          next_index < current_index ||
+          next_index < 0 ||
+          (clear === true && status !== 'consumed') ||
+          (next_phase !== undefined &&
+            (!COMPLETION_PHASES.includes(next_phase) ||
+              next_phase === 'needs_human' ||
+              next_phase === 'completed'))
+        ) {
+          return false;
+        }
+        active_op.status = status;
+        if (next_phase !== undefined) {
+          intent.phase = next_phase;
+        }
+        if (clear === true) {
+          intent.active_op = null;
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Replace the current merge subject after an operation has settled. A
+     * repair subject must already belong to this root lineage; switching the
+     * subject can therefore never smuggle an unrelated Bead under the root's
+     * queue position or budget.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, phase: CompletionPhase, subject: CompletionSubject }} input
+     * @returns {QueueOpResult}
+     */
+    setCompletionSubject(workspace, input) {
+      const { root_bead_id, phase, subject } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const normalized_subject = normalizeCompletionSubject(
+          subject,
+          root_bead_id
+        );
+        if (
+          !intent ||
+          intent.active_op !== null ||
+          intent.phase === 'paused' ||
+          intent.phase === 'needs_human' ||
+          intent.phase === 'completed' ||
+          !normalized_subject ||
+          !COMPLETION_PHASES.includes(phase) ||
+          phase === 'paused' ||
+          phase === 'needs_human' ||
+          phase === 'completed' ||
+          (normalized_subject.role === 'repair' &&
+            !intent.repair_bead_ids.includes(normalized_subject.bead_id))
+        ) {
+          return false;
+        }
+        intent.subject = normalized_subject;
+        intent.phase = phase;
+        return true;
+      });
+    },
+
+    /**
+     * Stop new completion work after auto-merge is disabled. An in-flight op
+     * must settle first; the paused intent remains durable while its pending
+     * queue position is released, matching the explicit OFF boundary.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    pauseCompletionIntent(workspace, input) {
+      const { root_bead_id } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        if (
+          !intent ||
+          intent.active_op !== null ||
+          intent.phase === 'paused' ||
+          intent.phase === 'needs_human' ||
+          intent.phase === 'completed'
+        ) {
+          return false;
+        }
+        intent.phase = 'paused';
+        next.merge_queue = next.merge_queue.filter(
+          (entry) => entry.bead_id !== root_bead_id
+        );
+        return true;
+      });
+    },
+
+    /**
+     * Stop automatic progress with durable bounded evidence. The active-op
+     * journal is deliberately preserved: ambiguity at an external effect is
+     * evidence a restart or human diagnosis still needs.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, terminal: CompletionTerminal }} input
+     * @returns {QueueOpResult}
+     */
+    terminalizeCompletionIntent(workspace, input) {
+      const { root_bead_id, terminal } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const normalized_terminal = normalizeCompletionTerminal(terminal);
+        if (!intent || intent.phase === 'completed' || !normalized_terminal) {
+          return false;
+        }
+        intent.phase = 'needs_human';
+        intent.terminal_reason = normalized_terminal;
+        return true;
       });
     },
 

@@ -302,8 +302,44 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(typeof att.scheduler.stop).toBe('function');
     expect(typeof att.scheduler.reconcile).toBe('function');
     expect(typeof att.reconciler.start).toBe('function');
+    expect(typeof att.completionIntent.start).toBe('function');
+    expect(typeof att.completionIntent.stop).toBe('function');
     // The runtime running-count seam now reflects THIS scheduler.
     expect(runtime.status(WS).running_count).toBe(0);
+  });
+
+  test('initWorkerRuntime starts the completion-intent coordinator', () => {
+    const completionIntent = { start: vi.fn(), stop: vi.fn() };
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      completionIntent,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+
+    expect(completionIntent.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('reset stops the completion-intent coordinator', () => {
+    const completionIntent = { start: vi.fn(), stop: vi.fn() };
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      completionIntent,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    __resetWorkerAttachmentsForTest();
+
+    expect(completionIntent.stop).toHaveBeenCalledTimes(1);
   });
 
   test('builds a PR poller that stays silent without a subscriber provider', async () => {

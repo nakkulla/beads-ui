@@ -58,6 +58,56 @@ describe('worker/state-paths', () => {
 });
 
 describe('worker/queue-store', () => {
+  /**
+   * @param {string} [root_bead_id]
+   */
+  function storeWithCompletionIntent(root_bead_id = 'UI-root') {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: `att-${root_bead_id}`, bead_id: root_bead_id }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: root_bead_id,
+      attempt_id: `att-${root_bead_id}`,
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id,
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: root_bead_id,
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    return store;
+  }
+
+  /**
+   * @param {string} op_id
+   * @param {string} attempt_id
+   */
+  function resumeRepairOp(op_id, attempt_id) {
+    return {
+      op_id,
+      kind: /** @type {const} */ ('resume_root'),
+      failure_key: {
+        stage: 'merge_gate',
+        reason: 'verify_cmd_failed',
+        subject_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        result_digest: 'c'.repeat(64)
+      },
+      attempt_id,
+      repair_bead_id: null,
+      status: /** @type {const} */ ('prepared')
+    };
+  }
+
   test('place persists and round-trips through a fresh store instance', () => {
     const a = createQueueStore();
     const r = a.place(WS, {
@@ -122,6 +172,413 @@ describe('worker/queue-store', () => {
     const q = createQueueStore().snapshot(WS);
 
     expect(q.pr_wait_holds_slot).toBe(false);
+  });
+
+  test('loads a legacy queue with no completion intents', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify({ revision: 4 }));
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.completion_intents).toEqual({});
+  });
+
+  test('round-trips a valid completion intent', () => {
+    const head_sha = 'a'.repeat(40);
+    const base_sha = 'b'.repeat(40);
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        completion_intents: {
+          'UI-root': {
+            target_base: 'main',
+            phase: 'gating',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-root',
+              pr_url: 'https://github.com/o/r/pull/1',
+              head_sha,
+              base_sha,
+              merged_sha: null
+            },
+            repair_sessions_used: 0,
+            repair_bead_ids: [],
+            active_op: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.completion_intents['UI-root']).toEqual({
+      target_base: 'main',
+      phase: 'gating',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha,
+        base_sha,
+        merged_sha: null
+      },
+      repair_sessions_used: 0,
+      repair_bead_ids: [],
+      active_op: null,
+      terminal_reason: null
+    });
+  });
+
+  test('loads a malformed completion intent as needs_human without resetting budget', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        completion_intents: {
+          'UI-root': {
+            target_base: 'main',
+            phase: 'unknown',
+            subject: { role: 'root', bead_id: 'UI-root' },
+            repair_sessions_used: 'bad',
+            repair_bead_ids: ['UI-repair'],
+            active_op: { kind: 'resume_root' },
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    const intent =
+      createQueueStore().snapshot(WS).completion_intents['UI-root'];
+
+    expect(intent.phase).toBe('needs_human');
+    expect(intent.repair_sessions_used).toBe(2);
+    expect(intent.repair_bead_ids).toEqual(['UI-repair']);
+    expect(intent.active_op).toBe(null);
+    expect(intent.terminal_reason).toMatchObject({
+      reason: 'intent_state_invalid',
+      stage: 'state'
+    });
+  });
+
+  test('creates a root intent and merge queue entry in one revision', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-root', bead_id: 'UI-root' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'att-root',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.merge_queue).toEqual([
+      { bead_id: 'UI-root', resolution_rounds: 0 }
+    ]);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'gating',
+      repair_sessions_used: 0,
+      repair_bead_ids: [],
+      active_op: null
+    });
+  });
+
+  test('prerecords repair op, budget, and attempt in one revision', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-root', bead_id: 'UI-root' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'att-root',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: {
+        op_id: 'op-1',
+        kind: 'resume_root',
+        failure_key: {
+          stage: 'merge_gate',
+          reason: 'verify_cmd_failed',
+          subject_sha: 'a'.repeat(40),
+          base_sha: 'b'.repeat(40),
+          result_digest: 'c'.repeat(64)
+        },
+        attempt_id: 'att-repair-1',
+        repair_bead_id: null,
+        status: 'prepared'
+      },
+      attempt: {
+        attempt_id: 'att-repair-1',
+        bead_id: 'UI-root',
+        resumed_from: 'att-root'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'repairing',
+      repair_sessions_used: 1,
+      active_op: { op_id: 'op-1', attempt_id: 'att-repair-1' }
+    });
+    expect(result.queue.attempts['att-repair-1']).toMatchObject({
+      attempt_id: 'att-repair-1',
+      bead_id: 'UI-root',
+      resumed_from: 'att-root'
+    });
+  });
+
+  test('rejects a third repair session after two consumed operations', () => {
+    const store = storeWithCompletionIntent();
+    for (const n of [1, 2]) {
+      const attempt_id = `att-repair-${n}`;
+      const started = store.beginRepairOp(WS, {
+        root_bead_id: 'UI-root',
+        op: resumeRepairOp(`op-${n}`, attempt_id),
+        attempt: { attempt_id, bead_id: 'UI-root' }
+      });
+      expect(started.ok).toBe(true);
+      const consumed = store.advanceCompletionOp(WS, {
+        root_bead_id: 'UI-root',
+        op_id: `op-${n}`,
+        status: 'consumed',
+        next_phase: 'gating',
+        clear: true
+      });
+      expect(consumed.ok).toBe(true);
+    }
+    const revision = store.snapshot(WS).revision;
+
+    const rejected = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: resumeRepairOp('op-3', 'att-repair-3'),
+      attempt: { attempt_id: 'att-repair-3', bead_id: 'UI-root' }
+    });
+
+    expect(rejected.ok).toBe(false);
+    expect(rejected.queue.revision).toBe(revision);
+    expect(rejected.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'gating',
+      repair_sessions_used: 2,
+      active_op: null
+    });
+    expect(rejected.queue.attempts['att-repair-3']).toBeUndefined();
+  });
+
+  test('records repair child membership and refuses it a new root intent', () => {
+    const store = storeWithCompletionIntent();
+    const prepared = store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-1',
+        kind: 'create_repair',
+        failure_key: {
+          stage: 'merge_gate',
+          reason: 'verify_cmd_failed',
+          subject_sha: 'a'.repeat(40),
+          base_sha: 'b'.repeat(40),
+          result_digest: 'c'.repeat(64)
+        },
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    expect(prepared.ok).toBe(true);
+
+    const recorded = store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-1',
+      repair_bead_id: 'UI-repair'
+    });
+    const rejected = store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-repair',
+      target_base: 'main',
+      external: true,
+      subject: {
+        role: 'root',
+        bead_id: 'UI-repair',
+        pr_url: 'https://github.com/o/r/pull/2',
+        head_sha: 'd'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+
+    expect(recorded.ok).toBe(true);
+    expect(recorded.queue.completion_intents['UI-root']).toMatchObject({
+      repair_bead_ids: ['UI-repair'],
+      active_op: { repair_bead_id: 'UI-repair', status: 'observed' }
+    });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.queue.completion_intents['UI-repair']).toBeUndefined();
+  });
+
+  test('switches the current subject to a recorded repair child in one revision', () => {
+    const store = storeWithCompletionIntent();
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-1',
+        kind: 'create_repair',
+        failure_key: {
+          stage: 'merge_gate',
+          reason: 'verify_cmd_failed',
+          subject_sha: 'a'.repeat(40),
+          base_sha: 'b'.repeat(40),
+          result_digest: 'c'.repeat(64)
+        },
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-1',
+      repair_bead_id: 'UI-repair'
+    });
+    store.advanceCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-1',
+      status: 'consumed',
+      next_phase: 'repairing',
+      clear: true
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'waiting_repair_pr',
+      subject: {
+        role: 'repair',
+        bead_id: 'UI-repair',
+        pr_url: 'https://github.com/o/r/pull/2',
+        head_sha: 'd'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'waiting_repair_pr',
+      subject: { role: 'repair', bead_id: 'UI-repair' }
+    });
+  });
+
+  test('pauses an idle completion intent and releases its queue position', () => {
+    const store = storeWithCompletionIntent();
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.pauseCompletionIntent(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.completion_intents['UI-root'].phase).toBe('paused');
+    expect(result.queue.merge_queue).toEqual([]);
+  });
+
+  test('terminalizes an intent with bounded evidence in one revision', () => {
+    const store = storeWithCompletionIntent();
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      terminal: {
+        reason: 'ownership_undecidable',
+        stage: 'base_probe',
+        failure_key: null,
+        evidence: 'base probe timed out',
+        log_path: '/tmp/probe.log',
+        at: 12
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: {
+        reason: 'ownership_undecidable',
+        stage: 'base_probe',
+        evidence: 'base probe timed out',
+        log_path: '/tmp/probe.log',
+        at: 12
+      }
+    });
+  });
+
+  test('marks the root intent completed in the same move to done', () => {
+    const store = storeWithCompletionIntent();
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.moveToDone(WS, { bead_id: 'UI-root' });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.done.map((entry) => entry.bead_id)).toContain(
+      'UI-root'
+    );
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'completed',
+      active_op: null,
+      terminal_reason: null
+    });
+  });
+
+  test('prunes a completed intent with its expired done row', () => {
+    const store = storeWithCompletionIntent();
+    store.moveToDone(WS, { bead_id: 'UI-root' });
+
+    const result = store.pruneDoneBefore(WS, {
+      before: Number.MAX_SAFE_INTEGER
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.done).toEqual([]);
+    expect(result.queue.completion_intents['UI-root']).toBeUndefined();
   });
 
   test('persists pr_wait_holds_slot through a cold load', () => {

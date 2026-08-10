@@ -40,6 +40,7 @@ import { parsePrNumber } from '../workflow-enrich.js';
 import { validateAdmission } from './admission.js';
 import { createAutoMerge } from './auto-merge.js';
 import { createBdMetadata } from './bd-metadata.js';
+import { createCompletionIntentCoordinator } from './completion-intent.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
@@ -354,6 +355,7 @@ export function defaultProbePid(pid) {
  *   reviseDisposition?: any,
  *   mergeQueue?: any,
  *   autoMerge?: any,
+ *   completionIntent?: any,
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -919,6 +921,17 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       log
     });
 
+  // Durable completion-intent lifecycle. Phase-specific effects stay injected;
+  // the attachment owns only startup, queue-event wakeups, and shutdown.
+  const completionIntent =
+    options.completionIntent ||
+    createCompletionIntentCoordinator({
+      workspace: keyFor(workspace_root),
+      store: runtime.queueStore,
+      subscribeQueueChanged: onQueueChanged,
+      log
+    });
+
   // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
   // BUILT here but never started here — `initWorkerRuntime` starts it only when
   // a real subscriber-count provider is wired, so a test that constructs an
@@ -956,6 +969,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     prActions,
     mergeQueue,
     autoMerge,
+    completionIntent,
     refreshExternalPrs,
     reviseDisposition,
     sessionMonitors,
@@ -1106,6 +1120,11 @@ export function initWorkerRuntime(input) {
       }
     } catch (err) {
       log('auto-merge start failed for %s: %o', key, err);
+    }
+    try {
+      att.completionIntent.start();
+    } catch (err) {
+      log('completion-intent start failed for %s: %o', key, err);
     }
     // Before the startup pass judges those attempts: rebuild what their tally
     // was (the disposition below is the write that persists it — UI-ediw) and
@@ -1498,6 +1517,11 @@ export function __resetWorkerAttachmentsForTest() {
     }
     try {
       att.autoMerge?.stop();
+    } catch {
+      /* ignore */
+    }
+    try {
+      att.completionIntent?.stop();
     } catch {
       /* ignore */
     }
