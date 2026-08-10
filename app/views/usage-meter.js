@@ -81,8 +81,13 @@ function colorClass(pct) {
   return 'usage-meter__window--success';
 }
 
+const PROVIDERS = [
+  { key: 'claude', label: 'Claude', endpoint: '/api/claude-usage' },
+  { key: 'codex', label: 'Codex', endpoint: '/api/codex-usage' }
+];
+
 /**
- * Render and poll the active Claude Code account usage snapshot.
+ * Render and poll independent provider usage snapshots.
  *
  * @param {HTMLElement} mount_element
  */
@@ -90,6 +95,8 @@ export function createUsageMeter(mount_element) {
   let destroyed = false;
   /** @type {ReturnType<typeof setInterval> | null} */
   let interval_id = null;
+  /** @type {Map<string, any>} */
+  const provider_payloads = new Map();
 
   /** Hide the fail-quiet mount and discard its previous snapshot. */
   function hide() {
@@ -97,66 +104,105 @@ export function createUsageMeter(mount_element) {
     mount_element.hidden = true;
   }
 
-  /** Fetch and render one snapshot. */
-  async function refresh() {
+  /** Render every currently available provider. */
+  function renderProviders() {
+    const available_providers = PROVIDERS.filter((provider) =>
+      provider_payloads.has(provider.key)
+    );
+    if (available_providers.length === 0) {
+      hide();
+      return;
+    }
+
+    const now_ms = Date.now();
+    render(
+      html`<div class="usage-meter" aria-label="Usage">
+        ${available_providers.map((provider) => {
+          const payload = provider_payloads.get(provider.key);
+          const stale =
+            typeof payload.ageSeconds === 'number' && payload.ageSeconds > 600;
+          const stale_note = stale
+            ? `${Math.floor(payload.ageSeconds / 60)}분 전 측정`
+            : '';
+          return html`<span
+            class="usage-meter__group${stale
+              ? ' usage-meter__group--stale'
+              : ''}"
+            aria-label=${`${provider.label} usage`}
+          >
+            <span class="usage-meter__provider">${provider.label}</span>
+            ${payload.windows.map((/** @type {any} */ window) => {
+              const raw_pct =
+                typeof window.pct === 'number' && Number.isFinite(window.pct)
+                  ? window.pct
+                  : 0;
+              const pct = Math.min(100, Math.max(0, raw_pct));
+              const reset_time = formatResetTime(window.resetsAt, now_ms);
+              const title = `resets ${reset_time}${stale ? ` · ${stale_note}` : ''}`;
+              return html`<span
+                class="usage-meter__window ${colorClass(pct)}"
+                style=${`--progress: ${pct}%`}
+                title=${title}
+              >
+                <span class="usage-meter__label">${window.key}</span>
+                <span class="usage-meter__track" aria-hidden="true">
+                  <span class="usage-meter__fill"></span>
+                </span>
+                <span class="usage-meter__pct">${pct}%</span>
+              </span>`;
+            })}
+          </span>`;
+        })}
+      </div>`,
+      mount_element
+    );
+    mount_element.hidden = false;
+  }
+
+  /**
+   * Fetch one provider and collapse its failure to unavailable.
+   *
+   * @param {{ key: string, label: string, endpoint: string }} provider
+   */
+  async function fetchProvider(provider) {
     try {
-      const response = await fetch('/api/claude-usage');
+      const response = await fetch(provider.endpoint);
       if (!response.ok) {
-        throw new Error(`usage request failed: ${response.status}`);
+        return null;
       }
       const payload = /** @type {any} */ (await response.json());
-      if (destroyed) {
-        return;
-      }
       if (
         !payload ||
         payload.available !== true ||
         !Array.isArray(payload.windows)
       ) {
-        hide();
-        return;
+        return null;
       }
-
-      const stale =
-        typeof payload.ageSeconds === 'number' && payload.ageSeconds > 600;
-      const stale_note = stale
-        ? `${Math.floor(payload.ageSeconds / 60)}분 전 측정`
-        : '';
-      const now_ms = Date.now();
-      render(
-        html`<div
-          class="usage-meter${stale ? ' usage-meter--stale' : ''}"
-          aria-label="Claude Code usage"
-        >
-          ${payload.windows.map((/** @type {any} */ window) => {
-            const pct =
-              typeof window.pct === 'number' && Number.isFinite(window.pct)
-                ? window.pct
-                : 0;
-            const progress = Math.min(100, Math.max(0, pct));
-            const reset_time = formatResetTime(window.resetsAt, now_ms);
-            const title = `resets ${reset_time}${stale ? ` · ${stale_note}` : ''}`;
-            return html`<span
-              class="usage-meter__window ${colorClass(pct)}"
-              style=${`--progress: ${progress}%`}
-              title=${title}
-            >
-              <span class="usage-meter__label">${window.key}</span>
-              <span class="usage-meter__track" aria-hidden="true">
-                <span class="usage-meter__fill"></span>
-              </span>
-              <span class="usage-meter__pct">${pct}%</span>
-            </span>`;
-          })}
-        </div>`,
-        mount_element
-      );
-      mount_element.hidden = false;
+      return payload;
     } catch {
-      if (!destroyed) {
-        hide();
+      return null;
+    }
+  }
+
+  /** Refresh every provider independently, then render one coherent tick. */
+  async function refresh() {
+    const results = await Promise.all(
+      PROVIDERS.map(async (provider) => ({
+        provider,
+        payload: await fetchProvider(provider)
+      }))
+    );
+    if (destroyed) {
+      return;
+    }
+    for (const result of results) {
+      if (result.payload) {
+        provider_payloads.set(result.provider.key, result.payload);
+      } else {
+        provider_payloads.delete(result.provider.key);
       }
     }
+    renderProviders();
   }
 
   hide();
