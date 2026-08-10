@@ -84,6 +84,24 @@ describe('handleUpdateWorkflowMeta (worker-autorun-policy §6, 수용 기준 7)'
     ]);
   });
 
+  test('accepts quick_fix as a route value', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleUpdateWorkflowMeta(ws, {
+      id: 'r1',
+      type: 'update-workflow-meta',
+      payload: { id: 'UI-1', key: 'route', value: 'quick_fix' }
+    });
+
+    expect(runBdInWorkspace).toHaveBeenCalledWith(expect.anything(), [
+      'update',
+      'UI-1',
+      '--set-metadata',
+      'route=quick_fix'
+    ]);
+    expect(sent[0].ok).toBe(true);
+  });
+
   test('rejects the retired merge axis keys on both set and unset without touching bd', async () => {
     for (const payload of [
       { id: 'UI-1', key: 'merge_policy', value: 'pr_stop' },
@@ -106,7 +124,7 @@ describe('handleUpdateWorkflowMeta (worker-autorun-policy §6, 수용 기준 7)'
 
   test('rejects a non-enum value and an unknown key without touching bd', async () => {
     for (const payload of [
-      { id: 'UI-1', key: 'route', value: 'quick_fix' },
+      { id: 'UI-1', key: 'route', value: 'foo' },
       { id: 'UI-1', key: 'spec_review', value: 'x' } // not an editable key
     ]) {
       runBdInWorkspace.mockClear();

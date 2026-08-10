@@ -426,12 +426,15 @@ export function computeStale(
 }
 
 /**
- * Derive the route ('spec_backed' | 'full_plan') from metadata.
+ * Derive the route ('quick_fix' | 'spec_backed' | 'full_plan') from metadata.
  *
  * @param {Record<string, any>} md
- * @returns {'spec_backed' | 'full_plan'}
+ * @returns {'quick_fix' | 'spec_backed' | 'full_plan'}
  */
 function deriveRoute(md) {
+  if (md.route === 'quick_fix') {
+    return 'quick_fix';
+  }
   if (md.route === 'full_plan') {
     return 'full_plan';
   }
@@ -675,12 +678,12 @@ function mergeStage(md, status) {
 
 /**
  * @typedef {Object} WorkflowSummary
- * @property {'spec_backed'|'full_plan'} route
+ * @property {'quick_fix'|'spec_backed'|'full_plan'} route
  * @property {'explicit'|'derived'} route_source - Whether the route came from
  * pinned metadata or the deriveRoute fallback (display distinguishes the
  * two — a derived value must not read as a settled pin).
- * @property {{ spec: WorkflowStage, plan?: WorkflowStage, impl: WorkflowStage, pr: WorkflowStage, merge: WorkflowStage }} stages
- * @property {{ route: 'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null }} chips
+ * @property {{ spec: WorkflowStage, plan?: WorkflowStage, impl: WorkflowStage, pr: WorkflowStage, merge: WorkflowStage, close?: WorkflowStage }} stages
+ * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null }} chips
  */
 
 /**
@@ -703,7 +706,9 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
   // Explicit only when the metadata pin itself is a valid enum value — any
   // fallback (absence, invalid value, plan_path inference) is 'derived'.
   const route_source =
-    md.route === 'spec_backed' || md.route === 'full_plan'
+    md.route === 'quick_fix' ||
+    md.route === 'spec_backed' ||
+    md.route === 'full_plan'
       ? 'explicit'
       : 'derived';
 
@@ -718,6 +723,13 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
   };
   if (route === 'full_plan') {
     stages.plan = planStage(md, status, workspace_root, resolved_head);
+  } else if (route === 'quick_fix') {
+    stages.close = makeStage(
+      status === 'closed' ? 'full' : 'none',
+      null,
+      false,
+      null
+    );
   }
 
   return {

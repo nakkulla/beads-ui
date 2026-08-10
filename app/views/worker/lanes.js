@@ -340,6 +340,7 @@ export function candidateCard(item) {
   const derived =
     chips.route_source === 'derived' ||
     !!(workflow && workflow.route_source === 'derived');
+  const is_quick_fix = !!workflow && workflow.route === 'quick_fix';
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
   return html`<div
@@ -392,7 +393,9 @@ export function candidateCard(item) {
         ?disabled=${!draggable}
         title=${draggable
           ? '대기 큐 맨 뒤에 추가'
-          : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
+          : is_quick_fix
+            ? 'quick_fix route는 워커 실행 대상이 아닙니다'
+            : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
       >
         대기로 ↴
       </button>

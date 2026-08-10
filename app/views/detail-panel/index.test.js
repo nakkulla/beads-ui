@@ -190,6 +190,73 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('quick_fix omits absent review rows and offers the route option', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: { route: 'quick_fix' },
+        workflow: {
+          route: 'quick_fix',
+          route_source: 'explicit',
+          stages: {
+            impl: { stale: false },
+            close: { fill: 'none', stale: false }
+          }
+        }
+      },
+      vi.fn()
+    );
+    const keys = Array.from(mount.querySelectorAll('.detail-kv__k')).map(
+      (node) => node.textContent?.trim()
+    );
+    const route_select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-edit="wfmeta-route"]')
+    );
+
+    expect(keys).not.toContain('spec_review');
+    expect(keys).not.toContain('impl_review');
+    expect(
+      Array.from(route_select.options).map((option) => option.value)
+    ).toContain('quick_fix');
+
+    panel.destroy();
+  });
+
+  test('quick_fix renders review rows when metadata carries them', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: {
+          route: 'quick_fix',
+          spec_review: 'codex@' + 'a'.repeat(40),
+          impl_review: 'self@' + 'b'.repeat(40)
+        },
+        workflow: {
+          route: 'quick_fix',
+          route_source: 'explicit',
+          stages: {
+            spec: { stale: false },
+            impl: { stale: false },
+            close: { fill: 'none', stale: false }
+          }
+        }
+      },
+      vi.fn()
+    );
+    const keys = Array.from(mount.querySelectorAll('.detail-kv__k')).map(
+      (node) => node.textContent?.trim()
+    );
+
+    expect(keys).toContain('spec_review');
+    expect(keys).toContain('impl_review');
+
+    panel.destroy();
+  });
+
   test('title pencil opens an input; save sends edit-text title', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi

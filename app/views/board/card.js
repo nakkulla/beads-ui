@@ -28,7 +28,7 @@ import { stepperTemplate } from './stepper.js';
 
 /**
  * @typedef {Object} BoardCardChips
- * @property {'spec_backed'|'full_plan'} [route]
+ * @property {'quick_fix'|'spec_backed'|'full_plan'} [route]
  * @property {'explicit'|'derived'} [route_source]
  * @property {boolean} [fast_track]
  * @property {{ number: number | null } | null} [pr]
