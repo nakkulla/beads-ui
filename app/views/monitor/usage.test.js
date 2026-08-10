@@ -5,14 +5,46 @@ import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
  * One 완료 아이템's minimal shape `crossRepoTokenTotal()` reads — just the
  * `usage` field `buildLanes()` already attaches via `sumAttemptUsage()`.
  *
- * @param {import('../../utils/token-usage.js').UsageRecord|null|undefined} usage
- * @returns {{ usage: import('../../utils/token-usage.js').UsageRecord|null|undefined }}
+ * @param {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null|undefined} usage
+ * @returns {{ usage: import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null|undefined }}
  */
 function doneItem(usage) {
   return { usage };
 }
 
 describe('cross-repo token total (UI-qrfo §7)', () => {
+  test('keeps Claude and Codex totals separate across workspaces', () => {
+    const total = crossRepoTokenTotal([
+      doneItem({
+        providers: {
+          claude: {
+            subtotal: 15,
+            breakdown: { input_tokens: 10, output_tokens: 5 }
+          }
+        },
+        roles: {}
+      }),
+      doneItem({
+        providers: {
+          codex: {
+            subtotal: 8,
+            breakdown: {
+              input_tokens: 5,
+              output_tokens: 3,
+              cache_read_input_tokens: 100
+            }
+          }
+        },
+        roles: {}
+      })
+    ]);
+
+    expect(total).toEqual([
+      expect.objectContaining({ label: 'Claude τ 15' }),
+      expect.objectContaining({ label: 'Codex τ 8' })
+    ]);
+  });
+
   test('sums usage across every repo done row into one total', () => {
     const total = crossRepoTokenTotal([
       doneItem({ input_tokens: 1000, output_tokens: 200 }),

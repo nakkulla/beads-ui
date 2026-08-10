@@ -15,6 +15,64 @@ function mount(tpl) {
 }
 
 describe('session-history token usage (UI-d7pw §2.2)', () => {
+  test('groups receipt legs by role beneath the outer orchestrator attempt', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          bead_id: 'UI-1',
+          status: 'done',
+          runner: 'claude',
+          model: 'opus',
+          session_id: 'outer-session',
+          usage: { input_tokens: 10, output_tokens: 2 },
+          usage_legs: [
+            {
+              receipt_id: 'impl-1',
+              provider: 'codex',
+              role: 'implementation',
+              model: 'gpt-5.6-terra',
+              session_id: 'implementation-thread',
+              completed_at: '2026-08-11T00:00:00Z',
+              usage: {
+                input_tokens: 5,
+                output_tokens: 3,
+                cache_read_input_tokens: 100,
+                reasoning_output_tokens: 2
+              }
+            },
+            {
+              receipt_id: 'review-1',
+              provider: 'codex',
+              role: 'review-consult',
+              model: 'gpt-5.6-luna',
+              session_id: 'review-thread',
+              completed_at: '2026-08-11T00:01:00Z',
+              usage: { input_tokens: 4, output_tokens: 1 }
+            }
+          ]
+        }
+      ])
+    );
+
+    expect(host.querySelector('.detail-session__role')?.textContent).toContain(
+      'orchestrator'
+    );
+    const legs = host.querySelectorAll('.detail-session__leg');
+    expect(legs).toHaveLength(2);
+    expect(legs[0].classList).toContain('detail-session__usage-detail');
+    expect(
+      legs[0].querySelector('.detail-session__leg-role')?.classList
+    ).toContain('detail-session__usage-label');
+    expect(
+      legs[0].querySelector('.detail-session__leg-meta')?.classList
+    ).toContain('detail-session__usage-value');
+    expect(host.textContent).toContain('implementation');
+    expect(host.textContent).toContain('review-consult');
+    expect(host.textContent).toContain('Codex τ 8');
+    expect(host.textContent).not.toContain('미실행');
+  });
+
   test('renders a token badge on an attempt that reported usage', () => {
     const attempts = [
       {
@@ -27,7 +85,7 @@ describe('session-history token usage (UI-d7pw §2.2)', () => {
     const host = mount(sessionHistoryTemplate(attempts));
 
     expect(host.querySelector('.detail-session__usage')?.textContent).toBe(
-      'τ 12.3k'
+      'Claude τ 12.3k'
     );
   });
 
@@ -157,6 +215,38 @@ describe('session-history token usage (UI-d7pw §2.2)', () => {
     expect(
       host.querySelector('.detail-session__usage-detail')?.textContent
     ).toContain('812,003');
+  });
+
+  test('labels direct Codex cache and reasoning as subset breakdown fields', () => {
+    const attempts = [
+      {
+        attempt_id: 'codex-1',
+        status: 'done',
+        runner: 'codex',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 100,
+          cache_creation_input_tokens: 9,
+          reasoning_output_tokens: 8
+        }
+      }
+    ];
+
+    const host = mount(
+      sessionHistoryTemplate(
+        attempts,
+        {},
+        {
+          expanded: new Set(['codex-1'])
+        }
+      )
+    );
+    const detail = host.querySelector('.detail-session__usage-detail');
+
+    expect(detail?.textContent).toContain('캐시 쓰기');
+    expect(detail?.textContent).toContain('추론 출력');
+    expect(detail?.textContent).not.toContain('캐시 생성');
   });
 
   test('hides the breakdown for an attempt not marked expanded', () => {

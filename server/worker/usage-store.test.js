@@ -112,6 +112,51 @@ describe('worker/usage-store', () => {
     });
   });
 
+  test('preserves reasoning output on an authoritative tally', () => {
+    const store = createUsageStore();
+
+    store.recordResult('/ws', 'a1', {
+      input_tokens: 18,
+      reasoning_output_tokens: 7
+    });
+
+    expect(store.get('/ws', 'a1')?.reasoning_output_tokens).toBe(7);
+  });
+
+  test('omits unreported reasoning output from an authoritative tally', () => {
+    const store = createUsageStore();
+
+    store.recordResult('/ws', 'a1', { input_tokens: 18, output_tokens: 2 });
+
+    expect(store.get('/ws', 'a1')).not.toHaveProperty(
+      'reasoning_output_tokens'
+    );
+  });
+
+  test('omits unreported reasoning output from an accumulated tally', () => {
+    const store = createUsageStore();
+    store.record('/ws', 'a1', {
+      message_id: 'm1',
+      input_tokens: 4,
+      output_tokens: 1
+    });
+
+    expect(store.get('/ws', 'a1')).not.toHaveProperty(
+      'reasoning_output_tokens'
+    );
+  });
+
+  test('preserves an explicitly reported zero reasoning output', () => {
+    const store = createUsageStore();
+    store.record('/ws', 'a1', {
+      message_id: 'm1',
+      input_tokens: 4,
+      reasoning_output_tokens: 0
+    });
+
+    expect(store.get('/ws', 'a1')).toHaveProperty('reasoning_output_tokens', 0);
+  });
+
   test('keeps a later message out of an already authoritative tally', () => {
     const store = createUsageStore();
     store.recordResult('/ws', 'a1', { input_tokens: 18, output_tokens: 1113 });

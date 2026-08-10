@@ -68,6 +68,41 @@ beforeEach(() => {
 });
 
 describe('done lane row', () => {
+  test('renders separate Claude and Codex usage badges without a grand total', () => {
+    const row = renderRow({
+      usage: {
+        providers: {
+          claude: {
+            subtotal: 15,
+            breakdown: { input_tokens: 10, output_tokens: 5 }
+          },
+          codex: {
+            subtotal: 8,
+            breakdown: {
+              input_tokens: 5,
+              output_tokens: 3,
+              cache_read_input_tokens: 100,
+              reasoning_output_tokens: 2
+            }
+          }
+        },
+        roles: {}
+      }
+    });
+
+    const badges = Array.from(row.querySelectorAll('.worker-usage')).map((el) =>
+      el.textContent?.trim()
+    );
+
+    expect(badges).toEqual(['Claude τ 15', 'Codex τ 8']);
+    expect(row.textContent).not.toContain('τ 23');
+    expect(
+      Array.from(row.querySelectorAll('.worker-usage'))
+        .at(-1)
+        ?.getAttribute('title')
+    ).toContain('subset');
+  });
+
   test('gives the first line the id and title with no usage badge', () => {
     const row = renderRow({ usage: USAGE });
 

@@ -14,6 +14,7 @@
 import { html } from 'lit-html';
 import {
   formatUsageTotalWithCost,
+  providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
 import { timesMeta } from './lanes.js';
@@ -37,7 +38,7 @@ import { timesMeta } from './lanes.js';
  * @property {string|null} [current_child] - 현재 진행중 child 이슈 제목
  * (UI-53es §2) — 큐 스냅샷에 페이즈명이 없으므로 이것이 "지금 어느 단계인가"에
  * 답하는 유일한 사실이다. 없으면 줄 자체를 생략한다 (fail-quiet).
- * @property {import('../../utils/token-usage.js').UsageRecord|null} [usage] - Live token usage
+ * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Live token usage
  * of this attempt (UI-raqh §1); absent/null renders nothing.
  * @property {boolean} [conflict_resolution] - Attempt dispatched to resolve a
  * PR conflict (worker-phase2 §6) rather than to do the bead's work; the tile
@@ -301,6 +302,7 @@ function runningTile(tile, now, selected_attempt = null) {
       ? formatElapsed(now - tile.started_at)
       : '—';
   const meta = [tile.runner, tile.model].filter(Boolean).join(' · ');
+  const provider_badges = providerUsageBadges(tile.usage);
   const usage_label = formatUsageTotalWithCost(tile.usage);
   // Same badge style the lane rows use — a resolution session is a different
   // KIND of run, not a louder one.
@@ -367,7 +369,11 @@ function runningTile(tile, now, selected_attempt = null) {
           └ ${tile.current_child}
         </div>`
       : ''}
-    ${meta || usage_label || conflict_badge || base_badge
+    ${meta ||
+    provider_badges.length > 0 ||
+    usage_label ||
+    conflict_badge ||
+    base_badge
       ? html`<div class="rtile__meta">
           ${conflict_badge
             ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
@@ -380,11 +386,20 @@ function runningTile(tile, now, selected_attempt = null) {
               >`
             : ''}
           ${meta ? html`<span class="rtile__runner">${meta}</span>` : ''}
-          ${usage_label
-            ? html`<span class="worker-usage" title=${usageTooltip(tile.usage)}
-                >${usage_label}</span
-              >`
-            : ''}
+          ${provider_badges.length > 0
+            ? provider_badges.map(
+                (badge) =>
+                  html`<span class="worker-usage" title=${badge.tooltip}
+                    >${badge.label}</span
+                  >`
+              )
+            : usage_label
+              ? html`<span
+                  class="worker-usage"
+                  title=${usageTooltip(tile.usage)}
+                  >${usage_label}</span
+                >`
+              : ''}
         </div>`
       : ''}
     ${timesMeta(tile)}

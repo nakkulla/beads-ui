@@ -15,7 +15,7 @@ import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { runSession } from './runner/session.js';
 import { createScheduler } from './scheduler.js';
-import { guardHookDir } from './state-paths.js';
+import { guardHookDir, usageReceiptInboxDir } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
 const WS = '/tmp/example-workspace/project-a';
@@ -376,6 +376,44 @@ function flush() {
 }
 
 /**
+ * Publish one exact v1 receipt into an attempt's deterministic inbox.
+ *
+ * @param {string} attempt_id
+ * @param {string} [receipt_id]
+ * @returns {string}
+ */
+function writeUsageReceipt(attempt_id, receipt_id = 'late-receipt') {
+  const inbox = usageReceiptInboxDir(WS, attempt_id);
+  fs.mkdirSync(inbox, { recursive: true, mode: 0o700 });
+  fs.chmodSync(inbox, 0o700);
+  const file = path.join(inbox, `${receipt_id}.json`);
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      schema: 'codex-usage-receipt-v1',
+      receipt_id,
+      attempt_id,
+      provider: 'codex',
+      role: 'implementation',
+      thread_id: 'thread-late',
+      turn_id: 'turn-late',
+      model: 'gpt-5.6-terra',
+      usage: {
+        input_tokens: 5,
+        output_tokens: 3,
+        cache_read_input_tokens: 2,
+        cache_creation_input_tokens: 1,
+        reasoning_output_tokens: 2
+      },
+      completed_at: '2026-08-11T12:34:56Z'
+    }),
+    { mode: 0o600 }
+  );
+  fs.chmodSync(file, 0o600);
+  return file;
+}
+
+/**
  * Fake runner factory: each spawn returns a handle whose `done` stays pending
  * until the test resolves it. Records every spawn.
  */
@@ -627,7 +665,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, cleanupDiagnosis?: any, readCleanupDiagnosisResult?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, cleanupDiagnosis?: any, readCleanupDiagnosisResult?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -691,6 +729,7 @@ function setup(opts) {
     verify,
     sessionLog,
     usage,
+    usageReceipts: opts.usageReceipts,
     admission: opts.admission,
     resolveBase: opts.resolveBase,
     notify: opts.notify,
@@ -5535,6 +5574,18 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
 
+  test('recovers a late receipt for a paused attempt after restart', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    seedDetachedAttempt(env.store, { status: 'paused' });
+    const receipt_file = writeUsageReceipt('att-1');
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].usage_legs).toHaveLength(1);
+    expect(fs.existsSync(receipt_file)).toBe(false);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
   test('skips an attempt this process still holds a session handle for', async () => {
     const env = setup({
       config: { S1: {} },
@@ -6414,6 +6465,25 @@ describe('scheduler token usage (UI-raqh §1)', () => {
 });
 
 describe('scheduler usage after a pause or a stop (UI-raqh §1)', () => {
+  test('persists a late receipt after pause without an outer usage delta', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('A1').emit('session_id', 'sid-1');
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.pause(WS, attempt_id);
+    const receipt_file = writeUsageReceipt(attempt_id);
+
+    env.runner.finish('A1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].usage_legs).toHaveLength(
+      1
+    );
+    expect(fs.existsSync(receipt_file)).toBe(false);
+  });
+
   test('persists a trailing usage event that lands after the pause', async () => {
     const env = setup({ config: { A1: {} } });
     seedQueue(env.store, ['A1']);
@@ -6714,12 +6784,105 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
 
     await env.scheduler.tick(WS);
 
-    expect(env.runner.settingsFor('S1').env).toEqual({
+    expect(env.runner.settingsFor('S1').env).toMatchObject({
       GIT_CONFIG_COUNT: '1',
       GIT_CONFIG_KEY_0: 'core.hooksPath',
-      GIT_CONFIG_VALUE_0: guardHookDir(WS, 'S1-1000-1')
+      GIT_CONFIG_VALUE_0: guardHookDir(WS, 'S1-1000-1'),
+      BDUI_ATTEMPT_ID: 'S1-1000-1',
+      BDUI_CODEX_USAGE_RECEIPT_DIR: expect.stringContaining(
+        path.join('usage-receipts', 'S1-1000-1')
+      )
     });
     expect(hookInstalled('S1-1000-1')).toBe(true);
+  });
+
+  test('continues the runner lifecycle when receipt inbox setup fails', async () => {
+    const usageReceipts = {
+      ensureUsageReceiptInbox: vi.fn(() => ({
+        ok: false,
+        reason: 'directory_mode'
+      })),
+      readAttemptUsageReceipts: vi.fn(() => ({
+        legs: [],
+        files: [],
+        warnings: []
+      })),
+      normalizeUsageLegs: vi.fn((legs) => legs),
+      removeEmptyUsageReceiptInbox: vi.fn(),
+      consumeUsageReceiptFiles: vi.fn()
+    };
+    const env = setup({ config: { S1: {} }, slots: 1, usageReceipts });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('running');
+    expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
+      'BDUI_ATTEMPT_ID'
+    );
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('done');
+  });
+
+  test('fans out a receipt-only leg after the bounded live poll', async () => {
+    vi.useFakeTimers();
+    try {
+      const notifyQueueChanged = vi.fn();
+      const usageReceipts = {
+        ensureUsageReceiptInbox: vi.fn(() => ({
+          ok: false,
+          reason: 'directory_mode'
+        })),
+        readAttemptUsageReceipts: vi.fn(() => ({
+          legs: [
+            {
+              receipt_id: 'launch-1',
+              provider: 'codex',
+              role: 'implementation',
+              session_id: 'thread-1',
+              turn_id: 'turn-1',
+              model: 'gpt-5.6-terra',
+              usage: {
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                reasoning_output_tokens: 0
+              },
+              completed_at: '2026-08-11T12:34:56Z'
+            }
+          ],
+          files: [],
+          warnings: []
+        })),
+        normalizeUsageLegs: vi.fn((legs) => legs),
+        removeEmptyUsageReceiptInbox: vi.fn(),
+        consumeUsageReceiptFiles: vi.fn()
+      };
+      const env = setup({
+        config: { S1: {} },
+        slots: 1,
+        usageReceipts,
+        notifyQueueChanged
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+      notifyQueueChanged.mockClear();
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(usageReceipts.readAttemptUsageReceipts).toHaveBeenCalledWith(
+        WS,
+        'S1-1000-1',
+        { known_legs: [] }
+      );
+      expect(notifyQueueChanged).toHaveBeenCalledWith(WS);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('the delivered keys reach the real spawn env', async () => {
@@ -6760,10 +6923,11 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
 
     // Writing COUNT=1 over an inherited COUNT=2 would drop the parent's
     // KEY_1/VALUE_1 pair.
-    expect(env.runner.settingsFor('S1').env).toEqual({
+    expect(env.runner.settingsFor('S1').env).toMatchObject({
       GIT_CONFIG_COUNT: '3',
       GIT_CONFIG_KEY_2: 'core.hooksPath',
-      GIT_CONFIG_VALUE_2: guardHookDir(WS, 'S1-1000-1')
+      GIT_CONFIG_VALUE_2: guardHookDir(WS, 'S1-1000-1'),
+      BDUI_ATTEMPT_ID: 'S1-1000-1'
     });
   });
 
@@ -6837,7 +7001,10 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
     // Publishing the resolved base IS this session's job.
     expect(res.ok).toBe(true);
     expect(hookInstalled(String(res.attempt_id))).toBe(false);
-    expect(env.runner.settingsFor('B1').env).toBe(undefined);
+    expect(env.runner.settingsFor('B1').env).toMatchObject({
+      BDUI_ATTEMPT_ID: String(res.attempt_id),
+      BDUI_CODEX_USAGE_RECEIPT_DIR: expect.stringContaining('usage-receipts')
+    });
   });
 
   test('refuses the dispatch with guard_hook_install_failed and leaves zero residue', async () => {
