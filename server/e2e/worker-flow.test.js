@@ -510,16 +510,12 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
           /** @type {string} */ key
         ) => bd_record.metadata[key] ?? null,
         listChildren: async () => [],
-        // No `export:` label on this bead, so the ship step is a no-op — but the
-        // adapter must still expose the capability, or it fails closed.
         readIssue: async (/** @type {string} */ id) => ({
           id,
           status: bd_record.status,
           labels: [],
           metadata: bd_record.metadata
-        }),
-        ship: async () => ({ status: 'shipped', issue_id: null }),
-        removeLabel: async () => {}
+        })
       },
       worktree: prActionsWorktree(runtime),
       gitRun,

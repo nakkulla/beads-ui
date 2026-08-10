@@ -146,10 +146,6 @@ function seedStore(options = {}) {
  *   external?: Record<string, { bead_id: string, pr_url: string, pr_number: number|null, added_at: number }>,
  *   bdStatus?: Record<string, string>,
  *   bdPrUrl?: string|null,
- *   labels?: Record<string, string[]>,
- *   dispositions?: Record<string, string>,
- *   shipFail?: (capability: string) => boolean,
- *   shipSilent?: string[],
  *   declaredBase?: string,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
  *   noNotify?: boolean
@@ -257,51 +253,12 @@ function makeActions(options = {}) {
         // The CLICK-TIME guard answer, kept apart from `bd_status` (which
         // models the cleanup's own close/restore readbacks).
         status: (options.bdStatus || {})[id] ?? bd_status.get(id) ?? 'closed',
-        labels: [...(bd_labels.get(id) || [])],
-        metadata: {
-          ...(Object.hasOwn(options, 'bdPrUrl')
-            ? { pr_url: options.bdPrUrl ?? undefined }
-            : {}),
-          ...((options.dispositions || {})[id]
-            ? { child_disposition: (options.dispositions || {})[id] }
-            : {})
-        }
+        metadata: Object.hasOwn(options, 'bdPrUrl')
+          ? { pr_url: options.bdPrUrl ?? undefined }
+          : {}
       };
-    }),
-    ship: vi.fn(async (/** @type {string} */ capability) => {
-      calls.push(`bd:ship:${capability}`);
-      if (options.shipFail && options.shipFail(capability)) {
-        throw new Error('bd ship failed');
-      }
-      const target =
-        [...bd_labels.entries()].find(([, labels]) =>
-          labels.includes(`export:${capability}`)
-        )?.[0] || null;
-      if (target && !(options.shipSilent || []).includes(capability)) {
-        bd_labels.set(target, [
-          ...(bd_labels.get(target) || []),
-          `provides:${capability}`
-        ]);
-      }
-      return { status: 'shipped', issue_id: target };
-    }),
-    removeLabel: vi.fn(
-      async (/** @type {string} */ id, /** @type {string} */ label) => {
-        calls.push(`bd:removeLabel:${id}:${label}`);
-        bd_labels.set(
-          id,
-          (bd_labels.get(id) || []).filter((l) => l !== label)
-        );
-      }
-    )
+    })
   };
-  /** @type {Map<string, string[]>} */
-  const bd_labels = new Map(
-    Object.entries(options.labels || {}).map(([id, labels]) => [
-      id,
-      [...labels]
-    ])
-  );
   /** @type {Map<string, string>} */
   const bd_status = new Map();
 
@@ -1371,15 +1328,14 @@ describe('post-merge cleanup — the worktree is FOUND, not named (UI-u7hh)', ()
 });
 
 describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', () => {
-  test('fixes the contract-aligned seven-step order', () => {
+  test('fixes the contract-aligned six-step order', () => {
     expect(CLEANUP_STEPS).toEqual([
       'base_sync',
       'post_merge_verify',
       'deploy',
       'child_sweep',
       'branch_cleanup',
-      'parent_close',
-      'ship_exported_capabilities'
+      'parent_close'
     ]);
   });
 
@@ -2261,8 +2217,8 @@ describe('post-merge cleanup — retiring the external row (UI-wwby §1)', () =>
   });
 
   test('does not drop the row when the cleanup fails before it', async () => {
-    // The drop sits behind `clearShipFailure`, i.e. behind every step that can
-    // stop the cleanup — a bead whose close failed is still `resolved` and must
+    // The drop sits after every step that can stop the cleanup — a bead whose
+    // close failed is still `resolved` and must
     // stay a registry row so the [정리] retry can find it.
     const h = makeActions({
       bdFail: (/** @type {string} */ method) => method === 'setStatus'
@@ -2452,7 +2408,7 @@ describe('[폐기] — the order-sensitive discard transition (discard spec §1)
 });
 
 describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
-  test('walks the eight steps in contract order on a clean merge', async () => {
+  test('walks the six cleanup steps in contract order on a clean merge', async () => {
     const env = makeActions();
 
     await env.actions.merge(BEAD);
@@ -2465,7 +2421,6 @@ describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
       'child_sweep',
       'branch_cleanup',
       'parent_close',
-      'ship_exported_capabilities',
       '(cleared)'
     ]);
   });
@@ -3191,189 +3146,6 @@ describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
 
     expect(r).toMatchObject({ ok: true, reason: null });
     expect(h.notify.mergeCompleted).not.toHaveBeenCalled();
-  });
-});
-
-describe('worker/pr-actions — capability ship after the close (UI-4ii4)', () => {
-  const CHILD = 'UI-1-c1';
-
-  test('ships the parent and every closed descendant, then moves the bead to done', async () => {
-    const env = makeActions({
-      children: { [BEAD]: [{ id: CHILD, status: 'open' }] },
-      labels: { [BEAD]: ['export:cap-a'], [CHILD]: ['export:cap-b'] }
-    });
-
-    const r = await env.actions.merge(BEAD);
-
-    expect(r).toMatchObject({ ok: true, reason: null });
-    expect(env.calls).toContain('bd:ship:cap-a');
-    expect(env.calls).toContain('bd:ship:cap-b');
-    expect(
-      env.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
-    ).toEqual([BEAD]);
-  });
-
-  test('leaves bd CLOSED when the ship fails — the close is not rolled back', async () => {
-    const env = makeActions({
-      labels: { [BEAD]: ['export:cap-a'] },
-      shipFail: (cap) => cap === 'cap-a'
-    });
-
-    const r = await env.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'ship_exported_capabilities',
-      reason: 'ship_failed:cap-a'
-    });
-    expect(env.calls).toContain(`bd:setStatus:${BEAD}:closed`);
-    expect(env.calls).not.toContain(`bd:setStatus:${BEAD}:resolved`);
-    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'ship_exported_capabilities',
-      reason: 'ship_failed:cap-a',
-      bd_restore: null,
-      detail: 'pending=cap-a'
-    });
-  });
-
-  test('keeps the bead in pr_wait so [정리] can retry the whole sequence', async () => {
-    const env = makeActions({
-      labels: { [BEAD]: ['export:cap-a'] },
-      shipFail: () => true
-    });
-
-    await env.actions.merge(BEAD);
-
-    expect(
-      env.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
-    ).toEqual([BEAD]);
-    expect(env.store.snapshot(WS).done).toEqual([]);
-  });
-
-  test('a [정리] retry over already-closed beads still publishes every capability', async () => {
-    let ship_broken = true;
-    const env = makeActions({
-      children: { [BEAD]: [{ id: CHILD, status: 'open' }] },
-      labels: { [BEAD]: ['export:cap-a'], [CHILD]: ['export:cap-b'] },
-      shipFail: () => ship_broken
-    });
-    const first = await env.actions.merge(BEAD);
-    expect(first).toMatchObject({ ok: false, reason: 'ship_failed:cap-a' });
-
-    // The retry finds parent AND child already `closed` — the enumeration is
-    // deliberately the whole walked set, not "what this sweep closed".
-    ship_broken = false;
-    const closes_before = env.calls.filter(
-      (c) => c === `bd:setStatus:${CHILD}:closed`
-    ).length;
-    const second = await env.actions.merge(BEAD);
-
-    expect(second).toMatchObject({ ok: true, reason: null });
-    // The child is NOT closed a second time — so its capability was published
-    // purely off the wide enumeration, which is acceptance criterion 6.
-    expect(
-      env.calls.filter((c) => c === `bd:setStatus:${CHILD}:closed`)
-    ).toHaveLength(closes_before);
-    expect(env.bd.ship.mock.calls.map((c) => c[0])).toEqual([
-      'cap-a',
-      'cap-a',
-      'cap-b'
-    ]);
-    expect(
-      env.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
-    ).toEqual([BEAD]);
-    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
-  });
-
-  test('strips the export: label of a canceled descendant instead of shipping it', async () => {
-    const env = makeActions({
-      children: { [BEAD]: [{ id: CHILD, status: 'open' }] },
-      labels: { [CHILD]: ['export:cap-b'] },
-      dispositions: { [CHILD]: 'canceled' }
-    });
-
-    const r = await env.actions.merge(BEAD);
-
-    expect(r.ok).toBe(true);
-    expect(env.bd.ship).not.toHaveBeenCalled();
-    expect(env.calls).toContain(`bd:removeLabel:${CHILD}:export:cap-b`);
-  });
-
-  test('an external row records a workspace ship failure and no cleanup_failed', async () => {
-    const EXT = 'UI-ext-ship';
-    const env = makeActions({
-      store: createQueueStore(),
-      external: {
-        [EXT]: {
-          bead_id: EXT,
-          pr_url: 'https://github.com/o/r/pull/909',
-          pr_number: 909,
-          added_at: 1
-        }
-      },
-      bdStatus: { [EXT]: 'resolved' },
-      bdPrUrl: 'https://github.com/o/r/pull/909',
-      labels: { [EXT]: ['export:cap-x'] },
-      shipFail: () => true
-    });
-
-    const r = await env.actions.merge(EXT);
-
-    expect(r).toMatchObject({ ok: false, reason: 'ship_failed:cap-x' });
-    expect(env.store.snapshot(WS).cleanup_failed[EXT]).toBeUndefined();
-    expect(env.store.snapshot(WS).ship_failure).toMatchObject({
-      bead_id: EXT,
-      reason: 'ship_failed:cap-x',
-      detail: 'pending=cap-x',
-      pr_url: 'https://github.com/o/r/pull/909'
-    });
-  });
-
-  test('a durable-row ship failure writes cleanup_failed and no workspace record', async () => {
-    const env = makeActions({
-      labels: { [BEAD]: ['export:cap-a'] },
-      shipFail: () => true
-    });
-
-    await env.actions.merge(BEAD);
-
-    expect(env.store.snapshot(WS).ship_failure).toBeNull();
-    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toBeDefined();
-  });
-
-  test('a successful ship clears a workspace record an earlier failure left', async () => {
-    const env = makeActions({ labels: { [BEAD]: ['export:cap-a'] } });
-    env.store.recordShipFailure(WS, {
-      bead_id: 'UI-old',
-      reason: 'ship_failed:cap-old'
-    });
-
-    await env.actions.merge(BEAD);
-
-    expect(env.store.snapshot(WS).ship_failure).toBeNull();
-  });
-});
-
-describe('worker/pr-actions — ship failure records exactly one place (impl review)', () => {
-  test('a bead that left the lane mid-cleanup still gets the workspace record', async () => {
-    const env = makeActions({
-      labels: { [BEAD]: ['export:cap-a'] },
-      shipFail: () => true
-    });
-    // The lane loses the bead WHILE the cleanup runs (a [폐기] during a long
-    // post-merge suite): the start-of-cleanup snapshot said durable, the
-    // failure-time one says otherwise.
-    env.bd.ship.mockImplementationOnce(async () => {
-      env.store.removeFromPrWait(WS, { bead_id: BEAD });
-      throw new Error('bd ship failed');
-    });
-
-    await env.actions.merge(BEAD);
-
-    expect(env.store.snapshot(WS).ship_failure).toMatchObject({
-      bead_id: BEAD,
-      reason: 'ship_failed:cap-a'
-    });
   });
 });
 

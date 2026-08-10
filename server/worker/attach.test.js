@@ -1458,9 +1458,7 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
           id,
           labels: [],
           metadata: { pr_url: PR_URL }
-        }),
-        ship: async () => ({ status: 'ok', issue_id: null }),
-        removeLabel: async () => {}
+        })
       },
       worktree: fakeWorktree,
       verify: okVerify,

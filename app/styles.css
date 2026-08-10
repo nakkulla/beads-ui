@@ -2906,16 +2906,6 @@ html[data-theme='dark'] {
   color: var(--accent-warn);
 }
 
-/* capability 발행(ship)이 실패한 워크스페이스 (UI-4ii4). 정리 배너와 같은 warn
-   계열이되 재시도 버튼이 없다 — external 행은 close와 함께 사라지므로 누를 행이
-   남지 않고, 복구는 배너가 안내하는 수동 `bd ship`이다. */
-.worker-banner--ship {
-  border: 1px solid var(--border-warn);
-  border-left: 3px solid var(--accent-warn);
-  background: color-mix(in srgb, var(--accent-warn) 14%, var(--bg-panel));
-  color: var(--accent-warn);
-}
-
 /* 실패 배너의 수동 이어하기(↻) · 닫기(✕) 버튼. */
 .worker-banner__resume,
 .worker-banner__dismiss {

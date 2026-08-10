@@ -248,27 +248,6 @@
  * time — the question it answers is "is the running service the merged code?",
  * which only the latest deploy can answer. Null on a workspace that has never
  * deployed (no `[worker.deploy]` section, or none run yet).
- * @property {ShipFailure|null} ship_failure - The workspace's outstanding
- * capability-ship failure (UI-4ii4). WORKSPACE level rather than per-lane-member
- * for one reason: the ship step runs AFTER the parent close, and an external PR
- * row exists only while its bead is `resolved` + `pr_url` (UI-7agi) — so by the
- * time this can fail, that row has already vanished from the next scan and
- * `cleanup_failed` (lane-member state) would be written nowhere. The record
- * outliving the row is what keeps a failed ship from being silent. One record,
- * overwritten; cleared by the next successful ship step.
- */
-/**
- * @typedef {Object} ShipFailure
- * @property {string} bead_id - The merged bead whose ship step stopped.
- * @property {string} reason - The failure vocabulary from
- * `ship-capabilities.js` (`ship_failed:<cap>`, `ship_readback_failed:<cap>`,
- * `ship_target_mismatch:<cap>`, `ship_read_failed:<id>`,
- * `export_removal_failed:<id>:<cap>`, `ship_unavailable`).
- * @property {string|null} detail - The remaining work (`pending=… unread=…`);
- * null when the failure carried none.
- * @property {string|null} pr_url - The PR that was merged, so the banner can
- * name what a human is being asked to finish.
- * @property {number} at - Epoch ms of the record.
  */
 /**
  * One member of the sequential merge queue (UI-5v7d §1).
@@ -396,8 +375,7 @@ function emptyQueue() {
     merge_queue: [],
     auto_merge: false,
     auto_merge_skips: {},
-    last_deploy: null,
-    ship_failure: null
+    last_deploy: null
   };
 }
 
@@ -769,39 +747,8 @@ function normalizeQueue(raw) {
   // record carrying an outcome outside the vocabulary is dropped the same way:
   // an unrenderable record and no record mean the same thing to the reader.
   q.last_deploy = normalizeLastDeploy(raw.last_deploy);
-  // A queue.json written before UI-4ii4 has no key → null, which reads as "no
-  // capability ship is outstanding" — true of every queue from before the step
-  // existed.
-  q.ship_failure = normalizeShipFailure(raw.ship_failure);
   // auto_advance intentionally left false — see load() restart-safety note.
   return q;
-}
-
-/**
- * @param {unknown} value
- * @returns {ShipFailure|null}
- */
-function normalizeShipFailure(value) {
-  if (
-    !isRecord(value) ||
-    typeof value.reason !== 'string' ||
-    value.reason.length === 0
-  ) {
-    return null;
-  }
-  return {
-    bead_id: typeof value.bead_id === 'string' ? value.bead_id : '',
-    reason: value.reason,
-    detail:
-      typeof value.detail === 'string' && value.detail.length > 0
-        ? value.detail
-        : null,
-    pr_url:
-      typeof value.pr_url === 'string' && value.pr_url.length > 0
-        ? value.pr_url
-        : null,
-    at: typeof value.at === 'number' ? value.at : 0
-  };
 }
 
 /**
@@ -1415,50 +1362,6 @@ export function createQueueStore(options = {}) {
           return false;
         }
         next.last_deploy = record;
-        return true;
-      });
-    },
-
-    /**
-     * Record that the post-merge capability ship stopped (UI-4ii4). Scheduler-
-     * owned (no CAS), workspace level, ONE record overwritten each time.
-     *
-     * This exists because the ship step is the first cleanup step that runs
-     * AFTER the parent close, and an external PR row's whole existence is
-     * `resolved` + `pr_url`: the close makes the row disappear on the next scan,
-     * so a lane-member `cleanup_failed` record would have nowhere to live and
-     * the failure would be silent. A record without a `reason` is refused
-     * without a write, like {@link recordLastDeploy}'s unrenderable outcomes.
-     *
-     * @param {string} workspace
-     * @param {{ bead_id: string, reason: string, detail?: string|null, pr_url?: string|null }} input
-     * @returns {QueueOpResult}
-     */
-    recordShipFailure(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const record = normalizeShipFailure({ ...input, at: now() });
-        if (!record) {
-          return false;
-        }
-        next.ship_failure = record;
-        return true;
-      });
-    },
-
-    /**
-     * Clear the workspace's ship-failure record — what a SUCCESSFUL ship step
-     * does, including the one inside a `[정리]` retry of the same bead. No-op
-     * (no revision bump) when there is nothing recorded.
-     *
-     * @param {string} workspace
-     * @returns {QueueOpResult}
-     */
-    clearShipFailure(workspace) {
-      return applyUnconditional(workspace, (next) => {
-        if (!next.ship_failure) {
-          return false;
-        }
-        next.ship_failure = null;
         return true;
       });
     },

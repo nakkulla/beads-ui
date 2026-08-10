@@ -493,8 +493,8 @@ export function activityBadge(gate_badge, activity) {
 }
 
 /**
- * The merge's eight steps in server order (UI-raqh §4), each with the label the
- * row shows. Mirrors `pr-actions.js` — `merging` plus the seven `CLEANUP_STEPS`
+ * The merge's seven steps in server order (UI-raqh §4), each with the label the
+ * row shows. Mirrors `pr-actions.js` — `merging` plus the six `CLEANUP_STEPS`
  * — and the client keeps its own copy because a view must not import server
  * code. An unknown step still renders (by its raw name) rather than blanking the
  * row.
@@ -508,8 +508,7 @@ const MERGE_STEPS = [
   { step: 'deploy', label: '배포' },
   { step: 'child_sweep', label: '자식 정리' },
   { step: 'branch_cleanup', label: '브랜치 정리' },
-  { step: 'parent_close', label: '부모 close' },
-  { step: 'ship_exported_capabilities', label: 'capability 발행' }
+  { step: 'parent_close', label: '부모 close' }
 ];
 
 /**
@@ -1520,7 +1519,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, ship_failure: { bead_id: string, reason: string, detail: string|null, pr_url: string|null }|null }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -1632,24 +1631,6 @@ export function createWorkerView(mount_element, options = {}) {
             : undefined
       })
     );
-    // The WORKSPACE-level capability ship failure (UI-4ii4). It is separate from
-    // `cleanup_failed` because the step runs after the parent close, which is
-    // exactly when an external PR row stops existing — this record is the only
-    // thing that survives to say a merged bead's capability was never published.
-    // Fail-quiet on a server that does not send it.
-    /** @type {{ bead_id?: unknown, reason?: unknown, detail?: unknown, pr_url?: unknown }|null} */
-    const ship_raw = q.ship_failure || null;
-    const ship_failure =
-      ship_raw && typeof ship_raw.reason === 'string' && ship_raw.reason
-        ? {
-            bead_id:
-              typeof ship_raw.bead_id === 'string' ? ship_raw.bead_id : '',
-            reason: ship_raw.reason,
-            detail:
-              typeof ship_raw.detail === 'string' ? ship_raw.detail : null,
-            pr_url: typeof ship_raw.pr_url === 'string' ? ship_raw.pr_url : null
-          }
-        : null;
     const queue_entries = /** @type {any[]} */ (q.queue || []);
     const queued = new Set([
       ...queue_entries.map((/** @type {any} */ e) => e.bead_id),
@@ -2218,8 +2199,7 @@ export function createWorkerView(mount_element, options = {}) {
       declared_base,
       done: done_rows,
       token_total,
-      cleanup_failures,
-      ship_failure
+      cleanup_failures
     };
   }
 
@@ -2314,8 +2294,7 @@ export function createWorkerView(mount_element, options = {}) {
       </button>`;
     const banners = bannersTemplate({
       failure: m.failure,
-      cleanupFailures: m.cleanup_failures,
-      shipFailure: m.ship_failure
+      cleanupFailures: m.cleanup_failures
     });
     if (is_mobile) {
       // sticky 리본 (UI-58y2 §모바일 1)에는 자동 진행 토글과 세 카운트만 둔다.
