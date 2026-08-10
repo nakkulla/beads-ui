@@ -1,0 +1,371 @@
+import express from 'express';
+import { EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
+import { PassThrough } from 'node:stream';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  __resetCacheForTest,
+  createCodexAuthRunner,
+  createCodexUsageHandler,
+  normalizeCodexUsage
+} from './codex-usage.js';
+
+/**
+ * @typedef {EventEmitter & { stdout: PassThrough, stderr: PassThrough, kill: import('vitest').Mock<(signal: NodeJS.Signals) => boolean> }} TestChild
+ */
+
+/**
+ * @param {Record<string, unknown>} [overrides]
+ */
+function usageSnapshot(overrides = {}) {
+  return {
+    schema_version: 1,
+    command: 'list',
+    active_account_key: 'active-account',
+    accounts: [
+      {
+        account_key: 'inactive-account',
+        usage: { source: 'none' }
+      },
+      {
+        account_key: 'active-account',
+        email: 'private@example.com',
+        credits: 42,
+        usage: {
+          source: 'api',
+          updated_at: 1_786_334_358,
+          primary: {
+            used_percent: 26,
+            window_minutes: 300,
+            resets_at: 1_786_344_000
+          },
+          secondary: {
+            used_percent: 74,
+            window_minutes: 10_080,
+            resets_at: 1_786_852_800
+          },
+          refresh: { status: 'ok', error: 'private detail' }
+        }
+      }
+    ],
+    ...overrides
+  };
+}
+
+/**
+ * @param {() => Promise<{ code: number, stdout: string, stderr: string }>} runCodexAuth
+ * @param {() => number} [now]
+ */
+async function requestUsage(runCodexAuth, now) {
+  const app = express();
+  app.get(
+    '/api/codex-usage',
+    createCodexUsageHandler({
+      runCodexAuth,
+      now: now || (() => 1_786_334_400_000)
+    })
+  );
+  const server = createServer(app);
+  await new Promise((resolve) => {
+    server.listen({ port: 0, host: '127.0.0.1' }, () => resolve(undefined));
+  });
+  const address = /** @type {import('node:net').AddressInfo} */ (
+    server.address()
+  );
+
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/codex-usage`
+    );
+    return {
+      status: response.status,
+      cache_control: response.headers.get('cache-control'),
+      body: await response.json()
+    };
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
+  }
+}
+
+/**
+ * @param {(child: TestChild) => void} finish
+ */
+function spawnedChild(finish) {
+  const child = /** @type {TestChild} */ (new EventEmitter());
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = vi.fn(
+    (/** @type {NodeJS.Signals} */ signal) => signal === 'SIGKILL'
+  );
+  queueMicrotask(() => finish(child));
+  return child;
+}
+
+afterEach(() => {
+  __resetCacheForTest();
+  vi.useRealTimers();
+});
+
+describe('codex usage normalization', () => {
+  test('selects the active account and normalizes windows', () => {
+    const payload = normalizeCodexUsage(
+      usageSnapshot(),
+      () => 1_786_334_400_000
+    );
+
+    expect(payload).toEqual({
+      available: true,
+      provider: 'codex',
+      windows: [
+        {
+          key: '5h',
+          pct: 26,
+          resetsAt: new Date(1_786_344_000_000).toISOString()
+        },
+        {
+          key: '7d',
+          pct: 74,
+          resetsAt: new Date(1_786_852_800_000).toISOString()
+        }
+      ],
+      fetchedAt: new Date(1_786_334_358_000).toISOString(),
+      ageSeconds: 42
+    });
+  });
+
+  test('shows a valid cached snapshot after refresh failure', () => {
+    const snapshot = usageSnapshot();
+    const account = /** @type {any} */ (snapshot.accounts[1]);
+    account.usage.source = 'cache';
+    account.usage.refresh = { status: 'error', error: 'private detail' };
+
+    const payload = normalizeCodexUsage(snapshot, () => 1_786_334_400_000);
+
+    expect(payload).toMatchObject({ available: true, provider: 'codex' });
+  });
+
+  test('clamps negative snapshot age to zero', () => {
+    const payload = normalizeCodexUsage(
+      usageSnapshot(),
+      () => 1_786_334_000_000
+    );
+
+    expect(payload).toMatchObject({ ageSeconds: 0 });
+  });
+
+  test.each([
+    ['unknown schema', { schema_version: 2 }],
+    ['wrong command', { command: 'status' }],
+    ['missing active account', { active_account_key: 'missing' }]
+  ])('returns unavailable for %s', (_name, overrides) => {
+    const payload = normalizeCodexUsage(usageSnapshot(overrides));
+
+    expect(payload).toEqual({ available: false });
+  });
+
+  test.each([
+    ['none source', { source: 'none' }],
+    ['missing primary', { primary: undefined }],
+    [
+      'invalid percent',
+      {
+        primary: {
+          used_percent: 101,
+          window_minutes: 300,
+          resets_at: 1_786_344_000
+        }
+      }
+    ],
+    [
+      'invalid epoch',
+      { primary: { used_percent: 26, window_minutes: 300, resets_at: -1 } }
+    ]
+  ])('returns unavailable for %s', (_name, usage_overrides) => {
+    const snapshot = usageSnapshot();
+    const account = /** @type {any} */ (snapshot.accounts[1]);
+    account.usage = { ...account.usage, ...usage_overrides };
+
+    const payload = normalizeCodexUsage(snapshot);
+
+    expect(payload).toEqual({ available: false });
+  });
+
+  test('omits identity, credits and refresh errors from the response', () => {
+    const payload = normalizeCodexUsage(
+      usageSnapshot(),
+      () => 1_786_334_400_000
+    );
+
+    expect(payload).toEqual({
+      available: true,
+      provider: 'codex',
+      windows: [
+        {
+          key: '5h',
+          pct: 26,
+          resetsAt: new Date(1_786_344_000_000).toISOString()
+        },
+        {
+          key: '7d',
+          pct: 74,
+          resetsAt: new Date(1_786_852_800_000).toISOString()
+        }
+      ],
+      fetchedAt: new Date(1_786_334_358_000).toISOString(),
+      ageSeconds: 42
+    });
+  });
+});
+
+describe('codex-auth runner', () => {
+  test('spawns list --active --json without a shell', async () => {
+    const spawn_process = vi.fn(() =>
+      spawnedChild((child) => child.emit('close', 0))
+    );
+    const runCodexAuth = createCodexAuthRunner({ spawn_process });
+
+    await runCodexAuth();
+
+    expect(spawn_process).toHaveBeenCalledWith(
+      'codex-auth',
+      ['list', '--active', '--json'],
+      { shell: false, windowsHide: true }
+    );
+  });
+
+  test('falls back to the user-local binary only after ENOENT', async () => {
+    const spawn_process = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        spawnedChild((child) =>
+          child.emit(
+            'error',
+            Object.assign(new Error('missing'), { code: 'ENOENT' })
+          )
+        )
+      )
+      .mockImplementationOnce(() =>
+        spawnedChild((child) => child.emit('close', 0))
+      );
+    const runCodexAuth = createCodexAuthRunner({
+      spawn_process,
+      home_dir: '/private/home'
+    });
+
+    await runCodexAuth();
+
+    expect(spawn_process).toHaveBeenNthCalledWith(
+      2,
+      '/private/home/.local/bin/codex-auth',
+      ['list', '--active', '--json'],
+      { shell: false, windowsHide: true }
+    );
+  });
+
+  test('kills a process after ten seconds', async () => {
+    vi.useFakeTimers();
+    const child = spawnedChild(() => {});
+    child.kill.mockImplementation(() => child.emit('close', null));
+    const spawn_process = vi.fn(() => child);
+    const runCodexAuth = createCodexAuthRunner({ spawn_process });
+
+    const pending = runCodexAuth();
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await pending;
+
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(result.code).toBe(124);
+  });
+});
+
+describe('GET /api/codex-usage', () => {
+  test('returns a normalized response without HTTP caching', async () => {
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify(usageSnapshot()),
+      stderr: ''
+    });
+
+    const response = await requestUsage(runCodexAuth);
+
+    expect(response.status).toBe(200);
+    expect(response.cache_control).toBe('no-store');
+    expect(response.body).toMatchObject({ available: true, provider: 'codex' });
+  });
+
+  test('returns unavailable for invalid JSON', async () => {
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: 'not-json',
+      stderr: 'private detail'
+    });
+
+    const response = await requestUsage(runCodexAuth);
+
+    expect(response.body).toEqual({ available: false });
+  });
+
+  test('returns unavailable for a non-zero process exit', async () => {
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 1,
+      stdout: JSON.stringify(usageSnapshot()),
+      stderr: 'private detail'
+    });
+
+    const response = await requestUsage(runCodexAuth);
+
+    expect(response.body).toEqual({ available: false });
+  });
+
+  test('negative-caches unavailable responses for 180 seconds', async () => {
+    const runCodexAuth = vi.fn().mockRejectedValue(new Error('private detail'));
+
+    await requestUsage(runCodexAuth);
+    await requestUsage(runCodexAuth);
+
+    expect(runCodexAuth).toHaveBeenCalledTimes(1);
+  });
+
+  test('refreshes the positive cache after 180 seconds', async () => {
+    let clock = 1_786_334_400_000;
+    const now = () => clock;
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify(usageSnapshot()),
+      stderr: ''
+    });
+
+    await requestUsage(runCodexAuth, now);
+    clock += 179_999;
+    await requestUsage(runCodexAuth, now);
+    clock += 1;
+    await requestUsage(runCodexAuth, now);
+
+    expect(runCodexAuth).toHaveBeenCalledTimes(2);
+  });
+
+  test('coalesces concurrent cache misses into one process', async () => {
+    const result = {
+      code: 0,
+      stdout: JSON.stringify(usageSnapshot()),
+      stderr: ''
+    };
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(result);
+    });
+    const runCodexAuth = vi.fn(() => gate);
+
+    const responses = Promise.all([
+      requestUsage(runCodexAuth),
+      requestUsage(runCodexAuth),
+      requestUsage(runCodexAuth)
+    ]);
+    await vi.waitFor(() => expect(runCodexAuth).toHaveBeenCalled());
+    release();
+    await responses;
+
+    expect(runCodexAuth).toHaveBeenCalledTimes(1);
+  });
+});
