@@ -26,6 +26,10 @@
  * the wire only.
  */
 import path from 'node:path';
+import {
+  isWorkerIneligible,
+  workerLabels
+} from '../../app/utils/worker-eligibility.js';
 import { runBdJson } from '../bd.js';
 import { debug } from '../logging.js';
 import { resolveSpecId } from '../spec-id.js';
@@ -74,25 +78,11 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan']);
  * @property {string} title
  * @property {string} route - The `metadata.route` that qualified it.
  * @property {string} spec_id - The native-first resolved spec path.
- * @property {string[]} labels - The bead's labels, carried so the 실행가능 card
- * can show routing labels like `worker-ineligible` (UI-lzfa §4.1). NOT part of
- * 판정 — the human queueing decides, the screen only supplies the ground.
+ * @property {string[]} labels - Non-policy labels carried for display. An exact
+ * `worker-ineligible` label excludes the row before this projection is made.
  * @property {number|string|null} created_at
  * @property {number|string|null} updated_at
  */
-
-/**
- * A row's labels, string entries only. Same tolerant principle as `stampOf`:
- * a shape the client cannot render becomes an empty list rather than an error.
- *
- * @param {unknown} value
- * @returns {string[]}
- */
-function labelsOf(value) {
-  return Array.isArray(value)
-    ? value.filter((entry) => typeof entry === 'string')
-    : [];
-}
 
 /**
  * Keep a timestamp only in the shapes the client can format; anything else
@@ -157,6 +147,9 @@ function qualify(row) {
   if (bead_id.length === 0) {
     return null;
   }
+  if (isWorkerIneligible(row.labels)) {
+    return null;
+  }
   const meta = metadataOf(row);
   const route = typeof meta.route === 'string' ? meta.route : '';
   if (!RUNNABLE_ROUTES.has(route)) {
@@ -181,7 +174,7 @@ function qualify(row) {
     title: typeof row.title === 'string' ? row.title : '',
     route,
     spec_id: spec.path,
-    labels: labelsOf(row.labels),
+    labels: workerLabels(row.labels),
     created_at: stampOf(row.created_at),
     updated_at: stampOf(row.updated_at)
   };

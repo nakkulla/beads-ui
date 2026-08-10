@@ -213,6 +213,10 @@ function makeFakeBd(config) {
         route: c.route ?? null,
         status: c.status ?? '',
         title: c.title ?? null,
+        labels:
+          c.workerIneligibleAt === nth
+            ? ['worker-ineligible']
+            : (c.labels ?? []),
         spec_review: c.spec_review,
         deps: c.deps ?? []
       };
@@ -445,6 +449,57 @@ function seedExecDefaults(store, defaults) {
 }
 
 describe('scheduler slot policy (single scan, worker-phase2 §3)', () => {
+  test('keeps an ineligible queue head and dispatches the next eligible bead', async () => {
+    const env = setup({
+      config: {
+        S1: { labels: ['worker-ineligible'] },
+        S2: {}
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S2']);
+    expect(env.store.snapshot(WS).queue.map((entry) => entry.bead_id)).toEqual([
+      'S1',
+      'S2'
+    ]);
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'worker_ineligible'
+    );
+  });
+
+  test('blocks a label added between scan and dispatch before worktree mutation', async () => {
+    const env = setup({
+      config: { S1: { workerIneligibleAt: 2 } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'worker_ineligible'
+    );
+  });
+
+  test('dispatches and clears the refusal after the label is removed', async () => {
+    const bead = { labels: ['worker-ineligible'] };
+    const env = setup({ config: { S1: bead }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    bead.labels = [];
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
   test('holds a single slot while one durable PR waits', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedPrWait(env.store, 'P1');
@@ -2313,6 +2368,35 @@ describe('scheduler resume (spec §1)', () => {
       ...over
     };
   }
+
+  test('refuses resume when the current bead is worker-ineligible', async () => {
+    const env = setup({
+      config: { B1: { labels: ['worker-ineligible'] } },
+      slots: 1
+    });
+    seedAttempt(env.store, 'r1', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'r1');
+
+    expect(result).toEqual({ ok: false, reason: 'worker_ineligible' });
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.B1.reason).toBe(
+      'worker_ineligible'
+    );
+  });
+
+  test('refuses resume when the current Bead snapshot cannot be read', async () => {
+    const env = setup({
+      config: { B1: { throwOnSnapshotAt: 'all' } },
+      slots: 1
+    });
+    seedAttempt(env.store, 'r1', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'r1');
+
+    expect(result).toEqual({ ok: false, reason: 'bd_snapshot_failed' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
 
   test('refuses before resume metadata or runner launch when child prerecord fails', async () => {
     const base_store = createQueueStore();

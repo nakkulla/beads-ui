@@ -39,6 +39,7 @@
  *
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
+import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { observeBaseDrift } from './base-drift.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
@@ -162,6 +163,7 @@ function staleDispatchPrompt(bead_id, stale) {
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
  * @property {string|null} [title] - Issue title, for the start notification.
+ * @property {string[]} [labels] - Normalized live Bead labels.
  * @property {string|null} [spec_id] - Native-first spec doc path (admission input).
  * @property {boolean} [spec_id_conflict] - Native and legacy metadata paths differ.
  * @property {unknown} [spec_review] - Raw spec_review metadata value. Key
@@ -1034,6 +1036,9 @@ export function createScheduler(deps) {
    * @returns {Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha: string, delta_shas: string[] } }>}
    */
   async function checkAdmission(snap, base) {
+    if (isWorkerIneligible(snap.labels)) {
+      return { ok: false, reason: 'worker_ineligible' };
+    }
     if (!deps.admission) {
       return { ok: true };
     }
@@ -2262,6 +2267,10 @@ export function createScheduler(deps) {
       claimed.delete(bead_id);
       return;
     }
+    if (isWorkerIneligible(snap.labels)) {
+      refuseDispatch(workspace, bead_id, 'worker_ineligible');
+      return;
+    }
 
     // Capture the preset/reference + effective values once, before any launch
     // state mutation. The coordinator's snapshot is the only default source;
@@ -2932,10 +2941,36 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'already_resumed' };
       }
     }
-    return relaunchFromAttempt(workspace, prior, {
+    /** @type {BeadSnapshot} */
+    let snap;
+    try {
+      snap = await deps.bd.snapshotBead(bead_id);
+    } catch {
+      recordSkipReason(workspace, bead_id, 'bd_snapshot_failed');
+      return { ok: false, reason: 'bd_snapshot_failed' };
+    }
+    const adm = await checkAdmission(
+      snap,
+      typeof prior.base_oid === 'string' && prior.base_oid.length > 0
+        ? prior.base_oid
+        : undefined
+    );
+    if (!adm.ok) {
+      const reason = adm.reason || 'git_error';
+      recordSkipReason(workspace, bead_id, reason);
+      return { ok: false, reason };
+    }
+    const result = await relaunchFromAttempt(workspace, prior, {
       prompt: resumePrompt(bead_id, prior.status ?? null),
       conflict_resolution: false
     });
+    if (result.ok) {
+      const cleared = deps.store.clearAdmission(workspace, bead_id);
+      if (cleared && cleared.ok) {
+        notifyChanged(workspace);
+      }
+    }
+    return result;
   }
 
   /**

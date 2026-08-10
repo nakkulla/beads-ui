@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { runBdJson } from './bd.js';
-import { __resetWorkerAttachmentsForTest } from './worker/attach.js';
+import {
+  __resetWorkerAttachmentsForTest,
+  __setUnattachedAdmissionCheckForTest
+} from './worker/attach.js';
 import {
   __resetRegistriesForTest,
   __resetWorkerQueueForTest,
@@ -87,6 +90,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
+  __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
   vi.mocked(runBdJson).mockReset();
   attachWsServer(createServer(), { path: '/ws' });
 });

@@ -35,13 +35,14 @@ function makeGitRun(opts = {}) {
 }
 
 /**
- * @param {Partial<{ route: string|null, spec_id: string|null, spec_id_conflict: boolean, spec_review: unknown }>} [bead]
+ * @param {Partial<{ route: string|null, spec_id: string|null, spec_id_conflict: boolean, spec_review: unknown, labels: unknown }>} [bead]
  */
 function makeBead(bead = {}) {
   return {
     route: Object.hasOwn(bead, 'route') ? bead.route : 'spec_backed',
     spec_id: Object.hasOwn(bead, 'spec_id') ? bead.spec_id : 'docs/specs/x.md',
     spec_id_conflict: bead.spec_id_conflict === true,
+    labels: Object.hasOwn(bead, 'labels') ? bead.labels : [],
     spec_review: Object.hasOwn(bead, 'spec_review')
       ? bead.spec_review
       : `codex@${SHA}`
@@ -57,6 +58,23 @@ function run(gitRun, bead) {
 }
 
 describe('worker/admission fail-closed validator', () => {
+  test('rejects worker-ineligible before environment and git probes', async () => {
+    const gitRun = makeGitRun();
+    const ghAvailable = vi.fn(async () => true);
+
+    const r = await validateAdmission({
+      gitRun,
+      ghAvailable,
+      repo: '/repo',
+      base: BASE,
+      bead: makeBead({ labels: ['worker-ineligible'] })
+    });
+
+    expect(r).toEqual({ ok: false, reason: 'worker_ineligible' });
+    expect(ghAvailable).not.toHaveBeenCalled();
+    expect(gitRun).not.toHaveBeenCalled();
+  });
+
   test('passes a fresh spec_backed bead with a reviewer receipt', async () => {
     const gitRun = makeGitRun();
     const r = await run(gitRun, makeBead());

@@ -129,7 +129,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     ]);
   });
 
-  test('carries the bead labels into the projection', async () => {
+  test('excludes a worker-ineligible bead from runnable candidates', async () => {
     const cache = createRunnableCache({
       runJson: fakeBd({
         [WS_A]: [row({ labels: ['worker-ineligible', 'frontend'] })]
@@ -138,7 +138,35 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
     const out = await warm(cache, WS_A);
 
-    expect(out[0].labels).toEqual(['worker-ineligible', 'frontend']);
+    expect(out).toEqual([]);
+  });
+
+  test('restores a runnable bead after the label is removed and cache refreshes', async () => {
+    let labels = ['worker-ineligible'];
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [row({ labels })]
+    }));
+    const cache = createRunnableCache({ runJson });
+    expect(await warm(cache, WS_A)).toEqual([]);
+
+    labels = [];
+    cache.invalidate(WS_A);
+    await warm(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A).map((item) => item.bead_id)).toEqual([
+      'UI-1'
+    ]);
+  });
+
+  test('carries non-policy labels into the projection', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({ [WS_A]: [row({ labels: ['frontend'] })] })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].labels).toEqual(['frontend']);
   });
 
   test('drops non-string label entries', async () => {

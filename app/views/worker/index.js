@@ -51,6 +51,7 @@ import {
   formatUsageTotalWithCost,
   sumAttemptUsage
 } from '../../utils/token-usage.js';
+import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { createReorderController } from '../reorder.js';
 import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
 import { miniRow, paneTemplate } from './lanes.js';
@@ -1651,7 +1652,12 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {any[]} */
     const merged = [];
     for (const it of [...ready, ...blocked]) {
-      if (queued.has(it.id) || seen.has(it.id) || isPhaseChild(it)) {
+      if (
+        queued.has(it.id) ||
+        seen.has(it.id) ||
+        isPhaseChild(it) ||
+        isWorkerIneligible(/** @type {any} */ (it).labels)
+      ) {
         continue;
       }
       seen.add(it.id);
