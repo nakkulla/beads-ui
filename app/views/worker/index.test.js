@@ -8071,6 +8071,7 @@ describe('레인 행 생성·수정 시각 (UI-d7pw §4)', () => {
   });
 
   test('renders a done row as two lines carrying the completion time', () => {
+    window.localStorage.setItem('bdui.worker.done-range', 'all');
     const now = Date.now();
 
     const mount = renderTimes(
