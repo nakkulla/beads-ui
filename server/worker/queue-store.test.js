@@ -115,6 +115,41 @@ describe('worker/queue-store', () => {
     expect(restarted.snapshot(WS).auto_advance).toBe(false);
   });
 
+  test('defaults pr_wait_holds_slot off for a legacy queue', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify({ revision: 4 }));
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.pr_wait_holds_slot).toBe(false);
+  });
+
+  test('persists pr_wait_holds_slot through a cold load', () => {
+    const store = createQueueStore();
+
+    const r = store.setPrWaitHoldsSlot(WS, {
+      expected_revision: 0,
+      on: true
+    });
+
+    expect(r.ok).toBe(true);
+    expect(createQueueStore().snapshot(WS).pr_wait_holds_slot).toBe(true);
+  });
+
+  test('rejects a stale pr_wait_holds_slot revision without writing', () => {
+    const store = createQueueStore();
+    store.setPrWaitHoldsSlot(WS, { expected_revision: 0, on: true });
+    const before = fs.readFileSync(queueFilePath(WS), 'utf8');
+
+    const r = store.setPrWaitHoldsSlot(WS, {
+      expected_revision: 0,
+      on: false
+    });
+
+    expect(r.conflict).toBe(true);
+    expect(fs.readFileSync(queueFilePath(WS), 'utf8')).toBe(before);
+  });
+
   test('re-placing a queued bead moves it without duplicating it', () => {
     const store = createQueueStore();
     let rev = 0;

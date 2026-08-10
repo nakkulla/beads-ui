@@ -253,6 +253,38 @@ describe('ws worker-queue channel', () => {
     expect(reply.payload.stopped).toBe(true);
   });
 
+  test('routes the PR-wait slot toggle, persists it, ticks, and broadcasts', async () => {
+    const tick = vi.fn(async () => {});
+    __registerWorkerAttachmentForTest(process.cwd(), {
+      // @ts-expect-error minimal fake attachment
+      scheduler: { tick }
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'hold-1', 'worker-queue-set-pr-wait-hold', {
+      on: true,
+      expected_revision: 0
+    });
+
+    const reply = replyFor(sock, 'hold-1');
+    expect(reply.payload.queue.pr_wait_holds_slot).toBe(true);
+    expect(queueSnapshots(sock).at(-1).pr_wait_holds_slot).toBe(true);
+    expect(tick).toHaveBeenCalledWith(process.cwd());
+  });
+
+  test('rejects a non-boolean PR-wait slot toggle payload', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'hold-bad', 'worker-queue-set-pr-wait-hold', {
+      on: 'yes',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'hold-bad').error.code).toBe('bad_request');
+  });
+
   test('worker-attempt-pause reaches the scheduler and its refusal carries a reason (worker-phase1 §5)', async () => {
     const pause = vi
       .fn()
@@ -291,6 +323,7 @@ describe('ws worker-queue channel', () => {
       'worker-queue-reorder',
       'worker-queue-remove',
       'worker-queue-set-exec-default',
+      'worker-queue-set-pr-wait-hold',
       'worker-merge-queue-add',
       'worker-merge-queue-add-all',
       'worker-merge-queue-remove',

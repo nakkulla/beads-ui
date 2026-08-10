@@ -86,6 +86,7 @@ import {
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
   handleWorkerQueueSetExecDefault,
+  handleWorkerQueueSetPrWaitHold,
   handleWorkerQueueSetSlots,
   handleWorkerQueueToggle,
   handleWorkerReviseApprove,
@@ -494,6 +495,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-set-slots':
       handleWorkerQueueSetSlots(ws, req);
+      return;
+    case 'worker-queue-set-pr-wait-hold':
+      handleWorkerQueueSetPrWaitHold(ws, req);
       return;
     case 'worker-queue-set-exec-default':
       handleWorkerQueueSetExecDefault(ws, req);

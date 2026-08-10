@@ -381,6 +381,25 @@ function seedQueue(store, ids) {
 }
 
 /**
+ * Park one bead in the durable PR-wait lane.
+ *
+ * @param {any} store
+ * @param {string} bead_id
+ */
+function seedPrWait(store, bead_id) {
+  const attempt_id = `att-${bead_id}`;
+  store.appendAttempt(WS, {
+    expected_revision: store.snapshot(WS).revision,
+    attempt: { attempt_id, bead_id }
+  });
+  store.moveToPrWait(WS, {
+    bead_id,
+    attempt_id,
+    patch: { status: 'done' }
+  });
+}
+
+/**
  * Set workspace-global exec defaults (CAS-threaded) before dispatch.
  *
  * @param {any} store
@@ -398,6 +417,62 @@ function seedExecDefaults(store, defaults) {
 }
 
 describe('scheduler slot policy (single scan, worker-phase2 §3)', () => {
+  test('holds a single slot while one durable PR waits', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedPrWait(env.store, 'P1');
+    env.store.setPrWaitHoldsSlot(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      on: true
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(0);
+  });
+
+  test('uses one of two slots for a durable PR wait', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
+    seedPrWait(env.store, 'P1');
+    env.store.setPrWaitHoldsSlot(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      on: true
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(1);
+    expect(env.scheduler.runningBeads()).toEqual(['S1']);
+  });
+
+  test('ignores durable PR waits when slot holding is off', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedPrWait(env.store, 'P1');
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningBeads()).toEqual(['S1']);
+  });
+
+  test('dispatches after the durable PR wait leaves and a tick runs', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedPrWait(env.store, 'P1');
+    env.store.setPrWaitHoldsSlot(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      on: true
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.runningCount()).toBe(0);
+
+    env.store.removeFromPrWait(WS, { bead_id: 'P1' });
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningBeads()).toEqual(['S1']);
+  });
+
   test('fills exactly N slots from the queue in order', async () => {
     const env = setup({
       config: {

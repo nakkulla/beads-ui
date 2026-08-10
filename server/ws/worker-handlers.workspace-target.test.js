@@ -120,6 +120,11 @@ const MUTATIONS = [
     payload: { slots: 2, expected_revision: 0 }
   },
   {
+    action: 'worker-queue-set-pr-wait-hold',
+    run: handlers.handleWorkerQueueSetPrWaitHold,
+    payload: { on: true, expected_revision: 0 }
+  },
+  {
     action: 'worker-queue-set-exec-default',
     run: handlers.handleWorkerQueueSetExecDefault,
     payload: { key: 'impl_model', value: null, expected_revision: 0 }

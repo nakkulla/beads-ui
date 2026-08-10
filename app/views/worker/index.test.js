@@ -6283,6 +6283,156 @@ describe('전체 자동화 버튼 (UI-j6wa §1)', () => {
   });
 });
 
+describe('PR 대기 슬롯 점유 토글 (UI-mh3x)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, any>} over
+   */
+  function mountHold(over) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf(over));
+    const transport = vi
+      .fn()
+      .mockResolvedValue(reply(queueOf({ ...over, pr_wait_holds_slot: true })));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    return { mount, transport };
+  }
+
+  test('renders the slot-hold toggle from the queue snapshot', () => {
+    const { mount } = mountHold({ pr_wait_holds_slot: true });
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        mount.querySelector('.worker-pr-wait-hold')
+      ).checked
+    ).toBe(true);
+  });
+
+  test('sends the slot-hold mutation when clicked', async () => {
+    const { mount, transport } = mountHold({ pr_wait_holds_slot: false });
+
+    /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-pr-wait-hold')
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-set-pr-wait-hold', {
+      on: true,
+      expected_revision: 1
+    });
+  });
+
+  test('retries one slot-hold conflict with the adopted revision', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ pr_wait_holds_slot: false }));
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: true,
+        queue: queueOf({ revision: 2, pr_wait_holds_slot: false })
+      })
+      .mockResolvedValueOnce({
+        applied: true,
+        conflict: false,
+        queue: queueOf({ revision: 3, pr_wait_holds_slot: true })
+      });
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-pr-wait-hold')
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenNthCalledWith(
+      2,
+      'worker-queue-set-pr-wait-hold',
+      { on: true, expected_revision: 2 }
+    );
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
+  test('shows the hold hint when the waiting queue is slot-blocked', () => {
+    const { mount } = mountHold({
+      auto_advance: true,
+      auto_merge: false,
+      pr_wait_holds_slot: true,
+      slots: 1,
+      queue: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
+    });
+
+    expect(mount.querySelector('.worker-pr-wait-hint')?.textContent).toContain(
+      'PR 머지 대기 중'
+    );
+  });
+
+  test('hides the hold hint while a slot remains free', () => {
+    const { mount } = mountHold({
+      auto_advance: true,
+      auto_merge: false,
+      pr_wait_holds_slot: true,
+      slots: 2,
+      queue: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
+    });
+
+    expect(mount.querySelector('.worker-pr-wait-hint')).toBe(null);
+  });
+
+  test('hides the hold hint when automatic progress is off', () => {
+    const { mount } = mountHold({
+      auto_advance: false,
+      auto_merge: false,
+      pr_wait_holds_slot: true,
+      slots: 1,
+      queue: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
+    });
+
+    expect(mount.querySelector('.worker-pr-wait-hint')).toBe(null);
+  });
+
+  test('hides the hold hint for external PR rows only', () => {
+    const { mount } = mountHold({
+      auto_advance: true,
+      auto_merge: false,
+      pr_wait_holds_slot: true,
+      slots: 1,
+      queue: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_wait: [{ bead_id: 'RD-2', added_at: 1, external: true }]
+    });
+
+    expect(mount.querySelector('.worker-pr-wait-hint')).toBe(null);
+  });
+
+  test('hides the hold hint while automatic merge is on', () => {
+    const { mount } = mountHold({
+      auto_advance: true,
+      auto_merge: true,
+      pr_wait_holds_slot: true,
+      slots: 1,
+      queue: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
+    });
+
+    expect(mount.querySelector('.worker-pr-wait-hint')).toBe(null);
+  });
+});
+
 describe('target base 칩과 예외 배지 (UI-j6wa §3)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
