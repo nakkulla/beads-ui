@@ -6330,6 +6330,35 @@ describe('PR 대기 슬롯 점유 토글 (UI-mh3x)', () => {
     });
   });
 
+  test('updates the slot-hold toggle from a later queue snapshot', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ pr_wait_holds_slot: false }));
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      queue: queueOf({ revision: 2, pr_wait_holds_slot: true })
+    });
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-pr-wait-hold')
+    ).click();
+    await flush();
+
+    queueStore.set(queueOf({ revision: 3, pr_wait_holds_slot: false }));
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        mount.querySelector('.worker-pr-wait-hold')
+      ).checked
+    ).toBe(false);
+  });
+
   test('retries one slot-hold conflict with the adopted revision', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

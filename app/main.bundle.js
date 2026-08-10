@@ -2079,7 +2079,7 @@ ${Ue.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC
         <input
           type="checkbox"
           class="worker-pr-wait-hold"
-          ?checked=${u.queue.pr_wait_holds_slot===!0}
+          .checked=${u.queue.pr_wait_holds_slot===!0}
         />
         머지까지 대기
       </label>

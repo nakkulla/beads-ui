@@ -2295,7 +2295,7 @@ export function createWorkerView(mount_element, options = {}) {
         <input
           type="checkbox"
           class="worker-pr-wait-hold"
-          ?checked=${m.queue.pr_wait_holds_slot === true}
+          .checked=${m.queue.pr_wait_holds_slot === true}
         />
         머지까지 대기
       </label>
