@@ -90,6 +90,39 @@ function ids(items) {
 }
 
 describe('monitor lane builder exclusive priority (UI-qrfo §8)', () => {
+  test('preserves attempt runner for Codex provider projection in a lane card', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-run', added_at: NOW }],
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-run',
+              status: 'running',
+              runner: 'codex',
+              started_at: NOW - 1_000,
+              usage: {
+                input_tokens: 5,
+                output_tokens: 3,
+                cache_read_input_tokens: 100
+              }
+            }
+          }
+        })
+      ],
+      []
+    );
+
+    const usage =
+      /** @type {import('../../utils/token-usage.js').UsageProjection} */ (
+        lanes.running[0]?.usage
+      );
+
+    expect(usage.providers.codex?.subtotal).toBe(8);
+    expect(usage.providers).not.toHaveProperty('claude');
+  });
+
   test('keeps a running bead out of the waiting lane it still sits in', () => {
     const lanes = buildLanes(
       [
@@ -422,6 +455,37 @@ describe('monitor top bar (UI-qrfo §6)', () => {
     expect(chip?.getAttribute('title')).toBe(
       '오늘 완료된 이슈들이 생애 전체에 쓴 토큰 누적'
     );
+  });
+
+  test('renders provider totals as separate top-bar chips', () => {
+    render(
+      monitorTopBarTemplate(
+        topBarModel({
+          token_total: [
+            {
+              provider: 'claude',
+              label: 'Claude τ 15',
+              tooltip: 'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성'
+            },
+            {
+              provider: 'codex',
+              label: 'Codex τ 8',
+              tooltip: 'Codex subtotal = 입력 + 출력; subset 제외'
+            }
+          ]
+        })
+      ),
+      mount
+    );
+
+    const chips = Array.from(
+      mount.querySelectorAll('.mon-kpi__chip--tokens')
+    ).map((chip) => chip.textContent?.trim());
+
+    expect(chips).toEqual([
+      '오늘 완료 · 누적 Claude τ 15',
+      '오늘 완료 · 누적 Codex τ 8'
+    ]);
   });
 });
 

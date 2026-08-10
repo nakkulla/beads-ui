@@ -1,5 +1,9 @@
 import { html } from 'lit-html';
-import { formatUsageTotal } from '../../utils/token-usage.js';
+import {
+  formatUsageTotal,
+  projectAttemptUsage,
+  providerUsageBadges
+} from '../../utils/token-usage.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -42,10 +46,19 @@ function usageNumber(value) {
  * The `τ 총 …` label beside the section heading. Null when nothing was
  * reported, so the heading renders exactly as it did before.
  *
- * @param {UsageRecord|null|undefined} total
- * @returns {TemplateResult|''}
+ * @param {UsageRecord|import('../../utils/token-usage.js').UsageProjection|null|undefined} total
+ * @returns {TemplateResult|TemplateResult[]|''}
  */
 function totalTemplate(total) {
+  const provider_badges = providerUsageBadges(total);
+  if (provider_badges.length > 0) {
+    return provider_badges.map(
+      (badge) =>
+        html`<span class="detail-usage-total" title=${badge.tooltip}
+          >${badge.label}</span
+        >`
+    );
+  }
   const label = formatUsageTotal(total);
   if (!label || !total) {
     return '';
@@ -64,6 +77,89 @@ function totalTemplate(total) {
           >부분 집계</span
         >`
       : ''}`;
+}
+
+/**
+ * @param {import('../../utils/token-usage.js').UsageProjection|null} projection
+ * @returns {import('../../utils/token-usage.js').UsageProjection|null}
+ */
+function outerProjection(projection) {
+  if (!projection || !projection.roles.orchestrator) {
+    return null;
+  }
+  return { providers: projection.roles.orchestrator, roles: {} };
+}
+
+/**
+ * @param {string|undefined} completed_at
+ * @returns {string}
+ */
+function completedTime(completed_at) {
+  if (typeof completed_at !== 'string') {
+    return '';
+  }
+  const value = Date.parse(completed_at);
+  return Number.isFinite(value) ? shortTime(value) : '';
+}
+
+/**
+ * Completed nested receipts belong below their outer attempt. Missing or
+ * invalid receipts never reach the projection, so no configured-but-unrun row
+ * can be manufactured here.
+ *
+ * @param {import('../../utils/token-usage.js').UsageProjection|null} projection
+ * @returns {import('lit-html').TemplateResult|import('lit-html').TemplateResult[]|''}
+ */
+function receiptLegs(projection) {
+  if (!projection) {
+    return '';
+  }
+  /** @type {Array<'implementation'|'review-consult'>} */
+  const roles = ['implementation', 'review-consult'];
+  return roles.flatMap((role) => {
+    const summary = projection.roles[role]?.codex;
+    if (!summary) {
+      return [];
+    }
+    return summary.legs.map((leg) => {
+      const badges = providerUsageBadges({
+        providers: {
+          codex: {
+            subtotal: leg.subtotal,
+            breakdown: leg.usage,
+            ...(leg.replayed ? { replayed: true } : {})
+          }
+        },
+        roles: {}
+      });
+      const badge = badges[0];
+      return html`<div class="detail-session__leg detail-session__usage-detail">
+        <span class="detail-session__leg-role detail-session__usage-label"
+          >${role}</span
+        >
+        <span class="detail-session__leg-meta detail-session__usage-value"
+          >${[leg.provider, leg.model].filter(Boolean).join(' · ')}</span
+        >
+        ${leg.session_id
+          ? html`<span
+              class="detail-session__leg-sid detail-session__sid"
+              title=${leg.session_id}
+              >${leg.session_id.slice(0, 8)}</span
+            >`
+          : ''}
+        ${completedTime(leg.completed_at)
+          ? html`<span class="detail-session__leg-time detail-session__time"
+              >${completedTime(leg.completed_at)}</span
+            >`
+          : ''}
+        ${badge
+          ? html`<span class="detail-session__usage" title=${badge.tooltip}
+              >${badge.label}</span
+            >`
+          : ''}
+      </div>`;
+    });
+  });
 }
 
 /**
@@ -122,6 +218,8 @@ function usageDetail(usage) {
  * a guard can trip without one.
  * @property {UsageRecord|null} [usage] - This attempt's token usage (UI-d7pw
  * §2.2); absent/null renders no badge and no [τ 자세히] button.
+ * @property {Array<Record<string, any>>} [usage_legs] - Durable completed
+ * nested Codex receipts. Missing/invalid rows stay absent.
  * @property {string|null} [exec_default_preset_id] - Outer launch preset id.
  * @property {number|null} [exec_default_preset_revision] - Pinned preset revision.
  * @property {Record<string, string|null>|null} [exec_values] - Outer resolved values.
@@ -205,7 +303,7 @@ function presetAudit(attempt) {
  *
  * @param {SessionAttempt[]} [attempts]
  * @param {{ onOpen?: (attempt_id: string) => void, onResume?: (attempt_id: string) => void, onToggleUsage?: (attempt_id: string) => void }} [handlers]
- * @param {{ total?: UsageRecord|null, expanded?: Set<string> }} [usage_view]
+ * @param {{ total?: UsageRecord|import('../../utils/token-usage.js').UsageProjection|null, expanded?: Set<string> }} [usage_view]
  * @returns {TemplateResult}
  */
 export function sessionHistoryTemplate(
@@ -302,7 +400,11 @@ export function sessionHistoryTemplate(
    * @returns {TemplateResult|''}
    */
   const usageButton = (a) => {
-    if (!formatUsageTotal(a.usage)) {
+    const projection = outerProjection(projectAttemptUsage(a));
+    if (
+      providerUsageBadges(projection).length === 0 &&
+      !formatUsageTotal(a.usage)
+    ) {
       return '';
     }
     const open = expanded.has(a.attempt_id);
@@ -328,48 +430,60 @@ export function sessionHistoryTemplate(
       세션 이력${totalTemplate(usage_view.total)}
     </div>
     <div class="detail-sessions" data-seam="session-history">
-      ${list.map(
-        (a) =>
-          html`<div class="detail-session-row">
-            <button
-              type="button"
-              class="detail-session detail-session--${a.status || 'unknown'}"
-              data-attempt-id=${a.attempt_id}
-              @click=${() => handlers.onOpen && handlers.onOpen(a.attempt_id)}
+      ${list.map((a) => {
+        const projection = projectAttemptUsage(a);
+        const outer = outerProjection(projection);
+        const outer_badges = providerUsageBadges(outer);
+        return html`<div class="detail-session-row">
+          <button
+            type="button"
+            class="detail-session detail-session--${a.status || 'unknown'}"
+            data-attempt-id=${a.attempt_id}
+            @click=${() => handlers.onOpen && handlers.onOpen(a.attempt_id)}
+          >
+            <span class="detail-session__glyph"
+              >${STATUS_GLYPH[a.status || ''] || '·'}</span
             >
-              <span class="detail-session__glyph"
-                >${STATUS_GLYPH[a.status || ''] || '·'}</span
-              >
-              <span class="detail-session__id">${a.attempt_id}</span>
-              ${a.resumed_from
-                ? html`<span
-                    class="detail-session__resumed"
-                    title=${`이어받은 세션 (from ${a.resumed_from})`}
-                    >↻</span
-                  >`
-                : ''}
-              <span class="detail-session__meta"
-                >${[a.runner, a.model].filter(Boolean).join(' · ')}</span
-              >
-              ${a.session_id
-                ? html`<span class="detail-session__sid" title=${a.session_id}
-                    >${String(a.session_id).slice(0, 8)}</span
-                  >`
-                : ''}
-              ${formatUsageTotal(a.usage)
+            <span class="detail-session__id">${a.attempt_id}</span>
+            ${a.resumed_from
+              ? html`<span
+                  class="detail-session__resumed"
+                  title=${`이어받은 세션 (from ${a.resumed_from})`}
+                  >↻</span
+                >`
+              : ''}
+            <span class="detail-session__meta"
+              >${[a.runner, a.model].filter(Boolean).join(' · ')}</span
+            >
+            ${outer_badges.length > 0
+              ? html`<span class="detail-session__role">orchestrator</span>`
+              : ''}
+            ${a.session_id
+              ? html`<span class="detail-session__sid" title=${a.session_id}
+                  >${String(a.session_id).slice(0, 8)}</span
+                >`
+              : ''}
+            ${outer_badges.length > 0
+              ? outer_badges.map(
+                  (badge) =>
+                    html`<span
+                      class="detail-session__usage"
+                      title=${badge.tooltip}
+                      >${badge.label}</span
+                    >`
+                )
+              : formatUsageTotal(a.usage)
                 ? html`<span class="detail-session__usage"
                     >${formatUsageTotal(a.usage)}</span
                   >`
                 : ''}
-              <span class="detail-session__time"
-                >${shortTime(a.started_at)}</span
-              >
-            </button>
-            ${usageButton(a)} ${resumeButton(a)} ${causeLine(a)}
-            ${presetAudit(a)}
-            ${expanded.has(a.attempt_id) && a.usage ? usageDetail(a.usage) : ''}
-          </div>`
-      )}
+            <span class="detail-session__time">${shortTime(a.started_at)}</span>
+          </button>
+          ${usageButton(a)} ${resumeButton(a)} ${causeLine(a)} ${presetAudit(a)}
+          ${expanded.has(a.attempt_id) && a.usage ? usageDetail(a.usage) : ''}
+          ${receiptLegs(projection)}
+        </div>`;
+      })}
     </div>
   `;
 }

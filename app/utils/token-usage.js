@@ -179,6 +179,189 @@ function providerSubtotal(provider, usage) {
 }
 
 /**
+ * @param {UsageProvider} provider
+ * @returns {string}
+ */
+function providerName(provider) {
+  return provider === 'claude' ? 'Claude' : 'Codex';
+}
+
+/**
+ * @param {number} subtotal
+ * @returns {string}
+ */
+function formatSubtotal(subtotal) {
+  return `τ ${abbreviate(subtotal)}`;
+}
+
+/**
+ * The provider-aware hover breakdown used by every aggregate surface. Codex
+ * cache and reasoning figures stay visible, but their subset relationship is
+ * made explicit so a reader cannot re-add them to the headline.
+ *
+ * @param {UsageProvider} provider
+ * @param {ProviderUsageSummary} summary
+ * @returns {string}
+ */
+export function providerUsageTooltip(provider, summary) {
+  const usage = summary.breakdown || {};
+  const details = [
+    `입력 ${numeric(usage.input_tokens).toLocaleString('en-US')}`,
+    `출력 ${numeric(usage.output_tokens).toLocaleString('en-US')}`
+  ];
+  if (provider === 'claude') {
+    details.push(
+      `캐시읽기 ${numeric(usage.cache_read_input_tokens).toLocaleString('en-US')}`,
+      `캐시생성 ${numeric(usage.cache_creation_input_tokens).toLocaleString('en-US')}`
+    );
+  } else {
+    details.push(
+      `캐시읽기 ${numeric(usage.cache_read_input_tokens).toLocaleString('en-US')}`,
+      `캐시쓰기 ${numeric(usage.cache_creation_input_tokens).toLocaleString('en-US')}`
+    );
+    if (Number.isFinite(usage.reasoning_output_tokens)) {
+      details.push(
+        `추론출력 ${numeric(usage.reasoning_output_tokens).toLocaleString('en-US')}`
+      );
+    }
+  }
+  const formula =
+    provider === 'claude'
+      ? 'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성'
+      : 'Codex subtotal = 입력 + 출력; 캐시읽기·캐시쓰기·추론출력은 subtotal에 포함되지 않는 subset';
+  const lines = [
+    formula,
+    `총 ${summary.subtotal.toLocaleString('en-US')}`,
+    details.join(' · ')
+  ];
+  if (
+    typeof summary.total_cost_usd === 'number' &&
+    Number.isFinite(summary.total_cost_usd)
+  ) {
+    lines.push(`$${summary.total_cost_usd.toFixed(2)}`);
+  }
+  if (summary.replayed) {
+    lines.push(REPLAYED_NOTE);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * A display-ready badge for every provider that actually reported usage. The
+ * returned entries deliberately omit a cross-provider total.
+ *
+ * @param {UsageProjection|UsageRecord|null|undefined} projection
+ * @returns {Array<{ provider: UsageProvider, label: string, tooltip: string }>}
+ */
+export function providerUsageBadges(projection) {
+  /** @type {Array<{ provider: UsageProvider, label: string, tooltip: string }>} */
+  const badges = [];
+  if (
+    !projection ||
+    typeof projection !== 'object' ||
+    !('providers' in projection) ||
+    !projection.providers
+  ) {
+    return badges;
+  }
+  for (const provider of /** @type {UsageProvider[]} */ (['claude', 'codex'])) {
+    const summary = projection.providers[provider];
+    if (!summary) {
+      continue;
+    }
+    badges.push({
+      provider,
+      label: `${providerName(provider)} ${formatSubtotal(summary.subtotal)}${
+        typeof summary.total_cost_usd === 'number' &&
+        Number.isFinite(summary.total_cost_usd)
+          ? ` · $${summary.total_cost_usd.toFixed(2)}`
+          : ''
+      }`,
+      tooltip: providerUsageTooltip(provider, summary)
+    });
+  }
+  return badges;
+}
+
+/**
+ * Merge bead-level projections for a KPI while preserving provider separation.
+ *
+ * @param {Array<UsageProjection|null|undefined>} projections
+ * @returns {UsageProjection|null}
+ */
+export function mergeUsageProjections(projections) {
+  /** @type {Partial<Record<UsageProvider, ProviderUsageSummary>>} */
+  const providers = {};
+  /** @type {Record<UsageProvider, boolean>} */
+  const cost_complete = { claude: true, codex: false };
+  /** @type {Record<UsageProvider, number>} */
+  const costs = { claude: 0, codex: 0 };
+  for (const projection of projections) {
+    if (!projection || !projection.providers) {
+      continue;
+    }
+    for (const provider of /** @type {UsageProvider[]} */ ([
+      'claude',
+      'codex'
+    ])) {
+      const summary = projection.providers[provider];
+      if (!summary) {
+        continue;
+      }
+      let merged = providers[provider];
+      if (!merged) {
+        merged = { subtotal: 0, breakdown: {} };
+        providers[provider] = merged;
+      }
+      merged.subtotal += summary.subtotal;
+      for (const field of USAGE_FIELDS) {
+        if (Number.isFinite(summary.breakdown[field])) {
+          merged.breakdown[field] =
+            numeric(merged.breakdown[field]) +
+            numeric(summary.breakdown[field]);
+        }
+      }
+      if (summary.replayed) {
+        merged.replayed = true;
+      }
+      if (provider === 'claude') {
+        if (
+          typeof summary.total_cost_usd === 'number' &&
+          Number.isFinite(summary.total_cost_usd)
+        ) {
+          costs.claude += summary.total_cost_usd;
+        } else {
+          cost_complete.claude = false;
+        }
+      }
+    }
+  }
+  if (providers.claude && cost_complete.claude) {
+    providers.claude.total_cost_usd = costs.claude;
+  }
+  if (Object.keys(providers).length === 0) {
+    return null;
+  }
+  return { providers, roles: {} };
+}
+
+/**
+ * Project one outer attempt with its durable nested legs for the detail view.
+ *
+ * @param {Record<string, any>|null|undefined} attempt
+ * @returns {UsageProjection|null}
+ */
+export function projectAttemptUsage(attempt) {
+  if (!attempt || typeof attempt !== 'object') {
+    return null;
+  }
+  return sumAttemptUsage(
+    { attempt: { ...attempt, bead_id: '__attempt__' } },
+    '__attempt__'
+  );
+}
+
+/**
  * @param {unknown} runner
  * @returns {UsageProvider}
  */

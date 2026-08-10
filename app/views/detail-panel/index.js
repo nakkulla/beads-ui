@@ -2,7 +2,10 @@ import { html, render } from 'lit-html';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
-import { sumAttemptUsage } from '../../utils/token-usage.js';
+import {
+  providerUsageBadges,
+  sumAttemptUsage
+} from '../../utils/token-usage.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
@@ -409,7 +412,8 @@ export function createDetailPanel(mount_element, options) {
           a.exec_values && typeof a.exec_values === 'object'
             ? a.exec_values
             : null,
-        usage: a.usage || null
+        usage: a.usage || null,
+        usage_legs: Array.isArray(a.usage_legs) ? a.usage_legs : []
       }));
   }
 
@@ -418,7 +422,7 @@ export function createDetailPanel(mount_element, options) {
    * SAME projection the worker lanes use, so the two surfaces can never report
    * different numbers for one bead.
    *
-   * @returns {import('../../utils/token-usage.js').UsageRecord|null}
+   * @returns {import('../../utils/token-usage.js').UsageProjection|null}
    */
   function totalUsageForBead() {
     if (!queueStore || !current_id) {
@@ -1418,8 +1422,9 @@ export function createDetailPanel(mount_element, options) {
 
   /**
    * @param {string} title
+   * @param {import('../../utils/token-usage.js').UsageProjection|null} total_usage
    */
-  function titleTemplate(title) {
+  function titleTemplate(title, total_usage) {
     if (editing_title) {
       return html`
         <div class="detail-edit">
@@ -1456,6 +1461,12 @@ export function createDetailPanel(mount_element, options) {
     return html`
       <div class="detail-title-row">
         <h2 class="detail-overlay__title">${title}</h2>
+        ${providerUsageBadges(total_usage).map(
+          (badge) =>
+            html`<span class="detail-usage-total" title=${badge.tooltip}
+              >${badge.label}</span
+            >`
+        )}
         <button
           type="button"
           class="detail-edit-btn"
@@ -1663,6 +1674,7 @@ export function createDetailPanel(mount_element, options) {
     const data = current || {};
     const id = String(data.id || current_id);
     const title = data.title || '(제목 없음)';
+    const total_usage = totalUsageForBead();
     const status = data.status || 'open';
     /** @type {number | ''} */
     const priority_val =
@@ -1694,8 +1706,9 @@ export function createDetailPanel(mount_element, options) {
           >
             ${id}
           </button>
-          ${titleTemplate(title)} ${propsTemplate(status, priority_val)}
-          ${timesTemplate(data)} ${descTemplate(description)}
+          ${titleTemplate(title, total_usage)}
+          ${propsTemplate(status, priority_val)} ${timesTemplate(data)}
+          ${descTemplate(description)}
           ${commentsTemplate(comments, comment_handlers, {
             expanded: comments_expanded,
             draft: comment_draft,
@@ -1723,7 +1736,7 @@ export function createDetailPanel(mount_element, options) {
             { onToggle: toggleTaskPrompt }
           )}
           ${sessionHistoryTemplate(attemptsForBead(), session_handlers, {
-            total: totalUsageForBead(),
+            total: total_usage,
             expanded: usage_expanded
           })}
         </div>

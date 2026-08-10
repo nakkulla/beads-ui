@@ -49,6 +49,8 @@ import { showToast } from '../../utils/toast.js';
 import {
   SUM_FIELDS,
   formatUsageTotalWithCost,
+  mergeUsageProjections,
+  providerUsageBadges,
   sumAttemptUsage
 } from '../../utils/token-usage.js';
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
@@ -657,7 +659,7 @@ function baseException(declared_base, target_base) {
  * @param {Record<string, any>} observations - Snapshot `pr_observations` map.
  * @param {{ step: string, reason: string }|null} cleanup_failed - Durable
  * post-merge cleanup failure for this bead, if any (§6).
- * @param {import('../../utils/token-usage.js').UsageRecord|null} [usage] - Token usage of the
+ * @param {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Token usage of the
  * bead's last attempt (UI-raqh §1).
  * @param {{ activity: 'checking'|'verifying'|null, merge_progress: { step: string }|null }|null} [active]
  * What the server is doing to this bead right now (UI-raqh §3/§4).
@@ -1597,7 +1599,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string, diagnosis?: { verdict: string, evidence: string, fix_bead_id?: string|null, malformed?: boolean }|null, diagnosis_pending: boolean }> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string, diagnosis?: { verdict: string, evidence: string, fix_bead_id?: string|null, malformed?: boolean }|null, diagnosis_pending: boolean }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -2235,9 +2237,15 @@ export function createWorkerView(mount_element, options = {}) {
     if (summed_rows > 0 && cost_rows === summed_rows) {
       token_sum.total_cost_usd = cost_sum;
     }
-    const token_total = token_reported
-      ? formatUsageTotalWithCost(token_sum)
-      : null;
+    const projections = done_rows
+      .map((row) => row.usage)
+      .filter((usage) => usage && typeof usage === 'object' && usage.providers);
+    const token_total =
+      projections.length > 0
+        ? providerUsageBadges(mergeUsageProjections(projections))
+        : token_reported
+          ? formatUsageTotalWithCost(token_sum)
+          : null;
 
     return {
       queue: q,
@@ -2428,13 +2436,24 @@ export function createWorkerView(mount_element, options = {}) {
         <div class="worker-ctrl__ops">${play}${auto_all}${settings}</div>
         <div class="worker-kpi">
           ${overcap}${counts}${base_chip}
-          ${m.token_total
-            ? html`<span
+          ${(Array.isArray(m.token_total)
+            ? m.token_total
+            : m.token_total
+              ? [
+                  {
+                    label: m.token_total,
+                    tooltip: `${doneRangeLabel()} 완료된 이슈들이 생애 전체에 쓴 토큰 누적 (입력+출력+캐시). 이 기간에 소모된 양이 아니다`
+                  }
+                ]
+              : []
+          ).map(
+            (badge) =>
+              html`<span
                 class="worker-kpi__chip worker-kpi__chip--tokens"
-                title=${`${doneRangeLabel()} 완료된 이슈들이 생애 전체에 쓴 토큰 누적 (입력+출력+캐시). 이 기간에 소모된 양이 아니다`}
-                >${doneRangeLabel()} 완료 · 누적 ${m.token_total}</span
+                title=${badge.tooltip}
+                >${doneRangeLabel()} 완료 · 누적 ${badge.label}</span
               >`
-            : ''}
+          )}
           <span class="worker-kpi__next worker-stat"
             >다음 <b>${next_head}</b></span
           >
@@ -2708,7 +2727,9 @@ export function createWorkerView(mount_element, options = {}) {
           controls: doneRangeTemplate(),
           collapsible: true,
           collapsed: lane_collapse.done,
-          preview: m.token_total || stripPreview(m.done)
+          preview: Array.isArray(m.token_total)
+            ? m.token_total.map((badge) => badge.label).join(' · ')
+            : m.token_total || stripPreview(m.done)
         })}
       </div>`;
     }
