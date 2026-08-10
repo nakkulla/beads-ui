@@ -125,11 +125,6 @@ const MUTATIONS = [
     payload: { on: true, expected_revision: 0 }
   },
   {
-    action: 'worker-queue-set-exec-default',
-    run: handlers.handleWorkerQueueSetExecDefault,
-    payload: { key: 'impl_model', value: null, expected_revision: 0 }
-  },
-  {
     action: 'worker-queue-remove',
     run: handlers.handleWorkerQueueRemove,
     payload: { bead_id: 'UI-1', expected_revision: 0 }

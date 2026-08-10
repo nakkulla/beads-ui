@@ -122,6 +122,9 @@ function usageDetail(usage) {
  * a guard can trip without one.
  * @property {UsageRecord|null} [usage] - This attempt's token usage (UI-d7pw
  * §2.2); absent/null renders no badge and no [τ 자세히] button.
+ * @property {string|null} [exec_default_preset_id] - Outer launch preset id.
+ * @property {number|null} [exec_default_preset_revision] - Pinned preset revision.
+ * @property {Record<string, string|null>|null} [exec_values] - Outer resolved values.
  */
 
 /** @type {Record<string, string>} */
@@ -146,6 +149,43 @@ function shortTime(ms) {
   const h = String(d.getHours()).padStart(2, '0');
   const m = String(d.getMinutes()).padStart(2, '0');
   return `${h}:${m}`;
+}
+
+/**
+ * The outer Worker launch snapshot. It is intentionally not an execution
+ * receipt: `impl_model` describes the requested outer target and cannot prove
+ * which child provider/model the workflow actually dispatched.
+ *
+ * @param {SessionAttempt} attempt
+ * @returns {TemplateResult|''}
+ */
+function presetAudit(attempt) {
+  if (
+    typeof attempt.exec_default_preset_id !== 'string' ||
+    attempt.exec_default_preset_id.length === 0
+  ) {
+    return '';
+  }
+  const values =
+    attempt.exec_values && typeof attempt.exec_values === 'object'
+      ? Object.entries(attempt.exec_values)
+          .filter(([, value]) => typeof value === 'string' && value.length > 0)
+          .map(([key, value]) => `${key}=${value}`)
+          .join(' · ')
+      : '';
+  const revision =
+    typeof attempt.exec_default_preset_revision === 'number'
+      ? ` r${attempt.exec_default_preset_revision}`
+      : '';
+  return html`<div
+    class="detail-session__preset-audit"
+    data-attempt-preset-audit
+  >
+    <strong>외부 실행 preset</strong>
+    <span>${attempt.exec_default_preset_id}${revision}</span>
+    ${values ? html`<small>${values}</small>` : ''}
+    <small>내부 workflow 실행 영수증과 별도 기록</small>
+  </div>`;
 }
 
 /**
@@ -326,6 +366,7 @@ export function sessionHistoryTemplate(
               >
             </button>
             ${usageButton(a)} ${resumeButton(a)} ${causeLine(a)}
+            ${presetAudit(a)}
             ${expanded.has(a.attempt_id) && a.usage ? usageDetail(a.usage) : ''}
           </div>`
       )}

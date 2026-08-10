@@ -13,7 +13,10 @@
  * bead has, discard spec §1). Without a registered attachment those kicks are
  * inert and `running_count` stays 0.
  */
+import path from 'node:path';
+import { createExecPresetStore } from '../exec-preset-store.js';
 import { createActivityStore } from './activity-store.js';
+import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { createExternalPrStore } from './external-pr.js';
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
@@ -22,12 +25,14 @@ import { createQueueStore } from './queue-store.js';
 import { createReviseParkedStore } from './revise-parked.js';
 import { createRunnableCache } from './runnable-cache.js';
 import { createSessionLog } from './session-log.js';
+import { workspaceSlug } from './state-paths.js';
 import { createTitleCache } from './title-cache.js';
 import { createUsageStore } from './usage-store.js';
 
 /**
  * @typedef {Object} WorkerRuntime
  * @property {ReturnType<typeof createQueueStore>} queueStore
+ * @property {ReturnType<typeof createExecPresetCoordinator>} execPresetCoordinator
  * @property {ReturnType<typeof createLockManager>} locks
  * @property {ReturnType<typeof createGh>} gh
  * @property {ReturnType<typeof createPrObservationStore>} prObservations
@@ -49,6 +54,12 @@ import { createUsageStore } from './usage-store.js';
  */
 export function createWorkerRuntime() {
   const queueStore = createQueueStore();
+  const execPresetCoordinator = createExecPresetCoordinator({
+    queueStore,
+    presetStore: createExecPresetStore(),
+    workspaceKeyFor: workspaceSlug,
+    workspaceNameFor: (workspace) => path.basename(workspace) || workspace
+  });
   const locks = createLockManager();
   // Process-wide `gh` adapter: the availability probe memoizes per instance, so
   // one shared instance keeps the admission check to a single probe across every
@@ -96,6 +107,7 @@ export function createWorkerRuntime() {
 
   return {
     queueStore,
+    execPresetCoordinator,
     locks,
     gh,
     prObservations,

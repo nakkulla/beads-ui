@@ -31,7 +31,7 @@ export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 export const WORKFLOW_MODES = ['standard', 'fast_track'];
 
 /**
- * The 10 workspace-global-capable exec keys, in display order. Mirrors the
+ * The 11 workspace-global-capable exec keys, in display order. Mirrors the
  * server table in server/worker/exec-enums.js; `workflow_mode` is per-bead only
  * and therefore not part of it.
  */
@@ -44,6 +44,7 @@ export const EXEC_KEYS = [
   'plan_review_effort',
   'impl_review_model',
   'impl_review_effort',
+  'impl_runtime',
   'impl_model',
   'impl_effort'
 ];
@@ -63,6 +64,7 @@ export const EXEC_SETTING_PRESENTATION = {
   plan_review_effort: { title: '계획 리뷰 reasoning effort' },
   impl_review_model: { title: '구현 리뷰어' },
   impl_review_effort: { title: '구현 리뷰 reasoning effort' },
+  impl_runtime: { title: '구현 runtime' },
   impl_model: {
     title: '구현 모델',
     help: '워크플로가 복잡 구현인지, 범위가 한정된 구현인지 판단해 현재 runtime의 구현용 모델을 선택합니다.'
@@ -121,6 +123,7 @@ export const DEFAULT_LABELS = {
   spec_review_effort: '(기본: 프리셋)',
   impl_review_model: '(기본: codex)',
   impl_review_effort: '(기본: 프리셋)',
+  impl_runtime: '(기본: orchestration runtime 상속)',
   plan_review_model: '(기본: codex)',
   plan_review_effort: '(기본: 프리셋)',
   impl_model: '(기본: 작업 성격에 따라 구현 모델 자동 선택)',
@@ -151,13 +154,14 @@ export function execSettingLabelTemplate(key) {
  * final-fallback label (spec §3.2).
  *
  * @param {string} key
- * @param {Record<string, any>} globals - Workspace-global exec_defaults.
+ * @param {Record<string, any>} globals - Workspace preset settings.
+ * @param {string} [source_name] - Selected workspace preset name.
  * @returns {string}
  */
-export function defaultLabelFor(key, globals) {
+export function defaultLabelFor(key, globals, source_name = '') {
   const g = globals && globals[key];
   if (typeof g === 'string' && g.length > 0) {
-    return `(기본: ${g} — 전역)`;
+    return `(기본: ${g} — ${source_name || '워크스페이스 프리셋'})`;
   }
   return DEFAULT_LABELS[key] || '(기본)';
 }
@@ -222,17 +226,20 @@ function incompatibleGroup(selected) {
  *
  * @param {any} runner_catalog
  * @param {string} selected
+ * @param {string|null} [runner_filter]
  * @returns {SelectGroup[]}
  */
-export function modelGroups(runner_catalog, selected) {
+export function modelGroups(runner_catalog, selected, runner_filter = null) {
   const runners = catalogRunners(runner_catalog);
   if (!runners) {
     return selected ? [{ label: null, options: [plainOption(selected)] }] : [];
   }
-  const groups = runners.map(([name, entry]) => ({
-    label: name,
-    options: Object.keys(entry.models).map(plainOption)
-  }));
+  const groups = runners
+    .filter(([name]) => runner_filter === null || name === runner_filter)
+    .map(([name, entry]) => ({
+      label: name,
+      options: Object.keys(entry.models).map(plainOption)
+    }));
   const known = groups.some((g) => g.options.some((o) => o.value === selected));
   return selected && !known ? [incompatibleGroup(selected), ...groups] : groups;
 }
@@ -332,7 +339,94 @@ export function catalogEffortUnion(runner_catalog) {
 }
 
 /**
- * Build the option model for all 10 exec rows — the SINGLE implementation both
+ * Every effort level accepted by at least one model of one implementation
+ * runtime. This is the legal auto-model vocabulary: when no exact model is
+ * selected, the runtime still narrows what an explicit effort can mean.
+ *
+ * @param {any} runner_catalog
+ * @param {string|null} runtime
+ * @returns {string[]}
+ */
+export function runtimeEffortUnion(runner_catalog, runtime) {
+  if (!runtime) {
+    return catalogEffortUnion(runner_catalog);
+  }
+  const runners = catalogRunners(runner_catalog);
+  const entry = runners?.find(([name]) => name === runtime)?.[1];
+  if (!entry) {
+    return [];
+  }
+  /** @type {string[]} */
+  const efforts = [];
+  for (const model of Object.keys(entry.models)) {
+    for (const effort of effortsForModel(runner_catalog, model)) {
+      if (!efforts.includes(effort)) {
+        efforts.push(effort);
+      }
+    }
+  }
+  return efforts;
+}
+
+/**
+ * Normalize the three coupled implementation settings after an editor change.
+ * An inherited runtime has the resolved orchestration provider when known;
+ * therefore an exact model survives an `inherit` change exactly when that
+ * provider owns it. A model left on auto still constrains effort to the
+ * provider-wide union.
+ *
+ * @param {{ impl_runtime: string, impl_model: string, impl_effort: string }} target
+ * @param {any} runner_catalog
+ * @param {string|null} controller_runtime - `null` means an inherited runtime
+ * has no known controller provider in this editing context.
+ * @returns {{ impl_runtime: string, impl_model: string, impl_effort: string }}
+ */
+export function normalizeImplTarget(
+  target,
+  runner_catalog,
+  controller_runtime
+) {
+  const normalized = {
+    impl_runtime: target.impl_runtime || '',
+    impl_model: target.impl_model || '',
+    impl_effort: target.impl_effort || ''
+  };
+  const effective_runtime =
+    normalized.impl_runtime === 'inherit'
+      ? controller_runtime
+      : normalized.impl_runtime === 'claude' ||
+          normalized.impl_runtime === 'codex'
+        ? normalized.impl_runtime
+        : null;
+  if (normalized.impl_runtime === 'inherit' && !effective_runtime) {
+    normalized.impl_model = '';
+    normalized.impl_effort = '';
+    return normalized;
+  }
+  const model_runtime = modelRunnerOf(runner_catalog, normalized.impl_model);
+  if (
+    normalized.impl_model &&
+    (!effective_runtime || model_runtime !== effective_runtime)
+  ) {
+    normalized.impl_model = '';
+    normalized.impl_effort = '';
+    return normalized;
+  }
+  const allowed_efforts = normalized.impl_model
+    ? effortsForModel(runner_catalog, normalized.impl_model)
+    : runtimeEffortUnion(runner_catalog, effective_runtime);
+  if (
+    normalized.impl_effort &&
+    allowed_efforts.length > 0 &&
+    !allowed_efforts.includes(normalized.impl_effort)
+  ) {
+    normalized.impl_effort = '';
+  }
+  return normalized;
+}
+
+/**
+ * Build the option model for all 11 exec rows — the SINGLE implementation both
  * the per-bead detail panel and the ⚙ global dialog render, so the two surfaces
  * cannot drift on grouping, effort narrowing or the self/skip gate.
  *
@@ -346,23 +440,42 @@ export function catalogEffortUnion(runner_catalog) {
  * @param {{
  *   selectedOf: (key: string) => string,
  *   effectiveOf: (key: string) => string,
- *   runner_catalog: any
+ *   runner_catalog: any,
+ *   controller_runtime?: string|null
  * }} input
  * @returns {ExecRow[]}
  */
 export function execSettingRows(input) {
-  const { selectedOf, effectiveOf, runner_catalog } = input;
+  const { selectedOf, effectiveOf, runner_catalog, controller_runtime } = input;
   const orchestration_model =
     effectiveOf('orchestration_model') || ORCHESTRATION_MODEL_FALLBACK;
   const impl_model = effectiveOf('impl_model');
+  const requested_runtime = effectiveOf('impl_runtime');
+  const impl_runtime =
+    requested_runtime === 'claude' || requested_runtime === 'codex'
+      ? requested_runtime
+      : requested_runtime === 'inherit'
+        ? controller_runtime === undefined
+          ? modelRunnerOf(runner_catalog, orchestration_model)
+          : controller_runtime
+        : null;
 
   return EXEC_KEYS.map((key) => {
     const selected = selectedOf(key);
     /** @type {SelectGroup[]} */
     let groups;
     let disabled = false;
-    if (key === 'orchestration_model' || key === 'impl_model') {
+    if (key === 'orchestration_model') {
       groups = modelGroups(runner_catalog, selected);
+    } else if (key === 'impl_runtime') {
+      groups = valueGroups(['inherit', 'claude', 'codex'], selected);
+    } else if (key === 'impl_model') {
+      groups = impl_runtime
+        ? modelGroups(runner_catalog, selected, impl_runtime)
+        : selected
+          ? [incompatibleGroup(selected)]
+          : [];
+      disabled = requested_runtime === 'inherit' && impl_runtime === null;
     } else if (key === 'orchestration_effort') {
       groups = valueGroups(
         effortsForModel(runner_catalog, orchestration_model),
@@ -372,9 +485,12 @@ export function execSettingRows(input) {
       groups = valueGroups(
         impl_model
           ? effortsForModel(runner_catalog, impl_model)
-          : catalogEffortUnion(runner_catalog),
+          : impl_runtime
+            ? runtimeEffortUnion(runner_catalog, impl_runtime)
+            : catalogEffortUnion(runner_catalog),
         selected
       );
+      disabled = requested_runtime === 'inherit' && impl_runtime === null;
     } else if (key === 'plan_review_model') {
       groups = valueGroups(PLAN_REVIEW_MODELS, selected);
     } else if (Object.hasOwn(REVIEW_EFFORT_PAIR, key)) {
@@ -435,6 +551,7 @@ function optionTemplate(opt, selected) {
 /**
  * @typedef {Object} ExecSettingsHandlers
  * @property {(key: string, value: string) => void} onChange
+ * @property {(key: string, value: string) => void} [onImplTargetChange]
  */
 
 /**
@@ -468,10 +585,18 @@ function selectRow(
           data-key=${key}
           ?disabled=${disabled}
           @change=${(/** @type {Event} */ ev) =>
-            handlers.onChange(
-              key,
-              /** @type {HTMLSelectElement} */ (ev.target).value
-            )}
+            (key === 'impl_runtime' ||
+              key === 'impl_model' ||
+              key === 'impl_effort') &&
+            handlers.onImplTargetChange
+              ? handlers.onImplTargetChange(
+                  key,
+                  /** @type {HTMLSelectElement} */ (ev.target).value
+                )
+              : handlers.onChange(
+                  key,
+                  /** @type {HTMLSelectElement} */ (ev.target).value
+                )}
         >
           ${options}
         </select>
@@ -486,16 +611,17 @@ function selectRow(
 }
 
 /**
- * Execution-settings editor (detail-panel.html "실행 설정"): the 10 exec keys +
+ * Execution-settings editor (detail-panel.html "실행 설정"): the 11 exec keys +
  * workflow_mode. Selecting `standard` for workflow_mode (or `(기본)` for a key)
  * records an unset — the server mutation removes the metadata key.
  *
  * @param {{ metadata?: Record<string, any> }} effective_issue - Issue whose `metadata` carries the effective (metadata + in-flight edits) values.
  * @param {ExecSettingsHandlers} handlers
- * @param {Record<string, any>} [exec_defaults] - Workspace-global exec defaults
+ * @param {Record<string, any>} [exec_defaults] - Selected workspace preset settings
  * (queue snapshot). A bead-unset key resolves through these first, so they drive
  * the `(기본)` label (§3.2) and the derived vocabularies.
  * @param {any} [runner_catalog] - The snapshot's `runner_catalog` decoration.
+ * @param {string} [default_source] - Selected workspace preset name.
  * Null/absent degrades the model selectors to the stored value (fail-quiet).
  * @returns {TemplateResult}
  */
@@ -503,7 +629,8 @@ export function execSettingsTemplate(
   effective_issue,
   handlers,
   exec_defaults,
-  runner_catalog
+  runner_catalog,
+  default_source = ''
 ) {
   const md = (effective_issue && effective_issue.metadata) || {};
   const globals =
@@ -529,7 +656,7 @@ export function execSettingsTemplate(
         selectOptionsTemplate(
           row.groups,
           row.selected,
-          defaultLabelFor(row.key, globals)
+          defaultLabelFor(row.key, globals, default_source)
         ),
         row.selected,
         false,

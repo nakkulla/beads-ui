@@ -1384,39 +1384,31 @@ export function handleWorkerQueueSetPrWaitHold(ws, req) {
 }
 
 /**
- * Handle `worker-queue-set-exec-default`. Payload:
- * `{ key: <one of the 5 exec keys>, value: string|null, expected_revision }`.
- * Persists the workspace-global exec-setting default (CAS); null/'' unsets. Enum
- * validation (and the runner↔model union check) lives in the queue store's
- * `setExecDefault` (spec §2).
+ * Set or unset the workspace's global preset reference. Both the queue and
+ * preset revision must match the client snapshot; a stale pair returns both
+ * authoritative snapshots and never retries on the server.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleWorkerQueueSetExecDefault(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.key !== 'string') {
-    ws.send(
-      JSON.stringify(
-        makeError(
-          req,
-          'bad_request',
-          'payload requires { key: <exec setting key> } — see server/worker/exec-enums.js'
-        )
-      )
-    );
+export function handleWorkerQueueSetDefaultExecPreset(ws, req) {
+  const payload = /** @type {any} */ (req.payload || {});
+  const workspace_key = mutationWorkspaceOf(ws, req);
+  if (workspace_key === null) {
     return;
   }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
+  const result = getWorkerRuntime().execPresetCoordinator.setDefaultExecPreset(
+    workspace_key,
+    {
+      preset_id: payload.preset_id ?? null,
+      expected_queue_revision: payload.expected_queue_revision,
+      expected_preset_revision: payload.expected_preset_revision
+    }
+  );
+  ws.send(JSON.stringify(makeOk(req, result)));
+  if (result.applied) {
+    fanout(workspace_key, /** @type {any} */ (result.queue));
   }
-  const result = queueStore().setExecDefault(key, {
-    expected_revision: revisionOf(p),
-    key: p.key,
-    value: p.value ?? null
-  });
-  replyMutation(ws, req, key, result);
 }
 
 /**

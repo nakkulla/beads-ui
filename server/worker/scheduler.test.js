@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createExecPresetStore } from '../exec-preset-store.js';
+import { EXEC_SETTING_KEYS } from './exec-enums.js';
+import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { install as guardHookInstall } from './guard-hook.js';
+import { resolveExecSettings } from './policy.js';
 import { createQueueStore } from './queue-store.js';
 import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
@@ -227,6 +231,9 @@ function makeFakeBd(config) {
       if (cfg && cfg.throwOnSetKey === key) {
         throw new Error(`bd set-metadata failed for ${bead_id} ${key}`);
       }
+      if (cfg && typeof cfg.onSet === 'function') {
+        cfg.onSet({ bead_id, key, value });
+      }
       calls.push({ method: 'setMetadata', bead_id, key, value });
     },
     async unsetMetadata(
@@ -285,12 +292,32 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any }} opts
  */
 function setup(opts) {
-  const store = createQueueStore();
+  const store = /** @type {ReturnType<typeof createQueueStore>} */ (
+    opts.store || createQueueStore()
+  );
   const runner = makeFakeRunner();
   const bd = makeFakeBd(opts.config);
+  const execPresetCoordinator = opts.execPresetCoordinator || {
+    /**
+     * @param {string} workspace
+     * @param {import('./scheduler.js').BeadSnapshot} bead
+     */
+    resolveForDispatch(workspace, bead) {
+      return {
+        ok: true,
+        preset_id: null,
+        preset_revision: null,
+        settings: {},
+        exec: resolveExecSettings({
+          bead,
+          defaults: store.snapshot(workspace).exec_defaults
+        })
+      };
+    }
+  };
   const verify = opts.verify || {
     verifyPrSubmitted: vi.fn(async () => ({
       ok: opts.verifyOk ?? true,
@@ -343,6 +370,7 @@ function setup(opts) {
       : undefined,
     probePid: opts.probePid,
     sessionMonitors: opts.sessionMonitors,
+    execPresetCoordinator,
     // Absent ⇒ the REAL guard-hook module, writing under the tmp
     // XDG_STATE_HOME this file arms. An override is only how a test drives an
     // install failure (UI-8mvc §2).
@@ -1712,6 +1740,246 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     );
   }
 
+  test('refuses a missing selected preset before worktree or metadata mutation', async () => {
+    const resolveForDispatch = vi.fn(() => ({
+      ok: false,
+      reason: 'default_exec_preset_missing'
+    }));
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      execPresetCoordinator: { resolveForDispatch }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(resolveForDispatch).toHaveBeenCalledTimes(1);
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.bd.calls).toEqual([]);
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.S1?.reason).toBe(
+      'default_exec_preset_missing'
+    );
+  });
+
+  test('pre-records the immutable preset provenance before the first metadata stamp', async () => {
+    /** @type {any} */
+    let env;
+    const resolveForDispatch = vi.fn((/** @type {string} */ _ws, bead) => {
+      const exec = resolveExecSettings({
+        bead,
+        defaults: {
+          orchestration_model: 'sonnet',
+          spec_review_model: 'codex'
+        }
+      });
+      return {
+        ok: true,
+        preset_id: 'preset-1',
+        preset_revision: 7,
+        settings: {
+          orchestration_model: 'sonnet',
+          spec_review_model: 'codex'
+        },
+        exec
+      };
+    });
+    env = setup({
+      config: {
+        S1: {
+          model: null,
+          effort: null,
+          onSet: (/** @type {{ key: string }} */ call) => {
+            if (call.key !== 'workflow_mode') {
+              return;
+            }
+            const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+            expect(attempt).toMatchObject({
+              exec_default_preset_id: 'preset-1',
+              exec_default_preset_revision: 7,
+              exec_stamped_keys: ['orchestration_model', 'spec_review_model'],
+              exec_values: {
+                orchestration_model: 'sonnet',
+                spec_review_model: 'codex'
+              }
+            });
+          }
+        }
+      },
+      slots: 1,
+      execPresetCoordinator: { resolveForDispatch }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(resolveForDispatch).toHaveBeenCalledTimes(1);
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt).toMatchObject({
+      exec_default_preset_id: 'preset-1',
+      exec_default_preset_revision: 7,
+      exec_values: {
+        orchestration_model: 'sonnet',
+        spec_review_model: 'codex'
+      }
+    });
+    expect(Object.keys(attempt.exec_values)).toEqual(EXEC_SETTING_KEYS);
+  });
+
+  test('applies a shared preset update only to a later workspace dispatch while the active Attempt stays pinned', async () => {
+    const second_workspace = `${WS}-second`;
+    const store = createQueueStore();
+    const presetStore = createExecPresetStore({
+      filePath: path.join(tmp_state, 'exec-presets.json'),
+      randomUUID: () => 'shared-preset'
+    });
+    presetStore.create({
+      expected_revision: 0,
+      name: '공유 기본값',
+      settings: { orchestration_model: 'sol' }
+    });
+    const coordinator = createExecPresetCoordinator({
+      queueStore: store,
+      presetStore,
+      discover: () => ({
+        complete: true,
+        states: [
+          {
+            workspace_key: WS,
+            display_name: '첫 작업 공간',
+            status: 'ok',
+            queue_file: path.join(tmp_state, 'first-queue.json'),
+            raw: store.snapshot(WS)
+          },
+          {
+            workspace_key: second_workspace,
+            display_name: '둘째 작업 공간',
+            status: 'ok',
+            queue_file: path.join(tmp_state, 'second-queue.json'),
+            raw: store.snapshot(second_workspace)
+          }
+        ]
+      })
+    });
+
+    expect(
+      coordinator.setDefaultExecPreset(WS, {
+        preset_id: 'shared-preset',
+        expected_queue_revision: 0,
+        expected_preset_revision: 1
+      }).applied
+    ).toBe(true);
+    expect(
+      coordinator.setDefaultExecPreset(second_workspace, {
+        preset_id: 'shared-preset',
+        expected_queue_revision: 0,
+        expected_preset_revision: 1
+      }).applied
+    ).toBe(true);
+    expect(coordinator.snapshot().presets[0].reference_count).toBe(2);
+
+    const first = setup({
+      store,
+      config: { S1: { model: null, effort: null } },
+      slots: 1,
+      execPresetCoordinator: coordinator
+    });
+    const second = setup({
+      store,
+      config: { S2: { model: null, effort: null } },
+      slots: 1,
+      execPresetCoordinator: coordinator
+    });
+    seedQueue(store, ['S1']);
+    let second_revision = store.snapshot(second_workspace).revision;
+    second_revision = store.setSlots(second_workspace, {
+      expected_revision: second_revision,
+      slots: 1
+    }).queue.revision;
+    store.place(second_workspace, {
+      expected_revision: second_revision,
+      bead_id: 'S2'
+    });
+    store.setAutoAdvance(second_workspace, true);
+
+    await first.scheduler.tick(WS);
+
+    const active_attempt = Object.values(store.snapshot(WS).attempts)[0];
+    const queue_revisions_before_update = {
+      first: store.snapshot(WS).revision,
+      second: store.snapshot(second_workspace).revision
+    };
+    expect(active_attempt).toMatchObject({
+      status: 'running',
+      exec_default_preset_id: 'shared-preset',
+      exec_default_preset_revision: 1,
+      exec_values: { orchestration_model: 'sol' }
+    });
+
+    expect(
+      coordinator.update({
+        expected_revision: 1,
+        id: 'shared-preset',
+        name: '공유 기본값',
+        settings: { orchestration_model: 'terra' }
+      }).applied
+    ).toBe(true);
+
+    expect(store.snapshot(WS).revision).toBe(
+      queue_revisions_before_update.first
+    );
+    expect(store.snapshot(second_workspace).revision).toBe(
+      queue_revisions_before_update.second
+    );
+
+    await second.scheduler.tick(second_workspace);
+
+    const fresh_attempt = Object.values(
+      store.snapshot(second_workspace).attempts
+    )[0];
+    expect(fresh_attempt).toMatchObject({
+      status: 'running',
+      exec_default_preset_id: 'shared-preset',
+      exec_default_preset_revision: 2,
+      exec_values: { orchestration_model: 'terra' }
+    });
+    expect(
+      store.snapshot(WS).attempts[active_attempt.attempt_id]
+    ).toMatchObject({
+      exec_default_preset_revision: 1,
+      exec_values: { orchestration_model: 'sol' }
+    });
+  });
+
+  test('refuses before metadata or runner launch when normal attempt prerecord fails', async () => {
+    const base_store = createQueueStore();
+    const appendAttempt = vi.fn((workspace) => ({
+      ok: false,
+      conflict: false,
+      queue: base_store.snapshot(workspace)
+    }));
+    const env = setup({
+      store: { ...base_store, appendAttempt },
+      config: { S1: {} },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(appendAttempt).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).admission.S1?.reason).toBe(
+      'attempt_prerecord_failed'
+    );
+    expect(env.worktree.remove).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'S1'
+    });
+    expect(env.bd.calls).toEqual([]);
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
   test('global-only exec settings reach spawn + stamp bead metadata + durable exec_stamped_keys, then revert on termination', async () => {
     // Bead leaves runner/model/effort UNSET; the workspace global fills them.
     const env = setup({
@@ -1796,9 +2064,10 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
 
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     const a = /** @type {any} */ (env.store.snapshot(WS).attempts[attempt_id]);
-    // Only the global-filled impl_model is stamped; the bead-set spec_review_model
-    // is not (its value is the bead's own, not the global 'codex').
-    expect(a.exec_stamped_keys).toEqual(['impl_model']);
+    // A global exact model gets its inferred provider stamp too; the bead-set
+    // spec_review_model is not stamped (it is the bead's own value).
+    expect(a.exec_stamped_keys).toEqual(['impl_runtime', 'impl_model']);
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'impl_runtime')).toBe(true);
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'impl_model')).toBe(true);
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'spec_review_model')).toBe(
       false
@@ -1807,6 +2076,9 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     env.runner.finish('S1', { success: true });
     await flush();
     await flush();
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'impl_runtime')).toBe(
+      true
+    );
     expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'impl_model')).toBe(true);
     expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       false
@@ -1888,8 +2160,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     // The durable stamp list was recorded BEFORE the first metadata write.
     expect(a.exec_stamped_keys).toEqual([
       'orchestration_model',
-      'orchestration_effort',
-      'spec_review_model'
+      'orchestration_effort'
     ]);
 
     // The one key that WAS stamped is cleaned up; workflow_mode reverted too.
@@ -1899,6 +2170,12 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(
       calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
     ).toBe(true);
+    expect(
+      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_effort')
+    ).toBe(true);
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
+      false
+    );
     expect(
       env.bd.calls.some(
         (/** @type {any} */ c) =>
@@ -1950,13 +2227,12 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
       true
     );
-    // … and it is unset in cleanup (the durable-stamped_keys fix; the old
-    // confirmed-only cleanup would have leaked it), along with worker_runner.
+    // … and it is unset in cleanup even though its confirming readback failed.
     expect(
       calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
     ).toBe(true);
     expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
-      true
+      false
     );
     // workflow_mode is reverted too; the dispatch failed in isolation.
     expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'workflow_mode')).toBe(
@@ -2037,6 +2313,33 @@ describe('scheduler resume (spec §1)', () => {
       ...over
     };
   }
+
+  test('refuses before resume metadata or runner launch when child prerecord fails', async () => {
+    const base_store = createQueueStore();
+    let deny_append = false;
+    const store = {
+      ...base_store,
+      appendAttempt(/** @type {string} */ workspace, /** @type {any} */ input) {
+        if (deny_append) {
+          return {
+            ok: false,
+            conflict: false,
+            queue: base_store.snapshot(workspace)
+          };
+        }
+        return base_store.appendAttempt(workspace, input);
+      }
+    };
+    const env = setup({ store, config: {}, slots: 1 });
+    seedAttempt(env.store, 'r1', resumablePrior());
+    deny_append = true;
+
+    const result = await env.scheduler.resume(WS, 'r1');
+
+    expect(result).toEqual({ ok: false, reason: 'attempt_prerecord_failed' });
+    expect(env.bd.calls).toEqual([]);
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
 
   test('refuses not_failed (running/done/unknown attempt)', async () => {
     const env = setup({ config: {}, slots: 1 });
@@ -2218,6 +2521,8 @@ describe('scheduler resume (spec §1)', () => {
       'anc',
       resumablePrior({
         workflow_mode_prior: null,
+        exec_default_preset_id: 'preset-1',
+        exec_default_preset_revision: 7,
         exec_stamped_keys: ['orchestration_model'],
         exec_values: { orchestration_model: 'opus' }
       })
@@ -2246,6 +2551,11 @@ describe('scheduler resume (spec §1)', () => {
     const child =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
     expect(child.exec_stamped_keys).toEqual(['orchestration_model']);
+    expect(child).toMatchObject({
+      exec_default_preset_id: 'preset-1',
+      exec_default_preset_revision: 7,
+      exec_values: { orchestration_model: 'opus' }
+    });
   });
 });
 
@@ -2389,7 +2699,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
    * An external bead as bd really holds it: `resolved`, hence blocked and not
    * ready — the two verdicts this dispatch must NOT consult.
    *
-   * @param {{ bead?: Record<string, any>, registry?: boolean, defaults?: Record<string, string>, notify?: any }} [over]
+   * @param {{ bead?: Record<string, any>, registry?: boolean, defaults?: Record<string, string>, store?: any, execPresetCoordinator?: any, notify?: any }} [over]
    */
   function extEnv(over = {}) {
     const env = setup({
@@ -2403,8 +2713,10 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
           ...(over.bead || {})
         }
       },
+      store: over.store,
       slots: 1,
       notify: over.notify,
+      execPresetCoordinator: over.execPresetCoordinator,
       externalPrs: over.registry === false ? undefined : { X1: EXT_ROW }
     });
     if (over.defaults) {
@@ -2426,6 +2738,97 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     });
     store.updateAttempt(WS, { attempt_id: 'prev-1', patch });
   }
+
+  test('refuses an incompatible selected preset before external metadata mutation', async () => {
+    const resolveForDispatch = vi.fn(() => ({
+      ok: false,
+      reason: 'default_exec_preset_incompatible'
+    }));
+    const env = extEnv({ execPresetCoordinator: { resolveForDispatch } });
+
+    const result = await env.scheduler.dispatchExternalConflict(
+      WS,
+      'X1',
+      'main'
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'default_exec_preset_incompatible'
+    });
+    expect(resolveForDispatch).toHaveBeenCalledTimes(1);
+    expect(env.bd.calls).toEqual([]);
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+  });
+
+  test('refuses before external metadata or runner launch when attempt prerecord fails', async () => {
+    const base_store = createQueueStore();
+    const appendAttempt = vi.fn((workspace) => ({
+      ok: false,
+      conflict: false,
+      queue: base_store.snapshot(workspace)
+    }));
+    const env = extEnv({ store: { ...base_store, appendAttempt } });
+
+    const result = await env.scheduler.dispatchExternalConflict(
+      WS,
+      'X1',
+      'main'
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'attempt_prerecord_failed' });
+    expect(env.bd.calls).toEqual([]);
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('inherits prior external provenance without resolving a changed preset', async () => {
+    const resolveForDispatch = vi.fn(() => ({
+      ok: false,
+      reason: 'default_exec_preset_missing'
+    }));
+    const env = extEnv({ execPresetCoordinator: { resolveForDispatch } });
+    seedRunningAttempt(env.store, {
+      status: 'done',
+      runner: 'codex',
+      model: 'sol',
+      effort: 'high',
+      exec_default_preset_id: 'preset-7',
+      exec_default_preset_revision: 7,
+      exec_stamped_keys: ['spec_review_model'],
+      exec_values: {
+        orchestration_model: 'sol',
+        orchestration_effort: 'high',
+        spec_review_model: 'codex'
+      }
+    });
+
+    const result = await env.scheduler.dispatchExternalConflict(
+      WS,
+      'X1',
+      'main'
+    );
+
+    expect(result.ok).toBe(true);
+    expect(resolveForDispatch).not.toHaveBeenCalled();
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    expect(env.runner.settingsFor('X1')).toMatchObject({
+      model: 'sol',
+      effort: 'high'
+    });
+    expect(
+      env.store.snapshot(WS).attempts[/** @type {string} */ (result.attempt_id)]
+    ).toMatchObject({
+      exec_default_preset_id: 'preset-7',
+      exec_default_preset_revision: 7,
+      exec_stamped_keys: ['spec_review_model'],
+      exec_values: {
+        orchestration_model: 'sol',
+        orchestration_effort: 'high',
+        spec_review_model: 'codex'
+      }
+    });
+  });
 
   test('dispatches a fresh session in the bead worktree with no resume', async () => {
     const env = extEnv();
@@ -7463,7 +7866,7 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
     await flush();
   });
 
-  test('skips the orchestration stamps when the launch trio came from the prior attempt', async () => {
+  test('inherits no current preset stamps when the prior attempt has none', async () => {
     const env = extRunnerEnv({ model: null, effort: null });
     seedSettledAttempt(env.store, 'prev-1', {
       runner: 'codex',
@@ -7485,7 +7888,7 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
 
     const a =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    expect(a.exec_stamped_keys).toEqual(['spec_review_model']);
+    expect(a.exec_stamped_keys).toBe(null);
     expect(a.model).toBe('sol');
     await flush();
   });

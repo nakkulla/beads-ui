@@ -1,23 +1,29 @@
 import { describe, expect, test } from 'vitest';
 import * as enums from './exec-enums.js';
 import {
+  EXEC_SETTING_KEYS,
+  IMPL_RUNTIMES,
   PLAN_REVIEW_MODELS,
   REVIEW_EFFORTS,
   REVIEW_STEP_MODELS,
-  execSettingEnums
+  execSettingEnums,
+  inferImplRuntime,
+  validateExecSettings,
+  validateImplSettings
 } from './exec-enums.js';
 import { resolveCatalog } from './runner-catalog.js';
 
-/** The 10 workspace-global-capable exec keys (workflow_mode excluded). */
+/** The 11 workspace-global-capable exec keys (workflow_mode excluded). */
 const EXPECTED_KEYS = [
   'orchestration_model',
   'orchestration_effort',
   'spec_review_model',
   'spec_review_effort',
-  'impl_review_model',
-  'impl_review_effort',
   'plan_review_model',
   'plan_review_effort',
+  'impl_review_model',
+  'impl_review_effort',
+  'impl_runtime',
   'impl_model',
   'impl_effort'
 ];
@@ -52,10 +58,9 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
 });
 
 describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
-  test('covers exactly the 10 workspace-global exec keys', () => {
-    expect(Object.keys(execSettingEnums()).sort()).toEqual(
-      EXPECTED_KEYS.slice().sort()
-    );
+  test('covers the canonical 11 workspace-global exec keys in contract order', () => {
+    expect(EXEC_SETTING_KEYS).toEqual(EXPECTED_KEYS);
+    expect(Object.keys(execSettingEnums())).toEqual(EXPECTED_KEYS);
   });
 
   test('takes the model keys from the injected catalog model index', () => {
@@ -117,5 +122,108 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
     expect(table.spec_review_effort).toEqual(REVIEW_EFFORTS);
     expect(table.impl_review_effort).toEqual(REVIEW_EFFORTS);
     expect(table.plan_review_effort).toEqual(REVIEW_EFFORTS);
+  });
+
+  test('exposes the implementation runtime contract enum', () => {
+    expect(IMPL_RUNTIMES).toEqual(['inherit', 'claude', 'codex']);
+    expect(execSettingEnums().impl_runtime).toEqual(IMPL_RUNTIMES);
+  });
+});
+
+describe('worker/exec-enums implementation target coherence', () => {
+  test('marks stale known settings incompatible across all 11 keys', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    expect(
+      validateExecSettings(
+        { orchestration_model: 'removed-model' },
+        { catalog }
+      )
+    ).toMatchObject({ ok: false, reason: 'invalid_orchestration_model' });
+    expect(
+      validateExecSettings(
+        { impl_review_model: 'removed-reviewer' },
+        { catalog }
+      )
+    ).toMatchObject({ ok: false, reason: 'invalid_impl_review_model' });
+    expect(
+      validateExecSettings({ impl_review_effort: 'max' }, { catalog })
+    ).toMatchObject({ ok: false, reason: 'invalid_impl_review_effort' });
+  });
+
+  test('infers a provider only for a known model-only legacy value', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    expect(inferImplRuntime({ impl_model: 'terra' }, catalog)).toBe('codex');
+    expect(inferImplRuntime({ impl_model: 'removed-model' }, catalog)).toBe(
+      undefined
+    );
+    expect(
+      inferImplRuntime(
+        { impl_runtime: 'inherit', impl_model: 'terra' },
+        catalog
+      )
+    ).toBe(undefined);
+  });
+
+  test('rejects active model-only writes while accepting the read-only legacy form', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    expect(
+      validateImplSettings(
+        { impl_model: 'terra', impl_effort: 'high' },
+        { catalog, active_writer: false }
+      )
+    ).toMatchObject({ ok: true, impl_runtime: 'codex', inferred: true });
+    expect(
+      validateImplSettings(
+        { impl_model: 'terra', impl_effort: 'high' },
+        { catalog, active_writer: true }
+      )
+    ).toMatchObject({ ok: false, reason: 'impl_runtime_required' });
+  });
+
+  test('requires the selected runtime, model, and effort to share one provider', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    expect(
+      validateImplSettings(
+        { impl_runtime: 'codex', impl_model: 'terra', impl_effort: 'high' },
+        { catalog, active_writer: true }
+      )
+    ).toMatchObject({ ok: true, impl_runtime: 'codex' });
+    expect(
+      validateImplSettings(
+        { impl_runtime: 'claude', impl_model: 'terra' },
+        { catalog, active_writer: true }
+      )
+    ).toMatchObject({ ok: false, reason: 'provider_model_mismatch' });
+    expect(
+      validateImplSettings(
+        { impl_runtime: 'codex', impl_model: 'terra', impl_effort: 'max' },
+        { catalog, active_writer: true }
+      )
+    ).toMatchObject({ ok: false, reason: 'illegal_impl_effort' });
+  });
+
+  test('resolves inherit against the controller provider', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    expect(
+      validateImplSettings(
+        {
+          orchestration_model: 'sol',
+          impl_runtime: 'inherit',
+          impl_model: 'terra'
+        },
+        { catalog, active_writer: true }
+      )
+    ).toMatchObject({ ok: true, impl_runtime: 'inherit' });
+    expect(
+      validateImplSettings(
+        { impl_runtime: 'inherit', impl_model: 'terra' },
+        { catalog, active_writer: true, controller_runtime: 'claude' }
+      )
+    ).toMatchObject({ ok: false, reason: 'provider_model_mismatch' });
   });
 });

@@ -3,7 +3,10 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import { makeError, makeOk } from '../../app/protocol.js';
-import { execSettingEnums } from '../worker/exec-enums.js';
+import {
+  execSettingEnums,
+  validateImplSettings
+} from '../worker/exec-enums.js';
 import {
   getGitUserNameInWorkspace,
   log,
@@ -73,9 +76,9 @@ export async function handleUpdateAssignee(ws, req) {
 
 /**
  * Allowed values per exec-preference key for the per-bead detail-panel edit
- * surface: the 10 workspace-global keys from the shared exec-enums single source
+ * surface: the 11 workspace-global keys from the shared exec-enums single source
  * PLUS `workflow_mode` (per-bead only — its only stored value is `fast_track`;
- * `standard`/empty is recorded as key removal). The 10-key table stays canonical
+ * `standard`/empty is recorded as key removal). The 11-key table stays canonical
  * in exec-enums.js; only the extra per-bead `workflow_mode` is synthesized here
  * so this edit surface's behavior is unchanged. `orchestration_model` uses the
  * catalog union across runners; the client narrows by chosen runner for UX.
@@ -110,6 +113,33 @@ export function buildExecSettingsArgs(id, key, value) {
 }
 
 /**
+ * Build one atomic implementation-target update. The three coupled metadata
+ * values must never be written as independent mutations: an exact model only
+ * has meaning with its runtime and legal effort.
+ *
+ * @param {string} id
+ * @param {{ impl_runtime: string, impl_model: string, impl_effort: string }} target
+ * @returns {string[]}
+ */
+export function buildImplTargetArgs(id, target) {
+  /** @type {string[]} */
+  const args = ['update', id];
+  for (const key of /** @type {const} */ ([
+    'impl_runtime',
+    'impl_model',
+    'impl_effort'
+  ])) {
+    const value = target[key];
+    if (value) {
+      args.push('--set-metadata', `${key}=${value}`);
+    } else {
+      args.push('--unset-metadata', key);
+    }
+  }
+  return args;
+}
+
+/**
  * Validate an exec-setting mutation. Returns null when valid, else an error
  * message. `standard`/empty values are always valid (they map to unset).
  *
@@ -118,6 +148,9 @@ export function buildExecSettingsArgs(id, key, value) {
  * @returns {string | null}
  */
 function validateExecSetting(key, value) {
+  if (['impl_runtime', 'impl_model', 'impl_effort'].includes(key)) {
+    return 'implementation target must be updated with update-impl-target';
+  }
   const enums = execSettingEnumsForBead();
   if (!Object.prototype.hasOwnProperty.call(enums, key)) {
     return `unknown exec-setting key: ${key}`;
@@ -132,11 +165,17 @@ function validateExecSetting(key, value) {
   if (!allowed.includes(value)) {
     return `invalid value for ${key}: ${value}`;
   }
+  if (key === 'impl_model' || key === 'impl_runtime' || key === 'impl_effort') {
+    const coherence = validateImplSettings({ [key]: value });
+    if (!coherence.ok) {
+      return coherence.reason;
+    }
+  }
   return null;
 }
 
 /**
- * Set or unset one of the 10 exec-preference metadata keys (+ workflow_mode) via
+ * Set or unset one of the 11 exec-preference metadata keys (+ workflow_mode) via
  * `bd update --set-metadata` / `--unset-metadata`. Selecting `standard` (or
  * clearing a value) removes the key rather than storing a literal.
  *
@@ -188,6 +227,99 @@ export async function handleUpdateExecSettings(ws, req) {
   } catch {
     // ignore
   }
+}
+
+/**
+ * Atomically set/unset the linked implementation runtime/model/effort target
+ * and return exactly one authoritative `bd show --json` readback.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleUpdateImplTarget(ws, req) {
+  log('update-impl-target');
+  const { id, impl_runtime, impl_model, impl_effort, orchestration_runtime } =
+    /** @type {any} */ (req.payload || {});
+  if (
+    typeof id !== 'string' ||
+    id.length === 0 ||
+    typeof impl_runtime !== 'string' ||
+    typeof impl_model !== 'string' ||
+    typeof impl_effort !== 'string'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { id, impl_runtime, impl_model, impl_effort }'
+        )
+      )
+    );
+    return;
+  }
+  const coherence = validateImplSettings(
+    {
+      ...(impl_runtime ? { impl_runtime } : {}),
+      ...(impl_model ? { impl_model } : {}),
+      ...(impl_effort ? { impl_effort } : {})
+    },
+    {
+      ...(typeof orchestration_runtime === 'string'
+        ? { controller_runtime: orchestration_runtime }
+        : {})
+    }
+  );
+  if (!coherence.ok) {
+    ws.send(JSON.stringify(makeError(req, 'bad_request', coherence.reason)));
+    return;
+  }
+  const res = await runBdInWorkspace(
+    ws,
+    buildImplTargetArgs(id, { impl_runtime, impl_model, impl_effort })
+  );
+  if (res.code !== 0) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
+    );
+    return;
+  }
+  let shown;
+  try {
+    shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
+  } catch (err) {
+    triggerMutationRefreshOnce();
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          err instanceof Error ? err.message : String(err)
+        )
+      )
+    );
+    return;
+  }
+  const raw_issue = Array.isArray(shown.stdoutJson)
+    ? shown.stdoutJson[0]
+    : shown.stdoutJson;
+  if (
+    shown.code !== 0 ||
+    !raw_issue ||
+    typeof raw_issue !== 'object' ||
+    Array.isArray(raw_issue) ||
+    typeof (/** @type {any} */ (raw_issue).id) !== 'string'
+  ) {
+    triggerMutationRefreshOnce();
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bd_readback_failed', shown.stderr || 'bd show failed')
+      )
+    );
+    return;
+  }
+  ws.send(JSON.stringify(makeOk(req, raw_issue)));
+  triggerMutationRefreshOnce();
 }
 
 /**
