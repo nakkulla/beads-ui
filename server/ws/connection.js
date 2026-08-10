@@ -49,6 +49,7 @@ import {
   handleLabelRemove,
   handleUpdateAssignee,
   handleUpdateExecSettings,
+  handleUpdateImplTarget,
   handleUpdatePriority,
   handleUpdateStatus,
   handleUpdateWorkflowMeta
@@ -86,7 +87,6 @@ import {
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
   handleWorkerQueueSetDefaultExecPreset,
-  handleWorkerQueueSetExecDefault,
   handleWorkerQueueSetPrWaitHold,
   handleWorkerQueueSetSlots,
   handleWorkerQueueToggle,
@@ -401,6 +401,9 @@ export async function handleMessage(ws, data) {
     case 'update-exec-settings':
       await handleUpdateExecSettings(ws, req);
       return;
+    case 'update-impl-target':
+      await handleUpdateImplTarget(ws, req);
+      return;
     case 'update-workflow-meta':
       await handleUpdateWorkflowMeta(ws, req);
       return;
@@ -499,9 +502,6 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-set-pr-wait-hold':
       handleWorkerQueueSetPrWaitHold(ws, req);
-      return;
-    case 'worker-queue-set-exec-default':
-      handleWorkerQueueSetExecDefault(ws, req);
       return;
     case 'worker-queue-set-default-exec-preset':
       handleWorkerQueueSetDefaultExecPreset(ws, req);

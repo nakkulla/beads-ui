@@ -1,6 +1,6 @@
 import { render } from 'lit-html';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { execSettingsTemplate } from './exec-settings.js';
+import { execSettingsTemplate, normalizeImplTarget } from './exec-settings.js';
 
 /**
  * The catalog shape the server ships on the queue snapshot (`runner_catalog`).
@@ -104,7 +104,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     document.body.innerHTML = '<div id="m"></div>';
   });
 
-  test('renders the 10 exec keys plus workflow_mode and drops review_model', () => {
+  test('renders the 11 exec keys plus workflow_mode and drops review_model', () => {
     const mount = mountTemplate();
 
     for (const key of [
@@ -114,6 +114,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
       'spec_review_effort',
       'impl_review_model',
       'impl_review_effort',
+      'impl_runtime',
       'plan_review_model',
       'plan_review_effort',
       'impl_model',
@@ -145,6 +146,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
       { label: '계획 리뷰 reasoning effort', key: 'plan_review_effort' },
       { label: '구현 리뷰어', key: 'impl_review_model' },
       { label: '구현 리뷰 reasoning effort', key: 'impl_review_effort' },
+      { label: '구현 runtime', key: 'impl_runtime' },
       { label: '구현 모델', key: 'impl_model' },
       { label: '구현 reasoning effort', key: 'impl_effort' },
       { label: '워크플로 모드', key: 'workflow_mode' }
@@ -198,7 +200,9 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
 
   test('each step key emits its own mutation', () => {
     const onChange = vi.fn();
-    const mount = mountTemplate({}, {}, undefined, { onChange });
+    const mount = mountTemplate({ impl_runtime: 'codex' }, {}, undefined, {
+      onChange
+    });
 
     for (const [key, value] of [
       ['spec_review_model', 'codex'],
@@ -232,11 +236,10 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
     ]);
   });
 
-  test('impl_model renders the same grouped catalog', () => {
-    const mount = mountTemplate();
+  test('impl_model renders the explicit runtime catalog', () => {
+    const mount = mountTemplate({ impl_runtime: 'codex' });
 
     expect(optionGroups(selectFor(mount, 'impl_model'))).toEqual([
-      { label: 'claude', values: ['opus', 'sonnet', 'haiku', 'fable'] },
       { label: 'codex', values: ['sol', 'terra', 'luna'] }
     ]);
   });
@@ -406,12 +409,131 @@ describe('views/detail-panel/exec-settings default labels (§3.2)', () => {
     );
   });
 
-  test('a workspace-global default surfaces as the (기본: <값> — 전역) label', () => {
+  test('a selected workspace preset value names its source in the default label', () => {
     const mount = mountTemplate({}, { spec_review_model: 'opus' });
 
     const sel = selectFor(mount, 'spec_review_model');
     expect(sel.options[0].textContent).toContain('기본: opus');
-    expect(sel.options[0].textContent).toContain('전역');
+    expect(sel.options[0].textContent).toContain('워크스페이스 프리셋');
+  });
+});
+
+describe('views/detail-panel/exec-settings implementation runtime target', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('narrows exact models to the explicit implementation runtime', () => {
+    const mount = mountTemplate({ impl_runtime: 'codex' });
+
+    expect(optionGroups(selectFor(mount, 'impl_model'))).toEqual([
+      { label: 'codex', values: ['sol', 'terra', 'luna'] }
+    ]);
+  });
+
+  test('inherits the orchestration provider when runtime is inherit', () => {
+    const mount = mountTemplate({
+      impl_runtime: 'inherit',
+      orchestration_model: 'opus'
+    });
+
+    expect(optionGroups(selectFor(mount, 'impl_model'))).toEqual([
+      { label: 'claude', values: ['opus', 'sonnet', 'haiku', 'fable'] }
+    ]);
+  });
+
+  test('permits only auto when inherit cannot resolve an orchestration provider', () => {
+    const mount = mountTemplate({
+      impl_runtime: 'inherit',
+      orchestration_model: 'unknown'
+    });
+
+    const model = selectFor(mount, 'impl_model');
+    expect(model.disabled).toBe(true);
+    expect(optionValues(model)).toEqual(['']);
+  });
+
+  test('preserves an unknown stored implementation model as incompatible', () => {
+    const mount = mountTemplate({
+      impl_runtime: 'codex',
+      impl_model: 'retired'
+    });
+
+    const model = selectFor(mount, 'impl_model');
+    expect(model.value).toBe('retired');
+    expect(model.options[model.selectedIndex].textContent).toContain('비호환');
+  });
+
+  test('resets an exact model and effort when the explicit provider changes', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: 'claude',
+          impl_model: 'terra',
+          impl_effort: 'high'
+        },
+        catalogFixture(),
+        'codex'
+      )
+    ).toEqual({
+      impl_runtime: 'claude',
+      impl_model: '',
+      impl_effort: ''
+    });
+  });
+
+  test('keeps an inherited exact model when orchestration resolves its provider', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: 'inherit',
+          impl_model: 'terra',
+          impl_effort: 'high'
+        },
+        catalogFixture(),
+        'codex'
+      )
+    ).toEqual({
+      impl_runtime: 'inherit',
+      impl_model: 'terra',
+      impl_effort: 'high'
+    });
+  });
+
+  test('resets auto-model effort when an inherited provider is unknown', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: 'inherit',
+          impl_model: '',
+          impl_effort: 'high'
+        },
+        catalogFixture(),
+        null
+      )
+    ).toEqual({
+      impl_runtime: 'inherit',
+      impl_model: '',
+      impl_effort: ''
+    });
+  });
+
+  test('resets auto-model effort outside the effective provider union', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: 'claude',
+          impl_model: '',
+          impl_effort: 'max'
+        },
+        catalogFixture(),
+        'claude'
+      )
+    ).toEqual({
+      impl_runtime: 'claude',
+      impl_model: '',
+      impl_effort: ''
+    });
   });
 });
 

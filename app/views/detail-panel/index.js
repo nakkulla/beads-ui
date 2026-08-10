@@ -9,7 +9,9 @@ import { commentsTemplate } from './comments.js';
 import {
   EXEC_KEYS,
   execSettingRows,
-  execSettingsTemplate
+  execSettingsTemplate,
+  modelRunnerOf,
+  normalizeImplTarget
 } from './exec-settings.js';
 import { createMdViewer } from './md-viewer.js';
 import { sessionHistoryTemplate } from './session-history.js';
@@ -395,6 +397,18 @@ export function createDetailPanel(mount_element, options) {
           typeof a.dismissed_at === 'number' ? a.dismissed_at : null,
         cause: typeof a.cause === 'string' ? a.cause : null,
         cause_detail: a.cause_detail || null,
+        exec_default_preset_id:
+          typeof a.exec_default_preset_id === 'string'
+            ? a.exec_default_preset_id
+            : null,
+        exec_default_preset_revision:
+          typeof a.exec_default_preset_revision === 'number'
+            ? a.exec_default_preset_revision
+            : null,
+        exec_values:
+          a.exec_values && typeof a.exec_values === 'object'
+            ? a.exec_values
+            : null,
         usage: a.usage || null
       }));
   }
@@ -505,16 +519,37 @@ export function createDetailPanel(mount_element, options) {
   };
 
   /**
-   * Workspace-global exec defaults from the queue snapshot (spec §3.2): a
-   * bead-unset exec key resolves through these before the static fallback, so
-   * the panel shows `(기본: <값> — 전역)` when a global override exists.
+   * Selected workspace preset settings. Missing or incompatible references are
+   * deliberately ignored here: the detail UI must not imply a save/dispatch
+   * path is viable when the server will fail closed.
    *
    * @returns {Record<string, any>}
    */
   function execDefaults() {
     const q = queueStore ? queueStore.get() : null;
-    const d = q && q.exec_defaults;
-    return d && typeof d === 'object' ? d : {};
+    const preset_id = q && q.default_exec_preset_id;
+    const preset =
+      typeof preset_id === 'string'
+        ? execPresetState()?.presets.find((entry) => entry.id === preset_id)
+        : null;
+    return preset && preset.compatible !== false && preset.settings
+      ? preset.settings
+      : {};
+  }
+
+  /** @returns {string} */
+  function execDefaultSourceName() {
+    const q = queueStore ? queueStore.get() : null;
+    const preset_id = q && q.default_exec_preset_id;
+    const preset =
+      typeof preset_id === 'string'
+        ? execPresetState()?.presets.find((entry) => entry.id === preset_id)
+        : null;
+    return preset &&
+      preset.compatible !== false &&
+      typeof preset.name === 'string'
+      ? preset.name
+      : '';
   }
 
   /**
@@ -527,6 +562,34 @@ export function createDetailPanel(mount_element, options) {
   function runnerCatalog() {
     const q = queueStore ? queueStore.get() : null;
     return (q && /** @type {any} */ (q).runner_catalog) || null;
+  }
+
+  /**
+   * The provider an inherited implementation target resolves to on this exact
+   * screen. This follows the same value resolution as the selects: optimistic
+   * local edit, bead metadata, selected compatible workspace preset, then the
+   * orchestration fallback.
+   *
+   * @returns {string|null}
+   */
+  function effectiveOrchestrationRuntime() {
+    const metadata =
+      current?.metadata && typeof current.metadata === 'object'
+        ? current.metadata
+        : {};
+    const local = Object.hasOwn(exec_local, 'orchestration_model')
+      ? exec_local.orchestration_model
+      : undefined;
+    const model =
+      local ||
+      (typeof metadata.orchestration_model === 'string'
+        ? metadata.orchestration_model
+        : '') ||
+      (typeof execDefaults().orchestration_model === 'string'
+        ? execDefaults().orchestration_model
+        : '') ||
+      'opus';
+    return modelRunnerOf(runnerCatalog(), model);
   }
 
   /** @returns {{ revision: number, presets: any[] }|null} */
@@ -548,8 +611,14 @@ export function createDetailPanel(mount_element, options) {
         ? preset.settings
         : {};
     /** @param {string} key */
-    const valueOf = (key) =>
-      typeof settings[key] === 'string' ? settings[key] : '';
+    const valueOf = (key) => {
+      if (typeof settings[key] === 'string') {
+        return settings[key];
+      }
+      return key === 'impl_runtime' && typeof settings.impl_model === 'string'
+        ? modelRunnerOf(runnerCatalog(), settings.impl_model) || ''
+        : '';
+    };
     return execSettingRows({
       selectedOf: valueOf,
       effectiveOf: valueOf,
@@ -703,7 +772,7 @@ export function createDetailPanel(mount_element, options) {
           applying_preset}
           @click=${() => void applyExecPreset()}
         >
-          10개 설정 적용
+          11개 설정 적용
         </button>
       </div>
       <p>적용하면 현재 이슈 실행 설정 전체를 교체합니다.</p>
@@ -819,6 +888,92 @@ export function createDetailPanel(mount_element, options) {
     ).catch(() => {
       showToast('실행 설정 변경 실패', 'error');
     });
+  }
+
+  /**
+   * Save the three linked implementation controls as one optimistic group.
+   * Runtime changes cannot leave a mismatched exact model or effort in the
+   * local draft, so incompatible values reset to auto before the one mutation.
+   *
+   * @param {string} key
+   * @param {string} value
+   */
+  function onImplTargetChange(key, value) {
+    const data = current || {};
+    const metadata =
+      data.metadata && typeof data.metadata === 'object' ? data.metadata : {};
+    /** @type {Record<string, string|undefined>} */
+    const target = {};
+    for (const target_key of /** @type {const} */ ([
+      'impl_runtime',
+      'impl_model',
+      'impl_effort'
+    ])) {
+      target[target_key] = Object.hasOwn(exec_local, target_key)
+        ? exec_local[target_key]
+        : typeof metadata[target_key] === 'string'
+          ? metadata[target_key]
+          : '';
+    }
+    target[key] = value;
+    const normalized = normalizeImplTarget(
+      /** @type {{ impl_runtime: string, impl_model: string, impl_effort: string }} */ (
+        target
+      ),
+      runnerCatalog(),
+      effectiveOrchestrationRuntime()
+    );
+    /** @type {Record<string, string|undefined>} */
+    const previous = {};
+    for (const target_key of /** @type {const} */ ([
+      'impl_runtime',
+      'impl_model',
+      'impl_effort'
+    ])) {
+      previous[target_key] = exec_local[target_key];
+      exec_local[target_key] = normalized[target_key] || '';
+    }
+    doRender();
+    if (!transport || !current_id) {
+      return;
+    }
+    void Promise.resolve(
+      transport('update-impl-target', {
+        id: current_id,
+        ...normalized,
+        orchestration_runtime: effectiveOrchestrationRuntime()
+      })
+    )
+      .then((res) => {
+        const issue = Array.isArray(res) ? res[0] : res;
+        if (!issue || typeof issue !== 'object' || !issue.id) {
+          throw new Error('implementation target readback failed');
+        }
+        current = issue;
+        for (const target_key of [
+          'impl_runtime',
+          'impl_model',
+          'impl_effort'
+        ]) {
+          delete exec_local[target_key];
+        }
+        doRender();
+      })
+      .catch(() => {
+        for (const target_key of [
+          'impl_runtime',
+          'impl_model',
+          'impl_effort'
+        ]) {
+          if (previous[target_key] === undefined) {
+            delete exec_local[target_key];
+          } else {
+            exec_local[target_key] = previous[target_key];
+          }
+        }
+        doRender();
+        showToast('구현 target 변경 실패', 'error');
+      });
   }
 
   /**
@@ -1039,7 +1194,10 @@ export function createDetailPanel(mount_element, options) {
   }
 
   const artifact_handlers = { onCopyPath, onOpenDoc };
-  const exec_handlers = { onChange: onExecChange };
+  const exec_handlers = {
+    onChange: onExecChange,
+    onImplTargetChange
+  };
 
   /**
    * Normalize a bd dependency edge to a target id.
@@ -1548,7 +1706,8 @@ export function createDetailPanel(mount_element, options) {
             effective,
             exec_handlers,
             execDefaults(),
-            runnerCatalog()
+            runnerCatalog(),
+            execDefaultSourceName()
           )}
           ${taskPromptTemplate(
             {

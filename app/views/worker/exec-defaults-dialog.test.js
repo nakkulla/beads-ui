@@ -44,18 +44,21 @@ function createQueueStore() {
 /**
  * @param {any} state
  * @param {any} [transport]
+ * @param {Record<string, any>} [queue_overrides]
  */
-function setup(state, transport = vi.fn()) {
+function setup(state, transport = vi.fn(), queue_overrides = {}) {
   const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
   const presetStore = createExecPresetStore();
   presetStore.set(state);
+  const queueStore = createQueueStore();
+  queueStore.set({ ...queueStore.get(), ...queue_overrides });
   const dialog = createExecDefaultsDialog(mount, {
-    queueStore: createQueueStore(),
+    queueStore,
     presetStore,
     transport
   });
   dialog.open();
-  return { mount, presetStore, transport };
+  return { mount, presetStore, queueStore, transport };
 }
 
 /** @param {HTMLElement} element */
@@ -115,6 +118,11 @@ describe('worker exec preset dialog', () => {
     );
     name.value = '개발';
     name.dispatchEvent(new Event('input', { bubbles: true }));
+    const runtime = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="impl_runtime"]')
+    );
+    runtime.value = 'codex';
+    runtime.dispatchEvent(new Event('change', { bubbles: true }));
     const model = /** @type {HTMLSelectElement} */ (
       mount.querySelector('[data-preset-key="impl_model"]')
     );
@@ -129,10 +137,10 @@ describe('worker exec preset dialog', () => {
     expect(transport).toHaveBeenCalledWith('exec-preset-create', {
       expected_revision: 3,
       name: '개발',
-      settings: { impl_model: 'terra' }
+      settings: { impl_runtime: 'codex', impl_model: 'terra' }
     });
     expect(mount.querySelector('[data-preset-id="p1"]')?.textContent).toContain(
-      '1/10 지정'
+      '1/11 지정'
     );
   });
 
@@ -265,13 +273,12 @@ describe('worker exec preset dialog', () => {
     ).toContain('비호환');
   });
 
-  test('uses the shared semantic labels in defaults and preset editor rows', () => {
+  test('uses the shared semantic labels in the preset editor without per-key workspace rows', () => {
     const { mount } = setup({ revision: 0, presets: [] });
 
     expect(
       mount.querySelector('.exec-defaults__workspace [data-exec-setting-title]')
-        ?.textContent
-    ).toBe('워커 실행 모델');
+    ).toBe(null);
     click(
       /** @type {HTMLElement} */ (mount.querySelector('[data-preset-new]'))
     );
@@ -284,5 +291,254 @@ describe('worker exec preset dialog', () => {
         '.exec-preset-editor [data-exec-setting-help="impl_model"]'
       )?.textContent
     ).toContain('복잡 구현');
+  });
+
+  test('resets a preset draft model and effort when runtime switches provider', () => {
+    const { mount } = setup({
+      revision: 1,
+      presets: [
+        {
+          id: 'p1',
+          name: '구현',
+          settings: {
+            impl_runtime: 'codex',
+            impl_model: 'terra',
+            impl_effort: 'high'
+          }
+        }
+      ]
+    });
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('[data-preset-edit="p1"]')
+      )
+    );
+    const runtime = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="impl_runtime"]')
+    );
+    runtime.value = 'claude';
+    runtime.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-preset-key="impl_model"]')
+      ).value
+    ).toBe('');
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-preset-key="impl_effort"]')
+      ).value
+    ).toBe('');
+  });
+
+  test('keeps a compatible exact model when a preset draft inherits a known provider', () => {
+    const { mount } = setup({
+      revision: 1,
+      presets: [
+        {
+          id: 'p1',
+          name: '구현',
+          settings: {
+            orchestration_model: 'terra',
+            impl_runtime: 'codex',
+            impl_model: 'terra',
+            impl_effort: 'high'
+          }
+        }
+      ]
+    });
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('[data-preset-edit="p1"]')
+      )
+    );
+    const runtime = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="impl_runtime"]')
+    );
+    runtime.value = 'inherit';
+    runtime.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-preset-key="impl_model"]')
+      ).value
+    ).toBe('terra');
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-preset-key="impl_effort"]')
+      ).value
+    ).toBe('high');
+  });
+
+  test('resets inherited preset target when its orchestration provider is unset', () => {
+    const { mount } = setup({
+      revision: 1,
+      presets: [
+        {
+          id: 'p1',
+          name: '구현',
+          settings: {
+            impl_runtime: 'inherit',
+            impl_model: 'terra',
+            impl_effort: 'high'
+          }
+        }
+      ]
+    });
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('[data-preset-edit="p1"]')
+      )
+    );
+
+    const model = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="impl_model"]')
+    );
+    const effort = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="impl_effort"]')
+    );
+
+    expect(model.disabled).toBe(true);
+    expect(Array.from(model.options).map((option) => option.value)).toEqual(['']);
+    expect(model.value).toBe('');
+    expect(effort.value).toBe('');
+  });
+
+  test('shows provider models and keeps a matching target when orchestration model is exact', () => {
+    const { mount } = setup({
+      revision: 1,
+      presets: [
+        {
+          id: 'p1',
+          name: '구현',
+          settings: {
+            orchestration_model: 'terra',
+            impl_runtime: 'inherit',
+            impl_model: 'terra',
+            impl_effort: 'high'
+          }
+        }
+      ]
+    });
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('[data-preset-edit="p1"]')
+      )
+    );
+    const orchestration = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="orchestration_model"]')
+    );
+    orchestration.value = 'luna';
+    orchestration.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const model = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="impl_model"]')
+    );
+
+    expect(model.disabled).toBe(false);
+    expect(Array.from(model.options).map((option) => option.value)).toContain(
+      'terra'
+    );
+    expect(model.value).toBe('terra');
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-preset-key="impl_effort"]')
+      ).value
+    ).toBe('high');
+  });
+
+  test('resets an auto-model preset draft effort outside the new runtime union', () => {
+    const { mount } = setup({
+      revision: 1,
+      presets: [
+        {
+          id: 'p1',
+          name: '구현',
+          settings: {
+            impl_runtime: 'codex',
+            impl_effort: 'max'
+          }
+        }
+      ]
+    });
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('[data-preset-edit="p1"]')
+      )
+    );
+    const runtime = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="impl_runtime"]')
+    );
+    runtime.value = 'claude';
+    runtime.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-preset-key="impl_effort"]')
+      ).value
+    ).toBe('');
+  });
+
+  test('shows a missing workspace selection and blocks its dispatch', () => {
+    const transport = vi.fn();
+    const { mount } = setup(
+      { revision: 1, presets: [{ id: 'p1', name: '개발', settings: {} }] },
+      transport,
+      { default_exec_preset_id: 'gone' }
+    );
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-workspace-preset-select]')
+    );
+
+    expect(
+      mount.querySelector('[data-workspace-preset-missing]')?.textContent
+    ).toContain('찾을 수 없습니다');
+    expect(
+      mount.querySelector('[data-workspace-preset-missing]')?.textContent
+    ).toContain('실행이 차단됩니다');
+    expect(select.options[select.selectedIndex].textContent).toContain(
+      '선택한 프리셋 없음'
+    );
+    select.value = 'gone';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('shows an incompatible workspace selection and blocks its dispatch', () => {
+    const transport = vi.fn();
+    const { mount } = setup(
+      {
+        revision: 1,
+        presets: [{ id: 'p1', name: '과거', settings: {}, compatible: false }]
+      },
+      transport,
+      { default_exec_preset_id: 'p1' }
+    );
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-workspace-preset-select]')
+    );
+
+    expect(
+      mount.querySelector('[data-workspace-preset-incompatible]')?.textContent
+    ).toContain('실행이 차단됩니다');
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('renders an unknown preset reference count as unverifiable', () => {
+    const { mount } = setup({
+      revision: 1,
+      presets: [{ id: 'p1', name: '개발', settings: {} }]
+    });
+
+    expect(
+      mount.querySelector('[data-preset-references="p1"]')?.textContent
+    ).toContain('확인 불가');
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('[data-preset-delete="p1"]')
+      ).disabled
+    ).toBe(true);
   });
 });

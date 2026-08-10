@@ -7,21 +7,22 @@ import {
   EXEC_SETTING_PRESENTATION,
   execSettingLabelTemplate,
   execSettingRows,
+  modelRunnerOf,
+  normalizeImplTarget,
   selectOptionsTemplate
 } from '../detail-panel/exec-settings.js';
 import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 
 /**
  * Worker-tab "전역 실행 설정" dialog: the single editing surface for the
- * workspace-global exec defaults (the 10 exec keys, NOT workflow_mode). It mirrors
+ * workspace-global preset reference (not per-key defaults or workflow_mode). It mirrors
  * the display-settings dialog's native `<dialog>` shell (showModal/jsdom fallback,
  * close/cancel handling, destroy) and the Worker view's CAS contract:
- * a change sends `worker-queue-set-exec-default` with the current queue revision,
- * adopts the authoritative queue the reply carries, and replays the SAME edit once
- * against the fresh revision on a CAS conflict.
+ * a change sends `worker-queue-set-default-exec-preset` with queue and preset
+ * revisions, and adopts both authoritative snapshots on a conflict without retry.
  *
  * Values resolve bead metadata > this global default > final fallback (`opus`
- * for orchestration_model, unset for the other 9), so selecting `(기본)` records
+ * for orchestration_model, unset for the other 10), so selecting `(기본)` records
  * an unset (null) — the store drops the key. A stored value outside the current
  * vocabulary (e.g. a model dropped from `config.toml`, or an effort the chosen
  * model does not accept) shows as its own selected `(비호환)` option, still
@@ -160,11 +161,6 @@ export function createExecDefaultsDialog(mount_element, options) {
   /**
    * @returns {Record<string, string>}
    */
-  function currentDefaults() {
-    const d = currentQueue().exec_defaults;
-    return d && typeof d === 'object' ? d : {};
-  }
-
   /** @returns {{ revision: number, presets: any[] }|null} */
   function currentPresetState() {
     const state = presetStore ? presetStore.get() : null;
@@ -202,44 +198,6 @@ export function createExecDefaultsDialog(mount_element, options) {
   }
 
   /**
-   * Set (or unset with '') a global exec default, retrying ONCE on a CAS conflict
-   * against the revision the server just reported — the Worker view's adopt-and-
-   * replay discipline. `''` (the `(기본)` option) is sent as `null` = unset.
-   *
-   * @param {string} key
-   * @param {string} value
-   */
-  async function save(key, value) {
-    if (!transport) {
-      return;
-    }
-    const payload = { key, value: value || null };
-    try {
-      let res = await transport('worker-queue-set-exec-default', {
-        ...payload,
-        expected_revision: currentRevision()
-      });
-      adopt(res);
-      if (res && res.conflict) {
-        res = await transport('worker-queue-set-exec-default', {
-          ...payload,
-          expected_revision: currentRevision()
-        });
-        adopt(res);
-      }
-      if (res && res.conflict) {
-        showToast(
-          '전역 실행 설정 저장 실패: 다른 클라이언트와 충돌',
-          'error',
-          4000
-        );
-      }
-    } catch {
-      showToast('전역 실행 설정 저장 실패', 'error', 4000);
-    }
-  }
-
-  /**
    * The snapshot's `runner_catalog` decoration — the source of the grouped model
    * options and the per-model effort lists. Absent on a pre-snapshot or legacy
    * queue, which the shared row builder degrades fail-quiet.
@@ -250,40 +208,67 @@ export function createExecDefaultsDialog(mount_element, options) {
     return currentQueue().runner_catalog ?? null;
   }
 
-  /**
-   * One global exec-default row. The option model comes from the SAME
-   * `execSettingRows` the detail panel uses, so the two surfaces share the
-   * grouping, the per-model effort narrowing, the self/skip gate and the
-   * `(비호환)` rule instead of implementing them twice. This dialog edits the
-   * global layer itself, so `selected` and `effective` are the one value.
-   *
-   * @param {import('../detail-panel/exec-settings.js').ExecRow} row
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function selectRow(row) {
-    const { key } = row;
-    return html`<div class="exec-defaults__row">
-      <span class="exec-defaults__k">${execSettingLabelTemplate(key)}</span>
-      <select
-        class="exec-defaults__sel"
-        aria-label=${`전역 ${key}`}
-        data-key=${key}
-        ?disabled=${row.disabled}
-        @change=${(/** @type {Event} */ ev) =>
-          void save(key, /** @type {HTMLSelectElement} */ (ev.target).value)}
-      >
-        ${selectOptionsTemplate(
-          row.groups,
-          row.selected,
-          DEFAULT_LABELS[key] || '(기본)'
-        )}
-      </select>
-      ${row.runner
-        ? html`<span class="exec-defaults__runner" data-runner-for=${key}
-            >${row.runner}</span
-          >`
-        : ''}
-    </div>`;
+  /** @type {string|null} */
+  let workspace_selection = null;
+
+  /** @returns {string|null} */
+  function selectedWorkspacePresetId() {
+    if (workspace_selection !== null) {
+      return workspace_selection;
+    }
+    const id = currentQueue().default_exec_preset_id;
+    return typeof id === 'string' && id.length > 0 ? id : null;
+  }
+
+  /** @param {string} preset_id */
+  async function saveWorkspacePreset(preset_id) {
+    if (!transport) {
+      return;
+    }
+    const state = currentPresetState();
+    if (!state) {
+      return;
+    }
+    workspace_selection = preset_id || '';
+    const selection = workspacePresetSelection(preset_id);
+    doRender();
+    if (!selection.viable) {
+      showToast(
+        selection.missing
+          ? '선택한 프리셋을 찾을 수 없어 저장하지 않았습니다.'
+          : '비호환 프리셋은 워크스페이스 기본값으로 저장할 수 없습니다.',
+        'error',
+        4000
+      );
+      return;
+    }
+    try {
+      const res = await transport('worker-queue-set-default-exec-preset', {
+        preset_id: preset_id || null,
+        expected_queue_revision: currentRevision(),
+        expected_preset_revision: state.revision
+      });
+      adopt(res);
+      if (res && res.presets && presetStore) {
+        presetStore.set(res.presets);
+      }
+      if (res && res.conflict) {
+        showToast(
+          '기본 프리셋이 변경됐습니다. 선택을 검토한 뒤 다시 저장하세요.',
+          'error',
+          4000
+        );
+        return;
+      }
+      if (res && res.applied) {
+        workspace_selection = null;
+        doRender();
+        return;
+      }
+      showToast('워크스페이스 기본 프리셋 저장 실패', 'error', 4000);
+    } catch {
+      showToast('워크스페이스 기본 프리셋 저장 실패', 'error', 4000);
+    }
   }
 
   /** @param {any} preset */
@@ -293,6 +278,7 @@ export function createExecDefaultsDialog(mount_element, options) {
       name: preset.name,
       settings: { ...(preset.settings || {}) }
     };
+    normalizePresetDraftImplTarget();
     preset_conflict = false;
     doRender();
   }
@@ -310,8 +296,14 @@ export function createExecDefaultsDialog(mount_element, options) {
         ? preset.settings
         : {};
     /** @param {string} key */
-    const valueOf = (key) =>
-      typeof settings[key] === 'string' ? settings[key] : '';
+    const valueOf = (key) => {
+      if (typeof settings[key] === 'string') {
+        return settings[key];
+      }
+      return key === 'impl_runtime' && typeof settings.impl_model === 'string'
+        ? modelRunnerOf(currentCatalog(), settings.impl_model) || ''
+        : '';
+    };
     return execSettingRows({
       selectedOf: valueOf,
       effectiveOf: valueOf,
@@ -326,6 +318,74 @@ export function createExecDefaultsDialog(mount_element, options) {
     );
   }
 
+  /**
+   * @param {string} preset_id
+   * @returns {{ viable: boolean, missing: boolean, incompatible: boolean, preset: any|null }}
+   */
+  function workspacePresetSelection(preset_id) {
+    if (!preset_id) {
+      return {
+        viable: true,
+        missing: false,
+        incompatible: false,
+        preset: null
+      };
+    }
+    const state = currentPresetState();
+    const preset = state?.presets.find((entry) => entry.id === preset_id);
+    if (!preset || preset.migration_pending === true) {
+      return {
+        viable: false,
+        missing: true,
+        incompatible: false,
+        preset: null
+      };
+    }
+    const incompatible =
+      preset.compatible === false || presetIsIncompatible(preset);
+    return {
+      viable: !incompatible,
+      missing: false,
+      incompatible,
+      preset
+    };
+  }
+
+  /** @returns {string|null} */
+  function presetDraftControllerRuntime() {
+    const model = preset_draft?.settings.orchestration_model;
+    if (typeof model !== 'string') {
+      return null;
+    }
+    return modelRunnerOf(currentCatalog(), model);
+  }
+
+  function normalizePresetDraftImplTarget() {
+    if (!preset_draft) {
+      return;
+    }
+    const normalized = normalizeImplTarget(
+      {
+        impl_runtime: preset_draft.settings.impl_runtime || '',
+        impl_model: preset_draft.settings.impl_model || '',
+        impl_effort: preset_draft.settings.impl_effort || ''
+      },
+      currentCatalog(),
+      presetDraftControllerRuntime()
+    );
+    for (const key of /** @type {const} */ ([
+      'impl_runtime',
+      'impl_model',
+      'impl_effort'
+    ])) {
+      if (normalized[key]) {
+        preset_draft.settings[key] = normalized[key];
+      } else {
+        delete preset_draft.settings[key];
+      }
+    }
+  }
+
   /** @param {any} preset */
   function presetSummary(preset) {
     const settings =
@@ -335,21 +395,14 @@ export function createExecDefaultsDialog(mount_element, options) {
     const count = EXEC_KEYS.filter(
       (key) => typeof settings[key] === 'string'
     ).length;
-    const model_keys = [
-      'orchestration_model',
-      'spec_review_model',
-      'plan_review_model',
-      'impl_review_model',
-      'impl_model'
-    ];
-    const choices = model_keys
-      .filter((key) => typeof settings[key] === 'string')
-      .map(
-        (key) =>
-          `${EXEC_SETTING_PRESENTATION[key]?.title || key}: ${settings[key]}`
-      );
+    const choices = EXEC_KEYS.filter(
+      (key) => typeof settings[key] === 'string'
+    ).map(
+      (key) =>
+        `${EXEC_SETTING_PRESENTATION[key]?.title || key}: ${settings[key]}`
+    );
     return {
-      count: `${count}/10 지정`,
+      count: `${count}/11 지정`,
       choices: choices.length > 0 ? choices.join(' · ') : '모든 항목 기본값'
     };
   }
@@ -445,6 +498,14 @@ export function createExecDefaultsDialog(mount_element, options) {
           } else {
             delete preset_draft.settings[row.key];
           }
+          if (
+            row.key === 'impl_runtime' ||
+            row.key === 'impl_model' ||
+            row.key === 'impl_effort' ||
+            row.key === 'orchestration_model'
+          ) {
+            normalizePresetDraftImplTarget();
+          }
           preset_conflict = false;
           doRender();
         }}
@@ -470,7 +531,8 @@ export function createExecDefaultsDialog(mount_element, options) {
     const rows = execSettingRows({
       selectedOf: valueOf,
       effectiveOf: valueOf,
-      runner_catalog: currentCatalog()
+      runner_catalog: currentCatalog(),
+      controller_runtime: presetDraftControllerRuntime()
     });
     const state = currentPresetState();
     const deleted =
@@ -538,6 +600,9 @@ export function createExecDefaultsDialog(mount_element, options) {
 
   function presetSection() {
     const state = currentPresetState();
+    const presets = state
+      ? state.presets.filter((preset) => preset?.migration_pending !== true)
+      : [];
     return html`<section class="exec-presets" data-exec-presets>
       <div class="exec-presets__heading">
         <h3>공용 실행 프리셋</h3>
@@ -550,12 +615,26 @@ export function createExecDefaultsDialog(mount_element, options) {
       </p>
       ${state === null
         ? html`<p class="exec-presets__empty">프리셋을 불러오는 중…</p>`
-        : state.presets.length === 0
+        : presets.length === 0
           ? html`<p class="exec-presets__empty">
               아직 공용 프리셋이 없습니다.
             </p>`
-          : state.presets.map((preset) => {
+          : presets.map((preset) => {
               const summary = presetSummary(preset);
+              const has_reference_count =
+                typeof preset.reference_count === 'number';
+              const reference_count = has_reference_count
+                ? preset.reference_count
+                : null;
+              const impact = Array.isArray(preset.reference_summary)
+                ? preset.reference_summary
+                    .map(
+                      (/** @type {any} */ entry) =>
+                        entry?.display_name || entry?.workspace_key
+                    )
+                    .filter(Boolean)
+                    .join(', ')
+                : '';
               return html`<article
                 class="exec-preset-card"
                 data-preset-id=${preset.id}
@@ -563,10 +642,20 @@ export function createExecDefaultsDialog(mount_element, options) {
                 <div class="exec-preset-card__main">
                   <strong>${preset.name}</strong>
                   <span>${summary.count}</span>
+                  <span data-preset-references=${preset.id}
+                    >${has_reference_count
+                      ? `참조 ${reference_count}개`
+                      : '참조 확인 불가'}</span
+                  >
                   ${presetIsIncompatible(preset)
                     ? html`<span data-preset-incompatible>비호환</span>`
                     : ''}
                   <small>${summary.choices}</small>
+                  ${impact
+                    ? html`<small data-preset-impact=${preset.id}
+                        >업데이트 영향: ${impact}</small
+                      >`
+                    : ''}
                 </div>
                 <div class="exec-preset-card__actions">
                   <button
@@ -579,6 +668,16 @@ export function createExecDefaultsDialog(mount_element, options) {
                   <button
                     type="button"
                     data-preset-delete=${preset.id}
+                    ?disabled=${reference_count === null ||
+                    reference_count > 0 ||
+                    preset.reference_scan_complete === false}
+                    title=${reference_count === null
+                      ? '참조 수를 확인할 수 없어 삭제할 수 없습니다'
+                      : reference_count > 0
+                        ? '참조 중인 워크스페이스가 있어 삭제할 수 없습니다'
+                        : preset.reference_scan_complete === false
+                          ? '참조 스캔이 완료되지 않아 삭제할 수 없습니다'
+                          : ''}
                     @click=${() => void deletePreset(preset)}
                   >
                     삭제
@@ -587,6 +686,69 @@ export function createExecDefaultsDialog(mount_element, options) {
               </article>`;
             })}
       ${presetEditor()}
+    </section>`;
+  }
+
+  function workspacePresetSection() {
+    const state = currentPresetState();
+    const presets = state
+      ? state.presets.filter((preset) => preset?.migration_pending !== true)
+      : [];
+    const selected_id = selectedWorkspacePresetId() || '';
+    const selection = workspacePresetSelection(selected_id);
+    const selected = selection.preset;
+    const summary = selected ? presetSummary(selected) : null;
+    return html`<section class="exec-defaults__workspace" data-workspace-preset>
+      <h3>현재 워크스페이스 기본 프리셋</h3>
+      <p class="exec-defaults__hint">
+        이 워크스페이스는 프리셋 하나를 참조합니다. 없음은 harness 기본값을
+        사용합니다.
+      </p>
+      <select
+        class="exec-defaults__sel"
+        data-workspace-preset-select
+        aria-label="워크스페이스 기본 프리셋"
+        .value=${selected_id}
+        ?disabled=${state === null}
+        @change=${(/** @type {Event} */ ev) =>
+          void saveWorkspacePreset(
+            /** @type {HTMLSelectElement} */ (ev.target).value
+          )}
+      >
+        <option value="" ?selected=${selected_id === ''}>
+          없음 — harness 기본값
+        </option>
+        ${selected_id && selection.missing
+          ? html`<option value=${selected_id} ?selected=${true}>
+              ${selected_id} (선택한 프리셋 없음)
+            </option>`
+          : ''}
+        ${presets.map(
+          (preset) =>
+            html`<option
+              value=${preset.id}
+              ?selected=${preset.id === selected_id}
+              ?disabled=${preset.compatible === false}
+            >
+              ${preset.name}${preset.compatible === false ? ' (비호환)' : ''}
+            </option>`
+        )}
+      </select>
+      ${selected
+        ? html`<p data-workspace-preset-summary>
+            ${summary?.count} · ${summary?.choices}
+            ${selection.incompatible ? ' · 비호환' : ''}
+          </p>`
+        : ''}
+      ${selection.missing
+        ? html`<p data-workspace-preset-missing>
+            선택한 프리셋을 찾을 수 없습니다. 실행이 차단됩니다.
+          </p>`
+        : selection.incompatible
+          ? html`<p data-workspace-preset-incompatible>
+              선택한 프리셋이 비호환입니다. 실행이 차단됩니다.
+            </p>`
+          : ''}
     </section>`;
   }
 
@@ -870,15 +1032,6 @@ export function createExecDefaultsDialog(mount_element, options) {
   }
 
   function doRender() {
-    const defaults = currentDefaults();
-    /** @param {string} key */
-    const valueOf = (key) =>
-      typeof defaults[key] === 'string' ? defaults[key] : '';
-    const rows = execSettingRows({
-      selectedOf: valueOf,
-      effectiveOf: valueOf,
-      runner_catalog: currentCatalog()
-    });
     render(
       html`
         <div class="exec-defaults__container">
@@ -894,16 +1047,7 @@ export function createExecDefaultsDialog(mount_element, options) {
             </button>
           </header>
           <div class="exec-defaults__body">
-            ${presetSection()}
-            <section class="exec-defaults__workspace">
-              <h3>현재 워크스페이스 기본값</h3>
-              <p class="exec-defaults__hint">
-                현재 워크스페이스에만 적용됩니다. bead metadata가 우선하며,
-                '(기본: …)'은 이 전역값도 미설정일 때 실제 적용되는
-                하드코딩·CLI·워크플로 기본입니다.
-              </p>
-              ${rows.map((row) => selectRow(row))}
-            </section>
+            ${presetSection()} ${workspacePresetSection()}
             ${verifyDeploySection(currentWorkspaceInfo())}
             ${systemPromptSection()}
           </div>
@@ -911,6 +1055,14 @@ export function createExecDefaultsDialog(mount_element, options) {
       `,
       dialog
     );
+    if (workspace_selection !== null) {
+      const select = /** @type {HTMLSelectElement|null} */ (
+        dialog.querySelector('[data-workspace-preset-select]')
+      );
+      if (select) {
+        select.value = workspace_selection;
+      }
+    }
   }
 
   // Tracked separately from `dialog.open` so a pushed snapshot still re-renders

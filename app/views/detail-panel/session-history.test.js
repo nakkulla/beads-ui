@@ -239,3 +239,26 @@ describe('session-history token usage (UI-d7pw §2.2)', () => {
     ).toContain('부분 집계');
   });
 });
+
+describe('session-history preset audit', () => {
+  test('renders outer preset provenance without claiming a child execution model', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'a1',
+          status: 'done',
+          exec_default_preset_id: 'preset-dev',
+          exec_default_preset_revision: 4,
+          exec_values: { impl_model: 'terra', impl_runtime: 'codex' }
+        }
+      ])
+    );
+
+    const audit = host.querySelector('[data-attempt-preset-audit]');
+    expect(audit?.textContent).toContain('외부 실행 preset');
+    expect(audit?.textContent).toContain('preset-dev r4');
+    expect(audit?.textContent).toContain(
+      '내부 workflow 실행 영수증과 별도 기록'
+    );
+  });
+});

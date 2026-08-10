@@ -5298,6 +5298,21 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
+.detail-session__preset-audit {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-8);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+}
+
+.detail-session__preset-audit small {
+  flex: 1 1 100%;
+}
+
 .detail-session-row .detail-session {
   flex: 1 1 auto;
   min-width: 0;
