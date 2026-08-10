@@ -110,15 +110,15 @@ Nothing merges without a human `[머지]` click.
   from a subscription the server has not torn down yet; the rest is the full
   queue (`revision`, `auto_advance`, `slots`, `pr_wait_holds_slot`, `queue[]`,
   `pr_wait[]`, `done[]`, `attempts`, `admission`, `cleanup_failed`,
-  `ship_failure`, `exec_defaults`) plus four server-decorated, NON-persisted
-  keys: `workspace_info: { verify_cmd, slots }`, `pr_observations`
-  (per-`pr_wait` PR state + merge-gate verdict, memory cache only),
-  `bead_titles` (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done`
-  beads, memory cache only), and `declared_base`. `bead_titles` is PARTIAL: only
-  titles already cached travel, a miss simply has no entry and arrives in a
-  later snapshot once the server's async lookup fills it. Consumers fail-quiet
-  on the whole key being absent (older server) and on a missing entry — both
-  fall back to displaying the bead id.
+  `exec_defaults`) plus four server-decorated, NON-persisted keys:
+  `workspace_info: { verify_cmd, slots }`, `pr_observations` (per-`pr_wait` PR
+  state + merge-gate verdict, memory cache only), `bead_titles`
+  (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done` beads, memory cache
+  only), and `declared_base`. `bead_titles` is PARTIAL: only titles already
+  cached travel, a miss simply has no entry and arrives in a later snapshot once
+  the server's async lookup fills it. Consumers fail-quiet on the whole key
+  being absent (older server) and on a missing entry — both fall back to
+  displaying the bead id.
 - A RUNNING attempt inside `attempts` additionally carries the non-persisted
   `last_event_at` (epoch ms) — when the server last saw a session-log line for
   that attempt (UI-53es §1). It is what the monitor row's live heartbeat reads;
