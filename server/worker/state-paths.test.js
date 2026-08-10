@@ -5,6 +5,7 @@ import {
   execPresetsFilePath,
   guardHookDir,
   sessionLogPath,
+  usageReceiptInboxDir,
   workspaceSlug,
   workspaceStateDir
 } from './state-paths.js';
@@ -17,6 +18,14 @@ let saved_xdg;
 beforeEach(() => {
   saved_xdg = process.env.XDG_STATE_HOME;
   process.env.XDG_STATE_HOME = '/state';
+});
+
+describe('usageReceiptInboxDir', () => {
+  test('derives one deterministic private inbox per attempt', () => {
+    expect(usageReceiptInboxDir(WS, 'UI-orfj-1')).toBe(
+      path.join(workspaceStateDir(WS), 'usage-receipts', 'UI-orfj-1')
+    );
+  });
 });
 
 afterEach(() => {

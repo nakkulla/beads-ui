@@ -57,6 +57,10 @@ import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { readDeclaredBase } from '../worker/target-base.js';
 import {
+  normalizeUsageLegs,
+  readAttemptUsageReceipts
+} from '../worker/usage-receipts.js';
+import {
   emitSessionLogAppend,
   emitSessionLogSnapshot,
   emitWorkerQueueSnapshot,
@@ -533,6 +537,24 @@ export function attemptsWithUsage(queue, workspace_key) {
     let projected = stripPrompts(attempt);
     if (live) {
       projected = { ...projected, usage: live };
+    }
+    if (running) {
+      try {
+        const scanned = readAttemptUsageReceipts(workspace_key, attempt_id, {
+          known_legs: attempt.usage_legs
+        });
+        if (scanned.legs.length > 0) {
+          projected = {
+            ...projected,
+            usage_legs: normalizeUsageLegs([
+              ...(Array.isArray(attempt.usage_legs) ? attempt.usage_legs : []),
+              ...scanned.legs
+            ])
+          };
+        }
+      } catch (err) {
+        log('usage receipt overlay failed for %s: %o', attempt_id, err);
+      }
     }
     if (typeof last_event_at === 'number') {
       projected = { ...projected, last_event_at };

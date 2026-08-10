@@ -176,3 +176,30 @@ export function guardHookDir(workspace_root, attempt_id) {
   const safe = String(attempt_id || 'attempt').replace(/[^A-Za-z0-9._-]/g, '_');
   return path.join(workspaceStateDir(workspace_root), 'guard-hooks', safe);
 }
+
+/**
+ * Absolute directory used as the private, deterministic receipt inbox for one
+ * attempt. The runner receives this path at launch, but consumers always
+ * derive it again from the workspace and attempt id rather than trusting an
+ * inherited environment value.
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @param {string} attempt_id - Stable attempt id.
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/usage-receipts/<attempt_id>`.
+ */
+export function usageReceiptInboxDir(workspace_root, attempt_id) {
+  const safe = String(attempt_id || 'attempt').replace(/[^A-Za-z0-9._-]/g, '_');
+  return path.resolve(
+    workspaceStateDir(workspace_root),
+    'usage-receipts',
+    safe
+  );
+}
+
+/**
+ * @param {string} workspace_root
+ * @returns {string} Absolute directory containing all attempt receipt inboxes.
+ */
+export function usageReceiptRootDir(workspace_root) {
+  return path.resolve(workspaceStateDir(workspace_root), 'usage-receipts');
+}

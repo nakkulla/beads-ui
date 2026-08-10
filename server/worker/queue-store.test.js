@@ -10,10 +10,12 @@ import {
 import {
   deployLogDir,
   queueFilePath,
+  usageReceiptInboxDir,
   verifyLogDir,
   workspaceSlug,
   workspaceStateDir
 } from './state-paths.js';
+import { ensureUsageReceiptInbox } from './usage-receipts.js';
 
 /** @type {string} */
 let tmp_state;
@@ -1419,6 +1421,7 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
           output_tokens: 1113,
           cache_read_input_tokens: 45784,
           cache_creation_input_tokens: 12577,
+          reasoning_output_tokens: 37,
           total_cost_usd: 0.0353
         }
       }
@@ -1427,8 +1430,145 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(createQueueStore().load(WS).attempts['att-1'].usage).toMatchObject({
       input_tokens: 18,
       output_tokens: 1113,
+      reasoning_output_tokens: 37,
       total_cost_usd: 0.0353
     });
+  });
+
+  test('usage legs survive updateAttempt and normalize legacy attempts', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-legs' })
+      .queue.revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-legs', bead_id: 'UI-legs' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-legs',
+      patch: {
+        usage_legs: [
+          {
+            receipt_id: 'launch-1',
+            provider: 'codex',
+            role: 'implementation',
+            session_id: 'thread-1',
+            turn_id: 'turn-1',
+            model: 'gpt-5.6-terra',
+            usage: {
+              input_tokens: 10,
+              output_tokens: 2,
+              cache_read_input_tokens: 1,
+              cache_creation_input_tokens: 0,
+              reasoning_output_tokens: 3
+            },
+            completed_at: '2026-08-11T12:34:56Z'
+          }
+        ]
+      }
+    });
+
+    const reloaded = createQueueStore().load(WS);
+
+    expect(reloaded.attempts['att-legs'].usage_legs).toHaveLength(1);
+    expect(reloaded.attempts['att-legs'].usage_legs[0].receipt_id).toBe(
+      'launch-1'
+    );
+    expect(
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: { attempt_id: 'legacy', bead_id: 'UI-legacy' }
+      }).queue.attempts.legacy.usage_legs
+    ).toEqual([]);
+  });
+
+  test('persists terminal receipt legs before consuming their files', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'receipt-attempt', bead_id: 'UI-receipt' }
+    });
+    const inbox = usageReceiptInboxDir(WS, 'receipt-attempt');
+    ensureUsageReceiptInbox(WS, 'receipt-attempt');
+    const receipt_file = path.join(inbox, 'launch-1.json');
+    fs.writeFileSync(
+      receipt_file,
+      JSON.stringify({
+        schema: 'codex-usage-receipt-v1',
+        receipt_id: 'launch-1',
+        attempt_id: 'receipt-attempt',
+        provider: 'codex',
+        role: 'implementation',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        model: 'gpt-5.6-terra',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 2,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          reasoning_output_tokens: 0
+        },
+        completed_at: '2026-08-11T12:34:56Z'
+      }),
+      { mode: 0o600 }
+    );
+
+    const result = store.updateAttempt(WS, {
+      attempt_id: 'receipt-attempt',
+      patch: { status: 'done' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.attempts['receipt-attempt'].usage_legs).toHaveLength(1);
+    expect(fs.existsSync(receipt_file)).toBe(false);
+  });
+
+  test('keeps receipt files when terminal queue persistence fails', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'receipt-failure', bead_id: 'UI-receipt' }
+    });
+    const inbox = usageReceiptInboxDir(WS, 'receipt-failure');
+    ensureUsageReceiptInbox(WS, 'receipt-failure');
+    const receipt_file = path.join(inbox, 'launch-1.json');
+    fs.writeFileSync(
+      receipt_file,
+      JSON.stringify({
+        schema: 'codex-usage-receipt-v1',
+        receipt_id: 'launch-1',
+        attempt_id: 'receipt-failure',
+        provider: 'codex',
+        role: 'implementation',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        model: 'gpt-5.6-terra',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 2,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          reasoning_output_tokens: 0
+        },
+        completed_at: '2026-08-11T12:34:56Z'
+      }),
+      { mode: 0o600 }
+    );
+    const failing_fs = {
+      ...fs,
+      renameSync() {
+        throw new Error('queue persistence failed');
+      }
+    };
+    const failing = createQueueStore({ fs: failing_fs });
+
+    expect(() =>
+      failing.updateAttempt(WS, {
+        attempt_id: 'receipt-failure',
+        patch: { status: 'done' }
+      })
+    ).toThrow('queue persistence failed');
+    expect(fs.existsSync(receipt_file)).toBe(true);
   });
 
   test('cause_detail survives updateAttempt and a cold reload (UI-2o4z §2)', () => {

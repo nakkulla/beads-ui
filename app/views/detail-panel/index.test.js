@@ -572,6 +572,45 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('shows provider usage badges in the issue heading', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          claude: {
+            attempt_id: 'claude',
+            bead_id: 'UI-1',
+            status: 'done',
+            runner: 'claude',
+            usage: { input_tokens: 10, output_tokens: 5 }
+          },
+          codex: {
+            attempt_id: 'codex',
+            bead_id: 'UI-1',
+            status: 'done',
+            runner: 'codex',
+            usage: { input_tokens: 4, output_tokens: 2 }
+          }
+        }
+      })
+    );
+    const panel = createDetailPanel(mount, { queueStore, onClose: vi.fn() });
+    panel.load('UI-1');
+
+    const badges = Array.from(
+      mount.querySelectorAll('.detail-title-row .detail-usage-total')
+    ).map((badge) => badge.textContent?.trim());
+
+    expect(badges).toEqual(['Claude τ 15', 'Codex τ 6']);
+
+    panel.destroy();
+  });
+
   test('session-history projects the session id (short) and carries it into the drawer (§2)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

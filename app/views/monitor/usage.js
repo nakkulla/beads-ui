@@ -9,7 +9,9 @@
  */
 import {
   SUM_FIELDS,
-  formatUsageTotalWithCost
+  formatUsageTotalWithCost,
+  mergeUsageProjections,
+  providerUsageBadges
 } from '../../utils/token-usage.js';
 
 /**
@@ -38,9 +40,21 @@ export function tokenTotalTooltip(range_label) {
  *
  * @param {Array<Pick<MonitorItem, 'usage'>>} done_items - period-filtered 완료
  * 아이템 (`buildLanes()`가 이미 각 항목에 `sumAttemptUsage()` 결과를 실어 둔다).
- * @returns {string|null}
+ * @returns {string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null}
  */
 export function crossRepoTokenTotal(done_items) {
+  /** @type {import('../../utils/token-usage.js').UsageProjection[]} */
+  const projections =
+    /** @type {import('../../utils/token-usage.js').UsageProjection[]} */ (
+      (Array.isArray(done_items) ? done_items : [])
+        .map((item) => item && item.usage)
+        .filter(
+          (usage) => usage && typeof usage === 'object' && 'providers' in usage
+        )
+    );
+  if (projections.length > 0) {
+    return providerUsageBadges(mergeUsageProjections(projections));
+  }
   /** @type {Record<string, number>} */
   const token_sum = {};
   for (const field of SUM_FIELDS) {

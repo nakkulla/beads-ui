@@ -30,6 +30,7 @@ import {
 } from '../../utils/relative-time.js';
 import {
   formatUsageTotalWithCost,
+  providerUsageBadges,
   sumAttemptUsage,
   usageTooltip
 } from '../../utils/token-usage.js';
@@ -676,7 +677,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
  *
  * @param {number|null|undefined} last_event_at
  * @param {number} now
- * @returns {import('lit-html').TemplateResult|''}
+ * @returns {import('lit-html').TemplateResult|import('lit-html').TemplateResult[]|''}
  */
 export function heartbeatTemplate(last_event_at, now) {
   if (typeof last_event_at !== 'number' || !Number.isFinite(last_event_at)) {
@@ -735,10 +736,19 @@ function repoChip(item) {
 
 /**
  * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult|''}
+ * @returns {import('lit-html').TemplateResult|import('lit-html').TemplateResult[]|''}
  */
 function usageChip(item) {
+  const provider_badges = providerUsageBadges(item.usage);
   const label = formatUsageTotalWithCost(item.usage);
+  if (provider_badges.length > 0) {
+    return provider_badges.map(
+      (badge) =>
+        html`<span class="mon-c__usage" title=${badge.tooltip}
+          >${badge.label}</span
+        >`
+    );
+  }
   return label
     ? html`<span class="mon-c__usage" title=${usageTooltip(item.usage)}
         >${label}</span
@@ -1187,7 +1197,7 @@ export function monitorGroupHeaderTemplate(group) {
  *   automation: { total: number, both_on: number },
  *   counts: { running: number, queue: number, pr_wait: number },
  *   done_range: import('../../data/closed-range.js').ClosedRange,
- *   token_total: string|null,
+ *   token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null,
  *   token_tooltip: string
  * }} model
  * @returns {import('lit-html').TemplateResult}
@@ -1197,6 +1207,11 @@ export function monitorTopBarTemplate(model) {
   const all_on = total > 0 && both_on === total;
   const done_label =
     CLOSED_RANGE_OPTIONS.find((o) => o.value === model.done_range)?.label || '';
+  const token_badges = Array.isArray(model.token_total)
+    ? model.token_total
+    : model.token_total
+      ? [{ label: model.token_total, tooltip: model.token_tooltip }]
+      : [];
   return html`<div class="mon-top">
     <button
       type="button"
@@ -1241,13 +1256,14 @@ export function monitorTopBarTemplate(model) {
             </option>`
         )}
       </select>
-      ${model.token_total
-        ? html`<span
+      ${token_badges.map(
+        (badge) =>
+          html`<span
             class="mon-kpi__chip mon-kpi__chip--tokens"
-            title=${model.token_tooltip}
-            >${done_label} 완료 · 누적 ${model.token_total}</span
+            title=${badge.tooltip}
+            >${done_label} 완료 · 누적 ${badge.label}</span
           >`
-        : ''}
+      )}
     </div>
   </div>`;
 }

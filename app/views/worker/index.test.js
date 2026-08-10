@@ -4819,7 +4819,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     const tile = /** @type {HTMLElement} */ (
       mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
     );
-    expect(tile.textContent?.trim()).toBe('τ 12.3k');
+    expect(tile.textContent?.trim()).toBe('Claude τ 12.3k');
   });
 
   test('puts the breakdown in the running tile tooltip', () => {
@@ -4848,7 +4848,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
       mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
     );
     expect(el.getAttribute('title')).toBe(
-      '총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800 · $0.42'
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800\n$0.42'
     );
   });
 
@@ -4876,7 +4876,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     const tile = /** @type {HTMLElement} */ (
       mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
     );
-    expect(tile.textContent?.trim()).toBe('τ 14.1M');
+    expect(tile.textContent?.trim()).toBe('Claude τ 14.1M');
   });
 
   test('puts the cost beside the tokens on a done row (UI-tq13 §6)', () => {
@@ -4901,7 +4901,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     const el = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
     );
-    expect(el.textContent?.trim()).toBe('τ 13.8k · $12.34');
+    expect(el.textContent?.trim()).toBe('Claude τ 13.8k · $12.34');
   });
 
   test('omits the cost from a done row that reported none', () => {
@@ -4922,7 +4922,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     const el = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
     );
-    expect(el.textContent?.trim()).toBe('τ 13.8k');
+    expect(el.textContent?.trim()).toBe('Claude τ 13.8k');
   });
 
   test('omits the cost when only some summed attempts reported one (UI-tq13 §7)', () => {
@@ -4950,7 +4950,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     const el = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
     );
-    expect(el.textContent?.trim()).toBe('τ 31.1k');
+    expect(el.textContent?.trim()).toBe('Claude τ 31.1k');
   });
 
   test('sums every attempt usage on a pr_wait row (UI-d7pw §1)', () => {
@@ -4977,7 +4977,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     const el = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
     );
-    expect(el.textContent?.trim()).toBe('τ 31.1k');
+    expect(el.textContent?.trim()).toBe('Claude τ 31.1k');
   });
 
   test('shows the last attempt usage on a done row', () => {
@@ -4998,7 +4998,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     const el = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
     );
-    expect(el.textContent?.trim()).toBe('τ 13.8k');
+    expect(el.textContent?.trim()).toBe('Claude τ 13.8k');
   });
 
   test('renders nothing for an attempt that recorded no usage', () => {
@@ -5957,7 +5957,7 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
 
     expect(
       mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
-    ).toBe('오늘 완료 · 누적 τ 2.0k');
+    ).toBe('오늘 완료 · 누적 Claude τ 2.0k');
   });
 
   test('renders no token chip when no completed session reported usage', () => {
@@ -6000,10 +6000,10 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
 
     expect(
       mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
-    ).toBe('오늘 완료 · 누적 τ 5.3M');
+    ).toBe('오늘 완료 · 누적 Claude τ 5.3M');
     expect(
       mount.querySelector('.worker-kpi__chip--tokens')?.getAttribute('title')
-    ).toContain('(입력+출력+캐시)');
+    ).toContain('Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성');
   });
 
   test('chip matches the row badge for the same issue (UI-tq13 §5)', () => {
@@ -6032,8 +6032,8 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
       .querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
       ?.textContent?.trim();
 
-    expect(chip).toBe('오늘 완료 · 누적 τ 14.1M');
-    expect(badge).toBe('τ 14.1M');
+    expect(chip).toBe('오늘 완료 · 누적 Claude τ 14.1M');
+    expect(badge).toBe('Claude τ 14.1M');
   });
 
   test('appends the cost when every summed attempt reported one (UI-j6wa §2)', () => {
@@ -6068,7 +6068,7 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
 
     expect(
       mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
-    ).toBe('오늘 완료 · 누적 τ 2.0k · $3.75');
+    ).toBe('오늘 완료 · 누적 Claude τ 2.0k · $3.75');
   });
 
   test('omits the cost when one summed attempt reported none (UI-j6wa §2)', () => {
@@ -6099,7 +6099,7 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
 
     expect(
       mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
-    ).toBe('오늘 완료 · 누적 τ 2.0k');
+    ).toBe('오늘 완료 · 누적 Claude τ 2.0k');
   });
 });
 
@@ -6796,7 +6796,7 @@ describe('token KPI zero handling (UI-58y2)', () => {
 
     expect(
       mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
-    ).toBe('오늘 완료 · 누적 τ 0');
+    ).toBe('오늘 완료 · 누적 Claude τ 0');
   });
 });
 

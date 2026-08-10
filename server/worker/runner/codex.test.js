@@ -244,7 +244,7 @@ describe('runner/codex usage lift (UI-raqh §1 generalized)', () => {
     });
   });
 
-  test('drops a codex field the tally has no name for', () => {
+  test('preserves reasoning output as an optional breakdown field', () => {
     const spec = codexSpec();
 
     const lifted = spec.liftUsage({
@@ -252,7 +252,24 @@ describe('runner/codex usage lift (UI-raqh §1 generalized)', () => {
       usage: { input_tokens: 1, reasoning_output_tokens: 13 }
     });
 
-    expect(lifted?.usage).toEqual({ input_tokens: 1 });
+    expect(lifted?.usage).toEqual({
+      input_tokens: 1,
+      reasoning_output_tokens: 13
+    });
+  });
+
+  test('lifts the app-server reasoning output spelling', () => {
+    const spec = codexSpec();
+
+    const lifted = spec.liftUsage({
+      type: 'turn.completed',
+      usage: { input_tokens: 1, reasoningOutputTokens: 13 }
+    });
+
+    expect(lifted?.usage).toEqual({
+      input_tokens: 1,
+      reasoning_output_tokens: 13
+    });
   });
 
   test('returns null when no field is a finite number', () => {
@@ -523,7 +540,8 @@ describe('runner/codex fixture replay through the session engine', () => {
       input_tokens: 34610,
       output_tokens: 62,
       cache_read_input_tokens: 16128,
-      cache_creation_input_tokens: 0
+      cache_creation_input_tokens: 0,
+      reasoning_output_tokens: 13
     });
   });
 

@@ -18,6 +18,7 @@ import {
 } from '../../utils/relative-time.js';
 import {
   formatUsageTotalWithCost,
+  providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
 import { stepperTemplate } from '../board/stepper.js';
@@ -117,7 +118,7 @@ export function timesMeta(item) {
  * why it is refused.
  * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
- * @property {import('../../utils/token-usage.js').UsageRecord|null} [usage] - Token usage
+ * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Token usage
  * summed across the bead's attempts (UI-d7pw §1); absent/null renders nothing.
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4).
@@ -140,6 +141,7 @@ export function timesMeta(item) {
 export function miniRow(item) {
   const draggable = item.draggable && !item.done;
   const badges = Array.isArray(item.badges) ? item.badges : [];
+  const provider_badges = providerUsageBadges(item.usage);
   const usage_label = formatUsageTotalWithCost(item.usage);
   const merging = item.merge_step || null;
   const card = item.lane === 'pr_wait' || !!item.revise_action;
@@ -206,11 +208,19 @@ export function miniRow(item) {
   const reason_el = item.reason
     ? html`<span class="worker-mini__reason">${item.reason}</span>`
     : '';
-  const usage_el = usage_label
-    ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
-        >${usage_label}</span
-      >`
-    : '';
+  const usage_el =
+    provider_badges.length > 0
+      ? provider_badges.map(
+          (badge) =>
+            html`<span class="worker-usage" title=${badge.tooltip}
+              >${badge.label}</span
+            >`
+        )
+      : usage_label
+        ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
+            >${usage_label}</span
+          >`
+        : '';
   const merge_step_el = merging
     ? // The one place this board raises its voice (UI-raqh §4): a merge is
       // irreversible and minutes long, so the row itself becomes the gauge —

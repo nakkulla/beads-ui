@@ -187,7 +187,8 @@ describe('worker/usage-replay (UI-ediw)', () => {
             input_tokens: 34610,
             cached_input_tokens: 16128,
             cache_write_input_tokens: 0,
-            output_tokens: 62
+            output_tokens: 62,
+            reasoning_output_tokens: 13
           }
         }
       ]),
@@ -201,7 +202,8 @@ describe('worker/usage-replay (UI-ediw)', () => {
     expect(usage_store.get('/ws', 'a1')).toMatchObject({
       input_tokens: 34610,
       output_tokens: 62,
-      cache_read_input_tokens: 16128
+      cache_read_input_tokens: 16128,
+      reasoning_output_tokens: 13
     });
   });
 

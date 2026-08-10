@@ -45,8 +45,9 @@ const TERMINAL_TYPES = new Set(['turn.completed', 'turn.failed']);
 
 /**
  * codex usage field → the tallied name the worker stores (UI-raqh §1). A codex
- * field with no counterpart here (`reasoning_output_tokens`) is dropped rather
- * than invented into a tally column.
+ * field with no counterpart here is dropped rather than invented into a tally
+ * column. Reasoning output has a worker tally name, but remains a
+ * breakdown-only field in the provider projection.
  *
  * @type {Record<string, string>}
  */
@@ -56,6 +57,16 @@ const USAGE_MAP = {
   cached_input_tokens: 'cache_read_input_tokens',
   cache_write_input_tokens: 'cache_creation_input_tokens'
 };
+
+/**
+ * Codex CLI emits snake case, while app-server events use camel case.
+ *
+ * @type {readonly string[]}
+ */
+const REASONING_OUTPUT_FIELDS = [
+  'reasoning_output_tokens',
+  'reasoningOutputTokens'
+];
 
 /**
  * The task prompt this bead dispatches with. `defaultTaskPrompt` is the shared
@@ -141,6 +152,13 @@ export function liftUsage(raw) {
     const value = usage[source];
     if (typeof value === 'number' && Number.isFinite(value)) {
       out[target] = value;
+    }
+  }
+  for (const source of REASONING_OUTPUT_FIELDS) {
+    const value = usage[source];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      out.reasoning_output_tokens = value;
+      break;
     }
   }
   return Object.keys(out).length > 0 ? { kind: 'result', usage: out } : null;
