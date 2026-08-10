@@ -576,6 +576,38 @@ describe('worker/attach construction + live loop (F1)', () => {
 });
 
 describe('worker/attach createLiveBd bd show parsing', () => {
+  test('snapshotBead resolves native spec_id and carries a dual-value conflict', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: {
+            id: 'UI-1',
+            status: 'open',
+            spec_id: ' docs/native.md ',
+            metadata: {
+              route: 'spec_backed',
+              spec_id: 'docs/legacy.md',
+              spec_review: 'codex@' + 'a'.repeat(40)
+            }
+          }
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(snap.spec_id).toBe('docs/native.md');
+    expect(snap.spec_id_conflict).toBe(true);
+  });
+
   test('snapshotBead unwraps the single-item-array show shape (live bd) — metadata must not be lost', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {

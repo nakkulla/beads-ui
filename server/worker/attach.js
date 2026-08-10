@@ -31,6 +31,7 @@ import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
+import { resolveSpecId } from '../spec-id.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { validateAdmission } from './admission.js';
 import { createAutoMerge } from './auto-merge.js';
@@ -216,7 +217,8 @@ export function createLiveBd(config) {
       const route = typeof md.route === 'string' ? md.route : null;
       // Presence rule for the admission inputs: a malformed spec_review must
       // reach the validator as present-and-invalid, never as absent.
-      const spec_id = typeof md.spec_id === 'string' ? md.spec_id : null;
+      const spec = resolveSpecId(issue);
+      const spec_id = spec.path || null;
       const spec_review = Object.hasOwn(md, 'spec_review')
         ? md.spec_review
         : undefined;
@@ -278,6 +280,7 @@ export function createLiveBd(config) {
         status,
         title: typeof issue.title === 'string' ? issue.title : null,
         spec_id,
+        spec_id_conflict: spec.conflict,
         spec_review,
         deps: []
       };
@@ -429,6 +432,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         bead: {
           route: snap.route,
           spec_id: snap.spec_id,
+          spec_id_conflict: snap.spec_id_conflict,
           spec_review: snap.spec_review
         }
       });

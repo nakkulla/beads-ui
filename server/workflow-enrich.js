@@ -24,6 +24,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { debug } from './logging.js';
 import { resolveRealpathWithinDocs } from './path-safety.js';
+import { resolveSpecId } from './spec-id.js';
 
 const log = debug('workflow-enrich');
 
@@ -365,9 +366,17 @@ export function implFreshness(workspace_root, receipt_sha, bead_id) {
  * @param {string | null} head - precomputed HEAD (avoids re-shelling per issue)
  * @param {string | undefined | null} bead_id - issue id (impl branch name)
  * @param {string | null} status - issue status, or null to always probe
+ * @param {string} [spec_path] - Canonical native-first spec path.
  * @returns {{ spec_stale: boolean, impl_stale: boolean, spec_receipt: ParsedReceipt | null, impl_receipt: ParsedReceipt | null }}
  */
-function computeStaleWithHead(md, workspace_root, head, bead_id, status) {
+function computeStaleWithHead(
+  md,
+  workspace_root,
+  head,
+  bead_id,
+  status,
+  spec_path = resolveSpecId({ metadata: md }).path
+) {
   const spec_receipt = parseReceipt(md.spec_review);
   const impl_receipt = parseReceipt(md.impl_review);
   if (!staleProbesApply(status)) {
@@ -375,8 +384,8 @@ function computeStaleWithHead(md, workspace_root, head, bead_id, status) {
   }
   const spec_stale =
     !!spec_receipt &&
-    typeof md.spec_id === 'string' &&
-    pathChangedSince(workspace_root, head, spec_receipt.sha, md.spec_id);
+    spec_path.length > 0 &&
+    pathChangedSince(workspace_root, head, spec_receipt.sha, spec_path);
   const impl_stale =
     !!impl_receipt &&
     implFreshness(workspace_root, impl_receipt.sha, bead_id) === 'stale';
@@ -502,14 +511,15 @@ function makeStage(fill, glyph, stale, receipt) {
 /**
  * Compute the SPEC stage (spec §4).
  *
+ * @param {string} spec_path
  * @param {Record<string, any>} md
  * @param {ParsedReceipt | null} receipt
  * @param {boolean} stale
  * @returns {WorkflowStage}
  */
-function specStage(md, receipt, stale) {
+function specStage(spec_path, md, receipt, stale) {
   const raw = typeof md.spec_review === 'string' ? md.spec_review : null;
-  if (!md.spec_id) {
+  if (!spec_path) {
     return makeStage('none', null, false, raw);
   }
   if (!receipt) {
@@ -689,18 +699,26 @@ function mergeStage(md, status) {
 /**
  * Build the compact `workflow` summary for one issue.
  *
- * @param {{ id?: string, status?: string, metadata?: Record<string, any> }} issue
- * @param {string | undefined | null} workspace_root
+ * @param {{ id?: string, status?: string, spec_id?: unknown, metadata?: Record<string, any> }} issue
+ * @param {string | undefined | null} [workspace_root]
  * @param {string | null} [head] - Optional precomputed HEAD.
  * @returns {WorkflowSummary}
  */
 export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
   const md = (issue && issue.metadata) || {};
+  const spec = resolveSpecId(issue);
   const status = String((issue && issue.status) || 'open');
   const bead_id = (issue && issue.id) || null;
   const resolved_head = head === undefined ? gitHead(workspace_root) : head;
   const { spec_stale, impl_stale, spec_receipt, impl_receipt } =
-    computeStaleWithHead(md, workspace_root, resolved_head, bead_id, status);
+    computeStaleWithHead(
+      md,
+      workspace_root,
+      resolved_head,
+      bead_id,
+      status,
+      spec.path
+    );
 
   const route = deriveRoute(md);
   // Explicit only when the metadata pin itself is a valid enum value — any
@@ -714,7 +732,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
 
   /** @type {WorkflowSummary['stages']} */
   const stages = {
-    spec: specStage(md, spec_receipt, spec_stale),
+    spec: specStage(spec.path, md, spec_receipt, spec_stale),
     impl: implStage(md, status, impl_receipt, impl_stale),
     // pr is a binary fact; the wait-for-merge state lives in merge's `dim`
     // (spec §4.2), so this stage never uses `dim`.

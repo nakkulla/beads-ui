@@ -162,7 +162,8 @@ function staleDispatchPrompt(bead_id, stale) {
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
  * @property {string|null} [title] - Issue title, for the start notification.
- * @property {string|null} [spec_id] - Spec doc path metadata (admission input).
+ * @property {string|null} [spec_id] - Native-first spec doc path (admission input).
+ * @property {boolean} [spec_id_conflict] - Native and legacy metadata paths differ.
  * @property {unknown} [spec_review] - Raw spec_review metadata value. Key
  * absence ⇒ `undefined`; any present value must reach the admission
  * validator so a malformed receipt rejects instead of reading as absent.

@@ -35,12 +35,13 @@ function makeGitRun(opts = {}) {
 }
 
 /**
- * @param {Partial<{ route: string|null, spec_id: string|null, spec_review: unknown }>} [bead]
+ * @param {Partial<{ route: string|null, spec_id: string|null, spec_id_conflict: boolean, spec_review: unknown }>} [bead]
  */
 function makeBead(bead = {}) {
   return {
     route: Object.hasOwn(bead, 'route') ? bead.route : 'spec_backed',
     spec_id: Object.hasOwn(bead, 'spec_id') ? bead.spec_id : 'docs/specs/x.md',
+    spec_id_conflict: bead.spec_id_conflict === true,
     spec_review: Object.hasOwn(bead, 'spec_review')
       ? bead.spec_review
       : `codex@${SHA}`
@@ -104,6 +105,13 @@ describe('worker/admission fail-closed validator', () => {
     const gitRun = makeGitRun();
     const r = await run(gitRun, makeBead({ spec_id: null }));
     expect(r).toEqual({ ok: false, reason: 'spec_missing' });
+    expect(gitRun).not.toHaveBeenCalled();
+  });
+
+  test('rejects conflicting dual spec_id before any git path probe', async () => {
+    const gitRun = makeGitRun();
+    const r = await run(gitRun, makeBead({ spec_id_conflict: true }));
+    expect(r).toEqual({ ok: false, reason: 'spec_id_conflict' });
     expect(gitRun).not.toHaveBeenCalled();
   });
 

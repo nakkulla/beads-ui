@@ -1,4 +1,5 @@
 import { html } from 'lit-html';
+import { resolveSpecId } from '../../../server/spec-id.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -30,19 +31,20 @@ function hasPlanAuthoringHistory(metadata) {
 }
 
 /**
- * Collect artifact rows from issue metadata (spec_id / plan_path).
+ * Collect artifact rows from native spec_id and workflow metadata.
  *
- * @param {{ metadata?: Record<string, any> }} issue
+ * @param {{ spec_id?: unknown, metadata?: Record<string, any> }} issue
  * @returns {ArtifactRow[]}
  */
 export function collectArtifacts(issue) {
   const md = (issue && issue.metadata) || {};
+  const spec = resolveSpecId(issue);
   /** @type {ArtifactRow[]} */
   const rows = [];
-  if (typeof md.spec_id === 'string' && md.spec_id.trim().length > 0) {
+  if (spec.path) {
     rows.push({
       kind: 'spec',
-      path: md.spec_id.trim(),
+      path: spec.path,
       missing_state: null
     });
   }

@@ -101,6 +101,34 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     ]);
   });
 
+  test('accepts native-only and equal dual spec_id but rejects conflicting dual', async () => {
+    const native = row({
+      id: 'UI-native',
+      spec_id: ' docs/specs/native.md ',
+      metadata: { spec_id: undefined }
+    });
+    const equal = row({
+      id: 'UI-equal',
+      spec_id: 'docs/specs/same.md',
+      metadata: { spec_id: ' docs/specs/same.md ' }
+    });
+    const conflict = row({
+      id: 'UI-conflict',
+      spec_id: 'docs/specs/native.md',
+      metadata: { spec_id: 'docs/specs/legacy.md' }
+    });
+    const cache = createRunnableCache({
+      runJson: fakeBd({ [WS_A]: [native, equal, conflict] })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out.map((item) => [item.bead_id, item.spec_id])).toEqual([
+      ['UI-native', 'docs/specs/native.md'],
+      ['UI-equal', 'docs/specs/same.md']
+    ]);
+  });
+
   test('carries the bead labels into the projection', async () => {
     const cache = createRunnableCache({
       runJson: fakeBd({

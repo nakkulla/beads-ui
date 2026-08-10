@@ -325,6 +325,39 @@ describe('computeStale — fail-quiet', () => {
 });
 
 describe('enrichIssueWorkflow', () => {
+  test('top-level-only spec_id fills the Board spec stage', () => {
+    const wf = enrichIssueWorkflow({
+      spec_id: ' docs/spec.md ',
+      metadata: { route: 'spec_backed' }
+    });
+
+    expect(wf.stages.spec.fill).toBe('dim');
+  });
+
+  test('top-level spec_id drives Board staleness over conflicting metadata', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/native.md', '# native\n');
+    writeFile(dir, 'docs/legacy.md', '# legacy\n');
+    const sha = commitAll(dir, 'add specs');
+    writeFile(dir, 'docs/native.md', '# native\nchanged\n');
+    commitAll(dir, 'revise native spec');
+
+    const wf = enrichIssueWorkflow(
+      {
+        spec_id: 'docs/native.md',
+        status: 'in_progress',
+        metadata: {
+          route: 'spec_backed',
+          spec_id: 'docs/legacy.md',
+          spec_review: 'codex@' + sha
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.spec.stale).toBe(true);
+  });
+
   test('downgrades a stale spec review to state=stale', () => {
     const dir = makeRepo();
     writeFile(dir, 'docs/spec.md', '# spec\n');

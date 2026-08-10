@@ -1999,6 +1999,42 @@ describe('views/worker', () => {
     expect(cand.querySelector('.worker-card[data-bead-id="X-1.2"]')).toBeNull();
   });
 
+  test('native top-level spec_id enables a candidate and conflicting dual disables it', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'NATIVE-1',
+        title: 'native spec',
+        status: 'open',
+        spec_id: ' docs/native.md ',
+        metadata: {}
+      },
+      {
+        id: 'CONFLICT-1',
+        title: 'conflicting spec',
+        status: 'open',
+        spec_id: 'docs/native.md',
+        metadata: { spec_id: 'docs/legacy.md' }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const native = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="NATIVE-1"]')
+    );
+    const conflict = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="CONFLICT-1"]')
+    );
+    expect(native.getAttribute('draggable')).toBe('true');
+    expect(conflict.getAttribute('draggable')).toBe('false');
+    expect(conflict.textContent).toContain('spec_id_conflict');
+  });
+
   test('candidate card renders a derived route as unset and keeps the 4-cell spec_backed stepper', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const stores = createTestIssueStores();

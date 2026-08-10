@@ -28,6 +28,7 @@
 import path from 'node:path';
 import { runBdJson } from '../bd.js';
 import { debug } from '../logging.js';
+import { resolveSpecId } from '../spec-id.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
 
 const log = debug('worker:runnable-cache');
@@ -72,7 +73,7 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan']);
  * @property {string} bead_id
  * @property {string} title
  * @property {string} route - The `metadata.route` that qualified it.
- * @property {string} spec_id - The `metadata.spec_id` that qualified it.
+ * @property {string} spec_id - The native-first resolved spec path.
  * @property {string[]} labels - The bead's labels, carried so the 실행가능 card
  * can show routing labels like `worker-ineligible` (UI-lzfa §4.1). NOT part of
  * 판정 — the human queueing decides, the screen only supplies the ground.
@@ -161,8 +162,8 @@ function qualify(row) {
   if (!RUNNABLE_ROUTES.has(route)) {
     return null;
   }
-  const spec_id = typeof meta.spec_id === 'string' ? meta.spec_id.trim() : '';
-  if (spec_id.length === 0) {
+  const spec = resolveSpecId(row);
+  if (spec.path.length === 0 || spec.conflict) {
     return null;
   }
   const spec_review = meta.spec_review;
@@ -179,7 +180,7 @@ function qualify(row) {
     bead_id,
     title: typeof row.title === 'string' ? row.title : '',
     route,
-    spec_id,
+    spec_id: spec.path,
     labels: labelsOf(row.labels),
     created_at: stampOf(row.created_at),
     updated_at: stampOf(row.updated_at)

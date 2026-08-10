@@ -31,6 +31,7 @@
  * (`worker-pane--src`) precisely so it does not read as one of the four.
  */
 import { html, render } from 'lit-html';
+import { resolveSpecId } from '../../../server/spec-id.js';
 import {
   CLOSED_RANGE_OPTIONS,
   DEFAULT_CLOSED_RANGE,
@@ -79,8 +80,7 @@ const MIN_SLOTS = 1;
  * @returns {boolean} Whether the bead is queue-eligible (spec present, §5.4).
  */
 function hasSpec(issue) {
-  const meta = issue && issue.metadata;
-  return !!(meta && typeof meta === 'object' && meta.spec_id);
+  return resolveSpecId(issue).path.length > 0;
 }
 
 /**
@@ -1697,11 +1697,12 @@ export function createWorkerView(mount_element, options = {}) {
 
     /** @type {any[]} */
     const candidate_rows = candidate_issues.map((/** @type {any} */ it) => {
-      const has_spec = hasSpec(it);
+      const spec = resolveSpecId(it);
+      const has_spec = spec.path.length > 0;
       const is_quick_fix =
         it.workflow?.route === 'quick_fix' ||
         (it.metadata && it.metadata.route === 'quick_fix');
-      const eligible = !is_quick_fix && has_spec;
+      const eligible = !is_quick_fix && has_spec && !spec.conflict;
       const is_blocked = blocked_ids.has(it.id);
       /** @type {string[]} */
       const parts = [];
@@ -1710,6 +1711,8 @@ export function createWorkerView(mount_element, options = {}) {
       }
       if (is_quick_fix) {
         parts.push('quick_fix · 워커 비대상');
+      } else if (spec.conflict) {
+        parts.push('spec_id_conflict');
       } else if (!has_spec) {
         parts.push('spec 없음');
       }

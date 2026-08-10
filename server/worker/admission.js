@@ -14,7 +14,8 @@
  *      `invalid_route` is what makes the badge actionable; the adapter memoizes
  *      the probe, so leading with it costs no extra process per candidate.
  *   1. `route` pinned to the enum (`spec_backed` | `full_plan`),
- *   2. `spec_id` tracked at the base commit (`git cat-file -e <base>:<spec_id>`) —
+ *   2. native/metadata `spec_id` conflict absent, then the resolved path tracked
+ *      at the base commit (`git cat-file -e <base>:<spec_id>`) —
  *      a spec absent from THAT base refuses as `spec_missing_at_base:<base>`
  *      (worker-target-base §2): the spec is not gone, it was not on that branch,
  *      and the base is what the operator must fix. An absent `spec_id` stays the
@@ -63,7 +64,7 @@ const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
  * base there is nothing for this validator to ask git about
  * (worker-base-scope-alignment §1).
  *
- * @typedef {'gh_unavailable'|'invalid_route'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
+ * @typedef {'gh_unavailable'|'invalid_route'|'spec_id_conflict'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
  */
 
 /**
@@ -109,6 +110,7 @@ const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
  *   bead: {
  *     route?: string|null,
  *     spec_id?: string|null,
+ *     spec_id_conflict?: boolean,
  *     spec_review?: unknown,
  *     [key: string]: unknown
  *   }
@@ -134,6 +136,9 @@ export async function validateAdmission(input) {
 
   if (!ADMISSIBLE_ROUTES.includes(/** @type {any} */ (bead && bead.route))) {
     return { ok: false, reason: 'invalid_route' };
+  }
+  if (bead && bead.spec_id_conflict === true) {
+    return { ok: false, reason: 'spec_id_conflict' };
   }
   const spec_id = bead && typeof bead.spec_id === 'string' ? bead.spec_id : '';
   if (spec_id.length === 0) {
