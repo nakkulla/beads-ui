@@ -85,6 +85,7 @@ import {
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
+  handleWorkerQueueSetDefaultExecPreset,
   handleWorkerQueueSetExecDefault,
   handleWorkerQueueSetPrWaitHold,
   handleWorkerQueueSetSlots,
@@ -501,6 +502,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-set-exec-default':
       handleWorkerQueueSetExecDefault(ws, req);
+      return;
+    case 'worker-queue-set-default-exec-preset':
+      handleWorkerQueueSetDefaultExecPreset(ws, req);
       return;
     case 'worker-queue-remove':
       handleWorkerQueueRemove(ws, req);

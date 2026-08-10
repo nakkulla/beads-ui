@@ -113,6 +113,29 @@ afterEach(() => {
 });
 
 describe('ws worker-queue channel', () => {
+  test('sets a workspace preset reference with both queue and preset revisions', async () => {
+    const sock = fakeSocket();
+    await send(sock, 'p1', 'exec-preset-create', {
+      expected_revision: 0,
+      name: '기본',
+      settings: {}
+    });
+    const preset = replyFor(sock, 'p1').payload.presets[0];
+
+    await send(sock, 'q1', 'worker-queue-set-default-exec-preset', {
+      preset_id: preset.id,
+      expected_queue_revision: 0,
+      expected_preset_revision: 1
+    });
+
+    expect(replyFor(sock, 'q1').payload).toMatchObject({
+      applied: true,
+      conflict: false,
+      queue: { default_exec_preset_id: preset.id },
+      presets: { revision: 1 }
+    });
+  });
+
   test('subscribe emits an initial queue snapshot', async () => {
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });

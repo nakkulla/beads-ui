@@ -8,6 +8,7 @@ import { createPoller } from './poller.js';
 import { registerWorkspace, watchRegistry } from './registry-watcher.js';
 import { watchDb } from './watcher.js';
 import { initWorkerRuntime } from './worker/attach.js';
+import { getWorkerRuntime } from './worker/runtime.js';
 import {
   discoverWorkspaces,
   resolveStartupWorkspace
@@ -123,6 +124,17 @@ server.listen(config.port, config.host, () => {
     worker_roots.add(startup_workspace_root);
   }
   try {
+    const migration =
+      getWorkerRuntime().execPresetCoordinator.migrateWorkspaces(
+        Array.from(worker_roots)
+      );
+    if (!migration.ok) {
+      log(
+        'exec preset migration incomplete; worker dispatch stays closed: %o',
+        migration.outcomes
+      );
+      return;
+    }
     // The subscriber-count provider is what arms the PR pollers: they observe
     // `pr_wait` PRs only while a client is actually watching that workspace's
     // queue (worker-phase2 §4) — or, since UI-nprg, while a monitor subscriber

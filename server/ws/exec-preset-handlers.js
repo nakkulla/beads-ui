@@ -5,22 +5,27 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import { makeError, makeOk } from '../../app/protocol.js';
-import { createExecPresetStore } from '../exec-preset-store.js';
 import {
   EXEC_SETTING_KEYS,
   execSettingEnums,
   validateImplSettings
 } from '../worker/exec-enums.js';
+import {
+  __resetWorkerRuntimeForTest,
+  getWorkerRuntime
+} from '../worker/runtime.js';
 import { runBdInWorkspace, runBdJsonInWorkspace } from './context.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
 
 const DEFAULT_CLIENT_ID = 'exec:presets';
 
-/** @type {ReturnType<typeof createExecPresetStore>} */
-let STORE = createExecPresetStore();
-
 /** @type {Set<{ ws: WebSocket, client_id: string }>} */
 const SUBSCRIBERS = new Set();
+
+/** @returns {ReturnType<typeof getWorkerRuntime>['execPresetCoordinator']} */
+function coordinator() {
+  return getWorkerRuntime().execPresetCoordinator;
+}
 
 /**
  * Build one `bd update` argv that replaces every canonical exec metadata key.
@@ -93,7 +98,7 @@ function fanout(snapshot) {
 function handleMutation(ws, req, operation) {
   try {
     const input = /** @type {any} */ (req.payload || {});
-    const result = STORE[operation](input);
+    const result = coordinator()[operation](input);
     ws.send(JSON.stringify(makeOk(req, result)));
     if (result.applied) {
       fanout({ revision: result.revision, presets: result.presets });
@@ -125,7 +130,7 @@ export function handleSubscribeExecPresets(ws, req) {
   }
   SUBSCRIBERS.add({ ws, client_id });
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
-  emitSnapshot(ws, client_id, STORE.snapshot());
+  emitSnapshot(ws, client_id, coordinator().snapshot());
 }
 
 /**
@@ -191,7 +196,7 @@ export async function handleApplyExecPreset(ws, req) {
     return;
   }
 
-  const snapshot = STORE.snapshot();
+  const snapshot = coordinator().snapshot();
   if (expected_revision !== snapshot.revision) {
     ws.send(
       JSON.stringify(
@@ -247,8 +252,8 @@ export async function handleApplyExecPreset(ws, req) {
   }
   const apply_settings =
     coherence.inferred && typeof coherence.impl_runtime === 'string'
-    ? { ...preset.settings, impl_runtime: coherence.impl_runtime }
-    : preset.settings;
+      ? { ...preset.settings, impl_runtime: coherence.impl_runtime }
+      : preset.settings;
 
   let updated;
   try {
@@ -335,5 +340,5 @@ export function detachExecPresets(ws) {
 /** Reset global channel state and re-resolve the XDG path for tests. */
 export function __resetExecPresetsForTest() {
   SUBSCRIBERS.clear();
-  STORE = createExecPresetStore();
+  __resetWorkerRuntimeForTest();
 }

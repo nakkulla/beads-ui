@@ -1420,6 +1420,34 @@ export function handleWorkerQueueSetExecDefault(ws, req) {
 }
 
 /**
+ * Set or unset the workspace's global preset reference. Both the queue and
+ * preset revision must match the client snapshot; a stale pair returns both
+ * authoritative snapshots and never retries on the server.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerQueueSetDefaultExecPreset(ws, req) {
+  const payload = /** @type {any} */ (req.payload || {});
+  const workspace_key = mutationWorkspaceOf(ws, req);
+  if (workspace_key === null) {
+    return;
+  }
+  const result = getWorkerRuntime().execPresetCoordinator.setDefaultExecPreset(
+    workspace_key,
+    {
+      preset_id: payload.preset_id ?? null,
+      expected_queue_revision: payload.expected_queue_revision,
+      expected_preset_revision: payload.expected_preset_revision
+    }
+  );
+  ws.send(JSON.stringify(makeOk(req, result)));
+  if (result.applied) {
+    fanout(workspace_key, /** @type {any} */ (result.queue));
+  }
+}
+
+/**
  * Handle `worker-attempt-pause`. Payload: `{ attempt_id: string }`. Pauses (⏸)
  * a running attempt: group-kill + attempt `paused` + workflow_mode/exec revert,
  * bead stays queued, and the freed slot advances the queue
