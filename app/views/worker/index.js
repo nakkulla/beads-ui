@@ -1496,7 +1496,7 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Toggle whether durable PR-wait members consume scheduler slots.
+   * Toggle serial dispatch through the durable PR-wait lifecycle.
    *
    * @param {boolean} on
    */
@@ -2070,12 +2070,13 @@ export function createWorkerView(mount_element, options = {}) {
     const live = running.filter((r) => !r.paused);
     const live_count = live.length;
     const info_slots = (q.workspace_info || {}).slots;
-    const slots =
+    const configured_slots =
       typeof info_slots === 'number'
         ? info_slots
         : typeof q.slots === 'number'
           ? q.slots
           : MIN_SLOTS;
+    const slots = q.pr_wait_holds_slot === true ? MIN_SLOTS : configured_slots;
     const over_cap = live_count > slots;
 
     // 완료 레인은 최신순 + 기간 필터 (UI-d7pw §3). `q.done`은 append 순서라
@@ -2286,18 +2287,21 @@ export function createWorkerView(mount_element, options = {}) {
           min=${MIN_SLOTS}
           step="1"
           .value=${String(m.slots)}
-          title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
+          ?disabled=${m.queue.pr_wait_holds_slot === true}
+          title=${m.queue.pr_wait_holds_slot === true
+            ? '머지까지 순차 실행 중 — 해제하면 저장된 동시 실행 수로 돌아갑니다'
+            : '동시에 실행할 세션 수 (최소 1 = 순차 실행)'}
       /></label>
       <label
         class="worker-tgl"
-        title="PR이 머지·정리 완료될 때까지 다음 이슈를 시작하지 않습니다"
+        title="각 이슈가 PR 머지·정리를 마칠 때까지 다음 이슈를 시작하지 않습니다"
       >
         <input
           type="checkbox"
           class="worker-pr-wait-hold"
           .checked=${m.queue.pr_wait_holds_slot === true}
         />
-        머지까지 대기
+        머지까지 순차 실행
       </label>
       <button
         type="button"

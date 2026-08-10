@@ -1351,7 +1351,7 @@ export function handleWorkerQueueSetSlots(ws, req) {
 }
 
 /**
- * Handle `worker-queue-set-pr-wait-hold`.
+ * Handle the merge-serial `worker-queue-set-pr-wait-hold` toggle.
  * Payload: `{ on: boolean, expected_revision }`.
  *
  * @param {WebSocket} ws

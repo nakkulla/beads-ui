@@ -6316,6 +6316,45 @@ describe('PR 대기 슬롯 점유 토글 (UI-mh3x)', () => {
     ).toBe(true);
   });
 
+  test('shows merge-serial mode wording', () => {
+    const { mount } = mountHold({ pr_wait_holds_slot: true });
+
+    expect(mount.textContent).toContain('머지까지 순차 실행');
+  });
+
+  test('shows one disabled effective slot while preserving a larger setting', () => {
+    const { mount } = mountHold({ pr_wait_holds_slot: true, slots: 3 });
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-slots__input')
+    );
+
+    expect(input.value).toBe('1');
+    expect(input.disabled).toBe(true);
+  });
+
+  test('restores the configured slot value when merge-serial mode turns off', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({ pr_wait_holds_slot: true, slots: 3, revision: 2 })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    queueStore.set(
+      queueOf({ pr_wait_holds_slot: false, slots: 3, revision: 3 })
+    );
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-slots__input')
+    );
+    expect(input.value).toBe('3');
+    expect(input.disabled).toBe(false);
+  });
+
   test('sends the slot-hold mutation when clicked', async () => {
     const { mount, transport } = mountHold({ pr_wait_holds_slot: false });
 
@@ -6409,7 +6448,7 @@ describe('PR 대기 슬롯 점유 토글 (UI-mh3x)', () => {
     );
   });
 
-  test('hides the hold hint while a slot remains free', () => {
+  test('shows the hold hint with two configured slots', () => {
     const { mount } = mountHold({
       auto_advance: true,
       auto_merge: false,
@@ -6419,7 +6458,9 @@ describe('PR 대기 슬롯 점유 토글 (UI-mh3x)', () => {
       pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
     });
 
-    expect(mount.querySelector('.worker-pr-wait-hint')).toBe(null);
+    expect(mount.querySelector('.worker-pr-wait-hint')?.textContent).toContain(
+      'PR 머지 대기 중'
+    );
   });
 
   test('hides the hold hint when automatic progress is off', () => {

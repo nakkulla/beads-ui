@@ -3,10 +3,11 @@
  *
  * Drives the queue: when `auto_advance` is on, ONE scan walks the single
  * waiting lane in order and fills the free slots (`queue.slots`, the store-owned
- * concurrency cap — worker-phase2 §3). A blocked / inadmissible entry is skipped
- * to the next runnable one, never starving the rest. `slots = 1` IS the retired
- * serial lane. ⏸ (auto_advance off) lets running sessions finish but starts no
- * new ones.
+ * concurrency cap — worker-phase2 §3). Merge-serial mode temporarily forces
+ * the effective cap to 1 without overwriting that stored preference. A blocked
+ * / inadmissible entry is skipped to the next runnable one, never starving the
+ * rest. `slots = 1` IS the retired serial lane. ⏸ (auto_advance off) lets
+ * running sessions finish but starts no new ones.
  *
  * Dispatch is fail-closed and contract-native:
  *   - RE-READ ready/blocked/deps/exec-settings from bd just before dispatch and
@@ -971,15 +972,18 @@ export function createScheduler(deps) {
   }
 
   /**
-   * The workspace's concurrency cap, read from the STORE (`queue.slots`) on
-   * every pass so a UI edit takes effect on the next tick. A snapshot without a
-   * usable value (a hand-built fake store) falls back to the same default
-   * `normalizeQueue` applies, so the cap is never 0/NaN.
+   * The workspace's effective concurrency cap. Merge-serial mode forces 1
+   * without mutating the stored `queue.slots`, so turning it off restores the
+   * prior preference. Otherwise the cap is read from the store on every pass;
+   * an unusable value falls back to the same default `normalizeQueue` applies.
    *
-   * @param {{ slots?: unknown }} q - Queue snapshot.
+   * @param {{ slots?: unknown, pr_wait_holds_slot?: unknown }} q - Queue snapshot.
    * @returns {number}
    */
   function slotsOf(q) {
+    if (q.pr_wait_holds_slot === true) {
+      return MIN_SLOTS;
+    }
     const raw = q.slots;
     return typeof raw === 'number' && Number.isInteger(raw) && raw >= MIN_SLOTS
       ? raw

@@ -174,8 +174,9 @@
  * @typedef {Object} Queue
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
- * @property {boolean} pr_wait_holds_slot - Whether durable PR-wait members
- * consume scheduler slots until merge cleanup or discard removes them.
+ * @property {boolean} pr_wait_holds_slot - Whether dispatch runs serially until
+ * each durable PR wait leaves through merge cleanup or discard. The legacy key
+ * name remains stable; the stored `slots` preference is not overwritten.
  * @property {Record<string, string>} exec_defaults - Workspace-global exec
  * setting defaults (subset of the 5 exec keys; an unset key is absent). Only
  * valid enum values survive normalize. An absent key leaves dispatch on the
@@ -1131,8 +1132,8 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Toggle whether durable PR-wait members consume scheduler slots. The flag
-     * is durable because the wait routinely spans server restarts.
+     * Toggle merge-serial dispatch through the durable PR-wait lifecycle. The
+     * flag is durable because the wait routinely spans server restarts.
      *
      * @param {string} workspace
      * @param {{ expected_revision: number, on: boolean }} input

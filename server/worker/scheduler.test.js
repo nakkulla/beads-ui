@@ -431,9 +431,8 @@ describe('scheduler slot policy (single scan, worker-phase2 §3)', () => {
     expect(env.scheduler.runningCount()).toBe(0);
   });
 
-  test('uses one of two slots for a durable PR wait', async () => {
+  test('starts one session in merge-serial mode with two configured slots', async () => {
     const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
-    seedPrWait(env.store, 'P1');
     env.store.setPrWaitHoldsSlot(WS, {
       expected_revision: env.store.snapshot(WS).revision,
       on: true
@@ -444,6 +443,38 @@ describe('scheduler slot policy (single scan, worker-phase2 §3)', () => {
 
     expect(env.scheduler.runningCount()).toBe(1);
     expect(env.scheduler.runningBeads()).toEqual(['S1']);
+  });
+
+  test('blocks both configured slots while one durable PR waits', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
+    seedPrWait(env.store, 'P1');
+    env.store.setPrWaitHoldsSlot(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      on: true
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(0);
+  });
+
+  test('restores two-slot dispatch when merge-serial mode turns off', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
+    env.store.setPrWaitHoldsSlot(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      on: true
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+    await env.scheduler.tick(WS);
+    env.store.setPrWaitHoldsSlot(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      on: false
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningBeads()).toEqual(['S1', 'S2']);
   });
 
   test('ignores durable PR waits when slot holding is off', async () => {

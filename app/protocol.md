@@ -108,17 +108,17 @@ Nothing merges without a human `[머지]` click.
   workspace this snapshot describes (envelope addressing, not part of `queue`),
   so a client that already repointed to another workspace can drop a snapshot
   from a subscription the server has not torn down yet; the rest is the full
-  queue (`revision`, `auto_advance`, `slots`, `queue[]`, `pr_wait[]`, `done[]`,
-  `attempts`, `admission`, `cleanup_failed`, `ship_failure`, `exec_defaults`)
-  plus four server-decorated, NON-persisted keys:
-  `workspace_info: { verify_cmd, slots }`, `pr_observations` (per-`pr_wait` PR
-  state + merge-gate verdict, memory cache only), `bead_titles`
-  (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done` beads, memory cache
-  only), and `declared_base`. `bead_titles` is PARTIAL: only titles already
-  cached travel, a miss simply has no entry and arrives in a later snapshot once
-  the server's async lookup fills it. Consumers fail-quiet on the whole key
-  being absent (older server) and on a missing entry — both fall back to
-  displaying the bead id.
+  queue (`revision`, `auto_advance`, `slots`, `pr_wait_holds_slot`, `queue[]`,
+  `pr_wait[]`, `done[]`, `attempts`, `admission`, `cleanup_failed`,
+  `ship_failure`, `exec_defaults`) plus four server-decorated, NON-persisted
+  keys: `workspace_info: { verify_cmd, slots }`, `pr_observations`
+  (per-`pr_wait` PR state + merge-gate verdict, memory cache only),
+  `bead_titles` (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done`
+  beads, memory cache only), and `declared_base`. `bead_titles` is PARTIAL: only
+  titles already cached travel, a miss simply has no entry and arrives in a
+  later snapshot once the server's async lookup fills it. Consumers fail-quiet
+  on the whole key being absent (older server) and on a missing entry — both
+  fall back to displaying the bead id.
 - A RUNNING attempt inside `attempts` additionally carries the non-persisted
   `last_event_at` (epoch ms) — when the server last saw a session-log line for
   that attempt (UI-53es §1). It is what the monitor row's live heartbeat reads;
@@ -145,6 +145,9 @@ Nothing merges without a human `[머지]` click.
   `auto_advance` and, on turn-ON, kicks the live dispatch loop (`tick`).
 - `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
   concurrency cap (lower bound 1).
+- `worker-queue-set-pr-wait-hold` payload: `{ on, expected_revision }` — when
+  enabled, forces the effective concurrency cap to 1 through PR merge cleanup
+  while preserving the stored `slots` preference for later restoration.
 - `worker-queue-set-exec-default` payload:
   `{ key: <one of the 5 exec keys>, value: string|null, expected_revision }` —
   workspace-global exec default; null/`''` unsets.
