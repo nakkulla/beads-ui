@@ -66,6 +66,7 @@
     "app/main.bundle.js",
     "app/main.bundle.js.map",
     "app/protocol.js",
+    "app/utils/worker-eligibility.js",
     "bin",
     "server",
     "CHANGES.md",

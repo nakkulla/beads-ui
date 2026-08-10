@@ -379,6 +379,30 @@ describe('views/worker', () => {
     expect(rd1.getAttribute('draggable')).toBe('true');
   });
 
+  test('excludes worker-ineligible issues from the candidate lane', () => {
+    const stores = seedCandidates();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'NO-WORKER',
+        title: 'interactive only',
+        status: 'open',
+        metadata: { spec_id: 'SPEC-X' },
+        labels: ['worker-ineligible']
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    expect(
+      mount.querySelector('.worker-card[data-bead-id="NO-WORKER"]')
+    ).toBeNull();
+  });
+
   test('clicking a card ID copies the bead id and never opens the detail', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const gotoIssue = vi.fn();

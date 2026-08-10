@@ -27,6 +27,10 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
+import {
+  isWorkerIneligible,
+  workerLabels
+} from '../../app/utils/worker-eligibility.js';
 import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
@@ -279,6 +283,7 @@ export function createLiveBd(config) {
         route,
         status,
         title: typeof issue.title === 'string' ? issue.title : null,
+        labels: workerLabels(issue.labels),
         spec_id,
         spec_id_conflict: spec.conflict,
         spec_review,
@@ -433,7 +438,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           route: snap.route,
           spec_id: snap.spec_id,
           spec_id_conflict: snap.spec_id_conflict,
-          spec_review: snap.spec_review
+          spec_review: snap.spec_review,
+          labels: snap.labels
         }
       });
     },
@@ -1120,19 +1126,46 @@ export async function tickWorkerQueue(workspace_root) {
 }
 
 /**
- * Pre-check auto-run admission for a queue placement, IF an attachment is
- * registered. Returns `null` when none is (ws-handler tests and inactive
- * workspaces stay hermetic — no bd/git reachable, and nothing can dispatch
- * there anyway; the dispatch-time re-check stays the authoritative gate).
+ * Read the one execution-policy label needed when a workspace has no live
+ * scheduler attachment. This keeps direct queue mutations fail-closed without
+ * constructing runners, git probes, or timers for an inactive workspace.
  *
  * @param {string} workspace_root
  * @param {string} bead_id
- * @returns {Promise<import('./admission.js').AdmissionResult | null>}
+ * @returns {Promise<import('./admission.js').AdmissionResult>}
+ */
+async function checkUnattachedWorkerAdmission(workspace_root, bead_id) {
+  const shown = await runBdJson(['show', bead_id, '--json'], {
+    cwd: keyFor(workspace_root)
+  });
+  if (!shown || shown.code !== 0) {
+    return { ok: false, reason: 'bd_snapshot_failed' };
+  }
+  const issue = unwrapShowJson(shown.stdoutJson);
+  if (!issue) {
+    return { ok: false, reason: 'bd_snapshot_failed' };
+  }
+  return isWorkerIneligible(/** @type {any} */ (issue).labels)
+    ? { ok: false, reason: 'worker_ineligible' }
+    : { ok: true };
+}
+
+/** @type {typeof checkUnattachedWorkerAdmission} */
+let unattachedAdmissionCheck = checkUnattachedWorkerAdmission;
+
+/**
+ * Pre-check auto-run admission for a queue placement. A live attachment owns
+ * the full route/spec/git admission. Without one, an authoritative `bd show`
+ * still enforces the interactive-only label before queue mutation.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<import('./admission.js').AdmissionResult>}
  */
 export async function checkWorkerQueueAdmission(workspace_root, bead_id) {
   const att = ATTACHMENTS.get(keyFor(workspace_root));
   if (!att || !att.admission) {
-    return null;
+    return unattachedAdmissionCheck(workspace_root, bead_id);
   }
   return att.admission.check(bead_id);
 }
@@ -1401,6 +1434,16 @@ export function __registerWorkerAttachmentForTest(workspace_root, attachment) {
 }
 
 /**
+ * Test hook: replace the unattached label reader so ws tests never reach a real
+ * Beads database.
+ *
+ * @param {typeof checkUnattachedWorkerAdmission} reader
+ */
+export function __setUnattachedAdmissionCheckForTest(reader) {
+  unattachedAdmissionCheck = reader;
+}
+
+/**
  * Test hook: drop all registered attachments, stopping their PR pollers and
  * reconcile timers so no armed timer or queue-changed hook outlives the test
  * that built it.
@@ -1429,4 +1472,5 @@ export function __resetWorkerAttachmentsForTest() {
     }
   }
   ATTACHMENTS.clear();
+  unattachedAdmissionCheck = checkUnattachedWorkerAdmission;
 }

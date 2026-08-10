@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MESSAGE_TYPES } from '../app/protocol.js';
 import {
   __registerWorkerAttachmentForTest,
-  __resetWorkerAttachmentsForTest
+  __resetWorkerAttachmentsForTest,
+  __setUnattachedAdmissionCheckForTest
 } from './worker/attach.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 import {
@@ -96,6 +97,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
+  __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
   // Seed DEFAULT_WORKSPACE so bare sockets resolve a deterministic workspace.
   attachWsServer(createServer(), { path: '/ws' });
 });
@@ -394,6 +396,28 @@ describe('ws worker-queue channel', () => {
     expect(
       placed.payload.queue.queue.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual(['UI-7']);
+  });
+
+  test('worker-ineligible placement preserves the queue and records the refusal', async () => {
+    __setUnattachedAdmissionCheckForTest(async () => ({
+      ok: false,
+      reason: 'worker_ineligible'
+    }));
+    const sock = fakeSocket();
+
+    await send(sock, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-NO',
+      expected_revision: 0
+    });
+
+    const refused = replyFor(sock, 'm1').payload;
+    expect(refused).toMatchObject({
+      applied: false,
+      conflict: false,
+      admission_reason: 'worker_ineligible'
+    });
+    expect(refused.queue.queue).toEqual([]);
+    expect(refused.queue.admission['UI-NO'].reason).toBe('worker_ineligible');
   });
 
   test('a stale-but-admitted place enters the lane wearing a non-blocking mark (UI-dlim §3.2)', async () => {

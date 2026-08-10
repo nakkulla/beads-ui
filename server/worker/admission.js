@@ -6,25 +6,27 @@
  * `base_oid`, closing the check-then-advance TOCTOU). Admission requires a
  * human intent anchor before a bead may auto-run:
  *
- *   0. `gh` usable (installed + authenticated). Checked FIRST because it is the
+ *   0. no exact `worker-ineligible` label. Checked before environment probes so
+ *      an interactive-only disposition is always the visible refusal.
+ *   1. `gh` usable (installed + authenticated). Checked before git because it is the
  *      only ENVIRONMENT condition here: without `gh` the server cannot observe
  *      the PR that is now the sole completion verdict (worker-phase2 §1/§10), so
  *      no bead in the workspace can succeed and every per-bead check below is
  *      moot. Reporting the environment cause instead of an incidental
  *      `invalid_route` is what makes the badge actionable; the adapter memoizes
  *      the probe, so leading with it costs no extra process per candidate.
- *   1. `route` pinned to the enum (`spec_backed` | `full_plan`),
- *   2. native/metadata `spec_id` conflict absent, then the resolved path tracked
+ *   2. `route` pinned to the enum (`spec_backed` | `full_plan`),
+ *   3. native/metadata `spec_id` conflict absent, then the resolved path tracked
  *      at the base commit (`git cat-file -e <base>:<spec_id>`) —
  *      a spec absent from THAT base refuses as `spec_missing_at_base:<base>`
  *      (worker-target-base §2): the spec is not gone, it was not on that branch,
  *      and the base is what the operator must fix. An absent `spec_id` stays the
  *      bare `spec_missing`, which keeps the two causes distinguishable in one
  *      badge string,
- *   3. a `<reviewer>@<40hex>` spec_review receipt — `skipped@<40hex>` counts
+ *   4. a `<reviewer>@<40hex>` spec_review receipt — `skipped@<40hex>` counts
  *      (a skip is explicit user authority to proceed), short/non-hex does not,
- *   4. the receipt SHA reachable as a commit,
- *   5. freshness: `git log <sha>..<base> -- <spec_id>` runs successfully. A
+ *   5. the receipt SHA reachable as a commit,
+ *   6. freshness: `git log <sha>..<base> -- <spec_id>` runs successfully. A
  *      NON-empty delta no longer refuses (UI-dlim §3.1): the file-scoped probe
  *      cannot tell a change inside this bead's spec scope from another bead
  *      editing its own section of a shared spec, and refusing on it stopped the
@@ -40,6 +42,7 @@
  * the base is verified as a commit first; after that, a non-zero cat-file is a
  * missing spec path (spawn failures surface as code 127 → git_error).
  */
+import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 
 /**
  * Admission receipt: any reviewer token + EXACTLY 40 hex.
@@ -64,7 +67,7 @@ const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
  * base there is nothing for this validator to ask git about
  * (worker-base-scope-alignment §1).
  *
- * @typedef {'gh_unavailable'|'invalid_route'|'spec_id_conflict'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
+ * @typedef {'worker_ineligible'|'bd_snapshot_failed'|'gh_unavailable'|'invalid_route'|'spec_id_conflict'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
  */
 
 /**
@@ -112,6 +115,7 @@ const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
  *     spec_id?: string|null,
  *     spec_id_conflict?: boolean,
  *     spec_review?: unknown,
+ *     labels?: unknown,
  *     [key: string]: unknown
  *   }
  * }} input
@@ -121,6 +125,10 @@ export async function validateAdmission(input) {
   const { gitRun, ghAvailable, repo, base, base_label, bead } = input;
   const reported_base =
     typeof base_label === 'string' && base_label.length > 0 ? base_label : base;
+
+  if (isWorkerIneligible(bead && bead.labels)) {
+    return { ok: false, reason: 'worker_ineligible' };
+  }
 
   if (typeof ghAvailable === 'function') {
     let gh_ok = false;

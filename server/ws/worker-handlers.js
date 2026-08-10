@@ -1164,11 +1164,10 @@ function revisionOf(payload) {
  * There is ONE waiting lane now (worker-phase2 §3), so the payload carries no
  * `lane`; a stale client that still sends one is simply placed in `queue`.
  *
- * Queue entry is admission-gated (worker-autorun-policy §1): with a live
- * attachment the bead must pass the fail-closed validator (route pin + spec
- * existence + fresh spec_review receipt) before placement; a refusal replies
- * `{ applied:false, admission_reason }` without mutating the queue. Without an
- * attachment the check is skipped (nothing can dispatch there anyway).
+ * Queue entry is admission-gated (worker-autorun-policy §1): a live attachment
+ * applies the full validator, while an inactive workspace still performs an
+ * authoritative worker-ineligible label read. A refusal replies
+ * `{ applied:false, admission_reason }` without mutating the queue.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
