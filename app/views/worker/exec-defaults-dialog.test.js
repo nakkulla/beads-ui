@@ -74,6 +74,31 @@ describe('worker exec preset dialog', () => {
     vi.restoreAllMocks();
   });
 
+  test('closes on a backdrop click', () => {
+    const { mount } = setup({ revision: 0, presets: [] });
+    const dialog = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-exec-defaults-dialog')
+    );
+
+    click(dialog);
+
+    expect(dialog.hasAttribute('open')).toBe(false);
+  });
+
+  test('stays open on a container click', () => {
+    const { mount } = setup({ revision: 0, presets: [] });
+    const dialog = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-exec-defaults-dialog')
+    );
+    const container = /** @type {HTMLElement} */ (
+      dialog.querySelector('.exec-defaults__container')
+    );
+
+    click(container);
+
+    expect(dialog.hasAttribute('open')).toBe(true);
+  });
+
   test('creates a preset from the body editor with the current revision', async () => {
     const transport = vi.fn().mockResolvedValue({
       applied: true,

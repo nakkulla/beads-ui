@@ -922,8 +922,16 @@ export function createExecDefaultsDialog(mount_element, options) {
   const onDialogClose = () => {
     is_open = false;
   };
+
+  /** @param {MouseEvent} ev */
+  const onDialogClick = (ev) => {
+    if (ev.target === ev.currentTarget) {
+      close();
+    }
+  };
   dialog.addEventListener('close', onDialogClose);
   dialog.addEventListener('cancel', onDialogClose);
+  dialog.addEventListener('click', onDialogClick);
 
   /** @type {null | (() => void)} */
   let unsubscribe_queue = null;
@@ -976,6 +984,7 @@ export function createExecDefaultsDialog(mount_element, options) {
       is_open = false;
       dialog.removeEventListener('close', onDialogClose);
       dialog.removeEventListener('cancel', onDialogClose);
+      dialog.removeEventListener('click', onDialogClick);
       if (unsubscribe_queue) {
         unsubscribe_queue();
         unsubscribe_queue = null;
