@@ -532,6 +532,20 @@ describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
 
     expect(systemPromptOf(args)).toContain('PR 제출까지 수행하고');
   });
+
+  test('uses the ordinary guard contract for a cleanup diagnosis without PR delivery', () => {
+    const spec = claudeSpec();
+
+    const { args } = spec.buildArgv(
+      { id: 'UI-1', prompt: '분류하라' },
+      '/repo',
+      { fast_track: true, cleanup_diagnosis: true }
+    );
+
+    expect(systemPromptOf(args)).not.toContain('PR 제출까지 수행하고');
+    expect(systemPromptOf(args)).toContain('base 로 향하는 `git push`');
+    expect(systemPromptOf(args)).not.toContain('REVISE 처분 세션');
+  });
 });
 
 describe('runner/claude PR base wiring (worker-base-scope-alignment §3/§4)', () => {

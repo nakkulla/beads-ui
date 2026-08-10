@@ -75,6 +75,137 @@ describe('scheduler cleanup diagnosis (UI-7u3d)', () => {
     });
   });
 
+  test('launches diagnosis as a guarded no-PR session, not a disposition', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedCleanupFailure(env.store);
+
+    const result = await env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+
+    expect(result.ok).toBe(true);
+    expect(fs.existsSync(guardHookDir(WS, String(result.attempt_id)))).toBe(
+      true
+    );
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      cleanup_diagnosis: true,
+      disposition: null
+    });
+    const guard_env = env.runner.settingsFor('B1').env;
+    expect(Object.values(guard_env)).toContain('core.hooksPath');
+    expect(Object.values(guard_env)).toContain(
+      guardHookDir(WS, String(result.attempt_id))
+    );
+  });
+
+  test('refuses diagnosis while a leaf paused diagnosis owns the bead', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedCleanupFailure(env.store);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'diagnosis-paused', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'diagnosis-paused',
+      patch: { status: 'paused', cleanup_diagnosis: true }
+    });
+
+    const result = await env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+
+    expect(result).toEqual({ ok: false, reason: 'bead_running' });
+  });
+
+  test('serializes concurrent diagnosis clicks after the bead snapshot await', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedCleanupFailure(env.store);
+    const snapshotBead = env.bd.snapshotBead.bind(env.bd);
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    env.bd.snapshotBead = vi.fn(async (bead_id) => {
+      const snapshot = await snapshotBead(bead_id);
+      await gate;
+      return snapshot;
+    });
+
+    const first = env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+    const second = env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+    release();
+    const results = await Promise.all([first, second]);
+
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(
+      results.filter((result) => result.reason === 'bead_running')
+    ).toHaveLength(1);
+    expect(env.runner.spawnOrder).toEqual(['B1']);
+  });
+
+  test('refuses when the cleanup failure disappears during the bead snapshot await', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedCleanupFailure(env.store);
+    const snapshotBead = env.bd.snapshotBead.bind(env.bd);
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    env.bd.snapshotBead = vi.fn(async (bead_id) => {
+      const snapshot = await snapshotBead(bead_id);
+      await gate;
+      return snapshot;
+    });
+    const dispatch = env.scheduler.dispatchCleanupDiagnosis(WS, 'B1');
+    env.store.clearCleanupFailure(WS, 'B1');
+    release();
+
+    const result = await dispatch;
+
+    expect(result).toEqual({ ok: false, reason: 'cleanup_failed_missing' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('resumes a paused diagnosis with its kind, result path, and task prompt', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedCleanupFailure(env.store);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'diagnosis-paused', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'diagnosis-paused',
+      patch: {
+        status: 'paused',
+        repo: '/repo',
+        target_base: 'main',
+        runner: 'claude',
+        session_id: 'session-diagnosis',
+        workflow_mode_prior: null,
+        cleanup_diagnosis: true,
+        cleanup_diagnosis_result_path: '/diagnosis-result.json',
+        task_prompt: '분류를 계속하라'
+      }
+    });
+
+    const result = await env.scheduler.resume(WS, 'diagnosis-paused');
+
+    expect(result.ok).toBe(true);
+    const child =
+      env.store.snapshot(WS).attempts[
+        /** @type {string} */ (result.attempt_id)
+      ];
+    expect(child).toMatchObject({
+      resumed_from: 'diagnosis-paused',
+      cleanup_diagnosis: true,
+      cleanup_diagnosis_result_path: '/diagnosis-result.json'
+    });
+    expect(env.runner.spawnedBead('B1').prompt).toBe('분류를 계속하라');
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      cleanup_diagnosis: true,
+      disposition: null,
+      resume_session_id: 'session-diagnosis'
+    });
+  });
+
   test('records flake then consumes it before exactly one cleanup retry', async () => {
     const retryCleanup = vi.fn(async () => ({ ok: true }));
     const env = setup({

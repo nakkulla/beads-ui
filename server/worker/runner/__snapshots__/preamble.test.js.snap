@@ -42,6 +42,40 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 - hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
 `;
 
+exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'diagnosis no-PR' 1`] = `
+"## 무인 모드
+
+이 세션은 사람 없이 실행된다. 다음은 규칙이 아니라 환경 사실이다.
+
+- 사용자는 이 세션과 통신할 수 없다. 질문 도구는 응답자가 없어 영원히 대기한다.
+- hard-stop 조건은 \`blocker\` 줄을 출력한 뒤 비정상 종료로 표면화하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.
+- headless 프로세스는 턴이 끝나는 즉시 종료된다. 대기 중인 백그라운드 태스크(예: 비동기 리뷰 브리지)는 함께 kill되고 결과는 유실된다. 결과가 필요한 태스크는 턴 안에서 완료까지 기다려라.
+
+## 가드 계약
+
+이 세션 위에는 세션이 안에서 볼 수 없는 가드 층이 있다. 심각도는 셋으로 갈린다.
+
+### 즉시 종료 — 세션이 kill된다
+
+- \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
+  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
+- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git -c core.hooksPath=…\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 재정의.
+  - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
+  - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
+  - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
+
+### 거부만 됨 — 세션은 계속된다
+
+- base 브랜치 직접 랜딩 금지 — 이 attempt 가 맡은 저장소의 base 로 향하는 \`git push\` 는 attempt 전용 pre-push hook 이 거부한다. 세션은 종료되지 않고 push 만 실패한다. 다른 저장소의 base 로 향하는 push 는 hook 의 판정 대상이 아니다(통과).
+  - 대안: feature branch 로 push 하고 \`gh pr create --base <target_base>\` 로 PR 을 연다.
+- 사후 판정 — 이 attempt 가 자기 base 로 push 한 기록이 있고 그 커밋이 원격 base 에서 도달 가능하면 attempt 가 \`base_landing_detected\` 로 실패 처리된다.
+
+### 허용됨 — 오해하지 말 것
+
+- base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
+`;
+
 exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'disposition + fast_track ignores targ…' 1`] = `
 "## 무인 모드
 

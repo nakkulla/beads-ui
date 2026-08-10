@@ -1008,7 +1008,8 @@ export function handleGetWorkerSystemPrompt(ws, req) {
   });
   const disposition = applyPreamble('', {
     fast_track: true,
-    pr_submit: false
+    pr_submit: false,
+    disposition: true
   });
   ws.send(
     JSON.stringify(

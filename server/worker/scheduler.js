@@ -1534,11 +1534,6 @@ export function createScheduler(deps) {
         patch: { exit: verdict.exit, ...usagePatch(workspace, attempt_id) }
       });
 
-      if (cleanupDiagnosisOf(workspace, attempt_id)) {
-        await settleCleanupDiagnosis(workspace, attempt_id, bead_id, verdict);
-        return;
-      }
-
       // The settlement step, ahead of EVERY completion branch (UI-8mvc §3).
       // Above the disposition split on purpose: that branch returns, so a call
       // placed after it could not even record why a disposition was excluded.
@@ -1556,6 +1551,11 @@ export function createScheduler(deps) {
         );
         notifyChanged(workspace);
         await tick(workspace);
+        return;
+      }
+
+      if (cleanupDiagnosisOf(workspace, attempt_id)) {
+        await settleCleanupDiagnosis(workspace, attempt_id, bead_id, verdict);
         return;
       }
 
@@ -2859,12 +2859,11 @@ export function createScheduler(deps) {
       repo,
       target_base,
       base_oid: base_oid ?? null,
-      // A disposition session repairs a spec on the base and opens no PR, so
-      // the always-on PR-submit directive would instruct it to do the one
-      // thing its own prompt forbids (UI-hs11 §3.3).
-      disposition:
-        input.disposition ??
-        (input.cleanup_diagnosis ? 'cleanup_diagnosis' : null)
+      // The two no-PR shapes stay separate: only a REVISE disposition may
+      // publish the base. Cleanup diagnosis keeps the ordinary command and
+      // pre-push guards while dropping PR delivery from its prompt.
+      disposition: input.disposition ?? null,
+      cleanup_diagnosis: input.cleanup_diagnosis === true
     };
     // Hand the session the hook that was installed BEFORE any state change
     // (UI-8mvc §2). Delivery creates nothing, which is why it belongs here even
@@ -3146,9 +3145,22 @@ export function createScheduler(deps) {
       recordSkipReason(workspace, bead_id, reason);
       return { ok: false, reason };
     }
+    const cleanup_diagnosis = prior.cleanup_diagnosis === true;
+    const diagnosis_result_path =
+      typeof prior.cleanup_diagnosis_result_path === 'string'
+        ? prior.cleanup_diagnosis_result_path
+        : null;
+    const diagnosis_prompt =
+      cleanup_diagnosis &&
+      typeof prior.task_prompt === 'string' &&
+      prior.task_prompt.length > 0
+        ? prior.task_prompt
+        : resumePrompt(bead_id, prior.status ?? null);
     const result = await relaunchFromAttempt(workspace, prior, {
-      prompt: resumePrompt(bead_id, prior.status ?? null),
-      conflict_resolution: false
+      prompt: diagnosis_prompt,
+      conflict_resolution: false,
+      cleanup_diagnosis,
+      cleanup_diagnosis_result_path: diagnosis_result_path
     });
     if (result.ok) {
       const cleared = deps.store.clearAdmission(workspace, bead_id);
@@ -3221,13 +3233,8 @@ export function createScheduler(deps) {
     if (!failure) {
       return { ok: false, reason: 'cleanup_failed_missing' };
     }
-    if (claimed.has(bead_id)) {
+    if (activeBeadIdsFrom(q).has(bead_id)) {
       return { ok: false, reason: 'bead_running' };
-    }
-    for (const a of Object.values(q.attempts || {})) {
-      if (a && a.bead_id === bead_id && a.status === 'running') {
-        return { ok: false, reason: 'bead_running' };
-      }
     }
     /** @type {BeadSnapshot} */
     let snap;
@@ -3261,6 +3268,27 @@ export function createScheduler(deps) {
       wt_path,
       `.bdui-cleanup-diagnosis-${attempt_id}.json`
     );
+    // `snapshotBead` is an await boundary. Re-read the failure and queue, then
+    // take the claim synchronously so a completed cleanup or concurrent click
+    // cannot race a stale diagnosis into the lane.
+    const latest_queue = deps.store.snapshot(workspace);
+    const latest_failure = latest_queue.cleanup_failed?.[bead_id];
+    if (!latest_failure) {
+      return { ok: false, reason: 'cleanup_failed_missing' };
+    }
+    if (activeBeadIdsFrom(latest_queue).has(bead_id)) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    if (
+      !installGuardHook({
+        workspace,
+        attempt_id,
+        repo,
+        target_base: snap.target_base || 'main'
+      })
+    ) {
+      return { ok: false, reason: 'guard_hook_install_failed' };
+    }
     claimed.add(bead_id);
     if (
       !prerecordAttempt(workspace, {
@@ -3283,6 +3311,7 @@ export function createScheduler(deps) {
         pid: null
       })
     ) {
+      removeGuardHook(workspace, attempt_id);
       claimed.delete(bead_id);
       return { ok: false, reason: 'attempt_prerecord_failed' };
     }
@@ -3303,7 +3332,7 @@ export function createScheduler(deps) {
       cleanup_diagnosis: true,
       spawnBead: {
         id: bead_id,
-        prompt: cleanupDiagnosisPrompt(bead_id, failure, result_path)
+        prompt: cleanupDiagnosisPrompt(bead_id, latest_failure, result_path)
       }
     });
     if (!launched.ok) {
@@ -3742,7 +3771,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {any} prior - The source attempt record (guards already passed).
-   * @param {{ prompt: string, conflict_resolution: boolean, disposition?: string|null, disposition_receipt?: string|null, cwd?: string|null, resume?: boolean }} options
+   * @param {{ prompt: string, conflict_resolution: boolean, disposition?: string|null, disposition_receipt?: string|null, cleanup_diagnosis?: boolean, cleanup_diagnosis_result_path?: string|null, cwd?: string|null, resume?: boolean }} options
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function relaunchFromAttempt(workspace, prior, options) {
@@ -3854,6 +3883,9 @@ export function createScheduler(deps) {
           ? options.resume !== false
           : false,
         disposition_prompt: options.disposition ? options.prompt : null,
+        cleanup_diagnosis: options.cleanup_diagnosis === true,
+        cleanup_diagnosis_result_path:
+          options.cleanup_diagnosis_result_path ?? null,
         status: 'running',
         pid: null
       })
@@ -3982,15 +4014,18 @@ export function createScheduler(deps) {
       wt_path,
       launch_kind: options.disposition
         ? 'disposition'
-        : options.conflict_resolution
-          ? 'conflict'
-          : 'resume',
+        : options.cleanup_diagnosis
+          ? 'cleanup_diagnosis'
+          : options.conflict_resolution
+            ? 'conflict'
+            : 'resume',
       spawnBead: {
         id: bead_id,
         prompt: options.prompt
       },
       resume_session_id,
-      disposition: options.disposition ?? null
+      disposition: options.disposition ?? null,
+      cleanup_diagnosis: options.cleanup_diagnosis === true
     });
     if (!launched.ok) {
       return { ok: false, reason: launched.reason || 'spawn_failed' };

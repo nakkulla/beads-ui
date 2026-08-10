@@ -24,18 +24,27 @@ const COMBINATIONS = [
     name: 'fast_track + base (the worker dispatch default)',
     options: { fast_track: true, target_base: 'main' }
   },
-  { name: 'disposition', options: { pr_submit: false } },
+  {
+    name: 'diagnosis no-PR',
+    options: { pr_submit: false, disposition: false }
+  },
+  { name: 'disposition', options: { pr_submit: false, disposition: true } },
   {
     name: 'disposition + fast_track',
-    options: { pr_submit: false, fast_track: true }
+    options: { pr_submit: false, disposition: true, fast_track: true }
   },
   {
     name: 'disposition ignores target_base',
-    options: { pr_submit: false, target_base: 'main' }
+    options: { pr_submit: false, disposition: true, target_base: 'main' }
   },
   {
     name: 'disposition + fast_track ignores target_base',
-    options: { pr_submit: false, fast_track: true, target_base: 'main' }
+    options: {
+      pr_submit: false,
+      disposition: true,
+      fast_track: true,
+      target_base: 'main'
+    }
   }
 ];
 
@@ -158,7 +167,10 @@ describe('runner/preamble merge axis removal (worker-phase2 §2)', () => {
 
 describe('runner/preamble disposition sessions (UI-hs11 §3.3, UI-rxp3 §1)', () => {
   test('drops the PR-submit directive when the session opens no PR', () => {
-    const out = applyPreamble('처분하라', { pr_submit: false }).system_prompt;
+    const out = applyPreamble('처분하라', {
+      pr_submit: false,
+      disposition: true
+    }).system_prompt;
 
     expect(out).not.toContain('PR 제출까지 수행하고');
     expect(out).toContain('## 무인 모드');
@@ -171,11 +183,25 @@ describe('runner/preamble disposition sessions (UI-hs11 §3.3, UI-rxp3 §1)', ()
     );
   });
 
-  test('selects the disposition guard variant off the same flag', () => {
-    const out = applyPreamble('처분하라', { pr_submit: false }).system_prompt;
+  test('selects the disposition guard variant explicitly', () => {
+    const out = applyPreamble('처분하라', {
+      pr_submit: false,
+      disposition: true
+    }).system_prompt;
 
     expect(out).toContain(guardContractDirective({ disposition: true }));
     expect(out).not.toContain(guardContractDirective({ disposition: false }));
+  });
+
+  test('keeps the ordinary guard variant for a diagnosis no-PR session', () => {
+    const out = applyPreamble('분류하라', {
+      pr_submit: false,
+      disposition: false
+    }).system_prompt;
+
+    expect(out).not.toContain('PR 제출까지 수행하고');
+    expect(out).toContain(guardContractDirective({ disposition: false }));
+    expect(out).not.toContain(guardContractDirective({ disposition: true }));
   });
 });
 
@@ -211,6 +237,7 @@ describe('runner/preamble PR base directive (worker-base-scope-alignment §4)', 
   test('drops the base directive with the PR-submit directive it belongs to', () => {
     const out = applyPreamble('처분하라', {
       pr_submit: false,
+      disposition: true,
       target_base: 'ilsun/dev'
     }).system_prompt;
 

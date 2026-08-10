@@ -631,6 +631,54 @@ describe('views/board/card display policy', () => {
     expect(onCleanupDiagnose).toHaveBeenCalledWith(expect.anything(), 'UI-1');
   });
 
+  test('renders durable cleanup diagnosis details on the card', () => {
+    const m = mountCard(
+      { id: 'UI-1', title: 'cleanup failed' },
+      makeCtx({
+        policy: makePolicy(),
+        cleanupFailureFor: () => ({
+          step: 'post_merge_verify',
+          reason: 'verify_cmd_failed',
+          diagnosis: {
+            verdict: 'regression',
+            evidence: 'same assertion fails on the merge head',
+            fix_bead_id: 'UI-fix'
+          }
+        })
+      })
+    );
+
+    const result = /** @type {HTMLElement} */ (
+      m.querySelector('.board-card__cleanup-diagnosis')
+    );
+
+    expect(result.textContent).toContain('regression');
+    expect(result.textContent).toContain('same assertion fails');
+    expect(result.textContent).toContain('UI-fix');
+  });
+
+  test('renders malformed cleanup diagnosis fail-closed on the card', () => {
+    const m = mountCard(
+      { id: 'UI-1', title: 'cleanup failed' },
+      makeCtx({
+        policy: makePolicy(),
+        cleanupFailureFor: () => ({
+          step: 'post_merge_verify',
+          reason: 'verify_cmd_failed',
+          diagnosis: {
+            verdict: 'malformed',
+            evidence: 'diagnosis result is absent',
+            malformed: true
+          }
+        })
+      })
+    );
+
+    expect(
+      m.querySelector('.board-card__cleanup-diagnosis')?.textContent
+    ).toContain('판정 불가');
+  });
+
   test('omits cleanup controls without a failure or when blocked chips are disabled', () => {
     const missing = mountCard(
       { id: 'UI-1', title: 'quiet' },

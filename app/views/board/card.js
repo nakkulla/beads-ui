@@ -233,9 +233,39 @@ function chipsTemplate(issue, ctx) {
     const diagnosis_pending = ctx.isCleanupDiagnosisPending
       ? ctx.isCleanupDiagnosisPending(issue.id)
       : false;
+    const diagnosis = /** @type {any|null} */ (
+      cleanup_failure.diagnosis &&
+      typeof cleanup_failure.diagnosis === 'object' &&
+      !Array.isArray(cleanup_failure.diagnosis)
+        ? cleanup_failure.diagnosis
+        : null
+    );
     items.push(
       html`<span class="ctl-chip ctl-chip--cleanup">⚠ 정리 실패</span>`
     );
+    if (diagnosis) {
+      const verdict =
+        diagnosis.malformed === true || diagnosis.verdict === 'malformed'
+          ? '판정 불가'
+          : String(diagnosis.verdict || '판정 불가');
+      const evidence =
+        typeof diagnosis.evidence === 'string'
+          ? diagnosis.evidence.trim().slice(0, 96)
+          : '';
+      const fix_bead =
+        typeof diagnosis.fix_bead_id === 'string' &&
+        diagnosis.fix_bead_id.length > 0
+          ? ` · fix ${diagnosis.fix_bead_id}`
+          : '';
+      const detail = evidence ? ` · ${evidence}` : '';
+      items.push(
+        html`<span
+          class="ctl-chip ctl-chip--cleanup board-card__cleanup-diagnosis"
+          title=${evidence}
+          >AI ${verdict}${detail}${fix_bead}</span
+        >`
+      );
+    }
     items.push(
       html`<button
         type="button"

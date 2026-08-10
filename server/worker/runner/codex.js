@@ -322,7 +322,8 @@ export function codexSpec(catalog_entry, options = {}) {
       args.push('--disable', 'hooks');
       const { system_prompt, task_prompt } = applyPreamble(promptFor(bead), {
         fast_track: !!s.fast_track,
-        pr_submit: !s.disposition,
+        pr_submit: !s.disposition && !s.cleanup_diagnosis,
+        disposition: !!s.disposition,
         target_base: typeof s.target_base === 'string' ? s.target_base : null
       });
       // codex has no `--append-system-prompt` equivalent, so the two channels
