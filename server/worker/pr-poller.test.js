@@ -183,6 +183,24 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prDetail).toHaveBeenCalled();
   });
 
+  test('observes a nonterminal deployment reconcile without a subscriber', async () => {
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue: {
+        ...queueOf(),
+        auto_merge: false,
+        merge_queue: [],
+        reconcile: {
+          'UI-1': { bead_id: 'UI-1', stage: 'deploying' }
+        }
+      }
+    });
+
+    await poller.tick();
+
+    expect(prDetail).toHaveBeenCalled();
+  });
+
   test('keeps a merge-queue member observed after its row leaves the lane', async () => {
     const observations = createPrObservationStore();
     observations.record('/ws', 'UI-9', { error: null, pr: detailOf() });
@@ -301,6 +319,29 @@ describe('worker/pr-poller — external PR state classification (§4)', () => {
     expect(store_snapshot.pr_wait).toEqual([{ bead_id: 'UI-1', added_at: 1 }]);
     expect(store_snapshot.done).toEqual([]);
     expect(prChecks).not.toHaveBeenCalled();
+  });
+
+  test('resumes a user-started external reconcile after restart', async () => {
+    const onMerged = vi.fn(async () => {});
+    const { poller } = makePoller({
+      subscribers: 0,
+      queue: {
+        ...queueOf({ pr_wait: [] }),
+        reconcile: {
+          'UI-X': { bead_id: 'UI-X', stage: 'deploying' }
+        }
+      },
+      external: externalOf([{ bead_id: 'UI-X' }]),
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
+      onMerged
+    });
+
+    await poller.tick();
+
+    expect(onMerged).toHaveBeenCalledWith('UI-X', NEW_SHA);
   });
 
   test('keeps a CLOSED-unmerged bead in pr_wait with its state recorded', async () => {

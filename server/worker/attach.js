@@ -1003,10 +1003,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   completionIntent = resolvedCompletionIntent;
 
   // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
-  // BUILT here but never started here — `initWorkerRuntime` starts it only when
-  // a real subscriber-count provider is wired, so a test that constructs an
-  // attachment can never reach `gh`. Its default subscriber count is 0, which
-  // by itself already makes every pass a no-op.
+  // BUILT here but started by `initWorkerRuntime`. Its default subscriber count
+  // is 0, while durable auto-merge/merge-queue/reconcile demand can still wake
+  // it after restart.
   const prPoller = createPrPoller({
     workspace: keyFor(workspace_root),
     repo,
@@ -1134,9 +1133,9 @@ function recoverRunningAttempts(att, key) {
  * timer (worker-detached-session-reconcile §2). Idempotent per workspace.
  *
  * `getSubscriberCount` is what turns the PR poller on (worker-phase2 §4): the
- * caller supplies the live worker-queue subscriber count for a workspace, and
- * the poller queries `gh` only while that is positive. Omitting it leaves every
- * poller armed-but-silent, which is what keeps tests off the network.
+ * caller supplies the live worker-queue subscriber count for a workspace. The
+ * poller also honors durable auto-merge/merge-queue/reconcile demand; omitting
+ * the provider stays silent only when none of those internal consumers exist.
  *
  * @param {{ workspaces: string[], getSubscriberCount?: (workspace: string) => number }} input
  * @returns {ReturnType<typeof createWorkerAttachment>[]}
@@ -1157,13 +1156,11 @@ export function initWorkerRuntime(input) {
           typeof countFor === 'function' ? () => countFor(key) : undefined
       });
       ATTACHMENTS.set(key, att);
-      if (typeof countFor === 'function') {
-        try {
-          att.prPoller.start();
-        } catch (err) {
-          log('pr poller start failed for %s: %o', key, err);
-        }
-      }
+    }
+    try {
+      att.prPoller.start();
+    } catch (err) {
+      log('pr poller start failed for %s: %o', key, err);
     }
     try {
       att.reconciler.start();
@@ -1186,9 +1183,14 @@ export function initWorkerRuntime(input) {
     // the first poll interval elapsed (§4.4).
     try {
       att.autoMerge.start();
-      if (att.runtime.queueStore.snapshot(key).auto_merge === true) {
+      const queue = att.runtime.queueStore.snapshot(key);
+      const reconcile_pending = Object.values(queue.reconcile || {}).some(
+        (record) =>
+          record && record.stage !== 'complete' && record.stage !== 'failed'
+      );
+      if (queue.auto_merge === true || reconcile_pending) {
         Promise.resolve(att.prPoller.tick()).catch((err) => {
-          log('auto-merge boot observation failed for %s: %o', key, err);
+          log('worker boot PR observation failed for %s: %o', key, err);
         });
       }
     } catch (err) {

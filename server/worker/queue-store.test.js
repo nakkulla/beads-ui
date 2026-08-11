@@ -3106,6 +3106,32 @@ describe('worker/queue-store deployment reconcile state', () => {
     expect(store.snapshot(WS).reconcile['UI-1'].stage).toBe('failed');
   });
 
+  test('persists a terminal reconcile step across store recreation', () => {
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    store.failReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      reason: 'verify_failed',
+      detail: 'suite red',
+      step: 'post_merge_verify'
+    });
+
+    const terminal_failure =
+      createQueueStore().snapshot(WS).reconcile['UI-1'].terminal_failure;
+
+    expect(terminal_failure).toMatchObject({
+      reason: 'verify_failed',
+      detail: 'suite red',
+      step: 'post_merge_verify'
+    });
+  });
+
   test('completes with a receipt binding and mirrors it into last_deploy', () => {
     const store = createQueueStore();
     store.enqueueReconcile(WS, {

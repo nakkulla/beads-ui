@@ -490,6 +490,68 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(gh.prChecks).not.toHaveBeenCalled();
   });
 
+  test('initWorkerRuntime observes a persisted reconcile without subscribers', async () => {
+    const runtime = createWorkerRuntime();
+    const prDetail = vi.fn(async () => ({
+      state: 'ok',
+      data: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'UI-1',
+        head_sha: 'b'.repeat(40),
+        base_ref: 'main',
+        merge_sha: null,
+        merged_sha: null
+      }
+    }));
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      gh: /** @type {any} */ ({
+        prDetail,
+        prChecks: vi.fn(async () => ({ state: 'empty' })),
+        checkAvailability: vi.fn(async () => ({ state: 'ok', data: true }))
+      }),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      resolveBase: okBase('main'),
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    runtime.queueStore.appendAttempt(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    runtime.queueStore.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      patch: {
+        status: 'done',
+        repo: WS,
+        target_base: 'main',
+        verify_result: {
+          ok: true,
+          pr_url: 'https://github.com/o/r/pull/1',
+          pr_number: 1
+        }
+      }
+    });
+    runtime.queueStore.enqueueReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: 'a'.repeat(40)
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => prDetail.mock.calls.length > 0);
+
+    expect(prDetail).toHaveBeenCalledWith(path.resolve(WS), 1);
+  });
+
   test('toggle→tick dispatches via the real runner with the PR-submit preamble injected (fake spawn)', async () => {
     const runtime = createWorkerRuntime();
     const spawn_impl = makeFixtureSpawn({

@@ -12,6 +12,23 @@ import { errorDetail } from './verify-cmd.js';
 
 const RECEIPT_MAX_BYTES = 1024 * 1024;
 const RETRY_DELAYS_MS = [1000, 5000, 15000];
+const MANAGED_ENV_KEYS = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'TZ',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_STATE_HOME'
+];
 
 /**
  * @param {unknown} value
@@ -40,6 +57,58 @@ function isDigest(value) {
  */
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * Build the candidate Adapter environment without inheriting Worker secrets.
+ *
+ * @param {Record<string, string>} adapter_env
+ * @param {NodeJS.ProcessEnv} [process_env]
+ */
+export function managedAdapterEnvironment(
+  adapter_env,
+  process_env = process.env
+) {
+  /** @type {Record<string, string>} */
+  const safe_env = {};
+  for (const key of MANAGED_ENV_KEYS) {
+    const value = process_env[key];
+    if (typeof value === 'string') {
+      safe_env[key] = value;
+    }
+  }
+  return { ...safe_env, ...adapter_env };
+}
+
+/**
+ * Reject the credential-bearing URL forms that must never enter Adapter env or
+ * a durable receipt. SSH usernames are transport identities, not credentials;
+ * HTTP(S) userinfo and URL query/fragment data are not safe to forward.
+ *
+ * @param {string} value
+ */
+function safeRemoteUrl(value) {
+  if (path.isAbsolute(value) || value.startsWith('local:')) {
+    return value;
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.search.length > 0 || parsed.hash.length > 0) {
+      return null;
+    }
+    if (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      (parsed.username.length > 0 || parsed.password.length > 0)
+    ) {
+      return null;
+    }
+    if (parsed.password.length > 0) {
+      return null;
+    }
+    return value;
+  } catch {
+    return value;
+  }
 }
 
 /**
@@ -85,7 +154,10 @@ export function validateDeploymentReceipt(input) {
   } catch (err) {
     return {
       ok: false,
-      reason: 'receipt_missing',
+      reason:
+        isRecord(err) && err.code === 'ENOENT'
+          ? 'receipt_missing'
+          : 'receipt_file_invalid',
       detail: errorDetail(err)
     };
   }
@@ -206,13 +278,63 @@ function workspaceReceipt(input) {
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   fs?: typeof import('node:fs')
  * }} input
- * @returns {Promise<{ ok: true, release_path: string }|{ ok: false, reason: string, detail?: string, retryable: true }>}
+ * @returns {Promise<{ ok: true, release_path: string }|{ ok: false, reason: string, detail?: string, retryable: boolean }>}
  */
 async function materializeRelease(input) {
   const fs_impl = input.fs || nodeFs;
+  const deployment_root = path.dirname(releaseRoot(input.repo));
+  const release_root = releaseRoot(input.repo);
   const release_path = releasePath(input.repo, input.candidate_sha);
   try {
-    fs_impl.mkdirSync(release_path, { recursive: true, mode: 0o700 });
+    if (!isReleasePath(input.repo, release_path)) {
+      return {
+        ok: false,
+        reason: 'release_path_escape',
+        retryable: false
+      };
+    }
+    fs_impl.mkdirSync(deployment_root, { recursive: true, mode: 0o700 });
+    const deployment_stat = fs_impl.lstatSync(deployment_root);
+    if (!deployment_stat.isDirectory() || deployment_stat.isSymbolicLink()) {
+      return {
+        ok: false,
+        reason: 'release_root_invalid',
+        retryable: false
+      };
+    }
+    fs_impl.mkdirSync(release_root, { recursive: true, mode: 0o700 });
+    const root_stat = fs_impl.lstatSync(release_root);
+    if (!root_stat.isDirectory() || root_stat.isSymbolicLink()) {
+      return {
+        ok: false,
+        reason: 'release_root_invalid',
+        retryable: false
+      };
+    }
+    const real_root = fs_impl.realpathSync(release_root);
+    try {
+      const release_stat = fs_impl.lstatSync(release_path);
+      if (!release_stat.isDirectory() || release_stat.isSymbolicLink()) {
+        return {
+          ok: false,
+          reason: 'release_path_escape',
+          retryable: false
+        };
+      }
+    } catch (err) {
+      if (!isRecord(err) || err.code !== 'ENOENT') {
+        throw err;
+      }
+      fs_impl.mkdirSync(release_path, { mode: 0o700 });
+    }
+    const real_release = fs_impl.realpathSync(release_path);
+    if (path.dirname(real_release) !== real_root) {
+      return {
+        ok: false,
+        reason: 'release_path_escape',
+        retryable: false
+      };
+    }
     const commands = [
       ['init'],
       ['remote', 'remove', 'origin'],
@@ -255,20 +377,33 @@ async function materializeRelease(input) {
         retryable: true
       };
     }
-    const real_root = fs_impl.realpathSync(releaseRoot(input.repo));
-    const real_release = fs_impl.realpathSync(release_path);
-    const relative = path.relative(real_root, real_release);
+    const final_root_stat = fs_impl.lstatSync(release_root);
+    const final_release_stat = fs_impl.lstatSync(release_path);
+    if (
+      final_root_stat.isSymbolicLink() ||
+      final_release_stat.isSymbolicLink()
+    ) {
+      return {
+        ok: false,
+        reason: 'release_path_escape',
+        retryable: false
+      };
+    }
+    const final_real_root = fs_impl.realpathSync(release_root);
+    const final_real_release = fs_impl.realpathSync(release_path);
+    const relative = path.relative(final_real_root, final_real_release);
     if (
       !isReleasePath(input.repo, release_path) ||
       relative.length === 0 ||
       relative.startsWith('..') ||
       path.isAbsolute(relative) ||
-      path.dirname(relative) !== '.'
+      path.dirname(relative) !== '.' ||
+      path.dirname(final_real_release) !== final_real_root
     ) {
       return {
         ok: false,
         reason: 'release_path_escape',
-        retryable: true
+        retryable: false
       };
     }
     return { ok: true, release_path };
@@ -327,7 +462,7 @@ function runManagedCommand(input) {
     try {
       child = spawnImpl(executable, input.cmd.slice(1), {
         cwd: input.release_path,
-        env: { ...process.env, ...input.env },
+        env: managedAdapterEnvironment(input.env),
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true
@@ -480,8 +615,9 @@ export function createDeploymentReconciler(deps) {
       const result = await deps.gitRun(['remote', 'get-url', remote], {
         cwd: deps.repo
       });
-      return result.code === 0 && result.stdout.trim().length > 0
-        ? result.stdout.trim()
+      const value = result.stdout.trim();
+      return result.code === 0 && value.length > 0
+        ? safeRemoteUrl(value)
         : null;
     } catch {
       return null;
@@ -493,14 +629,22 @@ export function createDeploymentReconciler(deps) {
    * @param {string} reason
    * @param {string|null} detail
    * @param {'base_sync'|'post_merge_verify'|'deploy'|null} step
+   * @param {{ base_sync?: string|null, output_tail?: string, log_path?: string }} evidence
    */
-  function terminal(current, reason, detail = null, step = null) {
+  function terminal(
+    current,
+    reason,
+    detail = null,
+    step = null,
+    evidence = {}
+  ) {
     const stage = current.stage;
     deps.store.failReconcile(deps.workspace, {
       bead_id: current.bead_id,
       attempt_id: current.attempt_id,
       reason,
-      detail
+      detail,
+      step
     });
     onStage({
       bead_id: current.bead_id,
@@ -513,7 +657,8 @@ export function createDeploymentReconciler(deps) {
       reason,
       detail,
       stage,
-      ...(step === null ? {} : { step })
+      ...(step === null ? {} : { step }),
+      ...evidence
     };
   }
 
@@ -580,7 +725,7 @@ export function createDeploymentReconciler(deps) {
   }
 
   /**
-   * @param {{ bead_id: string, target_base: string, merged_floor_sha: string }} input
+   * @param {{ bead_id: string, target_base: string, merged_floor_sha: string, restart?: boolean }} input
    */
   async function reconcile(input) {
     if (
@@ -592,21 +737,25 @@ export function createDeploymentReconciler(deps) {
     ) {
       return { ok: false, pending: false, reason: 'reconcile_input_invalid' };
     }
-    const release_lock = await deps.locks.deployLock(deps.repo);
-    try {
-      let current = deps.store.snapshot(deps.workspace).reconcile[
-        input.bead_id
-      ];
-      if (!current) {
-        deps.store.enqueueReconcile(deps.workspace, {
-          bead_id: input.bead_id,
-          attempt_id: attemptId(),
-          target_base: input.target_base,
-          merged_floor_sha: input.merged_floor_sha
-        });
-        current = deps.store.snapshot(deps.workspace).reconcile[input.bead_id];
+    let current = deps.store.snapshot(deps.workspace).reconcile[input.bead_id];
+    if (!current || (input.restart === true && current.stage === 'failed')) {
+      deps.store.enqueueReconcile(deps.workspace, {
+        bead_id: input.bead_id,
+        attempt_id: attemptId(),
+        target_base: input.target_base,
+        merged_floor_sha: input.merged_floor_sha
+      });
+      current = deps.store.snapshot(deps.workspace).reconcile[input.bead_id];
+      if (current) {
         onStage({ bead_id: current.bead_id, stage: 'queued' });
       }
+    }
+    if (!current) {
+      return { ok: false, pending: false, reason: 'reconcile_enqueue_failed' };
+    }
+    const release_lock = await deps.locks.deployLock(deps.repo);
+    try {
+      current = deps.store.snapshot(deps.workspace).reconcile[input.bead_id];
       if (
         current.target_base !== input.target_base ||
         current.merged_floor_sha !== input.merged_floor_sha
@@ -617,7 +766,11 @@ export function createDeploymentReconciler(deps) {
         return {
           ok: false,
           pending: false,
-          reason: current.terminal_failure?.reason || 'reconcile_failed'
+          reason: current.terminal_failure?.reason || 'reconcile_failed',
+          detail: current.terminal_failure?.detail || null,
+          ...(typeof current.terminal_failure?.step === 'string'
+            ? { step: current.terminal_failure.step }
+            : {})
         };
       }
       if (current.retry_at !== null && current.retry_at > now()) {
@@ -764,6 +917,64 @@ export function createDeploymentReconciler(deps) {
       current = deps.store.snapshot(deps.workspace).reconcile[input.bead_id];
       onStage({ bead_id: current.bead_id, stage: 'pinned', adapter });
 
+      const receipt_path = deploymentReceiptPath(deps.repo, current.attempt_id);
+      const expected_source_path =
+        adapter === 'managed'
+          ? releasePath(deps.repo, candidate_sha)
+          : path.resolve(deps.repo);
+      const existing_receipt = validateDeploymentReceipt({
+        fs: fs_impl,
+        receipt_path,
+        repo: deps.repo,
+        target_remote,
+        target_base: input.target_base,
+        attempt_id: current.attempt_id,
+        merged_floor_sha: current.merged_floor_sha,
+        candidate_sha,
+        source_path: expected_source_path
+      });
+      if (existing_receipt.ok) {
+        deps.store.advanceReconcile(deps.workspace, {
+          bead_id: current.bead_id,
+          attempt_id: current.attempt_id,
+          stage: 'readback'
+        });
+        onStage({ bead_id: current.bead_id, stage: 'readback', adapter });
+        const workspace_no_deploy =
+          adapter === 'workspace' &&
+          existing_receipt.receipt.action_outcomes.some(
+            (/** @type {any} */ outcome) =>
+              outcome.action === 'workspace_no_deploy'
+          );
+        const completed = deps.store.completeReconcile(deps.workspace, {
+          bead_id: current.bead_id,
+          attempt_id: current.attempt_id,
+          receipt_path,
+          receipt_digest: existing_receipt.digest,
+          mirror_last_deploy: !workspace_no_deploy
+        });
+        if (!completed.ok) {
+          return terminal(current, 'reconcile_complete_failed', null, 'deploy');
+        }
+        onStage({ bead_id: current.bead_id, stage: 'complete', adapter });
+        return {
+          ok: true,
+          status: 'recovered',
+          candidate_sha,
+          base_sync: null,
+          receipt_path,
+          receipt_digest: existing_receipt.digest
+        };
+      }
+      if (existing_receipt.reason !== 'receipt_missing') {
+        return terminal(
+          current,
+          existing_receipt.reason,
+          existing_receipt.detail || null,
+          'deploy'
+        );
+      }
+
       /** @type {string|null} */
       let base_sync = null;
       if (typeof deps.prepareCandidate === 'function') {
@@ -777,15 +988,25 @@ export function createDeploymentReconciler(deps) {
           const failed = terminal(
             current,
             prepared.reason || 'candidate_prepare_failed',
-            prepared.detail || null
+            prepared.detail || null,
+            'base_sync',
+            {
+              base_sync: prepared.base_sync || null,
+              ...(typeof prepared.output_tail === 'string'
+                ? { output_tail: prepared.output_tail }
+                : {}),
+              ...(typeof prepared.log_path === 'string'
+                ? { log_path: prepared.log_path }
+                : {})
+            }
           );
-          return { ...failed, step: 'base_sync' };
+          return failed;
         }
         base_sync = prepared.base_sync || null;
       }
 
       /** @type {string} */
-      let source_path;
+      let source_path = expected_source_path;
       if (adapter === 'managed') {
         if (base.remote === null) {
           return terminal(current, 'managed_remote_required', null, 'deploy');
@@ -799,11 +1020,17 @@ export function createDeploymentReconciler(deps) {
           fs: fs_impl
         });
         if (!materialized.ok) {
-          return retry(current, materialized, 'deploy');
+          return materialized.retryable
+            ? retry(current, materialized, 'deploy')
+            : terminal(
+                current,
+                materialized.reason,
+                materialized.detail || null,
+                'deploy',
+                { base_sync }
+              );
         }
         source_path = materialized.release_path;
-      } else {
-        source_path = path.resolve(deps.repo);
       }
 
       deps.store.advanceReconcile(deps.workspace, {
@@ -823,7 +1050,16 @@ export function createDeploymentReconciler(deps) {
           current,
           verified.reason || 'verify_failed',
           verified.detail || null,
-          'post_merge_verify'
+          'post_merge_verify',
+          {
+            base_sync,
+            ...(typeof verified.output_tail === 'string'
+              ? { output_tail: verified.output_tail }
+              : {}),
+            ...(typeof verified.log_path === 'string'
+              ? { log_path: verified.log_path }
+              : {})
+          }
         );
       }
 
@@ -833,7 +1069,6 @@ export function createDeploymentReconciler(deps) {
         stage: 'deploying'
       });
       onStage({ bead_id: current.bead_id, stage: 'deploying', adapter });
-      const receipt_path = deploymentReceiptPath(deps.repo, current.attempt_id);
       /** @type {any} */
       let deployed;
       if (adapter === 'managed') {
@@ -903,7 +1138,16 @@ export function createDeploymentReconciler(deps) {
               current,
               deployed.reason || 'adapter_failed',
               deployed.detail || null,
-              'deploy'
+              'deploy',
+              {
+                base_sync,
+                ...(typeof deployed.output_tail === 'string'
+                  ? { output_tail: deployed.output_tail }
+                  : {}),
+                ...(typeof deployed.log_path === 'string'
+                  ? { log_path: deployed.log_path }
+                  : {})
+              }
             );
       }
 

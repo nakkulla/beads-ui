@@ -352,7 +352,7 @@
  * @property {number} retry_count
  * @property {number|null} retry_at
  * @property {string|null} last_retryable_reason
- * @property {{ reason: string, detail: string|null, at: number }|null} terminal_failure
+ * @property {{ reason: string, detail: string|null, step: string|null, at: number }|null} terminal_failure
  * @property {number} updated_at
  */
 /**
@@ -1428,6 +1428,10 @@ function normalizeReconcile(raw) {
                 typeof value.terminal_failure.detail === 'string'
                   ? value.terminal_failure.detail
                   : null,
+              step:
+                typeof value.terminal_failure.step === 'string'
+                  ? value.terminal_failure.step
+                  : null,
               at:
                 typeof value.terminal_failure.at === 'number'
                   ? value.terminal_failure.at
@@ -1955,7 +1959,7 @@ export function createQueueStore(options = {}) {
 
     /**
      * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, reason: string, detail?: string|null }} input
+     * @param {{ bead_id: string, attempt_id: string, reason: string, detail?: string|null, step?: string|null }} input
      * @returns {QueueOpResult}
      */
     failReconcile(workspace, input) {
@@ -1976,6 +1980,7 @@ export function createQueueStore(options = {}) {
         current.terminal_failure = {
           reason: input.reason,
           detail: typeof input.detail === 'string' ? input.detail : null,
+          step: typeof input.step === 'string' ? input.step : null,
           at: now()
         };
         current.updated_at = now();

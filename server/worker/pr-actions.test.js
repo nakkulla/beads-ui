@@ -2544,7 +2544,8 @@ describe('post-merge cleanup — Deployment Reconciler integration (UI-16ep)', (
     const result = await h.actions.merge(BEAD);
 
     expect(result).toMatchObject({
-      ok: false,
+      ok: true,
+      action: 'cleanup_pending',
       reason: 'materialize_failed',
       cleanup_step: null
     });
@@ -2552,9 +2553,171 @@ describe('post-merge cleanup — Deployment Reconciler integration (UI-16ep)', (
     expect(h.bd.setStatus).not.toHaveBeenCalledWith(BEAD, 'closed');
     expect(h.store.snapshot(WS).pr_wait).toHaveLength(1);
   });
+
+  test('preserves verify diagnostics from a terminal reconcile failure', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const h = makeActions({
+      deploymentReconciler: {
+        reconcile: vi.fn(async () => ({
+          ok: false,
+          pending: false,
+          reason: 'verify_cmd_failed',
+          step: 'post_merge_verify',
+          detail: 'suite red',
+          output_tail: 'failed assertion',
+          log_path: '/state/verify.log',
+          base_sync: 'fetch_only:dirty'
+        }))
+      },
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merge_sha })
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      cleanup_step: 'post_merge_verify',
+      base_sync: 'fetch_only:dirty'
+    });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      detail: 'suite red',
+      output_tail: 'failed assertion',
+      log_path: '/state/verify.log'
+    });
+  });
+
+  test('starts a new reconcile attempt for a diagnosis-authorized cleanup retry', async () => {
+    const floor = 'c'.repeat(40);
+    const store = seedStore();
+    store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'deploy',
+      reason: 'adapter_failed'
+    });
+    store.enqueueReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-old',
+      target_base: 'main',
+      merged_floor_sha: floor
+    });
+    store.failReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-old',
+      reason: 'adapter_failed'
+    });
+    const reconcile = vi.fn(async () => ({
+      ok: true,
+      status: 'complete',
+      candidate_sha: 'd'.repeat(40),
+      base_sync: null
+    }));
+    const h = makeActions({
+      store,
+      deploymentReconciler: { reconcile }
+    });
+
+    const result = await h.actions.retryCleanup(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(reconcile).toHaveBeenCalledWith({
+      bead_id: BEAD,
+      target_base: 'main',
+      merged_floor_sha: floor,
+      restart: true
+    });
+  });
 });
 
 describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6)', () => {
+  test('resumes a nonterminal external reconcile without a durable pr_wait row', async () => {
+    const floor = 'c'.repeat(40);
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: floor
+    });
+    const reconcile = vi.fn(async () => ({
+      ok: true,
+      status: 'complete',
+      candidate_sha: 'd'.repeat(40),
+      base_sync: null
+    }));
+    const h = makeActions({
+      store,
+      deploymentReconciler: { reconcile },
+      external: {
+        [BEAD]: {
+          bead_id: BEAD,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304,
+          added_at: 1
+        }
+      }
+    });
+
+    const result = await h.actions.cleanupObservedMerge(BEAD, floor);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(reconcile).toHaveBeenCalledWith({
+      bead_id: BEAD,
+      target_base: 'main',
+      merged_floor_sha: floor
+    });
+  });
+
+  test('starts a fresh external attempt only after a new cleanup click', async () => {
+    const floor = 'c'.repeat(40);
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-old',
+      target_base: 'main',
+      merged_floor_sha: floor
+    });
+    store.failReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-old',
+      reason: 'adapter_failed',
+      step: 'deploy'
+    });
+    const reconcile = vi.fn(async () => ({
+      ok: true,
+      status: 'complete',
+      candidate_sha: 'd'.repeat(40),
+      base_sync: null
+    }));
+    const h = makeActions({
+      store,
+      details: [prOf({ state: 'MERGED', merge_sha: floor })],
+      deploymentReconciler: { reconcile },
+      bdStatus: { [BEAD]: 'resolved' },
+      bdPrUrl: 'https://github.com/o/r/pull/304',
+      external: {
+        [BEAD]: {
+          bead_id: BEAD,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304,
+          added_at: 1
+        }
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, action: 'already_merged' });
+    expect(reconcile).toHaveBeenCalledWith({
+      bead_id: BEAD,
+      target_base: 'main',
+      merged_floor_sha: floor,
+      restart: true
+    });
+  });
+
   test('runs the identical cleanup path when a human merged on github.com', async () => {
     const merge_sha = 'c'.repeat(40);
     const h = makeActions({

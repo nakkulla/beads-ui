@@ -3,8 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { releasePath } from './deployment-paths.js';
-import { createDeploymentReconciler } from './deployment-reconciler.js';
+import { releasePath, releaseRoot } from './deployment-paths.js';
+import {
+  createDeploymentReconciler,
+  managedAdapterEnvironment
+} from './deployment-reconciler.js';
 import { createLockManager } from './locks.js';
 import { createQueueStore } from './queue-store.js';
 
@@ -73,6 +76,8 @@ function receipt(input) {
  *   runWorkspaceAdapter?: (input: any) => Promise<any>,
  *   prepareCandidate?: (input: any) => Promise<any>,
  *   deployResolution?: any,
+ *   remoteUrl?: string,
+ *   useDefaultMaterialize?: boolean,
  *   store?: ReturnType<typeof createQueueStore>,
  *   locks?: ReturnType<typeof createLockManager>
  * }} [options]
@@ -92,7 +97,7 @@ function harness(options = {}) {
     if (args.join(' ') === 'remote get-url origin') {
       return {
         code: 0,
-        stdout: 'git@example.test:owner/repo.git\n',
+        stdout: `${options.remoteUrl || 'git@example.test:owner/repo.git'}\n`,
         stderr: ''
       };
     }
@@ -121,6 +126,7 @@ function harness(options = {}) {
     });
   const runWorkspaceAdapter =
     options.runWorkspaceAdapter || vi.fn(async () => ({ ok: true }));
+  const verifyCandidate = vi.fn(async () => ({ ok: true }));
   const reconciler = createDeploymentReconciler({
     workspace: repo,
     repo,
@@ -148,8 +154,8 @@ function harness(options = {}) {
         }
       },
     prepareCandidate: options.prepareCandidate,
-    verifyCandidate: vi.fn(async () => ({ ok: true })),
-    materializeManaged,
+    verifyCandidate,
+    ...(options.useDefaultMaterialize ? {} : { materializeManaged }),
     runManagedAdapter,
     runWorkspaceAdapter,
     attemptId: () => `deploy-${++attempt}`,
@@ -161,12 +167,51 @@ function harness(options = {}) {
     locks,
     gitRun,
     materializeManaged,
+    verifyCandidate,
     runManagedAdapter,
     runWorkspaceAdapter
   };
 }
 
 describe('worker/deployment-reconciler', () => {
+  test('passes only allowlisted process values and explicit Adapter bindings', () => {
+    const result = managedAdapterEnvironment(
+      { BDUI_DEPLOY_CANDIDATE_SHA: CANDIDATE },
+      {
+        PATH: '/bin',
+        LANG: 'ko_KR.UTF-8',
+        GITHUB_TOKEN: 'secret',
+        GH_TOKEN: 'secret-too',
+        SSH_AUTH_SOCK: '/private/agent.sock'
+      }
+    );
+
+    expect(result).toEqual({
+      PATH: '/bin',
+      LANG: 'ko_KR.UTF-8',
+      BDUI_DEPLOY_CANDIDATE_SHA: CANDIDATE
+    });
+  });
+
+  test('rejects credential-bearing HTTP remote identity before Adapter spawn', async () => {
+    const h = harness({
+      remoteUrl: 'https://token@example.test/owner/repo.git'
+    });
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      pending: true,
+      reason: 'remote_url_unavailable'
+    });
+    expect(h.runManagedAdapter).not.toHaveBeenCalled();
+  });
+
   test('pins, verifies, deploys, validates readback, and completes a managed candidate', async () => {
     const h = harness();
 
@@ -316,7 +361,11 @@ describe('worker/deployment-reconciler', () => {
       target_base: 'main',
       merged_floor_sha: SECOND_FLOOR
     });
-    await Promise.resolve();
+
+    expect(h.store.snapshot(repo).reconcile['UI-2']).toMatchObject({
+      stage: 'queued',
+      merged_floor_sha: SECOND_FLOOR
+    });
     unblock();
 
     expect(await first).toMatchObject({ ok: true, status: 'complete' });
@@ -375,6 +424,46 @@ describe('worker/deployment-reconciler', () => {
     });
   });
 
+  test('completes from a terminal receipt after restart without rerunning verify or deploy', async () => {
+    let clock = 0;
+    const runManagedAdapter = vi.fn(async (input) => {
+      fs.mkdirSync(path.dirname(input.receipt_path), { recursive: true });
+      fs.writeFileSync(
+        input.receipt_path,
+        JSON.stringify(
+          receipt({
+            attempt_id: input.attempt_id,
+            merged_floor_sha: input.merged_floor_sha,
+            release: input.release_path
+          })
+        )
+      );
+      return {
+        ok: false,
+        reason: 'adapter_spawn_error',
+        retryable: true
+      };
+    });
+    const h = harness({ now: () => clock, runManagedAdapter });
+
+    const pending = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    clock = 2000;
+    const recovered = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(pending).toMatchObject({ ok: false, pending: true });
+    expect(recovered).toMatchObject({ ok: true, status: 'recovered' });
+    expect(h.verifyCandidate).toHaveBeenCalledTimes(1);
+    expect(runManagedAdapter).toHaveBeenCalledTimes(1);
+  });
+
   test('turns the third retryable adapter failure into a terminal failure', async () => {
     let clock = 0;
     const h = harness({
@@ -411,6 +500,89 @@ describe('worker/deployment-reconciler', () => {
     expect(h.store.snapshot(repo).reconcile['UI-1']).toMatchObject({
       stage: 'failed',
       retry_count: 3
+    });
+  });
+
+  test('starts a fresh attempt only for an explicitly authorized terminal retry', async () => {
+    let calls = 0;
+    let clock = 0;
+    const runManagedAdapter = vi.fn(async (input) => {
+      calls += 1;
+      if (calls <= 3) {
+        return {
+          ok: false,
+          reason: 'adapter_spawn_error',
+          retryable: true
+        };
+      }
+      fs.mkdirSync(path.dirname(input.receipt_path), { recursive: true });
+      fs.writeFileSync(
+        input.receipt_path,
+        JSON.stringify(
+          receipt({
+            attempt_id: input.attempt_id,
+            merged_floor_sha: input.merged_floor_sha,
+            release: input.release_path
+          })
+        )
+      );
+      return { ok: true };
+    });
+    const h = harness({
+      now: () => (clock += 10000),
+      runManagedAdapter
+    });
+    await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    const failed_attempt = h.store.snapshot(repo).reconcile['UI-1'].attempt_id;
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR,
+      restart: true
+    });
+
+    expect(result).toMatchObject({ ok: true, status: 'complete' });
+    expect(h.store.snapshot(repo).reconcile['UI-1'].attempt_id).not.toBe(
+      failed_attempt
+    );
+  });
+
+  test('rejects a symlinked release before running a git mutation', async () => {
+    const outside = path.join(tmp, 'outside');
+    fs.mkdirSync(releaseRoot(repo), { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.symlinkSync(outside, releasePath(repo, CANDIDATE), 'dir');
+    const h = harness({ useDefaultMaterialize: true });
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      pending: false,
+      reason: 'release_path_escape',
+      step: 'deploy'
+    });
+    expect(h.gitRun).not.toHaveBeenCalledWith(['init'], {
+      cwd: releasePath(repo, CANDIDATE)
     });
   });
 

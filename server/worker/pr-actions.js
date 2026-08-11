@@ -120,9 +120,10 @@ export const CLEANUP_STEPS = [
 /**
  * @typedef {Object} MergeClickResult
  * @property {boolean} ok - Whether the click accomplished what it set out to.
- * @property {'merged'|'updated_and_merged'|'already_merged'|'merge_unconfirmed'|'conflict_resolution'|'refused'} action
+ * @property {'merged'|'updated_and_merged'|'already_merged'|'cleanup_pending'|'merge_unconfirmed'|'conflict_resolution'|'refused'} action
  * What the click actually DID — never just "succeeded": a dispatched conflict
  * resolution is a legitimate outcome that merged nothing, and
+ * `cleanup_pending` is a landed merge whose durable Reconciler is backing off;
  * `merge_unconfirmed` is a merge COMMAND that succeeded without the PR being
  * observed merged (a merge queue accepted it, or the re-read failed).
  * @property {string|null} reason - Machine-readable cause for a refusal (or a
@@ -199,7 +200,7 @@ function authoritativeMergeSha(pr) {
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
  *   resolveDeploy?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').DeployResolution>,
  *   locks?: { deployLock: (repo: string) => Promise<() => void> },
- *   deploymentReconciler?: { reconcile: (input: { bead_id: string, target_base: string, merged_floor_sha: string }) => Promise<any> },
+ *   deploymentReconciler?: { reconcile: (input: { bead_id: string, target_base: string, merged_floor_sha: string, restart?: boolean }) => Promise<any> },
  *   selfRepoState?: (repo: string) => 'self'|'other'|'unknown',
  *   spawnImpl?: typeof spawn,
  *   notifyChanged?: (workspace: string) => void,
@@ -1614,10 +1615,10 @@ export function createPrActions(deps) {
    * second copy for the external case is exactly the divergence §6 forbids.
    *
    * @param {string} bead_id
-   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null }} [refs]
+   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, restart_reconcile?: boolean }} [refs]
    * - What the click-time gate observed on GitHub (UI-7agi §3). Load-bearing
    * for an external PR, which has no attempt to read a target base from.
-   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
+   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
   async function runCleanup(bead_id, refs = {}) {
     const q = deps.store.snapshot(workspace);
@@ -1657,6 +1658,19 @@ export function createPrActions(deps) {
     /** @type {string|null} */
     let deployed_sha = null;
     if (deploymentReconciler) {
+      const prior_failure = q.cleanup_failed?.[bead_id];
+      if (
+        refs.restart_reconcile !== true &&
+        q.reconcile?.[bead_id]?.stage === 'failed' &&
+        prior_failure
+      ) {
+        return {
+          ok: false,
+          step: prior_failure.step,
+          reason: prior_failure.reason,
+          base_sync: null
+        };
+      }
       const merge_sha = await cleanupMergeSha(q, bead_id, refs);
       if (merge_sha === null) {
         return failCleanup(bead_id, 'base_sync', 'merge_sha_unobserved', null);
@@ -1665,14 +1679,16 @@ export function createPrActions(deps) {
       const reconciled = await deploymentReconciler.reconcile({
         bead_id,
         target_base,
-        merged_floor_sha: merge_sha
+        merged_floor_sha: merge_sha,
+        ...(refs.restart_reconcile === true ? { restart: true } : {})
       });
       base_sync = reconciled.base_sync || null;
       if (!reconciled.ok) {
         if (reconciled.pending === true) {
           notifyChanged(workspace);
           return {
-            ok: false,
+            ok: true,
+            pending: true,
             step: null,
             reason: reconciled.reason || 'reconcile_pending',
             base_sync
@@ -1692,7 +1708,9 @@ export function createPrActions(deps) {
           reconciled.reason || 'reconcile_failed',
           base_sync,
           undefined,
-          reconciled.detail
+          reconciled.detail,
+          reconciled.output_tail,
+          reconciled.log_path
         );
       }
       deployed_sha = reconciled.candidate_sha;
@@ -1986,13 +2004,20 @@ export function createPrActions(deps) {
       };
       // A merge that already happened (here or on github.com) runs the same
       // cleanup rather than a second merge. For an EXTERNAL row this is the
-      // whole of the [정리] button: the poller deliberately never auto-cleans
-      // one, so the click is the only trigger (UI-7agi §1).
+      // whole of the [정리] button: the poller never starts its cleanup, but it
+      // may resume a nonterminal attempt this click already authorized.
       if (first.pr.state === 'MERGED') {
-        const c = await runCleanup(bead_id, refs);
+        const c = await runCleanup(bead_id, {
+          ...refs,
+          ...(is_external &&
+          q.reconcile?.[bead_id]?.stage === 'failed' &&
+          !q.auto_merge_skips?.[bead_id]
+            ? { restart_reconcile: true }
+            : {})
+        });
         return {
           ok: c.ok,
-          action: 'already_merged',
+          action: c.pending ? 'cleanup_pending' : 'already_merged',
           reason: c.reason,
           cleanup_step: c.step,
           base_sync: c.base_sync,
@@ -2178,7 +2203,7 @@ export function createPrActions(deps) {
     });
     return {
       ok: c.ok,
-      action,
+      action: c.pending ? 'cleanup_pending' : action,
       reason: c.reason,
       cleanup_step: c.step,
       base_sync: c.base_sync,
@@ -2253,7 +2278,14 @@ export function createPrActions(deps) {
       return { ok: false, step: null, reason: 'action_in_flight' };
     }
     const q = deps.store.snapshot(workspace);
-    if (!inPrWait(q, bead_id)) {
+    const reconcile = q.reconcile?.[bead_id];
+    const external_resume =
+      !inPrWait(q, bead_id) &&
+      !!external?.get(workspace, bead_id) &&
+      reconcile &&
+      reconcile.stage !== 'complete' &&
+      reconcile.stage !== 'failed';
+    if (!inPrWait(q, bead_id) && !external_resume) {
       return { ok: false, step: null, reason: 'not_in_pr_wait' };
     }
     if (q.cleanup_failed && q.cleanup_failed[bead_id]) {
@@ -2289,7 +2321,7 @@ export function createPrActions(deps) {
     }
     in_flight.add(bead_id);
     try {
-      return await runCleanup(bead_id);
+      return await runCleanup(bead_id, { restart_reconcile: true });
     } finally {
       in_flight.delete(bead_id);
       clearStep(bead_id);
@@ -2324,7 +2356,7 @@ export function createPrActions(deps) {
     }
     in_flight.add(root_bead_id);
     try {
-      return await runCleanup(root_bead_id);
+      return await runCleanup(root_bead_id, { restart_reconcile: true });
     } finally {
       in_flight.delete(root_bead_id);
       clearStep(root_bead_id);
