@@ -38,6 +38,24 @@ describe('worker console styles', () => {
     expect(mq).toContain('flex-direction: column');
   });
 
+  test('splits controls and KPIs into full rows at intermediate widths', () => {
+    const mediaStart = CSS.indexOf(
+      '@media (min-width: 641px) and (max-width: 1400px)',
+      markerIndex
+    );
+    const mediaEnd = CSS.indexOf('@media (max-width: 640px)', mediaStart);
+    const mq = CSS.slice(mediaStart, mediaEnd);
+
+    expect(mediaStart).toBeGreaterThan(markerIndex);
+    expect(mq).toContain('.worker-ctrl');
+    expect(mq).toContain('flex-wrap: wrap');
+    expect(mq).toContain('.worker-ctrl__ops');
+    expect(mq).toContain('flex: 1 1 100%');
+    expect(mq).toContain('.worker-kpi');
+    expect(mq).toContain('justify-content: flex-start');
+    expect(mq).toContain('margin-left: 0');
+  });
+
   test('styles the transcript drawer + tile selection ring', () => {
     expect(workerBlock).toContain('.sv__body');
     expect(workerBlock).toContain('.rtile--sel');

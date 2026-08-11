@@ -5722,6 +5722,29 @@ html[data-theme='dark'] {
   }
 }
 
+/* 중간 폭에서는 5개 레인을 유지하되 툴바의 두 의미 그룹을 각각 한 줄로 둔다.
+   KPI 일부만 오른쪽 아래로 떨어지는 대신 조작 → 상태 순서로 자연스럽게 읽힌다. */
+@media (min-width: 641px) and (max-width: 1400px) {
+  .worker-ctrl {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .worker-ctrl__ops,
+  .worker-kpi {
+    flex: 1 1 100%;
+  }
+
+  .worker-ctrl__ops {
+    flex-wrap: wrap;
+  }
+
+  .worker-kpi {
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+}
+
 /* ---------- Worker responsive (<=640px): single-column lanes + grid ---------- */
 @media (max-width: 640px) {
   /* App shell header: wrap instead of forcing title+picker+tabs+actions onto one
