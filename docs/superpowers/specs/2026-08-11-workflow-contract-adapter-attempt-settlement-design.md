@@ -129,8 +129,18 @@ docs/protocol/
 {
   "consumer_id": "beads-ui",
   "artifact_format": 1,
-  "producer_commit": "<full-40-hex-sha>",
-  "payload_sha256": "<64-lowercase-hex>",
+  "artifacts": {
+    "vendored": {
+      "path": "artifacts/current.json",
+      "producer_commit": "<full-40-hex-sha>",
+      "payload_sha256": "<64-lowercase-hex>"
+    },
+    "previous": {
+      "path": "artifacts/previous.json",
+      "producer_commit": "<full-40-hex-sha>",
+      "payload_sha256": "<64-lowercase-hex>"
+    }
+  },
   "required_capabilities": [
     "admission",
     "attempt_identity",
@@ -141,15 +151,19 @@ docs/protocol/
 }
 ```
 
-- Adapter는 process 시작 시 선택한 artifact를 한 번 읽고 immutable snapshot으로 cache한다.
-- `consumer_id`, `artifact_format`, full producer SHA, payload hash, capability completeness를
-  모두 검증한다.
+- Adapter는 process 시작 시 config가 선택한 source를 exact `artifacts.<source>` entry에
+  매핑하고, 그 entry의 path를 한 번 읽어 immutable snapshot으로 cache한다.
+- `consumer_id`, `artifact_format`, selected source의 full producer SHA와 payload hash,
+  capability completeness를 모두 검증한다. `current.json`과 `previous.json`은 서로 독립된
+  provenance/hash를 가지며 한 entry를 공유하거나 artifact 내부의 self-declared hash를
+  신뢰하지 않는다.
 - payload hash는 provider가 정한 canonical JSON bytes 규칙으로 재계산한다. 자체 serializer는
   provider golden fixture와 byte-for-byte 교차 검증하며 별도 의미를 추가하지 않는다.
 - `producer_commit` reachability는 vendoring/update CI에서 확인한다. runtime은 network나
   dotfiles checkout에 의존하지 않는다.
 - current load 실패 시 자동으로 previous를 선택하지 않는다. source 전환은 명시적 local
-  config와 diagnostic을 요구한다.
+  config와 diagnostic을 요구하며, 전환된 source도 자기 lock entry와 exact path/provenance/hash를
+  모두 통과해야 한다.
 - malformed/tampered artifact는 queue/session/Bead data를 수정하지 않는다.
 
 config surface는 기존 `~/.config/bdui/config.toml`의 Worker 영역에 다음 enum을 추가한다.
@@ -354,8 +368,10 @@ report presence가 merge blocker가 아닌 historical/PR row에는 row 12를 적
 - 허용 transition은 `live -> awaiting_evidence|repair_required|blocked_unknown|settled`,
   `awaiting_evidence -> live|repair_required|blocked_unknown|settled`,
   `repair_required -> awaiting_evidence|blocked_unknown|settled`다.
-- `blocked_unknown`은 새로운 authoritative evidence가 digest를 바꾼 경우에만
-  `awaiting_evidence|settled`로 나갈 수 있다.
+- `blocked_unknown`은 새로운 authoritative evidence가 digest를 바꾼 경우에만 decision table을
+  다시 적용해 `live|awaiting_evidence|repair_required|blocked_unknown|settled`로 전이할 수
+  있다. 같은 `blocked_unknown` state라도 reason 또는 evidence digest가 바뀌면 CAS write와
+  readback을 수행한다.
 - `settled`는 terminal immutable이며 stale callback이나 old digest가 되돌릴 수 없다.
 - `legacy_unbound`는 write transition이 없는 read-only projection이다.
 - CAS conflict는 새 repair를 띄우지 않고 latest journal을 다시 관측한다.
@@ -412,6 +428,25 @@ enforce enable은 코드 merge와 분리된 operator action이다. 최소 7일�
 모두 충족하고, Claude/Codex attempt가 각각 한 건 이상 있으며, safety mismatch와
 unknown new runner/PID가 0이고 rollback probe가 성공한 뒤에만 수행한다.
 
+delayed enforce는 별도 후속 Bead로 넘기지 않고 `UI-k066`의 required endpoint로 유지한다.
+observe PR Delivery와 첫 deploy 뒤에도 parent는 open/resolved 상태로 남고 observation window와
+아래 checkpoint를 모두 끝내기 전에는 closed로 전이하지 않는다.
+
+1. merged/deployed SHA, observe config, counters/sample, current/previous rollback artifact를
+   같은 checkpoint record로 readback한다.
+2. 현재 config bytes와 selected source를 snapshot하고 rollback source를 exact lock entry로 pin한다.
+3. config를 `enforce`로 atomic replace하고 durable readback한다.
+4. detached `bdui-shared restart`를 실행한다.
+5. config, process path, listening port, HTTP response와 positive/negative admission probe,
+   mismatch/fail-closed counter가 같은 deployed SHA와 enforce mode를 가리키는지 확인한다.
+6. 성공하면 exact evidence를 completion record에 남기고 parent를 닫는다. 실패하면 config를
+   observe로 atomic restore하고 다시 restart한 뒤 동일 readback을 수행한다. rollback 결과가
+   unknown이면 hard stop한다.
+
+중단 시 config write 전에는 다시 preflight부터 시작한다. write 후 restart 전이면 exact config를
+읽고 restart 또는 rollback checkpoint에서 재개하며, restart 뒤에는 service/readback부터
+재개한다. checkpoint를 추측하거나 동일 restart/enforce write를 무조건 반복하지 않는다.
+
 raw duplicate literal과 dead fallback은 같은 PR에서 제거할 수 있지만 old durable data의
 compatibility reader는 current/previous 두 release 또는 30일 중 긴 기간 동안 유지한다.
 그 기간 compatibility hit가 0이고 static caller 0, replacement test, rollback 검증을 모두
@@ -434,6 +469,8 @@ replacement, active readers, new-write 금지, hit counter, removal gate를 기�
 - tamper, unsupported format, missing safety key/capability, lock mismatch는 명시적으로 실패한다.
 - unknown additive display field는 fail-quiet하고 safety-critical unknown은 fail-closed한다.
 - current/previous 선택은 명시 config만 따르며 자동 fallback하지 않는다.
+- 선택한 source가 자기 lock entry의 path/full producer SHA/payload hash와 일치하며 current와
+  previous가 서로 다른 provenance를 독립적으로 검증한다.
 - provider golden bytes와 JS hash 재계산이 byte-identical하다.
 
 RED 소재: 현재 artifact, lock, loader, Adapter가 없다.
@@ -502,6 +539,9 @@ RED 소재: unknown runner fallback, one-side-unknown PID ownership, dropped gua
   evidence pending 및 report observation 자체가 pending인 경우는 row 11, 모든 다른 evidence가
   완료된 missing/marker-only report만 row 12다.
 - 새 attempt는 prerecord부터 journal이 존재하고 legacy-only nullable row는 write되지 않는다.
+- changed authoritative digest가 `blocked_unknown`에서 `live`, `repair_required`, 다른
+  `blocked_unknown` reason, `awaiting_evidence`, `settled` 각각으로 가는 row를 만들고 같은-state
+  reason/digest update도 CAS/readback한다.
 - missing report는 구현 재실행 없이 bounded endpoint repair로 간다.
 - CI red, contract mismatch, conflicting report, unknown PID는 settled로 승격되지 않는다.
 - rollback source 선택과 observe/enforce 변경은 queue/session/Bead durable bytes를 수정하지
@@ -519,6 +559,8 @@ RED 소재: 현재 settlement callback은 durable combined evidence journal이 �
   admission/dispatch를 막는다.
 - enforce safety mismatch는 새 dispatch를 막되 기존 attempt를 kill하지 않는다.
 - unregistered raw literal/fallback과 removal-gate 미충족 삭제는 CI에서 실패한다.
+- observe -> enforce config write, detached restart, exact readback, failure rollback과 각
+  interruption checkpoint가 table-driven fixture로 고정된다.
 
 RED 소재: 현재 mode/source/registry/counter가 없다.
 
@@ -552,6 +594,8 @@ reason과 next check를 남긴다.
 6. artifact producer/hash/mode/source, current/previous rollback probe, mismatch counters를
    readback한다.
 7. observe 배포 완료는 enforce enable과 구분해 completion report에 기록한다.
+8. observation window 뒤 §6의 checkpoint 순서로 enforce를 적용하고, 성공 또는 observe rollback의
+   config/process/path/port/HTTP/admission/counter evidence를 readback한다.
 
 restart 또는 readback 실패는 Bead를 open/resolved 상태로 유지하며 service가 반영됐다고
 추측하지 않는다. deploy action 전 세션이 끊기면 deployment reconciler의 durable phase에서
@@ -560,15 +604,20 @@ restart 또는 readback 실패는 Bead를 open/resolved 상태로 유지하며 s
 ### 9.1 Spec-gate disposition
 
 - seam soundness는 §7의 일곱 RED 소재와 target test가 소유한다.
-- live apply order는 §9의 merged SHA pin -> pinned verify -> durable cleanup -> detached
-  restart -> process/path/port/HTTP readback 순서로 고정한다.
-- target deploy/notify는 `docs/agents/repo-ops.toml [deploy]`와 closed `UI-16ep`가 소유한다.
+- live apply order는 observe 배포의 merged SHA pin -> pinned verify -> durable cleanup -> detached
+  restart -> process/path/port/HTTP readback 뒤, observation window -> config snapshot/rollback pin
+  -> enforce atomic write -> detached restart -> config/process/path/port/HTTP/admission/counter
+  readback -> 성공 기록 또는 observe restore/restart/readback 순서로 고정한다.
+- target deploy/notify는 `docs/agents/repo-ops.toml [deploy]`와 closed `UI-16ep`가 소유하지만,
+  observation window 뒤 enforce config 전환·restart·readback은 current Bead의 별도 required
+  operator endpoint다.
 - provider와 local prerequisite는 dependency-backed Bead로 disposition됐다.
-- current implementation PR, declared deploy, dependency-backed provider/local split이 required
-  work를 운반한다. compatibility reader의 장래 removal은 observation gate가 충족될 때 새
-  Bead로 승격하는 조건부 후속이며 현재 required no-PR residue가 아니다.
-- 따라서 `UI-k066`의 formal spec receipt write에서는 `worker-ineligible`이 absent/remove인
-  것이 맞고 exact label set을 readback한다.
+- compatibility reader의 장래 removal은 observation gate가 충족될 때 새 Bead로 승격하는
+  조건부 후속이다. 반면 delayed enforce는 이번 spec이 요구하는 interactive-only no-PR residue로
+  current Bead에 남는다.
+- 따라서 `UI-k066`의 formal spec receipt write에서는 `worker-ineligible`을 같은 logical write에
+  추가하고 exact label set을 readback한다. enforce endpoint가 dependency-backed Bead+PR/notify로
+  재설계된 후속 spec revision이 생길 때만 이 label을 제거할 수 있다.
 
 ## 10. 비범위
 
@@ -599,3 +648,5 @@ restart 또는 readback 실패는 Bead를 open/resolved 상태로 유지하며 s
 7. observe 배포, rollback probe, canonical verification, merged service readback이 통과한다.
 8. compatibility/dead surface는 owner·counter·removal gate를 가지며 historical evidence는
    보존된다.
+9. observation window 뒤 enforce checkpoint가 성공하거나 실패 시 observe rollback의 exact
+   service/readback이 완료되고, 그 결과가 current Bead의 durable evidence로 남는다.
