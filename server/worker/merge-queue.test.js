@@ -838,6 +838,141 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     ]);
   });
 
+  test.each([
+    ['clean', false],
+    ['dirty', true]
+  ])(
+    'charges a completed round only when the latest probe is %s',
+    async (kind, consume_round) => {
+      const store = seed(['UI-1']);
+      store.toggleAutoMerge(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        on: true
+      });
+      const finish = dispatchResolution(store, 'UI-1', 'res-charge');
+      store.bindResolutionWait(WS, {
+        bead_id: 'UI-1',
+        subject_bead_id: 'UI-1',
+        attempt_id: 'res-charge',
+        wait_ms: 100
+      });
+      finish();
+      store.settleResolutionWait(WS, {
+        bead_id: 'UI-1',
+        subject_bead_id: 'UI-1',
+        attempt_id: 'res-charge',
+        settled_at: 2,
+        active_bead_id: null
+      });
+      const consume = vi.spyOn(store, 'consumeResolutionWait');
+      const mq = driver(store, {
+        probeMergeability: async () => ({
+          ok: true,
+          kind,
+          reason: null,
+          head_sha: 'a'.repeat(40),
+          base_ref: 'main',
+          external: false
+        }),
+        dispatchConflict: async () => ({
+          ok: false,
+          action: 'conflict_resolution',
+          reason: 'worktree_missing'
+        })
+      });
+
+      await mq.kick();
+
+      expect(consume).toHaveBeenCalledWith(WS, {
+        bead_id: 'UI-1',
+        attempt_id: 'res-charge',
+        consume_round
+      });
+    }
+  );
+
+  test('defers a queue-origin resolver until the worker session fence clears', async () => {
+    const store = seed(['UI-1']);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    let blocked = true;
+    /** @type {{ current: ((workspace: string) => void)|null }} */
+    const changed = { current: null };
+    const dispatchConflict = vi.fn(
+      async (
+        /** @type {string} */ bead_id,
+        /** @type {unknown} */ _approved,
+        /** @type {{ queue_bead_id: string, wait_ms: number }} */ resolution_wait
+      ) => {
+        if (blocked) {
+          return {
+            ok: false,
+            action: /** @type {const} */ ('conflict_resolution'),
+            reason: 'worker_sessions_busy'
+          };
+        }
+        store.appendResolutionAttempt(WS, {
+          expected_revision: store.snapshot(WS).revision,
+          queue_bead_id: resolution_wait.queue_bead_id,
+          subject_bead_id: bead_id,
+          wait_ms: resolution_wait.wait_ms,
+          attempt: {
+            attempt_id: 'res-serial',
+            bead_id,
+            status: 'done',
+            conflict_resolution: true,
+            started_at: 0,
+            finished_at: 1
+          }
+        });
+        return {
+          ok: true,
+          action: /** @type {const} */ ('conflict_resolution'),
+          reason: null,
+          attempt_id: 'res-serial'
+        };
+      }
+    );
+    const mq = driver(store, {
+      probeMergeability: async () => ({
+        ok: true,
+        kind: store.snapshot(WS).attempts['res-serial'] ? 'clean' : 'dirty',
+        reason: null,
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main',
+        external: false
+      }),
+      dispatchConflict,
+      conflictDispatchBlocked: () => blocked,
+      merge: async (/** @type {string} */ bead_id) => {
+        landMerge(store, bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      },
+      subscribeQueueChanged: (
+        /** @type {(workspace: string) => void} */ fn
+      ) => {
+        changed.current = fn;
+        return () => {};
+      }
+    });
+
+    mq.start();
+    await vi.waitFor(() => expect(dispatchConflict).toHaveBeenCalledTimes(1));
+    changed.current?.(WS);
+    await Promise.resolve();
+    expect(dispatchConflict).toHaveBeenCalledTimes(1);
+
+    blocked = false;
+    changed.current?.(WS);
+    await vi.waitFor(() => expect(store.snapshot(WS).merge_queue).toEqual([]));
+    mq.stop();
+
+    expect(dispatchConflict).toHaveBeenCalledTimes(2);
+    expect(mq.state().failures['UI-1']).toBeUndefined();
+  });
+
   test('survives the scheduler moving the bead back into pr_wait mid-round', async () => {
     // The real completion path for a resolution attempt is `moveToPrWait`,
     // which re-enters the lane the bead never left. Its lane dedupe must not

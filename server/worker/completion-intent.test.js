@@ -1513,6 +1513,45 @@ describe('worker/completion-intent action driver', () => {
   });
 
   test.each([
+    'resolution_wait_invalid',
+    'resolution_attempt_missing',
+    'resolution_lineage_ambiguous',
+    'resolution_subject_mismatch',
+    'resolution_attempt_not_conflict',
+    'resolution_attempt_status_invalid',
+    'resolution_ready_lineage_active'
+  ])(
+    'preserves the concrete conflict-resolution failure %s',
+    async (reason) => {
+      const store = seededCompletionStore();
+      store.prepareCompletionOp(DRIVER_WS, {
+        root_bead_id: 'UI-root',
+        phase: 'merging',
+        op: mergeOperation()
+      });
+      const completionGate = vi.fn();
+      const driver = actionDriver(store, { prActions: { completionGate } });
+
+      await driver.onMergeResult('UI-root', 'UI-root', {
+        ok: false,
+        action: 'conflict_resolution',
+        reason
+      });
+
+      expect(completionGate).not.toHaveBeenCalled();
+      expect(store.snapshot(DRIVER_WS)).toMatchObject({
+        merge_queue: [],
+        completion_intents: {
+          'UI-root': {
+            phase: 'needs_human',
+            terminal_reason: { reason, stage: 'conflict_resolution' }
+          }
+        }
+      });
+    }
+  );
+
+  test.each([
     [
       'CLEAN',
       { enabled: true, tier: 'ready', base_badge: '최신', reason: null }
@@ -1625,6 +1664,58 @@ describe('worker/completion-intent action driver', () => {
         }
       }
     ]);
+  });
+
+  test('preserves the legacy resolver deadline across a resumed leaf', async () => {
+    const store = seededCompletionStore();
+    terminalizeResolutionTimeout(store);
+    store.appendAttempt(DRIVER_WS, {
+      expected_revision: store.snapshot(DRIVER_WS).revision,
+      attempt: {
+        attempt_id: 'legacy-anchor',
+        bead_id: 'UI-root',
+        conflict_resolution: true,
+        status: 'paused',
+        started_at: 100
+      }
+    });
+    store.appendAttempt(DRIVER_WS, {
+      expected_revision: store.snapshot(DRIVER_WS).revision,
+      attempt: {
+        attempt_id: 'legacy-leaf',
+        bead_id: 'UI-root',
+        conflict_resolution: true,
+        resumed_from: 'legacy-anchor',
+        status: 'running',
+        started_at: 10_000
+      }
+    });
+    const completionGate = vi.fn(async () => ({
+      ok: true,
+      subject: intent().subject,
+      verdict: {
+        enabled: false,
+        tier: 'base',
+        base_badge: '충돌',
+        reason: 'merge_conflict'
+      },
+      evidence: {}
+    }));
+    const driver = actionDriver(store, { prActions: { completionGate } });
+    const queue = store.snapshot(DRIVER_WS);
+
+    const adopted = await driver.adoptLegacyTimeout(
+      'UI-root',
+      queue.completion_intents['UI-root'],
+      queue
+    );
+
+    expect(adopted).toBe(true);
+    expect(store.snapshot(DRIVER_WS).merge_queue[0].resolution).toMatchObject({
+      attempt_id: 'legacy-anchor',
+      deadline_at: 100 + 30 * 60 * 1000,
+      state: 'waiting'
+    });
   });
 
   test('keeps an unprovable historical DIRTY budget terminal', async () => {

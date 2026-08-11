@@ -3534,6 +3534,27 @@ describe('scheduler resume (spec §1)', () => {
     expect(prompt).not.toContain('실패로 남았다');
   });
 
+  test('preserves conflict-resolution lineage across a paused resume', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(
+      env.store,
+      'resolver-paused',
+      resumablePrior({
+        status: 'paused',
+        cause: null,
+        conflict_resolution: true
+      })
+    );
+
+    const res = await env.scheduler.resume(WS, 'resolver-paused');
+
+    expect(res.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
+        .conflict_resolution
+    ).toBe(true);
+  });
+
   test('a failed resume is announced as a failure', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedAttempt(env.store, 'f1', resumablePrior());
@@ -3876,6 +3897,27 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(env.scheduler.runningCount()).toBe(2);
   });
 
+  test('defers a queue-origin resolver while another worker bead is active', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'other-running',
+        bead_id: 'A1',
+        status: 'running'
+      }
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1', {
+      queue_bead_id: 'B1',
+      wait_ms: 100
+    });
+
+    expect(res).toEqual({ ok: false, reason: 'worker_sessions_busy' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
   test('refuses no_session_id when no attempt of the bead captured one', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedDoneAttempt(env.store, { session_id: null });
@@ -4122,6 +4164,26 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
 
     expect(res.ok).toBe(true);
     expect(env.scheduler.runningCount()).toBe(2);
+  });
+
+  test('defers a queue-origin external resolver while another worker bead is paused', async () => {
+    const env = extEnv();
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'other-paused',
+        bead_id: 'A1',
+        status: 'paused'
+      }
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main', {
+      queue_bead_id: 'X1',
+      wait_ms: 100
+    });
+
+    expect(res).toEqual({ ok: false, reason: 'worker_sessions_busy' });
+    expect(env.runner.spawnOrder).toEqual([]);
   });
 
   test('refuses bead_running while an attempt of the bead is running', async () => {

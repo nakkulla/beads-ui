@@ -921,6 +921,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // poller never looks at can never end.
       isExternalRow: (/** @type {string} */ bead_id) =>
         !!runtime.externalPrs.get(keyFor(workspace_root), bead_id),
+      conflictDispatchBlocked: (
+        /** @type {string} */ queue_bead_id,
+        /** @type {string} */ subject_bead_id
+      ) =>
+        scheduler.queueConflictBlocked(
+          keyFor(workspace_root),
+          queue_bead_id,
+          subject_bead_id
+        ),
       onCompletionResult: (
         /** @type {string} */ root_bead_id,
         /** @type {string} */ subject_bead_id,

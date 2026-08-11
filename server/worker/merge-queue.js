@@ -105,6 +105,7 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
+ *   conflictDispatchBlocked?: (queue_bead_id: string, subject_bead_id: string) => boolean,
  *   onCompletionResult?: (root_bead_id: string, subject_bead_id: string, result: MergeClickResult) => Promise<void>|void,
  *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
@@ -170,6 +171,8 @@ export function createMergeQueue(deps) {
   let halted_on_completion = null;
   /** @type {{ queue_bead_id: string, subject_bead_id: string }|null} */
   let halted_on_reconcile = null;
+  /** @type {{ queue_bead_id: string, subject_bead_id: string }|null} */
+  let halted_on_conflict = null;
   let prepared = false;
   /** @type {string|null} */
   let active = null;
@@ -606,7 +609,7 @@ export function createMergeQueue(deps) {
     if (completionIntent(queue_bead_id)) {
       await handoffCompletion(queue_bead_id, subject_bead_id, {
         ok: false,
-        action: 'refused',
+        action: 'conflict_resolution',
         reason
       });
       return;
@@ -867,18 +870,20 @@ export function createMergeQueue(deps) {
   }
 
   /**
-   * Charge and clear one exact ready resolution record.
+   * Clear one exact ready resolution record, charging it only when the latest
+   * probe still needs another conflict-resolution round.
    *
    * @param {string} queue_bead_id
    * @param {string} attempt_id
+   * @param {boolean} consume_round
    */
-  function consumeResolution(queue_bead_id, attempt_id) {
+  function consumeResolution(queue_bead_id, attempt_id, consume_round) {
     let ok = false;
     try {
       ok = deps.store.consumeResolutionWait(workspace, {
         bead_id: queue_bead_id,
         attempt_id,
-        consume_round: true
+        consume_round
       }).ok;
     } catch (err) {
       log(
@@ -986,7 +991,7 @@ export function createMergeQueue(deps) {
     if (typeof deps.probeMergeability !== 'function') {
       if (
         ready_attempt_id &&
-        !consumeResolution(queue_bead_id, ready_attempt_id)
+        !consumeResolution(queue_bead_id, ready_attempt_id, true)
       ) {
         return null;
       }
@@ -1013,11 +1018,13 @@ export function createMergeQueue(deps) {
       return null;
     }
     const before = queuedEntry(queue_bead_id);
+    const consume_round =
+      ready_attempt_id !== null && probe.ok === true && probe.kind === 'dirty';
     const effective_rounds =
-      (before?.resolution_rounds ?? round_cap) + (ready_attempt_id ? 1 : 0);
+      (before?.resolution_rounds ?? round_cap) + (consume_round ? 1 : 0);
     if (
       ready_attempt_id &&
-      !consumeResolution(queue_bead_id, ready_attempt_id)
+      !consumeResolution(queue_bead_id, ready_attempt_id, consume_round)
     ) {
       return null;
     }
@@ -1178,6 +1185,15 @@ export function createMergeQueue(deps) {
       }
       if (action === 'conflict_resolution') {
         if (!result.ok) {
+          if (result.reason === 'worker_sessions_busy') {
+            halted = true;
+            halted_on_conflict = {
+              queue_bead_id: root_bead_id,
+              subject_bead_id
+            };
+            notify();
+            return;
+          }
           await handoffCompletion(root_bead_id, subject_bead_id, result);
           return;
         }
@@ -1363,6 +1379,15 @@ export function createMergeQueue(deps) {
 
       if (action === 'conflict_resolution') {
         if (!result.ok) {
+          if (result.reason === 'worker_sessions_busy') {
+            halted = true;
+            halted_on_conflict = {
+              queue_bead_id: bead_id,
+              subject_bead_id: bead_id
+            };
+            notify();
+            return;
+          }
           failAndDequeue(bead_id, result.reason || 'resolution_refused');
           return;
         }
@@ -1421,6 +1446,42 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * Keep a deferred automatic resolver asleep until its external session fence
+   * is provably clear. Without a predicate, staying halted is the fail-closed
+   * behavior; a restart can re-evaluate the durable queue from scratch.
+   */
+  function conflictDispatchStillBlocked() {
+    if (!halted_on_conflict) {
+      return false;
+    }
+    const pending = halted_on_conflict;
+    if (!queuedEntry(pending.queue_bead_id)) {
+      halted_on_conflict = null;
+      return false;
+    }
+    if (typeof deps.conflictDispatchBlocked !== 'function') {
+      return true;
+    }
+    let blocked = true;
+    try {
+      blocked = deps.conflictDispatchBlocked(
+        pending.queue_bead_id,
+        pending.subject_bead_id
+      );
+    } catch (err) {
+      log(
+        'merge queue conflict dispatch fence failed for %s: %o',
+        pending.queue_bead_id,
+        err
+      );
+    }
+    if (!blocked) {
+      halted_on_conflict = null;
+    }
+    return blocked;
+  }
+
+  /**
    * Remember a requested pass even when one is already running. The active
    * drain must not await itself, so an in-flight caller gets an immediate
    * promise while the latch makes the current owner run the next pass.
@@ -1429,6 +1490,9 @@ export function createMergeQueue(deps) {
    */
   function requestDrain() {
     if (stopped) {
+      return Promise.resolve();
+    }
+    if (conflictDispatchStillBlocked()) {
       return Promise.resolve();
     }
     drain_requested = true;
@@ -1449,6 +1513,10 @@ export function createMergeQueue(deps) {
     draining = true;
     try {
       while (!stopped && drain_requested) {
+        if (conflictDispatchStillBlocked()) {
+          drain_requested = false;
+          break;
+        }
         drain_requested = false;
         halted = false;
         halted_on_head = null;
@@ -1588,6 +1656,9 @@ export function createMergeQueue(deps) {
               void requestDrain();
             }
           }
+          if (halted_on_conflict) {
+            void requestDrain();
+          }
           if (resolutionNeedsDrain()) {
             void requestDrain();
           }
@@ -1604,6 +1675,7 @@ export function createMergeQueue(deps) {
       stopped = true;
       started = false;
       drain_requested = false;
+      halted_on_conflict = null;
       if (unsubscribe) {
         try {
           unsubscribe();

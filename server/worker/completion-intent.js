@@ -14,6 +14,15 @@ const OUTPUT_TAIL_MAX = 4_000;
 const CHECKS_MAX = 100;
 const CHECK_FIELD_MAX = 200;
 const REASON_MAX = 500;
+const CONFLICT_RESOLUTION_FAILURES = new Set([
+  'resolution_wait_invalid',
+  'resolution_attempt_missing',
+  'resolution_lineage_ambiguous',
+  'resolution_subject_mismatch',
+  'resolution_attempt_not_conflict',
+  'resolution_attempt_status_invalid',
+  'resolution_ready_lineage_active'
+]);
 
 /**
  * Build the stable identity of one failure observed at pinned subject/base
@@ -602,7 +611,7 @@ export function createCompletionActionDriver(deps) {
       }
       current = parent;
     }
-    return { attempt_id: live[0].attempt_id, reason: null };
+    return { attempt_id: current.attempt_id, reason: null };
   }
 
   /**
@@ -1458,6 +1467,16 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (result?.reason === 'resolution_timeout') {
+      return;
+    }
+    if (CONFLICT_RESOLUTION_FAILURES.has(result?.reason)) {
+      terminalize(
+        root_bead_id,
+        result.reason,
+        'conflict_resolution',
+        intent.active_op?.failure_key ?? null,
+        result
+      );
       return;
     }
     const merged =

@@ -293,6 +293,7 @@ function staleDispatchPrompt(bead_id, stale) {
  *   resume: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
  *   dispatchCleanupDiagnosis: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean }>,
@@ -3467,7 +3468,7 @@ export function createScheduler(deps) {
         : resumePrompt(bead_id, prior.status ?? null);
     const result = await relaunchFromAttempt(workspace, prior, {
       prompt: diagnosis_prompt,
-      conflict_resolution: false,
+      conflict_resolution: prior.conflict_resolution === true,
       completion_resume: !cleanup_diagnosis,
       cleanup_diagnosis,
       cleanup_diagnosis_result_path: diagnosis_result_path
@@ -3674,6 +3675,12 @@ export function createScheduler(deps) {
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function resolveConflict(workspace, bead_id, resolution_wait = null) {
+    if (
+      resolution_wait &&
+      queueConflictBlocked(workspace, resolution_wait.queue_bead_id, bead_id)
+    ) {
+      return { ok: false, reason: 'worker_sessions_busy' };
+    }
     const q = deps.store.snapshot(workspace);
     /** @type {any|null} */
     let source = null;
@@ -3815,6 +3822,12 @@ export function createScheduler(deps) {
     target_base,
     resolution_wait = null
   ) {
+    if (
+      resolution_wait &&
+      queueConflictBlocked(workspace, resolution_wait.queue_bead_id, bead_id)
+    ) {
+      return { ok: false, reason: 'worker_sessions_busy' };
+    }
     const q = deps.store.snapshot(workspace);
     if (claimed.has(bead_id)) {
       return { ok: false, reason: 'bead_running' };
@@ -4390,6 +4403,39 @@ export function createScheduler(deps) {
     }
 
     return { ok: true, attempt_id: new_attempt_id };
+  }
+
+  /**
+   * Keep automatic conflict resolvers behind the existing physical-session
+   * fence. The queue owner and its current subject are the same saga, so only a
+   * different Bead blocks the side effect. Human-click dispatches do not call
+   * this predicate and remain cap-exempt.
+   *
+   * @param {string} workspace
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   */
+  function queueConflictBlocked(workspace, queue_bead_id, subject_bead_id) {
+    const allowed = new Set([queue_bead_id, subject_bead_id]);
+    for (const bead_id of claimed) {
+      if (!allowed.has(bead_id)) {
+        return true;
+      }
+    }
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    const values = Object.values(attempts);
+    const resumed_from = new Set(
+      values.map((attempt) => attempt && attempt.resumed_from).filter(Boolean)
+    );
+    return values.some(
+      (attempt) =>
+        attempt &&
+        typeof attempt.bead_id === 'string' &&
+        !allowed.has(attempt.bead_id) &&
+        (attempt.status === 'running' ||
+          (attempt.status === 'paused' &&
+            !resumed_from.has(attempt.attempt_id)))
+    );
   }
 
   /**
@@ -5370,6 +5416,7 @@ export function createScheduler(deps) {
     resume,
     resolveConflict,
     dispatchExternalConflict,
+    queueConflictBlocked,
     dispatchCleanupDiagnosis,
     dispatchReviseFix,
     dispatchCompletionRepair,
