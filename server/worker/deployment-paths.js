@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { workspaceSlug, workspaceStateDir } from './state-paths.js';
@@ -20,6 +21,19 @@ function dataHome() {
 function safeComponent(value, fallback) {
   const safe = String(value || fallback).replace(/[^A-Za-z0-9._-]/g, '_');
   return safe.length > 0 ? safe : fallback;
+}
+
+/**
+ * @param {string} value - Raw attempt identifier.
+ * @param {string} fallback - Value used when the identifier is empty.
+ */
+function attemptComponent(value, fallback) {
+  const raw = String(value || fallback);
+  return `${safeComponent(raw, fallback).slice(0, 48)}-${crypto
+    .createHash('sha256')
+    .update(raw)
+    .digest('hex')
+    .slice(0, 16)}`;
 }
 
 /**
@@ -74,5 +88,50 @@ export function deploymentReceiptPath(repo, attempt_id) {
     workspaceStateDir(repo),
     'deploy-receipts',
     `${safe_attempt}.json`
+  );
+}
+
+/**
+ * @param {string} repo - Source repository path.
+ * @param {string} attempt_id - Deployment attempt identifier.
+ */
+export function managedJournalPath(repo, attempt_id) {
+  return path.join(
+    path.resolve(workspaceStateDir(repo)),
+    'managed-deploy',
+    `${attemptComponent(attempt_id, 'attempt')}.json`
+  );
+}
+
+/**
+ * @param {string} repo - Source repository path.
+ * @param {string} attempt_id - Deployment attempt identifier.
+ */
+export function managedClaimDir(repo, attempt_id) {
+  return `${managedJournalPath(repo, attempt_id)}.claims`;
+}
+
+export function runtimePointerPath() {
+  return path.join(dataHome(), 'bdui', 'runtime', 'beads-ui', 'current');
+}
+
+export function runtimeMarkerPath() {
+  const xdg = process.env.XDG_STATE_HOME;
+  const state =
+    typeof xdg === 'string' && xdg.trim().length > 0
+      ? path.resolve(xdg)
+      : path.join(os.homedir(), '.local', 'state');
+  return path.join(state, 'bdui', 'runtime', 'beads-ui.json');
+}
+
+/**
+ * @param {string} repo - Source repository path.
+ * @param {string} candidate_sha - Exact candidate commit SHA.
+ */
+export function candidateInstallMarkerPath(repo, candidate_sha) {
+  return path.join(
+    releasePath(repo, candidate_sha),
+    '.bdui',
+    'managed-install.json'
   );
 }
