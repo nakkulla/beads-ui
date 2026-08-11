@@ -71,6 +71,13 @@ app/utils/worker-serial.js
 - legacy/malformed attempt는 `false`로 normalize한다.
 - resume, repair, conflict-resolution 등 동일 lineage 후속 attempt는 선행 attempt의
   `worker_serial`을 상속한다.
+- guard의 lineage identity는 physical `bead_id` 하나로 판단하지 않는다. 일반
+  attempt는 `bead_id`, completion-owned attempt는 기존 durable
+  `completion_root_id`를 `serial_lineage_id`로 사용한다. 별도 mirror field는 만들지
+  않고 `completion_root_id ?? bead_id`로 계산한다.
+- linked completion repair child는 자기 label이 아니라 root source attempt의
+  `worker_serial`을 상속한다. 따라서 root와 다른 `repair_bead_id`여도 같은
+  `completion_root_id`면 active serial lineage를 완료하기 위해 시작할 수 있다.
 - running attempt와 durable `pr_wait`의 serial 여부는 이 durable field로 판단한다.
   실행 중 label edit를 다시 읽어 현재 lineage 의미를 바꾸지 않는다.
 - paused serial lineage는 terminal attempt end가 아니므로 active fence를 유지한다.
@@ -149,7 +156,11 @@ queue에 남겨 `defer + rescan`한다.
 - completion resume/repair
 - REVISE disposition session
 
-요청 Bead가 active/pending serial과 같으면 lineage 진행을 허용한다. 다른 Bead면
+guard 입력은 physical `bead_id`와 `serial_lineage_id`를 함께 가진다. 요청의
+`serial_lineage_id`가 active serial root와 같으면 resume/repair 진행을 허용한다.
+completion repair child처럼 physical ID가 달라도 기존 `completion_root_id` ownership
+검증을 통과했다면 같은 lineage다. fresh manual launch가 단지 pending Bead와 ID가
+같다는 이유만으로 queue claim을 우회하지는 않는다. 다른 lineage면
 `worker_serial_pending` 또는 `worker_serial_active` reason으로 side effect 전에
 거부한다. label을 제거하거나 serial 작업을 끝낸 뒤 다시 실행할 수 있다.
 
@@ -162,7 +173,8 @@ external PR merge/cleanup 자체와 merge queue FIFO는 새 scheduling contract�
 새 Beads CLI option이나 새 bulk protocol을 만들지 않는다.
 
 - client는 기존 `label-add`/`label-remove`를 queue order대로 순차 호출한다.
-- 이미 desired state인 Bead는 mutation을 보내지 않는다.
+- authoritative projection이 known이고 이미 desired state인 Bead만 mutation을
+  생략한다. `unknown`은 label 부재로 간주하거나 no-op 처리하지 않는다.
 - server generic label handler는 성공한 label이 `worker-serial`이면 issue
   subscription refresh와 함께 scheduler tick을 요청한다.
 - tick은 기존 coalescing을 사용한다. 여러 bulk mutation이 연달아 와도 concurrent
@@ -175,10 +187,26 @@ readback을 유지한다.
 
 ### Label projection
 
-queue member는 dispatch 전까지 Ready/Blocked subscription에도 존재하므로
-`buildModel()`이 이 live issue 목록에서 `id -> labels` map을 만든다. waiting row에
-`worker_serial` boolean을 투영한다. older server나 label array가 없으면 `false`로
-fail-quiet한다.
+waiting queue에는 `not_ready:in_progress`처럼 Ready/Blocked subscription 밖의 Bead도
+남을 수 있다. 따라서 client issue 목록을 전체 label source로 가정하지 않는다.
+
+server의 shared `decorateQueue()` snapshot에 `bead_labels: Record<bead_id, string[]>`를
+추가한다. queue/pr_wait/done을 이미 채우는 async `bd show` decoration pipeline에서
+같은 issue response의 labels를 `workerLabels()`로 normalize하며 별도 `bd` process를
+늘리지 않는다. label mutation 또는 issue-store refresh는 해당 cache entry를
+invalidate하고 다음 fill snapshot을 fanout한다. title과 달리 label은 mutation 판단에
+쓰이므로 성공적인 mutation readback 뒤 stale value를 유지하지 않는다.
+
+projection은 partial이다. key가 아직 없거나 older server가 `bead_labels`를 보내지
+않으면 `worker_serial=null`인 **unknown**으로 둔다. exact label array가 도착한 뒤에만
+`true` 또는 `false`가 된다. unknown row는 `실행 방식 확인 중` 상태를 표시하고
+선택할 수는 있지만, 선택 집합의 label fill이 끝날 때까지 [적용]을 실행하지 않는다.
+unknown을 `false`로 fail-quiet하거나 `일반 병렬` no-op으로 생략하지 않는다.
+
+Ready/Blocked live issue labels는 더 최신일 때 같은 tri-state map을 갱신할 수 있지만,
+구독 밖 waiting row도 반드시 server `bead_labels`로 수렴한다. 이 projection은 UI
+표시와 mutation 최적화용이며 scheduler의 dispatch 판정은 계속 authoritative
+`bd show` re-read가 소유한다.
 
 ### Selection state
 
@@ -193,10 +221,11 @@ fail-quiet한다.
 ### Bulk apply
 
 1. 선택된 ID를 현재 queue order로 정렬한다.
-2. dropdown desired state와 각 row current label을 비교한다.
-3. 필요한 generic mutation만 한 번에 하나씩 보낸다.
-4. 각 성공은 subscription/readback으로 수렴한다.
-5. 완료 toast:
+2. 모든 선택 ID의 tri-state가 known이 될 때까지 snapshot fill을 기다린다.
+3. dropdown desired state와 known current label을 비교한다.
+4. 필요한 generic mutation만 한 번에 하나씩 보낸다.
+5. 각 성공은 mutation `bd show` readback으로 label cache와 subscription을 갱신한다.
+6. 완료 toast:
    - 전체 성공: `N개 실행 방식 변경`
    - no-op: `이미 같은 실행 방식입니다`
    - 부분 실패: `N개 중 M개 변경 · K개 실패`와 실패 ID
@@ -251,6 +280,38 @@ checkbox와 grip에는 명시적 accessible name을 제공하고 keyboard focus�
 - process restart: attempt `worker_serial`과 durable lane으로 active fence를 복구하고,
   startup rescan으로 pending fence를 재구성한다.
 
+## Post-merge 적용·검증 순서
+
+`docs/agents/repo-ops.toml [deploy]`의 detached `bdui-shared restart`는 재시작을
+운반하지만 새 process의 path·port·HTTP readback까지 운반하지 않는다. 따라서 이
+검증은 현재 Bead의 required no-PR residue이며 spec gate에서 exact
+`worker-ineligible` label을 붙인다. 이 Bead는 대기열 auto-dispatch가 아니라
+post-merge 검증까지 이어갈 interactive controller가 수행한다.
+
+다음 순서를 바꾸거나 일부만 성공한 상태에서 완료를 선언하지 않는다.
+
+1. fetched `origin/main`이 merge commit을 포함하는지 확인하고 canonical `main`
+   checkout을 그 SHA로 fast-forward한다. 이후 단계의 cwd는 worktree가 아니라 이
+   merged checkout이다.
+2. merged checkout에서 `npm run build`를 실행하고 `app/main.bundle.js`와 map이
+   source와 같은 merged SHA에서 생성됐는지 확인한다.
+3. `~/.config/bdui/config.toml`에서 이 repository의 `[worker.verify."<abs>"]`와
+   `[worker.deploy."<abs>"]` legacy fallback을 발명하지 않고, active shared-service
+   path와 configured port가 canonical merged checkout을 가리키는지만 확인한다.
+   credential 값은 출력하지 않는다.
+4. 자동 detached deploy 결과와 관계없이 merged checkout에서
+   `bdui-shared restart`를 실행한다. command exit 0만으로 성공을 선언하지 않는다.
+5. 재시작 뒤 실제 process command/cwd가 merged checkout에서 로드됐는지, configured
+   port가 listening인지, 그 port의 기본 HTTP request가 성공 응답을 반환하는지
+   순서대로 확인한다.
+6. 세 readback이 모두 성공하면 `worker-ineligible`을 제거하고 그 label set을
+   확인한 뒤 completion sweep에서 `UI-nrut`을 닫는다.
+
+어느 단계든 실패하면 Bead와 `worker-ineligible`을 유지하고 shared service의 마지막
+관측 상태를 기록한다. source나 config를 임의 rollback하지 않으며, 같은 merged
+`main`에서 첫 실패 단계부터 재개한다. restart는 동일 merged state에서 재실행
+가능하고, process path·port·HTTP 세 항목이 모두 새로 통과해야 이전 실패를 해소한다.
+
 ## Test scope
 
 ### Contract helper
@@ -264,6 +325,8 @@ checkbox와 grip에는 명시적 accessible name을 제공하고 keyboard focus�
 - fresh attempt `worker_serial` round-trip
 - legacy absence -> false
 - relaunch/repair lineage inheritance
+- root `worker_serial`을 다른 ID의 linked completion repair child가
+  `completion_root_id`로 상속
 - restart snapshot preserves active serial evidence
 
 ### Scheduler RED-GREEN seams
@@ -276,7 +339,8 @@ checkbox와 grip에는 명시적 accessible name을 제공하고 keyboard focus�
 - scan 뒤 label add: authoritative dispatch re-read가 other claim과 겹치지 않고 defer
 - active serial running/pr_wait 중 normal auto-dispatch 0건
 - manual resume/conflict/diagnosis/repair의 other-Bead 시작이 공통 guard에서 거부
-- same-Bead serial resume/repair는 허용하고 snapshot 상속
+- same-lineage serial resume와 root→다른-ID completion repair child는 허용하고
+  snapshot 상속
 - label remove 중 active lineage는 fence 유지; fresh attempt는 non-serial
 - label add 중 running non-serial은 소급하지 않음
 - prerecord/guard/worktree abort가 reservation과 claim을 누수하지 않음
@@ -292,6 +356,8 @@ checkbox와 grip에는 명시적 accessible name을 제공하고 keyboard focus�
 ### Worker view
 
 - waiting row만 checkbox와 semantic chip 표시
+- Ready/Blocked 밖 waiting row도 `bead_labels` fill로 serial chip 표시
+- missing projection은 unknown이고 false/no-op으로 처리하지 않음
 - 선택 시 bulk toolbar 표시, no selection이면 숨김
 - desired state와 같은 행은 mutation 생략
 - selected IDs를 queue order로 순차 mutation
@@ -323,6 +389,8 @@ npm run build
 - `server/worker/scheduler.test.js`
 - `server/ws/mutation-handlers.js`
 - 관련 mutation handler tests
+- `server/worker/title-cache.js` 또는 동일 `bd show` decoration owner와 focused tests
+- `server/ws/worker-handlers.js`의 `bead_labels` projection과 protocol test
 - `app/views/worker/index.js`
 - `app/views/worker/index.test.js`
 - `app/views/worker/lanes.js`
@@ -355,5 +423,6 @@ refactor나 serial/parallel lane 부활은 하지 않는다.
    grip drag로 재정렬할 수 있다.
 4. generic label partial failure, CAS conflict, restart가 fail-visible하게 수렴한다.
 5. pre-handoff validation 전체와 frontend build가 통과하고 bundle이 갱신된다.
-6. merge 후 shared service를 `bdui-shared restart`로 재시작하고 process path, port,
-   HTTP response를 검증한다.
+6. spec gate부터 post-merge runtime readback 전까지 `worker-ineligible`이 유지된다.
+7. 위 ordered post-merge 절차로 shared service를 재시작하고 process path, port,
+   HTTP response를 검증한 뒤에만 label을 제거하고 Bead를 닫는다.
