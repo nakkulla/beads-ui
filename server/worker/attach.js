@@ -45,6 +45,7 @@ import {
   createCompletionIntentCoordinator
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
+import { createDiscardCoordinator } from './discard-coordinator.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
@@ -52,6 +53,7 @@ import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
+import { createRecoveryArchive } from './recovery-archive.js';
 import {
   peekVerifyResolution,
   resolveDeployAt,
@@ -364,6 +366,8 @@ export function defaultProbePid(pid) {
  *   completionIntent?: any,
  *   completionActionDriver?: any,
  *   completionRepair?: any,
+ *   discardCoordinator?: any,
+ *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -623,6 +627,30 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     sessionMonitors,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
+
+  const recoveryArchive = options.recoveryArchive || createRecoveryArchive();
+  const discardCoordinator =
+    options.discardCoordinator ||
+    createDiscardCoordinator({
+      workspace: keyFor(workspace_root),
+      repo,
+      store: runtime.queueStore,
+      gh,
+      bd,
+      worktree,
+      gitRun,
+      scheduler,
+      archive: recoveryArchive,
+      processController,
+      sessionLog: runtime.sessionLog,
+      external: {
+        get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
+          runtime.externalPrs.get(ws_key, bead_id)
+      },
+      actionInFlight: (/** @type {string} */ bead_id) =>
+        prActions?.isInFlight(bead_id) === true,
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+    });
 
   // REVISE-parking disposition (UI-hs11 §3.2–§3.4): the two human clicks that
   // dispose of a bead parked at `blocked_reason=spec_review_stale:revise`.
@@ -1033,6 +1061,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // The externally-observed MERGED trigger routes into the SAME cleanup the
     // button runs — one implementation, two triggers (worker-phase2 §6).
     onMerged: (bead_id) => prActions.cleanupObservedMerge(bead_id),
+    onDiscardObservation: (bead_id) => discardCoordinator.observeBead(bead_id),
     // The external registry rides the poller's own subscriber gate and cadence
     // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:
     // never.
@@ -1049,6 +1078,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reconciler,
     prPoller,
     prActions,
+    discardCoordinator,
     mergeQueue,
     autoMerge,
     completionIntent: resolvedCompletionIntent,
@@ -1161,6 +1191,13 @@ function recoverRunningAttempts(att, key) {
  */
 async function startWorkerAttachment(att, key, start_pr_poller) {
   try {
+    await att.discardCoordinator.recoverFences();
+  } catch (err) {
+    log('discard fence recovery failed for %s: %o', key, err);
+    return;
+  }
+
+  try {
     await att.scheduler.recoverControls(key);
   } catch (err) {
     log('control recovery failed for %s: %o', key, err);
@@ -1168,6 +1205,12 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   }
 
   recoverRunningAttempts(att, key);
+  try {
+    await att.discardCoordinator.recover();
+  } catch (err) {
+    log('discard operation recovery failed for %s: %o', key, err);
+    return;
+  }
   try {
     await att.scheduler.reconcile(key);
   } catch (err) {
@@ -1532,6 +1575,20 @@ export async function discardWorkerPr(workspace_root, bead_id) {
     return { ok: false, reason: 'no_attachment' };
   }
   return att.prActions.discard(bead_id);
+}
+
+/**
+ * Start or reuse one durable unified discard operation.
+ *
+ * @param {string} workspace_root
+ * @param {{ bead_id: string, attempt_id?: string|null, expected_revision: number }} input
+ */
+export async function discardWorkerBead(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.discardCoordinator) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.discardCoordinator.discard(input);
 }
 
 /**

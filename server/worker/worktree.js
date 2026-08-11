@@ -135,7 +135,8 @@ function isOwnedWorktree(repo, wt, branch) {
  *   exists: (repo: string, bead_id: string) => boolean,
  *   add: (input: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>,
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
- *   removeByBranch: (input: { repo: string, branch: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
+ *   observeOwnedByBead: (input: { repo: string, bead_id: string }) => Promise<{ ok: boolean, present: boolean, path: string|null, branch: string|null, head_sha: string|null, reason: string|null }>,
+ *   removeByBranch: (input: { repo: string, branch: string, expected_path?: string|null, expected_head?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *   removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *   addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
  *   removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>,
@@ -276,6 +277,99 @@ export function createWorktreeManager(deps) {
     },
 
     /**
+     * Resolve the worker-owned worktree/branch/head tuple that a durable
+     * discard snapshot binds to. Collision fallback branches remain eligible
+     * only when their basename and worktree directory still match.
+     *
+     * @param {{ repo: string, bead_id: string }} input
+     */
+    async observeOwnedByBead(input) {
+      const release = await locks.topologyLock(input.repo);
+      try {
+        const listed = await run(['worktree', 'list', '--porcelain', '-z'], {
+          cwd: input.repo
+        });
+        if (listed.code !== 0) {
+          return {
+            ok: false,
+            present: false,
+            path: null,
+            branch: null,
+            head_sha: null,
+            reason: 'observe_failed'
+          };
+        }
+        let root = input.repo;
+        try {
+          root = fs.realpathSync(input.repo);
+        } catch {
+          /* the ownership check below still uses the given root */
+        }
+        const matches = parseWorktreeRecords(listed.stdout).filter((record) => {
+          if (!record.branch?.startsWith('refs/heads/')) {
+            return false;
+          }
+          const branch = record.branch.slice('refs/heads/'.length);
+          const name_matches =
+            branch === input.bead_id ||
+            new RegExp(
+              `^${input.bead_id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d{8}$`
+            ).test(branch);
+          return (
+            name_matches &&
+            (isOwnedWorktree(root, record.path, branch) ||
+              isOwnedWorktree(input.repo, record.path, branch))
+          );
+        });
+        if (matches.length > 1) {
+          return {
+            ok: false,
+            present: false,
+            path: null,
+            branch: null,
+            head_sha: null,
+            reason: 'ownership_ambiguous'
+          };
+        }
+        if (matches.length === 0) {
+          return {
+            ok: true,
+            present: false,
+            path: null,
+            branch: null,
+            head_sha: null,
+            reason: null
+          };
+        }
+        const match = matches[0];
+        const branch = /** @type {string} */ (match.branch).slice(
+          'refs/heads/'.length
+        );
+        const head = await run(['rev-parse', 'HEAD'], { cwd: match.path });
+        if (head.code !== 0 || !/^[0-9a-f]{40}$/i.test(head.stdout.trim())) {
+          return {
+            ok: false,
+            present: true,
+            path: match.path,
+            branch,
+            head_sha: null,
+            reason: 'head_observe_failed'
+          };
+        }
+        return {
+          ok: true,
+          present: true,
+          path: match.path,
+          branch,
+          head_sha: head.stdout.trim(),
+          reason: null
+        };
+      } finally {
+        release();
+      }
+    },
+
+    /**
      * Remove the worktree that has `branch` checked out — ASKING git where it
      * is instead of computing a name from the bead id (UI-u7hh §1).
      *
@@ -298,7 +392,7 @@ export function createWorktreeManager(deps) {
      * in here — never another manager method, which would take the same
      * non-reentrant lock.
      *
-     * @param {{ repo: string, branch: string }} input
+     * @param {{ repo: string, branch: string, expected_path?: string|null, expected_head?: string|null }} input
      * @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null }>}
      */
     async removeByBranch(input) {
@@ -324,6 +418,16 @@ export function createWorktreeManager(deps) {
           return { ok: true, removed: false, reason: null };
         }
         const wt = matches[0].path;
+        if (
+          typeof input.expected_path === 'string' &&
+          wt !== input.expected_path
+        ) {
+          return {
+            ok: false,
+            removed: false,
+            reason: 'identity_changed'
+          };
+        }
         // git reports canonical paths, so the repo side is resolved too before
         // they are compared (a symlinked repo root would otherwise read as
         // foreign).
@@ -338,6 +442,19 @@ export function createWorktreeManager(deps) {
           !isOwnedWorktree(input.repo, wt, input.branch)
         ) {
           return { ok: false, removed: false, reason: 'foreign_worktree' };
+        }
+        if (typeof input.expected_head === 'string') {
+          const head = await run(['rev-parse', 'HEAD'], { cwd: wt });
+          if (
+            head.code !== 0 ||
+            head.stdout.trim() !== input.expected_head
+          ) {
+            return {
+              ok: false,
+              removed: false,
+              reason: 'identity_changed'
+            };
+          }
         }
         const removed = await run(['worktree', 'remove', '--force', wt], {
           cwd: input.repo

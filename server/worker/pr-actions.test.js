@@ -603,6 +603,29 @@ const ON_BASE = {
 };
 
 describe('merge click — the three branches (worker-phase2 §6)', () => {
+  test('refuses a bead fenced by an active discard operation', async () => {
+    const h = makeActions();
+    const snapshot = h.store.snapshot(WS);
+    h.store.createDiscardOperation(WS, {
+      expected_revision: snapshot.revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: BEAD,
+        attempt_id: 'a1',
+        source_snapshot: { repo: REPO, branch: BEAD }
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'discard_in_progress'
+    });
+    expect(h.gh.prDetail).not.toHaveBeenCalled();
+  });
+
   test('squash-merges a CLEAN pull request', async () => {
     const h = makeActions({ details: [prOf({ merge_state_status: 'CLEAN' })] });
 
@@ -1134,6 +1157,32 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
       }
     });
     expect(h.calls).not.toContain('spawn:bdui-shared:detached');
+  });
+
+  test('refuses a cleanup retry while an active discard owns the bead', async () => {
+    const h = makeActions();
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed'
+    });
+    h.store.createDiscardOperation(WS, {
+      expected_revision: h.store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: BEAD,
+        attempt_id: 'a1',
+        source_snapshot: { repo: REPO, branch: BEAD }
+      }
+    });
+
+    const result = await h.actions.retryCleanup(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'discard_in_progress'
+    });
+    expect(h.calls).toEqual([]);
   });
 
   test('replays the complete cleanup from a prerecorded completion operation', async () => {
@@ -2453,6 +2502,27 @@ describe('post-merge cleanup — ref operations hold the topology lock (§8)', (
 });
 
 describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6)', () => {
+  test('refuses observed cleanup while an active discard owns the bead', async () => {
+    const h = makeActions();
+    h.store.createDiscardOperation(WS, {
+      expected_revision: h.store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: BEAD,
+        attempt_id: 'a1',
+        source_snapshot: { repo: REPO, branch: BEAD }
+      }
+    });
+
+    const result = await h.actions.cleanupObservedMerge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'discard_in_progress'
+    });
+    expect(h.calls).toEqual([]);
+  });
+
   test('runs the identical cleanup path when a human merged on github.com', async () => {
     const h = makeActions({ details: [prOf({ state: 'MERGED' })] });
     const poller = createPrPoller({
@@ -2570,6 +2640,24 @@ describe('post-merge cleanup — retiring the external row (UI-wwby §1)', () =>
 });
 
 describe('[폐기] — the order-sensitive discard transition (discard spec §1)', () => {
+  test('refuses the retired discard path while a unified discard is active', async () => {
+    const h = makeActions();
+    h.store.createDiscardOperation(WS, {
+      expected_revision: h.store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: BEAD,
+        attempt_id: 'a1',
+        source_snapshot: { repo: REPO, branch: BEAD }
+      }
+    });
+
+    const result = await h.actions.discard(BEAD);
+
+    expect(result).toEqual({ ok: false, reason: 'discard_in_progress' });
+    expect(h.gh.prDetail).not.toHaveBeenCalled();
+  });
+
   test('closes an OPEN pull request, restores bd, discards the worktree, and removes the bead from pr_wait', async () => {
     const h = makeActions();
     h.bd_status.set(BEAD, 'open');

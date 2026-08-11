@@ -89,7 +89,8 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   'done',
   'failed',
   'orphaned',
-  'stopped'
+  'stopped',
+  'discarded'
 ]);
 
 /** Maximum terminal receipt inboxes inspected per reconciliation pass. */
@@ -299,6 +300,9 @@ function staleDispatchPrompt(bead_id, stale) {
  *   dispatchCleanupDiagnosis: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean }>,
+ *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
+ *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
+ *   finalizeDiscardAttempt: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   recoverControls: (workspace: string) => Promise<void>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
@@ -1037,12 +1041,18 @@ export function createScheduler(deps) {
    *     forever.
    *   - any non-terminal attempt.
    *
-   * @param {{ attempts?: Record<string, any> }} q - Queue snapshot.
+   * @param {{ attempts?: Record<string, any>, discard_operations?: Record<string, any> }} q - Queue snapshot.
    * @returns {Set<string>}
    */
   function activeBeadIdsFrom(q) {
     /** @type {Set<string>} */
     const out = new Set(claimed);
+    for (const operation of Object.values(q.discard_operations || {})) {
+      const discard = /** @type {any} */ (operation);
+      if (discard.phase !== 'done' && typeof discard.bead_id === 'string') {
+        out.add(discard.bead_id);
+      }
+    }
     for (const bead_id of dispatch_refused) {
       out.add(bead_id);
     }
@@ -1069,6 +1079,25 @@ export function createScheduler(deps) {
       out.add(a.bead_id);
     }
     return out;
+  }
+
+  /**
+   * Whether one durable discard operation currently owns a Bead or attempt.
+   *
+   * @param {{ discard_operations?: Record<string, any> }} q
+   * @param {{ bead_id?: string|null, attempt_id?: string|null }} identity
+   */
+  function discardActive(q, identity) {
+    return Object.values(q.discard_operations || {}).some((operation) => {
+      const discard = /** @type {any} */ (operation);
+      return (
+        discard.phase !== 'done' &&
+        ((typeof identity.bead_id === 'string' &&
+          discard.bead_id === identity.bead_id) ||
+          (typeof identity.attempt_id === 'string' &&
+            discard.attempt_id === identity.attempt_id))
+      );
+    });
   }
 
   /**
@@ -3378,6 +3407,11 @@ export function createScheduler(deps) {
     ) {
       return { ok: false, reason: 'not_failed' };
     }
+    if (
+      discardActive(q, { bead_id: prior.bead_id, attempt_id })
+    ) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
     // no_session_id: a pre-UI-azj6 attempt without a captured session id.
     if (typeof prior.session_id !== 'string' || prior.session_id.length === 0) {
       return { ok: false, reason: 'no_session_id' };
@@ -3648,6 +3682,9 @@ export function createScheduler(deps) {
    */
   async function resolveConflict(workspace, bead_id) {
     const q = deps.store.snapshot(workspace);
+    if (discardActive(q, { bead_id })) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
     /** @type {any|null} */
     let source = null;
     let source_at = -1;
@@ -3782,6 +3819,9 @@ export function createScheduler(deps) {
    */
   async function dispatchExternalConflict(workspace, bead_id, target_base) {
     const q = deps.store.snapshot(workspace);
+    if (discardActive(q, { bead_id })) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
     if (claimed.has(bead_id)) {
       return { ok: false, reason: 'bead_running' };
     }
@@ -4978,6 +5018,7 @@ export function createScheduler(deps) {
       return;
     }
     const paused_beads = leafPausedBeads(q);
+    const active_beads = activeBeadIdsFrom(q);
 
     /** @type {Array<{ bead_id: string, snap: BeadSnapshot }>} */
     const to_dispatch = [];
@@ -5034,7 +5075,8 @@ export function createScheduler(deps) {
       if (
         claimed.has(entry.bead_id) ||
         dispatch_refused.has(entry.bead_id) ||
-        paused_beads.has(entry.bead_id)
+        paused_beads.has(entry.bead_id) ||
+        active_beads.has(entry.bead_id)
       ) {
         continue;
       }
@@ -5075,16 +5117,21 @@ export function createScheduler(deps) {
     // queue member, and launching it would both run finished work and delete
     // the `done` row the sweep just wrote. Nothing can move a bead between this
     // read and the claim, so the check is not merely advisory.
+    const live_snapshot = deps.store.snapshot(workspace);
     const live_queue = new Set(
-      deps.store
-        .snapshot(workspace)
-        .queue.map((/** @type {{ bead_id: string }} */ e) => e.bead_id)
+      live_snapshot.queue.map(
+        (/** @type {{ bead_id: string }} */ e) => e.bead_id
+      )
     );
+    const live_active = activeBeadIdsFrom(live_snapshot);
     // `claimed` is re-read here too: the coalescing guard already removes the
     // overlap that let two passes claim one bead, and this is the thin line
     // behind it — a bead claimed since this pass's scan never launches twice.
     const to_launch = to_dispatch.filter(
-      (d) => live_queue.has(d.bead_id) && !claimed.has(d.bead_id)
+      (d) =>
+        live_queue.has(d.bead_id) &&
+        !claimed.has(d.bead_id) &&
+        !live_active.has(d.bead_id)
     );
     for (const d of to_launch) {
       claimed.add(d.bead_id);
@@ -5149,6 +5196,16 @@ export function createScheduler(deps) {
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
   async function pause(workspace, attempt_id) {
+    const snapshot = deps.store.snapshot(workspace);
+    const attempt = snapshot.attempts?.[attempt_id];
+    if (
+      discardActive(snapshot, {
+        attempt_id,
+        bead_id: attempt?.bead_id ?? null
+      })
+    ) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
     if (deps.processController) {
       return pauseDurably(workspace, attempt_id);
     }
@@ -5379,7 +5436,16 @@ export function createScheduler(deps) {
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
   async function pauseDurably(workspace, attempt_id) {
-    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    const snapshot = deps.store.snapshot(workspace);
+    const attempt = snapshot.attempts?.[attempt_id];
+    if (
+      discardActive(snapshot, {
+        attempt_id,
+        bead_id: attempt?.bead_id ?? null
+      })
+    ) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
     if (!attempt || attempt.status !== 'running') {
       return { ok: false, reason: 'not_running' };
     }
@@ -5413,9 +5479,18 @@ export function createScheduler(deps) {
    */
   async function recoverControls(workspace) {
     const snapshot = deps.store.snapshot(workspace);
+    const discard_attempts = new Set(
+      Object.values(snapshot.discard_operations || {})
+        .filter((operation) => /** @type {any} */ (operation).phase !== 'done')
+        .map((operation) => /** @type {any} */ (operation).attempt_id)
+        .filter((attempt_id) => typeof attempt_id === 'string')
+    );
     for (const [attempt_id, attempt] of Object.entries(
       snapshot.attempts || {}
     )) {
+      if (discard_attempts.has(attempt_id)) {
+        continue;
+      }
       const phase = /** @type {any} */ (attempt).control?.phase;
       if (
         phase === 'requested' ||
@@ -5425,6 +5500,86 @@ export function createScheduler(deps) {
         await drivePauseControl(workspace, attempt_id);
       }
     }
+  }
+
+  /**
+   * Suppress the expected live-handle exit as soon as a durable discard fence
+   * exists. The runner remains in the running map until archive/termination
+   * completes, so its slot is still occupied during the safety-critical copy.
+   *
+   * @param {string|null|undefined} attempt_id
+   */
+  function canDiscardAttempt(attempt_id) {
+    return (
+      typeof attempt_id !== 'string' ||
+      attempt_id.length === 0 ||
+      !settling.has(attempt_id)
+    );
+  }
+
+  /**
+   * @param {string|null|undefined} attempt_id
+   */
+  function fenceDiscardAttempt(attempt_id) {
+    if (typeof attempt_id !== 'string' || attempt_id.length === 0) {
+      return false;
+    }
+    if (!canDiscardAttempt(attempt_id)) {
+      return false;
+    }
+    stopped.add(attempt_id);
+    return true;
+  }
+
+  /**
+   * Release scheduler-local ownership only after the process controller proved
+   * the group absent and the monitor drained its final log lines.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function finalizeDiscardAttempt(workspace, attempt_id) {
+    if (!canDiscardAttempt(attempt_id)) {
+      return { ok: false, reason: 'attempt_settling' };
+    }
+    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    if (!attempt) {
+      return { ok: false, reason: 'attempt_not_found' };
+    }
+    const entry = running.get(attempt_id);
+    if (entry) {
+      stopped.add(attempt_id);
+      const done = entry.handle.done;
+      paused_done.set(attempt_id, done);
+      const forgetDone = () => paused_done.delete(attempt_id);
+      done.then(forgetDone, forgetDone);
+      running.delete(attempt_id);
+      claimed.delete(entry.bead_id);
+    }
+    deps.sessionMonitors?.stop(workspace, attempt_id);
+    if (await settleBaseDrift(workspace, attempt_id)) {
+      return { ok: false, reason: 'base_landing_detected' };
+    }
+    const updated = deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        status: 'discarded',
+        cause: null,
+        control: null,
+        finished_at: now(),
+        ...usagePatch(workspace, attempt_id)
+      }
+    });
+    if (!updated.ok) {
+      return { ok: false, reason: 'attempt_persist_failed' };
+    }
+    await revertStamps(workspace, attempt_id, {
+      bead_id: attempt.bead_id,
+      prior: attempt.workflow_mode_prior ?? null
+    });
+    notifyChanged(workspace);
+    return { ok: true };
   }
 
   /**
@@ -5445,6 +5600,15 @@ export function createScheduler(deps) {
    * @returns {Promise<boolean>} True when an attempt was discarded.
    */
   async function stop(workspace, attempt_id) {
+    const initial = deps.store.snapshot(workspace);
+    if (
+      discardActive(initial, {
+        attempt_id,
+        bead_id: initial.attempts?.[attempt_id]?.bead_id ?? null
+      })
+    ) {
+      return false;
+    }
     const entry = running.get(attempt_id);
     if (entry) {
       const base = attemptBase(workspace, attempt_id);
@@ -5578,6 +5742,9 @@ export function createScheduler(deps) {
     dispatchCleanupDiagnosis,
     dispatchReviseFix,
     dispatchCompletionRepair,
+    canDiscardAttempt,
+    fenceDiscardAttempt,
+    finalizeDiscardAttempt,
     recoverControls,
     reconcile,
     sweepClosedQueue,

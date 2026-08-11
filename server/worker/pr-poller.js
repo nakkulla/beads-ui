@@ -174,6 +174,7 @@ export function rollupConclusion(checks) {
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
  *   onMerged?: (bead_id: string) => Promise<unknown>,
+ *   onDiscardObservation?: (bead_id: string) => Promise<unknown>,
  *   external?: {
  *     refresh: () => Promise<unknown>,
  *     list: () => import('./external-pr.js').ExternalPrRow[]
@@ -287,6 +288,8 @@ export function createPrPoller(deps) {
    * @type {Set<string>}
    */
   const cleaning = new Set();
+  /** @type {Set<string>} */
+  const discard_observing = new Set();
   /** @type {(() => void)|null} */
   let off_queue_changed = null;
 
@@ -341,6 +344,21 @@ export function createPrPoller(deps) {
       return { verify: null };
     }
     const pr = detail.data;
+
+    const active_discard = Object.values(queue.discard_operations || {}).some(
+      (operation) =>
+        /** @type {any} */ (operation).bead_id === bead_id &&
+        /** @type {any} */ (operation).phase !== 'done'
+    );
+    if (active_discard) {
+      deps.observations.record(workspace, bead_id, { error: null, pr });
+      return {
+        verify:
+          typeof deps.onDiscardObservation === 'function'
+            ? observeDiscard(bead_id)
+            : null
+      };
+    }
 
     // A merged or closed PR is classified by its state alone — there is no gate
     // left to compute, so no checks query is spent on it. MERGED hands off to
@@ -449,6 +467,26 @@ export function createPrPoller(deps) {
       log('post-merge cleanup failed for %s: %o', bead_id, err);
     } finally {
       cleaning.delete(bead_id);
+    }
+  }
+
+  /**
+   * Wake the durable discard driver once per bead per observation round.
+   *
+   * @param {string} bead_id
+   */
+  async function observeDiscard(bead_id) {
+    if (discard_observing.has(bead_id)) {
+      return;
+    }
+    discard_observing.add(bead_id);
+    try {
+      await /** @type {any} */ (deps.onDiscardObservation)(bead_id);
+      notifyChanged(workspace);
+    } catch (err) {
+      log('discard observation failed for %s: %o', bead_id, err);
+    } finally {
+      discard_observing.delete(bead_id);
     }
   }
 

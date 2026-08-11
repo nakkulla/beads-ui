@@ -645,6 +645,53 @@ describe('worker/attach construction + live loop (F1)', () => {
     });
   });
 
+  test('recovers discard fences before controls and resumes them after monitor replay', async () => {
+    const runtime = createWorkerRuntime();
+    seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
+    /** @type {string[]} */
+    const order = [];
+    const discardCoordinator = {
+      recoverFences: vi.fn(() => order.push('discard-fence')),
+      recover: vi.fn(async () => order.push('discard-drive'))
+    };
+    const sessionMonitors = {
+      start: vi.fn(() => {
+        order.push('monitor');
+        return true;
+      }),
+      stop: vi.fn(),
+      stopAll: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      discardCoordinator,
+      sessionMonitors,
+      probePid: () => {
+        order.push('reconcile');
+        return { alive: true, started_at: 1000 };
+      }
+    });
+    vi.spyOn(att.scheduler, 'recoverControls').mockImplementation(async () => {
+      order.push('control');
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => order.includes('reconcile'));
+
+    expect(order).toEqual([
+      'discard-fence',
+      'control',
+      'monitor',
+      'discard-drive',
+      'reconcile'
+    ]);
+  });
+
   test('initWorkerRuntime replays the session log of a running attempt into the usage store (UI-ediw)', async () => {
     const runtime = createWorkerRuntime();
     seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');

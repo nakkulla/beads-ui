@@ -63,8 +63,8 @@
  * @property {string|null} repo - Target repo root (the reconcile's observation
  * scope: a dead attempt's PR is looked for in THIS repo).
  * @property {string|null} status - Attempt lifecycle: running/done/failed/
- * orphaned/paused/stopped. `paused` (tile ⏸, resumable) and `stopped` (tile ■,
- * terminal) are user actions and carry no `cause` — the state is the meaning.
+ * orphaned/paused/stopped/discarded. `paused` is resumable; `stopped` is legacy
+ * history; `discarded` is the unified archive-backed terminal action.
  * @property {string|null} workflow_mode_prior - workflow_mode value snapshotted before launch (null=was unset).
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
@@ -2168,11 +2168,13 @@ export function createQueueStore(options = {}) {
       const terminal =
         patch.status === 'paused' ||
         patch.status === 'stopped' ||
+        patch.status === 'discarded' ||
         patch.status === 'done' ||
         patch.status === 'failed' ||
         patch.status === 'orphaned' ||
         current_status === 'paused' ||
         current_status === 'stopped' ||
+        current_status === 'discarded' ||
         current_status === 'done' ||
         current_status === 'failed' ||
         current_status === 'orphaned';

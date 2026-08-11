@@ -186,13 +186,18 @@ Nothing merges without a human `[머지]` click.
   (`[{ bead_id, resolution_rounds }]`, durable order) plus a non-persisted
   `merge_queue_state` = `{ active, failures }` — which item the driver is on and
   why each skipped one failed.
-- `worker-pr-discard` payload: `{ bead_id, expected_revision }` — `[폐기]`:
-  re-read the PR state authoritatively, close it when it is still OPEN (`MERGED`
-  refuses with `pr_already_merged`, an unreadable state fails closed), put bd
-  back to `open` without `pr_url`, discard the worktree/branch, and REMOVE the
-  bead from `pr_wait`. It is NOT re-queued and nothing is dispatched — the bead
-  reappears in the candidate lane and re-running it is a drag back into 대기,
-  which re-passes admission. Reply `{ bead_id, discarded, conflict, reason }`.
+- `worker-discard` payload: `{ bead_id, attempt_id?, expected_revision }` —
+  creates or reuses one durable, restart-safe discard operation. It validates
+  the latest leaf attempt or worker-owned PR row, archives the exact source
+  before destructive effects, fences dispatch/merge, and advances by
+  authoritative readback. Reply:
+  `{ bead_id, operation_id, accepted, discarded, pending, reused, conflict, phase, reason, queue }`;
+  `pending:'merged_revert'` means the PR was merged during observation and the
+  operation is waiting for the revert lifecycle.
+- `worker-pr-discard` and `worker-attempt-stop` are legacy compatibility
+  messages. While old clients remain, the server translates both into the same
+  archive-first durable `worker-discard` coordinator; neither retains a direct
+  destructive path.
 
 Every queue mutation replies `{ applied, conflict, queue }`; a stale
 `expected_revision` yields `conflict:true` + the current queue for re-sync.
