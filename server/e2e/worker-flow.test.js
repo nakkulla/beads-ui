@@ -681,6 +681,10 @@ describe('worker e2e — completion intent post-merge recovery', () => {
         attempt: {
           attempt_id: `initial-${bead_id}`,
           bead_id,
+          repo: repo_dir,
+          target_base: 'main',
+          base_oid: 'b'.repeat(40),
+          runner: 'claude',
           status: 'done'
         }
       });
@@ -704,6 +708,7 @@ describe('worker e2e — completion intent post-merge recovery', () => {
     };
     store.enqueueCompletionIntent(WS, {
       root_bead_id,
+      source_attempt_id: `initial-${root_bead_id}`,
       target_base: 'main',
       subject
     });
@@ -884,6 +889,7 @@ describe('worker e2e — completion intent post-merge recovery', () => {
     };
     store.enqueueCompletionIntent(WS, {
       root_bead_id,
+      source_attempt_id: `initial-${root_bead_id}`,
       target_base: 'main',
       subject: old_subject
     });
@@ -1009,6 +1015,10 @@ describe('worker e2e — completion intent post-merge recovery', () => {
         attempt: {
           attempt_id: `initial-${bead_id}`,
           bead_id,
+          repo: repo_dir,
+          target_base: 'main',
+          base_oid: 'b'.repeat(40),
+          runner: 'claude',
           status: 'done'
         }
       });
@@ -1032,6 +1042,7 @@ describe('worker e2e — completion intent post-merge recovery', () => {
     };
     store.enqueueCompletionIntent(WS, {
       root_bead_id,
+      source_attempt_id: `initial-${root_bead_id}`,
       target_base: 'main',
       subject
     });
@@ -1152,6 +1163,10 @@ describe('worker e2e — completion intent post-merge recovery', () => {
       attempt: {
         attempt_id: 'beads-456-initial',
         bead_id: root_bead_id,
+        repo: repo_dir,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'claude',
         status: 'done'
       }
     });
@@ -1174,6 +1189,7 @@ describe('worker e2e — completion intent post-merge recovery', () => {
     };
     store.enqueueCompletionIntent(WS, {
       root_bead_id,
+      source_attempt_id: 'beads-456-initial',
       target_base: 'main',
       subject
     });
@@ -1315,6 +1331,7 @@ describe('worker e2e — completion intent post-merge recovery', () => {
     };
     store.enqueueCompletionIntent(WS, {
       root_bead_id,
+      source_attempt_id: 'root-attempt',
       target_base: 'main',
       subject: root_subject
     });

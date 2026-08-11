@@ -41,7 +41,7 @@ import {
  *   headSha?: (bead_id: string) => string|null,
  *   candidates?: (workspace: string, queue: Record<string, unknown>, verify_cmd_state: 'resolved'|'absent'|'invalid') => Array<{ bead_id: string, external: boolean, repairable?: boolean }>,
  *   lane?: (workspace: string, queue: Record<string, unknown>) => Array<{ bead_id: string, external: boolean }>,
- *   completionSeed?: (workspace: string, queue: Record<string, unknown>, bead_id: string) => { target_base: string, subject: any }|null,
+ *   completionSeed?: (workspace: string, queue: Record<string, unknown>, bead_id: string) => { source_attempt_id: string, target_base: string, subject: any }|null,
  *   notifyChanged?: (workspace: string) => void,
  *   kick?: () => unknown,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
@@ -92,7 +92,7 @@ export function createAutoMerge(deps) {
       // declaration this pass could see, so the gate falls to its own tiers.
       verify_cmd_state = 'absent';
     }
-    /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, completion?: { target_base: string, subject: any } }>} */
+    /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, completion?: { source_attempt_id: string, target_base: string, subject: any } }>} */
     const entries = [];
     for (const c of candidates(workspace, overlaid, verify_cmd_state)) {
       const head_sha = headSha(c.bead_id);
