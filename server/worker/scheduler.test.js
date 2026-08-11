@@ -3783,6 +3783,59 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(child.completion_root_id).toBe(null);
   });
 
+  test('starts conflict resolution after the source completion op was consumed', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store, {
+      completion_root_id: 'B1',
+      completion_op_id: 'consumed-repair-op',
+      completion_mode: 'resume_root',
+      completion_failure_key: COMPLETION_FAILURE
+    });
+    env.store.moveToPrWait(WS, {
+      bead_id: 'B1',
+      attempt_id: 'd1',
+      patch: { finished_at: 50 }
+    });
+    env.store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'B1',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'B1',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: COMPLETION_FAILURE.subject_sha,
+        base_sha: COMPLETION_FAILURE.base_sha,
+        merged_sha: null
+      }
+    });
+    env.store.prepareCompletionOp(WS, {
+      root_bead_id: 'B1',
+      phase: 'merging',
+      op: {
+        op_id: 'merge-subject-op',
+        kind: 'merge_subject',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1');
+
+    expect(res.ok).toBe(true);
+    const child =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(child).toMatchObject({
+      resumed_from: 'd1',
+      conflict_resolution: true,
+      completion_root_id: null,
+      completion_op_id: null,
+      completion_mode: null,
+      completion_failure_key: null
+    });
+  });
+
   // The ATTEMPT RECORD keeps the flag (asserted above); the guard input does
   // not exist any more (UI-1xcd §3).
   test('does not pass conflict_resolution into the runner settings', async () => {
