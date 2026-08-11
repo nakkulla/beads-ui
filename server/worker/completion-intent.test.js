@@ -667,6 +667,146 @@ describe('worker/completion-intent action driver', () => {
     });
   });
 
+  test('adopts a unique legacy terminal descendant with a fresh PR subject', async () => {
+    const store = seededCompletionStore();
+    const failure_key = createCompletionFailureKey({
+      stage: 'merge_gate',
+      reason: 'verify_cmd_failed',
+      subject_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      evidence: { output_tail: 'regression' }
+    });
+    store.beginRepairOp(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      op: {
+        op_id: 'legacy-resume',
+        kind: 'resume_root',
+        failure_key,
+        attempt_id: 'legacy-source',
+        repair_bead_id: null,
+        status: 'prepared'
+      },
+      attempt: {
+        attempt_id: 'legacy-source',
+        bead_id: 'UI-root',
+        status: 'paused',
+        completion_root_id: 'UI-root',
+        completion_op_id: 'legacy-resume',
+        completion_mode: 'resume_root',
+        completion_failure_key: failure_key
+      }
+    });
+    store.appendAttempt(DRIVER_WS, {
+      expected_revision: store.snapshot(DRIVER_WS).revision,
+      attempt: {
+        attempt_id: 'legacy-leaf',
+        bead_id: 'UI-root',
+        resumed_from: 'legacy-source',
+        status: 'done'
+      }
+    });
+    const fresh_subject = {
+      ...intent().subject,
+      head_sha: 'd'.repeat(40)
+    };
+    const completionGate = vi.fn(async () =>
+      redGate({
+        subject: fresh_subject,
+        verdict: { enabled: true, tier: 'ready', reason: null },
+        evidence: {}
+      })
+    );
+    const driver = actionDriver(store, {
+      prActions: { completionGate }
+    });
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'reconcile_op' },
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    );
+
+    expect(completionGate).toHaveBeenCalledWith('UI-root', 'root');
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'gating',
+      subject: fresh_subject,
+      active_op: null,
+      repair_sessions_used: 1
+    });
+    expect(store.snapshot(DRIVER_WS).attempts['legacy-leaf']).toMatchObject({
+      completion_root_id: 'UI-root',
+      completion_op_id: 'legacy-resume',
+      completion_mode: 'resume_root',
+      completion_failure_key: failure_key
+    });
+  });
+
+  test('terminalizes an ambiguous legacy completion lineage', async () => {
+    const store = seededCompletionStore();
+    const failure_key = createCompletionFailureKey({
+      stage: 'merge_gate',
+      reason: 'verify_cmd_failed',
+      subject_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      evidence: { output_tail: 'regression' }
+    });
+    store.beginRepairOp(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      op: {
+        op_id: 'legacy-branch',
+        kind: 'resume_root',
+        failure_key,
+        attempt_id: 'legacy-source',
+        repair_bead_id: null,
+        status: 'prepared'
+      },
+      attempt: {
+        attempt_id: 'legacy-source',
+        bead_id: 'UI-root',
+        status: 'paused',
+        completion_root_id: 'UI-root',
+        completion_op_id: 'legacy-branch',
+        completion_mode: 'resume_root',
+        completion_failure_key: failure_key
+      }
+    });
+    for (const attempt_id of ['legacy-a', 'legacy-b']) {
+      store.appendAttempt(DRIVER_WS, {
+        expected_revision: store.snapshot(DRIVER_WS).revision,
+        attempt: {
+          attempt_id,
+          bead_id: 'UI-root',
+          resumed_from: 'legacy-source',
+          status: 'done'
+        }
+      });
+    }
+    const driver = actionDriver(store);
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'reconcile_op' },
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    );
+
+    expect(store.snapshot(DRIVER_WS)).toMatchObject({
+      merge_queue: [],
+      completion_intents: {
+        'UI-root': {
+          phase: 'needs_human',
+          repair_sessions_used: 1,
+          terminal_reason: {
+            reason: 'repair_resume_lineage_ambiguous',
+            stage: 'reconciliation',
+            evidence: 'legacy_lineage_ambiguous'
+          }
+        }
+      }
+    });
+  });
+
   test('adopts a repair PR observed after its session settlement', async () => {
     const store = seededCompletionStore();
     const failure_key = linkRepairSubject(store);

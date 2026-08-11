@@ -819,6 +819,49 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Persist a relaunch child. An explicit generic resume of a completion-owned
+   * ancestor uses the store's atomic ownership transfer; other relaunch kinds
+   * keep their existing ordinary append semantics.
+   *
+   * @param {string} workspace
+   * @param {any} prior
+   * @param {any} attempt
+   * @param {boolean} completion_resume
+   */
+  function prerecordRelaunchAttempt(
+    workspace,
+    prior,
+    attempt,
+    completion_resume
+  ) {
+    if (!completion_resume) {
+      return prerecordAttempt(workspace, attempt);
+    }
+    const completion_owned =
+      prior.completion_root_id != null ||
+      prior.completion_op_id != null ||
+      prior.completion_mode != null ||
+      prior.completion_failure_key != null;
+    if (!completion_owned) {
+      return prerecordAttempt(workspace, attempt);
+    }
+    if (typeof deps.store.appendResumedCompletionAttempt !== 'function') {
+      return false;
+    }
+    try {
+      return (
+        deps.store.appendResumedCompletionAttempt(workspace, {
+          expected_revision: deps.store.snapshot(workspace).revision,
+          source_attempt_id: prior.attempt_id,
+          attempt
+        }).ok === true
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Install this attempt's pre-push hook (UI-8mvc §2). Called BEFORE the launch
    * path's first state change — no worktree, no attempt record, no metadata
    * stamp — so a failure is a plain refusal with nothing to unwind.
@@ -3394,6 +3437,7 @@ export function createScheduler(deps) {
     const result = await relaunchFromAttempt(workspace, prior, {
       prompt: diagnosis_prompt,
       conflict_resolution: false,
+      completion_resume: !cleanup_diagnosis,
       cleanup_diagnosis,
       cleanup_diagnosis_result_path: diagnosis_result_path
     });
@@ -4032,7 +4076,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {any} prior - The source attempt record (guards already passed).
-   * @param {{ prompt: string, conflict_resolution: boolean, disposition?: string|null, disposition_receipt?: string|null, cleanup_diagnosis?: boolean, cleanup_diagnosis_result_path?: string|null, cwd?: string|null, resume?: boolean }} options
+   * @param {{ prompt: string, conflict_resolution: boolean, completion_resume?: boolean, disposition?: string|null, disposition_receipt?: string|null, cleanup_diagnosis?: boolean, cleanup_diagnosis_result_path?: string|null, cwd?: string|null, resume?: boolean }} options
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function relaunchFromAttempt(workspace, prior, options) {
@@ -4114,42 +4158,47 @@ export function createScheduler(deps) {
     // globals. The retired merge-axis fields are NOT copied forward: history
     // keeps them on the old record, new attempts stop writing them (§9).
     if (
-      !prerecordAttempt(workspace, {
-        attempt_id: new_attempt_id,
-        bead_id,
-        repo,
-        target_base,
-        base_oid: prior.base_oid ?? null,
-        runner: runner_name,
-        model: prior.model ?? null,
-        effort: prior.effort ?? null,
-        workflow_mode_prior: prior_wf,
-        exec_default_preset_id: prior.exec_default_preset_id ?? null,
-        exec_default_preset_revision:
-          prior.exec_default_preset_revision ?? null,
-        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
-        exec_values,
-        resumed_from: attempt_id,
-        conflict_resolution: options.conflict_resolution,
-        // INHERITED, never re-derived (UI-w0hi §1): a child of an external
-        // resolution is still working an external bead, and losing the flag
-        // would send its successful termination down the ordinary arm — which
-        // injects the bead into the durable `pr_wait` lane the external overlay
-        // owns. The identifier has to survive every relaunch, not just a
-        // restart.
-        external_conflict: prior.external_conflict === true,
-        disposition: options.disposition ?? null,
-        disposition_receipt: options.disposition_receipt ?? null,
-        disposition_resume: options.disposition
-          ? options.resume !== false
-          : false,
-        disposition_prompt: options.disposition ? options.prompt : null,
-        cleanup_diagnosis: options.cleanup_diagnosis === true,
-        cleanup_diagnosis_result_path:
-          options.cleanup_diagnosis_result_path ?? null,
-        status: 'running',
-        pid: null
-      })
+      !prerecordRelaunchAttempt(
+        workspace,
+        prior,
+        {
+          attempt_id: new_attempt_id,
+          bead_id,
+          repo,
+          target_base,
+          base_oid: prior.base_oid ?? null,
+          runner: runner_name,
+          model: prior.model ?? null,
+          effort: prior.effort ?? null,
+          workflow_mode_prior: prior_wf,
+          exec_default_preset_id: prior.exec_default_preset_id ?? null,
+          exec_default_preset_revision:
+            prior.exec_default_preset_revision ?? null,
+          exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+          exec_values,
+          resumed_from: attempt_id,
+          conflict_resolution: options.conflict_resolution,
+          // INHERITED, never re-derived (UI-w0hi §1): a child of an external
+          // resolution is still working an external bead, and losing the flag
+          // would send its successful termination down the ordinary arm — which
+          // injects the bead into the durable `pr_wait` lane the external overlay
+          // owns. The identifier has to survive every relaunch, not just a
+          // restart.
+          external_conflict: prior.external_conflict === true,
+          disposition: options.disposition ?? null,
+          disposition_receipt: options.disposition_receipt ?? null,
+          disposition_resume: options.disposition
+            ? options.resume !== false
+            : false,
+          disposition_prompt: options.disposition ? options.prompt : null,
+          cleanup_diagnosis: options.cleanup_diagnosis === true,
+          cleanup_diagnosis_result_path:
+            options.cleanup_diagnosis_result_path ?? null,
+          status: 'running',
+          pid: null
+        },
+        options.completion_resume === true
+      )
     ) {
       removeGuardHook(workspace, new_attempt_id);
       claimed.delete(bead_id);
@@ -4190,6 +4239,7 @@ export function createScheduler(deps) {
       removeGuardHook(workspace, new_attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
+      await reportCompletionSettlement(workspace, new_attempt_id, null);
       return { ok: false, reason: 'workflow_mode_record_failed' };
     }
 
@@ -4247,6 +4297,7 @@ export function createScheduler(deps) {
       removeGuardHook(workspace, new_attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
+      await reportCompletionSettlement(workspace, new_attempt_id, null);
       return { ok: false, reason: 'exec_stamp_failed' };
     }
 
@@ -4289,6 +4340,7 @@ export function createScheduler(deps) {
       cleanup_diagnosis: options.cleanup_diagnosis === true
     });
     if (!launched.ok) {
+      await reportCompletionSettlement(workspace, new_attempt_id, null);
       return { ok: false, reason: launched.reason || 'spawn_failed' };
     }
 

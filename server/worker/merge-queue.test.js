@@ -233,6 +233,107 @@ describe('worker/merge-queue — completion subject continuity', () => {
     expect(store.snapshot(WS).merge_queue[0].bead_id).toBe('UI-root');
   });
 
+  test('preserves a completion kick requested during an active drain', async () => {
+    const store = seed(['UI-root']);
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: store.snapshot(WS).completion_intents['UI-root'].subject
+    });
+    let attempts = 0;
+    /** @type {any} */
+    let mq;
+    mq = driver(store, {
+      merge: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return { ok: false, action: 'refused', reason: 'retry_gate' };
+        }
+        landMerge(store, 'UI-root');
+        return { ok: true, action: 'merged', reason: null };
+      },
+      onCompletionResult: async () => {
+        if (attempts !== 1) {
+          return;
+        }
+        store.setCompletionSubject(WS, {
+          root_bead_id: 'UI-root',
+          phase: 'merging',
+          subject: store.snapshot(WS).completion_intents['UI-root'].subject
+        });
+        await mq.kick();
+      }
+    });
+
+    await mq.kick();
+
+    expect(attempts).toBe(2);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('continues to the next item after a latched completion pass', async () => {
+    const store = seed(['UI-root', 'UI-next']);
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: store.snapshot(WS).completion_intents['UI-root'].subject
+    });
+    /** @type {string[]} */
+    const order = [];
+    /** @type {any} */
+    let mq;
+    mq = driver(store, {
+      merge: async (/** @type {string} */ bead_id) => {
+        order.push(bead_id);
+        if (bead_id === 'UI-root' && order.length === 1) {
+          return { ok: false, action: 'refused', reason: 'retry_gate' };
+        }
+        landMerge(store, bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      },
+      onCompletionResult: async () => {
+        if (order.length !== 1) {
+          return;
+        }
+        store.setCompletionSubject(WS, {
+          root_bead_id: 'UI-root',
+          phase: 'merging',
+          subject: store.snapshot(WS).completion_intents['UI-root'].subject
+        });
+        await mq.kick();
+      }
+    });
+
+    await mq.kick();
+
+    expect(order).toEqual(['UI-root', 'UI-root', 'UI-next']);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
   test('merges only the repair subject and returns the held root to gating', async () => {
     const store = seed(['UI-root', 'UI-repair']);
     store.dequeueMerge(WS, 'UI-repair');

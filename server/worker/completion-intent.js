@@ -991,7 +991,7 @@ export function createCompletionActionDriver(deps) {
         return;
       }
       if (op.kind === 'resume_root' || op.kind === 'dispatch_repair') {
-        const attempt = deps.store.snapshot(deps.workspace).attempts?.[
+        let attempt = deps.store.snapshot(deps.workspace).attempts?.[
           op.attempt_id
         ];
         if (!attempt) {
@@ -1002,6 +1002,34 @@ export function createCompletionActionDriver(deps) {
             op.failure_key
           );
           return;
+        }
+        if (attempt.status === 'paused') {
+          if (typeof deps.store.adoptLegacyCompletionAttempt === 'function') {
+            const adopted = deps.store.adoptLegacyCompletionAttempt(
+              deps.workspace,
+              { root_bead_id }
+            );
+            if (adopted.ok) {
+              attempt =
+                adopted.queue.attempts?.[
+                  adopted.queue.completion_intents?.[root_bead_id]?.active_op
+                    ?.attempt_id
+                ] || attempt;
+              notify();
+            } else if (
+              adopted.reason !== 'legacy_descendant_missing' &&
+              adopted.reason !== 'legacy_adoption_not_applicable'
+            ) {
+              terminalize(
+                root_bead_id,
+                'repair_resume_lineage_ambiguous',
+                'reconciliation',
+                op.failure_key,
+                adopted.reason || 'legacy_lineage_ambiguous'
+              );
+              return;
+            }
+          }
         }
         if (attempt.status === 'running' || attempt.status === 'paused') {
           if (op.status === 'prepared') {

@@ -141,6 +141,7 @@ export function createMergeQueue(deps) {
   let started = false;
   let stopped = false;
   let draining = false;
+  let drain_requested = false;
   // Set when a durable write the loop DEPENDS ON did not stick. It ends the
   // current drain instead of retrying in place; the queue is durable, so the
   // next kick or restart resumes it.
@@ -941,8 +942,24 @@ export function createMergeQueue(deps) {
   }
 
   /**
-   * Run the queue to exhaustion. Re-entrant-safe: a second call while the loop
-   * runs is a no-op, because the loop always re-reads the head.
+   * Remember a requested pass even when one is already running. The active
+   * drain must not await itself, so an in-flight caller gets an immediate
+   * promise while the latch makes the current owner run the next pass.
+   *
+   * @returns {Promise<void>}
+   */
+  function requestDrain() {
+    if (stopped) {
+      return Promise.resolve();
+    }
+    drain_requested = true;
+    return drain();
+  }
+
+  /**
+   * Run requested passes serially. Each pass re-reads the durable head; a kick
+   * arriving during an await sets the latch and is consumed only after the
+   * current pass exits its halt condition.
    *
    * @returns {Promise<void>}
    */
@@ -951,38 +968,46 @@ export function createMergeQueue(deps) {
       return;
     }
     draining = true;
-    halted = false;
-    halted_on_head = null;
-    halted_on_completion = null;
     try {
-      // A queue resumed after a restart can hold EXTERNAL rows, and those exist
-      // only in the in-memory registry the ws overlay reads — empty until
-      // something scans bd. Without this, a restored external head would be
-      // refused as `not_in_pr_wait` and dropped, which is exactly the resume the
-      // durable queue exists to guarantee (UI-5v7d §2 / UI-7agi 정합).
-      if (!prepared && typeof deps.prepare === 'function') {
-        prepared = true;
-        try {
-          await deps.prepare();
-        } catch (err) {
-          log('merge queue prepare failed: %o', err);
+      while (!stopped && drain_requested) {
+        drain_requested = false;
+        halted = false;
+        halted_on_head = null;
+        halted_on_completion = null;
+        // A queue resumed after a restart can hold EXTERNAL rows, and those
+        // exist only in the in-memory registry the ws overlay reads — empty
+        // until something scans bd. Without this, a restored external head
+        // would be refused as `not_in_pr_wait` and dropped, which is exactly
+        // the resume the durable queue exists to guarantee (UI-5v7d §2 /
+        // UI-7agi 정합).
+        if (!prepared && typeof deps.prepare === 'function') {
+          prepared = true;
+          try {
+            await deps.prepare();
+          } catch (err) {
+            log('merge queue prepare failed: %o', err);
+          }
         }
-      }
-      while (!stopped && !halted) {
-        const head = headEntry();
-        if (!head) {
-          break;
+        while (!stopped && !halted) {
+          const head = headEntry();
+          if (!head) {
+            break;
+          }
+          active = head.bead_id;
+          notify();
+          await processItem(head.bead_id);
         }
-        active = head.bead_id;
-        notify();
-        await processItem(head.bead_id);
       }
     } catch (err) {
       log('merge queue drain failed: %o', err);
     } finally {
+      const rerun = !stopped && drain_requested;
       draining = false;
       active = null;
       notify();
+      if (rerun) {
+        void drain();
+      }
     }
   }
 
@@ -1017,14 +1042,14 @@ export function createMergeQueue(deps) {
           //   expired: no observation is coming, so the halt would be
           //   permanent. Resuming sends it down the unobserved branch, which
           //   dequeues it.
-          if (!draining && halted_on_head) {
+          if (halted_on_head) {
             const head = halted_on_head;
             if (!queuedEntry(head) || headSha(head) || !pollerObserves(head)) {
               halted_on_head = null;
-              void drain();
+              void requestDrain();
             }
           }
-          if (!draining && halted_on_completion) {
+          if (halted_on_completion) {
             const root_bead_id = halted_on_completion;
             const intent = completionIntent(root_bead_id);
             if (
@@ -1033,12 +1058,12 @@ export function createMergeQueue(deps) {
               intent.phase === 'merging'
             ) {
               halted_on_completion = null;
-              void drain();
+              void requestDrain();
             }
           }
         });
       }
-      void drain();
+      void requestDrain();
     },
 
     /**
@@ -1048,6 +1073,7 @@ export function createMergeQueue(deps) {
     stop() {
       stopped = true;
       started = false;
+      drain_requested = false;
       if (unsubscribe) {
         try {
           unsubscribe();
@@ -1066,7 +1092,7 @@ export function createMergeQueue(deps) {
      * @returns {Promise<void>}
      */
     kick() {
-      return drain();
+      return requestDrain();
     },
 
     /**

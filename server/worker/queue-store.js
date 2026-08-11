@@ -385,8 +385,7 @@
  * @property {boolean} conflict - True when rejected by a revision mismatch.
  * @property {Queue} queue - Current snapshot (new on success, unchanged else).
  * @property {string} [reason] - Why a non-conflict rejection happened, for the
- * ops that distinguish causes (only {@link createQueueStore}'s `dismissAttempt`
- * today); absent when there is nothing to distinguish.
+ * ops that distinguish causes; absent when there is nothing to distinguish.
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
@@ -442,6 +441,15 @@ const COMPLETION_OP_STATUSES = [
   'observed',
   'consumed'
 ];
+
+const COMPLETION_RESUME_LEAF_STATUSES = new Set([
+  'running',
+  'paused',
+  'done',
+  'failed',
+  'orphaned',
+  'stopped'
+]);
 
 const MAX_REPAIR_SESSIONS = 2;
 
@@ -1731,6 +1739,183 @@ export function createQueueStore(options = {}) {
         next.attempts[attempt.attempt_id] = makeAttempt(attempt);
         return true;
       });
+    },
+
+    /**
+     * Append a resumed completion attempt and transfer the active operation to
+     * it in the same CAS-guarded persist. A caller cannot reconstruct the
+     * completion identity: it is copied from the active source record only.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, source_attempt_id: string, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
+     * @returns {QueueOpResult}
+     */
+    appendResumedCompletionAttempt(workspace, input) {
+      const { expected_revision, source_attempt_id, attempt } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        const source = next.attempts[source_attempt_id];
+        if (
+          !source ||
+          !attempt ||
+          typeof attempt.attempt_id !== 'string' ||
+          attempt.attempt_id.length === 0 ||
+          Object.hasOwn(next.attempts, attempt.attempt_id) ||
+          attempt.resumed_from !== source_attempt_id ||
+          attempt.bead_id !== source.bead_id ||
+          attempt.repo !== source.repo ||
+          attempt.target_base !== source.target_base ||
+          attempt.base_oid !== source.base_oid ||
+          attempt.runner !== source.runner ||
+          attempt.session_id != null ||
+          attempt.pid != null ||
+          attempt.status !== 'running' ||
+          (source.status !== 'paused' &&
+            source.status !== 'failed' &&
+            source.status !== 'orphaned') ||
+          Object.values(next.attempts).some(
+            (item) => item.resumed_from === source_attempt_id
+          ) ||
+          typeof source.completion_root_id !== 'string' ||
+          typeof source.completion_op_id !== 'string' ||
+          (source.completion_mode !== 'resume_root' &&
+            source.completion_mode !== 'dispatch_repair') ||
+          source.completion_failure_key === null
+        ) {
+          return false;
+        }
+        const intent = next.completion_intents[source.completion_root_id];
+        const active_op = intent?.active_op;
+        if (
+          !intent ||
+          intent.phase !== 'repairing' ||
+          !active_op ||
+          active_op.op_id !== source.completion_op_id ||
+          active_op.attempt_id !== source_attempt_id ||
+          active_op.kind !== source.completion_mode ||
+          !sameCompletionFailureKey(
+            active_op.failure_key,
+            source.completion_failure_key
+          ) ||
+          (attempt.completion_root_id != null &&
+            attempt.completion_root_id !== source.completion_root_id) ||
+          (attempt.completion_op_id != null &&
+            attempt.completion_op_id !== source.completion_op_id) ||
+          (attempt.completion_mode != null &&
+            attempt.completion_mode !== source.completion_mode) ||
+          (attempt.completion_failure_key != null &&
+            !sameCompletionFailureKey(
+              normalizeCompletionFailureKey(attempt.completion_failure_key),
+              source.completion_failure_key
+            ))
+        ) {
+          return false;
+        }
+        next.attempts[attempt.attempt_id] = makeAttempt({
+          ...attempt,
+          completion_root_id: source.completion_root_id,
+          completion_op_id: source.completion_op_id,
+          completion_mode: source.completion_mode,
+          completion_failure_key: source.completion_failure_key
+        });
+        active_op.attempt_id = attempt.attempt_id;
+        return true;
+      });
+    },
+
+    /**
+     * Adopt one pre-fix resume chain whose descendants lost completion
+     * metadata. Only an unbranched, acyclic, same-Bead chain ending in a known
+     * attempt status is safe to bind to the active operation.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    adoptLegacyCompletionAttempt(workspace, input) {
+      const { root_bead_id } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const active_op = intent?.active_op;
+        const source = active_op
+          ? next.attempts[active_op.attempt_id || '']
+          : null;
+        if (
+          !intent ||
+          !active_op ||
+          (active_op.kind !== 'resume_root' &&
+            active_op.kind !== 'dispatch_repair') ||
+          !source ||
+          source.status !== 'paused'
+        ) {
+          reason = 'legacy_adoption_not_applicable';
+          return false;
+        }
+        if (
+          source.completion_root_id !== root_bead_id ||
+          source.completion_op_id !== active_op.op_id ||
+          source.completion_mode !== active_op.kind ||
+          !sameCompletionFailureKey(
+            source.completion_failure_key,
+            active_op.failure_key
+          )
+        ) {
+          reason = 'legacy_lineage_ambiguous';
+          return false;
+        }
+
+        let leaf = source;
+        const visited = new Set([source.attempt_id]);
+        while (true) {
+          const children = Object.values(next.attempts).filter(
+            (item) => item.resumed_from === leaf.attempt_id
+          );
+          if (children.length === 0) {
+            break;
+          }
+          if (children.length !== 1) {
+            reason = 'legacy_lineage_ambiguous';
+            return false;
+          }
+          const child = children[0];
+          if (
+            visited.has(child.attempt_id) ||
+            child.bead_id !== source.bead_id ||
+            (child.completion_root_id !== null &&
+              child.completion_root_id !== root_bead_id) ||
+            (child.completion_op_id !== null &&
+              child.completion_op_id !== active_op.op_id) ||
+            (child.completion_mode !== null &&
+              child.completion_mode !== active_op.kind) ||
+            (child.completion_failure_key !== null &&
+              !sameCompletionFailureKey(
+                child.completion_failure_key,
+                active_op.failure_key
+              ))
+          ) {
+            reason = 'legacy_lineage_ambiguous';
+            return false;
+          }
+          visited.add(child.attempt_id);
+          leaf = child;
+        }
+        if (leaf === source) {
+          reason = 'legacy_descendant_missing';
+          return false;
+        }
+        if (!COMPLETION_RESUME_LEAF_STATUSES.has(leaf.status || '')) {
+          reason = 'legacy_lineage_ambiguous';
+          return false;
+        }
+        leaf.completion_root_id = root_bead_id;
+        leaf.completion_op_id = active_op.op_id;
+        leaf.completion_mode = active_op.kind;
+        leaf.completion_failure_key = { ...active_op.failure_key };
+        active_op.attempt_id = leaf.attempt_id;
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
     },
 
     /**

@@ -110,6 +110,35 @@ describe('worker/queue-store', () => {
     };
   }
 
+  /**
+   * @param {any} store
+   * @param {string} [attempt_id]
+   */
+  function beginPausedCompletionAttempt(store, attempt_id = 'att-repair-1') {
+    const op = resumeRepairOp('op-1', attempt_id);
+    const result = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op,
+      attempt: {
+        attempt_id,
+        bead_id: 'UI-root',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'codex',
+        status: 'paused',
+        completion_root_id: 'UI-root',
+        completion_op_id: op.op_id,
+        completion_mode: op.kind,
+        completion_failure_key: op.failure_key
+      }
+    });
+    if (!result.ok) {
+      throw new Error('completion attempt setup failed');
+    }
+    return op;
+  }
+
   test('place persists and round-trips through a fresh store instance', () => {
     const a = createQueueStore();
     const r = a.place(WS, {
@@ -402,6 +431,218 @@ describe('worker/queue-store', () => {
       bead_id: 'UI-root',
       resumed_from: 'att-root'
     });
+  });
+
+  test('transfers completion ownership while appending a resumed child', () => {
+    const store = storeWithCompletionIntent();
+    const op = beginPausedCompletionAttempt(store);
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.appendResumedCompletionAttempt(WS, {
+      expected_revision: revision,
+      source_attempt_id: 'att-repair-1',
+      attempt: {
+        attempt_id: 'att-repair-2',
+        bead_id: 'UI-root',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'codex',
+        resumed_from: 'att-repair-1',
+        status: 'running'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      repair_sessions_used: 1,
+      active_op: { op_id: op.op_id, attempt_id: 'att-repair-2' }
+    });
+    expect(result.queue.attempts['att-repair-2']).toMatchObject({
+      completion_root_id: 'UI-root',
+      completion_op_id: op.op_id,
+      completion_mode: op.kind,
+      completion_failure_key: op.failure_key
+    });
+  });
+
+  test('rejects a resumed completion child with mismatched lineage', () => {
+    const store = storeWithCompletionIntent();
+    beginPausedCompletionAttempt(store);
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.appendResumedCompletionAttempt(WS, {
+      expected_revision: revision,
+      source_attempt_id: 'att-repair-1',
+      attempt: {
+        attempt_id: 'att-repair-2',
+        bead_id: 'UI-root',
+        repo: '/repo',
+        target_base: 'develop',
+        base_oid: 'b'.repeat(40),
+        runner: 'codex',
+        resumed_from: 'att-repair-1',
+        status: 'running'
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.revision).toBe(revision);
+    expect(result.queue.attempts['att-repair-2']).toBeUndefined();
+    expect(
+      result.queue.completion_intents['UI-root'].active_op?.attempt_id
+    ).toBe('att-repair-1');
+  });
+
+  test('rejects a second child for one completion attempt', () => {
+    const store = storeWithCompletionIntent();
+    beginPausedCompletionAttempt(store);
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'legacy-child',
+        bead_id: 'UI-root',
+        resumed_from: 'att-repair-1'
+      }
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.appendResumedCompletionAttempt(WS, {
+      expected_revision: revision,
+      source_attempt_id: 'att-repair-1',
+      attempt: {
+        attempt_id: 'att-repair-2',
+        bead_id: 'UI-root',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'codex',
+        resumed_from: 'att-repair-1',
+        status: 'running'
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.revision).toBe(revision);
+    expect(result.queue.attempts['att-repair-2']).toBeUndefined();
+  });
+
+  test('rejects a stale completion transfer revision', () => {
+    const store = storeWithCompletionIntent();
+    beginPausedCompletionAttempt(store);
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.appendResumedCompletionAttempt(WS, {
+      expected_revision: revision - 1,
+      source_attempt_id: 'att-repair-1',
+      attempt: {
+        attempt_id: 'att-repair-2',
+        bead_id: 'UI-root',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'codex',
+        resumed_from: 'att-repair-1',
+        status: 'running'
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.conflict).toBe(true);
+    expect(result.queue.revision).toBe(revision);
+    expect(result.queue.attempts['att-repair-2']).toBeUndefined();
+  });
+
+  test('adopts a unique legacy completion descendant', () => {
+    const store = storeWithCompletionIntent();
+    const op = beginPausedCompletionAttempt(store);
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'legacy-child',
+        bead_id: 'UI-root',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'codex',
+        resumed_from: 'att-repair-1',
+        status: 'done'
+      }
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.adoptLegacyCompletionAttempt(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      repair_sessions_used: 1,
+      active_op: { op_id: op.op_id, attempt_id: 'legacy-child' }
+    });
+    expect(result.queue.attempts['legacy-child']).toMatchObject({
+      completion_root_id: 'UI-root',
+      completion_op_id: op.op_id,
+      completion_mode: op.kind,
+      completion_failure_key: op.failure_key
+    });
+  });
+
+  test('rejects a branched legacy completion lineage', () => {
+    const store = storeWithCompletionIntent();
+    beginPausedCompletionAttempt(store);
+    for (const attempt_id of ['legacy-a', 'legacy-b']) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: {
+          attempt_id,
+          bead_id: 'UI-root',
+          resumed_from: 'att-repair-1',
+          status: 'done'
+        }
+      });
+    }
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.adoptLegacyCompletionAttempt(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('legacy_lineage_ambiguous');
+    expect(result.queue.revision).toBe(revision);
+    expect(
+      result.queue.completion_intents['UI-root'].active_op?.attempt_id
+    ).toBe('att-repair-1');
+  });
+
+  test('rejects a cyclic legacy completion lineage', () => {
+    const store = storeWithCompletionIntent();
+    beginPausedCompletionAttempt(store);
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'legacy-child',
+        bead_id: 'UI-root',
+        resumed_from: 'att-repair-1',
+        status: 'paused'
+      }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-repair-1',
+      patch: { resumed_from: 'legacy-child' }
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.adoptLegacyCompletionAttempt(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('legacy_lineage_ambiguous');
+    expect(result.queue.revision).toBe(revision);
   });
 
   test('rejects a third repair session after two consumed operations', () => {
