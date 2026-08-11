@@ -286,6 +286,8 @@
  * @property {Record<string, DiscardOperation>} discard_operations - Durable
  * discard sagas keyed by operation id. A missing legacy field normalizes to an
  * empty map; every non-done operation fences its bead from other drivers.
+ * @property {Record<string, DeploymentReconcile>} reconcile - Durable
+ * deployment reconciliation state keyed by parent Bead.
  * @property {LastDeploy|null} last_deploy - The workspace's most recent
  * post-merge deployment (worker-deploy-hook §3). ONE record, overwritten each
  * time — the question it answers is "is the running service the merged code?",
@@ -316,6 +318,28 @@
  * @property {number} resolution_rounds - How many conflict-resolution rounds
  * this item has already consumed. Persisted so the 2-round cap survives the
  * deploy restart a merge can trigger.
+ * @property {ResolutionWait|InvalidResolutionWait|null} resolution - Durable
+ * binding between this queue item and one exact conflict-resolution attempt.
+ */
+/**
+ * @typedef {'waiting'|'yielded'|'ready'} ResolutionWaitState
+ */
+/**
+ * @typedef {Object} ResolutionWait
+ * @property {string} attempt_id
+ * @property {string} subject_bead_id
+ * @property {number} deadline_at
+ * @property {ResolutionWaitState} state
+ * @property {number|null} yielded_at
+ * @property {number|null} settled_at
+ */
+/**
+ * Canonical fail-closed marker for a persisted non-null resolution record that
+ * cannot safely be interpreted as an attempt binding.
+ *
+ * @typedef {Object} InvalidResolutionWait
+ * @property {'invalid'} state
+ * @property {'resolution_wait_invalid'} reason
  */
 /**
  * One auto-merge exclusion record (UI-yk55 §3.2).
@@ -351,6 +375,30 @@
  * preserved output (UI-l53x §1). Present only for a SYNCHRONOUS deploy that
  * reached the runner and whose log file completed; a detached deploy has no
  * observable output at all, and a pre-run refusal never opened a file.
+ * @property {'workspace'|'managed'} [adapter]
+ * @property {string} [attempt_id]
+ * @property {string} [merged_floor_sha]
+ * @property {string} [receipt_path]
+ * @property {string} [receipt_digest]
+ */
+/**
+ * @typedef {Object} DeploymentReconcile
+ * @property {string} bead_id
+ * @property {string} attempt_id
+ * @property {string} target_base
+ * @property {string} merged_floor_sha
+ * @property {string|null} candidate_sha
+ * @property {'workspace'|'managed'|null} adapter
+ * @property {'queued'|'pinned'|'verifying'|'deploying'|'readback'|'complete'|'failed'} stage
+ * @property {string|null} receipt_path
+ * @property {string|null} receipt_digest
+ * @property {string|null} receipt_attempt_id
+ * @property {string|null} receipt_floor_sha
+ * @property {number} retry_count
+ * @property {number|null} retry_at
+ * @property {string|null} last_retryable_reason
+ * @property {{ reason: string, detail: string|null, step: string|null, at: number }|null} terminal_failure
+ * @property {number} updated_at
  */
 /**
  * @typedef {'gating'|'repairing'|'waiting_repair_pr'|'merging'|'cleaning'|'paused'|'needs_human'|'completed'} CompletionPhase
@@ -846,6 +894,17 @@ function normalizeSlots(value) {
  */
 const DEPLOY_OUTCOMES = ['deployed', 'launched', 'failed'];
 
+/** @type {string[]} */
+const RECONCILE_STAGES = [
+  'queued',
+  'pinned',
+  'verifying',
+  'deploying',
+  'readback',
+  'complete',
+  'failed'
+];
+
 /**
  * @returns {Queue}
  */
@@ -868,6 +927,7 @@ function emptyQueue() {
     auto_merge_skips: {},
     completion_intents: {},
     discard_operations: {},
+    reconcile: {},
     last_deploy: null
   };
 }
@@ -906,10 +966,64 @@ function normalizeMergeSkips(raw) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {ResolutionWait|InvalidResolutionWait|null}
+ */
+function normalizeResolutionWait(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    return { state: 'invalid', reason: 'resolution_wait_invalid' };
+  }
+  const attempt_id = value.attempt_id;
+  const subject_bead_id = value.subject_bead_id;
+  const deadline_at = value.deadline_at;
+  const state = value.state;
+  const yielded_at = value.yielded_at;
+  const settled_at = value.settled_at;
+  const valid_state =
+    state === 'waiting' || state === 'yielded' || state === 'ready';
+  const valid_yielded_at =
+    yielded_at === null ||
+    (typeof yielded_at === 'number' && Number.isFinite(yielded_at));
+  const valid_settled_at =
+    settled_at === null ||
+    (typeof settled_at === 'number' && Number.isFinite(settled_at));
+  const valid_transition =
+    (state === 'waiting' && yielded_at === null && settled_at === null) ||
+    (state === 'yielded' &&
+      typeof yielded_at === 'number' &&
+      settled_at === null) ||
+    (state === 'ready' && typeof settled_at === 'number');
+  if (
+    typeof attempt_id !== 'string' ||
+    attempt_id.length === 0 ||
+    typeof subject_bead_id !== 'string' ||
+    subject_bead_id.length === 0 ||
+    typeof deadline_at !== 'number' ||
+    !Number.isFinite(deadline_at) ||
+    !valid_state ||
+    !valid_yielded_at ||
+    !valid_settled_at ||
+    !valid_transition
+  ) {
+    return { state: 'invalid', reason: 'resolution_wait_invalid' };
+  }
+  return {
+    attempt_id,
+    subject_bead_id,
+    deadline_at,
+    state,
+    yielded_at,
+    settled_at
+  };
+}
+
+/**
  * Normalize the durable merge queue: entry order is the FIFO order, a bead may
- * appear once, and a missing/unusable `resolution_rounds` reads as 0 (which is
- * what "no round consumed yet" means, and is the safe direction — it can only
- * grant rounds the cap would otherwise have to guess about).
+ * appear once, a missing/unusable `resolution_rounds` reads as 0, and every
+ * legacy entry receives an explicit null resolution binding.
  *
  * @param {unknown} arr
  * @returns {MergeQueueEntry[]}
@@ -936,7 +1050,8 @@ function normalizeMergeQueue(arr) {
         Number.isFinite(raw.resolution_rounds) &&
         raw.resolution_rounds > 0
           ? Math.floor(raw.resolution_rounds)
-          : 0
+          : 0,
+      resolution: normalizeResolutionWait(raw.resolution)
     });
   }
   return out;
@@ -1447,6 +1562,7 @@ function normalizeQueue(raw) {
   q.auto_merge_skips = normalizeMergeSkips(raw.auto_merge_skips);
   q.completion_intents = normalizeCompletionIntents(raw.completion_intents);
   q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
+  q.reconcile = normalizeReconcile(raw.reconcile);
   // A queue.json written before the deploy hook simply has no key → null, which
   // reads as "this workspace has never deployed" (worker-deploy-hook §3). A
   // record carrying an outcome outside the vocabulary is dropped the same way:
@@ -1484,7 +1600,119 @@ function normalizeLastDeploy(value) {
   if (typeof value.log_path === 'string' && value.log_path.length > 0) {
     record.log_path = value.log_path;
   }
+  if (value.adapter === 'workspace' || value.adapter === 'managed') {
+    record.adapter = value.adapter;
+  }
+  if (typeof value.attempt_id === 'string' && value.attempt_id.length > 0) {
+    record.attempt_id = value.attempt_id;
+  }
+  if (/^[0-9a-f]{40}$/i.test(String(value.merged_floor_sha || ''))) {
+    record.merged_floor_sha = String(value.merged_floor_sha).toLowerCase();
+  }
+  if (typeof value.receipt_path === 'string' && value.receipt_path.length > 0) {
+    record.receipt_path = value.receipt_path;
+  }
+  if (/^[0-9a-f]{64}$/i.test(String(value.receipt_digest || ''))) {
+    record.receipt_digest = String(value.receipt_digest).toLowerCase();
+  }
   return record;
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {Record<string, DeploymentReconcile>}
+ */
+function normalizeReconcile(raw) {
+  /** @type {Record<string, DeploymentReconcile>} */
+  const out = {};
+  if (!isRecord(raw)) {
+    return out;
+  }
+  for (const [bead_id, value] of Object.entries(raw)) {
+    if (
+      !isRecord(value) ||
+      value.bead_id !== bead_id ||
+      typeof value.attempt_id !== 'string' ||
+      value.attempt_id.length === 0 ||
+      typeof value.target_base !== 'string' ||
+      value.target_base.length === 0 ||
+      !/^[0-9a-f]{40}$/i.test(String(value.merged_floor_sha || '')) ||
+      !RECONCILE_STAGES.includes(String(value.stage || ''))
+    ) {
+      continue;
+    }
+    out[bead_id] = {
+      bead_id,
+      attempt_id: value.attempt_id,
+      target_base: value.target_base,
+      merged_floor_sha: String(value.merged_floor_sha).toLowerCase(),
+      candidate_sha: /^[0-9a-f]{40}$/i.test(String(value.candidate_sha || ''))
+        ? String(value.candidate_sha).toLowerCase()
+        : null,
+      adapter:
+        value.adapter === 'workspace' || value.adapter === 'managed'
+          ? value.adapter
+          : null,
+      stage: /** @type {DeploymentReconcile['stage']} */ (value.stage),
+      receipt_path:
+        typeof value.receipt_path === 'string' && value.receipt_path.length > 0
+          ? value.receipt_path
+          : null,
+      receipt_digest: /^[0-9a-f]{64}$/i.test(String(value.receipt_digest || ''))
+        ? String(value.receipt_digest).toLowerCase()
+        : null,
+      receipt_attempt_id:
+        typeof value.receipt_attempt_id === 'string' &&
+        value.receipt_attempt_id.length > 0
+          ? value.receipt_attempt_id
+          : null,
+      receipt_floor_sha: /^[0-9a-f]{40}$/i.test(
+        String(value.receipt_floor_sha || '')
+      )
+        ? String(value.receipt_floor_sha).toLowerCase()
+        : null,
+      retry_count:
+        typeof value.retry_count === 'number' &&
+        Number.isInteger(value.retry_count) &&
+        value.retry_count >= 0
+          ? value.retry_count
+          : 0,
+      retry_at:
+        typeof value.retry_at === 'number' && Number.isFinite(value.retry_at)
+          ? value.retry_at
+          : null,
+      last_retryable_reason:
+        typeof value.last_retryable_reason === 'string' &&
+        value.last_retryable_reason.length > 0
+          ? value.last_retryable_reason
+          : null,
+      terminal_failure:
+        isRecord(value.terminal_failure) &&
+        typeof value.terminal_failure.reason === 'string'
+          ? {
+              reason: value.terminal_failure.reason,
+              detail:
+                typeof value.terminal_failure.detail === 'string'
+                  ? value.terminal_failure.detail
+                  : null,
+              step:
+                typeof value.terminal_failure.step === 'string'
+                  ? value.terminal_failure.step
+                  : null,
+              at:
+                typeof value.terminal_failure.at === 'number'
+                  ? value.terminal_failure.at
+                  : 0
+            }
+          : null,
+      updated_at:
+        typeof value.updated_at === 'number' &&
+        Number.isFinite(value.updated_at)
+          ? value.updated_at
+          : 0
+    };
+  }
+  return out;
 }
 
 /**
@@ -1563,6 +1791,20 @@ function enqueueMember(q, bead_id, external) {
 }
 
 /**
+ * Insert runnable work immediately before the durable yielded suffix.
+ *
+ * @param {Queue} q
+ * @param {MergeQueueEntry} entry
+ */
+function insertRunnableMergeEntry(q, entry) {
+  const yielded_at = q.merge_queue.findIndex(
+    (item) => item.resolution?.state === 'yielded'
+  );
+  const index = yielded_at < 0 ? q.merge_queue.length : yielded_at;
+  q.merge_queue.splice(index, 0, entry);
+}
+
+/**
  * Resume one paused saga without discarding its current subject or lineage.
  * The merged SHA is the durable discriminator between pre-merge gating and
  * post-merge cleanup replay.
@@ -1582,7 +1824,11 @@ function resumeCompletionIntentRecord(next, root_bead_id) {
   }
   intent.phase = intent.subject.merged_sha === null ? 'gating' : 'cleaning';
   if (!next.merge_queue.some((entry) => entry.bead_id === root_bead_id)) {
-    next.merge_queue.push({ bead_id: root_bead_id, resolution_rounds: 0 });
+    insertRunnableMergeEntry(next, {
+      bead_id: root_bead_id,
+      resolution_rounds: 0,
+      resolution: null
+    });
   }
   if (next.auto_merge_skips[root_bead_id]) {
     delete next.auto_merge_skips[root_bead_id];
@@ -1786,6 +2032,248 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, target_base: string, merged_floor_sha: string }} input
+     * @returns {QueueOpResult}
+     */
+    enqueueReconcile(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const { bead_id, attempt_id, target_base, merged_floor_sha } = input;
+        if (
+          typeof bead_id !== 'string' ||
+          bead_id.length === 0 ||
+          typeof attempt_id !== 'string' ||
+          attempt_id.length === 0 ||
+          typeof target_base !== 'string' ||
+          target_base.length === 0 ||
+          !/^[0-9a-f]{40}$/i.test(String(merged_floor_sha || ''))
+        ) {
+          return false;
+        }
+        const current = next.reconcile[bead_id];
+        if (
+          current &&
+          current.stage !== 'complete' &&
+          current.stage !== 'failed'
+        ) {
+          return false;
+        }
+        next.reconcile[bead_id] = {
+          bead_id,
+          attempt_id,
+          target_base,
+          merged_floor_sha: merged_floor_sha.toLowerCase(),
+          candidate_sha: null,
+          adapter: null,
+          stage: 'queued',
+          receipt_path: null,
+          receipt_digest: null,
+          receipt_attempt_id: null,
+          receipt_floor_sha: null,
+          retry_count: 0,
+          retry_at: null,
+          last_retryable_reason: null,
+          terminal_failure: null,
+          updated_at: now()
+        };
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, stage: 'queued'|'pinned'|'verifying'|'deploying'|'readback', candidate_sha?: string, adapter?: 'workspace'|'managed' }} input
+     * @returns {QueueOpResult}
+     */
+    advanceReconcile(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const current = next.reconcile[input.bead_id];
+        if (
+          !current ||
+          current.attempt_id !== input.attempt_id ||
+          current.stage === 'complete' ||
+          current.stage === 'failed' ||
+          !RECONCILE_STAGES.includes(input.stage)
+        ) {
+          return false;
+        }
+        if (
+          input.candidate_sha !== undefined &&
+          !/^[0-9a-f]{40}$/i.test(input.candidate_sha)
+        ) {
+          return false;
+        }
+        if (
+          current.candidate_sha !== null &&
+          input.candidate_sha !== undefined &&
+          current.candidate_sha !== input.candidate_sha.toLowerCase()
+        ) {
+          return false;
+        }
+        if (
+          current.adapter !== null &&
+          input.adapter !== undefined &&
+          current.adapter !== input.adapter
+        ) {
+          return false;
+        }
+        if (
+          input.adapter !== undefined &&
+          input.adapter !== 'workspace' &&
+          input.adapter !== 'managed'
+        ) {
+          return false;
+        }
+        current.stage = input.stage;
+        if (input.candidate_sha !== undefined) {
+          current.candidate_sha = input.candidate_sha.toLowerCase();
+        }
+        if (input.adapter !== undefined) {
+          current.adapter = input.adapter;
+        }
+        current.retry_at = null;
+        current.updated_at = now();
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, reason: string, retry_at: number }} input
+     * @returns {QueueOpResult}
+     */
+    retryReconcile(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const current = next.reconcile[input.bead_id];
+        if (
+          !current ||
+          current.attempt_id !== input.attempt_id ||
+          current.stage === 'complete' ||
+          current.stage === 'failed' ||
+          typeof input.reason !== 'string' ||
+          input.reason.length === 0 ||
+          typeof input.retry_at !== 'number' ||
+          !Number.isFinite(input.retry_at)
+        ) {
+          return false;
+        }
+        current.retry_count += 1;
+        current.retry_at = input.retry_at;
+        current.last_retryable_reason = input.reason;
+        current.updated_at = now();
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, receipt_path: string, receipt_digest: string, receipt_attempt_id?: string, receipt_floor_sha?: string, mirror_last_deploy?: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    completeReconcile(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const current = next.reconcile[input.bead_id];
+        if (
+          !current ||
+          current.attempt_id !== input.attempt_id ||
+          current.stage === 'complete' ||
+          current.stage === 'failed' ||
+          current.candidate_sha === null ||
+          current.adapter === null ||
+          typeof input.receipt_path !== 'string' ||
+          input.receipt_path.length === 0 ||
+          !/^[0-9a-f]{64}$/i.test(String(input.receipt_digest || ''))
+        ) {
+          return false;
+        }
+        if (
+          input.receipt_floor_sha !== undefined &&
+          !/^[0-9a-f]{40}$/i.test(input.receipt_floor_sha)
+        ) {
+          return false;
+        }
+        if (
+          input.receipt_attempt_id !== undefined &&
+          (typeof input.receipt_attempt_id !== 'string' ||
+            input.receipt_attempt_id.length === 0)
+        ) {
+          return false;
+        }
+        const prior = next.last_deploy;
+        const record =
+          input.mirror_last_deploy === false
+            ? null
+            : buildLastDeploy(
+                {
+                  outcome: 'deployed',
+                  reason: null,
+                  bead_id: current.bead_id,
+                  base_sha: current.candidate_sha,
+                  adapter: current.adapter,
+                  attempt_id: current.attempt_id,
+                  merged_floor_sha: current.merged_floor_sha,
+                  receipt_path: input.receipt_path,
+                  receipt_digest: input.receipt_digest,
+                  ...(prior?.bead_id === current.bead_id &&
+                  prior.base_sha === current.candidate_sha
+                    ? { detail: prior.detail, log_path: prior.log_path }
+                    : {})
+                },
+                now()
+              );
+        if (input.mirror_last_deploy !== false && !record) {
+          return false;
+        }
+        current.stage = 'complete';
+        current.receipt_path = input.receipt_path;
+        current.receipt_digest = input.receipt_digest.toLowerCase();
+        current.receipt_attempt_id =
+          input.receipt_attempt_id || current.attempt_id;
+        current.receipt_floor_sha = (
+          input.receipt_floor_sha || current.merged_floor_sha
+        ).toLowerCase();
+        current.retry_at = null;
+        current.terminal_failure = null;
+        current.updated_at = now();
+        if (record) {
+          next.last_deploy = record;
+        }
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, reason: string, detail?: string|null, step?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    failReconcile(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const current = next.reconcile[input.bead_id];
+        if (
+          !current ||
+          current.attempt_id !== input.attempt_id ||
+          current.stage === 'complete' ||
+          current.stage === 'failed' ||
+          typeof input.reason !== 'string' ||
+          input.reason.length === 0
+        ) {
+          return false;
+        }
+        current.stage = 'failed';
+        current.retry_at = null;
+        current.terminal_failure = {
+          reason: input.reason,
+          detail: typeof input.detail === 'string' ? input.detail : null,
+          step: typeof input.step === 'string' ? input.step : null,
+          at: now()
+        };
+        current.updated_at = now();
+        return true;
+      });
+    },
+
+    /**
      * Place a bead into the waiting `queue` at an index, removing it from every
      * other lane (dedupe). CAS-guarded.
      *
@@ -1927,6 +2415,56 @@ export function createQueueStore(options = {}) {
           return false;
         }
         next.attempts[attempt.attempt_id] = makeAttempt(attempt);
+        return true;
+      });
+    },
+
+    /**
+     * Atomically prerecord a conflict-resolution attempt and bind its owning
+     * merge queue item before the resolver process can outlive the driver.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, queue_bead_id: string, subject_bead_id: string, wait_ms: number, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
+     * @returns {QueueOpResult}
+     */
+    appendResolutionAttempt(workspace, input) {
+      const {
+        expected_revision,
+        queue_bead_id,
+        subject_bead_id,
+        wait_ms,
+        attempt
+      } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === queue_bead_id
+        );
+        if (
+          !entry ||
+          entry.resolution !== null ||
+          !attempt ||
+          typeof attempt.attempt_id !== 'string' ||
+          attempt.attempt_id.length === 0 ||
+          Object.hasOwn(next.attempts, attempt.attempt_id) ||
+          attempt.bead_id !== subject_bead_id ||
+          attempt.conflict_resolution !== true ||
+          typeof attempt.started_at !== 'number' ||
+          !Number.isFinite(attempt.started_at) ||
+          typeof wait_ms !== 'number' ||
+          !Number.isFinite(wait_ms) ||
+          wait_ms < 0
+        ) {
+          return false;
+        }
+        next.attempts[attempt.attempt_id] = makeAttempt(attempt);
+        entry.resolution = {
+          attempt_id: attempt.attempt_id,
+          subject_bead_id,
+          deadline_at: attempt.started_at + wait_ms,
+          state: 'waiting',
+          yielded_at: null,
+          settled_at: null
+        };
         return true;
       });
     },
@@ -3206,7 +3744,11 @@ export function createQueueStore(options = {}) {
           if (next.merge_queue.some((e) => e.bead_id === bead_id)) {
             continue;
           }
-          next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+          insertRunnableMergeEntry(next, {
+            bead_id,
+            resolution_rounds: 0,
+            resolution: null
+          });
           added += 1;
         }
         return added > 0 || cleared > 0;
@@ -3263,9 +3805,10 @@ export function createQueueStore(options = {}) {
         }
         next.completion_intents[root_bead_id] = normalized;
         if (!next.merge_queue.some((entry) => entry.bead_id === root_bead_id)) {
-          next.merge_queue.push({
+          insertRunnableMergeEntry(next, {
             bead_id: root_bead_id,
-            resolution_rounds: 0
+            resolution_rounds: 0,
+            resolution: null
           });
         }
         return true;
@@ -3623,6 +4166,114 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Re-adopt one historical time-only conflict terminal as the same root
+     * merge saga. The terminal evidence, merge operation, queue position, and
+     * optional live resolver wait change in one persist, so startup cannot
+     * clear the terminal and crash before restoring its owner.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, subject: CompletionSubject, op: CompletionOperation, resolution_attempt_id?: string|null, resolution_rounds: number, wait_ms: number }} input
+     * @returns {QueueOpResult}
+     */
+    adoptLegacyResolutionTimeout(workspace, input) {
+      const {
+        root_bead_id,
+        subject,
+        op,
+        resolution_attempt_id,
+        resolution_rounds,
+        wait_ms
+      } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const terminal = intent?.terminal_reason;
+        const normalized_subject = normalizeCompletionSubject(
+          subject,
+          root_bead_id
+        );
+        const normalized_op = normalizeCompletionOperation(op);
+        const expected_repair =
+          intent?.subject.role === 'repair' ? intent.subject.bead_id : null;
+        const active_op = intent?.active_op;
+        const active_failure = active_op?.failure_key;
+        const active_op_consistent =
+          active_op === null ||
+          (active_op?.kind === 'merge_subject' &&
+            active_op.attempt_id === null &&
+            active_op.repair_bead_id === expected_repair &&
+            active_op.status !== 'consumed' &&
+            active_failure?.stage === 'merge_subject' &&
+            active_failure.subject_sha === intent?.subject.head_sha &&
+            active_failure.base_sha === intent.subject.base_sha);
+        const attempt =
+          typeof resolution_attempt_id === 'string'
+            ? next.attempts[resolution_attempt_id]
+            : null;
+        const attempt_started_at =
+          typeof attempt?.started_at === 'number' &&
+          Number.isFinite(attempt.started_at)
+            ? attempt.started_at
+            : null;
+        if (
+          !intent ||
+          intent.phase !== 'needs_human' ||
+          terminal?.reason !== 'resolution_timeout' ||
+          terminal.stage !== 'conflict_resolution' ||
+          !normalized_subject ||
+          normalized_subject.role !== intent.subject.role ||
+          normalized_subject.bead_id !== intent.subject.bead_id ||
+          !normalized_op ||
+          normalized_op.kind !== 'merge_subject' ||
+          normalized_op.attempt_id !== null ||
+          normalized_op.repair_bead_id !== expected_repair ||
+          normalized_op.status !== 'prepared' ||
+          normalized_op.failure_key.stage !== 'merge_subject' ||
+          normalized_op.failure_key.subject_sha !==
+            normalized_subject.head_sha ||
+          normalized_op.failure_key.base_sha !== normalized_subject.base_sha ||
+          !active_op_consistent ||
+          next.merge_queue.some((entry) => entry.bead_id === root_bead_id) ||
+          typeof resolution_rounds !== 'number' ||
+          !Number.isInteger(resolution_rounds) ||
+          resolution_rounds < 0 ||
+          typeof wait_ms !== 'number' ||
+          !Number.isFinite(wait_ms) ||
+          wait_ms < 0 ||
+          (resolution_attempt_id != null &&
+            (typeof resolution_attempt_id !== 'string' ||
+              resolution_attempt_id.length === 0 ||
+              !attempt ||
+              attempt.bead_id !== intent.subject.bead_id ||
+              attempt.conflict_resolution !== true ||
+              (attempt.status !== 'running' && attempt.status !== 'paused') ||
+              attempt_started_at === null))
+        ) {
+          return false;
+        }
+        intent.phase = 'merging';
+        intent.subject = normalized_subject;
+        intent.active_op = active_op || normalized_op;
+        intent.terminal_reason = null;
+        insertRunnableMergeEntry(next, {
+          bead_id: root_bead_id,
+          resolution_rounds,
+          resolution: attempt
+            ? {
+                attempt_id: attempt.attempt_id,
+                subject_bead_id: attempt.bead_id,
+                deadline_at:
+                  /** @type {number} */ (attempt_started_at) + wait_ms,
+                state: 'waiting',
+                yielded_at: null,
+                settled_at: null
+              }
+            : null
+        });
+        return true;
+      });
+    },
+
+    /**
      * Queue every eligible row the AUTO enroller (or the lane's toggle click)
      * judged, applying the exclusion filter and the record prune inside the SAME
      * mutation (UI-yk55 §3.2/§3.2.1).
@@ -3698,7 +4349,11 @@ export function createQueueStore(options = {}) {
                 changed += 1;
               }
               if (!next.merge_queue.some((item) => item.bead_id === bead_id)) {
-                next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+                insertRunnableMergeEntry(next, {
+                  bead_id,
+                  resolution_rounds: 0,
+                  resolution: null
+                });
                 changed += 1;
               }
               continue;
@@ -3718,7 +4373,11 @@ export function createQueueStore(options = {}) {
             }
             next.completion_intents[bead_id] = normalized;
             if (!next.merge_queue.some((item) => item.bead_id === bead_id)) {
-              next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+              insertRunnableMergeEntry(next, {
+                bead_id,
+                resolution_rounds: 0,
+                resolution: null
+              });
             }
             if (next.auto_merge_skips[bead_id]) {
               delete next.auto_merge_skips[bead_id];
@@ -3740,7 +4399,11 @@ export function createQueueStore(options = {}) {
           if (next.merge_queue.some((e) => e.bead_id === bead_id)) {
             continue;
           }
-          next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+          insertRunnableMergeEntry(next, {
+            bead_id,
+            resolution_rounds: 0,
+            resolution: null
+          });
           changed += 1;
         }
         return changed > 0;
@@ -3755,12 +4418,10 @@ export function createQueueStore(options = {}) {
      * {@link toggleAutoAdvance} — the click starts an irreversible chain of
      * merges, so it must not apply against a snapshot the user never saw.
      *
-     * `clear_waiting` empties the waiting merge queue in the SAME mutation
-     * (UI-yk55 §5.2). It has to be one write: a flag persisted without the
-     * queue leaves a process that restarts in between with `auto_merge = false`
-     * and a full queue, and the boot-resume driver would merge every item a user
-     * had just pressed stop on. `keep` names the item being merged right now,
-     * which is never removable — its merge already reached GitHub.
+     * `clear_waiting` removes ordinary queued work in the SAME mutation while
+     * preserving the active item and every durable resolution journal. Turning
+     * automation off pauses new merge/update/resolver effects; it does not
+     * cancel a resolver already running or erase its late settlement identity.
      *
      * @param {string} workspace
      * @param {{ expected_revision: number, on: boolean, clear_waiting?: boolean, keep?: string|null }} input
@@ -3772,7 +4433,7 @@ export function createQueueStore(options = {}) {
         next.auto_merge = !!on;
         if (clear_waiting) {
           next.merge_queue = next.merge_queue.filter(
-            (e) => e.bead_id === (keep || null)
+            (e) => e.bead_id === (keep || null) || e.resolution !== null
           );
         }
         return true;
@@ -3812,6 +4473,188 @@ export function createQueueStore(options = {}) {
         next.merge_queue = next.merge_queue.filter(
           (e) => e.bead_id !== bead_id
         );
+        return true;
+      });
+    },
+
+    /**
+     * Bind one queue item to the exact conflict-resolution attempt that is
+     * already durable in the scheduler journal.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, subject_bead_id: string, attempt_id: string, wait_ms: number }} input
+     * @returns {QueueOpResult}
+     */
+    bindResolutionWait(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        const attempt = next.attempts[input.attempt_id];
+        if (
+          !entry ||
+          entry.resolution != null ||
+          typeof input.subject_bead_id !== 'string' ||
+          input.subject_bead_id.length === 0 ||
+          typeof input.attempt_id !== 'string' ||
+          input.attempt_id.length === 0 ||
+          typeof input.wait_ms !== 'number' ||
+          !Number.isFinite(input.wait_ms) ||
+          input.wait_ms < 0 ||
+          !attempt ||
+          attempt.attempt_id !== input.attempt_id ||
+          attempt.bead_id !== input.subject_bead_id ||
+          attempt.conflict_resolution !== true ||
+          typeof attempt.started_at !== 'number' ||
+          !Number.isFinite(attempt.started_at)
+        ) {
+          return false;
+        }
+        entry.resolution = {
+          attempt_id: input.attempt_id,
+          subject_bead_id: input.subject_bead_id,
+          deadline_at: attempt.started_at + input.wait_ms,
+          state: 'waiting',
+          yielded_at: null,
+          settled_at: null
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Relinquish only this item's queue turn while its resolver keeps running.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, subject_bead_id: string, attempt_id: string, yielded_at: number }} input
+     * @returns {QueueOpResult}
+     */
+    yieldResolutionWait(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const index = next.merge_queue.findIndex(
+          (item) => item.bead_id === input.bead_id
+        );
+        const entry = index < 0 ? null : next.merge_queue[index];
+        const resolution = entry?.resolution;
+        if (
+          !entry ||
+          !resolution ||
+          resolution.state !== 'waiting' ||
+          resolution.attempt_id !== input.attempt_id ||
+          resolution.subject_bead_id !== input.subject_bead_id ||
+          typeof input.yielded_at !== 'number' ||
+          !Number.isFinite(input.yielded_at)
+        ) {
+          return false;
+        }
+        resolution.state = 'yielded';
+        resolution.yielded_at = input.yielded_at;
+        next.merge_queue.splice(index, 1);
+        next.merge_queue.push(entry);
+        return true;
+      });
+    },
+
+    /**
+     * Promote one exact settled wait ahead of ordinary runnable work while
+     * preserving the currently active merge turn.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, subject_bead_id: string, attempt_id: string, settled_at: number, active_bead_id: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    settleResolutionWait(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        const resolution = entry?.resolution;
+        if (
+          !entry ||
+          !resolution ||
+          (resolution.state !== 'waiting' && resolution.state !== 'yielded') ||
+          resolution.attempt_id !== input.attempt_id ||
+          resolution.subject_bead_id !== input.subject_bead_id ||
+          typeof input.settled_at !== 'number' ||
+          !Number.isFinite(input.settled_at)
+        ) {
+          return false;
+        }
+        resolution.state = 'ready';
+        resolution.settled_at = input.settled_at;
+
+        const indexed = next.merge_queue.map((item, index) => ({
+          item,
+          index
+        }));
+        const active = indexed.find(
+          ({ item }) =>
+            item.bead_id === input.active_bead_id &&
+            item.resolution?.state !== 'ready'
+        );
+        const ready = indexed
+          .filter(({ item }) => item.resolution?.state === 'ready')
+          .sort((left, right) => {
+            const left_resolution = left.item.resolution;
+            const right_resolution = right.item.resolution;
+            const left_at =
+              left_resolution?.state === 'ready'
+                ? (left_resolution.settled_at ?? 0)
+                : 0;
+            const right_at =
+              right_resolution?.state === 'ready'
+                ? (right_resolution.settled_at ?? 0)
+                : 0;
+            return left_at - right_at || left.index - right.index;
+          })
+          .map(({ item }) => item);
+        const runnable = indexed
+          .filter(
+            ({ item }) =>
+              item !== active?.item &&
+              item.resolution?.state !== 'ready' &&
+              item.resolution?.state !== 'yielded'
+          )
+          .map(({ item }) => item);
+        const yielded = indexed
+          .filter(({ item }) => item.resolution?.state === 'yielded')
+          .map(({ item }) => item);
+        next.merge_queue = [
+          ...(active ? [active.item] : []),
+          ...ready,
+          ...runnable,
+          ...yielded
+        ];
+        return true;
+      });
+    },
+
+    /**
+     * Consume one ready attempt identity, optionally charging its completed
+     * conflict round. A duplicate event finds no ready identity and is a no-op.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, consume_round: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    consumeResolutionWait(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        const resolution = entry?.resolution;
+        if (
+          !entry ||
+          !resolution ||
+          resolution.state !== 'ready' ||
+          resolution.attempt_id !== input.attempt_id
+        ) {
+          return false;
+        }
+        if (input.consume_round === true) {
+          entry.resolution_rounds += 1;
+        }
+        entry.resolution = null;
         return true;
       });
     },

@@ -546,16 +546,21 @@ export function activityBadge(gate_badge, activity) {
  * code. An unknown step still renders (by its raw name) rather than blanking the
  * row.
  *
- * @type {Array<{ step: string, label: string }>}
+ * @type {Array<{ step: string, label: string, index: number }>}
  */
 const MERGE_STEPS = [
-  { step: 'merging', label: '머지 중' },
-  { step: 'base_sync', label: 'base 동기화' },
-  { step: 'post_merge_verify', label: '머지 후 검증' },
-  { step: 'deploy', label: '배포' },
-  { step: 'child_sweep', label: '자식 정리' },
-  { step: 'branch_cleanup', label: '브랜치 정리' },
-  { step: 'parent_close', label: '부모 close' }
+  { step: 'merging', label: '머지 중', index: 1 },
+  { step: 'base_sync', label: 'base 동기화', index: 2 },
+  { step: 'reconcile_queued', label: '정리 준비', index: 2 },
+  { step: 'candidate_pinned', label: '배포 후보 고정', index: 3 },
+  { step: 'post_merge_verify', label: '머지 후 검증', index: 4 },
+  { step: 'reconcile_verify', label: '정리 중 · 검증', index: 4 },
+  { step: 'deploy', label: '배포', index: 5 },
+  { step: 'reconcile_deploy', label: '정리 중 · 배포', index: 5 },
+  { step: 'reconcile_readback', label: '정리 중 · readback', index: 6 },
+  { step: 'child_sweep', label: '자식 정리', index: 7 },
+  { step: 'branch_cleanup', label: '브랜치 정리', index: 8 },
+  { step: 'parent_close', label: '부모 close', index: 9 }
 ];
 
 /**
@@ -574,17 +579,49 @@ export function mergeStepView(step) {
   if (typeof step !== 'string' || step.length === 0) {
     return null;
   }
-  const total = MERGE_STEPS.length;
-  const i = MERGE_STEPS.findIndex((s) => s.step === step);
-  if (i < 0) {
+  const total = 9;
+  const found = MERGE_STEPS.find((s) => s.step === step);
+  if (!found) {
     return { label: step, index: 0, total, percent: 0 };
   }
   return {
-    label: MERGE_STEPS[i].label,
-    index: i + 1,
+    label: found.label,
+    index: found.index,
     total,
-    percent: Math.round(((i + 1) / total) * 100)
+    percent: Math.round((found.index / total) * 100)
   };
+}
+
+/**
+ * @param {Record<string, any>|null|undefined} record
+ * @returns {{ activity: null, merge_progress: { step: string, started_at: number } }|null}
+ */
+function reconcileActivity(record) {
+  if (!record || (record.adapter !== 'managed' && record.stage !== 'queued')) {
+    return null;
+  }
+  const step =
+    record.stage === 'queued'
+      ? 'reconcile_queued'
+      : record.stage === 'pinned'
+        ? 'candidate_pinned'
+        : record.stage === 'verifying'
+          ? 'reconcile_verify'
+          : record.stage === 'deploying'
+            ? 'reconcile_deploy'
+            : record.stage === 'readback'
+              ? 'reconcile_readback'
+              : null;
+  return step
+    ? {
+        activity: null,
+        merge_progress: {
+          step,
+          started_at:
+            typeof record.updated_at === 'number' ? record.updated_at : 0
+        }
+      }
+    : null;
 }
 
 /**
@@ -617,6 +654,33 @@ export function mergeFailureText(reason) {
       return '머지 오류';
     default:
       return reason;
+  }
+}
+
+/**
+ * Turn the optional durable merge-queue wait into one nonterminal badge.
+ * Unknown and malformed states stay invisible: the server owns fail-closed
+ * execution, while this projection must remain compatible with older snapshots.
+ *
+ * @param {import('../../data/worker-queue-store.js').ResolutionProjection|null|undefined} resolution
+ * @returns {{ badge: string, live: boolean }|null}
+ */
+function resolutionView(resolution) {
+  if (!resolution || typeof resolution !== 'object') {
+    return null;
+  }
+  switch (resolution.state) {
+    case 'waiting':
+      return { badge: '충돌 해소 중', live: true };
+    case 'yielded':
+      return {
+        badge: '충돌 해소 계속 중 · 완료 후 우선 머지',
+        live: true
+      };
+    case 'ready':
+      return { badge: '충돌 해소 완료 · 재검증 대기', live: false };
+    default:
+      return null;
   }
 }
 
@@ -778,7 +842,7 @@ function completionView(completion) {
  * durable lane membership an external row does not have), and a MERGED row
  * becomes a [정리] button because nothing auto-cleans it. 충돌 해소 is NOT one
  * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
- * @param {{ position: number, active: boolean, failure: string|null }|null} [merge_queue]
+ * @param {{ position: number, active: boolean, failure: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
  * `position` while it waits (0 = not queued), whether the driver is on it right
  * now, and the reason it was skipped, if any.
@@ -819,16 +883,22 @@ function prWaitRow(
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
   const recovery = completionView(completion);
+  const resolution = resolutionView(
+    merge_queue ? merge_queue.resolution : null
+  );
   /** @type {string[]} */
   const badges = [];
   if (external) {
     badges.push('세션');
   }
-  const conflict_badge = conflict_session
-    ? conflict_session === 'running'
-      ? '충돌 해소 중'
-      : '충돌 해소 일시정지'
-    : null;
+  const conflict_badge =
+    conflict_session === 'paused'
+      ? '충돌 해소 일시정지'
+      : resolution
+        ? resolution.badge
+        : conflict_session === 'running'
+          ? '충돌 해소 중'
+          : null;
   const substituted = activityBadge(
     external && gate && gate.tier === 'closed_unmerged'
       ? '닫힘'
@@ -924,12 +994,12 @@ function prWaitRow(
     // state — the row draws that one with the breathing dot and no colour
     // emphasis, because nobody has to act on it.
     live_badge:
-      conflict_session === 'running'
-        ? conflict_badge
-        : conflict_badge
-          ? // A paused resolution session is a settled state, not live work:
-            // the badge shows, the breathing dot does not.
-            null
+      conflict_session === 'paused'
+        ? // A paused resolution session is a settled state, not live work:
+          // the badge shows, the breathing dot does not.
+          null
+        : resolution?.live || conflict_session === 'running'
+          ? conflict_badge
           : substituted.live
             ? substituted.label
             : null,
@@ -1805,6 +1875,8 @@ export function createWorkerView(mount_element, options = {}) {
     // server that does not send it simply renders the settled badges.
     /** @type {Record<string, any>} */
     const pr_activity = q.pr_activity || {};
+    /** @type {Record<string, any>} */
+    const reconcile = q.deployment_reconcile || q.reconcile || {};
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
@@ -1816,7 +1888,15 @@ export function createWorkerView(mount_element, options = {}) {
         step: rec && rec.step ? rec.step : '',
         reason: rec && rec.reason ? rec.reason : '',
         // Fail-quiet: a record written before the field existed has none.
-        detail: rec && typeof rec.detail === 'string' ? rec.detail : null,
+        detail:
+          reconcile[bead_id]?.adapter === 'managed' &&
+          (rec?.detail === 'checkout_dirty' ||
+            rec?.detail === 'checkout_not_on_base' ||
+            rec?.detail === 'head_not_base_sha')
+            ? null
+            : rec && typeof rec.detail === 'string'
+              ? rec.detail
+              : null,
         output_tail:
           rec && typeof rec.output_tail === 'string' && rec.output_tail
             ? rec.output_tail
@@ -2299,9 +2379,12 @@ export function createWorkerView(mount_element, options = {}) {
     const merge_queue = Array.isArray(q.merge_queue) ? q.merge_queue : [];
     /** @type {Map<string, number>} */
     const merge_positions = new Map();
+    /** @type {Map<string, import('../../data/worker-queue-store.js').ResolutionProjection|null|undefined>} */
+    const merge_resolutions = new Map();
     merge_queue.forEach((/** @type {any} */ e, /** @type {number} */ i) => {
       if (e && typeof e.bead_id === 'string') {
         merge_positions.set(e.bead_id, i + 1);
+        merge_resolutions.set(e.bead_id, e.resolution);
       }
     });
     const merge_state = q.merge_queue_state || { active: null, failures: {} };
@@ -2467,7 +2550,8 @@ export function createWorkerView(mount_element, options = {}) {
             sumAttemptUsage(q.attempts || {}, e.bead_id),
             // The server's own progress wins; the local pending only covers the
             // window before the first snapshot carrying it arrives.
-            pr_activity[e.bead_id] ||
+            reconcileActivity(reconcile[e.bead_id]) ||
+              pr_activity[e.bead_id] ||
               (merge_pending.has(e.bead_id)
                 ? { activity: null, merge_progress: { step: 'merging' } }
                 : null),
@@ -2477,7 +2561,8 @@ export function createWorkerView(mount_element, options = {}) {
             {
               position: merge_positions.get(e.bead_id) || 0,
               active: merge_state.active === e.bead_id,
-              failure: merge_failures[e.bead_id] || null
+              failure: merge_failures[e.bead_id] || null,
+              resolution: merge_resolutions.get(e.bead_id)
             },
             // Also overlay-only (UI-w0hi §3): a durable row has no field here and
             // must keep the pre-existing behaviour, so absence reads as present.

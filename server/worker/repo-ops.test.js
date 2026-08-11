@@ -94,8 +94,51 @@ describe('worker/repo-ops — the two-rung ladder (UI-kfl4 §4.2)', () => {
       value: {
         cmd: ['bdui-shared', 'restart'],
         timeout_ms: 600000,
-        detached: true
+        detached: true,
+        adapter: 'workspace'
       }
+    });
+  });
+
+  test('resolves a managed deploy declaration with a candidate-relative command', async () => {
+    const gitRun = gitOf({
+      [SHA]:
+        '[deploy]\nadapter = "managed"\ncmd = ["./scripts/deploy.sh", "--apply"]\n'
+    });
+
+    const r = await resolveDeployAt({
+      gitRun,
+      repo: REPO,
+      sha: SHA,
+      config_map: CONFIG_DEPLOY
+    });
+
+    expect(r).toEqual({
+      state: 'resolved',
+      source: 'declaration',
+      value: {
+        cmd: ['./scripts/deploy.sh', '--apply'],
+        timeout_ms: 600000,
+        detached: false,
+        adapter: 'managed'
+      }
+    });
+  });
+
+  test('treats the legacy config rung as a workspace adapter', async () => {
+    const gitRun = gitOf({ [SHA]: 'base = "main"\n' });
+
+    const r = await resolveDeployAt({
+      gitRun,
+      repo: REPO,
+      sha: SHA,
+      config_map: CONFIG_DEPLOY
+    });
+
+    expect(r).toMatchObject({
+      state: 'resolved',
+      source: 'config',
+      value: { adapter: 'workspace' }
     });
   });
 
@@ -290,6 +333,50 @@ describe('worker/repo-ops — invalid never falls through (UI-kfl4 §4.2)', () =
     expect(r).toMatchObject({
       state: 'invalid',
       detail: 'deploy:detached_not_a_boolean'
+    });
+  });
+
+  test.each([
+    [
+      'absolute executable',
+      '/usr/local/bin/deploy',
+      'managed_cmd_not_relative'
+    ],
+    ['release escape', '../scripts/deploy.sh', 'managed_cmd_escapes_release']
+  ])('rejects a managed %s', async (_label, executable, detail) => {
+    const gitRun = gitOf({
+      [SHA]: `[deploy]\nadapter = "managed"\ncmd = ["${executable}"]\n`
+    });
+
+    const r = await resolveDeployAt({
+      gitRun,
+      repo: REPO,
+      sha: SHA,
+      config_map: CONFIG_DEPLOY
+    });
+
+    expect(r).toMatchObject({
+      state: 'invalid',
+      detail: `deploy:${detail}`
+    });
+  });
+
+  test('rejects a detached managed adapter', async () => {
+    const gitRun = gitOf({
+      [SHA]:
+        '[deploy]\nadapter = "managed"\ncmd = ["./deploy.sh"]\ndetached = true\n'
+    });
+
+    const r = await resolveDeployAt({
+      gitRun,
+      repo: REPO,
+      sha: SHA,
+      config_map: CONFIG_DEPLOY
+    });
+
+    expect(r).toMatchObject({
+      state: 'invalid',
+      detail: 'deploy:managed_detached_forbidden'
     });
   });
 

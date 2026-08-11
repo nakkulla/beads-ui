@@ -3768,6 +3768,27 @@ describe('scheduler resume (spec §1)', () => {
     expect(prompt).not.toContain('실패로 남았다');
   });
 
+  test('preserves conflict-resolution lineage across a paused resume', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(
+      env.store,
+      'resolver-paused',
+      resumablePrior({
+        status: 'paused',
+        cause: null,
+        conflict_resolution: true
+      })
+    );
+
+    const res = await env.scheduler.resume(WS, 'resolver-paused');
+
+    expect(res.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
+        .conflict_resolution
+    ).toBe(true);
+  });
+
   test('a failed resume is announced as a failure', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedAttempt(env.store, 'f1', resumablePrior());
@@ -4110,6 +4131,27 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(env.scheduler.runningCount()).toBe(2);
   });
 
+  test('defers a queue-origin resolver while another worker bead is active', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'other-running',
+        bead_id: 'A1',
+        status: 'running'
+      }
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1', {
+      queue_bead_id: 'B1',
+      wait_ms: 100
+    });
+
+    expect(res).toEqual({ ok: false, reason: 'worker_sessions_busy' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
   test('refuses no_session_id when no attempt of the bead captured one', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedDoneAttempt(env.store, { session_id: null });
@@ -4356,6 +4398,26 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
 
     expect(res.ok).toBe(true);
     expect(env.scheduler.runningCount()).toBe(2);
+  });
+
+  test('defers a queue-origin external resolver while another worker bead is paused', async () => {
+    const env = extEnv();
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'other-paused',
+        bead_id: 'A1',
+        status: 'paused'
+      }
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main', {
+      queue_bead_id: 'X1',
+      wait_ms: 100
+    });
+
+    expect(res).toEqual({ ok: false, reason: 'worker_sessions_busy' });
+    expect(env.runner.spawnOrder).toEqual([]);
   });
 
   test('refuses bead_running while an attempt of the bead is running', async () => {
@@ -9431,6 +9493,92 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
     expect(attempt.task_prompt).toBe(sent.task_prompt);
     expect(attempt.task_prompt).toContain('git merge origin/main');
     expect(attempt.system_prompt).toBe(sent.system_prompt);
+  });
+
+  test('prerecords the resolver and merge wait before launch', async () => {
+    const recorder = makeRecordingClaudeRunner();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      makeRunner: recorder.factory
+    });
+    seedPrWait(env.store, 'B1');
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-B1',
+      patch: {
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-orig',
+        finished_at: 50
+      }
+    });
+    env.store.enqueueMerge(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      entries: [{ bead_id: 'B1' }]
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1', {
+      queue_bead_id: 'B1',
+      wait_ms: 100
+    });
+
+    expect(res.ok).toBe(true);
+    const q = env.store.snapshot(WS);
+    expect(q.merge_queue[0].resolution).toEqual({
+      attempt_id: res.attempt_id,
+      subject_bead_id: 'B1',
+      deadline_at: 1100,
+      state: 'waiting',
+      yielded_at: null,
+      settled_at: null
+    });
+    expect(q.attempts[/** @type {string} */ (res.attempt_id)]).toMatchObject({
+      bead_id: 'B1',
+      status: 'running',
+      conflict_resolution: true,
+      started_at: 1000
+    });
+  });
+
+  test('fans out the terminal resolver transition for wait reconciliation', async () => {
+    const notifyQueueChanged = vi.fn();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      notifyQueueChanged
+    });
+    seedPrWait(env.store, 'B1');
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-B1',
+      patch: {
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-orig',
+        finished_at: 50
+      }
+    });
+    env.store.enqueueMerge(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      entries: [{ bead_id: 'B1' }]
+    });
+    const res = await env.scheduler.resolveConflict(WS, 'B1', {
+      queue_bead_id: 'B1',
+      wait_ms: 100
+    });
+    notifyQueueChanged.mockClear();
+
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts[/** @type {string} */ (res.attempt_id)].status).toBe(
+      'done'
+    );
+    expect(q.merge_queue[0].resolution).toMatchObject({
+      attempt_id: res.attempt_id
+    });
+    expect(notifyQueueChanged).toHaveBeenCalledWith(WS);
   });
 
   test('records the disposition prompts and its own guard variant', async () => {

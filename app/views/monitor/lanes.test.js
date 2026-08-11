@@ -490,22 +490,22 @@ describe('monitor top bar (UI-qrfo §6)', () => {
 });
 
 describe('monitor lane ordering (ported from buildSections, UI-nprg)', () => {
-  test('orders running items by last_event_at descending', () => {
+  test('orders running items by started_at ascending by default', () => {
     const lanes = buildLanes(
       [
         workspace({
           attempts: {
             a1: {
               attempt_id: 'a1',
-              bead_id: 'A-quiet',
+              bead_id: 'A-new',
               status: 'running',
-              last_event_at: NOW - 90_000
+              started_at: NOW - 1_000
             },
             a2: {
               attempt_id: 'a2',
-              bead_id: 'A-live',
+              bead_id: 'A-old',
               status: 'running',
-              last_event_at: NOW - 1_000
+              started_at: NOW - 90_000
             }
           }
         })
@@ -513,7 +513,74 @@ describe('monitor lane ordering (ported from buildSections, UI-nprg)', () => {
       []
     );
 
-    expect(ids(lanes.running)).toEqual(['A-live', 'A-quiet']);
+    expect(ids(lanes.running)).toEqual(['A-old', 'A-new']);
+  });
+
+  test('puts missing running start times last with a bead id tie-break', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            a1: { attempt_id: 'a1', bead_id: 'A-z', status: 'running' },
+            a2: {
+              attempt_id: 'a2',
+              bead_id: 'A-started',
+              status: 'running',
+              started_at: NOW
+            },
+            a3: { attempt_id: 'a3', bead_id: 'A-a', status: 'running' }
+          }
+        })
+      ],
+      []
+    );
+
+    expect(ids(lanes.running)).toEqual(['A-started', 'A-a', 'A-z']);
+  });
+
+  test('groups running items by workspace state order in repo mode', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-first',
+              status: 'running',
+              started_at: NOW - 90_000
+            }
+          }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          attempts: {
+            b1: {
+              attempt_id: 'b1',
+              bead_id: 'B-later',
+              status: 'running',
+              started_at: NOW - 1_000
+            }
+          }
+        }),
+        workspace({
+          root_dir: '/tmp/example/repo-unknown',
+          name: 'repo-unknown',
+          attempts: {
+            c1: {
+              attempt_id: 'c1',
+              bead_id: 'C-unknown',
+              status: 'running',
+              started_at: NOW - 120_000
+            }
+          }
+        })
+      ],
+      [state({ root_dir: WS_B, name: 'repo-b' }), state()],
+      { running_sort: 'repo' }
+    );
+
+    expect(ids(lanes.running)).toEqual(['B-later', 'A-first', 'C-unknown']);
   });
 
   test('orders done items by completion time descending across repos', () => {
@@ -882,6 +949,29 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
     expect(lanes.runnable[0].labels).toEqual(['worker-ineligible']);
   });
 
+  test('carries review progress fields onto the runnable item', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-3',
+              title: '실행 가능',
+              spec_reviewer: 'codex',
+              plan_state: 'approved'
+            }
+          ]
+        })
+      ],
+      []
+    );
+
+    expect([
+      lanes.runnable[0].spec_reviewer,
+      lanes.runnable[0].plan_state
+    ]).toEqual(['codex', 'approved']);
+  });
+
   test('leaves the runnable labels empty when the server sends none', () => {
     const lanes = buildLanes(
       [workspace({ runnable: [{ bead_id: 'A-3', title: '실행 가능' }] })],
@@ -1227,6 +1317,112 @@ describe('monitor 카드 문법 (UI-gwkl §2.2)', () => {
     render(monitorRunnableCard(lanes.runnable[0]), mount);
 
     expect(mount.querySelectorAll('.ctl-chip--label').length).toBe(0);
+  });
+
+  test('renders the spec reviewer chip on a runnable card', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-3',
+              title: '실행 가능',
+              route: 'spec_backed',
+              spec_reviewer: 'codex',
+              plan_state: 'none'
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+    expect(mount.querySelector('.mon-c__review')?.textContent).toBe(
+      'spec:codex'
+    );
+  });
+
+  test('dims a skipped spec reviewer chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-3',
+              title: '실행 가능',
+              route: 'spec_backed',
+              spec_reviewer: 'skipped',
+              plan_state: 'none'
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+    expect(mount.querySelector('.mon-c__review')?.classList).toContain(
+      'mon-c__review--dim'
+    );
+  });
+
+  for (const [plan_state, label, dimmed] of [
+    ['approved', 'plan ✓', false],
+    ['authored', 'plan ✎', false],
+    ['none', 'plan –', true]
+  ]) {
+    test(`renders the ${plan_state} full-plan chip`, () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            runnable: [
+              {
+                bead_id: 'A-3',
+                title: '실행 가능',
+                route: 'full_plan',
+                spec_reviewer: 'codex',
+                plan_state
+              }
+            ]
+          })
+        ],
+        [state()]
+      );
+
+      render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+      const chip = mount.querySelector('.mon-c__plan');
+      expect([
+        chip?.textContent,
+        chip?.classList.contains('mon-c__review--dim')
+      ]).toEqual([label, dimmed]);
+    });
+  }
+
+  test('omits the plan chip from a spec-backed runnable card', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-3',
+              title: '실행 가능',
+              route: 'spec_backed',
+              spec_reviewer: 'codex',
+              plan_state: 'none'
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+    expect(mount.querySelector('.mon-c__plan')).toBe(null);
   });
 });
 

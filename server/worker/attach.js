@@ -978,6 +978,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     runVerify: (/** @type {any} */ input) =>
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
     resolveDeploy,
+    locks: runtime.locks,
     notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
     // The SAME notifier the scheduler pushes attempt transitions through, so
     // the merge that closes a bead lands in the same channel as its start and
@@ -995,7 +996,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createMergeQueue({
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
-      merge: (/** @type {string} */ bead_id) => prActions.merge(bead_id),
+      merge: (/** @type {string} */ bead_id) =>
+        prActions.merge(bead_id, { allow_conflict_resolution: false }),
+      probeMergeability: (/** @type {string} */ bead_id) =>
+        prActions.probeMergeability(bead_id),
+      dispatchConflict: (
+        /** @type {string} */ bead_id,
+        /** @type {{ head_sha: string, base_ref: string|null }} */ approved,
+        /** @type {{ queue_bead_id: string, wait_ms: number }} */ resolution_wait
+      ) => prActions.dispatchConflict(bead_id, approved, resolution_wait),
       observePr: (/** @type {string} */ bead_id) => prActions.prState(bead_id),
       // The head an auto-merge exclusion is pinned to (UI-yk55 §3.3). A cache
       // read only — `observePr` returns `{state, error}` and cannot serve it.
@@ -1006,6 +1015,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // poller never looks at can never end.
       isExternalRow: (/** @type {string} */ bead_id) =>
         !!runtime.externalPrs.get(keyFor(workspace_root), bead_id),
+      conflictDispatchBlocked: (
+        /** @type {string} */ queue_bead_id,
+        /** @type {string} */ subject_bead_id
+      ) =>
+        scheduler.queueConflictBlocked(
+          keyFor(workspace_root),
+          queue_bead_id,
+          subject_bead_id
+        ),
       onCompletionResult: (
         /** @type {string} */ root_bead_id,
         /** @type {string} */ subject_bead_id,
@@ -1090,16 +1108,16 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       subscribeQueueChanged: onQueueChanged,
       observe: resolvedCompletionActionDriver.observe,
       onAction: resolvedCompletionActionDriver.onAction,
+      adoptLegacy: resolvedCompletionActionDriver.adoptLegacyTimeout,
       onAttemptSettled: resolvedCompletionActionDriver.onAttemptSettled,
       log
     });
   completionIntent = resolvedCompletionIntent;
 
   // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
-  // BUILT here but never started here — `initWorkerRuntime` starts it only when
-  // a real subscriber-count provider is wired, so a test that constructs an
-  // attachment can never reach `gh`. Its default subscriber count is 0, which
-  // by itself already makes every pass a no-op.
+  // BUILT here but started by `initWorkerRuntime`. Its default subscriber count
+  // is 0, while durable auto-merge/merge-queue/reconcile demand can still wake
+  // it after restart.
   const prPoller = createPrPoller({
     workspace: keyFor(workspace_root),
     repo,
@@ -1113,7 +1131,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     gitRun,
     // The externally-observed MERGED trigger routes into the SAME cleanup the
     // button runs — one implementation, two triggers (worker-phase2 §6).
-    onMerged: (bead_id) => prActions.cleanupObservedMerge(bead_id),
+    onMerged: (bead_id, merge_sha) =>
+      prActions.cleanupObservedMerge(bead_id, merge_sha),
     onDiscardObservation: (bead_id) => discardCoordinator.observeBead(bead_id),
     // The external registry rides the poller's own subscriber gate and cadence
     // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:
@@ -1290,9 +1309,14 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   }
   try {
     att.autoMerge.start();
-    if (att.runtime.queueStore.snapshot(key).auto_merge === true) {
+    const queue = att.runtime.queueStore.snapshot(key);
+    const reconcile_pending = Object.values(queue.reconcile || {}).some(
+      (record) =>
+        record && record.stage !== 'complete' && record.stage !== 'failed'
+    );
+    if (queue.auto_merge === true || reconcile_pending) {
       Promise.resolve(att.prPoller.tick()).catch((err) => {
-        log('auto-merge boot observation failed for %s: %o', key, err);
+        log('worker boot PR observation failed for %s: %o', key, err);
       });
     }
   } catch (err) {
@@ -1311,9 +1335,9 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
  * timer (worker-detached-session-reconcile §2). Idempotent per workspace.
  *
  * `getSubscriberCount` is what turns the PR poller on (worker-phase2 §4): the
- * caller supplies the live worker-queue subscriber count for a workspace, and
- * the poller queries `gh` only while that is positive. Omitting it leaves every
- * poller armed-but-silent, which is what keeps tests off the network.
+ * caller supplies the live worker-queue subscriber count for a workspace. The
+ * poller also honors durable auto-merge/merge-queue/reconcile demand; omitting
+ * the provider stays silent only when none of those internal consumers exist.
  *
  * @param {{ workspaces: string[], getSubscriberCount?: (workspace: string) => number }} input
  * @returns {ReturnType<typeof createWorkerAttachment>[]}

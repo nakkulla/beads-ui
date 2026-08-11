@@ -8,11 +8,21 @@
  */
 import { createHash } from 'node:crypto';
 import { isRepairableCleanupFailure } from './completion-repair-policy.js';
+import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
 
 const OUTPUT_TAIL_MAX = 4_000;
 const CHECKS_MAX = 100;
 const CHECK_FIELD_MAX = 200;
 const REASON_MAX = 500;
+const CONFLICT_RESOLUTION_FAILURES = new Set([
+  'resolution_wait_invalid',
+  'resolution_attempt_missing',
+  'resolution_lineage_ambiguous',
+  'resolution_subject_mismatch',
+  'resolution_attempt_not_conflict',
+  'resolution_attempt_status_invalid',
+  'resolution_ready_lineage_active'
+]);
 
 /**
  * Build the stable identity of one failure observed at pinned subject/base
@@ -193,6 +203,7 @@ export function decideCompletionAction(input) {
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
  *   observe?: (root_bead_id: string, intent: any, queue: any) => Promise<CompletionFact>|CompletionFact,
  *   onAction?: (root_bead_id: string, action: CompletionAction, intent: any) => Promise<void>|void,
+ *   adoptLegacy?: (root_bead_id: string, intent: any, queue: any) => Promise<boolean>|boolean,
  *   onAttemptSettled?: (input: any) => Promise<void>|void,
  *   log?: (...args: any[]) => void
  * }} deps
@@ -201,6 +212,7 @@ export function createCompletionIntentCoordinator(deps) {
   const workspace = deps.workspace;
   const observe = deps.observe || (() => ({ state: 'waiting' }));
   const onAction = deps.onAction || (() => {});
+  const adoptLegacy = deps.adoptLegacy || (() => false);
   const log = deps.log || (() => {});
   let stopped = true;
   let pending = false;
@@ -232,7 +244,19 @@ export function createCompletionIntentCoordinator(deps) {
       }
       return;
     }
-    const head = Array.isArray(queue.merge_queue) ? queue.merge_queue[0] : null;
+    for (const [root_bead_id, intent] of Object.entries(intents)) {
+      if (
+        intent?.phase === 'needs_human' &&
+        (await adoptLegacy(root_bead_id, intent, queue))
+      ) {
+        return;
+      }
+    }
+    const head = Array.isArray(queue.merge_queue)
+      ? queue.merge_queue.find(
+          (/** @type {any} */ entry) => entry?.resolution?.state !== 'yielded'
+        )
+      : null;
     const root_bead_id =
       head && typeof head.bead_id === 'string' ? head.bead_id : null;
     if (!root_bead_id || !Object.hasOwn(intents, root_bead_id)) {
@@ -539,6 +563,155 @@ export function createCompletionActionDriver(deps) {
       base_sha: subject.base_sha,
       evidence: { output_tail: root_bead_id }
     });
+  }
+
+  /**
+   * Find the only live conflict-resolution leaf for a historical subject. A
+   * fork anywhere on that leaf's resume chain is ambiguous even when only one
+   * child remains running.
+   *
+   * @param {any} queue
+   * @param {string} subject_bead_id
+   * @returns {{ attempt_id: string|null, reason: string|null }}
+   */
+  function legacyResolutionLeaf(queue, subject_bead_id) {
+    const attempts = Object.values(queue.attempts || {});
+    const live = attempts.filter(
+      (/** @type {any} */ attempt) =>
+        attempt?.bead_id === subject_bead_id &&
+        attempt.conflict_resolution === true &&
+        (attempt.status === 'running' || attempt.status === 'paused') &&
+        !attempts.some(
+          (/** @type {any} */ child) =>
+            child?.resumed_from === attempt.attempt_id
+        )
+    );
+    if (live.length !== 1) {
+      return { attempt_id: null, reason: 'resolution_lineage_ambiguous' };
+    }
+    let current = live[0];
+    const visited = new Set();
+    while (typeof current.resumed_from === 'string') {
+      if (visited.has(current.attempt_id)) {
+        return { attempt_id: null, reason: 'resolution_lineage_ambiguous' };
+      }
+      visited.add(current.attempt_id);
+      const siblings = attempts.filter(
+        (/** @type {any} */ attempt) =>
+          attempt?.resumed_from === current.resumed_from
+      );
+      const parent = queue.attempts?.[current.resumed_from];
+      if (
+        siblings.length !== 1 ||
+        !parent ||
+        parent.bead_id !== subject_bead_id ||
+        parent.conflict_resolution !== true
+      ) {
+        return { attempt_id: null, reason: 'resolution_lineage_ambiguous' };
+      }
+      current = parent;
+    }
+    return { attempt_id: current.attempt_id, reason: null };
+  }
+
+  /**
+   * Strict one-time startup adoption for the retired time-only resolution
+   * terminal. Current authoritative mergeability decides whether the old saga
+   * can safely resume; a DIRTY PR receives no fresh budget without one exact
+   * live resolver leaf.
+   *
+   * @param {string} root_bead_id
+   * @param {any} intent
+   * @param {any} queue
+   * @returns {Promise<boolean>}
+   */
+  async function adoptLegacyTimeout(root_bead_id, intent, queue) {
+    if (
+      intent?.phase !== 'needs_human' ||
+      intent.terminal_reason?.reason !== 'resolution_timeout' ||
+      intent.terminal_reason.stage !== 'conflict_resolution'
+    ) {
+      return false;
+    }
+    const expected_repair =
+      intent.subject?.role === 'repair' ? intent.subject.bead_id : null;
+    const active_failure = intent.active_op?.failure_key;
+    if (
+      intent.active_op !== null &&
+      (intent.active_op?.kind !== 'merge_subject' ||
+        intent.active_op.attempt_id !== null ||
+        intent.active_op.repair_bead_id !== expected_repair ||
+        intent.active_op.status === 'consumed' ||
+        active_failure?.stage !== 'merge_subject' ||
+        active_failure.subject_sha !== intent.subject.head_sha ||
+        active_failure.base_sha !== intent.subject.base_sha ||
+        intent.active_op.op_id !==
+          operationIdentity(root_bead_id, 'merge_subject', active_failure))
+    ) {
+      return false;
+    }
+    let gated;
+    try {
+      gated = await deps.prActions.completionGate(
+        intent.subject.bead_id,
+        intent.subject.role
+      );
+    } catch {
+      return false;
+    }
+    if (gated?.ok !== true) {
+      return false;
+    }
+    const verdict = gated.verdict || {};
+    const merged = typeof gated.subject?.merged_sha === 'string';
+    const clean = verdict.enabled === true;
+    const behind = verdict.base_badge === 'base 뒤처짐';
+    const dirty = verdict.base_badge === '충돌';
+    if (!merged && !clean && !behind && !dirty) {
+      return false;
+    }
+    const failure_key = mergeFailureKey(root_bead_id, intent, { gated });
+    const op = {
+      op_id: operationIdentity(root_bead_id, 'merge_subject', failure_key),
+      kind: 'merge_subject',
+      failure_key,
+      attempt_id: null,
+      repair_bead_id: expected_repair,
+      status: 'prepared'
+    };
+    let resolution_attempt_id = null;
+    let resolution_rounds = 0;
+    if (dirty) {
+      const leaf = legacyResolutionLeaf(queue, intent.subject.bead_id);
+      if (!leaf.attempt_id) {
+        terminalize(
+          root_bead_id,
+          leaf.reason || 'resolution_lineage_ambiguous',
+          'conflict_resolution',
+          failure_key,
+          gated
+        );
+        return true;
+      }
+      resolution_attempt_id = leaf.attempt_id;
+      resolution_rounds = Math.max(0, RESOLUTION_ROUND_CAP - 1);
+    }
+    if (typeof deps.store.adoptLegacyResolutionTimeout !== 'function') {
+      return false;
+    }
+    const adopted = deps.store.adoptLegacyResolutionTimeout(deps.workspace, {
+      root_bead_id,
+      subject: gated.subject,
+      op,
+      resolution_attempt_id,
+      resolution_rounds,
+      wait_ms: RESOLUTION_WAIT_MS
+    });
+    if (!adopted.ok) {
+      return false;
+    }
+    notify();
+    return true;
   }
 
   /**
@@ -1293,6 +1466,19 @@ export function createCompletionActionDriver(deps) {
     if (intent.subject.bead_id !== subject_bead_id) {
       return;
     }
+    if (result?.reason === 'resolution_timeout') {
+      return;
+    }
+    if (CONFLICT_RESOLUTION_FAILURES.has(result?.reason)) {
+      terminalize(
+        root_bead_id,
+        result.reason,
+        'conflict_resolution',
+        intent.active_op?.failure_key ?? null,
+        result
+      );
+      return;
+    }
     const merged =
       result &&
       (result.action === 'merged' ||
@@ -1422,10 +1608,7 @@ export function createCompletionActionDriver(deps) {
       );
       return;
     }
-    if (
-      result?.reason === 'resolution_round_cap' ||
-      result?.reason === 'resolution_timeout'
-    ) {
+    if (result?.reason === 'resolution_round_cap') {
       terminalize(root_bead_id, result.reason, 'conflict_resolution');
       return;
     }
@@ -1454,5 +1637,11 @@ export function createCompletionActionDriver(deps) {
     );
   }
 
-  return { observe, onAction, onAttemptSettled, onMergeResult };
+  return {
+    observe,
+    onAction,
+    adoptLegacyTimeout,
+    onAttemptSettled,
+    onMergeResult
+  };
 }

@@ -53,4 +53,24 @@ describe('worker/locks acquire ordering', () => {
     topo();
     svc();
   });
+
+  test('serializes deployment work per repo without blocking another repo', async () => {
+    const locks = createLockManager();
+    const first = await locks.deployLock('/repo/a');
+    let second_held = false;
+    const second = locks.deployLock('/repo/a').then((release) => {
+      second_held = true;
+      return release;
+    });
+    const other = await locks.deployLock('/repo/b');
+
+    await Promise.resolve();
+    expect(second_held).toBe(false);
+
+    first();
+    const release_second = await second;
+    expect(second_held).toBe(true);
+    release_second();
+    other();
+  });
 });

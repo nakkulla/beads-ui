@@ -21,6 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createActivityStore } from './activity-store.js';
+import { createLockManager } from './locks.js';
 import { CLEANUP_STEPS, createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller } from './pr-poller.js';
@@ -149,6 +150,8 @@ function seedStore(options = {}) {
  *   bdPrUrl?: string|null,
  *   declaredBase?: string,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
+ *   deploymentReconciler?: { reconcile: (input: any) => Promise<any> },
+ *   locks?: ReturnType<typeof createLockManager>,
  *   noNotify?: boolean
  * }} [options]
  */
@@ -341,6 +344,13 @@ function makeActions(options = {}) {
     }
     if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
       return { code: 0, stdout: 'base-sha-1\n', stderr: '' };
+    }
+    if (args.join(' ') === 'remote get-url origin') {
+      return {
+        code: 0,
+        stdout: 'git@example.test:o/r.git\n',
+        stderr: ''
+      };
     }
     if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
       return { code: 0, stdout: `${git_branch}\n`, stderr: '' };
@@ -538,6 +548,8 @@ function makeActions(options = {}) {
             value: options.deploy
           }
         : { state: /** @type {const} */ ('absent') }),
+    deploymentReconciler: options.deploymentReconciler,
+    locks: options.locks,
     selfRepoState: options.selfRepoState || (() => 'other'),
     spawnImpl: /** @type {any} */ (spawnImpl),
     requeryDelayMs: 0,
@@ -703,6 +715,98 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('merge_failed:gh_failed');
     expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+  });
+});
+
+describe('merge click — driver-approved latest probe (UI-yup9)', () => {
+  test.each([
+    ['CLEAN', prOf({ merge_state_status: 'CLEAN' }), 'clean'],
+    ['MERGED', prOf({ state: 'MERGED' }), 'merged'],
+    ['BEHIND', prOf({ merge_state_status: 'BEHIND' }), 'behind'],
+    [
+      'DIRTY',
+      prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' }),
+      'dirty'
+    ]
+  ])('classifies latest %s without an effect', async (_label, detail, kind) => {
+    const h = makeActions({ details: [detail] });
+
+    const result = await h.actions.probeMergeability(BEAD);
+
+    expect(result).toMatchObject({ ok: true, kind, head_sha: 'sha-aaa' });
+    expect(h.gh.updateBranch).not.toHaveBeenCalled();
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('refuses DIRTY without dispatch when the driver disallows it', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+
+    const result = await h.actions.merge(BEAD, {
+      allow_conflict_resolution: false
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'conflict_resolution_required'
+    });
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('dispatches one resolver for the exact re-probed DIRTY identity', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+    const resolution_wait = { queue_bead_id: BEAD, wait_ms: 1_800_000 };
+
+    const result = await h.actions.dispatchConflict(
+      BEAD,
+      {
+        head_sha: 'sha-aaa',
+        base_ref: 'main'
+      },
+      resolution_wait
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: 'conflict_resolution',
+      attempt_id: 'a2'
+    });
+    expect(h.scheduler.resolveConflict).toHaveBeenCalledTimes(1);
+    expect(h.scheduler.resolveConflict).toHaveBeenCalledWith(
+      WS,
+      BEAD,
+      resolution_wait
+    );
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses a moved DIRTY identity without dispatching', async () => {
+    const h = makeActions({
+      details: [
+        prOf({
+          head_sha: 'sha-new',
+          mergeable: 'CONFLICTING',
+          merge_state_status: 'DIRTY'
+        })
+      ]
+    });
+
+    const result = await h.actions.dispatchConflict(BEAD, {
+      head_sha: 'sha-old',
+      base_ref: 'main'
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'mergeability_identity_changed'
+    });
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
   });
 });
 
@@ -2534,6 +2638,173 @@ describe('post-merge cleanup — ref operations hold the topology lock (§8)', (
   });
 });
 
+describe('post-merge cleanup — Deployment Reconciler integration (UI-16ep)', () => {
+  test('keeps the workspace adapter on the candidate pinned before checkout sync', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const candidate_sha = 'a'.repeat(40);
+    const h = makeActions({
+      locks: createLockManager(),
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merge_sha })
+      },
+      gitBranch: 'main',
+      gitStatus: ' M user-file\n',
+      gitHead: 'f'.repeat(40)
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(h.git_argv).not.toContainEqual([
+      'fetch',
+      '--no-tags',
+      'origin',
+      'main'
+    ]);
+    expect(h.store.snapshot(WS).reconcile[BEAD]).toMatchObject({
+      stage: 'complete',
+      candidate_sha,
+      adapter: 'workspace'
+    });
+  });
+
+  test('passes the authoritative merge SHA and ignores a dirty shared checkout for managed cleanup', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const reconcile = vi.fn(async () => ({
+      ok: true,
+      status: 'complete',
+      candidate_sha: 'd'.repeat(40),
+      base_sync: null
+    }));
+    const h = makeActions({
+      deploymentReconciler: { reconcile },
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merge_sha })
+      },
+      gitStatus: ' M user-file\n'
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(reconcile).toHaveBeenCalledWith({
+      bead_id: BEAD,
+      target_base: 'main',
+      merged_floor_sha: merge_sha
+    });
+    expect(h.calls).not.toContain('git:fetch --no-tags');
+    expect(h.bd.setStatus).toHaveBeenCalledWith(BEAD, 'closed');
+  });
+
+  test('leaves a retryable reconcile in pr_wait without a cleanup failure', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const h = makeActions({
+      deploymentReconciler: {
+        reconcile: vi.fn(async () => ({
+          ok: false,
+          pending: true,
+          reason: 'materialize_failed',
+          retry_at: 2000
+        }))
+      },
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merge_sha })
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: 'cleanup_pending',
+      reason: 'materialize_failed',
+      cleanup_step: null
+    });
+    expect(h.store.snapshot(WS).cleanup_failed).toEqual({});
+    expect(h.bd.setStatus).not.toHaveBeenCalledWith(BEAD, 'closed');
+    expect(h.store.snapshot(WS).pr_wait).toHaveLength(1);
+  });
+
+  test('preserves verify diagnostics from a terminal reconcile failure', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const h = makeActions({
+      deploymentReconciler: {
+        reconcile: vi.fn(async () => ({
+          ok: false,
+          pending: false,
+          reason: 'verify_cmd_failed',
+          step: 'post_merge_verify',
+          detail: 'suite red',
+          output_tail: 'failed assertion',
+          log_path: '/state/verify.log',
+          base_sync: 'fetch_only:dirty'
+        }))
+      },
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merge_sha })
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      cleanup_step: 'post_merge_verify',
+      base_sync: 'fetch_only:dirty'
+    });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      detail: 'suite red',
+      output_tail: 'failed assertion',
+      log_path: '/state/verify.log'
+    });
+  });
+
+  test('starts a new reconcile attempt for a diagnosis-authorized cleanup retry', async () => {
+    const floor = 'c'.repeat(40);
+    const store = seedStore();
+    store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'deploy',
+      reason: 'adapter_failed'
+    });
+    store.enqueueReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-old',
+      target_base: 'main',
+      merged_floor_sha: floor
+    });
+    store.failReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-old',
+      reason: 'adapter_failed'
+    });
+    const reconcile = vi.fn(async () => ({
+      ok: true,
+      status: 'complete',
+      candidate_sha: 'd'.repeat(40),
+      base_sync: null
+    }));
+    const h = makeActions({
+      store,
+      deploymentReconciler: { reconcile }
+    });
+
+    const result = await h.actions.retryCleanup(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(reconcile).toHaveBeenCalledWith({
+      bead_id: BEAD,
+      target_base: 'main',
+      merged_floor_sha: floor,
+      restart: true
+    });
+  });
+});
+
 describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6)', () => {
   test('refuses observed cleanup while an active discard owns the bead', async () => {
     const h = makeActions();
@@ -2556,8 +2827,97 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
     expect(h.calls).toEqual([]);
   });
 
+  test('resumes a nonterminal external reconcile without a durable pr_wait row', async () => {
+    const floor = 'c'.repeat(40);
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: floor
+    });
+    const reconcile = vi.fn(async () => ({
+      ok: true,
+      status: 'complete',
+      candidate_sha: 'd'.repeat(40),
+      base_sync: null
+    }));
+    const h = makeActions({
+      store,
+      deploymentReconciler: { reconcile },
+      external: {
+        [BEAD]: {
+          bead_id: BEAD,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304,
+          added_at: 1
+        }
+      }
+    });
+
+    const result = await h.actions.cleanupObservedMerge(BEAD, floor);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(reconcile).toHaveBeenCalledWith({
+      bead_id: BEAD,
+      target_base: 'main',
+      merged_floor_sha: floor
+    });
+  });
+
+  test('starts a fresh external attempt only after a new cleanup click', async () => {
+    const floor = 'c'.repeat(40);
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-old',
+      target_base: 'main',
+      merged_floor_sha: floor
+    });
+    store.failReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-old',
+      reason: 'adapter_failed',
+      step: 'deploy'
+    });
+    const reconcile = vi.fn(async () => ({
+      ok: true,
+      status: 'complete',
+      candidate_sha: 'd'.repeat(40),
+      base_sync: null
+    }));
+    const h = makeActions({
+      store,
+      details: [prOf({ state: 'MERGED', merge_sha: floor })],
+      deploymentReconciler: { reconcile },
+      bdStatus: { [BEAD]: 'resolved' },
+      bdPrUrl: 'https://github.com/o/r/pull/304',
+      external: {
+        [BEAD]: {
+          bead_id: BEAD,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304,
+          added_at: 1
+        }
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, action: 'already_merged' });
+    expect(reconcile).toHaveBeenCalledWith({
+      bead_id: BEAD,
+      target_base: 'main',
+      merged_floor_sha: floor,
+      restart: true
+    });
+  });
+
   test('runs the identical cleanup path when a human merged on github.com', async () => {
-    const h = makeActions({ details: [prOf({ state: 'MERGED' })] });
+    const merge_sha = 'c'.repeat(40);
+    const h = makeActions({
+      details: [prOf({ state: 'MERGED', merge_sha })]
+    });
     const poller = createPrPoller({
       workspace: WS,
       repo: REPO,
@@ -2565,7 +2925,8 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
       gh: /** @type {any} */ (h.gh),
       observations: h.observations,
       getSubscriberCount: () => 1,
-      onMerged: (bead_id) => h.actions.cleanupObservedMerge(bead_id),
+      onMerged: (bead_id, observed_merge_sha) =>
+        h.actions.cleanupObservedMerge(bead_id, observed_merge_sha),
       sleep: async () => {}
     });
 

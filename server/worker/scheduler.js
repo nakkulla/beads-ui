@@ -295,8 +295,9 @@ function staleDispatchPrompt(bead_id, stale) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   resume: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
- *   resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
- *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
  *   dispatchCleanupDiagnosis: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean }>,
@@ -827,6 +828,32 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Persist the attempt and its merge-queue ownership in one revision.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   * @param {{ queue_bead_id: string, wait_ms: number }} resolution_wait
+   */
+  function prerecordResolutionAttempt(workspace, attempt, resolution_wait) {
+    if (typeof deps.store.appendResolutionAttempt !== 'function') {
+      return false;
+    }
+    try {
+      return (
+        deps.store.appendResolutionAttempt(workspace, {
+          expected_revision: deps.store.snapshot(workspace).revision,
+          queue_bead_id: resolution_wait.queue_bead_id,
+          subject_bead_id: attempt.bead_id,
+          wait_ms: resolution_wait.wait_ms,
+          attempt
+        }).ok === true
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Persist a relaunch child. An explicit generic resume of a completion-owned
    * ancestor uses the store's atomic ownership transfer; other relaunch kinds
    * keep their existing ordinary append semantics.
@@ -835,13 +862,18 @@ export function createScheduler(deps) {
    * @param {any} prior
    * @param {any} attempt
    * @param {boolean} completion_resume
+   * @param {{ queue_bead_id: string, wait_ms: number }|null} resolution_wait
    */
   function prerecordRelaunchAttempt(
     workspace,
     prior,
     attempt,
-    completion_resume
+    completion_resume,
+    resolution_wait = null
   ) {
+    if (resolution_wait) {
+      return prerecordResolutionAttempt(workspace, attempt, resolution_wait);
+    }
     if (!completion_resume) {
       return prerecordAttempt(workspace, attempt);
     }
@@ -3486,7 +3518,7 @@ export function createScheduler(deps) {
         : resumePrompt(bead_id, prior.status ?? null);
     const result = await relaunchFromAttempt(workspace, prior, {
       prompt: diagnosis_prompt,
-      conflict_resolution: false,
+      conflict_resolution: prior.conflict_resolution === true,
       completion_resume: !cleanup_diagnosis,
       cleanup_diagnosis,
       cleanup_diagnosis_result_path: diagnosis_result_path
@@ -3689,9 +3721,16 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} bead_id
+   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
-  async function resolveConflict(workspace, bead_id) {
+  async function resolveConflict(workspace, bead_id, resolution_wait = null) {
+    if (
+      resolution_wait &&
+      queueConflictBlocked(workspace, resolution_wait.queue_bead_id, bead_id)
+    ) {
+      return { ok: false, reason: 'worker_sessions_busy' };
+    }
     const q = deps.store.snapshot(workspace);
     if (discardActive(q, { bead_id })) {
       return { ok: false, reason: 'discard_in_progress' };
@@ -3740,7 +3779,8 @@ export function createScheduler(deps) {
       typeof source.target_base === 'string' ? source.target_base : 'main';
     return relaunchFromAttempt(workspace, source, {
       prompt: conflictPrompt(bead_id, target_base),
-      conflict_resolution: true
+      conflict_resolution: true,
+      resolution_wait
     });
   }
 
@@ -3826,9 +3866,21 @@ export function createScheduler(deps) {
    * @param {string} bead_id
    * @param {string} [target_base] - The base branch the CLICK observed on the
    * PR (pr-actions §2); empty/absent falls back to `main`.
+   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
-  async function dispatchExternalConflict(workspace, bead_id, target_base) {
+  async function dispatchExternalConflict(
+    workspace,
+    bead_id,
+    target_base,
+    resolution_wait = null
+  ) {
+    if (
+      resolution_wait &&
+      queueConflictBlocked(workspace, resolution_wait.queue_bead_id, bead_id)
+    ) {
+      return { ok: false, reason: 'worker_sessions_busy' };
+    }
     const q = deps.store.snapshot(workspace);
     if (discardActive(q, { bead_id })) {
       return { ok: false, reason: 'discard_in_progress' };
@@ -3955,27 +4007,31 @@ export function createScheduler(deps) {
     // restart can revert the stamps from. `base_oid` stays null — this dispatch
     // creates no worktree and passes no admission, so there is no pinned base
     // to honestly record.
-    if (
-      !prerecordAttempt(workspace, {
-        attempt_id,
-        bead_id,
-        repo,
-        target_base: base,
-        base_oid: null,
-        runner: runner_name,
-        model: launch_model,
-        effort: launch_effort,
-        workflow_mode_prior: prior,
-        exec_default_preset_id: preset_id,
-        exec_default_preset_revision: preset_revision,
-        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
-        exec_values,
-        conflict_resolution: true,
-        external_conflict: true,
-        status: 'running',
-        pid: null
-      })
-    ) {
+    const prerecord_started_at = resolution_wait ? now() : null;
+    const attempt = {
+      attempt_id,
+      bead_id,
+      repo,
+      target_base: base,
+      base_oid: null,
+      runner: runner_name,
+      model: launch_model,
+      effort: launch_effort,
+      workflow_mode_prior: prior,
+      exec_default_preset_id: preset_id,
+      exec_default_preset_revision: preset_revision,
+      exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+      exec_values,
+      conflict_resolution: true,
+      external_conflict: true,
+      started_at: prerecord_started_at,
+      status: 'running',
+      pid: null
+    };
+    const prerecorded = resolution_wait
+      ? prerecordResolutionAttempt(workspace, attempt, resolution_wait)
+      : prerecordAttempt(workspace, attempt);
+    if (!prerecorded) {
       removeGuardHook(workspace, attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
@@ -4132,7 +4188,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {any} prior - The source attempt record (guards already passed).
-   * @param {{ prompt: string, conflict_resolution: boolean, completion_resume?: boolean, disposition?: string|null, disposition_receipt?: string|null, cleanup_diagnosis?: boolean, cleanup_diagnosis_result_path?: string|null, cwd?: string|null, resume?: boolean }} options
+   * @param {{ prompt: string, conflict_resolution: boolean, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, completion_resume?: boolean, disposition?: string|null, disposition_receipt?: string|null, cleanup_diagnosis?: boolean, cleanup_diagnosis_result_path?: string|null, cwd?: string|null, resume?: boolean }} options
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function relaunchFromAttempt(workspace, prior, options) {
@@ -4250,10 +4306,12 @@ export function createScheduler(deps) {
           cleanup_diagnosis: options.cleanup_diagnosis === true,
           cleanup_diagnosis_result_path:
             options.cleanup_diagnosis_result_path ?? null,
+          started_at: options.resolution_wait ? now() : null,
           status: 'running',
           pid: null
         },
-        options.completion_resume === true
+        options.completion_resume === true,
+        options.resolution_wait ?? null
       )
     ) {
       removeGuardHook(workspace, new_attempt_id);
@@ -4401,6 +4459,39 @@ export function createScheduler(deps) {
     }
 
     return { ok: true, attempt_id: new_attempt_id };
+  }
+
+  /**
+   * Keep automatic conflict resolvers behind the existing physical-session
+   * fence. The queue owner and its current subject are the same saga, so only a
+   * different Bead blocks the side effect. Human-click dispatches do not call
+   * this predicate and remain cap-exempt.
+   *
+   * @param {string} workspace
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   */
+  function queueConflictBlocked(workspace, queue_bead_id, subject_bead_id) {
+    const allowed = new Set([queue_bead_id, subject_bead_id]);
+    for (const bead_id of claimed) {
+      if (!allowed.has(bead_id)) {
+        return true;
+      }
+    }
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    const values = Object.values(attempts);
+    const resumed_from = new Set(
+      values.map((attempt) => attempt && attempt.resumed_from).filter(Boolean)
+    );
+    return values.some(
+      (attempt) =>
+        attempt &&
+        typeof attempt.bead_id === 'string' &&
+        !allowed.has(attempt.bead_id) &&
+        (attempt.status === 'running' ||
+          (attempt.status === 'paused' &&
+            !resumed_from.has(attempt.attempt_id)))
+    );
   }
 
   /**
@@ -5750,6 +5841,7 @@ export function createScheduler(deps) {
     resume,
     resolveConflict,
     dispatchExternalConflict,
+    queueConflictBlocked,
     dispatchCleanupDiagnosis,
     dispatchReviseFix,
     dispatchCompletionRepair,

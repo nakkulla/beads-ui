@@ -53,6 +53,7 @@
 import { spawn } from 'node:child_process';
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
+import { createDeploymentReconciler } from './deployment-reconciler.js';
 import { evaluateMergeGate } from './merge-gate.js';
 import { resolvePrRef, rollupConclusion } from './pr-poller.js';
 import { selfRepoState } from './repo-ops.js';
@@ -119,9 +120,10 @@ export const CLEANUP_STEPS = [
 /**
  * @typedef {Object} MergeClickResult
  * @property {boolean} ok - Whether the click accomplished what it set out to.
- * @property {'merged'|'updated_and_merged'|'already_merged'|'merge_unconfirmed'|'conflict_resolution'|'refused'} action
+ * @property {'merged'|'updated_and_merged'|'already_merged'|'cleanup_pending'|'merge_unconfirmed'|'conflict_resolution'|'refused'} action
  * What the click actually DID — never just "succeeded": a dispatched conflict
  * resolution is a legitimate outcome that merged nothing, and
+ * `cleanup_pending` is a landed merge whose durable Reconciler is backing off;
  * `merge_unconfirmed` is a merge COMMAND that succeeded without the PR being
  * observed merged (a merge queue accepted it, or the re-read failed).
  * @property {string|null} reason - Machine-readable cause for a refusal (or a
@@ -131,6 +133,16 @@ export const CLEANUP_STEPS = [
  * did to the local checkout, when a cleanup ran.
  * @property {string|null} [attempt_id] - The resolution attempt, when dispatched.
  * @property {string|null} [head_sha] - The sha the decision was taken on.
+ */
+
+/**
+ * @typedef {Object} MergeabilityProbe
+ * @property {boolean} ok
+ * @property {'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked'} kind
+ * @property {string|null} reason
+ * @property {string|null} head_sha
+ * @property {string|null} base_ref
+ * @property {boolean} external
  */
 
 /**
@@ -149,6 +161,17 @@ export const CLEANUP_STEPS = [
  */
 function isConflicting(pr) {
   return pr.mergeable === 'CONFLICTING' || pr.merge_state_status === 'DIRTY';
+}
+
+/**
+ * @param {PrDetail|Record<string, any>|null|undefined} pr
+ * @returns {string|null}
+ */
+function authoritativeMergeSha(pr) {
+  const sha = pr?.merge_sha || pr?.merged_sha;
+  return typeof sha === 'string' && /^[0-9a-f]{40}$/i.test(sha)
+    ? sha.toLowerCase()
+    : null;
 }
 
 /**
@@ -181,11 +204,13 @@ function isConflicting(pr) {
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
+ *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').VerifyResolution>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
  *   resolveDeploy?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').DeployResolution>,
+ *   locks?: { deployLock: (repo: string) => Promise<() => void> },
+ *   deploymentReconciler?: { reconcile: (input: { bead_id: string, target_base: string, merged_floor_sha: string, restart?: boolean }) => Promise<any> },
  *   selfRepoState?: (repo: string) => 'self'|'other'|'unknown',
  *   spawnImpl?: typeof spawn,
  *   notifyChanged?: (workspace: string) => void,
@@ -235,6 +260,84 @@ export function createPrActions(deps) {
         reason: 'verify_cmd_spawn_error',
         exit: null
       }));
+  const deploymentReconciler =
+    deps.deploymentReconciler ||
+    (deps.locks && deps.resolveBase && deps.resolveDeploy
+      ? createDeploymentReconciler({
+          workspace,
+          repo,
+          store: deps.store,
+          locks: deps.locks,
+          gitRun: deps.gitRun,
+          resolveBase: deps.resolveBase,
+          resolveDeploy,
+          prepareCandidate: async (input) => {
+            if (input.adapter === 'managed') {
+              return { ok: true, base_sync: null };
+            }
+            const synced = await syncBase(
+              input.target_base,
+              input.candidate_sha
+            );
+            if (!synced.ok) {
+              return synced;
+            }
+            if (synced.sha !== input.candidate_sha) {
+              return { ok: false, reason: 'base_sha_mismatch' };
+            }
+            return { ok: true, base_sync: synced.outcome };
+          },
+          verifyCandidate: (input) =>
+            postMergeVerify(input.bead_id, input.candidate_sha),
+          runWorkspaceAdapter: async (input) => {
+            const deployed = await runDeploy(
+              input.bead_id,
+              input.candidate_sha,
+              input.target_base
+            );
+            if (!deployed.ok) {
+              return { ...deployed, retryable: false };
+            }
+            return {
+              ok: true,
+              deployed: deployed.deployed,
+              pending: deployed.pending !== null,
+              pending_deploy: deployed.pending,
+              action_outcomes: [
+                {
+                  action:
+                    deployed.deployed === false
+                      ? 'workspace_no_deploy'
+                      : deployed.pending
+                        ? 'workspace_detached_launch'
+                        : 'workspace_deploy',
+                  outcome: 'success'
+                }
+              ]
+            };
+          },
+          spawnImpl,
+          now,
+          onStage: ({ bead_id, stage, adapter }) => {
+            const projected =
+              stage === 'queued'
+                ? 'reconcile_queued'
+                : stage === 'pinned'
+                  ? 'candidate_pinned'
+                  : stage === 'verifying'
+                    ? 'reconcile_verify'
+                    : stage === 'deploying'
+                      ? 'reconcile_deploy'
+                      : stage === 'readback'
+                        ? 'reconcile_readback'
+                        : null;
+            if (projected && adapter !== 'workspace') {
+              markStep(bead_id, projected);
+            }
+            notifyChanged(workspace);
+          }
+        })
+      : null);
 
   /**
    * Beads with an action in flight. A merge and its cleanup can take minutes
@@ -836,33 +939,39 @@ export function createPrActions(deps) {
    * divergence: a genuine failure (`base_ff_diverged`), never something to force.
    *
    * @param {string} target_base
+   * @param {string|null} [candidate_sha] - Already fetched candidate owned by
+   * the Reconciler. When present, update the checkout toward this exact commit
+   * instead of re-fetching a potentially newer base tip.
    * @returns {Promise<{ ok: true, sha: string, outcome: BaseSyncOutcome }|{ ok: false, reason: string }>}
    */
-  async function syncBase(target_base) {
+  async function syncBase(target_base, candidate_sha = null) {
     // Every command below writes or reads this repo's ref database, so the whole
     // sequence is serialized under the topology lock (§8). No worktree-manager
     // call happens inside — those take the same lock (see `withTopologyLock`).
     return deps.worktree.withTopologyLock(repo, async () => {
-      const fetched = await deps.gitRun(
-        ['fetch', '--no-tags', 'origin', target_base],
-        { cwd: repo }
-      );
-      if (fetched.code !== 0) {
-        return {
-          ok: /** @type {const} */ (false),
-          reason: 'base_fetch_failed'
-        };
+      let sha = candidate_sha;
+      if (sha === null) {
+        const fetched = await deps.gitRun(
+          ['fetch', '--no-tags', 'origin', target_base],
+          { cwd: repo }
+        );
+        if (fetched.code !== 0) {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'base_fetch_failed'
+          };
+        }
+        const rev = await deps.gitRun(['rev-parse', `origin/${target_base}`], {
+          cwd: repo
+        });
+        if (rev.code !== 0 || rev.stdout.trim().length === 0) {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'base_rev_unavailable'
+          };
+        }
+        sha = rev.stdout.trim();
       }
-      const rev = await deps.gitRun(['rev-parse', `origin/${target_base}`], {
-        cwd: repo
-      });
-      if (rev.code !== 0 || rev.stdout.trim().length === 0) {
-        return {
-          ok: /** @type {const} */ (false),
-          reason: 'base_rev_unavailable'
-        };
-      }
-      const sha = rev.stdout.trim();
       const head = await deps.gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], {
         cwd: repo
       });
@@ -883,10 +992,7 @@ export function createPrActions(deps) {
           outcome: /** @type {BaseSyncOutcome} */ ('fetch_only:dirty')
         };
       }
-      const ff = await deps.gitRun(
-        ['merge', '--ff-only', `origin/${target_base}`],
-        { cwd: repo }
-      );
+      const ff = await deps.gitRun(['merge', '--ff-only', sha], { cwd: repo });
       if (ff.code !== 0) {
         return { ok: /** @type {const} */ (false), reason: 'base_ff_diverged' };
       }
@@ -1077,7 +1183,7 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {string} base_sha
    * @param {string} target_base
-   * @returns {Promise<{ ok: true, pending: ResolvedDeployCmd|null }|{ ok: false, reason: string, detail?: string, output_tail?: string, log_path?: string }>}
+   * @returns {Promise<{ ok: true, pending: ResolvedDeployCmd|null, deployed: boolean }|{ ok: false, reason: string, detail?: string, output_tail?: string, log_path?: string }>}
    */
   async function runDeploy(bead_id, base_sha, target_base) {
     // Post-merge context, so both resolutions pin to the base commit the
@@ -1110,7 +1216,7 @@ export function createPrActions(deps) {
     }
     if (resolution.state === 'absent') {
       if (!self) {
-        return { ok: true, pending: null };
+        return { ok: true, pending: null, deployed: false };
       }
       log('deploy declaration missing for this server own repo %s', repo);
       deps.store.recordLastDeploy(
@@ -1164,7 +1270,7 @@ export function createPrActions(deps) {
       return { ok: false, reason: 'deploy_base_not_synced', detail };
     }
     if (deploy.detached) {
-      return { ok: true, pending: deploy };
+      return { ok: true, pending: deploy, deployed: true };
     }
 
     /**
@@ -1213,7 +1319,7 @@ export function createPrActions(deps) {
           log_path: r.log_path
         })
       );
-      return { ok: true, pending: null };
+      return { ok: true, pending: null, deployed: true };
     }
     const reason = deployReasonFor(r.reason);
     deps.store.recordLastDeploy(
@@ -1490,15 +1596,51 @@ export function createPrActions(deps) {
   }
 
   /**
+   * @param {Queue} q
+   * @param {string} bead_id
+   * @param {{ merge_sha?: string|null }} refs
+   * @returns {Promise<string|null>}
+   */
+  async function cleanupMergeSha(q, bead_id, refs) {
+    const candidates = [
+      refs.merge_sha,
+      q.reconcile?.[bead_id]?.merged_floor_sha,
+      q.completion_intents?.[bead_id]?.subject?.merged_sha,
+      authoritativeMergeSha(deps.observations.get(workspace, bead_id)?.pr)
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && /^[0-9a-f]{40}$/i.test(candidate)) {
+        return candidate.toLowerCase();
+      }
+    }
+    const ref = resolvePrRef(
+      q,
+      bead_id,
+      external ? external.get(workspace, bead_id) : null
+    );
+    if (!ref) {
+      return null;
+    }
+    try {
+      const detail = await deps.gh.prDetail(repo, ref.number);
+      return detail.state === 'ok' && detail.data.state === 'MERGED'
+        ? authoritativeMergeSha(detail.data)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Run the whole cleanup in contract order. The SINGLE implementation both the
    * [머지] button and the poller's externally-observed MERGED go through — a
    * second copy for the external case is exactly the divergence §6 forbids.
    *
    * @param {string} bead_id
-   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null }} [refs]
+   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, restart_reconcile?: boolean }} [refs]
    * - What the click-time gate observed on GitHub (UI-7agi §3). Load-bearing
    * for an external PR, which has no attempt to read a target base from.
-   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
+   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
   async function runCleanup(bead_id, refs = {}) {
     const q = deps.store.snapshot(workspace);
@@ -1539,47 +1681,116 @@ export function createPrActions(deps) {
     // deploy that really ran is a real fact about this repo.
     const durable = inPrWait(q, bead_id);
 
-    markStep(bead_id, 'base_sync');
-    const synced = await syncBase(target_base);
-    if (!synced.ok) {
-      return failCleanup(bead_id, 'base_sync', synced.reason, null);
-    }
-    const base_sync = synced.outcome;
-    log(
-      'cleanup base sync for %s: %s (base %s)',
-      bead_id,
-      base_sync,
-      synced.sha
-    );
-    markStep(bead_id, 'post_merge_verify');
-    const verified = await postMergeVerify(bead_id, synced.sha);
-    if (!verified.ok) {
-      return failCleanup(
+    /** @type {BaseSyncOutcome|null} */
+    let base_sync = null;
+    /** @type {ResolvedDeployCmd|null} */
+    let pending_deploy = null;
+    /** @type {string|null} */
+    let deployed_sha = null;
+    if (deploymentReconciler) {
+      const prior_failure = q.cleanup_failed?.[bead_id];
+      if (
+        refs.restart_reconcile !== true &&
+        q.reconcile?.[bead_id]?.stage === 'failed' &&
+        prior_failure
+      ) {
+        return {
+          ok: false,
+          step: prior_failure.step,
+          reason: prior_failure.reason,
+          base_sync: null
+        };
+      }
+      const merge_sha = await cleanupMergeSha(q, bead_id, refs);
+      if (merge_sha === null) {
+        return failCleanup(bead_id, 'base_sync', 'merge_sha_unobserved', null);
+      }
+      markStep(bead_id, 'reconcile_queued');
+      const reconciled = await deploymentReconciler.reconcile({
         bead_id,
-        'post_merge_verify',
-        verified.reason,
-        base_sync,
-        undefined,
-        verified.detail,
-        verified.output_tail,
-        verified.log_path
-      );
-    }
-    markStep(bead_id, 'deploy');
-    const deployed = await runDeploy(bead_id, synced.sha, target_base);
-    if (!deployed.ok) {
-      return failCleanup(
+        target_base,
+        merged_floor_sha: merge_sha,
+        ...(refs.restart_reconcile === true ? { restart: true } : {})
+      });
+      base_sync = reconciled.base_sync || null;
+      if (!reconciled.ok) {
+        if (reconciled.pending === true) {
+          notifyChanged(workspace);
+          return {
+            ok: true,
+            pending: true,
+            step: null,
+            reason: reconciled.reason || 'reconcile_pending',
+            base_sync
+          };
+        }
+        const failed_step =
+          reconciled.step ||
+          (reconciled.stage === 'verifying'
+            ? 'post_merge_verify'
+            : reconciled.stage === 'deploying' ||
+                reconciled.stage === 'readback'
+              ? 'deploy'
+              : 'base_sync');
+        return failCleanup(
+          bead_id,
+          failed_step,
+          reconciled.reason || 'reconcile_failed',
+          base_sync,
+          undefined,
+          reconciled.detail,
+          reconciled.output_tail,
+          reconciled.log_path
+        );
+      }
+      deployed_sha = reconciled.candidate_sha;
+      if (reconciled.status === 'detached_pending') {
+        pending_deploy = reconciled.pending_deploy;
+      }
+    } else {
+      markStep(bead_id, 'base_sync');
+      const synced = await syncBase(target_base);
+      if (!synced.ok) {
+        return failCleanup(bead_id, 'base_sync', synced.reason, null);
+      }
+      base_sync = synced.outcome;
+      deployed_sha = synced.sha;
+      log(
+        'cleanup base sync for %s: %s (base %s)',
         bead_id,
-        'deploy',
-        deployed.reason,
         base_sync,
-        undefined,
-        deployed.detail,
-        deployed.output_tail,
-        deployed.log_path
+        synced.sha
       );
+      markStep(bead_id, 'post_merge_verify');
+      const verified = await postMergeVerify(bead_id, synced.sha);
+      if (!verified.ok) {
+        return failCleanup(
+          bead_id,
+          'post_merge_verify',
+          verified.reason,
+          base_sync,
+          undefined,
+          verified.detail,
+          verified.output_tail,
+          verified.log_path
+        );
+      }
+      markStep(bead_id, 'deploy');
+      const deployed = await runDeploy(bead_id, synced.sha, target_base);
+      if (!deployed.ok) {
+        return failCleanup(
+          bead_id,
+          'deploy',
+          deployed.reason,
+          base_sync,
+          undefined,
+          deployed.detail,
+          deployed.output_tail,
+          deployed.log_path
+        );
+      }
+      pending_deploy = deployed.pending;
     }
-    const pending_deploy = deployed.pending;
     markStep(bead_id, 'child_sweep');
     const swept = await sweepChildren(bead_id);
     if (!swept.ok) {
@@ -1636,7 +1847,12 @@ export function createPrActions(deps) {
     // written FIRST, in one mutation, because the next line may kill this
     // process: a `launched` record that only exists in memory when the server
     // restarts itself is a record that never existed.
-    const launch_record = deployRecord('launched', null, bead_id, synced.sha);
+    const launch_record = deployRecord(
+      'launched',
+      null,
+      bead_id,
+      deployed_sha || ''
+    );
     if (durable) {
       deps.store.moveToDoneWithDeploy(workspace, {
         bead_id,
@@ -1663,9 +1879,15 @@ export function createPrActions(deps) {
     const record_spawn_failure = (/** @type {string|undefined} */ detail) => {
       deps.store.recordLastDeploy(
         workspace,
-        deployRecord('failed', 'deploy_spawn_error', bead_id, synced.sha, {
-          detail
-        })
+        deployRecord(
+          'failed',
+          'deploy_spawn_error',
+          bead_id,
+          deployed_sha || '',
+          {
+            detail
+          }
+        )
       );
       notifyChanged(workspace);
     };
@@ -1817,12 +2039,112 @@ export function createPrActions(deps) {
   // -------------------------------------------------------------------------
 
   /**
+   * Read the latest mergeability authority without updating a branch, merging,
+   * starting cleanup, or dispatching a resolver. Observation and SHA-bound
+   * verification are allowed because they are the evidence this probe returns.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<MergeabilityProbe>}
+   */
+  async function probeMergeability(bead_id) {
+    const q = deps.store.snapshot(workspace);
+    const member = await laneMembership(q, bead_id);
+    if (!member.ok) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: member.reason,
+        head_sha: null,
+        base_ref: null,
+        external: false
+      };
+    }
+    const is_external = member.external === true;
+    const ref = resolvePrRef(
+      q,
+      bead_id,
+      is_external
+        ? {
+            pr_url: member.pr_url,
+            pr_number: parsePrNumber(member.pr_url)
+          }
+        : null
+    );
+    if (!ref) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: 'pr_ref_unknown',
+        head_sha: null,
+        base_ref: null,
+        external: is_external
+      };
+    }
+    const observed = await gateNow(bead_id, ref.number);
+    if ('error' in observed) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: observed.error,
+        head_sha: null,
+        base_ref: null,
+        external: is_external
+      };
+    }
+    const base_ok = await baseGate(q, bead_id, observed.pr.base_ref);
+    if (!base_ok.ok) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: base_ok.reason,
+        head_sha: observed.pr.head_sha,
+        base_ref: observed.pr.base_ref || null,
+        external: is_external
+      };
+    }
+    const common = {
+      reason: /** @type {string|null} */ (null),
+      head_sha: observed.pr.head_sha,
+      base_ref: observed.pr.base_ref || null,
+      external: is_external
+    };
+    if (observed.pr.state === 'MERGED') {
+      return { ok: true, kind: 'merged', ...common };
+    }
+    if (observed.pr.state === 'CLOSED') {
+      return {
+        ok: false,
+        kind: 'closed',
+        ...common,
+        reason: 'pr_closed_unmerged'
+      };
+    }
+    if (isConflicting(observed.pr)) {
+      return { ok: true, kind: 'dirty', ...common };
+    }
+    if (!observed.verdict.enabled) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        ...common,
+        reason: observed.verdict.reason || 'gate_blocked'
+      };
+    }
+    return {
+      ok: true,
+      kind: observed.pr.merge_state_status === 'BEHIND' ? 'behind' : 'clean',
+      ...common
+    };
+  }
+
+  /**
    * The authoritative [머지] click (§6).
    *
    * @param {string} bead_id
+   * @param {{ allow_conflict_resolution?: boolean }} [options]
    * @returns {Promise<MergeClickResult>}
    */
-  async function merge(bead_id) {
+  async function merge(bead_id, options = {}) {
     if (in_flight.has(bead_id)) {
       return refuse('action_in_flight');
     }
@@ -1871,6 +2193,7 @@ export function createPrActions(deps) {
       const refs = {
         base_ref: first.pr.base_ref || null,
         head_ref: first.pr.head_ref || null,
+        merge_sha: authoritativeMergeSha(first.pr),
         // The url the click itself resolved (UI-9rrk). For an external row the
         // registry may be one scan stale, so the notification must name the PR
         // this click actually merged, not the previous one.
@@ -1878,16 +2201,23 @@ export function createPrActions(deps) {
       };
       // A merge that already happened (here or on github.com) runs the same
       // cleanup rather than a second merge. For an EXTERNAL row this is the
-      // whole of the [정리] button: the poller deliberately never auto-cleans
-      // one, so the click is the only trigger (UI-7agi §1).
+      // whole of the [정리] button: the poller never starts its cleanup, but it
+      // may resume a nonterminal attempt this click already authorized.
       if (first.pr.state === 'MERGED') {
         if (discardActive(deps.store.snapshot(workspace), bead_id)) {
           return refuse('discard_in_progress');
         }
-        const c = await runCleanup(bead_id, refs);
+        const c = await runCleanup(bead_id, {
+          ...refs,
+          ...(is_external &&
+          q.reconcile?.[bead_id]?.stage === 'failed' &&
+          !q.auto_merge_skips?.[bead_id]
+            ? { restart_reconcile: true }
+            : {})
+        });
         return {
           ok: c.ok,
-          action: 'already_merged',
+          action: c.pending ? 'cleanup_pending' : 'already_merged',
           reason: c.reason,
           cleanup_step: c.step,
           base_sync: c.base_sync,
@@ -1902,6 +2232,14 @@ export function createPrActions(deps) {
       if (isConflicting(first.pr)) {
         if (discardActive(deps.store.snapshot(workspace), bead_id)) {
           return refuse('discard_in_progress');
+        }
+        if (options.allow_conflict_resolution === false) {
+          return {
+            ok: false,
+            action: 'refused',
+            reason: 'conflict_resolution_required',
+            head_sha: first.pr.head_sha
+          };
         }
         // An EXTERNAL row has no attempt to relaunch from, so it takes the
         // attempt-less dispatch instead (UI-w0hi §2). The base is the one THIS
@@ -1970,6 +2308,14 @@ export function createPrActions(deps) {
         );
       }
       if (isConflicting(second.pr)) {
+        if (options.allow_conflict_resolution === false) {
+          return {
+            ok: false,
+            action: 'refused',
+            reason: 'conflict_resolution_required',
+            head_sha: second.pr.head_sha
+          };
+        }
         if (is_external) {
           return dispatchExternalResolution(
             bead_id,
@@ -2023,7 +2369,7 @@ export function createPrActions(deps) {
    * @param {number} number
    * @param {string} head_sha
    * @param {'merged'|'updated_and_merged'} action
-   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null }} [refs]
+   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null }} [refs]
    * - The gate-time base/head branch names and the click-resolved PR url,
    * forwarded to the cleanup (UI-7agi §3, UI-9rrk).
    * @returns {Promise<MergeClickResult>}
@@ -2076,10 +2422,13 @@ export function createPrActions(deps) {
       };
     }
 
-    const c = await runCleanup(bead_id, refs);
+    const c = await runCleanup(bead_id, {
+      ...refs,
+      merge_sha: authoritativeMergeSha(after.data)
+    });
     return {
       ok: c.ok,
-      action,
+      action: c.pending ? 'cleanup_pending' : action,
       reason: c.reason,
       cleanup_step: c.step,
       base_sync: c.base_sync,
@@ -2092,14 +2441,21 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string} head_sha
+   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
    * @returns {Promise<MergeClickResult>}
    */
-  async function dispatchResolution(bead_id, head_sha) {
+  async function dispatchResolution(bead_id, head_sha, resolution_wait = null) {
     // Resolving is not merging: drop the progress BEFORE the session appears,
     // so the row goes back to its ordinary conflict state rather than showing a
     // merge that is not happening.
     clearStep(bead_id);
-    const r = await deps.scheduler.resolveConflict(workspace, bead_id);
+    const r = resolution_wait
+      ? await deps.scheduler.resolveConflict(
+          workspace,
+          bead_id,
+          resolution_wait
+        )
+      : await deps.scheduler.resolveConflict(workspace, bead_id);
     notifyChanged(workspace);
     return {
       ok: !!r.ok,
@@ -2119,15 +2475,28 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {string} head_sha
    * @param {string} base_ref - The base branch this click OBSERVED on the PR.
+   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
    * @returns {Promise<MergeClickResult>}
    */
-  async function dispatchExternalResolution(bead_id, head_sha, base_ref) {
+  async function dispatchExternalResolution(
+    bead_id,
+    head_sha,
+    base_ref,
+    resolution_wait = null
+  ) {
     clearStep(bead_id);
-    const r = await deps.scheduler.dispatchExternalConflict(
-      workspace,
-      bead_id,
-      base_ref
-    );
+    const r = resolution_wait
+      ? await deps.scheduler.dispatchExternalConflict(
+          workspace,
+          bead_id,
+          base_ref,
+          resolution_wait
+        )
+      : await deps.scheduler.dispatchExternalConflict(
+          workspace,
+          bead_id,
+          base_ref
+        );
     notifyChanged(workspace);
     return {
       ok: !!r.ok,
@@ -2139,6 +2508,56 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Dispatch only the exact DIRTY head/base pair the merge driver approved.
+   * The seam re-probes immediately before the effect, so a moved branch or a
+   * newly CLEAN/BEHIND PR returns without starting a resolver.
+   *
+   * @param {string} bead_id
+   * @param {{ head_sha: string, base_ref: string|null }} approved
+   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @returns {Promise<MergeClickResult>}
+   */
+  async function dispatchConflict(bead_id, approved, resolution_wait = null) {
+    if (in_flight.has(bead_id)) {
+      return refuse('action_in_flight');
+    }
+    in_flight.add(bead_id);
+    markStep(bead_id, 'merging');
+    try {
+      const latest = await probeMergeability(bead_id);
+      if (
+        !latest.ok ||
+        latest.kind !== 'dirty' ||
+        latest.head_sha !== approved.head_sha ||
+        latest.base_ref !== approved.base_ref
+      ) {
+        return refuse(
+          latest.reason ||
+            (latest.kind === 'dirty'
+              ? 'mergeability_identity_changed'
+              : 'mergeability_changed')
+        );
+      }
+      if (latest.external) {
+        return dispatchExternalResolution(
+          bead_id,
+          latest.head_sha || '',
+          latest.base_ref || '',
+          resolution_wait
+        );
+      }
+      return dispatchResolution(
+        bead_id,
+        latest.head_sha || '',
+        resolution_wait
+      );
+    } finally {
+      in_flight.delete(bead_id);
+      clearStep(bead_id);
+    }
+  }
+
+  /**
    * The externally-observed MERGED trigger (§4): a human merged on github.com.
    * Runs the IDENTICAL cleanup, with two extra guards the button does not need:
    * it never runs while another action holds the bead, and it never re-runs a
@@ -2146,9 +2565,10 @@ export function createPrActions(deps) {
    * must stay off it until a human acts.
    *
    * @param {string} bead_id
+   * @param {string|null} [merge_sha]
    * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
    */
-  async function cleanupObservedMerge(bead_id) {
+  async function cleanupObservedMerge(bead_id, merge_sha = null) {
     if (in_flight.has(bead_id)) {
       return { ok: false, step: null, reason: 'action_in_flight' };
     }
@@ -2156,7 +2576,14 @@ export function createPrActions(deps) {
     if (discardActive(q, bead_id)) {
       return { ok: false, step: null, reason: 'discard_in_progress' };
     }
-    if (!inPrWait(q, bead_id)) {
+    const reconcile = q.reconcile?.[bead_id];
+    const external_resume =
+      !inPrWait(q, bead_id) &&
+      !!external?.get(workspace, bead_id) &&
+      reconcile &&
+      reconcile.stage !== 'complete' &&
+      reconcile.stage !== 'failed';
+    if (!inPrWait(q, bead_id) && !external_resume) {
       return { ok: false, step: null, reason: 'not_in_pr_wait' };
     }
     if (q.cleanup_failed && q.cleanup_failed[bead_id]) {
@@ -2164,7 +2591,7 @@ export function createPrActions(deps) {
     }
     in_flight.add(bead_id);
     try {
-      return await runCleanup(bead_id);
+      return await runCleanup(bead_id, { merge_sha });
     } finally {
       in_flight.delete(bead_id);
       clearStep(bead_id);
@@ -2195,7 +2622,7 @@ export function createPrActions(deps) {
     }
     in_flight.add(bead_id);
     try {
-      return await runCleanup(bead_id);
+      return await runCleanup(bead_id, { restart_reconcile: true });
     } finally {
       in_flight.delete(bead_id);
       clearStep(bead_id);
@@ -2233,7 +2660,7 @@ export function createPrActions(deps) {
     }
     in_flight.add(root_bead_id);
     try {
-      return await runCleanup(root_bead_id);
+      return await runCleanup(root_bead_id, { restart_reconcile: true });
     } finally {
       in_flight.delete(root_bead_id);
       clearStep(root_bead_id);
@@ -2419,6 +2846,8 @@ export function createPrActions(deps) {
 
   return {
     merge,
+    probeMergeability,
+    dispatchConflict,
     discard,
     isInFlight: (/** @type {string} */ bead_id) => in_flight.has(bead_id),
     cleanupObservedMerge,

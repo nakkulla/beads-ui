@@ -27,6 +27,7 @@
  *   acquire: (key: string) => Promise<Release>,
  *   dupRunLock: (database: string, bead_id: string) => Promise<Release>,
  *   topologyLock: (repo: string) => Promise<Release>,
+ *   deployLock: (repo: string) => Promise<Release>,
  *   serviceLock: () => Promise<Release>,
  *   isLocked: (key: string) => boolean
  * }}
@@ -83,6 +84,14 @@ export function createLockManager() {
      */
     topologyLock(repo) {
       return acquire(`repo:${repo}::topology`);
+    },
+
+    /**
+     * @param {string} repo
+     * @returns {Promise<Release>}
+     */
+    deployLock(repo) {
+      return acquire(`repo:${repo}::deploy`);
     },
 
     /**

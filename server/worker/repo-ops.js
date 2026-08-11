@@ -83,6 +83,7 @@ const CACHE_MAX = 64;
  * @property {string[]} cmd
  * @property {number} timeout_ms
  * @property {boolean} detached
+ * @property {'workspace'|'managed'} [adapter]
  */
 
 /**
@@ -252,13 +253,58 @@ function declaredDeploy(parsed) {
       detail: 'deploy:detached_not_a_boolean'
     };
   }
+  const raw_adapter = parsed.deploy.adapter;
+  if (
+    Object.hasOwn(parsed.deploy, 'adapter') &&
+    raw_adapter !== 'workspace' &&
+    raw_adapter !== 'managed'
+  ) {
+    return {
+      state: 'invalid',
+      source: 'declaration',
+      detail: 'deploy:adapter_unknown'
+    };
+  }
+  const adapter = raw_adapter === 'managed' ? 'managed' : 'workspace';
+  if (adapter === 'managed') {
+    const executable = normalized.cmd[0];
+    const normalized_executable = path.posix.normalize(executable);
+    if (
+      path.posix.isAbsolute(executable) ||
+      path.win32.isAbsolute(executable)
+    ) {
+      return {
+        state: 'invalid',
+        source: 'declaration',
+        detail: 'deploy:managed_cmd_not_relative'
+      };
+    }
+    if (
+      normalized_executable === '..' ||
+      normalized_executable.startsWith('../')
+    ) {
+      return {
+        state: 'invalid',
+        source: 'declaration',
+        detail: 'deploy:managed_cmd_escapes_release'
+      };
+    }
+    if (parsed.deploy.detached === true) {
+      return {
+        state: 'invalid',
+        source: 'declaration',
+        detail: 'deploy:managed_detached_forbidden'
+      };
+    }
+  }
   return {
     state: 'resolved',
     source: 'declaration',
     value: {
       cmd: normalized.cmd,
       timeout_ms: normalized.timeout_ms,
-      detached: parsed.deploy.detached === true
+      detached: parsed.deploy.detached === true,
+      adapter
     }
   };
 }
@@ -415,7 +461,8 @@ function configDeploy(repo, config_map) {
         typeof configured.timeout_ms === 'number' && configured.timeout_ms > 0
           ? configured.timeout_ms
           : DEFAULT_TIMEOUT_MS,
-      detached: configured.detached === true
+      detached: configured.detached === true,
+      adapter: 'workspace'
     }
   };
 }
