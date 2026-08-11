@@ -1278,6 +1278,12 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     log('startup reconcile failed for %s: %o', key, err);
     return;
   }
+  try {
+    await att.prActions.resumePersistedReconciles();
+  } catch (err) {
+    log('startup deployment recovery failed for %s: %o', key, err);
+    return;
+  }
 
   if (start_pr_poller) {
     try {

@@ -1637,7 +1637,7 @@ export function createPrActions(deps) {
    * second copy for the external case is exactly the divergence §6 forbids.
    *
    * @param {string} bead_id
-   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, restart_reconcile?: boolean }} [refs]
+   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, target_base?: string|null, restart_reconcile?: boolean }} [refs]
    * - What the click-time gate observed on GitHub (UI-7agi §3). Load-bearing
    * for an external PR, which has no attempt to read a target base from.
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
@@ -1655,7 +1655,10 @@ export function createPrActions(deps) {
     // The EXPECTED base, never the observed one (§5): this is the branch that
     // gets synced, verified and deployed, so deriving it from the PR's own
     // metadata would let a wrongly-based PR pick its own post-merge target.
-    const expected = await expectedBaseFor(q, bead_id);
+    const expected =
+      typeof refs.target_base === 'string' && refs.target_base.length > 0
+        ? { ok: /** @type {const} */ (true), base: refs.target_base }
+        : await expectedBaseFor(q, bead_id);
     if (!expected.ok) {
       return failCleanup(bead_id, 'base_sync', expected.reason, null);
     }
@@ -2601,6 +2604,47 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Resume every durable nonterminal deployment on server startup. The
+   * persisted target/floor pair is the authority: resolving either from the
+   * current checkout or GitHub could silently turn a crash recovery into a new
+   * deployment. `runCleanup` continues the remaining sweep only after the same
+   * Reconciler attempt proves its receipt.
+   *
+   * @returns {Promise<{ bead_id: string, result: { ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null } }[]>}
+   */
+  async function resumePersistedReconciles() {
+    const q = deps.store.snapshot(workspace);
+    const records = Object.values(q.reconcile || {}).filter(
+      (record) =>
+        record && record.stage !== 'complete' && record.stage !== 'failed'
+    );
+    /** @type {{ bead_id: string, result: any }[]} */
+    const results = [];
+    for (const record of records) {
+      const bead_id = record.bead_id;
+      if (in_flight.has(bead_id)) {
+        results.push({
+          bead_id,
+          result: { ok: false, step: null, reason: 'action_in_flight' }
+        });
+        continue;
+      }
+      in_flight.add(bead_id);
+      try {
+        const result = await runCleanup(bead_id, {
+          target_base: record.target_base,
+          merge_sha: record.merged_floor_sha
+        });
+        results.push({ bead_id, result });
+      } finally {
+        in_flight.delete(bead_id);
+        clearStep(bead_id);
+      }
+    }
+    return results;
+  }
+
+  /**
    * Run the manual [정리] replay while the caller owns the bead action lock.
    *
    * @param {string} bead_id
@@ -2866,6 +2910,7 @@ export function createPrActions(deps) {
     discard,
     isInFlight: (/** @type {string} */ bead_id) => in_flight.has(bead_id),
     cleanupObservedMerge,
+    resumePersistedReconciles,
     retryCleanup,
     rollbackBaseSync,
     rollbackVerify,

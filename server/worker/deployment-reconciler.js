@@ -233,10 +233,11 @@ export function validateDeploymentReceipt(input) {
  *   candidate_sha: string,
  *   source_path: string,
  *   previous_marker?: string|null,
- *   action_outcomes?: Record<string, any>[]
+ *   action_outcomes?: Record<string, any>[],
+ *   completed_at?: string
  * }} input
  */
-function workspaceReceipt(input) {
+export function createDeploymentReceipt(input) {
   const action_outcomes =
     Array.isArray(input.action_outcomes) && input.action_outcomes.length > 0
       ? input.action_outcomes
@@ -265,7 +266,7 @@ function workspaceReceipt(input) {
       source_head: input.candidate_sha
     },
     outcome: 'success',
-    completed_at: new Date().toISOString()
+    completed_at: input.completed_at || new Date().toISOString()
   };
 }
 
@@ -1117,7 +1118,7 @@ export function createDeploymentReconciler(deps) {
           writeJsonAtomic(
             fs_impl,
             receipt_path,
-            workspaceReceipt({
+            createDeploymentReceipt({
               repo: deps.repo,
               target_remote,
               target_base: input.target_base,

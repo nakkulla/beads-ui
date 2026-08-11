@@ -5,10 +5,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  readRuntimeMarker as readRuntimeMarkerFile,
+  runtimeIdentitiesEqual,
+  validateRuntimeIdentity
+} from '../server/runtime-identity.js';
+import {
   candidateInstallMarkerPath,
   managedJournalPath,
   runtimePointerPath
 } from '../server/worker/deployment-paths.js';
+import {
+  createDeploymentReceipt,
+  validateDeploymentReceipt
+} from '../server/worker/deployment-reconciler.js';
 import {
   advanceManagedState,
   createPreparedState,
@@ -26,6 +35,7 @@ const HELPER_ACK_TIMEOUT_MS = 15_000;
 const HELPER_ACK_POLL_MS = 25;
 const HANDOFF_TIMEOUT_MS = 600_000;
 const HANDOFF_POLL_MS = 100;
+const RUNTIME_HEALTH_TIMEOUT_MS = 5_000;
 const SAFE_ENV_KEYS = [
   'PATH',
   'HOME',
@@ -128,6 +138,148 @@ function helperEnvironment(environment) {
     }
   }
   return result;
+}
+
+/**
+ * Read the current server's live identity from its health endpoint. HTTP
+ * success alone is insufficient: the caller still compares the returned
+ * process identity with the private startup marker.
+ *
+ * @param {any} identity
+ * @param {typeof fetch} [fetch_impl]
+ */
+export async function readRuntimeHealth(identity, fetch_impl = fetch) {
+  if (!validateRuntimeIdentity(identity)) {
+    return { ok: false, reason: 'runtime_identity_mismatch' };
+  }
+  const host = identity.host.includes(':')
+    ? `[${identity.host}]`
+    : identity.host;
+  const url = `http://${host}:${identity.port}${identity.health_path}`;
+  try {
+    const response = await fetch_impl(url, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(RUNTIME_HEALTH_TIMEOUT_MS)
+    });
+    if (!response.ok) {
+      return { ok: false, reason: 'runtime_health_red' };
+    }
+    const body = await response.json();
+    if (!isRecord(body) || body.ok !== true) {
+      return { ok: false, reason: 'runtime_health_red' };
+    }
+    return { ok: true, runtime: body.runtime };
+  } catch {
+    return { ok: false, reason: 'runtime_health_red' };
+  }
+}
+
+/**
+ * Write the terminal protocol-v1 receipt only after marker, pointer, journal,
+ * and live health all prove one exact candidate process.
+ *
+ * @param {{ binding: Binding, release_realpath: string, lockfile_sha256: string, state: any, previous_marker: string|null, readRuntimeMarker?: typeof readRuntimeMarkerFile, readRuntimeHealth?: typeof readRuntimeHealth, now?: () => Date }} input
+ */
+async function recoverRuntimeReceipt(input) {
+  const readMarker = input.readRuntimeMarker || readRuntimeMarkerFile;
+  const marker = readMarker();
+  if (
+    !marker.ok ||
+    !validateRuntimeIdentity(marker.identity) ||
+    marker.identity.source_repo !== input.release_realpath ||
+    marker.identity.source_sha !== input.binding.candidate_sha
+  ) {
+    return { ok: false, reason: 'runtime_identity_mismatch' };
+  }
+  const readHealth = input.readRuntimeHealth || readRuntimeHealth;
+  const health = await readHealth(marker.identity);
+  if (!health.ok) {
+    return {
+      ok: false,
+      reason:
+        health.reason === 'runtime_identity_mismatch'
+          ? 'runtime_identity_mismatch'
+          : 'runtime_health_red'
+    };
+  }
+  if (!runtimeIdentitiesEqual(marker.identity, health.runtime)) {
+    return { ok: false, reason: 'runtime_identity_mismatch' };
+  }
+  const action_outcomes = [
+    {
+      action: 'dependency_install',
+      outcome: 'success',
+      candidate_sha: input.binding.candidate_sha,
+      lockfile_sha256: input.lockfile_sha256
+    },
+    {
+      action: 'pointer_cutover',
+      outcome: 'success',
+      pointer_path: input.binding.pointer_path,
+      release_path: input.release_realpath
+    },
+    {
+      action: 'restart_handoff',
+      outcome: 'success',
+      journal_stage: input.state.stage,
+      generation: input.state.generation
+    },
+    {
+      action: 'runtime_identity_readback',
+      outcome: 'success',
+      pid: marker.identity.pid,
+      process_started_at: marker.identity.process_started_at,
+      instance_id: marker.identity.instance_id,
+      source_repo: marker.identity.source_repo,
+      source_sha: marker.identity.source_sha,
+      host: marker.identity.host,
+      port: marker.identity.port
+    }
+  ];
+  const receipt = createDeploymentReceipt({
+    repo: input.binding.repo,
+    target_remote: input.binding.target_remote,
+    target_base: input.binding.target_base,
+    attempt_id: input.binding.attempt_id,
+    merged_floor_sha: input.binding.merged_floor_sha,
+    candidate_sha: input.binding.candidate_sha,
+    source_path: input.binding.release_path,
+    previous_marker: input.previous_marker,
+    action_outcomes,
+    completed_at: (input.now || (() => new Date()))().toISOString()
+  });
+  try {
+    writePrivateJsonAtomic(input.binding.receipt_path, receipt);
+  } catch {
+    return {
+      ok: false,
+      reason: 'receipt_write_failed',
+      runtime_proven: true
+    };
+  }
+  const readback = validateDeploymentReceipt({
+    receipt_path: input.binding.receipt_path,
+    repo: input.binding.repo,
+    target_remote: input.binding.target_remote,
+    target_base: input.binding.target_base,
+    attempt_id: input.binding.attempt_id,
+    merged_floor_sha: input.binding.merged_floor_sha,
+    candidate_sha: input.binding.candidate_sha,
+    source_path: input.binding.release_path
+  });
+  if (!readback.ok) {
+    return {
+      ok: false,
+      reason: 'receipt_readback_failed',
+      runtime_proven: true
+    };
+  }
+  return {
+    ok: true,
+    status: 'runtime_recovered',
+    receipt_path: input.binding.receipt_path,
+    receipt_digest: readback.digest
+  };
 }
 
 /**
@@ -587,6 +739,31 @@ export async function runAdapter(input = {}) {
   if (!verified.ok) {
     return verified;
   }
+  const existing_receipt = validateDeploymentReceipt({
+    receipt_path: binding.receipt_path,
+    repo: binding.repo,
+    target_remote: binding.target_remote,
+    target_base: binding.target_base,
+    attempt_id: binding.attempt_id,
+    merged_floor_sha: binding.merged_floor_sha,
+    candidate_sha: binding.candidate_sha,
+    source_path: binding.release_path
+  });
+  if (existing_receipt.ok) {
+    return {
+      ok: true,
+      status: 'receipt_reused',
+      receipt_path: binding.receipt_path,
+      receipt_digest: existing_receipt.digest
+    };
+  }
+  if (existing_receipt.reason !== 'receipt_missing') {
+    return {
+      ok: false,
+      reason: existing_receipt.reason,
+      ...(existing_receipt.detail ? { detail: existing_receipt.detail } : {})
+    };
+  }
   const current_pointer = inspectManagedPointer(binding);
   if (!current_pointer.ok) {
     return current_pointer;
@@ -600,12 +777,55 @@ export async function runAdapter(input = {}) {
   if (!current.ok && current.reason !== 'state_absent') {
     return current;
   }
+  const previous_marker = current_pointer.present
+    ? path.basename(current_pointer.target)
+    : null;
+  const recoverRuntime = (/** @type {any} */ state) =>
+    recoverRuntimeReceipt({
+      binding,
+      release_realpath: verified.release_realpath,
+      lockfile_sha256: verified.lockfile_sha256,
+      state,
+      previous_marker,
+      ...(input.readRuntimeMarker
+        ? { readRuntimeMarker: input.readRuntimeMarker }
+        : {}),
+      ...(input.readRuntimeHealth
+        ? { readRuntimeHealth: input.readRuntimeHealth }
+        : {}),
+      ...(input.now ? { now: input.now } : {})
+    });
+  if (
+    current.ok &&
+    current_pointer.present &&
+    current_pointer.target === verified.release_realpath
+  ) {
+    const recovered = await recoverRuntime(current.state);
+    if (recovered.ok || recovered.runtime_proven === true) {
+      return recovered;
+    }
+    if (
+      current.state.stage === 'restart_committed' ||
+      current.state.stage === 'restart_launched'
+    ) {
+      return {
+        ...recovered,
+        status: 'awaiting_runtime',
+        state: current.state
+      };
+    }
+  }
   if (
     current.ok &&
     (current.state.stage === 'restart_committed' ||
       current.state.stage === 'restart_launched')
   ) {
-    return { ok: false, status: 'awaiting_runtime', state: current.state };
+    return {
+      ok: false,
+      status: 'awaiting_runtime',
+      reason: 'runtime_identity_mismatch',
+      state: current.state
+    };
   }
   const process_controller =
     input.processController || createProcessController();
@@ -678,7 +898,14 @@ export async function runAdapter(input = {}) {
       current.state.stage === 'restart_committed' ||
       current.state.stage === 'restart_launched'
     ) {
-      return { ok: false, status: 'awaiting_runtime', state: current.state };
+      const recovered = await recoverRuntime(current.state);
+      return recovered.ok || recovered.runtime_proven === true
+        ? recovered
+        : {
+            ...recovered,
+            status: 'awaiting_runtime',
+            state: current.state
+          };
     }
     if (current.state.stage === 'restart_prerecorded') {
       const observed = process_controller.probe(current.state.helper);
@@ -723,6 +950,10 @@ export async function runAdapter(input = {}) {
   });
   if (!pointer.ok) {
     return pointer;
+  }
+  const recovered = await recoverRuntime(prepared.state);
+  if (recovered.ok || recovered.runtime_proven === true) {
+    return recovered;
   }
   const helper_path = path.resolve(fileURLToPath(import.meta.url));
   const helper_args = [

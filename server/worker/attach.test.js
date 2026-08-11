@@ -661,17 +661,24 @@ describe('worker/attach construction + live loop (F1)', () => {
     vi.spyOn(att.scheduler, 'recoverControls').mockImplementation(async () => {
       order.push('control');
     });
+    vi.spyOn(att.prActions, 'resumePersistedReconciles').mockImplementation(
+      async () => {
+        order.push('deploy-resume');
+        return [];
+      }
+    );
     __registerWorkerAttachmentForTest(WS, att);
 
     initWorkerRuntime({ workspaces: [WS] });
-    await waitFor(() => order.includes('reconcile'));
+    await waitFor(() => order.includes('deploy-resume'));
 
     expect(order).toEqual([
       'discard-fence',
       'control',
       'monitor',
       'discard-drive',
-      'reconcile'
+      'reconcile',
+      'deploy-resume'
     ]);
   });
 

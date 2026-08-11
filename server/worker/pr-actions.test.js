@@ -2626,6 +2626,46 @@ describe('post-merge cleanup — ref operations hold the topology lock (§8)', (
 });
 
 describe('post-merge cleanup — Deployment Reconciler integration (UI-16ep)', () => {
+  test('resumes persisted nonterminal reconciles with the same durable binding', async () => {
+    const floor = 'c'.repeat(40);
+    const store = seedStore();
+    store.enqueueReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-1',
+      target_base: 'release',
+      merged_floor_sha: floor
+    });
+    const reconcile = vi.fn(async () => ({
+      ok: true,
+      status: 'complete',
+      candidate_sha: 'd'.repeat(40),
+      base_sync: null
+    }));
+    const resolveBase = vi.fn(async () => {
+      throw new Error('startup resume must use the durable target base');
+    });
+    const h = makeActions({
+      store,
+      resolveBase,
+      deploymentReconciler: { reconcile }
+    });
+
+    const results = await h.actions.resumePersistedReconciles();
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        bead_id: BEAD,
+        result: expect.objectContaining({ ok: true })
+      })
+    ]);
+    expect(resolveBase).not.toHaveBeenCalled();
+    expect(reconcile).toHaveBeenCalledWith({
+      bead_id: BEAD,
+      target_base: 'release',
+      merged_floor_sha: floor
+    });
+  });
+
   test('keeps the workspace adapter on the candidate pinned before checkout sync', async () => {
     const merge_sha = 'c'.repeat(40);
     const candidate_sha = 'a'.repeat(40);

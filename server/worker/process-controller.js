@@ -89,6 +89,37 @@ function wait(delay_ms) {
 }
 
 /**
+ * Observe the exact OS start time for a live process without requiring it to
+ * lead a process group.
+ *
+ * @param {number} pid
+ * @param {{ inspect?: typeof inspectProcess }} [deps]
+ * @returns {{ ok: true, identity: { pid: number, process_started_at: number } }|{ ok: false, reason: string }}
+ */
+export function observeProcessIdentity(pid, deps = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { ok: false, reason: 'pid_invalid' };
+  }
+  const observed = (deps.inspect || inspectProcess)(pid);
+  if (!observed.ok) {
+    return { ok: false, reason: observed.reason || 'inspect_failed' };
+  }
+  if (!observed.alive) {
+    return { ok: false, reason: 'process_gone' };
+  }
+  if (
+    typeof observed.started_at !== 'number' ||
+    !Number.isFinite(observed.started_at)
+  ) {
+    return { ok: false, reason: 'start_time_unknown' };
+  }
+  return {
+    ok: true,
+    identity: { pid, process_started_at: observed.started_at }
+  };
+}
+
+/**
  * @param {{ inspect?: typeof inspectProcess, groupAlive?: typeof processGroupAlive, signal?: (target: number, signal: NodeJS.Signals|number) => void, wait?: (delay_ms: number) => Promise<void>, start_tolerance_ms?: number, term_grace_ms?: number, kill_grace_ms?: number }} [deps]
  */
 export function createProcessController(deps = {}) {

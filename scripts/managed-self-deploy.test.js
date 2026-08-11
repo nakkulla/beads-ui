@@ -10,6 +10,7 @@ import {
   releasePath,
   runtimePointerPath
 } from '../server/worker/deployment-paths.js';
+import { validateDeploymentReceipt } from '../server/worker/deployment-reconciler.js';
 import {
   advanceManagedState,
   createPreparedState,
@@ -18,6 +19,7 @@ import {
 } from '../server/worker/managed-state.js';
 import {
   bindingFromEnv,
+  readRuntimeHealth,
   runAdapter,
   runRestartHelper,
   waitForRestartHandoff
@@ -51,6 +53,25 @@ function binding() {
     throw new Error(parsed.reason);
   }
   return parsed.binding;
+}
+
+/**
+ * @param {Record<string, any>} [overrides]
+ */
+function runtimeIdentity(overrides = {}) {
+  return {
+    protocol_version: 1,
+    pid: 77,
+    process_started_at: 1_000,
+    started_at: '2026-08-11T00:00:00.000Z',
+    instance_id: '11111111-2222-4333-8444-555555555555',
+    source_repo: fs.realpathSync(release),
+    source_sha: SHA,
+    host: '127.0.0.1',
+    port: 3000,
+    health_path: '/healthz',
+    ...overrides
+  };
 }
 
 /**
@@ -704,6 +725,168 @@ describe('scripts/managed-self-deploy', () => {
 
     expect(result).toMatchObject({ ok: false, status: 'awaiting_runtime' });
     expect(harness.runInstall).not.toHaveBeenCalled();
+    expect(harness.spawnHelper).not.toHaveBeenCalled();
+  });
+
+  test('recovers a receipt from an exact committed runtime without another restart', async () => {
+    seedCommitted();
+    const harness = effectHarness();
+    const identity = runtimeIdentity();
+
+    const result = await runWith(harness, {
+      readRuntimeMarker: vi.fn(() => ({ ok: true, identity })),
+      readRuntimeHealth: vi.fn(async () => ({
+        ok: true,
+        runtime: identity
+      })),
+      now: () => new Date('2026-08-11T00:01:00.000Z')
+    });
+
+    expect(result).toMatchObject({ ok: true, status: 'runtime_recovered' });
+    expect(harness.runInstall).not.toHaveBeenCalled();
+    expect(harness.spawnHelper).not.toHaveBeenCalled();
+    const exact_binding = binding();
+    const receipt = validateDeploymentReceipt({
+      receipt_path: exact_binding.receipt_path,
+      repo: exact_binding.repo,
+      target_remote: exact_binding.target_remote,
+      target_base: exact_binding.target_base,
+      attempt_id: exact_binding.attempt_id,
+      merged_floor_sha: exact_binding.merged_floor_sha,
+      candidate_sha: exact_binding.candidate_sha,
+      source_path: exact_binding.release_path
+    });
+    expect(receipt.ok).toBe(true);
+    expect(receipt.ok && receipt.receipt.action_outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: 'dependency_install',
+          outcome: 'success'
+        }),
+        expect.objectContaining({
+          action: 'pointer_cutover',
+          outcome: 'success'
+        }),
+        expect.objectContaining({
+          action: 'restart_handoff',
+          outcome: 'success'
+        }),
+        expect.objectContaining({
+          action: 'runtime_identity_readback',
+          outcome: 'success'
+        })
+      ])
+    );
+    const receipt_before = fs.readFileSync(exact_binding.receipt_path);
+    const readRuntimeMarker = vi.fn(() => ({ ok: true, identity }));
+    const readRuntimeHealth = vi.fn(async () => ({
+      ok: true,
+      runtime: identity
+    }));
+
+    const reused = await runWith(harness, {
+      readRuntimeMarker,
+      readRuntimeHealth,
+      now: () => new Date('2026-08-11T00:02:00.000Z')
+    });
+
+    expect(reused).toMatchObject({ ok: true, status: 'receipt_reused' });
+    expect(fs.readFileSync(exact_binding.receipt_path)).toEqual(receipt_before);
+    expect(readRuntimeMarker).not.toHaveBeenCalled();
+    expect(readRuntimeHealth).not.toHaveBeenCalled();
+  });
+
+  test('installs and cuts over without restart when the exact candidate is already live', async () => {
+    const harness = effectHarness();
+    const identity = runtimeIdentity();
+
+    const result = await runWith(harness, {
+      readRuntimeMarker: vi.fn(() => ({ ok: true, identity })),
+      readRuntimeHealth: vi.fn(async () => ({
+        ok: true,
+        runtime: identity
+      }))
+    });
+
+    expect(result).toMatchObject({ ok: true, status: 'runtime_recovered' });
+    expect(harness.runInstall).toHaveBeenCalledOnce();
+    expect(harness.spawnHelper).not.toHaveBeenCalled();
+    expect(fs.realpathSync(runtimePointerPath())).toBe(
+      fs.realpathSync(release)
+    );
+  });
+
+  test('reads one exact live runtime from the marker address', async () => {
+    const identity = runtimeIdentity();
+    const fetch_impl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true, runtime: identity })
+    }));
+
+    const result = await readRuntimeHealth(
+      identity,
+      /** @type {any} */ (fetch_impl)
+    );
+
+    expect(result).toEqual({ ok: true, runtime: identity });
+    expect(fetch_impl).toHaveBeenCalledWith(
+      'http://127.0.0.1:3000/healthz',
+      expect.objectContaining({ headers: { accept: 'application/json' } })
+    );
+  });
+
+  test.each([
+    ['marker protocol', { marker: { protocol_version: 2 } }],
+    ['marker SHA', { marker: { source_sha: 'c'.repeat(40) } }],
+    ['marker source path', { marker: { source_repo: repo } }],
+    ['live PID', { live: { pid: 78 } }],
+    ['live process start', { live: { process_started_at: 2_000 } }],
+    [
+      'live instance',
+      { live: { instance_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' } }
+    ],
+    ['live source path', { live: { source_repo: repo } }],
+    ['live SHA', { live: { source_sha: 'c'.repeat(40) } }],
+    ['live host', { live: { host: 'localhost' } }],
+    ['live port', { live: { port: 3001 } }]
+  ])('rejects a committed runtime with a mismatched %s', async (_, changes) => {
+    seedCommitted();
+    const harness = effectHarness();
+    const marker = runtimeIdentity('marker' in changes ? changes.marker : {});
+    const live = runtimeIdentity('live' in changes ? changes.live : {});
+
+    const result = await runWith(harness, {
+      readRuntimeMarker: vi.fn(() => ({ ok: true, identity: marker })),
+      readRuntimeHealth: vi.fn(async () => ({ ok: true, runtime: live }))
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'runtime_identity_mismatch'
+    });
+    expect(fs.existsSync(environment.BDUI_DEPLOY_RECEIPT_PATH)).toBe(false);
+    expect(harness.runInstall).not.toHaveBeenCalled();
+    expect(harness.spawnHelper).not.toHaveBeenCalled();
+  });
+
+  test('rejects a committed runtime whose live health is red', async () => {
+    seedCommitted();
+    const harness = effectHarness();
+    const identity = runtimeIdentity();
+
+    const result = await runWith(harness, {
+      readRuntimeMarker: vi.fn(() => ({ ok: true, identity })),
+      readRuntimeHealth: vi.fn(async () => ({
+        ok: false,
+        reason: 'runtime_health_red'
+      }))
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'runtime_health_red'
+    });
+    expect(fs.existsSync(environment.BDUI_DEPLOY_RECEIPT_PATH)).toBe(false);
     expect(harness.spawnHelper).not.toHaveBeenCalled();
   });
 

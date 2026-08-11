@@ -93,8 +93,8 @@ export function defaultWorkerStatus(root_dir) {
  * Run readiness checks and compute overall health. `worker` reflects the live
  * Worker subsystem: auto_advance and the running session count.
  *
- * @param {{ root_dir?: string, bd_probe?: HealthProbe, db_probe?: HealthProbe, worker_status?: () => WorkerStatus }} [options]
- * @returns {Promise<{ ok: boolean, checks: { bd: boolean, db: boolean, worker: WorkerStatus } }>}
+ * @param {{ root_dir?: string, bd_probe?: HealthProbe, db_probe?: HealthProbe, worker_status?: () => WorkerStatus, runtime_identity?: () => any }} [options]
+ * @returns {Promise<{ ok: boolean, checks: { bd: boolean, db: boolean, worker: WorkerStatus }, runtime: any|null }>}
  */
 export async function checkHealth(options = {}) {
   const root_dir = options.root_dir || process.cwd();
@@ -107,5 +107,11 @@ export async function checkHealth(options = {}) {
     ? options.worker_status()
     : defaultWorkerStatus(root_dir);
   const checks = { bd, db, worker };
-  return { ok: bd && db, checks };
+  let runtime = null;
+  try {
+    runtime = options.runtime_identity ? options.runtime_identity() : null;
+  } catch {
+    runtime = null;
+  }
+  return { ok: bd && db, checks, runtime };
 }
