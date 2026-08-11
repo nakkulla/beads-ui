@@ -180,6 +180,23 @@ describe('worker-queue snapshot workspace guard', () => {
     expect(waitingRowCount()).toBe(1);
   });
 
+  test('accepts an older queue snapshot with no bead_labels projection', async () => {
+    CLIENT = makeClient({ current: '/repo-a' });
+    bootstrap(setupShell());
+    await settle();
+
+    // `queueSnapshotFor` intentionally omits bead_labels: an older server must
+    // leave execution mode unknown without dropping the queue snapshot.
+    CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
+    await settle();
+
+    expect(waitingRowCount()).toBe(1);
+    expect(
+      document.querySelector('#worker-pane-queue .worker-mini__serial')
+        ?.textContent
+    ).toContain('실행 방식 확인 중');
+  });
+
   test('applies the bootstrap snapshot that arrives before a workspace is known', async () => {
     CLIENT = makeClient({ current: null });
     bootstrap(setupShell());
