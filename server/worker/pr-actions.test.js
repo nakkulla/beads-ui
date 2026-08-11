@@ -695,6 +695,98 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
   });
 });
 
+describe('merge click — driver-approved latest probe (UI-yup9)', () => {
+  test.each([
+    ['CLEAN', prOf({ merge_state_status: 'CLEAN' }), 'clean'],
+    ['MERGED', prOf({ state: 'MERGED' }), 'merged'],
+    ['BEHIND', prOf({ merge_state_status: 'BEHIND' }), 'behind'],
+    [
+      'DIRTY',
+      prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' }),
+      'dirty'
+    ]
+  ])('classifies latest %s without an effect', async (_label, detail, kind) => {
+    const h = makeActions({ details: [detail] });
+
+    const result = await h.actions.probeMergeability(BEAD);
+
+    expect(result).toMatchObject({ ok: true, kind, head_sha: 'sha-aaa' });
+    expect(h.gh.updateBranch).not.toHaveBeenCalled();
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('refuses DIRTY without dispatch when the driver disallows it', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+
+    const result = await h.actions.merge(BEAD, {
+      allow_conflict_resolution: false
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'conflict_resolution_required'
+    });
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('dispatches one resolver for the exact re-probed DIRTY identity', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+    const resolution_wait = { queue_bead_id: BEAD, wait_ms: 1_800_000 };
+
+    const result = await h.actions.dispatchConflict(
+      BEAD,
+      {
+        head_sha: 'sha-aaa',
+        base_ref: 'main'
+      },
+      resolution_wait
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: 'conflict_resolution',
+      attempt_id: 'a2'
+    });
+    expect(h.scheduler.resolveConflict).toHaveBeenCalledTimes(1);
+    expect(h.scheduler.resolveConflict).toHaveBeenCalledWith(
+      WS,
+      BEAD,
+      resolution_wait
+    );
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses a moved DIRTY identity without dispatching', async () => {
+    const h = makeActions({
+      details: [
+        prOf({
+          head_sha: 'sha-new',
+          mergeable: 'CONFLICTING',
+          merge_state_status: 'DIRTY'
+        })
+      ]
+    });
+
+    const result = await h.actions.dispatchConflict(BEAD, {
+      head_sha: 'sha-old',
+      base_ref: 'main'
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'mergeability_identity_changed'
+    });
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+});
+
 describe('merge click — a zero exit is not a merge (§6)', () => {
   test('leaves the bead in pr_wait when a merge queue only enqueued the PR', async () => {
     // `gh pr merge` returned 0, but GitHub still reports the PR OPEN: a merge

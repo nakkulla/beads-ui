@@ -9054,6 +9054,51 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
     expect(attempt.system_prompt).toBe(sent.system_prompt);
   });
 
+  test('prerecords the resolver and merge wait before launch', async () => {
+    const recorder = makeRecordingClaudeRunner();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      makeRunner: recorder.factory
+    });
+    seedPrWait(env.store, 'B1');
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-B1',
+      patch: {
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-orig',
+        finished_at: 50
+      }
+    });
+    env.store.enqueueMerge(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      entries: [{ bead_id: 'B1' }]
+    });
+
+    const res = await env.scheduler.resolveConflict(WS, 'B1', {
+      queue_bead_id: 'B1',
+      wait_ms: 100
+    });
+
+    expect(res.ok).toBe(true);
+    const q = env.store.snapshot(WS);
+    expect(q.merge_queue[0].resolution).toEqual({
+      attempt_id: res.attempt_id,
+      subject_bead_id: 'B1',
+      deadline_at: 1100,
+      state: 'waiting',
+      yielded_at: null,
+      settled_at: null
+    });
+    expect(q.attempts[/** @type {string} */ (res.attempt_id)]).toMatchObject({
+      bead_id: 'B1',
+      status: 'running',
+      conflict_resolution: true,
+      started_at: 1000
+    });
+  });
+
   test('records the disposition prompts and its own guard variant', async () => {
     const recorder = makeRecordingClaudeRunner();
     const env = setup({

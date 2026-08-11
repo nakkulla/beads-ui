@@ -16,10 +16,9 @@
  * - `merged` / `updated_and_merged` / `already_merged` → done, dequeue.
  *   `ok:false` there means the cleanup stopped part-way; that is already a
  *   durable `cleanup_failed` record, so the item still leaves the queue.
- * - `conflict_resolution` → a session was dispatched. Wait for it to END, count
- *   the round, and merge again. The queue holding still guarantees nothing else
- *   moves the base while that session works, which is what stops the
- *   resolve→re-conflict loop the manual flow had.
+ * - `conflict_resolution` → bind the exact attempt durably. It holds the turn
+ *   until its absolute deadline, then yields without ending the item; the exact
+ *   late terminal leaf is promoted for a fresh gate after the active merge.
  * - `merge_unconfirmed` → the squash command exited 0 but the PR is not
  *   OBSERVED merged (merge queue / `--auto`, or an unreadable state). Neither
  *   done nor failed, so the item KEEPS the head and the driver re-observes it.
@@ -34,11 +33,9 @@
  * fresh `resolution_rounds` budget. Without the exclusion, "gave up after 2
  * resolution rounds" would mean "2 more rounds, forever".
  *
- * Durable vs memory: the queue and each item's consumed resolution rounds live
- * in `queue.json` because merging beads-ui DEPLOYS beads-ui, which restarts this
- * process mid-queue. Everything else — which item is active, why one failed, the
- * waiting clocks — is memory: after a restart nothing is in flight, so a fresh
- * clock is the honest reading.
+ * The queue, consumed rounds, resolution identity, deadline, and settlement
+ * state live in `queue.json` because merging beads-ui restarts this process.
+ * Only the currently active turn and transient failure decoration are memory.
  *
  * @import { MergeClickResult } from './pr-actions.js'
  */
@@ -52,10 +49,8 @@
 export const RESOLUTION_ROUND_CAP = 2;
 
 /**
- * How long the driver waits for a dispatched resolution session to END before
- * giving up on the item (spec §2). The session itself is NOT stopped — the
- * queue moves on and leaves it running, because killing a session that is
- * mid-resolution destroys work no one asked to throw away.
+ * How long a dispatched resolution owns the queue turn before yielding it.
+ * Neither the session nor the item terminates at this deadline.
  *
  * @type {number}
  */
@@ -82,6 +77,14 @@ export const UNCONFIRMED_WAIT_MS = 30 * 60 * 1000;
  */
 const RESOLUTION_POLL_MS = 30 * 1000;
 
+/** @type {Set<string>} */
+const TERMINAL_ATTEMPT_STATUSES = new Set([
+  'done',
+  'failed',
+  'orphaned',
+  'stopped'
+]);
+
 /**
  * @typedef {Object} MergeQueueState
  * @property {string|null} active - The item the driver is working on right now.
@@ -97,6 +100,8 @@ const RESOLUTION_POLL_MS = 30 * 1000;
  *   workspace: string,
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
  *   merge: (bead_id: string) => Promise<MergeClickResult>,
+ *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, external: boolean }>,
+ *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number }) => Promise<MergeClickResult>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
@@ -106,6 +111,7 @@ const RESOLUTION_POLL_MS = 30 * 1000;
  *   notifyChanged?: (workspace: string) => void,
  *   now?: () => number,
  *   setTimer?: (fn: () => void, ms: number) => any,
+ *   setResolutionPollTimer?: (fn: () => void, ms: number) => any,
  *   clearTimer?: (handle: any) => void,
  *   log?: (...args: any[]) => void,
  *   resolution_round_cap?: number,
@@ -129,6 +135,7 @@ export function createMergeQueue(deps) {
     });
   const clearTimer =
     deps.clearTimer || ((/** @type {any} */ h) => clearTimeout(h));
+  const setResolutionPollTimer = deps.setResolutionPollTimer || setTimer;
   const log = deps.log || (() => {});
   // The head SHA an exclusion is pinned to (UI-yk55 §3.3). A cache read, not a
   // network call: the driver adds no `gh` traffic of its own.
@@ -172,6 +179,8 @@ export function createMergeQueue(deps) {
   let unsubscribe = null;
   /** @type {(() => void)|null} */
   let wake_waiter = null;
+  /** @type {any|null} */
+  let resolution_poll_timer = null;
 
   function notify() {
     if (typeof deps.notifyChanged === 'function') {
@@ -195,12 +204,28 @@ export function createMergeQueue(deps) {
   }
 
   /**
-   * @returns {{ bead_id: string, resolution_rounds: number }|null}
+   * @returns {any|null}
    */
   function headEntry() {
     const q = snapshot();
     const lane = q && Array.isArray(q.merge_queue) ? q.merge_queue : [];
-    return lane.length > 0 ? lane[0] : null;
+    const invalid = lane.find((/** @type {any} */ entry) => {
+      if (entry.resolution?.state === 'invalid') {
+        return true;
+      }
+      if (entry.resolution?.state !== 'yielded') {
+        return false;
+      }
+      return resolutionLineage(q, entry).state === 'invalid';
+    });
+    if (invalid) {
+      return invalid;
+    }
+    return (
+      lane.find(
+        (/** @type {any} */ entry) => entry.resolution?.state !== 'yielded'
+      ) || null
+    );
   }
 
   /**
@@ -259,70 +284,114 @@ export function createMergeQueue(deps) {
   }
 
   /**
-   * The bead's own RUNNING conflict-resolution attempt, if one exists. This is
-   * what a boot resume finds when the previous process died with a session in
-   * flight — and it must be judged BEFORE `merge()` is called again, because
-   * `scheduler.resolveConflict` refuses a running bead with `bead_running`,
-   * which would look like a resolution failure instead of the wait it is.
+   * Resolve one persisted wait to its exact linear resume leaf.
    *
-   * @param {string} bead_id
-   * @returns {string|null} The running attempt's id.
+   * @param {any} q
+   * @param {any} entry
+   * @returns {{ state: 'active'|'terminal'|'invalid', leaf: any|null, reason: string|null }}
    */
-  function runningResolutionAttempt(bead_id) {
-    const q = snapshot();
-    for (const [attempt_id, a] of Object.entries(
-      (q && q.attempts) || /** @type {Record<string, any>} */ ({})
-    )) {
-      const rec = /** @type {any} */ (a);
-      if (
-        rec &&
-        rec.bead_id === bead_id &&
-        rec.status === 'running' &&
-        rec.conflict_resolution === true
-      ) {
-        return attempt_id;
-      }
+  function resolutionLineage(q, entry) {
+    const resolution = entry?.resolution;
+    if (!resolution || resolution.state === 'invalid') {
+      return {
+        state: 'invalid',
+        leaf: null,
+        reason: 'resolution_wait_invalid'
+      };
     }
-    return null;
+    const attempts = Object.values(q?.attempts || {});
+    let leaf = q?.attempts?.[resolution.attempt_id];
+    if (!leaf) {
+      return {
+        state: 'invalid',
+        leaf: null,
+        reason: 'resolution_attempt_missing'
+      };
+    }
+    const visited = new Set();
+    while (leaf) {
+      if (visited.has(leaf.attempt_id)) {
+        return {
+          state: 'invalid',
+          leaf,
+          reason: 'resolution_lineage_ambiguous'
+        };
+      }
+      visited.add(leaf.attempt_id);
+      if (leaf.bead_id !== resolution.subject_bead_id) {
+        return {
+          state: 'invalid',
+          leaf,
+          reason: 'resolution_subject_mismatch'
+        };
+      }
+      if (leaf.conflict_resolution !== true) {
+        return {
+          state: 'invalid',
+          leaf,
+          reason: 'resolution_attempt_not_conflict'
+        };
+      }
+      const children = attempts.filter(
+        (/** @type {any} */ attempt) =>
+          attempt?.resumed_from === leaf.attempt_id
+      );
+      if (children.length > 1) {
+        return {
+          state: 'invalid',
+          leaf,
+          reason: 'resolution_lineage_ambiguous'
+        };
+      }
+      if (children.length === 0) {
+        break;
+      }
+      leaf = children[0];
+    }
+    if (leaf.status === 'running' || leaf.status === 'paused') {
+      return { state: 'active', leaf, reason: null };
+    }
+    if (TERMINAL_ATTEMPT_STATUSES.has(leaf.status || '')) {
+      return { state: 'terminal', leaf, reason: null };
+    }
+    return {
+      state: 'invalid',
+      leaf,
+      reason: 'resolution_attempt_status_invalid'
+    };
   }
 
   /**
-   * Whether the bead's resolution session is still in flight.
+   * Find one unbound live resolution leaf left by a pre-journal process.
    *
-   * `paused` counts as in flight, not as ended. A user who pauses a resolution
-   * session has not finished resolving anything, and calling `merge()` there
-   * would find the PR still DIRTY and dispatch a SECOND session from the paused
-   * one — restarting by itself the session a human deliberately stopped. Waiting
-   * it out (and timing out) is what leaves that decision with the human.
-   *
-   * @param {string} bead_id
-   * @param {string|null} attempt_id - Null watches ANY resolution attempt of
-   * the bead (the boot-resume case, where the driver did not dispatch it).
-   * @returns {boolean}
+   * @param {string} subject_bead_id
+   * @returns {{ attempt_id: string|null, reason: string|null }}
    */
-  function resolutionStillRunning(bead_id, attempt_id) {
-    if (!attempt_id) {
-      return runningResolutionAttempt(bead_id) !== null;
-    }
+  function restorableResolutionAttempt(subject_bead_id) {
     const q = snapshot();
-    const rec = q && q.attempts ? q.attempts[attempt_id] : null;
-    if (!rec) {
-      return false;
-    }
-    if (rec.status === 'running') {
-      return true;
-    }
-    if (rec.status !== 'paused') {
-      return false;
-    }
-    // A paused attempt the user already RESUMED is spent history — its child is
-    // the live one, so the wait follows the child instead of stalling here.
-    const child = Object.values(q.attempts || {}).find(
-      (/** @type {any} */ a) => a && a.resumed_from === attempt_id
+    const attempts = Object.values(q?.attempts || {});
+    const parents = new Set(
+      attempts
+        .map((/** @type {any} */ attempt) => attempt?.resumed_from)
+        .filter(Boolean)
     );
-    return child
-      ? resolutionStillRunning(bead_id, /** @type {any} */ (child).attempt_id)
-      : true;
+    const live = attempts.filter(
+      (/** @type {any} */ attempt) =>
+        attempt?.bead_id === subject_bead_id &&
+        attempt.conflict_resolution === true &&
+        (attempt.status === 'running' || attempt.status === 'paused') &&
+        !parents.has(attempt.attempt_id)
+    );
+    if (live.length === 0) {
+      return { attempt_id: null, reason: null };
+    }
+    if (live.length !== 1) {
+      return {
+        attempt_id: null,
+        reason: 'resolution_lineage_ambiguous'
+      };
+    }
+    return { attempt_id: live[0].attempt_id, reason: null };
   }
 
   /**
@@ -356,6 +425,45 @@ export function createMergeQueue(deps) {
     if (wake_waiter) {
       wake_waiter();
     }
+  }
+
+  /**
+   * Whether at least one yielded resolver still needs a missed-event backstop.
+   *
+   * @returns {boolean}
+   */
+  function hasYieldedResolution() {
+    const q = snapshot();
+    const lane = Array.isArray(q?.merge_queue) ? q.merge_queue : [];
+    return lane.some(
+      (/** @type {any} */ entry) =>
+        entry.resolution?.state === 'yielded' &&
+        resolutionLineage(q, entry).state === 'active'
+    );
+  }
+
+  /** Maintain one low-frequency poll for yielded waits; never one per item. */
+  function maintainResolutionWatcher() {
+    if (stopped || !hasYieldedResolution()) {
+      if (resolution_poll_timer !== null) {
+        clearTimer(resolution_poll_timer);
+        resolution_poll_timer = null;
+      }
+      return;
+    }
+    if (resolution_poll_timer !== null) {
+      return;
+    }
+    resolution_poll_timer = setResolutionPollTimer(() => {
+      resolution_poll_timer = null;
+      if (stopped) {
+        return;
+      }
+      if (resolutionNeedsDrain()) {
+        void requestDrain();
+      }
+      maintainResolutionWatcher();
+    }, RESOLUTION_POLL_MS);
   }
 
   /**
@@ -486,45 +594,306 @@ export function createMergeQueue(deps) {
   }
 
   /**
-   * Count one consumed resolution round, failing CLOSED: a bump that did not
-   * persist would let the item re-merge on a budget the cap already spent.
-   *
-   * @param {string} bead_id
-   * @returns {boolean}
-   */
-  function bumpRound(bead_id) {
-    try {
-      return deps.store.bumpResolutionRound(workspace, bead_id).ok;
-    } catch (err) {
-      log('merge queue round bump failed for %s: %o', bead_id, err);
-      return false;
-    }
-  }
-
-  /**
-   * Wait for a resolution session to end.
+   * Send one undecidable resolution lineage through the existing ownership
+   * boundary. Completion roots retain their slot; ordinary rows receive the
+   * same durable skip/dequeue treatment as every other terminal refusal.
    *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
-   * @param {string|null} attempt_id
-   * @returns {Promise<'ended'|'timeout'|'gone'|'stopped'>}
+   * @param {string} reason
    */
-  async function waitForResolution(queue_bead_id, subject_bead_id, attempt_id) {
-    const deadline = now() + resolution_wait_ms;
-    while (!stopped) {
-      if (!queuedEntry(queue_bead_id)) {
-        return 'gone';
+  async function failResolution(queue_bead_id, subject_bead_id, reason) {
+    if (completionIntent(queue_bead_id)) {
+      await handoffCompletion(queue_bead_id, subject_bead_id, {
+        ok: false,
+        action: 'refused',
+        reason
+      });
+      return;
+    }
+    failAndDequeue(queue_bead_id, reason);
+  }
+
+  /**
+   * Persist an exact attempt binding before the driver waits on it.
+   *
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   * @param {string} attempt_id
+   */
+  function bindResolution(queue_bead_id, subject_bead_id, attempt_id) {
+    let ok = false;
+    try {
+      ok = deps.store.bindResolutionWait(workspace, {
+        bead_id: queue_bead_id,
+        subject_bead_id,
+        attempt_id,
+        wait_ms: resolution_wait_ms
+      }).ok;
+    } catch (err) {
+      log('merge queue resolution bind failed for %s: %o', queue_bead_id, err);
+    }
+    if (!ok) {
+      halted = true;
+      notify();
+      return false;
+    }
+    notify();
+    return true;
+  }
+
+  /**
+   * Accept the scheduler's atomic prerecord, or use the legacy bind seam when
+   * a custom dispatcher recorded only the attempt. A different existing
+   * journal is an ownership conflict and stops the driver fail-closed.
+   *
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   * @param {string} attempt_id
+   */
+  function ensureResolutionBound(queue_bead_id, subject_bead_id, attempt_id) {
+    const resolution = queuedEntry(queue_bead_id)?.resolution;
+    if (
+      resolution &&
+      resolution.state !== 'invalid' &&
+      resolution.attempt_id === attempt_id &&
+      resolution.subject_bead_id === subject_bead_id
+    ) {
+      return true;
+    }
+    if (resolution === null) {
+      return bindResolution(queue_bead_id, subject_bead_id, attempt_id);
+    }
+    halted = true;
+    notify();
+    return false;
+  }
+
+  /**
+   * Promote every exact terminal wait before choosing the next runnable head.
+   * This is what gives late settlements priority after the current active item.
+   *
+   * @returns {boolean}
+   */
+  function promoteTerminalResolutions() {
+    const q = snapshot();
+    const lane = Array.isArray(q?.merge_queue) ? q.merge_queue : [];
+    let changed = false;
+    for (const entry of lane) {
+      if (
+        entry.resolution?.state !== 'waiting' &&
+        entry.resolution?.state !== 'yielded'
+      ) {
+        continue;
       }
-      if (!resolutionStillRunning(subject_bead_id, attempt_id)) {
-        return 'ended';
+      const lineage = resolutionLineage(q, entry);
+      if (lineage.state !== 'terminal') {
+        continue;
       }
-      const left = deadline - now();
+      const settled_at =
+        typeof lineage.leaf?.finished_at === 'number'
+          ? lineage.leaf.finished_at
+          : now();
+      let ok = false;
+      try {
+        ok = deps.store.settleResolutionWait(workspace, {
+          bead_id: entry.bead_id,
+          subject_bead_id: entry.resolution.subject_bead_id,
+          attempt_id: entry.resolution.attempt_id,
+          settled_at,
+          active_bead_id: active
+        }).ok;
+      } catch (err) {
+        log(
+          'merge queue resolution settlement failed for %s: %o',
+          entry.bead_id,
+          err
+        );
+      }
+      if (!ok) {
+        halted = true;
+        notify();
+        return changed;
+      }
+      changed = true;
+    }
+    if (changed) {
+      notify();
+    }
+    return changed;
+  }
+
+  /**
+   * Whether a queue-change event can advance durable resolution state.
+   *
+   * @returns {boolean}
+   */
+  function resolutionNeedsDrain() {
+    const q = snapshot();
+    const lane = Array.isArray(q?.merge_queue) ? q.merge_queue : [];
+    for (const entry of lane) {
+      const resolution = entry.resolution;
+      if (!resolution) {
+        continue;
+      }
+      if (resolution.state === 'invalid') {
+        return true;
+      }
+      const lineage = resolutionLineage(q, entry);
+      if (lineage.state === 'invalid') {
+        return true;
+      }
+      if (resolution.state === 'ready') {
+        return lineage.state !== 'terminal' || q.auto_merge === true;
+      }
+      if (lineage.state === 'terminal') {
+        return true;
+      }
+      if (resolution.state === 'waiting' && resolution.deadline_at <= now()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Observe or yield one durable wait. A ready record remains unconsumed until
+   * the latest mergeability probe has selected the next effect.
+   *
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   * @returns {Promise<{ kind: 'none'|'ready'|'yielded'|'paused'|'failed'|'gone'|'stopped', attempt_id?: string }>}
+   */
+  async function prepareResolution(queue_bead_id, subject_bead_id) {
+    while (!stopped && !halted) {
+      const entry = queuedEntry(queue_bead_id);
+      if (!entry) {
+        return { kind: 'gone' };
+      }
+      let resolution = entry.resolution;
+      if (!resolution) {
+        const restored = restorableResolutionAttempt(subject_bead_id);
+        if (restored.reason) {
+          await failResolution(queue_bead_id, subject_bead_id, restored.reason);
+          return { kind: 'failed' };
+        }
+        if (!restored.attempt_id) {
+          if (entry.resolution_rounds > 0 && snapshot()?.auto_merge !== true) {
+            halted = true;
+            return { kind: 'paused' };
+          }
+          return { kind: 'none' };
+        }
+        if (entry.resolution_rounds >= round_cap) {
+          await failResolution(
+            queue_bead_id,
+            subject_bead_id,
+            'resolution_round_cap'
+          );
+          return { kind: 'failed' };
+        }
+        if (
+          !bindResolution(queue_bead_id, subject_bead_id, restored.attempt_id)
+        ) {
+          return { kind: 'paused' };
+        }
+        continue;
+      }
+      if (resolution.state === 'invalid') {
+        await failResolution(queue_bead_id, subject_bead_id, resolution.reason);
+        return { kind: 'failed' };
+      }
+      const q = snapshot();
+      const lineage = resolutionLineage(q, entry);
+      if (lineage.state === 'invalid') {
+        await failResolution(
+          queue_bead_id,
+          subject_bead_id,
+          lineage.reason || 'resolution_wait_invalid'
+        );
+        return { kind: 'failed' };
+      }
+      if (resolution.state === 'ready') {
+        if (lineage.state !== 'terminal') {
+          await failResolution(
+            queue_bead_id,
+            subject_bead_id,
+            'resolution_ready_lineage_active'
+          );
+          return { kind: 'failed' };
+        }
+        if (q.auto_merge !== true) {
+          halted = true;
+          return { kind: 'paused' };
+        }
+        return { kind: 'ready', attempt_id: resolution.attempt_id };
+      }
+      if (lineage.state === 'terminal') {
+        promoteTerminalResolutions();
+        continue;
+      }
+      if (resolution.state === 'yielded') {
+        return { kind: 'yielded' };
+      }
+      const left = resolution.deadline_at - now();
       if (left <= 0) {
-        return 'timeout';
+        let ok = false;
+        try {
+          ok = deps.store.yieldResolutionWait(workspace, {
+            bead_id: queue_bead_id,
+            subject_bead_id,
+            attempt_id: resolution.attempt_id,
+            yielded_at: now()
+          }).ok;
+        } catch (err) {
+          log(
+            'merge queue resolution yield failed for %s: %o',
+            queue_bead_id,
+            err
+          );
+        }
+        if (!ok) {
+          halted = true;
+          notify();
+          return { kind: 'paused' };
+        }
+        notify();
+        maintainResolutionWatcher();
+        return { kind: 'yielded' };
       }
       await sleepOrWake(Math.min(RESOLUTION_POLL_MS, left));
     }
-    return 'stopped';
+    return { kind: stopped ? 'stopped' : 'paused' };
+  }
+
+  /**
+   * Charge and clear one exact ready resolution record.
+   *
+   * @param {string} queue_bead_id
+   * @param {string} attempt_id
+   */
+  function consumeResolution(queue_bead_id, attempt_id) {
+    let ok = false;
+    try {
+      ok = deps.store.consumeResolutionWait(workspace, {
+        bead_id: queue_bead_id,
+        attempt_id,
+        consume_round: true
+      }).ok;
+    } catch (err) {
+      log(
+        'merge queue resolution consumption failed for %s: %o',
+        queue_bead_id,
+        err
+      );
+    }
+    if (!ok) {
+      halted = true;
+      notify();
+      return false;
+    }
+    notify();
+    return true;
   }
 
   /**
@@ -597,6 +966,118 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * Re-probe before every effect. A ready resolution is charged exactly once
+   * after the probe and before the selected merge/update/resolver action.
+   *
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   * @param {string|null} ready_attempt_id
+   * @returns {Promise<MergeClickResult|null>}
+   */
+  async function runLatestMerge(
+    queue_bead_id,
+    subject_bead_id,
+    ready_attempt_id
+  ) {
+    if (ready_attempt_id && snapshot()?.auto_merge !== true) {
+      halted = true;
+      return null;
+    }
+    if (typeof deps.probeMergeability !== 'function') {
+      if (
+        ready_attempt_id &&
+        !consumeResolution(queue_bead_id, ready_attempt_id)
+      ) {
+        return null;
+      }
+      return runMerge(subject_bead_id);
+    }
+    /** @type {any} */
+    let probe;
+    try {
+      probe = await deps.probeMergeability(subject_bead_id);
+    } catch (err) {
+      log(
+        'merge queue mergeability probe failed for %s: %o',
+        subject_bead_id,
+        err
+      );
+      probe = {
+        ok: false,
+        kind: 'blocked',
+        reason: 'mergeability_probe_error'
+      };
+    }
+    if (ready_attempt_id && snapshot()?.auto_merge !== true) {
+      halted = true;
+      return null;
+    }
+    const before = queuedEntry(queue_bead_id);
+    const effective_rounds =
+      (before?.resolution_rounds ?? round_cap) + (ready_attempt_id ? 1 : 0);
+    if (
+      ready_attempt_id &&
+      !consumeResolution(queue_bead_id, ready_attempt_id)
+    ) {
+      return null;
+    }
+    if (!probe.ok) {
+      return {
+        ok: false,
+        action: 'refused',
+        reason: probe.reason || 'mergeability_probe_blocked'
+      };
+    }
+    if (probe.kind !== 'dirty') {
+      return runMerge(subject_bead_id);
+    }
+    if (effective_rounds >= round_cap) {
+      return {
+        ok: false,
+        action: 'refused',
+        reason: 'resolution_round_cap',
+        head_sha: probe.head_sha || null
+      };
+    }
+    if (
+      typeof deps.dispatchConflict !== 'function' ||
+      typeof probe.head_sha !== 'string' ||
+      probe.head_sha.length === 0
+    ) {
+      return {
+        ok: false,
+        action: 'refused',
+        reason: 'mergeability_identity_invalid',
+        head_sha: probe.head_sha || null
+      };
+    }
+    try {
+      return await deps.dispatchConflict(
+        subject_bead_id,
+        {
+          head_sha: probe.head_sha,
+          base_ref: probe.base_ref || null
+        },
+        {
+          queue_bead_id,
+          wait_ms: resolution_wait_ms
+        }
+      );
+    } catch (err) {
+      log(
+        'merge queue conflict dispatch failed for %s: %o',
+        subject_bead_id,
+        err
+      );
+      return {
+        ok: false,
+        action: 'conflict_resolution',
+        reason: 'resolution_dispatch_error'
+      };
+    }
+  }
+
+  /**
    * Hand a completion-owned result back without creating an auto-merge skip.
    * The root intent is the terminal authority; the root queue position remains
    * held unless the callback completes or terminalizes it.
@@ -660,41 +1141,26 @@ export function createMergeQueue(deps) {
     }
     /** @type {number|null} */
     let unconfirmed_deadline = null;
-    const restored = runningResolutionAttempt(subject_bead_id);
-    if (restored) {
-      const entry = queuedEntry(root_bead_id);
-      if (entry && entry.resolution_rounds >= round_cap) {
-        await handoffCompletion(root_bead_id, subject_bead_id, {
-          ok: false,
-          action: 'refused',
-          reason: 'resolution_round_cap'
-        });
-        return;
-      }
-      const outcome = await waitForResolution(
-        root_bead_id,
-        subject_bead_id,
-        restored
-      );
-      if (outcome === 'stopped' || outcome === 'gone') {
-        return;
-      }
-      if (outcome === 'timeout') {
-        await handoffCompletion(root_bead_id, subject_bead_id, {
-          ok: false,
-          action: 'refused',
-          reason: 'resolution_timeout'
-        });
-        return;
-      }
-      if (!bumpRound(root_bead_id)) {
-        halted = true;
-        return;
-      }
-    }
 
     while (!stopped && !halted && queuedEntry(root_bead_id)) {
-      const result = await runMerge(subject_bead_id);
+      const resolution = await prepareResolution(root_bead_id, subject_bead_id);
+      if (
+        resolution.kind === 'yielded' ||
+        resolution.kind === 'paused' ||
+        resolution.kind === 'failed' ||
+        resolution.kind === 'gone' ||
+        resolution.kind === 'stopped'
+      ) {
+        return;
+      }
+      const result = await runLatestMerge(
+        root_bead_id,
+        subject_bead_id,
+        resolution.kind === 'ready' ? resolution.attempt_id || null : null
+      );
+      if (!result) {
+        return;
+      }
       const action = result ? result.action : null;
       if (action === 'cleanup_pending') {
         halted = true;
@@ -715,6 +1181,17 @@ export function createMergeQueue(deps) {
           await handoffCompletion(root_bead_id, subject_bead_id, result);
           return;
         }
+        if (
+          typeof result.attempt_id !== 'string' ||
+          result.attempt_id.length === 0
+        ) {
+          await handoffCompletion(root_bead_id, subject_bead_id, {
+            ok: false,
+            action: 'refused',
+            reason: 'resolution_attempt_missing'
+          });
+          return;
+        }
         const entry = queuedEntry(root_bead_id);
         const rounds = entry ? entry.resolution_rounds : round_cap;
         if (rounds >= round_cap) {
@@ -725,24 +1202,13 @@ export function createMergeQueue(deps) {
           });
           return;
         }
-        const outcome = await waitForResolution(
-          root_bead_id,
-          subject_bead_id,
-          result.attempt_id || null
-        );
-        if (outcome === 'stopped' || outcome === 'gone') {
-          return;
-        }
-        if (outcome === 'timeout') {
-          await handoffCompletion(root_bead_id, subject_bead_id, {
-            ok: false,
-            action: 'refused',
-            reason: 'resolution_timeout'
-          });
-          return;
-        }
-        if (!bumpRound(root_bead_id)) {
-          halted = true;
+        if (
+          !ensureResolutionBound(
+            root_bead_id,
+            subject_bead_id,
+            result.attempt_id
+          )
+        ) {
           return;
         }
         continue;
@@ -768,6 +1234,14 @@ export function createMergeQueue(deps) {
           reason: verdict
         });
         return;
+      }
+      if (
+        action === 'refused' &&
+        (result.reason === 'conflict_resolution_required' ||
+          result.reason === 'mergeability_changed' ||
+          result.reason === 'mergeability_identity_changed')
+      ) {
+        continue;
       }
       await handoffCompletion(root_bead_id, subject_bead_id, result);
       return;
@@ -831,41 +1305,28 @@ export function createMergeQueue(deps) {
       }
     }
 
-    // Boot resume (spec §2 부팅 정합): a durable `running` resolution attempt is
-    // restored as the step-3 wait rather than judged a failure.
-    const restored = runningResolutionAttempt(bead_id);
-    if (restored) {
-      const entry = queuedEntry(bead_id);
-      if (entry && entry.resolution_rounds >= round_cap) {
-        // The cap is spent, so this item gets no more rounds — including this
-        // restored one. The session is left running, as everywhere else.
-        // Right after a restart the observation cache is empty, so the head SHA
-        // is usually unreadable here: the disposition then HOLDS the item (§3.2)
-        // instead of dropping it without an exclusion.
-        failAndDequeue(bead_id, 'resolution_round_cap');
-        return;
-      }
-      const outcome = await waitForResolution(bead_id, bead_id, restored);
-      if (outcome === 'stopped' || outcome === 'gone') {
-        return;
-      }
-      if (outcome === 'timeout') {
-        failAndDequeue(bead_id, 'resolution_timeout');
-        return;
-      }
-      if (!bumpRound(bead_id)) {
-        // The round did not persist, so re-merging would spend a budget the
-        // count cannot prove. Leave the item queued and stop this drain.
-        halted = true;
-        return;
-      }
-    }
-
     while (!stopped && !halted) {
       if (!queuedEntry(bead_id)) {
         return;
       }
-      const result = await runMerge(bead_id);
+      const resolution = await prepareResolution(bead_id, bead_id);
+      if (
+        resolution.kind === 'yielded' ||
+        resolution.kind === 'paused' ||
+        resolution.kind === 'failed' ||
+        resolution.kind === 'gone' ||
+        resolution.kind === 'stopped'
+      ) {
+        return;
+      }
+      const result = await runLatestMerge(
+        bead_id,
+        bead_id,
+        resolution.kind === 'ready' ? resolution.attempt_id || null : null
+      );
+      if (!result) {
+        return;
+      }
       const action = result ? result.action : null;
 
       if (action === 'cleanup_pending') {
@@ -905,29 +1366,20 @@ export function createMergeQueue(deps) {
           failAndDequeue(bead_id, result.reason || 'resolution_refused');
           return;
         }
+        if (
+          typeof result.attempt_id !== 'string' ||
+          result.attempt_id.length === 0
+        ) {
+          failAndDequeue(bead_id, 'resolution_attempt_missing');
+          return;
+        }
         const entry = queuedEntry(bead_id);
         const rounds = entry ? entry.resolution_rounds : round_cap;
         if (rounds >= round_cap) {
-          // Cap reached. The session just dispatched is deliberately LEFT
-          // RUNNING (spec §2): the queue gives up its turn, the human keeps
-          // the resolution work.
           failAndDequeue(bead_id, 'resolution_round_cap');
           return;
         }
-        const outcome = await waitForResolution(
-          bead_id,
-          bead_id,
-          result.attempt_id || null
-        );
-        if (outcome === 'stopped' || outcome === 'gone') {
-          return;
-        }
-        if (outcome === 'timeout') {
-          failAndDequeue(bead_id, 'resolution_timeout');
-          return;
-        }
-        if (!bumpRound(bead_id)) {
-          halted = true;
+        if (!ensureResolutionBound(bead_id, bead_id, result.attempt_id)) {
           return;
         }
         continue;
@@ -952,6 +1404,15 @@ export function createMergeQueue(deps) {
         }
         failAndDequeue(bead_id, verdict);
         return;
+      }
+
+      if (
+        action === 'refused' &&
+        (result.reason === 'conflict_resolution_required' ||
+          result.reason === 'mergeability_changed' ||
+          result.reason === 'mergeability_identity_changed')
+      ) {
+        continue;
       }
 
       failAndDequeue(bead_id, (result && result.reason) || 'refused');
@@ -1008,6 +1469,10 @@ export function createMergeQueue(deps) {
           }
         }
         while (!stopped && !halted) {
+          promoteTerminalResolutions();
+          if (halted) {
+            break;
+          }
           const head = headEntry();
           if (!head) {
             break;
@@ -1015,6 +1480,8 @@ export function createMergeQueue(deps) {
           active = head.bead_id;
           notify();
           await processItem(head.bead_id);
+          active = null;
+          notify();
         }
       }
     } catch (err) {
@@ -1024,6 +1491,7 @@ export function createMergeQueue(deps) {
       draining = false;
       active = null;
       notify();
+      maintainResolutionWatcher();
       if (rerun) {
         void drain();
       }
@@ -1120,6 +1588,9 @@ export function createMergeQueue(deps) {
               void requestDrain();
             }
           }
+          if (resolutionNeedsDrain()) {
+            void requestDrain();
+          }
         });
       }
       void requestDrain();
@@ -1142,6 +1613,7 @@ export function createMergeQueue(deps) {
         unsubscribe = null;
       }
       wake();
+      maintainResolutionWatcher();
     },
 
     /**

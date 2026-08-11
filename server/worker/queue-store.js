@@ -2230,6 +2230,56 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Atomically prerecord a conflict-resolution attempt and bind its owning
+     * merge queue item before the resolver process can outlive the driver.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, queue_bead_id: string, subject_bead_id: string, wait_ms: number, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
+     * @returns {QueueOpResult}
+     */
+    appendResolutionAttempt(workspace, input) {
+      const {
+        expected_revision,
+        queue_bead_id,
+        subject_bead_id,
+        wait_ms,
+        attempt
+      } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === queue_bead_id
+        );
+        if (
+          !entry ||
+          entry.resolution !== null ||
+          !attempt ||
+          typeof attempt.attempt_id !== 'string' ||
+          attempt.attempt_id.length === 0 ||
+          Object.hasOwn(next.attempts, attempt.attempt_id) ||
+          attempt.bead_id !== subject_bead_id ||
+          attempt.conflict_resolution !== true ||
+          typeof attempt.started_at !== 'number' ||
+          !Number.isFinite(attempt.started_at) ||
+          typeof wait_ms !== 'number' ||
+          !Number.isFinite(wait_ms) ||
+          wait_ms < 0
+        ) {
+          return false;
+        }
+        next.attempts[attempt.attempt_id] = makeAttempt(attempt);
+        entry.resolution = {
+          attempt_id: attempt.attempt_id,
+          subject_bead_id,
+          deadline_at: attempt.started_at + wait_ms,
+          state: 'waiting',
+          yielded_at: null,
+          settled_at: null
+        };
+        return true;
+      });
+    },
+
+    /**
      * Append a resumed completion attempt and transfer the active operation to
      * it in the same CAS-guarded persist. A caller cannot reconstruct the
      * completion identity: it is copied from the active source record only.
@@ -3714,12 +3764,10 @@ export function createQueueStore(options = {}) {
      * {@link toggleAutoAdvance} — the click starts an irreversible chain of
      * merges, so it must not apply against a snapshot the user never saw.
      *
-     * `clear_waiting` empties the waiting merge queue in the SAME mutation
-     * (UI-yk55 §5.2). It has to be one write: a flag persisted without the
-     * queue leaves a process that restarts in between with `auto_merge = false`
-     * and a full queue, and the boot-resume driver would merge every item a user
-     * had just pressed stop on. `keep` names the item being merged right now,
-     * which is never removable — its merge already reached GitHub.
+     * `clear_waiting` removes ordinary queued work in the SAME mutation while
+     * preserving the active item and every durable resolution journal. Turning
+     * automation off pauses new merge/update/resolver effects; it does not
+     * cancel a resolver already running or erase its late settlement identity.
      *
      * @param {string} workspace
      * @param {{ expected_revision: number, on: boolean, clear_waiting?: boolean, keep?: string|null }} input
@@ -3731,7 +3779,7 @@ export function createQueueStore(options = {}) {
         next.auto_merge = !!on;
         if (clear_waiting) {
           next.merge_queue = next.merge_queue.filter(
-            (e) => e.bead_id === (keep || null)
+            (e) => e.bead_id === (keep || null) || e.resolution !== null
           );
         }
         return true;
@@ -3870,8 +3918,7 @@ export function createQueueStore(options = {}) {
         if (
           !entry ||
           !resolution ||
-          (resolution.state !== 'waiting' &&
-            resolution.state !== 'yielded') ||
+          (resolution.state !== 'waiting' && resolution.state !== 'yielded') ||
           resolution.attempt_id !== input.attempt_id ||
           resolution.subject_bead_id !== input.subject_bead_id ||
           typeof input.settled_at !== 'number' ||
@@ -3882,7 +3929,10 @@ export function createQueueStore(options = {}) {
         resolution.state = 'ready';
         resolution.settled_at = input.settled_at;
 
-        const indexed = next.merge_queue.map((item, index) => ({ item, index }));
+        const indexed = next.merge_queue.map((item, index) => ({
+          item,
+          index
+        }));
         const active = indexed.find(
           ({ item }) =>
             item.bead_id === input.active_bead_id &&

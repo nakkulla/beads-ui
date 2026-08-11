@@ -3662,9 +3662,7 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
       queueFilePath(WS),
       JSON.stringify({
         revision: 3,
-        merge_queue: [
-          { bead_id: 'UI-1', resolution_rounds: 1, resolution }
-        ]
+        merge_queue: [{ bead_id: 'UI-1', resolution_rounds: 1, resolution }]
       })
     );
 
@@ -3739,6 +3737,44 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
     ]);
   });
 
+  test('prerecords the resolver and wait binding in one revision', () => {
+    const store = storeWithPrWait(['UI-root']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-root' }]
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.appendResolutionAttempt(WS, {
+      expected_revision: revision,
+      queue_bead_id: 'UI-root',
+      subject_bead_id: 'UI-subject',
+      wait_ms: 100,
+      attempt: {
+        attempt_id: 'res-atomic',
+        bead_id: 'UI-subject',
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 50
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.attempts['res-atomic']).toMatchObject({
+      bead_id: 'UI-subject',
+      status: 'running'
+    });
+    expect(result.queue.merge_queue[0].resolution).toEqual({
+      attempt_id: 'res-atomic',
+      subject_bead_id: 'UI-subject',
+      deadline_at: 150,
+      state: 'waiting',
+      yielded_at: null,
+      settled_at: null
+    });
+  });
+
   test('leaves the prior journal intact when resolution binding cannot persist', () => {
     const store = storeWithPrWait(['UI-1']);
     store.enqueueMerge(WS, {
@@ -3784,11 +3820,7 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
     const store = storeWithPrWait(['UI-1', 'UI-2', 'UI-3', 'UI-4']);
     store.enqueueMerge(WS, {
       expected_revision: store.snapshot(WS).revision,
-      entries: [
-        { bead_id: 'UI-1' },
-        { bead_id: 'UI-2' },
-        { bead_id: 'UI-3' }
-      ]
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }, { bead_id: 'UI-3' }]
     });
     store.appendAttempt(WS, {
       expected_revision: store.snapshot(WS).revision,
