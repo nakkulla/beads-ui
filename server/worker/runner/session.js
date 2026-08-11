@@ -258,7 +258,7 @@ function openOutputFds(fs, log_path, stderr_path) {
  * @param {AdapterSpec} spec
  * @param {any} bead - Bead being executed (source of route/plan_path/etc.).
  * @param {string} workspace - Absolute cwd for the session (the worktree).
- * @param {any} settings - Launch settings (model, effort, fast_track, env).
+ * @param {any} settings - Launch settings (model, effort, speed, fast_track, env).
  * @param {EngineDeps} deps
  * @returns {RunnerHandle}
  */

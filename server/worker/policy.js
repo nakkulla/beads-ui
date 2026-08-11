@@ -320,7 +320,13 @@ export function resolveExecSettings(input) {
         'orchestration_speed',
         stamped_keys
       );
-  const orchestration_speed = speed_pick.value ?? 'default';
+  const orchestration_speed = speed_pick.invalid
+    ? typeof bead.orchestration_speed === 'string'
+      ? bead.orchestration_speed
+      : typeof defaults.orchestration_speed === 'string'
+        ? defaults.orchestration_speed
+        : 'default'
+    : (speed_pick.value ?? 'default');
   const spec_review_model = pickLayered(
     REVIEW_STEP_MODELS,
     bead.spec_review_model,

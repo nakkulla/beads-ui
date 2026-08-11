@@ -73,12 +73,13 @@ describe('worker/notify argv assembly', () => {
       runner: 'codex',
       model: 'sol',
       effort: 'high',
+      speed: 'fast',
       repo: '/r/proj',
       kind: 'dispatch'
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '🤖 🚀 시작 — UI-1 워커 알림\n리포: proj\n실행: codex sol / high'
+      '🤖 🚀 시작 — UI-1 워커 알림\n리포: proj\n실행: codex sol / high / fast'
     );
   });
 

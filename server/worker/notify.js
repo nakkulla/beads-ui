@@ -130,7 +130,7 @@ function headline(transition, bead_id, bead_title) {
  *
  * @param {NotifierDeps} deps
  * @returns {{
- *   attemptStarted: (input: { bead_id: string, title?: string|null, runner?: string|null, model?: string|null, effort?: string|null, repo?: string|null, kind?: string|null }) => Promise<void>,
+ *   attemptStarted: (input: { bead_id: string, title?: string|null, runner?: string|null, model?: string|null, effort?: string|null, speed?: string|null, repo?: string|null, kind?: string|null }) => Promise<void>,
  *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => Promise<void>,
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>
@@ -296,13 +296,14 @@ export function createNotifier(deps) {
         if (repo) {
           lines.push(`리포: ${repo}`);
         }
-        // `<runner> <model> / <effort>`: the runner leads because a model name
+        // `<runner> <model> / <effort> / <speed>`: the runner leads because a model name
         // alone no longer says which CLI ran (`sol` is codex, `opus` claude),
         // and it is the only part that is always resolved. Every piece is
         // omitted when absent, so a legacy caller still reads `model / effort`.
         const exec = [
           [text(input.runner), text(input.model)].filter(Boolean).join(' '),
-          text(input.effort)
+          text(input.effort),
+          text(input.speed)
         ]
           .filter(Boolean)
           .join(' / ');

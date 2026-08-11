@@ -199,13 +199,16 @@ describe('exec-preset-store CRUD', () => {
     const store = createExecPresetStore({
       filePath: file_path,
       randomUUID: () => 'preset-1',
-      settingEnums: () => ({ orchestration_model: ['sol'] })
+      settingEnums: () => ({
+        orchestration_model: ['sol'],
+        orchestration_speed: ['default', 'fast']
+      })
     });
 
     const result = store.create({
       expected_revision: 0,
       name: '  기본 개발  ',
-      settings: { orchestration_model: 'sol' }
+      settings: { orchestration_model: 'sol', orchestration_speed: 'fast' }
     });
 
     expect(result).toEqual({
@@ -216,7 +219,10 @@ describe('exec-preset-store CRUD', () => {
         {
           id: 'preset-1',
           name: '기본 개발',
-          settings: { orchestration_model: 'sol' },
+          settings: {
+            orchestration_model: 'sol',
+            orchestration_speed: 'fast'
+          },
           origin: { kind: 'user' }
         }
       ]
@@ -234,13 +240,14 @@ describe('exec-preset-store CRUD', () => {
       randomUUID: () => String(ids.shift()),
       settingEnums: () => ({
         orchestration_model: ['sol', 'terra'],
-        orchestration_effort: ['high']
+        orchestration_effort: ['high'],
+        orchestration_speed: ['default', 'fast']
       })
     });
     store.create({
       expected_revision: 0,
       name: '첫째',
-      settings: { orchestration_model: 'sol' }
+      settings: { orchestration_model: 'sol', orchestration_speed: 'default' }
     });
     store.create({
       expected_revision: 1,
@@ -252,7 +259,7 @@ describe('exec-preset-store CRUD', () => {
       expected_revision: 2,
       id: 'preset-1',
       name: '수정됨',
-      settings: { orchestration_model: 'terra' }
+      settings: { orchestration_model: 'terra', orchestration_speed: 'fast' }
     });
 
     expect(result.presets.map((preset) => preset.id)).toEqual([
@@ -262,9 +269,14 @@ describe('exec-preset-store CRUD', () => {
     expect(result.presets[0]).toEqual({
       id: 'preset-1',
       name: '수정됨',
-      settings: { orchestration_model: 'terra' },
+      settings: { orchestration_model: 'terra', orchestration_speed: 'fast' },
       origin: { kind: 'user' }
     });
+    expect(
+      createExecPresetStore({
+        filePath: path.join(tmp_dir, 'exec-presets.json')
+      }).snapshot()
+    ).toEqual({ revision: 3, presets: result.presets });
   });
 
   test('deletes only the named preset without cascading', () => {

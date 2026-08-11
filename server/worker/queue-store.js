@@ -42,6 +42,7 @@
  * `--resume`/transcript tracking; null until the runner emits it (spec §2).
  * @property {string|null} model - Model snapshot.
  * @property {string|null} effort - Effort snapshot.
+ * @property {string|null} speed - Orchestration service tier snapshot.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
  * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], pushed?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
@@ -109,7 +110,7 @@
  * revision paired with `exec_default_preset_id`; null without a selected
  * preset. Together they prove which mutable preset version the attempt pinned.
  * @property {Record<string, string|null>|null} exec_values - Effective resolved
- * values from the 11-key dispatch contract, kept independently from the worker
+ * values from the 12-key dispatch contract, kept independently from the worker
  * stamp subset so a manual session resume reuses the PRIOR snapshot rather than
  * re-resolving a changed/deleted preset. Null on legacy attempts.
  * @property {string|null} resumed_from - Prior attempt_id this attempt resumes
@@ -1324,6 +1325,7 @@ export function makeAttempt(fields) {
     session_id: fields.session_id ?? null,
     model: fields.model ?? null,
     effort: fields.effort ?? null,
+    speed: typeof fields.speed === 'string' ? fields.speed : null,
     exit: fields.exit ?? null,
     verify_result: fields.verify_result ?? null,
     base_drift: isRecord(fields.base_drift)
