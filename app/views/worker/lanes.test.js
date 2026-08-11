@@ -1,6 +1,14 @@
 import { render } from 'lit-html';
 import { beforeEach, describe, expect, test } from 'vitest';
-import { candidateCard, miniRow } from './lanes.js';
+import {
+  candidateCard,
+  discardCompletionMessage,
+  discardConfirmationMessage,
+  discardPhaseLabel,
+  discardProjection,
+  discardReceiptTemplate,
+  miniRow
+} from './lanes.js';
 
 /** @type {HTMLElement} */
 let mount;
@@ -159,5 +167,128 @@ describe('candidate card', () => {
     expect(
       card.querySelector('.worker-card__place')?.getAttribute('title')
     ).toBe('quick_fix route는 워커 실행 대상이 아닙니다');
+  });
+});
+
+describe('discard receipts', () => {
+  test('uses the shared state-specific confirmation wording', () => {
+    expect(discardConfirmationMessage('UI-x1', 'unmerged')).toContain(
+      'runner/PR/branch/worktree를 정리하고 이슈를 후보로 되돌립니다'
+    );
+    expect(discardConfirmationMessage('UI-x1', 'merged')).toContain(
+      '실제 원복은 사람이 그 PR을 merge한 뒤 완료됩니다'
+    );
+  });
+
+  test('keeps the operation and recovery archive in the terminal message', () => {
+    expect(
+      discardCompletionMessage({
+        operation_id: 'op-1',
+        receipt: {
+          archive_path: '/state/op-1',
+          original_pr: { url: 'https://github.com/o/r/pull/1' }
+        }
+      })
+    ).toContain(
+      '폐기 완료 · 작업 op-1 · 백업 /state/op-1 · 원본 PR https://github.com/o/r/pull/1'
+    );
+  });
+
+  test('maps durable phases to the five user-facing progress labels', () => {
+    expect(discardPhaseLabel('requested')).toBe('백업 중');
+    expect(discardPhaseLabel('signaled')).toBe('runner 종료 중');
+    expect(discardPhaseLabel('runner_terminated')).toBe('PR 정리 중');
+    expect(discardPhaseLabel('revert_local_prepared')).toBe('revert PR 대기');
+    expect(discardPhaseLabel('rollback_verified')).toBe('원복 배포 중');
+  });
+
+  test('shows no deletion before a failed backup has a receipt', () => {
+    const discard = discardProjection(
+      {
+        'discard-1': {
+          operation_id: 'discard-1',
+          bead_id: 'UI-x1',
+          phase: 'requested',
+          last_error: 'archive_failed'
+        }
+      },
+      'UI-x1'
+    );
+
+    render(discardReceiptTemplate({ discard }), mount);
+
+    expect(mount.textContent).toContain('아직 아무것도 삭제하지 않음');
+    expect(mount.textContent).toContain('작업: discard-1');
+    expect(mount.textContent).toContain('백업 중');
+    expect(mount.textContent).toContain('폐기 실패: archive_failed');
+  });
+
+  test('keeps the archive path after a failed later phase', () => {
+    const discard = discardProjection(
+      {
+        'discard-1': {
+          operation_id: 'discard-1',
+          bead_id: 'UI-x1',
+          phase: 'runner_terminated',
+          last_error: 'pr_close_failed',
+          backup: { path: '/state/discard-1' }
+        }
+      },
+      'UI-x1'
+    );
+
+    render(discardReceiptTemplate({ discard }), mount);
+
+    expect(mount.textContent).toContain('/state/discard-1');
+  });
+
+  test('shows the current revert PR state after a later failure', () => {
+    const discard = discardProjection(
+      {
+        'discard-1': {
+          operation_id: 'discard-1',
+          bead_id: 'UI-x1',
+          phase: 'revert_pr_wait',
+          last_error: 'revert_observe_failed',
+          revert_pr: {
+            number: 2,
+            url: 'https://github.com/o/r/pull/2',
+            state: 'OPEN'
+          }
+        }
+      },
+      'UI-x1'
+    );
+
+    render(discardReceiptTemplate({ discard }), mount);
+
+    expect(mount.textContent?.replace(/\s+/g, ' ')).toContain(
+      'revert PR #2 · OPEN'
+    );
+  });
+
+  test('selects the newest active operation for the bead', () => {
+    const discard = discardProjection(
+      {
+        newer: {
+          operation_id: 'newer',
+          bead_id: 'UI-x1',
+          requested_at: 20,
+          phase: 'pr_closed',
+          last_error: 'close_failed'
+        },
+        older: {
+          operation_id: 'older',
+          bead_id: 'UI-x1',
+          requested_at: 10,
+          phase: 'requested',
+          last_error: 'archive_failed'
+        }
+      },
+      'UI-x1'
+    );
+
+    expect(discard.operation?.operation_id).toBe('newer');
+    expect(discard.label).toBe('재시도');
   });
 });

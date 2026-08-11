@@ -90,11 +90,14 @@ describe('runner/claude 2-rule success (judged over the last result)', () => {
     });
   });
 
-  test('terminates and refuses a spawn without verified group leadership', () => {
+  test('refuses a spawn without signaling an unverified process group', async () => {
+    const directKill = vi.fn(() => true);
     const spawn_impl = makeFixtureSpawn({
       pid: 5150,
       lines: [resultLine()],
-      exit: 0
+      exit: 0,
+      kill: directKill,
+      closeOnKill: 'SIGTERM'
     });
     const kill_impl = vi.fn();
     const process_controller = {
@@ -104,7 +107,9 @@ describe('runner/claude 2-rule success (judged over the last result)', () => {
       }))
     };
 
-    expect(() =>
+    /** @type {any} */
+    let failure;
+    try {
       spawnClaude(
         BEAD,
         WS,
@@ -114,9 +119,93 @@ describe('runner/claude 2-rule success (judged over the last result)', () => {
           kill_impl,
           process_controller
         }
-      )
-    ).toThrow('process_identity:not_group_leader');
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure.message).toBe('process_identity:not_group_leader');
+    await expect(failure.cleanup).resolves.toEqual({ ok: true });
+    expect(directKill).toHaveBeenCalledWith('SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
+  });
+
+  test('escalates an identity-refused direct child and confirms close', async () => {
+    const directKill = vi.fn(() => true);
+    const spawn_impl = makeFixtureSpawn({
+      pid: 5150,
+      lines: [resultLine()],
+      exit: 0,
+      kill: directKill,
+      autoClose: false,
+      closeOnKill: 'SIGKILL'
+    });
+    const process_controller = {
+      capture: vi.fn(() => ({
+        ok: /** @type {const} */ (false),
+        reason: 'not_group_leader'
+      }))
+    };
+
+    /** @type {any} */
+    let failure;
+    try {
+      spawnClaude(
+        BEAD,
+        WS,
+        {},
+        {
+          spawn_impl,
+          process_controller,
+          direct_child_term_grace_ms: 0,
+          direct_child_kill_grace_ms: 10
+        }
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    await expect(failure.cleanup).resolves.toEqual({ ok: true });
+    expect(directKill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
+  });
+
+  test('reports an unconfirmed direct-child exit after bounded escalation', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      pid: 5150,
+      lines: [resultLine()],
+      exit: 0,
+      kill: () => true,
+      autoClose: false
+    });
+    const process_controller = {
+      capture: vi.fn(() => ({
+        ok: /** @type {const} */ (false),
+        reason: 'not_group_leader'
+      }))
+    };
+    /** @type {any} */
+    let failure;
+
+    try {
+      spawnClaude(
+        BEAD,
+        WS,
+        {},
+        {
+          spawn_impl,
+          process_controller,
+          direct_child_term_grace_ms: 0,
+          direct_child_kill_grace_ms: 0
+        }
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    await expect(failure.cleanup).resolves.toEqual({
+      ok: false,
+      reason: 'direct_child_exit_unconfirmed'
+    });
   });
 
   test('succeeds when multiple results end on a clean last result', async () => {

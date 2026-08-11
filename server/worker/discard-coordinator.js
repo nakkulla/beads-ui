@@ -124,6 +124,54 @@ export function createDiscardCoordinator(deps) {
   }
 
   /**
+   * Materialize the exact PR head before archiving a merged cleanup failure
+   * whose worker worktree and branch are already gone. The attempt's
+   * `head_oid` is its dispatch starting point, not the delivered implementation.
+   *
+   * @param {string} repo
+   * @param {{ number?: number, head_sha?: string }} pr
+   * @returns {Promise<{ ok: true, sha: string }|{ ok: false, reason: string }>}
+   */
+  async function fetchPinnedPrHead(repo, pr) {
+    if (
+      !Number.isFinite(pr.number) ||
+      typeof pr.head_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(pr.head_sha)
+    ) {
+      return { ok: false, reason: 'pr_head_identity_unknown' };
+    }
+    const pull_ref = `refs/pull/${pr.number}/head`;
+    const fetched_pull = await deps.gitRun(['fetch', 'origin', pull_ref], {
+      cwd: repo
+    });
+    if (fetched_pull.code === 0) {
+      const fetched_head = await deps.gitRun(['rev-parse', 'FETCH_HEAD'], {
+        cwd: repo
+      });
+      if (
+        fetched_head.code !== 0 ||
+        fetched_head.stdout.trim() !== pr.head_sha
+      ) {
+        return { ok: false, reason: 'pull_ref_head_mismatch' };
+      }
+    } else {
+      const fetched_head = await deps.gitRun(['fetch', 'origin', pr.head_sha], {
+        cwd: repo
+      });
+      if (fetched_head.code !== 0) {
+        return { ok: false, reason: 'pull_ref_head_unavailable' };
+      }
+    }
+    const observed_head = await deps.gitRun(
+      ['cat-file', '-e', `${pr.head_sha}^{commit}`],
+      { cwd: repo }
+    );
+    return observed_head.code === 0
+      ? { ok: true, sha: pr.head_sha }
+      : { ok: false, reason: 'pull_ref_head_unavailable' };
+  }
+
+  /**
    * @param {string} bead_id
    * @param {string|null} attempt_id
    * @returns {Promise<{ ok: true, attempt: any, source_snapshot: Record<string, unknown> }|{ ok: false, reason: string }>}
@@ -239,15 +287,28 @@ export function createDiscardCoordinator(deps) {
     if (!topology.present && pr?.state !== 'MERGED') {
       return { ok: false, reason: 'cleanup_failed_pr_not_merged' };
     }
-    if (!topology.present && (local.sha !== null || remote.sha !== null)) {
-      return { ok: false, reason: 'source_residue_identity_unknown' };
+    let absent_source_head = null;
+    if (!topology.present) {
+      if (
+        typeof pr?.head_sha !== 'string' ||
+        (local.sha !== null && local.sha !== pr.head_sha) ||
+        (remote.sha !== null && remote.sha !== pr.head_sha)
+      ) {
+        return { ok: false, reason: 'source_residue_identity_changed' };
+      }
+      const fetched_head = await fetchPinnedPrHead(repo, pr || {});
+      if (fetched_head.ok === false) {
+        return { ok: false, reason: fetched_head.reason };
+      }
+      absent_source_head = fetched_head.sha;
     }
     const source_head =
-      topology.head_sha ||
-      local.sha ||
-      (typeof record.head_oid === 'string' ? record.head_oid : null);
+      topology.head_sha || local.sha || absent_source_head || null;
     if (!/^[0-9a-f]{40}$/i.test(source_head || '')) {
       return { ok: false, reason: 'source_head_unknown' };
+    }
+    if (remote.sha !== null && remote.sha !== source_head) {
+      return { ok: false, reason: 'source_remote_ref_mismatch' };
     }
     let bead_status;
     let bead_pr_url;
@@ -1007,8 +1068,18 @@ export function createDiscardCoordinator(deps) {
         pending: 'revert_pr_wait'
       };
     }
+    const observed_revert_pr = {
+      ...expected,
+      state: observed.data.state,
+      merged_sha: observed.data.merged_sha || null
+    };
     if (observed.data.state === 'CLOSED') {
-      return fail(operation, 'revert_pr_closed_unmerged');
+      const persisted = advance(operation, operation.phase, {
+        revert_pr: observed_revert_pr
+      });
+      return persisted
+        ? fail(persisted, 'revert_pr_closed_unmerged')
+        : fail(operation, 'revert_pr_state_persist_failed');
     }
     if (observed.data.state !== 'MERGED') {
       return fail(operation, 'revert_pr_state_invalid');
@@ -1017,6 +1088,7 @@ export function createDiscardCoordinator(deps) {
       return fail(operation, 'revert_pr_merge_sha_missing');
     }
     return advance(operation, 'rollback_base_sync', {
+      revert_pr: observed_revert_pr,
       receipts: {
         revert_pr_merged: { at: now(), merge_sha: observed.data.merged_sha }
       }

@@ -445,10 +445,7 @@ export function createWorktreeManager(deps) {
         }
         if (typeof input.expected_head === 'string') {
           const head = await run(['rev-parse', 'HEAD'], { cwd: wt });
-          if (
-            head.code !== 0 ||
-            head.stdout.trim() !== input.expected_head
-          ) {
+          if (head.code !== 0 || head.stdout.trim() !== input.expected_head) {
             return {
               ok: false,
               removed: false,

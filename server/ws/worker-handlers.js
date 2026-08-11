@@ -201,8 +201,7 @@ function publicDiscardOperations(value) {
     }
     projected[operation_id] = {
       operation_id,
-      bead_id:
-        typeof operation.bead_id === 'string' ? operation.bead_id : null,
+      bead_id: typeof operation.bead_id === 'string' ? operation.bead_id : null,
       attempt_id:
         typeof operation.attempt_id === 'string' ? operation.attempt_id : null,
       requested_at: Number.isFinite(operation.requested_at)
@@ -229,9 +228,7 @@ function publicDiscardOperations(value) {
       original_pr: publicDiscardPr(operation.original_pr),
       revert_pr: publicDiscardPr(operation.revert_pr),
       last_error:
-        typeof operation.last_error === 'string'
-          ? operation.last_error
-          : null
+        typeof operation.last_error === 'string' ? operation.last_error : null
     };
   }
   return projected;
@@ -1787,82 +1784,42 @@ export async function handleWorkerAttemptPause(ws, req) {
     log('worker-attempt-pause failed for %s/%s: %o', key, p.attempt_id, err);
     result = { ok: false, reason: 'error' };
   }
+  const queue = /** @type {any} */ (queueStore().snapshot(key));
+  const phase =
+    queue.attempts?.[p.attempt_id]?.control?.phase ||
+    (result.ok ? 'done' : null);
   ws.send(
     JSON.stringify(
       makeOk(req, {
         attempt_id: p.attempt_id,
         paused: !!result.ok,
+        phase,
         reason: result.ok ? null : result.reason || null
       })
     )
   );
   if (result.ok) {
-    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+    fanout(key, queue);
   }
 }
 
 /**
- * Compatibility bridge for retired `worker-attempt-stop`. Every destructive
- * request now enters the durable unified discard coordinator; the old direct
- * scheduler stop is no longer reachable from websocket input.
+ * Retired `worker-attempt-stop` endpoint. It remains routable so stale clients
+ * get an explicit error, but it performs no workspace lookup or mutation.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export async function handleWorkerAttemptStop(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  const current = /** @type {any} */ (queueStore().snapshot(key));
-  const attempt = current.attempts?.[p.attempt_id];
-  /** @type {any} */
-  let result = { ok: false, reason: 'attempt_not_found' };
-  try {
-    if (attempt && typeof attempt.bead_id === 'string') {
-      result = await discardWorkerBead(key, {
-        bead_id: attempt.bead_id,
-        attempt_id: p.attempt_id,
-        expected_revision: current.revision
-      });
-    }
-  } catch (err) {
-    log('worker-attempt-stop failed for %s/%s: %o', key, p.attempt_id, err);
-    result = { ok: false, reason: 'error' };
-  }
-  const queue = /** @type {any} */ (queueStore().snapshot(key));
-  const operation =
-    typeof result.operation_id === 'string'
-      ? queue.discard_operations?.[result.operation_id]
-      : null;
-  const phase = operation?.phase || result.phase || null;
   ws.send(
     JSON.stringify(
-      makeOk(req, {
-        attempt_id: p.attempt_id,
-        stopped: result.ok === true && phase === 'done',
-        accepted: typeof result.operation_id === 'string',
-        operation_id: result.operation_id || null,
-        pending:
-          result.pending || (phase === 'merged_revert' ? 'merged_revert' : null),
-        phase,
-        reason: result.reason || null,
-        queue: decorateQueue(key, queue)
-      })
+      makeError(
+        req,
+        'action_retired',
+        'worker-attempt-stop is retired; use worker-discard'
+      )
     )
   );
-  if (typeof result.operation_id === 'string') {
-    fanout(key, queue);
-  }
 }
 
 /**
@@ -2331,79 +2288,22 @@ export function handleWorkerMergeQueueRemove(ws, req) {
 }
 
 /**
- * Handle `worker-pr-discard`. Payload: `{ bead_id, expected_revision }`.
- *
- * Compatibility bridge for the retired PR-only action. It preserves the old
- * response shape while routing the mutation through `worker-discard`'s durable
- * archive-first coordinator.
+ * Retired `worker-pr-discard` endpoint. It remains routable so stale clients
+ * get an explicit error, but it performs no workspace lookup or mutation.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export async function handleWorkerPrDiscard(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  const current = /** @type {any} */ (queueStore().snapshot(key));
-  if (revisionOf(p) !== current.revision) {
-    ws.send(
-      JSON.stringify(
-        makeOk(req, {
-          bead_id: p.bead_id,
-          discarded: false,
-          conflict: true,
-          reason: null,
-          queue: decorateQueue(key, current)
-        })
-      )
-    );
-    return;
-  }
-  /** @type {any} */
-  let result = { ok: false, reason: 'no_attachment' };
-  try {
-    result = await discardWorkerBead(key, {
-      bead_id: p.bead_id,
-      expected_revision: current.revision
-    });
-  } catch (err) {
-    log('worker-pr-discard failed for %s/%s: %o', key, p.bead_id, err);
-    result = { ok: false, reason: 'error' };
-  }
-  const queue = /** @type {any} */ (queueStore().snapshot(key));
-  const operation =
-    typeof result.operation_id === 'string'
-      ? queue.discard_operations?.[result.operation_id]
-      : null;
-  const phase = operation?.phase || result.phase || null;
   ws.send(
     JSON.stringify(
-      makeOk(req, {
-        bead_id: p.bead_id,
-        discarded: result.ok === true && phase === 'done',
-        conflict: result.conflict === true,
-        operation_id: result.operation_id || null,
-        pending:
-          result.pending || (phase === 'merged_revert' ? 'merged_revert' : null),
-        phase,
-        reason: result.reason || null,
-        queue: decorateQueue(key, queue)
-      })
+      makeError(
+        req,
+        'action_retired',
+        'worker-pr-discard is retired; use worker-discard'
+      )
     )
   );
-  if (typeof result.operation_id === 'string') {
-    fanout(key, queue);
-  }
 }
 
 /**
@@ -2419,14 +2319,16 @@ export async function handleWorkerDiscard(ws, req) {
     p.bead_id.length === 0 ||
     !Number.isInteger(p.expected_revision) ||
     (p.attempt_id != null &&
-      (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0))
+      (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0)) ||
+    (p.operation_id != null &&
+      (typeof p.operation_id !== 'string' || p.operation_id.length === 0))
   ) {
     ws.send(
       JSON.stringify(
         makeError(
           req,
           'bad_request',
-          'payload requires { bead_id, attempt_id?, expected_revision }'
+          'payload requires { bead_id, attempt_id?, operation_id?, expected_revision }'
         )
       )
     );
@@ -2442,6 +2344,7 @@ export async function handleWorkerDiscard(ws, req) {
     result = await discardWorkerBead(key, {
       bead_id: p.bead_id,
       ...(p.attempt_id == null ? {} : { attempt_id: p.attempt_id }),
+      ...(p.operation_id == null ? {} : { operation_id: p.operation_id }),
       expected_revision: p.expected_revision
     });
   } catch (err) {
@@ -2456,6 +2359,16 @@ export async function handleWorkerDiscard(ws, req) {
   const phase = operation?.phase || result.phase || null;
   const pending =
     result.pending || (phase === 'merged_revert' ? 'merged_revert' : null);
+  const receipt = operation
+    ? {
+        archive_path:
+          typeof operation.backup?.path === 'string'
+            ? operation.backup.path
+            : null,
+        original_pr: publicDiscardPr(operation.original_pr),
+        revert_pr: publicDiscardPr(operation.revert_pr)
+      }
+    : null;
   ws.send(
     JSON.stringify(
       makeOk(req, {
@@ -2468,6 +2381,7 @@ export async function handleWorkerDiscard(ws, req) {
         conflict: result.conflict === true,
         phase,
         reason: result.reason || null,
+        receipt,
         queue: decorateQueue(key, queue)
       })
     )

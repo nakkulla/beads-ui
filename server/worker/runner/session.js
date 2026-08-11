@@ -34,6 +34,9 @@ import {
 } from './command-guard.js';
 import { createTailReader } from './tail-reader.js';
 
+const DIRECT_CHILD_TERM_GRACE_MS = 250;
+const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
+
 /**
  * A normalized runner event. `raw` carries the original parsed jsonl object so
  * the session log persists the untransformed stream.
@@ -143,6 +146,8 @@ import { createTailReader } from './tail-reader.js';
  * @property {(pid: number, signal?: NodeJS.Signals|number) => void} [kill_impl]
  * @property {{ capture: (pid: number) => ({ ok: true, identity: { pid: number, pgid: number, started_at: number }}|{ ok: false, reason: string }) }} [process_controller]
  * @property {typeof import('node:fs')} [fs]
+ * @property {number} [direct_child_term_grace_ms]
+ * @property {number} [direct_child_kill_grace_ms]
  * @property {(input: { child: ChildProcessLike, log_path: string|null, fs: typeof import('node:fs'), onLine: (line: string) => void }) => LineSource} [makeLineSource] -
  * Line-source seam (UI-o2yt §5). Production leaves it unset: a `log_path` picks
  * the file tail reader and its absence picks the stdout reader. Tests inject
@@ -345,17 +350,95 @@ export function runSession(spec, bead, workspace, settings, deps) {
   /** @type {{ pid: number, pgid: number, started_at: number }|null} */
   let process_identity = null;
   if (deps.process_controller) {
+    /**
+     * Refuse a launch without targeting an unverified process group. The child
+     * handle is authoritative only for the direct process that was just
+     * spawned; a false return or exception is surfaced in the launch failure.
+     *
+     * @param {string} reason
+     * @returns {never}
+     */
+    function refuseUnverifiedLaunch(reason) {
+      const term_grace_ms =
+        deps.direct_child_term_grace_ms ?? DIRECT_CHILD_TERM_GRACE_MS;
+      const kill_grace_ms =
+        deps.direct_child_kill_grace_ms ?? DIRECT_CHILD_KILL_GRACE_MS;
+      const cleanup = new Promise((resolve) => {
+        let settled = false;
+        /** @type {ReturnType<typeof setTimeout>|null} */
+        let term_timer = null;
+        /** @type {ReturnType<typeof setTimeout>|null} */
+        let kill_timer = null;
+
+        /** @param {{ ok: boolean, reason?: string }} result */
+        function finish(result) {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          if (term_timer) {
+            clearTimeout(term_timer);
+          }
+          if (kill_timer) {
+            clearTimeout(kill_timer);
+          }
+          resolve(result);
+        }
+
+        child.on('close', () => finish({ ok: true }));
+
+        /** Escalate only against the same direct child handle. */
+        function forceDirectChild() {
+          let signal_failed = false;
+          try {
+            signal_failed = child.kill('SIGKILL') === false;
+          } catch {
+            signal_failed = true;
+          }
+          if (settled) {
+            return;
+          }
+          kill_timer = setTimeout(
+            () =>
+              finish({
+                ok: false,
+                reason: signal_failed
+                  ? 'direct_child_sigkill_failed'
+                  : 'direct_child_exit_unconfirmed'
+              }),
+            kill_grace_ms
+          );
+          kill_timer.unref?.();
+        }
+
+        let term_failed = false;
+        try {
+          term_failed = child.kill('SIGTERM') === false;
+        } catch {
+          term_failed = true;
+        }
+        if (settled) {
+          return;
+        }
+        if (term_failed) {
+          forceDirectChild();
+          return;
+        }
+        term_timer = setTimeout(forceDirectChild, term_grace_ms);
+        term_timer.unref?.();
+      });
+      const error = /** @type {Error & { cleanup: Promise<any> }} */ (
+        new Error(`process_identity:${reason}`)
+      );
+      error.cleanup = cleanup;
+      throw error;
+    }
     if (pid == null) {
-      throw new Error('process_identity:pid_missing');
+      refuseUnverifiedLaunch('pid_missing');
     }
     const captured = deps.process_controller.capture(pid);
     if (!captured.ok) {
-      try {
-        kill_impl(-pid, 'SIGTERM');
-      } catch {
-        /* fail-closed refusal is already surfaced below */
-      }
-      throw new Error(`process_identity:${captured.reason}`);
+      refuseUnverifiedLaunch(captured.reason);
     }
     process_identity = captured.identity;
   }

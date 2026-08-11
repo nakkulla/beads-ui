@@ -3212,19 +3212,32 @@ export function createScheduler(deps) {
     let handle;
     try {
       handle = runner.spawn(spawnBead, wt_path, settings);
-    } catch {
-      // No process exists, so nothing will ever push through this hook — the
-      // last early return before the spawn owes the same cleanup as the rest.
+    } catch (error) {
+      let spawn_failure = 'spawn_failed';
+      const launch_error = /** @type {any} */ (error);
+      if (launch_error?.cleanup instanceof Promise) {
+        const cleanup = await launch_error.cleanup;
+        const identity_reason =
+          typeof launch_error.message === 'string'
+            ? launch_error.message
+            : 'process_identity:unknown';
+        spawn_failure = cleanup?.ok
+          ? `spawn_failed:${identity_reason}`
+          : `spawn_failed:${identity_reason}:${cleanup?.reason || 'direct_child_cleanup_failed'}`;
+      }
+      // A raw spawn error creates no process. An identity refusal carries a
+      // cleanup promise, and this path waits for direct-child close (including
+      // bounded SIGKILL escalation) before dropping the hook and ownership.
       removeGuardHook(workspace, attempt_id);
       usage_receipts.removeEmptyUsageReceiptInbox(workspace, attempt_id);
       await revertExecStamps(bead_id, stamped_keys);
       deps.store.updateAttempt(workspace, {
         attempt_id,
-        patch: { status: 'failed', cause: 'spawn_failed', finished_at: now() }
+        patch: { status: 'failed', cause: spawn_failure, finished_at: now() }
       });
       notifyLifecycle('attemptFailed', {
         bead_id,
-        cause: 'spawn_failed',
+        cause: spawn_failure,
         repo,
         cause_detail: null
       });
@@ -3235,7 +3248,7 @@ export function createScheduler(deps) {
       }
       claimed.delete(bead_id);
       notifyChanged(workspace);
-      return { ok: false, reason: 'spawn_failed' };
+      return { ok: false, reason: spawn_failure };
     }
 
     // What the spawn actually sent (UI-rxp3 §3), lifted off the handle rather
@@ -3407,9 +3420,7 @@ export function createScheduler(deps) {
     ) {
       return { ok: false, reason: 'not_failed' };
     }
-    if (
-      discardActive(q, { bead_id: prior.bead_id, attempt_id })
-    ) {
+    if (discardActive(q, { bead_id: prior.bead_id, attempt_id })) {
       return { ok: false, reason: 'discard_in_progress' };
     }
     // no_session_id: a pre-UI-azj6 attempt without a captured session id.

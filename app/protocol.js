@@ -84,7 +84,7 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'worker-queue-remove',
   // Pause (⏸) a running attempt: resumable, bead stays queued
   'worker-attempt-pause',
-  // Discard (■) an attempt: terminal, bead leaves the queue
+  // Retired legacy action; server returns action_retired without mutation.
   'worker-attempt-stop',
   // Manual resume (↻ / paused ▶) in the attempt's existing worktree
   'worker-attempt-resume',
@@ -99,7 +99,7 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'worker-merge-queue-remove',
   // Unified restart-safe discard operation for every worker-owned phase.
   'worker-discard',
-  // Legacy compatibility bridge into worker-discard; frontend call is retired.
+  // Retired legacy action; server returns action_retired without mutation.
   'worker-pr-discard',
   // REVISE-parking disposition clicks (UI-hs11): finding acceptance dispatches
   // the repair session, delta approval refreshes the receipt server-side.

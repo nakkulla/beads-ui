@@ -1634,12 +1634,29 @@ export async function discardWorkerPr(workspace_root, bead_id) {
  * Start or reuse one durable unified discard operation.
  *
  * @param {string} workspace_root
- * @param {{ bead_id: string, attempt_id?: string|null, expected_revision: number }} input
+ * @param {{ bead_id: string, attempt_id?: string|null, operation_id?: string|null, expected_revision: number }} input
  */
 export async function discardWorkerBead(workspace_root, input) {
   const att = ATTACHMENTS.get(keyFor(workspace_root));
   if (!att || !att.discardCoordinator) {
     return { ok: false, reason: 'no_attachment' };
+  }
+  if (typeof input.operation_id === 'string' && input.operation_id.length > 0) {
+    const queue = getWorkerRuntime().queueStore.snapshot(
+      keyFor(workspace_root)
+    );
+    const operation = queue.discard_operations?.[input.operation_id];
+    if (
+      !operation ||
+      operation.bead_id !== input.bead_id ||
+      operation.phase === 'done'
+    ) {
+      return { ok: false, reason: 'operation_not_retryable' };
+    }
+    if (queue.revision !== input.expected_revision) {
+      return { ok: false, conflict: true, reason: 'revision_conflict' };
+    }
+    return att.discardCoordinator.retry(input.operation_id);
   }
   return att.discardCoordinator.discard(input);
 }

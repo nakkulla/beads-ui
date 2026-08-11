@@ -149,9 +149,10 @@ Nothing merges without a human `[머지]` click.
   enabled, forces the effective concurrency cap to 1 through PR merge cleanup
   while preserving the stored `slots` preference for later restoration.
 - `worker-queue-remove` payload: `{ bead_id, expected_revision }`
-- `worker-attempt-pause` / `worker-attempt-stop` payload: `{ attempt_id }` —
-  pauses (⏸) or discards (■) a running attempt (group-kill + `workflow_mode`
-  revert); stop replies `{ attempt_id, stopped }`.
+- `worker-attempt-pause` payload: `{ attempt_id }` — pauses (⏸) a running
+  attempt while preserving its resumable state. Reply
+  `{ attempt_id, paused, phase, reason }` exposes the durable control phase
+  (`done` when the pause has settled).
 - `worker-attempt-resume` payload: `{ attempt_id, expected_revision }` — ▶ on a
   paused/failed/orphaned attempt; cap-exempt (human-originated).
 - `worker-attempt-dismiss` payload: `{ attempt_id, expected_revision }` — the
@@ -186,18 +187,21 @@ Nothing merges without a human `[머지]` click.
   (`[{ bead_id, resolution_rounds }]`, durable order) plus a non-persisted
   `merge_queue_state` = `{ active, failures }` — which item the driver is on and
   why each skipped one failed.
-- `worker-discard` payload: `{ bead_id, attempt_id?, expected_revision }` —
-  creates or reuses one durable, restart-safe discard operation. It validates
-  the latest leaf attempt or worker-owned PR row, archives the exact source
-  before destructive effects, fences dispatch/merge, and advances by
-  authoritative readback. Reply:
-  `{ bead_id, operation_id, accepted, discarded, pending, reused, conflict, phase, reason, queue }`;
+- `worker-discard` payload:
+  `{ bead_id, attempt_id?, operation_id?, expected_revision }` — creates or
+  reuses one durable, restart-safe discard operation. It validates the latest
+  leaf attempt or worker-owned PR row, archives the exact source before
+  destructive effects, fences dispatch/merge, and advances by authoritative
+  readback. Reply:
+  `{ bead_id, operation_id, accepted, discarded, pending, reused, conflict, phase, reason, receipt, queue }`;
   `pending:'merged_revert'` means the PR was merged during observation and the
-  operation is waiting for the revert lifecycle.
-- `worker-pr-discard` and `worker-attempt-stop` are legacy compatibility
-  messages. While old clients remain, the server translates both into the same
-  archive-first durable `worker-discard` coordinator; neither retains a direct
-  destructive path.
+  operation is waiting for the revert lifecycle. A displayed `operation_id`
+  retries that exact failed durable operation after one CAS re-sync. Terminal
+  `receipt` preserves the archive path plus UI-safe original/revert PR links in
+  the success toast after the completed operation leaves active snapshots.
+- `worker-pr-discard` and `worker-attempt-stop` are retired protocol names. The
+  server replies `{ ok:false, error:{ code:'action_retired' } }` and never
+  mutates state; active clients use `worker-discard` exclusively.
 
 Every queue mutation replies `{ applied, conflict, queue }`; a stale
 `expected_revision` yields `conflict:true` + the current queue for re-sync.

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { discardConfirmationMessage } from '../worker/lanes.js';
 import { createMonitorView } from './index.js';
 
 const NOW = 1_700_000_000_000;
@@ -405,6 +406,157 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
       {
         type: 'worker-attempt-pause',
         payload: { attempt_id: 'a1', root_dir: WS_A }
+      }
+    ]);
+  });
+
+  test('uses the shared unmerged confirmation and worker-discard action', () => {
+    const { mount, view, sent, confirmFn } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-run',
+              status: 'running',
+              session_id: 's1',
+              started_at: NOW - 1_000
+            }
+          }
+        })
+      ],
+      workspaces_state: [state({ revision: 4 })]
+    });
+    view.load();
+
+    click(mount, '#monitor-running .mon-op--discard');
+
+    expect(confirmFn).toHaveBeenCalledWith(
+      discardConfirmationMessage('A-run', 'unmerged')
+    );
+    expect(sent).toEqual([
+      {
+        type: 'worker-discard',
+        payload: {
+          bead_id: 'A-run',
+          attempt_id: 'a1',
+          root_dir: WS_A,
+          expected_revision: 4
+        }
+      }
+    ]);
+  });
+
+  test('surfaces an immediate discard refusal', async () => {
+    const transport = vi.fn(async () => ({
+      accepted: true,
+      operation_id: 'op-failed',
+      conflict: false,
+      reason: 'operation_not_retryable'
+    }));
+    const { mount, view } = setup({
+      transport,
+      workspaces: [
+        workspace({
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-run',
+              status: 'running',
+              session_id: 's1',
+              started_at: NOW - 1_000
+            }
+          }
+        })
+      ],
+      workspaces_state: [state({ revision: 4 })]
+    });
+    view.load();
+
+    click(mount, '#monitor-running .mon-op--discard');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      'operation_not_retryable'
+    );
+  });
+
+  test('uses the shared merged confirmation for cleanup discard', () => {
+    const { mount, view, sent, confirmFn } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          pr_observations: {
+            'A-pr': { gate: { enabled: false, tier: 'merged' } }
+          },
+          cleanup_failed: {
+            'A-pr': { step: 'verify', reason: 'verify_failed' }
+          }
+        })
+      ],
+      workspaces_state: [state({ revision: 5 })]
+    });
+    view.load();
+
+    click(mount, '#monitor-pr_wait .worker-mini__discard');
+
+    expect(confirmFn).toHaveBeenCalledWith(
+      discardConfirmationMessage('A-pr', 'merged')
+    );
+    expect(sent).toEqual([
+      {
+        type: 'worker-discard',
+        payload: {
+          bead_id: 'A-pr',
+          root_dir: WS_A,
+          expected_revision: 5
+        }
+      }
+    ]);
+  });
+
+  test('retries a failed post-runner discard from the queue row', () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-queue', added_at: NOW }],
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-queue',
+              status: 'discarded'
+            }
+          },
+          discard_operations: {
+            'op-queue': {
+              operation_id: 'op-queue',
+              bead_id: 'A-queue',
+              attempt_id: 'a1',
+              requested_at: 1,
+              mode: 'unmerged',
+              phase: 'runner_terminated',
+              last_error: 'pr_observe_failed'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state({ revision: 6 })]
+    });
+    view.load();
+
+    click(mount, '#monitor-queue .worker-mini__discard');
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-discard',
+        payload: {
+          bead_id: 'A-queue',
+          attempt_id: 'a1',
+          operation_id: 'op-queue',
+          root_dir: WS_A,
+          expected_revision: 6
+        }
       }
     ]);
   });

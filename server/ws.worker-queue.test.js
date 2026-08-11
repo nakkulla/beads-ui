@@ -302,9 +302,7 @@ describe('ws worker-queue channel', () => {
         last_error: null
       }
     });
-    expect(JSON.stringify(snapshot.discard_operations)).not.toContain(
-      'secret'
-    );
+    expect(JSON.stringify(snapshot.discard_operations)).not.toContain('secret');
   });
 
   test('sets a workspace preset reference with both queue and preset revisions', async () => {
@@ -444,7 +442,7 @@ describe('ws worker-queue channel', () => {
     expect(snaps.at(-1).auto_advance).toBe(true);
   });
 
-  test('toggle ON kicks the live tick; retired stop enters unified discard', async () => {
+  test('toggle ON kicks the live tick; retired stop never mutates', async () => {
     const tick = vi.fn(async () => {});
     const discard = vi.fn(async () => ({
       ok: true,
@@ -473,17 +471,11 @@ describe('ws worker-queue channel', () => {
       expected_revision: store.snapshot(process.cwd()).revision,
       attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
     });
-    const discard_revision = store.snapshot(process.cwd()).revision;
-
     await send(sock, 'm2', 'worker-attempt-stop', { attempt_id: 'att-1' });
-    expect(discard).toHaveBeenCalledWith({
-      bead_id: 'UI-1',
-      attempt_id: 'att-1',
-      expected_revision: discard_revision
-    });
+    expect(discard).not.toHaveBeenCalled();
     const reply = replyFor(sock, 'm2');
-    expect(reply.ok).toBe(true);
-    expect(reply.payload.stopped).toBe(true);
+    expect(reply.ok).toBe(false);
+    expect(reply.error.code).toBe('action_retired');
   });
 
   test('routes the PR-wait slot toggle, persists it, ticks, and broadcasts', async () => {
@@ -536,11 +528,13 @@ describe('ws worker-queue channel', () => {
     const ok_reply = replyFor(sock, 'p1');
     expect(ok_reply.ok).toBe(true);
     expect(ok_reply.payload.paused).toBe(true);
+    expect(ok_reply.payload.phase).toBe('done');
     expect(ok_reply.payload.reason).toBe(null);
 
     await send(sock, 'p2', 'worker-attempt-pause', { attempt_id: 'att-2' });
     const refused = replyFor(sock, 'p2');
     expect(refused.payload.paused).toBe(false);
+    expect(refused.payload.phase).toBe(null);
     expect(refused.payload.reason).toBe('no_session_id');
   });
 
@@ -1878,7 +1872,125 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
     });
   });
 
-  test('a stale revision refuses the destructive discard without acting', async () => {
+  test('worker-discard retries the exact failed operation id', async () => {
+    const store = getWorkerRuntime().queueStore;
+    const created = store.createDiscardOperation(process.cwd(), {
+      expected_revision: 0,
+      operation: {
+        operation_id: 'discard-retry',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: {}
+      }
+    });
+    store.failDiscardOperation(process.cwd(), {
+      operation_id: 'discard-retry',
+      expected_phase: 'requested',
+      reason: 'archive_failed'
+    });
+    const discard = vi.fn();
+    const retry = vi.fn(async () => ({
+      ok: true,
+      operation_id: 'discard-retry',
+      phase: 'requested'
+    }));
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        discardCoordinator: { discard, retry }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'd1', 'worker-discard', {
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      operation_id: 'discard-retry',
+      expected_revision: created.queue.revision + 1
+    });
+
+    expect(retry).toHaveBeenCalledWith('discard-retry');
+    expect(discard).not.toHaveBeenCalled();
+    expect(replyFor(sock, 'd1').payload).toMatchObject({
+      operation_id: 'discard-retry',
+      accepted: true,
+      discarded: false,
+      phase: 'requested'
+    });
+  });
+
+  test('worker-discard returns the terminal recovery receipt after lane removal', async () => {
+    const store = getWorkerRuntime().queueStore;
+    const created = store.createDiscardOperation(process.cwd(), {
+      expected_revision: 0,
+      operation: {
+        operation_id: 'discard-complete',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: {}
+      }
+    });
+    store.advanceDiscardOperation(process.cwd(), {
+      operation_id: 'discard-complete',
+      expected_phase: 'requested',
+      next_phase: 'bead_pr_url_cleared',
+      patch: {
+        backup: {
+          path: '/state/discard-complete',
+          manifest_sha256: 'a'.repeat(64),
+          verified_at: 10
+        },
+        original_pr: {
+          number: 1,
+          url: 'https://github.com/o/r/pull/1',
+          state: 'CLOSED'
+        }
+      }
+    });
+    store.completeDiscardOperation(process.cwd(), {
+      operation_id: 'discard-complete',
+      expected_phase: 'bead_pr_url_cleared'
+    });
+    const discard = vi.fn(async () => ({
+      ok: true,
+      operation_id: 'discard-complete'
+    }));
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        discardCoordinator: { discard }
+      })
+    );
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'd1', 'worker-discard', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot(process.cwd()).revision
+    });
+
+    expect(created.ok).toBe(true);
+    expect(replyFor(sock, 'd1').payload).toMatchObject({
+      operation_id: 'discard-complete',
+      accepted: true,
+      discarded: true,
+      phase: 'done',
+      receipt: {
+        archive_path: '/state/discard-complete',
+        original_pr: {
+          number: 1,
+          url: 'https://github.com/o/r/pull/1',
+          state: 'CLOSED'
+        },
+        revert_pr: null
+      }
+    });
+  });
+
+  test('retired PR discard never acts even with a stale revision', async () => {
     const discard = vi.fn();
     __registerWorkerAttachmentForTest(
       process.cwd(),
@@ -1896,10 +2008,10 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
     });
 
     expect(discard).not.toHaveBeenCalled();
-    expect(replyFor(sock, 'r1').payload.conflict).toBe(true);
+    expect(replyFor(sock, 'r1').error.code).toBe('action_retired');
   });
 
-  test('worker-pr-discard enters the unified coordinator and reports refusal', async () => {
+  test('retired PR discard returns action_retired without coordinator work', async () => {
     const discard = vi.fn(async () => ({
       ok: false,
       reason: 'pr_already_merged'
@@ -1919,17 +2031,11 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
       expected_revision: 0
     });
 
-    expect(discard).toHaveBeenCalledWith({
-      bead_id: 'UI-1',
-      expected_revision: 0
-    });
-    expect(replyFor(sock, 'r1').payload).toMatchObject({
-      discarded: false,
-      reason: 'pr_already_merged'
-    });
+    expect(discard).not.toHaveBeenCalled();
+    expect(replyFor(sock, 'r1').error.code).toBe('action_retired');
   });
 
-  test('discard is inert without a registered attachment', async () => {
+  test('retired PR discard returns action_retired without an attachment', async () => {
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
@@ -1938,7 +2044,7 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
       expected_revision: 0
     });
 
-    expect(replyFor(sock, 'r1').payload.reason).toBe('no_attachment');
+    expect(replyFor(sock, 'r1').error.code).toBe('action_retired');
   });
 });
 

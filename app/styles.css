@@ -2904,8 +2904,9 @@ html[data-theme='dark'] {
   color: var(--accent-warn);
 }
 
-/* 실패 배너의 수동 이어하기(↻) · 닫기(✕) 버튼. */
+/* 실패 배너의 수동 이어하기(↻) · 폐기 · 닫기(✕) 버튼. */
 .worker-banner__resume,
+.worker-banner__discard,
 .worker-banner__dismiss {
   margin-left: var(--sp-8);
   padding: 1px var(--sp-6);
@@ -2918,11 +2919,13 @@ html[data-theme='dark'] {
 }
 
 .worker-banner__resume:hover:not(:disabled),
+.worker-banner__discard:hover:not(:disabled),
 .worker-banner__dismiss:hover {
   background: color-mix(in srgb, var(--accent-danger) 22%, var(--bg-panel));
 }
 
-.worker-banner__resume:disabled {
+.worker-banner__resume:disabled,
+.worker-banner__discard:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -3061,18 +3064,46 @@ html[data-theme='dark'] {
   color: var(--accent);
 }
 
-.rtile__stop {
+.rtile__discard {
   flex: 0 0 auto;
-  border: none;
+  border: 1px solid color-mix(in srgb, var(--accent-danger) 45%, transparent);
+  border-radius: var(--r-3);
   background: transparent;
   color: var(--accent-danger);
   cursor: pointer;
   font-size: var(--fs-small);
-  line-height: 1;
-  padding: 0 2px;
+  line-height: 1.2;
+  padding: 2px 5px;
 }
 
-/* 일시정지·재개 (worker-phase1 §2.1): 폐기(■)와 달리 되돌릴 수 있으므로
+.rtile__discard:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.worker-discard-receipt {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  align-items: center;
+  width: 100%;
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+}
+
+.worker-discard-receipt[role='alert'] {
+  color: var(--accent-danger);
+}
+
+.worker-discard-receipt code,
+.worker-discard-receipt a {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 일시정지·재개 (worker-phase1 §2.1): durable [폐기]와 달리 되돌릴 수 있으므로
    danger 색을 쓰지 않는다. */
 .rtile__pause,
 .rtile__resume {

@@ -34,6 +34,7 @@ import {
   sumAttemptUsage,
   usageTooltip
 } from '../../utils/token-usage.js';
+import { discardProjection, discardReceiptTemplate } from '../worker/lanes.js';
 import { formatElapsed } from '../worker/running-grid.js';
 import {
   iconClose,
@@ -369,6 +370,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const revise_parked = objectOf(workspace.revise_parked);
     const merge_state = objectOf(workspace.merge_queue_state);
     const cleanup_failed = objectOf(workspace.cleanup_failed);
+    const discard_operations = objectOf(workspace.discard_operations);
     const merge_queue = Array.isArray(workspace.merge_queue)
       ? workspace.merge_queue
       : [];
@@ -423,6 +425,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         last_event_at: live.last_event_at,
         model: live.model,
         usage: live.usage,
+        discard: discardProjection(discard_operations, bead_id, {
+          attempt_id: live.attempt_id
+        }),
         badges:
           live.run_state === 'paused'
             ? ['⏸ 일시정지']
@@ -453,6 +458,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const conflicting = !!gate && gate.base_badge === '충돌';
       const cleanup_retry = !!cleanup && !!gate && gate.tier === 'merged';
       const external_cleanup = external && !!gate && gate.tier === 'merged';
+      const discard = discardProjection(discard_operations, bead_id, {
+        external,
+        merge_active: active,
+        merge_queued: queued,
+        merged: !!cleanup || gate?.tier === 'merged'
+      });
+      const discard_blocks_merge = !!discard.operation;
       pr_wait.push({
         ...base(bead_id),
         lane: 'pr_wait',
@@ -469,35 +481,35 @@ export function buildLanes(workspaces, workspaces_state, options) {
         // 게이트가 열렸거나(enabled), 충돌 해소 세션을 띄우는 클릭이거나,
         // 머지된 뒤의 정리 재시도일 때만 누를 수 있다.
         merge_enabled:
-          gate?.enabled === true ||
-          conflicting ||
-          cleanup_retry ||
-          external_cleanup,
+          !discard_blocks_merge &&
+          (gate?.enabled === true ||
+            conflicting ||
+            cleanup_retry ||
+            external_cleanup),
         merge_label: external_cleanup
           ? '정리'
           : conflicting && !cleanup_retry
             ? '충돌 해소 후 머지'
             : undefined,
-        merge_title: external_cleanup
-          ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
-          : cleanup_retry
-            ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
-            : conflicting
-              ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
-              : gate?.enabled === true
-                ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다`
-                : `머지 불가: ${gate?.reason || '관측 대기'}`,
+        merge_title: discard_blocks_merge
+          ? discard.error
+            ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
+            : `폐기 진행 중 — ${discard.progress || '완료를 기다리세요'}`
+          : external_cleanup
+            ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
+            : cleanup_retry
+              ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+              : conflicting
+                ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
+                : gate?.enabled === true
+                  ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다`
+                  : `머지 불가: ${gate?.reason || '관측 대기'}`,
         cancel_action: queued,
         cancel_enabled: !active,
-        // 이미 머지된 PR에 폐기를 다시 내밀지 않는다 (`cleanup_failed`는 관측
-        // 캐시가 빈 재시작 직후에도 남는 durable 머지 증거다), 외부 세션이
-        // 배달한 PR도 이 탭이 폐기할 대상이 아니다 — Worker 탭과 같은 규약.
-        discard_action:
-          !external && !cleanup && !(gate && gate.tier === 'merged'),
-        discard_enabled: !active && !queued,
-        discard_title: queued
-          ? '머지 큐에 있음 — 폐기하려면 먼저 [취소]하세요'
-          : undefined
+        discard,
+        discard_action: discard.action,
+        discard_enabled: discard.enabled,
+        discard_title: discard.title
       });
     }
 
@@ -509,10 +521,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
       claimed.add(bead_id);
       const parked = revise_parked[bead_id];
+      const projected_discard = discardProjection(discard_operations, bead_id);
+      const discard = projected_discard.operation ? projected_discard : null;
       /** @type {MonitorItem} */
       const item = {
         ...base(bead_id),
         lane: 'queue',
+        draggable: !discard,
+        discard: discard || undefined,
         reason: admissionBadge(admission, bead_id),
         // 순번은 레인에서의 디스패치 순서이므로, 실행중으로 빠진 버드를 건너뛴
         // 뒤의 인덱스가 아니라 레인 자체의 자리를 쓴다.
@@ -522,7 +538,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         badges: parked ? ['⏸ REVISE 파킹'] : [],
         alert: !!parked,
         revise_action: !!parked,
-        revise_enabled: !!parked,
+        revise_enabled: !!parked && !discard,
         revise_title: parked
           ? parked.notes_tail
             ? `REVISE findings (자세히는 카드 클릭 → 이슈 상세):\n${parked.notes_tail}`
@@ -798,14 +814,19 @@ function runningOps(item) {
         >
           ${iconPlay()}
         </button>`}
-    <button
-      type="button"
-      class="mon-op mon-op--stop"
-      aria-label="중단"
-      title="중단 — 세션을 죽이고 대기 큐에서 뺍니다"
-    >
-      ${iconStop()}
-    </button>
+    ${item.discard?.action
+      ? html`<button
+          type="button"
+          class="mon-op mon-op--discard"
+          data-operation-id=${item.discard.operation?.operation_id || ''}
+          data-discard-mode=${item.discard.confirmation}
+          ?disabled=${!item.discard.enabled}
+          aria-label=${item.discard.label}
+          title=${item.discard.title}
+        >
+          ${item.discard.label}
+        </button>`
+      : ''}
     ${item.run_state === 'failed'
       ? html`<button
           type="button"
@@ -839,7 +860,7 @@ export function monitorRunningTile(item, now) {
       )}${repoChip(item)}
       ${item.model ? html`<span class="mon-c__model">${item.model}</span>` : ''}
       ${elapsed ? html`<span class="mon-live__elapsed">${elapsed}</span>` : ''}
-      ${usageChip(item)}${runningOps(item)}
+      ${usageChip(item)}${runningOps(item)}${discardReceiptTemplate(item)}
     </div>`;
 }
 
@@ -904,6 +925,7 @@ export function monitorRunnableCard(item) {
  * @returns {import('lit-html').TemplateResult}
  */
 export function monitorQueueRow(item) {
+  const discard_locked = !!item.discard?.operation;
   return html`${titleLine(item)}
     <div class="mon-c__meta">
       <span class="mon-c__grip" aria-hidden="true">⠿</span>
@@ -916,7 +938,7 @@ export function monitorQueueRow(item) {
         <button
           type="button"
           class="mon-op mon-op--up"
-          ?disabled=${(item.queue_position ?? 1) <= 1}
+          ?disabled=${discard_locked || (item.queue_position ?? 1) <= 1}
           aria-label="한 칸 앞으로"
           title="한 칸 앞으로"
         >
@@ -925,7 +947,8 @@ export function monitorQueueRow(item) {
         <button
           type="button"
           class="mon-op mon-op--down"
-          ?disabled=${(item.queue_index ?? 0) >= (item.queue_length ?? 1) - 1}
+          ?disabled=${discard_locked ||
+          (item.queue_index ?? 0) >= (item.queue_length ?? 1) - 1}
           aria-label="한 칸 뒤로"
           title="한 칸 뒤로"
         >
@@ -934,13 +957,30 @@ export function monitorQueueRow(item) {
         <button
           type="button"
           class="mon-op mon-op--remove"
+          ?disabled=${discard_locked}
           aria-label="대기 큐에서 제거"
           title="대기 큐에서 제거"
         >
           ✕
         </button>
+        ${discard_locked
+          ? html`<button
+              type="button"
+              class="worker-mini__discard"
+              data-bead-id=${item.id}
+              data-attempt-id=${item.discard?.attempt_id || ''}
+              data-operation-id=${item.discard?.operation?.operation_id || ''}
+              data-discard-mode=${item.discard?.confirmation || 'unmerged'}
+              ?disabled=${!item.discard?.enabled}
+              aria-label=${item.discard?.label || '폐기'}
+              title=${item.discard?.title || ''}
+            >
+              ${item.discard?.label || '폐기'}
+            </button>`
+          : ''}
       </span>
     </div>
+    ${discardReceiptTemplate(item)}
     ${item.revise_action
       ? html`<div class="mon-c__tail">
           <button
@@ -1027,14 +1067,16 @@ export function monitorPrCard(item) {
                 type="button"
                 class="worker-mini__discard"
                 data-bead-id=${item.id}
+                data-attempt-id=${item.discard?.attempt_id || ''}
+                data-operation-id=${item.discard?.operation?.operation_id || ''}
+                data-discard-mode=${item.discard?.confirmation || 'unmerged'}
                 ?disabled=${item.discard_enabled === false}
-                title=${item.discard_enabled === false
-                  ? item.discard_title || '머지 진행 중 — 폐기할 수 없습니다'
-                  : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음)'}
+                title=${item.discard_title}
               >
-                폐기
+                ${item.discard?.label || '폐기'}
               </button>`
             : ''}
+          ${discardReceiptTemplate(item)}
         </div>`
       : ''}`;
 }

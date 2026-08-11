@@ -23,7 +23,14 @@ describe('worker failed running tile template', () => {
           status: 'failed',
           status_label: '실패',
           resume_eligible: false,
-          resume_reason: 'session_id 없는 구 attempt — 이어하기 불가'
+          resume_reason: 'session_id 없는 구 attempt — 이어하기 불가',
+          discard: {
+            action: true,
+            enabled: true,
+            label: '폐기',
+            title: '복구 archive 생성 후 폐기',
+            operation: null
+          }
         }
       ]),
       mount
@@ -42,6 +49,7 @@ describe('worker failed running tile template', () => {
     expect(tile.querySelector('.rtile__session')).toBeNull();
     expect(tile.querySelector('.rtile__pause')).toBeNull();
     expect(tile.querySelector('.rtile__stop')).toBeNull();
+    expect(tile.querySelector('.rtile__discard')).not.toBeNull();
     expect(tile.querySelector('.rtile__accent')).toBeNull();
   });
 

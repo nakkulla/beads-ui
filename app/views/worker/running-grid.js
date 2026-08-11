@@ -17,7 +17,7 @@ import {
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
-import { timesMeta } from './lanes.js';
+import { discardReceiptTemplate, timesMeta } from './lanes.js';
 
 /**
  * @typedef {Object} RunningTile
@@ -53,6 +53,7 @@ import { timesMeta } from './lanes.js';
  * @property {string|null} [base_exception] - `→ <target_base>` when this
  * attempt targets a base other than the workspace's declared one (UI-j6wa §3);
  * null on a match and on either side being unknown.
+ * @property {any} [discard] - Shared durable discard UI projection.
  */
 
 /**
@@ -70,6 +71,8 @@ import { timesMeta } from './lanes.js';
  * (session_id present, not already resumed); ineligible renders disabled.
  * @property {string|null} [resume_reason] - Ineligibility reason for the
  * disabled button's title.
+ * @property {string} bead_id - Bead targeted by the banner actions.
+ * @property {any} discard - Shared durable discard UI projection.
  */
 
 /**
@@ -245,6 +248,21 @@ export function bannersTemplate(state) {
                 ↻ 이어하기
               </button>`
             : ''}
+          ${state.failure.discard?.action
+            ? html`<button
+                type="button"
+                class="worker-banner__discard"
+                data-bead-id=${state.failure.bead_id}
+                data-attempt-id=${state.failure.resume_attempt_id || ''}
+                data-operation-id=${state.failure.discard.operation
+                  ?.operation_id || ''}
+                data-confirmation=${state.failure.discard.confirmation}
+                ?disabled=${!state.failure.discard.enabled}
+                title=${state.failure.discard.title}
+              >
+                ${state.failure.discard.label}
+              </button>`
+            : ''}
           ${state.failure.resume_attempt_id
             ? html`<button
                 type="button"
@@ -257,6 +275,7 @@ export function bannersTemplate(state) {
               </button>`
             : ''}
           ${causeDetailLine(state.failure.cause_detail)}
+          ${discardReceiptTemplate({ discard: state.failure.discard })}
         </div>`
       : ''}
     ${cleanup.map(
@@ -325,6 +344,18 @@ function runningTile(tile, now, selected_attempt = null) {
   // 워크스페이스의 base를 상시 말하므로, 타일은 그와 다를 때만 입을 연다.
   const base_badge = tile.base_exception || null;
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
+  const discard_button = tile.discard?.action
+    ? html`<button
+        type="button"
+        class="rtile__discard"
+        data-operation-id=${tile.discard.operation?.operation_id || ''}
+        ?disabled=${!tile.discard.enabled}
+        title=${tile.discard.title}
+        aria-label=${tile.discard.label}
+      >
+        ${tile.discard.label}
+      </button>`
+    : '';
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused
       ? ' rtile--paused'
@@ -355,6 +386,7 @@ function runningTile(tile, now, selected_attempt = null) {
             >
               ↻ 이어하기
             </button>
+            ${discard_button}
             <button
               type="button"
               class="rtile__dismiss"
@@ -391,14 +423,7 @@ function runningTile(tile, now, selected_attempt = null) {
                 >
                   ⏸
                 </button>`}
-            <button
-              type="button"
-              class="rtile__stop"
-              title="폐기"
-              aria-label="폐기"
-            >
-              ■
-            </button>`}
+            ${discard_button}`}
     </div>
     <div class="rtile__title">${tile.title}</div>
     ${tile.current_child
@@ -439,7 +464,7 @@ function runningTile(tile, now, selected_attempt = null) {
               : ''}
         </div>`
       : ''}
-    ${timesMeta(tile)}
+    ${timesMeta(tile)} ${discardReceiptTemplate(tile)}
     <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일): 큐
          스냅샷에는 페이즈명도 진행률도 없으므로 진행 바는 만들지 않는다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->
