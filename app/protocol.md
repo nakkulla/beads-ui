@@ -183,9 +183,12 @@ Nothing merges without a human `[머지]` click.
   merge is already running against GitHub. Reply
   `{ bead_id, applied, conflict, reason, queue }`.
 - The `worker-queue-snapshot` carries the queue as `merge_queue`
-  (`[{ bead_id, resolution_rounds }]`, durable order) plus a non-persisted
-  `merge_queue_state` = `{ active, failures }` — which item the driver is on and
-  why each skipped one failed.
+  (`[{ bead_id, resolution_rounds, resolution? }]`, durable order). The optional
+  `resolution` projection is the exact durable wait record (`attempt_id`,
+  `subject_bead_id`, `deadline_at`, `state`, `yielded_at`, `settled_at`); older
+  snapshots may omit it. A non-persisted `merge_queue_state` =
+  `{ active, failures }` says which item the driver is on and why each skipped
+  one failed.
 - `worker-pr-discard` payload: `{ bead_id, expected_revision }` — `[폐기]`:
   re-read the PR state authoritatively, close it when it is still OPEN (`MERGED`
   refuses with `pr_already_merged`, an unreadable state fails closed), put bd

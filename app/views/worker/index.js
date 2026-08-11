@@ -652,6 +652,33 @@ export function mergeFailureText(reason) {
 }
 
 /**
+ * Turn the optional durable merge-queue wait into one nonterminal badge.
+ * Unknown and malformed states stay invisible: the server owns fail-closed
+ * execution, while this projection must remain compatible with older snapshots.
+ *
+ * @param {import('../../data/worker-queue-store.js').ResolutionProjection|null|undefined} resolution
+ * @returns {{ badge: string, live: boolean }|null}
+ */
+function resolutionView(resolution) {
+  if (!resolution || typeof resolution !== 'object') {
+    return null;
+  }
+  switch (resolution.state) {
+    case 'waiting':
+      return { badge: '충돌 해소 중', live: true };
+    case 'yielded':
+      return {
+        badge: '충돌 해소 계속 중 · 완료 후 우선 머지',
+        live: true
+      };
+    case 'ready':
+      return { badge: '충돌 해소 완료 · 재검증 대기', live: false };
+    default:
+      return null;
+  }
+}
+
+/**
  * The base-exception badge text for one attempt, or null when there is no
  * exception to report (UI-j6wa §3).
  *
@@ -809,7 +836,7 @@ function completionView(completion) {
  * durable lane membership an external row does not have), and a MERGED row
  * becomes a [정리] button because nothing auto-cleans it. 충돌 해소 is NOT one
  * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
- * @param {{ position: number, active: boolean, failure: string|null }|null} [merge_queue]
+ * @param {{ position: number, active: boolean, failure: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
  * `position` while it waits (0 = not queued), whether the driver is on it right
  * now, and the reason it was skipped, if any.
@@ -848,16 +875,22 @@ function prWaitRow(
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
   const recovery = completionView(completion);
+  const resolution = resolutionView(
+    merge_queue ? merge_queue.resolution : null
+  );
   /** @type {string[]} */
   const badges = [];
   if (external) {
     badges.push('세션');
   }
-  const conflict_badge = conflict_session
-    ? conflict_session === 'running'
-      ? '충돌 해소 중'
-      : '충돌 해소 일시정지'
-    : null;
+  const conflict_badge =
+    conflict_session === 'paused'
+      ? '충돌 해소 일시정지'
+      : resolution
+        ? resolution.badge
+        : conflict_session === 'running'
+          ? '충돌 해소 중'
+          : null;
   const substituted = activityBadge(
     external && gate && gate.tier === 'closed_unmerged'
       ? '닫힘'
@@ -944,12 +977,12 @@ function prWaitRow(
     // state — the row draws that one with the breathing dot and no colour
     // emphasis, because nobody has to act on it.
     live_badge:
-      conflict_session === 'running'
-        ? conflict_badge
-        : conflict_badge
-          ? // A paused resolution session is a settled state, not live work:
-            // the badge shows, the breathing dot does not.
-            null
+      conflict_session === 'paused'
+        ? // A paused resolution session is a settled state, not live work:
+          // the badge shows, the breathing dot does not.
+          null
+        : resolution?.live || conflict_session === 'running'
+          ? conflict_badge
           : substituted.live
             ? substituted.label
             : null,
@@ -2311,9 +2344,12 @@ export function createWorkerView(mount_element, options = {}) {
     const merge_queue = Array.isArray(q.merge_queue) ? q.merge_queue : [];
     /** @type {Map<string, number>} */
     const merge_positions = new Map();
+    /** @type {Map<string, import('../../data/worker-queue-store.js').ResolutionProjection|null|undefined>} */
+    const merge_resolutions = new Map();
     merge_queue.forEach((/** @type {any} */ e, /** @type {number} */ i) => {
       if (e && typeof e.bead_id === 'string') {
         merge_positions.set(e.bead_id, i + 1);
+        merge_resolutions.set(e.bead_id, e.resolution);
       }
     });
     const merge_state = q.merge_queue_state || { active: null, failures: {} };
@@ -2490,7 +2526,8 @@ export function createWorkerView(mount_element, options = {}) {
             {
               position: merge_positions.get(e.bead_id) || 0,
               active: merge_state.active === e.bead_id,
-              failure: merge_failures[e.bead_id] || null
+              failure: merge_failures[e.bead_id] || null,
+              resolution: merge_resolutions.get(e.bead_id)
             },
             // Also overlay-only (UI-w0hi §3): a durable row has no field here and
             // must keep the pre-existing behaviour, so absence reads as present.

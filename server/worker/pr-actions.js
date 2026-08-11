@@ -136,6 +136,16 @@ export const CLEANUP_STEPS = [
  */
 
 /**
+ * @typedef {Object} MergeabilityProbe
+ * @property {boolean} ok
+ * @property {'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked'} kind
+ * @property {string|null} reason
+ * @property {string|null} head_sha
+ * @property {string|null} base_ref
+ * @property {boolean} external
+ */
+
+/**
  * @typedef {Object} DiscardResult
  * @property {boolean} ok
  * @property {string|null} reason
@@ -194,7 +204,7 @@ function authoritativeMergeSha(pr) {
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   scheduler: { resolveConflict: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
+ *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').VerifyResolution>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
@@ -1945,12 +1955,112 @@ export function createPrActions(deps) {
   // -------------------------------------------------------------------------
 
   /**
+   * Read the latest mergeability authority without updating a branch, merging,
+   * starting cleanup, or dispatching a resolver. Observation and SHA-bound
+   * verification are allowed because they are the evidence this probe returns.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<MergeabilityProbe>}
+   */
+  async function probeMergeability(bead_id) {
+    const q = deps.store.snapshot(workspace);
+    const member = await laneMembership(q, bead_id);
+    if (!member.ok) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: member.reason,
+        head_sha: null,
+        base_ref: null,
+        external: false
+      };
+    }
+    const is_external = member.external === true;
+    const ref = resolvePrRef(
+      q,
+      bead_id,
+      is_external
+        ? {
+            pr_url: member.pr_url,
+            pr_number: parsePrNumber(member.pr_url)
+          }
+        : null
+    );
+    if (!ref) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: 'pr_ref_unknown',
+        head_sha: null,
+        base_ref: null,
+        external: is_external
+      };
+    }
+    const observed = await gateNow(bead_id, ref.number);
+    if ('error' in observed) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: observed.error,
+        head_sha: null,
+        base_ref: null,
+        external: is_external
+      };
+    }
+    const base_ok = await baseGate(q, bead_id, observed.pr.base_ref);
+    if (!base_ok.ok) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        reason: base_ok.reason,
+        head_sha: observed.pr.head_sha,
+        base_ref: observed.pr.base_ref || null,
+        external: is_external
+      };
+    }
+    const common = {
+      reason: /** @type {string|null} */ (null),
+      head_sha: observed.pr.head_sha,
+      base_ref: observed.pr.base_ref || null,
+      external: is_external
+    };
+    if (observed.pr.state === 'MERGED') {
+      return { ok: true, kind: 'merged', ...common };
+    }
+    if (observed.pr.state === 'CLOSED') {
+      return {
+        ok: false,
+        kind: 'closed',
+        ...common,
+        reason: 'pr_closed_unmerged'
+      };
+    }
+    if (isConflicting(observed.pr)) {
+      return { ok: true, kind: 'dirty', ...common };
+    }
+    if (!observed.verdict.enabled) {
+      return {
+        ok: false,
+        kind: 'blocked',
+        ...common,
+        reason: observed.verdict.reason || 'gate_blocked'
+      };
+    }
+    return {
+      ok: true,
+      kind: observed.pr.merge_state_status === 'BEHIND' ? 'behind' : 'clean',
+      ...common
+    };
+  }
+
+  /**
    * The authoritative [머지] click (§6).
    *
    * @param {string} bead_id
+   * @param {{ allow_conflict_resolution?: boolean }} [options]
    * @returns {Promise<MergeClickResult>}
    */
-  async function merge(bead_id) {
+  async function merge(bead_id, options = {}) {
     if (in_flight.has(bead_id)) {
       return refuse('action_in_flight');
     }
@@ -2030,6 +2140,14 @@ export function createPrActions(deps) {
       // DIRTY comes BEFORE the gate: a conflicting PR needs resolving whatever
       // its CI says, and resolving is not merging.
       if (isConflicting(first.pr)) {
+        if (options.allow_conflict_resolution === false) {
+          return {
+            ok: false,
+            action: 'refused',
+            reason: 'conflict_resolution_required',
+            head_sha: first.pr.head_sha
+          };
+        }
         // An EXTERNAL row has no attempt to relaunch from, so it takes the
         // attempt-less dispatch instead (UI-w0hi §2). The base is the one THIS
         // click observed, not a stored one: an external row has no attempt
@@ -2094,6 +2212,14 @@ export function createPrActions(deps) {
         );
       }
       if (isConflicting(second.pr)) {
+        if (options.allow_conflict_resolution === false) {
+          return {
+            ok: false,
+            action: 'refused',
+            reason: 'conflict_resolution_required',
+            head_sha: second.pr.head_sha
+          };
+        }
         if (is_external) {
           return dispatchExternalResolution(
             bead_id,
@@ -2216,14 +2342,21 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string} head_sha
+   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
    * @returns {Promise<MergeClickResult>}
    */
-  async function dispatchResolution(bead_id, head_sha) {
+  async function dispatchResolution(bead_id, head_sha, resolution_wait = null) {
     // Resolving is not merging: drop the progress BEFORE the session appears,
     // so the row goes back to its ordinary conflict state rather than showing a
     // merge that is not happening.
     clearStep(bead_id);
-    const r = await deps.scheduler.resolveConflict(workspace, bead_id);
+    const r = resolution_wait
+      ? await deps.scheduler.resolveConflict(
+          workspace,
+          bead_id,
+          resolution_wait
+        )
+      : await deps.scheduler.resolveConflict(workspace, bead_id);
     notifyChanged(workspace);
     return {
       ok: !!r.ok,
@@ -2243,15 +2376,28 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {string} head_sha
    * @param {string} base_ref - The base branch this click OBSERVED on the PR.
+   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
    * @returns {Promise<MergeClickResult>}
    */
-  async function dispatchExternalResolution(bead_id, head_sha, base_ref) {
+  async function dispatchExternalResolution(
+    bead_id,
+    head_sha,
+    base_ref,
+    resolution_wait = null
+  ) {
     clearStep(bead_id);
-    const r = await deps.scheduler.dispatchExternalConflict(
-      workspace,
-      bead_id,
-      base_ref
-    );
+    const r = resolution_wait
+      ? await deps.scheduler.dispatchExternalConflict(
+          workspace,
+          bead_id,
+          base_ref,
+          resolution_wait
+        )
+      : await deps.scheduler.dispatchExternalConflict(
+          workspace,
+          bead_id,
+          base_ref
+        );
     notifyChanged(workspace);
     return {
       ok: !!r.ok,
@@ -2260,6 +2406,56 @@ export function createPrActions(deps) {
       attempt_id: r.attempt_id || null,
       head_sha
     };
+  }
+
+  /**
+   * Dispatch only the exact DIRTY head/base pair the merge driver approved.
+   * The seam re-probes immediately before the effect, so a moved branch or a
+   * newly CLEAN/BEHIND PR returns without starting a resolver.
+   *
+   * @param {string} bead_id
+   * @param {{ head_sha: string, base_ref: string|null }} approved
+   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @returns {Promise<MergeClickResult>}
+   */
+  async function dispatchConflict(bead_id, approved, resolution_wait = null) {
+    if (in_flight.has(bead_id)) {
+      return refuse('action_in_flight');
+    }
+    in_flight.add(bead_id);
+    markStep(bead_id, 'merging');
+    try {
+      const latest = await probeMergeability(bead_id);
+      if (
+        !latest.ok ||
+        latest.kind !== 'dirty' ||
+        latest.head_sha !== approved.head_sha ||
+        latest.base_ref !== approved.base_ref
+      ) {
+        return refuse(
+          latest.reason ||
+            (latest.kind === 'dirty'
+              ? 'mergeability_identity_changed'
+              : 'mergeability_changed')
+        );
+      }
+      if (latest.external) {
+        return dispatchExternalResolution(
+          bead_id,
+          latest.head_sha || '',
+          latest.base_ref || '',
+          resolution_wait
+        );
+      }
+      return dispatchResolution(
+        bead_id,
+        latest.head_sha || '',
+        resolution_wait
+      );
+    } finally {
+      in_flight.delete(bead_id);
+      clearStep(bead_id);
+    }
   }
 
   /**
@@ -2539,6 +2735,8 @@ export function createPrActions(deps) {
 
   return {
     merge,
+    probeMergeability,
+    dispatchConflict,
     discard,
     cleanupObservedMerge,
     retryCleanup,

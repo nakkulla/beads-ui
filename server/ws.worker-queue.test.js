@@ -226,6 +226,34 @@ describe('ws worker-queue channel', () => {
     });
   });
 
+  test('projects the optional durable resolution wait record', () => {
+    const resolution = {
+      attempt_id: 'resolution-1',
+      subject_bead_id: 'UI-1',
+      deadline_at: 100,
+      state: 'yielded',
+      yielded_at: 101,
+      settled_at: null
+    };
+    const snapshot = /** @type {any} */ (
+      decorateQueue('', {
+        revision: 1,
+        slots: 2,
+        queue: [],
+        attempts: {},
+        pr_wait: [{ bead_id: 'UI-1', added_at: 1 }],
+        done: [],
+        cleanup_failed: {},
+        merge_queue: [{ bead_id: 'UI-1', resolution_rounds: 1, resolution }],
+        completion_intents: {}
+      })
+    );
+
+    expect(snapshot.merge_queue).toEqual([
+      { bead_id: 'UI-1', resolution_rounds: 1, resolution }
+    ]);
+  });
+
   test('sets a workspace preset reference with both queue and preset revisions', async () => {
     const sock = fakeSocket();
     await send(sock, 'p1', 'exec-preset-create', {
@@ -1237,7 +1265,7 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
       queued: 1
     });
     expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 0 }
+      { bead_id: 'UI-1', resolution_rounds: 0, resolution: null }
     ]);
     expect(kick).toHaveBeenCalled();
   });

@@ -25,7 +25,14 @@
  * @property {string|null} [evidence]
  * @property {string|null} [log_path]
  * @property {string|null} terminal_reason
- * @typedef {Omit<Queue, 'completion_intents'> & { completion_status?: Record<string, CompletionStatus> }} WorkerQueueSnapshot
+ * @typedef {Object} ResolutionProjection
+ * @property {string} attempt_id
+ * @property {string} subject_bead_id
+ * @property {number} deadline_at
+ * @property {'waiting'|'yielded'|'ready'} state
+ * @property {number|null} yielded_at
+ * @property {number|null} settled_at
+ * @typedef {Omit<Queue, 'completion_intents'|'merge_queue'> & { merge_queue: Array<{ bead_id: string, resolution_rounds: number, resolution?: ResolutionProjection|null }>, completion_status?: Record<string, CompletionStatus> }} WorkerQueueSnapshot
  */
 
 /**

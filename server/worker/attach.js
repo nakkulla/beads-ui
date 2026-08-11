@@ -902,7 +902,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createMergeQueue({
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
-      merge: (/** @type {string} */ bead_id) => prActions.merge(bead_id),
+      merge: (/** @type {string} */ bead_id) =>
+        prActions.merge(bead_id, { allow_conflict_resolution: false }),
+      probeMergeability: (/** @type {string} */ bead_id) =>
+        prActions.probeMergeability(bead_id),
+      dispatchConflict: (
+        /** @type {string} */ bead_id,
+        /** @type {{ head_sha: string, base_ref: string|null }} */ approved,
+        /** @type {{ queue_bead_id: string, wait_ms: number }} */ resolution_wait
+      ) => prActions.dispatchConflict(bead_id, approved, resolution_wait),
       observePr: (/** @type {string} */ bead_id) => prActions.prState(bead_id),
       // The head an auto-merge exclusion is pinned to (UI-yk55 §3.3). A cache
       // read only — `observePr` returns `{state, error}` and cannot serve it.
@@ -913,6 +921,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // poller never looks at can never end.
       isExternalRow: (/** @type {string} */ bead_id) =>
         !!runtime.externalPrs.get(keyFor(workspace_root), bead_id),
+      conflictDispatchBlocked: (
+        /** @type {string} */ queue_bead_id,
+        /** @type {string} */ subject_bead_id
+      ) =>
+        scheduler.queueConflictBlocked(
+          keyFor(workspace_root),
+          queue_bead_id,
+          subject_bead_id
+        ),
       onCompletionResult: (
         /** @type {string} */ root_bead_id,
         /** @type {string} */ subject_bead_id,
@@ -997,6 +1014,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       subscribeQueueChanged: onQueueChanged,
       observe: resolvedCompletionActionDriver.observe,
       onAction: resolvedCompletionActionDriver.onAction,
+      adoptLegacy: resolvedCompletionActionDriver.adoptLegacyTimeout,
       onAttemptSettled: resolvedCompletionActionDriver.onAttemptSettled,
       log
     });
