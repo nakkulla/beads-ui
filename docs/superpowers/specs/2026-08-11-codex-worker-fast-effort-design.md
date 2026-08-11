@@ -202,7 +202,7 @@ Monitor가 전달하는 runner catalog와 preset snapshot도 새 capability를 �
 - implementation/review speed key
 - `implement-codex`, `codex-runner-bridge`, native `spawn_agent` schema 변경
 - Ductor·Thalamus 설정 변경
-- global Codex Fast default
+- global Codex effort·speed default policy 변경 또는 검증(별도 dotfiles runtime authority)
 - `workflow_mode=fast_track` 의미 변경
 - API usage의 service tier receipt 저장
 - app-server JSON-RPC 전환
