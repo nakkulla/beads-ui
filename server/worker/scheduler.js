@@ -157,6 +157,7 @@ function staleDispatchPrompt(bead_id, stale) {
  * a PR to.
  * @property {string} [model] - orchestration_model.
  * @property {string} [effort] - orchestration_effort.
+ * @property {string} [orchestration_speed] - orchestration_speed.
  * @property {string} [spec_review_model] - spec_review_model (per-bead exec setting).
  * @property {string} [spec_review_effort] - spec_review_effort (per-bead exec setting).
  * @property {string} [impl_review_model] - impl_review_model (per-bead exec setting).

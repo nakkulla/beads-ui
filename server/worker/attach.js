@@ -253,6 +253,10 @@ export function createLiveBd(config) {
           typeof md.orchestration_effort === 'string'
             ? md.orchestration_effort
             : undefined,
+        orchestration_speed:
+          typeof md.orchestration_speed === 'string'
+            ? md.orchestration_speed
+            : undefined,
         // The per-step exec keys (dotfiles-mqcj). They reach `policy.js` only
         // through this snapshot, so the bead-over-global layering and the
         // stamp/revert duty both depend on every one of them being read here.

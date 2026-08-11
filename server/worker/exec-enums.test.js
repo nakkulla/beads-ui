@@ -13,10 +13,11 @@ import {
 } from './exec-enums.js';
 import { resolveCatalog } from './runner-catalog.js';
 
-/** The 11 workspace-global-capable exec keys (workflow_mode excluded). */
+/** The 12 workspace-global-capable exec keys (workflow_mode excluded). */
 const EXPECTED_KEYS = [
   'orchestration_model',
   'orchestration_effort',
+  'orchestration_speed',
   'spec_review_model',
   'spec_review_effort',
   'plan_review_model',
@@ -58,7 +59,7 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
 });
 
 describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
-  test('covers the canonical 11 workspace-global exec keys in contract order', () => {
+  test('covers the canonical 12 workspace-global exec keys in contract order', () => {
     expect(EXEC_SETTING_KEYS).toEqual(EXPECTED_KEYS);
     expect(Object.keys(execSettingEnums())).toEqual(EXPECTED_KEYS);
   });
@@ -74,10 +75,17 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
     expect(table.impl_model).toContain('opus');
   });
 
-  test('the effort keys are the union of what the MODELS accept, incl. codex-only max', () => {
+  test('separates outer effort and speed unions from implementation effort', () => {
     const table = execSettingEnums(resolveCatalog({ warn: () => {} }));
 
-    expect(table.orchestration_effort).toEqual(table.impl_effort);
+    expect(table.orchestration_effort).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra'
+    ]);
     expect(table.impl_effort).toEqual([
       'low',
       'medium',
@@ -85,6 +93,7 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
       'xhigh',
       'max'
     ]);
+    expect(table.orchestration_speed).toEqual(['default', 'fast']);
     // `minimal` is on the codex runner-wide list but every builtin codex model
     // pins its own efforts, so no model actually accepts it.
     expect(table.impl_effort).not.toContain('minimal');

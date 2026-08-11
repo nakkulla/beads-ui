@@ -2,8 +2,12 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   ACTIVE_RUNNERS,
   builtinCatalog,
+  catalogOrchestrationEfforts,
+  catalogSpeedTiers,
   modelEfforts,
+  modelOrchestrationEfforts,
   modelRunner,
+  modelSpeedTiers,
   resolveCatalog
 } from './runner-catalog.js';
 
@@ -16,8 +20,16 @@ describe('worker/runner-catalog builtin defaults', () => {
     const first = builtinCatalog();
 
     first.claude.models.opus.id = 'mutated';
+    first.codex.models.sol.orchestration_efforts?.push('mutated');
+    first.codex.models.sol.speed_tiers?.push('turbo');
 
     expect(builtinCatalog().claude.models.opus.id).toBe('opus');
+    expect(
+      builtinCatalog().codex.models.sol.orchestration_efforts
+    ).not.toContain('mutated');
+    expect(builtinCatalog().codex.models.sol.speed_tiers).not.toContain(
+      'turbo'
+    );
   });
 
   test('resolves claude models to their own key as id', () => {
@@ -65,6 +77,30 @@ describe('worker/runner-catalog builtin defaults', () => {
       'high',
       'xhigh'
     ]);
+  });
+
+  test('exposes the builtin outer effort and speed capability matrix', () => {
+    const catalog = resolveCatalog();
+
+    expect(modelOrchestrationEfforts(catalog, 'sol')).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra'
+    ]);
+    expect(modelOrchestrationEfforts(catalog, 'luna')).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max'
+    ]);
+    expect(modelSpeedTiers(catalog, 'sol')).toEqual(['default', 'fast']);
+    expect(modelSpeedTiers(catalog, 'opus')).toEqual(['default']);
+    expect(catalogOrchestrationEfforts(catalog)).toContain('ultra');
+    expect(catalogSpeedTiers(catalog)).toEqual(['default', 'fast']);
   });
 
   test('keeps a codex-wide effort list distinct from the per-model lists', () => {
@@ -205,6 +241,82 @@ describe('worker/runner-catalog config overrides', () => {
 });
 
 describe('worker/runner-catalog fail-quiet validation', () => {
+  test('ignores only invalid speed fields while preserving valid model overrides', () => {
+    const warn = vi.fn();
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: {
+            sol: {
+              id: 'gpt-5.7-sol',
+              orchestration_efforts: ['high'],
+              speed_tiers: ['fast']
+            },
+            terra: {
+              speed_tiers: ['default', 'turbo']
+            }
+          }
+        },
+        claude: { models: { opus: { speed_tiers: ['default', 'fast'] } } }
+      },
+      warn
+    });
+
+    expect(catalog.runners.codex.models.sol.id).toBe('gpt-5.7-sol');
+    expect(modelOrchestrationEfforts(catalog, 'sol')).toEqual(['high']);
+    expect(modelSpeedTiers(catalog, 'sol')).toEqual(['default', 'fast']);
+    expect(modelSpeedTiers(catalog, 'terra')).toEqual(['default', 'fast']);
+    expect(modelSpeedTiers(catalog, 'opus')).toEqual(['default']);
+    expect(warn).toHaveBeenCalledTimes(3);
+  });
+
+  test('ignores an empty outer effort override without dropping other data', () => {
+    const warn = vi.fn();
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: { models: { luna: { orchestration_efforts: [] } } }
+      },
+      warn
+    });
+
+    expect(modelOrchestrationEfforts(catalog, 'luna')).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max'
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps empty legacy efforts while ignoring an empty outer effort field', () => {
+    const warn = vi.fn();
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: {
+            sol: { efforts: [], orchestration_efforts: [] },
+            nova: { efforts: ['high'] }
+          }
+        }
+      },
+      warn
+    });
+
+    expect(modelEfforts(catalog, 'sol')).toEqual([]);
+    expect(modelOrchestrationEfforts(catalog, 'sol')).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra'
+    ]);
+    expect(modelOrchestrationEfforts(catalog, 'nova')).toEqual(['high']);
+    expect(modelSpeedTiers(catalog, 'nova')).toEqual(['default']);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   test('ignores a non-object overrides value with one warning', () => {
     const warn = vi.fn();
 

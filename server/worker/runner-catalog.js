@@ -25,7 +25,12 @@
  */
 
 /**
- * @typedef {{ id: string, efforts?: string[] }} CatalogModel
+ * @typedef {{
+ *   id: string,
+ *   efforts?: string[],
+ *   orchestration_efforts?: string[],
+ *   speed_tiers?: string[]
+ * }} CatalogModel
  * @typedef {{
  *   command: string,
  *   models: Record<string, CatalogModel>,
@@ -69,14 +74,37 @@ const BUILTIN = {
   codex: {
     command: 'codex',
     models: {
-      sol: { id: 'gpt-5.6-sol', efforts: ['low', 'medium', 'high', 'xhigh'] },
+      sol: {
+        id: 'gpt-5.6-sol',
+        efforts: ['low', 'medium', 'high', 'xhigh'],
+        orchestration_efforts: [
+          'low',
+          'medium',
+          'high',
+          'xhigh',
+          'max',
+          'ultra'
+        ],
+        speed_tiers: ['default', 'fast']
+      },
       terra: {
         id: 'gpt-5.6-terra',
-        efforts: ['low', 'medium', 'high', 'xhigh']
+        efforts: ['low', 'medium', 'high', 'xhigh'],
+        orchestration_efforts: [
+          'low',
+          'medium',
+          'high',
+          'xhigh',
+          'max',
+          'ultra'
+        ],
+        speed_tiers: ['default', 'fast']
       },
       luna: {
         id: 'gpt-5.6-luna',
-        efforts: ['low', 'medium', 'high', 'xhigh', 'max']
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        speed_tiers: ['default', 'fast']
       }
     },
     // Per-model `efforts` win over this runner-wide list.
@@ -105,6 +133,28 @@ function isStringArray(value) {
 
 /**
  * @param {unknown} value
+ * @returns {value is string[]}
+ */
+function isNonEmptyStringArray(value) {
+  return isStringArray(value) && value.length > 0;
+}
+
+/**
+ * @param {string} runner_name
+ * @param {unknown} value
+ * @returns {value is string[]}
+ */
+function isValidSpeedTiers(runner_name, value) {
+  const allowed = runner_name === 'codex' ? ['default', 'fast'] : ['default'];
+  return (
+    isStringArray(value) &&
+    value.includes('default') &&
+    value.every((tier) => allowed.includes(tier))
+  );
+}
+
+/**
+ * @param {unknown} value
  * @returns {value is string}
  */
 function isNonEmptyString(value) {
@@ -127,9 +177,18 @@ function copyEntry(entry) {
   /** @type {Record<string, CatalogModel>} */
   const models = {};
   for (const [name, model] of Object.entries(entry.models)) {
-    models[name] = model.efforts
-      ? { id: model.id, efforts: model.efforts.slice() }
-      : { id: model.id };
+    /** @type {CatalogModel} */
+    const copy = { id: model.id };
+    if (model.efforts) {
+      copy.efforts = model.efforts.slice();
+    }
+    if (model.orchestration_efforts) {
+      copy.orchestration_efforts = model.orchestration_efforts.slice();
+    }
+    if (model.speed_tiers) {
+      copy.speed_tiers = model.speed_tiers.slice();
+    }
+    models[name] = copy;
   }
   /** @type {RunnerCatalogEntry} */
   const copy = {
@@ -183,9 +242,18 @@ function mergeModels(entry, runner_name, section, warn) {
       : null;
     /** @type {CatalogModel} */
     const merged = existing
-      ? existing.efforts
-        ? { id: existing.id, efforts: existing.efforts.slice() }
-        : { id: existing.id }
+      ? /** @type {CatalogModel} */ ({
+          id: existing.id,
+          ...(existing.efforts ? { efforts: existing.efforts.slice() } : {}),
+          ...(existing.orchestration_efforts
+            ? {
+                orchestration_efforts: existing.orchestration_efforts.slice()
+              }
+            : {}),
+          ...(existing.speed_tiers
+            ? { speed_tiers: existing.speed_tiers.slice() }
+            : {})
+        })
       : { id: model_name };
 
     if (hasOwn(raw_model, 'id')) {
@@ -203,6 +271,24 @@ function mergeModels(entry, runner_name, section, warn) {
       } else {
         warn(
           `config.toml [runner.${runner_name}.models.${model_name}] efforts 무시: 문자열 배열이 아닙니다.`
+        );
+      }
+    }
+    if (hasOwn(raw_model, 'orchestration_efforts')) {
+      if (isNonEmptyStringArray(raw_model.orchestration_efforts)) {
+        merged.orchestration_efforts = raw_model.orchestration_efforts.slice();
+      } else {
+        warn(
+          `config.toml [runner.${runner_name}.models.${model_name}] orchestration_efforts 무시: 문자열 배열이 아닙니다.`
+        );
+      }
+    }
+    if (hasOwn(raw_model, 'speed_tiers')) {
+      if (isValidSpeedTiers(runner_name, raw_model.speed_tiers)) {
+        merged.speed_tiers = raw_model.speed_tiers.slice();
+      } else {
+        warn(
+          `config.toml [runner.${runner_name}.models.${model_name}] speed_tiers 무시: default를 포함한 지원 speed 문자열 배열이 아닙니다.`
         );
       }
     }
@@ -397,6 +483,27 @@ export function catalogEfforts(catalog) {
 }
 
 /**
+ * Every outer orchestration effort accepted by at least one catalog model,
+ * first-seen order. Models that do not advertise a distinct outer vocabulary
+ * retain their legacy implementation effort list.
+ *
+ * @param {ResolvedCatalog} catalog
+ * @returns {string[]}
+ */
+export function catalogOrchestrationEfforts(catalog) {
+  /** @type {string[]} */
+  const out = [];
+  for (const model of Object.keys(catalog.model_index)) {
+    for (const effort of modelOrchestrationEfforts(catalog, model)) {
+      if (!out.includes(effort)) {
+        out.push(effort);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Effort vocabulary accepted by `model`: its own list when it pins one, else
  * the owning runner's. An unknown model has no valid effort at all.
  *
@@ -413,4 +520,61 @@ export function modelEfforts(catalog, model) {
   const model_entry = entry.models[/** @type {string} */ (model)];
   const efforts = model_entry.efforts ?? entry.efforts;
   return efforts.slice();
+}
+
+/**
+ * Outer effort vocabulary accepted by `model`. A model without an explicit
+ * outer capability remains backward-compatible with its implementation list.
+ *
+ * @param {ResolvedCatalog} catalog
+ * @param {unknown} model
+ * @returns {string[]}
+ */
+export function modelOrchestrationEfforts(catalog, model) {
+  const runner_name = modelRunner(catalog, model);
+  if (!runner_name) {
+    return [];
+  }
+  const entry = catalog.runners[runner_name];
+  const model_entry = entry.models[/** @type {string} */ (model)];
+  const efforts =
+    model_entry.orchestration_efforts ?? modelEfforts(catalog, model);
+  return efforts.slice();
+}
+
+/**
+ * Every speed tier accepted by at least one catalog model, first-seen order.
+ *
+ * @param {ResolvedCatalog} catalog
+ * @returns {string[]}
+ */
+export function catalogSpeedTiers(catalog) {
+  /** @type {string[]} */
+  const out = [];
+  for (const model of Object.keys(catalog.model_index)) {
+    for (const tier of modelSpeedTiers(catalog, model)) {
+      if (!out.includes(tier)) {
+        out.push(tier);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Speed tiers accepted by `model`. Absent catalog capability is deliberately
+ * conservative: legacy and config-added models retain Standard only.
+ *
+ * @param {ResolvedCatalog} catalog
+ * @param {unknown} model
+ * @returns {string[]}
+ */
+export function modelSpeedTiers(catalog, model) {
+  const runner_name = modelRunner(catalog, model);
+  if (!runner_name) {
+    return [];
+  }
+  const model_entry =
+    catalog.runners[runner_name].models[/** @type {string} */ (model)];
+  return (model_entry.speed_tiers ?? ['default']).slice();
 }
