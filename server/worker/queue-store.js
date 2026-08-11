@@ -279,6 +279,8 @@
  * @property {Record<string, CompletionIntent>} completion_intents - Durable
  * root-scoped completion sagas. Missing on legacy queue files and normalized
  * to an empty map; execution lives in `completion-intent.js`.
+ * @property {Record<string, DeploymentReconcile>} reconcile - Durable
+ * deployment reconciliation state keyed by parent Bead.
  * @property {LastDeploy|null} last_deploy - The workspace's most recent
  * post-merge deployment (worker-deploy-hook §3). ONE record, overwritten each
  * time — the question it answers is "is the running service the merged code?",
@@ -328,6 +330,28 @@
  * preserved output (UI-l53x §1). Present only for a SYNCHRONOUS deploy that
  * reached the runner and whose log file completed; a detached deploy has no
  * observable output at all, and a pre-run refusal never opened a file.
+ * @property {'workspace'|'managed'} [adapter]
+ * @property {string} [attempt_id]
+ * @property {string} [merged_floor_sha]
+ * @property {string} [receipt_path]
+ * @property {string} [receipt_digest]
+ */
+/**
+ * @typedef {Object} DeploymentReconcile
+ * @property {string} bead_id
+ * @property {string} attempt_id
+ * @property {string} target_base
+ * @property {string} merged_floor_sha
+ * @property {string|null} candidate_sha
+ * @property {'workspace'|'managed'|null} adapter
+ * @property {'queued'|'pinned'|'verifying'|'deploying'|'readback'|'complete'|'failed'} stage
+ * @property {string|null} receipt_path
+ * @property {string|null} receipt_digest
+ * @property {number} retry_count
+ * @property {number|null} retry_at
+ * @property {string|null} last_retryable_reason
+ * @property {{ reason: string, detail: string|null, at: number }|null} terminal_failure
+ * @property {number} updated_at
  */
 /**
  * @typedef {'gating'|'repairing'|'waiting_repair_pr'|'merging'|'cleaning'|'paused'|'needs_human'|'completed'} CompletionPhase
@@ -815,6 +839,17 @@ function normalizeSlots(value) {
  */
 const DEPLOY_OUTCOMES = ['deployed', 'launched', 'failed'];
 
+/** @type {string[]} */
+const RECONCILE_STAGES = [
+  'queued',
+  'pinned',
+  'verifying',
+  'deploying',
+  'readback',
+  'complete',
+  'failed'
+];
+
 /**
  * @returns {Queue}
  */
@@ -836,6 +871,7 @@ function emptyQueue() {
     auto_merge: false,
     auto_merge_skips: {},
     completion_intents: {},
+    reconcile: {},
     last_deploy: null
   };
 }
@@ -1257,6 +1293,7 @@ function normalizeQueue(raw) {
   q.auto_merge = raw.auto_merge === true;
   q.auto_merge_skips = normalizeMergeSkips(raw.auto_merge_skips);
   q.completion_intents = normalizeCompletionIntents(raw.completion_intents);
+  q.reconcile = normalizeReconcile(raw.reconcile);
   // A queue.json written before the deploy hook simply has no key → null, which
   // reads as "this workspace has never deployed" (worker-deploy-hook §3). A
   // record carrying an outcome outside the vocabulary is dropped the same way:
@@ -1294,7 +1331,105 @@ function normalizeLastDeploy(value) {
   if (typeof value.log_path === 'string' && value.log_path.length > 0) {
     record.log_path = value.log_path;
   }
+  if (value.adapter === 'workspace' || value.adapter === 'managed') {
+    record.adapter = value.adapter;
+  }
+  if (typeof value.attempt_id === 'string' && value.attempt_id.length > 0) {
+    record.attempt_id = value.attempt_id;
+  }
+  if (/^[0-9a-f]{40}$/i.test(String(value.merged_floor_sha || ''))) {
+    record.merged_floor_sha = String(value.merged_floor_sha).toLowerCase();
+  }
+  if (typeof value.receipt_path === 'string' && value.receipt_path.length > 0) {
+    record.receipt_path = value.receipt_path;
+  }
+  if (/^[0-9a-f]{64}$/i.test(String(value.receipt_digest || ''))) {
+    record.receipt_digest = String(value.receipt_digest).toLowerCase();
+  }
   return record;
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {Record<string, DeploymentReconcile>}
+ */
+function normalizeReconcile(raw) {
+  /** @type {Record<string, DeploymentReconcile>} */
+  const out = {};
+  if (!isRecord(raw)) {
+    return out;
+  }
+  for (const [bead_id, value] of Object.entries(raw)) {
+    if (
+      !isRecord(value) ||
+      value.bead_id !== bead_id ||
+      typeof value.attempt_id !== 'string' ||
+      value.attempt_id.length === 0 ||
+      typeof value.target_base !== 'string' ||
+      value.target_base.length === 0 ||
+      !/^[0-9a-f]{40}$/i.test(String(value.merged_floor_sha || '')) ||
+      !RECONCILE_STAGES.includes(String(value.stage || ''))
+    ) {
+      continue;
+    }
+    out[bead_id] = {
+      bead_id,
+      attempt_id: value.attempt_id,
+      target_base: value.target_base,
+      merged_floor_sha: String(value.merged_floor_sha).toLowerCase(),
+      candidate_sha: /^[0-9a-f]{40}$/i.test(String(value.candidate_sha || ''))
+        ? String(value.candidate_sha).toLowerCase()
+        : null,
+      adapter:
+        value.adapter === 'workspace' || value.adapter === 'managed'
+          ? value.adapter
+          : null,
+      stage: /** @type {DeploymentReconcile['stage']} */ (value.stage),
+      receipt_path:
+        typeof value.receipt_path === 'string' && value.receipt_path.length > 0
+          ? value.receipt_path
+          : null,
+      receipt_digest: /^[0-9a-f]{64}$/i.test(String(value.receipt_digest || ''))
+        ? String(value.receipt_digest).toLowerCase()
+        : null,
+      retry_count:
+        typeof value.retry_count === 'number' &&
+        Number.isInteger(value.retry_count) &&
+        value.retry_count >= 0
+          ? value.retry_count
+          : 0,
+      retry_at:
+        typeof value.retry_at === 'number' && Number.isFinite(value.retry_at)
+          ? value.retry_at
+          : null,
+      last_retryable_reason:
+        typeof value.last_retryable_reason === 'string' &&
+        value.last_retryable_reason.length > 0
+          ? value.last_retryable_reason
+          : null,
+      terminal_failure:
+        isRecord(value.terminal_failure) &&
+        typeof value.terminal_failure.reason === 'string'
+          ? {
+              reason: value.terminal_failure.reason,
+              detail:
+                typeof value.terminal_failure.detail === 'string'
+                  ? value.terminal_failure.detail
+                  : null,
+              at:
+                typeof value.terminal_failure.at === 'number'
+                  ? value.terminal_failure.at
+                  : 0
+            }
+          : null,
+      updated_at:
+        typeof value.updated_at === 'number' &&
+        Number.isFinite(value.updated_at)
+          ? value.updated_at
+          : 0
+    };
+  }
+  return out;
 }
 
 /**
@@ -1593,6 +1728,215 @@ export function createQueueStore(options = {}) {
      */
     snapshot(workspace) {
       return clone(ensureLoaded(workspace));
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, target_base: string, merged_floor_sha: string }} input
+     * @returns {QueueOpResult}
+     */
+    enqueueReconcile(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const { bead_id, attempt_id, target_base, merged_floor_sha } = input;
+        if (
+          typeof bead_id !== 'string' ||
+          bead_id.length === 0 ||
+          typeof attempt_id !== 'string' ||
+          attempt_id.length === 0 ||
+          typeof target_base !== 'string' ||
+          target_base.length === 0 ||
+          !/^[0-9a-f]{40}$/i.test(String(merged_floor_sha || ''))
+        ) {
+          return false;
+        }
+        const current = next.reconcile[bead_id];
+        if (
+          current &&
+          current.stage !== 'complete' &&
+          current.stage !== 'failed'
+        ) {
+          return false;
+        }
+        next.reconcile[bead_id] = {
+          bead_id,
+          attempt_id,
+          target_base,
+          merged_floor_sha: merged_floor_sha.toLowerCase(),
+          candidate_sha: null,
+          adapter: null,
+          stage: 'queued',
+          receipt_path: null,
+          receipt_digest: null,
+          retry_count: 0,
+          retry_at: null,
+          last_retryable_reason: null,
+          terminal_failure: null,
+          updated_at: now()
+        };
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, stage: 'queued'|'pinned'|'verifying'|'deploying'|'readback', candidate_sha?: string, adapter?: 'workspace'|'managed' }} input
+     * @returns {QueueOpResult}
+     */
+    advanceReconcile(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const current = next.reconcile[input.bead_id];
+        if (
+          !current ||
+          current.attempt_id !== input.attempt_id ||
+          !RECONCILE_STAGES.includes(input.stage)
+        ) {
+          return false;
+        }
+        if (
+          input.candidate_sha !== undefined &&
+          !/^[0-9a-f]{40}$/i.test(input.candidate_sha)
+        ) {
+          return false;
+        }
+        if (
+          current.candidate_sha !== null &&
+          input.candidate_sha !== undefined &&
+          current.candidate_sha !== input.candidate_sha.toLowerCase()
+        ) {
+          return false;
+        }
+        if (
+          current.adapter !== null &&
+          input.adapter !== undefined &&
+          current.adapter !== input.adapter
+        ) {
+          return false;
+        }
+        if (
+          input.adapter !== undefined &&
+          input.adapter !== 'workspace' &&
+          input.adapter !== 'managed'
+        ) {
+          return false;
+        }
+        current.stage = input.stage;
+        if (input.candidate_sha !== undefined) {
+          current.candidate_sha = input.candidate_sha.toLowerCase();
+        }
+        if (input.adapter !== undefined) {
+          current.adapter = input.adapter;
+        }
+        current.retry_at = null;
+        current.updated_at = now();
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, reason: string, retry_at: number }} input
+     * @returns {QueueOpResult}
+     */
+    retryReconcile(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const current = next.reconcile[input.bead_id];
+        if (
+          !current ||
+          current.attempt_id !== input.attempt_id ||
+          current.stage === 'complete' ||
+          current.stage === 'failed' ||
+          typeof input.reason !== 'string' ||
+          input.reason.length === 0 ||
+          typeof input.retry_at !== 'number' ||
+          !Number.isFinite(input.retry_at)
+        ) {
+          return false;
+        }
+        current.retry_count += 1;
+        current.retry_at = input.retry_at;
+        current.last_retryable_reason = input.reason;
+        current.updated_at = now();
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, receipt_path: string, receipt_digest: string }} input
+     * @returns {QueueOpResult}
+     */
+    completeReconcile(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const current = next.reconcile[input.bead_id];
+        if (
+          !current ||
+          current.attempt_id !== input.attempt_id ||
+          current.stage === 'complete' ||
+          current.stage === 'failed' ||
+          current.candidate_sha === null ||
+          current.adapter === null ||
+          typeof input.receipt_path !== 'string' ||
+          input.receipt_path.length === 0 ||
+          !/^[0-9a-f]{64}$/i.test(String(input.receipt_digest || ''))
+        ) {
+          return false;
+        }
+        const record = buildLastDeploy(
+          {
+            outcome: 'deployed',
+            reason: null,
+            bead_id: current.bead_id,
+            base_sha: current.candidate_sha,
+            adapter: current.adapter,
+            attempt_id: current.attempt_id,
+            merged_floor_sha: current.merged_floor_sha,
+            receipt_path: input.receipt_path,
+            receipt_digest: input.receipt_digest
+          },
+          now()
+        );
+        if (!record) {
+          return false;
+        }
+        current.stage = 'complete';
+        current.receipt_path = input.receipt_path;
+        current.receipt_digest = input.receipt_digest.toLowerCase();
+        current.retry_at = null;
+        current.terminal_failure = null;
+        current.updated_at = now();
+        next.last_deploy = record;
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, reason: string, detail?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    failReconcile(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const current = next.reconcile[input.bead_id];
+        if (
+          !current ||
+          current.attempt_id !== input.attempt_id ||
+          current.stage === 'complete' ||
+          current.stage === 'failed' ||
+          typeof input.reason !== 'string' ||
+          input.reason.length === 0
+        ) {
+          return false;
+        }
+        current.stage = 'failed';
+        current.retry_at = null;
+        current.terminal_failure = {
+          reason: input.reason,
+          detail: typeof input.detail === 'string' ? input.detail : null,
+          at: now()
+        };
+        current.updated_at = now();
+        return true;
+      });
     },
 
     /**
