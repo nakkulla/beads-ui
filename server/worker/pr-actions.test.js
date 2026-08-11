@@ -2666,6 +2666,58 @@ describe('post-merge cleanup — Deployment Reconciler integration (UI-16ep)', (
     });
   });
 
+  test('closes once after startup recovery consumes the durable reconcile', async () => {
+    const floor = 'c'.repeat(40);
+    const candidate = 'd'.repeat(40);
+    const store = seedStore();
+    store.enqueueReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: floor
+    });
+    const reconcile = vi.fn(async () => {
+      store.advanceReconcile(WS, {
+        bead_id: BEAD,
+        attempt_id: 'deploy-1',
+        stage: 'pinned',
+        candidate_sha: candidate,
+        adapter: 'managed'
+      });
+      store.completeReconcile(WS, {
+        bead_id: BEAD,
+        attempt_id: 'deploy-1',
+        receipt_path: '/state/deploy-1.json',
+        receipt_digest: 'e'.repeat(64)
+      });
+      return {
+        ok: true,
+        status: 'complete',
+        candidate_sha: candidate,
+        base_sync: null
+      };
+    });
+    const h = makeActions({
+      store,
+      deploymentReconciler: { reconcile }
+    });
+
+    const first = await h.actions.resumePersistedReconciles();
+    const second = await h.actions.resumePersistedReconciles();
+
+    expect(first).toEqual([
+      expect.objectContaining({
+        bead_id: BEAD,
+        result: expect.objectContaining({ ok: true })
+      })
+    ]);
+    expect(second).toEqual([]);
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(
+      h.calls.filter((call) => call === `bd:setStatus:${BEAD}:closed`)
+    ).toHaveLength(1);
+  });
+
   test('keeps the workspace adapter on the candidate pinned before checkout sync', async () => {
     const merge_sha = 'c'.repeat(40);
     const candidate_sha = 'a'.repeat(40);

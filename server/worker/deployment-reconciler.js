@@ -364,7 +364,9 @@ async function materializeRelease(input) {
     }
     const [head, status, remote] = await Promise.all([
       input.gitRun(['rev-parse', 'HEAD'], { cwd: release_path }),
-      input.gitRun(['status', '--porcelain'], { cwd: release_path }),
+      input.gitRun(['status', '--porcelain', '--untracked-files=no'], {
+        cwd: release_path
+      }),
       input.gitRun(['remote', 'get-url', 'origin'], { cwd: release_path })
     ]);
     if (
