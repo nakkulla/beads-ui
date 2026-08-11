@@ -342,6 +342,50 @@ describe('worker/merge-candidates — completion repair intake', () => {
     });
   });
 
+  test('returns the exact source attempt used for the pinned base', () => {
+    const runtime = getWorkerRuntime();
+    runtime.prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main'
+      },
+      ci: null
+    });
+
+    const result = completionIntentSeed(
+      WS,
+      {
+        attempts: {
+          'attempt-older': {
+            attempt_id: 'attempt-older',
+            bead_id: 'UI-1',
+            target_base: 'main',
+            base_oid: 'b'.repeat(40)
+          },
+          'attempt-source': {
+            attempt_id: 'attempt-source',
+            bead_id: 'UI-1',
+            target_base: 'release',
+            base_oid: 'c'.repeat(40)
+          }
+        }
+      },
+      'UI-1'
+    );
+
+    expect(result).toMatchObject({
+      source_attempt_id: 'attempt-source',
+      target_base: 'release',
+      subject: { base_sha: 'c'.repeat(40) }
+    });
+  });
+
   test('refuses to seed a merged root without an authoritative merge SHA', () => {
     const runtime = getWorkerRuntime();
     runtime.prObservations.record(WS, 'UI-1', {

@@ -35,7 +35,12 @@ function park(store, bead_ids) {
   for (const bead_id of bead_ids) {
     store.appendAttempt(WS, {
       expected_revision: store.snapshot(WS).revision,
-      attempt: { attempt_id: `att-${bead_id}`, bead_id }
+      attempt: {
+        attempt_id: `att-${bead_id}`,
+        bead_id,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
     });
     store.moveToPrWait(WS, {
       bead_id,
@@ -76,6 +81,7 @@ function enroller(store, input = {}) {
         external: false
       })),
     completionSeed: (_workspace, _queue, bead_id) => ({
+      source_attempt_id: `att-${bead_id}`,
       target_base: 'main',
       subject: {
         role: 'root',
@@ -218,6 +224,7 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
         { bead_id: 'UI-1', external: false, repairable: true }
       ],
       completionSeed: () => ({
+        source_attempt_id: 'att-UI-1',
         target_base: 'main',
         subject: {
           role: 'root',
@@ -246,6 +253,101 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
     });
   });
 
+  test('anchors auto completion intake to the exact source attempt', () => {
+    const store = park(createQueueStore(), ['UI-1']);
+    store.updateAttempt(WS, {
+      attempt_id: 'att-UI-1',
+      patch: {
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
+    });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const auto = createAutoMerge({
+      workspace: WS,
+      store,
+      verifyCmdState: () => 'resolved',
+      headSha: () => HEAD,
+      lane: () => [{ bead_id: 'UI-1', external: false }],
+      candidates: () => [
+        { bead_id: 'UI-1', external: false, repairable: true }
+      ],
+      completionSeed: () => ({
+        source_attempt_id: 'att-UI-1',
+        target_base: 'main',
+        subject: {
+          role: 'root',
+          bead_id: 'UI-1',
+          pr_url: 'https://github.com/o/r/pull/1',
+          head_sha: HEAD,
+          base_sha: 'b'.repeat(40),
+          merged_sha: null
+        }
+      })
+    });
+
+    const result = auto.enroll();
+
+    expect(result.applied).toBe(true);
+    expect(store.snapshot(WS).attempts['att-UI-1']).toMatchObject({
+      completion_root_id: 'UI-1',
+      completion_op_id: null
+    });
+    expect(store.snapshot(WS).completion_intents['UI-1']).not.toHaveProperty(
+      'source_attempt_id'
+    );
+  });
+
+  test('rejects auto completion intake when its source attempt belongs elsewhere', () => {
+    const store = park(createQueueStore(), ['UI-1']);
+    store.updateAttempt(WS, {
+      attempt_id: 'att-UI-1',
+      patch: {
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
+    });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const auto = createAutoMerge({
+      workspace: WS,
+      store,
+      verifyCmdState: () => 'resolved',
+      headSha: () => HEAD,
+      lane: () => [{ bead_id: 'UI-1', external: false }],
+      candidates: () => [
+        { bead_id: 'UI-1', external: false, repairable: true }
+      ],
+      completionSeed: () => ({
+        source_attempt_id: 'foreign-attempt',
+        target_base: 'main',
+        subject: {
+          role: 'root',
+          bead_id: 'UI-1',
+          pr_url: 'https://github.com/o/r/pull/1',
+          head_sha: HEAD,
+          base_sha: 'b'.repeat(40),
+          merged_sha: null
+        }
+      })
+    });
+
+    const result = auto.enroll();
+    const queue = store.snapshot(WS);
+
+    expect(result.applied).toBe(false);
+    expect(queue.completion_intents).toEqual({});
+    expect(queue.merge_queue).toEqual([]);
+    expect(queue.attempts['att-UI-1'].completion_root_id).toBe(null);
+  });
+
   test.each(['green', 'conflict'])(
     'atomically creates a root completion intent for worker-owned %s',
     (kind) => {
@@ -262,6 +364,7 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
         lane: () => [{ bead_id: 'UI-1', external: false }],
         candidates: () => [{ bead_id: 'UI-1', external: false, kind }],
         completionSeed: () => ({
+          source_attempt_id: 'att-UI-1',
           target_base: 'main',
           subject: {
             role: 'root',
@@ -400,6 +503,7 @@ describe('worker/auto-merge — 구독 (UI-yk55 §4.1/§4.3)', () => {
         ];
       },
       completionSeed: (_workspace, _queue, bead_id) => ({
+        source_attempt_id: `att-${bead_id}`,
         target_base: 'main',
         subject: {
           role: 'root',

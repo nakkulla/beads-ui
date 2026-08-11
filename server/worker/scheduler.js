@@ -40,6 +40,7 @@
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
+import { isWorkerSerial } from '../../app/utils/worker-serial.js';
 import { debug } from '../logging.js';
 import { observeBaseDrift } from './base-drift.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
@@ -327,6 +328,39 @@ export function createScheduler(deps) {
   const running = new Map();
   /** Beads currently claimed (dispatching or running) — prevents double launch. @type {Set<string>} */
   const claimed = new Set();
+  /**
+   * @typedef {{
+   *   release: () => void,
+   *   handoff: () => void,
+   *   revalidate: (input: { bead_id: string, worker_serial: boolean, serial_lineage_id?: string, continuation?: boolean, queue_owned?: boolean, before_pending?: boolean }) => ({ ok: true, lease: WorkerSerialLease }|{ ok: false, reason: string })
+   * }} WorkerSerialLease
+   */
+  /**
+   * The launch coordinator is deliberately process-local.  Queue state remains
+   * the recovery source; reservations only close the await gaps before a
+   * durable attempt exists.
+   *
+   * @type {Map<string, { pending: { bead_id: string, lineage_id: string }|null, refresh_generation: number, refresh_active: boolean, refresh_task: Promise<void>|null, launches: Map<string, { bead_id: string, lineage_id: string, worker_serial: boolean, queue_owned: boolean }> }>} */
+  const serial_coordinators = new Map();
+
+  /**
+   * @param {string} workspace
+   * @returns {{ pending: { bead_id: string, lineage_id: string }|null, refresh_generation: number, refresh_active: boolean, refresh_task: Promise<void>|null, launches: Map<string, { bead_id: string, lineage_id: string, worker_serial: boolean, queue_owned: boolean }> }}
+   */
+  function serialCoordinator(workspace) {
+    let coordinator = serial_coordinators.get(workspace);
+    if (!coordinator) {
+      coordinator = {
+        pending: null,
+        refresh_generation: 0,
+        refresh_active: false,
+        refresh_task: null,
+        launches: new Map()
+      };
+      serial_coordinators.set(workspace, coordinator);
+    }
+    return coordinator;
+  }
   /**
    * Attempts whose `onSessionDone` is in flight. That handler drops the
    * `running` + `claimed` fences at entry and only THEN awaits the verify, so
@@ -1446,6 +1480,319 @@ export function createScheduler(deps) {
       }
     }
     return out;
+  }
+
+  /**
+   * @param {any} attempt
+   * @returns {string|null}
+   */
+  function serialLineageId(attempt) {
+    if (!attempt || typeof attempt.bead_id !== 'string') {
+      return null;
+    }
+    return typeof attempt.completion_root_id === 'string'
+      ? attempt.completion_root_id
+      : attempt.bead_id;
+  }
+
+  /**
+   * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string }>, discard_operations?: Record<string, any> }} q
+   * @returns {Array<{ lineage_id: string, worker_serial: boolean }>}
+   */
+  function activeSerialLineages(q) {
+    const values = Object.values(q.attempts || {});
+    /** @type {Array<{ lineage_id: string, worker_serial: boolean }>} */
+    const activity = [];
+    const resumed = new Set(
+      values.map((attempt) => attempt?.resumed_from).filter(Boolean)
+    );
+    for (const attempt of values) {
+      if (!attempt || TERMINAL_ATTEMPT_STATUSES.has(attempt.status)) {
+        continue;
+      }
+      if (attempt.status === 'paused' && resumed.has(attempt.attempt_id)) {
+        continue;
+      }
+      const lineage = serialLineageId(attempt);
+      if (lineage) {
+        activity.push({
+          lineage_id: lineage,
+          worker_serial: attempt.worker_serial === true
+        });
+      }
+    }
+    for (const entry of q.pr_wait || []) {
+      const attempt = [...values]
+        .reverse()
+        .find((item) => item?.bead_id === entry?.bead_id);
+      const lineage = serialLineageId(attempt);
+      if (lineage) {
+        activity.push({
+          lineage_id: lineage,
+          worker_serial: attempt?.worker_serial === true
+        });
+      }
+    }
+    for (const operation of Object.values(q.discard_operations || {})) {
+      if (!operation || operation.phase === 'done') {
+        continue;
+      }
+      const attempt =
+        (typeof operation.attempt_id === 'string' &&
+          q.attempts?.[operation.attempt_id]) ||
+        [...values]
+          .reverse()
+          .find((item) => item?.bead_id === operation.bead_id);
+      const lineage = serialLineageId(
+        attempt || { bead_id: operation.bead_id }
+      );
+      if (lineage) {
+        activity.push({
+          lineage_id: lineage,
+          worker_serial: attempt?.worker_serial === true
+        });
+      }
+    }
+    return activity;
+  }
+
+  /**
+   * Rebuilds the in-memory fence from queue order.  This deliberately has no
+   * store write: label truth remains authoritative in bd and a restart can
+   * reproduce it without a queue.json schema field.
+   *
+   * @param {string} workspace
+   */
+  function refreshPendingSerial(workspace) {
+    const coordinator = serialCoordinator(workspace);
+    const refresh_generation = ++coordinator.refresh_generation;
+    coordinator.pending = null;
+    coordinator.refresh_active = true;
+    const task = rebuildPendingSerial(
+      workspace,
+      coordinator,
+      refresh_generation
+    );
+    coordinator.refresh_task = task;
+    return awaitLatestPendingRefresh(workspace, task);
+  }
+
+  /**
+   * Wait for the newest refresh that existed before the synchronous lease
+   * acquire. A superseded caller must never acquire through an unpublished
+   * newer pending fence.
+   *
+   * @param {string} workspace
+   * @param {Promise<void>} task
+   */
+  async function awaitLatestPendingRefresh(workspace, task) {
+    let latest = task;
+    while (true) {
+      await latest;
+      const coordinator = serialCoordinator(workspace);
+      if (coordinator.refresh_task === latest) {
+        return;
+      }
+      latest = /** @type {Promise<void>} */ (coordinator.refresh_task);
+    }
+  }
+
+  /**
+   * Compute a generation's pending candidate locally, then publish it only if
+   * no newer refresh or run pass superseded that generation.
+   *
+   * @param {string} workspace
+   * @param {{ pending: { bead_id: string, lineage_id: string }|null, refresh_generation: number, refresh_active: boolean, refresh_task: Promise<void>|null, launches: Map<string, { bead_id: string, lineage_id: string, worker_serial: boolean, queue_owned: boolean }> }} coordinator
+   * @param {number} refresh_generation
+   */
+  async function rebuildPendingSerial(
+    workspace,
+    coordinator,
+    refresh_generation
+  ) {
+    const q = deps.store.snapshot(workspace);
+    /** @type {{ bead_id: string, lineage_id: string }|null} */
+    let next_pending = null;
+    for (const entry of q.queue || []) {
+      try {
+        const snap = await deps.bd.snapshotBead(entry.bead_id);
+        if (!snap.ready || snap.blocked || isWorkerIneligible(snap.labels)) {
+          continue;
+        }
+        const admission = await checkAdmission(snap);
+        if (refresh_generation !== coordinator.refresh_generation) {
+          return;
+        }
+        const confirmed = await deps.bd.snapshotBead(entry.bead_id);
+        if (refresh_generation !== coordinator.refresh_generation) {
+          return;
+        }
+        const live = deps.store.snapshot(workspace);
+        const active = activeSerialLineages(live);
+        const launches = [...coordinator.launches.values()];
+        const active_nonserial =
+          active.some(
+            (item) =>
+              item.lineage_id === entry.bead_id && item.worker_serial === false
+          ) ||
+          launches.some(
+            (item) =>
+              item.lineage_id === entry.bead_id && item.worker_serial === false
+          );
+        const queued = live.queue.some(
+          /** @param {{ bead_id: string }} item */
+          (item) => item.bead_id === entry.bead_id
+        );
+        if (
+          queued &&
+          confirmed.ready &&
+          !confirmed.blocked &&
+          !isWorkerIneligible(confirmed.labels) &&
+          admission.ok &&
+          isWorkerSerial(confirmed.labels) &&
+          !active_nonserial
+        ) {
+          next_pending = {
+            bead_id: entry.bead_id,
+            lineage_id: entry.bead_id
+          };
+          break;
+        }
+      } catch {
+        // Unreadable entries retain the queue's anti-starvation behavior.
+      }
+    }
+    if (refresh_generation === coordinator.refresh_generation) {
+      coordinator.pending = next_pending;
+      coordinator.refresh_active = false;
+    }
+  }
+
+  /**
+   * Synchronously judges a launch against all fences. `excluded_token` is the
+   * lease being authoritatively reclassified during queue dispatch, so it does
+   * not fence itself while it remains continuously held.
+   *
+   * @param {string} workspace
+   * @param {{ bead_id: string, worker_serial: boolean, serial_lineage_id?: string, continuation?: boolean, queue_owned?: boolean, before_pending?: boolean }} input
+   * @param {string|null} [excluded_token]
+   * @returns {string|null}
+   */
+  function workerSerialLaunchRefusal(workspace, input, excluded_token = null) {
+    const coordinator = serialCoordinator(workspace);
+    const q = deps.store.snapshot(workspace);
+    const lineage = input.serial_lineage_id || input.bead_id;
+    const active = activeSerialLineages(q);
+    const launch_values = [...coordinator.launches.entries()]
+      .filter(([token]) => token !== excluded_token)
+      .map(([, launch]) => launch);
+    if (launch_values.some((item) => item.bead_id === input.bead_id)) {
+      return 'bead_running';
+    }
+    const has_other_activity =
+      active.some((item) => item.lineage_id !== lineage) ||
+      launch_values.some((item) => item.lineage_id !== lineage);
+    const has_other_serial =
+      active.some(
+        (item) => item.worker_serial && item.lineage_id !== lineage
+      ) ||
+      launch_values.some(
+        (item) => item.worker_serial && item.lineage_id !== lineage
+      );
+    const pending = coordinator.pending;
+    const continuation = input.continuation === true;
+    if (has_other_serial && !(continuation && !has_other_activity)) {
+      return 'worker_serial_active';
+    }
+    if (
+      pending &&
+      !(continuation && pending.lineage_id === lineage) &&
+      input.before_pending !== true &&
+      !(
+        input.queue_owned === true &&
+        input.worker_serial === true &&
+        pending.lineage_id === lineage
+      )
+    ) {
+      return 'worker_serial_pending';
+    }
+    if (input.worker_serial && has_other_activity) {
+      return 'worker_serial_pending';
+    }
+    if (input.worker_serial && !continuation && input.queue_owned !== true) {
+      return 'worker_serial_pending';
+    }
+    return null;
+  }
+
+  /**
+   * Synchronous inspect/acquire half of the launch protocol. No await may be
+   * inserted here: callers invoke it after authoritative preflight and before
+   * their first worktree, metadata, or attempt side effect.
+   *
+   * @param {string} workspace
+   * @param {{ bead_id: string, worker_serial: boolean, serial_lineage_id?: string, continuation?: boolean, queue_owned?: boolean, before_pending?: boolean }} input
+   * @returns {{ ok: true, lease: WorkerSerialLease }|{ ok: false, reason: string }}
+   */
+  function acquireWorkerSerialLaunch(workspace, input) {
+    const coordinator = serialCoordinator(workspace);
+    const refusal = workerSerialLaunchRefusal(workspace, input);
+    if (refusal) {
+      return { ok: false, reason: refusal };
+    }
+    const lineage = input.serial_lineage_id || input.bead_id;
+    const token = `${input.bead_id}:${Date.now()}:${coordinator.launches.size}`;
+    coordinator.launches.set(token, {
+      bead_id: input.bead_id,
+      lineage_id: lineage,
+      worker_serial: input.worker_serial === true,
+      queue_owned: input.queue_owned === true
+    });
+    let held = true;
+    /** Release the pre-record reservation exactly once. */
+    function release() {
+      if (!held) {
+        return;
+      }
+      held = false;
+      coordinator.launches.delete(token);
+    }
+    /**
+     * @param {{ bead_id: string, worker_serial: boolean, serial_lineage_id?: string, continuation?: boolean, queue_owned?: boolean, before_pending?: boolean }} next_input
+     * @returns {{ ok: true, lease: WorkerSerialLease }|{ ok: false, reason: string }}
+     */
+    function revalidate(next_input) {
+      if (!held) {
+        return { ok: false, reason: 'bead_running' };
+      }
+      const next_refusal = workerSerialLaunchRefusal(
+        workspace,
+        next_input,
+        token
+      );
+      if (next_refusal) {
+        return { ok: false, reason: next_refusal };
+      }
+      const launch = coordinator.launches.get(token);
+      if (!launch) {
+        return { ok: false, reason: 'bead_running' };
+      }
+      launch.lineage_id = next_input.serial_lineage_id || next_input.bead_id;
+      launch.worker_serial = next_input.worker_serial === true;
+      launch.queue_owned = next_input.queue_owned === true;
+      return { ok: true, lease };
+    }
+    const lease = { release, handoff: release, revalidate };
+    return { ok: true, lease };
+  }
+
+  /**
+   * @param {string} workspace
+   * @param {{ bead_id: string, worker_serial: boolean, serial_lineage_id?: string, continuation?: boolean, queue_owned?: boolean, before_pending?: boolean }} input
+   */
+  async function preflightWorkerSerialLaunch(workspace, input) {
+    await refreshPendingSerial(workspace);
+    return acquireWorkerSerialLaunch(workspace, input);
   }
 
   /**
@@ -2577,361 +2924,403 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} bead_id
+   * @param {WorkerSerialLease|null} reservation
    */
-  async function dispatch(workspace, bead_id) {
-    // RE-READ authoritative ready/blocked/deps/exec-settings at dispatch.
-    // A disagreement with the scan pass is a real TOCTOU stop, so it is
-    // recorded on the same channel the scan uses — without a reason this
-    // dispatch would abort with nothing visible anywhere.
-    let snap;
+  async function dispatch(workspace, bead_id, reservation = null) {
     try {
-      snap = await deps.bd.snapshotBead(bead_id);
-    } catch {
-      recordSkipReason(workspace, bead_id, 'bd_snapshot_failed');
-      claimed.delete(bead_id);
-      return;
-    }
-    if (!snap.ready || snap.blocked) {
-      if (!dequeueIfClosed(workspace, bead_id, snap)) {
-        recordSkipReason(workspace, bead_id, notReadyReason(snap));
-      }
-      claimed.delete(bead_id);
-      return;
-    }
-    if (isWorkerIneligible(snap.labels)) {
-      refuseDispatch(workspace, bead_id, 'worker_ineligible');
-      return;
-    }
-
-    // Capture the preset/reference + effective values once, before any launch
-    // state mutation. The coordinator's snapshot is the only default source;
-    // all later stamp/provenance work consumes this immutable result.
-    const resolved_exec = resolveDispatchSettings(workspace, snap);
-    if (!resolved_exec.ok) {
-      refuseDispatch(workspace, bead_id, resolved_exec.reason);
-      return;
-    }
-    const exec = resolved_exec.exec;
-    if (exec.invalid_reason) {
-      refuseDispatch(workspace, bead_id, exec.invalid_reason);
-      return;
-    }
-    // DERIVED from the resolved model, never an independent axis: the catalog
-    // owns the model→runner map, so a bead asking for `sol` dispatches through
-    // codex without anyone setting a runner key (§C-2).
-    const runner_name = exec.runner;
-
-    const attempt_id = makeAttemptId(bead_id);
-    const prior = snap.workflow_mode ?? null;
-
-    // Base RE-RESOLUTION at dispatch (worker-base-scope-alignment §1). The scan
-    // may have read a memoized resolution; the cut below and the attempt record
-    // must come from a base read now. An unresolved declaration refuses HERE,
-    // before any worktree is touched: there is nothing to cut from, and the
-    // dispatch order puts the cut ahead of the admission re-check.
-    if (typeof deps.resolveBase === 'function') {
-      /** @type {import('./target-base.js').TargetBaseResult} */
-      let resolved;
+      // RE-READ authoritative ready/blocked/deps/exec-settings at dispatch.
+      // A disagreement with the scan pass is a real TOCTOU stop, so it is
+      // recorded on the same channel the scan uses — without a reason this
+      // dispatch would abort with nothing visible anywhere.
+      let snap;
       try {
-        resolved = await deps.resolveBase({ force: true });
+        snap = await deps.bd.snapshotBead(bead_id);
       } catch {
-        refuseDispatch(workspace, bead_id, 'base_unresolved:git_error');
+        reservation?.release();
+        recordSkipReason(workspace, bead_id, 'bd_snapshot_failed');
+        claimed.delete(bead_id);
         return;
       }
-      if (!resolved.ok) {
-        refuseDispatch(workspace, bead_id, `base_unresolved:${resolved.step}`);
+      if (!snap.ready || snap.blocked) {
+        reservation?.release();
+        if (!dequeueIfClosed(workspace, bead_id, snap)) {
+          recordSkipReason(workspace, bead_id, notReadyReason(snap));
+        }
+        claimed.delete(bead_id);
         return;
       }
-      snap = {
-        ...snap,
-        target_base: resolved.base,
-        base_oid: resolved.base_oid,
-        base_unresolved: null
+      if (isWorkerIneligible(snap.labels)) {
+        reservation?.release();
+        refuseDispatch(workspace, bead_id, 'worker_ineligible');
+        return;
+      }
+      const serial_input = {
+        bead_id,
+        worker_serial: isWorkerSerial(snap.labels),
+        queue_owned: true,
+        before_pending: isWorkerSerial(snap.labels) ? false : true
       };
-    } else if (snap.base_unresolved) {
-      refuseDispatch(workspace, bead_id, snap.base_unresolved);
-      return;
-    }
-    // The cut source: the FETCHED remote tip when the resolver produced one, so
-    // a stale local `<base>` cannot silently become the worktree's parent.
-    const cut_base = snap.base_oid || snap.target_base;
+      const serial_launch = reservation
+        ? reservation.revalidate(serial_input)
+        : acquireWorkerSerialLaunch(workspace, serial_input);
+      if (!serial_launch.ok) {
+        reservation?.release();
+        if (serial_launch.reason !== 'worker_serial_pending') {
+          refuseDispatch(workspace, bead_id, serial_launch.reason);
+        } else {
+          claimed.delete(bead_id);
+          requestRescan();
+        }
+        return;
+      }
+      reservation = serial_launch.lease;
 
-    // PREVENTION LAYER (UI-8mvc §2): the pre-push hook goes in HERE — after the
-    // base re-resolution that supplies its subject, and before the first state
-    // change of the launch. At this point there is no worktree, no attempt
-    // record and no metadata stamp, so an install failure ends in a refusal
-    // with nothing left behind (완료조건 #17). Every early return BELOW this
-    // line removes it again.
-    if (
-      !installGuardHook({
-        workspace,
-        attempt_id,
-        repo: snap.repo,
-        target_base: snap.target_base
-      })
-    ) {
-      refuseDispatch(workspace, bead_id, 'guard_hook_install_failed');
-      return;
-    }
+      // Capture the preset/reference + effective values once, before any launch
+      // state mutation. The coordinator's snapshot is the only default source;
+      // all later stamp/provenance work consumes this immutable result.
+      const resolved_exec = resolveDispatchSettings(workspace, snap);
+      if (!resolved_exec.ok) {
+        reservation.release();
+        refuseDispatch(workspace, bead_id, resolved_exec.reason);
+        return;
+      }
+      const exec = resolved_exec.exec;
+      if (exec.invalid_reason) {
+        reservation.release();
+        refuseDispatch(workspace, bead_id, exec.invalid_reason);
+        return;
+      }
+      // DERIVED from the resolved model, never an independent axis: the catalog
+      // owns the model→runner map, so a bead asking for `sol` dispatches through
+      // codex without anyone setting a runner key (§C-2).
+      const runner_name = exec.runner;
 
-    // PRE-FLIGHT (spec §2): a leftover worktree/branch from an earlier ■ makes
-    // `add` fail outright, and — once the worktree alone is gone — makes its
-    // `-B` silently reset a branch that may still hold the only copy of its
-    // commits. Clear it when nothing would be lost, refuse VISIBLY otherwise.
-    if (typeof deps.worktree.removeIfDiscardable === 'function') {
-      /** @type {{ ok: boolean, removed: boolean, reason: string|null }} */
-      let residue;
+      const attempt_id = makeAttemptId(bead_id);
+      const prior = snap.workflow_mode ?? null;
+
+      // Base RE-RESOLUTION at dispatch (worker-base-scope-alignment §1). The scan
+      // may have read a memoized resolution; the cut below and the attempt record
+      // must come from a base read now. An unresolved declaration refuses HERE,
+      // before any worktree is touched: there is nothing to cut from, and the
+      // dispatch order puts the cut ahead of the admission re-check.
+      if (typeof deps.resolveBase === 'function') {
+        /** @type {import('./target-base.js').TargetBaseResult} */
+        let resolved;
+        try {
+          resolved = await deps.resolveBase({ force: true });
+        } catch {
+          refuseDispatch(workspace, bead_id, 'base_unresolved:git_error');
+          return;
+        }
+        if (!resolved.ok) {
+          refuseDispatch(
+            workspace,
+            bead_id,
+            `base_unresolved:${resolved.step}`
+          );
+          return;
+        }
+        snap = {
+          ...snap,
+          target_base: resolved.base,
+          base_oid: resolved.base_oid,
+          base_unresolved: null
+        };
+      } else if (snap.base_unresolved) {
+        refuseDispatch(workspace, bead_id, snap.base_unresolved);
+        return;
+      }
+      // The cut source: the FETCHED remote tip when the resolver produced one, so
+      // a stale local `<base>` cannot silently become the worktree's parent.
+      const cut_base = snap.base_oid || snap.target_base;
+
+      // PREVENTION LAYER (UI-8mvc §2): the pre-push hook goes in HERE — after the
+      // base re-resolution that supplies its subject, and before the first state
+      // change of the launch. At this point there is no worktree, no attempt
+      // record and no metadata stamp, so an install failure ends in a refusal
+      // with nothing left behind (완료조건 #17). Every early return BELOW this
+      // line removes it again.
+      if (
+        !installGuardHook({
+          workspace,
+          attempt_id,
+          repo: snap.repo,
+          target_base: snap.target_base
+        })
+      ) {
+        refuseDispatch(workspace, bead_id, 'guard_hook_install_failed');
+        return;
+      }
+
+      // PRE-FLIGHT (spec §2): a leftover worktree/branch from an earlier ■ makes
+      // `add` fail outright, and — once the worktree alone is gone — makes its
+      // `-B` silently reset a branch that may still hold the only copy of its
+      // commits. Clear it when nothing would be lost, refuse VISIBLY otherwise.
+      if (typeof deps.worktree.removeIfDiscardable === 'function') {
+        /** @type {{ ok: boolean, removed: boolean, reason: string|null }} */
+        let residue;
+        try {
+          residue = await deps.worktree.removeIfDiscardable({
+            repo: snap.repo,
+            bead_id,
+            base: cut_base
+          });
+        } catch {
+          removeGuardHook(workspace, attempt_id);
+          refuseDispatch(workspace, bead_id, 'git_error');
+          return;
+        }
+        if (!residue.ok) {
+          removeGuardHook(workspace, attempt_id);
+          refuseDispatch(workspace, bead_id, 'worktree_stale_work');
+          return;
+        }
+      }
+
+      let wt;
       try {
-        residue = await deps.worktree.removeIfDiscardable({
+        wt = await deps.worktree.add({
           repo: snap.repo,
           bead_id,
           base: cut_base
         });
       } catch {
+        // Fail-VISIBLE: this used to abort with no badge, no log and no attempt,
+        // leaving a re-queued bead permanently stuck with nothing to see.
         removeGuardHook(workspace, attempt_id);
-        refuseDispatch(workspace, bead_id, 'git_error');
+        refuseDispatch(workspace, bead_id, 'worktree_add_failed');
         return;
       }
-      if (!residue.ok) {
+
+      // Admission re-check against the PINNED base_oid — the tick scan validated
+      // against a moving base tip, so a base advance between scan and worktree
+      // creation (TOCTOU) is caught here, fail-closed.
+      const adm = await checkAdmission(snap, wt.base_oid);
+      if (adm.ok && adm.stale) {
+        // The re-check is pinned to base_oid, so ITS payload — not the scan's —
+        // is what the session is told about (UI-dlim §3.2). A bead that was fresh
+        // at scan time and stale here is flagged, never refused.
+        recordStale(workspace, bead_id);
+      }
+      if (!adm.ok) {
+        recordSkipReason(workspace, bead_id, adm.reason || 'git_error');
         removeGuardHook(workspace, attempt_id);
-        refuseDispatch(workspace, bead_id, 'worktree_stale_work');
+        try {
+          await deps.worktree.remove({ repo: snap.repo, bead_id });
+        } catch {
+          // Best-effort cleanup; the refusal is already recorded.
+        }
+        claimed.delete(bead_id);
+        dispatch_refused.add(bead_id);
+        // Not awaited: this runs inside the drain it would wait on
+        // ({@link requestRescan}).
+        requestRescan();
         return;
       }
-    }
 
-    let wt;
-    try {
-      wt = await deps.worktree.add({
-        repo: snap.repo,
-        bead_id,
-        base: cut_base
-      });
-    } catch {
-      // Fail-VISIBLE: this used to abort with no badge, no log and no attempt,
-      // leaving a re-queued bead permanently stuck with nothing to see.
-      removeGuardHook(workspace, attempt_id);
-      refuseDispatch(workspace, bead_id, 'worktree_add_failed');
-      return;
-    }
+      // DURABLE pre-record before the FIRST metadata write. It carries the whole
+      // effective 12-key snapshot, separate from the subset the worker will
+      // stamp, so restart/reconcile and every relaunch have exact provenance.
+      const stamped_keys = exec.stamped_keys;
+      const exec_values = execValuesFor(exec);
+      if (
+        !prerecordAttempt(workspace, {
+          attempt_id,
+          bead_id,
+          repo: snap.repo,
+          target_base: snap.target_base,
+          base_oid: wt.base_oid,
+          workflow_mode_prior: prior,
+          exec_default_preset_id: resolved_exec.preset_id,
+          exec_default_preset_revision: resolved_exec.preset_revision,
+          exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+          exec_values,
+          spec_review_stale: !!adm.stale,
+          worker_serial: isWorkerSerial(snap.labels),
+          status: 'running',
+          pid: null
+        })
+      ) {
+        reservation.release();
+        removeGuardHook(workspace, attempt_id);
+        try {
+          await deps.worktree.remove({ repo: snap.repo, bead_id });
+        } catch {
+          // The durable refusal is already recorded below.
+        }
+        refuseDispatch(workspace, bead_id, 'attempt_prerecord_failed');
+        return;
+      }
+      reservation.handoff();
 
-    // Admission re-check against the PINNED base_oid — the tick scan validated
-    // against a moving base tip, so a base advance between scan and worktree
-    // creation (TOCTOU) is caught here, fail-closed.
-    const adm = await checkAdmission(snap, wt.base_oid);
-    if (adm.ok && adm.stale) {
-      // The re-check is pinned to base_oid, so ITS payload — not the scan's —
-      // is what the session is told about (UI-dlim §3.2). A bead that was fresh
-      // at scan time and stale here is flagged, never refused.
-      recordStale(workspace, bead_id);
-    }
-    if (!adm.ok) {
-      recordSkipReason(workspace, bead_id, adm.reason || 'git_error');
-      removeGuardHook(workspace, attempt_id);
+      // Record + readback workflow_mode=fast_track (double-delivered with prompt).
+      // The set AND its confirming readback are contained: a bd failure or a
+      // readback that does not echo `fast_track` fails THIS dispatch only (records
+      // a failed attempt, reverts the mode, releases the claim) — it never rejects
+      // out of tick's Promise.all, and never halts the queue or pauses siblings
+      // (spec §5.2).
+      let fast_track_ok = false;
       try {
-        await deps.worktree.remove({ repo: snap.repo, bead_id });
-      } catch {
-        // Best-effort cleanup; the refusal is already recorded.
+        await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
+        const readback = await deps.bd.readMetadata(bead_id, 'workflow_mode');
+        fast_track_ok = readback === 'fast_track';
+        if (!fast_track_ok) {
+          log(
+            'workflow_mode readback mismatch for %s: expected fast_track, got %o',
+            bead_id,
+            readback
+          );
+        }
+      } catch (err) {
+        log('workflow_mode set/readback failed for %s: %o', bead_id, err);
+        fast_track_ok = false;
       }
-      claimed.delete(bead_id);
-      dispatch_refused.add(bead_id);
-      // Not awaited: this runs inside the drain it would wait on
-      // ({@link requestRescan}).
-      requestRescan();
-      return;
-    }
+      if (!fast_track_ok) {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            status: 'failed',
+            cause: 'workflow_mode_record_failed',
+            finished_at: now()
+          }
+        });
+        // Direct failure record — this path never reaches `failAttempt`, so the
+        // push is fired here (UI-2yoq §2).
+        notifyLifecycle('attemptFailed', {
+          bead_id,
+          cause: 'workflow_mode_record_failed',
+          repo: snap.repo,
+          cause_detail: null
+        });
+        try {
+          await revertWorkflowMode(bead_id, prior);
+        } catch {
+          // Best-effort: bd may be down; the failed record already reflects it.
+        }
+        removeGuardHook(workspace, attempt_id);
+        claimed.delete(bead_id);
+        notifyChanged(workspace);
+        return;
+      }
 
-    // DURABLE pre-record before the FIRST metadata write. It carries the whole
-    // effective 12-key snapshot, separate from the subset the worker will
-    // stamp, so restart/reconcile and every relaunch have exact provenance.
-    const stamped_keys = exec.stamped_keys;
-    const exec_values = execValuesFor(exec);
-    if (
-      !prerecordAttempt(workspace, {
+      // Stamp each bead-absent, global-filled exec key onto the bead metadata
+      // (set + confirming readback, mirroring the workflow_mode stamp). A bd
+      // failure or a readback mismatch on ANY key fails THIS dispatch only: the
+      // attempted prefix is durably narrowed and unset (including a set that
+      // succeeded but whose readback threw/mismatched), the attempt is recorded
+      // failed, the mode is reverted, the claim released — no queue halt, no
+      // sibling pause.
+      let exec_stamp_ok = true;
+      /** @type {string[]} */
+      const attempted_stamped_keys = [];
+      for (const key of stamped_keys) {
+        const value = /** @type {Record<string, string|null>} */ (
+          /** @type {any} */ (exec)
+        )[key];
+        if (typeof value !== 'string') {
+          exec_stamp_ok = false;
+          break;
+        }
+        attempted_stamped_keys.push(key);
+        try {
+          await deps.bd.setMetadata(bead_id, key, value);
+          const rb = await deps.bd.readMetadata(bead_id, key);
+          if (rb !== value) {
+            log(
+              'exec stamp readback mismatch for %s %s: expected %o, got %o',
+              bead_id,
+              key,
+              value,
+              rb
+            );
+            exec_stamp_ok = false;
+            break;
+          }
+        } catch (err) {
+          log(
+            'exec stamp set/readback failed for %s %s: %o',
+            bead_id,
+            key,
+            err
+          );
+          exec_stamp_ok = false;
+          break;
+        }
+      }
+      if (!exec_stamp_ok) {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            exec_stamped_keys:
+              attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
+          }
+        });
+        await revertExecStamps(bead_id, attempted_stamped_keys);
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            status: 'failed',
+            cause: 'exec_stamp_failed',
+            finished_at: now()
+          }
+        });
+        notifyLifecycle('attemptFailed', {
+          bead_id,
+          cause: 'exec_stamp_failed',
+          repo: snap.repo,
+          cause_detail: null
+        });
+        try {
+          await revertWorkflowMode(bead_id, prior);
+        } catch {
+          // Best-effort: bd may be down; the failed record already reflects it.
+        }
+        removeGuardHook(workspace, attempt_id);
+        claimed.delete(bead_id);
+        notifyChanged(workspace);
+        return;
+      }
+
+      await launchSession({
+        workspace,
         attempt_id,
         bead_id,
         repo: snap.repo,
         target_base: snap.target_base,
         base_oid: wt.base_oid,
-        workflow_mode_prior: prior,
-        exec_default_preset_id: resolved_exec.preset_id,
-        exec_default_preset_revision: resolved_exec.preset_revision,
-        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
-        exec_values,
-        spec_review_stale: !!adm.stale,
-        status: 'running',
-        pid: null
-      })
-    ) {
-      removeGuardHook(workspace, attempt_id);
-      try {
-        await deps.worktree.remove({ repo: snap.repo, bead_id });
-      } catch {
-        // The durable refusal is already recorded below.
-      }
-      refuseDispatch(workspace, bead_id, 'attempt_prerecord_failed');
-      return;
-    }
-
-    // Record + readback workflow_mode=fast_track (double-delivered with prompt).
-    // The set AND its confirming readback are contained: a bd failure or a
-    // readback that does not echo `fast_track` fails THIS dispatch only (records
-    // a failed attempt, reverts the mode, releases the claim) — it never rejects
-    // out of tick's Promise.all, and never halts the queue or pauses siblings
-    // (spec §5.2).
-    let fast_track_ok = false;
-    try {
-      await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
-      const readback = await deps.bd.readMetadata(bead_id, 'workflow_mode');
-      fast_track_ok = readback === 'fast_track';
-      if (!fast_track_ok) {
-        log(
-          'workflow_mode readback mismatch for %s: expected fast_track, got %o',
-          bead_id,
-          readback
-        );
-      }
-    } catch (err) {
-      log('workflow_mode set/readback failed for %s: %o', bead_id, err);
-      fast_track_ok = false;
-    }
-    if (!fast_track_ok) {
-      deps.store.updateAttempt(workspace, {
-        attempt_id,
-        patch: {
-          status: 'failed',
-          cause: 'workflow_mode_record_failed',
-          finished_at: now()
-        }
+        runner_name,
+        model: exec.orchestration_model ?? null,
+        effort: exec.orchestration_effort ?? null,
+        speed: exec.orchestration_speed ?? 'default',
+        prior_wf: prior,
+        stamped_keys,
+        wt_path: wt.path,
+        // Only the FIRST dispatch holds a bead snapshot, so only it can name the
+        // bead in the start push; a resume/conflict relaunch pushes without one.
+        title: snap.title ?? null,
+        launch_kind: 'dispatch',
+        // The adapter reads only `id`/`prompt`; the plan-receipt fields the
+        // retired runner guard needed are no longer carried (worker-phase1 §4).
+        // A fresh receipt carries no `prompt`, so the adapter builds the default
+        // one — only a stale dispatch overrides it (UI-dlim §3.2).
+        spawnBead: adm.stale
+          ? {
+              id: bead_id,
+              prompt: staleDispatchPrompt(bead_id, {
+                receipt:
+                  typeof snap.spec_review === 'string' &&
+                  snap.spec_review.trim().length > 0
+                    ? snap.spec_review.trim()
+                    : adm.stale.receipt_sha,
+                base: wt.base_oid,
+                delta_shas: adm.stale.delta_shas
+              })
+            }
+          : { id: bead_id }
       });
-      // Direct failure record — this path never reaches `failAttempt`, so the
-      // push is fired here (UI-2yoq §2).
-      notifyLifecycle('attemptFailed', {
-        bead_id,
-        cause: 'workflow_mode_record_failed',
-        repo: snap.repo,
-        cause_detail: null
-      });
-      try {
-        await revertWorkflowMode(bead_id, prior);
-      } catch {
-        // Best-effort: bd may be down; the failed record already reflects it.
-      }
-      removeGuardHook(workspace, attempt_id);
-      claimed.delete(bead_id);
-      notifyChanged(workspace);
-      return;
+    } finally {
+      reservation?.release();
     }
-
-    // Stamp each bead-absent, global-filled exec key onto the bead metadata
-    // (set + confirming readback, mirroring the workflow_mode stamp). A bd
-    // failure or a readback mismatch on ANY key fails THIS dispatch only: the
-    // attempted prefix is durably narrowed and unset (including a set that
-    // succeeded but whose readback threw/mismatched), the attempt is recorded
-    // failed, the mode is reverted, the claim released — no queue halt, no
-    // sibling pause.
-    let exec_stamp_ok = true;
-    /** @type {string[]} */
-    const attempted_stamped_keys = [];
-    for (const key of stamped_keys) {
-      const value = /** @type {Record<string, string|null>} */ (
-        /** @type {any} */ (exec)
-      )[key];
-      if (typeof value !== 'string') {
-        exec_stamp_ok = false;
-        break;
-      }
-      attempted_stamped_keys.push(key);
-      try {
-        await deps.bd.setMetadata(bead_id, key, value);
-        const rb = await deps.bd.readMetadata(bead_id, key);
-        if (rb !== value) {
-          log(
-            'exec stamp readback mismatch for %s %s: expected %o, got %o',
-            bead_id,
-            key,
-            value,
-            rb
-          );
-          exec_stamp_ok = false;
-          break;
-        }
-      } catch (err) {
-        log('exec stamp set/readback failed for %s %s: %o', bead_id, key, err);
-        exec_stamp_ok = false;
-        break;
-      }
-    }
-    if (!exec_stamp_ok) {
-      deps.store.updateAttempt(workspace, {
-        attempt_id,
-        patch: {
-          exec_stamped_keys:
-            attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
-        }
-      });
-      await revertExecStamps(bead_id, attempted_stamped_keys);
-      deps.store.updateAttempt(workspace, {
-        attempt_id,
-        patch: {
-          status: 'failed',
-          cause: 'exec_stamp_failed',
-          finished_at: now()
-        }
-      });
-      notifyLifecycle('attemptFailed', {
-        bead_id,
-        cause: 'exec_stamp_failed',
-        repo: snap.repo,
-        cause_detail: null
-      });
-      try {
-        await revertWorkflowMode(bead_id, prior);
-      } catch {
-        // Best-effort: bd may be down; the failed record already reflects it.
-      }
-      removeGuardHook(workspace, attempt_id);
-      claimed.delete(bead_id);
-      notifyChanged(workspace);
-      return;
-    }
-
-    await launchSession({
-      workspace,
-      attempt_id,
-      bead_id,
-      repo: snap.repo,
-      target_base: snap.target_base,
-      base_oid: wt.base_oid,
-      runner_name,
-      model: exec.orchestration_model ?? null,
-      effort: exec.orchestration_effort ?? null,
-      speed: exec.orchestration_speed ?? 'default',
-      prior_wf: prior,
-      stamped_keys,
-      wt_path: wt.path,
-      // Only the FIRST dispatch holds a bead snapshot, so only it can name the
-      // bead in the start push; a resume/conflict relaunch pushes without one.
-      title: snap.title ?? null,
-      launch_kind: 'dispatch',
-      // The adapter reads only `id`/`prompt`; the plan-receipt fields the
-      // retired runner guard needed are no longer carried (worker-phase1 §4).
-      // A fresh receipt carries no `prompt`, so the adapter builds the default
-      // one — only a stale dispatch overrides it (UI-dlim §3.2).
-      spawnBead: adm.stale
-        ? {
-            id: bead_id,
-            prompt: staleDispatchPrompt(bead_id, {
-              receipt:
-                typeof snap.spec_review === 'string' &&
-                snap.spec_review.trim().length > 0
-                  ? snap.spec_review.trim()
-                  : adm.stale.receipt_sha,
-              base: wt.base_oid,
-              delta_shas: adm.stale.delta_shas
-            })
-          }
-        : { id: bead_id }
-    });
   }
 
   /**
@@ -3553,6 +3942,32 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Return the one durable source attempt that owns a completion root. Repair
+   * attempts always carry an operation id; accepting a latest same-Bead record
+   * here would let an unrelated administrative attempt rewrite provenance.
+   *
+   * @param {Record<string, any>} queue
+   * @param {string} root_bead_id
+   * @returns {{ source: any|null, reason: string|null }}
+   */
+  function completionRootAnchor(queue, root_bead_id) {
+    const anchors = Object.values(queue.attempts || {}).filter(
+      (attempt) =>
+        attempt &&
+        attempt.bead_id === root_bead_id &&
+        attempt.completion_root_id === root_bead_id &&
+        attempt.completion_op_id === null
+    );
+    if (anchors.length === 0) {
+      return { source: null, reason: 'completion_source_anchor_missing' };
+    }
+    if (anchors.length > 1) {
+      return { source: null, reason: 'completion_source_anchor_ambiguous' };
+    }
+    return { source: anchors[0], reason: null };
+  }
+
+  /**
    * The most recent same-Bead attempt that captured a resumable transcript.
    * A newer pre-session failure must not hide an older valid conversation.
    *
@@ -3730,64 +4145,105 @@ export function createScheduler(deps) {
     }
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
-
-    // An external-PR resolution is a CONFLICT session (spec §2 적용 범위: every
-    // session except a disposition), and its job — merge the base INTO the
-    // branch, verify, push the branch — never writes the base. It is exempt
-    // only from the DETECTION layer, and for an observation reason rather than
-    // a policy one: this dispatch pins no `base_oid`, so there is no reference
-    // point to compare against afterwards (§5 잔여 3). That makes prevention the
-    // only layer covering it, which is an argument for installing the hook, not
-    // against it. Installed here, before `claimed.add` and the durable
-    // pre-record — the same "before the first state change" rule.
-    if (
-      !installGuardHook({
-        workspace,
-        attempt_id,
-        repo,
-        target_base: base
-      })
-    ) {
-      return { ok: false, reason: 'guard_hook_install_failed' };
-    }
-
-    claimed.add(bead_id);
-
-    // DURABLE pre-record before the first metadata write, exactly as the queue
-    // dispatch does it: a crash between here and spawn leaves a record a
-    // restart can revert the stamps from. `base_oid` stays null — this dispatch
-    // creates no worktree and passes no admission, so there is no pinned base
-    // to honestly record.
-    const prerecord_started_at = resolution_wait ? now() : null;
-    const attempt = {
-      attempt_id,
+    let worker_serial = prior_attempt
+      ? prior_attempt.worker_serial === true
+      : isWorkerSerial(snap.labels);
+    const serial_launch = await preflightWorkerSerialLaunch(workspace, {
       bead_id,
-      repo,
-      target_base: base,
-      base_oid: null,
-      runner: runner_name,
-      model: launch_model,
-      effort: launch_effort,
-      speed: launch_speed,
-      workflow_mode_prior: prior,
-      exec_default_preset_id: preset_id,
-      exec_default_preset_revision: preset_revision,
-      exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
-      exec_values,
-      conflict_resolution: true,
-      external_conflict: true,
-      started_at: prerecord_started_at,
-      status: 'running',
-      pid: null
-    };
-    const prerecorded = resolution_wait
-      ? prerecordResolutionAttempt(workspace, attempt, resolution_wait)
-      : prerecordAttempt(workspace, attempt);
-    if (!prerecorded) {
-      removeGuardHook(workspace, attempt_id);
-      claimed.delete(bead_id);
-      notifyChanged(workspace);
-      return { ok: false, reason: 'attempt_prerecord_failed' };
+      worker_serial,
+      serial_lineage_id: prior_attempt
+        ? serialLineageId(prior_attempt) || bead_id
+        : bead_id,
+      continuation: !!prior_attempt
+    });
+    if (!serial_launch.ok) {
+      return { ok: false, reason: serial_launch.reason };
+    }
+    const serial_lease = serial_launch.lease;
+    if (!prior_attempt) {
+      try {
+        snap = await deps.bd.snapshotBead(bead_id);
+      } catch {
+        serial_lease.release();
+        return { ok: false, reason: 'bd_snapshot_failed' };
+      }
+      worker_serial = isWorkerSerial(snap.labels);
+      const revalidated = serial_lease.revalidate({
+        bead_id,
+        worker_serial,
+        serial_lineage_id: bead_id,
+        continuation: false
+      });
+      if (!revalidated.ok) {
+        serial_lease.release();
+        return { ok: false, reason: revalidated.reason };
+      }
+    }
+    try {
+      // An external-PR resolution is a CONFLICT session (spec §2 적용 범위: every
+      // session except a disposition), and its job — merge the base INTO the
+      // branch, verify, push the branch — never writes the base. It is exempt
+      // only from the DETECTION layer, and for an observation reason rather than
+      // a policy one: this dispatch pins no `base_oid`, so there is no reference
+      // point to compare against afterwards (§5 잔여 3). That makes prevention the
+      // only layer covering it, which is an argument for installing the hook, not
+      // against it. Installed here, before `claimed.add` and the durable
+      // pre-record — the same "before the first state change" rule.
+      if (
+        !installGuardHook({
+          workspace,
+          attempt_id,
+          repo,
+          target_base: base
+        })
+      ) {
+        serial_lease.release();
+        return { ok: false, reason: 'guard_hook_install_failed' };
+      }
+
+      claimed.add(bead_id);
+
+      // DURABLE pre-record before the first metadata write, exactly as the queue
+      // dispatch does it: a crash between here and spawn leaves a record a
+      // restart can revert the stamps from. `base_oid` stays null — this dispatch
+      // creates no worktree and passes no admission, so there is no pinned base
+      // to honestly record.
+      const prerecord_started_at = resolution_wait ? now() : null;
+      const attempt = {
+        attempt_id,
+        bead_id,
+        repo,
+        target_base: base,
+        base_oid: null,
+        runner: runner_name,
+        model: launch_model,
+        effort: launch_effort,
+        speed: launch_speed,
+        workflow_mode_prior: prior,
+        exec_default_preset_id: preset_id,
+        exec_default_preset_revision: preset_revision,
+        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+        exec_values,
+        worker_serial,
+        conflict_resolution: true,
+        external_conflict: true,
+        started_at: prerecord_started_at,
+        status: 'running',
+        pid: null
+      };
+      const prerecorded = resolution_wait
+        ? prerecordResolutionAttempt(workspace, attempt, resolution_wait)
+        : prerecordAttempt(workspace, attempt);
+      if (!prerecorded) {
+        serial_lease.release();
+        removeGuardHook(workspace, attempt_id);
+        claimed.delete(bead_id);
+        notifyChanged(workspace);
+        return { ok: false, reason: 'attempt_prerecord_failed' };
+      }
+      serial_lease.handoff();
+    } finally {
+      serial_lease.release();
     }
 
     let mode_ok = false;
@@ -3960,52 +4416,16 @@ export function createScheduler(deps) {
     const new_attempt_id = makeAttemptId(bead_id);
     const target_base =
       typeof prior.target_base === 'string' ? prior.target_base : 'main';
-
-    // Same "before the first state change" rule as the queue dispatch (UI-8mvc
-    // §2): the resume/conflict relaunch installs the child attempt's hook while
-    // the ancestor is still intact and no claim has been taken, so a failure is
-    // a plain refusal. A DISPOSITION child gets no hook — publishing the base
-    // is its job.
-    if (
-      !options.disposition &&
-      !installGuardHook({
-        workspace,
-        attempt_id: new_attempt_id,
-        repo,
-        target_base
-      })
-    ) {
-      return { ok: false, reason: 'guard_hook_install_failed' };
+    const serial_launch = await preflightWorkerSerialLaunch(workspace, {
+      bead_id,
+      worker_serial: prior.worker_serial === true,
+      serial_lineage_id: serialLineageId(prior) || bead_id,
+      continuation: true
+    });
+    if (!serial_launch.ok) {
+      return { ok: false, reason: serial_launch.reason };
     }
-
-    // The ancestor is spent from here on: nothing can discard it any more, so
-    // its parked `done` promise must not outlive the relaunch — nor do its hook
-    // assets, which a restart-restored `paused` record would otherwise strand
-    // (its `onSessionDone` belongs to a process this one never spawned).
-    //
-    // Which makes THIS the last moment its push record exists (UI-1xcd §4,
-    // implementation review 2026-08-04): a restart-restored ancestor reaches no
-    // other observer, so removing the hook first deleted the only evidence of
-    // what it pushed. The settlement is skipped for an ancestor that already
-    // carries a `base_drift`, because re-observing a hook that is already gone
-    // would overwrite a real record with `push_log_absent`.
-    if (
-      prior.base_drift == null &&
-      (await settleBaseDrift(workspace, attempt_id))
-    ) {
-      // A relaunch on top of a landing would build further work on a violation.
-      // The evidence is durable now, so the assets can go.
-      removeGuardHook(workspace, attempt_id);
-      if (!options.disposition) {
-        removeGuardHook(workspace, new_attempt_id);
-      }
-      notifyChanged(workspace);
-      return { ok: false, reason: 'base_landing_detected' };
-    }
-    paused_done.delete(attempt_id);
-    removeGuardHook(workspace, attempt_id);
-    claimed.add(bead_id);
-
+    const serial_lease = serial_launch.lease;
     const prior_wf =
       typeof prior.workflow_mode_prior === 'string'
         ? prior.workflow_mode_prior
@@ -4019,58 +4439,111 @@ export function createScheduler(deps) {
         : null;
     const launch_speed =
       typeof prior.speed === 'string' ? prior.speed : 'default';
-
-    // Mint the new attempt inheriting the PRIOR snapshot verbatim (§1.3): repo/
-    // target_base/base_oid/runner/model/effort/speed — never re-resolved from current
-    // globals. The retired merge-axis fields are NOT copied forward: history
-    // keeps them on the old record, new attempts stop writing them (§9).
-    if (
-      !prerecordRelaunchAttempt(
-        workspace,
-        prior,
-        {
+    try {
+      // Same "before the first state change" rule as the queue dispatch (UI-8mvc
+      // §2): the resume/conflict relaunch installs the child attempt's hook while
+      // the ancestor is still intact and no claim has been taken, so a failure is
+      // a plain refusal. A DISPOSITION child gets no hook — publishing the base
+      // is its job.
+      if (
+        !options.disposition &&
+        !installGuardHook({
+          workspace,
           attempt_id: new_attempt_id,
-          bead_id,
           repo,
-          target_base,
-          base_oid: prior.base_oid ?? null,
-          runner: runner_name,
-          model: prior.model ?? null,
-          effort: prior.effort ?? null,
-          speed: launch_speed,
-          workflow_mode_prior: prior_wf,
-          exec_default_preset_id: prior.exec_default_preset_id ?? null,
-          exec_default_preset_revision:
-            prior.exec_default_preset_revision ?? null,
-          exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
-          exec_values,
-          resumed_from: attempt_id,
-          conflict_resolution: options.conflict_resolution,
-          // INHERITED, never re-derived (UI-w0hi §1): a child of an external
-          // resolution is still working an external bead, and losing the flag
-          // would send its successful termination down the ordinary arm — which
-          // injects the bead into the durable `pr_wait` lane the external overlay
-          // owns. The identifier has to survive every relaunch, not just a
-          // restart.
-          external_conflict: prior.external_conflict === true,
-          disposition: options.disposition ?? null,
-          disposition_receipt: options.disposition_receipt ?? null,
-          disposition_resume: options.disposition
-            ? options.resume !== false
-            : false,
-          disposition_prompt: options.disposition ? options.prompt : null,
-          started_at: options.resolution_wait ? now() : null,
-          status: 'running',
-          pid: null
-        },
-        options.completion_resume === true,
-        options.resolution_wait ?? null
-      )
-    ) {
-      removeGuardHook(workspace, new_attempt_id);
-      claimed.delete(bead_id);
-      notifyChanged(workspace);
-      return { ok: false, reason: 'attempt_prerecord_failed' };
+          target_base
+        })
+      ) {
+        serial_lease.release();
+        return { ok: false, reason: 'guard_hook_install_failed' };
+      }
+
+      // The ancestor is spent from here on: nothing can discard it any more, so
+      // its parked `done` promise must not outlive the relaunch — nor do its hook
+      // assets, which a restart-restored `paused` record would otherwise strand
+      // (its `onSessionDone` belongs to a process this one never spawned).
+      //
+      // Which makes THIS the last moment its push record exists (UI-1xcd §4,
+      // implementation review 2026-08-04): a restart-restored ancestor reaches no
+      // other observer, so removing the hook first deleted the only evidence of
+      // what it pushed. The settlement is skipped for an ancestor that already
+      // carries a `base_drift`, because re-observing a hook that is already gone
+      // would overwrite a real record with `push_log_absent`.
+      if (
+        prior.base_drift == null &&
+        (await settleBaseDrift(workspace, attempt_id))
+      ) {
+        // A relaunch on top of a landing would build further work on a violation.
+        // The evidence is durable now, so the assets can go.
+        removeGuardHook(workspace, attempt_id);
+        if (!options.disposition) {
+          removeGuardHook(workspace, new_attempt_id);
+        }
+        serial_lease.release();
+        notifyChanged(workspace);
+        return { ok: false, reason: 'base_landing_detected' };
+      }
+      paused_done.delete(attempt_id);
+      removeGuardHook(workspace, attempt_id);
+      claimed.add(bead_id);
+
+      // Mint the new attempt inheriting the PRIOR snapshot verbatim (§1.3): repo/
+      // target_base/base_oid/runner/model/effort/speed — never re-resolved from current
+      // globals. The retired merge-axis fields are NOT copied forward: history
+      // keeps them on the old record, new attempts stop writing them (§9).
+      if (
+        !prerecordRelaunchAttempt(
+          workspace,
+          prior,
+          {
+            attempt_id: new_attempt_id,
+            bead_id,
+            repo,
+            target_base,
+            base_oid: prior.base_oid ?? null,
+            runner: runner_name,
+            model: prior.model ?? null,
+            effort: prior.effort ?? null,
+            speed: launch_speed,
+            workflow_mode_prior: prior_wf,
+            exec_default_preset_id: prior.exec_default_preset_id ?? null,
+            exec_default_preset_revision:
+              prior.exec_default_preset_revision ?? null,
+            exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+            exec_values,
+            worker_serial: prior.worker_serial === true,
+            resumed_from: attempt_id,
+            conflict_resolution: options.conflict_resolution,
+            // INHERITED, never re-derived (UI-w0hi §1): a child of an external
+            // resolution is still working an external bead, and losing the flag
+            // would send its successful termination down the ordinary arm — which
+            // injects the bead into the durable `pr_wait` lane the external overlay
+            // owns. The identifier has to survive every relaunch, not just a
+            // restart.
+            external_conflict: prior.external_conflict === true,
+            disposition: options.disposition ?? null,
+            disposition_receipt: options.disposition_receipt ?? null,
+            disposition_resume: options.disposition
+              ? options.resume !== false
+              : false,
+            disposition_prompt: options.disposition ? options.prompt : null,
+            started_at: options.resolution_wait ? now() : null,
+            status: 'running',
+            pid: null
+          },
+          options.completion_resume === true,
+          options.resolution_wait ?? null
+        )
+      ) {
+        serial_lease.release();
+        removeGuardHook(workspace, new_attempt_id);
+        claimed.delete(bead_id);
+        notifyChanged(workspace);
+        return { ok: false, reason: 'attempt_prerecord_failed' };
+      }
+      serial_lease.handoff();
+    } finally {
+      serial_lease.release();
     }
 
     // Re-stamp workflow_mode=fast_track from the PRIOR snapshot (set + readback).
@@ -4422,7 +4895,14 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'completion_base_sha_stale' };
     }
 
-    const source = lastAttemptOf(workspace, root_bead_id);
+    const anchor = completionRootAnchor(q, root_bead_id);
+    if (!anchor.source) {
+      return {
+        ok: false,
+        reason: anchor.reason || 'completion_lineage_missing'
+      };
+    }
+    const source = anchor.source;
     if (
       !source ||
       typeof source.repo !== 'string' ||
@@ -4556,41 +5036,67 @@ export function createScheduler(deps) {
     }
 
     const attempt_id = op.attempt_id;
-    if (!installGuardHook({ workspace, attempt_id, repo, target_base })) {
-      return { ok: false, reason: 'guard_hook_install_failed' };
-    }
-    claimed.add(bead_id);
-    const prerecord = deps.store.beginRepairOp(workspace, {
-      root_bead_id,
-      op,
-      attempt: {
-        attempt_id,
-        bead_id,
-        repo,
-        target_base,
-        base_oid: op.failure_key.base_sha,
-        runner: runner_name,
-        model: launch_model,
-        effort: launch_effort,
-        speed: launch_speed,
-        workflow_mode_prior: prior_wf,
-        exec_default_preset_id: preset_id,
-        exec_default_preset_revision: preset_revision,
-        exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
-        exec_values,
-        resumed_from,
-        completion_root_id: root_bead_id,
-        completion_op_id: op.op_id,
-        completion_mode: mode,
-        completion_failure_key: op.failure_key,
-        status: 'running',
-        pid: null
-      }
+    const serial_launch = await preflightWorkerSerialLaunch(workspace, {
+      bead_id,
+      worker_serial: source.worker_serial === true,
+      serial_lineage_id: root_bead_id,
+      continuation: true
     });
-    if (!prerecord.ok) {
-      removeGuardHook(workspace, attempt_id);
-      claimed.delete(bead_id);
-      return { ok: false, reason: 'attempt_prerecord_failed' };
+    if (!serial_launch.ok) {
+      return { ok: false, reason: serial_launch.reason };
+    }
+    const serial_lease = serial_launch.lease;
+    try {
+      if (!installGuardHook({ workspace, attempt_id, repo, target_base })) {
+        serial_lease.release();
+        return { ok: false, reason: 'guard_hook_install_failed' };
+      }
+      claimed.add(bead_id);
+      let prerecord;
+      try {
+        prerecord = deps.store.beginRepairOp(workspace, {
+          root_bead_id,
+          op,
+          attempt: {
+            attempt_id,
+            bead_id,
+            repo,
+            target_base,
+            base_oid: op.failure_key.base_sha,
+            runner: runner_name,
+            model: launch_model,
+            effort: launch_effort,
+            speed: launch_speed,
+            workflow_mode_prior: prior_wf,
+            exec_default_preset_id: preset_id,
+            exec_default_preset_revision: preset_revision,
+            exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+            exec_values,
+            worker_serial: source.worker_serial === true,
+            resumed_from,
+            completion_root_id: root_bead_id,
+            completion_op_id: op.op_id,
+            completion_mode: mode,
+            completion_failure_key: op.failure_key,
+            status: 'running',
+            pid: null
+          }
+        });
+      } catch {
+        serial_lease.release();
+        removeGuardHook(workspace, attempt_id);
+        claimed.delete(bead_id);
+        return { ok: false, reason: 'attempt_prerecord_failed' };
+      }
+      if (!prerecord.ok) {
+        serial_lease.release();
+        removeGuardHook(workspace, attempt_id);
+        claimed.delete(bead_id);
+        return { ok: false, reason: 'attempt_prerecord_failed' };
+      }
+      serial_lease.handoff();
+    } finally {
+      serial_lease.release();
     }
     notifyChanged(workspace);
 
@@ -4875,15 +5381,24 @@ export function createScheduler(deps) {
    * @returns {Promise<void>}
    */
   async function runPass(workspace) {
-    const q = deps.store.snapshot(workspace);
+    let q = deps.store.snapshot(workspace);
     if (!q.auto_advance) {
       return;
     }
+    const coordinator = serialCoordinator(workspace);
+    if (coordinator.refresh_active && coordinator.refresh_task) {
+      await awaitLatestPendingRefresh(workspace, coordinator.refresh_task);
+    }
+    const scan_generation = coordinator.refresh_generation;
+    q = deps.store.snapshot(workspace);
+    coordinator.pending = null;
     const paused_beads = leafPausedBeads(q);
     const active_beads = activeBeadIdsFrom(q);
 
     /** @type {Array<{ bead_id: string, snap: BeadSnapshot }>} */
     const to_dispatch = [];
+    /** @type {{ bead_id: string, lineage_id: string }|null} */
+    let pending_candidate = null;
 
     // Occupancy is `claimed`, NOT `running`: a dispatch that has taken its claim
     // but has not spawned yet already owns a slot, and a refusal's re-entrant
@@ -4966,6 +5481,21 @@ export function createScheduler(deps) {
       if (adm.stale) {
         recordStale(workspace, entry.bead_id);
       }
+      // A runnable serial entry is a queue barrier. Earlier ordinary entries
+      // may drain, but nothing at or behind the barrier is selected in the
+      // same pass. If an earlier ordinary attempt is already active, leave the
+      // serial entry pending until that lineage settles.
+      if (isWorkerSerial(snap.labels)) {
+        pending_candidate = {
+          bead_id: entry.bead_id,
+          lineage_id: entry.bead_id
+        };
+        if (to_dispatch.length > 0 || occupied.size > 0) {
+          break;
+        }
+        to_dispatch.push({ bead_id: entry.bead_id, snap });
+        break;
+      }
       to_dispatch.push({ bead_id: entry.bead_id, snap });
       free -= 1;
     }
@@ -4979,7 +5509,36 @@ export function createScheduler(deps) {
     // queue member, and launching it would both run finished work and delete
     // the `done` row the sweep just wrote. Nothing can move a bead between this
     // read and the claim, so the check is not merely advisory.
-    const live_snapshot = deps.store.snapshot(workspace);
+    let live_snapshot = deps.store.snapshot(workspace);
+    if (
+      pending_candidate &&
+      live_snapshot.queue.some(
+        /** @param {{ bead_id: string }} entry */
+        (entry) => entry.bead_id === pending_candidate.bead_id
+      )
+    ) {
+      try {
+        const confirmed = await deps.bd.snapshotBead(pending_candidate.bead_id);
+        live_snapshot = deps.store.snapshot(workspace);
+        if (
+          live_snapshot.queue.some(
+            /** @param {{ bead_id: string }} entry */
+            (entry) => entry.bead_id === pending_candidate.bead_id
+          ) &&
+          confirmed.ready &&
+          !confirmed.blocked &&
+          !isWorkerIneligible(confirmed.labels) &&
+          isWorkerSerial(confirmed.labels)
+        ) {
+          if (coordinator.refresh_generation === scan_generation) {
+            coordinator.pending = pending_candidate;
+          }
+        }
+      } catch {
+        // A pending fence needs an authoritative label read; unreadable means
+        // no in-memory barrier until the next rescan can establish one.
+      }
+    }
     const live_queue = new Set(
       live_snapshot.queue.map(
         (/** @type {{ bead_id: string }} */ e) => e.bead_id
@@ -4995,10 +5554,37 @@ export function createScheduler(deps) {
         !claimed.has(d.bead_id) &&
         !live_active.has(d.bead_id)
     );
-    for (const d of to_launch) {
-      claimed.add(d.bead_id);
+    if (coordinator.refresh_generation !== scan_generation) {
+      requestRescan();
+      return;
     }
-    await Promise.all(to_launch.map((d) => dispatch(workspace, d.bead_id)));
+    /** @type {Array<{ bead_id: string, lease: WorkerSerialLease }>} */
+    const launches = [];
+    for (const d of to_launch) {
+      const reservation = acquireWorkerSerialLaunch(workspace, {
+        bead_id: d.bead_id,
+        worker_serial: isWorkerSerial(d.snap.labels),
+        queue_owned: true,
+        before_pending: !isWorkerSerial(d.snap.labels)
+      });
+      if (!reservation.ok) {
+        continue;
+      }
+      claimed.add(d.bead_id);
+      launches.push({ bead_id: d.bead_id, lease: reservation.lease });
+    }
+    await Promise.all(
+      launches.map(async (launch) => {
+        try {
+          await dispatch(workspace, launch.bead_id, launch.lease);
+        } catch (err) {
+          launch.lease.release();
+          claimed.delete(launch.bead_id);
+          log('dispatch failed for %s: %o', launch.bead_id, err);
+          requestRescan();
+        }
+      })
+    );
   }
 
   /**

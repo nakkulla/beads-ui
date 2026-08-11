@@ -79,7 +79,14 @@ function seedStore(options = {}) {
   const store = createQueueStore();
   store.appendAttempt(WS, {
     expected_revision: store.snapshot(WS).revision,
-    attempt: { attempt_id: 'a1', bead_id: BEAD }
+    attempt: {
+      attempt_id: 'a1',
+      bead_id: BEAD,
+      repo: REPO,
+      target_base: 'main',
+      base_oid: 'b'.repeat(40),
+      runner: 'claude'
+    }
   });
   store.updateAttempt(WS, {
     attempt_id: 'a1',
@@ -1283,6 +1290,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     });
     h.store.enqueueCompletionIntent(WS, {
       root_bead_id: BEAD,
+      source_attempt_id: 'a1',
       target_base: 'main',
       subject: {
         role: 'root',
@@ -1340,6 +1348,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     });
     h.store.enqueueCompletionIntent(WS, {
       root_bead_id: BEAD,
+      source_attempt_id: 'a1',
       target_base: 'main',
       subject: {
         role: 'root',
