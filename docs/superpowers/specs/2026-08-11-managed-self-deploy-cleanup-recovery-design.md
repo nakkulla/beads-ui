@@ -71,10 +71,12 @@ release로 옮기고 기존 code-repair coordinator의 경계를 유지한다.
    verify한 candidate `D`와 같다.
 2. **shared checkout 무변경**: managed Adapter는 source repo를 fetch, checkout, reset, stash,
    clean하거나 status 기반 배포 입력으로 사용하지 않는다.
-3. **effect 전 journal**: pointer 전진과 restart launch 전에 attempt-bound handoff state를
-   원자적으로 기록한다.
-4. **success 전 readback**: 새 process의 source path·HEAD·PID와 health가 `D`에 bind되기 전에는
-   terminal success receipt와 Parent close가 없다.
+3. **effect 전 journal**: pointer 전진 전에 attempt-bound handoff state를 기록하고, restart
+   helper는 자기 PID·OS start time·launch token을 원자 선기록한 뒤에만 restart effect를
+   claim·실행한다.
+4. **success 전 readback**: 새 process의 source path·HEAD·PID·start time·instance identity와
+   live health가 marker 및 `D`에 bind되기 전에는 terminal success receipt와 Parent close가
+   없다.
 5. **merge 권한 단일화**: repair PR도 기존 merge driver만 merge하며 agent는 push/PR 제출까지만
    수행한다.
 6. **코드 복구 예산 유지**: completion repair 총 2회 cap과 conflict/flake retry budget은 서로
@@ -138,25 +140,40 @@ cwd로 Adapter를 실행한다. Adapter는 다음을 수행한다.
    tracked status를 다시 확인한다.
 2. candidate `package-lock.json`으로 `npm ci --omit=dev`를 실행한다. `node_modules`는 ignored
    runtime artifact이며 install marker와 lockfile digest를 readback한다.
-3. attempt-bound self-deploy journal을 worker state root에 `prepared`로 원자 기록한다.
+3. attempt-bound self-deploy journal을 worker state root에 `prepared`로 원자 기록한다. 이때
+   재사용할 수 없는 launch token을 attempt/candidate/release에 bind한다.
 4. data home의 `bdui/runtime/beads-ui/current` symlink를 임시 link + atomic rename으로 exact
    release `D`에 전진시키고 target containment를 다시 읽는다.
-5. journal을 `restart_launched`로 전진시킨 뒤 `bdui-shared restart`를 별도 process group으로
-   detached spawn한다. Adapter parent는 terminal success나 receipt 없이 종료하지 않고 old
-   server termination을 기다린다.
+5. restart helper를 별도 process group으로 spawn한다. helper는 restart를 호출하기 전에 자기
+   PID, OS process start time, launch token을 journal의 `restart_prerecorded` stage로 atomic
+   write하고 같은 값을 readback한다. durable prerecord가 실패하면 restart를 호출하지 않고
+   종료한다.
+6. helper만 journal을 `restart_committed`로 CAS한 뒤 `bdui-shared restart`를 호출하고,
+   호출 결과를 `restart_launched`에 기록한다. Adapter parent는 helper의 prerecord ACK를
+   확인하되 terminal success나 receipt를 대신 쓰지 않으며 old server termination을 기다린다.
 
 Adapter의 stdout은 authority가 아니다. journal은 protocol version, attempt, candidate, release,
-pointer target, restart child PID/start time, stage와 last error만 비-secret 값으로 보존한다.
-같은 attempt의 재호출은 live helper PID와 runtime marker를 먼저 읽고 중복 restart를 만들지
-않는다. helper가 사라지고 runtime이 아직 `D`가 아니면 Reconciler의 기존 retryable adapter
-timeout budget 안에서만 새 launch를 허용한다.
+pointer target, launch token, helper PID/OS start time, stage와 last error만 비-secret 값으로
+보존한다. 같은 attempt의 재호출은 live helper identity, effect claim과 runtime marker를 먼저
+읽고 중복 restart를 만들지 않는다.
+
+중단 지점은 다음처럼 수렴한다.
+
+- helper spawn 전 또는 `restart_prerecorded` 전 helper 종료는 restart 0회가 증명되므로 같은
+  attempt의 bounded retry가 새 token/helper를 만들 수 있다.
+- Adapter parent가 helper spawn 뒤 종료돼도 helper는 자기 prerecord를 끝낸 뒤에만 effect를
+  수행하고, 새 server startup reconcile이 같은 attempt를 이어받는다.
+- `restart_prerecorded` 뒤 `restart_committed` 전 helper 종료도 effect 0회로 간주한다.
+- `restart_committed` 뒤 helper가 사라졌는데 exact runtime identity로 effect 완료를 증명하지
+  못하면 자동으로 두 번째 restart를 만들지 않고 `restart_effect_ambiguous` terminal evidence를
+  남긴다. effect가 실행됐음이 증명되면 receipt/readback만 복구한다.
 
 ### 4. Runtime identity와 restart 후 resume
 
 server는 listen 완료 뒤 `$XDG_STATE_HOME/bdui/runtime/beads-ui.json`을 mode `0600`으로 atomic
 write한다. marker는 다음 exact readback만 가진다.
 
-- protocol version, PID, started timestamp
+- protocol version, PID, OS process start time, started timestamp, process별 `instance_id`
 - `server/index.js`에서 계산한 source repo realpath
 - source `git rev-parse HEAD` 40-hex SHA
 - bound host/port와 health path
@@ -164,16 +181,25 @@ write한다. marker는 다음 exact readback만 가진다.
 secret, 전체 environment, workspace path 목록은 기록하지 않는다. marker의 source는 process cwd가
 아니라 실행 중인 module path에서 계산한다.
 
-restart된 candidate server는 startup에서 기존 nonterminal reconcile을 발견한다. 같은 Adapter를
-재호출했을 때 journal의 candidate/attempt와 runtime marker가 모두 `D`에 bind되고 `/healthz`가
-성공하면 Adapter가 protocol v1 terminal receipt를 worker-owned path에 atomic write한다.
+restart된 candidate server는 startup에서 기존 nonterminal reconcile을 발견한다. `/healthz`의
+`runtime` payload는 marker 파일을 그대로 되돌리는 값이 아니라 현재 process가 계산한 protocol
+version, PID, OS start time, started timestamp, `instance_id`, source realpath/SHA, bound host/port를
+반환한다. 같은 Adapter를 재호출했을 때 다음 predicate를 모두 만족해야 protocol v1 terminal
+receipt를 worker-owned path에 atomic write한다.
+
+- journal의 attempt/candidate/release와 marker가 exact `D` 및 `releasePath(D)`에 bind된다.
+- marker와 live `/healthz.runtime`의 PID, OS start time, `instance_id`, source realpath/SHA,
+  host/port가 exact match한다.
+- live source SHA는 `D`, source realpath는 exact release이고 health outcome은 success다.
+
 receipt action outcomes는 dependency install, pointer cutover, restart handoff, exact runtime
-readback을 포함한다. Reconciler는 기존 validator로 receipt를 수락하고 child sweep, branch
-cleanup, Parent close를 이어간다.
+identity readback을 포함한다. Reconciler는 기존 validator로 receipt를 수락하고 child sweep,
+branch cleanup, Parent close를 이어간다.
 
 new server가 이미 `D`에서 실행 중이면 restart를 다시 호출하지 않는다. receipt rename 전 crash는
-같은 runtime readback으로 receipt만 복구한다. marker가 old SHA, PID 불일치, health red, pointer
-escape이면 success를 쓰지 않는다.
+같은 runtime identity readback으로 receipt만 복구한다. stale marker와 별도 healthy process의
+조합, old SHA, PID/start/instance 불일치, source path 불일치, health red, pointer escape이면
+success를 쓰지 않는다.
 
 ### 5. Failure ownership과 자동 세션
 
@@ -193,6 +219,29 @@ escape이면 success를 쓰지 않는다.
 이미 merge된 root는 원 session/branch를 resume하거나 같은 PR을 재머지하지 않는다. linked repair
 PR merge 뒤 root의 기존 `runCleanup` 전체를 다시 실행한다. `deploy_base_not_synced`는 repair
 allowlist에 추가하지 않는다.
+
+Adapter failure의 ownership은 stderr/stdout 문구나 generic exit code로 추론하지 않는다. Adapter는
+nonzero exit 전에 가능한 경우 같은 attempt journal에 `{failure_code, retryable, detail}`을 원자
+기록하고, Reconciler는 protocol version, repo, attempt, candidate, release binding과 다음 finite
+mapping을 검증한다.
+
+| `failure_code` | public reason | retryable | repair ownership |
+|---|---|---|---|
+| `adapter_regression` | `deploy_failed` | false | completion intent allowlist |
+| `pointer_transient` | `managed_pointer_transient` | true | 없음 |
+| `helper_spawn_timeout` | `managed_helper_spawn_timeout` | true | 없음 |
+| `pointer_escape` | `managed_pointer_escape` | false | 없음 |
+| `restart_effect_ambiguous` | `managed_restart_effect_ambiguous` | false | 없음 |
+| `runtime_identity_mismatch` | `managed_runtime_identity_mismatch` | false | 없음 |
+| `runtime_health_red` | `managed_runtime_health_red` | false | 없음 |
+
+Reconciler는 managed command의 nonzero exit 뒤 이 record를 읽어 public reason으로 투영한다.
+`retryable`은 위 mapping과 일치해야 하며 attempt count/backoff를 새로 만들거나 reset하지 않는다.
+spawn/timeout처럼 Adapter가 journal을 쓰기 전에 생긴 provider failure는 Reconciler의 기존 bounded
+reason을 유지한다. failure record가 missing, malformed, unbound, unknown이거나 retryability가
+모순이면 `managed_failure_record_invalid` terminal로 fail closed하고 repair session을 만들지 않는다.
+검증된 code, public reason, retryability, attempt count와 evidence는 reconcile terminal state와
+`cleanup_failed`까지 손실 없이 전달한다.
 
 ## 상태와 UI
 
@@ -233,18 +282,32 @@ dotfiles 선행 unit이 installed 되지 않았으면 declaration을 merge하지
    - missing-process legacy attempt가 orphan evidence로 정산되고 cleanup retry를 호출하지 않는다.
 2. self Adapter unit
    - invalid env/floor/release/HEAD/containment에서 pointer·journal·receipt 무변경.
-   - exact lockfile install 뒤 pointer atomic cutover와 `restart_launched` prerecord.
-   - 같은 attempt/helper가 살아 있을 때 duplicate restart 없음.
-   - exact runtime marker+health에서 receipt complete, old SHA/PID/path/health red에서 거부.
+   - exact lockfile install 뒤 pointer atomic cutover와
+     `restart_prerecorded -> restart_committed -> restart_launched` 순서가 지켜진다.
+   - restart callback 전 durable helper PID/start/token이 존재하고, prerecord 실패 또는 helper가
+     prerecord 전에 죽으면 restart는 0회다.
+   - 같은 attempt/helper 또는 committed effect가 있을 때 duplicate restart 없음.
+   - exact marker/live health/candidate identity에서 receipt complete, stale marker+unrelated healthy
+     process와 old SHA/PID/start/instance/path/health red에서 거부.
 3. restart reconciliation
    - adapter launch 직후 old server termination을 주입하고 새 store/Reconciler가 기존 attempt를
      receipt로 recover한다.
-   - pointer 전진/receipt 전 crash, restart 후/receipt rename 전 crash가 budget reset이나
-     duplicate close 없이 수렴한다.
+   - helper spawn 전, spawn 후/prerecord 전, prerecord 후/commit 전, restart 후/receipt rename 전
+     crash가 정해진 recovery 또는 `restart_effect_ambiguous`로 수렴하며 budget reset, duplicate
+     restart, duplicate close가 없다.
    - dirty/feature shared checkout의 HEAD/status가 처음부터 끝까지 불변이다.
-4. completion ownership regression
-   - tracked Adapter failure만 existing `deploy_failed` linked repair로 들어간다.
-   - `deploy_base_not_synced`와 pointer/runtime identity failure는 repair session을 만들지 않는다.
+4. failure ownership transport
+   - bound `adapter_regression` record만 `deploy_failed`로 투영되어 linked repair에 들어간다.
+   - retryable pointer/helper code는 같은 attempt의 기존 budget만 소비하고 completion repair를
+     만들지 않는다.
+   - terminal pointer/runtime/ambiguous code와 malformed·unbound·unknown record는 정확한 evidence로
+     fail closed하며 stdout 문구만으로 repair ownership을 얻지 않는다.
+
+### Regression coverage (existing green)
+
+- 기존 `deploy_failed` completion repair allowlist와 bounded linked repair 동작을 유지한다.
+- legacy workspace `deploy_base_not_synced`/`checkout_dirty` guard는 deploy spawn 전 fail closed하고
+  completion repair session을 만들지 않는다.
 
 ### Verification bundle
 
@@ -263,10 +326,13 @@ dotfiles 선행 unit이 installed 되지 않았으면 declaration을 merge하지
 2. `worker-cleanup-diagnose`가 client/server public action으로 남지 않는다.
 3. beads-ui self deploy가 exact managed candidate release에서 실행되고 shared checkout은 읽기
    편의 source 외에 deployment authority가 아니다.
-4. restart 뒤 새 process source realpath와 SHA가 candidate `D`에 정확히 bind된 receipt가
-   있어야 cleanup과 Parent close가 진행된다.
-5. duplicate restart, duplicate receipt consume, retry budget reset이 crash/restart fixture에서 없다.
-6. 실제 code/config regression만 기존 bounded Codex/Claude repair session을 사용한다.
-7. retry 안내 문구가 durable retry count와 일치한다.
-8. live rollout에서 process path, port, HTTP, candidate SHA, receipt, Parent close와 shared checkout
+4. restart helper identity가 effect 전에 durable prerecord되고, unrecorded/ambiguous effect가 자동
+   duplicate restart로 이어지지 않는다.
+5. restart 뒤 live process PID/start/instance/source realpath/SHA가 marker와 candidate `D`에
+   정확히 bind된 receipt가 있어야 cleanup과 Parent close가 진행된다.
+6. duplicate restart, duplicate receipt consume, retry budget reset이 crash/restart fixture에서 없다.
+7. 검증된 `failure_code` transport가 실제 code/config regression만 기존 bounded Codex/Claude
+   repair session에 보내고 pointer/runtime failure는 보내지 않는다.
+8. retry 안내 문구가 durable retry count와 일치한다.
+9. live rollout에서 process path, port, HTTP, candidate SHA, receipt, Parent close와 shared checkout
    불변을 모두 확인한다.
