@@ -884,6 +884,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     runVerify: (/** @type {any} */ input) =>
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
     resolveDeploy,
+    locks: runtime.locks,
     notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
     // The SAME notifier the scheduler pushes attempt transitions through, so
     // the merge that closes a bead lands in the same channel as its start and
@@ -1019,7 +1020,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     gitRun,
     // The externally-observed MERGED trigger routes into the SAME cleanup the
     // button runs — one implementation, two triggers (worker-phase2 §6).
-    onMerged: (bead_id) => prActions.cleanupObservedMerge(bead_id),
+    onMerged: (bead_id, merge_sha) =>
+      prActions.cleanupObservedMerge(bead_id, merge_sha),
     // The external registry rides the poller's own subscriber gate and cadence
     // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:
     // never.

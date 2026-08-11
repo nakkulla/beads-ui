@@ -540,16 +540,21 @@ export function activityBadge(gate_badge, activity) {
  * code. An unknown step still renders (by its raw name) rather than blanking the
  * row.
  *
- * @type {Array<{ step: string, label: string }>}
+ * @type {Array<{ step: string, label: string, index: number }>}
  */
 const MERGE_STEPS = [
-  { step: 'merging', label: '머지 중' },
-  { step: 'base_sync', label: 'base 동기화' },
-  { step: 'post_merge_verify', label: '머지 후 검증' },
-  { step: 'deploy', label: '배포' },
-  { step: 'child_sweep', label: '자식 정리' },
-  { step: 'branch_cleanup', label: '브랜치 정리' },
-  { step: 'parent_close', label: '부모 close' }
+  { step: 'merging', label: '머지 중', index: 1 },
+  { step: 'base_sync', label: 'base 동기화', index: 2 },
+  { step: 'reconcile_queued', label: '정리 준비', index: 2 },
+  { step: 'candidate_pinned', label: '배포 후보 고정', index: 3 },
+  { step: 'post_merge_verify', label: '머지 후 검증', index: 4 },
+  { step: 'reconcile_verify', label: '정리 중 · 검증', index: 4 },
+  { step: 'deploy', label: '배포', index: 5 },
+  { step: 'reconcile_deploy', label: '정리 중 · 배포', index: 5 },
+  { step: 'reconcile_readback', label: '정리 중 · readback', index: 6 },
+  { step: 'child_sweep', label: '자식 정리', index: 7 },
+  { step: 'branch_cleanup', label: '브랜치 정리', index: 8 },
+  { step: 'parent_close', label: '부모 close', index: 9 }
 ];
 
 /**
@@ -568,17 +573,49 @@ export function mergeStepView(step) {
   if (typeof step !== 'string' || step.length === 0) {
     return null;
   }
-  const total = MERGE_STEPS.length;
-  const i = MERGE_STEPS.findIndex((s) => s.step === step);
-  if (i < 0) {
+  const total = 9;
+  const found = MERGE_STEPS.find((s) => s.step === step);
+  if (!found) {
     return { label: step, index: 0, total, percent: 0 };
   }
   return {
-    label: MERGE_STEPS[i].label,
-    index: i + 1,
+    label: found.label,
+    index: found.index,
     total,
-    percent: Math.round(((i + 1) / total) * 100)
+    percent: Math.round((found.index / total) * 100)
   };
+}
+
+/**
+ * @param {Record<string, any>|null|undefined} record
+ * @returns {{ activity: null, merge_progress: { step: string, started_at: number } }|null}
+ */
+function reconcileActivity(record) {
+  if (!record || (record.adapter !== 'managed' && record.stage !== 'queued')) {
+    return null;
+  }
+  const step =
+    record.stage === 'queued'
+      ? 'reconcile_queued'
+      : record.stage === 'pinned'
+        ? 'candidate_pinned'
+        : record.stage === 'verifying'
+          ? 'reconcile_verify'
+          : record.stage === 'deploying'
+            ? 'reconcile_deploy'
+            : record.stage === 'readback'
+              ? 'reconcile_readback'
+              : null;
+  return step
+    ? {
+        activity: null,
+        merge_progress: {
+          step,
+          started_at:
+            typeof record.updated_at === 'number' ? record.updated_at : 0
+        }
+      }
+    : null;
 }
 
 /**
@@ -1793,6 +1830,8 @@ export function createWorkerView(mount_element, options = {}) {
     // server that does not send it simply renders the settled badges.
     /** @type {Record<string, any>} */
     const pr_activity = q.pr_activity || {};
+    /** @type {Record<string, any>} */
+    const reconcile = q.deployment_reconcile || q.reconcile || {};
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
@@ -1804,7 +1843,15 @@ export function createWorkerView(mount_element, options = {}) {
         step: rec && rec.step ? rec.step : '',
         reason: rec && rec.reason ? rec.reason : '',
         // Fail-quiet: a record written before the field existed has none.
-        detail: rec && typeof rec.detail === 'string' ? rec.detail : null,
+        detail:
+          reconcile[bead_id]?.adapter === 'managed' &&
+          (rec?.detail === 'checkout_dirty' ||
+            rec?.detail === 'checkout_not_on_base' ||
+            rec?.detail === 'head_not_base_sha')
+            ? null
+            : rec && typeof rec.detail === 'string'
+              ? rec.detail
+              : null,
         output_tail:
           rec && typeof rec.output_tail === 'string' && rec.output_tail
             ? rec.output_tail
@@ -2432,7 +2479,8 @@ export function createWorkerView(mount_element, options = {}) {
             sumAttemptUsage(q.attempts || {}, e.bead_id),
             // The server's own progress wins; the local pending only covers the
             // window before the first snapshot carrying it arrives.
-            pr_activity[e.bead_id] ||
+            reconcileActivity(reconcile[e.bead_id]) ||
+              pr_activity[e.bead_id] ||
               (merge_pending.has(e.bead_id)
                 ? { activity: null, merge_progress: { step: 'merging' } }
                 : null),

@@ -108,8 +108,10 @@ import { runShell } from '../bd.js';
  * @property {string} merge_state_status - CLEAN|BEHIND|BLOCKED|DIRTY|UNKNOWN…
  * @property {string} head_ref - Head branch name.
  * @property {string} head_sha - Head commit sha; every gate verdict binds here.
+ * @property {string|null} [merge_sha] - Canonical authoritative merge commit
+ * SHA; null while no merge commit exists.
  * @property {string|null} [merged_sha] - Authoritative merge commit SHA for a
- * MERGED PR; null while no merge commit exists.
+ * MERGED PR; compatibility alias for `merge_sha`.
  * @property {string} base_ref - Base branch name. The ONLY base signal an
  * external PR has (UI-7agi §3): with no attempt to read `target_base` from, the
  * post-merge cleanup would otherwise sync, verify and deploy `main` for a PR
@@ -749,6 +751,7 @@ export function createGh(deps = {}) {
           head_ref: typeof rec.headRefName === 'string' ? rec.headRefName : '',
           base_ref: typeof rec.baseRefName === 'string' ? rec.baseRefName : '',
           head_sha,
+          merge_sha: merged_sha,
           merged_sha
         }
       };

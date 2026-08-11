@@ -769,13 +769,16 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
   test('still hands a WORKER row MERGED to the cleanup', async () => {
     const onMerged = vi.fn(async () => {});
     const { poller } = makePoller({
-      detail: { state: 'ok', data: detailOf({ state: 'MERGED' }) },
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
       onMerged
     });
 
     await poller.tick();
 
-    expect(onMerged).toHaveBeenCalledWith('UI-1');
+    expect(onMerged).toHaveBeenCalledWith('UI-1', NEW_SHA);
   });
 
   test('keeps the previous rows when the scan throws', async () => {

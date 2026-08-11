@@ -413,6 +413,7 @@ function runManagedCommand(input) {
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   resolveBase: (options?: { force?: boolean }) => Promise<any>,
  *   resolveDeploy: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
+ *   prepareCandidate?: (input: any) => Promise<any>,
  *   verifyCandidate: (input: any) => Promise<any>,
  *   runWorkspaceAdapter: (input: any) => Promise<any>,
  *   materializeManaged?: typeof materializeRelease,
@@ -420,7 +421,8 @@ function runManagedCommand(input) {
  *   spawnImpl?: typeof spawn,
  *   fs?: typeof import('node:fs'),
  *   now?: () => number,
- *   attemptId?: () => string
+ *   attemptId?: () => string,
+ *   onStage?: (input: { bead_id: string, stage: string, adapter?: string|null }) => void
  * }} deps
  */
 export function createDeploymentReconciler(deps) {
@@ -441,6 +443,15 @@ export function createDeploymentReconciler(deps) {
         spawnImpl: deps.spawnImpl,
         fs: fs_impl
       }));
+
+  /** @param {{ bead_id: string, stage: string, adapter?: string|null }} input */
+  function onStage(input) {
+    try {
+      deps.onStage?.(input);
+    } catch {
+      // Stage projection is advisory; durable queue state remains authoritative.
+    }
+  }
 
   /**
    * @param {string} floor_sha
@@ -481,22 +492,37 @@ export function createDeploymentReconciler(deps) {
    * @param {any} current
    * @param {string} reason
    * @param {string|null} detail
+   * @param {'base_sync'|'post_merge_verify'|'deploy'|null} step
    */
-  function terminal(current, reason, detail = null) {
+  function terminal(current, reason, detail = null, step = null) {
+    const stage = current.stage;
     deps.store.failReconcile(deps.workspace, {
       bead_id: current.bead_id,
       attempt_id: current.attempt_id,
       reason,
       detail
     });
-    return { ok: false, pending: false, reason, detail };
+    onStage({
+      bead_id: current.bead_id,
+      stage: 'failed',
+      adapter: current.adapter
+    });
+    return {
+      ok: false,
+      pending: false,
+      reason,
+      detail,
+      stage,
+      ...(step === null ? {} : { step })
+    };
   }
 
   /**
    * @param {any} current
    * @param {{ reason: string, detail?: string }} failure
+   * @param {'base_sync'|'deploy'} step
    */
-  function retry(current, failure) {
+  function retry(current, failure, step) {
     const retry_at = now() + RETRY_DELAYS_MS[current.retry_count];
     deps.store.retryReconcile(deps.workspace, {
       bead_id: current.bead_id,
@@ -508,7 +534,7 @@ export function createDeploymentReconciler(deps) {
       current.bead_id
     ];
     if (updated.retry_count >= RETRY_DELAYS_MS.length) {
-      return terminal(updated, failure.reason, failure.detail || null);
+      return terminal(updated, failure.reason, failure.detail || null, step);
     }
     return {
       ok: false,
@@ -579,6 +605,7 @@ export function createDeploymentReconciler(deps) {
           merged_floor_sha: input.merged_floor_sha
         });
         current = deps.store.snapshot(deps.workspace).reconcile[input.bead_id];
+        onStage({ bead_id: current.bead_id, stage: 'queued' });
       }
       if (
         current.target_base !== input.target_base ||
@@ -608,15 +635,19 @@ export function createDeploymentReconciler(deps) {
           detail: base.detail
         };
         return base.step === 'fetch' && !String(base.detail).includes('auth')
-          ? retry(current, failure)
-          : terminal(current, failure.reason, failure.detail);
+          ? retry(current, failure, 'base_sync')
+          : terminal(current, failure.reason, failure.detail, 'base_sync');
       }
       if (base.base !== input.target_base) {
-        return terminal(current, 'target_base_mismatch');
+        return terminal(current, 'target_base_mismatch', null, 'base_sync');
       }
       const target_remote = await remoteUrl(base.remote);
       if (target_remote === null) {
-        return retry(current, { reason: 'remote_url_unavailable' });
+        return retry(
+          current,
+          { reason: 'remote_url_unavailable' },
+          'base_sync'
+        );
       }
 
       if (current.stage === 'complete') {
@@ -666,6 +697,11 @@ export function createDeploymentReconciler(deps) {
           candidate_sha: source.candidate_sha,
           adapter: source.adapter
         });
+        onStage({
+          bead_id: current.bead_id,
+          stage: 'readback',
+          adapter: source.adapter
+        });
         deps.store.completeReconcile(deps.workspace, {
           bead_id: current.bead_id,
           attempt_id: current.attempt_id,
@@ -673,6 +709,11 @@ export function createDeploymentReconciler(deps) {
           receipt_digest: source.receipt_digest,
           receipt_attempt_id: source.receipt_attempt_id || source.attempt_id,
           receipt_floor_sha: source.receipt_floor_sha || source.merged_floor_sha
+        });
+        onStage({
+          bead_id: current.bead_id,
+          stage: 'complete',
+          adapter: source.adapter
         });
         return {
           ok: true,
@@ -691,15 +732,18 @@ export function createDeploymentReconciler(deps) {
         sha: candidate_sha,
         force: true
       });
-      if (deploy.state !== 'resolved') {
+      if (deploy.state === 'invalid') {
         return terminal(
           current,
-          deploy.state === 'invalid'
-            ? `deploy_config_invalid:${deploy.detail}`
-            : 'deploy_missing'
+          'deploy_config_invalid',
+          deploy.detail,
+          'deploy'
         );
       }
-      const adapter = deploy.value.adapter || 'workspace';
+      const adapter =
+        deploy.state === 'resolved'
+          ? deploy.value.adapter || 'workspace'
+          : 'workspace';
       if (current.candidate_sha === null || current.adapter === null) {
         const advanced = deps.store.advanceReconcile(deps.workspace, {
           bead_id: current.bead_id,
@@ -718,12 +762,33 @@ export function createDeploymentReconciler(deps) {
         return terminal(current, 'reconcile_state_conflict');
       }
       current = deps.store.snapshot(deps.workspace).reconcile[input.bead_id];
+      onStage({ bead_id: current.bead_id, stage: 'pinned', adapter });
+
+      /** @type {string|null} */
+      let base_sync = null;
+      if (typeof deps.prepareCandidate === 'function') {
+        const prepared = await deps.prepareCandidate({
+          bead_id: current.bead_id,
+          candidate_sha,
+          target_base: input.target_base,
+          adapter
+        });
+        if (!prepared.ok) {
+          const failed = terminal(
+            current,
+            prepared.reason || 'candidate_prepare_failed',
+            prepared.detail || null
+          );
+          return { ...failed, step: 'base_sync' };
+        }
+        base_sync = prepared.base_sync || null;
+      }
 
       /** @type {string} */
       let source_path;
       if (adapter === 'managed') {
         if (base.remote === null) {
-          return terminal(current, 'managed_remote_required');
+          return terminal(current, 'managed_remote_required', null, 'deploy');
         }
         const materialized = await materializeManaged({
           repo: deps.repo,
@@ -734,7 +799,7 @@ export function createDeploymentReconciler(deps) {
           fs: fs_impl
         });
         if (!materialized.ok) {
-          return retry(current, materialized);
+          return retry(current, materialized, 'deploy');
         }
         source_path = materialized.release_path;
       } else {
@@ -746,6 +811,7 @@ export function createDeploymentReconciler(deps) {
         attempt_id: current.attempt_id,
         stage: 'verifying'
       });
+      onStage({ bead_id: current.bead_id, stage: 'verifying', adapter });
       const verified = await deps.verifyCandidate({
         bead_id: current.bead_id,
         candidate_sha,
@@ -756,7 +822,8 @@ export function createDeploymentReconciler(deps) {
         return terminal(
           current,
           verified.reason || 'verify_failed',
-          verified.detail || null
+          verified.detail || null,
+          'post_merge_verify'
         );
       }
 
@@ -765,10 +832,14 @@ export function createDeploymentReconciler(deps) {
         attempt_id: current.attempt_id,
         stage: 'deploying'
       });
+      onStage({ bead_id: current.bead_id, stage: 'deploying', adapter });
       const receipt_path = deploymentReceiptPath(deps.repo, current.attempt_id);
       /** @type {any} */
       let deployed;
       if (adapter === 'managed') {
+        if (deploy.state !== 'resolved') {
+          return terminal(current, 'deploy_missing', null, 'deploy');
+        }
         deployed = await runManagedAdapter({
           cmd: deploy.value.cmd,
           timeout_ms: deploy.value.timeout_ms,
@@ -803,6 +874,7 @@ export function createDeploymentReconciler(deps) {
             ok: true,
             status: 'detached_pending',
             candidate_sha,
+            base_sync,
             pending_deploy: deployed.pending_deploy
           };
         }
@@ -826,11 +898,12 @@ export function createDeploymentReconciler(deps) {
       }
       if (!deployed.ok) {
         return deployed.retryable
-          ? retry(current, deployed)
+          ? retry(current, deployed, 'deploy')
           : terminal(
               current,
               deployed.reason || 'adapter_failed',
-              deployed.detail || null
+              deployed.detail || null,
+              'deploy'
             );
       }
 
@@ -839,6 +912,7 @@ export function createDeploymentReconciler(deps) {
         attempt_id: current.attempt_id,
         stage: 'readback'
       });
+      onStage({ bead_id: current.bead_id, stage: 'readback', adapter });
       const receipt = validateDeploymentReceipt({
         fs: fs_impl,
         receipt_path,
@@ -851,21 +925,30 @@ export function createDeploymentReconciler(deps) {
         source_path
       });
       if (!receipt.ok) {
-        return terminal(current, receipt.reason, receipt.detail || null);
+        return terminal(
+          current,
+          receipt.reason,
+          receipt.detail || null,
+          'deploy'
+        );
       }
       const completed = deps.store.completeReconcile(deps.workspace, {
         bead_id: current.bead_id,
         attempt_id: current.attempt_id,
         receipt_path,
-        receipt_digest: receipt.digest
+        receipt_digest: receipt.digest,
+        mirror_last_deploy:
+          adapter !== 'workspace' || deployed.deployed !== false
       });
       if (!completed.ok) {
-        return terminal(current, 'reconcile_complete_failed');
+        return terminal(current, 'reconcile_complete_failed', null, 'deploy');
       }
+      onStage({ bead_id: current.bead_id, stage: 'complete', adapter });
       return {
         ok: true,
         status: 'complete',
         candidate_sha,
+        base_sync,
         receipt_path,
         receipt_digest: receipt.digest
       };

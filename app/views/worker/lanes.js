@@ -224,8 +224,9 @@ export function miniRow(item) {
   const merge_step_el = merging
     ? // The one place this board raises its voice (UI-raqh §4): a merge is
       // irreversible and minutes long, so the row itself becomes the gauge —
-      // side rail, bottom progress line, step name and n/7. No spinner: the
-      // counter says more than a spinner can.
+      // side rail, bottom progress line, step name and n/total. No spinner: the
+      // stage counter says more than a spinner can. The total comes from the
+      // projection because managed reconcile adds pin/readback stages.
       html`<span class="merge-step"
         >${merging.label}<span class="merge-step__n"
           >${merging.index}/${merging.total}</span

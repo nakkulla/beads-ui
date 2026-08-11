@@ -1878,7 +1878,7 @@ export function createQueueStore(options = {}) {
 
     /**
      * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, receipt_path: string, receipt_digest: string, receipt_attempt_id?: string, receipt_floor_sha?: string }} input
+     * @param {{ bead_id: string, attempt_id: string, receipt_path: string, receipt_digest: string, receipt_attempt_id?: string, receipt_floor_sha?: string, mirror_last_deploy?: boolean }} input
      * @returns {QueueOpResult}
      */
     completeReconcile(workspace, input) {
@@ -1910,21 +1910,29 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
-        const record = buildLastDeploy(
-          {
-            outcome: 'deployed',
-            reason: null,
-            bead_id: current.bead_id,
-            base_sha: current.candidate_sha,
-            adapter: current.adapter,
-            attempt_id: current.attempt_id,
-            merged_floor_sha: current.merged_floor_sha,
-            receipt_path: input.receipt_path,
-            receipt_digest: input.receipt_digest
-          },
-          now()
-        );
-        if (!record) {
+        const prior = next.last_deploy;
+        const record =
+          input.mirror_last_deploy === false
+            ? null
+            : buildLastDeploy(
+                {
+                  outcome: 'deployed',
+                  reason: null,
+                  bead_id: current.bead_id,
+                  base_sha: current.candidate_sha,
+                  adapter: current.adapter,
+                  attempt_id: current.attempt_id,
+                  merged_floor_sha: current.merged_floor_sha,
+                  receipt_path: input.receipt_path,
+                  receipt_digest: input.receipt_digest,
+                  ...(prior?.bead_id === current.bead_id &&
+                  prior.base_sha === current.candidate_sha
+                    ? { detail: prior.detail, log_path: prior.log_path }
+                    : {})
+                },
+                now()
+              );
+        if (input.mirror_last_deploy !== false && !record) {
           return false;
         }
         current.stage = 'complete';
@@ -1938,7 +1946,9 @@ export function createQueueStore(options = {}) {
         current.retry_at = null;
         current.terminal_failure = null;
         current.updated_at = now();
-        next.last_deploy = record;
+        if (record) {
+          next.last_deploy = record;
+        }
         return true;
       });
     },

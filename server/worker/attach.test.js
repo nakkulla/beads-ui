@@ -1806,10 +1806,15 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
       spawn_impl: makeFixtureSpawn({ lines: [] }),
       gitRun: async (/** @type {string[]} */ args) => ({
         code: 0,
-        stdout: args[0] === 'rev-parse' ? `${'b'.repeat(40)}\n` : '',
+        stdout:
+          args.join(' ') === 'remote get-url origin'
+            ? 'git@example.test:o/r.git\n'
+            : args[0] === 'rev-parse'
+              ? `${'b'.repeat(40)}\n`
+              : '',
         stderr: ''
       }),
-      resolveBase: okBase('main'),
+      resolveBase: okBase('main', 'b'.repeat(40)),
       gh: /** @type {any} */ ({
         checkAvailability: async () => ({ state: 'ok', data: true })
       })
@@ -1831,9 +1836,9 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
     // The whole cleanup, through the attachment's own `prActions` — nothing
     // about the registry is stubbed, so a missing `drop` in `attach.js` leaves
     // the row behind for the next enroller pass to trip over.
-    const r = await att.prActions.cleanupObservedMerge('X1');
+    const r = await att.prActions.cleanupObservedMerge('X1', 'a'.repeat(40));
 
-    expect(r.ok).toBe(true);
+    expect(r).toMatchObject({ ok: true, reason: null });
     expect(runtime.externalPrs.list(WS)).toEqual([]);
   });
 });

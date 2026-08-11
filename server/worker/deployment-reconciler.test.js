@@ -71,6 +71,8 @@ function receipt(input) {
  *   now?: () => number,
  *   runManagedAdapter?: (input: any) => Promise<any>,
  *   runWorkspaceAdapter?: (input: any) => Promise<any>,
+ *   prepareCandidate?: (input: any) => Promise<any>,
+ *   deployResolution?: any,
  *   store?: ReturnType<typeof createQueueStore>,
  *   locks?: ReturnType<typeof createLockManager>
  * }} [options]
@@ -134,16 +136,18 @@ function harness(options = {}) {
       base_oid: CANDIDATE,
       local_only: false
     }),
-    resolveDeploy: async () => ({
-      state: 'resolved',
-      source: 'declaration',
-      value: {
-        cmd: ['./deploy.sh'],
-        timeout_ms: 1000,
-        detached: false,
-        adapter: options.adapter || 'managed'
-      }
-    }),
+    resolveDeploy: async () =>
+      options.deployResolution || {
+        state: 'resolved',
+        source: 'declaration',
+        value: {
+          cmd: ['./deploy.sh'],
+          timeout_ms: 1000,
+          detached: false,
+          adapter: options.adapter || 'managed'
+        }
+      },
+    prepareCandidate: options.prepareCandidate,
     verifyCandidate: vi.fn(async () => ({ ok: true })),
     materializeManaged,
     runManagedAdapter,
@@ -401,11 +405,36 @@ describe('worker/deployment-reconciler', () => {
     expect(result).toMatchObject({
       ok: false,
       pending: false,
-      reason: 'adapter_spawn_error'
+      reason: 'adapter_spawn_error',
+      step: 'deploy'
     });
     expect(h.store.snapshot(repo).reconcile['UI-1']).toMatchObject({
       stage: 'failed',
       retry_count: 3
+    });
+  });
+
+  test('attributes an invalid deploy declaration to the deploy cleanup step', async () => {
+    const h = harness({
+      deployResolution: {
+        state: 'invalid',
+        source: 'declaration',
+        detail: 'deploy.adapter must be managed or workspace'
+      }
+    });
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      pending: false,
+      reason: 'deploy_config_invalid',
+      detail: 'deploy.adapter must be managed or workspace',
+      step: 'deploy'
     });
   });
 
@@ -421,5 +450,57 @@ describe('worker/deployment-reconciler', () => {
     expect(result).toMatchObject({ ok: true, status: 'complete' });
     expect(h.runWorkspaceAdapter).toHaveBeenCalledTimes(1);
     expect(h.materializeManaged).not.toHaveBeenCalled();
+  });
+
+  test('keeps an absent workspace deploy as a successful no-op without replacing last_deploy', async () => {
+    const store = createQueueStore();
+    store.recordLastDeploy(repo, {
+      outcome: 'deployed',
+      reason: null,
+      bead_id: 'UI-old',
+      base_sha: FLOOR
+    });
+    const h = harness({
+      store,
+      deployResolution: { state: 'absent' },
+      runWorkspaceAdapter: vi.fn(async () => ({
+        ok: true,
+        deployed: false
+      }))
+    });
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result).toMatchObject({ ok: true, status: 'complete' });
+    expect(store.snapshot(repo).last_deploy).toMatchObject({
+      bead_id: 'UI-old',
+      base_sha: FLOOR
+    });
+  });
+
+  test('returns workspace preparation evidence with the reconcile result', async () => {
+    const h = harness({
+      adapter: 'workspace',
+      prepareCandidate: vi.fn(async () => ({
+        ok: true,
+        base_sync: 'fetch_only:dirty'
+      }))
+    });
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'complete',
+      base_sync: 'fetch_only:dirty'
+    });
   });
 });

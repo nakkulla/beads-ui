@@ -173,7 +173,7 @@ export function rollupConclusion(checks) {
  *   worktree?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
- *   onMerged?: (bead_id: string) => Promise<unknown>,
+ *   onMerged?: (bead_id: string, merge_sha: string) => Promise<unknown>,
  *   external?: {
  *     refresh: () => Promise<unknown>,
  *     list: () => import('./external-pr.js').ExternalPrRow[]
@@ -360,7 +360,14 @@ export function createPrPoller(deps) {
         !external_row &&
         typeof deps.onMerged === 'function'
       ) {
-        return { verify: cleanupMerged(bead_id) };
+        const merge_sha = pr.merge_sha || pr.merged_sha;
+        if (typeof merge_sha !== 'string') {
+          deps.observations.record(workspace, bead_id, {
+            error: 'merge_sha_unobserved'
+          });
+          return { verify: null };
+        }
+        return { verify: cleanupMerged(bead_id, merge_sha) };
       }
       return { verify: null };
     }
@@ -435,15 +442,16 @@ export function createPrPoller(deps) {
    * failed cleanup automatically (§6).
    *
    * @param {string} bead_id
+   * @param {string} merge_sha
    * @returns {Promise<void>}
    */
-  async function cleanupMerged(bead_id) {
+  async function cleanupMerged(bead_id, merge_sha) {
     if (cleaning.has(bead_id)) {
       return;
     }
     cleaning.add(bead_id);
     try {
-      await /** @type {any} */ (deps.onMerged)(bead_id);
+      await /** @type {any} */ (deps.onMerged)(bead_id, merge_sha);
       notifyChanged(workspace);
     } catch (err) {
       log('post-merge cleanup failed for %s: %o', bead_id, err);
