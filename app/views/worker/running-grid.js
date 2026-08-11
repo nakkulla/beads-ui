@@ -30,6 +30,13 @@ import { timesMeta } from './lanes.js';
  * @property {string|null} [resumed_from] - Prior attempt this one resumes (§1).
  * @property {boolean} [paused] - Leaf paused attempt: shows ▶ instead of ⏸ and
  * has no live elapsed clock (worker-phase1 §1.1/§2.1).
+ * @property {boolean} [failed] - Unhandled failed/orphaned attempt. Failed
+ * tiles stay visible for resume/dismiss actions and have no live controls.
+ * @property {'running'|'paused'|'failed'|'orphaned'} [status] - Raw attempt
+ * status, used to distinguish failure from orphan interruption.
+ * @property {string} [status_label] - Terminal status label for a failed tile.
+ * @property {boolean} [resume_eligible] - Whether a failed attempt can resume.
+ * @property {string|null} [resume_reason] - Why a failed attempt cannot resume.
  * @property {boolean} [can_pause] - Running attempt whose session id is already
  * captured. Pausing before that would strand an unresumable attempt, so the ⏸
  * button renders disabled until it lands (§2.1).
@@ -295,12 +302,15 @@ export function bannersTemplate(state) {
  * @returns {import('lit-html').TemplateResult}
  */
 function runningTile(tile, now, selected_attempt = null) {
+  const failed = tile.failed === true;
   const paused = !!tile.paused;
-  const elapsed = paused
-    ? '일시정지'
-    : typeof tile.started_at === 'number'
-      ? formatElapsed(now - tile.started_at)
-      : '—';
+  const elapsed = failed
+    ? tile.status_label || (tile.status === 'orphaned' ? '중단됨' : '실패')
+    : paused
+      ? '일시정지'
+      : typeof tile.started_at === 'number'
+        ? formatElapsed(now - tile.started_at)
+        : '—';
   const meta = [tile.runner, tile.model].filter(Boolean).join(' · ');
   const provider_badges = providerUsageBadges(tile.usage);
   const usage_label = formatUsageTotalWithCost(tile.usage);
@@ -316,7 +326,9 @@ function runningTile(tile, now, selected_attempt = null) {
   const base_badge = tile.base_exception || null;
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   return html`<div
-    class="rtile${sel ? ' rtile--sel' : ''}${paused ? ' rtile--paused' : ''}"
+    class="rtile${sel ? ' rtile--sel' : ''}${paused
+      ? ' rtile--paused'
+      : ''}${failed ? ' rtile--failed' : ''}"
     data-bead-id=${tile.bead_id}
     data-attempt-id=${tile.attempt_id || ''}
   >
@@ -331,37 +343,62 @@ function runningTile(tile, now, selected_attempt = null) {
           >`
         : ''}
       <span class="rtile__elapsed">${elapsed}</span>
-      <button
-        type="button"
-        class="rtile__session"
-        title="라이브 세션 열기"
-        aria-label="라이브 세션 열기"
-      >
-        ▤ 세션
-      </button>
-      ${paused
+      ${failed
         ? html`<button
-            type="button"
-            class="rtile__resume"
-            title="같은 세션으로 이어서 재개"
-            aria-label="재개"
-          >
-            ▶
-          </button>`
+              type="button"
+              class="rtile__resume"
+              ?disabled=${tile.resume_eligible === false}
+              title=${tile.resume_eligible === false
+                ? tile.resume_reason || '이어하기 불가'
+                : '같은 세션으로 이어서 진행'}
+              aria-label="이어하기"
+            >
+              ↻ 이어하기
+            </button>
+            <button
+              type="button"
+              class="rtile__dismiss"
+              title="실패 기록 닫기"
+              aria-label="실패 기록 닫기"
+            >
+              ✕
+            </button>`
         : html`<button
-            type="button"
-            class="rtile__pause"
-            ?disabled=${tile.can_pause === false}
-            title=${tile.can_pause === false
-              ? '세션 ID 기록 전 — 일시정지 불가'
-              : '일시정지 (같은 세션으로 재개 가능)'}
-            aria-label="일시정지"
-          >
-            ⏸
-          </button>`}
-      <button type="button" class="rtile__stop" title="폐기" aria-label="폐기">
-        ■
-      </button>
+              type="button"
+              class="rtile__session"
+              title="라이브 세션 열기"
+              aria-label="라이브 세션 열기"
+            >
+              ▤ 세션
+            </button>
+            ${paused
+              ? html`<button
+                  type="button"
+                  class="rtile__resume"
+                  title="같은 세션으로 이어서 재개"
+                  aria-label="재개"
+                >
+                  ▶
+                </button>`
+              : html`<button
+                  type="button"
+                  class="rtile__pause"
+                  ?disabled=${tile.can_pause === false}
+                  title=${tile.can_pause === false
+                    ? '세션 ID 기록 전 — 일시정지 불가'
+                    : '일시정지 (같은 세션으로 재개 가능)'}
+                  aria-label="일시정지"
+                >
+                  ⏸
+                </button>`}
+            <button
+              type="button"
+              class="rtile__stop"
+              title="폐기"
+              aria-label="폐기"
+            >
+              ■
+            </button>`}
     </div>
     <div class="rtile__title">${tile.title}</div>
     ${tile.current_child
@@ -406,7 +443,9 @@ function runningTile(tile, now, selected_attempt = null) {
     <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일): 큐
          스냅샷에는 페이즈명도 진행률도 없으므로 진행 바는 만들지 않는다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->
-    ${paused ? '' : html`<div class="rtile__accent" aria-hidden="true"></div>`}
+    ${failed || paused
+      ? ''
+      : html`<div class="rtile__accent" aria-hidden="true"></div>`}
   </div>`;
 }
 

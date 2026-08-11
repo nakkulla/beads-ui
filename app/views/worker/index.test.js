@@ -1098,9 +1098,9 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
 
-    // Two running tiles rendered from attempts.
+    // Two running tiles plus the unhandled failure tile rendered from attempts.
     const tiles = mount.querySelectorAll('.worker-rungrid .rtile');
-    expect(tiles.length).toBe(2);
+    expect(tiles.length).toBe(3);
     expect(mount.querySelector('.rtile[data-bead-id="S1"]')).not.toBeNull();
     // The lane badge is gone with the serial/parallel split (worker-phase2 §3).
     expect(
@@ -1114,6 +1114,171 @@ describe('views/worker', () => {
     expect(banner).not.toBeNull();
     expect(banner.textContent).toContain('/repo');
     expect(mount.querySelector('.worker-banner--breaker')).toBeNull();
+  });
+
+  /**
+   * @param {Record<string, any>} over
+   * @param {(type: string, payload?: unknown) => Promise<any>} [transport]
+   */
+  function mountAttemptTiles(over, transport = vi.fn()) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf(over));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    return mount;
+  }
+
+  test('projects unhandled failures before active attempts', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        eligible: {
+          attempt_id: 'eligible',
+          bead_id: 'ELIGIBLE',
+          status: 'failed',
+          session_id: 'sid-eligible'
+        },
+        orphaned: {
+          attempt_id: 'orphaned',
+          bead_id: 'ORPHANED',
+          status: 'orphaned',
+          session_id: 'sid-orphaned'
+        },
+        active: {
+          attempt_id: 'active',
+          bead_id: 'ACTIVE',
+          status: 'running',
+          session_id: 'sid-active',
+          started_at: Date.now() - 1000
+        }
+      }
+    });
+
+    const tiles = /** @type {HTMLElement[]} */ (
+      Array.from(mount.querySelectorAll('.worker-rungrid .rtile'))
+    );
+    expect(tiles.map((tile) => tile.dataset.attemptId)).toEqual([
+      'eligible',
+      'orphaned',
+      'active'
+    ]);
+    expect(
+      mount.querySelector('.worker-kpi__chip--running')?.textContent
+    ).toContain('실행 1');
+  });
+
+  test('excludes a superseded failure tile', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        superseded: {
+          attempt_id: 'superseded',
+          bead_id: 'SUPER',
+          status: 'failed'
+        },
+        child: {
+          attempt_id: 'child',
+          bead_id: 'SUPER',
+          status: 'running'
+        }
+      }
+    });
+
+    expect(
+      mount.querySelector('.rtile[data-attempt-id="superseded"]')
+    ).toBeNull();
+  });
+
+  test('excludes a failure resolved by a done entry', () => {
+    const finished_at = Date.now() - 1000;
+    const mount = mountAttemptTiles({
+      done: [{ bead_id: 'DONE', added_at: finished_at + 500 }],
+      attempts: {
+        resolved: {
+          attempt_id: 'resolved',
+          bead_id: 'DONE',
+          status: 'failed',
+          finished_at
+        }
+      }
+    });
+
+    expect(
+      mount.querySelector('.rtile[data-attempt-id="resolved"]')
+    ).toBeNull();
+  });
+
+  test('excludes a dismissed failure tile', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        dismissed: {
+          attempt_id: 'dismissed',
+          bead_id: 'DISMISSED',
+          status: 'failed',
+          dismissed_at: Date.now()
+        }
+      }
+    });
+
+    expect(
+      mount.querySelector('.rtile[data-attempt-id="dismissed"]')
+    ).toBeNull();
+  });
+
+  test('sends the failed tile resume payload with the current revision', async () => {
+    const transport = vi.fn().mockResolvedValue({});
+    const mount = mountAttemptTiles(
+      {
+        revision: 7,
+        attempts: {
+          failed: {
+            attempt_id: 'failed',
+            bead_id: 'FAILED',
+            status: 'failed',
+            session_id: 'sid-failed'
+          }
+        }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__resume')
+    ).click();
+    await flush();
+    expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
+      attempt_id: 'failed',
+      expected_revision: 7
+    });
+  });
+
+  test('sends the failed tile dismiss payload with the current revision', async () => {
+    const transport = vi.fn().mockResolvedValue({});
+    const mount = mountAttemptTiles(
+      {
+        revision: 7,
+        attempts: {
+          failed: {
+            attempt_id: 'failed',
+            bead_id: 'FAILED',
+            status: 'failed',
+            session_id: 'sid-failed'
+          }
+        }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__dismiss')
+    ).click();
+    await flush();
+    expect(transport).toHaveBeenCalledWith('worker-attempt-dismiss', {
+      attempt_id: 'failed',
+      expected_revision: 7
+    });
   });
 
   test('paused/stopped attempts raise no banner; only a leaf paused renders a tile (worker-phase1 §1)', () => {
@@ -6103,7 +6268,7 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
   });
 });
 
-describe('전체 자동화 버튼 (UI-j6wa §1)', () => {
+describe('worker toolbar automation controls (UI-jk7z)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
   });
@@ -6127,111 +6292,28 @@ describe('전체 자동화 버튼 (UI-j6wa §1)', () => {
     return { mount, transport };
   }
 
-  /**
-   * @param {HTMLElement} mount
-   */
-  function autoBtn(mount) {
-    return /** @type {HTMLElement} */ (mount.querySelector('.worker-auto-all'));
-  }
-
-  test('reads active only when both automations are on', () => {
+  test('removes the derived whole-automation button', () => {
     const { mount } = mountAuto({ auto_advance: true, auto_merge: true });
 
-    expect(autoBtn(mount).classList.contains('is-active')).toBe(true);
+    expect(mount.querySelector('.worker-auto-all')).toBeNull();
   });
 
-  test('reads inactive when only auto_advance is on', () => {
-    const { mount } = mountAuto({ auto_advance: true, auto_merge: false });
-
-    expect(autoBtn(mount).classList.contains('is-active')).toBe(false);
-  });
-
-  test('reads inactive when only auto_merge is on', () => {
-    const { mount } = mountAuto({ auto_advance: false, auto_merge: true });
-
-    expect(autoBtn(mount).classList.contains('is-active')).toBe(false);
-  });
-
-  test('reads inactive when neither automation is on', () => {
-    const { mount } = mountAuto({ auto_advance: false, auto_merge: false });
-
-    expect(autoBtn(mount).classList.contains('is-active')).toBe(false);
-  });
-
-  test('turns both on from the all-off state', async () => {
-    const { mount, transport } = mountAuto({
+  test('keeps one merge toggle beside play while idle', () => {
+    const { mount } = mountAuto({
       auto_advance: false,
-      auto_merge: false
+      auto_merge: false,
+      queue: [],
+      pr_wait: [],
+      attempts: []
     });
 
-    autoBtn(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith(
-      'worker-queue-toggle',
-      expect.objectContaining({ on: true })
+    const merge_buttons = mount.querySelectorAll('.worker-merge-all');
+    expect(merge_buttons).toHaveLength(1);
+    expect(merge_buttons[0].closest('.worker-ctrl__ops')).not.toBeNull();
+    expect(mount.querySelector('.worker-play')?.nextElementSibling).toBe(
+      merge_buttons[0]
     );
-    expect(transport).toHaveBeenCalledWith(
-      'worker-merge-auto-toggle',
-      expect.objectContaining({ on: true })
-    );
-  });
-
-  test('turns both off from the all-on state', async () => {
-    const { mount, transport } = mountAuto({
-      auto_advance: true,
-      auto_merge: true
-    });
-
-    autoBtn(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith(
-      'worker-queue-toggle',
-      expect.objectContaining({ on: false })
-    );
-    expect(transport).toHaveBeenCalledWith(
-      'worker-merge-auto-toggle',
-      expect.objectContaining({ on: false })
-    );
-  });
-
-  test('normalizes an auto_advance-only mixed state to both on', async () => {
-    const { mount, transport } = mountAuto({
-      auto_advance: true,
-      auto_merge: false
-    });
-
-    autoBtn(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith(
-      'worker-queue-toggle',
-      expect.objectContaining({ on: true })
-    );
-    expect(transport).toHaveBeenCalledWith(
-      'worker-merge-auto-toggle',
-      expect.objectContaining({ on: true })
-    );
-  });
-
-  test('normalizes an auto_merge-only mixed state to both on', async () => {
-    const { mount, transport } = mountAuto({
-      auto_advance: false,
-      auto_merge: true
-    });
-
-    autoBtn(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith(
-      'worker-queue-toggle',
-      expect.objectContaining({ on: true })
-    );
-    expect(transport).toHaveBeenCalledWith(
-      'worker-merge-auto-toggle',
-      expect.objectContaining({ on: true })
-    );
+    expect(merge_buttons[0].textContent?.trim()).toBe('▶ 자동 머지');
   });
 });
 
@@ -6413,6 +6495,37 @@ describe('PR 대기 슬롯 점유 토글 (UI-mh3x)', () => {
     expect(mount.querySelector('.worker-pr-wait-hint')?.textContent).toContain(
       'PR 머지 대기 중'
     );
+  });
+
+  test('does not count a failed tile as an occupied live slot', () => {
+    const hold = {
+      auto_advance: true,
+      auto_merge: false,
+      pr_wait_holds_slot: true,
+      slots: 2,
+      queue: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
+    };
+    const { mount } = mountHold({
+      ...hold,
+      attempts: {
+        failed: {
+          attempt_id: 'failed',
+          bead_id: 'FAILED',
+          status: 'failed',
+          finished_at: 1
+        }
+      }
+    });
+    const with_failed =
+      mount.querySelector('.worker-pr-wait-hint')?.textContent || '';
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const baseline = mountHold(hold).mount;
+    const without_failed =
+      baseline.querySelector('.worker-pr-wait-hint')?.textContent || '';
+
+    expect(with_failed).toBe(without_failed);
   });
 
   test('hides the hold hint when automatic progress is off', () => {
@@ -6607,7 +6720,7 @@ describe('running tile stage accent (UI-58y2)', () => {
   });
 
   /**
-   * @param {'running'|'paused'} status
+   * @param {'running'|'paused'|'failed'} status
    * @returns {HTMLElement}
    */
   function mountTile(status) {
@@ -6658,6 +6771,16 @@ describe('running tile stage accent (UI-58y2)', () => {
 
   test('leaves the running lane header still when only a paused tile is there', () => {
     const mount = mountTile('paused');
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('#worker-pane-running')
+      ).classList.contains('worker-pane--live')
+    ).toBe(false);
+  });
+
+  test('leaves the running lane header still when only a failed tile is there', () => {
+    const mount = mountTile('failed');
 
     expect(
       /** @type {HTMLElement} */ (
@@ -7818,7 +7941,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     const { mount, transport } = mountLane(laneOf(['RD-1', 'RD-2']));
 
     const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+      mount.querySelector('.worker-merge-all')
     );
     expect(btn.textContent?.trim()).toBe('▶ 자동 머지 2');
 
@@ -7839,7 +7962,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+      mount.querySelector('.worker-merge-all')
     );
     expect(btn.textContent?.trim()).toBe('▶ 자동 머지');
     expect(btn.disabled).toBe(false);
@@ -7856,7 +7979,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
 
     expect(
       /** @type {HTMLButtonElement} */ (
-        mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+        mount.querySelector('.worker-merge-all')
       ).textContent?.trim()
     ).toBe('⏸ 자동 머지');
   });
@@ -7874,7 +7997,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+      mount.querySelector('.worker-merge-all')
     );
     expect(btn.textContent?.trim()).toBe('⏸ 자동 머지 중단 2');
 
@@ -7926,7 +8049,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     // 편입은 0건인데 양수를 보이게 된다.
     expect(
       /** @type {HTMLButtonElement} */ (
-        mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+        mount.querySelector('.worker-merge-all')
       ).textContent?.trim()
     ).toBe('▶ 자동 머지');
   });
@@ -7946,7 +8069,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
 
     expect(
       /** @type {HTMLButtonElement} */ (
-        mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+        mount.querySelector('.worker-merge-all')
       ).textContent?.trim()
     ).toBe('▶ 자동 머지 1');
   });
@@ -7979,7 +8102,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('#worker-pane-pr-wait .worker-merge-all')
+      mount.querySelector('.worker-merge-all')
     );
     expect(btn.textContent?.trim()).toBe('일괄 머지 중단 2');
 
