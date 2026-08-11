@@ -1676,6 +1676,70 @@ export function createPrActions(deps) {
     return { ok: true, step: null, reason: null, base_sync };
   }
 
+  /** @param {{ base_ref?: string|null }} refs */
+  async function rollbackBaseSync(refs = {}) {
+    const target_base =
+      typeof refs.base_ref === 'string' && refs.base_ref.length > 0
+        ? refs.base_ref
+        : null;
+    return target_base === null
+      ? { ok: false, reason: 'rollback_base_missing' }
+      : syncBase(target_base);
+  }
+
+  /**
+   * @param {string} bead_id
+   * @param {string} base_sha
+   */
+  async function rollbackVerify(bead_id, base_sha) {
+    return postMergeVerify(bead_id, base_sha);
+  }
+
+  /**
+   * @param {string} bead_id
+   * @param {string} base_sha
+   * @param {string} target_base
+   */
+  async function rollbackResolveDeploy(bead_id, base_sha, target_base) {
+    return runDeploy(bead_id, base_sha, target_base);
+  }
+
+  /**
+   * Launch a rollback's already-authorized detached deploy only after its
+   * coordinator has atomically finalized the rollback and recorded the launch
+   * intent. This function performs only the terminal spawn and may overwrite
+   * that intent when the spawn itself is known not to have happened.
+   *
+   * @param {string} bead_id
+   * @param {{ deploy: ResolvedDeployCmd, base_sha: string }|null} pending_deploy
+   */
+  function launchRollbackDeploy(bead_id, pending_deploy) {
+    if (!pending_deploy) {
+      return { ok: true };
+    }
+    const record_spawn_failure = (/** @type {string|undefined} */ detail) => {
+      deps.store.recordLastDeploy(
+        workspace,
+        deployRecord(
+          'failed',
+          'deploy_spawn_error',
+          bead_id,
+          pending_deploy.base_sha,
+          { detail }
+        )
+      );
+      notifyChanged(workspace);
+    };
+    const launched = launchDetachedDeploy(
+      pending_deploy.deploy,
+      record_spawn_failure
+    );
+    if (!launched.ok) {
+      record_spawn_failure(launched.detail);
+    }
+    return launched;
+  }
+
   /**
    * Record a cleanup stop durably and hand the bead back to a human: it stays
    * in `pr_wait`, bd is left `resolved`, the banner renders off the record, and
@@ -2359,6 +2423,10 @@ export function createPrActions(deps) {
     isInFlight: (/** @type {string} */ bead_id) => in_flight.has(bead_id),
     cleanupObservedMerge,
     retryCleanup,
+    rollbackBaseSync,
+    rollbackVerify,
+    rollbackResolveDeploy,
+    launchRollbackDeploy,
     resumeCompletionCleanup,
     prState,
     completionGate

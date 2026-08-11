@@ -501,7 +501,114 @@ export function createRecoveryArchive(deps = {}) {
     }
   }
 
-  return { create, verify };
+  /**
+   * Preserve immutable evidence when a cleanup-failed merged source is already
+   * absent. This intentionally makes no dirty/untracked recovery claim.
+   *
+   * @param {{ workspace: string, operation_id: string, source_snapshot: Record<string, unknown>, session_log_path?: string|null }} input
+   */
+  function createCommittedSource(input) {
+    const final_path = discardBackupDir(input.workspace, input.operation_id);
+    const temp_path = `${final_path}.tmp`;
+    if (fs.existsSync(final_path)) {
+      const existing = verify(final_path);
+      return existing.ok
+        ? { ...existing, reused: true }
+        : { ok: false, reason: 'archive_exists_invalid' };
+    }
+    try {
+      const source = input.source_snapshot;
+      if (
+        !source ||
+        source.preexisting_absent !== true ||
+        typeof source.repo !== 'string' ||
+        typeof source.source_head !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(source.source_head)
+      ) {
+        throw new ArchiveError('committed_source_archive_invalid');
+      }
+      fs.mkdirSync(path.dirname(final_path), { recursive: true });
+      fs.rmSync(temp_path, { recursive: true, force: true });
+      fs.mkdirSync(temp_path, { recursive: true });
+      /** @type {Array<{ path: string, kind: string, mode: number, size: number, sha256: string }>} */
+      const artifacts = [];
+      const bundle_path = path.join(temp_path, 'commits.bundle');
+      const archive_ref = `refs/bdui/discard-archives/${String(
+        input.operation_id
+      ).replace(/[^A-Za-z0-9._-]/g, '_')}`;
+      /** @type {ArchiveError|null} */
+      let bundle_error = null;
+      try {
+        git(source.repo, ['update-ref', archive_ref, source.source_head]);
+        git(source.repo, ['bundle', 'create', bundle_path, archive_ref]);
+        git(source.repo, ['bundle', 'verify', bundle_path]);
+      } catch {
+        bundle_error = new ArchiveError('bundle_create_failed');
+      }
+      try {
+        git(source.repo, ['update-ref', '-d', archive_ref, source.source_head]);
+      } catch {
+        bundle_error ??= new ArchiveError('archive_ref_cleanup_failed');
+      }
+      if (bundle_error) {
+        throw bundle_error;
+      }
+      artifacts.push({
+        path: 'commits.bundle',
+        kind: 'bundle',
+        ...checksumEntry(fs, bundle_path)
+      });
+      if (input.session_log_path && fs.existsSync(input.session_log_path)) {
+        const source_log = checksumEntry(fs, input.session_log_path);
+        if (source_log.type !== 'file') {
+          throw new ArchiveError('session_log_invalid');
+        }
+        const destination = path.join(temp_path, 'session.jsonl');
+        fs.copyFileSync(input.session_log_path, destination);
+        artifacts.push({
+          path: 'session.jsonl',
+          kind: 'session',
+          ...checksumEntry(fs, destination)
+        });
+      }
+      const manifest = {
+        schema_version: ARCHIVE_SCHEMA_VERSION,
+        operation_id: input.operation_id,
+        created_at: now(),
+        mode: 'committed-source',
+        topology: 'preexisting_absent',
+        source_snapshot: source,
+        excluded: ['dirty-and-untracked-unavailable'],
+        failures: [],
+        artifacts,
+        files: []
+      };
+      const manifest_bytes = Buffer.from(JSON.stringify(manifest, null, 2));
+      const manifest_sha256 = sha256(manifest_bytes);
+      fs.writeFileSync(path.join(temp_path, 'manifest.json'), manifest_bytes);
+      fs.writeFileSync(
+        path.join(temp_path, 'COMPLETE'),
+        `${manifest_sha256}\n`
+      );
+      const checked = verify(temp_path);
+      if (!checked.ok) {
+        throw new ArchiveError(checked.reason);
+      }
+      fs.renameSync(temp_path, final_path);
+      return verify(final_path);
+    } catch (err) {
+      return {
+        ok: false,
+        reason:
+          err instanceof ArchiveError
+            ? err.reason
+            : 'committed_source_archive_failed',
+        temp_path
+      };
+    }
+  }
+
+  return { create, createCommittedSource, verify };
 }
 
 /**

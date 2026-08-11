@@ -2082,6 +2082,39 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
     expect(h.scheduler.tick).toHaveBeenCalledWith(WS);
   });
 
+  test('spawns a rollback deploy without rewriting its durable coordinator intent', () => {
+    const h = makeActions({ ...ON_BASE });
+    h.store.recordLastDeploy(WS, {
+      outcome: 'launched',
+      reason: null,
+      bead_id: BEAD,
+      base_sha: 'a'.repeat(40)
+    });
+    const recordLastDeploy = h.store.recordLastDeploy.bind(h.store);
+    h.store.recordLastDeploy = (
+      /** @type {string} */ ws,
+      /** @type {any} */ record
+    ) => {
+      h.calls.push(`store:deploy:${record.outcome}`);
+      return recordLastDeploy(ws, record);
+    };
+
+    const result = h.actions.launchRollbackDeploy(BEAD, {
+      deploy: DEPLOY_DETACHED,
+      base_sha: 'a'.repeat(40)
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      h.calls.filter(
+        (call) => call.startsWith('store:deploy:') || call.startsWith('spawn:')
+      )
+    ).toEqual(['spawn:bdui-shared:detached', 'spawn:unref']);
+    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'launched'
+    });
+  });
+
   test('spawns the detached deploy with detached + stdio ignore', async () => {
     const h = makeActions({
       verify: VERIFY_CFG,

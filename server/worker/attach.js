@@ -59,6 +59,7 @@ import {
   resolveDeployAt,
   resolveVerifyAt
 } from './repo-ops.js';
+import { createRevertBuilder } from './revert-builder.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
@@ -643,6 +644,58 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       archive: recoveryArchive,
       processController,
       sessionLog: runtime.sessionLog,
+      revertBuilder: createRevertBuilder({ gitRun }),
+      verifyRevert: async (
+        /** @type {{ worktree: string, base_sha: string }} */ input
+      ) => {
+        const resolved = await resolveVerify({
+          sha: input.base_sha,
+          force: true
+        });
+        if (resolved.state !== 'resolved') {
+          return {
+            ok: false,
+            reason:
+              resolved.state === 'invalid'
+                ? 'verify_config_invalid'
+                : 'verify_missing'
+          };
+        }
+        const result = await runShell(
+          resolved.value.cmd[0],
+          resolved.value.cmd.slice(1),
+          {
+            cwd: input.worktree,
+            timeout_ms: resolved.value.timeout_ms
+          }
+        );
+        return result.code === 0
+          ? { ok: true }
+          : { ok: false, reason: 'verify_cmd_failed' };
+      },
+      rollbackBaseSync: (/** @type {any} */ refs) =>
+        prActions
+          ? prActions.rollbackBaseSync(refs)
+          : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
+      rollbackVerify: (
+        /** @type {string} */ bead_id,
+        /** @type {string} */ base_sha
+      ) =>
+        prActions
+          ? prActions.rollbackVerify(bead_id, base_sha)
+          : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
+      rollbackResolveDeploy: (
+        /** @type {string} */ bead_id,
+        /** @type {string} */ base_sha,
+        /** @type {string} */ target_base
+      ) =>
+        prActions
+          ? prActions.rollbackResolveDeploy(bead_id, base_sha, target_base)
+          : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
+      launchRollbackDeploy: (
+        /** @type {string} */ bead_id,
+        /** @type {any} */ pending_deploy
+      ) => prActions?.launchRollbackDeploy(bead_id, pending_deploy),
       external: {
         get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
           runtime.externalPrs.get(ws_key, bead_id)

@@ -11,6 +11,7 @@ let tmp;
 let workspace;
 
 const HEAD_SHA = 'b'.repeat(40);
+const MERGED_SHA = 'd'.repeat(40);
 
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-discard-'));
@@ -24,7 +25,7 @@ afterEach(() => {
 });
 
 /**
- * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any }} [options]
+ * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, rollbackResolveDeploy?: any, launchRollbackDeploy?: (bead_id: string, pending_deploy: any) => any, gitRun?: any }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore({ now: () => 100 });
@@ -55,10 +56,10 @@ function setup(options = {}) {
   /** @type {string[]} */
   const calls = [];
   let pr_state = options.prState || 'OPEN';
-  let local_present = true;
-  let remote_present = true;
+  let local_present = !options.sourceAbsent;
+  let remote_present = !options.sourceAbsent;
   let remote_sha = HEAD_SHA;
-  let worktree_present = true;
+  let worktree_present = !options.sourceAbsent;
   let worktree_observations = 0;
   let ls_remote_calls = 0;
   let bead_status = 'resolved';
@@ -112,6 +113,10 @@ function setup(options = {}) {
     unsetMetadata: vi.fn(async () => {
       calls.push('bd:pr-unset');
       pr_url = null;
+    }),
+    setMetadata: vi.fn(async (_id, _key, value) => {
+      calls.push('bd:pr-set');
+      pr_url = value;
     })
   };
   const worktree = {
@@ -148,7 +153,7 @@ function setup(options = {}) {
     }),
     withTopologyLock: vi.fn(async (_repo, work) => work())
   };
-  const gitRun = vi.fn(async (args) => {
+  const defaultGitRun = vi.fn(async (args) => {
     const command = args.join(' ');
     calls.push(`git:${command}`);
     if (args[0] === 'rev-parse' && args[1] === '--verify') {
@@ -179,6 +184,7 @@ function setup(options = {}) {
     }
     return { code: 0, stdout: '', stderr: '' };
   });
+  const gitRun = options.gitRun || defaultGitRun;
   const scheduler = {
     canDiscardAttempt: vi.fn(() => options.schedulerCanDiscard ?? true),
     fenceDiscardAttempt: vi.fn(() => true),
@@ -196,6 +202,17 @@ function setup(options = {}) {
           verified_at: 200
         }
       };
+    }),
+    createCommittedSource: vi.fn(() => {
+      calls.push('archive:committed-source');
+      return {
+        ok: true,
+        receipt: {
+          path: '/state/committed-source-archive',
+          manifest_sha256: 'b'.repeat(64),
+          verified_at: 200
+        }
+      };
     })
   };
   const coordinator = createDiscardCoordinator({
@@ -210,7 +227,16 @@ function setup(options = {}) {
     archive,
     processController: options.processController || {},
     sessionLog: { pathFor: () => '/state/session.jsonl' },
+    revertBuilder: options.revertBuilder,
+    verifyRevert: options.verifyRevert,
     actionInFlight: options.actionInFlight,
+    rollbackBaseSync:
+      options.rollbackBaseSync ||
+      vi.fn(async () => ({ ok: true, sha: 'base-sha' })),
+    rollbackVerify: options.rollbackVerify || vi.fn(async () => ({ ok: true })),
+    rollbackResolveDeploy:
+      options.rollbackResolveDeploy || vi.fn(async () => ({ ok: true })),
+    launchRollbackDeploy: options.launchRollbackDeploy,
     makeOperationId: () => 'discard-1',
     now: () => 300,
     notifyChanged: vi.fn()
@@ -229,6 +255,540 @@ function setup(options = {}) {
 }
 
 describe('worker discard coordinator unmerged lifecycle', () => {
+  test('finalizes a merged revert after restart without ordinary merge cleanup', async () => {
+    /** @type {any} */
+    let launch_snapshot = null;
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const launchRollbackDeploy = vi.fn(() => {
+      launch_snapshot = env.store.snapshot(workspace);
+      return { ok: true };
+    });
+    env = setup({
+      prState: 'MERGED',
+      rollbackResolveDeploy: vi.fn(async () => ({
+        ok: true,
+        pending: { cmd: ['restart'] }
+      })),
+      launchRollbackDeploy
+    });
+    const created = env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'discard-rollback',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: {
+          repo: '/repo',
+          worktree: '/repo/.worktrees/UI-1',
+          branch: 'UI-1',
+          source_head: HEAD_SHA,
+          local_branch_sha: HEAD_SHA,
+          remote_branch_sha: HEAD_SHA,
+          pr: { number: 304, url: 'https://github.com/acme/repo/pull/304' }
+        }
+      }
+    });
+    expect(created.ok).toBe(true);
+    const advanced = env.store.advanceDiscardOperation(workspace, {
+      operation_id: 'discard-rollback',
+      expected_phase: 'requested',
+      next_phase: 'revert_pr_wait',
+      patch: {
+        mode: 'merged_revert',
+        original_pr: { base_ref: 'main' },
+        revert_pr: {
+          number: 304,
+          url: 'https://github.com/acme/repo/pull/304',
+          head_ref: 'revert-UI-1-op',
+          branch: 'revert-UI-1-op',
+          head_sha: HEAD_SHA,
+          target_base: 'main'
+        }
+      }
+    });
+    expect(advanced.ok).toBe(true);
+    env.gh.prDetail.mockResolvedValue({
+      state: 'ok',
+      data: {
+        number: 304,
+        url: 'https://github.com/acme/repo/pull/304',
+        state: 'MERGED',
+        head_ref: 'revert-UI-1-op',
+        base_ref: 'main',
+        head_sha: HEAD_SHA,
+        merged_sha: MERGED_SHA
+      }
+    });
+
+    await env.coordinator.recover();
+
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-rollback']
+    ).toMatchObject({ phase: 'done', mode: 'merged_revert' });
+    expect(env.store.snapshot(workspace).pr_wait).toEqual([]);
+    expect(launchRollbackDeploy).toHaveBeenCalledWith(
+      'UI-1',
+      expect.objectContaining({ base_sha: 'base-sha' })
+    );
+    expect(launch_snapshot).toMatchObject({
+      discard_operations: {
+        'discard-rollback': { phase: 'done' }
+      },
+      last_deploy: { outcome: 'launched', bead_id: 'UI-1' }
+    });
+  });
+
+  test('refuses a merged revert PR whose persisted head identity changed', async () => {
+    const env = setup({ prState: 'MERGED' });
+    env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'discard-drift',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+    env.store.advanceDiscardOperation(workspace, {
+      operation_id: 'discard-drift',
+      expected_phase: 'requested',
+      next_phase: 'revert_pr_wait',
+      patch: {
+        mode: 'merged_revert',
+        original_pr: { base_ref: 'main' },
+        revert_pr: {
+          number: 404,
+          url: 'https://github.com/acme/repo/pull/404',
+          branch: 'revert-UI-1-op',
+          head_sha: HEAD_SHA,
+          target_base: 'main'
+        }
+      }
+    });
+    env.gh.prDetail.mockResolvedValue({
+      state: 'ok',
+      data: {
+        number: 404,
+        url: 'https://github.com/acme/repo/pull/404',
+        state: 'MERGED',
+        head_ref: 'revert-UI-1-op',
+        base_ref: 'main',
+        head_sha: 'c'.repeat(40),
+        merged_sha: MERGED_SHA
+      }
+    });
+
+    await env.coordinator.recover();
+
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-drift']
+    ).toMatchObject({
+      phase: 'revert_pr_wait',
+      last_error: 'revert_pr_identity_changed'
+    });
+    expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['rollback_source_cleanup', 'worktree:remove'],
+    [
+      'rollback_source_local_removed',
+      `git:update-ref -d refs/heads/UI-1 ${HEAD_SHA}`
+    ],
+    [
+      'rollback_source_remote_removed',
+      `git:push --force-with-lease=refs/heads/UI-1:${HEAD_SHA} origin :refs/heads/UI-1`
+    ],
+    [
+      'rollback_revert_local_removed',
+      `git:update-ref -d refs/heads/revert-UI-1-op ${HEAD_SHA}`
+    ],
+    [
+      'rollback_revert_remote_removed',
+      `git:push --force-with-lease=refs/heads/revert-UI-1-op:${HEAD_SHA} origin :refs/heads/revert-UI-1-op`
+    ],
+    ['rollback_bead_opened', 'bd:status:open'],
+    ['rollback_pr_url_cleared', 'bd:pr-unset']
+  ])(
+    'reconciles a crash after the %s side effect without repeating the mutation',
+    async (phase, side_effect) => {
+      const env = setup();
+      env.store.createDiscardOperation(workspace, {
+        expected_revision: env.store.snapshot(workspace).revision,
+        operation: {
+          operation_id: 'discard-rollback-crash',
+          bead_id: 'UI-1',
+          attempt_id: 'att-1',
+          source_snapshot: {
+            repo: '/repo',
+            worktree: '/repo/.worktrees/UI-1',
+            branch: 'UI-1',
+            source_head: HEAD_SHA,
+            local_branch_sha: HEAD_SHA,
+            remote_branch_sha: HEAD_SHA
+          }
+        }
+      });
+      env.store.advanceDiscardOperation(workspace, {
+        operation_id: 'discard-rollback-crash',
+        expected_phase: 'requested',
+        next_phase: phase,
+        patch: {
+          mode: 'merged_revert',
+          original_pr: { base_ref: 'main' },
+          revert_pr: {
+            number: 404,
+            url: 'https://github.com/acme/repo/pull/404',
+            branch: 'revert-UI-1-op',
+            head_sha: HEAD_SHA,
+            target_base: 'main'
+          }
+        }
+      });
+      const advance = env.store.advanceDiscardOperation.bind(env.store);
+      let injected = false;
+      vi.spyOn(env.store, 'advanceDiscardOperation').mockImplementation(
+        (ws, input) => {
+          if (!injected && input.expected_phase === phase) {
+            injected = true;
+            return {
+              ok: false,
+              conflict: false,
+              queue: env.store.snapshot(ws)
+            };
+          }
+          return advance(ws, input);
+        }
+      );
+
+      await env.coordinator.recover();
+      const retried = await env.coordinator.retry('discard-rollback-crash');
+
+      expect(retried).toMatchObject({ ok: true });
+      expect(env.calls.filter((call) => call === side_effect)).toHaveLength(1);
+      expect(
+        env.store.snapshot(workspace).discard_operations[
+          'discard-rollback-crash'
+        ].phase
+      ).toBe('done');
+    }
+  );
+
+  test('resumes after a crash following revert PR readback without recreating the PR', async () => {
+    const env = setup();
+    const created = env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'discard-revert-worktree',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: { repo: '/repo', pr: { number: 304 } }
+      }
+    });
+    expect(created.ok).toBe(true);
+    env.store.advanceDiscardOperation(workspace, {
+      operation_id: 'discard-revert-worktree',
+      expected_phase: 'requested',
+      next_phase: 'revert_pr_created',
+      patch: {
+        mode: 'merged_revert',
+        revert_pr: {
+          number: 404,
+          url: 'https://github.com/acme/repo/pull/404',
+          branch: 'revert-UI-1-op',
+          worktree: '/tmp/revert-UI-1-op',
+          head_sha: HEAD_SHA
+        }
+      }
+    });
+
+    await env.coordinator.recover();
+
+    expect(
+      env.store.snapshot(workspace).discard_operations[
+        'discard-revert-worktree'
+      ]
+    ).toMatchObject({ phase: 'revert_pr_wait' });
+    expect(env.bd.setMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  test('reuses the exact local revert commit after a crash before phase persistence', async () => {
+    const base_sha = 'a'.repeat(40);
+    const tree_sha = 'e'.repeat(40);
+    const revert_sha = 'f'.repeat(40);
+    let head_sha = base_sha;
+    /** @type {string|null} */
+    let remote_sha = null;
+    const gitRun = vi.fn(async (args) => {
+      if (args[0] === 'symbolic-ref') {
+        return { code: 0, stdout: 'revert-UI-1-op\n', stderr: '' };
+      }
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+        return { code: 0, stdout: `${head_sha}\n`, stderr: '' };
+      }
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD^') {
+        return { code: 0, stdout: `${base_sha}\n`, stderr: '' };
+      }
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD^{tree}') {
+        return { code: 0, stdout: `${tree_sha}\n`, stderr: '' };
+      }
+      if (args[0] === 'status') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'log') {
+        return {
+          code: 0,
+          stdout: 'Revert UI-1\n\nDiscard operation: discard-local\n',
+          stderr: ''
+        };
+      }
+      if (args[0] === 'write-tree') {
+        return { code: 0, stdout: `${tree_sha}\n`, stderr: '' };
+      }
+      if (args[0] === 'commit') {
+        head_sha = revert_sha;
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'ls-remote') {
+        return remote_sha === null
+          ? { code: 0, stdout: '', stderr: '' }
+          : {
+              code: 0,
+              stdout: `${remote_sha}\trefs/heads/revert-UI-1-op\n`,
+              stderr: ''
+            };
+      }
+      if (args[0] === 'push') {
+        remote_sha = revert_sha;
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const verifyRevert = vi.fn(async () => ({ ok: true }));
+    const env = setup({ gitRun, verifyRevert });
+    env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'discard-local',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+    env.store.advanceDiscardOperation(workspace, {
+      operation_id: 'discard-local',
+      expected_phase: 'requested',
+      next_phase: 'revert_local_prepared',
+      patch: {
+        mode: 'merged_revert',
+        original_pr: { url: 'https://github.com/acme/repo/pull/304' },
+        revert_pr: {
+          branch: 'revert-UI-1-op',
+          worktree: '/state/revert-UI-1-op',
+          base_sha,
+          tree_sha,
+          target_base: 'main'
+        }
+      }
+    });
+    const advance = env.store.advanceDiscardOperation.bind(env.store);
+    let injected = false;
+    vi.spyOn(env.store, 'advanceDiscardOperation').mockImplementation(
+      (ws, input) => {
+        if (!injected && input.expected_phase === 'revert_local_prepared') {
+          injected = true;
+          return {
+            ok: false,
+            conflict: false,
+            queue: env.store.snapshot(ws)
+          };
+        }
+        return advance(ws, input);
+      }
+    );
+
+    await env.coordinator.recover();
+    await env.coordinator.retry('discard-local');
+
+    expect(
+      gitRun.mock.calls.filter(([args]) => args[0] === 'commit')
+    ).toHaveLength(1);
+    expect(verifyRevert).toHaveBeenCalledTimes(2);
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-local']
+    ).toMatchObject({
+      phase: 'revert_remote_pushed',
+      revert_pr: { head_sha: revert_sha }
+    });
+  });
+
+  test('rebuilds only an exact deterministic prepare residue after a phase crash', async () => {
+    const target_sha = 'a'.repeat(40);
+    const tree_sha = 'e'.repeat(40);
+    let worktree_present = false;
+    let local_present = false;
+    let worktree_path = '';
+    let branch = '';
+    const gitRun = vi.fn(async (args) => {
+      if (args[0] === 'ls-remote') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return {
+          code: 0,
+          stdout: worktree_present
+            ? `worktree ${worktree_path}\nHEAD ${target_sha}\nbranch refs/heads/${branch}\n\n`
+            : '',
+          stderr: ''
+        };
+      }
+      if (args[0] === 'worktree' && args[1] === 'remove') {
+        worktree_present = false;
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') {
+        return local_present
+          ? { code: 0, stdout: `${target_sha}\n`, stderr: '' }
+          : { code: 1, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'update-ref') {
+        local_present = false;
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const revertBuilder = {
+      prepare: vi.fn(async (input) => {
+        worktree_path = input.worktree;
+        branch = input.branch;
+        worktree_present = true;
+        local_present = true;
+        return {
+          ok: true,
+          worktree: input.worktree,
+          branch: input.branch,
+          base_sha: target_sha,
+          tree_sha
+        };
+      })
+    };
+    const env = setup({
+      gitRun,
+      revertBuilder,
+      verifyRevert: vi.fn(async () => ({ ok: true }))
+    });
+    env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'discard-prepare',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+    env.store.advanceDiscardOperation(workspace, {
+      operation_id: 'discard-prepare',
+      expected_phase: 'requested',
+      next_phase: 'revert_source_observed',
+      patch: {
+        mode: 'merged_revert',
+        original_pr: { base_ref: 'main' },
+        receipts: {
+          revert_source_observed: {
+            target_base: 'main',
+            target_sha
+          }
+        }
+      }
+    });
+    const advance = env.store.advanceDiscardOperation.bind(env.store);
+    let injected = false;
+    vi.spyOn(env.store, 'advanceDiscardOperation').mockImplementation(
+      (ws, input) => {
+        if (!injected && input.expected_phase === 'revert_source_observed') {
+          injected = true;
+          return {
+            ok: false,
+            conflict: false,
+            queue: env.store.snapshot(ws)
+          };
+        }
+        return advance(ws, input);
+      }
+    );
+
+    await env.coordinator.recover();
+    await env.coordinator.retry('discard-prepare');
+
+    expect(revertBuilder.prepare).toHaveBeenCalledTimes(2);
+    expect(
+      gitRun.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'remove'
+      )
+    ).toHaveLength(1);
+    expect(
+      gitRun.mock.calls.filter(([args]) => args[0] === 'update-ref')
+    ).toHaveLength(1);
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-prepare']
+    ).toMatchObject({ phase: 'revert_local_prepared' });
+  });
+
+  test('keeps the revert PR and operation when exact worktree removal fails', async () => {
+    const gitRun = vi.fn(async (args) => {
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return {
+          code: 0,
+          stdout: `worktree /tmp/revert-UI-1-op\nHEAD ${HEAD_SHA}\nbranch refs/heads/revert-UI-1-op\n\n`,
+          stderr: ''
+        };
+      }
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stdout: `${HEAD_SHA}\n`, stderr: '' };
+      }
+      if (args[0] === 'worktree' && args[1] === 'remove') {
+        return { code: 1, stdout: '', stderr: 'busy' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const env = setup({ gitRun });
+    env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'discard-revert-failure',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: { repo: '/repo', pr: { number: 304 } }
+      }
+    });
+    env.store.advanceDiscardOperation(workspace, {
+      operation_id: 'discard-revert-failure',
+      expected_phase: 'requested',
+      next_phase: 'revert_pr_created',
+      patch: {
+        mode: 'merged_revert',
+        revert_pr: {
+          number: 404,
+          url: 'https://github.com/acme/repo/pull/404',
+          branch: 'revert-UI-1-op',
+          worktree: '/tmp/revert-UI-1-op',
+          head_sha: HEAD_SHA
+        }
+      }
+    });
+
+    await env.coordinator.recover();
+
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-revert-failure']
+    ).toMatchObject({
+      phase: 'revert_pr_created',
+      last_error: 'revert_worktree_remove_failed'
+    });
+    expect(env.bd.setMetadata).not.toHaveBeenCalled();
+  });
+
   test('archives before cleanup and completes the exact destructive order', async () => {
     const env = setup();
     const revision = env.store.snapshot(workspace).revision;
@@ -580,10 +1140,7 @@ describe('worker discard coordinator unmerged lifecycle', () => {
   test.each([
     ['runner_terminated', 'gh:close'],
     ['pr_closed', 'worktree:remove'],
-    [
-      'worktree_removed',
-      `git:update-ref -d refs/heads/UI-1 ${HEAD_SHA}`
-    ],
+    ['worktree_removed', `git:update-ref -d refs/heads/UI-1 ${HEAD_SHA}`],
     [
       'local_ref_removed',
       `git:push --force-with-lease=refs/heads/UI-1:${HEAD_SHA} origin :refs/heads/UI-1`
@@ -697,5 +1254,60 @@ describe('worker discard coordinator unmerged lifecycle', () => {
     });
     expect(env.store.snapshot(workspace).discard_operations).toEqual({});
     expect(env.archive.create).not.toHaveBeenCalled();
+  });
+
+  test('refuses cleanup discard after the same bead launched a detached deploy', async () => {
+    const env = setup();
+    env.store.recordLastDeploy(workspace, {
+      outcome: 'launched',
+      reason: null,
+      bead_id: 'UI-1',
+      base_sha: HEAD_SHA
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      conflict: false,
+      reason: 'deploy_outcome_unknown'
+    });
+    expect(env.archive.create).not.toHaveBeenCalled();
+  });
+
+  test('archives a merged cleanup failure whose source topology is already absent', async () => {
+    const env = setup({ prState: 'MERGED', sourceAbsent: true });
+    env.store.recordCleanupFailure(workspace, {
+      bead_id: 'UI-1',
+      step: 'parent_close',
+      reason: 'bd_close_failed'
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: true, pending: 'merged_revert' });
+    expect(env.archive.create).not.toHaveBeenCalled();
+    expect(env.archive.createCommittedSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source_snapshot: expect.objectContaining({
+          branch: 'UI-1',
+          preexisting_absent: true,
+          local_branch_sha: null,
+          remote_branch_sha: null
+        })
+      })
+    );
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-1']
+    ).toMatchObject({
+      phase: 'merged_revert',
+      backup: { path: '/state/committed-source-archive' }
+    });
   });
 });

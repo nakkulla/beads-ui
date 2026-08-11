@@ -1912,6 +1912,52 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     ).toBe('done');
   });
 
+  test('finalizes rollback and detached deploy intent in one durable mutation', () => {
+    const store = createQueueStore({ now: () => 100 });
+    store.createDiscardOperation(WS, {
+      expected_revision: 0,
+      operation: {
+        operation_id: 'discard-rollback',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+    store.advanceDiscardOperation(WS, {
+      operation_id: 'discard-rollback',
+      expected_phase: 'requested',
+      next_phase: 'rollback_finalized',
+      patch: { mode: 'merged_revert' }
+    });
+
+    const completed = store.completeDiscardOperation(WS, {
+      operation_id: 'discard-rollback',
+      expected_phase: 'rollback_finalized',
+      deploy: {
+        outcome: 'launched',
+        reason: null,
+        bead_id: 'UI-1',
+        base_sha: 'a'.repeat(40)
+      }
+    });
+
+    expect(completed.ok).toBe(true);
+    expect(completed.queue.discard_operations['discard-rollback'].phase).toBe(
+      'done'
+    );
+    expect(completed.queue.last_deploy).toMatchObject({
+      outcome: 'launched',
+      bead_id: 'UI-1',
+      base_sha: 'a'.repeat(40)
+    });
+    expect(createQueueStore().load(WS)).toMatchObject({
+      discard_operations: {
+        'discard-rollback': { phase: 'done' }
+      },
+      last_deploy: { outcome: 'launched', bead_id: 'UI-1' }
+    });
+  });
+
   test('exec provenance survives appendAttempt/updateAttempt and a reload', () => {
     const store = createQueueStore();
     let rev = store.place(WS, {

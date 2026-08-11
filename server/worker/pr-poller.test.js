@@ -186,6 +186,33 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prDetail).toHaveBeenCalled();
   });
 
+  test('observes a human-merged revert without a browser subscriber', async () => {
+    const onDiscardObservation = vi.fn(async () => {});
+    const queue = queueOf({
+      pr_wait: [],
+      discard_operations: {
+        'discard-1': {
+          operation_id: 'discard-1',
+          bead_id: 'UI-1',
+          phase: 'revert_pr_wait',
+          requested_at: 1,
+          revert_pr: { number: 404, url: 'https://github.com/o/r/pull/404' }
+        }
+      }
+    });
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue,
+      detail: { state: 'ok', data: detailOf({ number: 404, state: 'MERGED' }) },
+      onDiscardObservation
+    });
+
+    await poller.tick();
+
+    expect(prDetail).toHaveBeenCalledWith('/repo', 404);
+    expect(onDiscardObservation).toHaveBeenCalledWith('UI-1');
+  });
+
   test('keeps a merge-queue member observed after its row leaves the lane', async () => {
     const observations = createPrObservationStore();
     observations.record('/ws', 'UI-9', { error: null, pr: detailOf() });

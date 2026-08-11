@@ -97,6 +97,17 @@ function prNumberFromUrl(url) {
  * @returns {{ number: number, url: string }|null}
  */
 export function resolvePrRef(queue, bead_id, external = null) {
+  const rollback = Object.values(queue?.discard_operations || {}).find(
+    (operation) =>
+      /** @type {any} */ (operation)?.bead_id === bead_id &&
+      /** @type {any} */ (operation)?.phase === 'revert_pr_wait' &&
+      Number.isFinite(/** @type {any} */ (operation)?.revert_pr?.number) &&
+      typeof (/** @type {any} */ (operation)?.revert_pr?.url) === 'string'
+  );
+  if (rollback) {
+    const revert_pr = /** @type {any} */ (rollback).revert_pr;
+    return { number: revert_pr.number, url: revert_pr.url };
+  }
   const attempts = queue && queue.attempts ? Object.values(queue.attempts) : [];
   /** @type {{ number: number, url: string, at: number }|null} */
   let best = null;
@@ -250,7 +261,11 @@ export function createPrPoller(deps) {
       const q = deps.store.snapshot(workspace);
       return (
         q.auto_merge === true ||
-        (Array.isArray(q.merge_queue) && q.merge_queue.length > 0)
+        (Array.isArray(q.merge_queue) && q.merge_queue.length > 0) ||
+        Object.values(q.discard_operations || {}).some(
+          (operation) =>
+            /** @type {any} */ (operation)?.phase === 'revert_pr_wait'
+        )
       );
     } catch {
       return false;
@@ -569,7 +584,20 @@ export function createPrPoller(deps) {
     const pending = [];
     try {
       const queue = deps.store.snapshot(workspace);
-      const durable = Array.isArray(queue.pr_wait) ? queue.pr_wait : [];
+      const durable = Array.isArray(queue.pr_wait) ? [...queue.pr_wait] : [];
+      for (const operation of Object.values(queue.discard_operations || {})) {
+        const record = /** @type {any} */ (operation);
+        if (
+          record?.phase === 'revert_pr_wait' &&
+          typeof record.bead_id === 'string' &&
+          !durable.some((entry) => entry.bead_id === record.bead_id)
+        ) {
+          durable.push({
+            bead_id: record.bead_id,
+            added_at: record.requested_at
+          });
+        }
+      }
       const durable_ids = new Set(durable.map((e) => e.bead_id));
       /** @type {Map<string, import('./external-pr.js').ExternalPrRow>} */
       const external_rows = new Map();

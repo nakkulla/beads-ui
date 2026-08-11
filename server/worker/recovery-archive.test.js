@@ -76,6 +76,52 @@ function input(operation_id) {
 }
 
 describe('worker recovery archive real-git integration', () => {
+  test('records a checksum-verified committed-source archive for absent cleanup residue', () => {
+    const session_log_path = path.join(tmp, 'absent-session.jsonl');
+    write(session_log_path, '{"type":"result"}\n');
+    const archive = createRecoveryArchive({ now: () => 5000 });
+    const source_head = git(['rev-parse', 'HEAD']);
+
+    const result = archive.createCommittedSource({
+      workspace,
+      operation_id: 'discard-absent',
+      source_snapshot: {
+        repo,
+        source_head,
+        preexisting_absent: true,
+        pr: { number: 304, state: 'MERGED' }
+      },
+      session_log_path
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const receipt = /** @type {any} */ (result).receipt;
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(receipt.path, 'manifest.json'), 'utf8')
+    );
+    expect(manifest).toMatchObject({
+      mode: 'committed-source',
+      topology: 'preexisting_absent',
+      excluded: ['dirty-and-untracked-unavailable']
+    });
+    expect(fs.existsSync(path.join(receipt.path, 'commits.bundle'))).toBe(true);
+    expect(() =>
+      git([
+        'show-ref',
+        '--verify',
+        '--quiet',
+        'refs/bdui/discard-archives/discard-absent'
+      ])
+    ).toThrow();
+    expect(archive.verify(receipt.path)).toEqual({
+      ok: true,
+      receipt
+    });
+  });
+
   test('archives commits patches binary files symlinks and session evidence', () => {
     write(path.join(repo, 'committed.txt'), 'ahead\n');
     git(['add', 'committed.txt']);

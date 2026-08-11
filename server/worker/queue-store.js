@@ -2502,7 +2502,7 @@ export function createQueueStore(options = {}) {
      * fence on the same final write.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, expected_phase: string }} input
+     * @param {{ operation_id: string, expected_phase: string, deploy?: { outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string, detail?: string, log_path?: string } }} input
      * @returns {QueueOpResult}
      */
     completeDiscardOperation(workspace, input) {
@@ -2519,6 +2519,13 @@ export function createQueueStore(options = {}) {
           reason = 'phase_mismatch';
           return false;
         }
+        const deploy = Object.hasOwn(input, 'deploy')
+          ? buildLastDeploy(input.deploy, now())
+          : null;
+        if (Object.hasOwn(input, 'deploy') && deploy === null) {
+          reason = 'deploy_invalid';
+          return false;
+        }
         removeFromLanes(next, current.bead_id);
         delete next.admission[current.bead_id];
         delete next.cleanup_failed[current.bead_id];
@@ -2527,6 +2534,9 @@ export function createQueueStore(options = {}) {
           phase: 'done',
           last_error: null
         };
+        if (deploy !== null) {
+          next.last_deploy = deploy;
+        }
         return true;
       });
       return reason === null ? result : { ...result, reason };
