@@ -347,6 +347,8 @@
  * @property {'queued'|'pinned'|'verifying'|'deploying'|'readback'|'complete'|'failed'} stage
  * @property {string|null} receipt_path
  * @property {string|null} receipt_digest
+ * @property {string|null} receipt_attempt_id
+ * @property {string|null} receipt_floor_sha
  * @property {number} retry_count
  * @property {number|null} retry_at
  * @property {string|null} last_retryable_reason
@@ -1392,6 +1394,16 @@ function normalizeReconcile(raw) {
       receipt_digest: /^[0-9a-f]{64}$/i.test(String(value.receipt_digest || ''))
         ? String(value.receipt_digest).toLowerCase()
         : null,
+      receipt_attempt_id:
+        typeof value.receipt_attempt_id === 'string' &&
+        value.receipt_attempt_id.length > 0
+          ? value.receipt_attempt_id
+          : null,
+      receipt_floor_sha: /^[0-9a-f]{40}$/i.test(
+        String(value.receipt_floor_sha || '')
+      )
+        ? String(value.receipt_floor_sha).toLowerCase()
+        : null,
       retry_count:
         typeof value.retry_count === 'number' &&
         Number.isInteger(value.retry_count) &&
@@ -1767,6 +1779,8 @@ export function createQueueStore(options = {}) {
           stage: 'queued',
           receipt_path: null,
           receipt_digest: null,
+          receipt_attempt_id: null,
+          receipt_floor_sha: null,
           retry_count: 0,
           retry_at: null,
           last_retryable_reason: null,
@@ -1788,6 +1802,8 @@ export function createQueueStore(options = {}) {
         if (
           !current ||
           current.attempt_id !== input.attempt_id ||
+          current.stage === 'complete' ||
+          current.stage === 'failed' ||
           !RECONCILE_STAGES.includes(input.stage)
         ) {
           return false;
@@ -1862,7 +1878,7 @@ export function createQueueStore(options = {}) {
 
     /**
      * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, receipt_path: string, receipt_digest: string }} input
+     * @param {{ bead_id: string, attempt_id: string, receipt_path: string, receipt_digest: string, receipt_attempt_id?: string, receipt_floor_sha?: string }} input
      * @returns {QueueOpResult}
      */
     completeReconcile(workspace, input) {
@@ -1878,6 +1894,19 @@ export function createQueueStore(options = {}) {
           typeof input.receipt_path !== 'string' ||
           input.receipt_path.length === 0 ||
           !/^[0-9a-f]{64}$/i.test(String(input.receipt_digest || ''))
+        ) {
+          return false;
+        }
+        if (
+          input.receipt_floor_sha !== undefined &&
+          !/^[0-9a-f]{40}$/i.test(input.receipt_floor_sha)
+        ) {
+          return false;
+        }
+        if (
+          input.receipt_attempt_id !== undefined &&
+          (typeof input.receipt_attempt_id !== 'string' ||
+            input.receipt_attempt_id.length === 0)
         ) {
           return false;
         }
@@ -1901,6 +1930,11 @@ export function createQueueStore(options = {}) {
         current.stage = 'complete';
         current.receipt_path = input.receipt_path;
         current.receipt_digest = input.receipt_digest.toLowerCase();
+        current.receipt_attempt_id =
+          input.receipt_attempt_id || current.attempt_id;
+        current.receipt_floor_sha = (
+          input.receipt_floor_sha || current.merged_floor_sha
+        ).toLowerCase();
         current.retry_at = null;
         current.terminal_failure = null;
         current.updated_at = now();
