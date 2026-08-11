@@ -5,6 +5,10 @@ const NOW = 1_700_000_000_000;
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
+beforeEach(() => {
+  window.localStorage.clear();
+});
+
 /**
  * One workspace entry of the aggregated payload's heavy array.
  *
@@ -239,6 +243,79 @@ describe('views/monitor lanes (UI-qrfo §8)', () => {
     expect(
       mount.querySelector('#monitor-queue .mon-group__name')?.textContent
     ).toContain('repo-a');
+  });
+});
+
+describe('views/monitor running sort persistence (UI-fmwh §4.1)', () => {
+  /**
+   * @returns {{ workspaces: Record<string, any>[], workspaces_state: Record<string, any>[] }}
+   */
+  function runningPayload() {
+    return {
+      workspaces: [
+        workspace({
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-new',
+              status: 'running',
+              started_at: NOW - 1_000
+            }
+          }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          attempts: {
+            b1: {
+              attempt_id: 'b1',
+              bead_id: 'B-old',
+              status: 'running',
+              started_at: NOW - 90_000
+            }
+          }
+        })
+      ],
+      workspaces_state: [state(), state({ root_dir: WS_B, name: 'repo-b' })]
+    };
+  }
+
+  test('uses started order by default', () => {
+    const { mount, view } = setup(runningPayload());
+
+    view.load();
+
+    expect(idsIn(mount, 'running')).toEqual(['B-old', 'A-new']);
+  });
+
+  test('restores repo order from localStorage', () => {
+    window.localStorage.setItem('bdui.monitor.running_sort', 'repo');
+    const { mount, view } = setup(runningPayload());
+
+    view.load();
+
+    expect(idsIn(mount, 'running')).toEqual(['A-new', 'B-old']);
+  });
+
+  test('falls back from an unknown saved order', () => {
+    window.localStorage.setItem('bdui.monitor.running_sort', 'unknown');
+    const { mount, view } = setup(runningPayload());
+
+    view.load();
+
+    expect(idsIn(mount, 'running')).toEqual(['B-old', 'A-new']);
+  });
+
+  test('saves and applies the selected repo order', () => {
+    const { mount, view } = setup(runningPayload());
+    view.load();
+
+    click(mount, '.mon-running-sort[data-sort="repo"]');
+
+    expect(window.localStorage.getItem('bdui.monitor.running_sort')).toBe(
+      'repo'
+    );
+    expect(idsIn(mount, 'running')).toEqual(['A-new', 'B-old']);
   });
 });
 
