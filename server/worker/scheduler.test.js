@@ -1406,6 +1406,107 @@ describe('scheduler completion repair dispatch', () => {
       })
     );
   });
+
+  test('transfers completion identity when a paused repair uses generic resume', async () => {
+    const env = setup({
+      config: { B1: {} },
+      gitRun: ownedGit(),
+      slots: 1
+    });
+    seedCompletionIntent(env.store);
+    const op = {
+      op_id: 'generic-resume-op',
+      kind: 'resume_root',
+      failure_key: COMPLETION_FAILURE,
+      attempt_id: 'generic-resume-source',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+    await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+    env.runner.eventsFor('B1').emit('session_id', 'completion-session');
+    await flush();
+    await env.scheduler.pause(WS, 'generic-resume-source');
+
+    const result = await env.scheduler.resume(WS, 'generic-resume-source');
+
+    expect(result.ok).toBe(true);
+    const child = env.store.snapshot(WS).attempts[String(result.attempt_id)];
+    expect(child).toMatchObject({
+      resumed_from: 'generic-resume-source',
+      completion_root_id: 'B1',
+      completion_op_id: op.op_id,
+      completion_mode: op.kind,
+      completion_failure_key: op.failure_key
+    });
+    expect(
+      env.store.snapshot(WS).completion_intents.B1.active_op?.attempt_id
+    ).toBe(result.attempt_id);
+    expect(
+      env.store.snapshot(WS).completion_intents.B1.repair_sessions_used
+    ).toBe(1);
+  });
+
+  test('reports a generic completion resume spawn failure for settlement', async () => {
+    const first_runner = makeFakeRunner();
+    let factory_count = 0;
+    const onCompletionAttemptSettled = vi.fn();
+    const env = setup({
+      config: { B1: {} },
+      gitRun: ownedGit(),
+      slots: 1,
+      onCompletionAttemptSettled,
+      makeRunner(name) {
+        factory_count += 1;
+        if (factory_count === 1) {
+          return first_runner.factory(name);
+        }
+        return {
+          name,
+          spawn() {
+            throw new Error('spawn failed');
+          }
+        };
+      }
+    });
+    seedCompletionIntent(env.store);
+    const op = {
+      op_id: 'generic-spawn-op',
+      kind: 'resume_root',
+      failure_key: COMPLETION_FAILURE,
+      attempt_id: 'generic-spawn-source',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+    await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+    first_runner.eventsFor('B1').emit('session_id', 'completion-spawn-session');
+    await flush();
+    await env.scheduler.pause(WS, 'generic-spawn-source');
+    onCompletionAttemptSettled.mockClear();
+
+    const result = await env.scheduler.resume(WS, 'generic-spawn-source');
+
+    expect(result).toEqual({ ok: false, reason: 'spawn_failed' });
+    expect(onCompletionAttemptSettled).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root_bead_id: 'B1',
+        op_id: op.op_id,
+        failure_key: op.failure_key,
+        attempt: expect.objectContaining({
+          resumed_from: 'generic-spawn-source',
+          completion_root_id: 'B1',
+          status: 'failed',
+          cause: 'spawn_failed'
+        }),
+        verdict: null
+      })
+    );
+  });
 });
 
 /**
@@ -3527,6 +3628,12 @@ describe('scheduler resume (spec §1)', () => {
     expect(child.effort).toBe('high');
     expect(child.base_oid).toBe('base-B1');
     expect(child.resumed_from).toBe('anc');
+    expect(child).toMatchObject({
+      completion_root_id: null,
+      completion_op_id: null,
+      completion_mode: null,
+      completion_failure_key: null
+    });
     // Worktree reused — never re-created.
     expect(env.worktree.add).not.toHaveBeenCalled();
     // The resume argv carries the prior session id.
@@ -3673,6 +3780,7 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
     expect(child.resumed_from).toBe('d1');
     expect(child.conflict_resolution).toBe(true);
+    expect(child.completion_root_id).toBe(null);
   });
 
   // The ATTEMPT RECORD keeps the flag (asserted above); the guard input does
@@ -4313,6 +4421,7 @@ describe('scheduler REVISE disposition dispatch (UI-hs11 §3.3)', () => {
     expect(child.resumed_from).toBe('p1');
     expect(child.disposition).toBe('revise_fix');
     expect(child.conflict_resolution).toBe(false);
+    expect(child.completion_root_id).toBe(null);
   });
 
   test('falls back to a fresh session in the shared checkout when the worktree is gone', async () => {

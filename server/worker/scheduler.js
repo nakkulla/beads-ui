@@ -819,6 +819,40 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Persist a resume child. Completion-owned ancestors use the store's atomic
+   * ownership transfer; any partial completion identity fails closed instead
+   * of falling back to an ordinary append that would strand the journal.
+   *
+   * @param {string} workspace
+   * @param {any} prior
+   * @param {any} attempt
+   */
+  function prerecordResumedAttempt(workspace, prior, attempt) {
+    const completion_owned =
+      prior.completion_root_id != null ||
+      prior.completion_op_id != null ||
+      prior.completion_mode != null ||
+      prior.completion_failure_key != null;
+    if (!completion_owned) {
+      return prerecordAttempt(workspace, attempt);
+    }
+    if (typeof deps.store.appendResumedCompletionAttempt !== 'function') {
+      return false;
+    }
+    try {
+      return (
+        deps.store.appendResumedCompletionAttempt(workspace, {
+          expected_revision: deps.store.snapshot(workspace).revision,
+          source_attempt_id: prior.attempt_id,
+          attempt
+        }).ok === true
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Install this attempt's pre-push hook (UI-8mvc §2). Called BEFORE the launch
    * path's first state change — no worktree, no attempt record, no metadata
    * stamp — so a failure is a plain refusal with nothing to unwind.
@@ -4114,7 +4148,7 @@ export function createScheduler(deps) {
     // globals. The retired merge-axis fields are NOT copied forward: history
     // keeps them on the old record, new attempts stop writing them (§9).
     if (
-      !prerecordAttempt(workspace, {
+      !prerecordResumedAttempt(workspace, prior, {
         attempt_id: new_attempt_id,
         bead_id,
         repo,
@@ -4190,6 +4224,7 @@ export function createScheduler(deps) {
       removeGuardHook(workspace, new_attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
+      await reportCompletionSettlement(workspace, new_attempt_id, null);
       return { ok: false, reason: 'workflow_mode_record_failed' };
     }
 
@@ -4247,6 +4282,7 @@ export function createScheduler(deps) {
       removeGuardHook(workspace, new_attempt_id);
       claimed.delete(bead_id);
       notifyChanged(workspace);
+      await reportCompletionSettlement(workspace, new_attempt_id, null);
       return { ok: false, reason: 'exec_stamp_failed' };
     }
 
@@ -4289,6 +4325,7 @@ export function createScheduler(deps) {
       cleanup_diagnosis: options.cleanup_diagnosis === true
     });
     if (!launched.ok) {
+      await reportCompletionSettlement(workspace, new_attempt_id, null);
       return { ok: false, reason: launched.reason || 'spawn_failed' };
     }
 
