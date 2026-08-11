@@ -3459,9 +3459,9 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(
       calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_effort')
     ).toBe(true);
-    expect(
-      calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_speed')
-    ).toBe(true);
+    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_speed')).toBe(
+      true
+    );
 
     // Termination (success) reverts every stamped key + workflow_mode.
     env.runner.finish('S1', { success: true });
