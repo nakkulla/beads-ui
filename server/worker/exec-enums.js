@@ -1,6 +1,7 @@
 /**
- * Shared exec-setting enums — the SINGLE source of truth for the 11 worker
- * exec-preference keys (orchestration_model / orchestration_effort, the three
+ * Shared exec-setting enums — the SINGLE source of truth for the 12 worker
+ * exec-preference keys (orchestration_model / orchestration_effort /
+ * orchestration_speed, the three
  * `*_review_model` / `*_review_effort` step pairs, and the linked
  * impl_runtime / impl_model / impl_effort target).
  *
@@ -9,7 +10,7 @@
  *     normalize (`exec_defaults`), and the `setExecDefault` mutation enum.
  *   - policy.js: dispatch resolution (`resolveExecSettings`).
  *   - ws/mutation-handlers.js: the per-bead detail-panel edit surface, which
- *     synthesizes the extra `workflow_mode` key on top of these 10.
+ *     synthesizes the extra `workflow_mode` key on top of these 12.
  *
  * `workflow_mode` is intentionally NOT part of this table — it is a per-bead
  * metadata key only, never a workspace-global default (spec 비-목표).
@@ -29,7 +30,13 @@
  *
  * @import { ResolvedCatalog } from './runner-catalog.js'
  */
-import { catalogEfforts, modelEfforts, modelRunner } from './runner-catalog.js';
+import {
+  catalogEfforts,
+  catalogOrchestrationEfforts,
+  catalogSpeedTiers,
+  modelEfforts,
+  modelRunner
+} from './runner-catalog.js';
 import { runtimeCatalog } from './runner/index.js';
 
 /**
@@ -70,6 +77,7 @@ export const IMPL_RUNTIMES = ['inherit', 'claude', 'codex'];
 export const EXEC_SETTING_KEYS = [
   'orchestration_model',
   'orchestration_effort',
+  'orchestration_speed',
   'spec_review_model',
   'spec_review_effort',
   'plan_review_model',
@@ -230,14 +238,14 @@ export function validateExecSettings(settings, options = {}) {
 }
 
 /**
- * Allowed values per exec-preference key — the 11 workspace-global-capable keys
+ * Allowed values per exec-preference key — the 12 workspace-global-capable keys
  * (`workflow_mode` excluded).
  *
  * `orchestration_model` and `impl_model` take the catalog's model names (claude
  * aliases plus the codex short names, which pass through unexpanded — the worker
- * never assembles a full model id). Their effort partners take the catalog-wide
- * UNION: `orchestration_effort` is narrowed per resolved model by `policy.js`
- * and by the UI selector, while `impl_effort` names a leaf whose model is not
+ * never assembles a full model id). `orchestration_effort` uses the outer
+ * catalog union and is narrowed per resolved model by `policy.js`; `impl_effort`
+ * retains the implementation union because it names a leaf whose model is not
  * known at set time.
  *
  * @param {ResolvedCatalog} [catalog] - Defaults to the process-wide runtime
@@ -246,10 +254,12 @@ export function validateExecSettings(settings, options = {}) {
  */
 export function execSettingEnums(catalog = runtimeCatalog()) {
   const models = Object.keys(catalog.model_index);
-  const efforts = catalogEfforts(catalog);
+  const orchestration_efforts = catalogOrchestrationEfforts(catalog);
+  const impl_efforts = catalogEfforts(catalog);
   return {
     orchestration_model: models,
-    orchestration_effort: efforts,
+    orchestration_effort: orchestration_efforts,
+    orchestration_speed: catalogSpeedTiers(catalog),
     spec_review_model: REVIEW_STEP_MODELS,
     spec_review_effort: REVIEW_EFFORTS,
     plan_review_model: PLAN_REVIEW_MODELS,
@@ -258,6 +268,6 @@ export function execSettingEnums(catalog = runtimeCatalog()) {
     impl_review_effort: REVIEW_EFFORTS,
     impl_runtime: IMPL_RUNTIMES,
     impl_model: models,
-    impl_effort: efforts
+    impl_effort: impl_efforts
   };
 }

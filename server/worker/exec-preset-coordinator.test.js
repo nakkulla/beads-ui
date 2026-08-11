@@ -42,7 +42,10 @@ function createFixture(options = {}) {
   const presetStore = createExecPresetStore({
     filePath: preset_file,
     randomUUID: () => 'migration-preset',
-    settingEnums: () => ({ orchestration_model: ['sol'] })
+    settingEnums: () => ({
+      orchestration_model: ['sol'],
+      orchestration_speed: ['default', 'fast']
+    })
   });
   const discover = () => ({
     complete: true,
@@ -84,6 +87,75 @@ function beadSnapshot(over = {}) {
 }
 
 describe('exec-preset coordinator legacy migration', () => {
+  test('preserves orchestration speed in a selected preset dispatch snapshot', () => {
+    const fixture = createFixture({
+      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
+      preset: {
+        revision: 7,
+        presets: [
+          {
+            id: 'preset-1',
+            name: 'Fast 기본',
+            settings: {
+              orchestration_model: 'sol',
+              orchestration_speed: 'fast'
+            },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const resolved = fixture.coordinator.resolveForDispatch(
+      WORKSPACE,
+      beadSnapshot()
+    );
+
+    expect(resolved).toMatchObject({
+      ok: true,
+      settings: { orchestration_speed: 'fast' },
+      exec: { orchestration_speed: 'fast' }
+    });
+  });
+
+  test('carries an illegal model-specific speed from a selected preset', () => {
+    const fixture = createFixture({
+      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
+      preset: {
+        revision: 7,
+        presets: [
+          {
+            id: 'preset-1',
+            name: 'Claude Fast',
+            settings: {
+              orchestration_model: 'opus',
+              orchestration_speed: 'fast'
+            },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const resolved = fixture.coordinator.resolveForDispatch(
+      WORKSPACE,
+      beadSnapshot()
+    );
+
+    expect(resolved).toMatchObject({
+      ok: true,
+      settings: {
+        orchestration_model: 'opus',
+        orchestration_speed: 'fast'
+      },
+      exec: {
+        orchestration_model: 'opus',
+        orchestration_speed: 'fast',
+        invalid_reason: 'illegal_orchestration_speed'
+      }
+    });
+  });
+
   test('resolves one frozen preset snapshot with bead precedence and preset stamps', () => {
     const fixture = createFixture({
       queue: { revision: 2, default_exec_preset_id: 'preset-1' },

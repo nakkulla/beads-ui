@@ -76,9 +76,9 @@ export async function handleUpdateAssignee(ws, req) {
 
 /**
  * Allowed values per exec-preference key for the per-bead detail-panel edit
- * surface: the 11 workspace-global keys from the shared exec-enums single source
+ * surface: the 12 workspace-global keys from the shared exec-enums single source
  * PLUS `workflow_mode` (per-bead only — its only stored value is `fast_track`;
- * `standard`/empty is recorded as key removal). The 11-key table stays canonical
+ * `standard`/empty is recorded as key removal). The 12-key table stays canonical
  * in exec-enums.js; only the extra per-bead `workflow_mode` is synthesized here
  * so this edit surface's behavior is unchanged. `orchestration_model` uses the
  * catalog union across runners; the client narrows by chosen runner for UX.
@@ -175,7 +175,7 @@ function validateExecSetting(key, value) {
 }
 
 /**
- * Set or unset one of the 11 exec-preference metadata keys (+ workflow_mode) via
+ * Set or unset one of the 12 exec-preference metadata keys (+ workflow_mode) via
  * `bd update --set-metadata` / `--unset-metadata`. Selecting `standard` (or
  * clearing a value) removes the key rather than storing a literal.
  *

@@ -60,6 +60,17 @@ describe('runner/claude 2-rule success (judged over the last result)', () => {
     expect(call.options.detached).toBe(true);
   });
 
+  test('accepts only Standard speed and emits no speed argv', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv(BEAD, WS, { speed: 'default' });
+
+    expect(built.args.join(' ')).not.toContain('service_tier');
+    expect(() => spec.buildArgv(BEAD, WS, { speed: 'fast' })).toThrow(
+      'unknown orchestration speed'
+    );
+  });
+
   test('exposes the verified detached process identity', () => {
     const spawn_impl = makeFixtureSpawn({
       pid: 5150,

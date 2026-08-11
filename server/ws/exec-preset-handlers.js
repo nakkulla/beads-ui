@@ -167,7 +167,7 @@ export function handleExecPresetDelete(ws, req) {
 }
 
 /**
- * Apply one preset to all 11 issue metadata keys without changing preset state.
+ * Apply one preset to all 12 issue metadata keys without changing preset state.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req

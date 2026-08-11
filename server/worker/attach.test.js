@@ -1147,6 +1147,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
               id: 'UI-1',
               status: 'open',
               metadata: {
+                orchestration_speed: 'fast',
                 spec_review_model: 'codex',
                 spec_review_effort: 'high',
                 impl_review_model: 'self',
@@ -1170,6 +1171,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     });
     const snap = await bd.snapshotBead('UI-1');
     expect(snap).toMatchObject({
+      orchestration_speed: 'fast',
       spec_review_model: 'codex',
       spec_review_effort: 'high',
       impl_review_model: 'self',

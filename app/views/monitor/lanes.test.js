@@ -291,11 +291,29 @@ describe('monitor waiting lane repo groups (UI-qrfo §6)', () => {
   });
 
   test('carries the runtime catalog into an empty repo group', () => {
-    const runner_catalog = { runners: { codex: { models: {} } } };
+    const runner_catalog = {
+      runners: {
+        codex: {
+          models: {
+            sol: {
+              orchestration_efforts: ['low', 'max', 'ultra'],
+              speed_tiers: ['default', 'fast']
+            }
+          }
+        }
+      }
+    };
 
     const lanes = buildLanes([], [state({ runner_catalog })]);
 
     expect(lanes.queue_groups[0].runner_catalog).toBe(runner_catalog);
+    expect(lanes.queue_groups[0].runner_catalog).toEqual(runner_catalog);
+    expect(
+      lanes.queue_groups[0].runner_catalog.runners.codex.models.sol
+    ).toMatchObject({
+      orchestration_efforts: ['low', 'max', 'ultra'],
+      speed_tiers: ['default', 'fast']
+    });
   });
 
   // 파이프라인이 빈 workspace는 무거운 배열에 없다 — CAS 토큰은 그룹이

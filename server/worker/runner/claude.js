@@ -288,6 +288,10 @@ export function claudeSpec(options = {}) {
     name: 'claude',
     buildArgv(bead, _workspace, settings) {
       const s = settings || {};
+      const speed = s.speed ?? 'default';
+      if (speed !== 'default') {
+        throw new Error(`unknown orchestration speed: ${String(speed)}`);
+      }
       const args = ['-p', '--output-format', 'stream-json', '--verbose'];
       // Resume branch (spec §1.4): continue the PRIOR claude session id so the
       // resumed run inherits the interrupted session's context.

@@ -1560,11 +1560,17 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
       key: 'orchestration_effort',
       value: 'high'
     });
+    store.setExecDefault(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      key: 'orchestration_speed',
+      value: 'fast'
+    });
 
     const restarted = createQueueStore();
     expect(restarted.load(WS).exec_defaults).toEqual({
       spec_review_model: 'opus',
-      orchestration_effort: 'high'
+      orchestration_effort: 'high',
+      orchestration_speed: 'fast'
     });
 
     // Corrupt the persisted map: unknown key, invalid value, valid survivor.
@@ -1572,6 +1578,7 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     raw.exec_defaults = {
       bogus_key: 'x',
       orchestration_effort: 'nope',
+      orchestration_speed: 'unknown',
       spec_review_model: 'opus'
     };
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
@@ -2093,8 +2100,10 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
         exec_stamped_keys: ['worker_runner', 'review_model'],
         exec_values: {
           orchestration_model: 'opus',
+          orchestration_speed: 'fast',
           spec_review_model: 'codex'
-        }
+        },
+        speed: 'fast'
       }
     });
     expect(appended.ok).toBe(true);
@@ -2105,8 +2114,10 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(appended.queue.attempts['att-1']).toMatchObject({
       exec_default_preset_id: 'preset-1',
       exec_default_preset_revision: 7,
+      speed: 'fast',
       exec_values: {
         orchestration_model: 'opus',
+        orchestration_speed: 'fast',
         spec_review_model: 'codex'
       }
     });
@@ -2129,8 +2140,10 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(restarted.load(WS).attempts['att-1']).toMatchObject({
       exec_default_preset_id: 'preset-1',
       exec_default_preset_revision: 7,
+      speed: 'fast',
       exec_values: {
         orchestration_model: 'opus',
+        orchestration_speed: 'fast',
         spec_review_model: 'codex'
       }
     });

@@ -39,7 +39,7 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
  * Shared detail panel (spec §3). Opens as a right-side overlay from a board
  * card (and later a Worker tile). Composition: id/title/status/description,
  * dependencies (bd edges), workflow summary WITH raw receipt strings,
- * Artifacts (copy path / open md viewer), execution settings (5 keys +
+ * Artifacts (copy path / open md viewer), execution settings (12 keys +
  * workflow_mode), and a session-history seam (Phase 11). Reads the pushed
  * snapshot from the `detail:<id>` subscription store — no new list calls; the
  * exec-settings edit is the only mutation (via `transport`).
@@ -776,7 +776,7 @@ export function createDetailPanel(mount_element, options) {
           applying_preset}
           @click=${() => void applyExecPreset()}
         >
-          11개 설정 적용
+          12개 설정 적용
         </button>
       </div>
       <p>적용하면 현재 이슈 실행 설정 전체를 교체합니다.</p>

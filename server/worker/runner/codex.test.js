@@ -50,12 +50,29 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
     expect(built.args[i + 1]).toBe('model_reasoning_effort=max');
   });
 
-  test('omits the config override when no effort is set', () => {
+  test('emits an explicit Standard service tier when no speed is set', () => {
     const spec = codexSpec();
 
     const built = spec.buildArgv(BEAD, WS, { model: 'sol' });
 
-    expect(built.args).not.toContain('-c');
+    expect(
+      built.args.filter((arg) => arg === 'service_tier="default"')
+    ).toHaveLength(1);
+  });
+
+  test('emits exactly one Fast service tier and rejects an unknown speed', () => {
+    const spec = codexSpec();
+
+    const built = spec.buildArgv(BEAD, WS, { model: 'sol', speed: 'fast' });
+
+    expect(
+      built.args.filter((arg) => arg === 'service_tier="fast"')
+    ).toHaveLength(1);
+    expect(built.args.join(' ')).not.toContain('priority');
+    expect(built.args.join(' ')).not.toContain('features.fast_mode');
+    expect(() => spec.buildArgv(BEAD, WS, { speed: 'turbo' })).toThrow(
+      'unknown orchestration speed'
+    );
   });
 
   test('takes the exec resume branch with the session id positionally', () => {
@@ -63,6 +80,7 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
 
     const built = spec.buildArgv(BEAD, WS, {
       model: 'sol',
+      speed: 'fast',
       resume_session_id: 'thread-1'
     });
 
@@ -74,6 +92,9 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
       '-m',
       'gpt-5.6-sol'
     ]);
+    expect(
+      built.args.filter((arg) => arg === 'service_tier="fast"')
+    ).toHaveLength(1);
   });
 
   test('keeps -m on resume so the recorded model is not questioned', () => {

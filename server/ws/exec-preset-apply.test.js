@@ -74,7 +74,7 @@ afterEach(() => {
 });
 
 describe('buildApplyExecPresetArgs', () => {
-  test('replaces all 11 metadata keys in canonical order with one update argv', () => {
+  test('replaces all 12 metadata keys in canonical order with one update argv', () => {
     const args = buildApplyExecPresetArgs('UI-1', {
       orchestration_model: 'sol',
       impl_effort: 'high'
@@ -87,6 +87,8 @@ describe('buildApplyExecPresetArgs', () => {
       'orchestration_model=sol',
       '--unset-metadata',
       'orchestration_effort',
+      '--unset-metadata',
+      'orchestration_speed',
       '--unset-metadata',
       'spec_review_model',
       '--unset-metadata',
@@ -108,14 +110,14 @@ describe('buildApplyExecPresetArgs', () => {
     ]);
   });
 
-  test('sets all 11 keys when the preset defines every value', () => {
+  test('sets all 12 keys when the preset defines every value', () => {
     const settings = Object.fromEntries(
       EXEC_SETTING_KEYS.map((key) => [key, `${key}-value`])
     );
 
     const args = buildApplyExecPresetArgs('UI-1', settings);
 
-    expect(args.filter((value) => value === '--set-metadata')).toHaveLength(11);
+    expect(args.filter((value) => value === '--set-metadata')).toHaveLength(12);
     expect(args).not.toContain('--unset-metadata');
   });
 });

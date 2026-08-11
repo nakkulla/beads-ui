@@ -3,6 +3,7 @@
  *
  * CLI (measured against codex 0.147.0):
  * `codex exec --json -m <full_id> [-c model_reasoning_effort=<effort>]
+ * -c service_tier="default|fast"
  * --dangerously-bypass-approvals-and-sandbox --disable hooks "<prompt>"`, and on
  * the resume branch `codex exec resume <thread_id> --json -m <full_id> …`. The
  * resume branch KEEPS `-m`: codex emits a model-mismatch warning item when a
@@ -334,6 +335,11 @@ export function codexSpec(catalog_entry, options = {}) {
       if (s.effort) {
         args.push('-c', `model_reasoning_effort=${String(s.effort)}`);
       }
+      const speed = s.speed ?? 'default';
+      if (speed !== 'default' && speed !== 'fast') {
+        throw new Error(`unknown orchestration speed: ${String(speed)}`);
+      }
+      args.push('-c', `service_tier="${speed}"`);
       // Unattended: no approval prompt can appear, and the user's codex hooks
       // (features.hooks) stay off so a worker session fires none of them.
       args.push('--dangerously-bypass-approvals-and-sandbox');

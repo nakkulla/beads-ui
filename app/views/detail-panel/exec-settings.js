@@ -31,13 +31,14 @@ export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 export const WORKFLOW_MODES = ['standard', 'fast_track'];
 
 /**
- * The 11 workspace-global-capable exec keys, in display order. Mirrors the
+ * The 12 workspace-global-capable exec keys, in display order. Mirrors the
  * server table in server/worker/exec-enums.js; `workflow_mode` is per-bead only
  * and therefore not part of it.
  */
 export const EXEC_KEYS = [
   'orchestration_model',
   'orchestration_effort',
+  'orchestration_speed',
   'spec_review_model',
   'spec_review_effort',
   'plan_review_model',
@@ -58,6 +59,10 @@ export const EXEC_KEYS = [
 export const EXEC_SETTING_PRESENTATION = {
   orchestration_model: { title: '워커 실행 모델' },
   orchestration_effort: { title: '워커 reasoning effort' },
+  orchestration_speed: {
+    title: '워커 실행 속도',
+    help: 'Fast는 지원 모델을 더 빠르게 실행하며 사용량 비용이 증가합니다.'
+  },
   spec_review_model: { title: '스펙 리뷰어' },
   spec_review_effort: { title: '스펙 리뷰 reasoning effort' },
   plan_review_model: { title: '계획 리뷰어' },
@@ -119,6 +124,7 @@ const ORCHESTRATION_MODEL_FALLBACK = 'opus';
 export const DEFAULT_LABELS = {
   orchestration_model: '(기본: opus)',
   orchestration_effort: '(기본: CLI 기본)',
+  orchestration_speed: '(기본: Standard)',
   spec_review_model: '(기본: codex)',
   spec_review_effort: '(기본: 프리셋)',
   impl_review_model: '(기본: codex)',
@@ -161,7 +167,15 @@ export function execSettingLabelTemplate(key) {
 export function defaultLabelFor(key, globals, source_name = '') {
   const g = globals && globals[key];
   if (typeof g === 'string' && g.length > 0) {
-    return `(기본: ${g} — ${source_name || '워크스페이스 프리셋'})`;
+    const shown =
+      key === 'orchestration_speed'
+        ? g === 'default'
+          ? 'Standard'
+          : g === 'fast'
+            ? 'Fast'
+            : g
+        : g;
+    return `(기본: ${shown} — ${source_name || '워크스페이스 프리셋'})`;
   }
   return DEFAULT_LABELS[key] || '(기본)';
 }
@@ -288,6 +302,69 @@ function effortsOf(entry, model_entry) {
     return model_entry.efforts.slice();
   }
   return Array.isArray(entry.efforts) ? entry.efforts.slice() : [];
+}
+
+/**
+ * Outer Worker effort vocabulary for one model. The nested capability is
+ * additive: legacy catalog entries continue to use their implementation
+ * `efforts` list as the outer fallback.
+ *
+ * @param {any} entry - A catalog runner entry.
+ * @param {any} model_entry
+ * @returns {string[]}
+ */
+function orchestrationEffortsOf(entry, model_entry) {
+  if (
+    isRecord(model_entry) &&
+    Array.isArray(model_entry.orchestration_efforts)
+  ) {
+    return model_entry.orchestration_efforts.slice();
+  }
+  return effortsOf(entry, model_entry);
+}
+
+/**
+ * Outer Worker effort vocabulary accepted by `model`.
+ *
+ * @param {any} runner_catalog
+ * @param {string} model
+ * @returns {string[]}
+ */
+export function orchestrationEffortsForModel(runner_catalog, model) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners || !model) {
+    return [];
+  }
+  for (const [, entry] of runners) {
+    if (Object.hasOwn(entry.models, model)) {
+      return orchestrationEffortsOf(entry, entry.models[model]);
+    }
+  }
+  return [];
+}
+
+/**
+ * Speed vocabulary accepted by `model`. Legacy entries are Standard-only.
+ *
+ * @param {any} runner_catalog
+ * @param {string} model
+ * @returns {string[]}
+ */
+export function speedTiersForModel(runner_catalog, model) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners || !model) {
+    return [];
+  }
+  for (const [, entry] of runners) {
+    if (!Object.hasOwn(entry.models, model)) {
+      continue;
+    }
+    const model_entry = entry.models[model];
+    return Array.isArray(model_entry.speed_tiers)
+      ? model_entry.speed_tiers.slice()
+      : ['default'];
+  }
+  return [];
 }
 
 /**
@@ -426,7 +503,7 @@ export function normalizeImplTarget(
 }
 
 /**
- * Build the option model for all 11 exec rows — the SINGLE implementation both
+ * Build the option model for all 12 exec rows — the SINGLE implementation both
  * the per-bead detail panel and the ⚙ global dialog render, so the two surfaces
  * cannot drift on grouping, effort narrowing or the self/skip gate.
  *
@@ -478,7 +555,12 @@ export function execSettingRows(input) {
       disabled = requested_runtime === 'inherit' && impl_runtime === null;
     } else if (key === 'orchestration_effort') {
       groups = valueGroups(
-        effortsForModel(runner_catalog, orchestration_model),
+        orchestrationEffortsForModel(runner_catalog, orchestration_model),
+        selected
+      );
+    } else if (key === 'orchestration_speed') {
+      groups = speedGroups(
+        speedTiersForModel(runner_catalog, orchestration_model),
         selected
       );
     } else if (key === 'impl_effort') {
@@ -535,6 +617,37 @@ export function selectOptionsTemplate(groups, selected, default_label) {
           </optgroup>`
     )}
   `;
+}
+
+/**
+ * User-facing labels for canonical orchestration speeds. Known stale values
+ * keep their Standard/Fast labels with `(비호환)`; unknown values stay verbatim.
+ *
+ * @param {ReadonlyArray<string>} values
+ * @param {string} selected
+ * @returns {SelectGroup[]}
+ */
+function speedGroups(values, selected) {
+  return valueGroups(values, selected).map((group) => ({
+    ...group,
+    options: group.options.map((option) => {
+      const incompatible = option.label.endsWith('(비호환)');
+      const known_label =
+        option.value === 'default'
+          ? 'Standard'
+          : option.value === 'fast'
+            ? 'Fast'
+            : null;
+      return {
+        ...option,
+        label: incompatible
+          ? known_label
+            ? `${known_label} (비호환)`
+            : option.label
+          : known_label || option.label
+      };
+    })
+  }));
 }
 
 /**
@@ -611,7 +724,7 @@ function selectRow(
 }
 
 /**
- * Execution-settings editor (detail-panel.html "실행 설정"): the 11 exec keys +
+ * Execution-settings editor (detail-panel.html "실행 설정"): the 12 exec keys +
  * workflow_mode. Selecting `standard` for workflow_mode (or `(기본)` for a key)
  * records an unset — the server mutation removes the metadata key.
  *

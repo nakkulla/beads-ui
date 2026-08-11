@@ -1,14 +1,17 @@
 /**
  * Worker exec settings — resolution order (worker-global-exec-defaults §3).
  *
- * The 11 exec keys (orchestration_model / orchestration_effort, the three
+ * The 12 exec keys (orchestration_model / orchestration_effort /
+ * orchestration_speed, the three
  * `*_review_model` + `*_review_effort` step pairs, and the linked
  * impl_runtime / impl_model / impl_effort target)
  * resolve bead metadata > workspace global (queue store) > final fallback.
- * Invalid orchestration/review values fall through; an invalid linked
- * implementation target blocks dispatch instead of silently demoting. The
+ * Invalid orchestration values fail closed, invalid review values fall
+ * through, and an invalid linked implementation target blocks dispatch instead
+ * of silently demoting. The
  * final fallback is `opus` for orchestration_model
- * (worker-orchestration-model-default-opus) and unset for the other 10 keys.
+ * (worker-orchestration-model-default-opus), `default` for orchestration_speed,
+ * and unset for the other 10 keys.
  *
  * The single `review_model` key is retired (dotfiles-mqcj): it is neither read
  * nor used to seed the per-step keys, so a bead still carrying it resolves the
@@ -33,7 +36,11 @@ import {
   REVIEW_STEP_MODELS,
   validateImplSettings
 } from './exec-enums.js';
-import { modelEfforts, modelRunner } from './runner-catalog.js';
+import {
+  modelOrchestrationEfforts,
+  modelRunner,
+  modelSpeedTiers
+} from './runner-catalog.js';
 import { runtimeCatalog } from './runner/index.js';
 
 /**
@@ -66,7 +73,7 @@ function defaultCatalog() {
 /**
  * @param {ReadonlyArray<string>} allowed
  * @param {unknown} value
- * @returns {boolean}
+ * @returns {value is string}
  */
 function isEnum(allowed, value) {
   return typeof value === 'string' && allowed.includes(value);
@@ -96,6 +103,43 @@ function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
     return /** @type {string} */ (globalVal);
   }
   return undefined;
+}
+
+/**
+ * Resolve an outer launch setting without treating an explicit incompatible
+ * Bead or workspace value as absent. Dispatch must stop rather than silently
+ * changing a requested model, effort, or speed to a lower-precedence value.
+ *
+ * @param {ReadonlyArray<string>} allowed
+ * @param {unknown} beadVal
+ * @param {unknown} globalVal
+ * @param {string|undefined} fallback
+ * @param {string} stampKey
+ * @param {string[]} stamped_keys
+ * @returns {{ value: string|undefined, invalid: boolean }}
+ */
+function pickOuterFailClosed(
+  allowed,
+  beadVal,
+  globalVal,
+  fallback,
+  stampKey,
+  stamped_keys
+) {
+  if (beadVal !== undefined) {
+    return {
+      value: isEnum(allowed, beadVal) ? beadVal : fallback,
+      invalid: !isEnum(allowed, beadVal)
+    };
+  }
+  if (globalVal !== undefined) {
+    if (!isEnum(allowed, globalVal)) {
+      return { value: fallback, invalid: true };
+    }
+    stamped_keys.push(stampKey);
+    return { value: globalVal, invalid: false };
+  }
+  return { value: fallback, invalid: false };
 }
 
 /**
@@ -155,6 +199,7 @@ function normalizeImplLayer(layer, catalog) {
  * @typedef {{
  *   model?: unknown,
  *   effort?: unknown,
+ *   orchestration_speed?: unknown,
  *   spec_review_model?: unknown,
  *   spec_review_effort?: unknown,
  *   impl_review_model?: unknown,
@@ -168,6 +213,7 @@ function normalizeImplLayer(layer, catalog) {
  * @typedef {{
  *   orchestration_model?: unknown,
  *   orchestration_effort?: unknown,
+ *   orchestration_speed?: unknown,
  *   spec_review_model?: unknown,
  *   spec_review_effort?: unknown,
  *   impl_review_model?: unknown,
@@ -181,12 +227,13 @@ function normalizeImplLayer(layer, catalog) {
  */
 
 /**
- * Resolve the 11 exec settings for one dispatch, plus the runner they imply
+ * Resolve the 12 exec settings for one dispatch, plus the runner they imply
  * (worker-global-exec-defaults; worker-multi-provider-runner §C; dotfiles-mqcj).
  *
  * Order is bead metadata > workspace-global default > final fallback.
  * `orchestration_model` alone has a hardcoded final fallback (`opus`) and
- * therefore never resolves to undefined; the other 10 keys still end at unset.
+ * therefore never resolves to undefined; speed finally falls back to `default`
+ * and the other 10 keys still end at unset.
  *
  * The implementation runtime/model/effort group is validated as a unit.
  * Model-only legacy metadata infers a known model's provider read-only; a
@@ -202,7 +249,8 @@ function normalizeImplLayer(layer, catalog) {
  * and whose resolved value came from the workspace-global default — i.e. the
  * exact keys dispatch should stamp onto the bead metadata (and revert on
  * terminate). Order is FIXED and mirrors the pick order below:
- * orchestration_model, orchestration_effort, spec_review_model,
+ * orchestration_model, orchestration_effort, orchestration_speed,
+ * spec_review_model,
  * spec_review_effort, plan_review_model, plan_review_effort, impl_review_model,
  * impl_review_effort, impl_runtime, impl_model, impl_effort.
  *
@@ -218,6 +266,7 @@ function normalizeImplLayer(layer, catalog) {
  * @returns {{
  *   orchestration_model: string,
  *   orchestration_effort: string|undefined,
+ *   orchestration_speed: string,
  *   runner: string,
  *   spec_review_model: string|undefined,
  *   spec_review_effort: string|undefined,
@@ -241,22 +290,44 @@ export function resolveExecSettings(input) {
   /** @type {string[]} */
   const stamped_keys = [];
 
-  const orchestration_model =
-    pickLayered(
-      model_names,
-      bead.model,
-      defaults.orchestration_model,
-      'orchestration_model',
-      stamped_keys
-    ) ?? ORCHESTRATION_MODEL_FALLBACK;
-  const runner = modelRunner(catalog, orchestration_model) ?? RUNNER_FALLBACK;
-  const orchestration_effort = pickLayered(
-    modelEfforts(catalog, orchestration_model),
-    bead.effort,
-    defaults.orchestration_effort,
-    'orchestration_effort',
+  const model_pick = pickOuterFailClosed(
+    model_names,
+    bead.model,
+    defaults.orchestration_model,
+    ORCHESTRATION_MODEL_FALLBACK,
+    'orchestration_model',
     stamped_keys
   );
+  const orchestration_model = model_pick.value ?? ORCHESTRATION_MODEL_FALLBACK;
+  const runner = modelRunner(catalog, orchestration_model) ?? RUNNER_FALLBACK;
+  const effort_pick = model_pick.invalid
+    ? { value: undefined, invalid: false }
+    : pickOuterFailClosed(
+        modelOrchestrationEfforts(catalog, orchestration_model),
+        bead.effort,
+        defaults.orchestration_effort,
+        undefined,
+        'orchestration_effort',
+        stamped_keys
+      );
+  const orchestration_effort = effort_pick.value;
+  const speed_pick = model_pick.invalid
+    ? { value: 'default', invalid: false }
+    : pickOuterFailClosed(
+        modelSpeedTiers(catalog, orchestration_model),
+        bead.orchestration_speed,
+        defaults.orchestration_speed,
+        'default',
+        'orchestration_speed',
+        stamped_keys
+      );
+  const orchestration_speed = speed_pick.invalid
+    ? typeof bead.orchestration_speed === 'string'
+      ? bead.orchestration_speed
+      : typeof defaults.orchestration_speed === 'string'
+        ? defaults.orchestration_speed
+        : 'default'
+    : (speed_pick.value ?? 'default');
   const spec_review_model = pickLayered(
     REVIEW_STEP_MODELS,
     bead.spec_review_model,
@@ -363,6 +434,7 @@ export function resolveExecSettings(input) {
   return {
     orchestration_model,
     orchestration_effort,
+    orchestration_speed,
     runner,
     spec_review_model,
     spec_review_effort,
@@ -374,7 +446,15 @@ export function resolveExecSettings(input) {
     impl_runtime_inferred,
     impl_model,
     impl_effort,
-    invalid_reason: impl_validation.ok ? undefined : impl_validation.reason,
+    invalid_reason: model_pick.invalid
+      ? 'invalid_orchestration_model'
+      : effort_pick.invalid
+        ? 'illegal_orchestration_effort'
+        : speed_pick.invalid
+          ? 'illegal_orchestration_speed'
+          : impl_validation.ok
+            ? undefined
+            : impl_validation.reason,
     stamped_keys
   };
 }

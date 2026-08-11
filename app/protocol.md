@@ -53,7 +53,7 @@ The detail panel uses the same mechanism with a `detail:<id>` client id and an
 - `edit-text` payload:
   `{ id, field: 'title'|'description'|'acceptance'|'notes'|'design', value }`
 - `update-exec-settings` payload: `{ id, key, value }` — execution-preference
-  metadata (the 5 keys + `workflow_mode`; `workflow_mode='standard'` unsets the
+  metadata (the 12 keys + `workflow_mode`; `workflow_mode='standard'` unsets the
   override key). Replaces the removed v3 `update-workflow-settings`.
 - `create-issue` payload: `{ title, type?, priority?, description? }`
 - `delete-issue` payload: `{ id }`

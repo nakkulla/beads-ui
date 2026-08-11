@@ -16,6 +16,7 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     const r = resolveExecSettings({ bead: {}, defaults: {} });
     expect(r.orchestration_model).toBe('opus');
     expect(r.orchestration_effort).toBe(undefined);
+    expect(r.orchestration_speed).toBe('default');
     expect(r.spec_review_model).toBe(undefined);
     expect(r.spec_review_effort).toBe(undefined);
     expect(r.impl_review_model).toBe(undefined);
@@ -43,12 +44,13 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('workspace global fills every key and stamps all 11 in contract order when the bead is bare', () => {
+  test('workspace global fills every key and stamps all 12 in contract order when the bead is bare', () => {
     const r = resolveExecSettings({
       bead: {},
       defaults: {
         orchestration_model: 'sonnet',
         orchestration_effort: 'high',
+        orchestration_speed: 'default',
         spec_review_model: 'opus',
         spec_review_effort: 'high',
         plan_review_model: 'fable',
@@ -63,6 +65,7 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r).toMatchObject({
       orchestration_model: 'sonnet',
       orchestration_effort: 'high',
+      orchestration_speed: 'default',
       spec_review_model: 'opus',
       spec_review_effort: 'high',
       plan_review_model: 'fable',
@@ -76,6 +79,7 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([
       'orchestration_model',
       'orchestration_effort',
+      'orchestration_speed',
       'spec_review_model',
       'spec_review_effort',
       'plan_review_model',
@@ -271,12 +275,13 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('a retired codex model value falls back to opus at both layers', () => {
+  test('a retired codex model blocks dispatch without reading lower layers', () => {
     const bead_pinned = resolveExecSettings({
       bead: { model: 'gpt-5.6' },
       defaults: {}
     });
     expect(bead_pinned.orchestration_model).toBe('opus');
+    expect(bead_pinned.invalid_reason).toBe('invalid_orchestration_model');
     expect(bead_pinned.stamped_keys).toEqual([]);
 
     const global_only = resolveExecSettings({
@@ -286,11 +291,12 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
         orchestration_effort: 'medium'
       }
     });
-    // The stale model is dropped (fallback, not stamped); the valid effort still
-    // resolves from the global layer.
+    // The fallback value is display-only: an explicit invalid model blocks
+    // dispatch before the lower effort layer can resolve or stamp.
     expect(global_only.orchestration_model).toBe('opus');
-    expect(global_only.orchestration_effort).toBe('medium');
-    expect(global_only.stamped_keys).toEqual(['orchestration_effort']);
+    expect(global_only.orchestration_effort).toBe(undefined);
+    expect(global_only.invalid_reason).toBe('invalid_orchestration_model');
+    expect(global_only.stamped_keys).toEqual([]);
   });
 
   test('a global model still beats the fallback and is stamped', () => {
@@ -317,14 +323,13 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(policy.ORCHESTRATION_MODEL_FALLBACK).toBe('opus');
   });
 
-  test('an invalid bead value falls through to the global, but a bead-SET key is never stamped', () => {
+  test('an invalid explicit outer effort blocks dispatch without falling through', () => {
     const r = resolveExecSettings({
       bead: { effort: 'ultra' },
       defaults: { orchestration_effort: 'high' }
     });
-    // Invalid bead effort falls through to the global for the resolved value...
-    expect(r.orchestration_effort).toBe('high');
-    // ...but the bead already set the key, so it is not a stamp/revert target.
+    expect(r.orchestration_effort).toBe(undefined);
+    expect(r.invalid_reason).toBe('illegal_orchestration_effort');
     expect(r.stamped_keys).toEqual([]);
   });
 
@@ -336,6 +341,55 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.spec_review_model).toBe('skip');
     expect(r.impl_model).toBe('haiku');
     expect(r.stamped_keys).toEqual(['impl_runtime', 'impl_model']);
+  });
+
+  test('fails closed for explicit invalid outer model, effort, and speed in precedence order', () => {
+    const invalid_model = resolveExecSettings({
+      bead: {
+        model: 'removed-model',
+        effort: 'ultra',
+        orchestration_speed: 'fast'
+      },
+      defaults: {
+        orchestration_model: 'sol',
+        orchestration_effort: 'ultra',
+        orchestration_speed: 'fast'
+      }
+    });
+    const invalid_effort = resolveExecSettings({
+      bead: { model: 'luna', effort: 'ultra', orchestration_speed: 'fast' },
+      defaults: { orchestration_effort: 'max', orchestration_speed: 'default' }
+    });
+    const invalid_speed = resolveExecSettings({
+      bead: { model: 'opus', effort: 'high', orchestration_speed: 'fast' },
+      defaults: { orchestration_speed: 'default' }
+    });
+
+    expect(invalid_model.invalid_reason).toBe('invalid_orchestration_model');
+    expect(invalid_effort.invalid_reason).toBe('illegal_orchestration_effort');
+    expect(invalid_speed.invalid_reason).toBe('illegal_orchestration_speed');
+  });
+
+  test('accepts model-specific outer capabilities and defaults absent speed to Standard', () => {
+    const sol = resolveExecSettings({
+      bead: { model: 'sol', effort: 'ultra', orchestration_speed: 'fast' },
+      defaults: {}
+    });
+    const luna = resolveExecSettings({
+      bead: { model: 'luna', effort: 'max' },
+      defaults: {}
+    });
+
+    expect(sol).toMatchObject({
+      orchestration_effort: 'ultra',
+      orchestration_speed: 'fast',
+      invalid_reason: undefined
+    });
+    expect(luna).toMatchObject({
+      orchestration_effort: 'max',
+      orchestration_speed: 'default',
+      invalid_reason: undefined
+    });
   });
 });
 
@@ -366,7 +420,7 @@ describe('worker/policy runner derivation from the model catalog', () => {
     expect(r.stamped_keys).toEqual(['orchestration_model']);
   });
 
-  test('falls back to opus on claude for an unknown model', () => {
+  test('blocks an unknown model before it can run the display fallback', () => {
     const r = resolveExecSettings({
       bead: { model: 'grok4' },
       defaults: {}
@@ -374,6 +428,7 @@ describe('worker/policy runner derivation from the model catalog', () => {
 
     expect(r.orchestration_model).toBe('opus');
     expect(r.runner).toBe('claude');
+    expect(r.invalid_reason).toBe('invalid_orchestration_model');
   });
 
   test('accepts the per-model max effort luna alone allows', () => {
@@ -387,24 +442,26 @@ describe('worker/policy runner derivation from the model catalog', () => {
     expect(r.orchestration_effort).toBe('max');
   });
 
-  test('leaves the effort unset when the resolved model rejects it', () => {
+  test('blocks an effort the resolved model rejects', () => {
     const r = resolveExecSettings({
-      bead: { model: 'sol', effort: 'max' },
+      bead: { model: 'sol', effort: 'minimal' },
       defaults: {}
     });
 
     expect(r.orchestration_model).toBe('sol');
     expect(r.orchestration_effort).toBe(undefined);
+    expect(r.invalid_reason).toBe('illegal_orchestration_effort');
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('falls the effort through to the global when the model rejects the bead value', () => {
+  test('does not fall through when the model rejects the bead effort', () => {
     const r = resolveExecSettings({
-      bead: { model: 'sol', effort: 'max' },
+      bead: { model: 'luna', effort: 'ultra' },
       defaults: { orchestration_effort: 'xhigh' }
     });
 
-    expect(r.orchestration_effort).toBe('xhigh');
+    expect(r.orchestration_effort).toBe(undefined);
+    expect(r.invalid_reason).toBe('illegal_orchestration_effort');
     expect(r.stamped_keys).toEqual([]);
   });
 
@@ -449,6 +506,7 @@ describe('worker/policy runner derivation from the model catalog', () => {
 
     expect(r.orchestration_model).toBe('opus');
     expect(r.runner).toBe('claude');
+    expect(r.invalid_reason).toBe('invalid_orchestration_model');
   });
 });
 

@@ -157,6 +157,8 @@ function staleDispatchPrompt(bead_id, stale) {
  * a PR to.
  * @property {string} [model] - orchestration_model.
  * @property {string} [effort] - orchestration_effort.
+ * @property {string} [orchestration_speed] - Effective outer launch speed
+ * (`default` or `fast`).
  * @property {string} [spec_review_model] - spec_review_model (per-bead exec setting).
  * @property {string} [spec_review_effort] - spec_review_effort (per-bead exec setting).
  * @property {string} [impl_review_model] - impl_review_model (per-bead exec setting).
@@ -792,7 +794,7 @@ export function createScheduler(deps) {
   /**
    * Build the durable effective-value provenance independently from the subset
    * of keys this worker writes into metadata. Unset optional keys are recorded
-   * as null so every fresh snapshot still has the complete 11-key shape.
+   * as null so every fresh snapshot still has the complete 12-key shape.
    *
    * @param {any} exec
    * @returns {Record<string, string|null>}
@@ -2858,7 +2860,7 @@ export function createScheduler(deps) {
     }
 
     // DURABLE pre-record before the FIRST metadata write. It carries the whole
-    // effective 11-key snapshot, separate from the subset the worker will
+    // effective 12-key snapshot, separate from the subset the worker will
     // stamp, so restart/reconcile and every relaunch have exact provenance.
     const stamped_keys = exec.stamped_keys;
     const exec_values = execValuesFor(exec);
@@ -3022,6 +3024,7 @@ export function createScheduler(deps) {
       runner_name,
       model: exec.orchestration_model ?? null,
       effort: exec.orchestration_effort ?? null,
+      speed: exec.orchestration_speed ?? 'default',
       prior_wf: prior,
       stamped_keys,
       wt_path: wt.path,
@@ -3113,6 +3116,7 @@ export function createScheduler(deps) {
    *   runner_name: string,
    *   model: string|null,
    *   effort: string|null,
+   *   speed: string,
    *   prior_wf: string|null,
    *   stamped_keys: string[],
    *   wt_path: string,
@@ -3140,6 +3144,7 @@ export function createScheduler(deps) {
       runner_name,
       model,
       effort,
+      speed,
       prior_wf,
       stamped_keys,
       wt_path,
@@ -3168,6 +3173,7 @@ export function createScheduler(deps) {
     const settings = {
       model: model ?? undefined,
       effort: effort ?? undefined,
+      speed,
       fast_track: true,
       // The base wiring (worker-base-scope-alignment §3): `launchSession`
       // already destructured `repo`/`target_base`/`base_oid`, but the settings
@@ -3312,9 +3318,18 @@ export function createScheduler(deps) {
         runner: runner_name,
         model: model ?? null,
         effort: effort ?? null,
+        speed,
         ...prompt_patch
       }
     });
+    log(
+      'attempt %s started: %s %s / %s / %s',
+      attempt_id,
+      runner_name,
+      model ?? 'default',
+      effort ?? 'default',
+      speed
+    );
 
     notifyLifecycle('attemptStarted', {
       bead_id,
@@ -3322,6 +3337,7 @@ export function createScheduler(deps) {
       runner: runner_name,
       model,
       effort,
+      speed,
       repo,
       kind: input.launch_kind ?? 'dispatch'
     });
@@ -3661,6 +3677,7 @@ export function createScheduler(deps) {
         runner: exec.runner,
         model: exec.orchestration_model ?? null,
         effort: exec.orchestration_effort ?? null,
+        speed: exec.orchestration_speed ?? 'default',
         workflow_mode_prior: snap.workflow_mode ?? null,
         exec_default_preset_id: resolved_exec.preset_id,
         exec_default_preset_revision: resolved_exec.preset_revision,
@@ -3686,6 +3703,7 @@ export function createScheduler(deps) {
       runner_name: exec.runner,
       model: exec.orchestration_model ?? null,
       effort: exec.orchestration_effort ?? null,
+      speed: exec.orchestration_speed ?? 'default',
       prior_wf: snap.workflow_mode ?? null,
       stamped_keys: [],
       wt_path,
@@ -3925,6 +3943,8 @@ export function createScheduler(deps) {
     let launch_model;
     /** @type {string|null} */
     let launch_effort;
+    /** @type {string} */
+    let launch_speed;
     /** @type {string[]} */
     let stamped_keys;
     /** @type {Record<string, string|null>|null} */
@@ -3955,6 +3975,10 @@ export function createScheduler(deps) {
         typeof prior_attempt.effort === 'string'
           ? prior_attempt.effort
           : (exec_values?.orchestration_effort ?? null);
+      launch_speed =
+        typeof prior_attempt.speed === 'string'
+          ? prior_attempt.speed
+          : 'default';
       stamped_keys = Array.isArray(prior_attempt.exec_stamped_keys)
         ? prior_attempt.exec_stamped_keys
         : [];
@@ -3972,6 +3996,7 @@ export function createScheduler(deps) {
       runner_name = exec.runner;
       launch_model = exec.orchestration_model ?? null;
       launch_effort = exec.orchestration_effort ?? null;
+      launch_speed = exec.orchestration_speed ?? 'default';
       stamped_keys = exec.stamped_keys;
       exec_values = execValuesFor(exec);
       preset_id = resolved_exec.preset_id;
@@ -4017,6 +4042,7 @@ export function createScheduler(deps) {
       runner: runner_name,
       model: launch_model,
       effort: launch_effort,
+      speed: launch_speed,
       workflow_mode_prior: prior,
       exec_default_preset_id: preset_id,
       exec_default_preset_revision: preset_revision,
@@ -4155,6 +4181,7 @@ export function createScheduler(deps) {
       runner_name,
       model: launch_model,
       effort: launch_effort,
+      speed: launch_speed,
       prior_wf: prior,
       stamped_keys,
       wt_path:
@@ -4264,9 +4291,11 @@ export function createScheduler(deps) {
       prior.exec_values && typeof prior.exec_values === 'object'
         ? /** @type {Record<string, string|null>} */ (prior.exec_values)
         : null;
+    const launch_speed =
+      typeof prior.speed === 'string' ? prior.speed : 'default';
 
     // Mint the new attempt inheriting the PRIOR snapshot verbatim (§1.3): repo/
-    // target_base/base_oid/runner/model/effort — never re-resolved from current
+    // target_base/base_oid/runner/model/effort/speed — never re-resolved from current
     // globals. The retired merge-axis fields are NOT copied forward: history
     // keeps them on the old record, new attempts stop writing them (§9).
     if (
@@ -4282,6 +4311,7 @@ export function createScheduler(deps) {
           runner: runner_name,
           model: prior.model ?? null,
           effort: prior.effort ?? null,
+          speed: launch_speed,
           workflow_mode_prior: prior_wf,
           exec_default_preset_id: prior.exec_default_preset_id ?? null,
           exec_default_preset_revision:
@@ -4435,6 +4465,7 @@ export function createScheduler(deps) {
       runner_name,
       model: prior.model ?? null,
       effort: prior.effort ?? null,
+      speed: launch_speed,
       prior_wf,
       stamped_keys,
       wt_path,
@@ -4723,6 +4754,8 @@ export function createScheduler(deps) {
     let launch_model;
     /** @type {string|null} */
     let launch_effort;
+    /** @type {string} */
+    let launch_speed;
     /** @type {string[]} */
     let stamped_keys;
     /** @type {Record<string, string|null>|null} */
@@ -4752,6 +4785,10 @@ export function createScheduler(deps) {
           : 'claude';
       launch_model = resume_source.model ?? null;
       launch_effort = resume_source.effort ?? null;
+      launch_speed =
+        typeof resume_source.speed === 'string'
+          ? resume_source.speed
+          : 'default';
       stamped_keys = Array.isArray(resume_source.exec_stamped_keys)
         ? resume_source.exec_stamped_keys
         : [];
@@ -4790,6 +4827,7 @@ export function createScheduler(deps) {
       runner_name = exec.runner;
       launch_model = exec.orchestration_model ?? null;
       launch_effort = exec.orchestration_effort ?? null;
+      launch_speed = exec.orchestration_speed ?? 'default';
       stamped_keys = exec.stamped_keys;
       exec_values = execValuesFor(exec);
       preset_id = resolved_exec.preset_id;
@@ -4814,6 +4852,7 @@ export function createScheduler(deps) {
         runner: runner_name,
         model: launch_model,
         effort: launch_effort,
+        speed: launch_speed,
         workflow_mode_prior: prior_wf,
         exec_default_preset_id: preset_id,
         exec_default_preset_revision: preset_revision,
@@ -4936,6 +4975,7 @@ export function createScheduler(deps) {
       runner_name,
       model: launch_model,
       effort: launch_effort,
+      speed: launch_speed,
       prior_wf,
       stamped_keys,
       wt_path,
