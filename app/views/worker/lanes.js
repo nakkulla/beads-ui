@@ -55,6 +55,186 @@ export function timesMeta(item) {
 }
 
 /**
+ * Convert durable discard phases into the small, restart-safe vocabulary both
+ * Worker and Monitor render. Unknown phases remain visible instead of being
+ * misrepresented as completion.
+ *
+ * @param {string|null|undefined} phase
+ * @returns {string}
+ */
+export function discardPhaseLabel(phase) {
+  if (!phase || phase === 'requested') {
+    return '백업 중';
+  }
+  if (phase === 'backup_verified' || phase === 'signaled') {
+    return 'runner 종료 중';
+  }
+  if (phase === 'merged_revert' || phase.startsWith('revert_')) {
+    return 'revert PR 대기';
+  }
+  if (phase.startsWith('rollback_')) {
+    return '원복 배포 중';
+  }
+  if (
+    phase === 'runner_terminated' ||
+    phase.startsWith('pr_') ||
+    phase.includes('ref_') ||
+    phase.includes('worktree') ||
+    phase.startsWith('bead_')
+  ) {
+    return 'PR 정리 중';
+  }
+  return `폐기 처리 중 (${phase})`;
+}
+
+/**
+ * State-specific confirmation shared verbatim by Worker and Monitor.
+ *
+ * @param {string} bead_id
+ * @param {'merged'|'unmerged'} confirmation
+ * @returns {string}
+ */
+export function discardConfirmationMessage(bead_id, confirmation) {
+  return confirmation === 'merged'
+    ? `${bead_id}: 이미 merge된 구현입니다. 복구 archive를 만든 뒤 revert PR을 생성하며, 실제 원복은 사람이 그 PR을 merge한 뒤 완료됩니다. 계속할까요?`
+    : `${bead_id}: 복구 archive를 만든 뒤 runner/PR/branch/worktree를 정리하고 이슈를 후보로 되돌립니다. 계속할까요?`;
+}
+
+/**
+ * Preserve the terminal recovery receipt in the success toast after the
+ * completed operation leaves every queue lane and active snapshot projection.
+ *
+ * @param {{ operation_id?: string|null, receipt?: { archive_path?: string|null, original_pr?: { url?: string|null }|null, revert_pr?: { url?: string|null }|null }|null }} result
+ * @returns {string}
+ */
+export function discardCompletionMessage(result) {
+  const parts = ['폐기 완료'];
+  if (result.operation_id) {
+    parts.push(`작업 ${result.operation_id}`);
+  }
+  if (result.receipt?.archive_path) {
+    parts.push(`백업 ${result.receipt.archive_path}`);
+  }
+  if (result.receipt?.original_pr?.url) {
+    parts.push(`원본 PR ${result.receipt.original_pr.url}`);
+  }
+  if (result.receipt?.revert_pr?.url) {
+    parts.push(`revert PR ${result.receipt.revert_pr.url}`);
+  }
+  return parts.join(' · ');
+}
+
+/**
+ * One shared UI projection for Worker and Monitor discard affordances. The
+ * server owns final admission; this only keeps both views from advertising a
+ * knowingly conflicting action and keeps a failed operation retry bound to its
+ * original durable operation id.
+ *
+ * @param {Record<string, any>|null|undefined} operations
+ * @param {string} bead_id
+ * @param {{ attempt_id?: string|null, external?: boolean, done?: boolean, merge_active?: boolean, merge_queued?: boolean, conflict_active?: boolean, cleanup_active?: boolean, merged?: boolean }} [input]
+ * @returns {{ action: boolean, enabled: boolean, label: string, title: string, attempt_id: string|null, operation: any, progress: string|null, error: string|null, confirmation: 'merged'|'unmerged' }}
+ */
+export function discardProjection(operations, bead_id, input = {}) {
+  const list = operations && typeof operations === 'object' ? operations : {};
+  const operation = Object.values(list)
+    .filter(
+      (/** @type {any} */ value) =>
+        value && value.bead_id === bead_id && value.phase !== 'done'
+    )
+    .sort(
+      (/** @type {any} */ left, /** @type {any} */ right) =>
+        (left.requested_at || 0) - (right.requested_at || 0)
+    )
+    .at(-1);
+  const attempt_id =
+    typeof input.attempt_id === 'string' && input.attempt_id.length > 0
+      ? input.attempt_id
+      : typeof operation?.attempt_id === 'string'
+        ? operation.attempt_id
+        : null;
+  const blocked_reason = input.external
+    ? '외부 PR은 Worker가 소유하지 않아 폐기할 수 없습니다'
+    : input.done
+      ? '완료된 작업은 폐기할 수 없습니다'
+      : input.merge_active
+        ? '머지 진행 중 — 폐기할 수 없습니다'
+        : input.merge_queued
+          ? '머지 큐에 있음 — 폐기하려면 먼저 [취소]하세요'
+          : input.conflict_active
+            ? '충돌 해소 세션 있음 — 폐기하려면 먼저 세션을 정리하세요'
+            : input.cleanup_active
+              ? '정리 진행 중 — 폐기할 수 없습니다'
+              : null;
+  const error =
+    typeof operation?.last_error === 'string' ? operation.last_error : null;
+  const progress = operation ? discardPhaseLabel(operation.phase) : null;
+  const confirmation =
+    input.merged || operation?.mode === 'merged_revert' ? 'merged' : 'unmerged';
+  return {
+    action: !input.external && !input.done,
+    enabled: !blocked_reason && (!operation || !!error),
+    label: error ? '재시도' : '폐기',
+    title:
+      blocked_reason ||
+      (error
+        ? `폐기 실패: ${error} — 같은 작업을 재시도합니다`
+        : operation
+          ? `${progress || '폐기 처리 중'} — 완료를 기다리세요`
+          : confirmation === 'merged'
+            ? '병합된 변경을 원복 PR로 되돌립니다'
+            : '백업 후 runner·PR·워크트리·브랜치를 폐기합니다'),
+    attempt_id,
+    operation: operation || null,
+    progress,
+    error,
+    confirmation
+  };
+}
+
+/**
+ * Durable discard progress, error, archive, and PR receipts. This same
+ * template is used by Worker rows, running tiles, and Monitor cards.
+ *
+ * @param {{ discard?: ReturnType<typeof discardProjection> }} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function discardReceiptTemplate(item) {
+  const discard = item.discard;
+  if (!discard || !discard.operation) {
+    return '';
+  }
+  const operation = discard.operation;
+  const archive = operation.backup?.path;
+  const original = operation.original_pr;
+  const revert = operation.revert_pr;
+  return html`<div
+    class="worker-discard-receipt"
+    role=${discard.error ? 'alert' : 'status'}
+  >
+    <span>${discard.progress}</span>
+    ${discard.error ? html`<span>폐기 실패: ${discard.error}</span>` : ''}
+    <code>작업: ${operation.operation_id}</code>
+    ${archive
+      ? html`<code>백업: ${archive}</code>`
+      : discard.error
+        ? html`<span>아직 아무것도 삭제하지 않음</span>`
+        : ''}
+    ${original?.url
+      ? html`<a href=${original.url} target="_blank" rel="noreferrer noopener"
+          >원본 PR #${original.number || '?'}</a
+        >`
+      : ''}
+    ${revert?.url
+      ? html`<a href=${revert.url} target="_blank" rel="noreferrer noopener"
+          >revert PR #${revert.number || '?'} ·
+          ${revert.state || '상태 미확인'}</a
+        >`
+      : ''}
+  </div>`;
+}
+
+/**
  * @typedef {Object} MiniItem
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
@@ -89,9 +269,9 @@ export function timesMeta(item) {
  * human decision (PR closed, observation error) — rendered in the warn colour.
  * @property {boolean} [merge_action] - Render the [머지] action (`pr_wait` rows
  * only, worker-phase2 §6).
- * @property {boolean} [discard_action] - Render the [폐기] action. Flagged apart
- * from `merge_action` because a merged tile keeps [머지] as its cleanup-retry
- * button while [폐기] must not be offered there at all (discard spec §2).
+ * @property {boolean} [discard_action] - Render the [폐기] action.
+ * @property {ReturnType<typeof discardProjection>} [discard] - Shared durable
+ * discard eligibility, phase, error, archive, and PR-receipt projection.
  * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
  * @property {boolean} [discard_enabled] - Whether [폐기] may be clicked; false
  * while a merge is in flight (UI-raqh §4) or a conflict-resolution session owns
@@ -258,19 +438,28 @@ export function miniRow(item) {
         취소
       </button>`
     : '';
-  const discard_el = item.discard_action
-    ? html`<button
-        type="button"
-        class="worker-mini__discard"
-        data-bead-id=${item.id}
-        ?disabled=${item.discard_enabled === false}
-        title=${item.discard_enabled === false
-          ? item.discard_title || '머지 진행 중 — 폐기할 수 없습니다'
-          : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음). 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요'}
-      >
-        폐기
-      </button>`
-    : '';
+  const discard = item.discard;
+  const discard_el =
+    discard?.action || item.discard_action
+      ? html`<button
+          type="button"
+          class="worker-mini__discard"
+          data-bead-id=${item.id}
+          data-attempt-id=${discard?.attempt_id || ''}
+          data-operation-id=${discard?.operation?.operation_id || ''}
+          data-discard-mode=${discard?.confirmation || 'unmerged'}
+          ?disabled=${discard
+            ? !discard.enabled
+            : item.discard_enabled === false}
+          title=${discard
+            ? discard.title
+            : item.discard_enabled === false
+              ? item.discard_title || '머지 진행 중 — 폐기할 수 없습니다'
+              : 'PR을 닫고 워크트리/브랜치를 폐기합니다 (되돌릴 수 없음). 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요'}
+        >
+          ${discard?.label || '폐기'}
+        </button>`
+      : '';
   // 파킹 처분 두 버튼 (UI-hs11 §3.5). 대기 레인 행에만 붙고, 머지/폐기와 같은
   // 클릭 위임·CAS 재시도 계약을 쓴다. findings 상세는 카드 클릭 → 이슈 상세
   // (notes 섹션, UI-yp64 §4)로 가고 여기서는 툴팁 요약만 싣는다.
@@ -301,6 +490,7 @@ export function miniRow(item) {
     item.merge_action ||
     item.cancel_action ||
     item.discard_action ||
+    discard?.operation ||
     item.revise_action
   );
   return html`<div
@@ -340,6 +530,7 @@ export function miniRow(item) {
                   <span class="worker-mini__actions"
                     >${merge_el}${cancel_el}${discard_el}${revise_els}</span
                   >
+                  ${discardReceiptTemplate(item)}
                 </div>`
               : ''}
             ${timesMeta(item)}`
@@ -349,7 +540,7 @@ export function miniRow(item) {
           html`<div class="worker-mini__line">
               ${grip}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
             </div>
-            ${timesMeta(item)}`}
+            ${discardReceiptTemplate(item)} ${timesMeta(item)}`}
   </div>`;
 }
 

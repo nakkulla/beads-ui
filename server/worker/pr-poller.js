@@ -97,6 +97,17 @@ function prNumberFromUrl(url) {
  * @returns {{ number: number, url: string }|null}
  */
 export function resolvePrRef(queue, bead_id, external = null) {
+  const rollback = Object.values(queue?.discard_operations || {}).find(
+    (operation) =>
+      /** @type {any} */ (operation)?.bead_id === bead_id &&
+      /** @type {any} */ (operation)?.phase === 'revert_pr_wait' &&
+      Number.isFinite(/** @type {any} */ (operation)?.revert_pr?.number) &&
+      typeof (/** @type {any} */ (operation)?.revert_pr?.url) === 'string'
+  );
+  if (rollback) {
+    const revert_pr = /** @type {any} */ (rollback).revert_pr;
+    return { number: revert_pr.number, url: revert_pr.url };
+  }
   const attempts = queue && queue.attempts ? Object.values(queue.attempts) : [];
   /** @type {{ number: number, url: string, at: number }|null} */
   let best = null;
@@ -174,6 +185,7 @@ export function rollupConclusion(checks) {
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
  *   onMerged?: (bead_id: string, merge_sha: string) => Promise<unknown>,
+ *   onDiscardObservation?: (bead_id: string) => Promise<unknown>,
  *   external?: {
  *     refresh: () => Promise<unknown>,
  *     list: () => import('./external-pr.js').ExternalPrRow[]
@@ -251,6 +263,10 @@ export function createPrPoller(deps) {
       return (
         q.auto_merge === true ||
         (Array.isArray(q.merge_queue) && q.merge_queue.length > 0) ||
+        Object.values(q.discard_operations || {}).some(
+          (operation) =>
+            /** @type {any} */ (operation)?.phase === 'revert_pr_wait'
+        ) ||
         Object.values(q.reconcile || {}).some(
           (record) =>
             record && record.stage !== 'complete' && record.stage !== 'failed'
@@ -292,6 +308,8 @@ export function createPrPoller(deps) {
    * @type {Set<string>}
    */
   const cleaning = new Set();
+  /** @type {Set<string>} */
+  const discard_observing = new Set();
   /** @type {(() => void)|null} */
   let off_queue_changed = null;
 
@@ -346,6 +364,21 @@ export function createPrPoller(deps) {
       return { verify: null };
     }
     const pr = detail.data;
+
+    const active_discard = Object.values(queue.discard_operations || {}).some(
+      (operation) =>
+        /** @type {any} */ (operation).bead_id === bead_id &&
+        /** @type {any} */ (operation).phase !== 'done'
+    );
+    if (active_discard) {
+      deps.observations.record(workspace, bead_id, { error: null, pr });
+      return {
+        verify:
+          typeof deps.onDiscardObservation === 'function'
+            ? observeDiscard(bead_id)
+            : null
+      };
+    }
 
     // A merged or closed PR is classified by its state alone — there is no gate
     // left to compute, so no checks query is spent on it. MERGED hands off to
@@ -469,6 +502,26 @@ export function createPrPoller(deps) {
   }
 
   /**
+   * Wake the durable discard driver once per bead per observation round.
+   *
+   * @param {string} bead_id
+   */
+  async function observeDiscard(bead_id) {
+    if (discard_observing.has(bead_id)) {
+      return;
+    }
+    discard_observing.add(bead_id);
+    try {
+      await /** @type {any} */ (deps.onDiscardObservation)(bead_id);
+      notifyChanged(workspace);
+    } catch (err) {
+      log('discard observation failed for %s: %o', bead_id, err);
+    } finally {
+      discard_observing.delete(bead_id);
+    }
+  }
+
+  /**
    * Run the local verification for one (bead, head SHA) pair and bind the
    * result to that SHA.
    *
@@ -547,7 +600,20 @@ export function createPrPoller(deps) {
     const pending = [];
     try {
       const queue = deps.store.snapshot(workspace);
-      const durable = Array.isArray(queue.pr_wait) ? queue.pr_wait : [];
+      const durable = Array.isArray(queue.pr_wait) ? [...queue.pr_wait] : [];
+      for (const operation of Object.values(queue.discard_operations || {})) {
+        const record = /** @type {any} */ (operation);
+        if (
+          record?.phase === 'revert_pr_wait' &&
+          typeof record.bead_id === 'string' &&
+          !durable.some((entry) => entry.bead_id === record.bead_id)
+        ) {
+          durable.push({
+            bead_id: record.bead_id,
+            added_at: record.requested_at
+          });
+        }
+      }
       const durable_ids = new Set(durable.map((e) => e.bead_id));
       /** @type {Map<string, import('./external-pr.js').ExternalPrRow>} */
       const external_rows = new Map();

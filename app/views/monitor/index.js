@@ -23,7 +23,11 @@ import {
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
 import { createExecDefaultsDialog } from '../worker/exec-defaults-dialog.js';
-import { paneTemplate } from '../worker/lanes.js';
+import {
+  discardCompletionMessage,
+  discardConfirmationMessage,
+  paneTemplate
+} from '../worker/lanes.js';
 import {
   MIN_SLOTS,
   buildLanes,
@@ -166,7 +170,9 @@ const MONITOR_LANES = [
  * @returns {import('lit-html').TemplateResult}
  */
 function cardTemplate(item, now) {
-  const draggable = item.lane === 'runnable' || item.lane === 'queue';
+  const draggable =
+    (item.lane === 'runnable' || item.lane === 'queue') &&
+    item.draggable !== false;
   return html`<div
     class="mon-card mon-card--${item.lane}${item.alert
       ? ' mon-card--alert'
@@ -361,6 +367,38 @@ export function createMonitorView(mount_element, options) {
       exec_adopted.set(root_dir, res.queue);
     }
     return res;
+  }
+
+  /**
+   * Run the unified discard request and surface the same immediate result
+   * vocabulary as the Worker tab. Durable later failures remain visible in the
+   * shared operation projection and its [재시도] receipt.
+   *
+   * @param {Record<string, unknown>} payload
+   * @param {string} root_dir
+   * @param {number} revision
+   */
+  async function discardBead(payload, root_dir, revision) {
+    const res = await sendCas('worker-discard', payload, root_dir, revision);
+    if (res && res.discarded === true) {
+      showToast(discardCompletionMessage(res), 'success', 5000);
+      return;
+    }
+    if (res && res.reason) {
+      showToast(`폐기 실패: ${res.reason}`, 'error');
+      return;
+    }
+    if (res && res.accepted && res.pending === 'merged_revert') {
+      showToast('revert PR 대기 상태로 전환했습니다', 'success');
+      return;
+    }
+    if (res && res.accepted) {
+      showToast(`폐기 진행: ${res.phase || '백업 중'}`, 'success');
+      return;
+    }
+    if (res && !res.conflict) {
+      showToast('폐기 거부: unknown', 'error');
+    }
   }
 
   /**
@@ -758,7 +796,8 @@ export function createMonitorView(mount_element, options) {
   function runCardAction(card, button) {
     const { root_dir, revision } = casOf(card);
     const bead_id = card.getAttribute('data-issue-id') || '';
-    const attempt_id = card.getAttribute('data-attempt-id') || '';
+    const attempt_id =
+      button.dataset.attemptId || card.getAttribute('data-attempt-id') || '';
     const cls = button.classList;
     if (cls.contains('worker-card__place')) {
       // 적재만 한다 — 서버가 적재 성공 후 이미 `tickWorkerQueue()`를 부르므로
@@ -796,8 +835,21 @@ export function createMonitorView(mount_element, options) {
       void send('worker-attempt-pause', { attempt_id }, root_dir);
       return;
     }
-    if (cls.contains('mon-op--stop')) {
-      void send('worker-attempt-stop', { attempt_id }, root_dir);
+    if (cls.contains('mon-op--discard')) {
+      if (!confirmFn(discardConfirmationMessage(bead_id, 'unmerged'))) {
+        return;
+      }
+      void discardBead(
+        {
+          bead_id,
+          ...(attempt_id ? { attempt_id } : {}),
+          ...(button.dataset.operationId
+            ? { operation_id: button.dataset.operationId }
+            : {})
+        },
+        root_dir,
+        revision
+      );
       return;
     }
     if (cls.contains('mon-op--resume')) {
@@ -827,14 +879,22 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('worker-mini__discard')) {
-      if (
-        !confirmFn(
-          `${bead_id}: PR을 닫고 워크트리/브랜치를 폐기합니다. 되돌릴 수 없습니다. 계속할까요?`
-        )
-      ) {
+      const confirmation =
+        button.dataset.discardMode === 'merged' ? 'merged' : 'unmerged';
+      if (!confirmFn(discardConfirmationMessage(bead_id, confirmation))) {
         return;
       }
-      void sendCas('worker-pr-discard', { bead_id }, root_dir, revision);
+      void discardBead(
+        {
+          bead_id,
+          ...(attempt_id ? { attempt_id } : {}),
+          ...(button.dataset.operationId
+            ? { operation_id: button.dataset.operationId }
+            : {})
+        },
+        root_dir,
+        revision
+      );
       return;
     }
     if (cls.contains('worker-mini__revise-fix')) {

@@ -223,6 +223,127 @@ describe('worker/gh — mergedPrForBranch', () => {
   });
 });
 
+describe('worker/gh — merged revert evidence', () => {
+  test('reads immutable source evidence for a merged PR', async () => {
+    const merge = 'c'.repeat(40);
+    const base = 'd'.repeat(40);
+    const head = 'e'.repeat(40);
+    const run = makeRun({
+      stdout: JSON.stringify({
+        number: 7,
+        url: PR.url,
+        state: 'MERGED',
+        baseRefName: 'main',
+        baseRefOid: base,
+        headRefName: 'UI-1',
+        headRefOid: head,
+        mergeCommit: { oid: merge },
+        commits: [{ oid: head }],
+        files: [{ path: 'file.js' }]
+      })
+    });
+
+    const result = await makeGh(run).revertSource('/repo', 7);
+
+    expect(result).toEqual({
+      state: 'ok',
+      data: {
+        number: 7,
+        url: PR.url,
+        base_ref: 'main',
+        base_sha: base,
+        head_ref: 'UI-1',
+        head_sha: head,
+        merge_sha: merge,
+        commits: [{ oid: head }],
+        files: [{ path: 'file.js' }]
+      }
+    });
+  });
+
+  test('finds an existing exact revert PR before creating another', async () => {
+    const run = makeRun({
+      stdout: JSON.stringify([
+        { ...PR, headRefName: 'revert-UI-1-op', state: 'OPEN' }
+      ])
+    });
+
+    const result = await makeGh(run).createRevertPr('/repo', {
+      base: 'main',
+      head: 'revert-UI-1-op',
+      head_sha: PR.headRefOid,
+      title: 'Revert UI-1',
+      body: 'human merge only'
+    });
+
+    expect(result).toMatchObject({ state: 'ok', data: { url: PR.url } });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  test('refuses an existing revert branch PR whose head sha drifted', async () => {
+    const run = makeRun({
+      stdout: JSON.stringify([
+        {
+          ...PR,
+          headRefName: 'revert-UI-1-op',
+          headRefOid: 'f'.repeat(40),
+          state: 'OPEN'
+        }
+      ])
+    });
+
+    const result = await makeGh(run).createRevertPr('/repo', {
+      base: 'main',
+      head: 'revert-UI-1-op',
+      head_sha: PR.headRefOid,
+      title: 'Revert UI-1',
+      body: 'human merge only'
+    });
+
+    expect(result).toEqual({
+      state: 'error',
+      reason: 'revert_pr_identity_changed'
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  test('creates a revert PR without an auto-merge option and confirms it is open', async () => {
+    const responses = [
+      { code: 0, stdout: '[]', stderr: '' },
+      { code: 0, stdout: '', stderr: '' },
+      {
+        code: 0,
+        stdout: JSON.stringify([
+          { ...PR, headRefName: 'revert-UI-1-op', state: 'OPEN' }
+        ]),
+        stderr: ''
+      }
+    ];
+    /** @type {string[][]} */
+    const calls = [];
+    const run = vi.fn(async (args) => {
+      calls.push(args);
+      const response = responses.shift();
+      if (!response) {
+        throw new Error('unexpected gh invocation');
+      }
+      return response;
+    });
+
+    const result = await makeGh(run).createRevertPr('/repo', {
+      base: 'main',
+      head: 'revert-UI-1-op',
+      head_sha: PR.headRefOid,
+      title: 'Revert UI-1',
+      body: 'human merge only'
+    });
+
+    expect(result).toMatchObject({ state: 'ok', data: { url: PR.url } });
+    expect(calls.at(1) || []).not.toContain('--auto');
+    expect(calls.at(1) || []).not.toContain('--merge');
+  });
+});
+
 describe('worker/gh — mergedPrsForCommit', () => {
   const SHA = 'c'.repeat(40);
 

@@ -14,9 +14,9 @@
  *
  * Execution: `worker-queue-toggle` persists the `auto_advance` flag (CAS) and,
  * on turn-ON, kicks the live dispatch loop via a fire-and-forget `tick` against
- * the registered worker attachment; `worker-attempt-stop` halts one running
- * attempt. Both are inert no-ops when no attachment is registered for the
- * workspace (spec §5.1–§5.2, F1).
+ * the registered worker attachment. Legacy destructive messages bridge into
+ * the same durable `worker-discard` coordinator and are inert when no
+ * attachment is registered for the workspace.
  *
  * Auth: these handlers only run for already-authenticated sockets — the
  * connection layer's first-frame auth gate fronts `handleMessage`, and these
@@ -31,7 +31,7 @@ import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
   diagnoseWorkerCleanup,
-  discardWorkerPr,
+  discardWorkerBead,
   enrollWorkerMergeCandidates,
   kickWorkerMergeQueue,
   observeWorkerPrs,
@@ -40,7 +40,6 @@ import {
   resumeWorkerAttempt,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
-  stopWorkerAttempt,
   tickWorkerQueue,
   workerMergeQueueState,
   workerSlots,
@@ -155,6 +154,84 @@ function subscribersFor(key) {
 export function workerQueueSubscriberCount(workspace_key) {
   const set = SUBSCRIBERS.get(workspace_key);
   return set ? set.size : 0;
+}
+
+/**
+ * Bound one GitHub PR record to fields the Worker UI actually renders.
+ *
+ * @param {any} value
+ */
+function publicDiscardPr(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  return {
+    number: Number.isFinite(value.number) ? value.number : null,
+    url: typeof value.url === 'string' ? value.url : null,
+    state: typeof value.state === 'string' ? value.state : null,
+    head_ref: typeof value.head_ref === 'string' ? value.head_ref : null,
+    head_sha: typeof value.head_sha === 'string' ? value.head_sha : null,
+    base_ref: typeof value.base_ref === 'string' ? value.base_ref : null,
+    merged_sha: typeof value.merged_sha === 'string' ? value.merged_sha : null
+  };
+}
+
+/**
+ * Project only active discard progress. The durable operation also contains
+ * source paths, Bead snapshots, session ids, and process identity that are
+ * controller evidence, not a websocket contract. The verified archive path is
+ * intentionally retained for this local UI as required by spec §9.3.
+ *
+ * @param {unknown} value
+ */
+function publicDiscardOperations(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  /** @type {Record<string, any>} */
+  const projected = {};
+  for (const [operation_id, raw] of Object.entries(value)) {
+    const operation = /** @type {any} */ (raw);
+    if (
+      !operation ||
+      typeof operation !== 'object' ||
+      operation.phase === 'done'
+    ) {
+      continue;
+    }
+    projected[operation_id] = {
+      operation_id,
+      bead_id: typeof operation.bead_id === 'string' ? operation.bead_id : null,
+      attempt_id:
+        typeof operation.attempt_id === 'string' ? operation.attempt_id : null,
+      requested_at: Number.isFinite(operation.requested_at)
+        ? operation.requested_at
+        : null,
+      mode: typeof operation.mode === 'string' ? operation.mode : null,
+      phase: typeof operation.phase === 'string' ? operation.phase : null,
+      backup:
+        operation.backup && typeof operation.backup === 'object'
+          ? {
+              path:
+                typeof operation.backup.path === 'string'
+                  ? operation.backup.path
+                  : null,
+              manifest_sha256:
+                typeof operation.backup.manifest_sha256 === 'string'
+                  ? operation.backup.manifest_sha256
+                  : null,
+              verified_at: Number.isFinite(operation.backup.verified_at)
+                ? operation.backup.verified_at
+                : null
+            }
+          : null,
+      original_pr: publicDiscardPr(operation.original_pr),
+      revert_pr: publicDiscardPr(operation.revert_pr),
+      last_error:
+        typeof operation.last_error === 'string' ? operation.last_error : null
+    };
+  }
+  return projected;
 }
 
 /**
@@ -820,6 +897,9 @@ export function decorateQueue(workspace_key, raw_queue) {
   /** @type {Record<string, any>} */
   const public_queue = { ...overlaid };
   delete public_queue.completion_intents;
+  public_queue.discard_operations = publicDiscardOperations(
+    overlaid.discard_operations
+  );
   /** @type {Record<string, any>} */
   const queue = {
     ...public_queue,
@@ -1708,55 +1788,42 @@ export async function handleWorkerAttemptPause(ws, req) {
     log('worker-attempt-pause failed for %s/%s: %o', key, p.attempt_id, err);
     result = { ok: false, reason: 'error' };
   }
+  const queue = /** @type {any} */ (queueStore().snapshot(key));
+  const phase =
+    queue.attempts?.[p.attempt_id]?.control?.phase ||
+    (result.ok ? 'done' : null);
   ws.send(
     JSON.stringify(
       makeOk(req, {
         attempt_id: p.attempt_id,
         paused: !!result.ok,
+        phase,
         reason: result.ok ? null : result.reason || null
       })
     )
   );
   if (result.ok) {
-    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+    fanout(key, queue);
   }
 }
 
 /**
- * Handle `worker-attempt-stop`. Payload: `{ attempt_id: string }`. Discards (■)
- * an attempt: group-kill + attempt `stopped` + workflow_mode revert, and the
- * bead leaves every lane in the same store mutation so the following tick
- * cannot re-dispatch it (worker-phase1 §2.2). Also accepts a leaf `paused`
- * attempt. Inert (`stopped:false`) when no live attachment or no such attempt.
+ * Retired `worker-attempt-stop` endpoint. It remains routable so stale clients
+ * get an explicit error, but it performs no workspace lookup or mutation.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export async function handleWorkerAttemptStop(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
+  ws.send(
+    JSON.stringify(
+      makeError(
+        req,
+        'action_retired',
+        'worker-attempt-stop is retired; use worker-discard'
       )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  let stopped = false;
-  try {
-    stopped = await stopWorkerAttempt(key, p.attempt_id);
-  } catch (err) {
-    log('worker-attempt-stop failed for %s/%s: %o', key, p.attempt_id, err);
-  }
-  ws.send(JSON.stringify(makeOk(req, { attempt_id: p.attempt_id, stopped })));
-  if (stopped) {
-    // Push a fresh snapshot so the tile clears from the running grid.
-    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
-  }
+    )
+  );
 }
 
 /**
@@ -2225,23 +2292,48 @@ export function handleWorkerMergeQueueRemove(ws, req) {
 }
 
 /**
- * Handle `worker-pr-discard`. Payload: `{ bead_id, expected_revision }`.
- *
- * [폐기] (discard spec §1): close the PR, put bd back to `open` without a
- * `pr_url`, discard the worktree/branch, and REMOVE the bead from `pr_wait` — it
- * is not re-queued, so re-running it is the deliberate 후보 → 대기 drag.
- * DESTRUCTIVE — the CAS guard matters more here than anywhere else, so a stale
- * revision refuses without touching a thing.
+ * Retired `worker-pr-discard` endpoint. It remains routable so stale clients
+ * get an explicit error, but it performs no workspace lookup or mutation.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export async function handleWorkerPrDiscard(ws, req) {
+  ws.send(
+    JSON.stringify(
+      makeError(
+        req,
+        'action_retired',
+        'worker-pr-discard is retired; use worker-discard'
+      )
+    )
+  );
+}
+
+/**
+ * Handle the durable unified `worker-discard` entry.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerDiscard(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+  if (
+    typeof p.bead_id !== 'string' ||
+    p.bead_id.length === 0 ||
+    !Number.isInteger(p.expected_revision) ||
+    (p.attempt_id != null &&
+      (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0)) ||
+    (p.operation_id != null &&
+      (typeof p.operation_id !== 'string' || p.operation_id.length === 0))
+  ) {
     ws.send(
       JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id, attempt_id?, operation_id?, expected_revision }'
+        )
       )
     );
     return;
@@ -2250,41 +2342,56 @@ export async function handleWorkerPrDiscard(ws, req) {
   if (key === null) {
     return;
   }
-  const current = /** @type {any} */ (queueStore().snapshot(key));
-  if (revisionOf(p) !== current.revision) {
-    ws.send(
-      JSON.stringify(
-        makeOk(req, {
-          bead_id: p.bead_id,
-          discarded: false,
-          conflict: true,
-          reason: null,
-          queue: decorateQueue(key, current)
-        })
-      )
-    );
-    return;
-  }
-  /** @type {{ ok: boolean, reason?: string|null }} */
-  let result = { ok: false, reason: 'no_attachment' };
+  /** @type {any} */
+  let result;
   try {
-    result = await discardWorkerPr(key, p.bead_id);
+    result = await discardWorkerBead(key, {
+      bead_id: p.bead_id,
+      ...(p.attempt_id == null ? {} : { attempt_id: p.attempt_id }),
+      ...(p.operation_id == null ? {} : { operation_id: p.operation_id }),
+      expected_revision: p.expected_revision
+    });
   } catch (err) {
-    log('worker-pr-discard failed for %s/%s: %o', key, p.bead_id, err);
+    log('worker-discard failed for %s/%s: %o', key, p.bead_id, err);
     result = { ok: false, reason: 'error' };
   }
+  const queue = /** @type {any} */ (queueStore().snapshot(key));
+  const accepted = typeof result.operation_id === 'string';
+  const operation = accepted
+    ? queue.discard_operations?.[result.operation_id]
+    : null;
+  const phase = operation?.phase || result.phase || null;
+  const pending =
+    result.pending || (phase === 'merged_revert' ? 'merged_revert' : null);
+  const receipt = operation
+    ? {
+        archive_path:
+          typeof operation.backup?.path === 'string'
+            ? operation.backup.path
+            : null,
+        original_pr: publicDiscardPr(operation.original_pr),
+        revert_pr: publicDiscardPr(operation.revert_pr)
+      }
+    : null;
   ws.send(
     JSON.stringify(
       makeOk(req, {
         bead_id: p.bead_id,
-        discarded: !!result.ok,
-        conflict: false,
-        reason: result.ok ? null : result.reason || null
+        operation_id: result.operation_id || null,
+        accepted,
+        discarded: result.ok === true && phase === 'done',
+        pending,
+        reused: result.reused === true,
+        conflict: result.conflict === true,
+        phase,
+        reason: result.reason || null,
+        receipt,
+        queue: decorateQueue(key, queue)
       })
     )
   );
-  if (result.ok) {
-    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
+  if (accepted) {
+    fanout(key, queue);
   }
 }
 

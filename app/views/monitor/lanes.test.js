@@ -750,7 +750,39 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
     expect(lanes.pr_wait[0].badges).toContain('정리 실패');
   });
 
-  test('hides discard on an already merged row', () => {
+  test('keeps cleanup disabled while a failed discard awaits retry', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          pr_observations: {
+            'A-pr': { gate: { enabled: false, tier: 'merged' } }
+          },
+          cleanup_failed: { 'A-pr': { step: 'verify', reason: 'x' } },
+          discard_operations: {
+            op1: {
+              operation_id: 'op1',
+              bead_id: 'A-pr',
+              requested_at: 1,
+              mode: 'merged_revert',
+              phase: 'revert_pr_created',
+              last_error: 'revert_pr_failed'
+            }
+          }
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].merge_enabled).toBe(false);
+    expect(lanes.pr_wait[0].merge_title).toContain(
+      '폐기 실패: revert_pr_failed'
+    );
+    expect(lanes.pr_wait[0].discard?.enabled).toBe(true);
+    expect(lanes.pr_wait[0].discard?.label).toBe('재시도');
+  });
+
+  test('offers discard on an already merged worker-owned row', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -763,7 +795,8 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
       []
     );
 
-    expect(lanes.pr_wait[0].discard_action).toBe(false);
+    expect(lanes.pr_wait[0].discard_action).toBe(true);
+    expect(lanes.pr_wait[0].discard?.confirmation).toBe('merged');
   });
 
   test('hides discard on an external PR row', () => {
@@ -1202,6 +1235,48 @@ describe('monitor 카드 문법 (UI-gwkl §2.2)', () => {
     expect(mount.querySelector('.mon-c__meta .mon-c__id')?.textContent).toBe(
       'A-1'
     );
+  });
+
+  test('keeps a failed post-runner discard reachable from the queue row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1', added_at: NOW }],
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-1',
+              status: 'discarded'
+            }
+          },
+          discard_operations: {
+            'op-queue': {
+              operation_id: 'op-queue',
+              bead_id: 'A-1',
+              attempt_id: 'a1',
+              requested_at: 1,
+              mode: 'unmerged',
+              phase: 'runner_terminated',
+              backup: { path: '/state/op-queue' },
+              last_error: 'pr_observe_failed'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorQueueRow(lanes.queue[0]), mount);
+
+    expect(lanes.queue[0].draggable).toBe(false);
+    expect(
+      mount.querySelector('.worker-mini__discard')?.textContent?.trim()
+    ).toBe('재시도');
+    expect(mount.textContent).toContain('/state/op-queue');
+    expect(
+      /** @type {HTMLButtonElement} */ (mount.querySelector('.mon-op--remove'))
+        .disabled
+    ).toBe(true);
   });
 
   // 큐잉 판단이 일어나는 화면이 실행가능 레인이므로, 라우팅 라벨은 여기서

@@ -188,6 +188,10 @@ const PR_JSON_FIELDS = 'number,url,headRefName,headRefOid,baseRefName,state';
 const PR_DETAIL_FIELDS =
   'number,url,state,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName,mergeCommit';
 
+/** The immutable original-PR evidence required before building a revert. */
+const REVERT_SOURCE_FIELDS =
+  'number,url,state,baseRefName,baseRefOid,headRefName,headRefOid,mergeCommit,commits,files';
+
 /**
  * `gh pr view --json` field set for the checks observation. See the module
  * docblock for why the rollup — not `gh pr checks` — carries the 3-state.
@@ -755,6 +759,220 @@ export function createGh(deps = {}) {
           merged_sha
         }
       };
+    },
+
+    /**
+     * Read the original merged PR's immutable evidence. This is intentionally
+     * a separate adapter call: ordinary poll/merge code does not need the
+     * commit/file payload and must not accidentally treat a partial detail as
+     * enough evidence for a rollback.
+     *
+     * @param {string} repo_dir
+     * @param {number} number
+     */
+    async revertSource(repo_dir, number) {
+      const repo = await resolveRepo(repo_dir);
+      if (repo === null) {
+        return { state: 'error', reason: 'origin_unresolvable' };
+      }
+      const result = await runJson(
+        [
+          'pr',
+          'view',
+          String(number),
+          '--json',
+          REVERT_SOURCE_FIELDS,
+          '--repo',
+          repo
+        ],
+        repo_dir
+      );
+      if (result.state === 'error') {
+        return result;
+      }
+      const raw = result.data;
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      const value = /** @type {Record<string, unknown>} */ (raw);
+      const merge = value.mergeCommit;
+      const merged_sha =
+        merge && typeof merge === 'object' && !Array.isArray(merge)
+          ? /** @type {Record<string, unknown>} */ (merge).oid
+          : null;
+      const base_sha = value.baseRefOid;
+      const head_sha = value.headRefOid;
+      if (
+        value.state !== 'MERGED' ||
+        typeof value.url !== 'string' ||
+        value.url.length === 0 ||
+        typeof value.baseRefName !== 'string' ||
+        value.baseRefName.length === 0 ||
+        typeof value.headRefName !== 'string' ||
+        value.headRefName.length === 0 ||
+        typeof base_sha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(base_sha) ||
+        typeof head_sha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(head_sha) ||
+        typeof merged_sha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(merged_sha) ||
+        !Array.isArray(value.commits) ||
+        !Array.isArray(value.files)
+      ) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      /** @type {{ oid: string }[]} */
+      const commits = [];
+      for (const commit of value.commits) {
+        if (!commit || typeof commit !== 'object' || Array.isArray(commit)) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        const oid = /** @type {Record<string, unknown>} */ (commit).oid;
+        if (typeof oid !== 'string' || !/^[0-9a-f]{40}$/i.test(oid)) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        commits.push({ oid });
+      }
+      /** @type {{ path: string }[]} */
+      const files = [];
+      for (const file of value.files) {
+        if (!file || typeof file !== 'object' || Array.isArray(file)) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        const file_path = /** @type {Record<string, unknown>} */ (file).path;
+        if (typeof file_path !== 'string' || file_path.length === 0) {
+          return { state: 'error', reason: 'gh_bad_json' };
+        }
+        files.push({ path: file_path });
+      }
+      return {
+        state: 'ok',
+        data: {
+          number: typeof value.number === 'number' ? value.number : null,
+          url: value.url,
+          base_ref: value.baseRefName,
+          base_sha,
+          head_ref: value.headRefName,
+          head_sha,
+          merge_sha: merged_sha,
+          commits,
+          files
+        }
+      };
+    },
+
+    /**
+     * Create a human-merge-only revert PR and immediately read it back. The
+     * argv deliberately omits every auto-merge/merge-queue flag.
+     *
+     * @param {string} repo_dir
+     * @param {{ base: string, head: string, head_sha: string, title: string, body: string }} input
+     */
+    async createRevertPr(repo_dir, input) {
+      if (
+        !input ||
+        !input.base ||
+        !input.head ||
+        !input.title ||
+        !input.body ||
+        typeof input.head_sha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(input.head_sha)
+      ) {
+        return { state: 'error', reason: 'revert_pr_input_invalid' };
+      }
+      const repo = await resolveRepo(repo_dir);
+      if (repo === null) {
+        return { state: 'error', reason: 'origin_unresolvable' };
+      }
+      const find = async () => {
+        const observed = await runJson(
+          [
+            'pr',
+            'list',
+            '--head',
+            input.head,
+            '--state',
+            'all',
+            '--json',
+            PR_JSON_FIELDS,
+            '--repo',
+            repo
+          ],
+          repo_dir
+        );
+        if (observed.state === 'error') {
+          return observed;
+        }
+        if (!Array.isArray(observed.data)) {
+          return { state: 'error', reason: 'revert_pr_readback_failed' };
+        }
+        if (observed.data.length > 1) {
+          return { state: 'error', reason: 'revert_pr_ambiguous' };
+        }
+        if (observed.data.length === 0) {
+          return { state: 'empty' };
+        }
+        const item = observed.data[0];
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          return { state: 'error', reason: 'revert_pr_readback_failed' };
+        }
+        const value = /** @type {Record<string, unknown>} */ (item);
+        if (
+          value.baseRefName !== input.base ||
+          value.headRefName !== input.head ||
+          value.headRefOid !== input.head_sha ||
+          typeof value.number !== 'number' ||
+          typeof value.url !== 'string' ||
+          value.url.length === 0
+        ) {
+          return { state: 'error', reason: 'revert_pr_identity_changed' };
+        }
+        if (value.state === 'CLOSED') {
+          return { state: 'error', reason: 'revert_pr_closed_unmerged' };
+        }
+        if (value.state !== 'OPEN' && value.state !== 'MERGED') {
+          return { state: 'error', reason: 'revert_pr_state_invalid' };
+        }
+        return {
+          state: 'ok',
+          data: {
+            number: value.number,
+            url: value.url,
+            state: value.state,
+            base_ref: value.baseRefName,
+            head_ref: value.headRefName,
+            head_sha: value.headRefOid
+          }
+        };
+      };
+      const existing = await find();
+      if (existing.state === 'ok' || existing.state === 'error') {
+        return existing;
+      }
+      const created = await runVoid(
+        [
+          'pr',
+          'create',
+          '--base',
+          input.base,
+          '--head',
+          input.head,
+          '--title',
+          input.title,
+          '--body',
+          input.body,
+          '--repo',
+          repo
+        ],
+        repo_dir
+      );
+      if (created.state !== 'ok') {
+        return created;
+      }
+      const readback = await find();
+      return readback.state === 'empty'
+        ? { state: 'error', reason: 'revert_pr_readback_failed' }
+        : readback;
     },
 
     /**

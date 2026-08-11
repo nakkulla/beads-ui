@@ -103,7 +103,7 @@ function startAtBoundary(env, attempt) {
 }
 
 /**
- * @param {{ probe?: { alive: boolean, started_at: number|null }, usage?: boolean }} [options]
+ * @param {{ probe?: { alive: boolean, started_at: number|null }, usage?: boolean, processController?: any }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore();
@@ -118,6 +118,7 @@ function setup(options = {}) {
     usage,
     probePid: () => probe,
     kill_impl,
+    processController: options.processController,
     notifyChanged,
     now: () => 5000,
     poll_ms: 5
@@ -355,6 +356,42 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
 
     expect(env.store.snapshot(WS).attempts['att-1'].guard_kill).toBeTruthy();
     expect(env.kill_impl).not.toHaveBeenCalled();
+  });
+
+  test('revalidates durable process identity through the controller before signaling', () => {
+    const processController = {
+      probe: vi.fn(() => ({ state: 'owned' })),
+      signal: vi.fn(() => ({ ok: true, state: 'owned' }))
+    };
+    const env = setup({ processController });
+    const attempt = seedRunningAttempt(env.store, {
+      process_identity: { pid: 4242, pgid: 4242, started_at: 1000 }
+    });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLine('gh pr merge 304 --squash'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(processController.signal).toHaveBeenCalledWith(
+      { pid: 4242, pgid: 4242, started_at: 1000 },
+      'SIGTERM'
+    );
+    expect(env.kill_impl).not.toHaveBeenCalled();
+  });
+
+  test('fails closed without signaling when durable identity is recycled', () => {
+    const processController = {
+      probe: vi.fn(() => ({ state: 'recycled' })),
+      signal: vi.fn()
+    };
+    const env = setup({ processController });
+    const attempt = seedRunningAttempt(env.store, {
+      process_identity: { pid: 4242, pgid: 4242, started_at: 1000 }
+    });
+
+    expect(env.monitors.start(WS, attempt)).toBe(false);
+
+    expect(processController.signal).not.toHaveBeenCalled();
   });
 
   test('sends NO signal when the blocker evidence did not become durable', () => {

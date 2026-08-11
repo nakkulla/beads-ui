@@ -28,9 +28,18 @@ A dark-first control tower with **two tabs** plus a shared detail panel:
   open PR for the session's branch — never by the session's self-report — so a
   finished bead lands in **PR 대기** with CI / local-verification / base badges.
   Merging is always a human `[머지]` click, gated on a verification result bound
-  to the PR's current head SHA (a stale green never passes); `[폐기]` throws the
-  PR, worktree and branch away and returns the bead to the candidate lane, from
-  where dragging it back into 대기 re-runs it on the current base.
+  to the PR's current head SHA (a stale green never passes). `[폐기]` first
+  creates a verified recovery archive under
+  `$XDG_STATE_HOME/bdui/<workspace>/discard-backups/<operation-id>`; an unmerged
+  PR is then closed and its worktree/branch removed, while an already merged PR
+  creates a human-merge-only revert PR. Keep the archive directory intact when
+  recovery is needed: verify `COMPLETE` equals `sha256(manifest.json)`, inspect
+  the manifest's artifact hashes and modes, run `git bundle verify` (then fetch
+  the bundle), and restore `index.patch`/`worktree.patch` plus recorded files
+  deliberately. Re-run a failed discard through its displayed `[재시도]` action
+  so it resumes the same durable operation. Historical `stopped` attempts are
+  read-only; old `worker-attempt-stop` and `worker-pr-discard` clients receive
+  `action_retired` and make no changes.
 - 🎞️ **Transcript viewer** – Click a running tile (or a session-history row) to
   open the session drawer: parsed assistant / tool / gate / phase lines with
   live-follow for a running attempt and the same viewer for a Done/Failed log.

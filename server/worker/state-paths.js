@@ -60,6 +60,40 @@ export function workspaceStateDir(workspace_root) {
 }
 
 /**
+ * @param {string} workspace_root
+ * @returns {string} Absolute directory containing durable discard archives.
+ */
+export function discardBackupRootDir(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'discard-backups');
+}
+
+/**
+ * @param {string} workspace_root
+ * @param {string} operation_id
+ * @returns {string} Absolute directory for one discard operation archive.
+ */
+export function discardBackupDir(workspace_root, operation_id) {
+  const safe = String(operation_id || 'discard').replace(
+    /[^A-Za-z0-9._-]/g,
+    '_'
+  );
+  return path.join(discardBackupRootDir(workspace_root), safe);
+}
+
+/**
+ * @param {string} workspace_root
+ * @param {string} operation_id
+ * @returns {string} Absolute parent directory for a rollback worktree.
+ */
+export function discardRevertWorktreeDir(workspace_root, operation_id) {
+  const safe = String(operation_id || 'discard').replace(
+    /[^A-Za-z0-9._-]/g,
+    '_'
+  );
+  return path.join(workspaceStateDir(workspace_root), 'revert-worktrees', safe);
+}
+
+/**
  * Absolute path to a workspace's queue persistence file.
  *
  * @param {string} workspace_root - Workspace root (relative or absolute).

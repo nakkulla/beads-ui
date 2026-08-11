@@ -1333,9 +1333,9 @@ describe('views/worker', () => {
       mount.querySelector('.rtile[data-attempt-id="paused_leaf"]')
     );
     expect(tile.classList.contains('rtile--paused')).toBe(true);
-    // A paused tile offers ▶ (resume) + ■ (discard), never ⏸.
+    // A paused tile offers ▶ (resume) + [폐기], never ⏸.
     expect(tile.querySelector('.rtile__resume')).not.toBeNull();
-    expect(tile.querySelector('.rtile__stop')).not.toBeNull();
+    expect(tile.querySelector('.rtile__discard')).not.toBeNull();
     expect(tile.querySelector('.rtile__pause')).toBeNull();
   });
 
@@ -2923,11 +2923,81 @@ describe('views/worker', () => {
     );
     expect(btn).not.toBeNull();
     expect(btn.dataset.attemptId).toBe('f1');
+    expect(
+      mount.querySelector('.worker-banner--failure .worker-banner__discard')
+    ).not.toBeNull();
     btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
       attempt_id: 'f1',
       expected_revision: 1
     });
+  });
+
+  test('retries a failed discard from the failure banner with its receipt', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          f1: {
+            attempt_id: 'f1',
+            bead_id: 'B1',
+            status: 'failed',
+            repo: '/repo',
+            cause: 'verify_failed:x',
+            session_id: 'sid-1'
+          }
+        },
+        discard_operations: {
+          'op-failed': {
+            operation_id: 'op-failed',
+            bead_id: 'B1',
+            attempt_id: 'f1',
+            requested_at: 1,
+            mode: 'unmerged',
+            phase: 'runner_terminated',
+            backup: { path: '/state/op-failed' },
+            last_error: 'pr_observe_failed'
+          }
+        }
+      })
+    );
+    const transport = vi.fn(async () => ({
+      accepted: true,
+      operation_id: 'op-failed',
+      phase: 'runner_terminated'
+    }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--failure')
+    );
+    const retry = /** @type {HTMLButtonElement} */ (
+      banner.querySelector('.worker-banner__discard')
+    );
+    expect(retry.textContent?.trim()).toBe('재시도');
+    expect(banner.textContent).toContain('작업: op-failed');
+    expect(banner.textContent).toContain('/state/op-failed');
+    expect(banner.textContent).toContain('PR 정리 중');
+    expect(banner.textContent).toContain('폐기 실패: pr_observe_failed');
+
+    retry.click();
+
+    expect(transport).toHaveBeenCalledWith('worker-discard', {
+      bead_id: 'B1',
+      attempt_id: 'f1',
+      operation_id: 'op-failed',
+      expected_revision: 1
+    });
+    vi.unstubAllGlobals();
   });
 
   test('the ↻ targets exactly the latest failure — ineligible renders disabled with the reason, never an older substitute (§1)', () => {
@@ -3559,7 +3629,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(discard.textContent?.trim()).toBe('폐기');
   });
 
-  test('withholds 폐기 on a merged tile — a landed merge cannot be discarded', () => {
+  test('offers merged discard as a revert PR operation', () => {
     const { mount } = mountWith(
       queueWithGate({
         enabled: false,
@@ -3573,12 +3643,17 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
-    expect(row.querySelector('.worker-mini__discard')).toBe(null);
+    expect(row.querySelector('.worker-mini__discard')).not.toBe(null);
+    expect(
+      row
+        .querySelector('.worker-mini__discard')
+        ?.getAttribute('data-discard-mode')
+    ).toBe('merged');
     // [머지] stays: on a merged tile it is the cleanup-retry button.
     expect(row.querySelector('.worker-mini__merge')).not.toBe(null);
   });
 
-  test('withholds 폐기 on a merged tile whose cleanup failed', () => {
+  test('offers merged discard on a cleanup failure', () => {
     const { mount } = mountWith(
       queueWithGate(
         {
@@ -3596,12 +3671,52 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       )
     );
 
-    expect(mount.querySelector('.worker-mini__discard')).toBe(null);
+    expect(mount.querySelector('.worker-mini__discard')).not.toBe(null);
   });
 
-  test('withholds 폐기 on a cleanup_failed tile even without observations', () => {
-    // Right after a restart the observation cache is empty — the durable
-    // cleanup_failed record alone must keep [폐기] off a merged tile.
+  test('keeps cleanup disabled while a failed discard awaits retry', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': { step: 'child_sweep', reason: 'boom', at: 1 }
+          },
+          discard_operations: {
+            op1: {
+              operation_id: 'op1',
+              bead_id: 'RD-1',
+              requested_at: 1,
+              mode: 'merged_revert',
+              phase: 'revert_pr_created',
+              last_error: 'revert_pr_failed'
+            }
+          }
+        }
+      )
+    );
+
+    const cleanup = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    const discard = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__discard')
+    );
+    expect(cleanup.disabled).toBe(true);
+    expect(cleanup.title).toContain('폐기 실패: revert_pr_failed');
+    expect(discard.disabled).toBe(false);
+    expect(discard.textContent?.trim()).toBe('재시도');
+  });
+
+  test('offers discard on a cleanup_failed tile even without observations', () => {
+    // Right after a restart the durable cleanup_failed record still identifies
+    // a worker-owned merged operation, so [폐기] starts its revert path.
     const { mount } = mountWith(
       queueOf({
         pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
@@ -3615,7 +3730,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
-    expect(row.querySelector('.worker-mini__discard')).toBe(null);
+    expect(row.querySelector('.worker-mini__discard')).not.toBe(null);
   });
 
   test('disables 머지 when the gate refuses, and says why', () => {
@@ -3673,7 +3788,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     vi.unstubAllGlobals();
   });
 
-  test('teaches the drag-back re-run path in the discard confirmation', () => {
+  test('describes the unmerged discard outcome in the confirmation', () => {
     const { mount } = mountWith(queueWithGate(GREEN));
     /** @type {string[]} */
     const messages = [];
@@ -3689,11 +3804,13 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       mount.querySelector('.worker-mini__discard')
     ).click();
 
-    expect(messages[0]).toContain('대기 레인으로 옮기세요');
+    expect(messages[0]).toContain(
+      'runner/PR/branch/worktree를 정리하고 이슈를 후보로 되돌립니다'
+    );
     vi.unstubAllGlobals();
   });
 
-  test('sends worker-pr-discard once the user confirms', () => {
+  test('sends worker-discard once the user confirms', () => {
     const { mount, transport } = mountWith(queueWithGate(GREEN));
     vi.stubGlobal(
       'confirm',
@@ -3704,8 +3821,65 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       mount.querySelector('.worker-mini__discard')
     ).click();
 
-    expect(transport).toHaveBeenCalledWith('worker-pr-discard', {
+    expect(transport).toHaveBeenCalledWith('worker-discard', {
       bead_id: 'RD-1',
+      expected_revision: 1
+    });
+    vi.unstubAllGlobals();
+  });
+
+  test('keeps a failed post-runner discard reachable from the queue row', () => {
+    const transport = vi.fn(async () => ({
+      accepted: true,
+      operation_id: 'op-queue',
+      phase: 'runner_terminated'
+    }));
+    const { mount } = mountWith(
+      queueOf({
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'discarded'
+          }
+        },
+        discard_operations: {
+          'op-queue': {
+            operation_id: 'op-queue',
+            bead_id: 'RD-1',
+            attempt_id: 'a1',
+            requested_at: 1,
+            mode: 'unmerged',
+            phase: 'runner_terminated',
+            backup: { path: '/state/op-queue' },
+            last_error: 'pr_observe_failed'
+          }
+        }
+      }),
+      transport
+    );
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    const retry = /** @type {HTMLButtonElement} */ (
+      row.querySelector('.worker-mini__discard')
+    );
+    expect(row.getAttribute('draggable')).toBe('false');
+    expect(retry.textContent?.trim()).toBe('재시도');
+    expect(row.textContent).toContain('/state/op-queue');
+
+    retry.click();
+
+    expect(transport).toHaveBeenCalledWith('worker-discard', {
+      bead_id: 'RD-1',
+      attempt_id: 'a1',
+      operation_id: 'op-queue',
       expected_revision: 1
     });
     vi.unstubAllGlobals();
@@ -3715,7 +3889,12 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(queueWithGate(GREEN));
-    const transport = vi.fn(async () => ({ discarded: true, conflict: false }));
+    const transport = vi.fn(async () => ({
+      operation_id: 'op-complete',
+      discarded: true,
+      conflict: false,
+      receipt: { archive_path: '/state/op-complete' }
+    }));
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
@@ -3735,6 +3914,40 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       document.querySelector('.toast')
     );
     expect(toast?.textContent).toContain('폐기 완료');
+    expect(toast?.textContent).toContain('작업 op-complete');
+    expect(toast?.textContent).toContain('백업 /state/op-complete');
+    vi.unstubAllGlobals();
+  });
+
+  test('announces an accepted discard failure as an error', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueWithGate(GREEN));
+    const transport = vi.fn(async () => ({
+      accepted: true,
+      operation_id: 'op-failed',
+      reason: 'archive_failed',
+      phase: 'requested'
+    }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__discard')
+    ).click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      '폐기 실패: archive_failed'
+    );
     vi.unstubAllGlobals();
   });
 

@@ -87,6 +87,26 @@ describe('worker/worktree (real git)', () => {
     expect(fs.existsSync(created.path)).toBe(false);
   });
 
+  test('observes the exact worker-owned branch path and head for discard', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const head = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: head });
+
+    const observed = await wt.observeOwnedByBead({
+      repo,
+      bead_id: 'UI-1'
+    });
+
+    expect(observed).toEqual({
+      ok: true,
+      present: true,
+      path: fs.realpathSync(created.path),
+      branch: 'UI-1',
+      head_sha: head,
+      reason: null
+    });
+  });
+
   test('addDetached pins the exact sha with a detached HEAD; removeDetached tears it down', async () => {
     const locks = createLockManager();
     const wt = createWorktreeManager({ locks });
@@ -413,6 +433,53 @@ describe('worker/worktree (real git)', () => {
     expect(fs.existsSync(created.path)).toBe(false);
     // The whole point: the branch is now deletable.
     git(['branch', '-D', 'UI-1-20260804'], repo);
+  });
+
+  test('removeByBranch preserves a worktree at a different captured path', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    const result = await wt.removeByBranch({
+      repo,
+      branch: 'UI-1',
+      expected_path: path.join(repo, '.worktrees', 'UI-old')
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'identity_changed'
+    });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeByBranch preserves a worktree whose head moved after capture', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const captured_head = headOf(repo);
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: captured_head
+    });
+    commit(created.path, 'changed.txt', 'changed after capture');
+
+    const result = await wt.removeByBranch({
+      repo,
+      branch: 'UI-1',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: captured_head
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'identity_changed'
+    });
+    expect(fs.existsSync(created.path)).toBe(true);
   });
 
   test('removeByBranch reports no removal when no worktree holds the branch', async () => {

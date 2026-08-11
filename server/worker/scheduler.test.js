@@ -446,6 +446,11 @@ function makeFakeRunner() {
         });
         const handle = {
           pid: 9000 + spawnOrder.length,
+          process_identity: {
+            pid: 9000 + spawnOrder.length,
+            pgid: 9000 + spawnOrder.length,
+            started_at: 1_000
+          },
           kill: vi.fn(),
           events,
           done
@@ -665,7 +670,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, cleanupDiagnosis?: any, readCleanupDiagnosisResult?: any, onCompletionAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, cleanupDiagnosis?: any, readCleanupDiagnosisResult?: any, onCompletionAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -743,6 +748,7 @@ function setup(opts) {
         }
       : undefined,
     probePid: opts.probePid,
+    processController: opts.processController,
     sessionMonitors: opts.sessionMonitors,
     execPresetCoordinator,
     // Absent ⇒ the REAL guard-hook module, writing under the tmp
@@ -801,6 +807,23 @@ function seedPrWait(store, bead_id) {
     bead_id,
     attempt_id,
     patch: { status: 'done' }
+  });
+}
+
+/**
+ * @param {any} store
+ * @param {string} bead_id
+ * @param {string|null} [attempt_id]
+ */
+function seedActiveDiscard(store, bead_id, attempt_id = null) {
+  store.createDiscardOperation(WS, {
+    expected_revision: store.snapshot(WS).revision,
+    operation: {
+      operation_id: `discard-${bead_id}`,
+      bead_id,
+      attempt_id,
+      source_snapshot: { repo: '/repo', branch: bead_id }
+    }
   });
 }
 
@@ -1898,6 +1921,217 @@ describe('scheduler stop (■ tile)', () => {
 });
 
 describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
+  test('persists verified process identity from the runner handle', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    expect(
+      env.store.snapshot(WS).attempts[attempt_id].process_identity
+    ).toEqual({
+      pid: 9000,
+      pgid: 9000,
+      started_at: 1_000
+    });
+  });
+
+  test('persists pause intent before signaling and finalizes after group exit', async () => {
+    /** @type {any} */
+    let store;
+    const processController = {
+      terminate: vi.fn(async () => {
+        const attempt = Object.values(store.snapshot(WS).attempts)[0];
+        expect(/** @type {any} */ (attempt).control.phase).toBe('requested');
+        return { ok: true, state: 'gone', forced: false };
+      }),
+      probe: vi.fn(() => ({ state: 'gone' }))
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      processController
+    });
+    store = env.store;
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+
+    const result = await env.scheduler.pause(WS, attempt_id);
+
+    expect(result).toEqual({ ok: true });
+    expect(env.runner.killFor('S1')).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts[attempt_id]).toMatchObject({
+      status: 'paused',
+      control: { kind: 'pause', phase: 'done', last_error: null }
+    });
+  });
+
+  test('suppresses a live handle exit while durable pause termination is in flight', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const processController = {
+      terminate: vi.fn(async () => {
+        env.runner.finish('S1', {
+          success: false,
+          reason: 'killed',
+          exit: null
+        });
+        await flush();
+        return { ok: true, state: /** @type {const} */ ('gone') };
+      }),
+      probe: vi.fn(() => ({ state: /** @type {const} */ ('gone') }))
+    };
+    env = setup({ config: { S1: {} }, slots: 1, processController });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+
+    const result = await env.scheduler.pause(WS, attempt_id);
+
+    expect(result).toEqual({ ok: true });
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('paused');
+    expect(env.store.snapshot(WS).auto_advance).toBe(true);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('recovers a pending pause without a process-local handle', async () => {
+    const sessionMonitors = { stop: vi.fn() };
+    const processController = {
+      terminate: vi.fn(async () => ({
+        ok: true,
+        state: 'gone',
+        forced: false
+      })),
+      probe: vi.fn(() => ({ state: 'gone' }))
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      processController,
+      sessionMonitors
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'recovered', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'recovered',
+      patch: {
+        status: 'running',
+        session_id: 'sid-1',
+        repo: '/repo',
+        workflow_mode_prior: null,
+        process_identity: { pid: 4242, pgid: 4242, started_at: 1_000 }
+      }
+    });
+    env.store.requestAttemptControl(WS, {
+      attempt_id: 'recovered',
+      kind: 'pause'
+    });
+
+    await env.scheduler.recoverControls(WS);
+
+    expect(env.store.snapshot(WS).attempts.recovered).toMatchObject({
+      status: 'paused',
+      control: { phase: 'done' }
+    });
+    expect(sessionMonitors.stop).toHaveBeenCalledWith(WS, 'recovered');
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('leaves pause control untouched when a durable discard owns the attempt', async () => {
+    const processController = {
+      terminate: vi.fn(async () => ({
+        ok: true,
+        state: 'gone',
+        forced: false
+      })),
+      probe: vi.fn(() => ({ state: 'gone' }))
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      processController
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'recovered', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'recovered',
+      patch: {
+        status: 'running',
+        session_id: 'sid-1',
+        repo: '/repo',
+        process_identity: { pid: 4242, pgid: 4242, started_at: 1_000 }
+      }
+    });
+    env.store.requestAttemptControl(WS, {
+      attempt_id: 'recovered',
+      kind: 'pause'
+    });
+    env.store.createDiscardOperation(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: 'S1',
+        attempt_id: 'recovered',
+        source_snapshot: { repo: '/repo', branch: 'S1' }
+      }
+    });
+
+    await env.scheduler.recoverControls(WS);
+
+    expect(processController.terminate).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts.recovered).toMatchObject({
+      status: 'running',
+      control: { phase: 'requested' }
+    });
+  });
+
+  test('fails closed when recovered process identity is unknown', async () => {
+    const processController = {
+      terminate: vi.fn(async () => ({
+        ok: false,
+        state: 'unknown',
+        reason: 'ps_failed'
+      })),
+      probe: vi.fn(() => ({ state: 'unknown', reason: 'ps_failed' }))
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      processController
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'recovered', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'recovered',
+      patch: {
+        status: 'running',
+        session_id: 'sid-1',
+        process_identity: { pid: 4242, pgid: 4242, started_at: 1_000 }
+      }
+    });
+    env.store.requestAttemptControl(WS, {
+      attempt_id: 'recovered',
+      kind: 'pause'
+    });
+
+    await env.scheduler.recoverControls(WS);
+
+    expect(env.store.snapshot(WS).attempts.recovered).toMatchObject({
+      status: 'running',
+      control: { phase: 'failed', last_error: 'ps_failed' }
+    });
+  });
+
   test('pause records `paused`, keeps the bead queued, and advances the queue', async () => {
     const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
     seedQueue(env.store, ['S1', 'S2']);
@@ -6128,6 +6362,127 @@ describe('scheduler closed-queue sweep (UI-m6bg)', () => {
 });
 
 describe('scheduler protected bead sets (UI-b8n8 §접근 A)', () => {
+  test('keeps an active discard bead out of dispatch and external adoption', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    env.store.createDiscardOperation(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: 'S1',
+        source_snapshot: { repo: '/repo', branch: 'S1' }
+      }
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(true);
+    expect(env.scheduler.externalProtectedBeadIds(WS).has('S1')).toBe(true);
+  });
+
+  test('finalizes a terminated discard runner as discarded and releases its slot', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.store.requestAttemptControl(WS, {
+      attempt_id,
+      kind: 'pause'
+    });
+
+    const result = await env.scheduler.finalizeDiscardAttempt(WS, attempt_id);
+
+    expect(result).toEqual({ ok: true });
+    expect(env.scheduler.runningCount()).toBe(0);
+    expect(env.store.snapshot(WS).attempts[attempt_id]).toMatchObject({
+      status: 'discarded',
+      cause: null,
+      control: null
+    });
+  });
+
+  test('refuses pause while an active discard owns the attempt', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    seedActiveDiscard(env.store, 'S1', attempt_id);
+
+    const result = await env.scheduler.pause(WS, attempt_id);
+
+    expect(result).toEqual({ ok: false, reason: 'discard_in_progress' });
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+  });
+
+  test('refuses legacy stop while an active discard owns the attempt', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    seedActiveDiscard(env.store, 'S1', attempt_id);
+
+    const result = await env.scheduler.stop(WS, attempt_id);
+
+    expect(result).toBe(false);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+  });
+
+  test('refuses resume while an active discard owns the attempt', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'paused-1', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'paused-1',
+      patch: {
+        status: 'paused',
+        session_id: 'session-1',
+        repo: '/repo'
+      }
+    });
+    seedActiveDiscard(env.store, 'S1', 'paused-1');
+
+    const result = await env.scheduler.resume(WS, 'paused-1');
+
+    expect(result).toEqual({ ok: false, reason: 'discard_in_progress' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('refuses conflict resolution while an active discard owns the bead', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedPrWait(env.store, 'S1');
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-S1',
+      patch: { session_id: 'session-1', repo: '/repo', target_base: 'main' }
+    });
+    seedActiveDiscard(env.store, 'S1', 'att-S1');
+
+    const result = await env.scheduler.resolveConflict(WS, 'S1');
+
+    expect(result).toEqual({ ok: false, reason: 'discard_in_progress' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('refuses external conflict dispatch while an active discard owns the bead', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      externalPrs: { S1: { number: 1 } }
+    });
+    seedActiveDiscard(env.store, 'S1');
+
+    const result = await env.scheduler.dispatchExternalConflict(
+      WS,
+      'S1',
+      'main'
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'discard_in_progress' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
   test('reports a dispatch-claimed bead as active before any attempt exists', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     env.worktree.add.mockImplementation(() => new Promise(() => {}));
@@ -6704,6 +7059,30 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(env.store.snapshot(WS).pr_wait.map((e) => e.bead_id)).toEqual([
       'S1'
     ]);
+  });
+
+  test('refuses discard fencing while normal completion is settling', async () => {
+    const gated = gatedVerify();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: gated.verify
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.finish('S1', { success: true });
+    await flush();
+
+    expect(env.scheduler.canDiscardAttempt(attempt_id)).toBe(false);
+    expect(env.scheduler.fenceDiscardAttempt(attempt_id)).toBe(false);
+    await expect(
+      env.scheduler.finalizeDiscardAttempt(WS, attempt_id)
+    ).resolves.toEqual({ ok: false, reason: 'attempt_settling' });
+
+    gated.release();
+    await drain();
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('done');
   });
 
   test('leaves an attempt alone while its dispatch is still in flight', async () => {

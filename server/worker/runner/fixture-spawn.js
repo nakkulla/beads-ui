@@ -16,7 +16,7 @@ import { PassThrough } from 'node:stream';
  * @typedef {Object} ChildProcessLike
  * @property {number|null} pid
  * @property {import('node:stream').Readable|null} stdout
- * @property {(signal?: NodeJS.Signals|number) => void} kill
+ * @property {(signal?: NodeJS.Signals|number) => boolean} kill
  * @property {(event: string, listener: (...args: any[]) => void) => void} on
  */
 
@@ -27,6 +27,9 @@ import { PassThrough } from 'node:stream';
  * @property {number} [exit] - Process exit code emitted on close (default 0).
  * @property {number} [pid] - Fake pid (default 4242).
  * @property {boolean} [error] - Emit a spawn 'error' instead of 'close'.
+ * @property {(signal?: NodeJS.Signals|number) => boolean} [kill] - Direct-child signal seam.
+ * @property {boolean} [autoClose] - Emit the normal fixture close (default true).
+ * @property {NodeJS.Signals|number} [closeOnKill] - Emit close after this direct signal.
  */
 
 /**
@@ -46,6 +49,7 @@ export function makeFixtureSpawn(options = {}) {
   const exit = typeof options.exit === 'number' ? options.exit : 0;
   const pid = typeof options.pid === 'number' ? options.pid : 4242;
   const emit_error = !!options.error;
+  const auto_close = options.autoClose !== false;
 
   /** @type {{ calls: Array<{ command: string, args: string[], options: any }> }} */
   const captured = { calls: [] };
@@ -60,7 +64,15 @@ export function makeFixtureSpawn(options = {}) {
     captured.calls.push({ command, args, options: spawn_options });
     const child = new EventEmitter();
     /** @type {any} */ (child).pid = pid;
-    /** @type {any} */ (child).kill = () => {};
+    /** @type {any} */ (child).kill = (
+      /** @type {NodeJS.Signals|number|undefined} */ signal
+    ) => {
+      const killed = options.kill ? options.kill(signal) : true;
+      if (killed && signal === options.closeOnKill) {
+        setImmediate(() => child.emit('close', null, signal));
+      }
+      return killed;
+    };
 
     // FD transport (UI-o2yt §3.1): when the engine hands stdout an fd on the
     // session-log file, a real child writes THERE and has no stdout pipe. The
@@ -76,13 +88,15 @@ export function makeFixtureSpawn(options = {}) {
           writeSync(out_fd, `${line}\n`);
         }
       }
-      setImmediate(() => {
-        if (emit_error) {
-          child.emit('error', new Error('spawn failure'));
-        } else {
-          child.emit('close', exit);
-        }
-      });
+      if (auto_close) {
+        setImmediate(() => {
+          if (emit_error) {
+            child.emit('error', new Error('spawn failure'));
+          } else {
+            child.emit('close', exit);
+          }
+        });
+      }
       return /** @type {any} */ (child);
     }
 
@@ -90,6 +104,9 @@ export function makeFixtureSpawn(options = {}) {
     /** @type {any} */ (child).stdout = stdout;
 
     stdout.on('end', () => {
+      if (!auto_close) {
+        return;
+      }
       if (emit_error) {
         child.emit('error', new Error('spawn failure'));
       } else {

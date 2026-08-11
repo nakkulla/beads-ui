@@ -33,7 +33,7 @@ function detailOf(pr = {}) {
 /**
  * A queue snapshot with one bead in `pr_wait` whose attempt records the PR.
  *
- * @param {{ pr_wait?: string[], pr_number?: number|null, pr_url?: string }} [input]
+ * @param {{ pr_wait?: string[], pr_number?: number|null, pr_url?: string, discard_operations?: Record<string, any> }} [input]
  */
 function queueOf(input = {}) {
   const ids = input.pr_wait ?? ['UI-1'];
@@ -62,7 +62,8 @@ function queueOf(input = {}) {
     pr_wait: ids.map((bead_id) => ({ bead_id, added_at: 1 })),
     done: [],
     attempts,
-    admission: {}
+    admission: {},
+    discard_operations: input.discard_operations ?? {}
   };
 }
 
@@ -77,6 +78,7 @@ function queueOf(input = {}) {
  *   resolveVerify?: any,
  *   runVerify?: any,
  *   onMerged?: any,
+ *   onDiscardObservation?: any,
  *   external?: any
  * }} [input]
  */
@@ -102,6 +104,7 @@ function makePoller(input = {}) {
     resolveVerify: input.resolveVerify ?? (async () => ({ state: 'absent' })),
     runVerify: input.runVerify,
     onMerged: input.onMerged,
+    onDiscardObservation: input.onDiscardObservation,
     external: input.external,
     notifyChanged,
     intervalSeconds: 0,
@@ -181,6 +184,33 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     // toggle alone leaves that halt waiting on a poller that never runs — the
     // permanent stall this Bead exists to remove.
     expect(prDetail).toHaveBeenCalled();
+  });
+
+  test('observes a human-merged revert without a browser subscriber', async () => {
+    const onDiscardObservation = vi.fn(async () => {});
+    const queue = queueOf({
+      pr_wait: [],
+      discard_operations: {
+        'discard-1': {
+          operation_id: 'discard-1',
+          bead_id: 'UI-1',
+          phase: 'revert_pr_wait',
+          requested_at: 1,
+          revert_pr: { number: 404, url: 'https://github.com/o/r/pull/404' }
+        }
+      }
+    });
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue,
+      detail: { state: 'ok', data: detailOf({ number: 404, state: 'MERGED' }) },
+      onDiscardObservation
+    });
+
+    await poller.tick();
+
+    expect(prDetail).toHaveBeenCalledWith('/repo', 404);
+    expect(onDiscardObservation).toHaveBeenCalledWith('UI-1');
   });
 
   test('observes a nonterminal deployment reconcile without a subscriber', async () => {
@@ -356,6 +386,57 @@ describe('worker/pr-poller — external PR state classification (§4)', () => {
     expect(observations.get('/ws', 'UI-1')?.pr?.state).toBe('CLOSED');
     expect(store_snapshot.pr_wait).toEqual([{ bead_id: 'UI-1', added_at: 1 }]);
     expect(store_snapshot.queue).toEqual([]);
+  });
+
+  test('hands a discard-fenced CLOSED observation to the discard coordinator', async () => {
+    const onMerged = vi.fn(async () => {});
+    const onDiscardObservation = vi.fn(async () => {});
+    const queue = queueOf({
+      discard_operations: {
+        'discard-1': {
+          operation_id: 'discard-1',
+          bead_id: 'UI-1',
+          phase: 'runner_terminated'
+        }
+      }
+    });
+    const { poller, prChecks } = makePoller({
+      queue,
+      detail: { state: 'ok', data: detailOf({ state: 'CLOSED' }) },
+      onMerged,
+      onDiscardObservation
+    });
+
+    await poller.tick();
+
+    expect(onDiscardObservation).toHaveBeenCalledWith('UI-1');
+    expect(onMerged).not.toHaveBeenCalled();
+    expect(prChecks).not.toHaveBeenCalled();
+  });
+
+  test('routes a discard-fenced MERGED observation away from ordinary cleanup', async () => {
+    const onMerged = vi.fn(async () => {});
+    const onDiscardObservation = vi.fn(async () => {});
+    const queue = queueOf({
+      discard_operations: {
+        'discard-1': {
+          operation_id: 'discard-1',
+          bead_id: 'UI-1',
+          phase: 'runner_terminated'
+        }
+      }
+    });
+    const { poller } = makePoller({
+      queue,
+      detail: { state: 'ok', data: detailOf({ state: 'MERGED' }) },
+      onMerged,
+      onDiscardObservation
+    });
+
+    await poller.tick();
+
+    expect(onDiscardObservation).toHaveBeenCalledWith('UI-1');
+    expect(onMerged).not.toHaveBeenCalled();
   });
 });
 

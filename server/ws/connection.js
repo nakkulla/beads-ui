@@ -79,6 +79,7 @@ import {
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
   handleWorkerCleanupDiagnose,
+  handleWorkerDiscard,
   handleWorkerMergeAutoToggle,
   handleWorkerMergeQueueAdd,
   handleWorkerMergeQueueAddAll,
@@ -536,6 +537,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-merge-queue-remove':
       handleWorkerMergeQueueRemove(ws, req);
+      return;
+    case 'worker-discard':
+      await handleWorkerDiscard(ws, req);
       return;
     case 'worker-pr-discard':
       await handleWorkerPrDiscard(ws, req);

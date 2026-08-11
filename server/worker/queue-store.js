@@ -32,6 +32,10 @@
  * @property {string|null} head_oid - Git head OID at dispatch.
  * @property {number|null} started_at - Epoch ms the session started.
  * @property {number|null} pid - OS process id of the runner.
+ * @property {{ pid: number, pgid: number, started_at: number }|null} process_identity -
+ * Verified detached process-group identity used for restart-safe control.
+ * @property {{ kind: 'pause', phase: 'requested'|'signaled'|'terminated'|'done'|'failed', requested_at: number, last_error: string|null }|null} control -
+ * Durable pause intent and monotonic recovery phase.
  * @property {string|null} runner - Runner adapter (claude/codex/ccx).
  * @property {string|null} session_id - Runner session identifier (claude
  * `session_id` / codex `thread_id`) captured from the stream's first event for
@@ -59,8 +63,8 @@
  * @property {string|null} repo - Target repo root (the reconcile's observation
  * scope: a dead attempt's PR is looked for in THIS repo).
  * @property {string|null} status - Attempt lifecycle: running/done/failed/
- * orphaned/paused/stopped. `paused` (tile ⏸, resumable) and `stopped` (tile ■,
- * terminal) are user actions and carry no `cause` — the state is the meaning.
+ * orphaned/paused/stopped/discarded. `paused` is resumable; `stopped` is legacy
+ * history; `discarded` is the unified archive-backed terminal action.
  * @property {string|null} workflow_mode_prior - workflow_mode value snapshotted before launch (null=was unset).
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
@@ -279,6 +283,9 @@
  * @property {Record<string, CompletionIntent>} completion_intents - Durable
  * root-scoped completion sagas. Missing on legacy queue files and normalized
  * to an empty map; execution lives in `completion-intent.js`.
+ * @property {Record<string, DiscardOperation>} discard_operations - Durable
+ * discard sagas keyed by operation id. A missing legacy field normalizes to an
+ * empty map; every non-done operation fences its bead from other drivers.
  * @property {Record<string, DeploymentReconcile>} reconcile - Durable
  * deployment reconciliation state keyed by parent Bead.
  * @property {LastDeploy|null} last_deploy - The workspace's most recent
@@ -286,6 +293,22 @@
  * time — the question it answers is "is the running service the merged code?",
  * which only the latest deploy can answer. Null on a workspace that has never
  * deployed (no `[worker.deploy]` section, or none run yet).
+ */
+/**
+ * @typedef {Object} DiscardOperation
+ * @property {string} operation_id
+ * @property {string} bead_id
+ * @property {string|null} attempt_id
+ * @property {number} requested_at
+ * @property {'undecided'|'unmerged'|'merged_revert'} mode
+ * @property {string} phase
+ * @property {{ pid: number, pgid: number, started_at: number }|null} process_identity
+ * @property {Record<string, unknown>} source_snapshot
+ * @property {{ path: string, manifest_sha256: string, verified_at: number }|null} backup
+ * @property {Record<string, unknown>|null} original_pr
+ * @property {Record<string, unknown>|null} revert_pr
+ * @property {Record<string, unknown>} receipts
+ * @property {string|null} last_error
  */
 /**
  * One member of the sequential merge queue (UI-5v7d §1).
@@ -504,6 +527,14 @@ const MAX_REPAIR_SESSIONS = 2;
 const COMPLETION_EVIDENCE_MAX = 4_000;
 
 const COMPLETION_LOG_PATH_MAX = 1_000;
+
+const ATTEMPT_CONTROL_TRANSITIONS = {
+  requested: new Set(['signaled', 'failed']),
+  signaled: new Set(['terminated', 'failed']),
+  terminated: new Set(['done', 'failed']),
+  done: new Set(),
+  failed: new Set()
+};
 
 /**
  * @param {unknown} value
@@ -895,6 +926,7 @@ function emptyQueue() {
     auto_merge: false,
     auto_merge_skips: {},
     completion_intents: {},
+    discard_operations: {},
     reconcile: {},
     last_deploy: null
   };
@@ -1118,6 +1150,161 @@ function boundGuardWarnings(raw) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {{ pid: number, pgid: number, started_at: number }|null}
+ */
+function normalizeProcessIdentity(value) {
+  const pid = isRecord(value) ? value.pid : null;
+  const pgid = isRecord(value) ? value.pgid : null;
+  const started_at = isRecord(value) ? value.started_at : null;
+  if (
+    !isRecord(value) ||
+    typeof pid !== 'number' ||
+    !Number.isInteger(pid) ||
+    typeof pgid !== 'number' ||
+    !Number.isInteger(pgid) ||
+    typeof started_at !== 'number' ||
+    !Number.isFinite(started_at) ||
+    pid <= 0 ||
+    pgid <= 0
+  ) {
+    return null;
+  }
+  return {
+    pid,
+    pgid,
+    started_at
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Attempt['control']}
+ */
+function normalizeAttemptControl(value) {
+  const requested_at = isRecord(value) ? value.requested_at : null;
+  if (
+    !isRecord(value) ||
+    value.kind !== 'pause' ||
+    !Object.hasOwn(ATTEMPT_CONTROL_TRANSITIONS, String(value.phase)) ||
+    typeof requested_at !== 'number' ||
+    !Number.isFinite(requested_at)
+  ) {
+    return null;
+  }
+  return {
+    kind: 'pause',
+    phase: /** @type {NonNullable<Attempt['control']>['phase']} */ (
+      value.phase
+    ),
+    requested_at,
+    last_error:
+      typeof value.last_error === 'string' && value.last_error.length > 0
+        ? value.last_error
+        : null
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Record<string, unknown>|null}
+ */
+function normalizeJsonRecord(value) {
+  return isRecord(value) ? clone(value) : null;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {DiscardOperation['backup']}
+ */
+function normalizeDiscardBackup(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.path !== 'string' ||
+    value.path.length === 0 ||
+    typeof value.manifest_sha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(value.manifest_sha256) ||
+    typeof value.verified_at !== 'number' ||
+    !Number.isFinite(value.verified_at)
+  ) {
+    return null;
+  }
+  return {
+    path: value.path,
+    manifest_sha256: value.manifest_sha256,
+    verified_at: value.verified_at
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} operation_id
+ * @returns {DiscardOperation|null}
+ */
+function normalizeDiscardOperation(value, operation_id) {
+  if (
+    !isRecord(value) ||
+    typeof operation_id !== 'string' ||
+    operation_id.length === 0 ||
+    typeof value.bead_id !== 'string' ||
+    value.bead_id.length === 0 ||
+    typeof value.phase !== 'string' ||
+    value.phase.length === 0 ||
+    typeof value.requested_at !== 'number' ||
+    !Number.isFinite(value.requested_at) ||
+    (value.mode !== 'undecided' &&
+      value.mode !== 'unmerged' &&
+      value.mode !== 'merged_revert')
+  ) {
+    return null;
+  }
+  const source_snapshot = normalizeJsonRecord(value.source_snapshot);
+  if (!source_snapshot) {
+    return null;
+  }
+  return {
+    operation_id,
+    bead_id: value.bead_id,
+    attempt_id:
+      typeof value.attempt_id === 'string' && value.attempt_id.length > 0
+        ? value.attempt_id
+        : null,
+    requested_at: value.requested_at,
+    mode: value.mode,
+    phase: value.phase,
+    process_identity: normalizeProcessIdentity(value.process_identity),
+    source_snapshot,
+    backup: normalizeDiscardBackup(value.backup),
+    original_pr: normalizeJsonRecord(value.original_pr),
+    revert_pr: normalizeJsonRecord(value.revert_pr),
+    receipts: normalizeJsonRecord(value.receipts) || {},
+    last_error:
+      typeof value.last_error === 'string' && value.last_error.length > 0
+        ? value.last_error
+        : null
+  };
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {Record<string, DiscardOperation>}
+ */
+function normalizeDiscardOperations(raw) {
+  /** @type {Record<string, DiscardOperation>} */
+  const operations = {};
+  if (!isRecord(raw)) {
+    return operations;
+  }
+  for (const [operation_id, value] of Object.entries(raw)) {
+    const operation = normalizeDiscardOperation(value, operation_id);
+    if (operation) {
+      operations[operation_id] = operation;
+    }
+  }
+  return operations;
+}
+
+/**
  * Fill an attempt container over its default (all-null) shape.
  *
  * @param {Partial<Attempt> & { attempt_id: string, bead_id: string }} fields
@@ -1131,6 +1318,8 @@ export function makeAttempt(fields) {
     head_oid: fields.head_oid ?? null,
     started_at: fields.started_at ?? null,
     pid: fields.pid ?? null,
+    process_identity: normalizeProcessIdentity(fields.process_identity),
+    control: normalizeAttemptControl(fields.control),
     runner: fields.runner ?? null,
     session_id: fields.session_id ?? null,
     model: fields.model ?? null,
@@ -1372,6 +1561,7 @@ function normalizeQueue(raw) {
   q.auto_merge = raw.auto_merge === true;
   q.auto_merge_skips = normalizeMergeSkips(raw.auto_merge_skips);
   q.completion_intents = normalizeCompletionIntents(raw.completion_intents);
+  q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
   q.reconcile = normalizeReconcile(raw.reconcile);
   // A queue.json written before the deploy hook simply has no key → null, which
   // reads as "this workspace has never deployed" (worker-deploy-hook §3). A
@@ -2516,11 +2706,13 @@ export function createQueueStore(options = {}) {
       const terminal =
         patch.status === 'paused' ||
         patch.status === 'stopped' ||
+        patch.status === 'discarded' ||
         patch.status === 'done' ||
         patch.status === 'failed' ||
         patch.status === 'orphaned' ||
         current_status === 'paused' ||
         current_status === 'stopped' ||
+        current_status === 'discarded' ||
         current_status === 'done' ||
         current_status === 'failed' ||
         current_status === 'orphaned';
@@ -2544,6 +2736,360 @@ export function createQueueStore(options = {}) {
       });
       consumeTerminalReceipts(result, prepared.files);
       return result;
+    },
+
+    /**
+     * Persist a pause request before any signal is attempted.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, kind: 'pause' }} input
+     * @returns {QueueOpResult}
+     */
+    requestAttemptControl(workspace, input) {
+      const { attempt_id, kind } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur) {
+          reason = 'attempt_not_found';
+          return false;
+        }
+        if (kind !== 'pause') {
+          reason = 'kind_invalid';
+          return false;
+        }
+        if (cur.status !== 'running') {
+          reason = 'not_running';
+          return false;
+        }
+        if (cur.control !== null) {
+          reason = 'control_exists';
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt({
+          ...cur,
+          control: {
+            kind: 'pause',
+            phase: 'requested',
+            requested_at: now(),
+            last_error: null
+          }
+        });
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Advance one durable attempt-control phase with an expected-phase fence.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, expected_phase: 'requested'|'signaled'|'terminated'|'done'|'failed', next_phase: 'requested'|'signaled'|'terminated'|'done'|'failed', last_error?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    advanceAttemptControl(workspace, input) {
+      const { attempt_id, expected_phase, next_phase, last_error } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur || cur.control === null) {
+          reason = cur ? 'control_missing' : 'attempt_not_found';
+          return false;
+        }
+        if (cur.control.phase !== expected_phase) {
+          reason = 'phase_mismatch';
+          return false;
+        }
+        const allowed = ATTEMPT_CONTROL_TRANSITIONS[expected_phase];
+        if (!allowed || !allowed.has(next_phase)) {
+          reason = 'transition_invalid';
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt({
+          ...cur,
+          control: {
+            ...cur.control,
+            phase: next_phase,
+            last_error:
+              next_phase === 'failed' && typeof last_error === 'string'
+                ? last_error
+                : null
+          }
+        });
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Atomically finish a terminated pause and mark the attempt resumable.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, finished_at: number, patch?: Partial<Attempt> }} input
+     * @returns {QueueOpResult}
+     */
+    completeAttemptControl(workspace, input) {
+      const { attempt_id, finished_at, patch } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur || cur.control === null) {
+          reason = cur ? 'control_missing' : 'attempt_not_found';
+          return false;
+        }
+        if (cur.control.phase !== 'terminated') {
+          reason = 'phase_mismatch';
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt({
+          ...cur,
+          ...(patch || {}),
+          status: 'paused',
+          cause: null,
+          finished_at,
+          control: { ...cur.control, phase: 'done', last_error: null }
+        });
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Create the bead's durable discard intent and merge fence in one CAS
+     * mutation. A fresh duplicate returns the existing active operation
+     * without minting a second id or bumping the revision.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, operation: { operation_id: string, bead_id: string, attempt_id?: string|null, process_identity?: { pid: number, pgid: number, started_at: number }|null, source_snapshot: Record<string, unknown> } }} input
+     * @returns {QueueOpResult & { reused?: boolean, operation?: DiscardOperation }}
+     */
+    createDiscardOperation(workspace, input) {
+      const { expected_revision, operation } = input;
+      const current = ensureLoaded(workspace);
+      if (expected_revision !== current.revision) {
+        return {
+          ok: false,
+          conflict: true,
+          queue: clone(current)
+        };
+      }
+      const existing = Object.values(current.discard_operations).find(
+        (item) => item.bead_id === operation?.bead_id && item.phase !== 'done'
+      );
+      if (existing) {
+        return {
+          ok: true,
+          conflict: false,
+          reused: true,
+          operation: clone(existing),
+          queue: clone(current)
+        };
+      }
+      const normalized = normalizeDiscardOperation(
+        {
+          ...operation,
+          requested_at: now(),
+          mode: 'undecided',
+          phase: 'requested',
+          backup: null,
+          original_pr: null,
+          revert_pr: null,
+          receipts: {},
+          last_error: null
+        },
+        operation?.operation_id
+      );
+      if (!normalized) {
+        return {
+          ok: false,
+          conflict: false,
+          reason: 'operation_invalid',
+          queue: clone(current)
+        };
+      }
+      const result = applyMutation(workspace, expected_revision, (next) => {
+        if (Object.hasOwn(next.discard_operations, normalized.operation_id)) {
+          return false;
+        }
+        if (
+          Object.values(next.discard_operations).some(
+            (item) =>
+              item.bead_id === normalized.bead_id && item.phase !== 'done'
+          )
+        ) {
+          return false;
+        }
+        next.discard_operations[normalized.operation_id] = normalized;
+        next.merge_queue = next.merge_queue.filter(
+          (item) => item.bead_id !== normalized.bead_id
+        );
+        delete next.auto_merge_skips[normalized.bead_id];
+        return true;
+      });
+      return result.ok
+        ? { ...result, operation: clone(normalized) }
+        : { ...result, reason: 'operation_conflict' };
+    },
+
+    /**
+     * Advance one discard phase under an expected-phase fence. Immutable
+     * source identity fields are deliberately absent from the applied patch.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, expected_phase: string, next_phase: string, patch?: { mode?: 'undecided'|'unmerged'|'merged_revert', backup?: DiscardOperation['backup'], original_pr?: Record<string, unknown>|null, revert_pr?: Record<string, unknown>|null, receipts?: Record<string, unknown>, source_snapshot?: Record<string, unknown> } }} input
+     * @returns {QueueOpResult}
+     */
+    advanceDiscardOperation(workspace, input) {
+      const { operation_id, expected_phase, next_phase, patch = {} } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const current = next.discard_operations[operation_id];
+        if (!current) {
+          reason = 'operation_not_found';
+          return false;
+        }
+        if (current.phase !== expected_phase) {
+          reason = 'phase_mismatch';
+          return false;
+        }
+        if (typeof next_phase !== 'string' || next_phase.length === 0) {
+          reason = 'phase_invalid';
+          return false;
+        }
+        if (next_phase === 'done') {
+          reason = 'use_complete';
+          return false;
+        }
+        const mode = patch.mode ?? current.mode;
+        if (
+          mode !== 'undecided' &&
+          mode !== 'unmerged' &&
+          mode !== 'merged_revert'
+        ) {
+          reason = 'mode_invalid';
+          return false;
+        }
+        let backup = current.backup;
+        if (Object.hasOwn(patch, 'backup')) {
+          backup = normalizeDiscardBackup(patch.backup);
+          if (patch.backup !== null && backup === null) {
+            reason = 'backup_invalid';
+            return false;
+          }
+        }
+        next.discard_operations[operation_id] = {
+          ...current,
+          mode,
+          phase: next_phase,
+          backup,
+          original_pr: Object.hasOwn(patch, 'original_pr')
+            ? normalizeJsonRecord(patch.original_pr)
+            : current.original_pr,
+          revert_pr: Object.hasOwn(patch, 'revert_pr')
+            ? normalizeJsonRecord(patch.revert_pr)
+            : current.revert_pr,
+          receipts: {
+            ...current.receipts,
+            ...(normalizeJsonRecord(patch.receipts) || {})
+          },
+          last_error: null
+        };
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Keep a failed operation active at the phase whose authoritative action
+     * must be retried.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, expected_phase: string, reason: string }} input
+     * @returns {QueueOpResult}
+     */
+    failDiscardOperation(workspace, input) {
+      const { operation_id, expected_phase, reason: failure } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const current = next.discard_operations[operation_id];
+        if (!current) {
+          reason = 'operation_not_found';
+          return false;
+        }
+        if (current.phase !== expected_phase) {
+          reason = 'phase_mismatch';
+          return false;
+        }
+        if (typeof failure !== 'string' || failure.length === 0) {
+          reason = 'reason_invalid';
+          return false;
+        }
+        current.last_error = failure;
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Remove all server-owned lane/failure membership and release the durable
+     * fence on the same final write.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, expected_phase: string, deploy?: { outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string, detail?: string, log_path?: string } }} input
+     * @returns {QueueOpResult}
+     */
+    completeDiscardOperation(workspace, input) {
+      const { operation_id, expected_phase } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const current = next.discard_operations[operation_id];
+        if (!current) {
+          reason = 'operation_not_found';
+          return false;
+        }
+        if (current.phase !== expected_phase) {
+          reason = 'phase_mismatch';
+          return false;
+        }
+        const deploy = Object.hasOwn(input, 'deploy')
+          ? buildLastDeploy(input.deploy, now())
+          : null;
+        if (Object.hasOwn(input, 'deploy') && deploy === null) {
+          reason = 'deploy_invalid';
+          return false;
+        }
+        removeFromLanes(next, current.bead_id);
+        delete next.admission[current.bead_id];
+        delete next.cleanup_failed[current.bead_id];
+        next.discard_operations[operation_id] = {
+          ...current,
+          phase: 'done',
+          last_error: null
+        };
+        if (deploy !== null) {
+          next.last_deploy = deploy;
+        }
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * @param {string} workspace
+     * @returns {Set<string>}
+     */
+    activeDiscardBeadIds(workspace) {
+      return new Set(
+        Object.values(ensureLoaded(workspace).discard_operations)
+          .filter((operation) => operation.phase !== 'done')
+          .map((operation) => operation.bead_id)
+      );
     },
 
     /**

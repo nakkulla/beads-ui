@@ -45,17 +45,21 @@ import {
   createCompletionIntentCoordinator
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
+import { createDiscardCoordinator } from './discard-coordinator.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
+import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
+import { createRecoveryArchive } from './recovery-archive.js';
 import {
   peekVerifyResolution,
   resolveDeployAt,
   resolveVerifyAt
 } from './repo-ops.js';
+import { createRevertBuilder } from './revert-builder.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
@@ -352,6 +356,7 @@ export function defaultProbePid(pid) {
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
+ *   processController?: ReturnType<typeof createProcessController>,
  *   sessionMonitors?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
@@ -362,6 +367,8 @@ export function defaultProbePid(pid) {
  *   completionIntent?: any,
  *   completionActionDriver?: any,
  *   completionRepair?: any,
+ *   discardCoordinator?: any,
+ *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -487,12 +494,21 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     options.verify ||
     createVerifier({ gh, bd: createBdMetadata({ cwd: workspace_root }) });
 
+  // Custom process seams identify unit-test attachments. Production supplies
+  // none of them and therefore always gets verified process-group control.
+  const processController =
+    options.processController ||
+    (options.spawn_impl || options.makeRunner || options.probePid
+      ? null
+      : createProcessController({ signal: options.kill_impl }));
+
   const makeRunner =
     options.makeRunner ||
     ((name) =>
       createRunner(name, {
         spawn_impl: options.spawn_impl || ((c, a, o) => spawn(c, a, o)),
-        kill_impl: options.kill_impl
+        kill_impl: options.kill_impl,
+        ...(processController ? { process_controller: processController } : {})
       }));
 
   // The outward attempt-lifecycle push (UI-2yoq). Config is read per call, so a
@@ -538,6 +554,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       usage: runtime.usageStore,
       probePid,
       kill_impl: options.kill_impl,
+      ...(processController ? { processController } : {}),
       notifyChanged: (ws_key) => emitQueueChanged(ws_key)
     });
 
@@ -607,9 +624,86 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         : Promise.resolve();
     },
     probePid,
+    ...(processController ? { processController } : {}),
     sessionMonitors,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
+
+  const recoveryArchive = options.recoveryArchive || createRecoveryArchive();
+  const discardCoordinator =
+    options.discardCoordinator ||
+    createDiscardCoordinator({
+      workspace: keyFor(workspace_root),
+      repo,
+      store: runtime.queueStore,
+      gh,
+      bd,
+      worktree,
+      gitRun,
+      scheduler,
+      archive: recoveryArchive,
+      processController,
+      sessionLog: runtime.sessionLog,
+      revertBuilder: createRevertBuilder({ gitRun }),
+      verifyRevert: async (
+        /** @type {{ worktree: string, base_sha: string }} */ input
+      ) => {
+        const resolved = await resolveVerify({
+          sha: input.base_sha,
+          force: true
+        });
+        if (resolved.state !== 'resolved') {
+          return {
+            ok: false,
+            reason:
+              resolved.state === 'invalid'
+                ? 'verify_config_invalid'
+                : 'verify_missing'
+          };
+        }
+        const result = await runShell(
+          resolved.value.cmd[0],
+          resolved.value.cmd.slice(1),
+          {
+            cwd: input.worktree,
+            timeout_ms: resolved.value.timeout_ms
+          }
+        );
+        return result.code === 0
+          ? { ok: true }
+          : { ok: false, reason: 'verify_cmd_failed' };
+      },
+      rollbackBaseSync: (/** @type {any} */ refs) =>
+        prActions
+          ? prActions.rollbackBaseSync(refs)
+          : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
+      rollbackVerify: (
+        /** @type {string} */ bead_id,
+        /** @type {string} */ base_sha
+      ) =>
+        prActions
+          ? prActions.rollbackVerify(bead_id, base_sha)
+          : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
+      rollbackResolveDeploy: (
+        /** @type {string} */ bead_id,
+        /** @type {string} */ base_sha,
+        /** @type {string} */ target_base
+      ) =>
+        prActions
+          ? prActions.rollbackResolveDeploy(bead_id, base_sha, target_base)
+          : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
+      launchRollbackDeploy: (
+        /** @type {string} */ bead_id,
+        /** @type {any} */ pending_deploy
+      ) => prActions?.launchRollbackDeploy(bead_id, pending_deploy),
+      external: {
+        get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
+          runtime.externalPrs.get(ws_key, bead_id)
+      },
+      actionInFlight: (/** @type {string} */ bead_id) =>
+        prActions?.isInFlight(bead_id) === true,
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+    });
 
   // REVISE-parking disposition (UI-hs11 §3.2–§3.4): the two human clicks that
   // dispose of a bead parked at `blocked_reason=spec_review_stale:revise`.
@@ -1039,6 +1133,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // button runs — one implementation, two triggers (worker-phase2 §6).
     onMerged: (bead_id, merge_sha) =>
       prActions.cleanupObservedMerge(bead_id, merge_sha),
+    onDiscardObservation: (bead_id) => discardCoordinator.observeBead(bead_id),
     // The external registry rides the poller's own subscriber gate and cadence
     // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:
     // never.
@@ -1055,6 +1150,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reconciler,
     prPoller,
     prActions,
+    discardCoordinator,
     mergeQueue,
     autoMerge,
     completionIntent: resolvedCompletionIntent,
@@ -1063,6 +1159,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     refreshExternalPrs,
     reviseDisposition,
     sessionMonitors,
+    processController,
     bd,
     // Exposed so the ws snapshot decoration can ask whether a bead's worktree
     // still exists (UI-w0hi §3); the manager itself stays attachment-owned.
@@ -1081,6 +1178,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
  * @type {Map<string, ReturnType<typeof createWorkerAttachment>>}
  */
 const ATTACHMENTS = new Map();
+
+/**
+ * One fail-closed startup sequence per attachment. The promise remains in the
+ * map after completion so repeated runtime initialization cannot interleave a
+ * second recovery pass with already-started drivers.
+ *
+ * @type {Map<string, Promise<void>>}
+ */
+const ATTACHMENT_STARTUPS = new Map();
 
 /**
  * @param {string} workspace_root
@@ -1146,6 +1252,84 @@ function recoverRunningAttempts(att, key) {
 }
 
 /**
+ * Recover persisted control before any monitor or ordinary driver can observe
+ * the same attempt. A recovery failure leaves the attachment constructed but
+ * inert; starting reconcile/poll/merge after an ambiguous signal would let a
+ * second subsystem consume the attempt under a contradictory state.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key
+ * @param {boolean} start_pr_poller
+ */
+async function startWorkerAttachment(att, key, start_pr_poller) {
+  try {
+    await att.discardCoordinator.recoverFences();
+  } catch (err) {
+    log('discard fence recovery failed for %s: %o', key, err);
+    return;
+  }
+
+  try {
+    await att.scheduler.recoverControls(key);
+  } catch (err) {
+    log('control recovery failed for %s: %o', key, err);
+    return;
+  }
+
+  recoverRunningAttempts(att, key);
+  try {
+    await att.discardCoordinator.recover();
+  } catch (err) {
+    log('discard operation recovery failed for %s: %o', key, err);
+    return;
+  }
+  try {
+    await att.scheduler.reconcile(key);
+  } catch (err) {
+    log('startup reconcile failed for %s: %o', key, err);
+    return;
+  }
+
+  if (start_pr_poller) {
+    try {
+      att.prPoller.start();
+    } catch (err) {
+      log('pr poller start failed for %s: %o', key, err);
+    }
+  }
+  try {
+    att.reconciler.start();
+  } catch (err) {
+    log('reconcile timer start failed for %s: %o', key, err);
+  }
+  try {
+    att.mergeQueue.start();
+  } catch (err) {
+    log('merge queue start failed for %s: %o', key, err);
+  }
+  try {
+    att.autoMerge.start();
+    const queue = att.runtime.queueStore.snapshot(key);
+    const reconcile_pending = Object.values(queue.reconcile || {}).some(
+      (record) =>
+        record && record.stage !== 'complete' && record.stage !== 'failed'
+    );
+    if (queue.auto_merge === true || reconcile_pending) {
+      Promise.resolve(att.prPoller.tick()).catch((err) => {
+        log('worker boot PR observation failed for %s: %o', key, err);
+      });
+    }
+  } catch (err) {
+    log('auto-merge start failed for %s: %o', key, err);
+  }
+  try {
+    att.completionIntent.start();
+  } catch (err) {
+    log('completion-intent start failed for %s: %o', key, err);
+  }
+}
+
+/**
  * Create + register attachments for each active workspace, then reconcile the
  * `running` attempts persisted from a prior run and arm the periodic reconcile
  * timer (worker-detached-session-reconcile §2). Idempotent per workspace.
@@ -1168,71 +1352,24 @@ export function initWorkerRuntime(input) {
     }
     const key = keyFor(ws);
     let att = ATTACHMENTS.get(key);
+    let created = false;
     if (!att) {
       att = createWorkerAttachment(key, {
         getSubscriberCount:
           typeof countFor === 'function' ? () => countFor(key) : undefined
       });
       ATTACHMENTS.set(key, att);
+      created = true;
     }
-    try {
-      att.prPoller.start();
-    } catch (err) {
-      log('pr poller start failed for %s: %o', key, err);
-    }
-    try {
-      att.reconciler.start();
-    } catch (err) {
-      log('reconcile timer start failed for %s: %o', key, err);
-    }
-    // The merge queue is DURABLE precisely because merging beads-ui restarts
-    // this process, so starting it here is the resume: whatever was still
-    // queued when the old process died is picked up from the head (UI-5v7d §2).
-    try {
-      att.mergeQueue.start();
-    } catch (err) {
-      log('merge queue start failed for %s: %o', key, err);
-    }
-    // The auto-merge enroller resumes the same way, and for the same reason: the
-    // flag it reads is durable because a beads-ui merge restarts this process
-    // (UI-yk55 §2). One immediate observation is fired for a workspace that
-    // comes up with the mode ON — the observation cache is empty after a
-    // restart, so without it every candidate would read as `unobserved` until
-    // the first poll interval elapsed (§4.4).
-    try {
-      att.autoMerge.start();
-      const queue = att.runtime.queueStore.snapshot(key);
-      const reconcile_pending = Object.values(queue.reconcile || {}).some(
-        (record) =>
-          record && record.stage !== 'complete' && record.stage !== 'failed'
+    if (!ATTACHMENT_STARTUPS.has(key)) {
+      ATTACHMENT_STARTUPS.set(
+        key,
+        startWorkerAttachment(
+          att,
+          key,
+          created && typeof countFor === 'function'
+        )
       );
-      if (queue.auto_merge === true || reconcile_pending) {
-        Promise.resolve(att.prPoller.tick()).catch((err) => {
-          log('worker boot PR observation failed for %s: %o', key, err);
-        });
-      }
-    } catch (err) {
-      log('auto-merge start failed for %s: %o', key, err);
-    }
-    try {
-      att.completionIntent.start();
-    } catch (err) {
-      log('completion-intent start failed for %s: %o', key, err);
-    }
-    // Before the startup pass judges those attempts: rebuild what their tally
-    // was (the disposition below is the write that persists it — UI-ediw) and
-    // re-arm the live half for the ones still running — drawer follow, merge
-    // guard, continued usage (UI-o2yt §3.3).
-    recoverRunningAttempts(att, key);
-    // Startup pass: a session that died WITH the old server may already have
-    // pushed its PR, so the same routine that handles a later death decides
-    // this one too. Fire-and-forget — a slow `gh` must not hold up startup.
-    try {
-      Promise.resolve(att.scheduler.reconcile(key)).catch((err) => {
-        log('startup reconcile failed for %s: %o', key, err);
-      });
-    } catch (err) {
-      log('startup reconcile failed for %s: %o', key, err);
     }
     built.push(att);
   }
@@ -1518,6 +1655,37 @@ export async function discardWorkerPr(workspace_root, bead_id) {
 }
 
 /**
+ * Start or reuse one durable unified discard operation.
+ *
+ * @param {string} workspace_root
+ * @param {{ bead_id: string, attempt_id?: string|null, operation_id?: string|null, expected_revision: number }} input
+ */
+export async function discardWorkerBead(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.discardCoordinator) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  if (typeof input.operation_id === 'string' && input.operation_id.length > 0) {
+    const queue = getWorkerRuntime().queueStore.snapshot(
+      keyFor(workspace_root)
+    );
+    const operation = queue.discard_operations?.[input.operation_id];
+    if (
+      !operation ||
+      operation.bead_id !== input.bead_id ||
+      operation.phase === 'done'
+    ) {
+      return { ok: false, reason: 'operation_not_retryable' };
+    }
+    if (queue.revision !== input.expected_revision) {
+      return { ok: false, conflict: true, reason: 'revision_conflict' };
+    }
+    return att.discardCoordinator.retry(input.operation_id);
+  }
+  return att.discardCoordinator.discard(input);
+}
+
+/**
  * Run the [finding 수용·수정] disposition click for a parked bead (UI-hs11
  * §3.3), IF an attachment is registered. Inert without one — a ws-handler test
  * never reaches bd or a spawn, and an unattached workspace could not have
@@ -1578,7 +1746,9 @@ export async function diagnoseWorkerCleanup(workspace_root, bead_id) {
  * @param {ReturnType<typeof createWorkerAttachment>} attachment
  */
 export function __registerWorkerAttachmentForTest(workspace_root, attachment) {
-  ATTACHMENTS.set(keyFor(workspace_root), attachment);
+  const key = keyFor(workspace_root);
+  ATTACHMENT_STARTUPS.delete(key);
+  ATTACHMENTS.set(key, attachment);
 }
 
 /**
@@ -1625,5 +1795,6 @@ export function __resetWorkerAttachmentsForTest() {
     }
   }
   ATTACHMENTS.clear();
+  ATTACHMENT_STARTUPS.clear();
   unattachedAdmissionCheck = checkUnattachedWorkerAdmission;
 }

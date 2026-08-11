@@ -433,7 +433,7 @@ describe('worker/attach construction + live loop (F1)', () => {
     );
   });
 
-  test('initWorkerRuntime starts the completion-intent coordinator', () => {
+  test('initWorkerRuntime starts the completion-intent coordinator after recovery', async () => {
     const completionIntent = { start: vi.fn(), stop: vi.fn() };
     const att = createWorkerAttachment(WS, {
       runtime: createWorkerRuntime(),
@@ -447,6 +447,7 @@ describe('worker/attach construction + live loop (F1)', () => {
 
     initWorkerRuntime({ workspaces: [WS] });
 
+    await waitFor(() => completionIntent.start.mock.calls.length === 1);
     expect(completionIntent.start).toHaveBeenCalledTimes(1);
   });
 
@@ -642,6 +643,117 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(snap.auto_advance).toBe(true);
   });
 
+  test('recovers durable control before monitor replay and ordinary reconcile', async () => {
+    const runtime = createWorkerRuntime();
+    seedDetachedAttempt(runtime.queueStore, 'pause-1', 'UI-pause');
+    runtime.queueStore.updateAttempt(WS, {
+      attempt_id: 'pause-1',
+      patch: {
+        session_id: 'sid-pause',
+        process_identity: { pid: 4242, pgid: 4242, started_at: 1000 }
+      }
+    });
+    runtime.queueStore.requestAttemptControl(WS, {
+      attempt_id: 'pause-1',
+      kind: 'pause'
+    });
+    seedDetachedAttempt(runtime.queueStore, 'orphan-1', 'UI-orphan');
+    /** @type {string[]} */
+    const order = [];
+    const sessionMonitors = {
+      start: vi.fn(() => {
+        order.push('monitor');
+        return true;
+      }),
+      stop: vi.fn(),
+      stopAll: vi.fn()
+    };
+    const processController = {
+      capture: vi.fn(),
+      terminate: vi.fn(async () => {
+        order.push('control');
+        return {
+          ok: true,
+          state: /** @type {const} */ ('gone'),
+          forced: false
+        };
+      }),
+      probe: vi.fn(() => ({ state: /** @type {const} */ ('gone') })),
+      signal: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      processController,
+      sessionMonitors,
+      probePid: () => {
+        order.push('reconcile');
+        return { alive: true, started_at: 1000 };
+      }
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => order.includes('reconcile'));
+
+    expect(order.indexOf('control')).toBeLessThan(order.indexOf('monitor'));
+    expect(order.indexOf('monitor')).toBeLessThan(order.indexOf('reconcile'));
+    expect(runtime.queueStore.snapshot(WS).attempts['pause-1']).toMatchObject({
+      status: 'paused',
+      control: { phase: 'done' }
+    });
+  });
+
+  test('recovers discard fences before controls and resumes them after monitor replay', async () => {
+    const runtime = createWorkerRuntime();
+    seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
+    /** @type {string[]} */
+    const order = [];
+    const discardCoordinator = {
+      recoverFences: vi.fn(() => order.push('discard-fence')),
+      recover: vi.fn(async () => order.push('discard-drive'))
+    };
+    const sessionMonitors = {
+      start: vi.fn(() => {
+        order.push('monitor');
+        return true;
+      }),
+      stop: vi.fn(),
+      stopAll: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      discardCoordinator,
+      sessionMonitors,
+      probePid: () => {
+        order.push('reconcile');
+        return { alive: true, started_at: 1000 };
+      }
+    });
+    vi.spyOn(att.scheduler, 'recoverControls').mockImplementation(async () => {
+      order.push('control');
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => order.includes('reconcile'));
+
+    expect(order).toEqual([
+      'discard-fence',
+      'control',
+      'monitor',
+      'discard-drive',
+      'reconcile'
+    ]);
+  });
+
   test('initWorkerRuntime replays the session log of a running attempt into the usage store (UI-ediw)', async () => {
     const runtime = createWorkerRuntime();
     seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
@@ -667,6 +779,7 @@ describe('worker/attach construction + live loop (F1)', () => {
 
     initWorkerRuntime({ workspaces: [WS] });
 
+    await waitFor(() => runtime.usageStore.get(WS, 'att-1') !== null);
     expect(runtime.usageStore.get(WS, 'att-1')).toMatchObject({
       input_tokens: 10,
       output_tokens: 4,
@@ -699,6 +812,7 @@ describe('worker/attach construction + live loop (F1)', () => {
     __registerWorkerAttachmentForTest(WS, att);
 
     initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => att.sessionMonitors.size() === 1);
     // The orphan keeps writing to the file the previous process could not read.
     /** @type {any[]} */
     const pushed = [];

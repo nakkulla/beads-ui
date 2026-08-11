@@ -136,11 +136,6 @@ const MUTATIONS = [
     payload: { attempt_id: 'a1' }
   },
   {
-    action: 'worker-attempt-stop',
-    run: handlers.handleWorkerAttemptStop,
-    payload: { attempt_id: 'a1' }
-  },
-  {
     action: 'worker-attempt-resume',
     run: handlers.handleWorkerAttemptResume,
     payload: { attempt_id: 'a1', expected_revision: 0 }
@@ -168,11 +163,6 @@ const MUTATIONS = [
   {
     action: 'worker-merge-queue-remove',
     run: handlers.handleWorkerMergeQueueRemove,
-    payload: { bead_id: 'UI-1', expected_revision: 0 }
-  },
-  {
-    action: 'worker-pr-discard',
-    run: handlers.handleWorkerPrDiscard,
     payload: { bead_id: 'UI-1', expected_revision: 0 }
   },
   {
@@ -264,5 +254,33 @@ describe.each(MUTATIONS)('$action workspace targeting (UI-qrfo §5)', (row) => {
     const { keys } = await dispatch(row, { ...row.payload });
 
     expect(keys).toEqual([WS_CONN]);
+  });
+});
+
+describe.each([
+  {
+    action: 'worker-attempt-stop',
+    run: handlers.handleWorkerAttemptStop,
+    payload: { attempt_id: 'a1' }
+  },
+  {
+    action: 'worker-pr-discard',
+    run: handlers.handleWorkerPrDiscard,
+    payload: { bead_id: 'UI-1', expected_revision: 0 }
+  }
+])('$action retired action', (row) => {
+  test('returns action_retired without workspace mutation', async () => {
+    const { keys, replies } = await dispatch(row, {
+      ...row.payload,
+      root_dir: WS_TARGET
+    });
+
+    expect(keys).toEqual([]);
+    expect(replies).toEqual([
+      expect.objectContaining({
+        ok: false,
+        error: expect.objectContaining({ code: 'action_retired' })
+      })
+    ]);
   });
 });

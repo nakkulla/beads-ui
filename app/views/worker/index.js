@@ -56,7 +56,13 @@ import {
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { createReorderController } from '../reorder.js';
 import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
-import { miniRow, paneTemplate } from './lanes.js';
+import {
+  discardCompletionMessage,
+  discardConfirmationMessage,
+  discardProjection,
+  miniRow,
+  paneTemplate
+} from './lanes.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
 
@@ -850,6 +856,7 @@ function completionView(completion) {
  * @param {string|null} [base_exception] - `→ <target_base>` when the attempt
  * behind this row targets a base other than the declared one (UI-j6wa §3).
  * @param {import('../../data/worker-queue-store.js').CompletionStatus|null} [completion] - Bounded root completion status;
+ * @param {Record<string, any>} [discard_operations] - UI-safe durable discard projection.
  * the durable journal itself never reaches the client (UI-x9tu §10).
  * @returns {any}
  */
@@ -866,7 +873,8 @@ function prWaitRow(
   wt_present = true,
   auto_skip = null,
   base_exception = null,
-  completion = null
+  completion = null,
+  discard_operations = {}
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const queue_active = !!merge_queue && merge_queue.active === true;
@@ -955,6 +963,15 @@ function prWaitRow(
   // The badge reports the conflict; the user resolves it in their own session.
   const external_conflict_unresolvable =
     external && conflicting && wt_present === false;
+  const discard = discardProjection(discard_operations, bead_id, {
+    external,
+    merge_active: queue_active || !!merge_step,
+    merge_queued: queued,
+    conflict_active: !!conflict_session,
+    cleanup_active: false,
+    merged: !!cleanup_failed || gate?.tier === 'merged'
+  });
+  const discard_blocks_merge = !!discard.operation;
   return {
     id: bead_id,
     title,
@@ -1003,25 +1020,11 @@ function prWaitRow(
         : queue_active
           ? '머지 진행 중 — 취소할 수 없습니다'
           : '머지 큐에서 이 항목을 뺍니다 (다시 [머지]로 넣을 수 있습니다)',
-    // `cleanup_failed` is DURABLE merged evidence — right after a restart the
-    // observation cache is empty, so the gate tier alone would re-offer [폐기]
-    // on a tile whose merge already landed (discard spec §2).
-    discard_action:
-      !external && !cleanup_failed && !(gate && gate.tier === 'merged'),
+    discard,
+    discard_action: discard.action,
     merge_step,
-    discard_enabled:
-      !merge_step &&
-      !conflict_session &&
-      !queued &&
-      !(recovery && recovery.lock_actions),
-    // Not a guard — the scheduler already refuses a second dispatch for a
-    // claimed/running attempt. The disabled buttons say WHY clicking now is
-    // pointless, which the server's refusal never reaches the user with.
-    discard_title: conflict_session
-      ? '충돌 해소 세션 있음 — 폐기하려면 먼저 세션을 정리하세요'
-      : queued
-        ? '머지 큐에 있음 — 폐기하려면 먼저 [취소]하세요'
-        : undefined,
+    discard_enabled: discard.enabled,
+    discard_title: discard.title,
     // A conflicting PR keeps [머지] clickable on purpose: that click is what
     // dispatches the resolution session (§6), and it merges nothing. Once that
     // session exists, there is nothing left to dispatch until it settles.
@@ -1031,6 +1034,7 @@ function prWaitRow(
     merge_enabled:
       !merge_step &&
       !conflict_session &&
+      !discard_blocks_merge &&
       !(recovery && recovery.lock_actions) &&
       !external_conflict_unresolvable &&
       (enabled || conflicting || cleanup_retry || external_cleanup),
@@ -1045,27 +1049,31 @@ function prWaitRow(
       : conflicting && !merge_step && !cleanup_retry
         ? '충돌 해소 후 머지'
         : undefined,
-    merge_title: merge_step
-      ? `머지 진행 중 — ${merge_step.label}`
-      : external_cleanup
-        ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
-        : external_conflict_unresolvable
-          ? '워크트리 없음 — 세션에서 직접 해소하세요'
-          : conflict_session === 'running'
-            ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
-            : conflict_session === 'paused'
-              ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
-              : cleanup_retry
-                ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
-                : conflicting
-                  ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
-                  : enabled
-                    ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                    : gate && gate.tier === 'merged'
-                      ? // Already merged with no cleanup failure recorded: the cleanup
-                        // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                        '머지됨 — 머지 후 정리 진행 중'
-                      : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+    merge_title: discard_blocks_merge
+      ? discard.error
+        ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
+        : `폐기 진행 중 — ${discard.progress || '완료를 기다리세요'}`
+      : merge_step
+        ? `머지 진행 중 — ${merge_step.label}`
+        : external_cleanup
+          ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
+          : external_conflict_unresolvable
+            ? '워크트리 없음 — 세션에서 직접 해소하세요'
+            : conflict_session === 'running'
+              ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
+              : conflict_session === 'paused'
+                ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
+                : cleanup_retry
+                  ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+                  : conflicting
+                    ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
+                    : enabled
+                      ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                      : gate && gate.tier === 'merged'
+                        ? // Already merged with no cleanup failure recorded: the cleanup
+                          // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                          '머지됨 — 머지 후 정리 진행 중'
+                        : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -1340,20 +1348,6 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Discard (■) an attempt: group-kill + attempt `stopped` + the bead leaves
-   * the queue, atomically on the server (worker-phase1 §2.2). Fire-and-forget;
-   * the server pushes a fresh snapshot that clears the tile.
-   *
-   * @param {string} attempt_id
-   */
-  async function stopAttempt(attempt_id) {
-    if (!transport || !attempt_id) {
-      return;
-    }
-    await transport('worker-attempt-stop', { attempt_id });
-  }
-
-  /**
    * Pause (⏸) a running attempt: the session is killed but the attempt stays
    * resumable and the bead stays queued (worker-phase1 §2.1). A refusal
    * surfaces its reason as a toast — most often `no_session_id`, which the tile
@@ -1604,45 +1598,63 @@ export function createWorkerView(mount_element, options = {}) {
    * server's own guards do the rest.
    *
    * @param {string} bead_id
+   * @param {string|null} [attempt_id]
+   * @param {'merged'|'unmerged'} [confirmation]
+   * @param {string|null} [operation_id]
    */
-  async function discardPr(bead_id) {
+  async function discardBead(
+    bead_id,
+    attempt_id = null,
+    confirmation = 'unmerged',
+    operation_id = null
+  ) {
     if (!transport || !bead_id) {
       return;
     }
+    const message = discardConfirmationMessage(bead_id, confirmation);
     const confirmed =
-      typeof globalThis.confirm !== 'function' ||
-      globalThis.confirm(
-        `${bead_id}: PR을 닫고 워크트리/브랜치를 폐기합니다. 되돌릴 수 없습니다. 다시 실행하려면 후보 레인에서 대기 레인으로 옮기세요. 계속할까요?`
-      );
+      typeof globalThis.confirm !== 'function' || globalThis.confirm(message);
     if (!confirmed) {
       return;
     }
     let res = /** @type {any} */ (
-      await transport('worker-pr-discard', {
+      await transport('worker-discard', {
         bead_id,
+        ...(attempt_id ? { attempt_id } : {}),
+        ...(operation_id ? { operation_id } : {}),
         expected_revision: currentRevision()
       })
     );
     adopt(res);
     if (res && res.conflict) {
       res = /** @type {any} */ (
-        await transport('worker-pr-discard', {
+        await transport('worker-discard', {
           bead_id,
+          ...(attempt_id ? { attempt_id } : {}),
+          ...(operation_id ? { operation_id } : {}),
           expected_revision: currentRevision()
         })
       );
       adopt(res);
     }
     if (res && res.discarded === true) {
-      showToast(
-        '폐기 완료 — 후보 레인에서 다시 실행할 수 있습니다',
-        'success',
-        2400
-      );
+      showToast(discardCompletionMessage(res), 'success', 5000);
       return;
     }
-    if (res && res.discarded === false && !res.conflict) {
-      showToast(`폐기 거부: ${res.reason || ''}`, 'error', 2800);
+    if (res && res.reason) {
+      showToast(`폐기 실패: ${res.reason}`, 'error', 2800);
+      return;
+    }
+    if (res && res.accepted && res.pending === 'merged_revert') {
+      showToast('revert PR 대기 상태로 전환했습니다', 'success', 2400);
+      return;
+    }
+    if (res && res.accepted && !res.discarded) {
+      showToast(`폐기 진행: ${res.phase || '백업 중'}`, 'success', 2400);
+      return;
+    }
+    if (res && !res.conflict) {
+      showToast('폐기 거부: unknown', 'error', 2800);
     }
   }
 
@@ -2036,6 +2048,12 @@ export function createWorkerView(mount_element, options = {}) {
     // 객체이므로 처분 카드가 그냥 렌더되지 않는다 (fail-quiet).
     /** @type {Record<string, any>} */
     const revise_parked = q.revise_parked || {};
+    const discard_operations =
+      q.discard_operations &&
+      typeof q.discard_operations === 'object' &&
+      !Array.isArray(q.discard_operations)
+        ? q.discard_operations
+        : {};
 
     /**
      * @param {any[]} entries
@@ -2045,19 +2063,26 @@ export function createWorkerView(mount_element, options = {}) {
     const toRows = (entries, lane) =>
       entries.map((/** @type {any} */ e) => {
         const parked = lane === 'queue' ? revise_parked[e.bead_id] : null;
+        const projected_discard =
+          lane === 'queue'
+            ? discardProjection(discard_operations, e.bead_id)
+            : null;
+        const discard = projected_discard?.operation ? projected_discard : null;
         return {
           id: e.bead_id,
           title: idToTitle.get(e.bead_id) || e.bead_id,
           reason: lane === 'done' ? '' : admissionBadge(e.bead_id),
-          draggable: lane !== 'done',
+          draggable: lane !== 'done' && !discard,
           done: lane === 'done',
           lane,
+          discard,
           // 파킹 행은 처분 대기 카드다 (§3.5): 뱃지 + 버튼 2개. 뱃지는 사람의
           // 결정을 기다리는 상태이므로 alert 색을 쓴다.
           badges: parked ? ['⏸ REVISE 파킹'] : [],
           alert: !!parked,
           revise_action: !!parked,
-          revise_enabled: !!parked && !revise_pending.has(e.bead_id),
+          revise_enabled:
+            !!parked && !discard && !revise_pending.has(e.bead_id),
           revise_title: parked
             ? parked.notes_tail
               ? `REVISE findings (자세히는 카드 클릭 → 이슈 상세):\n${parked.notes_tail}`
@@ -2262,6 +2287,9 @@ export function createWorkerView(mount_element, options = {}) {
           base_exception: baseException(declared_base, a.target_base),
           can_pause:
             typeof a.session_id === 'string' && a.session_id.length > 0,
+          discard: discardProjection(discard_operations, a.bead_id, {
+            attempt_id: a.attempt_id
+          }),
           // 실행 중 타일도 bead의 전체 attempt 합계를 쓴다 (UI-d7pw §1.4).
           // 이 attempt의 라이브 값만 쓰면 재실행된 bead의 실행 타일만 혼자
           // 다른 수를 보이게 되어 "모든 배지가 같은 질문에 답한다"가 깨진다.
@@ -2293,6 +2321,9 @@ export function createWorkerView(mount_element, options = {}) {
             failed: true,
             status: a.status,
             status_label: a.status === 'orphaned' ? '중단됨' : '실패',
+            discard: discardProjection(discard_operations, a.bead_id, {
+              attempt_id: a.attempt_id
+            }),
             resume_eligible: resume.eligible,
             resume_reason: resume.reason,
             conflict_resolution: resolvesConflict(a),
@@ -2319,6 +2350,7 @@ export function createWorkerView(mount_element, options = {}) {
       const resume = failureResumeState(latest_failed);
       const detail = latest_failed.cause_detail;
       failure = {
+        bead_id: latest_failed.bead_id,
         repo: latest_failed.repo || '',
         reason: latest_failed.cause || latest_failed.status,
         // Fail-quiet: only a fail-closed blocker records one (UI-2o4z §2).
@@ -2332,7 +2364,10 @@ export function createWorkerView(mount_element, options = {}) {
             : null,
         resume_attempt_id: latest_failed.attempt_id,
         resume_eligible: resume.eligible,
-        resume_reason: resume.reason
+        resume_reason: resume.reason,
+        discard: discardProjection(discard_operations, latest_failed.bead_id, {
+          attempt_id: latest_failed.attempt_id
+        })
       };
     }
 
@@ -2541,7 +2576,12 @@ export function createWorkerView(mount_element, options = {}) {
               typeof q.completion_status === 'object' &&
               !Array.isArray(q.completion_status)
               ? q.completion_status[e.bead_id] || null
-              : null
+              : null,
+            q.discard_operations &&
+              typeof q.discard_operations === 'object' &&
+              !Array.isArray(q.discard_operations)
+              ? q.discard_operations
+              : {}
           )
         )
         .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),
@@ -3414,6 +3454,22 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
+    const bannerDiscardBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-banner__discard')
+    );
+    if (bannerDiscardBtn) {
+      const confirmation =
+        bannerDiscardBtn.dataset.confirmation === 'merged'
+          ? 'merged'
+          : 'unmerged';
+      void discardBead(
+        bannerDiscardBtn.dataset.beadId || '',
+        bannerDiscardBtn.dataset.attemptId || null,
+        confirmation,
+        bannerDiscardBtn.dataset.operationId || null
+      );
+      return;
+    }
     // The failure banner's ✕ marks that same attempt handled.
     const dismissBtn = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-banner__dismiss')
@@ -3516,7 +3572,12 @@ export function createWorkerView(mount_element, options = {}) {
       target?.closest?.('.worker-mini__discard')
     );
     if (discardBtn) {
-      void discardPr(discardBtn.dataset.beadId || '');
+      void discardBead(
+        discardBtn.dataset.beadId || '',
+        discardBtn.dataset.attemptId || null,
+        discardBtn.dataset.discardMode === 'merged' ? 'merged' : 'unmerged',
+        discardBtn.dataset.operationId || null
+      );
       return;
     }
     // REVISE 파킹 처분도 같은 이유로 행 기본 동작보다 먼저 처리한다.
@@ -3546,13 +3607,20 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     // Tile controls act on the attempt and must never also open the drawer.
-    if (target?.closest?.('.rtile__stop')) {
+    if (target?.closest?.('.rtile__discard')) {
       const tile = /** @type {HTMLElement|null} */ (
         target?.closest?.('.rtile')
       );
+      const bead_id = tile?.dataset?.beadId;
       const att = tile?.dataset?.attemptId;
-      if (att) {
-        void stopAttempt(att);
+      if (bead_id) {
+        void discardBead(
+          bead_id,
+          att || null,
+          'unmerged',
+          /** @type {HTMLElement|null} */ (target?.closest?.('.rtile__discard'))
+            ?.dataset.operationId || null
+        );
       }
       return;
     }

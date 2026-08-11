@@ -450,6 +450,18 @@ export function createPrActions(deps) {
   }
 
   /**
+   * @param {Queue} q
+   * @param {string} bead_id
+   */
+  function discardActive(q, bead_id) {
+    return Object.values(q.discard_operations || {}).some(
+      (operation) =>
+        /** @type {any} */ (operation).bead_id === bead_id &&
+        /** @type {any} */ (operation).phase !== 'done'
+    );
+  }
+
+  /**
    * Decide whether a clicked bead is a legitimate lane member, and which KIND
    * (UI-7agi §4).
    *
@@ -1632,6 +1644,14 @@ export function createPrActions(deps) {
    */
   async function runCleanup(bead_id, refs = {}) {
     const q = deps.store.snapshot(workspace);
+    if (discardActive(q, bead_id)) {
+      return {
+        ok: false,
+        step: null,
+        reason: 'discard_in_progress',
+        base_sync: null
+      };
+    }
     // The EXPECTED base, never the observed one (§5): this is the branch that
     // gets synced, verified and deployed, so deriving it from the PR's own
     // metadata would let a wrongly-based PR pick its own post-merge target.
@@ -1878,6 +1898,70 @@ export function createPrActions(deps) {
     return { ok: true, step: null, reason: null, base_sync };
   }
 
+  /** @param {{ base_ref?: string|null }} refs */
+  async function rollbackBaseSync(refs = {}) {
+    const target_base =
+      typeof refs.base_ref === 'string' && refs.base_ref.length > 0
+        ? refs.base_ref
+        : null;
+    return target_base === null
+      ? { ok: false, reason: 'rollback_base_missing' }
+      : syncBase(target_base);
+  }
+
+  /**
+   * @param {string} bead_id
+   * @param {string} base_sha
+   */
+  async function rollbackVerify(bead_id, base_sha) {
+    return postMergeVerify(bead_id, base_sha);
+  }
+
+  /**
+   * @param {string} bead_id
+   * @param {string} base_sha
+   * @param {string} target_base
+   */
+  async function rollbackResolveDeploy(bead_id, base_sha, target_base) {
+    return runDeploy(bead_id, base_sha, target_base);
+  }
+
+  /**
+   * Launch a rollback's already-authorized detached deploy only after its
+   * coordinator has atomically finalized the rollback and recorded the launch
+   * intent. This function performs only the terminal spawn and may overwrite
+   * that intent when the spawn itself is known not to have happened.
+   *
+   * @param {string} bead_id
+   * @param {{ deploy: ResolvedDeployCmd, base_sha: string }|null} pending_deploy
+   */
+  function launchRollbackDeploy(bead_id, pending_deploy) {
+    if (!pending_deploy) {
+      return { ok: true };
+    }
+    const record_spawn_failure = (/** @type {string|undefined} */ detail) => {
+      deps.store.recordLastDeploy(
+        workspace,
+        deployRecord(
+          'failed',
+          'deploy_spawn_error',
+          bead_id,
+          pending_deploy.base_sha,
+          { detail }
+        )
+      );
+      notifyChanged(workspace);
+    };
+    const launched = launchDetachedDeploy(
+      pending_deploy.deploy,
+      record_spawn_failure
+    );
+    if (!launched.ok) {
+      record_spawn_failure(launched.detail);
+    }
+    return launched;
+  }
+
   /**
    * Record a cleanup stop durably and hand the bead back to a human: it stays
    * in `pr_wait`, bd is left `resolved`, the banner renders off the record, and
@@ -2064,6 +2148,9 @@ export function createPrActions(deps) {
     if (in_flight.has(bead_id)) {
       return refuse('action_in_flight');
     }
+    if (discardActive(deps.store.snapshot(workspace), bead_id)) {
+      return refuse('discard_in_progress');
+    }
     in_flight.add(bead_id);
     // Step 1 of 7 (UI-raqh §4): the re-gate + the merge itself, including the
     // BEHIND arm's update-branch and its re-observation.
@@ -2117,6 +2204,9 @@ export function createPrActions(deps) {
       // whole of the [정리] button: the poller never starts its cleanup, but it
       // may resume a nonterminal attempt this click already authorized.
       if (first.pr.state === 'MERGED') {
+        if (discardActive(deps.store.snapshot(workspace), bead_id)) {
+          return refuse('discard_in_progress');
+        }
         const c = await runCleanup(bead_id, {
           ...refs,
           ...(is_external &&
@@ -2140,6 +2230,9 @@ export function createPrActions(deps) {
       // DIRTY comes BEFORE the gate: a conflicting PR needs resolving whatever
       // its CI says, and resolving is not merging.
       if (isConflicting(first.pr)) {
+        if (discardActive(deps.store.snapshot(workspace), bead_id)) {
+          return refuse('discard_in_progress');
+        }
         if (options.allow_conflict_resolution === false) {
           return {
             ok: false,
@@ -2181,6 +2274,9 @@ export function createPrActions(deps) {
       }
 
       // BEHIND — merge the base into the branch ON GITHUB, then re-confirm.
+      if (discardActive(deps.store.snapshot(workspace), bead_id)) {
+        return refuse('discard_in_progress');
+      }
       /** @type {any} */
       let updated;
       try {
@@ -2279,6 +2375,9 @@ export function createPrActions(deps) {
    * @returns {Promise<MergeClickResult>}
    */
   async function doMerge(bead_id, number, head_sha, action, refs = {}) {
+    if (discardActive(deps.store.snapshot(workspace), bead_id)) {
+      return refuse('discard_in_progress');
+    }
     /** @type {any} */
     let merged;
     try {
@@ -2474,6 +2573,9 @@ export function createPrActions(deps) {
       return { ok: false, step: null, reason: 'action_in_flight' };
     }
     const q = deps.store.snapshot(workspace);
+    if (discardActive(q, bead_id)) {
+      return { ok: false, step: null, reason: 'discard_in_progress' };
+    }
     const reconcile = q.reconcile?.[bead_id];
     const external_resume =
       !inPrWait(q, bead_id) &&
@@ -2509,6 +2611,9 @@ export function createPrActions(deps) {
       return { ok: false, step: null, reason: 'action_in_flight' };
     }
     const q = deps.store.snapshot(workspace);
+    if (discardActive(q, bead_id)) {
+      return { ok: false, step: null, reason: 'discard_in_progress' };
+    }
     if (!inPrWait(q, bead_id)) {
       return { ok: false, step: null, reason: 'not_in_pr_wait' };
     }
@@ -2538,6 +2643,9 @@ export function createPrActions(deps) {
       return { ok: false, step: null, reason: 'action_in_flight' };
     }
     const q = deps.store.snapshot(workspace);
+    if (discardActive(q, root_bead_id)) {
+      return { ok: false, step: null, reason: 'discard_in_progress' };
+    }
     const intent = q.completion_intents?.[root_bead_id];
     if (!inPrWait(q, root_bead_id)) {
       return { ok: false, step: null, reason: 'not_in_pr_wait' };
@@ -2588,6 +2696,9 @@ export function createPrActions(deps) {
       return { ok: false, reason: 'action_in_flight' };
     }
     const q = deps.store.snapshot(workspace);
+    if (discardActive(q, bead_id)) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
     if (!inPrWait(q, bead_id)) {
       return { ok: false, reason: 'not_in_pr_wait' };
     }
@@ -2738,8 +2849,13 @@ export function createPrActions(deps) {
     probeMergeability,
     dispatchConflict,
     discard,
+    isInFlight: (/** @type {string} */ bead_id) => in_flight.has(bead_id),
     cleanupObservedMerge,
     retryCleanup,
+    rollbackBaseSync,
+    rollbackVerify,
+    rollbackResolveDeploy,
+    launchRollbackDeploy,
     resumeCompletionCleanup,
     prState,
     completionGate

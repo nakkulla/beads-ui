@@ -89,7 +89,8 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   'done',
   'failed',
   'orphaned',
-  'stopped'
+  'stopped',
+  'discarded'
 ]);
 
 /** Maximum terminal receipt inboxes inspected per reconciliation pass. */
@@ -278,6 +279,9 @@ function staleDispatchPrompt(bead_id, stale) {
  * Liveness + start-time probe for {@link createScheduler}'s `reconcile`. Absent
  * (legacy wiring / dispatch-only tests) makes every reconcile pass a no-op:
  * without a probe there is no evidence a detached session died.
+ * @property {{ probe: (identity: { pid: number, pgid: number, started_at: number }) => { state: 'owned'|'gone'|'recycled'|'unknown', reason?: string }, terminate: (identity: { pid: number, pgid: number, started_at: number }) => Promise<{ ok: boolean, state: 'owned'|'gone'|'recycled'|'unknown', reason?: string }> }} [processController]
+ * Restart-safe detached process-group controller. When absent, pause preserves
+ * the legacy process-local handle behavior for older embedders and tests.
  * @property {() => number} [now]
  * @property {(bead_id: string) => string} [makeAttemptId]
  */
@@ -297,6 +301,10 @@ function staleDispatchPrompt(bead_id, stale) {
  *   dispatchCleanupDiagnosis: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean }>,
+ *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
+ *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
+ *   finalizeDiscardAttempt: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
+ *   recoverControls: (workspace: string) => Promise<void>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
  *   activeBeadIds: (workspace: string) => Set<string>,
@@ -1065,12 +1073,18 @@ export function createScheduler(deps) {
    *     forever.
    *   - any non-terminal attempt.
    *
-   * @param {{ attempts?: Record<string, any> }} q - Queue snapshot.
+   * @param {{ attempts?: Record<string, any>, discard_operations?: Record<string, any> }} q - Queue snapshot.
    * @returns {Set<string>}
    */
   function activeBeadIdsFrom(q) {
     /** @type {Set<string>} */
     const out = new Set(claimed);
+    for (const operation of Object.values(q.discard_operations || {})) {
+      const discard = /** @type {any} */ (operation);
+      if (discard.phase !== 'done' && typeof discard.bead_id === 'string') {
+        out.add(discard.bead_id);
+      }
+    }
     for (const bead_id of dispatch_refused) {
       out.add(bead_id);
     }
@@ -1097,6 +1111,25 @@ export function createScheduler(deps) {
       out.add(a.bead_id);
     }
     return out;
+  }
+
+  /**
+   * Whether one durable discard operation currently owns a Bead or attempt.
+   *
+   * @param {{ discard_operations?: Record<string, any> }} q
+   * @param {{ bead_id?: string|null, attempt_id?: string|null }} identity
+   */
+  function discardActive(q, identity) {
+    return Object.values(q.discard_operations || {}).some((operation) => {
+      const discard = /** @type {any} */ (operation);
+      return (
+        discard.phase !== 'done' &&
+        ((typeof identity.bead_id === 'string' &&
+          discard.bead_id === identity.bead_id) ||
+          (typeof identity.attempt_id === 'string' &&
+            discard.attempt_id === identity.attempt_id))
+      );
+    });
   }
 
   /**
@@ -3211,19 +3244,32 @@ export function createScheduler(deps) {
     let handle;
     try {
       handle = runner.spawn(spawnBead, wt_path, settings);
-    } catch {
-      // No process exists, so nothing will ever push through this hook — the
-      // last early return before the spawn owes the same cleanup as the rest.
+    } catch (error) {
+      let spawn_failure = 'spawn_failed';
+      const launch_error = /** @type {any} */ (error);
+      if (launch_error?.cleanup instanceof Promise) {
+        const cleanup = await launch_error.cleanup;
+        const identity_reason =
+          typeof launch_error.message === 'string'
+            ? launch_error.message
+            : 'process_identity:unknown';
+        spawn_failure = cleanup?.ok
+          ? `spawn_failed:${identity_reason}`
+          : `spawn_failed:${identity_reason}:${cleanup?.reason || 'direct_child_cleanup_failed'}`;
+      }
+      // A raw spawn error creates no process. An identity refusal carries a
+      // cleanup promise, and this path waits for direct-child close (including
+      // bounded SIGKILL escalation) before dropping the hook and ownership.
       removeGuardHook(workspace, attempt_id);
       usage_receipts.removeEmptyUsageReceiptInbox(workspace, attempt_id);
       await revertExecStamps(bead_id, stamped_keys);
       deps.store.updateAttempt(workspace, {
         attempt_id,
-        patch: { status: 'failed', cause: 'spawn_failed', finished_at: now() }
+        patch: { status: 'failed', cause: spawn_failure, finished_at: now() }
       });
       notifyLifecycle('attemptFailed', {
         bead_id,
-        cause: 'spawn_failed',
+        cause: spawn_failure,
         repo,
         cause_detail: null
       });
@@ -3234,7 +3280,7 @@ export function createScheduler(deps) {
       }
       claimed.delete(bead_id);
       notifyChanged(workspace);
-      return { ok: false, reason: 'spawn_failed' };
+      return { ok: false, reason: spawn_failure };
     }
 
     // What the spawn actually sent (UI-rxp3 §3), lifted off the handle rather
@@ -3262,6 +3308,7 @@ export function createScheduler(deps) {
         ...(start_oid === null ? {} : { head_oid: start_oid }),
         started_at,
         pid: handle.pid,
+        process_identity: handle.process_identity ?? null,
         runner: runner_name,
         model: model ?? null,
         effort: effort ?? null,
@@ -3404,6 +3451,9 @@ export function createScheduler(deps) {
         prior.status !== 'paused')
     ) {
       return { ok: false, reason: 'not_failed' };
+    }
+    if (discardActive(q, { bead_id: prior.bead_id, attempt_id })) {
+      return { ok: false, reason: 'discard_in_progress' };
     }
     // no_session_id: a pre-UI-azj6 attempt without a captured session id.
     if (typeof prior.session_id !== 'string' || prior.session_id.length === 0) {
@@ -3682,6 +3732,9 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'worker_sessions_busy' };
     }
     const q = deps.store.snapshot(workspace);
+    if (discardActive(q, { bead_id })) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
     /** @type {any|null} */
     let source = null;
     let source_at = -1;
@@ -3829,6 +3882,9 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'worker_sessions_busy' };
     }
     const q = deps.store.snapshot(workspace);
+    if (discardActive(q, { bead_id })) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
     if (claimed.has(bead_id)) {
       return { ok: false, reason: 'bead_running' };
     }
@@ -5064,6 +5120,7 @@ export function createScheduler(deps) {
       return;
     }
     const paused_beads = leafPausedBeads(q);
+    const active_beads = activeBeadIdsFrom(q);
 
     /** @type {Array<{ bead_id: string, snap: BeadSnapshot }>} */
     const to_dispatch = [];
@@ -5120,7 +5177,8 @@ export function createScheduler(deps) {
       if (
         claimed.has(entry.bead_id) ||
         dispatch_refused.has(entry.bead_id) ||
-        paused_beads.has(entry.bead_id)
+        paused_beads.has(entry.bead_id) ||
+        active_beads.has(entry.bead_id)
       ) {
         continue;
       }
@@ -5161,16 +5219,21 @@ export function createScheduler(deps) {
     // queue member, and launching it would both run finished work and delete
     // the `done` row the sweep just wrote. Nothing can move a bead between this
     // read and the claim, so the check is not merely advisory.
+    const live_snapshot = deps.store.snapshot(workspace);
     const live_queue = new Set(
-      deps.store
-        .snapshot(workspace)
-        .queue.map((/** @type {{ bead_id: string }} */ e) => e.bead_id)
+      live_snapshot.queue.map(
+        (/** @type {{ bead_id: string }} */ e) => e.bead_id
+      )
     );
+    const live_active = activeBeadIdsFrom(live_snapshot);
     // `claimed` is re-read here too: the coalescing guard already removes the
     // overlap that let two passes claim one bead, and this is the thin line
     // behind it — a bead claimed since this pass's scan never launches twice.
     const to_launch = to_dispatch.filter(
-      (d) => live_queue.has(d.bead_id) && !claimed.has(d.bead_id)
+      (d) =>
+        live_queue.has(d.bead_id) &&
+        !claimed.has(d.bead_id) &&
+        !live_active.has(d.bead_id)
     );
     for (const d of to_launch) {
       claimed.add(d.bead_id);
@@ -5235,6 +5298,19 @@ export function createScheduler(deps) {
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
   async function pause(workspace, attempt_id) {
+    const snapshot = deps.store.snapshot(workspace);
+    const attempt = snapshot.attempts?.[attempt_id];
+    if (
+      discardActive(snapshot, {
+        attempt_id,
+        bead_id: attempt?.bead_id ?? null
+      })
+    ) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
+    if (deps.processController) {
+      return pauseDurably(workspace, attempt_id);
+    }
     const entry = running.get(attempt_id);
     if (!entry) {
       return { ok: false, reason: 'not_running' };
@@ -5269,6 +5345,346 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Resolve a verified identity from the durable record. Legacy attempts may
+   * infer `pgid = pid`, but the controller still has to prove every observed
+   * value before signaling.
+   *
+   * @param {any} attempt
+   * @returns {{ pid: number, pgid: number, started_at: number }|null}
+   */
+  function processIdentityOf(attempt) {
+    const identity = attempt?.process_identity;
+    if (
+      identity &&
+      Number.isInteger(identity.pid) &&
+      Number.isInteger(identity.pgid) &&
+      Number.isFinite(identity.started_at)
+    ) {
+      return identity;
+    }
+    if (
+      attempt &&
+      Number.isInteger(attempt.pid) &&
+      Number.isFinite(attempt.started_at)
+    ) {
+      return {
+        pid: attempt.pid,
+        pgid: attempt.pid,
+        started_at: attempt.started_at
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Persist a fail-closed control result without changing attempt status.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} phase
+   * @param {string} reason
+   */
+  function failPauseControl(workspace, attempt_id, phase, reason) {
+    const result = deps.store.advanceAttemptControl(workspace, {
+      attempt_id,
+      expected_phase: phase,
+      next_phase: 'failed',
+      last_error: reason
+    });
+    notifyChanged(workspace);
+    return {
+      ok: false,
+      reason: result.ok ? reason : 'control_persist_failed'
+    };
+  }
+
+  /**
+   * Drive a persisted pause from any restart-safe phase.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function drivePauseControl(workspace, attempt_id) {
+    const process_controller = deps.processController;
+    if (!process_controller) {
+      return { ok: false, reason: 'process_controller_missing' };
+    }
+    let attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    if (!attempt || !attempt.control || attempt.control.kind !== 'pause') {
+      return { ok: false, reason: 'control_missing' };
+    }
+    if (attempt.control.phase === 'done') {
+      return { ok: true };
+    }
+    if (attempt.control.phase === 'failed') {
+      return {
+        ok: false,
+        reason: attempt.control.last_error || 'control_failed'
+      };
+    }
+    const identity = processIdentityOf(attempt);
+    if (!identity) {
+      return failPauseControl(
+        workspace,
+        attempt_id,
+        attempt.control.phase,
+        'identity_unknown'
+      );
+    }
+    if (
+      attempt.control.phase === 'requested' ||
+      attempt.control.phase === 'signaled'
+    ) {
+      const live_entry = running.get(attempt_id);
+      if (live_entry) {
+        // The handle can resolve as soon as TERM lands. Mark the pause before
+        // the controller signals so onSessionDone cannot classify that
+        // expected exit as a session failure while termination is in flight.
+        stopped.add(attempt_id);
+      }
+      let terminated;
+      try {
+        terminated = await process_controller.terminate(identity);
+      } catch {
+        terminated = {
+          ok: false,
+          state: /** @type {const} */ ('unknown'),
+          reason: 'terminate_failed'
+        };
+      }
+      if (!terminated.ok && terminated.state !== 'recycled') {
+        if (live_entry && running.has(attempt_id)) {
+          stopped.delete(attempt_id);
+        }
+        return failPauseControl(
+          workspace,
+          attempt_id,
+          attempt.control.phase,
+          terminated.reason || `identity_${terminated.state}`
+        );
+      }
+      if (attempt.control.phase === 'requested') {
+        const signaled = deps.store.advanceAttemptControl(workspace, {
+          attempt_id,
+          expected_phase: 'requested',
+          next_phase: 'signaled'
+        });
+        if (!signaled.ok) {
+          return { ok: false, reason: 'control_persist_failed' };
+        }
+      }
+      const signaled_attempt =
+        deps.store.snapshot(workspace).attempts[attempt_id];
+      if (signaled_attempt.control?.phase === 'signaled') {
+        const persisted = deps.store.advanceAttemptControl(workspace, {
+          attempt_id,
+          expected_phase: 'signaled',
+          next_phase: 'terminated'
+        });
+        if (!persisted.ok) {
+          return { ok: false, reason: 'control_persist_failed' };
+        }
+      }
+    }
+    attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+    if (attempt.control?.phase !== 'terminated') {
+      return { ok: false, reason: 'control_phase_invalid' };
+    }
+    const observed = process_controller.probe(identity);
+    if (observed.state !== 'gone' && observed.state !== 'recycled') {
+      return failPauseControl(
+        workspace,
+        attempt_id,
+        'terminated',
+        observed.reason || `identity_${observed.state}`
+      );
+    }
+
+    const entry = running.get(attempt_id);
+    if (entry) {
+      stopped.add(attempt_id);
+      const done = entry.handle.done;
+      paused_done.set(attempt_id, done);
+      const forgetDone = () => paused_done.delete(attempt_id);
+      done.then(forgetDone, forgetDone);
+      running.delete(attempt_id);
+      claimed.delete(entry.bead_id);
+    }
+    deps.sessionMonitors?.stop(workspace, attempt_id);
+    const completed = deps.store.completeAttemptControl(workspace, {
+      attempt_id,
+      finished_at: now(),
+      patch: usagePatch(workspace, attempt_id)
+    });
+    if (!completed.ok) {
+      return { ok: false, reason: 'control_persist_failed' };
+    }
+    await revertStamps(workspace, attempt_id, {
+      bead_id: attempt.bead_id,
+      prior: attempt.workflow_mode_prior ?? null
+    });
+    notifyChanged(workspace);
+    await tick(workspace);
+    return { ok: true };
+  }
+
+  /**
+   * Persist a pause request before signaling, or resume its durable phase when
+   * the process-local runner handle was lost across a server restart.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function pauseDurably(workspace, attempt_id) {
+    const snapshot = deps.store.snapshot(workspace);
+    const attempt = snapshot.attempts?.[attempt_id];
+    if (
+      discardActive(snapshot, {
+        attempt_id,
+        bead_id: attempt?.bead_id ?? null
+      })
+    ) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
+    if (!attempt || attempt.status !== 'running') {
+      return { ok: false, reason: 'not_running' };
+    }
+    if (
+      typeof attempt.session_id !== 'string' ||
+      attempt.session_id.length === 0
+    ) {
+      return { ok: false, reason: 'no_session_id' };
+    }
+    if (attempt.control === null) {
+      const requested = deps.store.requestAttemptControl(workspace, {
+        attempt_id,
+        kind: 'pause'
+      });
+      if (!requested.ok) {
+        return {
+          ok: false,
+          reason: requested.reason || 'control_persist_failed'
+        };
+      }
+      notifyChanged(workspace);
+    }
+    return drivePauseControl(workspace, attempt_id);
+  }
+
+  /**
+   * Resume every nonterminal persisted control before ordinary dead-attempt
+   * reconciliation is allowed to classify the same process.
+   *
+   * @param {string} workspace
+   */
+  async function recoverControls(workspace) {
+    const snapshot = deps.store.snapshot(workspace);
+    const discard_attempts = new Set(
+      Object.values(snapshot.discard_operations || {})
+        .filter((operation) => /** @type {any} */ (operation).phase !== 'done')
+        .map((operation) => /** @type {any} */ (operation).attempt_id)
+        .filter((attempt_id) => typeof attempt_id === 'string')
+    );
+    for (const [attempt_id, attempt] of Object.entries(
+      snapshot.attempts || {}
+    )) {
+      if (discard_attempts.has(attempt_id)) {
+        continue;
+      }
+      const phase = /** @type {any} */ (attempt).control?.phase;
+      if (
+        phase === 'requested' ||
+        phase === 'signaled' ||
+        phase === 'terminated'
+      ) {
+        await drivePauseControl(workspace, attempt_id);
+      }
+    }
+  }
+
+  /**
+   * Suppress the expected live-handle exit as soon as a durable discard fence
+   * exists. The runner remains in the running map until archive/termination
+   * completes, so its slot is still occupied during the safety-critical copy.
+   *
+   * @param {string|null|undefined} attempt_id
+   */
+  function canDiscardAttempt(attempt_id) {
+    return (
+      typeof attempt_id !== 'string' ||
+      attempt_id.length === 0 ||
+      !settling.has(attempt_id)
+    );
+  }
+
+  /**
+   * @param {string|null|undefined} attempt_id
+   */
+  function fenceDiscardAttempt(attempt_id) {
+    if (typeof attempt_id !== 'string' || attempt_id.length === 0) {
+      return false;
+    }
+    if (!canDiscardAttempt(attempt_id)) {
+      return false;
+    }
+    stopped.add(attempt_id);
+    return true;
+  }
+
+  /**
+   * Release scheduler-local ownership only after the process controller proved
+   * the group absent and the monitor drained its final log lines.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function finalizeDiscardAttempt(workspace, attempt_id) {
+    if (!canDiscardAttempt(attempt_id)) {
+      return { ok: false, reason: 'attempt_settling' };
+    }
+    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    if (!attempt) {
+      return { ok: false, reason: 'attempt_not_found' };
+    }
+    const entry = running.get(attempt_id);
+    if (entry) {
+      stopped.add(attempt_id);
+      const done = entry.handle.done;
+      paused_done.set(attempt_id, done);
+      const forgetDone = () => paused_done.delete(attempt_id);
+      done.then(forgetDone, forgetDone);
+      running.delete(attempt_id);
+      claimed.delete(entry.bead_id);
+    }
+    deps.sessionMonitors?.stop(workspace, attempt_id);
+    if (await settleBaseDrift(workspace, attempt_id)) {
+      return { ok: false, reason: 'base_landing_detected' };
+    }
+    const updated = deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        status: 'discarded',
+        cause: null,
+        control: null,
+        finished_at: now(),
+        ...usagePatch(workspace, attempt_id)
+      }
+    });
+    if (!updated.ok) {
+      return { ok: false, reason: 'attempt_persist_failed' };
+    }
+    await revertStamps(workspace, attempt_id, {
+      bead_id: attempt.bead_id,
+      prior: attempt.workflow_mode_prior ?? null
+    });
+    notifyChanged(workspace);
+    return { ok: true };
+  }
+
+  /**
    * Discard an attempt (tile ■, worker-phase1 §2.2). Terminal: the attempt
    * lands in `stopped` and the bead leaves every lane, so the tick that follows
    * cannot re-dispatch the work the user just abandoned. Re-running means
@@ -5286,6 +5702,15 @@ export function createScheduler(deps) {
    * @returns {Promise<boolean>} True when an attempt was discarded.
    */
   async function stop(workspace, attempt_id) {
+    const initial = deps.store.snapshot(workspace);
+    if (
+      discardActive(initial, {
+        attempt_id,
+        bead_id: initial.attempts?.[attempt_id]?.bead_id ?? null
+      })
+    ) {
+      return false;
+    }
     const entry = running.get(attempt_id);
     if (entry) {
       const base = attemptBase(workspace, attempt_id);
@@ -5420,6 +5845,10 @@ export function createScheduler(deps) {
     dispatchCleanupDiagnosis,
     dispatchReviseFix,
     dispatchCompletionRepair,
+    canDiscardAttempt,
+    fenceDiscardAttempt,
+    finalizeDiscardAttempt,
+    recoverControls,
     reconcile,
     sweepClosedQueue,
     activeBeadIds,
