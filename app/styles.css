@@ -2531,25 +2531,6 @@ html[data-theme='dark'] {
   box-shadow: var(--ring-selected);
 }
 
-/* 전체 자동화 (UI-j6wa §1). ▶ 자동 진행과 나란히 서지만 그 버튼의 강조를
-   반복하지는 않는다 — 두 토글을 대표하는 파생 버튼이지 더 센 버튼이 아니다.
-   켜졌을 때만 성공색 테두리로 상태를 말한다. */
-.worker-auto-all {
-  padding: 3px 10px;
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--fs-chip);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.worker-auto-all.is-active {
-  border-color: var(--accent-success);
-  color: var(--accent-success);
-}
-
 .worker-stat {
   font-size: var(--fs-small);
   color: var(--text-muted);
@@ -3106,11 +3087,12 @@ html[data-theme='dark'] {
 }
 
 .rtile__pause:hover:not(:disabled),
-.rtile__resume:hover {
+.rtile__resume:hover:not(:disabled) {
   color: var(--accent);
 }
 
-.rtile__pause:disabled {
+.rtile__pause:disabled,
+.rtile__resume:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -3122,6 +3104,35 @@ html[data-theme='dark'] {
 .rtile--paused .rtile__dot {
   background: var(--text-muted);
   animation: none;
+}
+
+.rtile--failed {
+  border-color: var(--accent-danger);
+}
+
+.rtile--failed .rtile__dot {
+  background: var(--accent-danger);
+  box-shadow: none;
+  animation: none;
+}
+
+.rtile--failed .rtile__elapsed {
+  color: var(--accent-danger);
+}
+
+.rtile__dismiss {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-small);
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.rtile__dismiss:hover {
+  color: var(--accent-danger);
 }
 
 .worker-overcap {
@@ -4469,10 +4480,9 @@ html[data-theme='dark'] {
   cursor: not-allowed;
 }
 
-/* 레인 헤더 [일괄 머지] / [일괄 머지 중단] (UI-5v7d §4). 한 자리에서 상태만
-   바뀌는 단일 버튼이라 위치가 고정되어야 오조작이 없다 — 헤더 오른쪽 끝. */
+/* 툴바 [자동 머지] / [자동 머지 중단] (UI-5v7d §4). 한 자리에서 상태만
+   바뀌는 단일 버튼이라 [자동 진행] 바로 옆에 고정되어야 오조작이 없다. */
 .worker-merge-all {
-  margin-left: auto;
   padding: 1px var(--sp-6);
   border: 1px solid var(--border-tile-run);
   border-radius: var(--r-6);

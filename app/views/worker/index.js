@@ -1654,23 +1654,6 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Flip 자동 진행 and 자동 머지 together (UI-j6wa §1). 새 프로토콜 메시지는
-   * 만들지 않고 기존 두 토글을 그대로 보낸다 — 이 버튼은 서버 상태가 아니라
-   * 두 상태의 파생이므로, 서버에 세 번째 진실을 만들면 파생이 아니게 된다.
-   *
-   * 순차 전송이다: 두 핸들러 모두 CAS revision을 읽고 쓰므로, 동시에 보내면
-   * 둘 중 하나가 자기 자신의 충돌 재시도에 걸린다. 한쪽만 반영되는 부분 실패는
-   * 혼합 상태로 남고, 버튼은 그것을 꺼짐으로 표시한다 — 다음 클릭이 다시 둘 다
-   * ON으로 정규화하므로 별도 롤백은 두지 않는다.
-   *
-   * @param {boolean} on
-   */
-  async function setAutoAll(on) {
-    await setAutoAdvance(on);
-    await setAutoMerge(on);
-  }
-
-  /**
    * Set the concurrency cap (worker-phase2 §3), under the same CAS discipline
    * as the other mutations. The value is clamped to the lower bound before it
    * is sent — the server rejects (never clamps) an out-of-bound value.
@@ -2124,7 +2107,53 @@ export function createWorkerView(mount_element, options = {}) {
         : null;
     }
     /** @type {any[]} */
-    const running = [];
+    const failed_running = [];
+    /** @type {any[]} */
+    const active_running = [];
+    /**
+     * The single unhandled-failure predicate shared by failed tiles and the
+     * banner. A failure is actionable only while it is the bead's latest
+     * attempt, has not been resolved by a later done entry, and has not been
+     * dismissed.
+     *
+     * @param {any} attempt
+     * @returns {boolean}
+     */
+    const isUnhandledFailure = (attempt) => {
+      const superseded =
+        last_attempt_by_bead.get(attempt.bead_id) !== attempt.attempt_id;
+      const done_at = done_at_by_bead.get(attempt.bead_id);
+      const resolved_by_done =
+        typeof done_at === 'number' &&
+        done_at > 0 &&
+        typeof attempt.finished_at === 'number' &&
+        done_at >= attempt.finished_at;
+      return (
+        !superseded &&
+        !resolved_by_done &&
+        typeof attempt.dismissed_at !== 'number'
+      );
+    };
+    /**
+     * Resume eligibility is deliberately the same for the banner and its
+     * corresponding failed tile.
+     *
+     * @param {any} attempt
+     * @returns {{ eligible: boolean, reason: string|null }}
+     */
+    const failureResumeState = (attempt) => {
+      const has_sid =
+        typeof attempt.session_id === 'string' && attempt.session_id.length > 0;
+      const already = resumed_from_ids.has(attempt.attempt_id);
+      return {
+        eligible: has_sid && !already,
+        reason: !has_sid
+          ? 'session_id 없는 구 attempt — 이어하기 불가'
+          : already
+            ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+            : null
+      };
+    };
     /** @type {any|null} */
     let latest_failed = null;
     for (const a of /** @type {any[]} */ (attempts)) {
@@ -2133,7 +2162,7 @@ export function createWorkerView(mount_element, options = {}) {
       const leaf_paused =
         a.status === 'paused' && !resumed_from_ids.has(a.attempt_id);
       if (a.status === 'running' || leaf_paused) {
-        running.push({
+        active_running.push({
           bead_id: a.bead_id,
           attempt_id: a.attempt_id,
           title: idToTitle.get(a.bead_id) || a.bead_id,
@@ -2170,29 +2199,36 @@ export function createWorkerView(mount_element, options = {}) {
         // UNHANDLED one: a later attempt for the same bead (↻ child, redispatch,
         // whatever its outcome) supersedes it, a ✕ dismisses it, and entering
         // the done lane AFTER the failure resolves it (UI-a9ys).
-        const superseded = last_attempt_by_bead.get(a.bead_id) !== a.attempt_id;
-        // Only a done entry stamped at or after this failure resolves it.
-        // Membership alone is not enough: ↻ resume never clears lanes
-        // (scheduler `resume`/`relaunchFromAttempt`), so a stale done entry
-        // would hide the resumed child's NEW failure. Values that cannot be
-        // compared do not resolve — a legacy attempt's null finished_at, and a
-        // legacy pr_stop done entry normalized to added_at 0, which meant "PR
-        // delivered", not "closed".
-        const done_at = done_at_by_bead.get(a.bead_id);
-        const resolved_by_done =
-          typeof done_at === 'number' &&
-          done_at > 0 &&
-          typeof a.finished_at === 'number' &&
-          done_at >= a.finished_at;
-        if (
-          !superseded &&
-          !resolved_by_done &&
-          typeof a.dismissed_at !== 'number'
-        ) {
+        if (isUnhandledFailure(a)) {
+          const resume = failureResumeState(a);
+          failed_running.push({
+            bead_id: a.bead_id,
+            attempt_id: a.attempt_id,
+            title: idToTitle.get(a.bead_id) || a.bead_id,
+            runner: a.runner || null,
+            model: a.model || null,
+            effort: a.effort || null,
+            started_at: typeof a.started_at === 'number' ? a.started_at : null,
+            resumed_from: a.resumed_from || null,
+            failed: true,
+            status: a.status,
+            status_label: a.status === 'orphaned' ? '중단됨' : '실패',
+            resume_eligible: resume.eligible,
+            resume_reason: resume.reason,
+            conflict_resolution: resolvesConflict(a),
+            base_exception: baseException(declared_base, a.target_base),
+            usage: sumAttemptUsage(q.attempts || {}, a.bead_id),
+            current_child: currentChildTitleOf(a.bead_id),
+            ...timesOf(a.bead_id)
+          });
           latest_failed = a;
         }
       }
     }
+    // Failed records are the actionable front of the running lane; they do not
+    // consume a live slot, but still claim their bead so queue rows do not
+    // duplicate the same work item.
+    const running = [...failed_running, ...active_running];
     // The banner's ↻ targets EXACTLY the attempt the banner describes — the
     // latest failure. An older eligible attempt is never substituted (that
     // would resume a different session than the one reported); ineligibility
@@ -2200,10 +2236,7 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {any|null} */
     let failure = null;
     if (latest_failed) {
-      const has_sid =
-        typeof latest_failed.session_id === 'string' &&
-        latest_failed.session_id.length > 0;
-      const already = resumed_from_ids.has(latest_failed.attempt_id);
+      const resume = failureResumeState(latest_failed);
       const detail = latest_failed.cause_detail;
       failure = {
         repo: latest_failed.repo || '',
@@ -2218,12 +2251,8 @@ export function createWorkerView(mount_element, options = {}) {
               }
             : null,
         resume_attempt_id: latest_failed.attempt_id,
-        resume_eligible: has_sid && !already,
-        resume_reason: !has_sid
-          ? 'session_id 없는 구 attempt — 이어하기 불가'
-          : already
-            ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
-            : null
+        resume_eligible: resume.eligible,
+        resume_reason: resume.reason
       };
     }
 
@@ -2271,7 +2300,7 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {Map<string, 'running'|'paused'>} */
     const conflict_sessions = new Map();
     for (const r of running) {
-      if (r.conflict_resolution) {
+      if (r.failed !== true && r.conflict_resolution) {
         if (!r.paused) {
           conflict_sessions.set(r.bead_id, 'running');
         } else if (!conflict_sessions.has(r.bead_id)) {
@@ -2283,7 +2312,7 @@ export function createWorkerView(mount_element, options = {}) {
     // A manual ▶ may push live sessions past the dispatch cap on purpose (§2.3)
     // — surface it rather than blocking the resume. There is ONE cap now
     // (worker-phase2 §3), so the live total is compared against it directly.
-    const live = running.filter((r) => !r.paused);
+    const live = running.filter((r) => !r.paused && r.failed !== true);
     const live_count = live.length;
     const info_slots = (q.workspace_info || {}).slots;
     const configured_slots =
@@ -2461,22 +2490,10 @@ export function createWorkerView(mount_element, options = {}) {
     >
       ${m.queue.auto_advance ? '⏸ 일시정지' : '▶ 자동 진행'}
     </button>`;
-    // 전체 자동화 (UI-j6wa §1): 서버 상태를 새로 만들지 않고 기존 두 토글의
-    // 파생값만 보여준다. 그래서 혼합 상태는 "켜짐"이 아니고, 다음 클릭은 둘 다
-    // ON으로 정규화한다 — 한 버튼이 두 토글을 대표하는 이상, 그 표시가 참이
-    // 되는 방향은 하나뿐이다.
-    const auto_all_on =
-      m.queue.auto_advance === true && m.queue.auto_merge === true;
-    const auto_all = html`<button
-      type="button"
-      class="worker-auto-all${auto_all_on ? ' is-active' : ''}"
-      title=${auto_all_on
-        ? '자동 진행과 자동 머지를 함께 끕니다'
-        : '자동 진행과 자동 머지를 함께 켭니다'}
-      aria-pressed=${auto_all_on ? 'true' : 'false'}
-    >
-      ${auto_all_on ? '⏹ 전체 자동화' : '⏵⏵ 전체 자동화'}
-    </button>`;
+    // 자동 머지 토글은 실행/PR 패널 유무와 관계없이 툴바에 고정한다. 같은
+    // 템플릿을 한 번만 삽입해 모바일 지금 패널·데스크톱 PR 대기 헤더 중복도
+    // 피한다.
+    const merge_all = mergeAllTemplate(m);
     const overcap = m.over_cap
       ? html`<span
           class="worker-overcap"
@@ -2543,23 +2560,23 @@ export function createWorkerView(mount_element, options = {}) {
       cleanupFailures: m.cleanup_failures
     });
     if (is_mobile) {
-      // sticky 리본 (UI-58y2 §모바일 1)에는 자동 진행 토글과 세 카운트만 둔다.
+      // sticky 리본 (UI-58y2 §모바일 1)에는 두 자동화 토글과 세 카운트만 둔다.
       // 슬롯·⚙는 아래 조작 줄로 내리고 배너는 리본 밖에 남긴다 — 고정되는 것은
       // "항상 읽혀야 하는 한 줄"뿐이어야 하고, 배너가 같이 붙으면 스크롤할수록
       // 화면이 줄어든다.
       return html`<div class="worker-ribbon">
-          ${play}
+          ${play} ${merge_all}
           <div class="worker-kpi worker-kpi--ribbon">${overcap}${counts}</div>
         </div>
         <div class="worker-ctrl worker-ctrl--mobile">
-          <div class="worker-ctrl__ops">${auto_all}${settings}</div>
+          <div class="worker-ctrl__ops">${settings}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
         ${banners}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
-        <div class="worker-ctrl__ops">${play}${auto_all}${settings}</div>
+        <div class="worker-ctrl__ops">${play}${merge_all}${settings}</div>
         <div class="worker-kpi">
           ${overcap}${counts}${base_chip}
           ${(Array.isArray(m.token_total)
@@ -2601,7 +2618,7 @@ export function createWorkerView(mount_element, options = {}) {
     if (m.running.length === 0 && m.pr_wait.length === 0) {
       return '';
     }
-    const live = m.running.some((r) => !r.paused);
+    const live = m.running.some((r) => !r.paused && r.failed !== true);
     return html`<section
       class="worker-now${live ? ' worker-pane--live' : ''}"
       id="worker-now"
@@ -2615,7 +2632,6 @@ export function createWorkerView(mount_element, options = {}) {
         <span class="worker-now__count"
           >${m.running.length + m.pr_wait.length}</span
         >
-        ${mergeAllTemplate(m)}
       </header>
       ${m.running.length > 0
         ? runningGridTemplate(m.running, Date.now(), selected_attempt)
@@ -2729,7 +2745,7 @@ export function createWorkerView(mount_element, options = {}) {
     );
     const occupied = new Set(
       m.running
-        .filter((/** @type {any} */ row) => !row.paused)
+        .filter((/** @type {any} */ row) => !row.paused && row.failed !== true)
         .map((/** @type {any} */ row) => row.bead_id)
     );
     for (const entry of durable_pr_wait) {
@@ -2752,7 +2768,7 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The PR 대기 lane header's bulk control (UI-5v7d §4, made a durable toggle by
+   * The toolbar's bulk merge control (UI-5v7d §4, made a durable toggle by
    * UI-yk55 §5.1). ONE button, four states, never two side by side: asking the
    * reader to tell start from stop at a glance is exactly the misread that costs
    * a merge.
@@ -2874,7 +2890,7 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'running',
         title: `실행 중 · 슬롯 ${m.slots}`,
         items: m.running,
-        live: m.running.some((r) => !r.paused),
+        live: m.running.some((r) => !r.paused && r.failed !== true),
         body: runningGridTemplate(m.running, Date.now(), selected_attempt)
       })}
       ${paneTemplate({
@@ -2882,8 +2898,7 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'pr_wait',
         title: 'PR 대기',
         items: m.pr_wait,
-        empty: 'PR 대기 없음',
-        header_control: mergeAllTemplate(m)
+        empty: 'PR 대기 없음'
       })}
       ${paneTemplate({
         id: 'worker-pane-done',
@@ -3339,15 +3354,8 @@ export function createWorkerView(mount_element, options = {}) {
       void setAutoAdvance(!currentQueue().auto_advance);
       return;
     }
-    // 전체 자동화 (UI-j6wa §1): 둘 다 켜져 있을 때만 끄고, 나머지 세 조합은
-    // 전부 둘 다 켜기다 (혼합 상태 ON 정규화).
-    if (target?.closest?.('.worker-auto-all')) {
-      const q = currentQueue();
-      void setAutoAll(!(q.auto_advance === true && q.auto_merge === true));
-      return;
-    }
-    // The lane header's bulk merge control (UI-5v7d §4). It sits INSIDE a pane
-    // header, so it has to be read before the header's own accordion toggle.
+    // The toolbar's bulk merge control (UI-5v7d §4). Keep it ahead of generic
+    // row/pane click handling so the action never opens a detail view.
     const mergeAllBtn = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-merge-all')
     );
@@ -3460,6 +3468,16 @@ export function createWorkerView(mount_element, options = {}) {
       const att = tile?.dataset?.attemptId;
       if (att) {
         void stopAttempt(att);
+      }
+      return;
+    }
+    if (target?.closest?.('.rtile__dismiss')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const att = tile?.dataset?.attemptId;
+      if (att) {
+        void dismissAttempt(att);
       }
       return;
     }
