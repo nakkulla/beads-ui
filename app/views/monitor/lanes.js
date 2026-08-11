@@ -373,6 +373,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const revise_parked = objectOf(workspace.revise_parked);
     const merge_state = objectOf(workspace.merge_queue_state);
     const cleanup_failed = objectOf(workspace.cleanup_failed);
+    const deployment_reconcile = objectOf(
+      workspace.deployment_reconcile || workspace.reconcile
+    );
     const discard_operations = objectOf(workspace.discard_operations);
     const merge_queue = Array.isArray(workspace.merge_queue)
       ? workspace.merge_queue
@@ -456,6 +459,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const active = merge_state.active === bead_id;
       const external = entry.external === true;
       const cleanup = cleanup_failed[bead_id] || null;
+      const reconcile = objectOf(deployment_reconcile[bead_id]);
+      const restarting =
+        !cleanup &&
+        reconcile.adapter === 'managed' &&
+        reconcile.stage === 'restarting';
       // 아래 네 판정은 Worker 탭 `prWaitRow`와 같은 값이어야 한다 — 모니터가
       // 서버가 거부할 조작을 제시하면 클릭이 실패로만 돌아온다.
       const conflicting = !!gate && gate.base_badge === '충돌';
@@ -475,9 +483,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
         pr_url: typeof pr.url === 'string' ? pr.url : undefined,
         external,
         usage: sumAttemptUsage(attempts, bead_id),
-        badges: cleanup ? ['정리 실패'] : [],
+        badges: cleanup
+          ? ['정리 실패']
+          : restarting
+            ? ['정리 중 · 재시작']
+            : [],
         alert: !!cleanup,
-        reason: cleanup ? '머지됨 · 정리 미완' : 'PR 대기',
+        reason: cleanup
+          ? '머지됨 · 정리 미완'
+          : restarting
+            ? '정리 중 · 재시작'
+            : 'PR 대기',
         // 머지 큐에 이미 서 있으면 남은 조작은 자리를 포기하는 것뿐이다
         // (Worker 탭 [취소]와 같은 규약).
         merge_action: !queued,
@@ -489,11 +505,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
             conflicting ||
             cleanup_retry ||
             external_cleanup),
-        merge_label: external_cleanup
-          ? '정리'
-          : conflicting && !cleanup_retry
-            ? '충돌 해소 후 머지'
-            : undefined,
+        merge_label:
+          external_cleanup || cleanup_retry
+            ? '정리'
+            : conflicting && !cleanup_retry
+              ? '충돌 해소 후 머지'
+              : undefined,
         merge_title: discard_blocks_merge
           ? discard.error
             ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`

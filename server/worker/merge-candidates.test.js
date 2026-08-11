@@ -229,13 +229,53 @@ describe('worker/merge-candidates — completion repair intake', () => {
     ]);
   });
 
+  test('includes a worker-owned verified Adapter regression', () => {
+    const runtime = getWorkerRuntime();
+    runtime.prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'MERGED',
+        mergeable: 'UNKNOWN',
+        merge_state_status: 'UNKNOWN',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main',
+        merged_sha: 'c'.repeat(40)
+      },
+      ci: null
+    });
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [{ bead_id: 'UI-1' }],
+        attempts: {},
+        cleanup_failed: {
+          'UI-1': {
+            step: 'deploy',
+            reason: 'deploy_failed',
+            failure_code: 'adapter_regression',
+            retryable: false
+          }
+        }
+      },
+      'resolved'
+    );
+
+    expect(result).toEqual([
+      { bead_id: 'UI-1', external: false, repairable: true }
+    ]);
+  });
+
   test.each([
     'deploy_config_invalid',
     'deploy_missing_for_self',
     'deploy_not_detached_for_self',
     'deploy_verify_missing',
-    'deploy_failed'
-  ])('includes a worker-owned repairable %s cleanup failure', (reason) => {
+    'deploy_failed',
+    'managed_pointer_escape'
+  ])('does not mark %s as repair-owned cleanup evidence', (reason) => {
     const runtime = getWorkerRuntime();
     runtime.prObservations.record(WS, 'UI-1', {
       pr: {
@@ -262,9 +302,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
       'resolved'
     );
 
-    expect(result).toEqual([
-      { bead_id: 'UI-1', external: false, repairable: true }
-    ]);
+    expect(result).toEqual([{ bead_id: 'UI-1', external: false }]);
   });
 
   test('seeds an already-merged root with its observed landed SHA', () => {

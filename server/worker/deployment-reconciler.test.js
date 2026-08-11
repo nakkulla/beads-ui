@@ -3,12 +3,22 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { releasePath, releaseRoot } from './deployment-paths.js';
+import {
+  managedFailurePath,
+  managedJournalPath,
+  releasePath,
+  releaseRoot,
+  runtimePointerPath
+} from './deployment-paths.js';
 import {
   createDeploymentReconciler,
   managedAdapterEnvironment
 } from './deployment-reconciler.js';
 import { createLockManager } from './locks.js';
+import {
+  writeManagedFailure,
+  writePrivateJsonAtomic
+} from './managed-state.js';
 import { createQueueStore } from './queue-store.js';
 
 const FLOOR = 'a'.repeat(40);
@@ -64,6 +74,25 @@ function receipt(input) {
     },
     outcome: 'success',
     completed_at: '2026-08-11T00:00:00.000Z'
+  };
+}
+
+/**
+ * @param {any} input
+ */
+function managedBinding(input) {
+  return {
+    protocol_version: 1,
+    repo: path.resolve(repo),
+    target_remote: input.env.BDUI_DEPLOY_TARGET_REMOTE,
+    target_base: input.env.BDUI_DEPLOY_TARGET_BASE,
+    merged_floor_sha: input.merged_floor_sha,
+    attempt_id: input.attempt_id,
+    candidate_sha: input.candidate_sha,
+    release_path: input.release_path,
+    receipt_path: input.receipt_path,
+    pointer_path: runtimePointerPath(),
+    pointer_target: input.release_path
   };
 }
 
@@ -231,6 +260,254 @@ describe('worker/deployment-reconciler', () => {
       candidate_sha: CANDIDATE,
       adapter: 'managed'
     });
+  });
+
+  test('projects a bound Adapter regression as repair-owned deploy failure', async () => {
+    const h = harness({
+      runManagedAdapter: vi.fn(async (input) => {
+        expect(
+          writeManagedFailure({
+            binding: managedBinding(input),
+            failure: {
+              failure_code: 'adapter_regression',
+              retryable: false,
+              detail: 'install_failed'
+            }
+          })
+        ).toMatchObject({ ok: true });
+        return {
+          ok: false,
+          reason: 'adapter_exit_nonzero',
+          retryable: false
+        };
+      })
+    });
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      pending: false,
+      reason: 'deploy_failed',
+      failure_code: 'adapter_regression',
+      retryable: false,
+      detail: 'install_failed'
+    });
+    expect(h.store.snapshot(repo).reconcile['UI-1']).toMatchObject({
+      stage: 'failed',
+      terminal_failure: {
+        reason: 'deploy_failed',
+        failure_code: 'adapter_regression',
+        retryable: false,
+        detail: 'install_failed'
+      }
+    });
+  });
+
+  test('uses the existing attempt budget for a retryable managed failure', async () => {
+    const h = harness({
+      runManagedAdapter: vi.fn(async (input) => {
+        writeManagedFailure({
+          binding: managedBinding(input),
+          failure: {
+            failure_code: 'pointer_transient',
+            retryable: true,
+            detail: 'pointer_publish_failed'
+          }
+        });
+        return {
+          ok: false,
+          reason: 'adapter_exit_nonzero',
+          retryable: false
+        };
+      })
+    });
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      pending: true,
+      reason: 'managed_pointer_transient',
+      failure_code: 'pointer_transient',
+      retryable: true,
+      retry_count: 1
+    });
+    expect(h.store.snapshot(repo).reconcile['UI-1']).toMatchObject({
+      attempt_id: 'deploy-1',
+      candidate_sha: CANDIDATE,
+      stage: 'restarting',
+      retry_count: 1,
+      last_retryable_reason: 'managed_pointer_transient'
+    });
+  });
+
+  test('clears a stale failure record before a same-attempt retry', async () => {
+    let clock = 1000;
+    let calls = 0;
+    const h = harness({
+      now: () => clock,
+      runManagedAdapter: vi.fn(async (input) => {
+        calls += 1;
+        if (calls === 1) {
+          expect(
+            writeManagedFailure({
+              binding: managedBinding(input),
+              failure: {
+                failure_code: 'pointer_transient',
+                retryable: true,
+                detail: 'pointer_publish_failed'
+              }
+            })
+          ).toMatchObject({ ok: true });
+        }
+        return {
+          ok: false,
+          reason: 'adapter_exit_nonzero',
+          retryable: false
+        };
+      })
+    });
+
+    const first = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    if (!('retry_at' in first) || typeof first.retry_at !== 'number') {
+      throw new Error('expected_retry_schedule');
+    }
+    clock = first.retry_at + 1;
+    const second = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(first).toMatchObject({
+      pending: true,
+      failure_code: 'pointer_transient',
+      retry_count: 1
+    });
+    expect(second).toMatchObject({
+      pending: false,
+      reason: 'managed_failure_record_invalid',
+      detail: 'failure_absent',
+      retry_count: 1
+    });
+    expect(h.runManagedAdapter).toHaveBeenCalledTimes(2);
+    expect(h.store.snapshot(repo).reconcile['UI-1']).toMatchObject({
+      attempt_id: 'deploy-1',
+      candidate_sha: CANDIDATE,
+      stage: 'failed',
+      retry_count: 1
+    });
+  });
+
+  test('fails closed when a nonzero Adapter exit has no failure record', async () => {
+    const h = harness({
+      runManagedAdapter: vi.fn(async () => ({
+        ok: false,
+        reason: 'adapter_exit_nonzero',
+        retryable: false
+      }))
+    });
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      pending: false,
+      reason: 'managed_failure_record_invalid',
+      detail: 'failure_absent',
+      retryable: false,
+      retry_count: 0
+    });
+    expect(h.store.snapshot(repo).reconcile['UI-1']).toMatchObject({
+      stage: 'failed',
+      terminal_failure: {
+        reason: 'managed_failure_record_invalid',
+        retryable: false
+      }
+    });
+  });
+
+  test('fails closed on an unknown bound failure code', async () => {
+    const h = harness({
+      runManagedAdapter: vi.fn(async (input) => {
+        const binding = managedBinding(input);
+        writePrivateJsonAtomic(
+          managedFailurePath(binding.repo, binding.attempt_id),
+          {
+            ...binding,
+            journal_path: managedJournalPath(binding.repo, binding.attempt_id),
+            failure_code: 'unknown_failure',
+            retryable: false
+          }
+        );
+        return {
+          ok: false,
+          reason: 'adapter_exit_nonzero',
+          retryable: false
+        };
+      })
+    });
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      pending: false,
+      reason: 'managed_failure_record_invalid',
+      detail: 'failure_record_invalid',
+      retryable: false
+    });
+  });
+
+  test('persists restart progress before invoking the managed Adapter', async () => {
+    const store = createQueueStore();
+    const h = harness({
+      store,
+      runManagedAdapter: vi.fn(async (input) => {
+        expect(store.snapshot(repo).reconcile['UI-1'].stage).toBe('restarting');
+        fs.mkdirSync(path.dirname(input.receipt_path), { recursive: true });
+        fs.writeFileSync(
+          input.receipt_path,
+          JSON.stringify(
+            receipt({
+              attempt_id: input.attempt_id,
+              merged_floor_sha: input.merged_floor_sha,
+              release: input.release_path
+            })
+          )
+        );
+        return { ok: true };
+      })
+    });
+
+    const result = await h.reconciler.reconcile({
+      bead_id: 'UI-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result).toMatchObject({ ok: true, status: 'complete' });
   });
 
   test('fails terminally when the merge floor is not in the candidate history', async () => {

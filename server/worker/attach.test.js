@@ -1,4 +1,3 @@
-import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,11 +8,11 @@ import {
   __resetWorkerAttachmentsForTest,
   createLiveBd,
   createWorkerAttachment,
-  diagnoseWorkerCleanup,
   initWorkerRuntime,
   stopWorkerAttempt,
   tickWorkerQueue
 } from './attach.js';
+import * as attachModule from './attach.js';
 import {
   pushLogPath as guardPushLogPath,
   install as installGuardHook
@@ -205,88 +204,10 @@ function seedQueue(store, id) {
 }
 
 describe('worker/attach construction + live loop (F1)', () => {
-  test('late-binds cleanup diagnosis retry to the constructed PR actions', async () => {
-    /** @type {(result: any) => void} */
-    let finish = () => {};
-    const retryCleanup = vi.fn(async () => ({
-      ok: true,
-      step: null,
-      reason: null
-    }));
-    const runtime = createWorkerRuntime();
-    const worktree = {
-      ...fakeWorktree,
-      exists: () => true,
-      pathFor: () => tmp_state
-    };
-    const att = createWorkerAttachment(WS, {
-      runtime,
-      bd: fakeBd({ 'UI-1': {} }),
-      worktree,
-      verify: okVerify,
-      resolveBase: okBase('main'),
-      gitRun: async () => ({ code: 1, stdout: '', stderr: '' }),
-      makeRunner: () => {
-        return {
-          name: 'claude',
-          spawn() {
-            const events = new EventEmitter();
-            /** @type {(result: any) => void} */
-            let resolveDone = () => {};
-            const done = new Promise((resolve) => {
-              resolveDone = resolve;
-            });
-            finish = resolveDone;
-            return { pid: 1234, kill: vi.fn(), events, done };
-          }
-        };
-      }
-    });
-    vi.spyOn(att.prActions, 'retryCleanup').mockImplementation(retryCleanup);
-    runtime.queueStore.appendAttempt(WS, {
-      expected_revision: runtime.queueStore.snapshot(WS).revision,
-      attempt: { attempt_id: 'pr-1', bead_id: 'UI-1' }
-    });
-    runtime.queueStore.moveToPrWait(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'pr-1',
-      patch: { status: 'done', repo: '/repo' }
-    });
-    runtime.queueStore.recordCleanupFailure(WS, {
-      bead_id: 'UI-1',
-      step: 'post_merge_verify',
-      reason: 'verify_cmd_failed'
-    });
-    __registerWorkerAttachmentForTest(WS, att);
-
-    const dispatched = await diagnoseWorkerCleanup(WS, 'UI-1');
-    expect(dispatched).toMatchObject({ ok: true });
-    const attempt =
-      runtime.queueStore.snapshot(WS).attempts[
-        /** @type {string} */ (dispatched.attempt_id)
-      ];
-    const result_path = attempt?.cleanup_diagnosis_result_path;
-    if (typeof result_path !== 'string') {
-      throw new Error('cleanup diagnosis result path was not recorded');
-    }
-    fs.writeFileSync(
-      result_path,
-      JSON.stringify({ verdict: 'flake', evidence: 'passes on rerun' })
-    );
-    finish({
-      success: true,
-      reason: 'ok',
-      exit: 0,
-      blocked: false,
-      blocked_detail: null,
-      events: [],
-      raw: []
-    });
-
-    await waitFor(() => retryCleanup.mock.calls.length === 1);
-
-    expect(dispatched.ok).toBe(true);
-    expect(retryCleanup).toHaveBeenCalledWith('UI-1');
+  test('does not expose the retired cleanup diagnosis attachment action', () => {
+    expect(
+      /** @type {any} */ (attachModule).diagnoseWorkerCleanup
+    ).toBeUndefined();
   });
 
   test('createWorkerAttachment builds a scheduler + reconcile timer over REAL deps', () => {
@@ -740,17 +661,24 @@ describe('worker/attach construction + live loop (F1)', () => {
     vi.spyOn(att.scheduler, 'recoverControls').mockImplementation(async () => {
       order.push('control');
     });
+    vi.spyOn(att.prActions, 'resumePersistedReconciles').mockImplementation(
+      async () => {
+        order.push('deploy-resume');
+        return [];
+      }
+    );
     __registerWorkerAttachmentForTest(WS, att);
 
     initWorkerRuntime({ workspaces: [WS] });
-    await waitFor(() => order.includes('reconcile'));
+    await waitFor(() => order.includes('deploy-resume'));
 
     expect(order).toEqual([
       'discard-fence',
       'control',
       'monitor',
       'discard-drive',
-      'reconcile'
+      'reconcile',
+      'deploy-resume'
     ]);
   });
 

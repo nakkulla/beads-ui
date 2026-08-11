@@ -4,7 +4,7 @@ import { describe, expect, test } from 'vitest';
 import { createApp } from './app.js';
 
 /**
- * @param {{ bd?: boolean, db?: boolean }} probes
+ * @param {{ bd?: boolean, db?: boolean, runtime?: any }} probes
  * @returns {Promise<{ status: number, body: any }>}
  */
 async function getHealthz(probes) {
@@ -17,7 +17,8 @@ async function getHealthz(probes) {
     health_probes: {
       bd_probe: () => probes.bd ?? true,
       db_probe: () => probes.db ?? true
-    }
+    },
+    runtime_identity: () => probes.runtime ?? null
   });
   const server = createServer(app);
   // Bind the loopback address the fetch below targets (see
@@ -57,6 +58,30 @@ describe('GET /healthz', () => {
     const { body } = await getHealthz({ bd: true, db: true });
 
     expect('breaker_tripped' in body.checks.worker).toBe(false);
+  });
+
+  test('returns the live runtime provider without changing readiness', async () => {
+    const runtime = {
+      protocol_version: 1,
+      pid: 77,
+      process_started_at: 1_000,
+      started_at: '2026-08-11T00:00:00.000Z',
+      instance_id: '11111111-2222-4333-8444-555555555555',
+      source_repo: '/managed/release',
+      source_sha: 'a'.repeat(40),
+      host: '127.0.0.1',
+      port: 3000,
+      health_path: '/healthz'
+    };
+
+    const { status, body } = await getHealthz({
+      bd: true,
+      db: true,
+      runtime
+    });
+
+    expect(status).toBe(200);
+    expect(body.runtime).toEqual(runtime);
   });
 
   test('503 when the db probe fails', async () => {

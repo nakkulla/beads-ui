@@ -1,11 +1,3 @@
-const REPAIRABLE_DEPLOY_REASONS = new Set([
-  'deploy_config_invalid',
-  'deploy_missing_for_self',
-  'deploy_not_detached_for_self',
-  'deploy_verify_missing',
-  'deploy_failed'
-]);
-
 /**
  * Keep automatic post-merge repair on the design's explicit allowlist.
  *
@@ -20,7 +12,8 @@ export function isRepairableCleanupFailure(value) {
     (failure.step === 'post_merge_verify' &&
       failure.reason === 'verify_cmd_failed') ||
     (failure.step === 'deploy' &&
-      typeof failure.reason === 'string' &&
-      REPAIRABLE_DEPLOY_REASONS.has(failure.reason))
+      failure.reason === 'deploy_failed' &&
+      failure.failure_code === 'adapter_regression' &&
+      failure.retryable === false)
   );
 }

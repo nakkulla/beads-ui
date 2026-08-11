@@ -1224,13 +1224,7 @@ describe('worker/completion-intent action driver', () => {
     );
   });
 
-  test.each([
-    'deploy_config_invalid',
-    'deploy_missing_for_self',
-    'deploy_not_detached_for_self',
-    'deploy_verify_missing',
-    'deploy_failed'
-  ])('classifies %s as repairable cleanup evidence', async (reason) => {
+  test('classifies a verified Adapter regression as repairable cleanup evidence', async () => {
     const store = seededCompletionStore();
     store.setCompletionSubject(DRIVER_WS, {
       root_bead_id: 'UI-root',
@@ -1240,7 +1234,9 @@ describe('worker/completion-intent action driver', () => {
     store.recordCleanupFailure(DRIVER_WS, {
       bead_id: 'UI-root',
       step: 'deploy',
-      reason
+      reason: 'deploy_failed',
+      failure_code: 'adapter_regression',
+      retryable: false
     });
     const driver = actionDriver(store);
     const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
@@ -1249,9 +1245,44 @@ describe('worker/completion-intent action driver', () => {
 
     expect(fact).toMatchObject({
       state: 'cleanup_repairable',
-      failure_key: { stage: 'deploy', reason }
+      failure_key: { stage: 'deploy', reason: 'deploy_failed' }
     });
   });
+
+  test.each([
+    ['deploy_config_invalid', undefined],
+    ['deploy_missing_for_self', undefined],
+    ['deploy_not_detached_for_self', undefined],
+    ['deploy_verify_missing', undefined],
+    ['deploy_failed', undefined],
+    ['managed_pointer_escape', 'pointer_escape'],
+    ['managed_restart_effect_ambiguous', 'restart_effect_ambiguous']
+  ])(
+    'keeps %s outside automatic repair ownership',
+    async (reason, failure_code) => {
+      const store = seededCompletionStore();
+      store.setCompletionSubject(DRIVER_WS, {
+        root_bead_id: 'UI-root',
+        phase: 'cleaning',
+        subject: { ...intent().subject, merged_sha: 'c'.repeat(40) }
+      });
+      store.recordCleanupFailure(DRIVER_WS, {
+        bead_id: 'UI-root',
+        step: 'deploy',
+        reason,
+        ...(failure_code ? { failure_code, retryable: false } : {})
+      });
+      const driver = actionDriver(store);
+      const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+      const fact = await driver.observe('UI-root', current);
+
+      expect(fact).toMatchObject({
+        state: 'cleanup_red',
+        reason: `deploy:${reason}`
+      });
+    }
+  );
 
   test('does not notify when a gate subject mutation is refused', async () => {
     const store = seededCompletionStore();

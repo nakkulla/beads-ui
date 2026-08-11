@@ -6,6 +6,7 @@ import { resolveWorkspaceDatabase } from './db.js';
 import { debug, enableAllDebug } from './logging.js';
 import { createPoller } from './poller.js';
 import { registerWorkspace, watchRegistry } from './registry-watcher.js';
+import { publishRuntimeIdentity } from './runtime-startup.js';
 import { watchDb } from './watcher.js';
 import { initWorkerRuntime } from './worker/attach.js';
 import { getWorkerRuntime } from './worker/runtime.js';
@@ -33,9 +34,14 @@ for (let i = 0; i < process.argv.length; i++) {
 }
 
 const config = getConfig();
+/** @type {any|null} */
+let runtime_identity = null;
 // No auth (spec §8): the server binds to the trusted tailnet interface, and the
 // WS Origin allowlist remains the browser-CSRF boundary. No token gate.
-const app = createApp(config);
+const app = createApp({
+  ...config,
+  runtime_identity: () => runtime_identity
+});
 const server = createServer(app);
 const log = debug('server');
 const configured_workspaces = discoverWorkspaces({
@@ -108,6 +114,16 @@ watchRegistry(
 );
 
 server.listen(config.port, config.host, () => {
+  const runtime = publishRuntimeIdentity({ server });
+  if (!runtime.ok) {
+    process.exitCode = 1;
+    log(
+      'runtime identity publication failed; worker startup stays closed: %s',
+      runtime.reason
+    );
+    return;
+  }
+  runtime_identity = runtime.identity;
   printServerUrl();
   // Bring up the live worker dispatch loop: build a scheduler per active
   // workspace, reconcile the `running` attempts a prior run left behind, and

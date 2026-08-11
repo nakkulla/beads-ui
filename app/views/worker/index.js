@@ -115,44 +115,6 @@ const CANDIDATE_FILTER_KEY = 'beads-ui.worker.candidate-filter';
 const CANDIDATE_FILTER_DEFAULT = { show_blocked: false, spec: 'all' };
 
 /**
- * Whether a cleanup-diagnosis attempt still owns a bead's action slot. A paused
- * ancestor that has a resume child is history, matching the running-tile leaf
- * rule below; a leaf paused diagnosis remains in flight.
- *
- * @param {unknown} attempts
- * @param {string} bead_id
- * @returns {boolean}
- */
-function hasActiveCleanupDiagnosis(attempts, bead_id) {
-  if (!attempts || typeof attempts !== 'object' || Array.isArray(attempts)) {
-    return false;
-  }
-  const records = Object.values(attempts);
-  /** @type {Set<string>} */
-  const resumed_from_ids = new Set();
-  for (const attempt of records) {
-    if (
-      attempt &&
-      typeof attempt === 'object' &&
-      typeof attempt.resumed_from === 'string' &&
-      attempt.resumed_from.length > 0
-    ) {
-      resumed_from_ids.add(attempt.resumed_from);
-    }
-  }
-  return records.some(
-    (attempt) =>
-      attempt &&
-      typeof attempt === 'object' &&
-      attempt.bead_id === bead_id &&
-      attempt.cleanup_diagnosis === true &&
-      (attempt.status === 'running' ||
-        (attempt.status === 'paused' &&
-          !resumed_from_ids.has(attempt.attempt_id)))
-  );
-}
-
-/**
  * Read the persisted filter. Anything unreadable (absent, malformed JSON, wrong
  * shape, storage denied) falls back to the default rather than throwing — a bad
  * stored value must never take the Worker tab down.
@@ -557,6 +519,7 @@ const MERGE_STEPS = [
   { step: 'reconcile_verify', label: '정리 중 · 검증', index: 4 },
   { step: 'deploy', label: '배포', index: 5 },
   { step: 'reconcile_deploy', label: '정리 중 · 배포', index: 5 },
+  { step: 'reconcile_restart', label: '정리 중 · 재시작', index: 6 },
   { step: 'reconcile_readback', label: '정리 중 · readback', index: 6 },
   { step: 'child_sweep', label: '자식 정리', index: 7 },
   { step: 'branch_cleanup', label: '브랜치 정리', index: 8 },
@@ -609,9 +572,11 @@ function reconcileActivity(record) {
           ? 'reconcile_verify'
           : record.stage === 'deploying'
             ? 'reconcile_deploy'
-            : record.stage === 'readback'
-              ? 'reconcile_readback'
-              : null;
+            : record.stage === 'restarting'
+              ? 'reconcile_restart'
+              : record.stage === 'readback'
+                ? 'reconcile_readback'
+                : null;
   return step
     ? {
         activity: null,
@@ -819,7 +784,7 @@ function completionView(completion) {
  * disabled tooltip carries the refusal reason so the badge is not the only
  * explanation. [폐기] is visually subordinate: a misclick there discards a PR.
  * It is withheld entirely on a merged tile — a landed merge cannot be discarded
- * (discard spec §2), and there [머지] is the cleanup-retry button.
+ * (discard spec §2), and there [정리] is the cleanup-retry button.
  *
  * The gate shown here is ADVISORY. The click re-queries `gh` server-side and
  * decides again, so a badge that went stale between render and click cannot
@@ -1044,11 +1009,12 @@ function prWaitRow(
     // 해소만 하고 멈추는 것처럼 읽히던 라벨을 실제 동작에 맞춘다 (UI-yk55 §1):
     // 이 클릭이 띄우는 세션은 완료 후 자동으로 재머지된다 — 툴팁이 이미 그렇게
     // 말하고 있었고, 라벨만 어긋나 있었다.
-    merge_label: external_cleanup
-      ? '정리'
-      : conflicting && !merge_step && !cleanup_retry
-        ? '충돌 해소 후 머지'
-        : undefined,
+    merge_label:
+      cleanup_retry || external_cleanup
+        ? '정리'
+        : conflicting && !merge_step && !cleanup_retry
+          ? '충돌 해소 후 머지'
+          : undefined,
     merge_title: discard_blocks_merge
       ? discard.error
         ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
@@ -1176,8 +1142,6 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {Set<string>}
    */
   const revise_pending = new Set();
-  /** @type {Set<string>} */
-  const cleanup_diagnose_pending = new Set();
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -1431,43 +1395,6 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (res && res.dismissed === false && !res.conflict && res.reason) {
       showToast(`배너 닫기 거부: ${res.reason}`, 'error', 2400);
-    }
-  }
-
-  /**
-   * Dispatch one cleanup-diagnosis attempt under the queue revision CAS. The
-   * server remains authoritative for cleanup eligibility; the local pending
-   * set only closes the duplicate-click window before its snapshot arrives.
-   *
-   * @param {string} bead_id
-   */
-  async function diagnoseCleanup(bead_id) {
-    if (!transport || !bead_id || cleanup_diagnose_pending.has(bead_id)) {
-      return;
-    }
-    cleanup_diagnose_pending.add(bead_id);
-    doRender();
-    /** @type {any} */
-    let res;
-    try {
-      res = await transport('worker-cleanup-diagnose', {
-        bead_id,
-        expected_revision: currentRevision()
-      });
-      adopt(res);
-      if (res && res.conflict) {
-        res = await transport('worker-cleanup-diagnose', {
-          bead_id,
-          expected_revision: currentRevision()
-        });
-        adopt(res);
-      }
-    } finally {
-      cleanup_diagnose_pending.delete(bead_id);
-      doRender();
-    }
-    if (res && !res.conflict && res.ok === false && res.reason) {
-      showToast(`AI 정리 거부: ${res.reason}`, 'error', 2400);
     }
   }
 
@@ -1785,7 +1712,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string, diagnosis?: { verdict: string, evidence: string, fix_bead_id?: string|null, malformed?: boolean }|null, diagnosis_pending: boolean }> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -1880,7 +1807,7 @@ export function createWorkerView(mount_element, options = {}) {
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
-    /** @type {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} */
+    /** @type {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number }>} */
     const cleanup_failed = q.cleanup_failed || {};
     const cleanup_failures = Object.entries(cleanup_failed).map(
       ([bead_id, rec]) => ({
@@ -1905,25 +1832,13 @@ export function createWorkerView(mount_element, options = {}) {
           rec && typeof rec.log_path === 'string' && rec.log_path
             ? rec.log_path
             : undefined,
-        diagnosis:
+        retry_count:
           rec &&
-          rec.diagnosis &&
-          typeof rec.diagnosis === 'object' &&
-          typeof rec.diagnosis.verdict === 'string' &&
-          typeof rec.diagnosis.evidence === 'string'
-            ? {
-                verdict: rec.diagnosis.verdict,
-                evidence: rec.diagnosis.evidence,
-                fix_bead_id:
-                  typeof rec.diagnosis.fix_bead_id === 'string'
-                    ? rec.diagnosis.fix_bead_id
-                    : null,
-                malformed: rec.diagnosis.malformed === true
-              }
-            : null,
-        diagnosis_pending:
-          cleanup_diagnose_pending.has(bead_id) ||
-          hasActiveCleanupDiagnosis(q.attempts, bead_id)
+          typeof rec.retry_count === 'number' &&
+          Number.isInteger(rec.retry_count) &&
+          rec.retry_count > 0
+            ? rec.retry_count
+            : 0
       })
     );
     const queue_entries = /** @type {any[]} */ (q.queue || []);
@@ -3478,16 +3393,6 @@ export function createWorkerView(mount_element, options = {}) {
       const att = dismissBtn.dataset.attemptId;
       if (att) {
         void dismissAttempt(att);
-      }
-      return;
-    }
-    const cleanupDiagnoseBtn = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-banner__cleanup-diagnose')
-    );
-    if (cleanupDiagnoseBtn) {
-      const bead_id = cleanupDiagnoseBtn.dataset.beadId;
-      if (bead_id) {
-        void diagnoseCleanup(bead_id);
       }
       return;
     }

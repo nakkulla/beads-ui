@@ -132,10 +132,11 @@
  * restart-recovery path (`disposeDeadAttempt`) has no in-memory record of what
  * kind of attempt it is disposing. Defaults false — a missing value fails
  * closed onto the ordinary completion.
- * @property {boolean} cleanup_diagnosis - Whether this attempt only classifies
- * a durable cleanup failure and does not open a PR.
- * @property {string|null} cleanup_diagnosis_result_path - Fixed JSON result
- * path for the diagnosis attempt.
+ * @property {boolean} cleanup_diagnosis - Historical cleanup-diagnosis marker.
+ * New attempts never write it; legacy records retain it for round-trip
+ * compatibility.
+ * @property {string|null} cleanup_diagnosis_result_path - Historical result
+ * path retained for round-trip compatibility.
  * @property {{ reason: string, command: string|null, at: number }|null} guard_kill -
  * The fail-closed evidence a DETACHED session monitor recorded before killing an
  * orphan session (UI-o2yt §3.3). A killed session leaves no verdict behind, so
@@ -235,7 +236,7 @@
  * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
  * stale spec_review receipt, so the badge must not read as a refusal. Every
  * record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and nothing retries by itself — so the record that a human must
@@ -390,7 +391,7 @@
  * @property {string} merged_floor_sha
  * @property {string|null} candidate_sha
  * @property {'workspace'|'managed'|null} adapter
- * @property {'queued'|'pinned'|'verifying'|'deploying'|'readback'|'complete'|'failed'} stage
+ * @property {'queued'|'pinned'|'verifying'|'deploying'|'restarting'|'readback'|'complete'|'failed'} stage
  * @property {string|null} receipt_path
  * @property {string|null} receipt_digest
  * @property {string|null} receipt_attempt_id
@@ -398,7 +399,7 @@
  * @property {number} retry_count
  * @property {number|null} retry_at
  * @property {string|null} last_retryable_reason
- * @property {{ reason: string, detail: string|null, step: string|null, at: number }|null} terminal_failure
+ * @property {{ reason: string, detail: string|null, step: string|null, failure_code: string|null, retryable: boolean|null, at: number }|null} terminal_failure
  * @property {number} updated_at
  */
 /**
@@ -462,6 +463,7 @@
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { execSettingEnums } from './exec-enums.js';
+import { validateManagedFailure } from './managed-failure.js';
 import { queueFilePath } from './state-paths.js';
 import {
   consumeUsageReceiptFiles,
@@ -901,6 +903,7 @@ const RECONCILE_STAGES = [
   'pinned',
   'verifying',
   'deploying',
+  'restarting',
   'readback',
   'complete',
   'failed'
@@ -1532,6 +1535,21 @@ function normalizeQueue(raw) {
           q.cleanup_failed[bead_id].log_path = value.log_path;
         }
         if (
+          typeof value.failure_code === 'string' &&
+          validateManagedFailure(value).ok
+        ) {
+          q.cleanup_failed[bead_id].failure_code = value.failure_code;
+        }
+        if (typeof value.retryable === 'boolean') {
+          q.cleanup_failed[bead_id].retryable = value.retryable;
+        }
+        if (
+          Number.isInteger(value.retry_count) &&
+          Number(value.retry_count) >= 0
+        ) {
+          q.cleanup_failed[bead_id].retry_count = Number(value.retry_count);
+        }
+        if (
           isRecord(value.diagnosis) &&
           typeof value.diagnosis.verdict === 'string' &&
           typeof value.diagnosis.attempt_id === 'string' &&
@@ -1700,6 +1718,15 @@ function normalizeReconcile(raw) {
               step:
                 typeof value.terminal_failure.step === 'string'
                   ? value.terminal_failure.step
+                  : null,
+              failure_code:
+                typeof value.terminal_failure.failure_code === 'string' &&
+                validateManagedFailure(value.terminal_failure).ok
+                  ? value.terminal_failure.failure_code
+                  : null,
+              retryable:
+                typeof value.terminal_failure.retryable === 'boolean'
+                  ? value.terminal_failure.retryable
                   : null,
               at:
                 typeof value.terminal_failure.at === 'number'
@@ -2084,7 +2111,7 @@ export function createQueueStore(options = {}) {
 
     /**
      * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, stage: 'queued'|'pinned'|'verifying'|'deploying'|'readback', candidate_sha?: string, adapter?: 'workspace'|'managed' }} input
+     * @param {{ bead_id: string, attempt_id: string, stage: 'queued'|'pinned'|'verifying'|'deploying'|'restarting'|'readback', candidate_sha?: string, adapter?: 'workspace'|'managed' }} input
      * @returns {QueueOpResult}
      */
     advanceReconcile(workspace, input) {
@@ -2246,7 +2273,7 @@ export function createQueueStore(options = {}) {
 
     /**
      * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, reason: string, detail?: string|null, step?: string|null }} input
+     * @param {{ bead_id: string, attempt_id: string, reason: string, detail?: string|null, step?: string|null, failure_code?: string, retryable?: boolean }} input
      * @returns {QueueOpResult}
      */
     failReconcile(workspace, input) {
@@ -2258,7 +2285,9 @@ export function createQueueStore(options = {}) {
           current.stage === 'complete' ||
           current.stage === 'failed' ||
           typeof input.reason !== 'string' ||
-          input.reason.length === 0
+          input.reason.length === 0 ||
+          (input.failure_code !== undefined &&
+            !validateManagedFailure(input).ok)
         ) {
           return false;
         }
@@ -2268,6 +2297,10 @@ export function createQueueStore(options = {}) {
           reason: input.reason,
           detail: typeof input.detail === 'string' ? input.detail : null,
           step: typeof input.step === 'string' ? input.step : null,
+          failure_code:
+            typeof input.failure_code === 'string' ? input.failure_code : null,
+          retryable:
+            typeof input.retryable === 'boolean' ? input.retryable : null,
           at: now()
         };
         current.updated_at = now();
@@ -3389,7 +3422,7 @@ export function createQueueStore(options = {}) {
      * output (UI-0x54); omit it when the run left no complete log file.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, output_tail?: string|null, log_path?: string|null }} input
+     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number }} input
      * @returns {QueueOpResult}
      */
     recordCleanupFailure(workspace, input) {
@@ -3400,14 +3433,20 @@ export function createQueueStore(options = {}) {
         bd_restore,
         detail,
         output_tail,
-        log_path
+        log_path,
+        failure_code,
+        retryable,
+        retry_count
       } = input;
       return applyUnconditional(workspace, (next) => {
         if (
           typeof bead_id !== 'string' ||
           bead_id.length === 0 ||
           typeof reason !== 'string' ||
-          reason.length === 0
+          reason.length === 0 ||
+          (failure_code !== undefined && !validateManagedFailure(input).ok) ||
+          (retry_count !== undefined &&
+            (!Number.isInteger(retry_count) || Number(retry_count) < 0))
         ) {
           return false;
         }
@@ -3426,68 +3465,18 @@ export function createQueueStore(options = {}) {
         if (typeof log_path === 'string' && log_path.length > 0) {
           next.cleanup_failed[bead_id].log_path = log_path;
         }
+        if (typeof failure_code === 'string') {
+          next.cleanup_failed[bead_id].failure_code = failure_code;
+        }
+        if (typeof retryable === 'boolean') {
+          next.cleanup_failed[bead_id].retryable = retryable;
+        }
+        if (Number.isInteger(retry_count) && Number(retry_count) >= 0) {
+          next.cleanup_failed[bead_id].retry_count = Number(retry_count);
+        }
         if (diagnosis) {
           next.cleanup_failed[bead_id].diagnosis = diagnosis;
         }
-        return true;
-      });
-    },
-
-    /**
-     * Persist a cleanup-diagnosis result only while its cleanup failure remains
-     * active. Replaying the same attempt preserves a consumed marker so a
-     * restart cannot spend one diagnosis twice.
-     *
-     * @param {string} workspace
-     * @param {{ bead_id: string, verdict: string, attempt_id: string, evidence: string, fix_bead_id?: string|null, malformed?: boolean }} input
-     * @returns {QueueOpResult}
-     */
-    recordCleanupDiagnosis(workspace, input) {
-      const { bead_id, verdict, attempt_id, evidence, fix_bead_id, malformed } =
-        input;
-      return applyUnconditional(workspace, (next) => {
-        const record = next.cleanup_failed[bead_id];
-        if (
-          !record ||
-          typeof verdict !== 'string' ||
-          verdict.length === 0 ||
-          typeof attempt_id !== 'string' ||
-          attempt_id.length === 0 ||
-          typeof evidence !== 'string'
-        ) {
-          return false;
-        }
-        const prior = record.diagnosis;
-        record.diagnosis = {
-          verdict,
-          attempt_id,
-          consumed: prior?.attempt_id === attempt_id && prior.consumed === true,
-          evidence
-        };
-        if (typeof fix_bead_id === 'string' && fix_bead_id.length > 0) {
-          record.diagnosis.fix_bead_id = fix_bead_id;
-        }
-        if (malformed === true) {
-          record.diagnosis.malformed = true;
-        }
-        return true;
-      });
-    },
-
-    /**
-     * Spend a durable cleanup diagnosis before its single automatic retry.
-     *
-     * @param {string} workspace
-     * @param {string} bead_id
-     * @returns {QueueOpResult}
-     */
-    markDiagnosisConsumed(workspace, bead_id) {
-      return applyUnconditional(workspace, (next) => {
-        const diagnosis = next.cleanup_failed[bead_id]?.diagnosis;
-        if (!diagnosis || diagnosis.consumed === true) {
-          return false;
-        }
-        diagnosis.consumed = true;
         return true;
       });
     },

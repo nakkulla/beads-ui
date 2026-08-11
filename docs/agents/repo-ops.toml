@@ -23,7 +23,8 @@ cmd = ["npm", "run", "all"]
 timeout_ms = 600000
 
 [deploy]
-cmd = ["bdui-shared", "restart"]
-detached = true
+adapter = "managed"
+cmd = ["scripts/managed-self-deploy.js"]
+timeout_ms = 600000
 
-env_notes = "재시작이 이 서버 자신을 죽이므로 detached — 워커는 나머지 정리 단계가 모두 성공하고 durable 기록이 끝난 뒤 마지막에 launch한다(server/worker/pr-actions.js THE TERMINAL LAUNCH)"
+env_notes = "핀된 candidate release의 managed Adapter가 install·pointer cutover·restart handoff·runtime readback을 durable attempt에 결합한다"

@@ -607,21 +607,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         reviseDisposition?.release(bead_id);
       }
     },
-    cleanupDiagnosis: {
-      /** @param {string} bead_id */
-      async retryCleanup(bead_id) {
-        if (!prActions) {
-          return { ok: false, reason: 'retry_unwired' };
-        }
-        const result = await prActions.retryCleanup(bead_id);
-        return {
-          ok: result.ok,
-          ...(typeof result.reason === 'string'
-            ? { reason: result.reason }
-            : {})
-        };
-      }
-    },
     onCompletionAttemptSettled(input) {
       return completionIntent
         ? completionIntent.attemptSettled(input)
@@ -1293,6 +1278,12 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     log('startup reconcile failed for %s: %o', key, err);
     return;
   }
+  try {
+    await att.prActions.resumePersistedReconciles();
+  } catch (err) {
+    log('startup deployment recovery failed for %s: %o', key, err);
+    return;
+  }
 
   if (start_pr_poller) {
     try {
@@ -1721,25 +1712,6 @@ export async function reviseApproveWorkerBead(workspace_root, bead_id) {
     return { ok: false, reason: 'no_attachment' };
   }
   return att.reviseDisposition.approve(bead_id);
-}
-
-/**
- * Start a human-requested cleanup diagnosis, if this workspace has a live
- * scheduler attachment.
- *
- * @param {string} workspace_root
- * @param {string} bead_id
- * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
- */
-export async function diagnoseWorkerCleanup(workspace_root, bead_id) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att) {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.dispatchCleanupDiagnosis(
-    keyFor(workspace_root),
-    bead_id
-  );
 }
 
 /**

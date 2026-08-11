@@ -1,5 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
-import { createProcessController } from './process-controller.js';
+import {
+  createProcessController,
+  observeProcessIdentity
+} from './process-controller.js';
 
 const IDENTITY = {
   pid: 4242,
@@ -35,6 +38,33 @@ function setup(over = {}) {
 }
 
 describe('worker process controller identity', () => {
+  test('observes a live process start without requiring a group leader', () => {
+    const inspect = vi.fn(() => ({
+      ok: true,
+      alive: true,
+      pgid: 4000,
+      started_at: 1_000
+    }));
+
+    const result = observeProcessIdentity(4242, { inspect });
+
+    expect(result).toEqual({
+      ok: true,
+      identity: { pid: 4242, process_started_at: 1_000 }
+    });
+  });
+
+  test('fails closed when a live process start cannot be observed', () => {
+    const inspect = vi.fn(() => ({
+      ok: false,
+      reason: 'ps_failed'
+    }));
+
+    const result = observeProcessIdentity(4242, { inspect });
+
+    expect(result).toEqual({ ok: false, reason: 'ps_failed' });
+  });
+
   test('captures a detached group leader identity', () => {
     const env = setup();
 

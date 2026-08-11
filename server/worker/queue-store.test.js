@@ -2732,27 +2732,48 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     });
   });
 
-  test('persists a cleanup diagnosis and its consumed marker across reload', () => {
+  test('round-trips raw historical diagnosis fields across a later cleanup failure write', () => {
     const store = createQueueStore();
     seedPrWait(store);
-    store.recordCleanupFailure(WS, {
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.attempts.a1.cleanup_diagnosis = true;
+    raw.attempts.a1.cleanup_diagnosis_result_path = '/legacy-result.json';
+    raw.cleanup_failed = {
+      'UI-1': {
+        step: 'post_merge_verify',
+        reason: 'verify_cmd_failed',
+        bd_restore: null,
+        at: 1,
+        detail: null,
+        diagnosis: {
+          verdict: 'regression',
+          attempt_id: 'diag-1',
+          consumed: true,
+          evidence: 'reproduced by verify',
+          fix_bead_id: 'UI-fix'
+        }
+      }
+    };
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore();
+    loaded.load(WS);
+    loaded.recordCleanupFailure(WS, {
       bead_id: 'UI-1',
-      step: 'post_merge_verify',
-      reason: 'verify_cmd_failed'
+      step: 'deploy',
+      reason: 'adapter_failed'
     });
 
-    store.recordCleanupDiagnosis(WS, {
-      bead_id: 'UI-1',
-      verdict: 'regression',
-      attempt_id: 'diag-1',
-      evidence: 'reproduced by verify',
-      fix_bead_id: 'UI-fix'
+    const persisted = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(persisted.attempts.a1).toMatchObject({
+      cleanup_diagnosis: true,
+      cleanup_diagnosis_result_path: '/legacy-result.json'
     });
-    store.markDiagnosisConsumed(WS, 'UI-1');
-
-    expect(
-      createQueueStore().load(WS).cleanup_failed['UI-1'].diagnosis
-    ).toEqual({
+    expect(persisted.cleanup_failed['UI-1']).toMatchObject({
+      step: 'deploy',
+      reason: 'adapter_failed'
+    });
+    expect(persisted.cleanup_failed['UI-1'].diagnosis).toEqual({
       verdict: 'regression',
       attempt_id: 'diag-1',
       consumed: true,
@@ -2761,75 +2782,11 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     });
   });
 
-  test.each(['flake', 'environment'])(
-    'preserves a consumed %s diagnosis across serialize and reload',
-    (verdict) => {
-      const store = createQueueStore();
-      seedPrWait(store);
-      store.recordCleanupFailure(WS, {
-        bead_id: 'UI-1',
-        step: 'post_merge_verify',
-        reason: 'verify_cmd_failed'
-      });
-      store.recordCleanupDiagnosis(WS, {
-        bead_id: 'UI-1',
-        verdict,
-        attempt_id: `diag-${verdict}`,
-        evidence: 'evidence'
-      });
-      store.markDiagnosisConsumed(WS, 'UI-1');
-
-      const diagnosis =
-        createQueueStore().load(WS).cleanup_failed['UI-1'].diagnosis;
-
-      expect(diagnosis).toMatchObject({
-        verdict,
-        attempt_id: `diag-${verdict}`,
-        consumed: true,
-        evidence: 'evidence'
-      });
-    }
-  );
-
-  test('preserves a consumed diagnosis when retry cleanup records failure', () => {
-    const store = createQueueStore();
-    seedPrWait(store);
-    store.recordCleanupFailure(WS, {
-      bead_id: 'UI-1',
-      step: 'post_merge_verify',
-      reason: 'verify_cmd_failed'
-    });
-    store.recordCleanupDiagnosis(WS, {
-      bead_id: 'UI-1',
-      verdict: 'flake',
-      attempt_id: 'diag-1',
-      evidence: 'intermittent'
-    });
-    store.markDiagnosisConsumed(WS, 'UI-1');
-
-    store.recordCleanupFailure(WS, {
-      bead_id: 'UI-1',
-      step: 'post_merge_verify',
-      reason: 'verify_cmd_failed'
-    });
-
-    expect(store.snapshot(WS).cleanup_failed['UI-1'].diagnosis?.consumed).toBe(
-      true
-    );
-  });
-
-  test('does not create a diagnosis without a cleanup failure record', () => {
+  test('does not expose cleanup diagnosis writer APIs', () => {
     const store = createQueueStore();
 
-    const result = store.recordCleanupDiagnosis(WS, {
-      bead_id: 'UI-1',
-      verdict: 'flake',
-      attempt_id: 'diag-1',
-      evidence: 'intermittent'
-    });
-
-    expect(result.ok).toBe(false);
-    expect(store.snapshot(WS).cleanup_failed).toEqual({});
+    expect(/** @type {any} */ (store).recordCleanupDiagnosis).toBeUndefined();
+    expect(/** @type {any} */ (store).markDiagnosisConsumed).toBeUndefined();
   });
 
   test('round-trips a cleanup failure detail across a reload', () => {
@@ -2846,6 +2803,30 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     expect(createQueueStore().load(WS).cleanup_failed['UI-1'].detail).toBe(
       "fatal: '.worktrees/verify-UI-1-abc1234' already exists"
     );
+  });
+
+  test('round-trips managed failure ownership and actual retry count', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'deploy',
+      reason: 'deploy_failed',
+      detail: 'install_failed',
+      failure_code: 'adapter_regression',
+      retryable: false,
+      retry_count: 0
+    });
+
+    expect(createQueueStore().load(WS).cleanup_failed['UI-1']).toMatchObject({
+      step: 'deploy',
+      reason: 'deploy_failed',
+      detail: 'install_failed',
+      failure_code: 'adapter_regression',
+      retryable: false,
+      retry_count: 0
+    });
   });
 
   test('stores the verify output tail on a cleanup failure (UI-qult §1)', () => {
@@ -3537,6 +3518,45 @@ describe('worker/queue-store deployment reconcile state', () => {
       reason: 'verify_failed',
       detail: 'suite red',
       step: 'post_merge_verify'
+    });
+  });
+
+  test('persists restart progress and managed failure ownership evidence', () => {
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    store.advanceReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      stage: 'restarting',
+      candidate_sha: CANDIDATE,
+      adapter: 'managed'
+    });
+    store.failReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      reason: 'deploy_failed',
+      detail: 'install_failed',
+      step: 'deploy',
+      failure_code: 'adapter_regression',
+      retryable: false
+    });
+
+    expect(createQueueStore().load(WS).reconcile['UI-1']).toMatchObject({
+      stage: 'failed',
+      candidate_sha: CANDIDATE,
+      adapter: 'managed',
+      terminal_failure: {
+        reason: 'deploy_failed',
+        detail: 'install_failed',
+        step: 'deploy',
+        failure_code: 'adapter_regression',
+        retryable: false
+      }
     });
   });
 

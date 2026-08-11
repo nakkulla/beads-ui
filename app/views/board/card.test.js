@@ -603,35 +603,32 @@ describe('views/board/card display policy', () => {
     expect(m.querySelector('.ctl-chip--blocked-dep')).toBeNull();
   });
 
-  test('renders a cleanup failure chip and diagnoses the matching bead', () => {
-    const onCleanupDiagnose = vi.fn();
+  test('renders cleanup failure evidence without AI diagnosis controls', () => {
     const m = mountCard(
       { id: 'UI-1', title: 'cleanup failed' },
       makeCtx({
         policy: makePolicy(),
         cleanupFailureFor: () => ({
           step: 'post_merge_verify',
-          reason: 'verify_cmd_failed'
-        }),
-        isCleanupDiagnosisPending: () => false,
-        onCleanupDiagnose
+          reason: 'verify_cmd_failed',
+          diagnosis: {
+            verdict: 'regression',
+            evidence: 'historical diagnosis must remain passive'
+          }
+        })
       })
     );
 
     const chip = /** @type {HTMLElement} */ (
       m.querySelector('.ctl-chip--cleanup')
     );
-    const button = /** @type {HTMLButtonElement} */ (
-      m.querySelector('.board-card__cleanup-diagnose')
-    );
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(chip.textContent).toContain('정리 실패');
-    expect(button.dataset.beadId).toBe('UI-1');
-    expect(onCleanupDiagnose).toHaveBeenCalledWith(expect.anything(), 'UI-1');
+    expect(m.querySelector('.board-card__cleanup-diagnose')).toBeNull();
+    expect(m.querySelector('.board-card__cleanup-diagnosis')).toBeNull();
   });
 
-  test('renders durable cleanup diagnosis details on the card', () => {
+  test('does not expose durable cleanup diagnosis details on the card', () => {
     const m = mountCard(
       { id: 'UI-1', title: 'cleanup failed' },
       makeCtx({
@@ -648,16 +645,12 @@ describe('views/board/card display policy', () => {
       })
     );
 
-    const result = /** @type {HTMLElement} */ (
-      m.querySelector('.board-card__cleanup-diagnosis')
-    );
-
-    expect(result.textContent).toContain('regression');
-    expect(result.textContent).toContain('same assertion fails');
-    expect(result.textContent).toContain('UI-fix');
+    expect(m.querySelector('.board-card__cleanup-diagnosis')).toBeNull();
+    expect(m.textContent).not.toContain('same assertion fails');
+    expect(m.textContent).not.toContain('UI-fix');
   });
 
-  test('renders malformed cleanup diagnosis fail-closed on the card', () => {
+  test('does not expose malformed cleanup diagnosis on the card', () => {
     const m = mountCard(
       { id: 'UI-1', title: 'cleanup failed' },
       makeCtx({
@@ -674,9 +667,8 @@ describe('views/board/card display policy', () => {
       })
     );
 
-    expect(
-      m.querySelector('.board-card__cleanup-diagnosis')?.textContent
-    ).toContain('판정 불가');
+    expect(m.querySelector('.board-card__cleanup-diagnosis')).toBeNull();
+    expect(m.textContent).not.toContain('판정 불가');
   });
 
   test('omits cleanup controls without a failure or when blocked chips are disabled', () => {
