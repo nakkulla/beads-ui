@@ -361,7 +361,7 @@ describe('worker/queue-store', () => {
     expect(result.ok).toBe(true);
     expect(result.queue.revision).toBe(revision + 1);
     expect(result.queue.merge_queue).toEqual([
-      { bead_id: 'UI-root', resolution_rounds: 0 }
+      { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
     ]);
     expect(result.queue.completion_intents['UI-root']).toMatchObject({
       phase: 'gating',
@@ -883,7 +883,7 @@ describe('worker/queue-store', () => {
     expect(result.queue.revision).toBe(revision + 1);
     expect(result.queue.completion_intents['UI-root'].phase).toBe(phase);
     expect(result.queue.merge_queue).toEqual([
-      { bead_id: 'UI-root', resolution_rounds: 0 }
+      { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
     ]);
   });
 
@@ -3488,7 +3488,7 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
 
     expect(r.ok).toBe(true);
     expect(r.queue.merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 0 }
+      { bead_id: 'UI-1', resolution_rounds: 0, resolution: null }
     ]);
   });
 
@@ -3588,7 +3588,7 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
     store.bumpResolutionRound(WS, 'UI-1');
 
     expect(createQueueStore().snapshot(WS).merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 1 }
+      { bead_id: 'UI-1', resolution_rounds: 1, resolution: null }
     ]);
   });
 
@@ -3629,8 +3629,321 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
     );
 
     expect(createQueueStore().snapshot(WS).merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 0 }
+      { bead_id: 'UI-1', resolution_rounds: 0, resolution: null }
     ]);
+  });
+
+  test('loads a legacy merge entry with explicit null resolution', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        merge_queue: [{ bead_id: 'UI-1', resolution_rounds: 1 }]
+      })
+    );
+
+    const [entry] = createQueueStore().snapshot(WS).merge_queue;
+
+    expect(entry.resolution).toBe(null);
+  });
+
+  test('round-trips a valid resolution wait through a cold load', () => {
+    const resolution = {
+      attempt_id: 'res-1',
+      subject_bead_id: 'UI-subject',
+      deadline_at: 1_800_001,
+      state: 'yielded',
+      yielded_at: 1_800_002,
+      settled_at: null
+    };
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        merge_queue: [
+          { bead_id: 'UI-1', resolution_rounds: 1, resolution }
+        ]
+      })
+    );
+
+    const [entry] = createQueueStore().snapshot(WS).merge_queue;
+
+    expect(entry.resolution).toEqual(resolution);
+  });
+
+  test('preserves malformed resolution as fail-closed evidence', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        merge_queue: [
+          {
+            bead_id: 'UI-1',
+            resolution_rounds: 1,
+            resolution: { state: 'waiting', attempt_id: '' }
+          }
+        ]
+      })
+    );
+
+    const [entry] = createQueueStore().snapshot(WS).merge_queue;
+
+    expect(entry.resolution).toEqual({
+      state: 'invalid',
+      reason: 'resolution_wait_invalid'
+    });
+  });
+
+  test('binds exact resolution identity to the attempt absolute deadline', () => {
+    const store = storeWithPrWait(['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    store.bumpResolutionRound(WS, 'UI-1');
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-subject',
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 100
+      }
+    });
+
+    const result = store.bindResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-subject',
+      attempt_id: 'res-1',
+      wait_ms: 1_800_000
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.merge_queue).toEqual([
+      {
+        bead_id: 'UI-1',
+        resolution_rounds: 1,
+        resolution: {
+          attempt_id: 'res-1',
+          subject_bead_id: 'UI-subject',
+          deadline_at: 1_800_100,
+          state: 'waiting',
+          yielded_at: null,
+          settled_at: null
+        }
+      }
+    ]);
+  });
+
+  test('leaves the prior journal intact when resolution binding cannot persist', () => {
+    const store = storeWithPrWait(['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 100
+      }
+    });
+    const before = fs.readFileSync(queueFilePath(WS), 'utf8');
+    const failing = createQueueStore({
+      fs: /** @type {any} */ ({
+        readFileSync: fs.readFileSync,
+        mkdirSync: fs.mkdirSync,
+        renameSync: fs.renameSync,
+        writeFileSync: () => {
+          throw new Error('disk full');
+        }
+      })
+    });
+
+    expect(() =>
+      failing.bindResolutionWait(WS, {
+        bead_id: 'UI-1',
+        subject_bead_id: 'UI-1',
+        attempt_id: 'res-1',
+        wait_ms: 1_800_000
+      })
+    ).toThrow(/disk full/);
+
+    expect(fs.readFileSync(queueFilePath(WS), 'utf8')).toBe(before);
+    expect(failing.snapshot(WS).merge_queue[0].resolution).toBe(null);
+  });
+
+  test('yields behind runnable items and enrolls new work before the suffix', () => {
+    const store = storeWithPrWait(['UI-1', 'UI-2', 'UI-3', 'UI-4']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1' },
+        { bead_id: 'UI-2' },
+        { bead_id: 'UI-3' }
+      ]
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 100
+      }
+    });
+    store.bindResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      wait_ms: 100
+    });
+
+    const yielded = store.yieldResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      yielded_at: 200
+    });
+    const enrolled = store.enqueueMerge(WS, {
+      expected_revision: yielded.queue.revision,
+      entries: [{ bead_id: 'UI-4' }]
+    });
+
+    expect(enrolled.queue.merge_queue.map((entry) => entry.bead_id)).toEqual([
+      'UI-2',
+      'UI-3',
+      'UI-4',
+      'UI-1'
+    ]);
+    expect(enrolled.queue.merge_queue[3].resolution).toMatchObject({
+      state: 'yielded',
+      yielded_at: 200
+    });
+  });
+
+  test('promotes ready waits by settlement time after the active item', () => {
+    const store = storeWithPrWait(['UI-active', 'UI-1', 'UI-2']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-active' },
+        { bead_id: 'UI-1' },
+        { bead_id: 'UI-2' }
+      ]
+    });
+    for (const bead_id of ['UI-1', 'UI-2']) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: `res-${bead_id}`,
+          bead_id,
+          status: 'running',
+          conflict_resolution: true,
+          started_at: 100
+        }
+      });
+      store.bindResolutionWait(WS, {
+        bead_id,
+        subject_bead_id: bead_id,
+        attempt_id: `res-${bead_id}`,
+        wait_ms: 100
+      });
+      store.yieldResolutionWait(WS, {
+        bead_id,
+        subject_bead_id: bead_id,
+        attempt_id: `res-${bead_id}`,
+        yielded_at: 200
+      });
+    }
+
+    store.settleResolutionWait(WS, {
+      bead_id: 'UI-2',
+      subject_bead_id: 'UI-2',
+      attempt_id: 'res-UI-2',
+      settled_at: 300,
+      active_bead_id: 'UI-active'
+    });
+    const promoted = store.settleResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-UI-1',
+      settled_at: 250,
+      active_bead_id: 'UI-active'
+    });
+    const duplicate = store.settleResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-UI-1',
+      settled_at: 250,
+      active_bead_id: 'UI-active'
+    });
+
+    expect(promoted.queue.merge_queue.map((entry) => entry.bead_id)).toEqual([
+      'UI-active',
+      'UI-1',
+      'UI-2'
+    ]);
+    expect(duplicate.ok).toBe(false);
+    expect(duplicate.queue.revision).toBe(promoted.queue.revision);
+  });
+
+  test('consumes a ready round exactly once', () => {
+    const store = storeWithPrWait(['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        status: 'done',
+        conflict_resolution: true,
+        started_at: 100
+      }
+    });
+    store.bindResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      wait_ms: 100
+    });
+    store.settleResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      settled_at: 150,
+      active_bead_id: null
+    });
+
+    const consumed = store.consumeResolutionWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      consume_round: true
+    });
+    const duplicate = store.consumeResolutionWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      consume_round: true
+    });
+
+    expect(consumed.queue.merge_queue[0]).toEqual({
+      bead_id: 'UI-1',
+      resolution_rounds: 1,
+      resolution: null
+    });
+    expect(duplicate.ok).toBe(false);
+    expect(duplicate.queue.revision).toBe(consumed.queue.revision);
   });
 });
 
@@ -3670,7 +3983,7 @@ describe('worker/queue-store — merge queue lane coupling (UI-5v7d)', () => {
     });
 
     expect(store.snapshot(WS).merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 1 }
+      { bead_id: 'UI-1', resolution_rounds: 1, resolution: null }
     ]);
   });
 

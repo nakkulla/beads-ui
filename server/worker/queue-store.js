@@ -295,6 +295,28 @@
  * @property {number} resolution_rounds - How many conflict-resolution rounds
  * this item has already consumed. Persisted so the 2-round cap survives the
  * deploy restart a merge can trigger.
+ * @property {ResolutionWait|InvalidResolutionWait|null} resolution - Durable
+ * binding between this queue item and one exact conflict-resolution attempt.
+ */
+/**
+ * @typedef {'waiting'|'yielded'|'ready'} ResolutionWaitState
+ */
+/**
+ * @typedef {Object} ResolutionWait
+ * @property {string} attempt_id
+ * @property {string} subject_bead_id
+ * @property {number} deadline_at
+ * @property {ResolutionWaitState} state
+ * @property {number|null} yielded_at
+ * @property {number|null} settled_at
+ */
+/**
+ * Canonical fail-closed marker for a persisted non-null resolution record that
+ * cannot safely be interpreted as an attempt binding.
+ *
+ * @typedef {Object} InvalidResolutionWait
+ * @property {'invalid'} state
+ * @property {'resolution_wait_invalid'} reason
  */
 /**
  * One auto-merge exclusion record (UI-yk55 §3.2).
@@ -912,10 +934,64 @@ function normalizeMergeSkips(raw) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {ResolutionWait|InvalidResolutionWait|null}
+ */
+function normalizeResolutionWait(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    return { state: 'invalid', reason: 'resolution_wait_invalid' };
+  }
+  const attempt_id = value.attempt_id;
+  const subject_bead_id = value.subject_bead_id;
+  const deadline_at = value.deadline_at;
+  const state = value.state;
+  const yielded_at = value.yielded_at;
+  const settled_at = value.settled_at;
+  const valid_state =
+    state === 'waiting' || state === 'yielded' || state === 'ready';
+  const valid_yielded_at =
+    yielded_at === null ||
+    (typeof yielded_at === 'number' && Number.isFinite(yielded_at));
+  const valid_settled_at =
+    settled_at === null ||
+    (typeof settled_at === 'number' && Number.isFinite(settled_at));
+  const valid_transition =
+    (state === 'waiting' && yielded_at === null && settled_at === null) ||
+    (state === 'yielded' &&
+      typeof yielded_at === 'number' &&
+      settled_at === null) ||
+    (state === 'ready' && typeof settled_at === 'number');
+  if (
+    typeof attempt_id !== 'string' ||
+    attempt_id.length === 0 ||
+    typeof subject_bead_id !== 'string' ||
+    subject_bead_id.length === 0 ||
+    typeof deadline_at !== 'number' ||
+    !Number.isFinite(deadline_at) ||
+    !valid_state ||
+    !valid_yielded_at ||
+    !valid_settled_at ||
+    !valid_transition
+  ) {
+    return { state: 'invalid', reason: 'resolution_wait_invalid' };
+  }
+  return {
+    attempt_id,
+    subject_bead_id,
+    deadline_at,
+    state,
+    yielded_at,
+    settled_at
+  };
+}
+
+/**
  * Normalize the durable merge queue: entry order is the FIFO order, a bead may
- * appear once, and a missing/unusable `resolution_rounds` reads as 0 (which is
- * what "no round consumed yet" means, and is the safe direction — it can only
- * grant rounds the cap would otherwise have to guess about).
+ * appear once, a missing/unusable `resolution_rounds` reads as 0, and every
+ * legacy entry receives an explicit null resolution binding.
  *
  * @param {unknown} arr
  * @returns {MergeQueueEntry[]}
@@ -942,7 +1018,8 @@ function normalizeMergeQueue(arr) {
         Number.isFinite(raw.resolution_rounds) &&
         raw.resolution_rounds > 0
           ? Math.floor(raw.resolution_rounds)
-          : 0
+          : 0,
+      resolution: normalizeResolutionWait(raw.resolution)
     });
   }
   return out;
@@ -1524,6 +1601,20 @@ function enqueueMember(q, bead_id, external) {
 }
 
 /**
+ * Insert runnable work immediately before the durable yielded suffix.
+ *
+ * @param {Queue} q
+ * @param {MergeQueueEntry} entry
+ */
+function insertRunnableMergeEntry(q, entry) {
+  const yielded_at = q.merge_queue.findIndex(
+    (item) => item.resolution?.state === 'yielded'
+  );
+  const index = yielded_at < 0 ? q.merge_queue.length : yielded_at;
+  q.merge_queue.splice(index, 0, entry);
+}
+
+/**
  * Resume one paused saga without discarding its current subject or lineage.
  * The merged SHA is the durable discriminator between pre-merge gating and
  * post-merge cleanup replay.
@@ -1543,7 +1634,11 @@ function resumeCompletionIntentRecord(next, root_bead_id) {
   }
   intent.phase = intent.subject.merged_sha === null ? 'gating' : 'cleaning';
   if (!next.merge_queue.some((entry) => entry.bead_id === root_bead_id)) {
-    next.merge_queue.push({ bead_id: root_bead_id, resolution_rounds: 0 });
+    insertRunnableMergeEntry(next, {
+      bead_id: root_bead_id,
+      resolution_rounds: 0,
+      resolution: null
+    });
   }
   if (next.auto_merge_skips[root_bead_id]) {
     delete next.auto_merge_skips[root_bead_id];
@@ -3053,7 +3148,11 @@ export function createQueueStore(options = {}) {
           if (next.merge_queue.some((e) => e.bead_id === bead_id)) {
             continue;
           }
-          next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+          insertRunnableMergeEntry(next, {
+            bead_id,
+            resolution_rounds: 0,
+            resolution: null
+          });
           added += 1;
         }
         return added > 0 || cleared > 0;
@@ -3110,9 +3209,10 @@ export function createQueueStore(options = {}) {
         }
         next.completion_intents[root_bead_id] = normalized;
         if (!next.merge_queue.some((entry) => entry.bead_id === root_bead_id)) {
-          next.merge_queue.push({
+          insertRunnableMergeEntry(next, {
             bead_id: root_bead_id,
-            resolution_rounds: 0
+            resolution_rounds: 0,
+            resolution: null
           });
         }
         return true;
@@ -3545,7 +3645,11 @@ export function createQueueStore(options = {}) {
                 changed += 1;
               }
               if (!next.merge_queue.some((item) => item.bead_id === bead_id)) {
-                next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+                insertRunnableMergeEntry(next, {
+                  bead_id,
+                  resolution_rounds: 0,
+                  resolution: null
+                });
                 changed += 1;
               }
               continue;
@@ -3565,7 +3669,11 @@ export function createQueueStore(options = {}) {
             }
             next.completion_intents[bead_id] = normalized;
             if (!next.merge_queue.some((item) => item.bead_id === bead_id)) {
-              next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+              insertRunnableMergeEntry(next, {
+                bead_id,
+                resolution_rounds: 0,
+                resolution: null
+              });
             }
             if (next.auto_merge_skips[bead_id]) {
               delete next.auto_merge_skips[bead_id];
@@ -3587,7 +3695,11 @@ export function createQueueStore(options = {}) {
           if (next.merge_queue.some((e) => e.bead_id === bead_id)) {
             continue;
           }
-          next.merge_queue.push({ bead_id, resolution_rounds: 0 });
+          insertRunnableMergeEntry(next, {
+            bead_id,
+            resolution_rounds: 0,
+            resolution: null
+          });
           changed += 1;
         }
         return changed > 0;
@@ -3659,6 +3771,186 @@ export function createQueueStore(options = {}) {
         next.merge_queue = next.merge_queue.filter(
           (e) => e.bead_id !== bead_id
         );
+        return true;
+      });
+    },
+
+    /**
+     * Bind one queue item to the exact conflict-resolution attempt that is
+     * already durable in the scheduler journal.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, subject_bead_id: string, attempt_id: string, wait_ms: number }} input
+     * @returns {QueueOpResult}
+     */
+    bindResolutionWait(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        const attempt = next.attempts[input.attempt_id];
+        if (
+          !entry ||
+          entry.resolution != null ||
+          typeof input.subject_bead_id !== 'string' ||
+          input.subject_bead_id.length === 0 ||
+          typeof input.attempt_id !== 'string' ||
+          input.attempt_id.length === 0 ||
+          typeof input.wait_ms !== 'number' ||
+          !Number.isFinite(input.wait_ms) ||
+          input.wait_ms < 0 ||
+          !attempt ||
+          attempt.attempt_id !== input.attempt_id ||
+          attempt.bead_id !== input.subject_bead_id ||
+          attempt.conflict_resolution !== true ||
+          typeof attempt.started_at !== 'number' ||
+          !Number.isFinite(attempt.started_at)
+        ) {
+          return false;
+        }
+        entry.resolution = {
+          attempt_id: input.attempt_id,
+          subject_bead_id: input.subject_bead_id,
+          deadline_at: attempt.started_at + input.wait_ms,
+          state: 'waiting',
+          yielded_at: null,
+          settled_at: null
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Relinquish only this item's queue turn while its resolver keeps running.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, subject_bead_id: string, attempt_id: string, yielded_at: number }} input
+     * @returns {QueueOpResult}
+     */
+    yieldResolutionWait(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const index = next.merge_queue.findIndex(
+          (item) => item.bead_id === input.bead_id
+        );
+        const entry = index < 0 ? null : next.merge_queue[index];
+        const resolution = entry?.resolution;
+        if (
+          !entry ||
+          !resolution ||
+          resolution.state !== 'waiting' ||
+          resolution.attempt_id !== input.attempt_id ||
+          resolution.subject_bead_id !== input.subject_bead_id ||
+          typeof input.yielded_at !== 'number' ||
+          !Number.isFinite(input.yielded_at)
+        ) {
+          return false;
+        }
+        resolution.state = 'yielded';
+        resolution.yielded_at = input.yielded_at;
+        next.merge_queue.splice(index, 1);
+        next.merge_queue.push(entry);
+        return true;
+      });
+    },
+
+    /**
+     * Promote one exact settled wait ahead of ordinary runnable work while
+     * preserving the currently active merge turn.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, subject_bead_id: string, attempt_id: string, settled_at: number, active_bead_id: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    settleResolutionWait(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        const resolution = entry?.resolution;
+        if (
+          !entry ||
+          !resolution ||
+          (resolution.state !== 'waiting' &&
+            resolution.state !== 'yielded') ||
+          resolution.attempt_id !== input.attempt_id ||
+          resolution.subject_bead_id !== input.subject_bead_id ||
+          typeof input.settled_at !== 'number' ||
+          !Number.isFinite(input.settled_at)
+        ) {
+          return false;
+        }
+        resolution.state = 'ready';
+        resolution.settled_at = input.settled_at;
+
+        const indexed = next.merge_queue.map((item, index) => ({ item, index }));
+        const active = indexed.find(
+          ({ item }) =>
+            item.bead_id === input.active_bead_id &&
+            item.resolution?.state !== 'ready'
+        );
+        const ready = indexed
+          .filter(({ item }) => item.resolution?.state === 'ready')
+          .sort((left, right) => {
+            const left_resolution = left.item.resolution;
+            const right_resolution = right.item.resolution;
+            const left_at =
+              left_resolution?.state === 'ready'
+                ? (left_resolution.settled_at ?? 0)
+                : 0;
+            const right_at =
+              right_resolution?.state === 'ready'
+                ? (right_resolution.settled_at ?? 0)
+                : 0;
+            return left_at - right_at || left.index - right.index;
+          })
+          .map(({ item }) => item);
+        const runnable = indexed
+          .filter(
+            ({ item }) =>
+              item !== active?.item &&
+              item.resolution?.state !== 'ready' &&
+              item.resolution?.state !== 'yielded'
+          )
+          .map(({ item }) => item);
+        const yielded = indexed
+          .filter(({ item }) => item.resolution?.state === 'yielded')
+          .map(({ item }) => item);
+        next.merge_queue = [
+          ...(active ? [active.item] : []),
+          ...ready,
+          ...runnable,
+          ...yielded
+        ];
+        return true;
+      });
+    },
+
+    /**
+     * Consume one ready attempt identity, optionally charging its completed
+     * conflict round. A duplicate event finds no ready identity and is a no-op.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, consume_round: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    consumeResolutionWait(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        const resolution = entry?.resolution;
+        if (
+          !entry ||
+          !resolution ||
+          resolution.state !== 'ready' ||
+          resolution.attempt_id !== input.attempt_id
+        ) {
+          return false;
+        }
+        if (input.consume_round === true) {
+          entry.resolution_rounds += 1;
+        }
+        entry.resolution = null;
         return true;
       });
     },
