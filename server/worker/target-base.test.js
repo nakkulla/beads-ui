@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   DECLARATION_PATH,
   UNDECLARED_BASE,
@@ -192,11 +192,87 @@ describe('resolveTargetBase five-step validation', () => {
   test('fails when the fetch fails', async () => {
     writeDeclaration('base = "ilsun/dev"\n');
     const git = gitRunner({ ...HEALTHY, fetch: { code: 128 } });
+    const delay = vi.fn(async () => {});
 
-    const result = await resolveTargetBase({ repo, gitRun: git.run });
+    const result = await resolveTargetBase({
+      repo,
+      gitRun: git.run,
+      delay
+    });
 
     expect(result).toMatchObject({ ok: false, step: 'fetch' });
   });
+
+  test('recovers when a bounded fetch retry succeeds', async () => {
+    writeDeclaration('base = "ilsun/dev"\n');
+    const git = gitRunner(HEALTHY);
+    const delay = vi.fn(async () => {});
+    let fetch_calls = 0;
+    /** @param {string[]} args */
+    const run = async (args) => {
+      if (args[0] === 'fetch') {
+        fetch_calls += 1;
+        if (fetch_calls === 1) {
+          return {
+            code: 128,
+            stdout: '',
+            stderr: "fatal: cannot lock ref 'refs/remotes/origin/ilsun/dev'"
+          };
+        }
+      }
+      return git.run(args);
+    };
+
+    const result = await resolveTargetBase({ repo, gitRun: run, delay });
+
+    expect(result).toMatchObject({ ok: true, base: 'ilsun/dev' });
+    expect(fetch_calls).toBe(2);
+    expect(delay).toHaveBeenCalledExactlyOnceWith(100);
+  });
+
+  test.each([
+    {
+      category: 'ref_lock',
+      stderr: "fatal: cannot lock ref 'refs/remotes/origin/ilsun/dev'"
+    },
+    {
+      category: 'network',
+      stderr: 'fatal: Could not resolve host: github.com'
+    },
+    { category: 'auth', stderr: 'Permission denied (publickey).' },
+    {
+      category: 'missing_ref',
+      stderr: "fatal: couldn't find remote ref ilsun/dev"
+    },
+    { category: 'unknown', stderr: 'sensitive-marker' }
+  ])(
+    'classifies $category fetch failures without raw stderr',
+    async (input) => {
+      writeDeclaration('base = "ilsun/dev"\n');
+      const git = gitRunner({
+        ...HEALTHY,
+        fetch: { code: 128, stderr: input.stderr }
+      });
+      const delay = vi.fn(async () => {});
+
+      const result = await resolveTargetBase({
+        repo,
+        gitRun: git.run,
+        delay
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        step: 'fetch',
+        detail: `remote:origin;attempts:3;exit:128;category:${input.category}`
+      });
+      if (result.ok) {
+        throw new Error('fetch failure unexpectedly resolved');
+      }
+      expect(result.detail).not.toContain(input.stderr);
+      expect(delay.mock.calls).toEqual([[100], [300]]);
+    }
+  );
 
   test('fails when the remote branch does not exist', async () => {
     writeDeclaration('base = "ilsun/dv"\n');

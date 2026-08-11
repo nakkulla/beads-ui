@@ -1266,6 +1266,41 @@ describe('worker/attach target base resolution wiring (worker-base-scope-alignme
     expect(calls).toBe(2);
   });
 
+  test('shares one in-flight resolution across concurrent force calls', async () => {
+    let fetch_calls = 0;
+    let releaseFetch = () => {};
+    const fetch_gate = new Promise((resolve) => {
+      releaseFetch = () => resolve(undefined);
+    });
+    const att = attach({
+      bd: fakeBd(),
+      gitRun: async (/** @type {string[]} */ args) => {
+        if (args[0] === 'fetch') {
+          fetch_calls += 1;
+          await fetch_gate;
+        }
+        if (args[0] === 'remote') {
+          return { code: 0, stdout: 'origin\n', stderr: '' };
+        }
+        if (args[0] === 'config') {
+          return { code: 1, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'rev-parse') {
+          return { code: 0, stdout: 'f'.repeat(40), stderr: '' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      }
+    });
+
+    const first = att.resolveBase({ force: true });
+    const second = att.resolveBase({ force: true });
+    releaseFetch();
+    const results = await Promise.all([first, second]);
+
+    expect(fetch_calls).toBe(1);
+    expect(results[0]).toBe(results[1]);
+  });
+
   test('refuses admission with the failing step when the base is unresolved', async () => {
     const att = attach({
       bd: fakeBd(),
