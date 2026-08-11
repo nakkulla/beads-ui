@@ -165,8 +165,6 @@ export function createBoardView(mount_element, options) {
    * @type {Set<string>}
    */
   const collapsed_ids = new Set();
-  /** @type {Set<string>} */
-  const cleanup_diagnose_pending = new Set();
 
   /** @type {{ search: string, priority: string, type: string, labels: string[] }} */
   const filters = { search: '', priority: '', type: '', labels: [] };
@@ -624,119 +622,6 @@ export function createBoardView(mount_element, options) {
     return failure;
   }
 
-  /**
-   * Match the Worker console's active-attempt rule: a diagnosis is in flight
-   * while running, and while paused only until a resume child supersedes it.
-   *
-   * @param {unknown} attempts
-   * @param {string} bead_id
-   * @returns {boolean}
-   */
-  function hasActiveCleanupDiagnosis(attempts, bead_id) {
-    if (!attempts || typeof attempts !== 'object' || Array.isArray(attempts)) {
-      return false;
-    }
-    const records = Object.values(attempts);
-    /** @type {Set<string>} */
-    const resumed_from_ids = new Set();
-    for (const attempt of records) {
-      if (
-        attempt &&
-        typeof attempt === 'object' &&
-        typeof attempt.resumed_from === 'string' &&
-        attempt.resumed_from.length > 0
-      ) {
-        resumed_from_ids.add(attempt.resumed_from);
-      }
-    }
-    return records.some(
-      (attempt) =>
-        attempt &&
-        typeof attempt === 'object' &&
-        attempt.bead_id === bead_id &&
-        attempt.cleanup_diagnosis === true &&
-        (attempt.status === 'running' ||
-          (attempt.status === 'paused' &&
-            !resumed_from_ids.has(attempt.attempt_id)))
-    );
-  }
-
-  /**
-   * @param {string} bead_id
-   * @returns {boolean}
-   */
-  function isCleanupDiagnosisPending(bead_id) {
-    const queue = workerQueueStore ? workerQueueStore.get() : null;
-    return (
-      cleanup_diagnose_pending.has(bead_id) ||
-      hasActiveCleanupDiagnosis(queue ? queue.attempts : null, bead_id)
-    );
-  }
-
-  /**
-   * Adopt a queue carried only by a CAS-conflict reply. A normal success fans
-   * out its snapshot, preserving the server's single snapshot authority.
-   *
-   * @param {any} res
-   */
-  function adoptWorkerQueue(res) {
-    if (res && res.queue && workerQueueStore) {
-      workerQueueStore.set(res.queue);
-    }
-  }
-
-  /**
-   * Dispatch one cleanup diagnosis from a Board card under the same revision
-   * CAS discipline as the Worker surface.
-   *
-   * @param {Event} ev
-   * @param {string} bead_id
-   */
-  async function onCleanupDiagnose(ev, bead_id) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    if (
-      !transport ||
-      !workerQueueStore ||
-      !cleanupFailureFor(bead_id) ||
-      cleanup_diagnose_pending.has(bead_id)
-    ) {
-      return;
-    }
-    cleanup_diagnose_pending.add(bead_id);
-    doRender();
-    /** @type {any} */
-    let res;
-    try {
-      const queue = workerQueueStore.get();
-      const expected_revision =
-        queue && typeof queue.revision === 'number' ? queue.revision : 0;
-      res = await transport('worker-cleanup-diagnose', {
-        bead_id,
-        expected_revision
-      });
-      adoptWorkerQueue(res);
-      if (res && res.conflict) {
-        const fresh_queue = workerQueueStore.get();
-        const fresh_revision =
-          fresh_queue && typeof fresh_queue.revision === 'number'
-            ? fresh_queue.revision
-            : 0;
-        res = await transport('worker-cleanup-diagnose', {
-          bead_id,
-          expected_revision: fresh_revision
-        });
-        adoptWorkerQueue(res);
-      }
-    } finally {
-      cleanup_diagnose_pending.delete(bead_id);
-      doRender();
-    }
-    if (res && !res.conflict && res.ok === false && res.reason) {
-      showToast(`AI 정리 거부: ${res.reason}`, 'error', 2400);
-    }
-  }
-
   const card_ctx = {
     onCardClick,
     onCopyId,
@@ -749,8 +634,6 @@ export function createBoardView(mount_element, options) {
     onChildClick,
     onFromChipClick,
     cleanupFailureFor,
-    isCleanupDiagnosisPending,
-    onCleanupDiagnose,
     get policy() {
       return currentPolicy();
     }

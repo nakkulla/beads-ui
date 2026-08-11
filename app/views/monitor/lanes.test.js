@@ -765,6 +765,7 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
     );
 
     expect(lanes.pr_wait[0].merge_enabled).toBe(true);
+    expect(lanes.pr_wait[0].merge_label).toBe('정리');
     expect(lanes.pr_wait[0].badges).toContain('정리 실패');
   });
 

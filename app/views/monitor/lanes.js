@@ -489,11 +489,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
             conflicting ||
             cleanup_retry ||
             external_cleanup),
-        merge_label: external_cleanup
-          ? '정리'
-          : conflicting && !cleanup_retry
-            ? '충돌 해소 후 머지'
-            : undefined,
+        merge_label:
+          external_cleanup || cleanup_retry
+            ? '정리'
+            : conflicting && !cleanup_retry
+              ? '충돌 해소 후 머지'
+              : undefined,
         merge_title: discard_blocks_merge
           ? discard.error
             ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`

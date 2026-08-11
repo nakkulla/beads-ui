@@ -30,7 +30,6 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
-  diagnoseWorkerCleanup,
   discardWorkerBead,
   enrollWorkerMergeCandidates,
   kickWorkerMergeQueue,
@@ -2491,17 +2490,6 @@ export async function handleWorkerReviseFix(ws, req) {
  */
 export async function handleWorkerReviseApprove(ws, req) {
   await handleReviseDisposition(ws, req, reviseApproveWorkerBead);
-}
-
-/**
- * Handle `worker-cleanup-diagnose`. The click uses the same revision-CAS and
- * whole-queue fanout discipline as the existing worker disposition actions.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export async function handleWorkerCleanupDiagnose(ws, req) {
-  await handleReviseDisposition(ws, req, diagnoseWorkerCleanup);
 }
 
 /**

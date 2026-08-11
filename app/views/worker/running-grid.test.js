@@ -1,6 +1,6 @@
 import { render } from 'lit-html';
 import { beforeEach, describe, expect, test } from 'vitest';
-import { runningGridTemplate } from './running-grid.js';
+import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 
 describe('worker failed running tile template', () => {
   beforeEach(() => {
@@ -76,5 +76,37 @@ describe('worker failed running tile template', () => {
     );
 
     expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe('중단됨');
+  });
+
+  test('keeps cleanup failure evidence without rendering AI diagnosis controls', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      bannersTemplate({
+        cleanupFailures: /** @type {any[]} */ ([
+          {
+            bead_id: 'UI-3',
+            step: 'post_merge_verify',
+            reason: 'verify_cmd_failed',
+            detail: 'verify output retained for operator review',
+            diagnosis: {
+              verdict: 'regression',
+              evidence: 'historical diagnosis must not become an active surface'
+            },
+            diagnosis_pending: true
+          }
+        ])
+      }),
+      mount
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--cleanup')
+    );
+
+    expect(banner.textContent).toContain('verify output retained');
+    expect(banner.textContent).not.toContain('AI 정리');
+    expect(banner.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
+    expect(banner.textContent).not.toContain('historical diagnosis');
   });
 });

@@ -43,7 +43,6 @@ vi.mock('../worker/attach.js', () => {
   };
   return {
     checkWorkerQueueAdmission: rec(() => Promise.resolve({ ok: true })),
-    diagnoseWorkerCleanup: rec(() => Promise.resolve({ ok: true })),
     discardWorkerPr: rec(() => Promise.resolve({ ok: true })),
     enrollWorkerMergeCandidates: rec(() => ({
       applied: false,
@@ -174,11 +173,6 @@ const MUTATIONS = [
     action: 'worker-revise-approve',
     run: handlers.handleWorkerReviseApprove,
     payload: { bead_id: 'UI-1', expected_revision: 0 }
-  },
-  {
-    action: 'worker-cleanup-diagnose',
-    run: handlers.handleWorkerCleanupDiagnose,
-    payload: { bead_id: 'UI-1', expected_revision: 0 }
   }
 ];
 
@@ -255,6 +249,12 @@ describe.each(MUTATIONS)('$action workspace targeting (UI-qrfo §5)', (row) => {
 
     expect(keys).toEqual([WS_CONN]);
   });
+});
+
+test('does not export the retired cleanup diagnosis websocket handler', () => {
+  expect(
+    /** @type {any} */ (handlers).handleWorkerCleanupDiagnose
+  ).toBeUndefined();
 });
 
 describe.each([

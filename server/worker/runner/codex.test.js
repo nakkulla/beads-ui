@@ -18,6 +18,14 @@ const BEAD = { id: 'UI-1' };
 const WS = '/tmp/ws';
 
 describe('runner/codex argv (measured against codex 0.147.0)', () => {
+  test('does not suppress PR delivery for retired cleanup diagnosis settings', () => {
+    const spec = codexSpec();
+
+    const built = spec.buildArgv(BEAD, WS, { cleanup_diagnosis: true });
+
+    expect(built.system_prompt).toContain('PR 제출까지 수행하고');
+  });
+
   test('expands a catalog short name into the full model id', () => {
     const spec = codexSpec();
 

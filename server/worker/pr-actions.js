@@ -2207,14 +2207,16 @@ export function createPrActions(deps) {
         if (discardActive(deps.store.snapshot(workspace), bead_id)) {
           return refuse('discard_in_progress');
         }
-        const c = await runCleanup(bead_id, {
-          ...refs,
-          ...(is_external &&
-          q.reconcile?.[bead_id]?.stage === 'failed' &&
-          !q.auto_merge_skips?.[bead_id]
-            ? { restart_reconcile: true }
-            : {})
-        });
+        const c = q.cleanup_failed?.[bead_id]
+          ? await retryCleanupLocked(bead_id, refs)
+          : await runCleanup(bead_id, {
+              ...refs,
+              ...(is_external &&
+              q.reconcile?.[bead_id]?.stage === 'failed' &&
+              !q.auto_merge_skips?.[bead_id]
+                ? { restart_reconcile: true }
+                : {})
+            });
         return {
           ok: c.ok,
           action: c.pending ? 'cleanup_pending' : 'already_merged',
@@ -2566,7 +2568,7 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string|null} [merge_sha]
-   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
    */
   async function cleanupObservedMerge(bead_id, merge_sha = null) {
     if (in_flight.has(bead_id)) {
@@ -2599,17 +2601,13 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Reuse the existing cleanup execution path for one diagnosis-authorized
-   * retry. The scheduler writes its durable consumed marker before calling this
-   * entry, so this function deliberately has no retry policy of its own.
+   * Run the manual [정리] replay while the caller owns the bead action lock.
    *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   * @param {{ base_ref?: string|null, head_ref?: string|null, merge_sha?: string|null, pr_url?: string|null }} [refs]
+   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
    */
-  async function retryCleanup(bead_id) {
-    if (in_flight.has(bead_id)) {
-      return { ok: false, step: null, reason: 'action_in_flight' };
-    }
+  async function retryCleanupLocked(bead_id, refs = {}) {
     const q = deps.store.snapshot(workspace);
     if (discardActive(q, bead_id)) {
       return { ok: false, step: null, reason: 'discard_in_progress' };
@@ -2620,9 +2618,26 @@ export function createPrActions(deps) {
     if (!q.cleanup_failed?.[bead_id]) {
       return { ok: false, step: null, reason: 'cleanup_failed_missing' };
     }
+    return await runCleanup(bead_id, {
+      ...refs,
+      restart_reconcile: true
+    });
+  }
+
+  /**
+   * Reuse the complete cleanup path for one human-authorized [정리] retry.
+   * This entry deliberately has no retry policy of its own.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   */
+  async function retryCleanup(bead_id) {
+    if (in_flight.has(bead_id)) {
+      return { ok: false, step: null, reason: 'action_in_flight' };
+    }
     in_flight.add(bead_id);
     try {
-      return await runCleanup(bead_id, { restart_reconcile: true });
+      return await retryCleanupLocked(bead_id);
     } finally {
       in_flight.delete(bead_id);
       clearStep(bead_id);
@@ -2632,7 +2647,7 @@ export function createPrActions(deps) {
   /**
    * Coordinator-owned replay of the same complete cleanup choreography after
    * a merged-base repair. Authorization is the root intent's prerecorded
-   * `retry_cleanup` op, not the diagnosis marker used by the human retry path.
+   * `retry_cleanup` op, while the manual path is authorized by a [정리] click.
    * No cleanup steps are copied here: both entries call {@link runCleanup}.
    *
    * @param {string} root_bead_id

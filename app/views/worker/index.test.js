@@ -3979,7 +3979,8 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     const text = (banner.textContent || '').replace(/\s+/g, ' ');
     expect(text).toContain('child_sweep');
     expect(text).toContain('1회 자동 재시도 후에도 실패했습니다');
-    expect(text).toContain('[AI 정리]로 진단하거나');
+    expect(text).toContain('정리를 사람이 마무리하세요');
+    expect(text).not.toContain('AI 정리');
     expect(banner.getAttribute('data-bead-id')).toBe('RD-1');
     // The bead stays in the PR-wait row (not Done); the existing cleanup retry
     // remains the human's click after any applicable bounded verify retry.
@@ -3987,10 +3988,11 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       mount.querySelector('.worker-mini__merge')
     );
     expect(btn.disabled).toBe(false);
+    expect(btn.textContent?.trim()).toBe('정리');
     expect(btn.getAttribute('title')).toContain('남은 정리를');
   });
 
-  test('renders a cleanup diagnosis button and durable regression diagnosis', () => {
+  test('does not expose a cleanup diagnosis button or durable diagnosis result', () => {
     const { mount } = mountWith(
       queueWithGate(
         {
@@ -4021,18 +4023,13 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     const banner = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-banner--cleanup')
     );
-    const button = /** @type {HTMLButtonElement} */ (
-      banner.querySelector('.worker-banner__cleanup-diagnose')
-    );
-
-    expect(button.dataset.beadId).toBe('RD-1');
-    expect(button.disabled).toBe(false);
-    expect(banner.textContent).toContain('regression');
-    expect(banner.textContent).toContain('새 verify가 동일하게 실패합니다');
-    expect(banner.textContent).toContain('UI-fix');
+    expect(banner.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
+    expect(banner.textContent).not.toContain('regression');
+    expect(banner.textContent).not.toContain('새 verify가 동일하게 실패합니다');
+    expect(banner.textContent).not.toContain('UI-fix');
   });
 
-  test('renders a malformed cleanup diagnosis without offering automatic recovery', () => {
+  test('does not expose malformed cleanup diagnosis', () => {
     const { mount } = mountWith(
       queueWithGate(
         {
@@ -4064,19 +4061,13 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       mount.querySelector('.worker-banner--cleanup')
     );
 
-    expect(banner.textContent).toContain('진단 결과 형식 오류');
-    expect(banner.textContent).toContain('diagnosis result is absent');
+    expect(banner.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
+    expect(banner.textContent).not.toContain('진단 결과 형식 오류');
+    expect(banner.textContent).not.toContain('diagnosis result is absent');
   });
 
-  test('disables the cleanup diagnosis button while its dispatch is in flight', async () => {
-    /** @type {(value: any) => void} */
-    let resolve_dispatch = () => {};
-    const transport = vi.fn(
-      () =>
-        new Promise((resolve) => {
-          resolve_dispatch = resolve;
-        })
-    );
+  test('does not dispatch cleanup diagnosis when the failure banner is clicked', async () => {
+    const transport = vi.fn();
     const { mount } = mountWith(
       queueWithGate(
         {
@@ -4095,33 +4086,11 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       transport
     );
 
-    const button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-banner__cleanup-diagnose')
-    );
-    button.click();
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-cleanup-diagnose', {
-      bead_id: 'RD-1',
-      expected_revision: 1
-    });
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('.worker-banner__cleanup-diagnose')
-      ).disabled
-    ).toBe(true);
-
-    resolve_dispatch({ ok: true, conflict: false });
-    await flush();
-
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('.worker-banner__cleanup-diagnose')
-      ).disabled
-    ).toBe(false);
+    expect(mount.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
+    expect(transport).not.toHaveBeenCalled();
   });
 
-  test('keeps the cleanup diagnosis button disabled for a durable running diagnosis attempt', () => {
+  test('does not expose a durable cleanup diagnosis attempt as an active control', () => {
     const queue = queueWithGate(
       {
         enabled: false,
@@ -4150,11 +4119,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       }
     });
 
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('.worker-banner__cleanup-diagnose')
-      ).disabled
-    ).toBe(true);
+    expect(mount.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
 
     queueStore.set({
       ...queue,
@@ -4168,11 +4133,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       }
     });
 
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('.worker-banner__cleanup-diagnose')
-      ).disabled
-    ).toBe(false);
+    expect(mount.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
   });
 
   test('shows the cleanup failure detail line when the record carries one', () => {

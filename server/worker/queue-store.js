@@ -132,10 +132,11 @@
  * restart-recovery path (`disposeDeadAttempt`) has no in-memory record of what
  * kind of attempt it is disposing. Defaults false — a missing value fails
  * closed onto the ordinary completion.
- * @property {boolean} cleanup_diagnosis - Whether this attempt only classifies
- * a durable cleanup failure and does not open a PR.
- * @property {string|null} cleanup_diagnosis_result_path - Fixed JSON result
- * path for the diagnosis attempt.
+ * @property {boolean} cleanup_diagnosis - Historical cleanup-diagnosis marker.
+ * New attempts never write it; legacy records retain it for round-trip
+ * compatibility.
+ * @property {string|null} cleanup_diagnosis_result_path - Historical result
+ * path retained for round-trip compatibility.
  * @property {{ reason: string, command: string|null, at: number }|null} guard_kill -
  * The fail-closed evidence a DETACHED session monitor recorded before killing an
  * orphan session (UI-o2yt §3.3). A killed session leaves no verdict behind, so
@@ -3429,65 +3430,6 @@ export function createQueueStore(options = {}) {
         if (diagnosis) {
           next.cleanup_failed[bead_id].diagnosis = diagnosis;
         }
-        return true;
-      });
-    },
-
-    /**
-     * Persist a cleanup-diagnosis result only while its cleanup failure remains
-     * active. Replaying the same attempt preserves a consumed marker so a
-     * restart cannot spend one diagnosis twice.
-     *
-     * @param {string} workspace
-     * @param {{ bead_id: string, verdict: string, attempt_id: string, evidence: string, fix_bead_id?: string|null, malformed?: boolean }} input
-     * @returns {QueueOpResult}
-     */
-    recordCleanupDiagnosis(workspace, input) {
-      const { bead_id, verdict, attempt_id, evidence, fix_bead_id, malformed } =
-        input;
-      return applyUnconditional(workspace, (next) => {
-        const record = next.cleanup_failed[bead_id];
-        if (
-          !record ||
-          typeof verdict !== 'string' ||
-          verdict.length === 0 ||
-          typeof attempt_id !== 'string' ||
-          attempt_id.length === 0 ||
-          typeof evidence !== 'string'
-        ) {
-          return false;
-        }
-        const prior = record.diagnosis;
-        record.diagnosis = {
-          verdict,
-          attempt_id,
-          consumed: prior?.attempt_id === attempt_id && prior.consumed === true,
-          evidence
-        };
-        if (typeof fix_bead_id === 'string' && fix_bead_id.length > 0) {
-          record.diagnosis.fix_bead_id = fix_bead_id;
-        }
-        if (malformed === true) {
-          record.diagnosis.malformed = true;
-        }
-        return true;
-      });
-    },
-
-    /**
-     * Spend a durable cleanup diagnosis before its single automatic retry.
-     *
-     * @param {string} workspace
-     * @param {string} bead_id
-     * @returns {QueueOpResult}
-     */
-    markDiagnosisConsumed(workspace, bead_id) {
-      return applyUnconditional(workspace, (next) => {
-        const diagnosis = next.cleanup_failed[bead_id]?.diagnosis;
-        if (!diagnosis || diagnosis.consumed === true) {
-          return false;
-        }
-        diagnosis.consumed = true;
         return true;
       });
     },

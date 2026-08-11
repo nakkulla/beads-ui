@@ -712,7 +712,7 @@ describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
     expect(systemPromptOf(args)).toContain('PR 제출까지 수행하고');
   });
 
-  test('uses the ordinary guard contract for a cleanup diagnosis without PR delivery', () => {
+  test('does not suppress PR delivery for retired cleanup diagnosis settings', () => {
     const spec = claudeSpec();
 
     const { args } = spec.buildArgv(
@@ -721,7 +721,7 @@ describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
       { fast_track: true, cleanup_diagnosis: true }
     );
 
-    expect(systemPromptOf(args)).not.toContain('PR 제출까지 수행하고');
+    expect(systemPromptOf(args)).toContain('PR 제출까지 수행하고');
     expect(systemPromptOf(args)).toContain('base 로 향하는 `git push`');
     expect(systemPromptOf(args)).not.toContain('REVISE 처분 세션');
   });

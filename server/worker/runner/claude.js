@@ -319,9 +319,7 @@ export function claudeSpec(options = {}) {
       // the resume path only — is therefore not applied.
       const { system_prompt, task_prompt } = applyPreamble(promptFor(bead), {
         fast_track: !!s.fast_track,
-        // Disposition and cleanup diagnosis both open no PR, but only the
-        // disposition may publish the base or bypass the attempt hook.
-        pr_submit: !s.disposition && !s.cleanup_diagnosis,
+        pr_submit: !s.disposition,
         disposition: !!s.disposition,
         // The base the session must open its PR against
         // (worker-base-scope-alignment §4).

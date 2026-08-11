@@ -137,7 +137,7 @@ describe('views/board', () => {
     expect(rangeSel?.value).toBe('today');
   });
 
-  test('dispatches cleanup diagnosis from the matching card with a fresh CAS revision', async () => {
+  test('keeps cleanup failure cards passive without diagnosis dispatch', async () => {
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       /** @type {any} */ ({
@@ -147,21 +147,7 @@ describe('views/board', () => {
         }
       })
     );
-    const transport = vi
-      .fn()
-      .mockResolvedValueOnce({
-        conflict: true,
-        queue: {
-          revision: 8,
-          cleanup_failed: {
-            'RD-1': {
-              step: 'post_merge_verify',
-              reason: 'verify_cmd_failed'
-            }
-          }
-        }
-      })
-      .mockResolvedValueOnce({ ok: true, conflict: false });
+    const transport = vi.fn();
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const view = createBoardView(mount, {
       gotoIssue: vi.fn(),
@@ -171,23 +157,13 @@ describe('views/board', () => {
     });
     await view.load();
 
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector(
-        '.board-card[data-issue-id="RD-1"] .board-card__cleanup-diagnose'
-      )
-    ).click();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.board-card[data-issue-id="RD-1"]')
+    );
 
-    expect(transport).toHaveBeenNthCalledWith(1, 'worker-cleanup-diagnose', {
-      bead_id: 'RD-1',
-      expected_revision: 7
-    });
-    expect(transport).toHaveBeenNthCalledWith(2, 'worker-cleanup-diagnose', {
-      bead_id: 'RD-1',
-      expected_revision: 8
-    });
+    expect(card.querySelector('.ctl-chip--cleanup')).not.toBeNull();
+    expect(card.querySelector('.board-card__cleanup-diagnose')).toBeNull();
+    expect(transport).not.toHaveBeenCalled();
   });
 
   test('keeps cards quiet when the worker queue is unavailable', async () => {
@@ -207,7 +183,7 @@ describe('views/board', () => {
     expect(card.querySelector('.board-card__cleanup-diagnose')).toBeNull();
   });
 
-  test('keeps the cleanup diagnosis card button disabled for a durable running attempt', async () => {
+  test('does not render a cleanup diagnosis control for a durable running attempt', async () => {
     const queueStore = createWorkerQueueStore();
     const queue = /** @type {any} */ ({
       revision: 1,
@@ -234,12 +210,10 @@ describe('views/board', () => {
     await view.load();
 
     expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector(
-          '.board-card[data-issue-id="RD-1"] .board-card__cleanup-diagnose'
-        )
-      ).disabled
-    ).toBe(true);
+      mount.querySelector(
+        '.board-card[data-issue-id="RD-1"] .board-card__cleanup-diagnose'
+      )
+    ).toBeNull();
 
     queueStore.set({
       ...queue,
@@ -252,12 +226,10 @@ describe('views/board', () => {
     });
 
     expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector(
-          '.board-card[data-issue-id="RD-1"] .board-card__cleanup-diagnose'
-        )
-      ).disabled
-    ).toBe(false);
+      mount.querySelector(
+        '.board-card[data-issue-id="RD-1"] .board-card__cleanup-diagnose'
+      )
+    ).toBeNull();
   });
 
   test('closed column renders at most 200 cards (render cap)', async () => {
