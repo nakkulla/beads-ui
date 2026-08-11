@@ -380,10 +380,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // scan path's fetch cost; `{ force: true }` is the dispatch path's fresh read.
   /** @type {{ at: number, result: import('./target-base.js').TargetBaseResult }|null} */
   let base_cache = null;
+  /** @type {Promise<import('./target-base.js').TargetBaseResult>|null} */
+  let base_inflight = null;
   const resolveBase =
     options.resolveBase ||
     (async (/** @type {{ force?: boolean }} */ opts = {}) => {
       const at = Date.now();
+      if (base_inflight) {
+        return base_inflight;
+      }
       if (
         !opts.force &&
         base_cache &&
@@ -391,17 +396,25 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       ) {
         return base_cache.result;
       }
-      const result = await resolveTargetBase({ repo, gitRun });
-      base_cache = { at, result };
-      if (!result.ok) {
-        log(
-          'target base unresolved for %s: %s/%s',
-          repo,
-          result.step,
-          result.detail
-        );
+      const resolution = resolveTargetBase({ repo, gitRun });
+      base_inflight = resolution;
+      try {
+        const result = await resolution;
+        base_cache = { at: Date.now(), result };
+        if (!result.ok) {
+          log(
+            'target base unresolved for %s: %s/%s',
+            repo,
+            result.step,
+            result.detail
+          );
+        }
+        return result;
+      } finally {
+        if (base_inflight === resolution) {
+          base_inflight = null;
+        }
       }
-      return result;
     });
 
   const bd =

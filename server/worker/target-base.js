@@ -44,6 +44,13 @@ export const DECLARATION_PATH = path.join('docs', 'agents', 'repo-ops.toml');
  */
 export const UNDECLARED_BASE = 'main';
 
+/** @type {readonly number[]} */
+const FETCH_RETRY_DELAYS_MS = Object.freeze([100, 300]);
+
+/**
+ * @typedef {'ref_lock'|'network'|'auth'|'missing_ref'|'unknown'} FetchFailureCategory
+ */
+
 /**
  * Characters `git check-ref-format` accepts but a shell reads as syntax. The
  * resolved base is interpolated into a `gh pr create --base <base>` directive
@@ -54,6 +61,45 @@ export const UNDECLARED_BASE = 'main';
  * @type {RegExp}
  */
 const SHELL_UNSAFE = /[^A-Za-z0-9._/-]/;
+
+/**
+ * Classify fetch stderr without retaining credential-bearing remote output.
+ *
+ * @param {string} stderr
+ * @returns {FetchFailureCategory}
+ */
+function classifyFetchFailure(stderr) {
+  const message = String(stderr || '');
+  if (
+    /cannot lock ref|unable to create .*\.lock|cannot update ref|reference already exists/i.test(
+      message
+    )
+  ) {
+    return 'ref_lock';
+  }
+  if (
+    /permission denied|authentication failed|could not read username|terminal prompts disabled|publickey|credential/i.test(
+      message
+    )
+  ) {
+    return 'auth';
+  }
+  if (
+    /couldn't find remote ref|remote ref .* not found|remote branch .* not found/i.test(
+      message
+    )
+  ) {
+    return 'missing_ref';
+  }
+  if (
+    /could not resolve host|connection (?:timed out|reset|refused)|network is unreachable|operation timed out|early eof|remote end hung up unexpectedly/i.test(
+      message
+    )
+  ) {
+    return 'network';
+  }
+  return 'unknown';
+}
 
 /**
  * A successfully resolved base.
@@ -202,13 +248,20 @@ function wellFormedBranch(base) {
  * @param {{
  *   repo: string,
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   fs?: typeof import('node:fs')
+ *   fs?: typeof import('node:fs'),
+ *   delay?: (ms: number) => Promise<void>
  * }} input
  * @returns {Promise<TargetBaseResult>}
  */
 export async function resolveTargetBase(input) {
   const repo = String(input.repo || '');
   const fs = input.fs || nodeFs;
+  const delay =
+    input.delay ||
+    ((/** @type {number} */ ms) =>
+      new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      }));
   /**
    * @param {string[]} args
    */
@@ -329,9 +382,30 @@ export async function resolveTargetBase(input) {
     // Step 5 — fetch, THEN existence of the full remote-tracking ref. Skipping
     // the fetch lets a stale local ref pass validation; the abbreviated form can
     // collide with other ref namespaces.
-    const fetched = await git(['fetch', '--no-tags', remote, base]);
-    if (fetched.code !== 0) {
-      return { ok: false, step: 'fetch', base, detail: `remote:${remote}` };
+    /** @type {{ code: number, stdout: string, stderr: string }|null} */
+    let fetched = null;
+    for (
+      let attempt = 0;
+      attempt <= FETCH_RETRY_DELAYS_MS.length;
+      attempt += 1
+    ) {
+      fetched = await git(['fetch', '--no-tags', remote, base]);
+      if (fetched.code === 0) {
+        break;
+      }
+      if (attempt < FETCH_RETRY_DELAYS_MS.length) {
+        await delay(FETCH_RETRY_DELAYS_MS[attempt]);
+      }
+    }
+    if (!fetched || fetched.code !== 0) {
+      const category = classifyFetchFailure(fetched ? fetched.stderr : '');
+      const exit_code = fetched ? fetched.code : -1;
+      return {
+        ok: false,
+        step: 'fetch',
+        base,
+        detail: `remote:${remote};attempts:${FETCH_RETRY_DELAYS_MS.length + 1};exit:${exit_code};category:${category}`
+      };
     }
     const remote_ref = `refs/remotes/${remote}/${base}`;
     const tip = await git([
