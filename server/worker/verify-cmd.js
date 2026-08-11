@@ -26,7 +26,10 @@ import { spawn } from 'node:child_process';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { debug } from '../logging.js';
+import { errorDetail } from './error-detail.js';
 import { deployLogDir, verifyLogDir } from './state-paths.js';
+
+export { errorDetail } from './error-detail.js';
 
 const log = debug('worker:verify-cmd');
 
@@ -81,32 +84,6 @@ export function resolveVerifyCmd(repo, config_map) {
     };
   }
   return null;
-}
-
-/**
- * Upper bound on a preserved diagnostic string — enough to name a git failure,
- * not enough to bloat `queue.json`.
- *
- * @type {number}
- */
-const DETAIL_MAX = 512;
-
-/**
- * Reduce a thrown value to the diagnostic text worth persisting. Exported so the
- * deploy path caps its own preserved errors with the SAME bound (UI-l53x §2) —
- * the cap belongs to the producer, not to the record.
- *
- * @param {unknown} err
- * @returns {string}
- */
-export function errorDetail(err) {
-  const text =
-    err instanceof Error
-      ? err.message
-      : typeof err === 'string'
-        ? err
-        : String(err);
-  return text.trim().slice(0, DETAIL_MAX);
 }
 
 /**

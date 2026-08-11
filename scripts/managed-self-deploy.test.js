@@ -1,7 +1,9 @@
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   candidateInstallMarkerPath,
@@ -268,6 +270,48 @@ afterEach(() => {
 });
 
 describe('scripts/managed-self-deploy', () => {
+  test('imports before candidate dependencies are installed', () => {
+    const source_root = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..'
+    );
+    const fixture_root = path.join(root, 'import-smoke');
+    const files = [
+      'scripts/managed-self-deploy.js',
+      'server/logging.js',
+      'server/runtime-identity.js',
+      'server/worker/deployment-paths.js',
+      'server/worker/deployment-reconciler.js',
+      'server/worker/error-detail.js',
+      'server/worker/managed-failure.js',
+      'server/worker/managed-state.js',
+      'server/worker/process-controller.js',
+      'server/worker/state-paths.js',
+      'server/worker/verify-cmd.js'
+    ];
+    for (const relative_path of files) {
+      const target = path.join(fixture_root, relative_path);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(path.join(source_root, relative_path), target);
+    }
+    fs.writeFileSync(
+      path.join(fixture_root, 'package.json'),
+      JSON.stringify({ type: 'module' })
+    );
+
+    const output = execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        'await import("./scripts/managed-self-deploy.js")'
+      ],
+      { cwd: fixture_root, encoding: 'utf8' }
+    );
+
+    expect(output).toBe('');
+  });
+
   test.each([
     ['install_failed', undefined, 'adapter_regression', false],
     ['pointer_publish_failed', undefined, 'pointer_transient', true],

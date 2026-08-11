@@ -9,9 +9,9 @@ import {
   releaseRoot,
   runtimePointerPath
 } from './deployment-paths.js';
+import { errorDetail } from './error-detail.js';
 import { validateManagedFailure } from './managed-failure.js';
 import { clearManagedFailure, readManagedFailure } from './managed-state.js';
-import { errorDetail } from './verify-cmd.js';
 
 const RECEIPT_MAX_BYTES = 1024 * 1024;
 const RETRY_DELAYS_MS = [1000, 5000, 15000];
