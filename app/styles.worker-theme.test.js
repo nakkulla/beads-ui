@@ -61,4 +61,17 @@ describe('worker console styles', () => {
     expect(detailRule).toContain('overflow-wrap: anywhere');
     expect(resultRule).toContain('overflow-wrap: anywhere');
   });
+
+  test('shows the queue placement button without a pointer media gate', () => {
+    const baseRule =
+      CSS.match(/(?:^|\n)\.worker-card__place\s*{([^}]*)}/)?.[1] || '';
+    const mediaStart = CSS.indexOf(
+      '@media (any-pointer: coarse), (max-width: 640px)'
+    );
+    const mediaEnd = CSS.indexOf('/* 클릭 어포던스', mediaStart);
+    const mediaBlock = CSS.slice(mediaStart, mediaEnd);
+
+    expect(baseRule).not.toContain('display: none');
+    expect(mediaBlock).not.toContain('.worker-card__place');
+  });
 });

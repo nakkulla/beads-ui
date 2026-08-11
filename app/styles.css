@@ -4624,10 +4624,10 @@ html[data-theme='dark'] {
   color: var(--accent-danger);
 }
 
-/* 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 드래그가 어려운 입력 환경에서만
-   나타나는 보완재. 자격 조건은 템플릿이 드래그와 동일하게 결정한다. */
+/* 버튼식 큐 적재 (UI-fmwh §4.2): 드래그 가능 여부와 무관하게 항상 보이는
+   보완재. 자격 조건은 템플릿이 드래그와 동일하게 결정한다. */
 .worker-card__place {
-  display: none;
+  display: inline-block;
   margin-left: auto;
   padding: 2px var(--sp-8);
   border: 1px solid var(--stage-plan-dim);
@@ -4727,6 +4727,28 @@ html[data-theme='dark'] {
   display: flex;
   align-items: center;
   gap: var(--sp-6);
+}
+
+.mon-running-sort-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+}
+
+.mon-running-sort {
+  padding: 1px var(--sp-3);
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.mon-running-sort:hover,
+.mon-running-sort.is-active {
+  color: var(--text-primary);
 }
 
 .mon-kpi__chip {
@@ -4982,6 +5004,12 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip);
 }
 
+.mon-c__review--dim {
+  border-color: var(--border-chip);
+  color: var(--text-dim);
+  opacity: 0.65;
+}
+
 .mon-c__id {
   flex: 0 0 auto;
   color: var(--text-id-mono);
@@ -5212,10 +5240,6 @@ html[data-theme='dark'] {
 @media (any-pointer: coarse), (max-width: 640px) {
   .worker-card__foot--actions-only {
     display: flex;
-  }
-
-  .worker-card__place {
-    display: inline-block;
   }
 }
 
