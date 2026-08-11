@@ -62,6 +62,8 @@ Claude builtin models는 기존 `efforts`를 outer 목록으로 재사용하고 
 
 기존 `modelEfforts`·`catalogEfforts`는 implementation 의미를 유지한다.
 
+구현 entry에서는 `codex debug models --bundled`를 read-only로 다시 실행해 Sol/Terra/Luna의 effort와 Fast 광고값이 이 matrix와 일치하는지 확인한다. 지원 범위가 달라졌으면 builtin 값을 추측하거나 조용히 축소하지 않고 설계 전제 mismatch로 멈춘다.
+
 ## Exec 설정과 validation
 
 `EXEC_SETTING_KEYS`는 11개에서 12개가 되며 순서는 다음과 같다.
@@ -121,6 +123,8 @@ Bead metadata + workspace defaults/preset
 
 Resume 시 현재 Bead/default 값을 다시 해석하지 않는다. 기존 attempt의 speed를 model·effort와 함께 사용한다.
 
+Speed 필드가 없는 legacy attempt는 당시 동작과 같은 `default`로 해석한다. 현재 Bead나 workspace의 Fast 값을 새로 끌어오지 않는다.
+
 ## Codex adapter
 
 Codex `buildArgv()`는 effective speed에 따라 정확히 하나를 추가한다.
@@ -159,7 +163,7 @@ Monitor가 전달하는 runner catalog와 preset snapshot도 새 capability를 �
 
 ## 오류와 호환성
 
-- Unknown speed 문자열은 durable normalize에서 제거하거나 preset에서 비호환 상태로 보존하되 active write·dispatch에는 사용하지 않는다.
+- Workspace `exec_defaults` normalize는 resolved enum 밖의 speed를 제거한다. Shared preset은 알려진 key의 문자열을 보존하되 비호환으로 표시하고, Bead metadata는 raw 문자열을 진단·UI에 남기되 dispatch에서 invalid reason으로 차단한다.
 - Stale Bead metadata/preset의 Luna+ultra, Claude+fast 조합은 spawn 전에 실패하고 정확한 invalid reason을 노출한다.
 - Catalog override가 Fast를 제거하면 기존 Fast preset을 Standard로 강등하지 않는다. 사용자가 수정할 때까지 비호환으로 표시한다.
 - Codex가 runtime에서 advertised tier를 거부하면 adapter process failure를 기존 attempt 실패 경로로 노출한다. Claude나 Standard로 fallback하지 않는다.
