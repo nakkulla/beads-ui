@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
@@ -61,6 +62,32 @@ beforeEach(() => {
 });
 
 describe('worker/repo-ops — the two-rung ladder (UI-kfl4 §4.2)', () => {
+  test('resolves this repo candidate declaration as the managed Adapter', async () => {
+    const declaration = fs.readFileSync(
+      new URL('../../docs/agents/repo-ops.toml', import.meta.url),
+      'utf8'
+    );
+    const gitRun = gitOf({ [SHA]: declaration });
+
+    const result = await resolveDeployAt({
+      gitRun,
+      repo: REPO,
+      sha: SHA,
+      config_map: CONFIG_DEPLOY
+    });
+
+    expect(result).toEqual({
+      state: 'resolved',
+      source: 'declaration',
+      value: {
+        cmd: ['scripts/managed-self-deploy.js'],
+        timeout_ms: 600000,
+        detached: false,
+        adapter: 'managed'
+      }
+    });
+  });
+
   test('prefers the declaration over the config section', async () => {
     const gitRun = gitOf({ [SHA]: DECLARED });
 

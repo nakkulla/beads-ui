@@ -769,6 +769,28 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
     expect(lanes.pr_wait[0].badges).toContain('정리 실패');
   });
 
+  test('shows durable managed restart progress on a PR-wait row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          deployment_reconcile: {
+            'A-pr': {
+              adapter: 'managed',
+              stage: 'restarting',
+              retry_count: 0
+            }
+          }
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].badges).toContain('정리 중 · 재시작');
+    expect(lanes.pr_wait[0].reason).toBe('정리 중 · 재시작');
+    expect(lanes.pr_wait[0].alert).toBe(false);
+  });
+
   test('keeps cleanup disabled while a failed discard awaits retry', () => {
     const lanes = buildLanes(
       [

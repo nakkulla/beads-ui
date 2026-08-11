@@ -111,6 +111,14 @@ export function managedClaimDir(repo, attempt_id) {
   return `${managedJournalPath(repo, attempt_id)}.claims`;
 }
 
+/**
+ * @param {string} repo - Source repository path.
+ * @param {string} attempt_id - Deployment attempt identifier.
+ */
+export function managedFailurePath(repo, attempt_id) {
+  return `${managedJournalPath(repo, attempt_id)}.failure`;
+}
+
 export function runtimePointerPath() {
   return path.join(dataHome(), 'bdui', 'runtime', 'beads-ui', 'current');
 }

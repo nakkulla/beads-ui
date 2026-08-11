@@ -328,9 +328,11 @@ export function createPrActions(deps) {
                     ? 'reconcile_verify'
                     : stage === 'deploying'
                       ? 'reconcile_deploy'
-                      : stage === 'readback'
-                        ? 'reconcile_readback'
-                        : null;
+                      : stage === 'restarting'
+                        ? 'reconcile_restart'
+                        : stage === 'readback'
+                          ? 'reconcile_readback'
+                          : null;
             if (projected && adapter !== 'workspace') {
               markStep(bead_id, projected);
             }
@@ -1017,7 +1019,7 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string} base_sha
-   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, detail?: string, output_tail?: string, log_path?: string }>}
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, detail?: string, output_tail?: string, log_path?: string, retry_count?: number }>}
    */
   async function postMergeVerify(bead_id, base_sha) {
     const resolved = await resolveVerify({ sha: base_sha });
@@ -1057,7 +1059,10 @@ export function createPrActions(deps) {
           reason: r.reason,
           detail: r.detail,
           output_tail: r.output_tail,
-          log_path: r.log_path
+          log_path: r.log_path,
+          retry_count: Array.isArray(r.attempts)
+            ? Math.max(0, r.attempts.length - 1)
+            : 0
         };
   }
 
@@ -1732,6 +1737,7 @@ export function createPrActions(deps) {
           (reconciled.stage === 'verifying'
             ? 'post_merge_verify'
             : reconciled.stage === 'deploying' ||
+                reconciled.stage === 'restarting' ||
                 reconciled.stage === 'readback'
               ? 'deploy'
               : 'base_sync');
@@ -1743,7 +1749,18 @@ export function createPrActions(deps) {
           undefined,
           reconciled.detail,
           reconciled.output_tail,
-          reconciled.log_path
+          reconciled.log_path,
+          {
+            ...(typeof reconciled.failure_code === 'string'
+              ? { failure_code: reconciled.failure_code }
+              : {}),
+            ...(typeof reconciled.retryable === 'boolean'
+              ? { retryable: reconciled.retryable }
+              : {}),
+            ...(Number.isInteger(reconciled.retry_count)
+              ? { retry_count: reconciled.retry_count }
+              : {})
+          }
         );
       }
       deployed_sha = reconciled.candidate_sha;
@@ -1775,7 +1792,12 @@ export function createPrActions(deps) {
           undefined,
           verified.detail,
           verified.output_tail,
-          verified.log_path
+          verified.log_path,
+          {
+            ...(Number.isInteger(verified.retry_count)
+              ? { retry_count: verified.retry_count }
+              : {})
+          }
         );
       }
       markStep(bead_id, 'deploy');
@@ -1990,6 +2012,7 @@ export function createPrActions(deps) {
    * @param {string} [log_path] - Absolute path to that command's FULL preserved
    * output (UI-0x54), when the run produced a complete log file. A cleanup
    * retry overwrites it with its own run's log.
+   * @param {{ failure_code?: string, retryable?: boolean, retry_count?: number }} [failure_evidence]
    * @returns {Promise<{ ok: false, step: string, reason: string, base_sync: BaseSyncOutcome|null }>}
    */
   async function failCleanup(
@@ -2000,7 +2023,8 @@ export function createPrActions(deps) {
     restore_bd,
     detail,
     output_tail,
-    log_path
+    log_path,
+    failure_evidence = {}
   ) {
     /** @type {string|null} */
     let bd_restore = null;
@@ -2030,7 +2054,8 @@ export function createPrActions(deps) {
         bd_restore,
         detail,
         output_tail,
-        log_path
+        log_path,
+        ...failure_evidence
       });
     }
     notifyChanged(workspace);

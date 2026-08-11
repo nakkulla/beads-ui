@@ -6,8 +6,11 @@ import {
   deploymentReceiptPath,
   isReleasePath,
   releasePath,
-  releaseRoot
+  releaseRoot,
+  runtimePointerPath
 } from './deployment-paths.js';
+import { validateManagedFailure } from './managed-failure.js';
+import { clearManagedFailure, readManagedFailure } from './managed-state.js';
 import { errorDetail } from './verify-cmd.js';
 
 const RECEIPT_MAX_BYTES = 1024 * 1024;
@@ -531,8 +534,7 @@ function runManagedCommand(input) {
           ? { ok: true }
           : {
               ok: false,
-              reason: 'adapter_failed',
-              detail: captured.trim().slice(-512),
+              reason: 'adapter_exit_nonzero',
               retryable: false
             }
       );
@@ -630,7 +632,7 @@ export function createDeploymentReconciler(deps) {
    * @param {string} reason
    * @param {string|null} detail
    * @param {'base_sync'|'post_merge_verify'|'deploy'|null} step
-   * @param {{ base_sync?: string|null, output_tail?: string, log_path?: string }} evidence
+   * @param {{ base_sync?: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number }} evidence
    */
   function terminal(
     current,
@@ -645,7 +647,13 @@ export function createDeploymentReconciler(deps) {
       attempt_id: current.attempt_id,
       reason,
       detail,
-      step
+      step,
+      ...(typeof evidence.failure_code === 'string'
+        ? { failure_code: evidence.failure_code }
+        : {}),
+      ...(typeof evidence.retryable === 'boolean'
+        ? { retryable: evidence.retryable }
+        : {})
     });
     onStage({
       bead_id: current.bead_id,
@@ -659,13 +667,14 @@ export function createDeploymentReconciler(deps) {
       detail,
       stage,
       ...(step === null ? {} : { step }),
+      retry_count: current.retry_count,
       ...evidence
     };
   }
 
   /**
    * @param {any} current
-   * @param {{ reason: string, detail?: string }} failure
+   * @param {{ reason: string, detail?: string, failure_code?: string, retryable?: boolean }} failure
    * @param {'base_sync'|'deploy'} step
    */
   function retry(current, failure, step) {
@@ -680,13 +689,27 @@ export function createDeploymentReconciler(deps) {
       current.bead_id
     ];
     if (updated.retry_count >= RETRY_DELAYS_MS.length) {
-      return terminal(updated, failure.reason, failure.detail || null, step);
+      return terminal(updated, failure.reason, failure.detail || null, step, {
+        ...(typeof failure.failure_code === 'string'
+          ? { failure_code: failure.failure_code }
+          : {}),
+        ...(typeof failure.retryable === 'boolean'
+          ? { retryable: failure.retryable }
+          : {})
+      });
     }
     return {
       ok: false,
       pending: true,
       reason: failure.reason,
-      retry_at
+      retry_at,
+      retry_count: updated.retry_count,
+      ...(typeof failure.failure_code === 'string'
+        ? { failure_code: failure.failure_code }
+        : {}),
+      ...(typeof failure.retryable === 'boolean'
+        ? { retryable: failure.retryable }
+        : {})
     };
   }
 
@@ -769,6 +792,13 @@ export function createDeploymentReconciler(deps) {
           pending: false,
           reason: current.terminal_failure?.reason || 'reconcile_failed',
           detail: current.terminal_failure?.detail || null,
+          retry_count: current.retry_count,
+          ...(typeof current.terminal_failure?.failure_code === 'string'
+            ? { failure_code: current.terminal_failure.failure_code }
+            : {}),
+          ...(typeof current.terminal_failure?.retryable === 'boolean'
+            ? { retryable: current.terminal_failure.retryable }
+            : {}),
           ...(typeof current.terminal_failure?.step === 'string'
             ? { step: current.terminal_failure.step }
             : {})
@@ -1076,6 +1106,38 @@ export function createDeploymentReconciler(deps) {
         if (deploy.state !== 'resolved') {
           return terminal(current, 'deploy_missing', null, 'deploy');
         }
+        const binding = {
+          protocol_version: 1,
+          repo: path.resolve(deps.repo),
+          target_remote,
+          target_base: input.target_base,
+          merged_floor_sha: current.merged_floor_sha,
+          attempt_id: current.attempt_id,
+          candidate_sha,
+          release_path: source_path,
+          receipt_path,
+          pointer_path: runtimePointerPath(),
+          pointer_target: source_path
+        };
+        const cleared = clearManagedFailure({ binding });
+        if (!cleared.ok) {
+          return terminal(
+            current,
+            'managed_failure_record_invalid',
+            'reason' in cleared
+              ? cleared.reason
+              : 'failure_record_clear_failed',
+            'deploy',
+            { retryable: false }
+          );
+        }
+        deps.store.advanceReconcile(deps.workspace, {
+          bead_id: current.bead_id,
+          attempt_id: current.attempt_id,
+          stage: 'restarting'
+        });
+        onStage({ bead_id: current.bead_id, stage: 'restarting', adapter });
+        current = deps.store.snapshot(deps.workspace).reconcile[input.bead_id];
         deployed = await runManagedAdapter({
           cmd: deploy.value.cmd,
           timeout_ms: deploy.value.timeout_ms,
@@ -1096,6 +1158,35 @@ export function createDeploymentReconciler(deps) {
             BDUI_DEPLOY_ATTEMPT_ID: current.attempt_id
           }
         });
+        if (!deployed.ok && deployed.reason === 'adapter_exit_nonzero') {
+          const recorded = readManagedFailure({ binding });
+          if (!recorded.ok) {
+            return terminal(
+              current,
+              'managed_failure_record_invalid',
+              recorded.reason,
+              'deploy',
+              { retryable: false }
+            );
+          }
+          const validated = validateManagedFailure(recorded.record);
+          if (!validated.ok) {
+            return terminal(
+              current,
+              'managed_failure_record_invalid',
+              validated.reason,
+              'deploy',
+              { retryable: false }
+            );
+          }
+          deployed = {
+            ok: false,
+            reason: validated.definition.reason,
+            detail: recorded.record.detail,
+            failure_code: validated.definition.failure_code,
+            retryable: validated.definition.retryable
+          };
+        }
       } else {
         deployed = await deps.runWorkspaceAdapter({
           bead_id: current.bead_id,
@@ -1142,6 +1233,12 @@ export function createDeploymentReconciler(deps) {
               'deploy',
               {
                 base_sync,
+                ...(typeof deployed.failure_code === 'string'
+                  ? { failure_code: deployed.failure_code }
+                  : {}),
+                ...(typeof deployed.retryable === 'boolean'
+                  ? { retryable: deployed.retryable }
+                  : {}),
                 ...(typeof deployed.output_tail === 'string'
                   ? { output_tail: deployed.output_tail }
                   : {}),

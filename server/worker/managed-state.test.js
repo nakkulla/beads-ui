@@ -5,18 +5,22 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   deploymentReceiptPath,
   managedClaimDir,
+  managedFailurePath,
   managedJournalPath,
   releasePath,
   runtimePointerPath
 } from './deployment-paths.js';
 import {
   advanceManagedState,
+  clearManagedFailure,
   createPreparedState,
   cutoverPointer,
   inspectManagedPointer,
+  readManagedFailure,
   readManagedState,
   validateManagedBinding,
-  validateManagedRelease
+  validateManagedRelease,
+  writeManagedFailure
 } from './managed-state.js';
 
 const SHA = 'a'.repeat(40);
@@ -253,6 +257,49 @@ describe('worker/managed-state', () => {
 
     expect(result).toEqual({ ok: false, reason: 'transition_invalid' });
     expect(fs.existsSync(journal_path)).toBe(false);
+  });
+
+  test('writes, reads, and clears an exact attempt-bound failure record', () => {
+    const written = writeManagedFailure({
+      binding: binding(),
+      failure: {
+        failure_code: 'adapter_regression',
+        retryable: false,
+        detail: 'npm install exited nonzero'
+      }
+    });
+
+    const read = readManagedFailure({ binding: binding() });
+    const cleared = clearManagedFailure({ binding: binding() });
+    const absent = readManagedFailure({ binding: binding() });
+
+    expect(written).toMatchObject({
+      ok: true,
+      record: {
+        ...binding(),
+        journal_path,
+        failure_code: 'adapter_regression',
+        retryable: false,
+        detail: 'npm install exited nonzero'
+      }
+    });
+    expect(read).toEqual(written);
+    expect(fs.existsSync(managedFailurePath(repo, ATTEMPT))).toBe(false);
+    expect(cleared).toEqual({ ok: true, removed: true });
+    expect(absent).toEqual({ ok: false, reason: 'failure_absent' });
+  });
+
+  test('rejects a contradictory failure record before publication', () => {
+    const result = writeManagedFailure({
+      binding: binding(),
+      failure: {
+        failure_code: 'pointer_transient',
+        retryable: false
+      }
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'failure_record_invalid' });
+    expect(fs.existsSync(managedFailurePath(repo, ATTEMPT))).toBe(false);
   });
 
   test('writes private prepared authority before pointer mutation', () => {

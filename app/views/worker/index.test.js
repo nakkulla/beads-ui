@@ -3978,7 +3978,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     );
     const text = (banner.textContent || '').replace(/\s+/g, ' ');
     expect(text).toContain('child_sweep');
-    expect(text).toContain('1회 자동 재시도 후에도 실패했습니다');
+    expect(text).not.toContain('자동 재시도');
     expect(text).toContain('정리를 사람이 마무리하세요');
     expect(text).not.toContain('AI 정리');
     expect(banner.getAttribute('data-bead-id')).toBe('RD-1');
@@ -3990,6 +3990,37 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(btn.disabled).toBe(false);
     expect(btn.textContent?.trim()).toBe('정리');
     expect(btn.getAttribute('title')).toContain('남은 정리를');
+  });
+
+  test('mentions retry only when durable cleanup evidence consumed it', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          cleanup_failed: {
+            'RD-1': {
+              step: 'post_merge_verify',
+              reason: 'verify_cmd_failed',
+              retry_count: 1,
+              at: 1
+            }
+          }
+        }
+      )
+    );
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--cleanup')
+    );
+    const text = (banner.textContent || '').replace(/\s+/g, ' ');
+
+    expect(text).toContain('1회 자동 재시도 후에도 실패했습니다');
   });
 
   test('does not expose a cleanup diagnosis button or durable diagnosis result', () => {
@@ -5770,10 +5801,18 @@ describe('merge progress — projection (UI-raqh §4)', () => {
 
   test('translates managed reconcile stages to deployment progress', () => {
     expect(
-      ['reconcile_verify', 'reconcile_deploy', 'reconcile_readback'].map(
-        (step) => mergeStepView(step)?.label
-      )
-    ).toEqual(['정리 중 · 검증', '정리 중 · 배포', '정리 중 · readback']);
+      [
+        'reconcile_verify',
+        'reconcile_deploy',
+        'reconcile_restart',
+        'reconcile_readback'
+      ].map((step) => mergeStepView(step)?.label)
+    ).toEqual([
+      '정리 중 · 검증',
+      '정리 중 · 배포',
+      '정리 중 · 재시작',
+      '정리 중 · readback'
+    ]);
   });
 
   test('returns null when no merge is running', () => {

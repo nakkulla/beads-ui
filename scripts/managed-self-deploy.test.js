@@ -15,10 +15,14 @@ import {
   advanceManagedState,
   createPreparedState,
   cutoverPointer,
+  readManagedFailure,
   readManagedState
 } from '../server/worker/managed-state.js';
 import {
+  adapterFailureForResult,
   bindingFromEnv,
+  main,
+  publishAdapterFailure,
   readRuntimeHealth,
   runAdapter,
   runRestartHelper,
@@ -264,6 +268,72 @@ afterEach(() => {
 });
 
 describe('scripts/managed-self-deploy', () => {
+  test.each([
+    ['install_failed', undefined, 'adapter_regression', false],
+    ['pointer_publish_failed', undefined, 'pointer_transient', true],
+    ['helper_spawn_failed', undefined, 'helper_spawn_timeout', true],
+    ['pointer_target_invalid', undefined, 'pointer_escape', false],
+    [
+      'runtime_identity_mismatch',
+      'restart_committed',
+      'restart_effect_ambiguous',
+      false
+    ],
+    [
+      'restart_handoff_pending',
+      'restart_launched',
+      'restart_effect_ambiguous',
+      false
+    ],
+    [
+      'runtime_identity_mismatch',
+      undefined,
+      'runtime_identity_mismatch',
+      false
+    ],
+    ['runtime_health_red', undefined, 'runtime_health_red', false]
+  ])(
+    'classifies %s at stage %s with the finite failure mapping',
+    (reason, stage, failure_code, retryable) => {
+      const result = adapterFailureForResult({
+        ok: false,
+        reason,
+        ...(stage ? { state: { stage } } : {})
+      });
+
+      expect(result).toEqual({ failure_code, retryable, detail: reason });
+    }
+  );
+
+  test('publishes a bound failure before returning a nonzero CLI exit', async () => {
+    /** @type {string[]} */
+    const events = [];
+    const result = { ok: false, reason: 'install_failed' };
+
+    const exit_code = await main([], {
+      runAdapter: async () => {
+        events.push('adapter');
+        return result;
+      },
+      publishFailure: (failure_result) => {
+        events.push('failure');
+        return publishAdapterFailure(environment, failure_result);
+      }
+    });
+    const failure = readManagedFailure({ binding: binding() });
+
+    expect(exit_code).toBe(1);
+    expect(events).toEqual(['adapter', 'failure']);
+    expect(failure).toMatchObject({
+      ok: true,
+      record: {
+        failure_code: 'adapter_regression',
+        retryable: false,
+        detail: 'install_failed'
+      }
+    });
+  });
+
   test('rejects an invalid protocol before every effect', async () => {
     const harness = effectHarness();
 

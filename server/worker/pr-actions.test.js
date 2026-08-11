@@ -2767,6 +2767,7 @@ describe('post-merge cleanup — Deployment Reconciler integration (UI-16ep)', (
           detail: 'suite red',
           output_tail: 'failed assertion',
           log_path: '/state/verify.log',
+          retry_count: 1,
           base_sync: 'fetch_only:dirty'
         }))
       },
@@ -2786,7 +2787,48 @@ describe('post-merge cleanup — Deployment Reconciler integration (UI-16ep)', (
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       detail: 'suite red',
       output_tail: 'failed assertion',
-      log_path: '/state/verify.log'
+      log_path: '/state/verify.log',
+      retry_count: 1
+    });
+  });
+
+  test('preserves managed failure ownership in cleanup evidence', async () => {
+    const merge_sha = 'c'.repeat(40);
+    const h = makeActions({
+      deploymentReconciler: {
+        reconcile: vi.fn(async () => ({
+          ok: false,
+          pending: false,
+          reason: 'deploy_failed',
+          step: 'deploy',
+          stage: 'restarting',
+          detail: 'install_failed',
+          failure_code: 'adapter_regression',
+          retryable: false,
+          retry_count: 0,
+          base_sync: null
+        }))
+      },
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merge_sha })
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      cleanup_step: 'deploy',
+      reason: 'deploy_failed'
+    });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'deploy',
+      reason: 'deploy_failed',
+      detail: 'install_failed',
+      failure_code: 'adapter_regression',
+      retryable: false,
+      retry_count: 0
     });
   });
 

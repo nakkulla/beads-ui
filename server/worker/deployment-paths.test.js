@@ -8,6 +8,7 @@ import {
   deploymentRoot,
   isReleasePath,
   managedClaimDir,
+  managedFailurePath,
   managedJournalPath,
   releasePath,
   runtimeMarkerPath,
@@ -72,6 +73,13 @@ describe('worker/deployment-paths', () => {
     expect(managedClaimDir(REPO, 'attempt/1')).toBe(
       path.join(workspaceStateDir(REPO), 'managed-deploy', `${key}.json.claims`)
     );
+    expect(managedFailurePath(REPO, 'attempt/1')).toBe(
+      path.join(
+        workspaceStateDir(REPO),
+        'managed-deploy',
+        `${key}.json.failure`
+      )
+    );
     expect(candidateInstallMarkerPath(REPO, SHA)).toBe(
       path.join(releasePath(REPO, SHA), '.bdui', 'managed-install.json')
     );
@@ -82,6 +90,9 @@ describe('worker/deployment-paths', () => {
   test('keeps distinct unsafe attempt ids separate', () => {
     expect(managedJournalPath(REPO, 'a/b')).not.toBe(
       managedJournalPath(REPO, 'a?b')
+    );
+    expect(managedFailurePath(REPO, 'a/b')).not.toBe(
+      managedFailurePath(REPO, 'a?b')
     );
   });
 

@@ -10,11 +10,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   deploymentReceiptPath,
+  managedFailurePath,
   managedJournalPath,
   releasePath,
   releaseRoot,
   runtimePointerPath
 } from './deployment-paths.js';
+import { validateManagedFailure } from './managed-failure.js';
 
 const PROTOCOL_VERSION = 1;
 const MAX_JSON_BYTES = 1024 * 1024;
@@ -482,6 +484,137 @@ function validManagedJournalParents(journal_path) {
     }
   }
   return true;
+}
+
+/**
+ * @param {unknown} record
+ * @param {any} binding
+ */
+function validateManagedFailureRecord(record, binding) {
+  if (!isRecord(record) || !validateManagedBinding(binding).ok) {
+    return false;
+  }
+  const value = /** @type {any} */ (record);
+  const allowed_keys = new Set([
+    ...BINDING_KEYS,
+    'journal_path',
+    'failure_code',
+    'retryable',
+    'detail'
+  ]);
+  if (
+    Object.keys(value).some((key) => !allowed_keys.has(key)) ||
+    value.journal_path !==
+      managedJournalPath(binding.repo, binding.attempt_id) ||
+    !validateManagedFailure(value).ok ||
+    (value.detail !== undefined &&
+      (typeof value.detail !== 'string' ||
+        value.detail.length === 0 ||
+        value.detail.length > 4096 ||
+        /[\0\r\n]/.test(value.detail)))
+  ) {
+    return false;
+  }
+  return BINDING_KEYS.every((key) => value[key] === binding[key]);
+}
+
+/**
+ * @param {{ binding: any, failure: { failure_code: string, retryable: boolean, detail?: string } }} input
+ */
+export function writeManagedFailure(input) {
+  const binding = validateManagedBinding(input.binding);
+  if (!binding.ok) {
+    return { ok: false, reason: binding.reason || 'binding_invalid' };
+  }
+  const journal_path = managedJournalPath(
+    input.binding.repo,
+    input.binding.attempt_id
+  );
+  const record = {
+    ...input.binding,
+    journal_path,
+    ...input.failure
+  };
+  if (
+    !validManagedJournalParents(journal_path) ||
+    !validateManagedFailureRecord(record, input.binding)
+  ) {
+    return { ok: false, reason: 'failure_record_invalid' };
+  }
+  const failure_path = managedFailurePath(
+    input.binding.repo,
+    input.binding.attempt_id
+  );
+  const existing = readPrivateJsonFile(failure_path);
+  if (!existing.ok && existing.reason !== 'private_json_absent') {
+    return { ok: false, reason: 'failure_record_invalid' };
+  }
+  try {
+    writePrivateJsonAtomic(failure_path, record);
+  } catch {
+    return { ok: false, reason: 'failure_record_write_failed' };
+  }
+  const readback = readManagedFailure({ binding: input.binding });
+  return readback.ok
+    ? readback
+    : { ok: false, reason: 'failure_record_readback_failed' };
+}
+
+/**
+ * @param {{ binding: any }} input
+ */
+export function readManagedFailure(input) {
+  const binding = validateManagedBinding(input.binding);
+  if (!binding.ok) {
+    return { ok: false, reason: binding.reason || 'binding_invalid' };
+  }
+  const journal_path = managedJournalPath(
+    input.binding.repo,
+    input.binding.attempt_id
+  );
+  if (!validManagedJournalParents(journal_path)) {
+    return { ok: false, reason: 'failure_record_invalid' };
+  }
+  const readback = readPrivateJsonFile(
+    managedFailurePath(input.binding.repo, input.binding.attempt_id)
+  );
+  if (!readback.ok) {
+    return {
+      ok: false,
+      reason:
+        readback.reason === 'private_json_absent'
+          ? 'failure_absent'
+          : 'failure_record_invalid'
+    };
+  }
+  if (!validateManagedFailureRecord(readback.value, input.binding)) {
+    return { ok: false, reason: 'failure_record_invalid' };
+  }
+  return { ok: true, record: readback.value };
+}
+
+/**
+ * @param {{ binding: any }} input
+ */
+export function clearManagedFailure(input) {
+  const existing = readManagedFailure(input);
+  if (!existing.ok && existing.reason === 'failure_absent') {
+    return { ok: true, removed: false };
+  }
+  if (!existing.ok) {
+    return existing;
+  }
+  const failure_path = managedFailurePath(
+    input.binding.repo,
+    input.binding.attempt_id
+  );
+  try {
+    fs.unlinkSync(failure_path);
+    fsyncDirectory(path.dirname(failure_path));
+  } catch {
+    return { ok: false, reason: 'failure_record_clear_failed' };
+  }
+  return { ok: true, removed: true };
 }
 
 /**

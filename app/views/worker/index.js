@@ -519,6 +519,7 @@ const MERGE_STEPS = [
   { step: 'reconcile_verify', label: '정리 중 · 검증', index: 4 },
   { step: 'deploy', label: '배포', index: 5 },
   { step: 'reconcile_deploy', label: '정리 중 · 배포', index: 5 },
+  { step: 'reconcile_restart', label: '정리 중 · 재시작', index: 6 },
   { step: 'reconcile_readback', label: '정리 중 · readback', index: 6 },
   { step: 'child_sweep', label: '자식 정리', index: 7 },
   { step: 'branch_cleanup', label: '브랜치 정리', index: 8 },
@@ -571,9 +572,11 @@ function reconcileActivity(record) {
           ? 'reconcile_verify'
           : record.stage === 'deploying'
             ? 'reconcile_deploy'
-            : record.stage === 'readback'
-              ? 'reconcile_readback'
-              : null;
+            : record.stage === 'restarting'
+              ? 'reconcile_restart'
+              : record.stage === 'readback'
+                ? 'reconcile_readback'
+                : null;
   return step
     ? {
         activity: null,
@@ -1804,7 +1807,7 @@ export function createWorkerView(mount_element, options = {}) {
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
-    /** @type {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string }>} */
+    /** @type {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number }>} */
     const cleanup_failed = q.cleanup_failed || {};
     const cleanup_failures = Object.entries(cleanup_failed).map(
       ([bead_id, rec]) => ({
@@ -1828,7 +1831,14 @@ export function createWorkerView(mount_element, options = {}) {
         log_path:
           rec && typeof rec.log_path === 'string' && rec.log_path
             ? rec.log_path
-            : undefined
+            : undefined,
+        retry_count:
+          rec &&
+          typeof rec.retry_count === 'number' &&
+          Number.isInteger(rec.retry_count) &&
+          rec.retry_count > 0
+            ? rec.retry_count
+            : 0
       })
     );
     const queue_entries = /** @type {any[]} */ (q.queue || []);

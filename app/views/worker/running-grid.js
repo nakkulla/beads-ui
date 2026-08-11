@@ -87,6 +87,8 @@ import { discardReceiptTemplate, timesMeta } from './lanes.js';
  * @property {string} [log_path] - Absolute path to that command's FULL
  * preserved output (UI-0x54), which the capped tail above cannot hold; absent
  * on a record whose run left no complete log file.
+ * @property {number} [retry_count] - Durable retries actually consumed before
+ * this failure. Zero/absent never renders retry wording.
  */
 
 /**
@@ -247,7 +249,12 @@ export function bannersTemplate(state) {
           data-bead-id=${c.bead_id}
         >
           ⚠ ${c.bead_id} 머지 완료 — 머지 후 정리가 <b>${c.step}</b> 단계에서
-          멈췄습니다 (${c.reason}). 1회 자동 재시도 후에도 실패했습니다 — 정리를
+          멈췄습니다 (${c.reason}).
+          ${typeof c.retry_count === 'number' &&
+          Number.isInteger(c.retry_count) &&
+          c.retry_count > 0
+            ? html`${c.retry_count}회 자동 재시도 후에도 실패했습니다 — `
+            : ''}정리를
           사람이 마무리하세요.
           ${c.detail
             ? html`<div class="worker-banner__detail">

@@ -18,6 +18,7 @@ import {
   createDeploymentReceipt,
   validateDeploymentReceipt
 } from '../server/worker/deployment-reconciler.js';
+import { managedFailureDefinition } from '../server/worker/managed-failure.js';
 import {
   advanceManagedState,
   createPreparedState,
@@ -27,6 +28,7 @@ import {
   readPrivateJsonFile,
   validateManagedBinding,
   validateManagedRelease,
+  writeManagedFailure,
   writePrivateJsonAtomic
 } from '../server/worker/managed-state.js';
 import { createProcessController } from '../server/worker/process-controller.js';
@@ -67,6 +69,35 @@ const ACK_STAGES = new Set([
   'restart_committed',
   'restart_launched'
 ]);
+const POINTER_TRANSIENT_REASONS = new Set([
+  'pointer_unreadable',
+  'pointer_publish_failed',
+  'pointer_readback_mismatch',
+  'pointer_readback_failed'
+]);
+const HELPER_TRANSIENT_REASONS = new Set([
+  'helper_spawn_failed',
+  'helper_ack_missing',
+  'helper_precommit_gone',
+  'helper_prerecord_readback_failed',
+  'helper_fenced',
+  'state_contention',
+  'claim_conflict'
+]);
+const POINTER_ESCAPE_REASONS = new Set([
+  'pointer_parent_invalid',
+  'pointer_not_symlink',
+  'pointer_target_invalid',
+  'binding_pointer_mismatch'
+]);
+const AMBIGUOUS_REASONS = new Set([
+  'restart_effect_failed',
+  'restart_handoff_pending',
+  'restart_handoff_unknown',
+  'restart_handoff_timeout',
+  'helper_identity_unknown',
+  'helper_commit_readback_failed'
+]);
 
 /**
  * @typedef {Object} Binding
@@ -88,6 +119,62 @@ const ACK_STAGES = new Set([
  */
 function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * @param {any} result
+ */
+export function adapterFailureForResult(result) {
+  const reason =
+    typeof result?.reason === 'string' && result.reason.length > 0
+      ? result.reason
+      : 'adapter_failed';
+  const stage =
+    isRecord(result?.state) && typeof result.state.stage === 'string'
+      ? result.state.stage
+      : null;
+  let failure_code = 'adapter_regression';
+  if (POINTER_TRANSIENT_REASONS.has(reason)) {
+    failure_code = 'pointer_transient';
+  } else if (HELPER_TRANSIENT_REASONS.has(reason)) {
+    failure_code = 'helper_spawn_timeout';
+  } else if (POINTER_ESCAPE_REASONS.has(reason)) {
+    failure_code = 'pointer_escape';
+  } else if (
+    AMBIGUOUS_REASONS.has(reason) ||
+    (reason === 'runtime_identity_mismatch' &&
+      (stage === 'restart_committed' || stage === 'restart_launched'))
+  ) {
+    failure_code = 'restart_effect_ambiguous';
+  } else if (reason === 'runtime_identity_mismatch') {
+    failure_code = 'runtime_identity_mismatch';
+  } else if (reason === 'runtime_health_red') {
+    failure_code = 'runtime_health_red';
+  }
+  const definition = managedFailureDefinition(failure_code);
+  if (!definition) {
+    throw new Error('managed_failure_definition_missing');
+  }
+  return {
+    failure_code: definition.failure_code,
+    retryable: definition.retryable,
+    detail: reason.slice(0, 4096)
+  };
+}
+
+/**
+ * @param {Record<string, string|undefined>} environment
+ * @param {any} result
+ */
+export function publishAdapterFailure(environment, result) {
+  const parsed = bindingFromEnv(environment, runtimePointerPath());
+  if (!parsed.ok) {
+    return { ok: false, reason: 'failure_binding_invalid' };
+  }
+  return writeManagedFailure({
+    binding: parsed.binding,
+    failure: adapterFailureForResult(result)
+  });
 }
 
 /**
@@ -1183,10 +1270,20 @@ function optionValue(args, name) {
 
 /**
  * @param {string[]} args
+ * @param {{ runAdapter?: typeof runAdapter, publishFailure?: (result: any) => any }} [input]
  */
-export async function main(args) {
+export async function main(args, input = {}) {
   if (!args.includes('--restart-helper')) {
-    return (await runAdapter({})).ok ? 0 : 1;
+    const runAdapterImpl = input.runAdapter || runAdapter;
+    const result = await runAdapterImpl({});
+    if (!result.ok) {
+      const publishFailure =
+        input.publishFailure ||
+        ((failure_result) =>
+          publishAdapterFailure(process.env, failure_result));
+      publishFailure(result);
+    }
+    return result.ok ? 0 : 1;
   }
   const parsed = bindingFromEnv(process.env, runtimePointerPath());
   const generation = Number(optionValue(args, '--generation'));
