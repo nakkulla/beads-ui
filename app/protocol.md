@@ -118,7 +118,12 @@ Nothing merges without a human `[머지]` click.
   cached travel, a miss simply has no entry and arrives in a later snapshot once
   the server's async lookup fills it. Consumers fail-quiet on the whole key
   being absent (older server) and on a missing entry — both fall back to
-  displaying the bead id.
+  displaying the bead id. `bead_labels` is likewise a non-persisted partial
+  `Record<bead_id, string[]>` for the same `queue`/`pr_wait`/`done` beads. Its
+  arrays are normalized from the same async `bd show` fill as titles and times;
+  no entry means label truth is unknown (not an empty array), including when an
+  older server omits the whole key. It is UI projection only and never Worker
+  scheduler authority.
 - A RUNNING attempt inside `attempts` additionally carries the non-persisted
   `last_event_at` (epoch ms) — when the server last saw a session-log line for
   that attempt (UI-53es §1). It is what the monitor row's live heartbeat reads;

@@ -486,9 +486,22 @@ function beadTimesFor(workspace_key, queue) {
 }
 
 /**
+ * Normalized labels for every bead the lanes render. This is deliberately a
+ * partial projection: missing entries are unknown, never an inferred empty
+ * label array, because waiting rows can be outside the live issue subscription.
+ *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
- * @param {'titlesFor'|'timesFor'} method
+ * @returns {Record<string, string[]>}
+ */
+function beadLabelsFor(workspace_key, queue) {
+  return beadDecorationFor(workspace_key, queue, 'labelsFor');
+}
+
+/**
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @param {'titlesFor'|'timesFor'|'labelsFor'} method
  * @returns {any}
  */
 function beadDecorationFor(workspace_key, queue, method) {
@@ -1015,6 +1028,9 @@ export function decorateQueue(workspace_key, raw_queue) {
     // the same `bd show`. Kept as its own key rather than folded into
     // `bead_titles` so the existing title contract is untouched.
     bead_times: beadTimesFor(workspace_key, queue),
+    // Normalized labels for the same queue/pr_wait/done ids. Partial cache
+    // hits only: a missing key is intentionally unknown to the Phase 3 view.
+    bead_labels: beadLabelsFor(workspace_key, queue),
     // Which waiting beads are parked awaiting a REVISE disposition (UI-hs11
     // §3.1). Non-persisted, partial and advisory — see the projection.
     revise_parked: reviseParkedFor(workspace_key, queue),
