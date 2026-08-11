@@ -64,15 +64,19 @@
   - `spec_reviewer: string` — `meta.spec_review`의 `@` 앞 토큰(예 `codex`,
     `skipped`, `triage`, `self`). qualify()가 이미 `ADMISSION_RECEIPT_RE`로
     수령 형식을 검증하므로 (runnable-cache.js:152-158) 항상 존재한다.
-  - `plan_state: 'approved'|'authored'|'none'` — full_plan 전용 파생값,
-    **형식 검증을 통과한 키만 읽는다** (형식 이탈은 부재 취급 — fail-quiet):
-    - `approved`: `meta.plan_review`가 `ADMISSION_RECEIPT_RE`
-      (`<token>@<40hex>`)에 매치하고 토큰이 `skipped`가 아닐 때. 계약상
-      plan 승인에는 skip 값이 없으므로 `skipped@…`는 무효 — 부재 취급.
-    - `authored`: 위가 아니고 `meta.plan_check`가 `<token>@<12hex>`
-      (`/^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{12}$/`)에 매치할 때. `plan_check`는
-      토큰과 무관하게 초안 해시를 지니므로(skip도 초안 존재 증거) 작성됨
-      판정에 쓴다.
+  - `plan_state: 'approved'|'authored'|'none'` — full_plan 전용 파생값.
+    beads-ui는 계약을 재정의하지 않고 `server/workflow-enrich.js`의 영수증
+    parser를 재사용하며, **형식 검증을 통과한 키만 읽는다** (형식 이탈은 부재
+    취급 — fail-quiet):
+    - 공통 선행조건: `meta.plan_path`가 비어 있지 않은 문자열이어야 한다. 없으면
+      영수증이 남아 있어도 `none` — plan artifact가 없는 예약 full_plan을
+      작성됨으로 표시하지 않는다.
+    - `approved`: 새 계약의 `meta.plan_approval=user@<40hex>`, 또는 legacy
+      계약의 `meta.plan_review=<legacy-token>@<40hex>`가 유효할 때.
+    - `authored`: 위가 아니고 새 계약의
+      `meta.plan_review=<reviewer>@<12hex>`, 또는 legacy 계약의
+      `meta.plan_check=<reviewer>@<12hex>`가 유효할 때. `skipped`도 review를
+      생략한 **초안 존재 증거**이므로 authored로 표시한다.
     - `none`: 둘 다 아니면. spec_backed 행은 항상 `none`.
 - **클라이언트 전달**: 서버 필드는 저절로 카드에 닿지 않는다 —
   `lanes.js` `buildLanes()`의 runnable 조립부(lanes.js:544-563)가 필드를
@@ -92,9 +96,9 @@
 - `app/views/monitor/lanes.js` 정렬: 시작순 기본 정렬, started_at 부재 맨 뒤,
   레포순 그룹핑, 미지 root_dir 맨 뒤 — comparator 단위 테스트 (RED→GREEN).
 - `server/worker/runnable-cache.js` `qualify()`: `spec_reviewer` 토큰 추출,
-  `plan_state` 3상태 파생(spec_backed는 `none`), 형식 이탈
-  `plan_review`/`plan_check` 부재 취급(`skipped@40hex` plan_review 포함) —
-  단위 테스트 (RED→GREEN).
+  `plan_state` 3상태 파생(spec_backed는 `none`), `plan_path` 부재와 형식 이탈
+  `plan_approval`/`plan_review`/`plan_check` 부재 취급, 새 계약과 legacy 계약의
+  approved/authored dual-read — 단위 테스트 (RED→GREEN).
 - **전달 통합 seam**: `buildLanes()`에 `spec_reviewer`/`plan_state`를 실은
   workspace.runnable 입력을 넣고 runnable 항목에 두 필드가 실려 나오는 것 —
   `lanes.js` 단위 테스트 (RED→GREEN). 서버·카드 테스트만으로는 조립부 누락을
