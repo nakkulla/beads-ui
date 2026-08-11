@@ -60,6 +60,65 @@ describe('runner/claude 2-rule success (judged over the last result)', () => {
     expect(call.options.detached).toBe(true);
   });
 
+  test('exposes the verified detached process identity', () => {
+    const spawn_impl = makeFixtureSpawn({
+      pid: 5150,
+      lines: [resultLine()],
+      exit: 0
+    });
+    const process_controller = {
+      capture: vi.fn(() => ({
+        ok: /** @type {const} */ (true),
+        identity: { pid: 5150, pgid: 5150, started_at: 1_000 }
+      }))
+    };
+
+    const handle = spawnClaude(
+      BEAD,
+      WS,
+      {},
+      {
+        spawn_impl,
+        process_controller
+      }
+    );
+
+    expect(handle.process_identity).toEqual({
+      pid: 5150,
+      pgid: 5150,
+      started_at: 1_000
+    });
+  });
+
+  test('terminates and refuses a spawn without verified group leadership', () => {
+    const spawn_impl = makeFixtureSpawn({
+      pid: 5150,
+      lines: [resultLine()],
+      exit: 0
+    });
+    const kill_impl = vi.fn();
+    const process_controller = {
+      capture: vi.fn(() => ({
+        ok: /** @type {const} */ (false),
+        reason: 'not_group_leader'
+      }))
+    };
+
+    expect(() =>
+      spawnClaude(
+        BEAD,
+        WS,
+        {},
+        {
+          spawn_impl,
+          kill_impl,
+          process_controller
+        }
+      )
+    ).toThrow('process_identity:not_group_leader');
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+  });
+
   test('succeeds when multiple results end on a clean last result', async () => {
     const spawn_impl = makeFixtureSpawn({
       lines: [resultLine(), resultLine()],

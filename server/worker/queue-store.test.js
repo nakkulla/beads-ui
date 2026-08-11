@@ -1667,6 +1667,112 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     expect(loaded.queue.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
+  test('normalizes durable process identity and pause control across reload', () => {
+    const store = createQueueStore({ now: () => 100 });
+    const appended = store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    expect(appended.queue.attempts['att-1']).toMatchObject({
+      process_identity: null,
+      control: null
+    });
+
+    store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'running',
+        process_identity: { pid: 4242, pgid: 4242, started_at: 1_000 }
+      }
+    });
+    const requested = store.requestAttemptControl(WS, {
+      attempt_id: 'att-1',
+      kind: 'pause'
+    });
+
+    expect(requested.ok).toBe(true);
+    expect(requested.queue.attempts['att-1'].control).toEqual({
+      kind: 'pause',
+      phase: 'requested',
+      requested_at: 100,
+      last_error: null
+    });
+    expect(createQueueStore().load(WS).attempts['att-1']).toMatchObject({
+      process_identity: { pid: 4242, pgid: 4242, started_at: 1_000 },
+      control: {
+        kind: 'pause',
+        phase: 'requested',
+        requested_at: 100,
+        last_error: null
+      }
+    });
+  });
+
+  test('advances pause control monotonically and rejects stale phases', () => {
+    const store = createQueueStore({ now: () => 100 });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1', status: 'running' }
+    });
+    store.requestAttemptControl(WS, {
+      attempt_id: 'att-1',
+      kind: 'pause'
+    });
+
+    const signaled = store.advanceAttemptControl(WS, {
+      attempt_id: 'att-1',
+      expected_phase: 'requested',
+      next_phase: 'signaled'
+    });
+    const stale = store.advanceAttemptControl(WS, {
+      attempt_id: 'att-1',
+      expected_phase: 'requested',
+      next_phase: 'terminated'
+    });
+    const terminated = store.advanceAttemptControl(WS, {
+      attempt_id: 'att-1',
+      expected_phase: 'signaled',
+      next_phase: 'terminated'
+    });
+
+    expect(signaled.ok).toBe(true);
+    expect(stale).toMatchObject({ ok: false, reason: 'phase_mismatch' });
+    expect(terminated.ok).toBe(true);
+    expect(terminated.queue.attempts['att-1'].control?.phase).toBe(
+      'terminated'
+    );
+  });
+
+  test('records a terminal control failure without changing attempt status', () => {
+    const store = createQueueStore({ now: () => 100 });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1', status: 'running' }
+    });
+    store.requestAttemptControl(WS, {
+      attempt_id: 'att-1',
+      kind: 'pause'
+    });
+
+    const failed = store.advanceAttemptControl(WS, {
+      attempt_id: 'att-1',
+      expected_phase: 'requested',
+      next_phase: 'failed',
+      last_error: 'identity_unknown'
+    });
+
+    expect(failed.ok).toBe(true);
+    expect(failed.queue.attempts['att-1']).toMatchObject({
+      status: 'running',
+      control: {
+        kind: 'pause',
+        phase: 'failed',
+        requested_at: 100,
+        last_error: 'identity_unknown'
+      }
+    });
+  });
+
   test('exec provenance survives appendAttempt/updateAttempt and a reload', () => {
     const store = createQueueStore();
     let rev = store.place(WS, {

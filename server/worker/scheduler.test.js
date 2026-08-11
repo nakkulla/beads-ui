@@ -446,6 +446,11 @@ function makeFakeRunner() {
         });
         const handle = {
           pid: 9000 + spawnOrder.length,
+          process_identity: {
+            pid: 9000 + spawnOrder.length,
+            pgid: 9000 + spawnOrder.length,
+            started_at: 1_000
+          },
           kill: vi.fn(),
           events,
           done
@@ -665,7 +670,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, cleanupDiagnosis?: any, readCleanupDiagnosisResult?: any, onCompletionAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, cleanupDiagnosis?: any, readCleanupDiagnosisResult?: any, onCompletionAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -743,6 +748,7 @@ function setup(opts) {
         }
       : undefined,
     probePid: opts.probePid,
+    processController: opts.processController,
     sessionMonitors: opts.sessionMonitors,
     execPresetCoordinator,
     // Absent ⇒ the REAL guard-hook module, writing under the tmp
@@ -1898,6 +1904,167 @@ describe('scheduler stop (■ tile)', () => {
 });
 
 describe('scheduler pause (⏸ tile, worker-phase1 §2.1)', () => {
+  test('persists verified process identity from the runner handle', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    expect(
+      env.store.snapshot(WS).attempts[attempt_id].process_identity
+    ).toEqual({
+      pid: 9000,
+      pgid: 9000,
+      started_at: 1_000
+    });
+  });
+
+  test('persists pause intent before signaling and finalizes after group exit', async () => {
+    /** @type {any} */
+    let store;
+    const processController = {
+      terminate: vi.fn(async () => {
+        const attempt = Object.values(store.snapshot(WS).attempts)[0];
+        expect(/** @type {any} */ (attempt).control.phase).toBe('requested');
+        return { ok: true, state: 'gone', forced: false };
+      }),
+      probe: vi.fn(() => ({ state: 'gone' }))
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      processController
+    });
+    store = env.store;
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+
+    const result = await env.scheduler.pause(WS, attempt_id);
+
+    expect(result).toEqual({ ok: true });
+    expect(env.runner.killFor('S1')).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts[attempt_id]).toMatchObject({
+      status: 'paused',
+      control: { kind: 'pause', phase: 'done', last_error: null }
+    });
+  });
+
+  test('suppresses a live handle exit while durable pause termination is in flight', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const processController = {
+      terminate: vi.fn(async () => {
+        env.runner.finish('S1', {
+          success: false,
+          reason: 'killed',
+          exit: null
+        });
+        await flush();
+        return { ok: true, state: /** @type {const} */ ('gone') };
+      }),
+      probe: vi.fn(() => ({ state: /** @type {const} */ ('gone') }))
+    };
+    env = setup({ config: { S1: {} }, slots: 1, processController });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+
+    const result = await env.scheduler.pause(WS, attempt_id);
+
+    expect(result).toEqual({ ok: true });
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('paused');
+    expect(env.store.snapshot(WS).auto_advance).toBe(true);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('recovers a pending pause without a process-local handle', async () => {
+    const sessionMonitors = { stop: vi.fn() };
+    const processController = {
+      terminate: vi.fn(async () => ({
+        ok: true,
+        state: 'gone',
+        forced: false
+      })),
+      probe: vi.fn(() => ({ state: 'gone' }))
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      processController,
+      sessionMonitors
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'recovered', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'recovered',
+      patch: {
+        status: 'running',
+        session_id: 'sid-1',
+        repo: '/repo',
+        workflow_mode_prior: null,
+        process_identity: { pid: 4242, pgid: 4242, started_at: 1_000 }
+      }
+    });
+    env.store.requestAttemptControl(WS, {
+      attempt_id: 'recovered',
+      kind: 'pause'
+    });
+
+    await env.scheduler.recoverControls(WS);
+
+    expect(env.store.snapshot(WS).attempts.recovered).toMatchObject({
+      status: 'paused',
+      control: { phase: 'done' }
+    });
+    expect(sessionMonitors.stop).toHaveBeenCalledWith(WS, 'recovered');
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('fails closed when recovered process identity is unknown', async () => {
+    const processController = {
+      terminate: vi.fn(async () => ({
+        ok: false,
+        state: 'unknown',
+        reason: 'ps_failed'
+      })),
+      probe: vi.fn(() => ({ state: 'unknown', reason: 'ps_failed' }))
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      processController
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'recovered', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'recovered',
+      patch: {
+        status: 'running',
+        session_id: 'sid-1',
+        process_identity: { pid: 4242, pgid: 4242, started_at: 1_000 }
+      }
+    });
+    env.store.requestAttemptControl(WS, {
+      attempt_id: 'recovered',
+      kind: 'pause'
+    });
+
+    await env.scheduler.recoverControls(WS);
+
+    expect(env.store.snapshot(WS).attempts.recovered).toMatchObject({
+      status: 'running',
+      control: { phase: 'failed', last_error: 'ps_failed' }
+    });
+  });
+
   test('pause records `paused`, keeps the bead queued, and advances the queue', async () => {
     const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
     seedQueue(env.store, ['S1', 'S2']);

@@ -91,6 +91,9 @@ import { createTailReader } from './tail-reader.js';
  *
  * @typedef {Object} RunnerHandle
  * @property {number|null} pid - OS pid of the spawned process (null on failure).
+ * @property {{ pid: number, pgid: number, started_at: number }|null} process_identity -
+ * Verified detached group identity. Null only for legacy/test callers that did
+ * not provide a process controller.
  * @property {(signal?: NodeJS.Signals|number) => void} kill - Group-kill helper.
  * @property {EventEmitter} events - Emits 'event'(RunnerEvent), 'raw'(object), 'session_id'(string, once).
  * @property {Promise<RunnerVerdict>} done - Resolves with the terminal verdict.
@@ -138,6 +141,7 @@ import { createTailReader } from './tail-reader.js';
  * @typedef {Object} EngineDeps
  * @property {(command: string, args: string[], options: any) => ChildProcessLike} [spawn_impl]
  * @property {(pid: number, signal?: NodeJS.Signals|number) => void} [kill_impl]
+ * @property {{ capture: (pid: number) => ({ ok: true, identity: { pid: number, pgid: number, started_at: number }}|{ ok: false, reason: string }) }} [process_controller]
  * @property {typeof import('node:fs')} [fs]
  * @property {(input: { child: ChildProcessLike, log_path: string|null, fs: typeof import('node:fs'), onLine: (line: string) => void }) => LineSource} [makeLineSource] -
  * Line-source seam (UI-o2yt §5). Production leaves it unset: a `log_path` picks
@@ -338,6 +342,23 @@ export function runSession(spec, bead, workspace, settings, deps) {
   }
 
   const pid = typeof child.pid === 'number' ? child.pid : null;
+  /** @type {{ pid: number, pgid: number, started_at: number }|null} */
+  let process_identity = null;
+  if (deps.process_controller) {
+    if (pid == null) {
+      throw new Error('process_identity:pid_missing');
+    }
+    const captured = deps.process_controller.capture(pid);
+    if (!captured.ok) {
+      try {
+        kill_impl(-pid, 'SIGTERM');
+      } catch {
+        /* fail-closed refusal is already surfaced below */
+      }
+      throw new Error(`process_identity:${captured.reason}`);
+    }
+    process_identity = captured.identity;
+  }
   let blocked = false;
   /** @type {BlockedDetail|null} */
   let blocked_detail = null;
@@ -565,6 +586,7 @@ export function runSession(spec, bead, workspace, settings, deps) {
 
   return {
     pid,
+    process_identity,
     kill,
     events,
     done,

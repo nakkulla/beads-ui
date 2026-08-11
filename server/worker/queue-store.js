@@ -32,6 +32,10 @@
  * @property {string|null} head_oid - Git head OID at dispatch.
  * @property {number|null} started_at - Epoch ms the session started.
  * @property {number|null} pid - OS process id of the runner.
+ * @property {{ pid: number, pgid: number, started_at: number }|null} process_identity -
+ * Verified detached process-group identity used for restart-safe control.
+ * @property {{ kind: 'pause', phase: 'requested'|'signaled'|'terminated'|'done'|'failed', requested_at: number, last_error: string|null }|null} control -
+ * Durable pause intent and monotonic recovery phase.
  * @property {string|null} runner - Runner adapter (claude/codex/ccx).
  * @property {string|null} session_id - Runner session identifier (claude
  * `session_id` / codex `thread_id`) captured from the stream's first event for
@@ -456,6 +460,14 @@ const MAX_REPAIR_SESSIONS = 2;
 const COMPLETION_EVIDENCE_MAX = 4_000;
 
 const COMPLETION_LOG_PATH_MAX = 1_000;
+
+const ATTEMPT_CONTROL_TRANSITIONS = {
+  requested: new Set(['signaled', 'failed']),
+  signaled: new Set(['terminated', 'failed']),
+  terminated: new Set(['done', 'failed']),
+  done: new Set(),
+  failed: new Set()
+};
 
 /**
  * @param {unknown} value
@@ -1003,6 +1015,62 @@ function boundGuardWarnings(raw) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {{ pid: number, pgid: number, started_at: number }|null}
+ */
+function normalizeProcessIdentity(value) {
+  const pid = isRecord(value) ? value.pid : null;
+  const pgid = isRecord(value) ? value.pgid : null;
+  const started_at = isRecord(value) ? value.started_at : null;
+  if (
+    !isRecord(value) ||
+    typeof pid !== 'number' ||
+    !Number.isInteger(pid) ||
+    typeof pgid !== 'number' ||
+    !Number.isInteger(pgid) ||
+    typeof started_at !== 'number' ||
+    !Number.isFinite(started_at) ||
+    pid <= 0 ||
+    pgid <= 0
+  ) {
+    return null;
+  }
+  return {
+    pid,
+    pgid,
+    started_at
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Attempt['control']}
+ */
+function normalizeAttemptControl(value) {
+  const requested_at = isRecord(value) ? value.requested_at : null;
+  if (
+    !isRecord(value) ||
+    value.kind !== 'pause' ||
+    !Object.hasOwn(ATTEMPT_CONTROL_TRANSITIONS, String(value.phase)) ||
+    typeof requested_at !== 'number' ||
+    !Number.isFinite(requested_at)
+  ) {
+    return null;
+  }
+  return {
+    kind: 'pause',
+    phase: /** @type {NonNullable<Attempt['control']>['phase']} */ (
+      value.phase
+    ),
+    requested_at,
+    last_error:
+      typeof value.last_error === 'string' && value.last_error.length > 0
+        ? value.last_error
+        : null
+  };
+}
+
+/**
  * Fill an attempt container over its default (all-null) shape.
  *
  * @param {Partial<Attempt> & { attempt_id: string, bead_id: string }} fields
@@ -1016,6 +1084,8 @@ export function makeAttempt(fields) {
     head_oid: fields.head_oid ?? null,
     started_at: fields.started_at ?? null,
     pid: fields.pid ?? null,
+    process_identity: normalizeProcessIdentity(fields.process_identity),
+    control: normalizeAttemptControl(fields.control),
     runner: fields.runner ?? null,
     session_id: fields.session_id ?? null,
     model: fields.model ?? null,
@@ -2006,6 +2076,125 @@ export function createQueueStore(options = {}) {
       });
       consumeTerminalReceipts(result, prepared.files);
       return result;
+    },
+
+    /**
+     * Persist a pause request before any signal is attempted.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, kind: 'pause' }} input
+     * @returns {QueueOpResult}
+     */
+    requestAttemptControl(workspace, input) {
+      const { attempt_id, kind } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur) {
+          reason = 'attempt_not_found';
+          return false;
+        }
+        if (kind !== 'pause') {
+          reason = 'kind_invalid';
+          return false;
+        }
+        if (cur.status !== 'running') {
+          reason = 'not_running';
+          return false;
+        }
+        if (cur.control !== null) {
+          reason = 'control_exists';
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt({
+          ...cur,
+          control: {
+            kind: 'pause',
+            phase: 'requested',
+            requested_at: now(),
+            last_error: null
+          }
+        });
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Advance one durable attempt-control phase with an expected-phase fence.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, expected_phase: 'requested'|'signaled'|'terminated'|'done'|'failed', next_phase: 'requested'|'signaled'|'terminated'|'done'|'failed', last_error?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    advanceAttemptControl(workspace, input) {
+      const { attempt_id, expected_phase, next_phase, last_error } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur || cur.control === null) {
+          reason = cur ? 'control_missing' : 'attempt_not_found';
+          return false;
+        }
+        if (cur.control.phase !== expected_phase) {
+          reason = 'phase_mismatch';
+          return false;
+        }
+        const allowed = ATTEMPT_CONTROL_TRANSITIONS[expected_phase];
+        if (!allowed || !allowed.has(next_phase)) {
+          reason = 'transition_invalid';
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt({
+          ...cur,
+          control: {
+            ...cur.control,
+            phase: next_phase,
+            last_error:
+              next_phase === 'failed' && typeof last_error === 'string'
+                ? last_error
+                : null
+          }
+        });
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Atomically finish a terminated pause and mark the attempt resumable.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, finished_at: number, patch?: Partial<Attempt> }} input
+     * @returns {QueueOpResult}
+     */
+    completeAttemptControl(workspace, input) {
+      const { attempt_id, finished_at, patch } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur || cur.control === null) {
+          reason = cur ? 'control_missing' : 'attempt_not_found';
+          return false;
+        }
+        if (cur.control.phase !== 'terminated') {
+          reason = 'phase_mismatch';
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt({
+          ...cur,
+          ...(patch || {}),
+          status: 'paused',
+          cause: null,
+          finished_at,
+          control: { ...cur.control, phase: 'done', last_error: null }
+        });
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
     },
 
     /**

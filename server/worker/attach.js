@@ -50,6 +50,7 @@ import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
+import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import {
   peekVerifyResolution,
@@ -352,6 +353,7 @@ export function defaultProbePid(pid) {
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
+ *   processController?: ReturnType<typeof createProcessController>,
  *   sessionMonitors?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
@@ -487,12 +489,21 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     options.verify ||
     createVerifier({ gh, bd: createBdMetadata({ cwd: workspace_root }) });
 
+  // Custom process seams identify unit-test attachments. Production supplies
+  // none of them and therefore always gets verified process-group control.
+  const processController =
+    options.processController ||
+    (options.spawn_impl || options.makeRunner || options.probePid
+      ? null
+      : createProcessController({ signal: options.kill_impl }));
+
   const makeRunner =
     options.makeRunner ||
     ((name) =>
       createRunner(name, {
         spawn_impl: options.spawn_impl || ((c, a, o) => spawn(c, a, o)),
-        kill_impl: options.kill_impl
+        kill_impl: options.kill_impl,
+        ...(processController ? { process_controller: processController } : {})
       }));
 
   // The outward attempt-lifecycle push (UI-2yoq). Config is read per call, so a
@@ -538,6 +549,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       usage: runtime.usageStore,
       probePid,
       kill_impl: options.kill_impl,
+      ...(processController ? { processController } : {}),
       notifyChanged: (ws_key) => emitQueueChanged(ws_key)
     });
 
@@ -607,6 +619,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         : Promise.resolve();
     },
     probePid,
+    ...(processController ? { processController } : {}),
     sessionMonitors,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
@@ -1044,6 +1057,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     refreshExternalPrs,
     reviseDisposition,
     sessionMonitors,
+    processController,
     bd,
     // Exposed so the ws snapshot decoration can ask whether a bead's worktree
     // still exists (UI-w0hi §3); the manager itself stays attachment-owned.
@@ -1062,6 +1076,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
  * @type {Map<string, ReturnType<typeof createWorkerAttachment>>}
  */
 const ATTACHMENTS = new Map();
+
+/**
+ * One fail-closed startup sequence per attachment. The promise remains in the
+ * map after completion so repeated runtime initialization cannot interleave a
+ * second recovery pass with already-started drivers.
+ *
+ * @type {Map<string, Promise<void>>}
+ */
+const ATTACHMENT_STARTUPS = new Map();
 
 /**
  * @param {string} workspace_root
@@ -1127,6 +1150,66 @@ function recoverRunningAttempts(att, key) {
 }
 
 /**
+ * Recover persisted control before any monitor or ordinary driver can observe
+ * the same attempt. A recovery failure leaves the attachment constructed but
+ * inert; starting reconcile/poll/merge after an ambiguous signal would let a
+ * second subsystem consume the attempt under a contradictory state.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key
+ * @param {boolean} start_pr_poller
+ */
+async function startWorkerAttachment(att, key, start_pr_poller) {
+  try {
+    await att.scheduler.recoverControls(key);
+  } catch (err) {
+    log('control recovery failed for %s: %o', key, err);
+    return;
+  }
+
+  recoverRunningAttempts(att, key);
+  try {
+    await att.scheduler.reconcile(key);
+  } catch (err) {
+    log('startup reconcile failed for %s: %o', key, err);
+    return;
+  }
+
+  if (start_pr_poller) {
+    try {
+      att.prPoller.start();
+    } catch (err) {
+      log('pr poller start failed for %s: %o', key, err);
+    }
+  }
+  try {
+    att.reconciler.start();
+  } catch (err) {
+    log('reconcile timer start failed for %s: %o', key, err);
+  }
+  try {
+    att.mergeQueue.start();
+  } catch (err) {
+    log('merge queue start failed for %s: %o', key, err);
+  }
+  try {
+    att.autoMerge.start();
+    if (att.runtime.queueStore.snapshot(key).auto_merge === true) {
+      Promise.resolve(att.prPoller.tick()).catch((err) => {
+        log('auto-merge boot observation failed for %s: %o', key, err);
+      });
+    }
+  } catch (err) {
+    log('auto-merge start failed for %s: %o', key, err);
+  }
+  try {
+    att.completionIntent.start();
+  } catch (err) {
+    log('completion-intent start failed for %s: %o', key, err);
+  }
+}
+
+/**
  * Create + register attachments for each active workspace, then reconcile the
  * `running` attempts persisted from a prior run and arm the periodic reconcile
  * timer (worker-detached-session-reconcile §2). Idempotent per workspace.
@@ -1149,68 +1232,24 @@ export function initWorkerRuntime(input) {
     }
     const key = keyFor(ws);
     let att = ATTACHMENTS.get(key);
+    let created = false;
     if (!att) {
       att = createWorkerAttachment(key, {
         getSubscriberCount:
           typeof countFor === 'function' ? () => countFor(key) : undefined
       });
       ATTACHMENTS.set(key, att);
-      if (typeof countFor === 'function') {
-        try {
-          att.prPoller.start();
-        } catch (err) {
-          log('pr poller start failed for %s: %o', key, err);
-        }
-      }
+      created = true;
     }
-    try {
-      att.reconciler.start();
-    } catch (err) {
-      log('reconcile timer start failed for %s: %o', key, err);
-    }
-    // The merge queue is DURABLE precisely because merging beads-ui restarts
-    // this process, so starting it here is the resume: whatever was still
-    // queued when the old process died is picked up from the head (UI-5v7d §2).
-    try {
-      att.mergeQueue.start();
-    } catch (err) {
-      log('merge queue start failed for %s: %o', key, err);
-    }
-    // The auto-merge enroller resumes the same way, and for the same reason: the
-    // flag it reads is durable because a beads-ui merge restarts this process
-    // (UI-yk55 §2). One immediate observation is fired for a workspace that
-    // comes up with the mode ON — the observation cache is empty after a
-    // restart, so without it every candidate would read as `unobserved` until
-    // the first poll interval elapsed (§4.4).
-    try {
-      att.autoMerge.start();
-      if (att.runtime.queueStore.snapshot(key).auto_merge === true) {
-        Promise.resolve(att.prPoller.tick()).catch((err) => {
-          log('auto-merge boot observation failed for %s: %o', key, err);
-        });
-      }
-    } catch (err) {
-      log('auto-merge start failed for %s: %o', key, err);
-    }
-    try {
-      att.completionIntent.start();
-    } catch (err) {
-      log('completion-intent start failed for %s: %o', key, err);
-    }
-    // Before the startup pass judges those attempts: rebuild what their tally
-    // was (the disposition below is the write that persists it — UI-ediw) and
-    // re-arm the live half for the ones still running — drawer follow, merge
-    // guard, continued usage (UI-o2yt §3.3).
-    recoverRunningAttempts(att, key);
-    // Startup pass: a session that died WITH the old server may already have
-    // pushed its PR, so the same routine that handles a later death decides
-    // this one too. Fire-and-forget — a slow `gh` must not hold up startup.
-    try {
-      Promise.resolve(att.scheduler.reconcile(key)).catch((err) => {
-        log('startup reconcile failed for %s: %o', key, err);
-      });
-    } catch (err) {
-      log('startup reconcile failed for %s: %o', key, err);
+    if (!ATTACHMENT_STARTUPS.has(key)) {
+      ATTACHMENT_STARTUPS.set(
+        key,
+        startWorkerAttachment(
+          att,
+          key,
+          created && typeof countFor === 'function'
+        )
+      );
     }
     built.push(att);
   }
@@ -1556,7 +1595,9 @@ export async function diagnoseWorkerCleanup(workspace_root, bead_id) {
  * @param {ReturnType<typeof createWorkerAttachment>} attachment
  */
 export function __registerWorkerAttachmentForTest(workspace_root, attachment) {
-  ATTACHMENTS.set(keyFor(workspace_root), attachment);
+  const key = keyFor(workspace_root);
+  ATTACHMENT_STARTUPS.delete(key);
+  ATTACHMENTS.set(key, attachment);
 }
 
 /**
@@ -1603,5 +1644,6 @@ export function __resetWorkerAttachmentsForTest() {
     }
   }
   ATTACHMENTS.clear();
+  ATTACHMENT_STARTUPS.clear();
   unattachedAdmissionCheck = checkUnattachedWorkerAdmission;
 }
