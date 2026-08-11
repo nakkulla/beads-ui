@@ -41,6 +41,12 @@ beads-ui Worker의 Codex adapter는 모델과 `model_reasoning_effort`만 launch
 - `orchestration_efforts`: outer Worker 전용 목록. 부재 시 `efforts`로 fallback
 - `speed_tiers`: outer Worker가 지원하는 speed 목록. 부재 시 `['default']`
 
+`speed_tiers`는 canonical `default|fast` 중 non-empty subset이어야 하고 항상
+`default`를 포함해야 한다. 또한 해당 runner adapter가 지원하는 capability의
+subset이어야 한다. Codex adapter는 `default|fast`, Claude adapter는 `default`만
+지원한다. Unknown tier, `default` 누락, Claude의 `fast`처럼 adapter capability를
+벗어난 override는 해당 필드만 경고 후 무시하고 builtin/다른 필드를 보존한다.
+
 Builtin Codex matrix:
 
 | 모델 | `efforts` 유지값 | `orchestration_efforts` | `speed_tiers` |
@@ -51,7 +57,11 @@ Builtin Codex matrix:
 
 Claude builtin models는 기존 `efforts`를 outer 목록으로 재사용하고 speed는 `default`만 허용한다.
 
-`[runner.<name>.models.<model>]` config override도 두 새 string-array 필드를 지원한다. 잘못된 필드는 해당 override만 무시하고 경고하며, builtin/다른 필드는 보존한다. Resolved catalog snapshot이 server policy·adapter·detail UI·Worker dialog·Monitor의 단일 source다.
+`[runner.<name>.models.<model>]` config override도 두 새 string-array 필드를 지원한다.
+`orchestration_efforts`는 non-empty string array, `speed_tiers`는 위 canonical enum과
+adapter capability 제약으로 검증한다. 잘못된 필드는 해당 필드만 무시하고
+경고하며, builtin/다른 필드는 보존한다. Resolved catalog snapshot이 server
+policy·adapter·detail UI·Worker dialog·Monitor의 단일 source다.
 
 새 helper 책임:
 
@@ -88,13 +98,16 @@ impl_runtime / impl_model / impl_effort
 `resolveExecSettings()`는 model을 먼저 확정한 뒤 outer effort와 speed를 해당 모델의 capability로 검증한다.
 
 - key 부재: Bead → workspace default → final fallback 순서
+- 상위 precedence에 `orchestration_model` 문자열이 존재하면 lower layer로 내려가지 않는다. catalog에 없는 값이면 `invalid_orchestration_model`로 impl validation 및 spawn 전에 실패한다.
 - effort final fallback: unset, 기존 CLI/model default 사용
 - speed final fallback: `default`
 - 명시적으로 선택된 effort가 모델에서 지원되지 않음: `illegal_orchestration_effort`
 - 명시적으로 선택된 speed가 모델에서 지원되지 않음: `illegal_orchestration_speed`
 - outer invalid reason이 있으면 impl validation보다 먼저 보고하고 scheduler가 spawn 전에 attempt를 실패 처리한다.
 
-기존에 잘못된 `orchestration_effort`가 낮은 precedence 값으로 조용히 내려가던 동작은 종료한다. 명시적 선택과 실제 launch가 달라지는 것보다 사용자가 비호환 값을 수정하도록 막는 것이 우선이다.
+기존에 잘못된 outer model·effort가 낮은 precedence 값으로 조용히 내려가던 동작은
+종료한다. 명시적 model·effort·speed와 실제 launch가 달라지는 것보다 사용자가
+비호환 값을 수정하도록 막는 것이 우선이다.
 
 Per-key Bead 편집은 현재 mutation API를 유지한다. 모델 변경으로 기존 effort/speed가 비호환이 되면 UI가 `(비호환)`을 표시하고 Worker dispatch를 차단한다. Workspace default와 preset 저장은 현재 full-settings validation 경계를 재사용한다.
 
@@ -165,7 +178,9 @@ Monitor가 전달하는 runner catalog와 preset snapshot도 새 capability를 �
 
 - Workspace `exec_defaults` normalize는 resolved enum 밖의 speed를 제거한다. Shared preset은 알려진 key의 문자열을 보존하되 비호환으로 표시하고, Bead metadata는 raw 문자열을 진단·UI에 남기되 dispatch에서 invalid reason으로 차단한다.
 - Stale Bead metadata/preset의 Luna+ultra, Claude+fast 조합은 spawn 전에 실패하고 정확한 invalid reason을 노출한다.
+- Stale Bead metadata의 unknown orchestration model은 `opus`나 다른 fallback model로 강등하지 않고 `invalid_orchestration_model`로 차단한다.
 - Catalog override가 Fast를 제거하면 기존 Fast preset을 Standard로 강등하지 않는다. 사용자가 수정할 때까지 비호환으로 표시한다.
+- Catalog override의 unknown speed, `default` 누락, adapter capability 밖의 speed는 해당 override 필드만 무시하고 경고한다. resolved catalog와 adapter가 서로 다른 speed vocabulary를 갖지 않는다.
 - Codex가 runtime에서 advertised tier를 거부하면 adapter process failure를 기존 attempt 실패 경로로 노출한다. Claude나 Standard로 fallback하지 않는다.
 - `fast_track` prompt, workflow review 선택, implementation selector에는 speed를 전달하지 않는다.
 - Usage response의 `service_tier`는 비용/품질 receipt가 아니므로 기존 usage normalization처럼 저장하지 않는다.
@@ -174,14 +189,27 @@ Monitor가 전달하는 runner catalog와 preset snapshot도 새 capability를 �
 
 이 저장소는 dotfiles provider unit과 별도 Bead·branch·PR을 사용한다. Dotfiles 계약과 runtime install이 완료되기 전에는 beads-ui implementation을 merge/deploy하지 않는다.
 
+`[deploy]`의 detached `bdui-shared restart`는 재시작만 운반하며, merged checkout의
+build readback·process/port/HTTP 확인·Standard/Fast smoke는 운반하지 않는다. 이
+검증은 required interactive-only residue이므로 spec gate close에서
+`worker-ineligible`을 `spec_review`와 같은 logical write로 기록한다. PR Delivery
+보고서는 남은 post-merge cursor를 기록하고, 이후 명시적 `pr-finish` 세션이 merged
+상태에서 아래 순서를 소유한다.
+
 착륙 순서:
 
-1. dotfiles contract PR merge와 affected runtime install/readback
-2. beads-ui implementation PR merge
-3. merged checkout에서 frontend build 포함 full verification 확인
-4. `bdui-shared restart`
-5. process path·listening port·HTTP response 확인
-6. disposable 환경에서 Standard와 Fast Codex launch를 각각 bounded smoke하고 effective argv/정상 종료를 확인
+1. dotfiles contract PR merge와 affected runtime install/readback을 확인한다.
+2. beads-ui implementation PR을 merge하고 merge SHA가 `main`에 포함됐는지 확인한다.
+3. merged checkout에서 `npm run build`와 full verification을 실행하고 tracked bundle이 clean인지 확인한다.
+4. 선언된 `bdui-shared restart`를 실행한다.
+5. shared service의 process path·listening port·HTTP response를 확인한다.
+6. disposable 환경에서 Standard와 Fast Codex launch를 각각 bounded smoke하고 effective argv·정상 종료를 확인한다.
+7. 모든 검증이 green인 뒤에만 phase children과 `UI-03bc`를 close하고 `worker-ineligible` residue를 함께 제거한다.
+
+중단 시 parent는 `resolved`에 남고 close하지 않는다. 다음 `pr-finish`는 GitHub merged
+상태와 durable Bead를 읽어 마지막으로 확인된 단계부터 재개한다. Restart는
+idempotent하고 smoke는 disposable 환경만 사용하므로 어느 단계에서 중단돼도 base
+history나 live config를 되돌릴 필요가 없다.
 
 ## 수용 기준
 
@@ -211,13 +239,13 @@ Monitor가 전달하는 runner catalog와 preset snapshot도 새 capability를 �
 
 다음 seam은 구현 전 실패하는 RED→GREEN 대상이다.
 
-1. **Catalog seam**: builtin outer effort/speed matrix, legacy `efforts` fallback, config override merge/validation, implementation effort 목록 불변.
-2. **Enum/policy seam**: 12-key enum, outer/impl effort union 분리, speed union, Standard fallback, invalid Luna+ultra와 Claude+fast의 deterministic reason.
+1. **Catalog seam**: builtin outer effort/speed matrix, legacy `efforts` fallback, config override merge/validation, implementation effort 목록 불변. Unknown speed, `default` 누락, Claude `fast` override가 구현 전에는 허용되거나 검증 표면이 없어 RED임을 고정한다.
+2. **Enum/policy seam**: 12-key enum, outer/impl effort union 분리, speed union, Standard fallback, invalid Luna+ultra와 Claude+fast의 deterministic reason. Stale Bead의 unknown explicit model이 현재 `opus`로 강등되는 RED를 `invalid_orchestration_model` fail-closed로 전환한다.
 3. **Persistence seam**: Bead snapshot, defaults, preset create/update/apply, stamped key revert, queue normalize, 12-key `exec_values`, attempt speed 왕복.
 4. **Scheduler seam**: 일반 dispatch, cleanup, external conflict, resume/conflict/disposition relaunch가 올바른 speed를 launch settings에 전달하거나 prior tuple을 상속.
 5. **Adapter seam**: Codex Standard/Fast argv, unknown speed 거부, Claude default-only 동작, 기존 model/effort/resume argv 회귀 없음.
 6. **UI seam**: model별 outer effort/speed narrowing, 비호환 표시, Fast 비용 문구, detail/default/preset 공용 row, 12-count 문구.
 7. **Snapshot seam**: Worker와 Monitor의 resolved catalog serialization이 새 capability를 보존.
-8. **Runtime seam**: merged shared service process·port·HTTP와 bounded Standard/Fast Codex smoke.
+8. **Runtime seam**: explicit `pr-finish`가 merged checkout build부터 shared service process·port·HTTP와 bounded Standard/Fast Codex smoke까지 순서대로 수행하고, 중단 시 `resolved` parent에서 재개한다.
 
 Pre-handoff 회귀 검증은 `npm run tsc`, `npm test`, `npm run lint`, `npm run prettier:write`, `npm run build`를 수행하며 frontend bundle과 source map을 implementation commit에 포함한다.
