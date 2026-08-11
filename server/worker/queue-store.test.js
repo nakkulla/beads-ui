@@ -1773,6 +1773,145 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     });
   });
 
+  test('normalizes legacy queues with an empty discard operation map', () => {
+    const store = createQueueStore();
+
+    expect(store.snapshot(WS).discard_operations).toEqual({});
+  });
+
+  test('creates one active discard operation and fences its merge queue entry', () => {
+    const store = createQueueStore({ now: () => 100 });
+    const revision = store.enqueueMerge(WS, {
+      expected_revision: 0,
+      entries: [{ bead_id: 'UI-1', external: true }]
+    }).queue.revision;
+    /** @type {any} */
+    const operation = {
+      operation_id: 'discard-1',
+      bead_id: 'UI-1',
+      attempt_id: null,
+      mode: 'undecided',
+      phase: 'requested',
+      process_identity: null,
+      source_snapshot: { repo: '/repo', branch: 'UI-1' }
+    };
+
+    const created = store.createDiscardOperation(WS, {
+      expected_revision: revision,
+      operation
+    });
+    const reused = store.createDiscardOperation(WS, {
+      expected_revision: created.queue.revision,
+      operation: { ...operation, operation_id: 'discard-2' }
+    });
+
+    expect(created.ok).toBe(true);
+    expect(created.queue.merge_queue).toEqual([]);
+    expect(created.queue.discard_operations['discard-1']).toMatchObject({
+      requested_at: 100,
+      backup: null,
+      last_error: null
+    });
+    expect(reused).toMatchObject({ ok: true, reused: true });
+    expect(Object.keys(reused.queue.discard_operations)).toEqual(['discard-1']);
+  });
+
+  test('advances discard phases with CAS while source snapshot stays immutable', () => {
+    const store = createQueueStore({ now: () => 100 });
+    const created = store.createDiscardOperation(WS, {
+      expected_revision: 0,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        process_identity: null,
+        source_snapshot: { repo: '/repo', branch: 'UI-1' }
+      }
+    });
+
+    const advanced = store.advanceDiscardOperation(WS, {
+      operation_id: 'discard-1',
+      expected_phase: 'requested',
+      next_phase: 'backup_verified',
+      patch: {
+        mode: 'unmerged',
+        source_snapshot: { repo: '/other' },
+        backup: {
+          path: '/state/archive',
+          manifest_sha256: 'a'.repeat(64),
+          verified_at: 200
+        }
+      }
+    });
+    const stale = store.advanceDiscardOperation(WS, {
+      operation_id: 'discard-1',
+      expected_phase: 'requested',
+      next_phase: 'runner_terminated'
+    });
+
+    expect(created.ok).toBe(true);
+    expect(advanced.ok).toBe(true);
+    expect(advanced.queue.discard_operations['discard-1']).toMatchObject({
+      phase: 'backup_verified',
+      mode: 'unmerged',
+      source_snapshot: { repo: '/repo', branch: 'UI-1' },
+      backup: { path: '/state/archive' }
+    });
+    expect(stale).toMatchObject({ ok: false, reason: 'phase_mismatch' });
+  });
+
+  test('keeps a failed discard active and finalizes all lane cleanup atomically', () => {
+    const store = createQueueStore({ now: () => 100 });
+    let revision = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'UI-1'
+    }).queue.revision;
+    const created = store.createDiscardOperation(WS, {
+      expected_revision: revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: 'UI-1',
+        attempt_id: null,
+        process_identity: null,
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+    const advanced = store.advanceDiscardOperation(WS, {
+      operation_id: 'discard-1',
+      expected_phase: 'requested',
+      next_phase: 'backup_verified',
+      patch: { mode: 'unmerged' }
+    });
+    const failed = store.failDiscardOperation(WS, {
+      operation_id: 'discard-1',
+      expected_phase: 'backup_verified',
+      reason: 'archive_corrupt'
+    });
+    const active_before = store.activeDiscardBeadIds(WS);
+
+    const completed = store.completeDiscardOperation(WS, {
+      operation_id: 'discard-1',
+      expected_phase: 'backup_verified'
+    });
+
+    expect(created.ok).toBe(true);
+    expect(advanced.ok).toBe(true);
+    expect(failed.queue.discard_operations['discard-1']).toMatchObject({
+      phase: 'backup_verified',
+      last_error: 'archive_corrupt'
+    });
+    expect(active_before).toEqual(new Set(['UI-1']));
+    expect(store.activeDiscardBeadIds(WS)).toEqual(new Set());
+    expect(completed.queue.queue).toEqual([]);
+    expect(completed.queue.discard_operations['discard-1']).toMatchObject({
+      phase: 'done',
+      last_error: null
+    });
+    expect(
+      createQueueStore().load(WS).discard_operations['discard-1'].phase
+    ).toBe('done');
+  });
+
   test('exec provenance survives appendAttempt/updateAttempt and a reload', () => {
     const store = createQueueStore();
     let rev = store.place(WS, {
