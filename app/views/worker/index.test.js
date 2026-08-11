@@ -7927,6 +7927,65 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     ).toBe(false);
   });
 
+  test.each([
+    ['waiting', '충돌 해소 중', true],
+    ['yielded', '충돌 해소 계속 중 · 완료 후 우선 머지', true],
+    ['ready', '충돌 해소 완료 · 재검증 대기', false]
+  ])(
+    'renders the %s resolution badge without a failure alert',
+    (state, label, live) => {
+      const { mount } = mountLane(
+        laneOf(['RD-1'], {
+          merge_queue: [
+            {
+              bead_id: 'RD-1',
+              resolution_rounds: 1,
+              resolution: {
+                attempt_id: 'resolution-1',
+                subject_bead_id: 'RD-1',
+                deadline_at: 100,
+                state,
+                yielded_at: state === 'waiting' ? null : 101,
+                settled_at: state === 'ready' ? 102 : null
+              }
+            }
+          ],
+          merge_queue_state: { active: null, failures: {} }
+        })
+      );
+
+      const row = rowOf(mount, 'RD-1');
+      const badge = /** @type {HTMLElement} */ (
+        Array.from(row.querySelectorAll('.worker-mini__badge')).find(
+          (element) => element.textContent === label
+        )
+      );
+
+      expect(badge).toBeDefined();
+      expect(badge.classList.contains('worker-mini__badge--alert')).toBe(false);
+      expect(badge.classList.contains('worker-mini__badge--activity')).toBe(
+        live
+      );
+      expect(row.textContent).toContain('머지 대기 #1');
+    }
+  );
+
+  test('omits resolution UI when the optional queue field is absent', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: { active: null, failures: {} }
+      })
+    );
+
+    const text = rowOf(mount, 'RD-1').textContent || '';
+
+    expect(text).not.toContain('충돌 해소 중');
+    expect(text).not.toContain('충돌 해소 계속 중');
+    expect(text).not.toContain('충돌 해소 완료');
+    expect(text).toContain('머지 대기 #1');
+  });
+
   test('the active item shows no position badge and cannot be cancelled', () => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {
@@ -7992,9 +8051,14 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       })
     );
 
+    const row = rowOf(mount, 'RD-1');
+
+    expect(row.textContent).toContain(
+      '일괄 머지 실패: 충돌 해소 대기 시간 초과'
+    );
     expect(
       /** @type {HTMLButtonElement} */ (
-        rowOf(mount, 'RD-1').querySelector('.worker-mini__merge')
+        row.querySelector('.worker-mini__merge')
       ).disabled
     ).toBe(true);
   });

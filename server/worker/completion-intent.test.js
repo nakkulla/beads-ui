@@ -1715,6 +1715,38 @@ describe('worker/completion-intent action driver', () => {
     expect(completionGate).not.toHaveBeenCalled();
   });
 
+  test('does not adopt a malformed historical timeout', async () => {
+    const store = seededCompletionStore();
+    terminalizeResolutionTimeout(store);
+    const queue = store.snapshot(DRIVER_WS);
+    queue.completion_intents['UI-root'] = /** @type {any} */ ({
+      phase: 'needs_human',
+      subject: null,
+      active_op: null,
+      terminal_reason: {
+        reason: 'resolution_timeout',
+        stage: 'conflict_resolution'
+      }
+    });
+    const completionGate = vi.fn();
+    const driver = actionDriver(store, { prActions: { completionGate } });
+
+    const adopted = await driver.adoptLegacyTimeout(
+      'UI-root',
+      queue.completion_intents['UI-root'],
+      queue
+    );
+
+    expect(adopted).toBe(false);
+    expect(completionGate).not.toHaveBeenCalled();
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'resolution_timeout' }
+    });
+  });
+
   test('terminalizes a third repair request without creating another child', async () => {
     const store = seededCompletionStore();
     for (const n of [1, 2]) {
