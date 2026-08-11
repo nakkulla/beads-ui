@@ -488,6 +488,7 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
         head_ref: 'UI-1',
         base_ref: 'main',
         head_sha: DETAIL.headRefOid,
+        merge_sha: null,
         merged_sha: null
       }
     });
@@ -540,7 +541,11 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
 
     expect(r).toMatchObject({
       state: 'ok',
-      data: { state: 'MERGED', merged_sha: merge_sha }
+      data: {
+        state: 'MERGED',
+        merge_sha: merge_sha,
+        merged_sha: merge_sha
+      }
     });
   });
 

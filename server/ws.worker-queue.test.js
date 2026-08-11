@@ -1880,7 +1880,8 @@ detached = true
     expect(queueSnapshots(sock).at(-1).workspace_info.deploy_cmd).toEqual({
       cmd: ['bdui-shared', 'restart'],
       timeout_ms: 120000,
-      detached: true
+      detached: true,
+      adapter: 'workspace'
     });
   });
 
@@ -1922,6 +1923,35 @@ detached = true
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
     expect(queueSnapshots(sock).at(-1).workspace_info.last_deploy).toBeNull();
+  });
+
+  test('projects durable deployment reconcile progress', async () => {
+    const store = getWorkerRuntime().queueStore;
+    store.enqueueReconcile(WS_D.root_dir, {
+      bead_id: 'UI-9',
+      attempt_id: 'deploy-9',
+      target_base: 'main',
+      merged_floor_sha: 'a'.repeat(40)
+    });
+    store.advanceReconcile(WS_D.root_dir, {
+      bead_id: 'UI-9',
+      attempt_id: 'deploy-9',
+      candidate_sha: 'b'.repeat(40),
+      adapter: 'managed',
+      stage: 'verifying'
+    });
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(
+      queueSnapshots(sock).at(-1).deployment_reconcile['UI-9']
+    ).toMatchObject({
+      adapter: 'managed',
+      stage: 'verifying',
+      candidate_sha: 'b'.repeat(40)
+    });
   });
 });
 

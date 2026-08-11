@@ -2978,6 +2978,234 @@ describe('worker/queue-store — last_deploy record (worker-deploy-hook §3)', (
   });
 });
 
+describe('worker/queue-store deployment reconcile state', () => {
+  const FLOOR = 'a'.repeat(40);
+  const CANDIDATE = 'b'.repeat(40);
+
+  test('normalizes a legacy queue without reconcile records', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    delete raw.reconcile;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    expect(createQueueStore().load(WS).reconcile).toEqual({});
+  });
+
+  test('persists an enqueued reconcile attempt across store recreation', () => {
+    const store = createQueueStore();
+
+    const result = store.enqueueReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    expect(result.ok).toBe(true);
+    expect(createQueueStore().load(WS).reconcile['UI-1']).toMatchObject({
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR,
+      candidate_sha: null,
+      adapter: null,
+      stage: 'queued',
+      retry_count: 0,
+      retry_at: null,
+      terminal_failure: null
+    });
+  });
+
+  test('advances only the bound bead and attempt', () => {
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+
+    const rejected = store.advanceReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-other',
+      stage: 'pinned',
+      candidate_sha: CANDIDATE,
+      adapter: 'managed'
+    });
+    const applied = store.advanceReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      stage: 'pinned',
+      candidate_sha: CANDIDATE,
+      adapter: 'managed'
+    });
+
+    expect(rejected.ok).toBe(false);
+    expect(applied.ok).toBe(true);
+    expect(store.snapshot(WS).reconcile['UI-1']).toMatchObject({
+      stage: 'pinned',
+      candidate_sha: CANDIDATE,
+      adapter: 'managed'
+    });
+  });
+
+  test('does not replace a pinned candidate or adapter', () => {
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    store.advanceReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      stage: 'pinned',
+      candidate_sha: CANDIDATE,
+      adapter: 'managed'
+    });
+
+    const result = store.advanceReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      stage: 'verifying',
+      candidate_sha: 'd'.repeat(40),
+      adapter: 'workspace'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).reconcile['UI-1']).toMatchObject({
+      stage: 'pinned',
+      candidate_sha: CANDIDATE,
+      adapter: 'managed'
+    });
+  });
+
+  test('does not advance a terminal reconcile record', () => {
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    store.failReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      reason: 'verify_failed'
+    });
+
+    const result = store.advanceReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      stage: 'queued'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).reconcile['UI-1'].stage).toBe('failed');
+  });
+
+  test('persists a terminal reconcile step across store recreation', () => {
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    store.failReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      reason: 'verify_failed',
+      detail: 'suite red',
+      step: 'post_merge_verify'
+    });
+
+    const terminal_failure =
+      createQueueStore().snapshot(WS).reconcile['UI-1'].terminal_failure;
+
+    expect(terminal_failure).toMatchObject({
+      reason: 'verify_failed',
+      detail: 'suite red',
+      step: 'post_merge_verify'
+    });
+  });
+
+  test('completes with a receipt binding and mirrors it into last_deploy', () => {
+    const store = createQueueStore();
+    store.enqueueReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    store.advanceReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      stage: 'readback',
+      candidate_sha: CANDIDATE,
+      adapter: 'managed'
+    });
+
+    const result = store.completeReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      receipt_path: '/state/private/deploy-1.json',
+      receipt_digest: 'c'.repeat(64)
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).reconcile['UI-1']).toMatchObject({
+      stage: 'complete',
+      receipt_path: '/state/private/deploy-1.json',
+      receipt_digest: 'c'.repeat(64)
+    });
+    expect(store.snapshot(WS).last_deploy).toMatchObject({
+      outcome: 'deployed',
+      bead_id: 'UI-1',
+      base_sha: CANDIDATE,
+      adapter: 'managed',
+      attempt_id: 'deploy-1',
+      merged_floor_sha: FLOOR,
+      receipt_path: '/state/private/deploy-1.json',
+      receipt_digest: 'c'.repeat(64)
+    });
+  });
+
+  test('records bounded retry evidence without changing the candidate', () => {
+    const store = createQueueStore({ now: () => 1234 });
+    store.enqueueReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      target_base: 'main',
+      merged_floor_sha: FLOOR
+    });
+    store.advanceReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      stage: 'pinned',
+      candidate_sha: CANDIDATE,
+      adapter: 'managed'
+    });
+
+    const result = store.retryReconcile(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'deploy-1',
+      reason: 'fetch_failed',
+      retry_at: 4321
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).reconcile['UI-1']).toMatchObject({
+      candidate_sha: CANDIDATE,
+      retry_count: 1,
+      retry_at: 4321,
+      last_retryable_reason: 'fetch_failed'
+    });
+  });
+});
+
 describe('worker/queue-store skip-reason recording', () => {
   test('records a first reason and reports it as applied', () => {
     const store = createQueueStore();

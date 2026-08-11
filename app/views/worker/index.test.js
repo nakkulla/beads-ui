@@ -3992,6 +3992,41 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(banner.textContent).toContain("could not lock ref 'refs/heads/x'");
   });
 
+  test('hides retired shared-checkout guard detail for a managed reconcile', () => {
+    const { mount } = mountWith(
+      queueWithGate(
+        {
+          enabled: false,
+          tier: 'merged',
+          gate_badge: '머지됨',
+          base_badge: '머지됨',
+          reason: null
+        },
+        {
+          reconcile: {
+            'RD-1': {
+              bead_id: 'RD-1',
+              adapter: 'managed',
+              stage: 'failed'
+            }
+          },
+          cleanup_failed: {
+            'RD-1': {
+              step: 'deploy',
+              reason: 'deploy_base_not_synced',
+              at: 1,
+              detail: 'checkout_dirty'
+            }
+          }
+        }
+      )
+    );
+
+    expect(
+      mount.querySelector('.worker-banner--cleanup .worker-banner__detail')
+    ).toBeNull();
+  });
+
   test('omits the cleanup detail line on a record without one', () => {
     const { mount } = mountWith(
       queueWithGate(
@@ -5521,20 +5556,20 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
 });
 
 describe('merge progress — projection (UI-raqh §4)', () => {
-  test('labels the first step as 1 of 7', () => {
+  test('labels the first step as 1 of 9', () => {
     expect(mergeStepView('merging')).toEqual({
       label: '머지 중',
       index: 1,
-      total: 7,
-      percent: 14
+      total: 9,
+      percent: 11
     });
   });
 
-  test('labels the last step as 7 of 7', () => {
+  test('labels the last step as 9 of 9', () => {
     expect(mergeStepView('parent_close')).toMatchObject({
       label: '부모 close',
-      index: 7,
-      total: 7,
+      index: 9,
+      total: 9,
       percent: 100
     });
   });
@@ -5557,6 +5592,14 @@ describe('merge progress — projection (UI-raqh §4)', () => {
       '브랜치 정리',
       '부모 close'
     ]);
+  });
+
+  test('translates managed reconcile stages to deployment progress', () => {
+    expect(
+      ['reconcile_verify', 'reconcile_deploy', 'reconcile_readback'].map(
+        (step) => mergeStepView(step)?.label
+      )
+    ).toEqual(['정리 중 · 검증', '정리 중 · 배포', '정리 중 · readback']);
   });
 
   test('returns null when no merge is running', () => {
@@ -5588,13 +5631,15 @@ describe('merge progress — view (UI-raqh §4)', () => {
   /**
    * @param {any} activity
    * @param {any} [transport]
+   * @param {Record<string, any>} [queue_over]
    * @returns {HTMLElement}
    */
-  function mountRow(activity, transport) {
+  function mountRow(activity, transport, queue_over = {}) {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
+        ...queue_over,
         pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
         pr_observations: {
           'RD-1': {
@@ -5631,7 +5676,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     const step = /** @type {HTMLElement} */ (
       mount.querySelector('.merge-step')
     );
-    expect(step.textContent?.replace(/\s+/g, '')).toBe('배포4/7');
+    expect(step.textContent?.replace(/\s+/g, '')).toBe('배포5/9');
   });
 
   test('marks the row and its progress width', () => {
@@ -5644,7 +5689,24 @@ describe('merge progress — view (UI-raqh §4)', () => {
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
     expect(row.classList.contains('worker-mini--merging')).toBe(true);
-    expect(row.getAttribute('style')).toContain('--progress: 57%');
+    expect(row.getAttribute('style')).toContain('--progress: 56%');
+  });
+
+  test('restores managed progress from durable reconcile state', () => {
+    const mount = mountRow(null, undefined, {
+      reconcile: {
+        'RD-1': {
+          bead_id: 'RD-1',
+          adapter: 'managed',
+          stage: 'verifying',
+          updated_at: 10
+        }
+      }
+    });
+
+    expect(
+      mount.querySelector('.merge-step')?.textContent?.replace(/\s+/g, '')
+    ).toBe('정리중·검증4/9');
   });
 
   test('disables both actions while merging', () => {

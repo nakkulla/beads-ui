@@ -12,8 +12,8 @@
  * bead — Phase 5 owns every action.
  *
  * Cost discipline (spec §4):
- *   - it runs ONLY while the workspace has worker-queue subscribers OR the
- *     durable `auto_merge` flag is on (UI-yk55 §4.4), and
+ *   - it runs ONLY while the workspace has worker-queue subscribers, durable
+ *     `auto_merge`/merge-queue demand, or a nonterminal deployment reconcile,
  *   - it makes ZERO `gh` calls when `pr_wait` is empty.
  * Both gates are checked before any query, so an idle server is silent. The
  * demand gate is inherited by reusing {@link createPoller}.
@@ -173,7 +173,7 @@ export function rollupConclusion(checks) {
  *   worktree?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
- *   onMerged?: (bead_id: string) => Promise<unknown>,
+ *   onMerged?: (bead_id: string, merge_sha: string) => Promise<unknown>,
  *   external?: {
  *     refresh: () => Promise<unknown>,
  *     list: () => import('./external-pr.js').ExternalPrRow[]
@@ -236,8 +236,9 @@ export function createPrPoller(deps) {
    * The `auto_merge` flag cannot stand in for it: a manual [머지] click fills
    * the queue with the toggle off.
    *
-   * With none of the three present the old rule stands exactly as it was: no
-   * subscribers, no `gh` traffic.
+   * A nonterminal deployment reconcile is also durable demand: its retry or
+   * restart resume enters through the same MERGED observation callback. With
+   * none of these present the old rule stands: no subscribers, no `gh` traffic.
    *
    * @returns {boolean}
    */
@@ -249,7 +250,11 @@ export function createPrPoller(deps) {
       const q = deps.store.snapshot(workspace);
       return (
         q.auto_merge === true ||
-        (Array.isArray(q.merge_queue) && q.merge_queue.length > 0)
+        (Array.isArray(q.merge_queue) && q.merge_queue.length > 0) ||
+        Object.values(q.reconcile || {}).some(
+          (record) =>
+            record && record.stage !== 'complete' && record.stage !== 'failed'
+        )
       );
     } catch {
       return false;
@@ -349,18 +354,28 @@ export function createPrPoller(deps) {
     // bead simply stays where it is awaiting a human decision (§4).
     if (pr.state !== 'OPEN') {
       deps.observations.record(workspace, bead_id, { error: null, pr });
-      // An EXTERNAL row records the MERGED observation and STOPS (UI-7agi §1):
-      // its cleanup runs the full choreography including `deploy`, and nothing
-      // the user did not click may deploy. The lane shows `머지됨 · 정리` and the
-      // [정리] click is the single trigger — the worker row's automatic hand-off
-      // stays exactly as it was, because there the merge itself came from a
-      // click on this server.
+      // An EXTERNAL row normally records MERGED and stops (UI-7agi §1). Once a
+      // user click has durably started a Reconciler, however, its nonterminal
+      // record is authority to resume bounded retry after restart; that is not
+      // a new deployment decision.
+      const reconcile = queue.reconcile?.[bead_id];
+      const reconcile_resume =
+        reconcile &&
+        reconcile.stage !== 'complete' &&
+        reconcile.stage !== 'failed';
       if (
         pr.state === 'MERGED' &&
-        !external_row &&
+        (!external_row || reconcile_resume) &&
         typeof deps.onMerged === 'function'
       ) {
-        return { verify: cleanupMerged(bead_id) };
+        const merge_sha = pr.merge_sha || pr.merged_sha;
+        if (typeof merge_sha !== 'string') {
+          deps.observations.record(workspace, bead_id, {
+            error: 'merge_sha_unobserved'
+          });
+          return { verify: null };
+        }
+        return { verify: cleanupMerged(bead_id, merge_sha) };
       }
       return { verify: null };
     }
@@ -435,15 +450,16 @@ export function createPrPoller(deps) {
    * failed cleanup automatically (§6).
    *
    * @param {string} bead_id
+   * @param {string} merge_sha
    * @returns {Promise<void>}
    */
-  async function cleanupMerged(bead_id) {
+  async function cleanupMerged(bead_id, merge_sha) {
     if (cleaning.has(bead_id)) {
       return;
     }
     cleaning.add(bead_id);
     try {
-      await /** @type {any} */ (deps.onMerged)(bead_id);
+      await /** @type {any} */ (deps.onMerged)(bead_id, merge_sha);
       notifyChanged(workspace);
     } catch (err) {
       log('post-merge cleanup failed for %s: %o', bead_id, err);

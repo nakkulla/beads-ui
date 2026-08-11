@@ -925,6 +925,10 @@ export function decorateQueue(workspace_key, raw_queue) {
     // What is RUNNING against each `pr_wait` bead right now (UI-raqh §3/§4) —
     // observation/verification activity and merge progress. Also non-persisted.
     pr_activity: prActivityFor(workspace_key, queue),
+    // Durable Deployment Reconciler projection. Kept as an explicit wire key
+    // even though `...queue` also carries the raw state, so clients do not have
+    // to infer which queue field owns post-merge progress.
+    deployment_reconcile: queue.reconcile || {},
     // Titles for the queue/pr_wait/done beads (UI-12k6) — non-persisted and
     // partial (cache hits only); the client falls back to the id without it.
     bead_titles: beadTitlesFor(workspace_key, queue),
