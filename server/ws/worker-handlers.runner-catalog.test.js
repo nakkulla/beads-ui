@@ -39,6 +39,27 @@ describe('decorateQueue runner_catalog decoration (UI-jrb3 §7)', () => {
     expect(catalog.runners.codex.models.luna.efforts).toContain('max');
   });
 
+  test('preserves nested outer effort and speed capabilities additively', () => {
+    const catalog = /** @type {any} */ (decorateQueue(WS, bareQueue()))
+      .runner_catalog;
+
+    expect(catalog.runners.codex.models.sol).toMatchObject({
+      orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      speed_tiers: ['default', 'fast']
+    });
+    expect(catalog.runners.codex.models.sol.efforts).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh'
+    ]);
+    const wire_catalog = JSON.parse(JSON.stringify(catalog));
+    expect(wire_catalog.runners.codex.models.sol).toMatchObject({
+      orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      speed_tiers: ['default', 'fast']
+    });
+  });
+
   test('the decoration is additive — it does not disturb the persisted queue', () => {
     const out = /** @type {any} */ (decorateQueue(WS, bareQueue()));
 

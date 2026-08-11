@@ -10,7 +10,7 @@
  *     normalize (`exec_defaults`), and the `setExecDefault` mutation enum.
  *   - policy.js: dispatch resolution (`resolveExecSettings`).
  *   - ws/mutation-handlers.js: the per-bead detail-panel edit surface, which
- *     synthesizes the extra `workflow_mode` key on top of these 10.
+ *     synthesizes the extra `workflow_mode` key on top of these 12.
  *
  * `workflow_mode` is intentionally NOT part of this table — it is a per-bead
  * metadata key only, never a workspace-global default (spec 비-목표).

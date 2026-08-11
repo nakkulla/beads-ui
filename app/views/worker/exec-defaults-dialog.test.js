@@ -10,7 +10,25 @@ function catalogFixture() {
         efforts: ['low', 'medium', 'high', 'xhigh']
       },
       codex: {
-        models: { terra: { id: 'terra' }, luna: { id: 'luna' } },
+        models: {
+          terra: {
+            id: 'terra',
+            orchestration_efforts: [
+              'low',
+              'medium',
+              'high',
+              'xhigh',
+              'max',
+              'ultra'
+            ],
+            speed_tiers: ['default', 'fast']
+          },
+          luna: {
+            id: 'luna',
+            orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+            speed_tiers: ['default', 'fast']
+          }
+        },
         efforts: ['low', 'medium', 'high', 'xhigh', 'max']
       }
     }
@@ -140,7 +158,58 @@ describe('worker exec preset dialog', () => {
       settings: { impl_runtime: 'codex', impl_model: 'terra' }
     });
     expect(mount.querySelector('[data-preset-id="p1"]')?.textContent).toContain(
-      '1/11 지정'
+      '1/12 지정'
+    );
+  });
+
+  test('renders the shared speed row with Codex Standard and Fast choices', () => {
+    const { mount } = setup({ revision: 0, presets: [] }, vi.fn(), {
+      exec_defaults: { orchestration_model: 'terra' }
+    });
+    click(
+      /** @type {HTMLElement} */ (mount.querySelector('[data-preset-new]'))
+    );
+
+    const model = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="orchestration_model"]')
+    );
+    model.value = 'terra';
+    model.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const speed = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="orchestration_speed"]')
+    );
+    expect(
+      Array.from(speed.options).map((option) => option.textContent?.trim())
+    ).toEqual(['(기본: Standard)', 'Standard', 'Fast']);
+  });
+
+  test('keeps Claude fast speed as Fast (비호환)', () => {
+    const { mount } = setup({
+      revision: 0,
+      presets: [
+        {
+          id: 'p1',
+          name: 'Claude 설정',
+          settings: {
+            orchestration_model: 'opus',
+            orchestration_speed: 'fast'
+          }
+        }
+      ]
+    });
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('[data-preset-edit="p1"]')
+      )
+    );
+
+    const speed = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-preset-key="orchestration_speed"]')
+    );
+    expect(speed.value).toBe('fast');
+    expect(speed.options[speed.selectedIndex].textContent?.trim()).toBe(
+      'Fast (비호환)'
     );
   });
 

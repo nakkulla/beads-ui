@@ -140,7 +140,7 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
 });
 
 describe('worker/exec-enums implementation target coherence', () => {
-  test('marks stale known settings incompatible across all 11 keys', () => {
+  test('marks stale known settings incompatible across all 12 keys', () => {
     const catalog = resolveCatalog({ warn: () => {} });
 
     expect(

@@ -43,7 +43,7 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'dep-add',
   'dep-remove',
   'update-assignee',
-  // Execution-preference metadata (11 keys + workflow_mode), plus the linked
+  // Execution-preference metadata (12 keys + workflow_mode), plus the linked
   // implementation target's atomic three-key mutation.
   'update-exec-settings',
   'update-impl-target',

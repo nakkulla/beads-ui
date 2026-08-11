@@ -22,7 +22,8 @@ import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
  * revisions, and adopts both authoritative snapshots on a conflict without retry.
  *
  * Values resolve bead metadata > this global default > final fallback (`opus`
- * for orchestration_model, unset for the other 10), so selecting `(기본)` records
+ * for orchestration_model, `default` for orchestration_speed, unset for the
+ * other 10), so selecting `(기본)` records
  * an unset (null) — the store drops the key. A stored value outside the current
  * vocabulary (e.g. a model dropped from `config.toml`, or an effort the chosen
  * model does not accept) shows as its own selected `(비호환)` option, still
@@ -402,7 +403,7 @@ export function createExecDefaultsDialog(mount_element, options) {
         `${EXEC_SETTING_PRESENTATION[key]?.title || key}: ${settings[key]}`
     );
     return {
-      count: `${count}/11 지정`,
+      count: `${count}/12 지정`,
       choices: choices.length > 0 ? choices.join(' · ') : '모든 항목 기본값'
     };
   }

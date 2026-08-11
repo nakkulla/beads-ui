@@ -24,11 +24,37 @@ function catalogFixture() {
       codex: {
         command: 'codex',
         models: {
-          sol: { id: 'gpt-5.6-sol', efforts: ['low', 'medium', 'high'] },
-          terra: { id: 'gpt-5.6-terra', efforts: ['low', 'medium', 'high'] },
+          sol: {
+            id: 'gpt-5.6-sol',
+            efforts: ['low', 'medium', 'high'],
+            orchestration_efforts: [
+              'low',
+              'medium',
+              'high',
+              'xhigh',
+              'max',
+              'ultra'
+            ],
+            speed_tiers: ['default', 'fast']
+          },
+          terra: {
+            id: 'gpt-5.6-terra',
+            efforts: ['low', 'medium', 'high'],
+            orchestration_efforts: [
+              'low',
+              'medium',
+              'high',
+              'xhigh',
+              'max',
+              'ultra'
+            ],
+            speed_tiers: ['default', 'fast']
+          },
           luna: {
             id: 'gpt-5.6-luna',
-            efforts: ['low', 'medium', 'high', 'xhigh', 'max']
+            efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+            orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+            speed_tiers: ['default', 'fast']
           }
         },
         efforts: ['minimal', 'low', 'medium', 'high', 'xhigh']
@@ -104,12 +130,13 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     document.body.innerHTML = '<div id="m"></div>';
   });
 
-  test('renders the 11 exec keys plus workflow_mode and drops review_model', () => {
+  test('renders the 12 exec keys plus workflow_mode and drops review_model', () => {
     const mount = mountTemplate();
 
     for (const key of [
       'orchestration_model',
       'orchestration_effort',
+      'orchestration_speed',
       'spec_review_model',
       'spec_review_effort',
       'impl_review_model',
@@ -140,6 +167,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     expect(labels).toEqual([
       { label: '워커 실행 모델', key: 'orchestration_model' },
       { label: '워커 reasoning effort', key: 'orchestration_effort' },
+      { label: '워커 실행 속도', key: 'orchestration_speed' },
       { label: '스펙 리뷰어', key: 'spec_review_model' },
       { label: '스펙 리뷰 reasoning effort', key: 'spec_review_effort' },
       { label: '계획 리뷰어', key: 'plan_review_model' },
@@ -200,13 +228,17 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
 
   test('each step key emits its own mutation', () => {
     const onChange = vi.fn();
-    const mount = mountTemplate({ impl_runtime: 'codex' }, {}, undefined, {
-      onChange
-    });
+    const mount = mountTemplate(
+      { impl_runtime: 'codex', orchestration_model: 'sol' },
+      {},
+      undefined,
+      { onChange }
+    );
 
     for (const [key, value] of [
       ['spec_review_model', 'codex'],
       ['spec_review_effort', 'high'],
+      ['orchestration_speed', 'fast'],
       ['impl_review_model', 'self'],
       ['impl_review_effort', 'low'],
       ['plan_review_model', 'skip'],
@@ -278,10 +310,99 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
 
     document.body.innerHTML = '<div id="m"></div>';
     const from_global = mountTemplate({}, { orchestration_model: 'sol' });
-    // sol pins low/medium/high — no xhigh, no max.
+    // sol's outer capability is wider than its implementation effort list.
     expect(
       optionValues(selectFor(from_global, 'orchestration_effort'))
-    ).toEqual(['', 'low', 'medium', 'high']);
+    ).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  });
+
+  test('keeps outer effort capability separate from implementation effort', () => {
+    const mount = mountTemplate({
+      orchestration_model: 'sol',
+      impl_model: 'sol'
+    });
+
+    expect(optionValues(selectFor(mount, 'orchestration_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra'
+    ]);
+    expect(optionValues(selectFor(mount, 'impl_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high'
+    ]);
+  });
+
+  test('keeps Luna outer effort below ultra', () => {
+    const mount = mountTemplate({ orchestration_model: 'luna' });
+
+    expect(optionValues(selectFor(mount, 'orchestration_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max'
+    ]);
+    expect(
+      optionValues(selectFor(mount, 'orchestration_effort'))
+    ).not.toContain('ultra');
+  });
+
+  test('narrows speed options to the selected model and labels them', () => {
+    const claude = mountTemplate({ orchestration_model: 'opus' });
+    expect(optionValues(selectFor(claude, 'orchestration_speed'))).toEqual([
+      '',
+      'default'
+    ]);
+    expect(
+      selectFor(claude, 'orchestration_speed').options[1].textContent?.trim()
+    ).toBe('Standard');
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const codex = mountTemplate({ orchestration_model: 'sol' });
+    expect(optionValues(selectFor(codex, 'orchestration_speed'))).toEqual([
+      '',
+      'default',
+      'fast'
+    ]);
+    expect(
+      Array.from(selectFor(codex, 'orchestration_speed').options).map(
+        (option) => option.textContent?.trim()
+      )
+    ).toEqual(['(기본: Standard)', 'Standard', 'Fast']);
+  });
+
+  test('keeps a stale speed value selected as incompatible', () => {
+    const mount = mountTemplate({
+      orchestration_model: 'opus',
+      orchestration_speed: 'fast'
+    });
+
+    const speed = selectFor(mount, 'orchestration_speed');
+    expect(speed.value).toBe('fast');
+    expect(speed.options[speed.selectedIndex].textContent?.trim()).toBe(
+      'Fast (비호환)'
+    );
+  });
+
+  test('preserves an unknown stale speed label verbatim', () => {
+    const mount = mountTemplate({
+      orchestration_model: 'opus',
+      orchestration_speed: 'turbo'
+    });
+
+    const speed = selectFor(mount, 'orchestration_speed');
+    expect(speed.value).toBe('turbo');
+    expect(speed.options[speed.selectedIndex].textContent?.trim()).toBe(
+      'turbo (비호환)'
+    );
   });
 
   test('impl_effort is the catalog union until an impl model is chosen', () => {
@@ -378,6 +499,7 @@ describe('views/detail-panel/exec-settings default labels (§3.2)', () => {
     const expected = [
       ['orchestration_model', '기본: opus'],
       ['orchestration_effort', '기본: CLI 기본'],
+      ['orchestration_speed', '기본: Standard'],
       ['spec_review_model', '기본: codex'],
       ['impl_review_model', '기본: codex'],
       ['plan_review_model', '기본: codex'],

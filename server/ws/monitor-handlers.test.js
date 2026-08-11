@@ -357,7 +357,18 @@ describe('buildMonitorWorkspacesState (UI-qrfo §4)', () => {
   });
 
   test('decorates every workspace control state with the runtime catalog', () => {
-    const runner_catalog = { runners: { codex: { models: {} } } };
+    const runner_catalog = {
+      runners: {
+        codex: {
+          models: {
+            sol: {
+              orchestration_efforts: ['low', 'max', 'ultra'],
+              speed_tiers: ['default', 'fast']
+            }
+          }
+        }
+      }
+    };
 
     const out = buildMonitorWorkspacesState({
       listWorkspaces: () => [{ path: WS_A }],
@@ -367,6 +378,16 @@ describe('buildMonitorWorkspacesState (UI-qrfo §4)', () => {
     });
 
     expect(out[0].runner_catalog).toBe(runner_catalog);
+    const catalog = /** @type {any} */ (out[0].runner_catalog);
+    expect(catalog).toEqual(runner_catalog);
+    expect(catalog.runners.codex.models.sol).toMatchObject({
+      orchestration_efforts: ['low', 'max', 'ultra'],
+      speed_tiers: ['default', 'fast']
+    });
+    const wire_state = JSON.parse(JSON.stringify(out));
+    expect(wire_state[0].runner_catalog.runners.codex.models.sol).toEqual(
+      runner_catalog.runners.codex.models.sol
+    );
   });
 
   test('carries the automation flags and slot count', () => {

@@ -1005,7 +1005,20 @@ describe('views/detail-panel', () => {
               efforts: ['low', 'medium', 'high']
             },
             codex: {
-              models: { terra: { id: 'terra' } },
+              models: {
+                terra: {
+                  id: 'terra',
+                  orchestration_efforts: [
+                    'low',
+                    'medium',
+                    'high',
+                    'xhigh',
+                    'max',
+                    'ultra'
+                  ],
+                  speed_tiers: ['default', 'fast']
+                }
+              },
               efforts: ['low', 'medium', 'high']
             }
           }
@@ -1081,7 +1094,20 @@ describe('views/detail-panel', () => {
         runner_catalog: {
           runners: {
             codex: {
-              models: { terra: { id: 'terra' } },
+              models: {
+                terra: {
+                  id: 'terra',
+                  orchestration_efforts: [
+                    'low',
+                    'medium',
+                    'high',
+                    'xhigh',
+                    'max',
+                    'ultra'
+                  ],
+                  speed_tiers: ['default', 'fast']
+                }
+              },
               efforts: ['low', 'medium', 'high']
             }
           }
@@ -1091,7 +1117,17 @@ describe('views/detail-panel', () => {
     const execPresetStore = createExecPresetStore();
     execPresetStore.set({
       revision: 4,
-      presets: [{ id: 'p1', name: '개발', settings: { impl_model: 'terra' } }]
+      presets: [
+        {
+          id: 'p1',
+          name: '개발',
+          settings: {
+            orchestration_model: 'terra',
+            impl_model: 'terra',
+            orchestration_speed: 'fast'
+          }
+        }
+      ]
     });
     const transport = vi.fn(async (type) => {
       if (type === 'apply-exec-preset') {
@@ -1102,7 +1138,11 @@ describe('views/detail-panel', () => {
           issue: {
             id: 'UI-1',
             title: 't',
-            metadata: { impl_model: 'terra' }
+            metadata: {
+              orchestration_model: 'terra',
+              impl_model: 'terra',
+              orchestration_speed: 'fast'
+            }
           }
         };
       }
@@ -1148,10 +1188,18 @@ describe('views/detail-panel', () => {
       expected_revision: 4
     });
     expect(
+      mount.querySelector('[data-apply-exec-preset]')?.textContent
+    ).toContain('12개 설정 적용');
+    expect(
       /** @type {HTMLSelectElement} */ (
         mount.querySelector('[data-key="impl_model"]')
       ).value
     ).toBe('terra');
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-key="orchestration_speed"]')
+      ).value
+    ).toBe('fast');
     expect(
       /** @type {HTMLSelectElement} */ (
         mount.querySelector('[data-key="workflow_mode"]')

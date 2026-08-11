@@ -10,7 +10,8 @@
  * through, and an invalid linked implementation target blocks dispatch instead
  * of silently demoting. The
  * final fallback is `opus` for orchestration_model
- * (worker-orchestration-model-default-opus) and unset for the other 10 keys.
+ * (worker-orchestration-model-default-opus), `default` for orchestration_speed,
+ * and unset for the other 10 keys.
  *
  * The single `review_model` key is retired (dotfiles-mqcj): it is neither read
  * nor used to seed the per-step keys, so a bead still carrying it resolves the
