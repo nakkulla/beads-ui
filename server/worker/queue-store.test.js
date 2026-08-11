@@ -1043,6 +1043,110 @@ describe('worker/queue-store', () => {
     expect(result.queue.merge_queue).toEqual([]);
   });
 
+  test('adopts a historical timeout with its merge owner and wait atomically', () => {
+    const store = storeWithCompletionIntent();
+    const failure_key = {
+      stage: 'merge_subject',
+      reason: 'merge_ready',
+      subject_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      result_digest: 'c'.repeat(64)
+    };
+    const op = {
+      op_id: 'merge-op',
+      kind: /** @type {const} */ ('merge_subject'),
+      failure_key,
+      attempt_id: null,
+      repair_bead_id: null,
+      status: /** @type {const} */ ('prepared')
+    };
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      op
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'legacy-resolution',
+        bead_id: 'UI-root',
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 50
+      }
+    });
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      terminal: {
+        reason: 'resolution_timeout',
+        stage: 'conflict_resolution',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 100
+      }
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.adoptLegacyResolutionTimeout(WS, {
+      root_bead_id: 'UI-root',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'd'.repeat(40),
+        base_sha: 'e'.repeat(40),
+        merged_sha: null
+      },
+      op: {
+        ...op,
+        op_id: 'latest-merge-op',
+        failure_key: {
+          ...failure_key,
+          subject_sha: 'd'.repeat(40),
+          base_sha: 'e'.repeat(40)
+        }
+      },
+      resolution_attempt_id: 'legacy-resolution',
+      resolution_rounds: 1,
+      wait_ms: 100
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'merging',
+      active_op: { op_id: 'merge-op', kind: 'merge_subject' },
+      terminal_reason: null,
+      subject: { head_sha: 'd'.repeat(40), base_sha: 'e'.repeat(40) }
+    });
+    expect(result.queue.merge_queue).toEqual([
+      {
+        bead_id: 'UI-root',
+        resolution_rounds: 1,
+        resolution: {
+          attempt_id: 'legacy-resolution',
+          subject_bead_id: 'UI-root',
+          deadline_at: 150,
+          state: 'waiting',
+          yielded_at: null,
+          settled_at: null
+        }
+      }
+    ]);
+
+    const repeated = store.adoptLegacyResolutionTimeout(WS, {
+      root_bead_id: 'UI-root',
+      subject: result.queue.completion_intents['UI-root'].subject,
+      op,
+      resolution_attempt_id: null,
+      resolution_rounds: 0,
+      wait_ms: 100
+    });
+    expect(repeated.ok).toBe(false);
+    expect(repeated.queue.revision).toBe(revision + 1);
+  });
+
   test('marks the root intent completed in the same move to done', () => {
     const store = storeWithCompletionIntent();
     const revision = store.snapshot(WS).revision;

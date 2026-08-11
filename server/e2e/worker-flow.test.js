@@ -670,6 +670,168 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
 });
 
 describe('worker e2e — completion intent post-merge recovery', () => {
+  test('yields a long resolver, merges the next PR, then prioritizes the late root', async () => {
+    const root_bead_id = 'R-long';
+    const next_bead_id = 'R-clean';
+    const runtime = createWorkerRuntime();
+    const store = runtime.queueStore;
+    for (const bead_id of [root_bead_id, next_bead_id]) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: `initial-${bead_id}`,
+          bead_id,
+          status: 'done'
+        }
+      });
+      store.moveToPrWait(WS, {
+        bead_id,
+        attempt_id: `initial-${bead_id}`,
+        patch: { finished_at: 1 }
+      });
+    }
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const subject = {
+      role: /** @type {const} */ ('root'),
+      bead_id: root_bead_id,
+      pr_url: 'https://github.com/o/r/pull/10',
+      head_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      merged_sha: null
+    };
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id,
+      target_base: 'main',
+      subject
+    });
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: next_bead_id }]
+    });
+    /** @type {string[]} */
+    const effects = [];
+    /** @type {ReturnType<typeof createCompletionActionDriver>|null} */
+    let completion_driver = null;
+    const merge_queue = createMergeQueue({
+      workspace: WS,
+      store,
+      now: () => 100,
+      resolution_wait_ms: 10,
+      setResolutionPollTimer: () => 1,
+      probeMergeability: async (bead_id) => {
+        const resolution = store.snapshot(WS).attempts['resolution-long'];
+        return {
+          ok: true,
+          kind:
+            bead_id === root_bead_id && resolution?.status !== 'done'
+              ? /** @type {const} */ ('dirty')
+              : /** @type {const} */ ('clean'),
+          reason: null,
+          head_sha: 'a'.repeat(40),
+          base_ref: 'main',
+          external: false
+        };
+      },
+      dispatchConflict: async (bead_id, _approved, resolution_wait) => {
+        effects.push(`dispatch:${bead_id}`);
+        store.appendResolutionAttempt(WS, {
+          expected_revision: store.snapshot(WS).revision,
+          queue_bead_id: resolution_wait.queue_bead_id,
+          subject_bead_id: bead_id,
+          wait_ms: resolution_wait.wait_ms,
+          attempt: {
+            attempt_id: 'resolution-long',
+            bead_id,
+            status: 'running',
+            conflict_resolution: true,
+            started_at: 0
+          }
+        });
+        return {
+          ok: true,
+          action: 'conflict_resolution',
+          reason: null,
+          attempt_id: 'resolution-long'
+        };
+      },
+      merge: async (bead_id) => {
+        effects.push(`merge:${bead_id}`);
+        store.moveToDone(WS, { bead_id });
+        return { ok: true, action: 'merged', reason: null };
+      },
+      observePr: async () => ({ state: 'MERGED' }),
+      onCompletionResult: async (...args) => {
+        await completion_driver?.onMergeResult(...args);
+      }
+    });
+    completion_driver = createCompletionActionDriver({
+      workspace: WS,
+      store,
+      prActions: {
+        completionGate: async () => ({
+          ok: true,
+          target_base: 'main',
+          base_sha: subject.base_sha,
+          subject,
+          verdict: { enabled: true, tier: 'ready', reason: null },
+          evidence: {}
+        })
+      },
+      completionRepair: {
+        probeOwnership: async () => ({ state: 'pr_owned' }),
+        ensureLinkedBead: async () => ({ bead_id: 'unused' })
+      },
+      scheduler: {
+        dispatchCompletionRepair: async () => ({
+          ok: false,
+          reason: 'unexpected'
+        })
+      },
+      kickMerge: () => merge_queue.kick()
+    });
+    const current = store.snapshot(WS).completion_intents[root_bead_id];
+
+    await completion_driver.onAction(
+      root_bead_id,
+      { kind: 'merge_subject' },
+      current
+    );
+
+    expect(store.snapshot(WS).merge_queue).toMatchObject([
+      {
+        bead_id: root_bead_id,
+        resolution_rounds: 0,
+        resolution: { state: 'yielded', attempt_id: 'resolution-long' }
+      }
+    ]);
+    expect(effects).toEqual([
+      `dispatch:${root_bead_id}`,
+      `merge:${next_bead_id}`
+    ]);
+
+    store.updateAttempt(WS, {
+      attempt_id: 'resolution-long',
+      patch: { status: 'done', finished_at: 101 }
+    });
+    await merge_queue.kick();
+
+    const queue = store.snapshot(WS);
+    expect(effects).toEqual([
+      `dispatch:${root_bead_id}`,
+      `merge:${next_bead_id}`,
+      `merge:${root_bead_id}`
+    ]);
+    expect(queue.merge_queue).toEqual([]);
+    expect(queue.completion_intents[root_bead_id]).toMatchObject({
+      phase: 'completed',
+      active_op: null,
+      terminal_reason: null
+    });
+  });
+
   test('paused generic resume settles one root budget then advances the next item', async () => {
     const root_bead_id = 'R-resume';
     const next_bead_id = 'R-next';
@@ -979,6 +1141,125 @@ describe('worker e2e — completion intent post-merge recovery', () => {
       repair_sessions_used: 1
     });
     expect(Object.keys(queue.attempts)).toHaveLength(4);
+  });
+
+  test('recovers one persisted resolution-timeout root on startup', async () => {
+    const root_bead_id = 'beads-456';
+    const runtime = createWorkerRuntime();
+    const store = runtime.queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'beads-456-initial',
+        bead_id: root_bead_id,
+        status: 'done'
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: root_bead_id,
+      attempt_id: 'beads-456-initial',
+      patch: { finished_at: 1 }
+    });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const subject = {
+      role: /** @type {const} */ ('root'),
+      bead_id: root_bead_id,
+      pr_url: 'https://github.com/o/r/pull/9',
+      head_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      merged_sha: null
+    };
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id,
+      target_base: 'main',
+      subject
+    });
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id,
+      terminal: {
+        reason: 'resolution_timeout',
+        stage: 'conflict_resolution',
+        failure_key: null,
+        evidence: 'pre-yield terminal fixture',
+        log_path: null,
+        at: 1
+      }
+    });
+
+    const recovered_store = createWorkerRuntime().queueStore;
+    /** @type {string[]} */
+    const merge_calls = [];
+    /** @type {ReturnType<typeof createCompletionActionDriver>|null} */
+    let completion_driver = null;
+    const merge_queue = createMergeQueue({
+      workspace: WS,
+      store: recovered_store,
+      merge: async (bead_id) => {
+        merge_calls.push(bead_id);
+        recovered_store.moveToDone(WS, { bead_id });
+        return { ok: true, action: 'merged', reason: null };
+      },
+      observePr: async () => ({ state: 'MERGED' }),
+      onCompletionResult: async (...args) => {
+        await completion_driver?.onMergeResult(...args);
+      }
+    });
+    completion_driver = createCompletionActionDriver({
+      workspace: WS,
+      store: recovered_store,
+      prActions: {
+        completionGate: async () => ({
+          ok: true,
+          target_base: 'main',
+          base_sha: subject.base_sha,
+          subject: { ...subject, head_sha: 'c'.repeat(40) },
+          verdict: {
+            enabled: true,
+            tier: 'ready',
+            base_badge: '최신',
+            reason: null
+          },
+          evidence: {}
+        })
+      },
+      completionRepair: {
+        probeOwnership: async () => ({ state: 'pr_owned' }),
+        ensureLinkedBead: async () => ({ bead_id: 'unused' })
+      },
+      scheduler: {
+        dispatchCompletionRepair: async () => ({
+          ok: false,
+          reason: 'unexpected'
+        })
+      },
+      kickMerge: () => merge_queue.kick()
+    });
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: WS,
+      store: recovered_store,
+      observe: completion_driver.observe,
+      onAction: completion_driver.onAction,
+      adoptLegacy: completion_driver.adoptLegacyTimeout
+    });
+
+    await coordinator.reconcile();
+    await merge_queue.kick();
+    await coordinator.reconcile();
+    await merge_queue.kick();
+
+    const queue = recovered_store.snapshot(WS);
+    expect(merge_calls).toEqual([root_bead_id]);
+    expect(queue.merge_queue).toEqual([]);
+    expect(queue.completion_intents[root_bead_id]).toMatchObject({
+      phase: 'completed',
+      active_op: null,
+      terminal_reason: null,
+      subject: { head_sha: 'c'.repeat(40) }
+    });
+    expect(Object.keys(queue.attempts)).toEqual(['beads-456-initial']);
   });
 
   test('fake repair session → repair merge → root cleanup replay → done', async () => {

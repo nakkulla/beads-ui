@@ -1005,6 +1005,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       subscribeQueueChanged: onQueueChanged,
       observe: resolvedCompletionActionDriver.observe,
       onAction: resolvedCompletionActionDriver.onAction,
+      adoptLegacy: resolvedCompletionActionDriver.adoptLegacyTimeout,
       onAttemptSettled: resolvedCompletionActionDriver.onAttemptSettled,
       log
     });

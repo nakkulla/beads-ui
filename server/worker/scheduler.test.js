@@ -9099,6 +9099,47 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
     });
   });
 
+  test('fans out the terminal resolver transition for wait reconciliation', async () => {
+    const notifyQueueChanged = vi.fn();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      notifyQueueChanged
+    });
+    seedPrWait(env.store, 'B1');
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-B1',
+      patch: {
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-orig',
+        finished_at: 50
+      }
+    });
+    env.store.enqueueMerge(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      entries: [{ bead_id: 'B1' }]
+    });
+    const res = await env.scheduler.resolveConflict(WS, 'B1', {
+      queue_bead_id: 'B1',
+      wait_ms: 100
+    });
+    notifyQueueChanged.mockClear();
+
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts[/** @type {string} */ (res.attempt_id)].status).toBe(
+      'done'
+    );
+    expect(q.merge_queue[0].resolution).toMatchObject({
+      attempt_id: res.attempt_id
+    });
+    expect(notifyQueueChanged).toHaveBeenCalledWith(WS);
+  });
+
   test('records the disposition prompts and its own guard variant', async () => {
     const recorder = makeRecordingClaudeRunner();
     const env = setup({

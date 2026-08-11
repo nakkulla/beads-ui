@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -132,6 +133,64 @@ function actionDriver(store, overrides = {}) {
       dispatchCompletionRepair: vi.fn(async () => ({ ok: true }))
     },
     ...overrides
+  });
+}
+
+/**
+ * @param {string|null} [op_id]
+ */
+function mergeOperation(op_id = null) {
+  const failure_key = createCompletionFailureKey({
+    stage: 'merge_subject',
+    reason: 'merge_ready',
+    subject_sha: 'a'.repeat(40),
+    base_sha: 'b'.repeat(40),
+    evidence: {}
+  });
+  const generated_id = `completion-${createHash('sha256')
+    .update(
+      JSON.stringify({
+        root_bead_id: 'UI-root',
+        kind: 'merge_subject',
+        repair_round: null,
+        stage: failure_key.stage,
+        reason: failure_key.reason,
+        subject_sha: failure_key.subject_sha,
+        base_sha: failure_key.base_sha,
+        result_digest: failure_key.result_digest
+      })
+    )
+    .digest('hex')
+    .slice(0, 24)}`;
+  return {
+    op_id: op_id || generated_id,
+    kind: /** @type {const} */ ('merge_subject'),
+    failure_key,
+    attempt_id: null,
+    repair_bead_id: null,
+    status: /** @type {const} */ ('prepared')
+  };
+}
+
+/**
+ * @param {ReturnType<typeof seededCompletionStore>} store
+ */
+function terminalizeResolutionTimeout(store) {
+  store.prepareCompletionOp(DRIVER_WS, {
+    root_bead_id: 'UI-root',
+    phase: 'merging',
+    op: mergeOperation()
+  });
+  store.terminalizeCompletionIntent(DRIVER_WS, {
+    root_bead_id: 'UI-root',
+    terminal: {
+      reason: 'resolution_timeout',
+      stage: 'conflict_resolution',
+      failure_key: null,
+      evidence: 'historical timeout',
+      log_path: null,
+      at: 1
+    }
   });
 }
 
@@ -470,7 +529,7 @@ describe('worker/completion-intent action driver', () => {
 
     const queue = store.snapshot(DRIVER_WS);
     expect(queue.merge_queue).toEqual([
-      { bead_id: 'UI-root', resolution_rounds: 0 }
+      { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
     ]);
     expect(queue.completion_intents['UI-root']).toMatchObject({
       phase: 'repairing',
@@ -914,7 +973,7 @@ describe('worker/completion-intent action driver', () => {
 
     const queue = store.snapshot(DRIVER_WS);
     expect(queue.merge_queue).toEqual([
-      { bead_id: 'UI-root', resolution_rounds: 0 }
+      { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
     ]);
     expect(queue.completion_intents['UI-root']).toMatchObject({
       phase: 'gating',
@@ -1423,6 +1482,239 @@ describe('worker/completion-intent action driver', () => {
     ).toMatchObject({ phase: 'completed', active_op: null });
   });
 
+  test('keeps a live resolution deadline nonterminal', async () => {
+    const store = seededCompletionStore();
+    store.prepareCompletionOp(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      op: mergeOperation()
+    });
+    const driver = actionDriver(store);
+
+    await driver.onMergeResult('UI-root', 'UI-root', {
+      ok: false,
+      action: 'conflict_resolution',
+      reason: 'resolution_timeout'
+    });
+
+    expect(store.snapshot(DRIVER_WS)).toMatchObject({
+      merge_queue: [{ bead_id: 'UI-root' }],
+      completion_intents: {
+        'UI-root': {
+          phase: 'merging',
+          active_op: {
+            kind: 'merge_subject',
+            op_id: expect.stringMatching(/^completion-[0-9a-f]{24}$/)
+          },
+          terminal_reason: null
+        }
+      }
+    });
+  });
+
+  test.each([
+    [
+      'CLEAN',
+      { enabled: true, tier: 'ready', base_badge: '최신', reason: null }
+    ],
+    [
+      'BEHIND',
+      {
+        enabled: false,
+        tier: 'base',
+        base_badge: 'base 뒤처짐',
+        reason: 'branch_behind'
+      }
+    ]
+  ])(
+    'adopts one historical %s timeout exactly once',
+    async (_label, verdict) => {
+      const store = seededCompletionStore();
+      terminalizeResolutionTimeout(store);
+      const completionGate = vi.fn(async () => ({
+        ok: true,
+        target_base: 'main',
+        base_sha: 'd'.repeat(40),
+        subject: {
+          ...intent().subject,
+          head_sha: 'c'.repeat(40),
+          base_sha: 'd'.repeat(40)
+        },
+        verdict,
+        evidence: {}
+      }));
+      const driver = actionDriver(store, { prActions: { completionGate } });
+      let queue = store.snapshot(DRIVER_WS);
+
+      const adopted = await driver.adoptLegacyTimeout(
+        'UI-root',
+        queue.completion_intents['UI-root'],
+        queue
+      );
+      queue = store.snapshot(DRIVER_WS);
+      const repeated = await driver.adoptLegacyTimeout(
+        'UI-root',
+        queue.completion_intents['UI-root'],
+        queue
+      );
+
+      expect(adopted).toBe(true);
+      expect(repeated).toBe(false);
+      expect(completionGate).toHaveBeenCalledTimes(1);
+      expect(queue).toMatchObject({
+        merge_queue: [
+          { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
+        ],
+        completion_intents: {
+          'UI-root': {
+            phase: 'merging',
+            active_op: {
+              kind: 'merge_subject',
+              op_id: expect.stringMatching(/^completion-[0-9a-f]{24}$/)
+            },
+            terminal_reason: null,
+            subject: { head_sha: 'c'.repeat(40), base_sha: 'd'.repeat(40) }
+          }
+        }
+      });
+    }
+  );
+
+  test('adopts one exact live DIRTY leaf at the conservative last round', async () => {
+    const store = seededCompletionStore();
+    terminalizeResolutionTimeout(store);
+    store.appendAttempt(DRIVER_WS, {
+      expected_revision: store.snapshot(DRIVER_WS).revision,
+      attempt: {
+        attempt_id: 'legacy-resolution',
+        bead_id: 'UI-root',
+        conflict_resolution: true,
+        status: 'running',
+        started_at: 100
+      }
+    });
+    const completionGate = vi.fn(async () => ({
+      ok: true,
+      subject: intent().subject,
+      verdict: {
+        enabled: false,
+        tier: 'base',
+        base_badge: '충돌',
+        reason: 'merge_conflict'
+      },
+      evidence: {}
+    }));
+    const driver = actionDriver(store, { prActions: { completionGate } });
+    const queue = store.snapshot(DRIVER_WS);
+
+    const adopted = await driver.adoptLegacyTimeout(
+      'UI-root',
+      queue.completion_intents['UI-root'],
+      queue
+    );
+
+    expect(adopted).toBe(true);
+    expect(store.snapshot(DRIVER_WS).merge_queue).toMatchObject([
+      {
+        bead_id: 'UI-root',
+        resolution_rounds: 1,
+        resolution: {
+          attempt_id: 'legacy-resolution',
+          subject_bead_id: 'UI-root',
+          state: 'waiting'
+        }
+      }
+    ]);
+  });
+
+  test('keeps an unprovable historical DIRTY budget terminal', async () => {
+    const store = seededCompletionStore();
+    terminalizeResolutionTimeout(store);
+    const driver = actionDriver(store, {
+      prActions: {
+        completionGate: vi.fn(async () => ({
+          ok: true,
+          subject: intent().subject,
+          verdict: {
+            enabled: false,
+            tier: 'base',
+            base_badge: '충돌',
+            reason: 'merge_conflict'
+          },
+          evidence: {}
+        }))
+      }
+    });
+    const queue = store.snapshot(DRIVER_WS);
+
+    const handled = await driver.adoptLegacyTimeout(
+      'UI-root',
+      queue.completion_intents['UI-root'],
+      queue
+    );
+
+    expect(handled).toBe(true);
+    expect(store.snapshot(DRIVER_WS)).toMatchObject({
+      merge_queue: [],
+      completion_intents: {
+        'UI-root': {
+          phase: 'needs_human',
+          terminal_reason: { reason: 'resolution_lineage_ambiguous' }
+        }
+      }
+    });
+  });
+
+  test('does not adopt unrelated or contradictory terminal ownership', async () => {
+    const unrelated = seededCompletionStore();
+    unrelated.terminalizeCompletionIntent(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      terminal: {
+        reason: 'resolution_round_cap',
+        stage: 'conflict_resolution',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 1
+      }
+    });
+    const contradictory = seededCompletionStore();
+    contradictory.prepareCompletionOp(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        ...mergeOperation('wrong-owner'),
+        kind: 'create_repair'
+      }
+    });
+    contradictory.terminalizeCompletionIntent(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      terminal: {
+        reason: 'resolution_timeout',
+        stage: 'conflict_resolution',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 1
+      }
+    });
+    const completionGate = vi.fn();
+
+    for (const store of [unrelated, contradictory]) {
+      const driver = actionDriver(store, { prActions: { completionGate } });
+      const queue = store.snapshot(DRIVER_WS);
+      const adopted = await driver.adoptLegacyTimeout(
+        'UI-root',
+        queue.completion_intents['UI-root'],
+        queue
+      );
+
+      expect(adopted).toBe(false);
+      expect(queue.completion_intents['UI-root'].phase).toBe('needs_human');
+    }
+    expect(completionGate).not.toHaveBeenCalled();
+  });
+
   test('terminalizes a third repair request without creating another child', async () => {
     const store = seededCompletionStore();
     for (const n of [1, 2]) {
@@ -1522,6 +1814,91 @@ describe('worker/completion-intent lifecycle', () => {
       'UI-root',
       { kind: 'pause' },
       expect.objectContaining({ phase: 'gating' })
+    );
+  });
+
+  test('runs one strict legacy adoption before the runnable head', async () => {
+    const historical = intent({
+      phase: 'needs_human',
+      terminal_reason: {
+        reason: 'resolution_timeout',
+        stage: 'conflict_resolution'
+      }
+    });
+    const adoptLegacy = vi.fn(async () => true);
+    const observe = vi.fn();
+    const onAction = vi.fn();
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: '/repo',
+      store: {
+        snapshot: () => ({
+          auto_merge: true,
+          merge_queue: [{ bead_id: 'UI-later', resolution: null }],
+          completion_intents: {
+            'UI-root': historical,
+            'UI-later': intent({
+              subject: { ...intent().subject, bead_id: 'UI-later' }
+            })
+          }
+        })
+      },
+      adoptLegacy,
+      observe,
+      onAction
+    });
+
+    await coordinator.reconcile();
+
+    expect(adoptLegacy).toHaveBeenCalledWith(
+      'UI-root',
+      historical,
+      expect.objectContaining({ auto_merge: true })
+    );
+    expect(observe).not.toHaveBeenCalled();
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  test('observes the first runnable completion instead of a yielded root', async () => {
+    const later = intent({
+      subject: { ...intent().subject, bead_id: 'UI-later' }
+    });
+    const observe = vi.fn(async () => ({
+      state: /** @type {const} */ ('green')
+    }));
+    const onAction = vi.fn();
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: '/repo',
+      store: {
+        snapshot: () => ({
+          auto_merge: true,
+          merge_queue: [
+            {
+              bead_id: 'UI-root',
+              resolution: { state: 'yielded' }
+            },
+            { bead_id: 'UI-later', resolution: null }
+          ],
+          completion_intents: {
+            'UI-root': intent({ phase: 'merging' }),
+            'UI-later': later
+          }
+        })
+      },
+      observe,
+      onAction
+    });
+
+    await coordinator.reconcile();
+
+    expect(observe).toHaveBeenCalledWith(
+      'UI-later',
+      later,
+      expect.objectContaining({ auto_merge: true })
+    );
+    expect(onAction).toHaveBeenCalledWith(
+      'UI-later',
+      { kind: 'merge_subject' },
+      later
     );
   });
 

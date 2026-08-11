@@ -3620,6 +3620,114 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Re-adopt one historical time-only conflict terminal as the same root
+     * merge saga. The terminal evidence, merge operation, queue position, and
+     * optional live resolver wait change in one persist, so startup cannot
+     * clear the terminal and crash before restoring its owner.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, subject: CompletionSubject, op: CompletionOperation, resolution_attempt_id?: string|null, resolution_rounds: number, wait_ms: number }} input
+     * @returns {QueueOpResult}
+     */
+    adoptLegacyResolutionTimeout(workspace, input) {
+      const {
+        root_bead_id,
+        subject,
+        op,
+        resolution_attempt_id,
+        resolution_rounds,
+        wait_ms
+      } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const terminal = intent?.terminal_reason;
+        const normalized_subject = normalizeCompletionSubject(
+          subject,
+          root_bead_id
+        );
+        const normalized_op = normalizeCompletionOperation(op);
+        const expected_repair =
+          intent?.subject.role === 'repair' ? intent.subject.bead_id : null;
+        const active_op = intent?.active_op;
+        const active_failure = active_op?.failure_key;
+        const active_op_consistent =
+          active_op === null ||
+          (active_op?.kind === 'merge_subject' &&
+            active_op.attempt_id === null &&
+            active_op.repair_bead_id === expected_repair &&
+            active_op.status !== 'consumed' &&
+            active_failure?.stage === 'merge_subject' &&
+            active_failure.subject_sha === intent?.subject.head_sha &&
+            active_failure.base_sha === intent.subject.base_sha);
+        const attempt =
+          typeof resolution_attempt_id === 'string'
+            ? next.attempts[resolution_attempt_id]
+            : null;
+        const attempt_started_at =
+          typeof attempt?.started_at === 'number' &&
+          Number.isFinite(attempt.started_at)
+            ? attempt.started_at
+            : null;
+        if (
+          !intent ||
+          intent.phase !== 'needs_human' ||
+          terminal?.reason !== 'resolution_timeout' ||
+          terminal.stage !== 'conflict_resolution' ||
+          !normalized_subject ||
+          normalized_subject.role !== intent.subject.role ||
+          normalized_subject.bead_id !== intent.subject.bead_id ||
+          !normalized_op ||
+          normalized_op.kind !== 'merge_subject' ||
+          normalized_op.attempt_id !== null ||
+          normalized_op.repair_bead_id !== expected_repair ||
+          normalized_op.status !== 'prepared' ||
+          normalized_op.failure_key.stage !== 'merge_subject' ||
+          normalized_op.failure_key.subject_sha !==
+            normalized_subject.head_sha ||
+          normalized_op.failure_key.base_sha !== normalized_subject.base_sha ||
+          !active_op_consistent ||
+          next.merge_queue.some((entry) => entry.bead_id === root_bead_id) ||
+          typeof resolution_rounds !== 'number' ||
+          !Number.isInteger(resolution_rounds) ||
+          resolution_rounds < 0 ||
+          typeof wait_ms !== 'number' ||
+          !Number.isFinite(wait_ms) ||
+          wait_ms < 0 ||
+          (resolution_attempt_id != null &&
+            (typeof resolution_attempt_id !== 'string' ||
+              resolution_attempt_id.length === 0 ||
+              !attempt ||
+              attempt.bead_id !== intent.subject.bead_id ||
+              attempt.conflict_resolution !== true ||
+              (attempt.status !== 'running' && attempt.status !== 'paused') ||
+              attempt_started_at === null))
+        ) {
+          return false;
+        }
+        intent.phase = 'merging';
+        intent.subject = normalized_subject;
+        intent.active_op = active_op || normalized_op;
+        intent.terminal_reason = null;
+        insertRunnableMergeEntry(next, {
+          bead_id: root_bead_id,
+          resolution_rounds,
+          resolution: attempt
+            ? {
+                attempt_id: attempt.attempt_id,
+                subject_bead_id: attempt.bead_id,
+                deadline_at:
+                  /** @type {number} */ (attempt_started_at) + wait_ms,
+                state: 'waiting',
+                yielded_at: null,
+                settled_at: null
+              }
+            : null
+        });
+        return true;
+      });
+    },
+
+    /**
      * Queue every eligible row the AUTO enroller (or the lane's toggle click)
      * judged, applying the exclusion filter and the record prune inside the SAME
      * mutation (UI-yk55 §3.2/§3.2.1).
