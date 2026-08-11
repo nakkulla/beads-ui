@@ -14,6 +14,7 @@ import {
   attachWsServer,
   handleMessage
 } from './ws.js';
+import { decorateQueue } from './ws/worker-handlers.js';
 
 // Only `runBdJson` is faked — the title cache's fill is the single `bd` caller
 // under test, and everything else the ws layer imports from `bd.js` must stay
@@ -70,17 +71,27 @@ function queueSnapshots(sock) {
  * Answer `bd show <id> --json` from a fixture map; an unknown id exits
  * non-zero, which is the lookup failure the cache must survive.
  *
- * @param {Record<string, string>} titles
+ * @param {Record<string, string | { title: string, labels?: unknown }>} titles
  */
 function stubBdTitles(titles) {
   vi.mocked(runBdJson).mockImplementation(
     async (/** @type {string[]} */ args) => {
       const bead_id = args[1];
       const title = titles[bead_id];
-      if (typeof title !== 'string') {
+      if (
+        typeof title !== 'string' &&
+        (!title || typeof title.title !== 'string')
+      ) {
         return { code: 1, stderr: 'not found' };
       }
-      return { code: 0, stdoutJson: [{ id: bead_id, title }] };
+      return {
+        code: 0,
+        stdoutJson: [
+          typeof title === 'string'
+            ? { id: bead_id, title }
+            : { id: bead_id, ...title }
+        ]
+      };
     }
   );
 }
@@ -108,6 +119,30 @@ afterEach(() => {
 });
 
 describe('worker queue snapshot — bead_titles decoration (UI-12k6)', () => {
+  test('projects partial bead_labels for queue, pr_wait, and done rows', async () => {
+    stubBdTitles({
+      'UI-1': { title: '대기', labels: ['worker-serial'] },
+      'UI-2': { title: 'PR', labels: ['frontend'] },
+      'UI-3': { title: '완료', labels: [] }
+    });
+    const raw_queue = {
+      queue: [{ bead_id: 'UI-1' }],
+      pr_wait: [{ bead_id: 'UI-2' }],
+      done: [{ bead_id: 'UI-3' }],
+      attempts: {}
+    };
+
+    expect(decorateQueue(process.cwd(), raw_queue).bead_labels).toEqual({});
+
+    await vi.waitFor(() => {
+      expect(decorateQueue(process.cwd(), raw_queue).bead_labels).toEqual({
+        'UI-1': ['worker-serial'],
+        'UI-2': ['frontend'],
+        'UI-3': []
+      });
+    });
+  });
+
   test('carries a bead_titles map on every snapshot', async () => {
     stubBdTitles({});
     const sock = fakeSocket();
@@ -135,7 +170,9 @@ describe('worker queue snapshot — bead_titles decoration (UI-12k6)', () => {
   });
 
   test('pushes a fresh snapshot carrying the title once the lookup fills', async () => {
-    stubBdTitles({ 'UI-1': '채워진 제목' });
+    stubBdTitles({
+      'UI-1': { title: '채워진 제목', labels: ['worker-serial'] }
+    });
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     await send(sock, 'm1', 'worker-queue-place', {
@@ -146,6 +183,9 @@ describe('worker queue snapshot — bead_titles decoration (UI-12k6)', () => {
     await vi.waitFor(() => {
       const snaps = queueSnapshots(sock);
       expect(snaps[snaps.length - 1].bead_titles['UI-1']).toBe('채워진 제목');
+      expect(snaps[snaps.length - 1].bead_labels['UI-1']).toEqual([
+        'worker-serial'
+      ]);
     });
   });
 

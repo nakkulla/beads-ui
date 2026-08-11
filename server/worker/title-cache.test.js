@@ -6,7 +6,7 @@ import { createTitleCache } from './title-cache.js';
  * id absent from the map exits non-zero, which is the "cannot read this bead"
  * failure the cache negative-caches.
  *
- * @param {Record<string, string>} titles
+ * @param {Record<string, string | { title: string, labels?: unknown }>} titles
  * @param {{ deferred?: boolean }} [options]
  */
 function fakeBd(titles, options = {}) {
@@ -17,13 +17,23 @@ function fakeBd(titles, options = {}) {
   const runJson = vi.fn((/** @type {string[]} */ args) => {
     const p = new Promise((resolve) => {
       const bead_id = args[1];
-      const title = titles[bead_id];
+      const bead = titles[bead_id];
       const answer = () => {
-        if (typeof title !== 'string') {
+        if (
+          typeof bead !== 'string' &&
+          (!bead || typeof bead.title !== 'string')
+        ) {
           resolve({ code: 1, stderr: 'not found' });
           return;
         }
-        resolve({ code: 0, stdoutJson: [{ id: bead_id, title }] });
+        resolve({
+          code: 0,
+          stdoutJson: [
+            typeof bead === 'string'
+              ? { id: bead_id, title: bead }
+              : { id: bead_id, ...bead }
+          ]
+        });
       };
       if (options.deferred) {
         pending.push(answer);
@@ -56,6 +66,65 @@ function fakeBd(titles, options = {}) {
 }
 
 describe('worker title cache (UI-12k6)', () => {
+  test('returns normalized labels from the title cache fill', async () => {
+    const bd = fakeBd({
+      'UI-1': { title: '첫 제목', labels: ['worker-serial', 3, 'frontend'] }
+    });
+    const cache = createTitleCache({ runJson: bd.runJson });
+
+    expect(cache.labelsFor('/ws', ['UI-1'])).toEqual({});
+
+    await vi.waitFor(() =>
+      expect(cache.labelsFor('/ws', ['UI-1'])).toEqual({
+        'UI-1': ['worker-serial', 'frontend']
+      })
+    );
+  });
+
+  test('keeps an unreadable label projection absent', async () => {
+    const bd = fakeBd({ 'UI-1': '첫 제목' });
+    const cache = createTitleCache({ runJson: bd.runJson });
+
+    cache.labelsFor('/ws', ['UI-1', 'UI-2']);
+
+    await vi.waitFor(() =>
+      expect(cache.labelsFor('/ws', ['UI-1', 'UI-2'])).toEqual({
+        'UI-1': []
+      })
+    );
+  });
+
+  test('keeps a readback refresh when an older lookup finishes later', async () => {
+    /** @type {(value: unknown) => void} */
+    let release = () => {};
+    const runJson = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
+    const cache = createTitleCache({ runJson });
+
+    cache.labelsFor('/ws', ['UI-1']);
+    await vi.waitFor(() => expect(runJson).toHaveBeenCalledTimes(1));
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '새 제목',
+      labels: ['worker-serial']
+    });
+    release({
+      code: 0,
+      stdoutJson: [{ id: 'UI-1', title: '오래된 제목', labels: [] }]
+    });
+
+    await vi.waitFor(() =>
+      expect(cache.labelsFor('/ws', ['UI-1'])).toEqual({
+        'UI-1': ['worker-serial']
+      })
+    );
+    expect(cache.titlesFor('/ws', ['UI-1'])).toEqual({ 'UI-1': '새 제목' });
+  });
+
   test('returns nothing on a cold miss and fills asynchronously', async () => {
     const bd = fakeBd({ 'UI-1': '첫 제목' });
     const cache = createTitleCache({ runJson: bd.runJson });
