@@ -110,7 +110,9 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  *   queue_length?: number,
  *   place_index?: number,
  *   done_kind?: string|null,
- *   labels?: string[]
+ *   labels?: string[],
+ *   spec_reviewer?: string,
+ *   plan_state?: 'approved'|'authored'|'none'
  * }} MonitorItem
  */
 
@@ -311,10 +313,11 @@ function objectOf(value) {
  * 있는 레포만 실린 heavy array.
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state] - 모든
  * visible 레포의 제어 상태 (파이프라인이 빈 레포 포함).
- * @param {{ done_since?: number }} [options] - `done_since`는 Worker 탭과 같은
- * `closedRangeSince()` 하한이다 (§7). 생략하면 필터 없음 — 기존 호출부와
- * 호환된다. `added_at`이 없는 완료 엔트리는 기간으로 판정할 수 없으므로 필터를
- * 적용하지 않고 항상 남긴다 (Worker 탭과 같은 규약, §10).
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo' }} [options] - Sort/filter options.
+ * `done_since`는 Worker 탭과 같은 `closedRangeSince()` 하한이다 (§7). 생략하면
+ * 필터 없음 — 기존 호출부와 호환된다. `added_at`이 없는 완료 엔트리는 기간으로
+ * 판정할 수 없으므로 필터를 적용하지 않고 항상 남긴다 (Worker 탭과 같은 규약,
+ * §10). `running_sort`의 미지 값은 기본 `started`로 물러난다.
  * @returns {MonitorLanes}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -558,6 +561,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
         updated_at: entry.updated_at ?? undefined,
         // 라우팅 라벨(`worker-ineligible` 등)이 큐잉 판단의 근거다 (UI-lzfa §4.2).
         labels: Array.isArray(entry.labels) ? entry.labels : [],
+        spec_reviewer:
+          typeof entry.spec_reviewer === 'string'
+            ? entry.spec_reviewer
+            : undefined,
+        plan_state:
+          entry.plan_state === 'approved' || entry.plan_state === 'authored'
+            ? entry.plan_state
+            : 'none',
         // route 칩만 쓰고 스테퍼는 그리지 않는다: 집계 payload에는 stage 요약이
         // 없고, `stepperTemplate`은 `stages` 없는 workflow를 빈 문자열로 돌려준다.
         workflow: /** @type {any} */ (
@@ -610,7 +621,42 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
   }
 
-  running.sort((a, b) => (b.last_event_at ?? 0) - (a.last_event_at ?? 0));
+  /** @type {Map<string, number>} */
+  const repo_order = new Map();
+  states.forEach((entry, index) => {
+    if (entry && typeof entry.root_dir === 'string') {
+      repo_order.set(entry.root_dir, index);
+    }
+  });
+  const running_sort =
+    options && options.running_sort === 'repo' ? 'repo' : 'started';
+  running.sort((a, b) => {
+    if (running_sort === 'repo') {
+      const a_repo = repo_order.get(a.root_dir) ?? Number.MAX_SAFE_INTEGER;
+      const b_repo = repo_order.get(b.root_dir) ?? Number.MAX_SAFE_INTEGER;
+      if (a_repo !== b_repo) {
+        return a_repo - b_repo;
+      }
+    }
+    const a_started =
+      typeof a.started_at === 'number' && Number.isFinite(a.started_at)
+        ? a.started_at
+        : null;
+    const b_started =
+      typeof b.started_at === 'number' && Number.isFinite(b.started_at)
+        ? b.started_at
+        : null;
+    if (a_started !== null && b_started !== null && a_started !== b_started) {
+      return a_started - b_started;
+    }
+    if (a_started === null && b_started !== null) {
+      return 1;
+    }
+    if (a_started !== null && b_started === null) {
+      return -1;
+    }
+    return a.id.localeCompare(b.id);
+  });
   done.sort((a, b) => (b.done_at ?? 0) - (a.done_at ?? 0));
 
   // 그룹은 `workspaces_state`를 돌며 만든다 — 큐가 빈 레포에도 헤더가 필요하다.
@@ -858,6 +904,14 @@ export function monitorRunnableCard(item) {
   const workflow = item.workflow;
   const chips = (workflow && workflow.chips) || {};
   const route = chips.route || (workflow && workflow.route);
+  const spec_reviewer =
+    typeof item.spec_reviewer === 'string' ? item.spec_reviewer : '';
+  const plan_label =
+    item.plan_state === 'approved'
+      ? 'plan ✓'
+      : item.plan_state === 'authored'
+        ? 'plan ✎'
+        : 'plan –';
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
   const updated = formatRelativeTime(item.updated_at);
@@ -866,6 +920,22 @@ export function monitorRunnableCard(item) {
       <span class="mon-c__grip" aria-hidden="true">⠿</span>${idChip(item)}
       ${route
         ? html`<span class="ctl-chip ctl-chip--route">${route}</span>`
+        : ''}
+      ${spec_reviewer
+        ? html`<span
+            class="ctl-chip mon-c__review${spec_reviewer === 'skipped'
+              ? ' mon-c__review--dim'
+              : ''}"
+            >spec:${spec_reviewer}</span
+          >`
+        : ''}
+      ${route === 'full_plan'
+        ? html`<span
+            class="ctl-chip mon-c__plan${item.plan_state === 'none'
+              ? ' mon-c__review--dim'
+              : ''}"
+            >${plan_label}</span
+          >`
         : ''}
       ${visibleLabels(item.labels, null).map(
         (label) => html`<span class="ctl-chip ctl-chip--label">${label}</span>`
@@ -1196,6 +1266,7 @@ export function monitorGroupHeaderTemplate(group) {
  * @param {{
  *   automation: { total: number, both_on: number },
  *   counts: { running: number, queue: number, pr_wait: number },
+ *   running_sort?: 'started'|'repo',
  *   done_range: import('../../data/closed-range.js').ClosedRange,
  *   token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null,
  *   token_tooltip: string
@@ -1205,6 +1276,7 @@ export function monitorGroupHeaderTemplate(group) {
 export function monitorTopBarTemplate(model) {
   const { total, both_on } = model.automation;
   const all_on = total > 0 && both_on === total;
+  const running_sort = model.running_sort === 'repo' ? 'repo' : 'started';
   const done_label =
     CLOSED_RANGE_OPTIONS.find((o) => o.value === model.done_range)?.label || '';
   const token_badges = Array.isArray(model.token_total)
@@ -1231,6 +1303,31 @@ export function monitorTopBarTemplate(model) {
       >
     </button>
     <div class="mon-kpi">
+      <span
+        class="mon-running-sort-group"
+        role="group"
+        aria-label="실행중 정렬"
+      >
+        <button
+          type="button"
+          class="mon-running-sort${running_sort === 'started'
+            ? ' is-active'
+            : ''}"
+          data-sort="started"
+          aria-pressed=${running_sort === 'started' ? 'true' : 'false'}
+        >
+          시작순
+        </button>
+        <span aria-hidden="true">|</span>
+        <button
+          type="button"
+          class="mon-running-sort${running_sort === 'repo' ? ' is-active' : ''}"
+          data-sort="repo"
+          aria-pressed=${running_sort === 'repo' ? 'true' : 'false'}
+        >
+          레포순
+        </button>
+      </span>
       <span class="mon-kpi__chip mon-kpi__chip--running"
         >실행 <b>${model.counts.running}</b></span
       >

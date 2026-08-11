@@ -48,6 +48,9 @@ import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
  */
 const DONE_RANGE_KEY = 'bdui.monitor.done-range';
 
+/** Persisted sort for the 실행중 lane (UI-fmwh §4.1). */
+const RUNNING_SORT_KEY = 'bdui.monitor.running_sort';
+
 /**
  * @returns {import('../../data/closed-range.js').ClosedRange}
  */
@@ -68,6 +71,30 @@ function saveDoneRange(range) {
     window.localStorage.setItem(DONE_RANGE_KEY, range);
   } catch {
     /* ignore — a private-mode storage denial must not break the select */
+  }
+}
+
+/**
+ * @returns {'started'|'repo'}
+ */
+function loadRunningSort() {
+  try {
+    return window.localStorage.getItem(RUNNING_SORT_KEY) === 'repo'
+      ? 'repo'
+      : 'started';
+  } catch {
+    return 'started';
+  }
+}
+
+/**
+ * @param {'started'|'repo'} running_sort
+ */
+function saveRunningSort(running_sort) {
+  try {
+    window.localStorage.setItem(RUNNING_SORT_KEY, running_sort);
+  } catch {
+    /* ignore — storage denial must not break an in-memory sort change */
   }
 }
 
@@ -185,6 +212,9 @@ export function createMonitorView(mount_element, options) {
    * @type {import('../../data/closed-range.js').ClosedRange}
    */
   let done_range = loadDoneRange();
+
+  /** @type {'started'|'repo'} */
+  let running_sort = loadRunningSort();
 
   /**
    * @returns {string}
@@ -617,6 +647,7 @@ export function createMonitorView(mount_element, options) {
           queue: lanes.queue.length,
           pr_wait: lanes.pr_wait.length
         },
+        running_sort,
         done_range,
         token_total: crossRepoTokenTotal(lanes.done),
         token_tooltip: tokenTotalTooltip(doneRangeLabel())
@@ -680,7 +711,8 @@ export function createMonitorView(mount_element, options) {
         : [];
     const now = nowFn();
     lanes = buildLanes(workspaces, workspaces_state, {
-      done_since: closedRangeSince(done_range, now)
+      done_since: closedRangeSince(done_range, now),
+      running_sort
     });
     render(monitorTemplate(now), console_el);
   }
@@ -832,6 +864,20 @@ export function createMonitorView(mount_element, options) {
     }
     // PR 링크는 그대로 열려야 한다 — 행 열기로 가로채지 않는다.
     if (target.closest('a')) {
+      return;
+    }
+
+    const running_sort_button = /** @type {HTMLElement|null} */ (
+      target.closest('.mon-running-sort')
+    );
+    if (running_sort_button) {
+      ev.preventDefault();
+      running_sort =
+        running_sort_button.getAttribute('data-sort') === 'repo'
+          ? 'repo'
+          : 'started';
+      saveRunningSort(running_sort);
+      doRender();
       return;
     }
 

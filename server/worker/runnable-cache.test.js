@@ -94,6 +94,8 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         title: '실행 대기 이슈',
         route: 'spec_backed',
         spec_id: 'docs/specs/thing.md',
+        spec_reviewer: 'codex',
+        plan_state: 'none',
         labels: [],
         created_at: null,
         updated_at: null
@@ -233,6 +235,141 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     const out = await warm(cache, WS_A);
 
     expect(out.map((item) => item.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('projects the reviewer token from the spec receipt', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({ metadata: { spec_review: `skipped@${'b'.repeat(40)}` } })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].spec_reviewer).toBe('skipped');
+  });
+
+  test('projects an approved plan from the current approval receipt', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              route: 'full_plan',
+              plan_path: 'docs/superpowers/plans/thing.md',
+              plan_approval: `user@${'c'.repeat(40)}`
+            }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].plan_state).toBe('approved');
+  });
+
+  test('projects an authored plan from the current draft review receipt', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              route: 'full_plan',
+              plan_path: 'docs/superpowers/plans/thing.md',
+              plan_review: `skipped@${'d'.repeat(12)}`
+            }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].plan_state).toBe('authored');
+  });
+
+  test('projects an approved plan from the legacy approval receipt', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              route: 'full_plan',
+              plan_path: 'docs/superpowers/plans/thing.md',
+              plan_review: `codex@${'e'.repeat(40)}`
+            }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].plan_state).toBe('approved');
+  });
+
+  test('projects an authored plan from the legacy draft review receipt', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              route: 'full_plan',
+              plan_path: 'docs/superpowers/plans/thing.md',
+              plan_check: `codex@${'f'.repeat(12)}`
+            }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].plan_state).toBe('authored');
+  });
+
+  test('projects no plan state without a plan path', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              route: 'full_plan',
+              plan_approval: `user@${'c'.repeat(40)}`
+            }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].plan_state).toBe('none');
+  });
+
+  test('projects no plan state from malformed receipts', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              route: 'full_plan',
+              plan_path: 'docs/superpowers/plans/thing.md',
+              plan_approval: `codex@${'c'.repeat(40)}`,
+              plan_review: `user@${'d'.repeat(12)}`,
+              plan_check: `codex@${'e'.repeat(12)}`
+            }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].plan_state).toBe('none');
   });
 
   test('rejects a phase child named by its parent edge', async () => {

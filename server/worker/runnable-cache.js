@@ -33,6 +33,11 @@ import {
 import { runBdJson } from '../bd.js';
 import { debug } from '../logging.js';
 import { resolveSpecId } from '../spec-id.js';
+import {
+  parsePlanApprovalReceipt,
+  parsePlanReceipt,
+  parsePlanReviewReceipt
+} from '../workflow-enrich.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
 
 const log = debug('worker:runnable-cache');
@@ -78,6 +83,8 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan']);
  * @property {string} title
  * @property {string} route - The `metadata.route` that qualified it.
  * @property {string} spec_id - The native-first resolved spec path.
+ * @property {string} spec_reviewer - Reviewer token from `spec_review`.
+ * @property {'approved'|'authored'|'none'} plan_state
  * @property {string[]} labels - Non-policy labels carried for display. An exact
  * `worker-ineligible` label excludes the row before this projection is made.
  * @property {number|string|null} created_at
@@ -135,6 +142,44 @@ function isPhaseChild(row) {
 }
 
 /**
+ * Derive the display-only plan state using the workflow consumer's receipt
+ * parsers. New keys win without malformed-key fallback, matching
+ * `workflow-enrich.js` `planStage()`; legacy keys remain read-only compatibility.
+ *
+ * @param {Record<string, unknown>} meta
+ * @param {string} route
+ * @returns {'approved'|'authored'|'none'}
+ */
+function planState(meta, route) {
+  if (route !== 'full_plan') {
+    return 'none';
+  }
+  const plan_path =
+    typeof meta.plan_path === 'string' ? meta.plan_path.trim() : '';
+  if (plan_path.length === 0) {
+    return 'none';
+  }
+
+  const has_new_approval = Object.hasOwn(meta, 'plan_approval');
+  const legacy_approval = has_new_approval
+    ? null
+    : parsePlanReceipt(meta.plan_review);
+  const approval = has_new_approval
+    ? parsePlanApprovalReceipt(meta.plan_approval)
+    : legacy_approval;
+  if (approval) {
+    return 'approved';
+  }
+
+  const review = legacy_approval
+    ? parsePlanReviewReceipt(meta.plan_check)
+    : Object.hasOwn(meta, 'plan_review')
+      ? parsePlanReviewReceipt(meta.plan_review)
+      : parsePlanReviewReceipt(meta.plan_check);
+  return review ? 'authored' : 'none';
+}
+
+/**
  * The 판정 조건 (spec §4), minus the lane exclusion — that one depends on the
  * CALLER's current queue state, so it is applied at read time instead of being
  * baked into the cached list.
@@ -160,9 +205,11 @@ function qualify(row) {
     return null;
   }
   const spec_review = meta.spec_review;
+  const normalized_spec_review =
+    typeof spec_review === 'string' ? spec_review.trim() : '';
   if (
-    typeof spec_review !== 'string' ||
-    !ADMISSION_RECEIPT_RE.test(spec_review.trim())
+    normalized_spec_review.length === 0 ||
+    !ADMISSION_RECEIPT_RE.test(normalized_spec_review)
   ) {
     return null;
   }
@@ -174,6 +221,11 @@ function qualify(row) {
     title: typeof row.title === 'string' ? row.title : '',
     route,
     spec_id: spec.path,
+    spec_reviewer: normalized_spec_review.slice(
+      0,
+      normalized_spec_review.indexOf('@')
+    ),
+    plan_state: planState(meta, route),
     labels: workerLabels(row.labels),
     created_at: stampOf(row.created_at),
     updated_at: stampOf(row.updated_at)
