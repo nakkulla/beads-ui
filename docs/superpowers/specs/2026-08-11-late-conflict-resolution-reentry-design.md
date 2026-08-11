@@ -320,8 +320,8 @@ Worker view는 최소한 다음을 구분해 표시한다.
 ### RED-GREEN seams
 
 1. `server/worker/queue-store.test.js`
-   - legacy entry는 `resolution=null`로 load된다.
-   - wait binding이 attempt identity, absolute deadline, existing rounds를 round-trip한다.
+   - legacy entry는 새 schema에서 explicit `resolution=null`로 normalize된다.
+   - wait binding이 attempt identity, absolute deadline, existing rounds를 기록한다.
    - waiting→yielded가 round/intent/attempt를 바꾸지 않고 deferred suffix로 이동한다.
    - yielded→ready가 active item 바로 뒤에 exactly once promote한다.
    - multiple ready item은 `settled_at` FIFO를 유지한다.
@@ -329,17 +329,21 @@ Worker view는 최소한 다음을 구분해 표시한다.
    - malformed wait는 no-wait로 normalize되지 않는다.
    - cold load 뒤 deadline과 ordering이 유지된다.
 2. `server/worker/merge-queue.test.js`
-   - 30분 전에는 기존처럼 head를 기다린다.
    - 30분 뒤 session을 running으로 둔 채 timeout failure/skip 없이 다음 item을 처리한다.
    - late done event는 현재 active merge 다음으로 promote하고 full re-gate한다.
    - duplicate queue event와 stale ancestor settlement가 duplicate merge/resolver를 만들지 않는다.
    - restart 전후 동일 absolute deadline을 사용한다.
    - yielded item만 남았을 때 hot loop 없이 drain을 끝낸다.
    - CLEAN/MERGED, BEHIND, DIRTY 분기와 cap-before-dispatch를 각각 검증한다.
-   - timeout은 round를 소비하지 않고, ready+DIRTY만 한 번 소비한다.
+   - yield는 round를 소비하지 않고 timeout failure를 만들지 않으며, ready+DIRTY만 같은
+     attempt identity에 대해 한 번 소비한다.
+   - wait-binding store write가 throw 또는 `ok:false`이면 item/attempt를 보존하고 `merge()`를
+     재호출하지 않은 채 drain을 halt한다. cold restart는 exact running attempt를 다시 채택해
+     wait binding부터 이어간다.
+   - malformed/invalid wait record를 읽으면 `resolution_wait_invalid`로 fail-closed하고
+     `merge()`나 resolver dispatch를 호출하지 않는다.
 3. `server/worker/completion-intent.test.js`
    - live timeout/yield가 `needs_human`을 만들지 않고 `merging/merge_subject`를 유지한다.
-   - resolution round cap과 lineage ambiguity는 계속 terminalize한다.
    - historical `needs_human/resolution_timeout` + CLEAN/BEHIND는 one-time adoption된다.
    - historical DIRTY + unprovable budget은 새 budget을 받지 않는다.
 4. `server/worker/pr-actions.test.js`
@@ -349,19 +353,30 @@ Worker view는 최소한 다음을 구분해 표시한다.
 5. `server/worker/auto-merge.test.js`
    - new candidate는 yielded suffix 앞에 들어간다.
    - auto-merge OFF에서는 ready item의 effect가 실행되지 않고 ON에서 재개된다.
-   - terminal needs_human과 historical skip filtering은 그대로다.
 6. `server/worker/scheduler.test.js`
-   - resolution attempt terminal transition이 yielded reconciliation을 깨우며 normal conflict
-     attempt를 completion settlement로 오인하지 않는다.
+   - resolution attempt terminal transition이 exact yielded marker reconciliation을 깨운다.
    - pause→resume descendant chain이 marker의 exact leaf로 수렴한다.
-   - worker-serial guard는 yielded root 뒤 다른-Bead session launch에도 적용된다.
 7. `app/views/worker/index.test.js`
    - waiting/yielded/ready badge가 failure alert 없이 표시된다.
-   - historical resolution_timeout failure text는 유지된다.
 8. `server/e2e/worker-flow.test.js`
    - long resolver → queue yield → next clean PR merge → late resolver completion → priority reentry
      → full re-gate → root merge/cleanup 흐름을 재생한다.
    - persisted `beads-456` 형태의 terminal fixture가 startup에서 CLEAN PR로 자동 복구된다.
+
+위 RED는 current implementation에 없는 `resolution` journal/state, nonterminal yield,
+priority re-entry, probe-before-dispatch, legacy adoption을 직접 관측하므로 변경 전 실패해야 한다.
+환경 gate나 존재하지 않는 fixture 때문에 실행되지 않는 RED는 허용하지 않는다.
+
+### Regression and characterization
+
+다음 항목은 이미 성립하는 계약이므로 RED 증거로 세지 않고 회귀 보호로 유지한다.
+
+- 30분 전에는 current queue head와 running/leaf-paused resolver를 기다린다.
+- `resolution_round_cap`은 completion intent를 terminalize하고 새 budget을 만들지 않는다.
+- terminal `needs_human`과 same-head historical `auto_merge_skips` filtering은 유지한다.
+- normal conflict attempt를 completion settlement로 오인하지 않는다.
+- yielded root가 있어도 다른-Bead Worker session은 기존 `worker-serial` guard를 우회하지 않는다.
+- historical `resolution_timeout` failure text mapping은 과거 record 표시를 위해 유지한다.
 
 ### Verification bundle
 
