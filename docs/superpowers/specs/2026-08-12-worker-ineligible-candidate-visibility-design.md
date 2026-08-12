@@ -199,15 +199,36 @@ frontend source 변경 뒤 `app/main.bundle.js`와 `app/main.bundle.js.map`을 �
 
 ## 배포와 runtime 검증
 
-PR merge 뒤 merged `main` checkout에서 다음을 수행한다.
+현재 `docs/agents/repo-ops.toml`의 canonical 선언은 다음 managed deploy adapter다.
 
-1. `npm run build` 결과가 generated bundle과 map에 반영됐는지 확인한다.
-2. `docs/agents/repo-ops.toml`의 `[deploy]` 선언과 shared runtime 설정을 확인한다.
-3. `bdui-shared restart`로 shared service를 재시작한다.
-4. running process가 merged checkout을 가리키는지 확인한다.
-5. listening port와 `/healthz` HTTP 응답을 확인한다.
+```toml
+[deploy]
+adapter = "managed"
+cmd = ["scripts/managed-self-deploy.js"]
+timeout_ms = 600000
+```
+
+PR에는 `npm run build`로 생성한 bundle과 map을 포함한다. Merge 뒤 배포 owner는
+핀된 merged candidate release에서 선언된 adapter를 실행하며, controller가 과거의
+직접 restart 명령으로 이를 대체하지 않는다. 순서는 다음과 같다.
+
+1. managed adapter가 candidate release와 install marker를 검증한다.
+2. 검증된 release로 runtime pointer를 atomic cutover하고 readback한다.
+3. restart handoff를 durable journal에 먼저 기록한 뒤 adapter 내부에서
+   `bdui-shared restart`를 실행한다.
+4. 새 process가 runtime marker, pointer, candidate SHA와 일치하고 health check가
+   green인지 readback한 뒤에만 terminal deployment receipt를 기록한다.
+5. controller는 merged `main`에서 `npm run build`가 tracked bundle/map에 추가 diff를
+   만들지 않는지 확인하고, 실제 process source/SHA, listening port, `/healthz`를
+   독립 확인한다.
 6. 실제 `worker-ineligible` Bead가 Worker 후보에서 음영·chip·비활성 상태로
    보이며 queue placement가 불가능한지 확인한다.
+
+github.com에서 직접 merge해 자동 cleanup이 시작되지 않은 경우에는 beads-ui의
+`[정리]` 또는 workflow-owned `pr-finish` 경로로 같은 deployment reconciler를
+시작한다. Adapter가 중간에 실패하거나 restart handoff가 불명확하면 blind restart를
+겹쳐 실행하지 않는다. durable journal과 failure code를 기준으로 reconcile을 재개하며,
+terminal receipt와 위 live readback이 모두 확인되기 전에는 배포 완료를 선언하지 않는다.
 
 ## 완료 조건
 
@@ -217,5 +238,5 @@ PR merge 뒤 merged `main` checkout에서 다음을 수행한다.
 4. 상세 열기와 ID 복사는 유지된다.
 5. Monitor와 server execution guard 의미는 변하지 않는다.
 6. focused tests, 전체 frontend/backend 검증, build가 통과한다.
-7. merged shared service에서 process path, port, health, 실제 후보 카드 behavior가
-   확인된다.
+7. managed deployment receipt와 merged shared service의 process source/SHA, port,
+   health, 실제 후보 카드 behavior가 확인된다.
