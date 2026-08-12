@@ -62,13 +62,22 @@ state는 다음 개념을 가진다.
 2. `bd ready --explain --limit 0 --json`
 
 첫 command는 전체 status row, metadata, dependency edge, external PR metadata의 canonical
-source다. 두 번째 command만 readiness와 dependency-blocked 의미론의 source다. UI가
-readiness algorithm을 재구현하지 않는다.
+source다. 현재 운영 `bd 1.2.0-fork.1`에서 이 exact command를 직접 실행했을 때
+`beads-ui` 562개 row 중 231개, dotfiles 1,618개 row 중 1,129개가 hydrated
+`dependencies`를 포함했다. 두 번째 command만 readiness와 dependency-blocked 의미론의
+source다. UI가 readiness algorithm을 재구현하지 않는다.
+
+coordinator는 embedded dependency payload를 capability contract로 취급한다. 실제 CLI
+boundary 검증에서 known dependency edge가 raw row에 실리지 않는 legacy binary가
+발견되면 기존 batched `bd dep list`를 compatibility fallback으로 사용하고 그 workspace의
+generation command count를 3으로 기록한다. current supported fork의 정상 경로는 두
+command이며 synthetic fixture만으로 capability를 가정하지 않는다.
 
 두 command가 모두 성공하고 payload normalization과 cross-reference validation을
 통과해야 snapshot을 commit한다. 한쪽만 성공한 결과를 기존 snapshot과 섞지 않는다.
-explanation이 가리키는 ID가 all rows에 없으면 generation을 적용하지 않고 stale
-snapshot을 유지한다.
+cross-reference는 `ready[].id`와 `blocked[].id` 같은 subject ID만 all rows에 존재하도록
+요구한다. `blocked_by[].id`는 cross-rig external blocker나 local row가 없는 blocker를
+유효하게 표현할 수 있으므로 all rows 부재를 허용하고 ID/reason을 그대로 보존한다.
 
 `runBd`의 기존 global queue는 유지한다. coordinator는 process concurrency를 늘리는
 것이 아니라 command 수와 redundant generation을 줄인다.
@@ -105,8 +114,10 @@ characterization test가 정의하는 의미를 보존한다.
 - `in-progress`, `resolved`, `deferred`: raw row status로 projection한다.
 - `closed-issues`: raw closed rows에 기존 inclusive `since` filter를 적용하고 ordering을
   보존한다. 기존 `--closed-after` boundary fixture와 결과 parity를 검증한다.
-- provenance: row에 포함된 `dependencies`의 `discovered-from` edge에서 `from_id`를
-  계산한다. malformed edge만 fail-quiet로 생략하며 `bd dep list`를 실행하지 않는다.
+- provenance: supported fork에서는 row에 포함된 `dependencies`의 `discovered-from`
+  edge에서 `from_id`를 계산한다. malformed edge만 fail-quiet로 생략한다. capability
+  boundary가 legacy binary를 판정한 workspace만 기존 batched `bd dep list` fallback을
+  사용한다.
 
 `issue-detail`은 `bd show` 전용으로 남긴다. list row가 detail payload와 같다고 가정하지
 않는다. Beads mutation command도 기존 direct 실행을 유지하고 성공 뒤 coordinator에
@@ -164,7 +175,8 @@ memory에 남길 수 있지만 새 periodic generation은 시작하지 않는다
 
 - all command 실패: 새 generation 미적용, warm snapshot 유지
 - ready explain 실패: 새 generation 미적용, ready/blocked만 부분 교체 금지
-- malformed payload/cross-reference: 새 generation 미적용, structured log
+- malformed payload/subject cross-reference: 새 generation 미적용, structured log;
+  external/missing blocker row 자체는 오류가 아님
 - cold 상태의 실패: subscriber에 existing `bd_error` 계열 반환
 - warm 상태의 실패: delta/delete 미발행, retry backoff
 - projection 하나의 예외: 해당 generation 전체를 버리지 않고 해당 subscription publish만
@@ -211,13 +223,18 @@ read back한다.
 - 기존 adapter fixture를 raw all+ready snapshot fixture로 재사용해 all, ready, blocked,
   in-progress, closed range, resolved, deferred 결과가 동일함을 검증한다.
 - stored+dependency blocked union과 `blocked_info`를 고정한다.
-- embedded dependency provenance가 기존 batch `bd dep list` 결과와 같고 별도 dep command를
-  실행하지 않음을 검증한다.
+- external 또는 missing `blocked_by` ID가 all rows에 없어도 generation이 성공하고 blocker
+  ID/reason이 보존되는 fixture를 추가한다.
+- current installed `bd`를 통과하는 runner-boundary contract probe에서 whole-list row의
+  known `discovered-from` edge를 확인한다. supported path에서는 embedded provenance가 기존
+  batch `bd dep list` 결과와 같고 별도 dep command를 실행하지 않음을 검증한다.
+- embedded dependency capability가 없는 legacy CLI fixture에서는 batched dep fallback을
+  정확히 한 번 실행하고 provenance parity를 유지함을 검증한다.
 
 ### RED→GREEN seam 4: Monitor/worker reuse
 
 - Board+Worker+Monitor가 같은 workspace에서 활성화된 poll generation이 detail, `gh`, write를
-  제외하고 기본 두 `bd` child만 실행하는 integration test를 추가한다.
+  제외하고 supported fork에서 기본 두 `bd` child만 실행하는 integration test를 추가한다.
 - runnable 의미와 visible/hidden subscriber gate를 보존한다.
 - external PR status와 closed sweep이 fresh fenced generation을 사용하고 추가 whole-list
   scan을 만들지 않는 테스트를 추가한다.
